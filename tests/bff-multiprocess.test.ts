@@ -16,10 +16,14 @@ test("two real Next BFF processes share an opaque Redis session", async () => {
   const suffix = `${process.pid}-${Date.now()}`;
   const firstDist = `.next-bff-${suffix}-one`;
   const secondDist = `.next-bff-${suffix}-two`;
+  const vaultKey = randomBytes(32);
   const shared = {
     APPSELL_REDIS_URL: redis.url,
     APPSELL_REDIS_PREFIX: `appsell:test:bff-${suffix}`,
     APPSELL_SESSION_HMAC_KEY_B64: randomBytes(32).toString("base64"),
+    APPSELL_VAULT_LOCAL_KEYRING_B64_JSON: JSON.stringify([
+      { id: "test-v1", key: vaultKey.toString("base64"), active: true }
+    ]),
     NEXT_TELEMETRY_DISABLED: "1"
   };
   const first = startBff(firstPort, firstDist, shared);

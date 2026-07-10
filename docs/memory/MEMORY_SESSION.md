@@ -34,22 +34,22 @@ Project status:
 
 <!-- Substituir abaixo a cada nova sessão. Sessões anteriores vão para PROGRESS.md. -->
 
-## Sessão: 2026-07-10 16:05 — sincronização documental pós-merge
-Issue: #12
-Branch: docs/12-sync-post-redis
-PR: #16 (draft)
-Estado: concluído
+## Sessão: 2026-07-10 16:50 — token vault envelope encryption Local/CI
+Issue: #17
+Branch: feat/17-encrypted-token-vault
+PR: não aberta
+Estado: em_progresso
 Modelo: strong + human
-Arquivos alterados: STATUS, PROGRESS, planos, ADRs, decision register, dependency audit, verification report, audits históricos e memória
-Comandos executados: rg de drift; gh issue/pr/run/project view; vínculos nativos de subissues; validate-harness; pnpm install/lint/typecheck/test/build/test:e2e/test:e2e:production
-Validação: Harness verde; lint/typecheck/build verdes; 23 Vitest + 6 browser + 1 production local verdes; Project/subissues reconciliados; review independente verde P0-P3=0
-Bloqueios: nenhum técnico; Identity real permanece bloqueado na Issue #13
-Próxima ação: aguardar App CI e review humano da PR draft #16; sem merge
+Arquivos alterados: token-vault, redis-oauth-service, testes vault/Redis/BFF, env/README, STATUS/PROGRESS/decisions/audit
+Comandos executados: validate-harness; pnpm install/lint/typecheck/test/audit/build/test:e2e/test:e2e:production; gh issue/project/subissues
+Validação: local verde — lint/typecheck/build, audit zero, 35 Vitest, 6 browser, 1 production local; AppSec e concorrência verdes P0-P2=0
+Bloqueios: merge depende de PR/App CI; #18/#19/#13 permanecem bloqueadas
+Próxima ação: abrir PR draft #17, aguardar App CI e aplicar gate de merge aprovado
 Project status:
   - Projeto: Infra
-  - Status: PR aberta
-  - Tipo: Docs
-  - Prioridade: P1
-  - Risco: Baixo
+  - Status: Em desenvolvimento
+  - Tipo: Segurança
+  - Prioridade: P0
+  - Risco: Alto
   - Ambiente: Dev
-  - Próxima ação: aguardar App CI e review humano da PR draft #16; sem merge
+  - Próxima ação: abrir PR draft da #17 e aguardar App CI

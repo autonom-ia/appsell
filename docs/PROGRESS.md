@@ -2,7 +2,7 @@
 
 ## Fase atual
 
-Fase 1 — Identity/BFF local com session store Redis isolado.
+Fase 1 — Identity/BFF local com sessão Redis e token vault cifrado Local/CI.
 
 ## Concluído
 
@@ -27,14 +27,17 @@ Fase 1 — Identity/BFF local com session store Redis isolado.
 
 ## Em andamento
 
-- Issue #12 sincronizando documentação e decisões após os merges #11 e #15;
+- Issue #17 implementando envelope encryption Local/CI com DEK por registro,
+  keyring rotacionável e par sessão+vault atômico;
+- reviews independentes AppSec/crypto e concorrência verdes, P0-P2=0;
 - épica #8 permanece em desenvolvimento;
 - Identity real #13 permanece bloqueado por ausência de dev/hml e P0 upstream.
 
 ## Pendente
 
-- spike com Autonom.ia Identity real;
-- vault persistente/HA e rotação;
+- spike com Autonom.ia Identity real (#13);
+- refresh distribuído com fencing/CAS (#18), bloqueado por #17/#13;
+- KMS real, vault durável/HA e restore (#19), bloqueado;
 - CSRF generalizado para todas as futuras mutações;
 - RBAC e isolamento multi-tenant.
 
@@ -53,5 +56,5 @@ Fase 1 — Identity/BFF local com session store Redis isolado.
 
 ## Próximo passo recomendado
 
-Concluir a Issue #12 com review documental. Em seguida, decompor vault/KMS e
-refresh distribuído; não reutilizar o mock em produção.
+Abrir PR draft e fechar o CI da Issue #17. Não iniciar refresh #18 nem KMS real #19
+antes dos respectivos bloqueios; não reutilizar o mock/provider local em produção.

@@ -36,20 +36,44 @@ corepack pnpm build
 corepack pnpm test:e2e
 ```
 
-`APPSELL_REDIS_URL`, `APPSELL_REDIS_PREFIX` e
-`APPSELL_SESSION_HMAC_KEY_B64` são obrigatórios. Gere a chave local com
-`openssl rand -base64 32`; ela deriva o ID de sessão idempotente via HMAC e não
-é persistida no Redis. O prefixo deve
+`APPSELL_REDIS_URL`, `APPSELL_REDIS_PREFIX`,
+`APPSELL_SESSION_HMAC_KEY_B64` e
+`APPSELL_VAULT_LOCAL_KEYRING_B64_JSON` são obrigatórios. Gere duas chaves locais
+distintas com `openssl rand -base64 32`: a primeira deriva o ID de sessão via
+HMAC; a segunda envolve uma DEK aleatória por registro do vault. A chave HMAC
+não pode ser reutilizada como chave do vault. O prefixo deve
 seguir `appsell:<ambiente>:<instância-única>`. IDs opacos só aparecem nas chaves
-como SHA-256; transaction, code e sessão expiram por TTL do Redis. A suíte de
+como SHA-256; transaction, code, sessão e vault expiram por TTL do Redis. O
+payload de tokens sintéticos fica sob AES-256-GCM com AAD vinculada a namespace,
+sessão e subject; sessão e vault são criados e removidos atomicamente. A suíte de
 integração e o E2E criam um `redis-server` efêmero em porta aleatória diferente
 de 6379, protegido por senha aleatória. O harness valida o PID do processo antes
 de testar e aguarda seu encerramento antes de remover o diretório temporário.
 
 Limites deliberados do spike:
 
-- não há Identity externo, refresh real, HA/failover ou criptografia KMS;
+- não há Identity externo, refresh real, HA/failover ou integração KMS real;
+- o provider de keyring por env é exclusivo de Local/CI e falha fechado em
+  `NODE_ENV=production`; ele prova o contrato de envelope encryption, não KMS;
 - a sessão Redis contém somente identidade e metadados sanitizados; access e
-  refresh tokens não são persistidos nesta etapa;
+  refresh tokens sintéticos aparecem apenas no vault cifrado server-side;
 - o mock `/dev/identity/*` não é uma implementação de produção;
 - nenhuma autorização multi-tenant/RBAC está implementada nesta etapa.
+
+### Rotação do keyring local
+
+O keyring local existe apenas para testes Local/CI e não substitui KMS:
+
+1. adicionar a nova chave como `active: false`, mantendo a antiga ativa;
+2. validar que todas as instâncias conseguem ler envelopes antigos;
+3. promover exatamente uma chave nova para `active: true`, mantendo antigas
+   read-only;
+4. inventariar `kid` e executar rewrap/read-repair antes de remover qualquer
+   chave antiga — essa automação ainda não existe e está bloqueada na Issue #19.
+
+Remover uma chave com envelopes ainda ativos faz a leitura falhar fechada. A KEK
+em variável de ambiente também não protege contra RCE no BFF; o gate real exige
+KMS/secret manager, IAM mínimo e staging isolado. As chaves relacionadas por Lua
+usam uma hash tag Redis derivada do namespace `appsell:<ambiente>:<instância>`:
+ficam juntas por instância sem concentrar todas as instâncias no mesmo slot.
+HA/cluster ainda não foi certificado.

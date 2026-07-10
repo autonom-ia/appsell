@@ -2,6 +2,14 @@ import Redis from "ioredis";
 
 import { hmacSha256, pkceChallenge, randomOpaque, sha256 } from "./crypto";
 import { OAuthFlowError } from "./oauth-service";
+import {
+  createLocalTokenVaultFromEnvironment,
+  TokenVaultConfigurationError,
+  TokenVaultError,
+  type TokenBundle,
+  type TokenVault,
+  type TokenVaultContext
+} from "./token-vault";
 
 const DEFAULT_TRANSACTION_TTL_MS = 5 * 60_000;
 const DEFAULT_CODE_TTL_MS = 60_000;
@@ -35,6 +43,7 @@ export interface RedisOAuthOptions {
   redisUrl: string;
   prefix: string;
   sessionHmacKey: Buffer;
+  tokenVault: TokenVault;
   transactionTtlMs?: number;
   codeTtlMs?: number;
   sessionTtlMs?: number;
@@ -62,7 +71,12 @@ const CALLBACK_SCRIPT = `
 local transaction_json = redis.call('GET', KEYS[1])
 if not transaction_json then
   local receipt = redis.call('GET', KEYS[4])
-  if receipt and receipt == ARGV[4] and redis.call('EXISTS', KEYS[3]) == 1 then return 'RETRY_OK' end
+  if receipt and receipt == ARGV[4] then
+    local session_exists = redis.call('EXISTS', KEYS[3])
+    local vault_exists = redis.call('EXISTS', KEYS[5])
+    if session_exists == 1 and vault_exists == 1 then return 'RETRY_OK' end
+    if session_exists ~= vault_exists then return 'PAIR_INTEGRITY_ERROR' end
+  end
   return 'TRANSACTION_MISSING'
 end
 local transaction = cjson.decode(transaction_json)
@@ -74,16 +88,29 @@ local code = cjson.decode(code_json)
 if code.state ~= transaction.state then return 'CODE_STATE_MISMATCH' end
 if code.nonce ~= transaction.nonce then return 'NONCE_MISMATCH' end
 if code.challenge ~= transaction.challenge then return 'PKCE_MISMATCH' end
+local session = cjson.decode(ARGV[2])
+if code.subject ~= session.subject then return 'SUBJECT_MISMATCH' end
 
-if redis.call('EXISTS', KEYS[3]) == 1 then return 'SESSION_COLLISION' end
+if redis.call('EXISTS', KEYS[3]) == 1 or redis.call('EXISTS', KEYS[5]) == 1 then return 'PAIR_COLLISION' end
 redis.call('PSETEX', KEYS[3], ARGV[3], ARGV[2])
+redis.call('PSETEX', KEYS[5], ARGV[3], ARGV[6])
 redis.call('PSETEX', KEYS[4], ARGV[5], ARGV[4])
 redis.call('DEL', KEYS[1], KEYS[2])
 return 'OK'
 `;
 
+const READ_SESSION_VAULT_SCRIPT = `
+local session_json = redis.call('GET', KEYS[1])
+local vault_json = redis.call('GET', KEYS[2])
+if not session_json and not vault_json then return {} end
+if not session_json or not vault_json then return {'PAIR_INTEGRITY_ERROR'} end
+return {session_json, vault_json}
+`;
+
 export class OAuthStoreConfigurationError extends OAuthFlowError {}
 export class OAuthStoreUnavailableError extends OAuthFlowError {}
+export class OAuthVaultConfigurationError extends OAuthFlowError {}
+export class OAuthVaultIntegrityError extends OAuthFlowError {}
 
 export class RedisOAuthService {
   private readonly redis: Redis;
@@ -95,6 +122,7 @@ export class RedisOAuthService {
   private readonly maxPerClient: number;
   private readonly maxGlobal: number;
   private readonly sessionHmacKey: Buffer;
+  private readonly tokenVault: TokenVault;
   private readonly receiptTtlMs: number;
   private connectPromise: Promise<void> | undefined;
 
@@ -108,6 +136,7 @@ export class RedisOAuthService {
     this.maxPerClient = options.maxPerClient ?? DEFAULT_MAX_PER_CLIENT;
     this.maxGlobal = options.maxGlobal ?? DEFAULT_MAX_GLOBAL;
     this.sessionHmacKey = Buffer.from(options.sessionHmacKey);
+    this.tokenVault = options.tokenVault;
     this.receiptTtlMs = options.receiptTtlMs ?? DEFAULT_RECEIPT_TTL_MS;
     this.redis = new Redis(options.redisUrl, {
       lazyConnect: true,
@@ -122,10 +151,21 @@ export class RedisOAuthService {
   }
 
   static fromEnvironment(environment: Partial<Record<string, string | undefined>> = process.env) {
+    const sessionHmacKey = parseSessionHmacKey(environment.APPSELL_SESSION_HMAC_KEY_B64 ?? "");
+    let tokenVault: TokenVault;
+    try {
+      tokenVault = createLocalTokenVaultFromEnvironment(environment, [sessionHmacKey]);
+    } catch (error) {
+      if (error instanceof TokenVaultConfigurationError) {
+        throw new OAuthVaultConfigurationError("Token vault configuration is unavailable.");
+      }
+      throw error;
+    }
     return new RedisOAuthService({
       redisUrl: environment.APPSELL_REDIS_URL ?? "",
       prefix: environment.APPSELL_REDIS_PREFIX ?? "",
-      sessionHmacKey: parseSessionHmacKey(environment.APPSELL_SESSION_HMAC_KEY_B64 ?? "")
+      sessionHmacKey,
+      tokenVault
     });
   }
 
@@ -178,33 +218,56 @@ export class RedisOAuthService {
       const sessionId = hmacSha256(this.sessionHmacKey, transactionId);
       const callbackFingerprint = sha256(`${code}\0${state}`);
       const now = Date.now();
+      const subject = "dev-user-001";
       const session: SessionRecord = {
-        subject: "dev-user-001",
+        subject,
         createdAt: now,
         expiresAt: now + this.sessionTtlMs
       };
+      const tokenBundle: TokenBundle = {
+        subject,
+        tokenType: "Bearer",
+        accessToken: randomOpaque(32),
+        refreshToken: randomOpaque(48),
+        accessTokenExpiresAt: now + Math.max(1, Math.floor(this.sessionTtlMs / 2)),
+        refreshTokenExpiresAt: now + Math.max(2, this.sessionTtlMs),
+        scopes: ["openid", "profile"],
+        revision: 1
+      };
+      const vaultEnvelope = await this.tokenVault.seal(tokenBundle, this.vaultContext(sessionId, subject));
       const result = await this.redis.eval(
         CALLBACK_SCRIPT,
-        4,
+        5,
         this.key("tx", transactionId),
         this.key("code", code),
         this.key("session", sessionId),
         this.key("receipt", transactionId),
+        this.key("vault", sessionId),
         state,
         JSON.stringify(session),
         String(this.sessionTtlMs),
         callbackFingerprint,
-        String(Math.min(this.receiptTtlMs, this.sessionTtlMs))
+        String(Math.min(this.receiptTtlMs, this.sessionTtlMs)),
+        vaultEnvelope
       );
       switch (result) {
-        case "OK":
-        case "RETRY_OK": return sessionId;
+        case "OK": return sessionId;
+        case "RETRY_OK": {
+          const pair = await this.readSessionVaultPair(sessionId);
+          if (!pair) throw new OAuthVaultIntegrityError("OAuth session vault integrity failure.");
+          const existingSession = parseSessionRecord(pair.session);
+          await this.tokenVault.open(pair.vault, this.vaultContext(sessionId, existingSession.subject));
+          return sessionId;
+        }
         case "TRANSACTION_MISSING": throw new OAuthFlowError("Login transaction expired.");
         case "INVALID_STATE": throw new OAuthFlowError("Invalid OAuth state.");
         case "CODE_MISSING": throw new OAuthFlowError("Authorization code expired or replayed.");
         case "CODE_STATE_MISMATCH": throw new OAuthFlowError("Authorization code state mismatch.");
         case "NONCE_MISMATCH": throw new OAuthFlowError("Authorization nonce mismatch.");
         case "PKCE_MISMATCH": throw new OAuthFlowError("PKCE validation failed.");
+        case "SUBJECT_MISMATCH": throw new OAuthFlowError("Authorization subject mismatch.");
+        case "PAIR_INTEGRITY_ERROR": throw new OAuthVaultIntegrityError("OAuth session vault integrity failure.");
+        case "PAIR_COLLISION": throw new OAuthFlowError("Could not create session vault.");
         default: throw new OAuthFlowError("Could not create session.");
       }
     });
@@ -213,17 +276,28 @@ export class RedisOAuthService {
   async getSession(sessionId?: string) {
     if (!sessionId) return null;
     return this.withRedis(async () => {
-      const value = await this.redis.get(this.key("session", sessionId));
-      if (!value) return null;
-      const session = JSON.parse(value) as SessionRecord;
+      const pair = await this.readSessionVaultPair(sessionId);
+      if (!pair) return null;
+      const session = parseSessionRecord(pair.session);
+      await this.tokenVault.open(pair.vault, this.vaultContext(sessionId, session.subject));
       return { subject: session.subject, createdAt: session.createdAt, expiresAt: session.expiresAt };
+    });
+  }
+
+  async getServerTokenBundle(sessionId?: string) {
+    if (!sessionId) return null;
+    return this.withRedis(async () => {
+      const pair = await this.readSessionVaultPair(sessionId);
+      if (!pair) return null;
+      const session = parseSessionRecord(pair.session);
+      return this.tokenVault.open(pair.vault, this.vaultContext(sessionId, session.subject));
     });
   }
 
   async logout(sessionId?: string) {
     if (!sessionId) return;
     await this.withRedis(async () => {
-      await this.redis.del(this.key("session", sessionId));
+      await this.redis.del(this.key("session", sessionId), this.key("vault", sessionId));
     });
   }
 
@@ -233,7 +307,15 @@ export class RedisOAuthService {
   }
 
   private key(kind: string, opaqueId: string) {
-    return `${this.prefix}:${kind}:${sha256(opaqueId)}`;
+    return `${this.scope()}:${kind}:${sha256(opaqueId)}`;
+  }
+
+  private scope() {
+    return `${this.prefix}:{${this.prefix}}`;
+  }
+
+  private vaultContext(sessionId: string, subject: string): TokenVaultContext {
+    return { namespace: this.prefix, sessionHash: sha256(sessionId), subject };
   }
 
   private async assertAllowed(action: string, clientKey: string) {
@@ -241,8 +323,8 @@ export class RedisOAuthService {
     const result = await this.redis.eval(
       RATE_LIMIT_SCRIPT,
       2,
-      `${this.prefix}:rate:${action}:global:${window}`,
-      `${this.prefix}:rate:${action}:client:${sha256(clientKey)}:${window}`,
+      `${this.scope()}:rate:${action}:global:${window}`,
+      `${this.scope()}:rate:${action}:client:${sha256(clientKey)}:${window}`,
       String(this.maxGlobal),
       String(this.maxPerClient),
       String(this.rateWindowMs + 1_000)
@@ -263,19 +345,45 @@ export class RedisOAuthService {
     await this.connectPromise;
   }
 
+  private async readSessionVaultPair(sessionId: string) {
+    const result = await this.redis.eval(
+      READ_SESSION_VAULT_SCRIPT,
+      2,
+      this.key("session", sessionId),
+      this.key("vault", sessionId)
+    );
+    if (!Array.isArray(result) || result.length === 0) return null;
+    if (result.length === 1 && result[0] === "PAIR_INTEGRITY_ERROR") {
+      throw new OAuthVaultIntegrityError("OAuth session vault integrity failure.");
+    }
+    if (result.length !== 2 || typeof result[0] !== "string" || typeof result[1] !== "string") {
+      throw new OAuthVaultIntegrityError("OAuth session vault integrity failure.");
+    }
+    return { session: result[0], vault: result[1] };
+  }
+
   private async withRedis<T>(operation: () => Promise<T>) {
     try {
       await this.ensureConnected();
       return await operation();
     } catch (error) {
       if (error instanceof OAuthFlowError) throw error;
+      if (error instanceof TokenVaultConfigurationError) {
+        throw new OAuthVaultConfigurationError("Token vault configuration is unavailable.");
+      }
+      if (error instanceof TokenVaultError) {
+        throw new OAuthVaultIntegrityError("OAuth session vault integrity failure.");
+      }
       throw new OAuthStoreUnavailableError("OAuth store unavailable.");
     }
   }
 }
 
 export function isOAuthStoreUnavailable(error: unknown) {
-  return error instanceof OAuthStoreUnavailableError || error instanceof OAuthStoreConfigurationError;
+  return error instanceof OAuthStoreUnavailableError ||
+    error instanceof OAuthStoreConfigurationError ||
+    error instanceof OAuthVaultConfigurationError ||
+    error instanceof OAuthVaultIntegrityError;
 }
 
 function validateConfiguration(options: RedisOAuthOptions) {
@@ -309,6 +417,41 @@ function validateConfiguration(options: RedisOAuthOptions) {
   if (!Buffer.isBuffer(options.sessionHmacKey) || options.sessionHmacKey.length !== 32) {
     throw new OAuthStoreConfigurationError("APPSELL_SESSION_HMAC_KEY_B64 must decode to exactly 32 bytes.");
   }
+  if (!options.tokenVault || typeof options.tokenVault.seal !== "function" || typeof options.tokenVault.open !== "function") {
+    throw new OAuthVaultConfigurationError("A server-side token vault is required.");
+  }
+  try {
+    options.tokenVault.assertKeySeparation([options.sessionHmacKey]);
+  } catch (error) {
+    if (error instanceof TokenVaultConfigurationError) {
+      throw new OAuthVaultConfigurationError("Token vault key separation is invalid.");
+    }
+    throw error;
+  }
+}
+
+function parseSessionRecord(value: string): SessionRecord {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new OAuthVaultIntegrityError("OAuth session vault integrity failure.");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new OAuthVaultIntegrityError("OAuth session vault integrity failure.");
+  }
+  const record = parsed as Record<string, unknown>;
+  if (
+    Object.keys(record).sort().join(",") !== "createdAt,expiresAt,subject" ||
+    typeof record.subject !== "string" ||
+    record.subject.length === 0 ||
+    !Number.isSafeInteger(record.createdAt) ||
+    !Number.isSafeInteger(record.expiresAt) ||
+    (record.expiresAt as number) <= (record.createdAt as number)
+  ) {
+    throw new OAuthVaultIntegrityError("OAuth session vault integrity failure.");
+  }
+  return record as unknown as SessionRecord;
 }
 
 function parseSessionHmacKey(encoded: string) {
