@@ -34,22 +34,22 @@ Project status:
 
 <!-- Substituir abaixo a cada nova sessão. Sessões anteriores vão para PROGRESS.md. -->
 
-## Sessão: [pendente]
-Issue:
-Branch:
-PR:
-Estado:
-Modelo:
-Arquivos alterados:
-Comandos executados:
-Validação:
-Bloqueios: nenhum
-Próxima ação:
+## Sessão: 2026-07-10 14:47 — spike OAuth/BFF com sessão opaca
+Issue: #8
+Branch: feat/8-oauth-bff-spike
+PR: não aberta
+Estado: em_progresso
+Modelo: strong + human
+Arquivos alterados: scaffold Next.js em app/, lib/, tests/; package.json; pnpm-lock.yaml; README.md; docs/PROGRESS.md; docs/audit/session-2026-07-10-143043.md
+Comandos executados: pnpm install; pnpm lint; pnpm typecheck; pnpm test; pnpm build; pnpm audit --prod; pnpm test:e2e; pnpm test:e2e:production; git diff --check; scripts/validate-harness.sh; Playwright CLI; curl em next start
+Validação: lint/typecheck/build verdes; Vitest 12/12; Playwright automatizado 6/6 Chromium+WebKit mobile; produção 1/1 com next start; audit sem vulnerabilidades; Harness v2.0.2 completo; não exposição do cookie e replay 401 confirmados
+Bloqueios: nenhum técnico; merge continua proibido sem aprovação explícita
+Próxima ação: abrir PR draft vinculada à Issue #8, atualizar Project e aguardar checks
 Project status:
-  - Projeto:
-  - Status:
-  - Tipo:
-  - Prioridade:
-  - Risco:
-  - Ambiente:
-  - Próxima ação:
+  - Projeto: Infra
+  - Status: Em desenvolvimento
+  - Tipo: Segurança
+  - Prioridade: P0
+  - Risco: Alto
+  - Ambiente: Dev
+  - Próxima ação: implementar e revisar spike OAuth/BFF local com sessão opaca e teste Playwright CLI

@@ -1,0 +1,32 @@
+import { NextResponse } from "next/server";
+import { OAuthFlowError } from "@/lib/oauth-service";
+import { oauthService } from "@/lib/oauth-service.server";
+
+export const dynamic = "force-dynamic";
+
+export async function GET(request: Request) {
+  if (process.env.NODE_ENV === "production") {
+    return new NextResponse(null, { status: 404, headers: { "cache-control": "no-store" } });
+  }
+  try {
+    const url = new URL(request.url);
+    if (url.searchParams.get("code_challenge_method") !== "S256") throw new OAuthFlowError("Only PKCE S256 is supported.");
+    const state = url.searchParams.get("state") ?? "";
+    const code = oauthService().authorize({
+      state,
+      nonce: url.searchParams.get("nonce") ?? "",
+      codeChallenge: url.searchParams.get("code_challenge") ?? ""
+    }, request.headers.get("x-forwarded-for")?.split(",", 1)[0]?.trim() || "local");
+    const callback = new URL("/auth/callback", request.url);
+    callback.searchParams.set("code", code);
+    callback.searchParams.set("state", state);
+    const response = NextResponse.redirect(callback);
+    response.headers.set("cache-control", "no-store");
+    return response;
+  } catch {
+    return NextResponse.json({ error: "invalid_authorization_request" }, {
+      status: 400,
+      headers: { "cache-control": "no-store" }
+    });
+  }
+}
