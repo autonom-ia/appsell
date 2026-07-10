@@ -237,7 +237,7 @@ O tempo-alvo de primeira publicação será fixado ao final do protótipo, depoi
 | TLS/host não pronto | Alto | produção bloqueada até certificado e capacidade comprovados |
 | Studio ser copiado como pacote | Alto | usar somente linguagem/tokens; componentes próprios |
 | PWA cachear conteúdo privado | Alto | shell público apenas; APIs privadas sem cache-first |
-| Dependências vulneráveis | Alto | triagem de 16 vulnerabilidades observadas no Financial |
+| Dependências vulneráveis | Alto | reverificar o snapshot de 16 vulnerabilidades do Financial, incluindo tooling/dev; o estado atual não foi certificado |
 | ICP amplo demais | Alto | piloto focado em produtores/mentores |
 
 ## 11. Decisões operacionais ainda pendentes
@@ -246,18 +246,21 @@ Rodrigo aprovou a direção executiva e a execução por gates nesta tarefa. As
 escolhas abaixo permanecem pendentes quando exigem decisão operacional,
 financeira, jurídica ou de infraestrutura específica.
 
-Marcar cada item antes de iniciar implementação:
+Direções já aprovadas nesta tarefa:
 
-- [ ] Aprovar **Autonom.ia Sell** como nome operacional, não marca definitiva.
-- [ ] Aprovar produtores/mentores com checkout existente como ICP do piloto.
-- [ ] Aprovar checkout externo + webhook como seller commerce do MVP.
-- [ ] Aprovar Admin/Financial somente para produto e billing SaaS no MVP.
-- [ ] Aprovar `comercial@autonomia.site` como bootstrap one-shot do superadmin.
+- [x] **Autonom.ia Sell** como nome operacional, não marca definitiva.
+- [x] Produtores/mentores com checkout existente como ICP do piloto.
+- [x] Checkout externo + webhook como seller commerce do MVP.
+- [x] Admin/Financial somente para produto e billing SaaS no MVP.
+- [x] `comercial@autonomia.site` como bootstrap one-shot do superadmin.
+- [x] `sell.autonomia.site` como domínio do piloto.
+- [x] PWA após certificação do mobile web, sem atrasar a primeira validação.
+
+Decisões operacionais ainda pendentes:
+
 - [ ] Aprovar `sell-staging.autonomia.site` como ambiente separado.
-- [ ] Aprovar `sell.autonomia.site` como domínio do piloto.
 - [ ] Aprovar três tenants no piloto controlado.
 - [ ] Aprovar os limiares objetivos de go/no-go descritos neste plano.
-- [ ] Aprovar PWA após certificação do mobile web, sem atrasar a primeira validação.
 - [ ] Aprovar RPO de 15 minutos e RTO de 2 horas como metas iniciais sujeitas a custo.
 
 ## 12. O que esta aprovação autoriza

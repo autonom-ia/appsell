@@ -83,9 +83,11 @@ Verificação read-only do pacote documental, ativos GitHub da Autonom.ia, domí
 | Neuro.ai | 5 testes, typecheck e build passaram |
 | Identity Auth | build passou; suíte retornou `No test files found` |
 | Admin API | três testes dependem de `DATABASE_URL`; não cobrem permissão/tenancy |
-| Financial install audit | 16 vulnerabilidades: 8 moderadas, 4 altas e 4 críticas |
+| Financial install audit | snapshot: 16 findings em dev/tooling; audit posterior de produção registrou zero; estado atual não reverificado |
 
-Esses resultados não certificam produção. Faltam ambientes efêmeros completos, contratos reais entre serviços, testes adversariais de autorização e triagem das vulnerabilidades.
+Esses resultados não certificam produção. Faltam ambientes efêmeros completos,
+contratos reais entre serviços, testes adversariais de autorização e
+reverificação/triagem completa do snapshot de dependências do Financial.
 
 ## Domínio e infraestrutura
 
@@ -111,7 +113,11 @@ Há drift na documentação do Studio: seus docs ainda mencionam `85.31.60.100`,
 - Doctor: 0 errors, 0 warnings;
 - revisão independente encontrou e fechou falso positivo no hook e vazamento potencial no secret scan;
 - defeito upstream registrado em https://github.com/autonom-ia/agent-harness/issues/13;
-- PR permanece sem merge.
+- no momento deste snapshot, a PR permanecia sem merge.
+
+Reconciliação posterior: a PR #3 foi mergeada em `309da4c` em 2026-07-10 e a
+Issue #1 foi fechada. A lista acima preserva a evidência observada no discovery,
+não o estado operacional atual.
 
 ## Conclusão
 

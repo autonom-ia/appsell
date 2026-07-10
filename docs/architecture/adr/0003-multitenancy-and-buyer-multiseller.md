@@ -1,6 +1,6 @@
 # ADR 0003 — Multi-tenancy e buyer multi-seller
 
-- Status: Proposed
+- Status: Accepted with gates
 - Data: 2026-07-10
 - Decisores: Rodrigo / Arquitetura / Banco / AppSec
 - Issue: [autonom-ia/appsell#9](https://github.com/autonom-ia/appsell/issues/9)
@@ -12,7 +12,7 @@ mesma identidade pode comprar de vários sellers e também administrar um seller
 Esse modelo não pode depender de um único “tenant ativo” global nem de filtros
 voluntários em cada query.
 
-## Decisão proposta
+## Decisão
 
 Usar identidade global e dados seller-scoped com defesa em profundidade:
 

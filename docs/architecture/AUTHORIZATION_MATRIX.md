@@ -1,6 +1,6 @@
 # Matriz de autorização
 
-- Status: Proposed
+- Status: Approved baseline with gates
 - Regra: deny by default
 - Fonte de identidade: `identity_sub` validado e sessão opaca do BFF
 - Escopo tenant: `seller_organization_id` validado server-side

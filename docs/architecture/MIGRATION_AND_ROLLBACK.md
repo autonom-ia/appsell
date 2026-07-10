@@ -1,6 +1,6 @@
 # Plano de migração, release e rollback
 
-- Status: Proposed
+- Status: Approved operating baseline; no production execution authorized
 - Escopo atual: dev/staging isolados e bancos descartáveis
 - Produção/VPS: explicitamente fora do escopo desta Issue
 

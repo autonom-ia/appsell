@@ -1,6 +1,6 @@
 # Threat model — Autonom.ia Sell
 
-- Status: Proposed
+- Status: Approved baseline; treatments remain gated
 - Método: STRIDE + abuso de negócio
 - Data-base: 2026-07-10
 - Escopo: MVP descrito nos ADRs; nenhum ambiente de produção
@@ -179,7 +179,8 @@ legal permanecem no registro de decisões até validação jurídica/LGPD.
 - Financial permanece inadequado para seller commerce no estado verificado.
 - Fornecedor/região/controles do storage não foram selecionados.
 - Política de refund/cancel/chargeback e retenção ainda não foi aprovada.
-- A auditoria completa de dependências só existe após lockfiles do scaffold.
+- O scaffold tem lockfile e gate npm de vulnerabilidades verde; a auditoria
+  completa de licenças, SBOM, imagens e dependências não npm permanece pendente.
 - Infra/TLS/capacidade não são escopo desta Issue e não estão certificados.
 
 Nenhum desses riscos pode ser convertido em “passou” por mock. O gate exige

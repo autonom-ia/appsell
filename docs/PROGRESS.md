@@ -14,7 +14,8 @@ Fase 1 — Identity/BFF local com session store Redis isolado.
 - consumo somente após state/nonce/PKCE válidos;
 - stores limitados, limpeza de expirados e rate limit local;
 - testes Playwright automatizados em Chromium e WebKit mobile de login, sessão, logout e replay;
-- suíte automatizada com `next start` para falha fechada em produção;
+- suíte automatizada com `next start` para falha fechada em modo `production`
+  local, sem alegação de produção real;
 - 23 testes Vitest de replay, config, revogação, TTL, concorrência e dois BFFs reais;
 - repository Redis assíncrono sem fallback em memória, IDs SHA-256 e TTL real;
 - callback e criação de sessão em uma operação Lua atômica;
@@ -26,9 +27,9 @@ Fase 1 — Identity/BFF local com session store Redis isolado.
 
 ## Em andamento
 
-- PR draft #15 aberta para a Issue #14;
-- reviews AppSec e concorrência aprovados sem P0-P2;
-- App CI e oito checks do Harness verdes.
+- Issue #12 sincronizando documentação e decisões após os merges #11 e #15;
+- épica #8 permanece em desenvolvimento;
+- Identity real #13 permanece bloqueado por ausência de dev/hml e P0 upstream.
 
 ## Pendente
 
@@ -52,5 +53,5 @@ Fase 1 — Identity/BFF local com session store Redis isolado.
 
 ## Próximo passo recomendado
 
-Aguardar review humano da PR #15. Não reutilizar o mock em produção e não
-fazer merge.
+Concluir a Issue #12 com review documental. Em seguida, decompor vault/KMS e
+refresh distribuído; não reutilizar o mock em produção.

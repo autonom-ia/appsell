@@ -11,9 +11,11 @@ Construir um modular monolith multi-tenant, mobile-first, com isolamento por ten
 
 O plano prioriza fronteiras seguras com os ativos internos da Autonom.ia. Reutilização ocorrerá por contrato/SDK quando a autorização estiver adequada. Código e shells de outros produtos não serão copiados indiscriminadamente.
 
-## 2. Baseline arquitetural proposta
+## 2. Baseline arquitetural aprovada com gates
 
-A decisão final será registrada em ADR após spikes, mas a baseline recomendada é:
+A direção foi aceita e registrada nos ADRs. Componentes ainda não implementados,
+integrações reais e materialização de dados continuam condicionados aos spikes,
+testes e aprovações de cada fase:
 
 | Camada | Baseline proposta | Motivo |
 |---|---|---|
@@ -29,7 +31,10 @@ A decisão final será registrada em ADR após spikes, mas a baseline recomendad
 | Seller commerce | Checkout externo + webhook no MVP | evita expor Financial global sem escopo por operador |
 | Deploy | containers imutáveis por digest | rollback e promoção do mesmo artefato |
 
-Supabase-centric, Payload-centric e backend TypeScript único continuam alternativas válidas para o ADR 0001. A baseline acima só vira decisão depois dos spikes de isolamento, autoria, mídia, OAuth e build limpo.
+Supabase-centric, Payload-centric e backend TypeScript único foram alternativas
+consideradas. Qualquer mudança da baseline aprovada exige novo ADR; sua execução
+continua condicionada aos spikes de isolamento, autoria, mídia, OAuth e build
+limpo.
 
 ## 3. Topologia
 
@@ -560,14 +565,22 @@ Rollback:
 
 ## 12. Bloqueadores conhecidos
 
+Os itens 1 a 6 abaixo são snapshots de discovery registrados em 2026-07-10 e
+precisam ser reverificados nos repositórios de origem antes de orientar uma
+implementação. Não descrevem o estado atual certificado do AppSell.
+
 1. Admin backend atual tem autorização global insegura para sellers/buyers.
 2. Financial admin não possui escopo seguro por operator/organization.
-3. Financial apresentou 16 vulnerabilidades no install audit, incluindo quatro críticas, ainda sem triagem de alcance.
+3. O snapshot do Financial apresentou 16 vulnerabilidades no install audit,
+   incluindo quatro críticas, concentradas também em tooling/dev; o alcance em
+   runtime e o estado atual do repositório não foram certificados nesta Issue.
 4. Identity Auth não possui suíte automatizada real; build sozinho não certifica OAuth.
 5. Admin API tem testes condicionais a `DATABASE_URL` e não cobre tenancy/permissão.
 6. Studio não possui pacote UI reutilizável pronto.
 7. TLS do domínio está inválido.
-8. Capacidade e blast radius do host não foram medidos.
+8. Capacidade e blast radius do host receberam medição read-only na Issue #5,
+   mas a adequação para AppSell e o risco operacional não foram aprovados nem
+   encerrados.
 9. Política comercial de cancelamento/refund/chargeback ainda precisa de decisão.
 10. AppSell ainda não existe como opção no campo `Projeto` do Project central.
 
