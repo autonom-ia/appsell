@@ -45,7 +45,7 @@ não pode ser reutilizada como chave do vault. O prefixo deve
 seguir `appsell:<ambiente>:<instância-única>`. IDs opacos só aparecem nas chaves
 como SHA-256; transaction, code, sessão e vault expiram por TTL do Redis. O
 payload de tokens sintéticos fica sob AES-256-GCM com AAD vinculada a namespace,
-sessão e subject; sessão e vault são criados e removidos atomicamente. A suíte de
+sessão, subject e revision; sessão e vault são criados e removidos atomicamente. A suíte de
 integração e o E2E criam um `redis-server` efêmero em porta aleatória diferente
 de 6379, protegido por senha aleatória. O harness valida o PID do processo antes
 de testar e aguarda seu encerramento antes de remover o diretório temporário.
@@ -77,3 +77,29 @@ KMS/secret manager, IAM mínimo e staging isolado. As chaves relacionadas por Lu
 usam uma hash tag Redis derivada do namespace `appsell:<ambiente>:<instância>`:
 ficam juntas por instância sem concentrar todas as instâncias no mesmo slot.
 HA/cluster ainda não foi certificado.
+
+### Refresh distribuído Local/CI
+
+O contrato server-side de refresh coordena instâncias independentes por Redis,
+sem criar rota HTTP e sem expor tokens ao browser. A implementação usa lease
+curto, fence decimal exato, intent idempotente por revision e commit Lua com
+compare-and-swap. O intent transita por `prepared`, `inflight`, `retryable` ou
+`ambiguous`: só `transient` comprovadamente sem side effect libera retry; crash
+após `inflight` bloqueia nova chamada. O commit preserva o menor TTL do par sessão/vault e nunca
+ultrapassa `session.expiresAt` ou a expiração do refresh token novo. Logout e
+`invalid_grant` removem também as chaves de coordenação. `invalid_grant` exige
+revision/fence atuais; logout é uma revogação explícita e apaga o namespace da
+sessão incondicionalmente para impedir ressurreição.
+
+O provider injetado é somente um contrato de teste. Resultado upstream
+ambíguo fica persistido e bloqueia retry automático: lease/fencing não consegue
+provar se um Identity externo rotacionou o token antes de perder a resposta.
+Idempotência real, política de rotação e recuperação dependem do contrato e do
+ambiente isolado da Issue #13; portanto, refresh real continua bloqueado.
+
+A versão 2 do envelope inclui `revision` na AAD e `tokenRevision` na sessão,
+tornando envelopes
+anteriores incompatíveis de propósito. Como este slice é apenas Local/CI,
+upgrade ou rollback exige apagar somente o namespace Redis descartável do
+AppSell usado no teste. Não migrar nem limpar Redis compartilhado, staging ou
+produção.

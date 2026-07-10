@@ -51,8 +51,8 @@
 | D-030 | Analytics/cookies/consentimento | Pending business/legal | Produto + LGPD | instrumentação | somente telemetria operacional necessária, sem marketing tracker |
 | D-031 | Topologia de Postgres/Redis isolados | Redis Local/CI verified (#14); staging design pending | Infra + Banco | staging | não criar/tocar recursos na VPS/produção |
 | D-032 | Certificado/rota/capacidade de `sell.autonomia.site` | Blocked fora desta Issue | Infra | produção | produção e DNS bloqueados |
-| D-033 | Envelope encryption Local/CI com DEK por registro e keyring local | Verified local candidate; merge pending (#17) | AppSec + Auth | vault local | provider local proibido em produção |
-| D-034 | Refresh distribuído com lease/fencing/CAS | Blocked (#18; depende de #17/#13) | Identity + AppSec | refresh | sem refresh real |
+| D-033 | Envelope encryption Local/CI com DEK por registro e keyring local | Verified local slice; merged (#17/#20) | AppSec + Auth | vault local | provider local proibido em produção |
+| D-034 | Refresh distribuído com lease/fencing/CAS | Pending spike; local implementation/review in progress (#18), Identity real blocked (#13) | Identity + AppSec | refresh | sem refresh real |
 | D-035 | Provider KMS real, vault durável/HA e restore | Blocked (#19) | Infra + AppSec | staging | provider local proibido em produção |
 
 ## Spikes obrigatórios antes da Foundation

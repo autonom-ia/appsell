@@ -6,24 +6,25 @@ Atualizado em pontos de marco (PR aberta, deploy, incidente). Diferente de MEMOR
 
 | Indicador | Status | Última verificação |
 |-----------|:------:|--------------------|
-| Build | 🟢 main e branch #17 locais verdes | 2026-07-10 |
-| Testes | 🟢 main 23+6+1; branch #17 local 35+6+1 | 2026-07-10 |
-| CI | 🟢 main verde | 2026-07-10, run `29103657435`, SHA `ad784e2` |
+| Build | 🟢 main verde; branch #18 ainda em validação | 2026-07-10 |
+| Testes | 🟢 main 35+6+1; branch #18 local 51+6+1 | 2026-07-10 |
+| CI | 🟢 main verde | 2026-07-10, run `29106000267`, SHA `90a87c9` |
 | Deploy produção | 🟡 não configurado/não executado | 2026-07-10 |
 | Harness instalado | 2.0.2 | 2026-07-10 |
 | Harness drift | OK | 2026-07-10 |
 
 ## Estado atual
 
-Foundation local em Next.js com sessão opaca e Redis isolado foi mergeada. A
-PR draft #20 adiciona um candidato Local/CI de vault cifrado, com reviews verdes
-e App CI pendente. O mock Identity e o provider local continuam bloqueados em produção; não
-existe staging/produção do AppSell certificado ou autorizado.
+Foundation local em Next.js com sessão opaca, Redis isolado e vault cifrado
+Local/CI foi mergeada pela PR #20. A branch da Issue #18 implementa o candidato
+Local/CI de refresh distribuído e está em testes/review independente. O mock
+Identity e os providers locais continuam bloqueados em produção; não existe
+staging/produção do AppSell certificado ou autorizado.
 
 ## Última mudança relevante
 
-2026-07-10 — PR [#16](https://github.com/autonom-ia/appsell/pull/16), merge
-`ad784e2`: documentação/decisões sincronizadas; App CI pós-merge verde.
+2026-07-10 — PR [#20](https://github.com/autonom-ia/appsell/pull/20), merge
+`90a87c9`: token vault cifrado Local/CI; App CI pós-merge verde.
 
 ## O que está funcionando
 
@@ -33,14 +34,17 @@ existe staging/produção do AppSell certificado ou autorizado.
   Redis efêmero autenticado; 23/23 testes.
 - Modo `production` local (`next start`) fail-closed — mock 404,
   login/callback 503 e sessão 401; 1/1 E2E.
-- Candidato #17 apenas Local/CI — envelope encryption com DEK por registro,
-  keyring local, AAD, sessão+vault atômico e 35/35 testes; reviews AppSec e
-  concorrência verdes, App CI pendente na PR #20.
+- #17 apenas Local/CI — envelope encryption com DEK por registro, keyring
+  local, AAD, sessão+vault atômico e 35/35 testes; reviews AppSec e concorrência
+  verdes; PR #20 e App CI pós-merge verdes.
+- Candidato #18 Local/CI — refresh server-side com lease, fencing, intent e CAS;
+  16 testes adversariais novos, 51/51 Vitest locais; reviews AppSec,
+  concorrência e contrato verdes, P0-P2=0.
 
 ## O que está quebrado / em degradação
 
 - Identity real — sem dev/hml isolado e com P0 upstream — Issue #13.
-- Refresh distribuído — bloqueado por #17/#13 — Issue #18.
+- Refresh real com Identity — bloqueado por #13; a prova Local/CI segue na #18.
 - KMS real/vault HA — provider/infra/staging não decididos — Issue #19.
 - Staging/VPS/TLS — não certificado e fora do escopo atual — Issue #5.
 
@@ -52,8 +56,9 @@ existe staging/produção do AppSell certificado ou autorizado.
 
 ## Próxima ação
 
-Concluir o App CI/merge gate da PR #20. Manter #18 e #19 bloqueadas e sem qualquer ação em
-produção.
+Abrir PR draft e concluir o App CI da Issue #18. Manter
+a integração Identity real (#13), KMS real (#19) e qualquer ação em produção
+bloqueados.
 
 ## Links
 

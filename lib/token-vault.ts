@@ -19,6 +19,7 @@ const PROVIDER_ID_PATTERN = /^[a-z][a-z0-9._-]{0,63}$/;
 const SESSION_HASH_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const NAMESPACE_PATTERN = /^appsell:[a-z0-9][a-z0-9_-]{1,31}:[a-z0-9][a-z0-9_-]{5,63}$/;
 const LOCAL_PROVIDER_ID = "local-aes-gcm-v1";
+const TOKEN_VAULT_VERSION = 2;
 
 export interface TokenBundle {
   subject: string;
@@ -35,6 +36,7 @@ export interface TokenVaultContext {
   namespace: string;
   sessionHash: string;
   subject: string;
+  revision: number;
 }
 
 interface AeadRecord {
@@ -50,7 +52,7 @@ export interface KeyEnvelope extends AeadRecord {
 }
 
 interface TokenVaultEnvelope {
-  v: 1;
+  v: 2;
   alg: "A256GCM";
   keyEnvelope: KeyEnvelope;
   payload: AeadRecord;
@@ -88,7 +90,7 @@ export class EnvelopeTokenVault implements TokenVault {
   }
 
   async seal(bundle: TokenBundle, context: TokenVaultContext) {
-    const normalizedBundle = validateTokenBundle(bundle, context.subject);
+    const normalizedBundle = validateTokenBundle(bundle, context.subject, context.revision);
     const normalizedContext = validateContext(context);
     const dataKey = randomBytes(AES_KEY_BYTES);
     const plaintext = Buffer.from(JSON.stringify(normalizedBundle), "utf8");
@@ -101,7 +103,7 @@ export class EnvelopeTokenVault implements TokenVault {
         await this.keyProvider.wrapKey(dataKey, aad(normalizedContext, "key-wrap"))
       );
       const envelope: TokenVaultEnvelope = {
-        v: 1,
+        v: TOKEN_VAULT_VERSION,
         alg: "A256GCM",
         keyEnvelope,
         payload
@@ -132,7 +134,7 @@ export class EnvelopeTokenVault implements TokenVault {
       }
       plaintext = decryptAead(dataKey, envelope.payload, aad(normalizedContext, "payload"));
       const parsed = JSON.parse(plaintext.toString("utf8")) as unknown;
-      return validateTokenBundle(parsed, normalizedContext.subject);
+      return validateTokenBundle(parsed, normalizedContext.subject, normalizedContext.revision);
     } catch (error) {
       if (error instanceof TokenVaultError) throw error;
       if (error instanceof SyntaxError) throw new TokenVaultMalformedError("Token vault payload is invalid.");
@@ -281,12 +283,12 @@ function parseEnvelope(serialized: string): TokenVaultEnvelope {
     throw new TokenVaultMalformedError("Token vault envelope is invalid.");
   }
   const envelope = exactObject(parsed, ["v", "alg", "keyEnvelope", "payload"], "Token vault envelope is invalid.");
-  if (envelope.v !== 1 || envelope.alg !== "A256GCM") {
+  if (envelope.v !== TOKEN_VAULT_VERSION || envelope.alg !== "A256GCM") {
     throw new TokenVaultMalformedError("Token vault envelope version or algorithm is invalid.");
   }
   const keyEnvelope = parseKeyEnvelope(envelope.keyEnvelope);
   const payload = parseAeadRecord(envelope.payload, undefined, "Token vault payload is invalid.");
-  return { v: 1, alg: "A256GCM", keyEnvelope, payload };
+  return { v: TOKEN_VAULT_VERSION, alg: "A256GCM", keyEnvelope, payload };
 }
 
 function parseKeyEnvelope(value: unknown): KeyEnvelope {
@@ -346,14 +348,15 @@ function validateContext(context: TokenVaultContext): TokenVaultContext {
     !context ||
     !NAMESPACE_PATTERN.test(context.namespace) ||
     !SESSION_HASH_PATTERN.test(context.sessionHash) ||
-    !validSubject(context.subject)
+    !validSubject(context.subject) ||
+    !positiveSafeInteger(context.revision)
   ) {
     throw new TokenVaultMalformedError("Token vault context is invalid.");
   }
   return { ...context };
 }
 
-function validateTokenBundle(value: unknown, expectedSubject: string): TokenBundle {
+function validateTokenBundle(value: unknown, expectedSubject: string, expectedRevision: number): TokenBundle {
   const record = exactObject(value, [
     "subject",
     "tokenType",
@@ -375,6 +378,7 @@ function validateTokenBundle(value: unknown, expectedSubject: string): TokenBund
     !positiveSafeInteger(record.refreshTokenExpiresAt) ||
     record.refreshTokenExpiresAt <= record.accessTokenExpiresAt ||
     !positiveSafeInteger(record.revision) ||
+    record.revision !== expectedRevision ||
     !Array.isArray(record.scopes) ||
     record.scopes.length > MAX_SCOPES
   ) {
@@ -403,11 +407,12 @@ function validateTokenBundle(value: unknown, expectedSubject: string): TokenBund
 function aad(context: TokenVaultContext, purpose: "payload" | "key-wrap") {
   return Buffer.from(JSON.stringify([
     "appsell-token-vault",
-    1,
+    TOKEN_VAULT_VERSION,
     purpose,
     context.namespace,
     context.sessionHash,
-    context.subject
+    context.subject,
+    context.revision
   ]), "utf8");
 }
 

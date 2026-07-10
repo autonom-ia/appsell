@@ -34,22 +34,22 @@ Project status:
 
 <!-- Substituir abaixo a cada nova sessão. Sessões anteriores vão para PROGRESS.md. -->
 
-## Sessão: 2026-07-10 16:50 — token vault envelope encryption Local/CI
-Issue: #17
-Branch: feat/17-encrypted-token-vault
-PR: #20 (draft)
-Estado: concluído
+## Sessão: 2026-07-10 17:25 — refresh distribuído Local/CI
+Issue: #18
+Branch: feat/18-distributed-refresh
+PR: não aberta
+Estado: em_progresso
 Modelo: strong + human
-Arquivos alterados: token-vault, redis-oauth-service, testes vault/Redis/BFF, env/README, STATUS/PROGRESS/decisions/audit
-Comandos executados: validate-harness; pnpm install/lint/typecheck/test/audit/build/test:e2e/test:e2e:production; gh issue/project/subissues
-Validação: local verde — lint/typecheck/build, audit zero, 35 Vitest, 6 browser, 1 production local; AppSec e concorrência verdes P0-P2=0
-Bloqueios: merge depende de App CI; #18/#19/#13 permanecem bloqueadas
-Próxima ação: aguardar App CI da PR draft #20 e aplicar gate de merge aprovado
+Arquivos alterados: oauth-refresh, redis-oauth-service, token-vault, testes refresh/vault, README, STATUS/PROGRESS/decisions/audit
+Comandos executados: validate-harness; pnpm lint/typecheck/test/audit/build/test:e2e/test:e2e:production; gh issue/project
+Validação: local verde — Harness, lint/typecheck/build, audit zero, 51 Vitest, 6 browser e 1 production local; AppSec, concorrência e contrato verdes P0-P2=0
+Bloqueios: integração Identity real permanece bloqueada por #13; nenhuma ação de produção autorizada
+Próxima ação: abrir PR draft #18 e aguardar App CI
 Project status:
   - Projeto: Infra
-  - Status: PR aberta
+  - Status: Em desenvolvimento
   - Tipo: Segurança
   - Prioridade: P0
   - Risco: Alto
   - Ambiente: Dev
-  - Próxima ação: aguardar App CI da PR draft #20
+  - Próxima ação: validar Fase A Local/CI; Fase B Identity real segue bloqueada por #13
