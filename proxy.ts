@@ -1,0 +1,24 @@
+import { NextRequest, NextResponse } from "next/server";
+import { sessionCookieName } from "./lib/cookies";
+import { canAccessDemoPreview } from "./lib/demo-view";
+import { oauthService } from "./lib/oauth-service.server";
+
+export async function proxy(request: NextRequest) {
+  if (process.env.NODE_ENV === "production") {
+    return NextResponse.redirect(new URL("/", request.url));
+  }
+
+  try {
+    const session = await oauthService().getSession(request.cookies.get(sessionCookieName())?.value);
+    if (!canAccessDemoPreview(session?.subject, process.env.NODE_ENV)) {
+      return NextResponse.redirect(new URL("/", request.url));
+    }
+    return NextResponse.next();
+  } catch {
+    return NextResponse.redirect(new URL("/?error=session_unavailable", request.url));
+  }
+}
+
+export const config = {
+  matcher: ["/dashboard/:path*", "/products/:path*", "/library/:path*"],
+};

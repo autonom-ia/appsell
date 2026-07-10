@@ -2,7 +2,7 @@
 
 ## Fase atual
 
-Fase 1 — Identity/BFF local com refresh Redis distribuído Local/CI.
+Fase 2 — design system e protótipo Studio mobile-first.
 
 ## Concluído
 
@@ -34,12 +34,23 @@ Fase 1 — Identity/BFF local com refresh Redis distribuído Local/CI.
   e escritores obsoletos protegidos por revision/fence; logout explícito apaga
   o par e coordenação incondicionalmente;
 - 16 testes adversariais de refresh em Redis real, totalizando 51 Vitest locais.
+- PR #21 de refresh distribuído mergeada em `main`;
+- landing pública qualificada como prévia local;
+- shell persistente derivado do Studio, com sidebar desktop e bottom nav mobile;
+- visões demonstrativas de produtor, catálogo e comprador multi-seller;
+- gate server-side no Proxy antes de renderizar conteúdo protegido;
+- proteção contra cookie HttpOnly no DOM/RSC e request anônimo sem payload;
+- projeções tenant/buyer testadas e fail-closed para produção/sujeito desconhecido;
+- matriz real 360/390/768/1024/1440, 44 px, WebKit/Chromium, reload,
+  teclado e reduced motion;
+- 55 unitários, 17 E2E e 1 teste production local verdes.
 
 ## Em andamento
 
-- Issue #18 implementando e validando refresh distribuído Local/CI;
-- reviews independentes AppSec, concorrência e contrato verdes, P0-P2=0;
-- PR draft #21 aberta e registrada no Project; App CI pendente;
+- Issue #22 implementada e validada localmente;
+- reviews independentes tenancy/AppSec, mobile UX/a11y e Next/testes verdes,
+  P0-P3=0;
+- PR da #22 ainda não aberta; CI remoto pendente;
 - épica #8 permanece em desenvolvimento;
 - Identity real #13 permanece bloqueado por ausência de dev/hml e P0 upstream.
 
@@ -63,8 +74,12 @@ Fase 1 — Identity/BFF local com refresh Redis distribuído Local/CI.
   controlada, com 404/503/401 e `Cache-Control: no-store`.
 - erro de callback ainda removia o cookie de transaction: a remoção agora só
   acontece após sucesso, preservando a tentativa legítima.
+- leitura server-side do cookie no RSC dev serializou sessão no Flight inline:
+  gate movido para `proxy.ts`, com teste explícito de ausência no DOM/responses;
+- Vitest 4.0.18 tinha advisory crítico no UI server de desenvolvimento:
+  atualizado para 4.1.0 e `pnpm audit` voltou a zero.
 
 ## Próximo passo recomendado
 
-Fechar o App CI da PR #21. Não integrar Identity real nem iniciar KMS real #19; não
-reutilizar mock/provider local em produção.
+Abrir PR da #22, rodar CI remoto e aguardar aprovação de merge. Não integrar
+Identity real nem iniciar KMS real #19; não reutilizar preview/mock em produção.
