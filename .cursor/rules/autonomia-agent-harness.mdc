@@ -1,0 +1,13 @@
+# Autonom.ia Agent Harness
+
+Use AGENTS.md como regra principal.
+
+Project:
+https://github.com/users/autonom-ia/projects/3
+
+Fluxo:
+Issue → Branch → PR → Project update → Review → Approval → Merge.
+
+Não faça merge sem aprovação explícita do Rodrigo.
+Preserve regras locais.
+Se houver conflito, peça decisão.
