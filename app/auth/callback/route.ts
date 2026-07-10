@@ -6,6 +6,7 @@ import {
   transactionCookieName,
   transactionCookieOptions
 } from "@/lib/cookies";
+import { isOAuthStoreUnavailable } from "@/lib/redis-oauth-service";
 
 export const dynamic = "force-dynamic";
 
@@ -19,7 +20,7 @@ export async function GET(request: NextRequest) {
     return response;
   }
   try {
-    const sessionId = oauthService().callback({
+    const sessionId = await oauthService().callback({
       transactionId: request.cookies.get(transactionCookieName())?.value,
       code: request.nextUrl.searchParams.get("code") ?? undefined,
       state: request.nextUrl.searchParams.get("state") ?? undefined
@@ -29,9 +30,11 @@ export async function GET(request: NextRequest) {
     response.cookies.set(sessionCookieName(), sessionId, sessionCookieOptions());
     response.headers.set("cache-control", "no-store");
     return response;
-  } catch {
-    return NextResponse.json({ error: "invalid_oauth_callback" }, {
-      status: 400,
+  } catch (error) {
+    return NextResponse.json({
+      error: isOAuthStoreUnavailable(error) ? "oauth_store_unavailable" : "invalid_oauth_callback"
+    }, {
+      status: isOAuthStoreUnavailable(error) ? 503 : 400,
       headers: { "cache-control": "no-store" }
     });
   }

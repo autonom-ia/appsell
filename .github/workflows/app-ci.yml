@@ -19,6 +19,12 @@ jobs:
           node-version: 22
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
+      - name: Install isolated-test Redis binary
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y redis-server
+          sudo systemctl stop redis-server || true
+          redis-server --version
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test

@@ -10,10 +10,11 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:e2e": "playwright test",
+    "test:e2e": "node scripts/with-isolated-redis.mjs pnpm exec playwright test",
     "test:e2e:production": "playwright test --config=playwright.production.config.ts"
   },
   "dependencies": {
+    "ioredis": "5.10.0",
     "next": "16.2.10",
     "react": "19.2.7",
     "react-dom": "19.2.7"
