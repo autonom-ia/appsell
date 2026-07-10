@@ -34,22 +34,22 @@ Project status:
 
 <!-- Substituir abaixo a cada nova sessão. Sessões anteriores vão para PROGRESS.md. -->
 
-## Sessão: 2026-07-10 14:47 — spike OAuth/BFF com sessão opaca
-Issue: #8
-Branch: feat/8-oauth-bff-spike
-PR: #11 (draft)
-Estado: concluído
+## Sessão: 2026-07-10 15:34 — Redis OAuth store isolado e fail-closed
+Issue: #14
+Branch: feat/14-redis-oauth-store
+PR: não aberta
+Estado: em_progresso
 Modelo: strong + human
-Arquivos alterados: scaffold Next.js em app/, lib/, tests/; package.json; pnpm-lock.yaml; README.md; docs/PROGRESS.md; docs/audit/session-2026-07-10-143043.md
-Comandos executados: pnpm install; pnpm lint; pnpm typecheck; pnpm test; pnpm build; pnpm audit --prod; pnpm test:e2e; pnpm test:e2e:production; git diff --check; scripts/validate-harness.sh; Playwright CLI; curl em next start
-Validação: lint/typecheck/build verdes; Vitest 12/12; Playwright automatizado 6/6 Chromium+WebKit mobile; produção 1/1 com next start; audit sem vulnerabilidades; Harness v2.0.2 completo; não exposição do cookie e replay 401 confirmados
-Bloqueios: nenhum técnico; merge continua proibido sem aprovação explícita
-Próxima ação: aguardar App CI e review humano da PR #11; não fazer merge
+Arquivos alterados: lib/redis-oauth-service.ts; lib/oauth-service.server.ts; lib/crypto.ts; rotas OAuth/session; next.config.ts; tests/redis-oauth-store.test.ts; tests/bff-multiprocess.test.ts; tests/helpers/isolated-redis.ts; scripts/with-isolated-redis.mjs; package.json; pnpm-lock.yaml; .env.example; README.md; docs/PROGRESS.md
+Comandos executados: pnpm add ioredis; pnpm lint; pnpm typecheck; pnpm test; pnpm build; pnpm test:e2e; pnpm test:e2e:production; pnpm audit --prod; git diff --check
+Validação: lint/typecheck/build verdes; Vitest 23/23; Playwright Chromium+WebKit 6/6; produção fail-closed 1/1; audit sem vulnerabilidades; Redis 8.8.0 efêmero autenticado em porta aleatória diferente de 6379; dois processos Next reais compartilharam sessão
+Bloqueios: nenhum técnico; commit/push/PR e Project update pendentes
+Próxima ação: commit, push, abrir PR draft da Issue #14 e atualizar Project sem merge
 Project status:
   - Projeto: Infra
-  - Status: PR aberta
+  - Status: Em desenvolvimento
   - Tipo: Segurança
   - Prioridade: P0
   - Risco: Alto
   - Ambiente: Dev
-  - Próxima ação: aguardar checks e review humano; depois planejar Identity real e Redis isolado
+  - Próxima ação: abrir PR draft da Issue #14, aguardar App CI e review humano

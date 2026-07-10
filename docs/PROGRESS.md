@@ -2,24 +2,33 @@
 
 ## Fase atual
 
-Fase 1 — spike local de Identity/BFF.
+Fase 1 — Identity/BFF local com session store Redis isolado.
 
 ## Concluído
 
 - scaffold Next.js 16.2.10 + React 19.2.7;
 - OAuth mock HTTP com state, nonce e PKCE S256;
 - callback server-side e code single-use;
-- sessão opaca com cookie HttpOnly e vault in-memory dev-only;
+- sessão opaca com cookie HttpOnly e store Redis dev-only;
 - dashboard, introspecção mínima e logout same-origin;
 - consumo somente após state/nonce/PKCE válidos;
 - stores limitados, limpeza de expirados e rate limit local;
 - testes Playwright automatizados em Chromium e WebKit mobile de login, sessão, logout e replay;
 - suíte automatizada com `next start` para falha fechada em produção;
-- 12 testes Vitest de replay, config de logs, adulteração, revogação, TTL, limites e cookies.
+- 23 testes Vitest de replay, config, revogação, TTL, concorrência e dois BFFs reais;
+- repository Redis assíncrono sem fallback em memória, IDs SHA-256 e TTL real;
+- callback e criação de sessão em uma operação Lua atômica;
+- rate limit e revogação atômicos;
+- testes reais com Redis efêmero fora da porta 6379, incluindo 20 callbacks concorrentes.
+- retry idempotente de callback com ID HMAC determinístico e receipt curto sem IDs crus;
+- prova real com dois processos Next BFF distintos compartilhando a mesma sessão;
+- Redis de teste autenticado e validado por PID antes de qualquer operação.
 
 ## Em andamento
 
-- PR draft #11 aberta; checks do App CI e review humano pendentes.
+- Issue #14 implementada localmente na branch `feat/14-redis-oauth-store`;
+- reviews AppSec e concorrência aprovados sem P0-P2;
+- commit, push e PR ainda pendentes.
 
 ## Pendente
 
@@ -43,6 +52,5 @@ Fase 1 — spike local de Identity/BFF.
 
 ## Próximo passo recomendado
 
-Aguardar checks/review humano da PR #11. Não reutilizar o mock em produção e
-não fazer merge enquanto os gaps do Identity real não estiverem explicitamente
-aceitos.
+Abrir PR draft vinculada à Issue #14, executar App CI e aguardar review humano.
+Não reutilizar o mock em produção e não fazer merge.
