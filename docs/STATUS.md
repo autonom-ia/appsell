@@ -16,8 +16,8 @@ Atualizado em pontos de marco (PR aberta, deploy, incidente). Diferente de MEMOR
 ## Estado atual
 
 Foundation local em Next.js com sessão opaca, Redis isolado e vault cifrado
-Local/CI foi mergeada pela PR #20. A branch da Issue #18 implementa o candidato
-Local/CI de refresh distribuído e está em testes/review independente. O mock
+Local/CI foi mergeada pela PR #20. A PR draft #21 contém o candidato Local/CI
+de refresh distribuído, com reviews verdes e App CI pendente. O mock
 Identity e os providers locais continuam bloqueados em produção; não existe
 staging/produção do AppSell certificado ou autorizado.
 
@@ -56,7 +56,7 @@ staging/produção do AppSell certificado ou autorizado.
 
 ## Próxima ação
 
-Abrir PR draft e concluir o App CI da Issue #18. Manter
+Aguardar e concluir o App CI da PR #21. Manter
 a integração Identity real (#13), KMS real (#19) e qualquer ação em produção
 bloqueados.
 

@@ -37,19 +37,19 @@ Project status:
 ## Sessão: 2026-07-10 17:25 — refresh distribuído Local/CI
 Issue: #18
 Branch: feat/18-distributed-refresh
-PR: não aberta
-Estado: em_progresso
+PR: #21 (draft)
+Estado: concluído
 Modelo: strong + human
 Arquivos alterados: oauth-refresh, redis-oauth-service, token-vault, testes refresh/vault, README, STATUS/PROGRESS/decisions/audit
 Comandos executados: validate-harness; pnpm lint/typecheck/test/audit/build/test:e2e/test:e2e:production; gh issue/project
 Validação: local verde — Harness, lint/typecheck/build, audit zero, 51 Vitest, 6 browser e 1 production local; AppSec, concorrência e contrato verdes P0-P2=0
-Bloqueios: integração Identity real permanece bloqueada por #13; nenhuma ação de produção autorizada
-Próxima ação: abrir PR draft #18 e aguardar App CI
+Bloqueios: merge depende do App CI; integração Identity real permanece bloqueada por #13; nenhuma ação de produção autorizada
+Próxima ação: aguardar App CI da PR #21 e aplicar o gate de merge aprovado se verde
 Project status:
   - Projeto: Infra
-  - Status: Em desenvolvimento
+  - Status: PR aberta
   - Tipo: Segurança
   - Prioridade: P0
   - Risco: Alto
   - Ambiente: Dev
-  - Próxima ação: validar Fase A Local/CI; Fase B Identity real segue bloqueada por #13
+  - Próxima ação: aguardar App CI da PR #21; Identity real segue bloqueado por #13

@@ -39,6 +39,7 @@ Fase 1 — Identity/BFF local com refresh Redis distribuído Local/CI.
 
 - Issue #18 implementando e validando refresh distribuído Local/CI;
 - reviews independentes AppSec, concorrência e contrato verdes, P0-P2=0;
+- PR draft #21 aberta e registrada no Project; App CI pendente;
 - épica #8 permanece em desenvolvimento;
 - Identity real #13 permanece bloqueado por ausência de dev/hml e P0 upstream.
 
@@ -65,5 +66,5 @@ Fase 1 — Identity/BFF local com refresh Redis distribuído Local/CI.
 
 ## Próximo passo recomendado
 
-Abrir PR draft da #18 e fechar o App CI. Não integrar Identity real nem iniciar KMS real #19; não
+Fechar o App CI da PR #21. Não integrar Identity real nem iniciar KMS real #19; não
 reutilizar mock/provider local em produção.
