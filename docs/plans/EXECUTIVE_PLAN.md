@@ -1,6 +1,6 @@
 # Plano Executivo — Autonom.ia Sell
 
-- Status: Proposed
+- Status: Approved direction with gates
 - Data: 2026-07-10
 - Product Owner: Rodrigo / Autonom.ia
 - Issue: https://github.com/autonom-ia/appsell/issues/2
@@ -240,7 +240,11 @@ O tempo-alvo de primeira publicação será fixado ao final do protótipo, depoi
 | Dependências vulneráveis | Alto | triagem de 16 vulnerabilidades observadas no Financial |
 | ICP amplo demais | Alto | piloto focado em produtores/mentores |
 
-## 11. Decisões para aprovação do Rodrigo
+## 11. Decisões operacionais ainda pendentes
+
+Rodrigo aprovou a direção executiva e a execução por gates nesta tarefa. As
+escolhas abaixo permanecem pendentes quando exigem decisão operacional,
+financeira, jurídica ou de infraestrutura específica.
 
 Marcar cada item antes de iniciar implementação:
 

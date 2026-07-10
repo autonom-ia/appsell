@@ -1,6 +1,6 @@
 # Plano Técnico Detalhado — Autonom.ia Sell
 
-- Status: Proposed
+- Status: Approved direction with gates
 - Data: 2026-07-10
 - Issue: https://github.com/autonom-ia/appsell/issues/2
 - Repositório: https://github.com/autonom-ia/appsell
@@ -121,7 +121,7 @@ IdentityUser
 SellerOrganization
   |- Storefront
   |- CatalogProduct
-       |- Offer / SellerPlan
+       |- Offer (seller commerce plan/terms)
        |- ProductCourse -> Course
   |- Course -> Module -> Lesson -> ContentBlock
   |- Integration -> ExternalProductMapping
