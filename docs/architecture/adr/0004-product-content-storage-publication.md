@@ -1,6 +1,6 @@
 # ADR 0004 — Produto, conteúdo, storage e publicação
 
-- Status: Proposed
+- Status: Accepted with gates
 - Data: 2026-07-10
 - Decisores: Rodrigo / Produto / Conteúdo / AppSec
 - Issue: [autonom-ia/appsell#9](https://github.com/autonom-ia/appsell/issues/9)
@@ -11,7 +11,7 @@ Produto comercial, oferta e conteúdo são conceitos diferentes. Sellers precisa
 editar sem expor drafts, buyers precisam consumir versões estáveis, e assets
 privados não podem se tornar públicos por URL previsível ou cache indevido.
 
-## Decisão proposta
+## Decisão
 
 ### Agregados
 

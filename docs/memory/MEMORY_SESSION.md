@@ -34,22 +34,22 @@ Project status:
 
 <!-- Substituir abaixo a cada nova sessão. Sessões anteriores vão para PROGRESS.md. -->
 
-## Sessão: 2026-07-10 15:34 — Redis OAuth store isolado e fail-closed
-Issue: #14
-Branch: feat/14-redis-oauth-store
-PR: #15 (draft)
-Estado: concluído
+## Sessão: 2026-07-10 16:05 — sincronização documental pós-merge
+Issue: #12
+Branch: docs/12-sync-post-redis
+PR: não aberta
+Estado: em_progresso
 Modelo: strong + human
-Arquivos alterados: lib/redis-oauth-service.ts; lib/oauth-service.server.ts; lib/crypto.ts; rotas OAuth/session; next.config.ts; tests/redis-oauth-store.test.ts; tests/bff-multiprocess.test.ts; tests/helpers/isolated-redis.ts; scripts/with-isolated-redis.mjs; package.json; pnpm-lock.yaml; .env.example; README.md; docs/PROGRESS.md
-Comandos executados: pnpm add ioredis; pnpm lint; pnpm typecheck; pnpm test; pnpm build; pnpm test:e2e; pnpm test:e2e:production; pnpm audit --prod; git diff --check
-Validação: lint/typecheck/build verdes; Vitest 23/23; Playwright Chromium+WebKit 6/6; produção fail-closed 1/1; audit sem vulnerabilidades; Redis 8.8.0 efêmero autenticado em porta aleatória diferente de 6379; dois processos Next reais compartilharam sessão
-Bloqueios: nenhum técnico; merge depende de aprovação explícita
-Próxima ação: aguardar review humano da PR #15; não fazer merge
+Arquivos alterados: STATUS, PROGRESS, planos, ADRs, decision register, dependency audit, verification report, audits históricos e memória
+Comandos executados: rg de drift; gh issue/pr/run/project view; vínculos nativos de subissues; validate-harness; pnpm install/lint/typecheck/test/build/test:e2e/test:e2e:production
+Validação: Harness verde; lint/typecheck/build verdes; 23 Vitest + 6 browser + 1 production local verdes; Project/subissues reconciliados; review independente verde P0-P3=0
+Bloqueios: nenhum técnico; Identity real permanece bloqueado na Issue #13
+Próxima ação: abrir PR draft da Issue #12, aguardar CI e review humano; sem merge
 Project status:
   - Projeto: Infra
-  - Status: PR aberta
-  - Tipo: Segurança
-  - Prioridade: P0
-  - Risco: Alto
+  - Status: Em desenvolvimento
+  - Tipo: Docs
+  - Prioridade: P1
+  - Risco: Baixo
   - Ambiente: Dev
-  - Próxima ação: abrir PR draft da Issue #14, aguardar App CI e review humano
+  - Próxima ação: abrir PR draft da Issue #12 e aguardar CI/review humano

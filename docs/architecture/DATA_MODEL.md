@@ -1,6 +1,6 @@
 # Modelo de dados e ERD
 
-- Status: Proposed
+- Status: Approved logical baseline; migrations remain gated
 - Banco baseline: PostgreSQL 16+
 - Identificadores: UUID/UUIDv7 ou equivalente não sequencial, decisão final no scaffold
 - Escopo: modelo lógico; nomes/tipos finais dependem de migration revisada

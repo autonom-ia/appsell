@@ -1,6 +1,6 @@
 # ADR 0005 — Jobs, webhooks e fronteira com Financial
 
-- Status: Proposed
+- Status: Accepted with gates
 - Data: 2026-07-10
 - Decisores: Rodrigo / Financial / Integrações / AppSec
 - Issue: [autonom-ia/appsell#9](https://github.com/autonom-ia/appsell/issues/9)
@@ -12,7 +12,7 @@ ser determinístico mesmo com duplicata, replay, ordem invertida, timeout e qued
 do worker. O Financial existente atende o domínio corporativo, mas a verificação
 encontrou autorização global e ausência de scoping seguro principal→operator.
 
-## Decisão proposta
+## Decisão
 
 Separar dois domínios:
 

@@ -1,6 +1,6 @@
 # ADR 0001 — Stack e runtime
 
-- Status: Proposed
+- Status: Accepted with gates
 - Data: 2026-07-10
 - Decisores: Rodrigo / Arquitetura / Segurança / Operações
 - Issue: [autonom-ia/appsell#9](https://github.com/autonom-ia/appsell/issues/9)
@@ -10,10 +10,11 @@
 O produto precisa servir duas jornadas mobile-first distintas — seller e buyer —,
 manter isolamento multi-tenant, processar integrações assíncronas e preservar uma
 fronteira segura com serviços corporativos existentes. A equipe já opera
-TypeScript/React, Python/FastAPI, PostgreSQL, Redis e containers, mas os spikes de
-integração ainda não foram executados.
+TypeScript/React, Python/FastAPI, PostgreSQL, Redis e containers. O slice local de
+OAuth/BFF com sessão opaca em Redis já foi executado e testado; os spikes de
+Identity real, domínios, dados e infraestrutura continuam sob gate.
 
-## Decisão proposta
+## Decisão
 
 Adotar um modular monolith com fronteiras internas explícitas:
 

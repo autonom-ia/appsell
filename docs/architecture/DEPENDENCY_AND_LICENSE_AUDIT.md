@@ -1,22 +1,21 @@
 # Auditoria de dependências e licenças
 
-- Status: Preliminary / bloqueada até existir scaffold e lockfiles
+- Status: Scaffold auditado para vulnerabilities; licenças/SBOM ainda pendentes
 - Data-base: 2026-07-10
 - Natureza: controle de engenharia; não substitui parecer jurídico
 
 ## 1. Resultado atual
 
-O repositório AppSell contém apenas documentação neste worktree. Não há
-`package.json`, `pnpm-lock.yaml`, `pyproject.toml`, lockfile Python, Dockerfile ou
-imagem do produto. Portanto:
+O scaffold Web/BFF agora possui `package.json` e `pnpm-lock.yaml` versionados.
+Versões diretas atuais: Next.js 16.2.10, React/React DOM 19.2.7 e ioredis 5.10.0;
+ferramentas incluem pnpm 10.20.0, TypeScript 5.9.3, Vitest 4.0.18 e Playwright
+1.61.x. O App CI executou instalação congelada e `pnpm audit --prod` sem
+vulnerabilidades conhecidas nos merges #11 e #15.
 
-- a aplicação não possui inventário de dependências auditável ainda;
-- nenhuma licença de runtime do AppSell pode ser certificada;
-- nenhuma vulnerabilidade de dependência do AppSell pode ser classificada;
-- escolhas citadas nos ADRs são candidatas, não pacotes aprovados para uso.
-
-Declarar “auditoria verde” agora seria falso. O gate é executar a auditoria sobre
-manifests, lockfiles, imagens e artefatos reais no PR de scaffold.
+Esse verde é limitado a advisories do ecossistema npm no lockfile atual. Ainda
+não existe inventário transitivo de licenças, notices, SBOM, imagem de container,
+lock Python ou scan de sistema operacional. Portanto, licença/supply chain do
+produto completo continuam não certificados.
 
 ## 2. Evidência herdada do discovery
 
@@ -131,14 +130,15 @@ Gate proposto:
 - licença bloqueada/ausente: bloqueia merge, independentemente do scanner de CVE;
 - ignore/allowlist exige motivo, owner, expiração e revisão.
 
-## 8. Entregáveis no scaffold
+## 8. Entregáveis ainda pendentes
 
-- lockfiles versionados;
 - SBOM de dependências e imagem;
 - relatório de licenças e notices;
-- relatório de vulnerabilities com triagem;
+- triagem completa de vulnerabilities além do gate npm do scaffold;
 - lista de serviços externos/DPA;
 - revisão independente de supply chain;
-- atualização deste documento com versões e resultado real.
+- atualização contínua deste documento quando versões ou superfícies mudarem.
 
-Até esses itens existirem, o status permanece `Preliminary`, não aprovado.
+Até esses itens existirem, somente o gate de vulnerabilities npm do scaffold
+está verde; a aprovação jurídica de licenças e o gate completo de supply chain
+continuam pendentes.

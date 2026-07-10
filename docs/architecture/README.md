@@ -1,9 +1,10 @@
 # Arquitetura — Autonom.ia Sell
 
-- Status do pacote: Proposed
+- Status do pacote: Approved direction with gates
 - Issue: [autonom-ia/appsell#9](https://github.com/autonom-ia/appsell/issues/9)
 - Data-base: 2026-07-10
-- Gate: aprovação explícita do Rodrigo antes de código funcional da Foundation
+- Gate: direção aprovada; cada slice funcional continua sujeito a Issue, review,
+  testes reais e aprovação de merge
 
 ## Objetivo
 
@@ -15,11 +16,11 @@ alterações em produção, VPS, DNS, secrets, billing real ou dados de clientes
 
 | ADR | Decisão | Status |
 |---|---|---|
-| [0001](adr/0001-stack-and-runtime.md) | Monorepo, Web/BFF, API, dados e runtime | Proposed |
-| [0002](adr/0002-identity-bff-rbac.md) | Identity, sessão opaca, BFF e RBAC | Proposed |
-| [0003](adr/0003-multitenancy-and-buyer-multiseller.md) | Isolamento por seller e comprador multi-seller | Proposed |
-| [0004](adr/0004-product-content-storage-publication.md) | Produto, conteúdo, storage e publicação | Proposed |
-| [0005](adr/0005-jobs-webhooks-financial-boundary.md) | Jobs, webhooks e fronteira com Financial | Proposed |
+| [0001](adr/0001-stack-and-runtime.md) | Monorepo, Web/BFF, API, dados e runtime | Accepted with gates |
+| [0002](adr/0002-identity-bff-rbac.md) | Identity, sessão opaca, BFF e RBAC | Accepted with gates |
+| [0003](adr/0003-multitenancy-and-buyer-multiseller.md) | Isolamento por seller e comprador multi-seller | Accepted with gates |
+| [0004](adr/0004-product-content-storage-publication.md) | Produto, conteúdo, storage e publicação | Accepted with gates |
+| [0005](adr/0005-jobs-webhooks-financial-boundary.md) | Jobs, webhooks e fronteira com Financial | Accepted with gates |
 
 ## Artefatos de segurança e operação
 
@@ -55,14 +56,15 @@ alterações em produção, VPS, DNS, secrets, billing real ou dados de clientes
 
 ## Gate de aprovação
 
-Antes da Foundation, devem estar resolvidos ou formalmente aceitos:
+Antes de habilitar Identity real, tenancy, billing, dados reais ou produção,
+devem estar resolvidos ou formalmente aceitos:
 
 - decisões marcadas como bloqueadoras no [registro](DECISION_REGISTER.md);
 - spikes reais de OAuth/BFF, isolamento A/B, buyer A+B, publicação, asset
   privado e webhook idempotente;
 - matriz de autorização aprovada por produto e segurança;
 - threat model sem risco crítico sem tratamento aceito;
-- auditoria de licença sobre lockfiles reais, quando o scaffold existir;
+- auditoria completa de licenças e SBOM sobre os lockfiles atuais e futuros;
 - plano de migração/rollback executado em ambiente descartável.
 
 ## Relação com os planos

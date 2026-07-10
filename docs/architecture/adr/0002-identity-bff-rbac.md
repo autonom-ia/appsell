@@ -1,6 +1,6 @@
 # ADR 0002 — Identity, BFF, sessão opaca e RBAC
 
-- Status: Proposed
+- Status: Accepted with gates
 - Data: 2026-07-10
 - Decisores: Rodrigo / Identity / AppSec / Arquitetura
 - Issue: [autonom-ia/appsell#9](https://github.com/autonom-ia/appsell/issues/9)
@@ -12,7 +12,7 @@ persistir tokens no browser. Também há riscos confirmados nos serviços intern
 tokens não podem ser apenas decodificados, e-mail não pode elevar privilégio e o
 Admin atual não oferece RBAC seguro para sellers/buyers.
 
-## Decisão proposta
+## Decisão
 
 O AppSell usa Identity como provedor OAuth, mas possui sessão própria no BFF:
 
