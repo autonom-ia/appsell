@@ -1,0 +1,12 @@
+# macOS
+.DS_Store
+
+# Local credentials and environment
+credential.env
+*.credential.env
+.env
+.env.*
+!.env.example
+
+# Local-only overrides
+*.local
