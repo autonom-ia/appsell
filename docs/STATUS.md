@@ -16,8 +16,8 @@ Atualizado em pontos de marco (PR aberta, deploy, incidente). Diferente de MEMOR
 ## Estado atual
 
 Foundation local em Next.js com sessão opaca e Redis isolado foi mergeada. A
-branch #17 adiciona um candidato Local/CI de vault cifrado, ainda sem PR/review
-final. O mock Identity e o provider local continuam bloqueados em produção; não
+PR draft #20 adiciona um candidato Local/CI de vault cifrado, com reviews verdes
+e App CI pendente. O mock Identity e o provider local continuam bloqueados em produção; não
 existe staging/produção do AppSell certificado ou autorizado.
 
 ## Última mudança relevante
@@ -35,7 +35,7 @@ existe staging/produção do AppSell certificado ou autorizado.
   login/callback 503 e sessão 401; 1/1 E2E.
 - Candidato #17 apenas Local/CI — envelope encryption com DEK por registro,
   keyring local, AAD, sessão+vault atômico e 35/35 testes; reviews AppSec e
-  concorrência verdes, PR/CI pendentes.
+  concorrência verdes, App CI pendente na PR #20.
 
 ## O que está quebrado / em degradação
 
@@ -52,7 +52,7 @@ existe staging/produção do AppSell certificado ou autorizado.
 
 ## Próxima ação
 
-Concluir reviews e PR da #17. Manter #18 e #19 bloqueadas e sem qualquer ação em
+Concluir o App CI/merge gate da PR #20. Manter #18 e #19 bloqueadas e sem qualquer ação em
 produção.
 
 ## Links

@@ -37,19 +37,19 @@ Project status:
 ## Sessão: 2026-07-10 16:50 — token vault envelope encryption Local/CI
 Issue: #17
 Branch: feat/17-encrypted-token-vault
-PR: não aberta
-Estado: em_progresso
+PR: #20 (draft)
+Estado: concluído
 Modelo: strong + human
 Arquivos alterados: token-vault, redis-oauth-service, testes vault/Redis/BFF, env/README, STATUS/PROGRESS/decisions/audit
 Comandos executados: validate-harness; pnpm install/lint/typecheck/test/audit/build/test:e2e/test:e2e:production; gh issue/project/subissues
 Validação: local verde — lint/typecheck/build, audit zero, 35 Vitest, 6 browser, 1 production local; AppSec e concorrência verdes P0-P2=0
-Bloqueios: merge depende de PR/App CI; #18/#19/#13 permanecem bloqueadas
-Próxima ação: abrir PR draft #17, aguardar App CI e aplicar gate de merge aprovado
+Bloqueios: merge depende de App CI; #18/#19/#13 permanecem bloqueadas
+Próxima ação: aguardar App CI da PR draft #20 e aplicar gate de merge aprovado
 Project status:
   - Projeto: Infra
-  - Status: Em desenvolvimento
+  - Status: PR aberta
   - Tipo: Segurança
   - Prioridade: P0
   - Risco: Alto
   - Ambiente: Dev
-  - Próxima ação: abrir PR draft da #17 e aguardar App CI
+  - Próxima ação: aguardar App CI da PR draft #20
