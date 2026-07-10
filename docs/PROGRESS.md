@@ -19,7 +19,7 @@ Fase 1 — spike local de Identity/BFF.
 
 ## Em andamento
 
-- preparação da PR draft após terceira revisão independente aprovada sem P0-P2.
+- PR draft #11 aberta; checks do App CI e review humano pendentes.
 
 ## Pendente
 
@@ -43,6 +43,6 @@ Fase 1 — spike local de Identity/BFF.
 
 ## Próximo passo recomendado
 
-Abrir PR draft ligada à Issue #8 e aguardar checks/review humano. Não reutilizar
-o mock em produção e não fazer merge enquanto os gaps do Identity real não
-estiverem explicitamente aceitos.
+Aguardar checks/review humano da PR #11. Não reutilizar o mock em produção e
+não fazer merge enquanto os gaps do Identity real não estiverem explicitamente
+aceitos.

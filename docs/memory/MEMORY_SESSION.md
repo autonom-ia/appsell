@@ -37,19 +37,19 @@ Project status:
 ## Sessão: 2026-07-10 14:47 — spike OAuth/BFF com sessão opaca
 Issue: #8
 Branch: feat/8-oauth-bff-spike
-PR: não aberta
-Estado: em_progresso
+PR: #11 (draft)
+Estado: concluído
 Modelo: strong + human
 Arquivos alterados: scaffold Next.js em app/, lib/, tests/; package.json; pnpm-lock.yaml; README.md; docs/PROGRESS.md; docs/audit/session-2026-07-10-143043.md
 Comandos executados: pnpm install; pnpm lint; pnpm typecheck; pnpm test; pnpm build; pnpm audit --prod; pnpm test:e2e; pnpm test:e2e:production; git diff --check; scripts/validate-harness.sh; Playwright CLI; curl em next start
 Validação: lint/typecheck/build verdes; Vitest 12/12; Playwright automatizado 6/6 Chromium+WebKit mobile; produção 1/1 com next start; audit sem vulnerabilidades; Harness v2.0.2 completo; não exposição do cookie e replay 401 confirmados
 Bloqueios: nenhum técnico; merge continua proibido sem aprovação explícita
-Próxima ação: abrir PR draft vinculada à Issue #8, atualizar Project e aguardar checks
+Próxima ação: aguardar App CI e review humano da PR #11; não fazer merge
 Project status:
   - Projeto: Infra
-  - Status: Em desenvolvimento
+  - Status: PR aberta
   - Tipo: Segurança
   - Prioridade: P0
   - Risco: Alto
   - Ambiente: Dev
-  - Próxima ação: implementar e revisar spike OAuth/BFF local com sessão opaca e teste Playwright CLI
+  - Próxima ação: aguardar checks e review humano; depois planejar Identity real e Redis isolado
