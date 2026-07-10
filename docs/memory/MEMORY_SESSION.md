@@ -34,22 +34,22 @@ Project status:
 
 <!-- Substituir abaixo a cada nova sessão. Sessões anteriores vão para PROGRESS.md. -->
 
-## Sessão: 2026-07-10 17:25 — refresh distribuído Local/CI
-Issue: #18
-Branch: feat/18-distributed-refresh
-PR: #21 (draft)
-Estado: concluído
+## Sessão: 2026-07-10 22:03 — shell Studio mobile-first e jornadas seller/buyer
+Issue: #22
+Branch: feat/22-studio-mobile-shell
+PR: não aberta
+Estado: em_progresso
 Modelo: strong + human
-Arquivos alterados: oauth-refresh, redis-oauth-service, token-vault, testes refresh/vault, README, STATUS/PROGRESS/decisions/audit
-Comandos executados: validate-harness; pnpm lint/typecheck/test/audit/build/test:e2e/test:e2e:production; gh issue/project
-Validação: local verde — Harness, lint/typecheck/build, audit zero, 51 Vitest, 6 browser e 1 production local; AppSec, concorrência e contrato verdes P0-P2=0
-Bloqueios: merge depende do App CI; integração Identity real permanece bloqueada por #13; nenhuma ação de produção autorizada
-Próxima ação: aguardar App CI da PR #21 e aplicar o gate de merge aprovado se verde
+Arquivos alterados: app público/protegido, proxy, componentes, design system, projeções demo, testes, STATUS/PROGRESS/DECISIONS/audit
+Comandos executados: validate-harness/doctor; pnpm lint/typecheck/test/build/test:e2e/test:e2e:production; Playwright CLI/screenshot; reviews críticos
+Validação: local verde — Harness completo com drift 2.0.2→2.1.2; lint/typecheck/build; 55 unitários; 17 browser + 1 skip de matriz; 1 production local; três reviews P0-P3=0
+Bloqueios: CI remoto e aprovação de merge; Identity real #13, KMS #19 e produção continuam bloqueados
+Próxima ação: commit/push, abrir PR draft da #22, atualizar Project e aguardar CI
 Project status:
-  - Projeto: Infra
-  - Status: PR aberta
-  - Tipo: Segurança
-  - Prioridade: P0
-  - Risco: Alto
+  - Projeto: AppSell
+  - Status: Em review
+  - Tipo: Feature
+  - Prioridade: P1
+  - Risco: Médio
   - Ambiente: Dev
-  - Próxima ação: aguardar App CI da PR #21; Identity real segue bloqueado por #13
+  - Próxima ação: abrir PR draft e executar CI remoto

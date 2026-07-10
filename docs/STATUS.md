@@ -6,25 +6,26 @@ Atualizado em pontos de marco (PR aberta, deploy, incidente). Diferente de MEMOR
 
 | Indicador | Status | Última verificação |
 |-----------|:------:|--------------------|
-| Build | 🟢 main verde; branch #18 ainda em validação | 2026-07-10 |
-| Testes | 🟢 main 35+6+1; branch #18 local 51+6+1 | 2026-07-10 |
-| CI | 🟢 main verde | 2026-07-10, run `29106000267`, SHA `90a87c9` |
+| Build | 🟢 branch #22 local verde | 2026-07-10 |
+| Testes | 🟢 55 unitários + 17 browser + 1 production local | 2026-07-10 |
+| CI | 🟡 branch #22 ainda não publicada | 2026-07-10 |
 | Deploy produção | 🟡 não configurado/não executado | 2026-07-10 |
 | Harness instalado | 2.0.2 | 2026-07-10 |
 | Harness drift | OK | 2026-07-10 |
 
 ## Estado atual
 
-Foundation local em Next.js com sessão opaca, Redis isolado e vault cifrado
-Local/CI foi mergeada pela PR #20. A PR draft #21 contém o candidato Local/CI
-de refresh distribuído, com reviews verdes e App CI pendente. O mock
-Identity e os providers locais continuam bloqueados em produção; não existe
-staging/produção do AppSell certificado ou autorizado.
+Foundation local em Next.js com sessão opaca, Redis isolado, vault cifrado e
+refresh distribuído foi mergeada até a PR #21. A Issue #22 implementa o
+protótipo Studio mobile-first: landing, shell persistente, catálogo do produtor
+e biblioteca multi-seller demonstrativa. O gate das rotas protegidas ocorre no
+`proxy.ts`; a página não recebe o cookie HttpOnly no payload RSC. Todo conteúdo
+está rotulado como prévia local, sem grant, persistência, billing ou publicação.
 
 ## Última mudança relevante
 
-2026-07-10 — PR [#20](https://github.com/autonom-ia/appsell/pull/20), merge
-`90a87c9`: token vault cifrado Local/CI; App CI pós-merge verde.
+2026-07-10 — branch `feat/22-studio-mobile-shell`: slice Fase 2 local validado;
+PR ainda não aberta.
 
 ## O que está funcionando
 
@@ -37,14 +38,20 @@ staging/produção do AppSell certificado ou autorizado.
 - #17 apenas Local/CI — envelope encryption com DEK por registro, keyring
   local, AAD, sessão+vault atômico e 35/35 testes; reviews AppSec e concorrência
   verdes; PR #20 e App CI pós-merge verdes.
-- Candidato #18 Local/CI — refresh server-side com lease, fencing, intent e CAS;
-  16 testes adversariais novos, 51/51 Vitest locais; reviews AppSec,
-  concorrência e contrato verdes, P0-P2=0.
+- Refresh distribuído Local/CI mergeado pela PR #21.
+- Design system próprio derivado dos tokens do Studio, sem dependência runtime.
+- Gate server-side para `/dashboard`, `/products` e `/library`, sujeito dev
+  exato e produção fail-closed.
+- Projeções demonstrativas testadas: seller não recebe produto de outro seller;
+  buyer só recebe entitlement ativo/publicado; recomendações nunca incluem
+  draft nem outro seller.
+- Mobile/desktop: 360, 390, 768, 1024 e 1440 sem overflow; alvos >= 44 px;
+  Chromium e WebKit, reduced motion, deep link e reload verdes.
 
 ## O que está quebrado / em degradação
 
 - Identity real — sem dev/hml isolado e com P0 upstream — Issue #13.
-- Refresh real com Identity — bloqueado por #13; a prova Local/CI segue na #18.
+- Refresh real com Identity — bloqueado por #13.
 - KMS real/vault HA — provider/infra/staging não decididos — Issue #19.
 - Staging/VPS/TLS — não certificado e fora do escopo atual — Issue #5.
 
@@ -56,9 +63,9 @@ staging/produção do AppSell certificado ou autorizado.
 
 ## Próxima ação
 
-Aguardar e concluir o App CI da PR #21. Manter
-a integração Identity real (#13), KMS real (#19) e qualquer ação em produção
-bloqueados.
+Abrir a PR da Issue #22, executar CI remoto e manter merge dependente da
+aprovação do Rodrigo. Em PR separada, atualizar Harness 2.0.2 para 2.1.2. A
+integração Identity real (#13), KMS real (#19) e produção continuam bloqueadas.
 
 ## Links
 

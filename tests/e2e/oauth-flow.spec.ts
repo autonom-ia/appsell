@@ -16,21 +16,29 @@ test("keeps the opaque session out of browser-readable surfaces", async ({ conte
   const responseBodies: string[] = [];
   const bodyReads: Promise<void>[] = [];
   page.on("response", (response) => {
-    bodyReads.push((async () => {
+    const read = (async () => {
       const contentType = response.headers()["content-type"] ?? "";
       if (!/(text|json|javascript)/i.test(contentType)) return;
+      if (/text\/event-stream/i.test(contentType)) return;
+      // The final document is inspected below through documentElement.innerHTML,
+      // including inline RSC/Flight payloads. Re-reading it can hang in Chromium dev mode.
+      if (response.request().resourceType() === "document") return;
       try {
         responseBodies.push(await response.text());
       } catch {
         // Redirects and aborted dev assets do not always expose a body.
       }
-    })());
+    })();
+    bodyReads.push(Promise.race([
+      read,
+      new Promise<void>((_, reject) => setTimeout(() => reject(new Error(`Timed out inspecting response body: ${new URL(response.url()).pathname}`)), 5_000)),
+    ]));
   });
 
   await page.goto("/");
-  await page.getByRole("link", { name: "Entrar com Identity local" }).click();
+  await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
   await expect(page).toHaveURL("/dashboard");
-  await expect(page.getByRole("heading", { name: "Dashboard protegido" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Bom dia, creator." })).toBeVisible();
 
   const sessionCookie = (await context.cookies()).find((cookie) => cookie.name === "appsell_session");
   expect(sessionCookie).toMatchObject({ httpOnly: true, sameSite: "Lax" });
@@ -55,12 +63,15 @@ test("keeps the opaque session out of browser-readable surfaces", async ({ conte
   expect(exposure.localStorage).toEqual([]);
   expect(exposure.sessionStorage).toEqual([]);
   expect(exposure.debugChannels).toEqual([]);
-  for (const surface of [exposure.dom, exposure.url, ...exposure.localStorage, ...exposure.sessionStorage]) {
-    expect(containsRawOrBase64Encoded(surface, rawSession)).toBe(false);
+  const directIndex = exposure.dom.indexOf(rawSession);
+  const redactedContext = directIndex < 0 ? "not present" : exposure.dom.slice(Math.max(0, directIndex - 100), directIndex + rawSession.length + 100).replace(rawSession, "[REDACTED]");
+  expect(directIndex, `DOM directly exposed the opaque session near: ${redactedContext}`).toBe(-1);
+  for (const [name, surface] of Object.entries({ dom: exposure.dom, url: exposure.url, localStorage: exposure.localStorage.join("\n"), sessionStorage: exposure.sessionStorage.join("\n") })) {
+    expect(containsRawOrBase64Encoded(surface, rawSession), `${name} exposed the opaque session`).toBe(false);
   }
 
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Dashboard protegido" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Bom dia, creator." })).toBeVisible();
   await Promise.all(bodyReads);
   expect(responseBodies.some((body) => containsRawOrBase64Encoded(body, rawSession))).toBe(false);
   expect(page.url()).not.toMatch(/[?&](code|state)=/);
@@ -96,7 +107,7 @@ test("preserves a legitimate transaction after an invalid callback", async ({ co
 
 test("rejects foreign logout and rejects replay after same-origin logout", async ({ context, page }) => {
   await page.goto("/");
-  await page.getByRole("link", { name: "Entrar com Identity local" }).click();
+  await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
   await expect(page).toHaveURL("/dashboard");
   const rawSession = (await context.cookies()).find((cookie) => cookie.name === "appsell_session")?.value ?? "";
 
@@ -108,7 +119,7 @@ test("rejects foreign logout and rejects replay after same-origin logout", async
   expect(foreign.headers()["cache-control"]).toBe("no-store");
   expect((await page.request.get("/api/session")).status()).toBe(200);
 
-  await page.getByRole("button", { name: "Sair" }).click();
+  await page.getByRole("button", { name: "Sair com segurança" }).first().click();
   await expect(page).toHaveURL("/");
   expect((await context.cookies()).some((cookie) => cookie.name === "appsell_session")).toBe(false);
   expect((await page.request.get("/api/session")).status()).toBe(401);

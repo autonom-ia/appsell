@@ -51,3 +51,15 @@ riscos e gates está em
   publicado. Nenhuma ação na VPS ou produção faz parte dos slices atuais.
 - Próximo gate: staging isolado, TLS, secrets, observabilidade, restore/rollback,
   testes reais e aprovação explícita de Rodrigo.
+
+## Decisão 007 — preview protegido no Proxy, não no RSC
+
+- Data: 2026-07-10
+- Decisão: o slice visual usa `proxy.ts` para validar a sessão antes de servir
+  `/dashboard`, `/products` e `/library`. Server Components não leem cookie nem
+  objeto de sessão, porque a prova adversarial mostrou que valores aguardados
+  no RSC dev podiam aparecer no Flight inline.
+- Limite: o sujeito `dev-user-001` libera apenas uma prévia demonstrativa e
+  fail-closed fora de desenvolvimento; não representa grant seller/buyer.
+- Próximo gate: substituir a regra demo por RBAC/tenant context persistido e
+  testes cross-tenant na Fase 3.
