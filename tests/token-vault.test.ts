@@ -22,7 +22,8 @@ const sessionHmacKey = Buffer.alloc(32, 33);
 const context: TokenVaultContext = {
   namespace: "appsell:test:vault-tests",
   sessionHash: sha256("session-one"),
-  subject: "identity-user-001"
+  subject: "identity-user-001",
+  revision: 1
 };
 
 const bundle: TokenBundle = {
@@ -77,6 +78,8 @@ describe("token vault envelope encryption", () => {
       .rejects.toBeInstanceOf(TokenVaultAuthenticationError);
     await expect(tokenVault.open(serialized, { ...context, namespace: "appsell:test:other-tests" }))
       .rejects.toBeInstanceOf(TokenVaultAuthenticationError);
+    await expect(tokenVault.open(serialized, { ...context, revision: 2 }))
+      .rejects.toBeInstanceOf(TokenVaultAuthenticationError);
   });
 
   it("writes only with the active key and reads an older key explicitly during rotation", async () => {
@@ -104,8 +107,9 @@ describe("token vault envelope encryption", () => {
     const tokenVault = vault([{ id: "local-v1", key: firstKey, active: true }]);
     const serialized = await tokenVault.seal(bundle, context);
     const envelope = JSON.parse(serialized);
+    expect(envelope.v).toBe(2);
 
-    await expect(tokenVault.open(JSON.stringify({ ...envelope, v: 2 }), context))
+    await expect(tokenVault.open(JSON.stringify({ ...envelope, v: 1 }), context))
       .rejects.toBeInstanceOf(TokenVaultMalformedError);
     await expect(tokenVault.open(JSON.stringify({ ...envelope, alg: "none" }), context))
       .rejects.toBeInstanceOf(TokenVaultMalformedError);

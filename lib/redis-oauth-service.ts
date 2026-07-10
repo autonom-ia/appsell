@@ -3,6 +3,11 @@ import Redis from "ioredis";
 import { hmacSha256, pkceChallenge, randomOpaque, sha256 } from "./crypto";
 import { OAuthFlowError } from "./oauth-service";
 import {
+  OAuthRefreshProviderProtocolError,
+  parseRefreshProviderResult,
+  type OAuthTokenRefresher
+} from "./oauth-refresh";
+import {
   createLocalTokenVaultFromEnvironment,
   TokenVaultConfigurationError,
   TokenVaultError,
@@ -18,6 +23,12 @@ const DEFAULT_RATE_WINDOW_MS = 60_000;
 const DEFAULT_MAX_PER_CLIENT = 120;
 const DEFAULT_MAX_GLOBAL = 1_000;
 const DEFAULT_RECEIPT_TTL_MS = 30_000;
+const DEFAULT_REFRESH_LEASE_TTL_MS = 2_000;
+const DEFAULT_REFRESH_PROVIDER_TIMEOUT_MS = 1_000;
+const DEFAULT_REFRESH_WAIT_TIMEOUT_MS = 5_000;
+const DEFAULT_REFRESH_POLL_INTERVAL_MS = 20;
+const MIN_REFRESH_COMMIT_MARGIN_MS = 50;
+const MAX_REDIS_FENCE = "9223372036854775807";
 const PREFIX_PATTERN = /^appsell:[a-z0-9][a-z0-9_-]{1,31}:[a-z0-9][a-z0-9_-]{5,63}$/;
 
 interface LoginTransaction {
@@ -37,7 +48,33 @@ interface SessionRecord {
   subject: string;
   createdAt: number;
   expiresAt: number;
+  tokenRevision: number;
 }
+
+interface RefreshLease {
+  owner: string;
+  fence: string;
+  operationId: string;
+  leaseValue: string;
+  intentValue: string;
+}
+
+type RefreshLeaseStatus =
+  | "ADVANCED"
+  | "AMBIGUOUS"
+  | "BUSY"
+  | "MISSING"
+  | "PAIR_INTEGRITY_ERROR"
+  | "REVISION_INTEGRITY_ERROR"
+  | "INTENT_INTEGRITY_ERROR"
+  | "REVISION_MISMATCH"
+  | "TTL_ERROR"
+  | "FENCE_ERROR"
+  | "COORDINATION_ERROR";
+
+type RefreshLeaseAcquisition =
+  | { status: RefreshLeaseStatus }
+  | { status: "ACQUIRED"; lease: RefreshLease };
 
 export interface RedisOAuthOptions {
   redisUrl: string;
@@ -52,6 +89,10 @@ export interface RedisOAuthOptions {
   maxGlobal?: number;
   connectTimeoutMs?: number;
   receiptTtlMs?: number;
+  refreshLeaseTtlMs?: number;
+  refreshProviderTimeoutMs?: number;
+  refreshWaitTimeoutMs?: number;
+  refreshPollIntervalMs?: number;
 }
 
 const RATE_LIMIT_SCRIPT = `
@@ -104,13 +145,174 @@ local session_json = redis.call('GET', KEYS[1])
 local vault_json = redis.call('GET', KEYS[2])
 if not session_json and not vault_json then return {} end
 if not session_json or not vault_json then return {'PAIR_INTEGRITY_ERROR'} end
-return {session_json, vault_json}
+local session_ttl = redis.call('PTTL', KEYS[1])
+local vault_ttl = redis.call('PTTL', KEYS[2])
+if session_ttl <= 0 or vault_ttl <= 0 then return {'PAIR_TTL_ERROR'} end
+return {session_json, vault_json, tostring(session_ttl), tostring(vault_ttl)}
+`;
+
+const ACQUIRE_REFRESH_SCRIPT = `
+local session_json = redis.call('GET', KEYS[1])
+local vault_json = redis.call('GET', KEYS[2])
+if not session_json and not vault_json then return {'MISSING'} end
+if not session_json or not vault_json then return {'PAIR_INTEGRITY_ERROR'} end
+
+local session = cjson.decode(session_json)
+local current_revision = tonumber(session.tokenRevision)
+local expected_revision = tonumber(ARGV[1])
+if not current_revision or not expected_revision then return {'REVISION_INTEGRITY_ERROR'} end
+if current_revision > expected_revision then return {'ADVANCED'} end
+if current_revision ~= expected_revision then return {'REVISION_MISMATCH'} end
+
+local session_ttl = redis.call('PTTL', KEYS[1])
+local vault_ttl = redis.call('PTTL', KEYS[2])
+if session_ttl <= 0 or vault_ttl <= 0 then return {'TTL_ERROR'} end
+local pair_ttl = math.min(session_ttl, vault_ttl)
+
+local operation_id = ARGV[4]
+local intent = redis.call('GET', KEYS[5])
+if intent then
+  local intent_revision, existing_operation, intent_state = string.match(intent, '^(%d+):([A-Za-z0-9_-]+):([a-z]+)$')
+  if not intent_revision or intent_revision ~= ARGV[1] then return {'INTENT_INTEGRITY_ERROR'} end
+  if intent_state == 'ambiguous' then return {'AMBIGUOUS'} end
+  if intent_state == 'inflight' then
+    if redis.call('EXISTS', KEYS[3]) == 1 then return {'BUSY'} end
+    local ambiguous_intent = ARGV[1] .. ':' .. existing_operation .. ':ambiguous'
+    redis.call('PSETEX', KEYS[5], pair_ttl, ambiguous_intent)
+    return {'AMBIGUOUS'}
+  end
+  if intent_state ~= 'prepared' and intent_state ~= 'retryable' then return {'INTENT_INTEGRITY_ERROR'} end
+  operation_id = existing_operation
+else
+  intent = ARGV[1] .. ':' .. operation_id .. ':prepared'
+  redis.call('PSETEX', KEYS[5], pair_ttl, intent)
+end
+
+if redis.call('EXISTS', KEYS[3]) == 1 then return {'BUSY'} end
+redis.call('INCR', KEYS[4])
+local fence = redis.call('GET', KEYS[4])
+if not fence then return {'FENCE_ERROR'} end
+local lease_value = ARGV[2] .. ':' .. fence
+local lease_ttl = math.min(pair_ttl, tonumber(ARGV[3]))
+local acquired = redis.call('SET', KEYS[3], lease_value, 'PX', lease_ttl, 'NX')
+if not acquired then return {'BUSY'} end
+redis.call('PEXPIRE', KEYS[4], pair_ttl)
+return {'ACQUIRED', fence, operation_id}
+`;
+
+const BEGIN_REFRESH_PROVIDER_SCRIPT = `
+local session_json = redis.call('GET', KEYS[1])
+local vault_json = redis.call('GET', KEYS[2])
+if not session_json and not vault_json then return 'MISSING' end
+if not session_json or not vault_json then return 'PAIR_INTEGRITY_ERROR' end
+local session = cjson.decode(session_json)
+if tonumber(session.tokenRevision) ~= tonumber(ARGV[2]) then return 'STALE_REVISION' end
+if redis.call('GET', KEYS[3]) ~= ARGV[1] then return 'STALE_FENCE' end
+if redis.call('PTTL', KEYS[3]) <= tonumber(ARGV[5]) then return 'STALE_FENCE' end
+local intent = redis.call('GET', KEYS[4])
+local intent_revision, operation_id, intent_state = string.match(intent or '', '^(%d+):([A-Za-z0-9_-]+):([a-z]+)$')
+if intent_revision ~= ARGV[2] or operation_id ~= ARGV[3] then return 'INTENT_INTEGRITY_ERROR' end
+if intent_state == 'inflight' and intent == ARGV[4] then return 'STARTED' end
+if intent_state ~= 'prepared' and intent_state ~= 'retryable' then return 'INTENT_INTEGRITY_ERROR' end
+local ttl = math.min(redis.call('PTTL', KEYS[1]), redis.call('PTTL', KEYS[2]))
+if ttl <= 0 then return 'TTL_ERROR' end
+redis.call('PSETEX', KEYS[4], ttl, ARGV[4])
+return 'STARTED'
+`;
+
+const COMMIT_REFRESH_SCRIPT = `
+local session_json = redis.call('GET', KEYS[1])
+local vault_json = redis.call('GET', KEYS[2])
+if not session_json and not vault_json then return 'MISSING' end
+if not session_json or not vault_json then return 'PAIR_INTEGRITY_ERROR' end
+if redis.call('GET', KEYS[3]) ~= ARGV[1] then return 'STALE_FENCE' end
+if redis.call('GET', KEYS[4]) ~= ARGV[2] then return 'INTENT_INTEGRITY_ERROR' end
+
+local session = cjson.decode(session_json)
+local expected_revision = tonumber(ARGV[3])
+if tonumber(session.tokenRevision) ~= expected_revision then return 'STALE_REVISION' end
+local next_session = cjson.decode(ARGV[4])
+if tonumber(next_session.tokenRevision) ~= expected_revision + 1 then return 'REVISION_INTEGRITY_ERROR' end
+if next_session.subject ~= session.subject or next_session.createdAt ~= session.createdAt or next_session.expiresAt ~= session.expiresAt then
+  return 'SESSION_INTEGRITY_ERROR'
+end
+
+local session_ttl = redis.call('PTTL', KEYS[1])
+local vault_ttl = redis.call('PTTL', KEYS[2])
+local now_ms = tonumber(ARGV[6])
+local refresh_expires_at = tonumber(ARGV[7])
+if session_ttl <= 0 or vault_ttl <= 0 or not now_ms or not refresh_expires_at then return 'TTL_ERROR' end
+local absolute_ttl = tonumber(session.expiresAt) - now_ms
+local refresh_ttl = refresh_expires_at - now_ms
+local final_ttl = math.floor(math.min(session_ttl, vault_ttl, absolute_ttl, refresh_ttl))
+if final_ttl <= 0 then return 'TTL_ERROR' end
+
+redis.call('PSETEX', KEYS[1], final_ttl, ARGV[4])
+redis.call('PSETEX', KEYS[2], final_ttl, ARGV[5])
+redis.call('DEL', KEYS[3], KEYS[4])
+redis.call('PEXPIRE', KEYS[5], final_ttl)
+return 'OK'
+`;
+
+const RELEASE_REFRESH_SCRIPT = `
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+return redis.call('DEL', KEYS[1])
+`;
+
+const MARK_REFRESH_RETRYABLE_SCRIPT = `
+local session_json = redis.call('GET', KEYS[1])
+local vault_json = redis.call('GET', KEYS[2])
+if not session_json and not vault_json then return 'MISSING' end
+if not session_json or not vault_json then return 'PAIR_INTEGRITY_ERROR' end
+local session = cjson.decode(session_json)
+if tonumber(session.tokenRevision) ~= tonumber(ARGV[3]) then return 'STALE_REVISION' end
+if redis.call('GET', KEYS[3]) ~= ARGV[1] then return 'STALE_FENCE' end
+if redis.call('GET', KEYS[4]) ~= ARGV[2] then return 'INTENT_INTEGRITY_ERROR' end
+local ttl = math.min(redis.call('PTTL', KEYS[1]), redis.call('PTTL', KEYS[2]))
+if ttl <= 0 then return 'TTL_ERROR' end
+redis.call('PSETEX', KEYS[4], ttl, ARGV[4])
+redis.call('DEL', KEYS[3])
+return 'RETRYABLE'
+`;
+
+const MARK_REFRESH_AMBIGUOUS_SCRIPT = `
+local session_json = redis.call('GET', KEYS[1])
+local vault_json = redis.call('GET', KEYS[2])
+if not session_json and not vault_json then return 'MISSING' end
+if not session_json or not vault_json then return 'PAIR_INTEGRITY_ERROR' end
+local session = cjson.decode(session_json)
+if tonumber(session.tokenRevision) ~= tonumber(ARGV[3]) then return 'STALE_REVISION' end
+local intent = redis.call('GET', KEYS[4])
+if intent == ARGV[4] then return 'MARKED' end
+if intent ~= ARGV[2] then return 'INTENT_INTEGRITY_ERROR' end
+local ttl = math.min(redis.call('PTTL', KEYS[1]), redis.call('PTTL', KEYS[2]))
+if ttl <= 0 then return 'TTL_ERROR' end
+redis.call('PSETEX', KEYS[4], ttl, ARGV[4])
+if redis.call('GET', KEYS[3]) == ARGV[1] then redis.call('DEL', KEYS[3]) end
+return 'MARKED'
+`;
+
+const REVOKE_REFRESH_SCRIPT = `
+local session_json = redis.call('GET', KEYS[1])
+local vault_json = redis.call('GET', KEYS[2])
+if not session_json and not vault_json then return 'MISSING' end
+if not session_json or not vault_json then return 'PAIR_INTEGRITY_ERROR' end
+if redis.call('GET', KEYS[3]) ~= ARGV[1] then return 'STALE_FENCE' end
+if redis.call('GET', KEYS[4]) ~= ARGV[2] then return 'INTENT_INTEGRITY_ERROR' end
+local session = cjson.decode(session_json)
+if tonumber(session.tokenRevision) ~= tonumber(ARGV[3]) then return 'STALE_REVISION' end
+redis.call('DEL', KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5])
+return 'REVOKED'
 `;
 
 export class OAuthStoreConfigurationError extends OAuthFlowError {}
 export class OAuthStoreUnavailableError extends OAuthFlowError {}
 export class OAuthVaultConfigurationError extends OAuthFlowError {}
 export class OAuthVaultIntegrityError extends OAuthFlowError {}
+export class OAuthRefreshUnavailableError extends OAuthFlowError {}
+export class OAuthRefreshAmbiguousError extends OAuthFlowError {}
+export class OAuthRefreshInvalidGrantError extends OAuthFlowError {}
+export class OAuthRefreshRevisionError extends OAuthFlowError {}
 
 export class RedisOAuthService {
   private readonly redis: Redis;
@@ -124,6 +326,10 @@ export class RedisOAuthService {
   private readonly sessionHmacKey: Buffer;
   private readonly tokenVault: TokenVault;
   private readonly receiptTtlMs: number;
+  private readonly refreshLeaseTtlMs: number;
+  private readonly refreshProviderTimeoutMs: number;
+  private readonly refreshWaitTimeoutMs: number;
+  private readonly refreshPollIntervalMs: number;
   private connectPromise: Promise<void> | undefined;
 
   constructor(options: RedisOAuthOptions) {
@@ -138,6 +344,10 @@ export class RedisOAuthService {
     this.sessionHmacKey = Buffer.from(options.sessionHmacKey);
     this.tokenVault = options.tokenVault;
     this.receiptTtlMs = options.receiptTtlMs ?? DEFAULT_RECEIPT_TTL_MS;
+    this.refreshLeaseTtlMs = options.refreshLeaseTtlMs ?? DEFAULT_REFRESH_LEASE_TTL_MS;
+    this.refreshProviderTimeoutMs = options.refreshProviderTimeoutMs ?? DEFAULT_REFRESH_PROVIDER_TIMEOUT_MS;
+    this.refreshWaitTimeoutMs = options.refreshWaitTimeoutMs ?? DEFAULT_REFRESH_WAIT_TIMEOUT_MS;
+    this.refreshPollIntervalMs = options.refreshPollIntervalMs ?? DEFAULT_REFRESH_POLL_INTERVAL_MS;
     this.redis = new Redis(options.redisUrl, {
       lazyConnect: true,
       enableOfflineQueue: false,
@@ -222,7 +432,8 @@ export class RedisOAuthService {
       const session: SessionRecord = {
         subject,
         createdAt: now,
-        expiresAt: now + this.sessionTtlMs
+        expiresAt: now + this.sessionTtlMs,
+        tokenRevision: 1
       };
       const tokenBundle: TokenBundle = {
         subject,
@@ -234,7 +445,10 @@ export class RedisOAuthService {
         scopes: ["openid", "profile"],
         revision: 1
       };
-      const vaultEnvelope = await this.tokenVault.seal(tokenBundle, this.vaultContext(sessionId, subject));
+      const vaultEnvelope = await this.tokenVault.seal(
+        tokenBundle,
+        this.vaultContext(sessionId, subject, session.tokenRevision)
+      );
       const result = await this.redis.eval(
         CALLBACK_SCRIPT,
         5,
@@ -256,7 +470,11 @@ export class RedisOAuthService {
           const pair = await this.readSessionVaultPair(sessionId);
           if (!pair) throw new OAuthVaultIntegrityError("OAuth session vault integrity failure.");
           const existingSession = parseSessionRecord(pair.session);
-          await this.tokenVault.open(pair.vault, this.vaultContext(sessionId, existingSession.subject));
+          const bundle = await this.tokenVault.open(
+            pair.vault,
+            this.vaultContext(sessionId, existingSession.subject, existingSession.tokenRevision)
+          );
+          assertSessionBundleRevision(existingSession, bundle);
           return sessionId;
         }
         case "TRANSACTION_MISSING": throw new OAuthFlowError("Login transaction expired.");
@@ -276,10 +494,9 @@ export class RedisOAuthService {
   async getSession(sessionId?: string) {
     if (!sessionId) return null;
     return this.withRedis(async () => {
-      const pair = await this.readSessionVaultPair(sessionId);
-      if (!pair) return null;
-      const session = parseSessionRecord(pair.session);
-      await this.tokenVault.open(pair.vault, this.vaultContext(sessionId, session.subject));
+      const current = await this.readValidatedSessionBundle(sessionId);
+      if (!current) return null;
+      const { session } = current;
       return { subject: session.subject, createdAt: session.createdAt, expiresAt: session.expiresAt };
     });
   }
@@ -287,17 +504,59 @@ export class RedisOAuthService {
   async getServerTokenBundle(sessionId?: string) {
     if (!sessionId) return null;
     return this.withRedis(async () => {
-      const pair = await this.readSessionVaultPair(sessionId);
-      if (!pair) return null;
-      const session = parseSessionRecord(pair.session);
-      return this.tokenVault.open(pair.vault, this.vaultContext(sessionId, session.subject));
+      return (await this.readValidatedSessionBundle(sessionId))?.bundle ?? null;
+    });
+  }
+
+  async refreshSession(sessionId: string | undefined, expectedRevision: number, refresher: OAuthTokenRefresher) {
+    if (!sessionId || !positiveSafeInteger(expectedRevision) || expectedRevision >= Number.MAX_SAFE_INTEGER) {
+      throw new OAuthRefreshRevisionError("Token refresh revision is invalid.");
+    }
+    if (!refresher || typeof refresher.refresh !== "function") {
+      throw new OAuthRefreshUnavailableError("Token refresh provider is unavailable.");
+    }
+    return this.withRedis(async () => {
+      const initial = await this.readValidatedSessionBundle(sessionId);
+      if (!initial) throw new OAuthRefreshUnavailableError("OAuth session is unavailable for refresh.");
+      if (initial.bundle.revision > expectedRevision) return initial.bundle;
+      if (initial.bundle.revision !== expectedRevision) {
+        throw new OAuthRefreshRevisionError("Token refresh revision does not match the session.");
+      }
+
+      const deadline = Date.now() + this.refreshWaitTimeoutMs;
+      while (Date.now() <= deadline) {
+        const acquisition = await this.acquireRefreshLease(sessionId, expectedRevision);
+        switch (acquisition.status) {
+          case "ADVANCED": return this.readRefreshWinner(sessionId, expectedRevision);
+          case "AMBIGUOUS": throw new OAuthRefreshAmbiguousError("Token refresh outcome is ambiguous.");
+          case "BUSY":
+            await sleep(this.refreshPollIntervalMs + Math.floor(Math.random() * this.refreshPollIntervalMs));
+            continue;
+          case "ACQUIRED":
+            return this.refreshAsLeaseOwner(sessionId, expectedRevision, refresher, acquisition.lease);
+          case "MISSING": throw new OAuthRefreshUnavailableError("OAuth session is unavailable for refresh.");
+          case "PAIR_INTEGRITY_ERROR":
+          case "REVISION_INTEGRITY_ERROR":
+          case "INTENT_INTEGRITY_ERROR":
+            throw new OAuthVaultIntegrityError("OAuth session vault integrity failure.");
+          case "REVISION_MISMATCH": throw new OAuthRefreshRevisionError("Token refresh revision does not match the session.");
+          default: throw new OAuthRefreshUnavailableError("Token refresh coordination is unavailable.");
+        }
+      }
+      throw new OAuthRefreshUnavailableError("Timed out waiting for token refresh coordination.");
     });
   }
 
   async logout(sessionId?: string) {
     if (!sessionId) return;
     await this.withRedis(async () => {
-      await this.redis.del(this.key("session", sessionId), this.key("vault", sessionId));
+      await this.redis.del(
+        this.key("session", sessionId),
+        this.key("vault", sessionId),
+        this.key("refresh-lease", sessionId),
+        this.key("refresh-intent", sessionId),
+        this.key("refresh-fence", sessionId)
+      );
     });
   }
 
@@ -314,8 +573,8 @@ export class RedisOAuthService {
     return `${this.prefix}:{${this.prefix}}`;
   }
 
-  private vaultContext(sessionId: string, subject: string): TokenVaultContext {
-    return { namespace: this.prefix, sessionHash: sha256(sessionId), subject };
+  private vaultContext(sessionId: string, subject: string, revision: number): TokenVaultContext {
+    return { namespace: this.prefix, sessionHash: sha256(sessionId), subject, revision };
   }
 
   private async assertAllowed(action: string, clientKey: string) {
@@ -353,13 +612,319 @@ export class RedisOAuthService {
       this.key("vault", sessionId)
     );
     if (!Array.isArray(result) || result.length === 0) return null;
-    if (result.length === 1 && result[0] === "PAIR_INTEGRITY_ERROR") {
+    if (result.length === 1 && (result[0] === "PAIR_INTEGRITY_ERROR" || result[0] === "PAIR_TTL_ERROR")) {
       throw new OAuthVaultIntegrityError("OAuth session vault integrity failure.");
     }
-    if (result.length !== 2 || typeof result[0] !== "string" || typeof result[1] !== "string") {
+    if (
+      result.length !== 4 ||
+      typeof result[0] !== "string" ||
+      typeof result[1] !== "string" ||
+      typeof result[2] !== "string" ||
+      typeof result[3] !== "string" ||
+      !positiveSafeInteger(Number(result[2])) ||
+      !positiveSafeInteger(Number(result[3]))
+    ) {
       throw new OAuthVaultIntegrityError("OAuth session vault integrity failure.");
     }
-    return { session: result[0], vault: result[1] };
+    return { session: result[0], vault: result[1], sessionTtlMs: Number(result[2]), vaultTtlMs: Number(result[3]) };
+  }
+
+  private async readValidatedSessionBundle(sessionId: string) {
+    const pair = await this.readSessionVaultPair(sessionId);
+    if (!pair) return null;
+    const session = parseSessionRecord(pair.session);
+    const bundle = await this.tokenVault.open(
+      pair.vault,
+      this.vaultContext(sessionId, session.subject, session.tokenRevision)
+    );
+    assertSessionBundleRevision(session, bundle);
+    return { session, bundle };
+  }
+
+  private async acquireRefreshLease(
+    sessionId: string,
+    expectedRevision: number
+  ): Promise<RefreshLeaseAcquisition> {
+    const owner = randomOpaque(24);
+    const proposedOperationId = randomOpaque(24);
+    const result = await this.redis.eval(
+      ACQUIRE_REFRESH_SCRIPT,
+      5,
+      this.key("session", sessionId),
+      this.key("vault", sessionId),
+      this.key("refresh-lease", sessionId),
+      this.key("refresh-fence", sessionId),
+      this.key("refresh-intent", sessionId),
+      String(expectedRevision),
+      owner,
+      String(this.refreshLeaseTtlMs),
+      proposedOperationId
+    );
+    if (!Array.isArray(result) || typeof result[0] !== "string") {
+      return { status: "COORDINATION_ERROR" as const };
+    }
+    const status = result[0];
+    if (status !== "ACQUIRED") {
+      if (!isRefreshLeaseStatus(status)) return { status: "COORDINATION_ERROR" };
+      return { status };
+    }
+    const fence = result[1];
+    const operationId = result[2];
+    if (typeof fence !== "string" || !canonicalRedisFence(fence) || !validOpaque(operationId)) {
+      return { status: "COORDINATION_ERROR" as const };
+    }
+    const leaseValue = `${owner}:${fence}`;
+    const intentValue = `${expectedRevision}:${operationId}:inflight`;
+    return {
+      status: "ACQUIRED" as const,
+      lease: { owner, fence, operationId, leaseValue, intentValue }
+    };
+  }
+
+  private async refreshAsLeaseOwner(
+    sessionId: string,
+    expectedRevision: number,
+    refresher: OAuthTokenRefresher,
+    lease: RefreshLease
+  ): Promise<TokenBundle> {
+    const current = await this.readValidatedSessionBundle(sessionId);
+    if (!current) throw new OAuthRefreshUnavailableError("OAuth session is unavailable for refresh.");
+    if (current.bundle.revision > expectedRevision) {
+      await this.releaseRefreshLease(sessionId, lease.leaseValue);
+      return current.bundle;
+    }
+    if (current.bundle.revision !== expectedRevision) {
+      await this.releaseRefreshLease(sessionId, lease.leaseValue);
+      throw new OAuthRefreshRevisionError("Token refresh revision does not match the session.");
+    }
+
+    const advanced = await this.beginRefreshProvider(sessionId, expectedRevision, lease);
+    if (advanced) return advanced;
+
+    const providerResult = await this.invokeRefreshProvider(refresher, current.bundle, lease.operationId);
+    if (providerResult.kind === "transient") {
+      const transition = await this.markRefreshRetryable(sessionId, expectedRevision, lease);
+      if (transition) return transition;
+      throw new OAuthRefreshUnavailableError("Token refresh provider is temporarily unavailable.");
+    }
+    if (providerResult.kind === "ambiguous") {
+      return this.markRefreshAmbiguous(sessionId, expectedRevision, lease);
+    }
+    if (providerResult.kind === "invalid_grant") {
+      return this.revokeAfterInvalidGrant(sessionId, expectedRevision, lease);
+    }
+
+    const now = Date.now();
+    const normalizedScopes = [...new Set(providerResult.scopes)].sort();
+    if (
+      normalizedScopes.length !== providerResult.scopes.length ||
+      normalizedScopes.some((scope) => !current.bundle.scopes.includes(scope)) ||
+      providerResult.accessTokenExpiresAt <= now ||
+      providerResult.refreshTokenExpiresAt <= providerResult.accessTokenExpiresAt
+    ) {
+      return this.markRefreshAmbiguous(sessionId, expectedRevision, lease);
+    }
+    const nextRevision = expectedRevision + 1;
+    const nextBundle: TokenBundle = {
+      subject: current.bundle.subject,
+      tokenType: "Bearer",
+      accessToken: providerResult.accessToken,
+      refreshToken: providerResult.refreshToken,
+      accessTokenExpiresAt: providerResult.accessTokenExpiresAt,
+      refreshTokenExpiresAt: providerResult.refreshTokenExpiresAt,
+      scopes: normalizedScopes,
+      revision: nextRevision
+    };
+    const nextSession: SessionRecord = { ...current.session, tokenRevision: nextRevision };
+    let nextEnvelope: string;
+    try {
+      nextEnvelope = await this.tokenVault.seal(
+        nextBundle,
+        this.vaultContext(sessionId, nextSession.subject, nextRevision)
+      );
+    } catch {
+      return this.markRefreshAmbiguous(sessionId, expectedRevision, lease);
+    }
+
+    const commit = await this.redis.eval(
+      COMMIT_REFRESH_SCRIPT,
+      5,
+      this.key("session", sessionId),
+      this.key("vault", sessionId),
+      this.key("refresh-lease", sessionId),
+      this.key("refresh-intent", sessionId),
+      this.key("refresh-fence", sessionId),
+      lease.leaseValue,
+      lease.intentValue,
+      String(expectedRevision),
+      JSON.stringify(nextSession),
+      nextEnvelope,
+      String(now),
+      String(nextBundle.refreshTokenExpiresAt)
+    );
+    switch (commit) {
+      case "OK": return nextBundle;
+      case "PAIR_INTEGRITY_ERROR":
+      case "INTENT_INTEGRITY_ERROR":
+      case "REVISION_INTEGRITY_ERROR":
+      case "SESSION_INTEGRITY_ERROR":
+        throw new OAuthVaultIntegrityError("OAuth session vault integrity failure.");
+      case "STALE_REVISION": return this.readRefreshWinner(sessionId, expectedRevision);
+      case "STALE_FENCE": return this.markRefreshAmbiguous(sessionId, expectedRevision, lease);
+      case "MISSING": throw new OAuthRefreshUnavailableError("OAuth session is unavailable for refresh.");
+      default: throw new OAuthRefreshUnavailableError("Token refresh commit is unavailable.");
+    }
+  }
+
+  private async invokeRefreshProvider(
+    refresher: OAuthTokenRefresher,
+    current: TokenBundle,
+    operationId: string
+  ) {
+    const controller = new AbortController();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const raw = await Promise.race([
+        refresher.refresh({
+          subject: current.subject,
+          refreshToken: current.refreshToken,
+          scopes: [...current.scopes],
+          revision: current.revision,
+          idempotencyKey: operationId,
+          signal: controller.signal
+        }),
+        new Promise<{ kind: "ambiguous" }>((resolve) => {
+          timeout = setTimeout(() => {
+            controller.abort();
+            resolve({ kind: "ambiguous" });
+          }, this.refreshProviderTimeoutMs);
+        })
+      ]);
+      return parseRefreshProviderResult(raw);
+    } catch (error) {
+      if (error instanceof OAuthRefreshProviderProtocolError) return { kind: "ambiguous" } as const;
+      return { kind: "ambiguous" } as const;
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+  }
+
+  private async beginRefreshProvider(
+    sessionId: string,
+    expectedRevision: number,
+    lease: RefreshLease
+  ): Promise<TokenBundle | null> {
+    const result = await this.redis.eval(
+      BEGIN_REFRESH_PROVIDER_SCRIPT,
+      4,
+      this.key("session", sessionId),
+      this.key("vault", sessionId),
+      this.key("refresh-lease", sessionId),
+      this.key("refresh-intent", sessionId),
+      lease.leaseValue,
+      String(expectedRevision),
+      lease.operationId,
+      lease.intentValue,
+      String(this.refreshProviderTimeoutMs + MIN_REFRESH_COMMIT_MARGIN_MS)
+    );
+    if (result === "STARTED") return null;
+    if (result === "STALE_REVISION") return this.readRefreshWinner(sessionId, expectedRevision);
+    if (result === "PAIR_INTEGRITY_ERROR" || result === "INTENT_INTEGRITY_ERROR") {
+      throw new OAuthVaultIntegrityError("OAuth session vault integrity failure.");
+    }
+    throw new OAuthRefreshUnavailableError("Token refresh provider coordination is unavailable.");
+  }
+
+  private async releaseRefreshLease(sessionId: string, leaseValue: string) {
+    await this.redis.eval(
+      RELEASE_REFRESH_SCRIPT,
+      1,
+      this.key("refresh-lease", sessionId),
+      leaseValue
+    );
+  }
+
+  private async markRefreshRetryable(
+    sessionId: string,
+    expectedRevision: number,
+    lease: RefreshLease
+  ): Promise<TokenBundle | null> {
+    const result = await this.redis.eval(
+      MARK_REFRESH_RETRYABLE_SCRIPT,
+      4,
+      this.key("session", sessionId),
+      this.key("vault", sessionId),
+      this.key("refresh-lease", sessionId),
+      this.key("refresh-intent", sessionId),
+      lease.leaseValue,
+      lease.intentValue,
+      String(expectedRevision),
+      `${expectedRevision}:${lease.operationId}:retryable`
+    );
+    if (result === "RETRYABLE") return null;
+    if (result === "STALE_REVISION") return this.readRefreshWinner(sessionId, expectedRevision);
+    if (result === "PAIR_INTEGRITY_ERROR" || result === "INTENT_INTEGRITY_ERROR") {
+      throw new OAuthVaultIntegrityError("OAuth session vault integrity failure.");
+    }
+    throw new OAuthRefreshUnavailableError("Token refresh retry coordination is unavailable.");
+  }
+
+  private async markRefreshAmbiguous(
+    sessionId: string,
+    expectedRevision: number,
+    lease: RefreshLease
+  ): Promise<TokenBundle> {
+    const ambiguousIntent = `${expectedRevision}:${lease.operationId}:ambiguous`;
+    const result = await this.redis.eval(
+      MARK_REFRESH_AMBIGUOUS_SCRIPT,
+      4,
+      this.key("session", sessionId),
+      this.key("vault", sessionId),
+      this.key("refresh-lease", sessionId),
+      this.key("refresh-intent", sessionId),
+      lease.leaseValue,
+      lease.intentValue,
+      String(expectedRevision),
+      ambiguousIntent
+    );
+    if (result === "MARKED") throw new OAuthRefreshAmbiguousError("Token refresh outcome is ambiguous.");
+    if (result === "STALE_REVISION") return this.readRefreshWinner(sessionId, expectedRevision);
+    if (result === "PAIR_INTEGRITY_ERROR" || result === "INTENT_INTEGRITY_ERROR") {
+      throw new OAuthVaultIntegrityError("OAuth session vault integrity failure.");
+    }
+    throw new OAuthRefreshUnavailableError("OAuth session is unavailable for refresh.");
+  }
+
+  private async revokeAfterInvalidGrant(
+    sessionId: string,
+    expectedRevision: number,
+    lease: RefreshLease
+  ): Promise<TokenBundle> {
+    const result = await this.redis.eval(
+      REVOKE_REFRESH_SCRIPT,
+      5,
+      this.key("session", sessionId),
+      this.key("vault", sessionId),
+      this.key("refresh-lease", sessionId),
+      this.key("refresh-intent", sessionId),
+      this.key("refresh-fence", sessionId),
+      lease.leaseValue,
+      lease.intentValue,
+      String(expectedRevision)
+    );
+    if (result === "REVOKED") throw new OAuthRefreshInvalidGrantError("Token refresh grant is invalid.");
+    if (result === "STALE_REVISION") return this.readRefreshWinner(sessionId, expectedRevision);
+    if (result === "STALE_FENCE") return this.markRefreshAmbiguous(sessionId, expectedRevision, lease);
+    if (result === "PAIR_INTEGRITY_ERROR" || result === "INTENT_INTEGRITY_ERROR") {
+      throw new OAuthVaultIntegrityError("OAuth session vault integrity failure.");
+    }
+    throw new OAuthRefreshUnavailableError("OAuth session is unavailable for refresh.");
+  }
+
+  private async readRefreshWinner(sessionId: string, expectedRevision: number) {
+    const current = await this.readValidatedSessionBundle(sessionId);
+    if (current && current.bundle.revision > expectedRevision) return current.bundle;
+    throw new OAuthRefreshUnavailableError("Token refresh winner is not available.");
   }
 
   private async withRedis<T>(operation: () => Promise<T>) {
@@ -408,11 +973,25 @@ function validateConfiguration(options: RedisOAuthOptions) {
     ["rate window", options.rateWindowMs ?? DEFAULT_RATE_WINDOW_MS],
     ["per-client limit", options.maxPerClient ?? DEFAULT_MAX_PER_CLIENT],
     ["global limit", options.maxGlobal ?? DEFAULT_MAX_GLOBAL],
-    ["receipt TTL", options.receiptTtlMs ?? DEFAULT_RECEIPT_TTL_MS]
+    ["receipt TTL", options.receiptTtlMs ?? DEFAULT_RECEIPT_TTL_MS],
+    ["refresh lease TTL", options.refreshLeaseTtlMs ?? DEFAULT_REFRESH_LEASE_TTL_MS],
+    ["refresh provider timeout", options.refreshProviderTimeoutMs ?? DEFAULT_REFRESH_PROVIDER_TIMEOUT_MS],
+    ["refresh wait timeout", options.refreshWaitTimeoutMs ?? DEFAULT_REFRESH_WAIT_TIMEOUT_MS],
+    ["refresh poll interval", options.refreshPollIntervalMs ?? DEFAULT_REFRESH_POLL_INTERVAL_MS]
   ] as const) {
     if (!Number.isSafeInteger(value) || value <= 0) {
       throw new OAuthStoreConfigurationError(`${label} must be a positive integer.`);
     }
+  }
+  const refreshLeaseTtlMs = options.refreshLeaseTtlMs ?? DEFAULT_REFRESH_LEASE_TTL_MS;
+  const refreshProviderTimeoutMs = options.refreshProviderTimeoutMs ?? DEFAULT_REFRESH_PROVIDER_TIMEOUT_MS;
+  const refreshWaitTimeoutMs = options.refreshWaitTimeoutMs ?? DEFAULT_REFRESH_WAIT_TIMEOUT_MS;
+  const refreshPollIntervalMs = options.refreshPollIntervalMs ?? DEFAULT_REFRESH_POLL_INTERVAL_MS;
+  if (refreshLeaseTtlMs <= refreshProviderTimeoutMs + MIN_REFRESH_COMMIT_MARGIN_MS) {
+    throw new OAuthStoreConfigurationError("Refresh lease TTL must exceed provider timeout and commit margin.");
+  }
+  if (refreshWaitTimeoutMs < refreshPollIntervalMs) {
+    throw new OAuthStoreConfigurationError("Refresh wait timeout must be at least one poll interval.");
   }
   if (!Buffer.isBuffer(options.sessionHmacKey) || options.sessionHmacKey.length !== 32) {
     throw new OAuthStoreConfigurationError("APPSELL_SESSION_HMAC_KEY_B64 must decode to exactly 32 bytes.");
@@ -442,16 +1021,24 @@ function parseSessionRecord(value: string): SessionRecord {
   }
   const record = parsed as Record<string, unknown>;
   if (
-    Object.keys(record).sort().join(",") !== "createdAt,expiresAt,subject" ||
+    Object.keys(record).sort().join(",") !== "createdAt,expiresAt,subject,tokenRevision" ||
     typeof record.subject !== "string" ||
     record.subject.length === 0 ||
     !Number.isSafeInteger(record.createdAt) ||
     !Number.isSafeInteger(record.expiresAt) ||
-    (record.expiresAt as number) <= (record.createdAt as number)
+    (record.expiresAt as number) <= (record.createdAt as number) ||
+    !Number.isSafeInteger(record.tokenRevision) ||
+    (record.tokenRevision as number) <= 0
   ) {
     throw new OAuthVaultIntegrityError("OAuth session vault integrity failure.");
   }
   return record as unknown as SessionRecord;
+}
+
+function assertSessionBundleRevision(session: SessionRecord, bundle: TokenBundle) {
+  if (bundle.revision !== session.tokenRevision || bundle.subject !== session.subject) {
+    throw new OAuthVaultIntegrityError("OAuth session vault integrity failure.");
+  }
 }
 
 function parseSessionHmacKey(encoded: string) {
@@ -460,4 +1047,38 @@ function parseSessionHmacKey(encoded: string) {
     throw new OAuthStoreConfigurationError("APPSELL_SESSION_HMAC_KEY_B64 must be canonical base64 for exactly 32 bytes.");
   }
   return decoded;
+}
+
+function positiveSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+function canonicalRedisFence(value: string) {
+  if (!/^[1-9]\d{0,18}$/.test(value)) return false;
+  return value.length < MAX_REDIS_FENCE.length ||
+    (value.length === MAX_REDIS_FENCE.length && value <= MAX_REDIS_FENCE);
+}
+
+function validOpaque(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{32}$/.test(value);
+}
+
+function isRefreshLeaseStatus(value: string): value is RefreshLeaseStatus {
+  return [
+    "ADVANCED",
+    "AMBIGUOUS",
+    "BUSY",
+    "MISSING",
+    "PAIR_INTEGRITY_ERROR",
+    "REVISION_INTEGRITY_ERROR",
+    "INTENT_INTEGRITY_ERROR",
+    "REVISION_MISMATCH",
+    "TTL_ERROR",
+    "FENCE_ERROR",
+    "COORDINATION_ERROR"
+  ].includes(value);
+}
+
+function sleep(milliseconds: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 }

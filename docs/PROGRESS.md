@@ -2,7 +2,7 @@
 
 ## Fase atual
 
-Fase 1 — Identity/BFF local com sessão Redis e token vault cifrado Local/CI.
+Fase 1 — Identity/BFF local com refresh Redis distribuído Local/CI.
 
 ## Concluído
 
@@ -24,19 +24,29 @@ Fase 1 — Identity/BFF local com sessão Redis e token vault cifrado Local/CI.
 - retry idempotente de callback com ID HMAC determinístico e receipt curto sem IDs crus;
 - prova real com dois processos Next BFF distintos compartilhando a mesma sessão;
 - Redis de teste autenticado e validado por PID antes de qualquer operação.
+- token vault Local/CI com envelope encryption, DEK por registro, revision na
+  AAD e keyring rotacionável; PR #20 mergeada e CI pós-merge verde;
+- refresh server-side sem rota HTTP, coordenado por lease, fence decimal exato,
+  intent idempotente e CAS Lua;
+- máquina de estados `prepared/inflight/retryable/ambiguous`; somente transient
+  comprovado habilita retry, enquanto crash inflight falha ambíguo;
+- resultado upstream ambíguo persistido sem retry automático; `invalid_grant`
+  e escritores obsoletos protegidos por revision/fence; logout explícito apaga
+  o par e coordenação incondicionalmente;
+- 16 testes adversariais de refresh em Redis real, totalizando 51 Vitest locais.
 
 ## Em andamento
 
-- Issue #17 implementando envelope encryption Local/CI com DEK por registro,
-  keyring rotacionável e par sessão+vault atômico;
-- reviews independentes AppSec/crypto e concorrência verdes, P0-P2=0;
+- Issue #18 implementando e validando refresh distribuído Local/CI;
+- reviews independentes AppSec, concorrência e contrato verdes, P0-P2=0;
+- PR draft #21 aberta e registrada no Project; App CI pendente;
 - épica #8 permanece em desenvolvimento;
 - Identity real #13 permanece bloqueado por ausência de dev/hml e P0 upstream.
 
 ## Pendente
 
 - spike com Autonom.ia Identity real (#13);
-- refresh distribuído com fencing/CAS (#18), bloqueado por #17/#13;
+- refresh real contra Identity (#18), bloqueado pelo contrato/ambiente da #13;
 - KMS real, vault durável/HA e restore (#19), bloqueado;
 - CSRF generalizado para todas as futuras mutações;
 - RBAC e isolamento multi-tenant.
@@ -56,5 +66,5 @@ Fase 1 — Identity/BFF local com sessão Redis e token vault cifrado Local/CI.
 
 ## Próximo passo recomendado
 
-Abrir PR draft e fechar o CI da Issue #17. Não iniciar refresh #18 nem KMS real #19
-antes dos respectivos bloqueios; não reutilizar o mock/provider local em produção.
+Fechar o App CI da PR #21. Não integrar Identity real nem iniciar KMS real #19; não
+reutilizar mock/provider local em produção.
