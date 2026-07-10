@@ -1,0 +1,247 @@
+name: Agent Harness Check v2
+
+on:
+  pull_request:
+    branches: [main, master, develop]
+
+jobs:
+  # Reads enforcement_mode from platform-manifest.json — strict mode fails CI; warn mode reports only
+  file-completeness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check required files (warn unless strict mode)
+        run: |
+          mode="warn"
+          [ -f "platform-manifest.json" ] && mode=$(jq -r '.enforcement_mode // "warn"' platform-manifest.json 2>/dev/null || echo "warn")
+          required=(
+            "AGENTS.md" "CLAUDE.md"
+            "platform-manifest.json"
+            ".github/pull_request_template.md"
+          )
+          missing=0
+          for f in "${required[@]}"; do
+            if [ ! -f "$f" ]; then
+              echo "::warning::Missing: $f"
+              missing=$((missing+1))
+            fi
+          done
+          if [ $missing -eq 0 ]; then
+            echo "All core files present."
+            exit 0
+          fi
+          echo "Missing $missing core files."
+          [ "$mode" = "strict" ] && exit 1 || exit 0
+
+  hook-presence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify hooks (informational)
+        run: |
+          for f in .claude/hooks/pre-tool-use.sh .claude/hooks/post-tool-use.sh; do
+            if [ ! -f "$f" ]; then
+              echo "::warning::Hook script missing: $f (run apply-harness-to-repo.sh to install)"
+            elif ! head -1 "$f" | grep -q "#!/"; then
+              echo "::warning::Not a shell script: $f"
+            fi
+          done
+          echo "Hook check done (informational only)."
+
+  skill-integrity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify skills (informational)
+        run: |
+          if [ ! -d "skills" ]; then
+            echo "No skills/ directory — skip."
+            exit 0
+          fi
+          for skill_dir in skills/*/; do
+            skill_file="${skill_dir}SKILL.md"
+            if [ ! -f "$skill_file" ]; then
+              echo "::warning::Missing SKILL.md in $skill_dir"
+              continue
+            fi
+            missing_sections=""
+            for section in "Trigger\|Quando usar" "Workflow\|Passo" "Checklist\|Validação" "Output"; do
+              if ! grep -qi "$section" "$skill_file"; then
+                missing_sections="$missing_sections $section"
+              fi
+            done
+            [ -n "$missing_sections" ] && echo "::warning::$skill_file missing sections:$missing_sections"
+          done
+          echo "Skill check done (informational only)."
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan for hardcoded secrets
+        run: |
+          patterns=(
+            "sk-[a-zA-Z0-9]{20,}"
+            "ghp_[a-zA-Z0-9]{36}"
+            "password\s*=\s*['\"][^'\"]{8,}"
+            "api_key\s*=\s*['\"][^'\"]{8,}"
+            "Bearer [a-zA-Z0-9._-]{20,}"
+          )
+          failed=0
+          for pattern in "${patterns[@]}"; do
+            files=$(grep -rlE "$pattern" --include="*.md" --include="*.json" --include="*.sh" --include="*.yml" . \
+              --exclude-dir=".git" --exclude-dir="docs/superpowers" 2>/dev/null || true)
+            if [ -n "$files" ]; then
+              echo "POTENTIAL SECRET FOUND matching a protected pattern; values redacted."
+              while IFS= read -r file; do
+                echo "::error file=$file::Potential hardcoded secret detected; value redacted."
+              done <<< "$files"
+              failed=1
+            fi
+          done
+          [ $failed -eq 0 ] && echo "No hardcoded secrets detected."
+          exit $failed
+
+  harness-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate platform-manifest.json (informational)
+        run: |
+          if [ ! -f "platform-manifest.json" ]; then
+            if [ -f ".autonomia-harness.json" ]; then
+              v=$(jq -r '.version // "unknown"' .autonomia-harness.json 2>/dev/null || echo "unknown")
+              echo "::warning::Legacy v1 manifest (.autonomia-harness.json v$v) — consider upgrading to v2"
+            else
+              echo "::warning::No harness manifest found"
+            fi
+            exit 0
+          fi
+          version=$(jq -r '.version // "unknown"' platform-manifest.json 2>/dev/null || echo "unknown")
+          mode=$(jq -r '.enforcement_mode // "warn"' platform-manifest.json 2>/dev/null || echo "warn")
+          echo "Harness version: $version (enforcement_mode: $mode)"
+          exit 0
+
+  memory-consistency:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check MEMORY_SESSION for unaddressed blockers
+        run: |
+          if [ ! -f "docs/memory/MEMORY_SESSION.md" ]; then
+            echo "WARNING: MEMORY_SESSION.md not found"
+            exit 0
+          fi
+          if grep -q "^Bloqueios:.*TODO\|^Bloqueios:.*PENDENTE\|^Bloqueios:.*bloqueado" docs/memory/MEMORY_SESSION.md; then
+            echo "WARNING: MEMORY_SESSION.md has unaddressed blockers — review before merging"
+          else
+            echo "MEMORY_SESSION.md looks clean."
+          fi
+
+  pr-quality-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check PR template is being used
+        run: |
+          if [ ! -f ".github/pull_request_template.md" ]; then
+            echo "WARNING: PR template missing"
+          else
+            echo "PR template present."
+          fi
+
+  harness-self-assessment:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run harness self-assessment
+        id: assessment
+        run: |
+          if [ ! -f "scripts/harness-doctor.sh" ]; then
+            echo "::warning::harness-doctor.sh not present — skip self-assessment"
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Source not available in CI runner — pass current repo as source proxy
+          set +e
+          bash scripts/harness-doctor.sh . . 2>&1 | tee /tmp/doctor-output.log
+          doctor_exit=${PIPESTATUS[0]}
+          set -e
+          # Guard against empty PIPESTATUS (defensive)
+          if ! [[ "$doctor_exit" =~ ^-?[0-9]+$ ]]; then
+            echo "::error::harness-doctor.sh exit code unparseable: '$doctor_exit'"
+            doctor_exit=1
+          fi
+          echo "doctor_exit=$doctor_exit" >> "$GITHUB_OUTPUT"
+
+      - name: Read enforcement config
+        id: config
+        if: steps.assessment.outputs.skipped != 'true'
+        run: |
+          mode="warn"
+          on_degraded_l1="WARN_CI"
+          on_degraded_l3="WARN_CI"
+          if [ -f "platform-manifest.json" ]; then
+            mode=$(jq -r '.enforcement_mode // "warn"' platform-manifest.json 2>/dev/null || echo "warn")
+            on_degraded_l1=$(jq -r '.on_degraded.layer_core // "WARN_CI"' platform-manifest.json 2>/dev/null || echo "WARN_CI")
+            on_degraded_l3=$(jq -r '.on_degraded.layer_infra // "WARN_CI"' platform-manifest.json 2>/dev/null || echo "WARN_CI")
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "on_degraded_l1=$on_degraded_l1" >> "$GITHUB_OUTPUT"
+          echo "on_degraded_l3=$on_degraded_l3" >> "$GITHUB_OUTPUT"
+
+      - name: Upload health report
+        if: steps.assessment.outputs.skipped != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-health-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: docs/harness-health/doctor-*.md
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Apply degradation policy
+        if: steps.assessment.outputs.skipped != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          doctor_exit="${{ steps.assessment.outputs.doctor_exit }}"
+          mode="${{ steps.config.outputs.mode }}"
+          on_l1="${{ steps.config.outputs.on_degraded_l1 }}"
+          on_l3="${{ steps.config.outputs.on_degraded_l3 }}"
+
+          echo "doctor_exit=$doctor_exit mode=$mode on_l1=$on_l1 on_l3=$on_l3"
+
+          if [ "$doctor_exit" -eq 0 ]; then
+            echo "Harness healthy"
+            exit 0
+          fi
+
+          if [ "$mode" = "warn" ]; then
+            echo "::warning::Harness DEGRADED (warn mode — not blocking PR)"
+            exit 0
+          fi
+
+          # mode=strict — apply per-layer policy
+          if [ "$on_l1" = "FAIL_CI" ] || [ "$on_l3" = "FAIL_CI" ]; then
+            echo "::error::Harness DEGRADED in Layer 1 or Layer 3 (strict mode — blocking PR)"
+            exit 1
+          fi
+
+          if [ "$on_l1" = "CREATE_ISSUE" ] || [ "$on_l3" = "CREATE_ISSUE" ]; then
+            report_path=$(ls -t docs/harness-health/doctor-*.md 2>/dev/null | head -1)
+            body=$([ -n "$report_path" ] && tail -50 "$report_path" || echo "Harness degraded; report unavailable")
+            gh issue create \
+              --title "Harness DEGRADED — $(date -u +%Y-%m-%d)" \
+              --body "$body" \
+              --label "harness,degraded" 2>/dev/null || echo "::warning::Failed to create issue (permissions?)"
+            echo "::error::Issue created — blocking PR"
+            exit 1
+          fi
+
+          # strict mode + degraded + unrecognized policy → fail-closed (security default)
+          echo "::error::Harness DEGRADED in strict mode with unrecognized on_degraded policy (on_l1='$on_l1' on_l3='$on_l3') — failing closed"
+          exit 1
