@@ -10,3 +10,14 @@ credential.env
 
 # Local-only overrides
 *.local
+
+# Node.js / Next.js generated files
+node_modules/
+.next/
+coverage/
+tsconfig.tsbuildinfo
+.playwright-cli/
+output/playwright/
+test-results/
+playwright-report/
+blob-report/
