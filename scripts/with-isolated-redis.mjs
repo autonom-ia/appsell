@@ -30,13 +30,17 @@ try {
   if (await probe.ping() !== "PONG") throw new Error("isolated Redis ping failed");
   const redisPid = Number((await probe.info("server")).match(/^process_id:(\d+)$/m)?.[1]);
   if (!redis.pid || redisPid !== redis.pid) throw new Error("connected Redis is not the spawned child");
+  const vaultKey = randomBytes(32);
   child = spawn(command, args, {
     stdio: "inherit",
     env: {
       ...process.env,
       APPSELL_REDIS_URL: url,
       APPSELL_REDIS_PREFIX: `appsell:e2e:run-${process.pid}-${Date.now()}`,
-      APPSELL_SESSION_HMAC_KEY_B64: randomBytes(32).toString("base64")
+      APPSELL_SESSION_HMAC_KEY_B64: randomBytes(32).toString("base64"),
+      APPSELL_VAULT_LOCAL_KEYRING_B64_JSON: JSON.stringify([
+        { id: "e2e-v1", key: vaultKey.toString("base64"), active: true }
+      ])
     }
   });
   const exitCode = await new Promise((resolve, reject) => {
