@@ -26,9 +26,9 @@ Fase 1 — Identity/BFF local com session store Redis isolado.
 
 ## Em andamento
 
-- Issue #14 implementada localmente na branch `feat/14-redis-oauth-store`;
+- PR draft #15 aberta para a Issue #14;
 - reviews AppSec e concorrência aprovados sem P0-P2;
-- commit, push e PR ainda pendentes.
+- App CI e oito checks do Harness verdes.
 
 ## Pendente
 
@@ -52,5 +52,5 @@ Fase 1 — Identity/BFF local com session store Redis isolado.
 
 ## Próximo passo recomendado
 
-Abrir PR draft vinculada à Issue #14, executar App CI e aguardar review humano.
-Não reutilizar o mock em produção e não fazer merge.
+Aguardar review humano da PR #15. Não reutilizar o mock em produção e não
+fazer merge.
