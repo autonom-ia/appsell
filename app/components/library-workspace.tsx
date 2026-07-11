@@ -1,27 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-interface LibraryAsset {
-  id: string;
-  lesson_id: string;
-  seed_key: string;
-  title: string;
-  media_type: "application/pdf";
-  byte_size: number;
-  sha256: string;
-  position: number;
-}
-
-interface LibraryLesson {
-  id: string;
-  title: string;
-  content: string;
-  position: number;
-}
-
-interface LibraryItem {
+export interface LibraryItem {
+  entitlement_id: string;
+  resume_lesson_id: string | null;
   seller: { id: string; slug: string; name: string };
   product: {
     id: string;
@@ -32,30 +16,39 @@ interface LibraryItem {
     publication_version: number;
   };
   progress_percent: number;
-  snapshot: {
-    courses: Array<{
-      id: string;
-      title: string;
-      modules: Array<{ id: string; title: string; lessons: LibraryLesson[] }>;
-    }>;
-  };
-  assets: LibraryAsset[];
 }
 
 type State = "loading" | "ready" | "unauthorized" | "forbidden" | "unavailable" | "error";
 
+const stateMessages: Record<Exclude<State, "ready">, string> = {
+  loading: "Carregando sua biblioteca…",
+  unauthorized: "Sua sessão expirou. Entre novamente.",
+  forbidden: "Esta conta não possui acesso à biblioteca solicitada.",
+  unavailable: "A biblioteca não respondeu. Tente novamente.",
+  error: "Não foi possível validar os dados da biblioteca."
+};
+
 export function LibraryWorkspace() {
   const [state, setState] = useState<State>("loading");
   const [items, setItems] = useState<LibraryItem[]>([]);
+  const requestRef = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
-    setState("loading");
+    requestRef.current?.abort();
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 8_000);
+    requestRef.current = controller;
+    setItems([]);
+    setState("loading");
+    let timedOut = false;
+    const timeout = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, 8_000);
     try {
       const response = await fetch("/api/library", { cache: "no-store", signal: controller.signal });
+      if (controller.signal.aborted) return;
       if (response.status === 401) return setState("unauthorized");
-      if (response.status === 403) return setState("forbidden");
+      if (response.status === 403 || response.status === 404) return setState("forbidden");
       if (response.status === 503) return setState("unavailable");
       if (!response.ok) return setState("error");
       const payload: unknown = await response.json();
@@ -63,27 +56,26 @@ export function LibraryWorkspace() {
       setItems(payload.items);
       setState("ready");
     } catch {
-      setState("unavailable");
+      if (!controller.signal.aborted || timedOut) {
+        setState("unavailable");
+      }
     } finally {
       window.clearTimeout(timeout);
+      if (requestRef.current === controller) requestRef.current = null;
     }
   }, []);
 
   useEffect(() => {
     const start = window.setTimeout(() => void load(), 0);
-    return () => window.clearTimeout(start);
+    return () => {
+      window.clearTimeout(start);
+      requestRef.current?.abort();
+    };
   }, [load]);
 
   if (state !== "ready") {
-    const messages: Record<Exclude<State, "ready">, string> = {
-      loading: "Carregando sua biblioteca…",
-      unauthorized: "Sua sessão expirou. Entre novamente.",
-      forbidden: "Esta conta não possui acesso à biblioteca solicitada.",
-      unavailable: "A biblioteca não respondeu. Tente novamente.",
-      error: "Não foi possível validar os dados da biblioteca."
-    };
-    return <section className="library-state" aria-live="polite">
-      <p>{messages[state]}</p>
+    return <section className={`library-state state-${state}`} aria-live="polite" aria-busy={state === "loading"}>
+      {state === "loading" ? <LibrarySkeleton/> : <p role={state === "error" || state === "unavailable" ? "alert" : undefined}>{stateMessages[state]}</p>}
       {state === "unauthorized" || state === "forbidden"
         ? <Link className="primary-button" href="/">Voltar para a entrada</Link>
         : state === "unavailable" || state === "error"
@@ -97,74 +89,70 @@ export function LibraryWorkspace() {
   }
 
   return <div className="learner-library">{items.map((item) => {
-    const assets = new Map(item.assets.map((asset) => [asset.lesson_id, asset]));
-    return <article key={`${item.seller.id}:${item.product.id}`} className="learner-course" aria-labelledby={`course-${item.product.id}`}>
-      <header>
-        <div><p className="eyebrow">{item.seller.name} · acesso autorizado</p><h2 id={`course-${item.product.id}`}>{item.product.title}</h2><p>{item.product.description}</p></div>
-        <span className="publication-badge">Versão publicada {item.product.publication_version}</span>
-      </header>
-      <div className="course-progress">
-        <label htmlFor={`progress-${item.product.id}`}>Progresso geral: {item.progress_percent}%</label>
-        <progress id={`progress-${item.product.id}`} max={100} value={item.progress_percent}>{item.progress_percent}%</progress>
+    const started = item.progress_percent > 0;
+    const completed = item.progress_percent === 100;
+    const href = item.resume_lesson_id
+      ? `/library/items/${encodeURIComponent(item.entitlement_id)}/lessons/${encodeURIComponent(item.resume_lesson_id)}`
+      : null;
+    return <article key={item.entitlement_id} className="library-product-card" aria-labelledby={`course-${item.entitlement_id}`}>
+      <div className="library-product-copy">
+        <p className="eyebrow">{item.seller.name}</p>
+        <h2 id={`course-${item.entitlement_id}`}>{item.product.title}</h2>
+        {item.product.description.trim() ? <p>{item.product.description}</p> : null}
       </div>
-      {item.snapshot.courses.map((course) => <section className="learner-course-block" key={course.id}>
-        <h3>{course.title}</h3>
-        {course.modules.map((module) => <section className="learner-module" key={module.id}>
-          <h4>{module.title}</h4>
-          <ol className="learner-lessons">
-            {module.lessons.map((lesson, index) => {
-              const asset = assets.get(lesson.id);
-              return <li key={lesson.id}>
-                <div><span>Aula {index + 1}</span><h5>{lesson.title}</h5><p>{lesson.content}</p></div>
-                {asset ? <Link className="secondary-button" href={`/api/library/assets/${asset.seed_key}`} target="_blank" rel="noopener">Abrir material em PDF<span className="sr-only"> da aula {lesson.title} em nova aba</span></Link> : <span className="asset-unavailable">PDF indisponível</span>}
-              </li>;
-            })}
-          </ol>
-        </section>)}
-      </section>)}
+      <div className="course-progress">
+        <span id={`progress-label-${item.entitlement_id}`}>Progresso: {item.progress_percent}%</span>
+        <progress aria-labelledby={`progress-label-${item.entitlement_id}`} max={100} value={item.progress_percent}>{item.progress_percent}%</progress>
+      </div>
+      {href ? <Link className="primary-button library-continue" href={href}>
+          {completed ? "Rever curso" : started ? "Continuar curso" : "Começar curso"}
+          <span aria-hidden="true">→</span>
+        </Link>
+        : <div className="library-unavailable"><button className="primary-button" type="button" disabled>Conteúdo indisponível</button><p>Este produto ainda não possui uma aula publicada.</p></div>}
     </article>;
   })}</div>;
 }
 
+function LibrarySkeleton() {
+  return <>
+    <p className="sr-only">{stateMessages.loading}</p>
+    <div className="library-skeleton" aria-hidden="true"><span/><span/><span/></div>
+  </>;
+}
+
 export function isLibraryPayload(value: unknown): value is { items: LibraryItem[] } {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const items = (value as Record<string, unknown>).items;
-  if (!Array.isArray(items)) return false;
-  return items.every(isLibraryItem);
+  if (!isRecord(value) || !Array.isArray(value.items)) return false;
+  const entitlementIds = new Set<string>();
+  return value.items.every((item) => {
+    if (!isLibraryItem(item) || entitlementIds.has(item.entitlement_id)) return false;
+    entitlementIds.add(item.entitlement_id);
+    return true;
+  });
 }
 
 function isLibraryItem(value: unknown): value is LibraryItem {
   if (!isRecord(value)) return false;
-  return isStringRecord(value.seller, ["id", "slug", "name"]) &&
-    isProduct(value.product) && Number.isInteger(value.progress_percent) &&
-    typeof value.progress_percent === "number" && value.progress_percent >= 0 &&
-    value.progress_percent <= 100 && Array.isArray(value.assets) &&
-    value.assets.every(isAsset) && isRecord(value.snapshot) &&
-    Array.isArray(value.snapshot.courses) && value.snapshot.courses.every(isCourse);
+  return isUuid(value.entitlement_id) && (value.resume_lesson_id === null || isUuid(value.resume_lesson_id)) &&
+    isStringRecord(value.seller, ["id", "slug", "name"]) && isProduct(value.product) &&
+    Number.isInteger(value.progress_percent) && typeof value.progress_percent === "number" &&
+    value.progress_percent >= 0 && value.progress_percent <= 100;
 }
 
 function isProduct(value: unknown) {
-  return isStringRecord(value, ["id", "slug", "title", "description", "publication_id"]) &&
+  return isStringRecord(value, ["id", "slug", "title", "publication_id"]) && typeof value.description === "string" &&
     Number.isInteger(value.publication_version) && (value.publication_version as number) > 0;
 }
 
-function isAsset(value: unknown): value is LibraryAsset {
-  return isStringRecord(value, ["id", "lesson_id", "seed_key", "title", "sha256"]) &&
-    value.media_type === "application/pdf" && Number.isInteger(value.byte_size) &&
-    (value.byte_size as number) > 0 && Number.isInteger(value.position) &&
-    (value.position as number) >= 0;
-}
-
-function isCourse(value: unknown) {
-  return isStringRecord(value, ["id", "title"]) && Array.isArray(value.modules) &&
-    value.modules.every((module) => isStringRecord(module, ["id", "title"]) &&
-      Array.isArray(module.lessons) && module.lessons.every((lesson) =>
-        isStringRecord(lesson, ["id", "title", "content"]) &&
-        Number.isInteger(lesson.position) && (lesson.position as number) >= 0));
-}
-
 function isStringRecord(value: unknown, keys: string[]): value is Record<string, unknown> {
-  return isRecord(value) && keys.every((key) => typeof value[key] === "string" && value[key] !== "");
+  return isRecord(value) && keys.every((key) => isNonEmptyString(value[key]));
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isUuid(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

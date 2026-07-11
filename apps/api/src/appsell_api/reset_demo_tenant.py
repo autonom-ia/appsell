@@ -171,8 +171,8 @@ def reset_demo(
     validate_demo_database(connection)
     connection.execute("select set_config('appsell.demo_reset_key',%s,true)", (DEMO_KEY,))
     version = connection.execute("select version_num from alembic_version").fetchone()
-    if version != ("0006_demo_learning",):
-        raise RuntimeError("database must be migrated to 0006_demo_learning")
+    if version != ("0007_learning_progress",):
+        raise RuntimeError("database must be migrated to 0007_learning_progress")
 
     for identity, identity_uuid in ((admin, admin_id), (buyer, buyer_id)):
         connection.execute(
@@ -235,9 +235,26 @@ def reset_demo(
         "delete from app_private.product_draft_request where seller_organization_id=%s",
         (seller_id,),
     )
+    connection.execute(
+        "delete from app_private.learning_progress_request where seller_organization_id=%s",
+        (seller_id,),
+    )
+    connection.execute("delete from lesson_progress where seller_organization_id=%s", (seller_id,))
+    connection.execute(
+        "delete from course_learning_state where seller_organization_id=%s", (seller_id,)
+    )
+    connection.execute(
+        "delete from learning_enrollment where seller_organization_id=%s", (seller_id,)
+    )
     connection.execute("delete from learning_asset where seller_organization_id=%s", (seller_id,))
     connection.execute(
         "delete from buyer_entitlement where seller_organization_id=%s", (seller_id,)
+    )
+    connection.execute(
+        "delete from publication_lesson where seller_organization_id=%s", (seller_id,)
+    )
+    connection.execute(
+        "delete from publication_course where seller_organization_id=%s", (seller_id,)
     )
     connection.execute("delete from lesson where seller_organization_id=%s", (seller_id,))
     connection.execute("delete from course_module where seller_organization_id=%s", (seller_id,))
@@ -402,13 +419,14 @@ def reset_demo(
         """
         insert into buyer_entitlement(
           seller_organization_id,id,buyer_identity_user_id,catalog_product_id,
-          reference_key,source,status,progress_percent
-        ) values(%s,%s,%s,%s,'demo-user-codex-v1','demo_seed','active',0)
+          publication_id,reference_key,source,status,progress_percent
+        ) values(%s,%s,%s,%s,%s,'demo-user-codex-v1','demo_seed','active',0)
         on conflict(seller_organization_id,buyer_identity_user_id,catalog_product_id)
-        do update set status='active',progress_percent=0,expires_at=null,
+        do update set publication_id=excluded.publication_id,status='active',
+          progress_percent=0,starts_at=clock_timestamp(),expires_at=null,
           updated_at=clock_timestamp()
         """,
-        (seller_id, entitlement_id, buyer_id, product_id),
+        (seller_id, entitlement_id, buyer_id, product_id, publication_id),
     )
     connection.execute(
         """

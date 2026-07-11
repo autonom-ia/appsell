@@ -1,11 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+generated_digest() {
+  {
+    find output/pdf/codex -type f -print
+    printf '%s\n' \
+      demo/content/codex-na-pratica/manifest.json \
+      lib/demo-codex-assets.json
+  } | sort | xargs shasum -a 256
+}
+
+generated_before="$(generated_digest)"
 uv run --project apps/api python scripts/generate-demo-codex-pdfs.py
-git diff --exit-code -- \
-  output/pdf/codex \
-  demo/content/codex-na-pratica/manifest.json \
-  lib/demo-codex-assets.json
+generated_after="$(generated_digest)"
+if [[ "$generated_before" != "$generated_after" ]]; then
+  echo "demo course generator changed committed artifacts" >&2
+  diff -u <(printf '%s\n' "$generated_before") <(printf '%s\n' "$generated_after") || true
+  exit 1
+fi
 
 project="appsell_pg_${RANDOM}_$$"
 port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
@@ -109,9 +121,11 @@ uv run --project apps/api pytest \
   apps/api/tests/test_postgres_product_publication.py \
   apps/api/tests/test_postgres_curriculum.py \
   apps/api/tests/test_postgres_demo_learning.py \
+  apps/api/tests/test_postgres_learning_progress.py \
   apps/api/tests/test_reset_demo_tenant.py \
   apps/api/tests/test_api_catalog.py \
-  apps/api/tests/test_api_onboarding.py
+  apps/api/tests/test_api_onboarding.py \
+  apps/api/tests/test_api_learning.py
 if uv run --project apps/api python -m appsell_api.configure_context_key 2>/dev/null; then
   echo "configure_context_key re-enabled a consumed bootstrap" >&2
   exit 1
@@ -130,5 +144,6 @@ curl --fail --silent "http://127.0.0.1:${api_port}/health/ready"
 APPSELL_TEST_DOMAIN_API_URL="http://127.0.0.1:${api_port}" \
 APPSELL_LOCAL_IDENTITY_EMAIL="creator@example.test" \
 pnpm exec vitest run --no-file-parallelism \
-  tests/bff-api-onboarding.test.ts tests/bff-demo-library.test.ts
+  tests/bff-api-onboarding.test.ts tests/bff-learning-multiprocess.test.ts \
+  tests/bff-demo-library.test.ts
 git diff --exit-code -- next-env.d.ts tsconfig.json

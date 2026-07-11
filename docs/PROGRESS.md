@@ -2,7 +2,7 @@
 
 ## Fase atual
 
-Fase 4C — currículo multitenant e snapshot v2 em Local/CI.
+Fase 5 — player, progresso e retomada multitenant em Local/CI.
 
 ## Concluído
 
@@ -71,6 +71,14 @@ Fase 4C — currículo multitenant e snapshot v2 em Local/CI.
 
 ## Em andamento
 
+- Issue #38 na branch `feat/38-learning-progress`: migration 0007, player
+  mobile-first, progresso monotônico/idempotente e retomada multi-course;
+- assets protegidos por entitlement+asset, stream privado e validação de
+  tamanho/SHA-256 sem carregar o PDF inteiro em memória;
+- isolamento adversarial cobre cross-buyer/tenant/lesson, revogação, snapshot
+  pinado, append-only, concorrência e 100 buyers;
+- gates locais: 84 web, 137 PG/API, 3 BFF verticais reais, 42 E2E + 4 skips,
+  production fail-closed, build e audits verdes;
 - Issue #32 em implementação na branch `feat/32-curriculum`;
 - migration 0005 cria módulos/aulas text-only, FKs compostas, RLS forçado,
   receipt privado, CAS/locks por curso, archive e reorder exact-set;
@@ -96,7 +104,7 @@ Fase 4C — currículo multitenant e snapshot v2 em Local/CI.
 - refresh real contra Identity (#18), bloqueado pelo contrato/ambiente da #13;
 - KMS real, vault durável/HA e restore (#19), bloqueado;
 - assets privados e editor de blocos ricos após o currículo text-only;
-- RLS buyer/entitlements, checkout e biblioteca persistente;
+- checkout/billing e storage privado externo para conteúdo de clientes;
 - integrações Neuro.ai e financeiro após contratos/repos reais.
 
 ## Falhas encontradas e corrigidas
@@ -125,6 +133,6 @@ Fase 4C — currículo multitenant e snapshot v2 em Local/CI.
 
 ## Próximo passo recomendado
 
-Abrir PR da Issue #32, passar reviews críticos e CI remoto. Não declarar acesso
-real de `comercial@autonomia.site`: isso depende do Identity #13 e de ambiente
-isolado com token/JWKS/MFA reais.
+Concluir review crítico da Issue #38, abrir PR empilhada sobre #36 e passar CI
+remoto. Não declarar acesso real de `comercial@autonomia.site`: isso depende do
+Identity #13 e de ambiente isolado com token/JWKS/MFA reais.

@@ -7,18 +7,18 @@ Atualizado em pontos de marco (PR aberta, deploy, incidente). Diferente de MEMOR
 | Indicador | Status | Última verificação |
 |-----------|:------:|--------------------|
 | Build | 🟢 web + API container local verdes | 2026-07-11 |
-| Testes | 🟢 74 web + 103 Python/PG/API + 2 verticais BFF + 26 browser; build verde | 2026-07-11 |
-| CI | 🟢 PR #35 inteira verde; #33 ainda local/empilhada | 2026-07-11 |
+| Testes | 🟢 84 web + 137 Python/PG/API + 3 verticais BFF + 42 browser; build verde | 2026-07-11 |
+| CI | 🟢 PRs #35/#36/#37 verdes; #38 ainda local/empilhada | 2026-07-11 |
 | Deploy produção | 🟡 não configurado/não executado | 2026-07-10 |
-| Harness instalado | 2.0.2 | 2026-07-10 |
-| Harness drift | ⚠️ 2.0.2 → 2.1.2 | 2026-07-11 |
+| Harness instalado em `main` | 2.0.2 | 2026-07-10 |
+| Harness upgrade | 🟢 PR #37 em 2.1.2, review e 10/10 checks verdes; sem merge | 2026-07-11 |
 
 ## Estado atual
 
 O protótipo Studio mobile-first foi mergeado pela PR #23, a fundação
 persistente pela PR #25, a ponte BFF/API pela PR #27 e os drafts persistentes
-pela PR #29 e edição/publicação pela PR #31. A Fase 4C está ativa na Issue #32
-para currículo multitenant com módulos, aulas de texto e snapshot schema v2.
+pela PR #29 e edição/publicação pela PR #31. A Fase 5 está ativa na Issue #38
+para player, progresso e retomada multitenant, empilhada nas PRs #35 e #36.
 A fundação inclui FastAPI, PostgreSQL 16, Alembic forward-only,
 roles owner/migrator/runtime, RLS forçado, contexto transacional assinado,
 auditoria append-only e bootstrap one-shot do superadmin com atestação separada.
@@ -26,13 +26,11 @@ Este marco é Local/CI; não é o Identity real e não concede conta de produç�
 
 ## Última mudança relevante
 
-2026-07-11 — PR #35 de currículo aberta com todos os checks verdes, sem merge
-ou deploy. Branch empilhada `feat/33-demo-tenant`: migration 0006, entitlement
-buyer, assets privados, tenant resetável, personas admin/aluno `@autonomia.site`
-e curso Codex com cinco PDFs. Gates locais: 74 web, 103 Python/PG/API (incluindo 100
-buyers sob paralelismo limitado), 2 verticais BFF/API/PG com 100 leituras de
-biblioteca e 100 downloads concorrentes, 26 Playwright + 4
-skips deliberados, build, audit e production fail-closed verdes.
+2026-07-11 — Issue #38 implementada localmente: migration 0007, entitlement
+pinado à publicação, player mobile-first, progresso monotônico/idempotente,
+retomada multi-course e PDFs por `entitlement_id + asset_id` com stream privado.
+Gates reais: 84 web, 137 Python/PG/API, 3 verticais BFF/API/PG, 42 Playwright +
+4 skips deliberados, build sem warning NFT, audits e production fail-closed.
 
 ## O que está funcionando
 
@@ -86,6 +84,10 @@ skips deliberados, build, audit e production fail-closed verdes.
   fora da biblioteca do comprador.
 - Cinco PDFs do curso Codex ficam fora de `public/`; cada leitura exige sessão,
   capability, entitlement, snapshot publicado e validação de hash/tamanho.
+- Player retoma por aula/curso, grava progresso com versão esperada e receipt
+  persistente, revalida revogação e não confia em seller vindo do browser.
+- Testes cobrem mesma chave, versões concorrentes, revogação, republicação
+  pinada, multi-course e 100 buyers sem bypass de RLS.
 
 ## O que está quebrado / em degradação
 
@@ -93,8 +95,8 @@ skips deliberados, build, audit e production fail-closed verdes.
 - Refresh real com Identity — bloqueado por #13.
 - KMS real/vault HA — provider/infra/staging não decididos — Issue #19.
 - Staging/VPS/TLS — não certificado e fora do escopo atual — Issue #5.
-- Tenant/admin/comprador demo e curso Codex estão implementados somente na
-  branch local da Issue #33; ainda dependem de review, PR, CI e merge de #35.
+- Tenant/admin/comprador demo está na PR #36; player/progresso da Issue #38
+  ainda dependem de review final, PR, CI remoto e merges ordenados.
 - Capacidade de lançamento para 100 tenants/clientes ainda não está certificada:
   os testes cobrem 100 buyers no banco e 100 requisições concorrentes full-path,
   mas não um soak/load test de 100 tenants com p95/p99 em staging.
@@ -107,7 +109,7 @@ skips deliberados, build, audit e production fail-closed verdes.
 
 ## Próxima ação
 
-Concluir reviews críticos da Issue #33, abrir PR empilhada sobre #35 e executar
+Concluir review crítico da Issue #38, abrir PR empilhada sobre #36 e executar
 CI no SHA remoto. Identity real (#13), KMS (#19), billing/Financial e produção
 continuam bloqueados até ambientes e contratos reais.
 

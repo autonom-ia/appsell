@@ -31,16 +31,21 @@ def identity_id(subject: str) -> UUID:
     return uuid5(NAMESPACE_URL, f"{ISSUER}\0{subject}")
 
 
-def apply_context(connection: psycopg.Connection[Any], actor: UUID, capability: str) -> None:
+def apply_context(
+    connection: psycopg.Connection[Any],
+    actor: UUID,
+    capability: str,
+    seller: UUID | None = None,
+) -> None:
     issued = int(time.time())
     expires = issued + 60
-    payload = f"{actor}::{capability}:{issued}:{expires}"
+    payload = f"{actor}:{seller or ''}:{capability}:{issued}:{expires}"
     signature = hmac.new(
         bytes.fromhex(CONTEXT_KEY_HEX or ""), payload.encode(), hashlib.sha256
     ).hexdigest()
     connection.execute(
-        "select app_private.apply_request_context(%s,null,%s,%s,%s,%s)",
-        (actor, capability, issued, expires, signature),
+        "select app_private.apply_request_context(%s,%s,%s,%s,%s,%s)",
+        (actor, seller, capability, issued, expires, signature),
     )
 
 
@@ -212,8 +217,9 @@ def test_buyer_reads_only_active_entitlement_and_published_snapshot() -> None:
     assert len(library[0]) == 1
     item = library[0][0]
     assert item["product"]["id"] == manifest["product"]["id"]
-    assert item["snapshot"]["schema_version"] == 2
-    assert len(item["assets"]) == 5
+    assert item["product"]["publication_version"] == 1
+    assert "snapshot" not in item
+    assert "assets" not in item
     assert admin_library == ([],)
 
 
@@ -222,20 +228,21 @@ def test_asset_authorization_binds_identity_entitlement_and_manifest() -> None:
     manifest, _ = load_manifest()
     buyer = identity_id(manifest["personas"]["buyer"]["subject"])
     admin = identity_id(manifest["personas"]["admin"]["subject"])
+    entitlement = UUID(manifest["entitlement"]["id"])
     asset = manifest["lessons"][0]
     with psycopg.connect(RUNTIME_URL) as connection:
         apply_context(connection, buyer, "library.asset.read")
         row = connection.execute(
             "select seed_key,file_name,byte_size,sha256 "
             "from app_private.authorize_learning_asset(%s,%s,%s)",
-            (buyer, UUID(manifest["seller"]["id"]), UUID(asset["asset_id"])),
+            (buyer, entitlement, UUID(asset["asset_id"])),
         ).fetchone()
         connection.rollback()
         apply_context(connection, admin, "library.asset.read")
         with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
             connection.execute(
                 "select * from app_private.authorize_learning_asset(%s,%s,%s)",
-                (admin, UUID(manifest["seller"]["id"]), UUID(asset["asset_id"])),
+                (admin, entitlement, UUID(asset["asset_id"])),
             )
     assert row == (
         asset["slug"],
@@ -245,11 +252,49 @@ def test_asset_authorization_binds_identity_entitlement_and_manifest() -> None:
     )
 
 
+def test_buyer_library_and_asset_reject_seller_scoped_context() -> None:
+    assert RUNTIME_URL
+    manifest, _ = load_manifest()
+    buyer = identity_id(manifest["personas"]["buyer"]["subject"])
+    seller = UUID(manifest["seller"]["id"])
+    entitlement = UUID(manifest["entitlement"]["id"])
+    asset = UUID(manifest["lessons"][0]["asset_id"])
+    with psycopg.connect(RUNTIME_URL) as connection:
+        apply_context(connection, buyer, "library.read", seller)
+        with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
+            connection.execute("select app_private.read_buyer_library(%s)", (buyer,))
+        connection.rollback()
+        apply_context(connection, buyer, "library.asset.read", seller)
+        with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
+            connection.execute(
+                "select * from app_private.authorize_learning_asset(%s,%s,%s)",
+                (buyer, entitlement, asset),
+            )
+
+
+def test_buyer_library_and_asset_fail_closed_without_request_context() -> None:
+    assert RUNTIME_URL
+    manifest, _ = load_manifest()
+    buyer = identity_id(manifest["personas"]["buyer"]["subject"])
+    entitlement = UUID(manifest["entitlement"]["id"])
+    asset = UUID(manifest["lessons"][0]["asset_id"])
+    with psycopg.connect(RUNTIME_URL) as connection:
+        with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
+            connection.execute("select app_private.read_buyer_library(%s)", (buyer,))
+        connection.rollback()
+        with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
+            connection.execute(
+                "select * from app_private.authorize_learning_asset(%s,%s,%s)",
+                (buyer, entitlement, asset),
+            )
+
+
 def test_suspended_seller_cannot_serve_a_learning_asset() -> None:
     assert ADMIN_URL and RUNTIME_URL
     manifest, manifest_sha = load_manifest()
     seller = UUID(manifest["seller"]["id"])
     buyer = identity_id(manifest["personas"]["buyer"]["subject"])
+    entitlement = UUID(manifest["entitlement"]["id"])
     asset = UUID(manifest["lessons"][0]["asset_id"])
     with psycopg.connect(ADMIN_URL) as connection:
         connection.execute(
@@ -261,7 +306,7 @@ def test_suspended_seller_cannot_serve_a_learning_asset() -> None:
         with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
             connection.execute(
                 "select * from app_private.authorize_learning_asset(%s,%s,%s)",
-                (buyer, seller, asset),
+                (buyer, entitlement, asset),
             )
     reset_once(manifest, manifest_sha)
 
@@ -274,6 +319,7 @@ def test_runtime_cannot_mutate_entitlements_or_assets() -> None:
             select
               has_table_privilege('appsell_runtime','buyer_entitlement','SELECT'),
               has_table_privilege('appsell_runtime','buyer_entitlement','INSERT'),
+              has_table_privilege('appsell_runtime','learning_asset','SELECT'),
               has_table_privilege('appsell_runtime','learning_asset','UPDATE'),
               has_table_privilege(
                 'appsell_runtime','app_private.demo_tenant_registry','SELECT'
@@ -283,7 +329,7 @@ def test_runtime_cannot_mutate_entitlements_or_assets() -> None:
               )
             """
         ).fetchone()
-    assert privileges == (True, False, False, False, True)
+    assert privileges == (True, False, False, False, False, True)
 
 
 def test_revoked_entitlement_fails_closed_for_library_and_asset() -> None:
@@ -291,6 +337,7 @@ def test_revoked_entitlement_fails_closed_for_library_and_asset() -> None:
     manifest, manifest_sha = load_manifest()
     seller = UUID(manifest["seller"]["id"])
     buyer = identity_id(manifest["personas"]["buyer"]["subject"])
+    entitlement = UUID(manifest["entitlement"]["id"])
     asset = UUID(manifest["lessons"][0]["asset_id"])
     with psycopg.connect(ADMIN_URL) as connection:
         connection.execute(
@@ -309,7 +356,7 @@ def test_revoked_entitlement_fails_closed_for_library_and_asset() -> None:
         with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
             connection.execute(
                 "select * from app_private.authorize_learning_asset(%s,%s,%s)",
-                (buyer, seller, asset),
+                (buyer, entitlement, asset),
             )
     reset_once(manifest, manifest_sha)
 
@@ -339,14 +386,15 @@ def test_one_hundred_buyers_read_their_entitlement_under_bounded_parallel_load()
             cursor.executemany(
                 "insert into buyer_entitlement("
                 "seller_organization_id,id,buyer_identity_user_id,catalog_product_id,"
-                "reference_key,source,status,progress_percent) "
-                "values(%s,%s,%s,%s,%s,'manual','active',0)",
+                "publication_id,reference_key,source,status,progress_percent) "
+                "values(%s,%s,%s,%s,%s,%s,'manual','active',0)",
                 [
                     (
                         seller,
                         uuid5(NAMESPACE_URL, f"capacity-entitlement-{buyer}"),
                         buyer,
                         product,
+                        UUID(manifest["publication"]["id"]),
                         f"capacity-buyer-{index:03d}",
                     )
                     for index, buyer in enumerate(buyers)
@@ -372,6 +420,16 @@ def test_one_hundred_buyers_read_their_entitlement_under_bounded_parallel_load()
         assert elapsed < 30
     finally:
         with psycopg.connect(ADMIN_URL) as connection:
+            connection.execute(
+                "delete from course_learning_state where seller_organization_id=%s "
+                "and buyer_identity_user_id=any(%s)",
+                (seller, buyers),
+            )
+            connection.execute(
+                "delete from learning_enrollment where seller_organization_id=%s "
+                "and buyer_identity_user_id=any(%s)",
+                (seller, buyers),
+            )
             connection.execute(
                 "delete from buyer_entitlement where seller_organization_id=%s "
                 "and buyer_identity_user_id=any(%s)",

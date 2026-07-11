@@ -24,7 +24,8 @@ interface ApiRequest {
     "catalog.draft.preview" | "catalog.publication.read" | "catalog.publication.create" |
     "catalog.curriculum.read" | "catalog.curriculum.create" |
     "catalog.curriculum.update" | "catalog.curriculum.archive" |
-    "catalog.curriculum.reorder" | "library.read" | "library.asset.read";
+    "catalog.curriculum.reorder" | "library.read" | "library.asset.read" |
+    "learning.player.read" | "learning.progress.write";
   sellerOrganizationId?: string;
   body?: Record<string, unknown>;
 }
@@ -397,14 +398,85 @@ export async function readDomainLibrary(sessionId: string, session: ServerSessio
 export async function authorizeDomainLearningAsset(
   sessionId: string,
   session: ServerSession,
-  sellerOrganizationId: string,
+  entitlementId: string,
   assetId: string
 ) {
   return domainRequest(sessionId, session, {
     method: "GET",
-    path: `/v1/me/library/assets/${sellerOrganizationId}/${assetId}`,
+    path: `/v1/me/learning/items/${entitlementId}/assets/${assetId}`,
     capability: "library.asset.read"
   });
+}
+
+export async function readDomainLearningResume(
+  sessionId: string,
+  session: ServerSession,
+  entitlementId: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/learning/items/${entitlementId}/resume`,
+    capability: "learning.player.read"
+  });
+}
+
+export async function readDomainLearningLesson(
+  sessionId: string,
+  session: ServerSession,
+  entitlementId: string,
+  lessonId: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/learning/items/${entitlementId}/lessons/${lessonId}`,
+    capability: "learning.player.read"
+  });
+}
+
+interface LearningProgressInput {
+  idempotencyKey: string;
+  expectedVersion: number;
+  progressPercent?: number;
+}
+
+export async function updateDomainLessonProgress(
+  sessionId: string,
+  session: ServerSession,
+  entitlementId: string,
+  lessonId: string,
+  input: LearningProgressInput & { progressPercent: number }
+) {
+  return domainRequest(sessionId, session, {
+    method: "PUT",
+    path: `/v1/me/learning/items/${entitlementId}/lessons/${lessonId}/progress`,
+    capability: "learning.progress.write",
+    body: learningProgressBody(input)
+  });
+}
+
+export async function completeDomainLesson(
+  sessionId: string,
+  session: ServerSession,
+  entitlementId: string,
+  lessonId: string,
+  input: LearningProgressInput
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `/v1/me/learning/items/${entitlementId}/lessons/${lessonId}/complete`,
+    capability: "learning.progress.write",
+    body: learningProgressBody(input)
+  });
+}
+
+function learningProgressBody(input: LearningProgressInput) {
+  return {
+    idempotency_key: input.idempotencyKey,
+    expected_version: input.expectedVersion,
+    ...(input.progressPercent === undefined
+      ? {}
+      : { progress_percent: input.progressPercent })
+  };
 }
 
 function curriculumBody(
