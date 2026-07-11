@@ -34,17 +34,17 @@ Project status:
 
 <!-- Substituir abaixo a cada nova sessão. Sessões anteriores vão para PROGRESS.md. -->
 
-## Sessão: 2026-07-11 10:27 — produto e curso draft persistentes
-Issue: #28
-Branch: feat/28-product-course-drafts
-PR: #29
+## Sessão: 2026-07-11 11:55 — edição e publicação imutável de produto
+Issue: #30
+Branch: feat/30-product-publication
+PR: #31
 Estado: em_progresso
 Modelo: strong + human
-Arquivos alterados: migration 0003, FastAPI catálogo, BFF seller/product, workspace mobile, CSRF, testes PG/API/BFF/E2E, compose e docs
-Comandos executados: lint; typecheck; Vitest; Ruff; mypy; pytest; build; Playwright; test-postgres-foundation; reviews críticos
-Validação: local verde — 67 web, 68 PostgreSQL/API, 2-BFF real, 22 browser + 2 skips; preview local persiste tenant/produto/curso; três reviews P0-P2=0
-Bloqueios: CI remoto; Identity real #13, KMS #19 e produção continuam bloqueados
-Próxima ação: acompanhar CI e reviews da PR #29; não fazer deploy
+Arquivos alterados: migration 0004, FastAPI/BFF detail-update-preview-publish, editor mobile, CSRF por ação, history/focus guards, testes PG/API/BFF/E2E e docs
+Comandos executados: lint; typecheck; Vitest; Ruff; mypy; pytest; audits; build; Playwright; production fail-closed; test-postgres-foundation; reviews críticos
+Validação: local verde — 68 web, 84 PostgreSQL/API, BFF vertical real, 24 browser + 4 skips deliberados; três reviews P0-P2=0
+Bloqueios: CI remoto; Identity real #13, KMS #19, Financial/Neuro e produção continuam bloqueados
+Próxima ação: acompanhar CI e reviews da PR #31; não fazer deploy
 Project status:
   - Projeto: sem opção AppSell no campo do Project
   - Status: PR aberta
@@ -52,4 +52,4 @@ Project status:
   - Prioridade: P0
   - Risco: Alto
   - Ambiente: Dev
-  - Próxima ação: CI remoto e review da PR #29
+  - Próxima ação: acompanhar App CI e Harness da PR #31

@@ -4,13 +4,21 @@ import {
   csrfCookieName,
   csrfCookieOptions,
   productCsrfCookieName,
+  productPublishCsrfCookieName,
+  productUpdateCsrfCookieName,
   sellerCsrfCookieName,
   sessionCookieName,
   sessionCookieOptions,
   transactionCookieName,
   transactionCookieOptions
 } from "@/lib/cookies";
-import { CREATE_PRODUCT_DRAFT_CSRF_ACTION, csrfTokenForSession, LOGOUT_CSRF_ACTION } from "@/lib/mutation-protection.server";
+import {
+  CREATE_PRODUCT_DRAFT_CSRF_ACTION,
+  csrfTokenForSession,
+  LOGOUT_CSRF_ACTION,
+  PUBLISH_PRODUCT_DRAFT_CSRF_ACTION,
+  UPDATE_PRODUCT_DRAFT_CSRF_ACTION
+} from "@/lib/mutation-protection.server";
 import { isOAuthStoreUnavailable } from "@/lib/redis-oauth-service";
 import { configuredPublicOrigin } from "@/lib/public-origin";
 import { DomainApiError, isDomainApiConfigured, syncDomainIdentity } from "@/lib/internal-api-client.server";
@@ -49,6 +57,8 @@ export async function GET(request: NextRequest) {
     response.cookies.set(csrfCookieName(), csrfTokenForSession(sessionId, LOGOUT_CSRF_ACTION), csrfCookieOptions());
     response.cookies.set(sellerCsrfCookieName(), csrfTokenForSession(sessionId, ONBOARD_SELLER_CSRF_ACTION), csrfCookieOptions());
     response.cookies.set(productCsrfCookieName(), csrfTokenForSession(sessionId, CREATE_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
+    response.cookies.set(productUpdateCsrfCookieName(), csrfTokenForSession(sessionId, UPDATE_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
+    response.cookies.set(productPublishCsrfCookieName(), csrfTokenForSession(sessionId, PUBLISH_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
     response.headers.set("cache-control", "no-store");
     return response;
   } catch (error) {

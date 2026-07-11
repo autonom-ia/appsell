@@ -17,7 +17,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from appsell_api.catalog_routes import _domain_error, router
+from appsell_api.catalog_routes import _domain_error, _product_detail_response, router
 from appsell_api.config import get_settings
 from appsell_api.main import app as domain_app
 
@@ -42,8 +42,11 @@ class FakeResult:
         assert self._one is not None
         return self._one
 
+    def one_or_none(self) -> dict[str, Any] | None:
+        return self._one
+
     def all(self) -> list[dict[str, Any]]:
-        return self._all
+        return self._all or ([self._one] if self._one is not None else [])
 
 
 class FakeSession:
@@ -108,6 +111,37 @@ def draft_body(**overrides: Any) -> bytes:
         **overrides,
     }
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode()
+
+
+def update_body(course_id: UUID, offer_id: UUID, **overrides: Any) -> bytes:
+    value = {
+        "idempotency_key": str(uuid4()),
+        "course_id": str(course_id),
+        "offer_id": str(offer_id),
+        "slug": "produto-editado",
+        "title": "Produto Editado",
+        "description": "Rascunho persistido",
+        "course_title": "Curso Editado",
+        "offer_title": "Oferta Principal",
+        "offer_summary": "Condições informativas sem billing",
+        "expected_product_version": 1,
+        "expected_course_version": 1,
+        "expected_offer_version": 0,
+        **overrides,
+    }
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode()
+
+
+def publication_body(course_id: UUID, offer_id: UUID, **overrides: Any) -> bytes:
+    value = {
+        "idempotency_key": str(uuid4()),
+        "offer_id": str(offer_id),
+        "course_versions": [{"id": str(course_id), "version": 2}],
+        "expected_product_version": 2,
+        "expected_offer_version": 1,
+        **overrides,
+    }
+    return json.dumps(value, separators=(",", ":")).encode()
 
 
 @pytest.mark.asyncio
@@ -252,8 +286,8 @@ async def test_list_drafts_is_tenant_scoped_and_uses_bounded_keyset() -> None:
     assert payload["products"][0]["course"]["status"] == "draft"
     assert auth.capabilities == ["catalog.draft.read"]
     statement, parameters = auth.session.calls[0]
-    assert "product.status = 'draft'" in statement
-    assert "course.status = 'draft'" in statement
+    assert "product.status <> 'archived'" in statement
+    assert "course.status <> 'archived'" in statement
     assert "order by product.created_at desc, product.id desc" in statement
     assert parameters == {"seller_id": SELLER_ID, "cursor": cursor, "fetch_limit": 3}
 
@@ -271,12 +305,24 @@ async def test_list_limit_and_cursor_are_validated_before_authentication() -> No
 
 def test_domain_errors_are_stable_and_do_not_leak_driver_details() -> None:
     class DriverError:
-        def __init__(self, sqlstate: str | None):
+        def __init__(
+            self,
+            sqlstate: str | None,
+            constraint_name: str | None = None,
+            message: str | None = None,
+            diagnostic_message: str | None = None,
+        ):
             self.sqlstate = sqlstate
+            self.constraint_name = constraint_name
+            self.message = message
+            self.diag = SimpleNamespace(message_primary=diagnostic_message)
 
     for sqlstate, expected_status, expected_detail in [
         ("23505", 409, "resource_conflict"),
+        ("40001", 409, "draft_version_conflict"),
+        ("P4091", 409, "no_unpublished_changes"),
         ("22023", 422, "invalid_domain_request"),
+        ("55000", 422, "publication_not_ready"),
         ("28000", 403, "forbidden"),
         ("42501", 403, "forbidden"),
         (None, 503, "domain_unavailable"),
@@ -285,6 +331,226 @@ def test_domain_errors_are_stable_and_do_not_leak_driver_details() -> None:
         assert mapped.status_code == expected_status
         assert mapped.detail == expected_detail
         assert "driver" not in str(mapped.detail)
+
+    slug = _domain_error(
+        SimpleNamespace(  # type: ignore[arg-type]
+            orig=DriverError("23505", "catalog_product_seller_slug_key")
+        )
+    )
+    assert (slug.status_code, slug.detail) == (409, "slug_conflict")
+
+
+@pytest.mark.asyncio
+async def test_detail_and_preview_are_private_server_projections() -> None:
+    now = datetime(2026, 7, 11, 12, 0, tzinfo=UTC)
+    product_id, course_id, offer_id = uuid4(), uuid4(), uuid4()
+    row = {
+        "seller_organization_id": SELLER_ID,
+        "id": product_id,
+        "slug": "produto-editado",
+        "title": "Produto Editado",
+        "description": "Privado",
+        "status": "draft",
+        "version": 2,
+        "created_at": now,
+        "updated_at": now,
+        "published_snapshot_id": None,
+        "course_id": course_id,
+        "course_title": "Curso Editado",
+        "course_description": "",
+        "course_status": "draft",
+        "course_draft_version": 2,
+        "course_position": 0,
+        "offer_id": offer_id,
+        "offer_title": "Oferta Principal",
+        "offer_summary": "Sem billing",
+        "offer_status": "draft",
+        "offer_version": 1,
+        "publication_version": None,
+        "publication_source_sha256": None,
+        "published_at": None,
+        "publication_snapshot": None,
+    }
+    second_course_id = uuid4()
+    second_row = {
+        **row,
+        "course_id": second_course_id,
+        "course_title": "Curso Avançado",
+        "course_draft_version": 3,
+        "course_position": 1,
+    }
+    auth = FakeAuth(seller_id=SELLER_ID, result=FakeResult(all=[row, second_row]))
+    async with client_for(auth) as client:
+        detail = await client.get(f"/v1/me/sellers/{SELLER_ID}/products/{product_id}")
+        preview = await client.get(f"/v1/me/sellers/{SELLER_ID}/products/{product_id}/preview")
+    assert detail.status_code == 200
+    assert detail.json()["product"]["readiness"]["can_publish"] is True
+    assert detail.json()["product"]["offer"]["id"] == str(offer_id)
+    assert [course["id"] for course in detail.json()["product"]["courses"]] == [
+        str(course_id),
+        str(second_course_id),
+    ]
+    assert preview.status_code == 200
+    assert preview.json()["preview"] is True
+    assert preview.json()["snapshot"]["product"]["id"] == str(product_id)
+    assert len(preview.json()["snapshot"]["courses"]) == 2
+    assert auth.capabilities == ["catalog.draft.read", "catalog.draft.preview"]
+
+
+@pytest.mark.asyncio
+async def test_patch_binds_versions_ids_hash_and_actor_to_atomic_function() -> None:
+    product_id, course_id, offer_id = uuid4(), uuid4(), uuid4()
+    auth = FakeAuth(
+        seller_id=SELLER_ID,
+        result=FakeResult(
+            one={
+                "offer_id": offer_id,
+                "product_version": 2,
+                "course_version": 2,
+                "offer_version": 1,
+                "created": True,
+            }
+        ),
+    )
+    body = update_body(course_id, offer_id)
+    async with client_for(auth) as client:
+        response = await client.patch(
+            f"/v1/me/sellers/{SELLER_ID}/products/{product_id}", content=body
+        )
+    assert response.status_code == 200
+    assert response.json()["offer_version"] == 1
+    assert auth.capabilities == ["catalog.draft.update"]
+    statement, parameters = auth.session.calls[0]
+    assert "app_private.update_product_course_offer_draft" in statement
+    assert parameters["product_id"] == product_id
+    assert parameters["course_id"] == course_id
+    assert parameters["offer_id"] == offer_id
+    assert parameters["body_sha256"] == hashlib.sha256(body).hexdigest()
+
+
+def test_readiness_blocks_a_semantically_identical_publication() -> None:
+    now = datetime(2026, 7, 11, 12, 0, tzinfo=UTC)
+    seller_id, product_id, course_id, offer_id, publication_id = (
+        SELLER_ID,
+        uuid4(),
+        uuid4(),
+        uuid4(),
+        uuid4(),
+    )
+    row = {
+        "seller_organization_id": seller_id,
+        "id": product_id,
+        "slug": "produto-publicado",
+        "title": "Produto Publicado",
+        "description": "Estável",
+        "status": "published",
+        "version": 3,
+        "created_at": now,
+        "updated_at": now,
+        "published_snapshot_id": publication_id,
+        "course_id": course_id,
+        "course_title": "Curso",
+        "course_description": "",
+        "course_status": "draft",
+        "course_draft_version": 2,
+        "course_position": 0,
+        "offer_id": offer_id,
+        "offer_title": "Oferta",
+        "offer_summary": "Informativa",
+        "offer_status": "draft",
+        "offer_version": 1,
+        "publication_version": 1,
+        "publication_source_sha256": "a" * 64,
+        "published_at": now,
+    }
+    row["publication_snapshot"] = {
+        "schema_version": 1,
+        "seller_organization_id": str(seller_id),
+        "product": {
+            "id": str(product_id),
+            "slug": "produto-publicado",
+            "title": "Produto Publicado",
+            "description": "Estável",
+        },
+        "offer": {
+            "id": str(offer_id),
+            "title": "Oferta",
+            "summary": "Informativa",
+            "billing_authority": "external_unconfigured",
+        },
+        "courses": [{"id": str(course_id), "title": "Curso", "description": "", "position": 0}],
+    }
+    product = _product_detail_response([row])["product"]
+    assert product["has_unpublished_changes"] is False
+    assert product["readiness"] == {
+        "can_publish": False,
+        "items": [
+            {
+                "key": "no_unpublished_changes",
+                "label": "Não há alterações novas para publicar.",
+                "ready": False,
+            }
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_publish_binds_complete_expected_version_set_and_is_idempotent() -> None:
+    product_id, course_id, offer_id, publication_id = uuid4(), uuid4(), uuid4(), uuid4()
+    auth = FakeAuth(
+        seller_id=SELLER_ID,
+        result=FakeResult(
+            one={
+                "publication_id": publication_id,
+                "publication_version": 1,
+                "product_version": 3,
+                "source_sha256": "a" * 64,
+                "created": True,
+            }
+        ),
+    )
+    body = publication_body(course_id, offer_id)
+    async with client_for(auth) as client:
+        response = await client.post(
+            f"/v1/me/sellers/{SELLER_ID}/products/{product_id}/publications",
+            content=body,
+        )
+    assert response.status_code == 201
+    assert response.json()["publication_id"] == str(publication_id)
+    assert auth.capabilities == ["catalog.publication.create"]
+    statement, parameters = auth.session.calls[0]
+    assert "app_private.publish_product" in statement
+    assert json.loads(parameters["expected_course_versions"]) == {str(course_id): 2}
+    assert parameters["body_sha256"] == hashlib.sha256(body).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_publish_rejects_duplicate_or_incomplete_course_version_sets_before_database() -> (
+    None
+):
+    product_id, course_id, offer_id = uuid4(), uuid4(), uuid4()
+    auth = FakeAuth(seller_id=SELLER_ID, result=FakeResult())
+    duplicate = publication_body(
+        course_id,
+        offer_id,
+        course_versions=[
+            {"id": str(course_id), "version": 2},
+            {"id": str(course_id), "version": 3},
+        ],
+    )
+    incomplete = publication_body(course_id, offer_id, course_versions=[])
+    async with client_for(auth) as client:
+        duplicate_response = await client.post(
+            f"/v1/me/sellers/{SELLER_ID}/products/{product_id}/publications",
+            content=duplicate,
+        )
+        incomplete_response = await client.post(
+            f"/v1/me/sellers/{SELLER_ID}/products/{product_id}/publications",
+            content=incomplete,
+        )
+    assert duplicate_response.status_code == 422
+    assert incomplete_response.status_code == 422
+    assert auth.session.calls == []
 
 
 @pytest.mark.asyncio

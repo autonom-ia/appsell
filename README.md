@@ -139,6 +139,18 @@ real com dois BFFs, Redis, FastAPI e PostgreSQL:
 ./scripts/test-postgres-foundation.sh
 ```
 
+### Edição, preview e publicação Local/CI
+
+Em **Produtos**, escolha o tenant explicitamente e abra **Continuar edição**.
+O editor persiste produto, curso e oferta informativa com optimistic locking,
+monta uma prévia privada e publica um snapshot imutável. Publicar não cria
+checkout, cobrança, purchase ou entitlement; Financial permanece desconectado.
+
+As mutações exigem Origin exata, CSRF separado por ação e corpo limitado. Retry
+exato de publicação devolve o receipt original; snapshot idêntico com nova
+intenção falha fechado. Conflitos de versão preservam os campos locais e usam o
+fluxo **Recarregar versão do servidor**.
+
 Este fluxo não transforma a identidade sintética em conta real. Em particular,
 `comercial@autonomia.site` só poderá ser superadmin real após integração e
 prova do Identity externo com issuer/JWKS/audience/client/MFA válidos.

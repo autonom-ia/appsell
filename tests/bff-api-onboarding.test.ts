@@ -58,12 +58,20 @@ test.skipIf(!domainApiUrl)("two BFFs persist seller onboarding through the real 
     const session = cookiePair(setCookie, "appsell_session");
     const sellerCsrf = cookiePair(setCookie, "appsell_seller_csrf");
     const productCsrf = cookiePair(setCookie, "appsell_product_csrf");
+    const productUpdateCsrf = cookiePair(setCookie, "appsell_product_update_csrf");
+    const productPublishCsrf = cookiePair(setCookie, "appsell_product_publish_csrf");
     const sessionId = session.slice(session.indexOf("=") + 1);
     const sellerCsrfToken = sellerCsrf.slice(sellerCsrf.indexOf("=") + 1);
     expect(sellerCsrfToken).toBe(deriveCsrfToken(sessionId, "POST:/api/sellers", csrfKey));
     const productCsrfToken = productCsrf.slice(productCsrf.indexOf("=") + 1);
     expect(productCsrfToken).toBe(deriveCsrfToken(sessionId, "POST:/api/products", csrfKey));
-    const cookie = `${session}; ${sellerCsrf}; ${productCsrf}`;
+    const productUpdateCsrfToken = productUpdateCsrf.slice(productUpdateCsrf.indexOf("=") + 1);
+    expect(productUpdateCsrfToken).toBe(deriveCsrfToken(sessionId, "PATCH:/api/products", csrfKey));
+    const productPublishCsrfToken = productPublishCsrf.slice(productPublishCsrf.indexOf("=") + 1);
+    expect(productPublishCsrfToken).toBe(
+      deriveCsrfToken(sessionId, "POST:/api/products/publications", csrfKey)
+    );
+    const cookie = `${session}; ${sellerCsrf}; ${productCsrf}; ${productUpdateCsrf}; ${productPublishCsrf}`;
 
     const empty = await fetch(`http://127.0.0.1:${firstPort}/api/sellers`, {
       headers: { cookie: session }
@@ -112,7 +120,10 @@ test.skipIf(!domainApiUrl)("two BFFs persist seller onboarding through the real 
       body: productBody
     });
     expect(created.status, await created.clone().text()).toBe(201);
-    expect(await created.json()).toMatchObject({ status: "draft", created: true });
+    const createdPayload = await created.json() as {
+      product_id: string; course_id: string; status: string; created: boolean
+    };
+    expect(createdPayload).toMatchObject({ status: "draft", created: true });
 
     const replayed = await fetch(`http://127.0.0.1:${firstPort}/api/sellers/${sellerId}/products`, {
       method: "POST",
@@ -129,6 +140,143 @@ test.skipIf(!domainApiUrl)("two BFFs persist seller onboarding through the real 
     expect(await catalog.json()).toMatchObject({
       products: [{ slug: productSlug, title: "Produto Integrado", course: { title: "Curso Integrado" } }]
     });
+
+    const productId = createdPayload.product_id;
+    const courseId = createdPayload.course_id;
+    expect(productId).toBeTypeOf("string");
+    expect(courseId).toBeTypeOf("string");
+    const detailUrl = `http://127.0.0.1:${firstPort}/api/sellers/${sellerId}/products/${productId}`;
+    const initialDetail = await fetch(detailUrl, { headers: { cookie } });
+    expect(initialDetail.status, await initialDetail.clone().text()).toBe(200);
+    const initial = await initialDetail.json() as {
+      product: { draft_version: number; course: { draft_version: number }; offer: null }
+    };
+    expect(initial.product.offer).toBeNull();
+
+    const offerId = randomUUID();
+    const updateBody = new URLSearchParams({
+      _csrf: productUpdateCsrfToken,
+      idempotency_key: randomUUID(),
+      course_id: courseId!,
+      offer_id: offerId,
+      expected_product_version: String(initial.product.draft_version),
+      expected_course_version: String(initial.product.course.draft_version),
+      expected_offer_version: "0",
+      slug: productSlug,
+      product_title: "Produto Integrado Editado",
+      product_description: "Edição persistida por duas instâncias BFF",
+      course_title: "Curso Integrado Editado",
+      offer_title: "Oferta Principal",
+      offer_summary: "Oferta informativa sem autoridade de cobrança"
+    });
+    const updated = await fetch(detailUrl.replace(`:${firstPort}`, `:${secondPort}`), {
+      method: "PATCH",
+      headers: { cookie, origin: `http://localhost:${firstPort}` },
+      body: updateBody
+    });
+    expect(updated.status, await updated.clone().text()).toBe(200);
+    expect(await updated.json()).toMatchObject({ offer_id: offerId, offer_version: 1 });
+
+    const duplicate = new URLSearchParams(updateBody);
+    duplicate.append("product_title", "Duplicado ambiguo");
+    const duplicateResponse = await fetch(detailUrl, {
+      method: "PATCH",
+      headers: { cookie, origin: `http://localhost:${firstPort}` },
+      body: duplicate
+    });
+    expect(duplicateResponse.status).toBe(422);
+    expect(await duplicateResponse.json()).toEqual({ error: "invalid_product_input", field: "form" });
+
+    const editedDetail = await fetch(detailUrl, { headers: { cookie } });
+    const edited = await editedDetail.json() as {
+      product: {
+        draft_version: number;
+        title: string;
+        course: { id: string; draft_version: number };
+        offer: { id: string; draft_version: number };
+        readiness: { can_publish: boolean };
+      }
+    };
+    expect(edited.product).toMatchObject({
+      title: "Produto Integrado Editado",
+      offer: { id: offerId, draft_version: 1 },
+      readiness: { can_publish: true }
+    });
+
+    const preview = await fetch(`${detailUrl}/preview`, { headers: { cookie } });
+    expect(preview.status, await preview.clone().text()).toBe(200);
+    expect(await preview.json()).toMatchObject({
+      preview: true,
+      state: "unpublished_draft",
+      snapshot: { product: { title: "Produto Integrado Editado" } }
+    });
+
+    const publicationBody = new URLSearchParams({
+      _csrf: productPublishCsrfToken,
+      idempotency_key: randomUUID(),
+      offer_id: edited.product.offer.id,
+      expected_product_version: String(edited.product.draft_version),
+      expected_offer_version: String(edited.product.offer.draft_version),
+      course_versions: JSON.stringify([
+        { id: edited.product.course.id, version: edited.product.course.draft_version }
+      ])
+    });
+    const publicationUrl = `${detailUrl.replace(`:${firstPort}`, `:${secondPort}`)}/publications`;
+    const published = await fetch(
+      publicationUrl,
+      {
+        method: "POST",
+        headers: { cookie, origin: `http://localhost:${firstPort}` },
+        body: publicationBody
+      }
+    );
+    expect(published.status, await published.clone().text()).toBe(201);
+    const publishedPayload = await published.json() as {
+      publication_id: string; publication_version: number; source_sha256: string; created: boolean
+    };
+    expect(publishedPayload).toMatchObject({ publication_version: 1, created: true });
+
+    const retriedPublication = await fetch(publicationUrl, {
+      method: "POST",
+      headers: { cookie, origin: `http://localhost:${firstPort}` },
+      body: publicationBody
+    });
+    expect(retriedPublication.status, await retriedPublication.clone().text()).toBe(200);
+    const retriedPayload = await retriedPublication.json();
+    expect(retriedPayload).toMatchObject({
+      publication_id: publishedPayload.publication_id,
+      publication_version: publishedPayload.publication_version,
+      source_sha256: publishedPayload.source_sha256,
+      created: false
+    });
+
+    const publishedDetailResponse = await fetch(detailUrl, { headers: { cookie } });
+    expect(publishedDetailResponse.status, await publishedDetailResponse.clone().text()).toBe(200);
+    const publishedDetail = await publishedDetailResponse.json() as {
+      product: {
+        draft_version: number;
+        course: { id: string; draft_version: number };
+        offer: { id: string; draft_version: number };
+      }
+    };
+
+    const duplicateSnapshot = await fetch(publicationUrl, {
+      method: "POST",
+      headers: { cookie, origin: `http://localhost:${firstPort}` },
+      body: new URLSearchParams({
+        _csrf: productPublishCsrfToken,
+        idempotency_key: randomUUID(),
+        offer_id: publishedDetail.product.offer.id,
+        expected_product_version: String(publishedDetail.product.draft_version),
+        expected_offer_version: String(publishedDetail.product.offer.draft_version),
+        course_versions: JSON.stringify([{
+          id: publishedDetail.product.course.id,
+          version: publishedDetail.product.course.draft_version
+        }])
+      })
+    });
+    expect(duplicateSnapshot.status).toBe(409);
+    expect(await duplicateSnapshot.json()).toEqual({ error: "no_unpublished_changes" });
   } finally {
     await Promise.all([stopBff(first), stopBff(second)]);
     await redis.stop();

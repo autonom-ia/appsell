@@ -66,6 +66,8 @@ test("keeps the opaque session out of browser-readable surfaces", async ({ conte
   expect(Object.keys(readableCookies).sort()).toEqual([
     "appsell_csrf",
     "appsell_product_csrf",
+    "appsell_product_publish_csrf",
+    "appsell_product_update_csrf",
     "appsell_seller_csrf"
   ]);
   for (const value of Object.values(readableCookies)) {

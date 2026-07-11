@@ -1,8 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import type { FormEvent, ReactNode } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
+import type { FormEvent, MouseEvent, ReactNode } from "react";
+import { AccessibleDialog } from "./accessible-dialog";
+import { allowUnsavedNavigation, DIRTY_HISTORY_BLOCKED_EVENT, DIRTY_HISTORY_CONTINUE_EVENT, DIRTY_NAVIGATION_REQUEST_EVENT, DIRTY_STATE_EVENT } from "./use-unsaved-changes";
 
 interface AppShellProps {
   children: ReactNode;
@@ -29,8 +32,9 @@ function readCsrfCookie() {
   return value ? decodeURIComponent(value.slice(prefix.length)) : "";
 }
 
-function LogoutForm({ mobile = false }: { mobile?: boolean }) {
+function LogoutForm({ mobile = false, onAttempt }: { mobile?: boolean; onAttempt?: (event: FormEvent<HTMLFormElement>) => boolean }) {
   function attachCsrf(event: FormEvent<HTMLFormElement>) {
+    if (onAttempt?.(event) === false) return;
     const input = event.currentTarget.elements.namedItem("_csrf");
     if (input instanceof HTMLInputElement) input.value = readCsrfCookie();
   }
@@ -39,12 +43,85 @@ function LogoutForm({ mobile = false }: { mobile?: boolean }) {
 
 export function AppShell({ children }: AppShellProps) {
   const pathname = usePathname();
+  const router = useRouter();
+  const [pageDirty, setPageDirty] = useState(false);
+  const [pendingAction, setPendingAction] = useState<{ type: "navigate"; href: string } | { type: "logout"; form: HTMLFormElement } | { type: "history" } | null>(null);
+  const cancelDialogButton = useRef<HTMLButtonElement>(null);
+  const dirtyDialogTrigger = useRef<HTMLElement | null>(null);
+  const allowNextLogout = useRef(false);
+
+  useEffect(() => {
+    const updateDirtyState = (event: Event) => {
+      const detail = (event as CustomEvent<{ dirty?: boolean }>).detail;
+      setPageDirty(detail?.dirty === true);
+    };
+    window.addEventListener(DIRTY_STATE_EVENT, updateDirtyState);
+    const requestNavigation = (event: Event) => {
+      const detail = (event as CustomEvent<{ href?: string; trigger?: HTMLElement }>).detail;
+      if (!detail?.href) return;
+      dirtyDialogTrigger.current = detail.trigger ?? null;
+      setPendingAction({ type: "navigate", href: detail.href });
+    };
+    const blockHistory = () => {
+      dirtyDialogTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      setPendingAction({ type: "history" });
+    };
+    window.addEventListener(DIRTY_NAVIGATION_REQUEST_EVENT, requestNavigation);
+    window.addEventListener(DIRTY_HISTORY_BLOCKED_EVENT, blockHistory);
+    return () => {
+      window.removeEventListener(DIRTY_STATE_EVENT, updateDirtyState);
+      window.removeEventListener(DIRTY_NAVIGATION_REQUEST_EVENT, requestNavigation);
+      window.removeEventListener(DIRTY_HISTORY_BLOCKED_EVENT, blockHistory);
+    };
+  }, []);
+
+  function guardLink(event: MouseEvent<HTMLAnchorElement>, href: string) {
+    if (!pageDirty || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    dirtyDialogTrigger.current = event.currentTarget;
+    setPendingAction({ type: "navigate", href });
+  }
+
+  function guardLogout(event: FormEvent<HTMLFormElement>) {
+    if (allowNextLogout.current) {
+      allowNextLogout.current = false;
+      return true;
+    }
+    if (!pageDirty) return true;
+    event.preventDefault();
+    const submitter = (event.nativeEvent as SubmitEvent).submitter;
+    dirtyDialogTrigger.current = submitter instanceof HTMLElement ? submitter : null;
+    setPendingAction({ type: "logout", form: event.currentTarget });
+    return false;
+  }
+
+  function closeDirtyDialog() {
+    setPendingAction(null);
+    queueMicrotask(() => dirtyDialogTrigger.current?.focus());
+  }
+
+  function discardAndContinue() {
+    const action = pendingAction;
+    setPendingAction(null);
+    setPageDirty(false);
+    if (!action) return;
+    if (action.type === "history") {
+      window.dispatchEvent(new Event(DIRTY_HISTORY_CONTINUE_EVENT));
+    } else if (action.type === "navigate") {
+      allowUnsavedNavigation();
+      router.push(action.href);
+    } else {
+      allowUnsavedNavigation();
+      allowNextLogout.current = true;
+      action.form.requestSubmit();
+    }
+  }
 
   return (
     <div className="app-shell">
       <a className="skip-link" href="#conteudo">Pular para o conteúdo</a>
       <aside className="app-sidebar" aria-label="Navegação principal">
-        <Link className="brand" href="/dashboard" aria-label="Autonom.ia Sell — início">
+        <Link className="brand" href="/dashboard" aria-label="Autonom.ia Sell — início" onClick={(event) => guardLink(event, "/dashboard")}>
           <span className="brand-mark" aria-hidden="true">a</span>
           <span><strong>sell<span>.</span></strong><small>by Autonom.ia</small></span>
         </Link>
@@ -52,29 +129,40 @@ export function AppShell({ children }: AppShellProps) {
           <p className="nav-eyebrow">Seu negócio</p>
           {navigation.map((item) => {
             const active = pathname === item.href;
-            return <Link key={item.href} href={item.href} className={active ? "nav-link active" : "nav-link"} aria-current={active ? "page" : undefined}><NavIcon name={item.mark}/><span>{item.label}</span></Link>;
+            return <Link key={item.href} href={item.href} onClick={(event) => guardLink(event, item.href)} className={active ? "nav-link active" : "nav-link"} aria-current={active ? "page" : undefined}><NavIcon name={item.mark}/><span>{item.label}</span></Link>;
           })}
         </nav>
         <div className="sidebar-footer">
           <span className="avatar" aria-hidden="true">AU</span>
           <span><strong>Ambiente demo</strong><small>Sessão protegida</small></span>
         </div>
-        <LogoutForm/>
+        <LogoutForm onAttempt={guardLogout}/>
       </aside>
       <div className="app-content">
         <header className="mobile-topbar">
-          <Link className="mobile-brand" href="/dashboard"><span className="brand-mark" aria-hidden="true">a</span><strong>sell<span>.</span></strong></Link>
-          <LogoutForm mobile/>
+          <Link className="mobile-brand" href="/dashboard" onClick={(event) => guardLink(event, "/dashboard")}><span className="brand-mark" aria-hidden="true">a</span><strong>sell<span>.</span></strong></Link>
+          <LogoutForm mobile onAttempt={guardLogout}/>
         </header>
-        <div className="environment-banner" role="status"><strong>Prévia local, não é grant.</strong> Dados demonstrativos; publicação, cobrança e integrações reais estão desativadas.</div>
+        <div className="environment-banner" role="status"><strong>Ambiente local, não é grant.</strong> Draft e publicação local podem persistir; cobrança, checkout, Identity e integrações reais continuam desativados.</div>
         <main id="conteudo" className="app-main" tabIndex={-1}>{children}</main>
         <nav className="bottom-nav" aria-label="Navegação móvel">
           {navigation.map((item) => {
             const active = pathname === item.href;
-            return <Link key={item.href} href={item.href} className={active ? "active" : ""} aria-current={active ? "page" : undefined}><NavIcon name={item.mark}/><span>{item.label}</span></Link>;
+            return <Link key={item.href} href={item.href} onClick={(event) => guardLink(event, item.href)} className={active ? "active" : ""} aria-current={active ? "page" : undefined}><NavIcon name={item.mark}/><span>{item.label}</span></Link>;
           })}
         </nav>
       </div>
+      {pendingAction ? (
+        <AccessibleDialog titleId="dirty-dialog-title" descriptionId="dirty-dialog-description" initialFocusRef={cancelDialogButton} returnFocusRef={dirtyDialogTrigger} onClose={closeDirtyDialog}>
+            <p className="eyebrow">Alterações não salvas</p>
+            <h2 id="dirty-dialog-title">Sair desta edição?</h2>
+            <p id="dirty-dialog-description">Os campos alterados neste dispositivo serão descartados.</p>
+            <div className="dialog-actions">
+              <button ref={cancelDialogButton} type="button" className="secondary-button" onClick={closeDirtyDialog}>Continuar editando</button>
+              <button type="button" className="danger-button" onClick={discardAndContinue}>Descartar e sair</button>
+            </div>
+        </AccessibleDialog>
+      ) : null}
     </div>
   );
 }

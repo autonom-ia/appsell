@@ -25,6 +25,17 @@ describe("mutation protection", () => {
     expect(verifyCsrfToken(null, "opaque-session-a", "POST:/auth/logout", key)).toBe(false);
   });
 
+  it("keeps draft update and publication tokens on distinct stable actions", () => {
+    const key = randomBytes(32);
+    const updateAction = "PATCH:/api/products";
+    const publishAction = "POST:/api/products/publications";
+    const update = deriveCsrfToken("opaque-session-a", updateAction, key);
+    const publish = deriveCsrfToken("opaque-session-a", publishAction, key);
+    expect(update).not.toBe(publish);
+    expect(verifyCsrfToken(update, "opaque-session-a", updateAction, key)).toBe(true);
+    expect(verifyCsrfToken(update, "opaque-session-a", publishAction, key)).toBe(false);
+  });
+
   it("requires a canonical independent 32-byte key", () => {
     const encoded = randomBytes(32).toString("base64");
     const key = parseCsrfKey(encoded, []);

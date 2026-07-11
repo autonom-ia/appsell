@@ -16,10 +16,11 @@ interface ServerSession {
 }
 
 interface ApiRequest {
-  method: "GET" | "POST" | "PUT";
+  method: "GET" | "POST" | "PUT" | "PATCH";
   path: string;
   capability: "identity.sync" | "platform.grants.read" | "seller.list" | "seller.onboard" |
-    "catalog.draft.read" | "catalog.draft.create";
+    "catalog.draft.read" | "catalog.draft.create" | "catalog.draft.update" |
+    "catalog.draft.preview" | "catalog.publication.read" | "catalog.publication.create";
   sellerOrganizationId?: string;
   body?: Record<string, unknown>;
 }
@@ -115,6 +116,104 @@ export async function createDomainProductDraft(
       title: input.productTitle,
       description: input.productDescription,
       course_title: input.courseTitle
+    }
+  });
+}
+
+export async function readDomainProductDraft(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}`,
+    capability: "catalog.draft.read",
+    sellerOrganizationId
+  });
+}
+
+export async function updateDomainProductDraft(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  input: {
+    idempotencyKey: string;
+    expectedProductVersion: number;
+    expectedCourseVersion: number;
+    expectedOfferVersion: number;
+    courseId: string;
+    offerId: string;
+    slug: string;
+    productTitle: string;
+    productDescription: string;
+    courseTitle: string;
+    offerTitle: string;
+    offerSummary: string;
+  }
+) {
+  return domainRequest(sessionId, session, {
+    method: "PATCH",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}`,
+    capability: "catalog.draft.update",
+    sellerOrganizationId,
+    body: {
+      idempotency_key: input.idempotencyKey,
+      course_id: input.courseId,
+      offer_id: input.offerId,
+      expected_product_version: input.expectedProductVersion,
+      expected_course_version: input.expectedCourseVersion,
+      expected_offer_version: input.expectedOfferVersion,
+      slug: input.slug,
+      title: input.productTitle,
+      description: input.productDescription,
+      course_title: input.courseTitle,
+      offer_title: input.offerTitle,
+      offer_summary: input.offerSummary
+    }
+  });
+}
+
+export async function previewDomainProductDraft(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}/preview`,
+    capability: "catalog.draft.preview",
+    sellerOrganizationId
+  });
+}
+
+export async function publishDomainProductDraft(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  input: {
+    idempotencyKey: string;
+    expectedProductVersion: number;
+    expectedOfferVersion: number;
+    offerId: string;
+    courseVersions: Array<{ id: string; version: number }>;
+  }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}/publications`,
+    capability: "catalog.publication.create",
+    sellerOrganizationId,
+    body: {
+      idempotency_key: input.idempotencyKey,
+      offer_id: input.offerId,
+      expected_product_version: input.expectedProductVersion,
+      course_versions: input.courseVersions,
+      expected_offer_version: input.expectedOfferVersion
     }
   });
 }
