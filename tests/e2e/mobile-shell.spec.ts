@@ -199,9 +199,15 @@ test("creates a tenant-scoped product draft in the mobile UI", async ({ page }, 
   await page.evaluate(() => { document.documentElement.style.fontSize = "200%"; });
   const scaled = await page.evaluate(() => ({
     client: document.documentElement.clientWidth,
-    scroll: document.documentElement.scrollWidth
+    scroll: document.documentElement.scrollWidth,
+    offenders: [...document.querySelectorAll("body *")].flatMap((element) => {
+      const rect = element.getBoundingClientRect();
+      return rect.right > document.documentElement.clientWidth + 1 || rect.left < -1
+        ? [{ tag: element.tagName, className: element.className, text: element.textContent?.trim().slice(0, 80), left: rect.left, right: rect.right, width: rect.width }]
+        : [];
+    }).slice(0, 10)
   }));
-  expect(scaled.scroll).toBeLessThanOrEqual(scaled.client);
+  expect(scaled.scroll, JSON.stringify(scaled.offenders)).toBeLessThanOrEqual(scaled.client);
 });
 
 test("covers the approved responsive widths", async ({ page }, testInfo) => {

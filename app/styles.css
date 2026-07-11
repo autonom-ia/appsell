@@ -36,7 +36,7 @@ a:focus-visible, button:focus-visible { outline: 3px solid rgba(59,130,246,.55);
 .eyebrow { margin-bottom: 8px; color: var(--blue); font-size: .72rem; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; }
 .demo-pill { display: inline-flex; align-items: center; min-height: 28px; padding: 4px 10px; border: 1px solid rgba(59,130,246,.28); border-radius: 99px; background: rgba(59,130,246,.08); color: var(--blue); font-size: .67rem; font-weight: 800; letter-spacing: .1em; }
 .brand-mark { display: grid; width: 42px; height: 42px; place-items: center; flex: 0 0 auto; border-radius: 14px; background: linear-gradient(135deg, var(--bright), var(--sky)); box-shadow: 0 8px 18px rgba(59,130,246,.3); color: #fff; font-size: 1.25rem; font-weight: 800; }
-.primary-button { display: inline-flex; min-height: 48px; align-items: center; justify-content: center; gap: 12px; padding: 0 20px; border: 0; border-radius: 15px; background: linear-gradient(135deg, var(--blue), var(--bright)); box-shadow: 0 12px 24px rgba(30,58,138,.22); color: #fff; font-weight: 750; cursor: pointer; transition: transform 180ms ease, box-shadow 180ms ease, opacity 180ms ease; }
+.primary-button { display: inline-flex; min-width: 0; max-width: 100%; min-height: 48px; align-items: center; justify-content: center; gap: 12px; padding: 0 20px; border: 0; border-radius: 15px; background: linear-gradient(135deg, var(--blue), var(--bright)); box-shadow: 0 12px 24px rgba(30,58,138,.22); color: #fff; font-weight: 750; cursor: pointer; text-align: center; white-space: normal; overflow-wrap: anywhere; transition: transform 180ms ease, box-shadow 180ms ease, opacity 180ms ease; }
 .primary-button:hover { transform: translateY(-1px); box-shadow: 0 16px 28px rgba(30,58,138,.27); }
 .primary-button.disabled, .primary-button:disabled { opacity: .55; box-shadow: none; cursor: not-allowed; transform: none; }
 .primary-button[aria-disabled="true"] { opacity: .62; box-shadow: none; cursor: not-allowed; transform: none; }
@@ -156,7 +156,7 @@ a:focus-visible, button:focus-visible { outline: 3px solid rgba(59,130,246,.55);
 .private-badge { min-height: 36px; padding: 0 12px; display: inline-flex; align-items: center; border: 1px solid rgba(8,122,75,.22); border-radius: 99px; background: #e6f7ef; color: var(--success); font-size: .72rem; font-weight: 800; }
 .tenant-picker { padding: 18px; border: 1px solid var(--border); border-radius: var(--radius-md); background: rgba(255,255,255,.82); box-shadow: var(--shadow-sm); }
 .tenant-picker label { display: block; margin-bottom: 8px; color: var(--ink); font-size: .75rem; font-weight: 800; }
-.tenant-picker select { width: 100%; min-height: 48px; padding: 0 42px 0 14px; border: 1px solid var(--border); border-radius: 12px; background: white; color: var(--ink); font-size: 1rem; }
+.tenant-picker select { width: 100%; min-width: 0; max-width: 100%; min-height: 48px; padding: 0 42px 0 14px; border: 1px solid var(--border); border-radius: 12px; background: white; color: var(--ink); font-size: 1rem; }
 .tenant-picker select:focus-visible { outline: 3px solid rgba(59,130,246,.25); outline-offset: 2px; border-color: var(--bright); }
 .tenant-picker .form-note, .tenant-picker .form-error { margin: 9px 0 0; font-size: .76rem; line-height: 1.5; }
 .tenant-switch-warning { margin-top: 14px; padding: 14px; display: grid; gap: 13px; border: 1px solid rgba(180,83,9,.25); border-radius: 14px; background: #fff8e7; }
@@ -167,9 +167,9 @@ a:focus-visible, button:focus-visible { outline: 3px solid rgba(59,130,246,.55);
 .product-draft-form { display: grid; gap: 15px; }
 .form-heading h2, .draft-list-heading h2 { margin: 4px 0 8px; font-size: clamp(1.6rem,6vw,2.25rem); }
 .form-heading > p:last-child { margin: 0; color: var(--text); font-size: .85rem; line-height: 1.55; }
-.product-draft-form label { display: grid; gap: 7px; color: var(--ink); font-size: .76rem; font-weight: 800; }
+.product-draft-form label { min-width: 0; display: grid; gap: 7px; color: var(--ink); font-size: .76rem; font-weight: 800; }
 .product-draft-form label > span { color: var(--soft); font-size: .7rem; font-weight: 600; line-height: 1.45; }
-.product-draft-form input, .product-draft-form textarea { width: 100%; min-height: 48px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: #fff; color: var(--ink); font-size: 1rem; line-height: 1.5; resize: vertical; }
+.product-draft-form input, .product-draft-form textarea { width: 100%; min-width: 0; max-width: 100%; min-height: 48px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: #fff; color: var(--ink); font-size: 1rem; line-height: 1.5; resize: vertical; }
 .product-draft-form textarea { min-height: 112px; }
 .product-draft-form input:focus-visible, .product-draft-form textarea:focus-visible { outline: 3px solid rgba(59,130,246,.2); outline-offset: 2px; border-color: var(--bright); }
 .product-draft-form .primary-button { width: 100%; margin-top: 2px; }
