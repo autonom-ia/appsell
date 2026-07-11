@@ -152,6 +152,23 @@ e tamanho dos cinco PDFs antes de alterar a tenant. O comando recusa ambiente
 fora de Local/CI, DSN fora de loopback ou banco sem o marcador explícito; o
 modo demo recusa `NODE_ENV=production`.
 
+Os PDFs ficam fora do web root e são autorizados novamente por
+`entitlement_id + asset_id` antes de cada stream. Em Local/CI, a raiz privada
+padrão é `output/pdf/codex`; em produção, configure obrigatoriamente um diretório
+absoluto em `APPSELL_PRIVATE_LEARNING_ASSET_ROOT`. O processo falha fechado se a
+raiz, o arquivo regular, o tamanho ou o SHA-256 não coincidirem com os metadados
+autorizados pelo domínio.
+
+Para ver a jornada completa em infraestrutura local descartável:
+
+```bash
+./scripts/start-local-demo-preview.sh 3200
+```
+
+Abra `http://localhost:3200` e use os botões de admin ou aluno demo. O script
+cria PostgreSQL, API e Redis isolados; `Ctrl+C` remove containers, volume,
+segredos efêmeros e arquivos gerados. Ele não acessa VPS, DNS ou produção.
+
 ### Ponte BFF→API e onboarding seller Local/CI
 
 O BFF sincroniza a identidade local na API e assina cada chamada interna com um

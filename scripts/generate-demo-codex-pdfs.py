@@ -345,6 +345,7 @@ def main() -> None:
         output = OUTPUT / filename
         build_lesson(index, lesson, output)
         payload = output.read_bytes()
+        asset_id = stable_id(f"asset:{lesson['slug']}")
         manifest.append(
             {
                 "seller_id": stable_id("seller"),
@@ -352,11 +353,14 @@ def main() -> None:
                 "slug": lesson["slug"],
                 "title": lesson["title"],
                 "summary": lesson["summary"],
-                "href": f"/api/library/assets/{lesson['slug']}",
+                "href": (
+                    f"/api/library/items/{stable_id('entitlement:demo-user:codex-na-pratica')}"
+                    f"/assets/{asset_id}"
+                ),
                 "bytes": len(payload),
                 "sha256": hashlib.sha256(payload).hexdigest(),
                 "lesson_id": stable_id(f"lesson:{lesson['slug']}"),
-                "asset_id": stable_id(f"asset:{lesson['slug']}"),
+                "asset_id": asset_id,
             }
         )
     MANIFEST.write_text(

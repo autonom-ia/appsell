@@ -49,17 +49,33 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     const library = await fetch(`${origin}/api/library`, { headers: { cookie: buyer.session } });
     expect(library.status, await library.clone().text()).toBe(200);
     const libraryPayload = await library.json() as {
-      items: Array<{ product: { title: string }; assets: Array<{ seed_key: string }> }>;
+      items: Array<{
+        entitlement_id: string;
+        product: { title: string };
+      }>;
     };
     expect(libraryPayload.items).toHaveLength(1);
     expect(libraryPayload.items[0]?.product.title).toBe("Codex na prática");
-    expect(libraryPayload.items[0]?.assets).toHaveLength(5);
+    expect(libraryPayload.items[0]).not.toHaveProperty("snapshot");
+    expect(libraryPayload.items[0]).not.toHaveProperty("assets");
 
     const firstAsset = manifest[0]!;
-    const pdf = await fetch(`${origin}${firstAsset.href}`, { headers: { cookie: buyer.session } });
+    const entitlementId = libraryPayload.items[0]!.entitlement_id;
+    const player = await fetch(`${origin}/api/library/items/${entitlementId}`, {
+      headers: { cookie: buyer.session }
+    });
+    expect(player.status, await player.clone().text()).toBe(200);
+    const playerPayload = await player.json() as {
+      player: { selected_asset: { href: string } };
+    };
+    const assetHref = playerPayload.player.selected_asset.href;
+    expect(assetHref).toMatch(new RegExp(
+      `^/api/library/items/${entitlementId}/assets/[0-9a-f-]{36}$`
+    ));
+    const pdf = await fetch(`${origin}${assetHref}`, { headers: { cookie: buyer.session } });
     expect(pdf.status, await pdf.clone().text()).toBe(200);
     expect(pdf.headers.get("content-type")).toBe("application/pdf");
-    expect(pdf.headers.get("cache-control")).toBe("private, no-store");
+    expect(pdf.headers.get("cache-control")).toBe("private, no-store, max-age=0");
     expect(pdf.headers.get("x-content-type-options")).toBe("nosniff");
     expect((await pdf.arrayBuffer()).byteLength).toBe(firstAsset.bytes);
 
@@ -74,7 +90,7 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     expect(p95).toBeLessThan(10_000);
 
     const pdfLoad = await Promise.all(Array.from({ length: 100 }, async () => {
-      const response = await fetch(`${origin}${firstAsset.href}`, { headers: { cookie: buyer.session } });
+      const response = await fetch(`${origin}${assetHref}`, { headers: { cookie: buyer.session } });
       await response.arrayBuffer();
       return response.status;
     }));
@@ -85,7 +101,7 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     const adminLibrary = await fetch(`${origin}/api/library`, { headers: { cookie: admin.session } });
     expect(adminLibrary.status, await adminLibrary.clone().text()).toBe(200);
     expect(await adminLibrary.json()).toEqual({ items: [] });
-    const forbiddenPdf = await fetch(`${origin}${firstAsset.href}`, { headers: { cookie: admin.session } });
+    const forbiddenPdf = await fetch(`${origin}${assetHref}`, { headers: { cookie: admin.session } });
     expect(forbiddenPdf.status).not.toBe(200);
 
     browser = await chromium.launch();
@@ -96,12 +112,19 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     await buyerPage.waitForURL(`${origin}/library`);
     await pwExpect(buyerPage.getByRole("heading", { name: "Minha biblioteca" })).toBeVisible();
     await pwExpect(buyerPage.getByRole("heading", { level: 2, name: "Codex na prática", exact: true })).toBeVisible();
-    await pwExpect(buyerPage.getByRole("link", { name: /Abrir material em PDF/ })).toHaveCount(5);
+    await buyerPage.getByRole("link", { name: "Começar curso" }).click();
+    await buyerPage.waitForURL(/\/library\/items\/[0-9a-f-]+\/lessons\/[0-9a-f-]+$/);
+    await pwExpect(buyerPage.getByRole("heading", { level: 1, name: "O que é Codex e quando usar" })).toBeVisible();
+    await pwExpect(buyerPage.getByRole("link", { name: /Abrir PDF/ })).toHaveCount(1);
+    await buyerPage.getByRole("button", { name: "Concluir e avançar" }).click();
+    await pwExpect(buyerPage.getByRole("heading", { level: 1, name: "Como preparar contexto, repo e objetivo" })).toBeVisible();
+    await buyerPage.goto(`${origin}/library`);
+    await buyerPage.getByRole("link", { name: "Continuar curso" }).click();
+    await pwExpect(buyerPage.getByRole("heading", { level: 1, name: "Como preparar contexto, repo e objetivo" })).toBeVisible();
     await pwExpect(buyerPage.getByRole("link", { name: "Produtos" })).toHaveCount(0);
-    const buyerNav = buyerPage.getByRole("navigation", { name: "Navegação móvel" });
-    const navBox = await buyerNav.getByRole("link", { name: "Minha biblioteca" }).boundingBox();
-    expect(navBox?.width ?? 0).toBeGreaterThanOrEqual(360);
-    const browserPdf = await buyerPage.request.get(`${origin}${firstAsset.href}`);
+    const backBox = await buyerPage.getByRole("link", { name: "Minha biblioteca" }).boundingBox();
+    expect(backBox?.height ?? 0).toBeGreaterThanOrEqual(44);
+    const browserPdf = await buyerPage.request.get(`${origin}${assetHref}`);
     expect(browserPdf.status()).toBe(200);
     expect(browserPdf.headers()["content-type"]).toBe("application/pdf");
     await buyerContext.close();
@@ -115,7 +138,7 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     await pwExpect(adminPage.getByRole("link", { name: "Produtos" }).first()).toBeVisible();
     await adminPage.goto(`${origin}/library`);
     await pwExpect(adminPage.getByText("Nenhum produto ativo está disponível para esta conta.")).toBeVisible();
-    expect((await adminPage.request.get(`${origin}${firstAsset.href}`)).status()).not.toBe(200);
+    expect((await adminPage.request.get(`${origin}${assetHref}`)).status()).not.toBe(200);
     await adminContext.close();
   } finally {
     await browser?.close();

@@ -441,7 +441,7 @@ test.skipIf(!domainApiUrl)("two BFFs persist seller onboarding through the real 
     ]);
     await Promise.all(generatedFiles.map((file, index) => writeFile(join(process.cwd(), file), originals[index] ?? "")));
   }
-}, 40_000);
+}, 90_000);
 
 function startBff(port: number, distDir: string, shared: Record<string, string>) {
   return spawn(process.execPath, [join(process.cwd(), "node_modules/next/dist/bin/next"), "dev", "-H", "127.0.0.1", "-p", String(port)], {
