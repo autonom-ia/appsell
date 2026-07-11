@@ -365,10 +365,23 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   const scaled = await page.evaluate(() => ({
     client: document.documentElement.clientWidth,
     scroll: document.documentElement.scrollWidth,
-    clipped: [...document.querySelectorAll("a,button,input,select,textarea")].flatMap((element) => { const rect = element.getBoundingClientRect(); return rect.width > 0 && (rect.left < -1 || rect.right > document.documentElement.clientWidth + 1) ? [element.textContent?.trim() || element.getAttribute("name")] : []; })
+    scrollX: window.scrollX,
+    active: document.activeElement instanceof HTMLElement ? document.activeElement.textContent?.trim() || document.activeElement.getAttribute("name") : null,
+    clipped: [...document.querySelectorAll("a,button,input,select,textarea")].flatMap((element) => {
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0 || (rect.left >= -1 && rect.right <= document.documentElement.clientWidth + 1)) return [];
+      const parentRect = element.parentElement?.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return [{
+        text: element.textContent?.trim() || element.getAttribute("name"),
+        rect: { left: rect.left, right: rect.right, width: rect.width },
+        parent: parentRect ? { left: parentRect.left, right: parentRect.right, width: parentRect.width } : null,
+        style: { display: style.display, width: style.width, minWidth: style.minWidth, maxWidth: style.maxWidth, paddingInline: style.paddingInline, justifySelf: style.justifySelf }
+      }];
+    })
   }));
   expect(scaled.scroll).toBeLessThanOrEqual(scaled.client);
-  expect(scaled.clipped).toEqual([]);
+  expect(scaled.clipped, JSON.stringify(scaled)).toEqual([]);
   await page.evaluate(() => { document.documentElement.style.fontSize = "100%"; });
   await page.setViewportSize({ width: 568, height: 320 });
   const landscape = await page.evaluate(() => ({ client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }));
