@@ -366,7 +366,7 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
     client: document.documentElement.clientWidth,
     scroll: document.documentElement.scrollWidth,
     scrollX: window.scrollX,
-    active: document.activeElement instanceof HTMLElement ? document.activeElement.textContent?.trim() || document.activeElement.getAttribute("name") : null,
+    active: document.activeElement instanceof HTMLElement ? { tag: document.activeElement.tagName, text: (document.activeElement.textContent?.trim() || document.activeElement.getAttribute("name"))?.slice(0, 80) } : null,
     clipped: [...document.querySelectorAll("a,button,input,select,textarea")].flatMap((element) => {
       const rect = element.getBoundingClientRect();
       if (rect.width <= 0 || (rect.left >= -1 && rect.right <= document.documentElement.clientWidth + 1)) return [];

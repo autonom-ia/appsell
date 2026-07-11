@@ -256,7 +256,8 @@ a:focus-visible, button:focus-visible { outline: 3px solid rgba(59,130,246,.55);
 .preview-blocked p { color: var(--text); line-height: 1.6; }
 .preview-blocked .secondary-button { width: 100%; }
 .publish-panel h2 { margin: 0; font-size: clamp(1.7rem,7vw,2.5rem); }
-.publish-panel > .primary-button { width: 100%; justify-self: stretch; }
+.publish-panel > .primary-button { width: 100%; contain: inline-size; justify-self: stretch; }
+.publish-panel > .primary-button > span { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 .readiness-list { margin: 4px 0; padding: 0; display: grid; gap: 9px; list-style: none; }
 .readiness-list li { min-width: 0; padding: 12px; display: grid; grid-template-columns: 32px minmax(0,1fr); gap: 10px; align-items: start; border: 1px solid var(--border); border-radius: 13px; }
 .readiness-list li > span:first-child { display: grid; width: 32px; height: 32px; place-items: center; border-radius: 50%; background: #eef2f6; color: var(--soft); font-weight: 900; }
