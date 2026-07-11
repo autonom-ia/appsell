@@ -577,6 +577,7 @@ test("authors and reorders a tenant curriculum at 320px without drag", async ({ 
   const scaled = await page.evaluate(() => ({
     client: document.documentElement.clientWidth,
     scroll: document.documentElement.scrollWidth,
+    moduleIntrinsicInlineSize: getComputedStyle(document.querySelector(".curriculum-module")!).containIntrinsicInlineSize,
     clipped: [...document.querySelectorAll("a,button,input,textarea,summary")].flatMap((element) => {
       const rect = element.getBoundingClientRect();
       return rect.width > 0 && (rect.left < -1 || rect.right > document.documentElement.clientWidth + 1)
@@ -585,6 +586,7 @@ test("authors and reorders a tenant curriculum at 320px without drag", async ({ 
     })
   }));
   expect(scaled.scroll).toBeLessThanOrEqual(scaled.client);
+  expect(scaled.moduleIntrinsicInlineSize).not.toContain("520px");
   expect(scaled.clipped, JSON.stringify(scaled)).toEqual([]);
   await page.evaluate(() => { document.documentElement.style.fontSize = "100%"; });
   await page.setViewportSize({ width: 568, height: 320 });
