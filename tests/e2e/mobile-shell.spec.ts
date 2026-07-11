@@ -28,7 +28,10 @@ test("keeps the core journey usable without horizontal overflow", async ({ page 
 });
 
 test("does not render protected preview content for an anonymous request", async ({ request }) => {
-  const response = await request.get("/dashboard", { maxRedirects: 0 });
+  const response = await request.get("/dashboard", {
+    maxRedirects: 0,
+    headers: { "x-appsell-demo-persona": "buyer" }
+  });
   expect(response.status()).toBe(307);
   expect(response.headers().location).toBe("/");
   const body = await response.text();

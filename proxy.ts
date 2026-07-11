@@ -18,7 +18,10 @@ export async function proxy(request: NextRequest) {
     if (demoProfile?.persona === "buyer" && !request.nextUrl.pathname.startsWith("/library")) {
       return NextResponse.redirect(new URL("/library", request.url));
     }
-    return NextResponse.next();
+    const requestHeaders = new Headers(request.headers);
+    requestHeaders.delete("x-appsell-demo-persona");
+    if (demoProfile) requestHeaders.set("x-appsell-demo-persona", demoProfile.persona);
+    return NextResponse.next({ request: { headers: requestHeaders } });
   } catch {
     return NextResponse.redirect(new URL("/?error=session_unavailable", request.url));
   }
