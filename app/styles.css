@@ -225,7 +225,7 @@ a:focus-visible, button:focus-visible { outline: 3px solid rgba(59,130,246,.55);
 .editor-section-nav a.active { border-color: rgba(30,58,138,.42); background: var(--blue); color: rgba(255,255,255,.74); box-shadow: 0 10px 24px rgba(30,58,138,.16); }
 .editor-section-nav a.active strong { color: #fff; }
 .editor-form { min-width: 0; padding-bottom: 88px; }
-.editor-form fieldset, .publish-panel { min-width: 0; margin: 0; padding: 20px; display: grid; gap: 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow-sm); }
+.editor-form fieldset, .publish-panel { min-width: 0; margin: 0; padding: 20px; display: grid; grid-template-columns: minmax(0,1fr); gap: 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow-sm); }
 .editor-form fieldset:disabled { opacity: .68; }
 .editor-form legend { width: 100%; padding: 0 0 14px; color: var(--ink); font-size: clamp(1.45rem,6vw,2.1rem); font-weight: 800; letter-spacing: -.035em; }
 .section-intro, .publish-panel > p { margin: 0; color: var(--text); font-size: .84rem; line-height: 1.6; }
