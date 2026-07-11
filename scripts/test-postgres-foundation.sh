@@ -57,6 +57,8 @@ export APPSELL_TEST_BOOTSTRAP_KEY_HEX="$bootstrap_key"
 uv run --project apps/api pytest \
   apps/api/tests/test_postgres_foundation.py \
   apps/api/tests/test_postgres_bff_onboarding.py \
+  apps/api/tests/test_postgres_product_course.py \
+  apps/api/tests/test_api_catalog.py \
   apps/api/tests/test_api_onboarding.py
 if uv run --project apps/api python -m appsell_api.configure_context_key 2>/dev/null; then
   echo "configure_context_key re-enabled a consumed bootstrap" >&2

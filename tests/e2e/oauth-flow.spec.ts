@@ -59,9 +59,18 @@ test("keeps the opaque session out of browser-readable surfaces", async ({ conte
       url: location.href
     };
   });
-  expect(exposure.documentCookie).toMatch(
-    /^appsell_csrf=[A-Za-z0-9_-]+; appsell_seller_csrf=[A-Za-z0-9_-]+$/
-  );
+  const readableCookies = Object.fromEntries(exposure.documentCookie.split("; ").map((cookie) => {
+    const separator = cookie.indexOf("=");
+    return [cookie.slice(0, separator), cookie.slice(separator + 1)];
+  }));
+  expect(Object.keys(readableCookies).sort()).toEqual([
+    "appsell_csrf",
+    "appsell_product_csrf",
+    "appsell_seller_csrf"
+  ]);
+  for (const value of Object.values(readableCookies)) {
+    expect(value).toMatch(/^[A-Za-z0-9_-]+$/);
+  }
   expect(exposure.documentCookie).not.toContain("appsell_session");
   expect(exposure.localStorage).toEqual([]);
   expect(exposure.sessionStorage).toEqual([]);
@@ -108,7 +117,7 @@ test("preserves a legitimate transaction after an invalid callback", async ({ co
   expect(finalCookies.some((cookie) => cookie.name === "appsell_session")).toBe(true);
 });
 
-test("rejects a forged session before reading an oversized seller body", async ({ context, page }) => {
+test("rejects a forged session before reading oversized mutation bodies", async ({ context, page }) => {
   await context.addCookies([{
     name: "appsell_session",
     value: "forged-session",
@@ -116,15 +125,20 @@ test("rejects a forged session before reading an oversized seller body", async (
     httpOnly: true,
     sameSite: "Lax"
   }]);
-  const response = await page.request.post("/api/sellers", {
-    headers: {
-      origin: "http://localhost:3000",
-      "content-type": "application/x-www-form-urlencoded;charset=UTF-8"
-    },
-    data: `padding=${"x".repeat(20_000)}`
-  });
-  expect(response.status()).toBe(401);
-  expect(await response.json()).toEqual({ error: "unauthorized" });
+  for (const endpoint of [
+    "/api/sellers",
+    "/api/sellers/52000000-0000-4000-8000-000000000001/products"
+  ]) {
+    const response = await page.request.post(endpoint, {
+      headers: {
+        origin: "http://localhost:3000",
+        "content-type": "application/x-www-form-urlencoded;charset=UTF-8"
+      },
+      data: `padding=${"x".repeat(20_000)}`
+    });
+    expect(response.status()).toBe(401);
+    expect(await response.json()).toEqual({ error: "unauthorized" });
+  }
 });
 
 test("rejects forged origin and CSRF before revoking a same-origin session", async ({ browser, context, page }) => {

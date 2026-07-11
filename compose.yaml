@@ -41,7 +41,7 @@ services:
       - "127.0.0.1:${APPSELL_POSTGRES_PORT:-55432}:5432"
     volumes:
       - appsell_postgres_data:/var/lib/postgresql/data
-      - ./infra/postgres/init/001_roles.sh:/docker-entrypoint-initdb.d/001_roles.sh:ro
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d appsell"]
       interval: 2s

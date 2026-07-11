@@ -14,6 +14,10 @@ export function sellerCsrfCookieName(production = process.env.NODE_ENV === "prod
   return production ? "__Host-appsell_seller_csrf" : "appsell_seller_csrf";
 }
 
+export function productCsrfCookieName(production = process.env.NODE_ENV === "production") {
+  return production ? "__Host-appsell_product_csrf" : "appsell_product_csrf";
+}
+
 export function sessionCookieOptions(production = process.env.NODE_ENV === "production") {
   return {
     httpOnly: true as const,

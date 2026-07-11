@@ -17,8 +17,10 @@ interface ServerSession {
 
 interface ApiRequest {
   method: "GET" | "POST" | "PUT";
-  path: "/v1/me" | "/v1/me/sellers";
-  capability: "identity.sync" | "platform.grants.read" | "seller.list" | "seller.onboard";
+  path: string;
+  capability: "identity.sync" | "platform.grants.read" | "seller.list" | "seller.onboard" |
+    "catalog.draft.read" | "catalog.draft.create";
+  sellerOrganizationId?: string;
   body?: Record<string, unknown>;
 }
 
@@ -77,6 +79,46 @@ export async function onboardDomainSeller(
   });
 }
 
+export async function listDomainProductDrafts(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products`,
+    capability: "catalog.draft.read",
+    sellerOrganizationId
+  });
+}
+
+export async function createDomainProductDraft(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  input: {
+    idempotencyKey: string;
+    slug: string;
+    productTitle: string;
+    productDescription: string;
+    courseTitle: string;
+  }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products`,
+    capability: "catalog.draft.create",
+    sellerOrganizationId,
+    body: {
+      idempotency_key: input.idempotencyKey,
+      slug: input.slug,
+      title: input.productTitle,
+      description: input.productDescription,
+      course_title: input.courseTitle
+    }
+  });
+}
+
 async function domainRequest(
   sessionId: string,
   session: ServerSession,
@@ -92,7 +134,7 @@ async function domainRequest(
       sub: session.subject
     },
     capability: request.capability,
-    sellerOrganizationId: null,
+    sellerOrganizationId: request.sellerOrganizationId ?? null,
     method: request.method,
     path: request.path,
     body
