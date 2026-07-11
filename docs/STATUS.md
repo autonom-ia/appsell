@@ -8,7 +8,7 @@ Atualizado em pontos de marco (PR aberta, deploy, incidente). Diferente de MEMOR
 |-----------|:------:|--------------------|
 | Build | 🟢 web + API container local verdes | 2026-07-11 |
 | Testes | 🟢 84 web + 137 Python/PG/API + 3 verticais BFF + 42 browser; build verde | 2026-07-11 |
-| CI | 🟢 PRs #35/#36/#37 verdes; #38 ainda local/empilhada | 2026-07-11 |
+| CI | 🟢 PRs #35/#36/#37 verdes; PR #39 aberta/empilhada | 2026-07-11 |
 | Deploy produção | 🟡 não configurado/não executado | 2026-07-10 |
 | Harness instalado em `main` | 2.0.2 | 2026-07-10 |
 | Harness upgrade | 🟢 PR #37 em 2.1.2, review e 10/10 checks verdes; sem merge | 2026-07-11 |
@@ -109,8 +109,8 @@ Gates reais: 84 web, 137 Python/PG/API, 3 verticais BFF/API/PG, 42 Playwright +
 
 ## Próxima ação
 
-Concluir review crítico da Issue #38, abrir PR empilhada sobre #36 e executar
-CI no SHA remoto. Identity real (#13), KMS (#19), billing/Financial e produção
+Aguardar CI e review do SHA remoto da PR #39, empilhada sobre #36. Identity
+real (#13), KMS (#19), billing/Financial e produção
 continuam bloqueados até ambientes e contratos reais.
 
 ## Links

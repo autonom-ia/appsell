@@ -133,6 +133,6 @@ Fase 5 — player, progresso e retomada multitenant em Local/CI.
 
 ## Próximo passo recomendado
 
-Concluir review crítico da Issue #38, abrir PR empilhada sobre #36 e passar CI
-remoto. Não declarar acesso real de `comercial@autonomia.site`: isso depende do
+Aguardar CI e review do SHA remoto da PR #39, empilhada sobre #36. Não declarar
+acesso real de `comercial@autonomia.site`: isso depende do
 Identity #13 e de ambiente isolado com token/JWKS/MFA reais.

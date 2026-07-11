@@ -37,19 +37,19 @@ Project status:
 ## Sessão: 2026-07-11 22:00 — player, progresso e retomada multitenant
 Issue: #38
 Branch: feat/38-learning-progress
-PR: não aberta
-Estado: em_progresso
+PR: #39
+Estado: pr_aberta
 Modelo: strong + human
 Arquivos alterados: migration 0007, FastAPI/BFF learning, player e library mobile-first, asset stream tenant-bound, testes PG/API/BFF/E2E e docs
 Comandos executados: lint; typecheck; Vitest; Ruff; mypy; pytest; audit; build; Playwright Chromium/WebKit; production fail-closed; test-postgres-foundation; review de design/tenancy/API
 Validação: local verde — 84 web, 137 PostgreSQL/API, 3 BFF verticais reais, 42 browser + 4 skips deliberados; build sem warning e audits verdes
-Bloqueios: review final/PR/CI remoto; Identity real #13, KMS #19, Financial/Neuro, storage externo e produção continuam bloqueados
-Próxima ação: concluir review final, abrir PR empilhada sobre #36 e executar CI remoto; não fazer merge/deploy
+Bloqueios: CI/review remoto; Identity real #13, KMS #19, Financial/Neuro, storage externo e produção continuam bloqueados
+Próxima ação: aguardar CI e review do SHA da PR #39; não fazer merge/deploy
 Project status:
   - Projeto: Studio
-  - Status: Em desenvolvimento
+  - Status: PR aberta
   - Tipo: Feature
   - Prioridade: P0
   - Risco: Alto
   - Ambiente: Local
-  - Próxima ação: concluir review final, abrir PR empilhada e executar CI exato
+  - Próxima ação: aguardar CI e review do SHA da PR #39
