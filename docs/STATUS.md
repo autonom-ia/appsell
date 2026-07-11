@@ -8,7 +8,7 @@ Atualizado em pontos de marco (PR aberta, deploy, incidente). Diferente de MEMOR
 |-----------|:------:|--------------------|
 | Build | 🟢 web + API/PDF sandbox containers locais verdes | 2026-07-12 |
 | Testes | 🟢 116 web + suíte Python + 148 PG/API + 3 BFF + 3 storage; 31 browser focados | 2026-07-12 |
-| CI | 🟢 PRs #35/#36/#37 verdes; PR #39 aberta/empilhada | 2026-07-11 |
+| CI | 🟢 PRs #35/#36/#37/#39 e #41 verdes | 2026-07-12 |
 | Deploy produção | 🟡 não configurado/não executado | 2026-07-10 |
 | Harness instalado em `main` | 2.0.2 | 2026-07-10 |
 | Harness upgrade | 🟢 PR #37 em 2.1.2, review e 10/10 checks verdes; sem merge | 2026-07-11 |
@@ -31,7 +31,8 @@ Este marco é Local/CI; não é o Identity real e não concede conta de produç�
 quarentena, verificação PDF isolada, worker, publicação imutável e download
 autorizado por entitlement. Gates reais: 116 Vitest, suíte Python, 148 PG/API,
 3 verticais BFF, 3 verticais storage, 31 Playwright focados + 5 skips
-deliberados, build e audits verdes. PR ainda não aberta.
+deliberados, build e audits verdes. PR #41 aberta e os três checks remotos
+verdes no SHA `0b416e4`.
 
 ## O que está funcionando
 
@@ -108,8 +109,8 @@ deliberados, build e audits verdes. PR ainda não aberta.
 - Refresh real com Identity — bloqueado por #13.
 - KMS real/vault HA — provider/infra/staging não decididos — Issue #19.
 - Staging/VPS/TLS — não certificado e fora do escopo atual — Issue #5.
-- Assets privados da Issue #40 ainda dependem de review final, PR, CI remoto e
-  merges ordenados; esta branch permanece somente Local/CI.
+- Assets privados da Issue #40 estão na PR #41, com review crítico e CI verdes;
+  ainda dependem de aprovação/merges ordenados e permanecem somente Local/CI.
 - Capacidade de lançamento para 100 tenants/clientes ainda não está certificada:
   os testes cobrem 100 buyers no banco e 100 requisições concorrentes full-path,
   mas não um soak/load test de 100 tenants com p95/p99 em staging.
@@ -122,9 +123,9 @@ deliberados, build e audits verdes. PR ainda não aberta.
 
 ## Próxima ação
 
-Concluir review crítico da Issue #40 com P0/P1/P2/P3 zerados, abrir PR e mover o
-Project para `Em review`, sem merge ou deploy. Identity real (#13), KMS (#19),
-billing/Financial, storage externo de staging e produção continuam bloqueados.
+Aguardar decisão humana e merges empilhados #35 → #36 → #39 → #41, sem deploy.
+Identity real (#13), KMS (#19), billing/Financial, storage externo de staging e
+produção continuam bloqueados.
 
 ## Links
 

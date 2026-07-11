@@ -83,7 +83,8 @@ Fase 5 — entrega de conteúdo e assets privados multitenant em Local/CI.
   como bootstrap local, sem alegação de acesso no Identity real;
 - gates locais atuais: 116 Vitest, suíte Python, Ruff/mypy, 148 PG/API, 3 BFF,
   3 storage, 31 Playwright focados + 5 skips deliberados, build e audit Node;
-- aguardando review crítico final e abertura de PR; nenhum merge/deploy;
+- PR #41 aberta, review crítico P0/P1/P2/P3 zerado e três checks remotos verdes
+  no SHA `0b416e4`; aguardando decisão e merges empilhados, sem deploy;
 
 - Issue #38 na branch `feat/38-learning-progress`: migration 0007, player
   mobile-first, progresso monotônico/idempotente e retomada multi-course;
@@ -147,6 +148,6 @@ Fase 5 — entrega de conteúdo e assets privados multitenant em Local/CI.
 
 ## Próximo passo recomendado
 
-Aguardar CI e review do SHA remoto da PR #39, empilhada sobre #36. Não declarar
-acesso real de `comercial@autonomia.site`: isso depende do
-Identity #13 e de ambiente isolado com token/JWKS/MFA reais.
+Aguardar decisão e merges empilhados #35 → #36 → #39 → #41. Não declarar acesso
+real de `comercial@autonomia.site`: isso depende do Identity #13 e de ambiente
+isolado com token/JWKS/MFA reais.
