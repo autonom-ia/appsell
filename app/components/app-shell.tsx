@@ -6,11 +6,20 @@ import { useEffect, useRef, useState } from "react";
 import type { FormEvent, MouseEvent, ReactNode } from "react";
 import { AccessibleDialog } from "./accessible-dialog";
 import { allowUnsavedNavigation, DIRTY_HISTORY_BLOCKED_EVENT, DIRTY_HISTORY_CONTINUE_EVENT, DIRTY_NAVIGATION_REQUEST_EVENT, DIRTY_STATE_EVENT } from "./use-unsaved-changes";
-import type { DemoProfile } from "@/lib/demo-config";
+import {
+  DEMO_ADMIN_EMAIL,
+  DEMO_BUYER_EMAIL,
+  type DemoProfile
+} from "@/lib/demo-config";
+
+type DemoShellProfile = Pick<DemoProfile, "persona" | "email" | "label" | "home">;
+type ProfileState =
+  | { status: "loading" }
+  | { status: "ready"; profile: DemoShellProfile | null }
+  | { status: "failed" };
 
 interface AppShellProps {
   children: ReactNode;
-  demoProfile?: DemoProfile | null;
 }
 
 const navigation = [
@@ -43,18 +52,36 @@ function LogoutForm({ mobile = false, onAttempt }: { mobile?: boolean; onAttempt
   return <form action="/auth/logout" method="post" onSubmit={attachCsrf}><input type="hidden" name="_csrf" defaultValue=""/><button className={mobile ? "mobile-logout" : "logout-button"} type="submit" aria-label={mobile ? "Sair com segurança" : undefined}>{mobile ? "Sair" : "Sair com segurança"}</button><noscript><small>Ative JavaScript para assinar o logout com segurança.</small></noscript></form>;
 }
 
-export function AppShell({ children, demoProfile }: AppShellProps) {
+export function AppShell({ children }: AppShellProps) {
   const pathname = usePathname();
   const router = useRouter();
   const [pageDirty, setPageDirty] = useState(false);
+  const [profileState, setProfileState] = useState<ProfileState>({ status: "loading" });
   const [pendingAction, setPendingAction] = useState<{ type: "navigate"; href: string } | { type: "logout"; form: HTMLFormElement } | { type: "history" } | null>(null);
   const cancelDialogButton = useRef<HTMLButtonElement>(null);
   const dirtyDialogTrigger = useRef<HTMLElement | null>(null);
   const allowNextLogout = useRef(false);
-  const visibleNavigation = demoProfile?.persona === "buyer"
-    ? navigation.filter((item) => item.href === "/library")
-    : navigation;
-  const home = demoProfile?.home ?? "/dashboard";
+  const demoProfile = profileState.status === "ready" ? profileState.profile : undefined;
+  const visibleNavigation = profileState.status !== "ready"
+    ? []
+    : demoProfile?.persona === "buyer"
+      ? navigation.filter((item) => item.href === "/library")
+      : navigation;
+  const home = profileState.status === "ready" ? demoProfile?.home ?? "/dashboard" : pathname;
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetch("/api/session", { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("session_profile_unavailable");
+        return response.json() as Promise<unknown>;
+      })
+      .then((payload) => setProfileState(parseProfileState(payload)))
+      .catch(() => {
+        if (!controller.signal.aborted) setProfileState({ status: "failed" });
+      });
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     const updateDirtyState = (event: Event) => {
@@ -132,7 +159,7 @@ export function AppShell({ children, demoProfile }: AppShellProps) {
           <span><strong>sell<span>.</span></strong><small>by Autonom.ia</small></span>
         </Link>
         <nav>
-          <p className="nav-eyebrow">{demoProfile?.persona === "buyer" ? "Área do aluno" : "Seu negócio"}</p>
+          <p className="nav-eyebrow">{profileState.status === "loading" ? "Carregando acesso" : profileState.status === "failed" ? "Acesso indisponível" : demoProfile?.persona === "buyer" ? "Área do aluno" : "Seu negócio"}</p>
           {visibleNavigation.map((item) => {
             const active = pathname === item.href;
             return <Link key={item.href} href={item.href} onClick={(event) => guardLink(event, item.href)} className={active ? "nav-link active" : "nav-link"} aria-current={active ? "page" : undefined}><NavIcon name={item.mark}/><span>{item.label}</span></Link>;
@@ -140,7 +167,7 @@ export function AppShell({ children, demoProfile }: AppShellProps) {
         </nav>
         <div className="sidebar-footer">
           <span className="avatar" aria-hidden="true">AU</span>
-          <span><strong>{demoProfile ? `${demoProfile.label} demo` : "Ambiente demo"}</strong><small>{demoProfile?.email ?? "Sessão protegida"}</small></span>
+          <span><strong>{demoProfile ? `${demoProfile.label} demo` : profileState.status === "failed" ? "Perfil indisponível" : "Ambiente demo"}</strong><small>{demoProfile?.email ?? "Sessão protegida"}</small></span>
         </div>
         <LogoutForm onAttempt={guardLogout}/>
       </aside>
@@ -175,4 +202,20 @@ export function AppShell({ children, demoProfile }: AppShellProps) {
       ) : null}
     </div>
   );
+}
+
+function parseProfileState(payload: unknown): ProfileState {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return { status: "failed" };
+  if ((payload as Record<string, unknown>).authenticated !== true) return { status: "failed" };
+  const profile = (payload as Record<string, unknown>).demoProfile;
+  if (profile === null) return { status: "ready", profile: null };
+  if (!profile || typeof profile !== "object" || Array.isArray(profile)) return { status: "failed" };
+  const record = profile as Record<string, unknown>;
+  const admin = record.persona === "admin" && record.email === DEMO_ADMIN_EMAIL &&
+    record.label === "Administrador" && record.home === "/dashboard";
+  const buyer = record.persona === "buyer" && record.email === DEMO_BUYER_EMAIL &&
+    record.label === "Aluno" && record.home === "/library";
+  return admin || buyer
+    ? { status: "ready", profile: record as unknown as DemoShellProfile }
+    : { status: "failed" };
 }

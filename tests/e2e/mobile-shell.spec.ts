@@ -2,9 +2,12 @@ import { expect, test } from "@playwright/test";
 
 async function login(page: import("@playwright/test").Page) {
   await page.goto("/");
+  const sessionReady = page.waitForResponse((response) =>
+    response.url().endsWith("/api/session") && response.status() === 200);
   await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
   await expect(page).toHaveURL("/dashboard");
   await expect(page.getByRole("heading", { name: "Bom dia, creator." })).toBeVisible();
+  await sessionReady;
 }
 
 test("keeps the core journey usable without horizontal overflow", async ({ page }) => {
@@ -66,7 +69,7 @@ test("supports keyboard skip navigation and reduced motion", async ({ page }) =>
   expect(Number.parseFloat(transitionDuration)).toBeLessThanOrEqual(0.001);
 });
 
-test("keeps the protected shell mounted without a client-side session waterfall", async ({ page }) => {
+test("reuses the resolved shell profile across client-side navigation", async ({ page }) => {
   await login(page);
   let sessionRequests = 0;
   page.on("response", (response) => {
@@ -76,6 +79,39 @@ test("keeps the protected shell mounted without a client-side session waterfall"
   await expect(page.getByRole("heading", { name: "Produtos", exact: true })).toBeVisible();
   expect(sessionRequests).toBe(0);
   await expect(page.locator(".session-loading")).toHaveCount(0);
+});
+
+test("keeps seller navigation hidden until the shell profile resolves", async ({ page }) => {
+  let releaseSession: (() => void) | undefined;
+  const sessionReleased = new Promise<void>((resolve) => { releaseSession = resolve; });
+  await page.route("**/api/session", async (route) => {
+    await sessionReleased;
+    await route.continue();
+  });
+
+  await page.goto("/");
+  await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
+  await expect(page).toHaveURL("/dashboard");
+  await expect(page.getByRole("heading", { name: "Bom dia, creator." })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Produtos" })).toHaveCount(0);
+  await expect(page.locator(".nav-eyebrow")).toHaveText("Carregando acesso");
+  await expect(page.getByRole("navigation", { name: "Navegação móvel" }).getByRole("link")).toHaveCount(0);
+
+  releaseSession?.();
+  await expect(page.getByRole("link", { name: "Produtos" }).first()).toBeVisible();
+});
+
+test("keeps seller navigation hidden when the shell profile is unavailable", async ({ page }) => {
+  await page.route("**/api/session", async (route) => {
+    await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ authenticated: false }) });
+  });
+
+  await page.goto("/");
+  await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
+  await expect(page).toHaveURL("/dashboard");
+  await expect(page.locator(".nav-eyebrow")).toHaveText("Acesso indisponível");
+  await expect(page.getByRole("link", { name: "Produtos" })).toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "Navegação móvel" }).getByRole("link")).toHaveCount(0);
 });
 
 test("keeps seller onboarding recoverable when the domain API is unavailable", async ({ page }) => {
