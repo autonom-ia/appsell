@@ -1,9 +1,9 @@
 {
   "name": "Autonom.ia Agent Harness",
-  "version": "2.0.2",
+  "version": "2.1.2",
   "source": "https://github.com/autonom-ia/agent-harness",
   "project_url": "https://github.com/users/autonom-ia/projects/3",
-  "installed_at": "2026-07-10T11:45:18Z",
-  "last_checked_at": "2026-07-10T11:45:18Z",
+  "installed_at": "2026-07-11T13:18:16Z",
+  "last_checked_at": "2026-07-11T13:18:16Z",
   "_note": "Legacy file — platform-manifest.json is now canonical for v2+"
 }
