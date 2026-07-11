@@ -8,8 +8,8 @@ set -euo pipefail
 
 psql --set=ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres \
   --set=db_name="$POSTGRES_DB" \
-  --set=migrator_password="$APPSELL_MIGRATOR_PASSWORD" \
-  --set=runtime_password="$APPSELL_RUNTIME_PASSWORD" <<'SQL'
+  --set=migrator_secret="$APPSELL_MIGRATOR_PASSWORD" \
+  --set=runtime_secret="$APPSELL_RUNTIME_PASSWORD" <<'SQL'
 select 'create role appsell_owner nologin nosuperuser nocreatedb nocreaterole noinherit nobypassrls'
 where not exists (select 1 from pg_roles where rolname = 'appsell_owner')\gexec
 
@@ -22,8 +22,8 @@ where not exists (select 1 from pg_roles where rolname = 'appsell_runtime')\gexe
 alter role appsell_owner nologin nosuperuser nocreatedb nocreaterole noinherit nobypassrls;
 alter role appsell_migrator login nosuperuser nocreatedb nocreaterole inherit nobypassrls;
 alter role appsell_runtime login nosuperuser nocreatedb nocreaterole noinherit nobypassrls;
-alter role appsell_migrator password :'migrator_password';
-alter role appsell_runtime password :'runtime_password';
+alter role appsell_migrator password :'migrator_secret';
+alter role appsell_runtime password :'runtime_secret';
 grant appsell_owner to appsell_migrator;
 alter database :"db_name" owner to appsell_owner;
 revoke connect on database :"db_name" from public;
