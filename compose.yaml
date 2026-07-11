@@ -1,0 +1,47 @@
+name: appsell-local
+
+services:
+  api:
+    build:
+      context: ./apps/api
+    environment:
+      APPSELL_API_ENVIRONMENT: local
+      APPSELL_API_DATABASE_URL: postgresql+asyncpg://appsell_runtime:${APPSELL_RUNTIME_PASSWORD:?set in local env}@postgres:5432/appsell
+    ports:
+      - "127.0.0.1:${APPSELL_API_PORT:-58000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready')"
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16.9-alpine@sha256:7c688148e5e156d0e86df7ba8ae5a05a2386aaec1e2ad8e6d11bdf10504b1fb7
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${APPSELL_POSTGRES_SUPERUSER_PASSWORD:?set in local env}
+      POSTGRES_DB: appsell
+      APPSELL_MIGRATOR_PASSWORD: ${APPSELL_MIGRATOR_PASSWORD:?set in local env}
+      APPSELL_RUNTIME_PASSWORD: ${APPSELL_RUNTIME_PASSWORD:?set in local env}
+    ports:
+      - "127.0.0.1:${APPSELL_POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - appsell_postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init/001_roles.sh:/docker-entrypoint-initdb.d/001_roles.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d appsell"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    restart: unless-stopped
+
+volumes:
+  appsell_postgres_data:

@@ -22,3 +22,11 @@ output/playwright/
 test-results/
 playwright-report/
 blob-report/
+
+# Python generated files
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/

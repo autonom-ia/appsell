@@ -78,6 +78,48 @@ usam uma hash tag Redis derivada do namespace `appsell:<ambiente>:<instância>`:
 ficam juntas por instância sem concentrar todas as instâncias no mesmo slot.
 HA/cluster ainda não foi certificado.
 
+## Fundação PostgreSQL/API local
+
+A API de domínio usa FastAPI e PostgreSQL 16 com três roles separadas:
+`appsell_owner` (sem login), `appsell_migrator` e `appsell_runtime`. O runtime
+não é owner e não possui `SUPERUSER` ou `BYPASSRLS`. A migration inicial força
+RLS e valida um contexto transacional assinado antes de liberar dados do seller.
+
+O teste abaixo cria senhas/chave efêmeras, escolhe uma porta livre, sobe um
+PostgreSQL exclusivo, aplica a migration do zero, tenta acesso cross-tenant e
+falsificação de contexto e remove contêiner e volume ao terminar:
+
+```bash
+uv sync --project apps/api --frozen
+./scripts/test-postgres-foundation.sh
+```
+
+Para desenvolvimento manual, copie `.env.example`, substitua todos os valores
+`REPLACE_*` por segredos locais diferentes e execute a migration antes da API:
+
+```bash
+docker compose up -d --wait postgres
+uv run --project apps/api alembic -c apps/api/alembic.ini upgrade head
+uv run --project apps/api python -m appsell_api.configure_context_key
+docker compose up -d --build api
+```
+
+`APPSELL_CONTEXT_SIGNING_KEY_HEX` deve conter 32 bytes aleatórios em hexadecimal
+(`openssl rand -hex 32`). O comando é idempotente para a mesma chave e falha
+fechado se uma chave diferente já estiver configurada; ele nunca imprime o
+segredo. `APPSELL_BOOTSTRAP_ATTESTATION_KEY_HEX` é uma segunda chave, exclusiva
+para atestar os claims fortes do bootstrap e nunca pode reutilizar a chave do
+contexto comum. As três variáveis `APPSELL_BOOTSTRAP_EXPECTED_*` fixam issuer,
+audience e client ID que a atestação assinada de bootstrap precisa apresentar.
+O bootstrap fica desabilitado por padrão, só aceita `APPSELL_BOOTSTRAP_ENABLED=true`
+na janela controlada e se desabilita no banco após o primeiro sucesso. Uma policy
+diferente também falha fechada; rotação exige fluxo próprio e não é feita
+implicitamente no startup.
+
+Esta fundação ainda não concede o superadmin nem integra o Identity externo. O
+bootstrap one-shot exige claims reais verificadas e MFA/passkey; não deve ser
+simulado em produção.
+
 ### Refresh distribuído Local/CI
 
 O contrato server-side de refresh coordena instâncias independentes por Redis,
