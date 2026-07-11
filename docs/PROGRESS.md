@@ -81,7 +81,7 @@ Fase 4B — edição, preview e publicação por snapshot em Local/CI.
 - gates locais: 68 web, 84 PG/API, BFF vertical, 24 Playwright + 4 skips,
   build, production fail-closed e dependency audits verdes;
 - reviews finais tenancy, API/BFF e UI/UX verdes com P0-P2=0;
-- PR/CI remoto ainda pendentes; nenhum deploy;
+- PR #31 aberta e CI remoto em execução; nenhum deploy;
 - épica #8 permanece em desenvolvimento;
 - Identity real #13 permanece bloqueado por ausência de dev/hml e P0 upstream.
 
@@ -120,6 +120,6 @@ Fase 4B — edição, preview e publicação por snapshot em Local/CI.
 
 ## Próximo passo recomendado
 
-Abrir PR da #30, atualizar Project e executar CI remoto. Não declarar acesso real
+Acompanhar a PR #31, atualizar Project e executar CI remoto. Não declarar acesso real
 de `comercial@autonomia.site`: isso depende do Identity #13 e de ambiente
 isolado com token/JWKS/MFA reais.

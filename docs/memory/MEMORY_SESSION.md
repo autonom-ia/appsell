@@ -37,19 +37,19 @@ Project status:
 ## Sessão: 2026-07-11 11:55 — edição e publicação imutável de produto
 Issue: #30
 Branch: feat/30-product-publication
-PR: não aberta
+PR: #31
 Estado: em_progresso
 Modelo: strong + human
 Arquivos alterados: migration 0004, FastAPI/BFF detail-update-preview-publish, editor mobile, CSRF por ação, history/focus guards, testes PG/API/BFF/E2E e docs
 Comandos executados: lint; typecheck; Vitest; Ruff; mypy; pytest; audits; build; Playwright; production fail-closed; test-postgres-foundation; reviews críticos
 Validação: local verde — 68 web, 84 PostgreSQL/API, BFF vertical real, 24 browser + 4 skips deliberados; três reviews P0-P2=0
 Bloqueios: CI remoto; Identity real #13, KMS #19, Financial/Neuro e produção continuam bloqueados
-Próxima ação: abrir PR da #30, atualizar Project e acompanhar CI; não fazer deploy
+Próxima ação: acompanhar CI e reviews da PR #31; não fazer deploy
 Project status:
   - Projeto: sem opção AppSell no campo do Project
-  - Status: Em desenvolvimento
+  - Status: PR aberta
   - Tipo: Feature
   - Prioridade: P0
   - Risco: Alto
   - Ambiente: Dev
-  - Próxima ação: abrir PR da #30 e executar CI remoto
+  - Próxima ação: acompanhar App CI e Harness da PR #31

@@ -8,7 +8,7 @@ Atualizado em pontos de marco (PR aberta, deploy, incidente). Diferente de MEMOR
 |-----------|:------:|--------------------|
 | Build | 🟢 web + API container local verdes | 2026-07-11 |
 | Testes | 🟢 68 web + 84 PG/API + BFF real + 24 browser; build verde | 2026-07-11 |
-| CI | 🟡 Issue #30 local verde; PR/CI remoto ainda não abertos | 2026-07-11 |
+| CI | 🟡 PR #31 aberta; checks remotos em execução | 2026-07-11 |
 | Deploy produção | 🟡 não configurado/não executado | 2026-07-10 |
 | Harness instalado | 2.0.2 | 2026-07-10 |
 | Harness drift | ⚠️ 2.0.2 → 2.1.2 | 2026-07-11 |
@@ -31,7 +31,7 @@ optimistic locking, preview privado multi-course e publicação idempotente por
 snapshot append-only. UI mobile-first protege Back/dirty state e separa
 publicação de billing. Gates locais: 68 web, 84 PG/API, BFF vertical, 24
 Playwright + 4 skips deliberados, build e production fail-closed verdes; três
-reviews finais com P0-P2=0. PR/CI remoto ainda pendentes.
+reviews finais com P0-P2=0. PR #31 aberta; CI remoto em execução.
 
 ## O que está funcionando
 
@@ -88,7 +88,7 @@ reviews finais com P0-P2=0. PR/CI remoto ainda pendentes.
 
 ## Próxima ação
 
-Abrir a PR vinculada à Issue #30, atualizar o Project e executar CI remoto.
+Acompanhar a PR #31 no Project e executar o gate de CI remoto.
 Depois avançar para módulos/aulas/assets e buyer/entitlements. Identity real
 (#13), KMS (#19), billing/Financial e produção continuam bloqueados até
 ambientes e contratos reais.
