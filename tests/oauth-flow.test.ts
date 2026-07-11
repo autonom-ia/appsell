@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { DevOAuthService, isSameOrigin } from "../lib/oauth-service";
 import {
+  productPublishCsrfCookieName,
+  productUpdateCsrfCookieName,
   sessionCookieName,
   sessionCookieOptions,
   transactionCookieName,
@@ -113,6 +115,10 @@ describe("OAuth BFF development spike", () => {
       maxAge: 300
     });
     expect(transactionCookieOptions(true)).not.toHaveProperty("domain");
+    expect(productUpdateCsrfCookieName(false)).toBe("appsell_product_update_csrf");
+    expect(productUpdateCsrfCookieName(true)).toBe("__Host-appsell_product_update_csrf");
+    expect(productPublishCsrfCookieName(false)).toBe("appsell_product_publish_csrf");
+    expect(productPublishCsrfCookieName(true)).toBe("__Host-appsell_product_publish_csrf");
   });
 
   it("accepts logout only from the exact origin", () => {

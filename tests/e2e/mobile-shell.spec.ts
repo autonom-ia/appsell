@@ -95,7 +95,8 @@ test("creates a tenant-scoped product draft in the mobile UI", async ({ page }, 
   test.skip(testInfo.project.name !== "chromium", "interactive product flow runs once in Chromium");
   const sellerId = "52000000-0000-4000-8000-000000000001";
   const otherSellerId = "52000000-0000-4000-8000-000000000002";
-  const products: Array<Record<string, unknown>> = [];
+  const products: Array<Record<string, unknown>> = [{ id: "53000000-0000-4000-8000-000000000000", slug: "draft-existente", title: "Draft existente", description: "Já persistido.", status: "draft", created_at: "2026-07-11T11:00:00Z", course: { id: "54000000-0000-4000-8000-000000000000", title: "Curso existente", status: "draft" } }];
+  products.push({ id: "53000000-0000-4000-8000-000000000010", slug: "publicado", title: "Produto publicado", description: "Snapshot ativo.", status: "published", created_at: "2026-07-11T10:00:00Z", course: { id: "54000000-0000-4000-8000-000000000010", title: "Curso publicado", status: "published" } }, { id: "53000000-0000-4000-8000-000000000020", slug: "despublicado", title: "Produto despublicado", description: "Fora da vitrine.", status: "unpublished", created_at: "2026-07-11T09:00:00Z", course: { id: "54000000-0000-4000-8000-000000000020", title: "Curso despublicado", status: "draft" } });
   let releaseCreate: (() => void) | undefined;
   let markCreateStarted: (() => void) | undefined;
   const createStarted = new Promise<void>((resolve) => { markCreateStarted = resolve; });
@@ -157,11 +158,18 @@ test("creates a tenant-scoped product draft in the mobile UI", async ({ page }, 
   await page.goto("/products");
   await page.getByLabel("Espaço de vendas").selectOption({ label: "Studio Mobile · @studio-mobile" });
   await expect(page.getByRole("heading", { name: "Estruture sua próxima oferta" })).toBeVisible();
+  await expect(page.getByText("Publicado", { exact: true })).toBeVisible();
+  await expect(page.getByText("Despublicado", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Editar nova versão" })).toBeVisible();
 
   await page.getByLabel("Espaço de vendas").focus();
   await page.keyboard.press("Tab");
   await expect(page.getByLabel("Nome do produto")).toBeFocused();
   await page.keyboard.type("Rascunho do tenant A");
+  await page.getByRole("article").filter({ hasText: "Draft existente" }).getByRole("link", { name: "Continuar edição" }).click();
+  await expect(page.getByRole("dialog", { name: "Sair desta edição?" })).toBeVisible();
+  await page.getByRole("button", { name: "Continuar editando" }).click();
+  await expect(page.getByLabel("Nome do produto")).toHaveValue("Rascunho do tenant A");
   await page.getByLabel("Espaço de vendas").selectOption({ label: "Studio B · @studio-b" });
   await expect(page.getByText("Você tem alterações não salvas.", { exact: true })).toBeVisible();
   await expect(page.getByLabel("Espaço de vendas")).toHaveValue(sellerId);
@@ -210,10 +218,182 @@ test("creates a tenant-scoped product draft in the mobile UI", async ({ page }, 
   expect(scaled.scroll, JSON.stringify(scaled.offenders)).toBeLessThanOrEqual(scaled.client);
 });
 
+test("edits, previews and publishes a tenant-scoped product at 320px", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium", "authoring flow runs once in Chromium");
+  const sellerId = "62000000-0000-4000-8000-000000000001";
+  const productId = "63000000-0000-4000-8000-000000000001";
+  const courseId = "64000000-0000-4000-8000-000000000001";
+  const offerId = "65000000-0000-4000-8000-000000000001";
+  let conflictOnce = true;
+  const publishKeys: string[] = [];
+  const state = { title: "Creator OS", slug: "creator-os", description: "Draft privado.", courseTitle: "Fundamentos", offerTitle: "Oferta Creator", offerSummary: "Termos informativos.", productVersion: 1, courseVersion: 1, offerVersion: 1, status: "draft", hasChanges: true, publication: null as null | { id: string; version: number; published_at: string } };
+  const detail = () => ({
+    product: {
+      id: productId, seller_organization_id: sellerId, slug: state.slug, title: state.title, description: state.description, status: state.status,
+      version: state.productVersion, draft_version: state.productVersion,
+      course: { id: courseId, title: state.courseTitle, description: "", status: "draft", draft_version: state.courseVersion, position: 1 },
+      courses: [{ id: courseId, title: state.courseTitle, description: "", status: "draft", draft_version: state.courseVersion, position: 1 }],
+      offer: { id: offerId, title: state.offerTitle, summary: state.offerSummary, status: "draft", version: state.offerVersion, draft_version: state.offerVersion },
+      publication: state.publication,
+      has_unpublished_changes: state.hasChanges,
+      readiness: { can_publish: state.hasChanges, items: [{ key: "server", label: state.hasChanges ? "Validação do servidor concluída" : "Nenhuma alteração nova", ready: state.hasChanges }] }
+    },
+    csrf: { update: "csrf-update", publish: "csrf-publish" }
+  });
+
+  await page.route(`**/api/sellers/${sellerId}/products/${productId}`, async (route) => {
+    if (route.request().method() === "GET") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(detail()) });
+    const posted = route.request().postDataBuffer();
+    const form = await new Request(route.request().url(), { method: "PATCH", headers: route.request().headers(), body: posted ? new Uint8Array(posted) : undefined }).formData();
+    expect([...form.keys()].sort()).toEqual(["_csrf", "course_id", "course_title", "expected_course_version", "expected_offer_version", "expected_product_version", "idempotency_key", "offer_id", "offer_summary", "offer_title", "product_description", "product_title", "slug"]);
+    expect(form.get("_csrf")).toBe("csrf-update");
+    expect(form.get("course_id")).toBe(courseId);
+    expect(form.get("offer_id")).toBe(offerId);
+    if (conflictOnce) {
+      conflictOnce = false;
+      state.title = "Título concorrente do servidor";
+      state.productVersion += 1;
+      return route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: "version_conflict" }) });
+    }
+    expect(form.get("expected_product_version")).toBe(String(state.productVersion));
+    state.title = String(form.get("product_title")); state.slug = String(form.get("slug")); state.description = String(form.get("product_description")); state.courseTitle = String(form.get("course_title")); state.offerTitle = String(form.get("offer_title")); state.offerSummary = String(form.get("offer_summary"));
+    state.productVersion += 1; state.courseVersion += 1; state.offerVersion += 1;
+    state.hasChanges = true;
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ product_id: productId, course_id: courseId, offer_id: offerId, product_version: state.productVersion, course_version: state.courseVersion, offer_version: state.offerVersion }) });
+  });
+  await page.route(`**/api/sellers/${sellerId}/products/${productId}/preview`, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ preview: true, snapshot: { product: { id: productId, title: state.title, slug: state.slug, description: state.description, status: "draft" }, courses: [{ title: state.courseTitle }], offer: { title: state.offerTitle, summary: state.offerSummary, status: "draft" } }, versions: { product: state.productVersion, course: state.courseVersion, offer: state.offerVersion } }) }));
+  await page.route(`**/api/sellers/${sellerId}/products/${productId}/publications`, async (route) => {
+    const posted = route.request().postDataBuffer();
+    const form = await new Request(route.request().url(), { method: "POST", headers: route.request().headers(), body: posted ? new Uint8Array(posted) : undefined }).formData();
+    expect([...form.keys()].sort()).toEqual(["_csrf", "course_versions", "expected_offer_version", "expected_product_version", "idempotency_key", "offer_id"]);
+    expect(form.get("_csrf")).toBe("csrf-publish");
+    expect(form.get("course_versions")).toBe(JSON.stringify([{ id: courseId, version: state.courseVersion }]));
+    publishKeys.push(String(form.get("idempotency_key")));
+    if (publishKeys.length === 1) return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "upstream_unavailable" }) });
+    if (publishKeys.length === 2) expect(publishKeys[1]).toBe(publishKeys[0]);
+    if (publishKeys.length === 3) {
+      expect(publishKeys[2]).not.toBe(publishKeys[1]);
+      return route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: "version_conflict" }) });
+    }
+    if (publishKeys.length === 4) expect(publishKeys[3]).not.toBe(publishKeys[2]);
+    const publicationVersion = state.publication ? state.publication.version + 1 : 1;
+    state.status = "published"; state.hasChanges = false; state.publication = { id: "66000000-0000-4000-8000-000000000001", version: publicationVersion, published_at: "2026-07-11T15:00:00Z" };
+    return route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ publication: state.publication, product_version: state.productVersion }) });
+  });
+
+  await page.setViewportSize({ width: 320, height: 568 });
+  await login(page);
+  await page.goto(`/products/${sellerId}/${productId}`);
+  await expect(page.getByRole("heading", { name: "Creator OS", exact: true })).toBeVisible();
+  await page.getByLabel("Nome do produto").fill("Creator OS 2");
+  await expect(page.getByLabel("Nome do produto")).toBeFocused();
+  await page.goBack();
+  await expect(page.getByRole("dialog", { name: "Sair desta edição?" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Continuar editando" })).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(page.getByRole("button", { name: "Descartar e sair" })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("button", { name: "Continuar editando" })).toBeFocused();
+  await page.getByRole("button", { name: "Continuar editando" }).click();
+  await expect(page).toHaveURL(`/products/${sellerId}/${productId}`);
+  await expect(page.getByLabel("Nome do produto")).toBeFocused();
+  await expect(page.getByLabel("Nome do produto")).toHaveValue("Creator OS 2");
+  await page.goBack();
+  await expect(page.getByRole("dialog", { name: "Sair desta edição?" })).toBeVisible();
+  await page.getByRole("button", { name: "Continuar editando" }).click();
+  await expect(page.getByLabel("Nome do produto")).toBeFocused();
+  const libraryLink = page.getByRole("navigation", { name: "Navegação móvel" }).getByRole("link", { name: "Minha biblioteca" });
+  await libraryLink.click();
+  await expect(page.getByRole("dialog", { name: "Sair desta edição?" })).toBeVisible();
+  await page.getByRole("button", { name: "Continuar editando" }).click();
+  await expect(libraryLink).toBeFocused();
+  await expect(page.getByLabel("Nome do produto")).toHaveValue("Creator OS 2");
+  await page.getByRole("button", { name: "Salvar rascunho" }).click();
+  await expect(page.getByRole("button", { name: "Recarregar versão do servidor" })).toBeVisible();
+  await page.getByRole("button", { name: "Recarregar versão do servidor" }).click();
+  await expect(page.getByText("Versão atualizada; suas alterações locais continuam prontas para novo envio.")).toBeVisible();
+  await expect(page.getByLabel("Nome do produto")).toHaveValue("Creator OS 2");
+  await page.getByRole("button", { name: "Salvar rascunho" }).click();
+  await expect(page.getByText("Rascunho salvo com segurança.")).toBeVisible();
+
+  await page.getByRole("link", { name: /^Oferta/ }).click();
+  const offerSummary = page.getByLabel("Resumo da oferta");
+  await offerSummary.fill("Oferta sem cobrança conectada.");
+  await offerSummary.focus();
+  await offerSummary.evaluate((element) => (element as HTMLTextAreaElement).form?.requestSubmit());
+  await expect(page.getByText("Rascunho salvo com segurança.")).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`/products/${sellerId}/${productId}\\?section=oferta$`));
+  await expect(offerSummary).toBeFocused();
+  await page.goBack();
+  await expect(page).toHaveURL("/dashboard");
+  await page.goForward();
+  await expect(page).toHaveURL(new RegExp(`/products/${sellerId}/${productId}\\?section=oferta$`));
+  await expect(page.getByLabel("Resumo da oferta")).toHaveValue("Oferta sem cobrança conectada.");
+  await page.getByRole("link", { name: /^Preview/ }).click();
+  await expect(page.getByRole("heading", { name: "Creator OS 2" })).toBeVisible();
+  await expect(page.getByText("Compra indisponível nesta prévia")).toBeVisible();
+  await page.getByRole("link", { name: /^Publicar/ }).click();
+  await page.getByRole("button", { name: "Publicar primeira versão" }).click();
+  await expect(page.getByRole("dialog", { name: "Publicar este snapshot?" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Revisar novamente" })).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(page.getByRole("button", { name: "Publicar snapshot" })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("button", { name: "Revisar novamente" })).toBeFocused();
+  await page.getByRole("button", { name: "Publicar snapshot" }).click();
+  await expect(page.getByText("A API não respondeu.", { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: "Publicar primeira versão" }).click();
+  await page.getByRole("button", { name: "Publicar snapshot" }).click();
+  await expect(page.getByText("Versão publicada com sucesso.", { exact: false })).toBeVisible();
+  await expect(page.getByText("Nenhuma mudança desde o snapshot publicado.", { exact: false })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Publicar nova versão/ })).toBeDisabled();
+  await page.getByRole("link", { name: /^Produto Identidade/ }).click();
+  await page.getByLabel("Descrição curta").fill("Novo draft depois do snapshot.");
+  await page.getByRole("button", { name: "Salvar rascunho" }).click();
+  await expect(page.getByText("Rascunho salvo com segurança.")).toBeVisible();
+  await page.getByRole("link", { name: /^Publicar/ }).click();
+  await expect(page.getByRole("button", { name: "Publicar nova versão após v1" })).toBeEnabled();
+  await page.getByRole("button", { name: "Publicar nova versão após v1" }).click();
+  await page.getByRole("button", { name: "Publicar snapshot" }).click();
+  await expect(page.getByText("O produto mudou ou não está pronto.", { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: "Publicar nova versão após v1" }).click();
+  await page.getByRole("button", { name: "Publicar snapshot" }).click();
+  await expect(page.getByText("Versão publicada com sucesso.", { exact: false })).toBeVisible();
+  expect(publishKeys).toHaveLength(4);
+
+  await page.evaluate(() => { document.documentElement.style.fontSize = "200%"; });
+  const scaled = await page.evaluate(() => ({
+    client: document.documentElement.clientWidth,
+    scroll: document.documentElement.scrollWidth,
+    clipped: [...document.querySelectorAll("a,button,input,select,textarea")].flatMap((element) => { const rect = element.getBoundingClientRect(); return rect.width > 0 && (rect.left < -1 || rect.right > document.documentElement.clientWidth + 1) ? [element.textContent?.trim() || element.getAttribute("name")] : []; })
+  }));
+  expect(scaled.scroll).toBeLessThanOrEqual(scaled.client);
+  expect(scaled.clipped).toEqual([]);
+  await page.evaluate(() => { document.documentElement.style.fontSize = "100%"; });
+  await page.setViewportSize({ width: 568, height: 320 });
+  const landscape = await page.evaluate(() => ({ client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }));
+  expect(landscape.scroll).toBeLessThanOrEqual(landscape.client);
+});
+
+test("fails publication closed for string readiness and a missing offer", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium", "blocked readiness runs once in Chromium");
+  const sellerId = "72000000-0000-4000-8000-000000000001";
+  const productId = "73000000-0000-4000-8000-000000000001";
+  const course = { id: "74000000-0000-4000-8000-000000000001", title: "Curso privado", description: "", status: "draft", draft_version: 1, position: 1 };
+  await page.route(`**/api/sellers/${sellerId}/products/${productId}`, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ product: { id: productId, seller_organization_id: sellerId, slug: "produto-sem-oferta", title: "Produto sem oferta", description: "Privado", status: "draft", version: 1, draft_version: 1, course, courses: [course], offer: null, publication: null, has_unpublished_changes: true, readiness: { can_publish: false, items: ["offer_missing"] } }, csrf: { update: "csrf-update", publish: "csrf-publish" } }) }));
+  await page.route(`**/api/sellers/${sellerId}/products/${productId}/preview`, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ snapshot: { product: { id: productId, title: "Produto sem oferta", slug: "produto-sem-oferta", description: "Privado", status: "draft" }, courses: [{ title: course.title }], offer: null }, versions: { product: 1, course: 1, offer: 0 } }) }));
+  await login(page);
+  await page.goto(`/products/${sellerId}/${productId}?section=preview`);
+  await expect(page.getByText("Oferta ainda não configurada")).toBeVisible();
+  await page.getByRole("link", { name: /^Publicar/ }).click();
+  await expect(page.getByText("offer_missing")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Publicar primeira versão" })).toBeDisabled();
+});
+
 test("covers the approved responsive widths", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "viewport matrix runs once in Chromium");
   await login(page);
-  for (const width of [360, 390, 768, 1024, 1440]) {
+  for (const width of [320, 360, 390, 768, 1024, 1440]) {
     await page.setViewportSize({ width, height: 900 });
     for (const path of ["/", "/dashboard", "/products", "/library"]) {
       await page.goto(path);

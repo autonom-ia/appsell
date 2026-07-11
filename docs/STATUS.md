@@ -7,8 +7,8 @@ Atualizado em pontos de marco (PR aberta, deploy, incidente). Diferente de MEMOR
 | Indicador | Status | Última verificação |
 |-----------|:------:|--------------------|
 | Build | 🟢 web + API container local verdes | 2026-07-11 |
-| Testes | 🟢 67 web + 68 PG/API + 22 browser; build verde | 2026-07-11 |
-| CI | 🟡 PR #29 aberta; checks remotos em execução | 2026-07-11 |
+| Testes | 🟢 68 web + 84 PG/API + BFF real + 24 browser; build verde | 2026-07-11 |
+| CI | 🟡 Issue #30 local verde; PR/CI remoto ainda não abertos | 2026-07-11 |
 | Deploy produção | 🟡 não configurado/não executado | 2026-07-10 |
 | Harness instalado | 2.0.2 | 2026-07-10 |
 | Harness drift | ⚠️ 2.0.2 → 2.1.2 | 2026-07-11 |
@@ -16,8 +16,9 @@ Atualizado em pontos de marco (PR aberta, deploy, incidente). Diferente de MEMOR
 ## Estado atual
 
 O protótipo Studio mobile-first foi mergeado pela PR #23, a fundação
-persistente pela PR #25 e a ponte BFF/API + onboarding seller pela PR #27.
-A Fase 4A está ativa na Issue #28 para produto e curso draft persistentes.
+persistente pela PR #25, a ponte BFF/API pela PR #27 e os drafts persistentes
+pela PR #29. A Fase 4B está ativa na Issue #30 para edição, preview privado,
+oferta informativa e publicação por snapshot imutável.
 A fundação inclui FastAPI, PostgreSQL 16, Alembic forward-only,
 roles owner/migrator/runtime, RLS forçado, contexto transacional assinado,
 auditoria append-only e bootstrap one-shot do superadmin com atestação separada.
@@ -25,10 +26,12 @@ Este marco é Local/CI; não é o Identity real e não concede conta de produç�
 
 ## Última mudança relevante
 
-2026-07-11 — branch `feat/28-product-course-drafts`: migration 0003, RLS,
-produto+curso atômicos, BFF/API seller-scoped, UI com tenant explícito e preview
-local persistente. Gates locais: 67 web, 68 PG/API, integração com dois BFFs,
-22 Playwright e build de produção. PR/CI remoto ainda pendentes.
+2026-07-11 — branch `feat/30-product-publication`: migration 0004, oferta draft,
+optimistic locking, preview privado multi-course e publicação idempotente por
+snapshot append-only. UI mobile-first protege Back/dirty state e separa
+publicação de billing. Gates locais: 68 web, 84 PG/API, BFF vertical, 24
+Playwright + 4 skips deliberados, build e production fail-closed verdes; três
+reviews finais com P0-P2=0. PR/CI remoto ainda pendentes.
 
 ## O que está funcionando
 
@@ -63,6 +66,12 @@ local persistente. Gates locais: 67 web, 68 PG/API, integração com dois BFFs,
   sincronização issuer-scoped e onboarding seller idempotente/atômico.
 - POST de onboarding protegido por origem canônica, CSRF por sessão+ação e
   leitura streaming limitada a 16 KiB; fluxo real persiste entre dois BFFs.
+- Produto/curso/oferta editáveis com versões esperadas, receipt idempotente e
+  locks por produto sem serializar todo o tenant.
+- Preview privado e publicação multi-course gerados server-side; snapshot
+  idêntico é negado no PostgreSQL e retry exato retorna o receipt original.
+- Editor 320 px com rebase de conflito, guard de Back/gesture, modal com foco
+  contido, 200% de texto e oferta explicitamente sem cobrança.
 
 ## O que está quebrado / em degradação
 
@@ -79,10 +88,10 @@ local persistente. Gates locais: 67 web, 68 PG/API, integração com dois BFFs,
 
 ## Próxima ação
 
-Concluir reviews críticos P0-P2=0 da Issue #28, corrigir findings e abrir PR
-vinculada para CI remoto e Project update. Depois avançar para publicação e
-buyer/entitlements. Identity real (#13), KMS (#19) e produção continuam
-bloqueados até ambientes/contratos reais.
+Abrir a PR vinculada à Issue #30, atualizar o Project e executar CI remoto.
+Depois avançar para módulos/aulas/assets e buyer/entitlements. Identity real
+(#13), KMS (#19), billing/Financial e produção continuam bloqueados até
+ambientes e contratos reais.
 
 ## Links
 

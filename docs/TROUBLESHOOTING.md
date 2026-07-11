@@ -31,3 +31,21 @@ Selecione explicitamente o tenant, crie um rascunho sintético e confirme respos
 
 O comportamento é fail-closed. Não relaxe origem ou CSRF; mantenha a orientação
 de novo login até existir uma estratégia versionada de renovação de cookies.
+
+## Problema: edição ou publicação retorna 403 após atualização
+
+Sessões locais criadas antes da Fase 4B não possuem os cookies legíveis
+`appsell_product_update_csrf` e `appsell_product_publish_csrf`. Saia e entre
+novamente; não copie, registre ou reutilize os valores. Os tokens são separados
+por ação de propósito. Não relaxe Origin/CSRF para preservar sessões antigas.
+
+## Problema: publicação retorna 409
+
+- `draft_version_conflict`: use **Recarregar versão do servidor**; a UI preserva
+  os campos locais e permite novo envio com as versões atuais.
+- `no_unpublished_changes`: o snapshot vigente já representa o draft atual;
+  edite e salve antes de publicar uma nova versão.
+- `slug_conflict`: escolha outro endereço para o produto.
+
+Timeout/503 preserva a chave idempotente para retry do mesmo corpo. Uma nova
+edição cria uma nova intenção; não force novas chaves manualmente.

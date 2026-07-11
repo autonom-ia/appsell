@@ -2,7 +2,7 @@
 
 ## Fase atual
 
-Fase 4A — produto e curso draft persistentes em Local/CI.
+Fase 4B — edição, preview e publicação por snapshot em Local/CI.
 
 ## Concluído
 
@@ -64,18 +64,24 @@ Fase 4A — produto e curso draft persistentes em Local/CI.
 - 63 unitários web, 48 Python, 43 PostgreSQL/API, 21 E2E e 1 production verdes.
 - PR #27 mergeada no commit `95c913e`; App CI pós-merge e Harness verdes;
 - Issues #24 e #26 encerradas com evidência, sem deploy.
+- PR #29 mergeada em `a2695c7`; produto e curso draft persistentes, App CI
+  pós-merge verde e Issue #28 encerrada sem deploy.
 
 ## Em andamento
 
-- Issue #28 implementada localmente na branch `feat/28-product-course-drafts`;
-- migration 0003 cria produto+curso atômicos, RLS, FKs compostas, idempotência e audit;
-- BFF/API vinculam o seller do path ao envelope e revalidam owner ativo;
-- UI exige tenant explícito e cria/lista rascunhos privados sem preço ou publicação;
-- preview local isolado persiste tenant, produto e curso sintéticos;
-- gates locais: 67 web, 68 PG/API, dois BFFs, 22 Playwright e build verdes;
-- reviews críticos tenancy, API/CI e UX verdes com P0-P2=0;
-- PR #29 aberta em draft e vinculada à Issue #28; Project em `PR aberta`;
-- App CI e Harness remotos em execução; nenhum deploy;
+- Issue #30 implementada localmente na branch `feat/30-product-publication`;
+- migration 0004 cria offer, publication append-only, receipt privado, RLS e
+  publicação multi-course transacional com SQLSTATE estável;
+- edição usa optimistic locking, idempotência e locks que preservam revogação
+  sem serializar produtos distintos do mesmo tenant;
+- BFF/API usam CSRF separado, parser 16 KiB exato, preview privado e retry de
+  publicação que retorna o mesmo receipt;
+- UI exige tenant na URL, protege dirty state/Back, contém foco nos diálogos,
+  rebasa 409 sem perder campos e não simula billing;
+- gates locais: 68 web, 84 PG/API, BFF vertical, 24 Playwright + 4 skips,
+  build, production fail-closed e dependency audits verdes;
+- reviews finais tenancy, API/BFF e UI/UX verdes com P0-P2=0;
+- PR/CI remoto ainda pendentes; nenhum deploy;
 - épica #8 permanece em desenvolvimento;
 - Identity real #13 permanece bloqueado por ausência de dev/hml e P0 upstream.
 
@@ -84,7 +90,7 @@ Fase 4A — produto e curso draft persistentes em Local/CI.
 - spike com Autonom.ia Identity real (#13);
 - refresh real contra Identity (#18), bloqueado pelo contrato/ambiente da #13;
 - KMS real, vault durável/HA e restore (#19), bloqueado;
-- publicação, módulos/aulas e assets após o draft persistente;
+- módulos/aulas, editor de blocos e assets privados após a publicação base;
 - RLS buyer/entitlements, checkout e biblioteca persistente;
 - integrações Neuro.ai e financeiro após contratos/repos reais.
 
@@ -114,7 +120,6 @@ Fase 4A — produto e curso draft persistentes em Local/CI.
 
 ## Próximo passo recomendado
 
-Concluir reviews PostgreSQL/tenancy, API/CI e UX com P0-P2=0; corrigir findings,
-abrir PR da #28, atualizar Project e executar CI remoto. Não declarar acesso real
+Abrir PR da #30, atualizar Project e executar CI remoto. Não declarar acesso real
 de `comercial@autonomia.site`: isso depende do Identity #13 e de ambiente
 isolado com token/JWKS/MFA reais.

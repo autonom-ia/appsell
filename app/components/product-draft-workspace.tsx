@@ -1,6 +1,9 @@
 "use client";
 
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { DIRTY_NAVIGATION_REQUEST_EVENT, useUnsavedChanges } from "./use-unsaved-changes";
 
 interface Seller {
   id: string;
@@ -14,9 +17,9 @@ interface ProductDraft {
   slug: string;
   title: string;
   description: string;
-  status: "draft";
+  status: "draft" | "published" | "unpublished" | "archived";
   created_at: string;
-  course?: { id: string; title: string; status: "draft" } | null;
+  course?: { id: string; title: string; status: "draft" | "published" | "archived" } | null;
   course_id?: string;
   course_title?: string;
 }
@@ -25,6 +28,7 @@ type LoadState = "loading" | "idle" | "unauthorized" | "unavailable" | "error";
 type SaveState = "idle" | "saving" | "conflict" | "forbidden" | "invalid" | "unavailable" | "error";
 
 export function ProductDraftWorkspace() {
+  const router = useRouter();
   const [sellers, setSellers] = useState<Seller[] | null>(null);
   const [selectedSellerId, setSelectedSellerId] = useState("");
   const [products, setProducts] = useState<ProductDraft[]>([]);
@@ -33,11 +37,14 @@ export function ProductDraftWorkspace() {
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [invalidField, setInvalidField] = useState("");
   const [formDirty, setFormDirty] = useState(false);
+  const formDirtyRef = useRef(false);
   const [pendingSellerId, setPendingSellerId] = useState("");
   const idempotencyKey = useRef<string | null>(null);
   const selectedSellerIdRef = useRef("");
   const catalogRequest = useRef<{ controller: AbortController; version: number } | null>(null);
   const catalogVersion = useRef(0);
+
+  useUnsavedChanges(formDirty);
 
   const loadProducts = useCallback(async (sellerId: string) => {
     catalogRequest.current?.controller.abort();
@@ -73,6 +80,21 @@ export function ProductDraftWorkspace() {
     }
   }, []);
 
+  const switchSeller = useCallback((sellerId: string, syncUrl = true) => {
+    selectedSellerIdRef.current = sellerId;
+    setSelectedSellerId(sellerId);
+    setPendingSellerId("");
+    setFormDirty(false);
+    formDirtyRef.current = false;
+    setSaveState("idle");
+    setInvalidField("");
+    idempotencyKey.current = null;
+    if (syncUrl) {
+      router.replace(sellerId ? `/products?seller=${encodeURIComponent(sellerId)}` : "/products", { scroll: false });
+    }
+    void loadProducts(sellerId);
+  }, [loadProducts, router]);
+
   useEffect(() => {
     let active = true;
     const controllers = new Set<AbortController>();
@@ -88,8 +110,13 @@ export function ProductDraftWorkspace() {
           if (!response.ok) return setSellerState("error");
           const payload = await response.json() as { sellers?: Seller[] };
           if (!active) return;
-          setSellers(Array.isArray(payload.sellers) ? payload.sellers : []);
+          const nextSellers = Array.isArray(payload.sellers) ? payload.sellers : [];
+          setSellers(nextSellers);
           setSellerState("idle");
+          const requestedSellerId = new URLSearchParams(window.location.search).get("seller") ?? "";
+          if (!formDirtyRef.current && requestedSellerId && requestedSellerId !== selectedSellerIdRef.current && nextSellers.some((seller) => seller.id === requestedSellerId)) {
+            switchSeller(requestedSellerId, false);
+          }
         })
         .catch(() => {
           if (active) setSellerState("unavailable");
@@ -107,7 +134,7 @@ export function ProductDraftWorkspace() {
       controllers.forEach((controller) => controller.abort());
       catalogRequest.current?.controller.abort();
     };
-  }, []);
+  }, [switchSeller]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -149,6 +176,7 @@ export function ProductDraftWorkspace() {
       idempotencyKey.current = null;
       form.reset();
       setFormDirty(false);
+      formDirtyRef.current = false;
       setSaveState("idle");
       await loadProducts(submittedSellerId);
     } catch {
@@ -162,17 +190,6 @@ export function ProductDraftWorkspace() {
   const selectedSeller = sellers?.find((seller) => seller.id === selectedSellerId) ?? null;
   const pendingSeller = sellers?.find((seller) => seller.id === pendingSellerId) ?? null;
 
-  function switchSeller(sellerId: string) {
-    selectedSellerIdRef.current = sellerId;
-    setSelectedSellerId(sellerId);
-    setPendingSellerId("");
-    setFormDirty(false);
-    setSaveState("idle");
-    setInvalidField("");
-    idempotencyKey.current = null;
-    void loadProducts(sellerId);
-  }
-
   function isInvalid(field: string) {
     return saveState === "invalid" && invalidField === field;
   }
@@ -185,7 +202,7 @@ export function ProductDraftWorkspace() {
           <h1 id="catalog-workspace-title">Produtos</h1>
           <p>Crie o produto e o primeiro curso juntos. Tudo permanece privado até uma publicação futura.</p>
         </div>
-        <span className="private-badge">Rascunhos privados</span>
+        <span className="private-badge">Catálogo por tenant</span>
       </div>
 
       <div className="tenant-picker">
@@ -225,19 +242,22 @@ export function ProductDraftWorkspace() {
 
       {selectedSeller ? (
         <div className="catalog-workspace-grid">
-          <form key={selectedSeller.id} className="product-draft-form" action={`/api/sellers/${selectedSeller.id}/products`} method="post" onInput={() => setFormDirty(true)} onSubmit={submit}>
+          <form key={selectedSeller.id} className="product-draft-form" action={`/api/sellers/${selectedSeller.id}/products`} method="post" onInput={() => { formDirtyRef.current = true; setFormDirty(true); }} onSubmit={submit}>
             <div className="form-heading">
               <p className="eyebrow">Novo rascunho</p>
               <h2>Estruture sua próxima oferta</h2>
               <p>Tenant: <strong>{selectedSeller.display_name}</strong>. Nenhuma cobrança ou publicação acontece nesta etapa.</p>
             </div>
-            <input type="hidden" name="_csrf" defaultValue="" />
-            <input type="hidden" name="idempotency_key" defaultValue="" />
-            <label>Nome do produto<input name="product_title" minLength={2} maxLength={160} required autoComplete="off" placeholder="Ex.: Creator OS" aria-invalid={isInvalid("product_title")} aria-describedby={isInvalid("product_title") ? "product-title-error" : undefined} />{isInvalid("product_title") ? <span id="product-title-error" className="form-error">Informe um nome entre 2 e 160 bytes, sem espaços nas pontas.</span> : null}</label>
-            <label>Endereço do produto<input name="slug" minLength={3} maxLength={63} required autoComplete="off" autoCapitalize="none" spellCheck={false} pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="creator-os" aria-invalid={isInvalid("slug")} aria-describedby={isInvalid("slug") ? "product-slug-help product-slug-error" : "product-slug-help"} /><span id="product-slug-help">Somente letras minúsculas, números e hífens.</span>{isInvalid("slug") ? <span id="product-slug-error" className="form-error">Use de 3 a 63 caracteres válidos.</span> : null}</label>
-            <label>Descrição curta<textarea name="product_description" maxLength={2000} rows={4} placeholder="O que o aluno vai transformar com este produto?" aria-invalid={isInvalid("product_description")} aria-describedby={isInvalid("product_description") ? "product-description-error" : undefined} />{isInvalid("product_description") ? <span id="product-description-error" className="form-error">A descrição deve ter até 2.000 bytes e não pode conter controles.</span> : null}</label>
-            <label>Nome do curso inicial<input name="course_title" minLength={2} maxLength={160} required autoComplete="off" placeholder="Ex.: Fundamentos do Creator OS" aria-invalid={isInvalid("course_title")} aria-describedby={isInvalid("course_title") ? "course-title-error" : undefined} />{isInvalid("course_title") ? <span id="course-title-error" className="form-error">Informe um nome entre 2 e 160 bytes, sem espaços nas pontas.</span> : null}</label>
-            <button className="primary-button" type="submit" disabled={saveState === "saving"}>{saveState === "saving" ? "Salvando rascunho…" : "Criar produto e curso"}</button>
+            <fieldset className="product-create-fields" disabled={saveState === "saving"}>
+              <legend className="sr-only">Dados do novo produto</legend>
+              <input type="hidden" name="_csrf" defaultValue="" />
+              <input type="hidden" name="idempotency_key" defaultValue="" />
+              <label>Nome do produto<input name="product_title" minLength={2} maxLength={160} required autoComplete="off" placeholder="Ex.: Creator OS" aria-invalid={isInvalid("product_title")} aria-describedby={isInvalid("product_title") ? "product-title-error" : undefined} />{isInvalid("product_title") ? <span id="product-title-error" className="form-error">Informe um nome entre 2 e 160 bytes, sem espaços nas pontas.</span> : null}</label>
+              <label>Endereço do produto<input name="slug" minLength={3} maxLength={63} required autoComplete="off" autoCapitalize="none" spellCheck={false} pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="creator-os" aria-invalid={isInvalid("slug")} aria-describedby={isInvalid("slug") ? "product-slug-help product-slug-error" : "product-slug-help"} /><span id="product-slug-help">Somente letras minúsculas, números e hífens.</span>{isInvalid("slug") ? <span id="product-slug-error" className="form-error">Use de 3 a 63 caracteres válidos.</span> : null}</label>
+              <label>Descrição curta<textarea name="product_description" maxLength={2000} rows={4} placeholder="O que o aluno vai transformar com este produto?" aria-invalid={isInvalid("product_description")} aria-describedby={isInvalid("product_description") ? "product-description-error" : undefined} />{isInvalid("product_description") ? <span id="product-description-error" className="form-error">A descrição deve ter até 2.000 bytes e não pode conter controles.</span> : null}</label>
+              <label>Nome do curso inicial<input name="course_title" minLength={2} maxLength={160} required autoComplete="off" placeholder="Ex.: Fundamentos do Creator OS" aria-invalid={isInvalid("course_title")} aria-describedby={isInvalid("course_title") ? "course-title-error" : undefined} />{isInvalid("course_title") ? <span id="course-title-error" className="form-error">Informe um nome entre 2 e 160 bytes, sem espaços nas pontas.</span> : null}</label>
+              <button className="primary-button" type="submit">{saveState === "saving" ? "Salvando rascunho…" : "Criar produto e curso"}</button>
+            </fieldset>
             <div className="form-feedback" aria-live="polite" aria-atomic="true">
               {saveState === "invalid" ? <p className="form-error">Revise o campo {fieldLabel(invalidField)}.</p> : null}
               {saveState === "conflict" ? <p className="form-error">Este endereço já existe neste tenant. Escolha outro slug.</p> : null}
@@ -248,18 +268,23 @@ export function ProductDraftWorkspace() {
           </form>
 
           <div className="draft-list" aria-live="polite">
-            <div className="draft-list-heading"><div><p className="eyebrow">Neste tenant</p><h2>Rascunhos</h2></div><strong>{products.length}</strong></div>
-            {catalogState === "loading" ? <p className="empty-state">Carregando rascunhos…</p> : null}
+            <div className="draft-list-heading"><div><p className="eyebrow">Neste tenant</p><h2>Produtos do tenant</h2></div><strong>{products.length}</strong></div>
+            {catalogState === "loading" ? <p className="empty-state">Carregando produtos…</p> : null}
             {catalogState === "unavailable" ? <p className="empty-state">A API local está indisponível. Tente selecionar o tenant novamente.</p> : null}
             {catalogState === "unauthorized" ? <p className="empty-state">Sua sessão expirou.</p> : null}
             {catalogState === "error" ? <p className="empty-state">Não foi possível carregar este catálogo.</p> : null}
-            {catalogState === "idle" && products.length === 0 ? <p className="empty-state">Nenhum rascunho ainda. O primeiro aparecerá aqui sem ser publicado.</p> : null}
+            {catalogState === "idle" && products.length === 0 ? <p className="empty-state">Nenhum produto ainda. Crie o primeiro como rascunho privado.</p> : null}
             {catalogState === "idle" ? products.map((product) => (
               <article className="draft-card" key={product.id}>
-                <div><span className="status status-draft">Rascunho</span><span>@{product.slug}</span></div>
+                <div><span className={`status status-${product.status}`}>{productStatusLabel(product.status)}</span><span>@{product.slug}</span></div>
                 <h3>{product.title}</h3>
                 <p>{product.description || "Descrição ainda não informada."}</p>
                 <footer><span>Curso inicial</span><strong>{product.course?.title ?? product.course_title ?? "Curso em rascunho"}</strong></footer>
+                <Link className="draft-card-action" href={`/products/${encodeURIComponent(selectedSeller.id)}/${encodeURIComponent(product.id)}`} onClick={(event) => {
+                  if (!formDirty || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                  event.preventDefault();
+                  window.dispatchEvent(new CustomEvent(DIRTY_NAVIGATION_REQUEST_EVENT, { detail: { href: event.currentTarget.href, trigger: event.currentTarget } }));
+                }}>{product.status === "published" ? "Editar nova versão" : "Continuar edição"} <span aria-hidden="true">→</span></Link>
               </article>
             )) : null}
           </div>
@@ -285,4 +310,11 @@ function fieldLabel(field: string) {
     course_title: "nome do curso"
   };
   return labels[field] ?? "indicado";
+}
+
+function productStatusLabel(status: ProductDraft["status"]) {
+  if (status === "published") return "Publicado";
+  if (status === "unpublished") return "Despublicado";
+  if (status === "archived") return "Arquivado";
+  return "Rascunho";
 }

@@ -1,7 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { LOGOUT_CSRF_ACTION, verifyMutation } from "@/lib/mutation-protection.server";
 import { oauthService } from "@/lib/oauth-service.server";
-import { csrfCookieName, csrfCookieOptions, productCsrfCookieName, sellerCsrfCookieName, sessionCookieName, sessionCookieOptions } from "@/lib/cookies";
+import {
+  csrfCookieName,
+  csrfCookieOptions,
+  productCsrfCookieName,
+  productPublishCsrfCookieName,
+  productUpdateCsrfCookieName,
+  sellerCsrfCookieName,
+  sessionCookieName,
+  sessionCookieOptions
+} from "@/lib/cookies";
 import { isOAuthStoreUnavailable } from "@/lib/redis-oauth-service";
 import { configuredPublicOrigin } from "@/lib/public-origin";
 
@@ -35,4 +44,6 @@ function expireAuthCookies(response: NextResponse) {
   response.cookies.set(csrfCookieName(), "", { ...csrfCookieOptions(), maxAge: 0 });
   response.cookies.set(sellerCsrfCookieName(), "", { ...csrfCookieOptions(), maxAge: 0 });
   response.cookies.set(productCsrfCookieName(), "", { ...csrfCookieOptions(), maxAge: 0 });
+  response.cookies.set(productUpdateCsrfCookieName(), "", { ...csrfCookieOptions(), maxAge: 0 });
+  response.cookies.set(productPublishCsrfCookieName(), "", { ...csrfCookieOptions(), maxAge: 0 });
 }
