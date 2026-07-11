@@ -133,6 +133,18 @@ a:focus-visible, button:focus-visible { outline: 3px solid rgba(59,130,246,.55);
 .filter.active span { color: rgba(255,255,255,.7); }
 .recommendations { margin-top: 48px; padding-top: 38px; border-top: 1px solid var(--border); }
 .empty-state { padding: 24px; border: 1px dashed var(--border); border-radius: var(--radius-md); color: var(--text); }
+.seller-onboarding { margin-bottom: 34px; padding: 22px; display: grid; gap: 22px; border: 1px solid rgba(37,99,235,.2); border-radius: var(--radius-lg); background: linear-gradient(145deg,rgba(239,246,255,.98),rgba(255,255,255,.94)); box-shadow: var(--shadow-sm); }
+.seller-onboarding h2 { margin: 5px 0 9px; font-size: clamp(1.55rem,6vw,2.25rem); }
+.seller-onboarding p { margin: 0; color: var(--text); line-height: 1.55; }
+.seller-onboarding form { display: grid; gap: 13px; }
+.seller-onboarding label { display: grid; gap: 6px; color: var(--ink); font-size: .73rem; font-weight: 750; }
+.seller-onboarding input { width: 100%; min-height: 48px; padding: 0 14px; border: 1px solid var(--border); border-radius: 12px; background: #fff; color: var(--ink); font: inherit; }
+.seller-onboarding input:focus { outline: 3px solid rgba(59,130,246,.18); border-color: var(--bright); }
+.seller-onboarding .primary-button { width: 100%; justify-content: center; }
+.seller-onboarding .form-note { color: var(--soft); font-size: .72rem; }
+.seller-onboarding .form-error { color: #b42318; font-size: .75rem; font-weight: 700; }
+.seller-ready { border-color: rgba(5,150,105,.25); background: linear-gradient(145deg,#ecfdf5,#fff); }
+.seller-ready span { color: var(--success); font-size: .72rem; font-weight: 800; }
 .bottom-nav { position: fixed; right: 0; bottom: 0; left: 0; z-index: 20; min-height: calc(70px + env(safe-area-inset-bottom)); padding: 6px 8px env(safe-area-inset-bottom); display: grid; grid-template-columns: repeat(3,1fr); border-top: 1px solid var(--border); background: rgba(255,255,255,.94); backdrop-filter: blur(18px); }
 .bottom-nav a { min-width: 0; min-height: 56px; padding: 5px 4px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; border-radius: 12px; color: var(--soft); font-size: .62rem; font-weight: 700; text-align: center; }
 .bottom-nav svg { width: 21px; height: 21px; }
@@ -152,6 +164,7 @@ a:focus-visible, button:focus-visible { outline: 3px solid rgba(59,130,246,.55);
   .metric-grid { grid-template-columns: repeat(3,minmax(0,1fr)); }
   .metric-grid article:last-child { grid-column: auto; }
   .page-header { flex-direction: row; align-items: center; justify-content: space-between; }
+  .seller-onboarding { grid-template-columns: minmax(0,1fr) minmax(300px,.8fr); align-items: center; padding: 30px; }
 }
 
 @media (min-width: 1025px) {

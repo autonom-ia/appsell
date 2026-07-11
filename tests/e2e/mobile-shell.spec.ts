@@ -76,6 +76,21 @@ test("keeps the protected shell mounted without a client-side session waterfall"
   await expect(page.locator(".session-loading")).toHaveCount(0);
 });
 
+test("keeps seller onboarding recoverable when the domain API is unavailable", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await login(page);
+  await page.goto("/products");
+  const submit = page.getByRole("button", { name: "Ativar meu espaço" });
+  await expect(submit).toBeEnabled();
+  await expect(page.getByText("A API está indisponível.")).toBeVisible();
+  await page.getByLabel("Nome do negócio").fill("Studio Mobile");
+  await page.getByLabel("Endereço público").fill("studio-mobile");
+  await submit.click();
+  await expect(page.getByText("A API está indisponível.")).toBeVisible();
+  await expect(submit).toBeEnabled();
+  await expect(page.getByLabel("Nome do negócio")).toHaveValue("Studio Mobile");
+});
+
 test("covers the approved responsive widths", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "viewport matrix runs once in Chromium");
   await login(page);

@@ -13,8 +13,12 @@ export async function GET(request: NextRequest) {
     });
   }
   try {
-    const session = await oauthService().getSession(request.cookies.get(sessionCookieName())?.value);
-    return NextResponse.json(session ? { authenticated: true, ...session } : { authenticated: false }, {
+    const sessionId = request.cookies.get(sessionCookieName())?.value;
+    const session = await oauthService().getSession(sessionId);
+    return NextResponse.json(session ? {
+      authenticated: true,
+      expiresAt: session.expiresAt
+    } : { authenticated: false }, {
       status: session ? 200 : 401,
       headers: { "cache-control": "no-store" }
     });

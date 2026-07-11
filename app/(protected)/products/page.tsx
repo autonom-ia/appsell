@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ProductCard } from "../../components/product-card";
 import { DEMO_SELLER_ID, demoProducts } from "../../../lib/demo-catalog";
 import { listSellerProducts } from "../../../lib/catalog-projection";
+import { SellerOnboardingCard } from "../../components/seller-onboarding-card";
 
 interface ProductsPageProps {
   searchParams: Promise<{ status?: string }>;
@@ -19,6 +20,7 @@ export default async function ProductsPage({ searchParams }: ProductsPageProps) 
 
   return (
     <>
+      <SellerOnboardingCard/>
       <header className="page-header">
         <div><p className="eyebrow">Catálogo demonstrativo</p><h1>Produtos</h1><p>Prévia da separação entre rascunhos e produtos publicados.</p></div>
         <div className="blocked-action">

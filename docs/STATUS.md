@@ -7,24 +7,27 @@ Atualizado em pontos de marco (PR aberta, deploy, incidente). Diferente de MEMOR
 | Indicador | Status | Última verificação |
 |-----------|:------:|--------------------|
 | Build | 🟢 web + API container local verdes | 2026-07-11 |
-| Testes | 🟢 55 web + 32 API/PG + 17 browser + 1 production | 2026-07-11 |
-| CI | 🟡 branch #24 ainda não publicada | 2026-07-11 |
+| Testes | 🟢 63 web + 48 API + 43 PG/API + 21 browser + 1 production | 2026-07-11 |
+| CI | 🟡 slice #26 validado localmente; PR/CI remoto pendentes | 2026-07-11 |
 | Deploy produção | 🟡 não configurado/não executado | 2026-07-10 |
 | Harness instalado | 2.0.2 | 2026-07-10 |
 | Harness drift | ⚠️ 2.0.2 → 2.1.2 | 2026-07-11 |
 
 ## Estado atual
 
-O protótipo Studio mobile-first foi mergeado pela PR #23. A Issue #24 implementa
-a primeira fundação persistente: FastAPI, PostgreSQL 16, Alembic forward-only,
+O protótipo Studio mobile-first foi mergeado pela PR #23 e a fundação
+persistente pela PR #25. A Issue #26 conecta o BFF à API com envelope assinado,
+replay durável, sincronização de identidade e onboarding seller persistente.
+A fundação inclui FastAPI, PostgreSQL 16, Alembic forward-only,
 roles owner/migrator/runtime, RLS forçado, contexto transacional assinado,
 auditoria append-only e bootstrap one-shot do superadmin com atestação separada.
 Este marco é Local/CI; não é o Identity real e não concede conta de produção.
 
 ## Última mudança relevante
 
-2026-07-11 — branch `feat/24-domain-foundation`: migration limpa, 25 testes
-PostgreSQL adversariais, 7 testes API/config, container non-root e readiness verdes.
+2026-07-11 — branch `feat/26-bff-api-onboarding`: migration limpa, 43 testes
+PostgreSQL/API, integração real com dois BFFs, 63 testes web, 21 Playwright,
+container non-root, readiness e smoke local login→tenant verdes.
 
 ## O que está funcionando
 
@@ -53,6 +56,12 @@ PostgreSQL adversariais, 7 testes API/config, container non-root e readiness ver
   um vencedor entre 20 concorrentes, audit e auto-disable.
 - CI Python com lock, Ruff, mypy strict, pip-audit, migration limpa, testes PG,
   build do container por digest e healthcheck real.
+- Ponte BFF→API Local/CI com credencial de serviço e envelope HMAC vinculado a
+  método, path, query, body, capability, sessão, identidade e janela temporal.
+- Replay persistente no PostgreSQL, UUIDv5 compatível em TypeScript/Python/SQL,
+  sincronização issuer-scoped e onboarding seller idempotente/atômico.
+- POST de onboarding protegido por origem canônica, CSRF por sessão+ação e
+  leitura streaming limitada a 16 KiB; fluxo real persiste entre dois BFFs.
 
 ## O que está quebrado / em degradação
 
@@ -69,10 +78,10 @@ PostgreSQL adversariais, 7 testes API/config, container non-root e readiness ver
 
 ## Próxima ação
 
-Concluir reviews críticos da fundação #24, abrir PR parcial vinculada à Issue,
-executar CI remoto e atualizar o Project. Depois implementar ponte BFF→API,
-onboarding seller e jornadas persistentes. Identity real (#13), KMS (#19) e
-produção continuam bloqueados até ambientes/contratos reais.
+Concluir o review crítico da #26, abrir PR vinculada à Issue, executar CI remoto
+e atualizar o Project. Depois implementar domínio persistente de produto/curso
+e a jornada buyer/entitlements. Identity real (#13), KMS (#19) e produção
+continuam bloqueados até ambientes/contratos reais.
 
 ## Links
 

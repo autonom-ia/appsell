@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import type { ReactNode } from "react";
+import type { FormEvent, ReactNode } from "react";
 
 interface AppShellProps {
   children: ReactNode;
@@ -21,6 +21,20 @@ function NavIcon({ name }: { name: (typeof navigation)[number]["mark"] }) {
     library: <><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/></>,
   };
   return <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
+}
+
+function readCsrfCookie() {
+  const prefix = `${process.env.NODE_ENV === "production" ? "__Host-appsell_csrf" : "appsell_csrf"}=`;
+  const value = document.cookie.split("; ").find((part) => part.startsWith(prefix));
+  return value ? decodeURIComponent(value.slice(prefix.length)) : "";
+}
+
+function LogoutForm({ mobile = false }: { mobile?: boolean }) {
+  function attachCsrf(event: FormEvent<HTMLFormElement>) {
+    const input = event.currentTarget.elements.namedItem("_csrf");
+    if (input instanceof HTMLInputElement) input.value = readCsrfCookie();
+  }
+  return <form action="/auth/logout" method="post" onSubmit={attachCsrf}><input type="hidden" name="_csrf" defaultValue=""/><button className={mobile ? "mobile-logout" : "logout-button"} type="submit" aria-label={mobile ? "Sair com segurança" : undefined}>{mobile ? "Sair" : "Sair com segurança"}</button><noscript><small>Ative JavaScript para assinar o logout com segurança.</small></noscript></form>;
 }
 
 export function AppShell({ children }: AppShellProps) {
@@ -45,12 +59,12 @@ export function AppShell({ children }: AppShellProps) {
           <span className="avatar" aria-hidden="true">AU</span>
           <span><strong>Ambiente demo</strong><small>Sessão protegida</small></span>
         </div>
-        <form action="/auth/logout" method="post"><button className="logout-button" type="submit">Sair com segurança</button></form>
+        <LogoutForm/>
       </aside>
       <div className="app-content">
         <header className="mobile-topbar">
           <Link className="mobile-brand" href="/dashboard"><span className="brand-mark" aria-hidden="true">a</span><strong>sell<span>.</span></strong></Link>
-          <form action="/auth/logout" method="post"><button className="mobile-logout" type="submit" aria-label="Sair com segurança">Sair</button></form>
+          <LogoutForm mobile/>
         </header>
         <div className="environment-banner" role="status"><strong>Prévia local, não é grant.</strong> Dados demonstrativos; publicação, cobrança e integrações reais estão desativadas.</div>
         <main id="conteudo" className="app-main" tabIndex={-1}>{children}</main>

@@ -5,7 +5,7 @@ import hmac
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import psycopg
 import pytest
@@ -28,6 +28,10 @@ SELLER_B = UUID("20000000-0000-4000-8000-000000000002")
 BOOTSTRAP_ISSUER = "https://identity.dev.autonomia.site"
 BOOTSTRAP_AUDIENCE = "appsell-web-dev"
 BOOTSTRAP_CLIENT_ID = "appsell-web-dev"
+
+
+def derived_identity_user_id(issuer: str, subject: str) -> UUID:
+    return uuid5(NAMESPACE_URL, f"{issuer}\0{subject}")
 
 
 def sign_context(
@@ -122,10 +126,20 @@ def seed_foundation() -> None:
         )
         connection.execute(
             """
-            insert into identity_user (id, identity_sub, email_normalized, email_verified)
-            values (%s,%s,%s,true),(%s,%s,%s,true)
+            insert into identity_user (
+              id, identity_issuer, identity_sub, email_normalized, email_verified
+            ) values (%s,%s,%s,%s,true),(%s,%s,%s,%s,true)
             """,
-            (USER_A, "identity-a", "a@example.test", USER_B, "identity-b", "b@example.test"),
+            (
+                USER_A,
+                BOOTSTRAP_ISSUER,
+                "identity-a",
+                "a@example.test",
+                USER_B,
+                BOOTSTRAP_ISSUER,
+                "identity-b",
+                "b@example.test",
+            ),
         )
         connection.execute(
             """
@@ -502,10 +516,11 @@ def bootstrap_candidate(
 def test_bootstrap_rejects_untrusted_claims(
     email: str, email_verified: bool, assurance: str, capability: str
 ) -> None:
+    identity_sub = f"rejected-{uuid4()}"
     with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
         bootstrap_candidate(
-            uuid4(),
-            f"rejected-{uuid4()}",
+            derived_identity_user_id(BOOTSTRAP_ISSUER, identity_sub),
+            identity_sub,
             email,
             email_verified,
             assurance,
@@ -513,9 +528,30 @@ def test_bootstrap_rejects_untrusted_claims(
         )
 
 
+@pytest.mark.parametrize(
+    "identity_sub", [" leading-sub", "trailing-sub ", "bad\nsub", "bad\u0085sub", "ab"]
+)
+def test_bootstrap_rejects_noncanonical_subject(identity_sub: str) -> None:
+    with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
+        bootstrap_candidate(derived_identity_user_id(BOOTSTRAP_ISSUER, identity_sub), identity_sub)
+
+
+def test_identity_sync_treats_nbsp_as_exact_data() -> None:
+    assert RUNTIME_URL
+    identity_sub = f"\u00a0subject-{uuid4()}"
+    identity_user_id = derived_identity_user_id(BOOTSTRAP_ISSUER, identity_sub)
+    with psycopg.connect(RUNTIME_URL) as connection:
+        apply_context(connection, identity_user_id, None, "identity.sync")
+        row = connection.execute(
+            "select app_private.sync_identity(%s, %s, %s, %s, true)",
+            (identity_user_id, BOOTSTRAP_ISSUER, identity_sub, "nbsp@example.test"),
+        ).fetchone()
+        assert row == (identity_user_id,)
+
+
 def test_bootstrap_attestation_rejects_claim_substitution() -> None:
-    identity_user_id = uuid4()
     original_sub = f"original-{uuid4()}"
+    identity_user_id = uuid5(NAMESPACE_URL, f"{BOOTSTRAP_ISSUER}\0{original_sub}")
     request_id = uuid4()
     issued_at = int(time.time())
     signature = sign_bootstrap_attestation(
@@ -558,7 +594,8 @@ def test_bootstrap_attestation_rejects_claim_substitution() -> None:
 
 
 def test_bootstrap_attestation_rejects_null_timestamps() -> None:
-    identity_user_id = uuid4()
+    identity_sub = f"null-time-{uuid4()}"
+    identity_user_id = uuid5(NAMESPACE_URL, f"{BOOTSTRAP_ISSUER}\0{identity_sub}")
     assert RUNTIME_URL
     with psycopg.connect(RUNTIME_URL) as connection:
         apply_context(connection, identity_user_id, None, "platform.bootstrap")
@@ -571,7 +608,7 @@ def test_bootstrap_attestation_rejects_null_timestamps() -> None:
                 """,
                 (
                     identity_user_id,
-                    f"null-time-{uuid4()}",
+                    identity_sub,
                     "comercial@autonomia.site",
                     BOOTSTRAP_ISSUER,
                     BOOTSTRAP_AUDIENCE,
@@ -594,10 +631,11 @@ def test_bootstrap_attestation_rejects_null_timestamps() -> None:
 def test_bootstrap_rejects_wrong_token_trust_policy(
     issuer: str, audience: str, client_id: str
 ) -> None:
+    identity_sub = f"wrong-trust-{uuid4()}"
     with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
         bootstrap_candidate(
-            uuid4(),
-            f"wrong-trust-{uuid4()}",
+            derived_identity_user_id(issuer, identity_sub),
+            identity_sub,
             issuer=issuer,
             audience=audience,
             client_id=client_id,
@@ -605,18 +643,19 @@ def test_bootstrap_rejects_wrong_token_trust_policy(
 
 
 def test_bootstrap_rejects_invalid_or_expired_attestation() -> None:
+    invalid_sub = f"invalid-signature-{uuid4()}"
     with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
         bootstrap_candidate(
-            uuid4(),
-            f"invalid-signature-{uuid4()}",
+            derived_identity_user_id(BOOTSTRAP_ISSUER, invalid_sub),
+            invalid_sub,
             signature_override="0" * 64,
         )
 
     assert RUNTIME_URL
     now = int(time.time())
     for issued_at, expires_at in ((now - 180, now - 120), (now + 5, now + 4)):
-        identity_user_id = uuid4()
         identity_sub = f"invalid-time-{uuid4()}"
+        identity_user_id = uuid5(NAMESPACE_URL, f"{BOOTSTRAP_ISSUER}\0{identity_sub}")
         request_id = uuid4()
         signature = sign_bootstrap_attestation(
             identity_user_id,
@@ -667,10 +706,11 @@ def test_bootstrap_disable_is_linearizable_against_concurrent_consume() -> None:
             "update app_private.bootstrap_trust_policy set enabled = false where singleton"
         )
         with ThreadPoolExecutor(max_workers=1) as executor:
+            disabled_sub = f"disabled-race-{uuid4()}"
             future = executor.submit(
                 bootstrap_candidate,
-                uuid4(),
-                f"disabled-race-{uuid4()}",
+                derived_identity_user_id(BOOTSTRAP_ISSUER, disabled_sub),
+                disabled_sub,
             )
             time.sleep(0.1)
             assert not future.done()
@@ -694,17 +734,25 @@ def test_bootstrap_disable_is_linearizable_against_concurrent_consume() -> None:
 
 
 def test_bootstrap_has_exactly_one_concurrent_winner_and_grant_survives_email_change() -> None:
-    candidates = [(uuid4(), f"bootstrap-{uuid4()}") for _ in range(20)]
+    subjects = [f"bootstrap-{uuid4()}" for _ in range(20)]
+    candidates = [
+        (derived_identity_user_id(BOOTSTRAP_ISSUER, subject), subject) for subject in subjects
+    ]
     assert ADMIN_URL
     with psycopg.connect(ADMIN_URL, autocommit=True) as connection:
         connection.cursor().executemany(
             """
             insert into identity_user (
-              id, identity_sub, email_normalized, email_verified
-            ) values (%s, %s, %s, true)
+              id, identity_issuer, identity_sub, email_normalized, email_verified
+            ) values (%s, %s, %s, %s, true)
             """,
             [
-                (identity_user_id, identity_sub, f"candidate-{index}@example.test")
+                (
+                    identity_user_id,
+                    BOOTSTRAP_ISSUER,
+                    identity_sub,
+                    f"candidate-{index}@example.test",
+                )
                 for index, (identity_user_id, identity_sub) in enumerate(candidates)
             ],
         )
@@ -749,6 +797,28 @@ def test_bootstrap_has_exactly_one_concurrent_winner_and_grant_survives_email_ch
             (winner,),
         ).fetchone()
         assert grant == ("platform_superadmin", "active")
+
+    winner_subject = dict(candidates)[winner]
+    assert RUNTIME_URL
+    with psycopg.connect(RUNTIME_URL) as connection:
+        apply_context(connection, winner, None, "identity.sync")
+        synced = connection.execute(
+            "select app_private.sync_identity(%s,%s,%s,%s,true)",
+            (
+                winner,
+                BOOTSTRAP_ISSUER,
+                winner_subject,
+                "comercial@autonomia.site",
+            ),
+        ).fetchone()
+        assert synced == (winner,)
+        connection.commit()
+
+        apply_context(connection, winner, None, "platform.grants.read")
+        assert connection.execute(
+            "select role, status from platform_grant where identity_user_id = %s",
+            (winner,),
+        ).fetchone() == ("platform_superadmin", "active")
 
     with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
         bootstrap_candidate(uuid4(), f"replay-{uuid4()}")

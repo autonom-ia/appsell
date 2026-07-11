@@ -2,7 +2,7 @@
 
 ## Fase atual
 
-Fase 3 — foundation executável Local/CI.
+Fase 3A — BFF→API e onboarding seller executáveis em Local/CI.
 
 ## Concluído
 
@@ -53,12 +53,21 @@ Fase 3 — foundation executável Local/CI.
   janela disabled-by-default, auto-disable e 20 concorrentes;
 - 7 testes API/config + 25 testes PostgreSQL reais, pip-audit sem vulnerabilidade;
 - CI Python/PG/container acrescentado ao App CI, com actions fixadas por SHA.
+- PR #25 da fundação PostgreSQL/API mergeada em `main`;
+- contrato BFF→API assinado e validado nos dois runtimes, com golden vector;
+- replay durável, issuer-scoped identity sync e UUIDv5 compatível em TS/Python/SQL;
+- endpoints `PUT/GET /v1/me` e `GET/POST /v1/me/sellers` com capability/RLS;
+- onboarding seller idempotente e atômico, persistido no PostgreSQL;
+- CSRF por sessão+ação, origem canônica e parser streaming limitado a 16 KiB;
+- teste real com dois processos BFF, Redis, FastAPI e PostgreSQL;
+- smoke local completo: login 200, dashboard 200, create 201 e list 200;
+- 63 unitários web, 48 Python, 43 PostgreSQL/API, 21 E2E e 1 production verdes.
 
 ## Em andamento
 
-- Issue #24 em implementação; fundação DB/API/tenancy/bootstrap validada localmente;
-- reviews independentes tenancy, testes e API/CI em rodada final;
-- PR parcial da #24 ainda não aberta; CI remoto pendente;
+- Issue #26 em implementação; ponte BFF/API e onboarding validados localmente;
+- re-review adversarial de tenancy em rodada final;
+- PR da #26 ainda não aberta; CI remoto pendente;
 - épica #8 permanece em desenvolvimento;
 - Identity real #13 permanece bloqueado por ausência de dev/hml e P0 upstream.
 
@@ -67,9 +76,9 @@ Fase 3 — foundation executável Local/CI.
 - spike com Autonom.ia Identity real (#13);
 - refresh real contra Identity (#18), bloqueado pelo contrato/ambiente da #13;
 - KMS real, vault durável/HA e restore (#19), bloqueado;
-- ponte BFF→API, endpoint bootstrap e CSRF/origin;
-- onboarding seller owner e repositories tipados;
-- RLS buyer/entitlements e domínio de produto/curso.
+- domínio persistente de produto/curso e publicação;
+- RLS buyer/entitlements, checkout e biblioteca persistente;
+- integrações Neuro.ai e financeiro após contratos/repos reais.
 
 ## Falhas encontradas e corrigidas
 
@@ -87,9 +96,13 @@ Fase 3 — foundation executável Local/CI.
   gate movido para `proxy.ts`, com teste explícito de ausência no DOM/responses;
 - Vitest 4.0.18 tinha advisory crítico no UI server de desenvolvimento:
   atualizado para 4.1.0 e `pnpm audit` voltou a zero.
+- UUIDv5 SQL inicialmente concatenava NUL em `text`, inválido no PostgreSQL:
+  derivação passou a concatenar bytes UTF-8 e ganhou prova cruzada TS/Python/SQL.
+- parser do onboarding rejeitava o `charset=UTF-8` legítimo de URLSearchParams:
+  media type agora é normalizado sem relaxar origem, CSRF ou limite de 16 KiB.
 
 ## Próximo passo recomendado
 
-Após reviews finais verdes, abrir PR parcial da #24, rodar CI remoto e atualizar
-Project. Não declarar acesso real de `comercial@autonomia.site`: isso depende do
+Após review final verde, abrir PR da #26, rodar CI remoto e atualizar o Project.
+Não declarar acesso real de `comercial@autonomia.site`: isso depende do
 Identity #13 e de ambiente isolado com token/JWKS/MFA reais.
