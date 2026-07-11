@@ -149,7 +149,7 @@ a:focus-visible, button:focus-visible { outline: 3px solid rgba(59,130,246,.55);
 .seller-ready ul { margin: 0; padding: 0; display: grid; gap: 8px; list-style: none; }
 .seller-ready li { min-width: 0; padding: 12px 14px; display: grid; gap: 4px; border: 1px solid rgba(5,150,105,.18); border-radius: 12px; background: rgba(255,255,255,.7); }
 .seller-ready li strong, .seller-ready li span { overflow-wrap: anywhere; }
-.catalog-workspace { width: 100%; min-width: 0; display: grid; grid-template-columns: minmax(0,1fr); gap: 24px; }
+.catalog-workspace { width: 100%; min-width: 0; display: grid; grid-template-columns: minmax(0,1fr); gap: 24px; overflow-x: clip; }
 .catalog-workspace > *, .catalog-workspace-heading > div, .catalog-workspace-grid > * { min-width: 0; max-width: 100%; }
 .catalog-workspace-heading { display: flex; flex-direction: column; align-items: flex-start; gap: 16px; }
 .catalog-workspace-heading h1 { margin-bottom: 10px; font-size: clamp(2.35rem,10vw,4.25rem); }
@@ -157,7 +157,7 @@ a:focus-visible, button:focus-visible { outline: 3px solid rgba(59,130,246,.55);
 .private-badge { min-height: 36px; padding: 0 12px; display: inline-flex; align-items: center; border: 1px solid rgba(8,122,75,.22); border-radius: 99px; background: #e6f7ef; color: var(--success); font-size: .72rem; font-weight: 800; }
 .tenant-picker { padding: 18px; border: 1px solid var(--border); border-radius: var(--radius-md); background: rgba(255,255,255,.82); box-shadow: var(--shadow-sm); }
 .tenant-picker label { display: block; margin-bottom: 8px; color: var(--ink); font-size: .75rem; font-weight: 800; }
-.tenant-picker select { width: 100%; min-width: 0; max-width: 100%; min-height: 48px; padding: 0 42px 0 14px; border: 1px solid var(--border); border-radius: 12px; background: white; color: var(--ink); font-size: 1rem; }
+.tenant-picker select { width: 100%; min-width: 0; max-width: 100%; min-height: 48px; padding: 0 42px 0 14px; border: 1px solid var(--border); border-radius: 12px; background: white; contain: inline-size; overflow: hidden; color: var(--ink); font-size: 1rem; text-overflow: ellipsis; white-space: nowrap; }
 .tenant-picker select:focus-visible { outline: 3px solid rgba(59,130,246,.25); outline-offset: 2px; border-color: var(--bright); }
 .tenant-picker .form-note, .tenant-picker .form-error { margin: 9px 0 0; font-size: .76rem; line-height: 1.5; }
 .tenant-switch-warning { margin-top: 14px; padding: 14px; display: grid; gap: 13px; border: 1px solid rgba(180,83,9,.25); border-radius: 14px; background: #fff8e7; }
