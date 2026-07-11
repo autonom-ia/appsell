@@ -418,7 +418,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
             ) : <p className="form-note" role="status">A API ainda não retornou a validação de publicação. Nada será publicado.</p>}
             {dirty ? <p className="form-note" role="status">Salve as alterações antes de publicar.</p> : null}
             {!dirty && detail.publication && !hasUnpublishedChanges ? <p className="form-note" role="status">Nenhuma mudança desde o snapshot publicado. Edite e salve o rascunho antes de criar outra versão.</p> : null}
-            <button ref={publishTriggerButton} className="primary-button" type="button" disabled={!canPublish} onClick={() => setPublishDialogOpen(true)}><span>{publishState === "publishing" ? "Publicando…" : `Publicar${publicationVersion ? ` nova versão após v${publicationVersion}` : " primeira versão"}`}</span></button>
+            <div className="publish-action"><button ref={publishTriggerButton} className="primary-button" type="button" disabled={!canPublish} onClick={() => setPublishDialogOpen(true)}><span>{publishState === "publishing" ? "Publicando…" : `Publicar${publicationVersion ? ` nova versão após v${publicationVersion}` : " primeira versão"}`}</span></button></div>
             <div className="form-feedback" aria-live="polite" aria-atomic="true">
               {publishState === "published" ? <p className="form-success">Versão publicada com sucesso. O rascunho futuro continuará separado.</p> : null}
               {publishState === "conflict" ? <p className="form-error">O produto mudou ou não está pronto. Recarregue os dados antes de publicar.</p> : null}
