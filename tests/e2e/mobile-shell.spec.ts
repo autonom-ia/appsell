@@ -388,6 +388,181 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   expect(landscape.scroll).toBeLessThanOrEqual(landscape.client);
 });
 
+test("authors and reorders a tenant curriculum at 320px without drag", async ({ page }) => {
+  const sellerId = "82000000-0000-4000-8000-000000000001";
+  const productId = "83000000-0000-4000-8000-000000000001";
+  const courseId = "84000000-0000-4000-8000-000000000001";
+  const baseModuleId = "85000000-0000-4000-8000-000000000001";
+  let version = 3;
+  let productArchived = false;
+  const moduleAttemptKeys: string[] = [];
+  const modules = [{
+    id: baseModuleId,
+    title: "Base",
+    status: "active",
+    position: 0,
+    lessons: [{
+      id: "86000000-0000-4000-8000-000000000001",
+      title: "Boas-vindas",
+      kind: "text",
+      content: "Comece por aqui.",
+      status: "active",
+      position: 0
+    }]
+  }];
+
+  await page.setViewportSize({ width: 320, height: 800 });
+  await login(page);
+  await page.route("**/api/sellers/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const productPath = `/api/sellers/${sellerId}/products/${productId}`;
+    const curriculumPath = `${productPath}/courses/${courseId}`;
+    if (path === productPath && request.method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        product: {
+          id: productId,
+          seller_organization_id: sellerId,
+          slug: "curso-mobile",
+          title: "Curso Mobile",
+          description: "Editor de currículo.",
+          status: productArchived ? "archived" : "draft",
+          draft_version: 1,
+          course: { id: courseId, title: "Jornada Mobile", status: "draft", draft_version: version },
+          courses: [{ id: courseId, title: "Jornada Mobile", status: "draft", draft_version: version }],
+          offer: { id: null, title: "", summary: "", status: "draft", draft_version: 0 },
+          publication: null,
+          has_unpublished_changes: true,
+          readiness: { can_publish: false, items: [{ key: "offer_required", label: "Crie a oferta.", ready: false }] }
+        },
+        csrf: { update: "update-token", publish: "publish-token" }
+      }) });
+      return;
+    }
+    if (path === `${curriculumPath}/curriculum` && request.method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        course: { id: courseId, draft_version: version },
+        modules,
+        csrf: { create: "create-token", update: "update-token", reorder: "reorder-token", archive: "archive-token" },
+        limits: { modules_per_course: 50, lessons_per_module: 100, lessons_per_course: 500, title_bytes: 160, lesson_content_bytes: 8192 }
+      }) });
+      return;
+    }
+    const posted = request.postDataBuffer();
+    const form = await new Request(request.url(), {
+      method: request.method(),
+      headers: request.headers(),
+      body: posted ? new Uint8Array(posted) : undefined
+    }).formData();
+    expect(form.get("idempotency_key")).toMatch(/^[0-9a-f-]{36}$/);
+    expect(Number(form.get("expected_course_version"))).toBe(version);
+    if (path === `${curriculumPath}/modules` && request.method() === "POST") {
+      expect(form.get("_csrf")).toBe("create-token");
+      moduleAttemptKeys.push(String(form.get("idempotency_key")));
+      if (moduleAttemptKeys.length === 1) {
+        await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "temporarily_unavailable" }) });
+        return;
+      }
+      version += 1;
+      const id = "85000000-0000-4000-8000-000000000002";
+      modules.push({ id, title: String(form.get("title")), status: "active", position: 1, lessons: [] });
+      await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ module_id: id, course_version: version, created: true }) });
+      return;
+    }
+    if (path === `${curriculumPath}/modules/${baseModuleId}/lessons` && request.method() === "POST") {
+      expect(form.get("kind")).toBe("text");
+      version += 1;
+      const id = "86000000-0000-4000-8000-000000000002";
+      modules[0].lessons.push({ id, title: String(form.get("title")), kind: "text", content: String(form.get("content")), status: "active", position: 1 });
+      await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ lesson_id: id, course_version: version, created: true }) });
+      return;
+    }
+    if (path === `${curriculumPath}/modules/${baseModuleId}/lessons/order` && request.method() === "PUT") {
+      const order = JSON.parse(String(form.get("ordered_ids"))) as string[];
+      expect(order).toEqual(["86000000-0000-4000-8000-000000000002", "86000000-0000-4000-8000-000000000001"]);
+      modules[0].lessons.sort((left, right) => order.indexOf(left.id) - order.indexOf(right.id));
+      version += 1;
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ course_version: version, reordered: true }) });
+      return;
+    }
+    if (path === `${curriculumPath}/modules/${baseModuleId}/lessons/86000000-0000-4000-8000-000000000002/archive` && request.method() === "POST") {
+      expect(form.get("_csrf")).toBe("archive-token");
+      modules[0].lessons = modules[0].lessons.filter((lesson) => lesson.id !== "86000000-0000-4000-8000-000000000002");
+      version += 1;
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ course_version: version, archived: true }) });
+      return;
+    }
+    await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "unexpected_test_route" }) });
+  });
+
+  await page.goto(`/products/${sellerId}/${productId}?section=curriculo`);
+  await expect(page.getByRole("heading", { name: "Módulos e aulas" })).toBeVisible();
+  await page.getByLabel("Novo módulo").fill("Avançado");
+  await page.getByRole("button", { name: "Adicionar módulo" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "A API não respondeu" })).toBeVisible();
+  await expect(page.getByLabel("Novo módulo")).toHaveValue("Avançado");
+  await page.getByRole("button", { name: "Adicionar módulo" }).click();
+  await expect(page.getByRole("heading", { name: "Avançado" })).toBeVisible();
+  expect(moduleAttemptKeys).toHaveLength(2);
+  expect(moduleAttemptKeys[1]).toBe(moduleAttemptKeys[0]);
+
+  const baseModule = page.getByRole("article").filter({ has: page.getByRole("heading", { name: "Base" }) });
+  const lessonCreate = baseModule.getByTestId(`lesson-create-form-${baseModuleId}`);
+  await lessonCreate.getByLabel("Nome da aula").fill("Prática guiada");
+  await lessonCreate.getByLabel("Conteúdo textual").fill("Faça o exercício com calma e registre o resultado.");
+  await lessonCreate.getByRole("button", { name: "Adicionar aula" }).click();
+  await expect(page.getByRole("heading", { name: "Prática guiada" })).toBeVisible();
+  const moveUp = page.getByRole("button", { name: "Mover aula Prática guiada para cima" });
+  await moveUp.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("button", { name: "Mover aula Prática guiada para baixo" })).toBeFocused();
+  await expect(page.getByRole("status").filter({ hasText: "Prática guiada movida para a posição 1 de 2" })).toBeVisible();
+  const practice = page.getByTestId("lesson-86000000-0000-4000-8000-000000000002");
+  await practice.getByText("Editar aula").click();
+  await practice.getByLabel("Nome da aula").fill("Rascunho que será descartado");
+  page.once("dialog", (dialog) => dialog.accept());
+  await practice.getByRole("button", { name: "Arquivar aula" }).click();
+  await expect(page.getByRole("heading", { name: "Prática guiada" })).toHaveCount(0);
+
+  const touchAndWidth = await page.evaluate(() => ({
+    client: document.documentElement.clientWidth,
+    scroll: document.documentElement.scrollWidth,
+    shortTargets: [...document.querySelectorAll("button,input,textarea,summary")]
+      .filter((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 && rect.height < 44;
+      }).length
+  }));
+  expect(touchAndWidth.scroll).toBeLessThanOrEqual(touchAndWidth.client);
+  expect(touchAndWidth.shortTargets).toBe(0);
+  await page.evaluate(() => { document.documentElement.style.fontSize = "200%"; });
+  const scaled = await page.evaluate(() => ({
+    client: document.documentElement.clientWidth,
+    scroll: document.documentElement.scrollWidth,
+    clipped: [...document.querySelectorAll("a,button,input,textarea,summary")].flatMap((element) => {
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 && (rect.left < -1 || rect.right > document.documentElement.clientWidth + 1)
+        ? [{ text: element.textContent?.trim() || element.getAttribute("name"), left: rect.left, right: rect.right }]
+        : [];
+    })
+  }));
+  expect(scaled.scroll).toBeLessThanOrEqual(scaled.client);
+  expect(scaled.clipped, JSON.stringify(scaled)).toEqual([]);
+  await page.evaluate(() => { document.documentElement.style.fontSize = "100%"; });
+  await page.setViewportSize({ width: 568, height: 320 });
+  const landscape = await page.evaluate(() => ({ client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }));
+  expect(landscape.scroll).toBeLessThanOrEqual(landscape.client);
+
+  productArchived = true;
+  await page.reload();
+  await expect(page.getByText("Produto arquivado: currículo disponível somente para leitura.")).toBeVisible();
+  await expect(page.getByTestId("module-create-form")).toHaveCount(0);
+  const archivedOrderButtons = page.getByRole("button", { name: /Mover módulo/ });
+  await expect(archivedOrderButtons).toHaveCount(4);
+  expect(await archivedOrderButtons.evaluateAll((buttons) => buttons.every((button) => (button as HTMLButtonElement).disabled))).toBe(true);
+  await expect(page.getByText("Editar aula")).toHaveCount(0);
+});
+
 test("fails publication closed for string readiness and a missing offer", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "blocked readiness runs once in Chromium");
   const sellerId = "72000000-0000-4000-8000-000000000001";

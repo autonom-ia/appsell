@@ -4,9 +4,10 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, MouseEvent, useCallback, useEffect, useRef, useState } from "react";
 import { AccessibleDialog } from "./accessible-dialog";
+import { CurriculumWorkspace } from "./curriculum-workspace";
 import { allowUnsavedNavigation, useUnsavedChanges } from "./use-unsaved-changes";
 
-type EditorSection = "produto" | "oferta" | "preview" | "publicar";
+type EditorSection = "produto" | "curriculo" | "oferta" | "preview" | "publicar";
 type LoadState = "loading" | "ready" | "unauthorized" | "forbidden" | "not_found" | "unavailable" | "error";
 type SaveState = "idle" | "saving" | "saved" | "saved_with_changes" | "conflict" | "rebasing" | "rebased" | "invalid" | "forbidden" | "unavailable" | "error";
 type PreviewState = "idle" | "loading" | "ready" | "unavailable" | "error";
@@ -89,6 +90,7 @@ interface PrivatePreviewPayload extends PrivatePreview {
 
 const editorSections: Array<{ id: EditorSection; label: string; hint: string }> = [
   { id: "produto", label: "Produto", hint: "Identidade e curso" },
+  { id: "curriculo", label: "Currículo", hint: "Módulos e aulas" },
   { id: "oferta", label: "Oferta", hint: "Termos informativos" },
   { id: "preview", label: "Preview", hint: "Revisão privada" },
   { id: "publicar", label: "Publicar", hint: "Snapshot versionado" }
@@ -113,6 +115,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   const [publishState, setPublishState] = useState<PublishState>("idle");
   const [publishDialogOpen, setPublishDialogOpen] = useState(false);
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
+  const [curriculumDirty, setCurriculumDirty] = useState(false);
   const updateIdempotencyKey = useRef<string | null>(null);
   const publishIdempotencyKey = useRef<string | null>(null);
   const offerId = useRef<string | null>(null);
@@ -122,8 +125,10 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   const publishTriggerButton = useRef<HTMLButtonElement>(null);
   const listLink = useRef<HTMLAnchorElement>(null);
   const dirty = !sameFields(fields, savedFields);
+  const editorDirty = dirty || curriculumDirty;
 
-  useUnsavedChanges(dirty);
+  useUnsavedChanges(editorDirty);
+  const handleCurriculumDirty = useCallback((nextDirty: boolean) => setCurriculumDirty(nextDirty), []);
 
   const loadDetail = useCallback(async () => {
     const controller = new AbortController();
@@ -153,6 +158,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       clearTimeout(timeout);
     }
   }, [productId, sellerId]);
+  const handleCurriculumCommitted = useCallback(() => { void loadDetail(); }, [loadDetail]);
 
   useEffect(() => {
     const start = window.setTimeout(() => void loadDetail(), 0);
@@ -341,9 +347,24 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   }
 
   function requestListNavigation(event: MouseEvent<HTMLAnchorElement>) {
-    if (!dirty || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    if (!editorDirty || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
     setLeaveDialogOpen(true);
+  }
+
+  function requestSectionNavigation(event: MouseEvent<HTMLAnchorElement>, target: EditorSection) {
+    if (target === section || !editorDirty || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    if (!window.confirm("Há alterações não salvas nesta etapa. Descartar e continuar?")) {
+      event.preventDefault();
+      return;
+    }
+    if (dirty) {
+      setFields(savedFields);
+      fieldsRef.current = savedFields;
+      setSaveState("idle");
+      setInvalidField("");
+    }
+    setCurriculumDirty(false);
   }
 
   function closePublishDialog() {
@@ -382,10 +403,11 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       <nav className="editor-section-nav" aria-label="Etapas do produto">
         {editorSections.map((item) => {
           const active = section === item.id;
-          return <Link key={item.id} href={`?section=${item.id}`} replace scroll={false} className={active ? "active" : ""} aria-current={active ? "step" : undefined}><strong>{item.label}</strong><span>{item.hint}</span></Link>;
+          return <Link key={item.id} href={`?section=${item.id}`} replace scroll={false} className={active ? "active" : ""} aria-current={active ? "step" : undefined} onClick={(event) => requestSectionNavigation(event, item.id)}><strong>{item.label}</strong><span>{item.hint}</span></Link>;
         })}
       </nav>
 
+      {section === "curriculo" ? <CurriculumWorkspace sellerId={sellerId} productId={productId} courseId={detail.course.id} courseTitle={detail.course.title} archived={detail.status === "archived"} onDirtyChange={handleCurriculumDirty} onCommitted={handleCurriculumCommitted}/> : (
       <form ref={formElement} className="editor-form" onSubmit={saveDraft}>
         {section === "produto" ? (
           <fieldset disabled={detail.status === "archived"}>
@@ -412,7 +434,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
         {section === "publicar" ? (
           <section className="publish-panel" aria-labelledby="publish-panel-title">
             <p className="eyebrow">Validação server-side</p><h2 id="publish-panel-title">Preparar publicação</h2>
-            <p>A publicação cria um snapshot versionado. Cobrança e checkout continuam desativados.</p>
+            <p>A publicação cria um snapshot versionado com produto, oferta, módulos e aulas de texto. Cobrança e checkout continuam desativados.</p>
             {readiness ? (
               <ul className="readiness-list">{readiness.items.map((item, index) => <li key={item.key ?? `${item.label}-${index}`} className={item.ready ? "ready" : "blocked"}><span aria-hidden="true">{item.ready ? "✓" : "!"}</span><div><strong>{item.label}</strong>{item.detail ? <p>{item.detail}</p> : null}</div><span className="sr-only">{item.ready ? "Pronto" : "Pendente"}</span></li>)}</ul>
             ) : <p className="form-note" role="status">A API ainda não retornou a validação de publicação. Nada será publicado.</p>}
@@ -436,11 +458,12 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
           </div>
         ) : null}
       </form>
+      )}
 
       {publishDialogOpen ? (
         <AccessibleDialog titleId="publish-dialog-title" descriptionId="publish-dialog-description" initialFocusRef={publishCancelButton} returnFocusRef={publishTriggerButton} onClose={closePublishDialog}>
             <p className="eyebrow">Confirmação de publicação</p><h2 id="publish-dialog-title">Publicar este snapshot?</h2>
-            <p id="publish-dialog-description">Produto, curso e oferta informativa ficarão disponíveis na versão publicada. Nenhuma cobrança, checkout ou entitlement será criado.</p>
+            <p id="publish-dialog-description">Produto, oferta, módulos e aulas de texto ficarão disponíveis na versão publicada. Nenhuma cobrança, checkout ou entitlement será criado.</p>
             <div className="dialog-actions"><button ref={publishCancelButton} className="secondary-button" type="button" onClick={closePublishDialog}>Revisar novamente</button><button className="primary-button" type="button" onClick={() => void publish()}>Publicar snapshot</button></div>
         </AccessibleDialog>
       ) : null}

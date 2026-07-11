@@ -20,7 +20,10 @@ interface ApiRequest {
   path: string;
   capability: "identity.sync" | "platform.grants.read" | "seller.list" | "seller.onboard" |
     "catalog.draft.read" | "catalog.draft.create" | "catalog.draft.update" |
-    "catalog.draft.preview" | "catalog.publication.read" | "catalog.publication.create";
+    "catalog.draft.preview" | "catalog.publication.read" | "catalog.publication.create" |
+    "catalog.curriculum.read" | "catalog.curriculum.create" |
+    "catalog.curriculum.update" | "catalog.curriculum.archive" |
+    "catalog.curriculum.reorder";
   sellerOrganizationId?: string;
   body?: Record<string, unknown>;
 }
@@ -216,6 +219,181 @@ export async function publishDomainProductDraft(
       expected_offer_version: input.expectedOfferVersion
     }
   });
+}
+
+export async function readDomainCurriculum(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  courseId: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}/courses/${courseId}/curriculum`,
+    capability: "catalog.curriculum.read",
+    sellerOrganizationId
+  });
+}
+
+interface CurriculumMutationInput {
+  idempotencyKey: string;
+  expectedCourseVersion: number;
+}
+
+export async function createDomainCourseModule(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  courseId: string,
+  input: CurriculumMutationInput & { title: string }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}/courses/${courseId}/modules`,
+    capability: "catalog.curriculum.create",
+    sellerOrganizationId,
+    body: curriculumBody(input, { title: input.title })
+  });
+}
+
+export async function updateDomainCourseModule(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  courseId: string,
+  moduleId: string,
+  input: CurriculumMutationInput & { title: string }
+) {
+  return domainRequest(sessionId, session, {
+    method: "PATCH",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}/courses/${courseId}/modules/${moduleId}`,
+    capability: "catalog.curriculum.update",
+    sellerOrganizationId,
+    body: curriculumBody(input, { title: input.title })
+  });
+}
+
+export async function archiveDomainCourseModule(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  courseId: string,
+  moduleId: string,
+  input: CurriculumMutationInput
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}/courses/${courseId}/modules/${moduleId}/archive`,
+    capability: "catalog.curriculum.archive",
+    sellerOrganizationId,
+    body: curriculumBody(input)
+  });
+}
+
+export async function reorderDomainCourseModules(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  courseId: string,
+  input: CurriculumMutationInput & { orderedIds: string[] }
+) {
+  return domainRequest(sessionId, session, {
+    method: "PUT",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}/courses/${courseId}/modules/order`,
+    capability: "catalog.curriculum.reorder",
+    sellerOrganizationId,
+    body: curriculumBody(input, { ordered_ids: input.orderedIds })
+  });
+}
+
+export async function createDomainCourseLesson(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  courseId: string,
+  moduleId: string,
+  input: CurriculumMutationInput & { title: string; content: string }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}/courses/${courseId}/modules/${moduleId}/lessons`,
+    capability: "catalog.curriculum.create",
+    sellerOrganizationId,
+    body: curriculumBody(input, { title: input.title, kind: "text", content: input.content })
+  });
+}
+
+export async function updateDomainCourseLesson(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  courseId: string,
+  moduleId: string,
+  lessonId: string,
+  input: CurriculumMutationInput & { title: string; content: string }
+) {
+  return domainRequest(sessionId, session, {
+    method: "PATCH",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}/courses/${courseId}/modules/${moduleId}/lessons/${lessonId}`,
+    capability: "catalog.curriculum.update",
+    sellerOrganizationId,
+    body: curriculumBody(input, { title: input.title, kind: "text", content: input.content })
+  });
+}
+
+export async function archiveDomainCourseLesson(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  courseId: string,
+  moduleId: string,
+  lessonId: string,
+  input: CurriculumMutationInput
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}/courses/${courseId}/modules/${moduleId}/lessons/${lessonId}/archive`,
+    capability: "catalog.curriculum.archive",
+    sellerOrganizationId,
+    body: curriculumBody(input)
+  });
+}
+
+export async function reorderDomainCourseLessons(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  courseId: string,
+  moduleId: string,
+  input: CurriculumMutationInput & { orderedIds: string[] }
+) {
+  return domainRequest(sessionId, session, {
+    method: "PUT",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}/courses/${courseId}/modules/${moduleId}/lessons/order`,
+    capability: "catalog.curriculum.reorder",
+    sellerOrganizationId,
+    body: curriculumBody(input, { ordered_ids: input.orderedIds })
+  });
+}
+
+function curriculumBody(
+  input: CurriculumMutationInput,
+  extra: Record<string, unknown> = {}
+) {
+  return {
+    idempotency_key: input.idempotencyKey,
+    expected_course_version: input.expectedCourseVersion,
+    ...extra
+  };
 }
 
 async function domainRequest(

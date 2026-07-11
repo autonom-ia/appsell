@@ -58,6 +58,9 @@ describe("internal BFF envelope", () => {
   it("rejects invalid TTLs, routes and identifiers", () => {
     expect(() => signInternalEnvelope({ ...input, ttlSeconds: 61 }, config)).toThrow(InternalEnvelopeInputError);
     expect(() => signInternalEnvelope({ ...input, path: "//v1/me" }, config)).toThrow(InternalEnvelopeInputError);
+    const curriculumPath = "/v1/me/sellers/52000000-0000-4000-8000-000000000001/products/53000000-0000-4000-8000-000000000001/courses/54000000-0000-4000-8000-000000000001/modules/55000000-0000-4000-8000-000000000001/lessons";
+    expect(signInternalEnvelope({ ...input, path: curriculumPath }, config).payload.path).toBe(curriculumPath);
+    expect(() => signInternalEnvelope({ ...input, path: `/${"a".repeat(512)}` }, config)).toThrow(InternalEnvelopeInputError);
     expect(() => signInternalEnvelope({ ...input, requestId: "not-a-uuid" }, config)).toThrow(InternalEnvelopeInputError);
     for (const sub of [" ab", "ab ", "a\nb", "a\u0085b", "\ud800ab", "\udc00ab", "ab", "x".repeat(256)]) {
       expect(() => signInternalEnvelope({

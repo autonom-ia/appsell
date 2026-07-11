@@ -31,11 +31,12 @@ export type LimitedFieldsResult =
 
 export async function readExactLimitedFields(
   request: NextRequest,
-  expectedNames: readonly string[] | readonly (readonly string[])[]
+  expectedNames: readonly string[] | readonly (readonly string[])[],
+  maxBytes?: number
 ): Promise<LimitedFieldsResult> {
   let form: FormData | null;
   try {
-    form = await readLimitedForm(request);
+    form = await readLimitedForm(request, maxBytes);
   } catch (error) {
     if (error instanceof PayloadTooLargeError) return { kind: "too_large" };
     return { kind: "invalid" };

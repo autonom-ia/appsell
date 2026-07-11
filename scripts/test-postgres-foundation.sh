@@ -32,7 +32,47 @@ export APPSELL_SERVICE_CREDENTIAL_B64="$service_credential_b64"
 docker compose -p "$project" up -d --wait postgres
 
 export APPSELL_MIGRATOR_DATABASE_URL="postgresql+psycopg://appsell_migrator:${migrator_secret}@127.0.0.1:${port}/appsell"
+uv run --project apps/api alembic -c apps/api/alembic.ini upgrade 0004_product_publication
+docker compose -p "$project" exec -T postgres psql -U postgres -d appsell -v ON_ERROR_STOP=1 -c "
+  insert into identity_user(id,identity_issuer,identity_sub,email_normalized,email_verified)
+    values('61000000-0000-4000-8000-000000000001','https://identity.upgrade.test','upgrade-user','upgrade@example.test',true);
+  insert into seller_organization(id,slug,display_name,status)
+    values('62000000-0000-4000-8000-000000000001','upgrade-v1','Upgrade V1','active');
+  insert into seller_membership(seller_organization_id,identity_user_id,role,status)
+    values('62000000-0000-4000-8000-000000000001','61000000-0000-4000-8000-000000000001','seller_owner','active');
+  insert into catalog_product(seller_organization_id,id,slug,title,description,status)
+    values('62000000-0000-4000-8000-000000000001','63000000-0000-4000-8000-000000000001','upgrade-product','Upgrade product','V1 bytes','draft');
+  insert into course(seller_organization_id,id,title,description,status,draft_version)
+    values('62000000-0000-4000-8000-000000000001','64000000-0000-4000-8000-000000000001','Upgrade course','V1 course','draft',1);
+  insert into product_course(seller_organization_id,catalog_product_id,course_id,position)
+    values('62000000-0000-4000-8000-000000000001','63000000-0000-4000-8000-000000000001','64000000-0000-4000-8000-000000000001',0);
+  insert into offer(seller_organization_id,id,catalog_product_id,title,summary,status,version)
+    values('62000000-0000-4000-8000-000000000001','65000000-0000-4000-8000-000000000001','63000000-0000-4000-8000-000000000001','Upgrade offer','V1 offer','draft',1);
+  with payload as (
+    select '{\"schema_version\":1,\"seller_organization_id\":\"62000000-0000-4000-8000-000000000001\",\"product\":{\"id\":\"63000000-0000-4000-8000-000000000001\",\"slug\":\"upgrade-product\",\"title\":\"Upgrade product\",\"description\":\"V1 bytes\"},\"offer\":{\"id\":\"65000000-0000-4000-8000-000000000001\",\"title\":\"Upgrade offer\",\"summary\":\"V1 offer\",\"billing_authority\":\"external_unconfigured\"},\"courses\":[{\"id\":\"64000000-0000-4000-8000-000000000001\",\"title\":\"Upgrade course\",\"description\":\"V1 course\",\"position\":0}]}'::jsonb snapshot
+  ) insert into publication(seller_organization_id,id,catalog_product_id,version,schema_version,source_sha256,snapshot,actor_identity_user_id)
+    select '62000000-0000-4000-8000-000000000001','66000000-0000-4000-8000-000000000001','63000000-0000-4000-8000-000000000001',1,1,
+      encode(digest(convert_to(snapshot::text,'UTF8'),'sha256'),'hex'),snapshot,'61000000-0000-4000-8000-000000000001' from payload;
+  update catalog_product set status='published',published_snapshot_id='66000000-0000-4000-8000-000000000001'
+    where seller_organization_id='62000000-0000-4000-8000-000000000001' and id='63000000-0000-4000-8000-000000000001';
+"
+upgrade_before="$(docker compose -p "$project" exec -T postgres psql -U postgres -d appsell -Atc "
+  select product.published_snapshot_id||'|'||publication.source_sha256||'|'||encode(convert_to(publication.snapshot::text,'UTF8'),'base64')
+  from catalog_product product join publication on publication.seller_organization_id=product.seller_organization_id
+    and publication.id=product.published_snapshot_id
+  where product.id='63000000-0000-4000-8000-000000000001'
+")"
 uv run --project apps/api alembic -c apps/api/alembic.ini upgrade head
+upgrade_after="$(docker compose -p "$project" exec -T postgres psql -U postgres -d appsell -Atc "
+  select product.published_snapshot_id||'|'||publication.source_sha256||'|'||encode(convert_to(publication.snapshot::text,'UTF8'),'base64')
+  from catalog_product product join publication on publication.seller_organization_id=product.seller_organization_id
+    and publication.id=product.published_snapshot_id
+  where product.id='63000000-0000-4000-8000-000000000001'
+")"
+if [[ -z "$upgrade_before" || "$upgrade_before" != "$upgrade_after" ]]; then
+  echo "0004 to 0005 changed the v1 publication pointer, hash, or canonical bytes" >&2
+  exit 1
+fi
 uv run --project apps/api alembic -c apps/api/alembic.ini upgrade head
 export APPSELL_CONTEXT_SIGNING_KEY_HEX="$context_key"
 export APPSELL_BOOTSTRAP_ATTESTATION_KEY_HEX="$context_key"
@@ -59,6 +99,7 @@ uv run --project apps/api pytest \
   apps/api/tests/test_postgres_bff_onboarding.py \
   apps/api/tests/test_postgres_product_course.py \
   apps/api/tests/test_postgres_product_publication.py \
+  apps/api/tests/test_postgres_curriculum.py \
   apps/api/tests/test_api_catalog.py \
   apps/api/tests/test_api_onboarding.py
 if uv run --project apps/api python -m appsell_api.configure_context_key 2>/dev/null; then
