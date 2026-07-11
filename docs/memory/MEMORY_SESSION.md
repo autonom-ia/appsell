@@ -37,14 +37,14 @@ Project status:
 ## Sessão: 2026-07-11 13:38 — currículo multitenant e snapshot v2
 Issue: #32
 Branch: feat/32-curriculum
-PR: não aberta
-Estado: em_progresso
+PR: #35
+Estado: pr_aberta
 Modelo: strong + human
 Arquivos alterados: migration 0005, FastAPI/BFF curriculum CRUD/order/archive, internal envelope, snapshot v2, editor currículo, CSRF por ação, testes PG/API/BFF/E2E e docs
 Comandos executados: lint; typecheck; Vitest; Ruff; mypy; pytest; audit; build; Playwright Chromium/WebKit; production fail-closed; test-postgres-foundation; review de design/tenancy/API
 Validação: local verde — 69 web, 94 PostgreSQL/API, BFF vertical real em duas instâncias, 26 browser + 4 skips deliberados; build e audit verdes
 Bloqueios: PR/reviews/CI remoto; Identity real #13, KMS #19, Financial/Neuro e produção continuam bloqueados
-Próxima ação: reviews críticos do delta, correções, commit/push, abrir PR e atualizar Project; depois executar Issue #33 da tenant demo/curso Codex; não fazer deploy
+Próxima ação: aguardar App CI e review do SHA remoto da PR #35; depois executar Issue #33 da tenant demo/curso Codex e Issue #34 do Harness 2.1.2; não fazer deploy
 Project status:
   - Projeto: Studio
   - Status: Em desenvolvimento

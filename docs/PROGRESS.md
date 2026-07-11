@@ -83,7 +83,7 @@ Fase 4C — currículo multitenant e snapshot v2 em Local/CI.
 - receipts curriculares retidos por até 30 dias e no máximo 5.000 por curso;
 - gates locais: 69 web, 94 PG/API, BFF vertical com duas instâncias, 26
   Playwright + 4 skips, build, production fail-closed e audits verdes;
-- PR ainda não aberta; nenhum deploy;
+- PR #35 aberta; aguardando App CI e review do SHA remoto; nenhum deploy;
 - Issue #33 registrada no Project para tenant demo resetável, admin/comprador,
   superadmin auditado e curso Codex com cinco PDFs verificados;
 - épica #8 permanece em desenvolvimento;

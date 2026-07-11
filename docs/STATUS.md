@@ -32,6 +32,7 @@ receipts idempotentes, archive/reorder exato, snapshot v2 e editor mobile de
 módulos/aulas. Gates locais: 69 web, 94 PG/API, BFF vertical com duas
 instâncias, 26 Playwright + 4 skips deliberados, build, audit e production
 fail-closed verdes.
+PR #35 aberta; nenhum merge ou deploy executado.
 
 ## O que está funcionando
 
