@@ -34,22 +34,22 @@ Project status:
 
 <!-- Substituir abaixo a cada nova sessão. Sessões anteriores vão para PROGRESS.md. -->
 
-## Sessão: 2026-07-11 07:50 — foundation PostgreSQL, tenancy e bootstrap one-shot
-Issue: #24
-Branch: feat/24-domain-foundation
-PR: não aberta
+## Sessão: 2026-07-11 10:27 — produto e curso draft persistentes
+Issue: #28
+Branch: feat/28-product-course-drafts
+PR: #29
 Estado: em_progresso
 Modelo: strong + human
-Arquivos alterados: apps/api, migration Alembic, compose/Postgres init, CI, env/README, scripts e docs de status/audit
-Comandos executados: Harness doctor; uv lock/sync/ruff/mypy/pytest/pip-audit; Docker compose migration/PG/API; pnpm lint/typecheck/test/audit/build/E2E; reviews críticos
-Validação: local verde — 7 API/config, 25 PostgreSQL/RLS/bootstrap, 55 web, 17 browser, 1 production; container non-root healthy; cleanup sem resíduos
+Arquivos alterados: migration 0003, FastAPI catálogo, BFF seller/product, workspace mobile, CSRF, testes PG/API/BFF/E2E, compose e docs
+Comandos executados: lint; typecheck; Vitest; Ruff; mypy; pytest; build; Playwright; test-postgres-foundation; reviews críticos
+Validação: local verde — 67 web, 68 PostgreSQL/API, 2-BFF real, 22 browser + 2 skips; preview local persiste tenant/produto/curso; três reviews P0-P2=0
 Bloqueios: CI remoto; Identity real #13, KMS #19 e produção continuam bloqueados
-Próxima ação: abrir PR parcial da #24, atualizar Project e executar CI remoto
+Próxima ação: acompanhar CI e reviews da PR #29; não fazer deploy
 Project status:
-  - Projeto: AppSell
-  - Status: Em desenvolvimento
+  - Projeto: sem opção AppSell no campo do Project
+  - Status: PR aberta
   - Tipo: Feature
-  - Prioridade: P1
-  - Risco: Médio
+  - Prioridade: P0
+  - Risco: Alto
   - Ambiente: Dev
-  - Próxima ação: review final, PR parcial e CI remoto
+  - Próxima ação: CI remoto e review da PR #29

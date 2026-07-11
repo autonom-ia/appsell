@@ -13,6 +13,7 @@ import {
 import { oauthService } from "@/lib/oauth-service.server";
 import { isOAuthStoreUnavailable } from "@/lib/redis-oauth-service";
 import { configuredPublicOrigin, hasConfiguredOrigin } from "@/lib/public-origin";
+import { PayloadTooLargeError, readLimitedForm } from "@/lib/limited-form.server";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -87,33 +88,6 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     return mappedError(error);
   }
-}
-
-class PayloadTooLargeError extends Error {}
-
-async function readLimitedForm(request: NextRequest) {
-  const contentType = request.headers.get("content-type") ?? "";
-  const mediaType = contentType.split(";", 1)[0]?.trim().toLowerCase();
-  if (mediaType !== "multipart/form-data" &&
-      mediaType !== "application/x-www-form-urlencoded") return null;
-  const declared = Number(request.headers.get("content-length") ?? "0");
-  if (Number.isFinite(declared) && declared > 16_384) throw new PayloadTooLargeError();
-  if (!request.body) return null;
-  const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let length = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    length += value.byteLength;
-    if (length > 16_384) {
-      await reader.cancel();
-      throw new PayloadTooLargeError();
-    }
-    chunks.push(value);
-  }
-  const body = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
-  return new Response(body, { headers: { "content-type": contentType } }).formData();
 }
 
 async function authenticatedSession(request: NextRequest) {

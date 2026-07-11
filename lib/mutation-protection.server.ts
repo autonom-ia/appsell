@@ -5,6 +5,7 @@ import { configuredPublicOrigin, hasConfiguredOrigin } from "./public-origin";
 
 export const LOGOUT_CSRF_ACTION = "POST:/auth/logout";
 export const ONBOARD_SELLER_CSRF_ACTION = "POST:/api/sellers";
+export const CREATE_PRODUCT_DRAFT_CSRF_ACTION = "POST:/api/products";
 
 export function csrfTokenForSession(sessionId: string, action: string) {
   return deriveCsrfToken(sessionId, action, csrfKey());

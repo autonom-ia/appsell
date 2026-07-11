@@ -3,13 +3,14 @@ import { oauthService } from "@/lib/oauth-service.server";
 import {
   csrfCookieName,
   csrfCookieOptions,
+  productCsrfCookieName,
   sellerCsrfCookieName,
   sessionCookieName,
   sessionCookieOptions,
   transactionCookieName,
   transactionCookieOptions
 } from "@/lib/cookies";
-import { csrfTokenForSession, LOGOUT_CSRF_ACTION } from "@/lib/mutation-protection.server";
+import { CREATE_PRODUCT_DRAFT_CSRF_ACTION, csrfTokenForSession, LOGOUT_CSRF_ACTION } from "@/lib/mutation-protection.server";
 import { isOAuthStoreUnavailable } from "@/lib/redis-oauth-service";
 import { configuredPublicOrigin } from "@/lib/public-origin";
 import { DomainApiError, isDomainApiConfigured, syncDomainIdentity } from "@/lib/internal-api-client.server";
@@ -47,6 +48,7 @@ export async function GET(request: NextRequest) {
     response.cookies.set(sessionCookieName(), sessionId, sessionCookieOptions());
     response.cookies.set(csrfCookieName(), csrfTokenForSession(sessionId, LOGOUT_CSRF_ACTION), csrfCookieOptions());
     response.cookies.set(sellerCsrfCookieName(), csrfTokenForSession(sessionId, ONBOARD_SELLER_CSRF_ACTION), csrfCookieOptions());
+    response.cookies.set(productCsrfCookieName(), csrfTokenForSession(sessionId, CREATE_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
     response.headers.set("cache-control", "no-store");
     return response;
   } catch (error) {

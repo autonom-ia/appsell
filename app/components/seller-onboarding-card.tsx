@@ -92,6 +92,7 @@ export function SellerOnboardingCard() {
       idempotencyKey.current = null;
       form.reset();
       await loadSellers();
+      window.dispatchEvent(new Event("appsell:sellers-changed"));
     } catch {
       setStatus("error");
     } finally {
@@ -100,8 +101,7 @@ export function SellerOnboardingCard() {
   }
 
   if (sellers?.length) {
-    const seller = sellers[0]!;
-    return <section className="seller-onboarding seller-ready"><p className="eyebrow">Tenant ativo</p><h2>{seller.display_name}</h2><p><strong>@{seller.slug}</strong> · acesso {seller.role}</p><span>Persistido no PostgreSQL com RLS</span></section>;
+    return <section className="seller-onboarding seller-ready"><div><p className="eyebrow">Espaços ativos</p><h2>{sellers.length === 1 ? "Seu tenant está pronto" : `${sellers.length} tenants disponíveis`}</h2><p>A escolha do contexto acontece abaixo; nenhum tenant é inferido silenciosamente.</p></div><ul>{sellers.map((seller) => <li key={seller.id}><strong>{seller.display_name}</strong><span>@{seller.slug} · {seller.role}</span></li>)}</ul></section>;
   }
 
   return (

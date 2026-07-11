@@ -4,6 +4,7 @@ from typing import Any
 from fastapi import FastAPI, Response, status
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from .catalog_routes import router as catalog_router
 from .config import get_settings
 from .db import create_engine, create_session_factory, database_ready
 from .internal_requests import InternalRequestAuthenticator
@@ -34,6 +35,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(router)
+app.include_router(catalog_router)
 
 
 @app.get("/health/live")

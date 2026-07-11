@@ -7,17 +7,17 @@ Atualizado em pontos de marco (PR aberta, deploy, incidente). Diferente de MEMOR
 | Indicador | Status | Última verificação |
 |-----------|:------:|--------------------|
 | Build | 🟢 web + API container local verdes | 2026-07-11 |
-| Testes | 🟢 63 web + 48 API + 43 PG/API + 21 browser + 1 production | 2026-07-11 |
-| CI | 🟡 slice #26 validado localmente; PR/CI remoto pendentes | 2026-07-11 |
+| Testes | 🟢 67 web + 68 PG/API + 22 browser; build verde | 2026-07-11 |
+| CI | 🟡 PR #29 aberta; checks remotos em execução | 2026-07-11 |
 | Deploy produção | 🟡 não configurado/não executado | 2026-07-10 |
 | Harness instalado | 2.0.2 | 2026-07-10 |
 | Harness drift | ⚠️ 2.0.2 → 2.1.2 | 2026-07-11 |
 
 ## Estado atual
 
-O protótipo Studio mobile-first foi mergeado pela PR #23 e a fundação
-persistente pela PR #25. A Issue #26 conecta o BFF à API com envelope assinado,
-replay durável, sincronização de identidade e onboarding seller persistente.
+O protótipo Studio mobile-first foi mergeado pela PR #23, a fundação
+persistente pela PR #25 e a ponte BFF/API + onboarding seller pela PR #27.
+A Fase 4A está ativa na Issue #28 para produto e curso draft persistentes.
 A fundação inclui FastAPI, PostgreSQL 16, Alembic forward-only,
 roles owner/migrator/runtime, RLS forçado, contexto transacional assinado,
 auditoria append-only e bootstrap one-shot do superadmin com atestação separada.
@@ -25,9 +25,10 @@ Este marco é Local/CI; não é o Identity real e não concede conta de produç�
 
 ## Última mudança relevante
 
-2026-07-11 — branch `feat/26-bff-api-onboarding`: migration limpa, 43 testes
-PostgreSQL/API, integração real com dois BFFs, 63 testes web, 21 Playwright,
-container non-root, readiness e smoke local login→tenant verdes.
+2026-07-11 — branch `feat/28-product-course-drafts`: migration 0003, RLS,
+produto+curso atômicos, BFF/API seller-scoped, UI com tenant explícito e preview
+local persistente. Gates locais: 67 web, 68 PG/API, integração com dois BFFs,
+22 Playwright e build de produção. PR/CI remoto ainda pendentes.
 
 ## O que está funcionando
 
@@ -78,10 +79,10 @@ container non-root, readiness e smoke local login→tenant verdes.
 
 ## Próxima ação
 
-Concluir o review crítico da #26, abrir PR vinculada à Issue, executar CI remoto
-e atualizar o Project. Depois implementar domínio persistente de produto/curso
-e a jornada buyer/entitlements. Identity real (#13), KMS (#19) e produção
-continuam bloqueados até ambientes/contratos reais.
+Concluir reviews críticos P0-P2=0 da Issue #28, corrigir findings e abrir PR
+vinculada para CI remoto e Project update. Depois avançar para publicação e
+buyer/entitlements. Identity real (#13), KMS (#19) e produção continuam
+bloqueados até ambientes/contratos reais.
 
 ## Links
 

@@ -57,10 +57,13 @@ test.skipIf(!domainApiUrl)("two BFFs persist seller onboarding through the real 
     const setCookie = callback.headers.get("set-cookie");
     const session = cookiePair(setCookie, "appsell_session");
     const sellerCsrf = cookiePair(setCookie, "appsell_seller_csrf");
+    const productCsrf = cookiePair(setCookie, "appsell_product_csrf");
     const sessionId = session.slice(session.indexOf("=") + 1);
     const sellerCsrfToken = sellerCsrf.slice(sellerCsrf.indexOf("=") + 1);
     expect(sellerCsrfToken).toBe(deriveCsrfToken(sessionId, "POST:/api/sellers", csrfKey));
-    const cookie = `${session}; ${sellerCsrf}`;
+    const productCsrfToken = productCsrf.slice(productCsrf.indexOf("=") + 1);
+    expect(productCsrfToken).toBe(deriveCsrfToken(sessionId, "POST:/api/products", csrfKey));
+    const cookie = `${session}; ${sellerCsrf}; ${productCsrf}`;
 
     const empty = await fetch(`http://127.0.0.1:${firstPort}/api/sellers`, {
       headers: { cookie: session }
@@ -91,6 +94,41 @@ test.skipIf(!domainApiUrl)("two BFFs persist seller onboarding through the real 
     const view = await persisted.json() as { sellers: Array<{ slug: string; role: string }> };
     expect(view.sellers).toHaveLength(1);
     expect(view.sellers[0]).toMatchObject({ slug, role: "seller_owner" });
+
+    const sellerId = (await onboarded.json() as { id: string }).id;
+    const productSlug = `produto-${randomUUID().slice(0, 8)}`;
+    const productKey = randomUUID();
+    const productBody = new URLSearchParams({
+      _csrf: productCsrfToken,
+      idempotency_key: productKey,
+      slug: productSlug,
+      product_title: "Produto Integrado",
+      product_description: "Persistido por duas instâncias BFF",
+      course_title: "Curso Integrado"
+    });
+    const created = await fetch(`http://127.0.0.1:${secondPort}/api/sellers/${sellerId}/products`, {
+      method: "POST",
+      headers: { cookie, origin: `http://localhost:${firstPort}` },
+      body: productBody
+    });
+    expect(created.status, await created.clone().text()).toBe(201);
+    expect(await created.json()).toMatchObject({ status: "draft", created: true });
+
+    const replayed = await fetch(`http://127.0.0.1:${firstPort}/api/sellers/${sellerId}/products`, {
+      method: "POST",
+      headers: { cookie, origin: `http://localhost:${firstPort}` },
+      body: productBody
+    });
+    expect(replayed.status, await replayed.clone().text()).toBe(200);
+    expect(await replayed.json()).toMatchObject({ status: "draft", created: false });
+
+    const catalog = await fetch(`http://127.0.0.1:${firstPort}/api/sellers/${sellerId}/products`, {
+      headers: { cookie: session }
+    });
+    expect(catalog.status, await catalog.clone().text()).toBe(200);
+    expect(await catalog.json()).toMatchObject({
+      products: [{ slug: productSlug, title: "Produto Integrado", course: { title: "Curso Integrado" } }]
+    });
   } finally {
     await Promise.all([stopBff(first), stopBff(second)]);
     await redis.stop();

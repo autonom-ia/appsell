@@ -2,7 +2,7 @@
 
 ## Fase atual
 
-Fase 3A — BFF→API e onboarding seller executáveis em Local/CI.
+Fase 4A — produto e curso draft persistentes em Local/CI.
 
 ## Concluído
 
@@ -62,12 +62,20 @@ Fase 3A — BFF→API e onboarding seller executáveis em Local/CI.
 - teste real com dois processos BFF, Redis, FastAPI e PostgreSQL;
 - smoke local completo: login 200, dashboard 200, create 201 e list 200;
 - 63 unitários web, 48 Python, 43 PostgreSQL/API, 21 E2E e 1 production verdes.
+- PR #27 mergeada no commit `95c913e`; App CI pós-merge e Harness verdes;
+- Issues #24 e #26 encerradas com evidência, sem deploy.
 
 ## Em andamento
 
-- Issue #26 em implementação; ponte BFF/API e onboarding validados localmente;
-- re-review adversarial de tenancy em rodada final;
-- PR da #26 ainda não aberta; CI remoto pendente;
+- Issue #28 implementada localmente na branch `feat/28-product-course-drafts`;
+- migration 0003 cria produto+curso atômicos, RLS, FKs compostas, idempotência e audit;
+- BFF/API vinculam o seller do path ao envelope e revalidam owner ativo;
+- UI exige tenant explícito e cria/lista rascunhos privados sem preço ou publicação;
+- preview local isolado persiste tenant, produto e curso sintéticos;
+- gates locais: 67 web, 68 PG/API, dois BFFs, 22 Playwright e build verdes;
+- reviews críticos tenancy, API/CI e UX verdes com P0-P2=0;
+- PR #29 aberta em draft e vinculada à Issue #28; Project em `PR aberta`;
+- App CI e Harness remotos em execução; nenhum deploy;
 - épica #8 permanece em desenvolvimento;
 - Identity real #13 permanece bloqueado por ausência de dev/hml e P0 upstream.
 
@@ -76,7 +84,7 @@ Fase 3A — BFF→API e onboarding seller executáveis em Local/CI.
 - spike com Autonom.ia Identity real (#13);
 - refresh real contra Identity (#18), bloqueado pelo contrato/ambiente da #13;
 - KMS real, vault durável/HA e restore (#19), bloqueado;
-- domínio persistente de produto/curso e publicação;
+- publicação, módulos/aulas e assets após o draft persistente;
 - RLS buyer/entitlements, checkout e biblioteca persistente;
 - integrações Neuro.ai e financeiro após contratos/repos reais.
 
@@ -100,9 +108,13 @@ Fase 3A — BFF→API e onboarding seller executáveis em Local/CI.
   derivação passou a concatenar bytes UTF-8 e ganhou prova cruzada TS/Python/SQL.
 - parser do onboarding rejeitava o `charset=UTF-8` legítimo de URLSearchParams:
   media type agora é normalizado sem relaxar origem, CSRF ou limite de 16 KiB.
+- CI PostgreSQL não provisionava as novas dependências Node/pnpm/Redis exigidas
+  pela integração com dois BFFs: pipeline passou a instalá-las explicitamente e
+  ficou verde no PR e pós-merge.
 
 ## Próximo passo recomendado
 
-Após review final verde, abrir PR da #26, rodar CI remoto e atualizar o Project.
-Não declarar acesso real de `comercial@autonomia.site`: isso depende do
-Identity #13 e de ambiente isolado com token/JWKS/MFA reais.
+Concluir reviews PostgreSQL/tenancy, API/CI e UX com P0-P2=0; corrigir findings,
+abrir PR da #28, atualizar Project e executar CI remoto. Não declarar acesso real
+de `comercial@autonomia.site`: isso depende do Identity #13 e de ambiente
+isolado com token/JWKS/MFA reais.
