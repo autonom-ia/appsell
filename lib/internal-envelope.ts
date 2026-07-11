@@ -189,7 +189,7 @@ function validatePayload(payload: InternalEnvelopePayload, ttl: number) {
       !validIdentityValue(payload.identity.issuer) || !validIdentityValue(payload.identity.sub) ||
       payload.identity.user_id !== deriveIdentityUserId(payload.identity.issuer, payload.identity.sub) ||
       !CAPABILITY.test(payload.capability) || (payload.seller_organization_id !== null && !UUID.test(payload.seller_organization_id)) ||
-      !ALLOWED_METHODS.has(payload.method) || payload.path.length > 160 || !PATH.test(payload.path) ||
+      !ALLOWED_METHODS.has(payload.method) || payload.path.length > 512 || !PATH.test(payload.path) ||
       !/^[0-9a-f]{64}$/.test(payload.query_sha256) || !/^[0-9a-f]{64}$/.test(payload.body_sha256) ||
       !UUID.test(payload.request_id) || !Number.isSafeInteger(payload.iat) || payload.iat < 1 ||
       !Number.isSafeInteger(payload.exp) || ttl < 1 || ttl > 60 || payload.exp - payload.iat !== ttl) {

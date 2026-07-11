@@ -34,22 +34,22 @@ Project status:
 
 <!-- Substituir abaixo a cada nova sessão. Sessões anteriores vão para PROGRESS.md. -->
 
-## Sessão: 2026-07-11 11:55 — edição e publicação imutável de produto
-Issue: #30
-Branch: feat/30-product-publication
-PR: #31
+## Sessão: 2026-07-11 13:38 — currículo multitenant e snapshot v2
+Issue: #32
+Branch: feat/32-curriculum
+PR: não aberta
 Estado: em_progresso
 Modelo: strong + human
-Arquivos alterados: migration 0004, FastAPI/BFF detail-update-preview-publish, editor mobile, CSRF por ação, history/focus guards, testes PG/API/BFF/E2E e docs
-Comandos executados: lint; typecheck; Vitest; Ruff; mypy; pytest; audits; build; Playwright; production fail-closed; test-postgres-foundation; reviews críticos
-Validação: local verde — 68 web, 84 PostgreSQL/API, BFF vertical real, 24 browser + 4 skips deliberados; três reviews P0-P2=0
-Bloqueios: CI remoto; Identity real #13, KMS #19, Financial/Neuro e produção continuam bloqueados
-Próxima ação: acompanhar CI e reviews da PR #31; não fazer deploy
+Arquivos alterados: migration 0005, FastAPI/BFF curriculum CRUD/order/archive, internal envelope, snapshot v2, editor currículo, CSRF por ação, testes PG/API/BFF/E2E e docs
+Comandos executados: lint; typecheck; Vitest; Ruff; mypy; pytest; audit; build; Playwright Chromium/WebKit; production fail-closed; test-postgres-foundation; review de design/tenancy/API
+Validação: local verde — 69 web, 94 PostgreSQL/API, BFF vertical real em duas instâncias, 26 browser + 4 skips deliberados; build e audit verdes
+Bloqueios: PR/reviews/CI remoto; Identity real #13, KMS #19, Financial/Neuro e produção continuam bloqueados
+Próxima ação: reviews críticos do delta, correções, commit/push, abrir PR e atualizar Project; depois executar Issue #33 da tenant demo/curso Codex; não fazer deploy
 Project status:
-  - Projeto: sem opção AppSell no campo do Project
-  - Status: PR aberta
+  - Projeto: Studio
+  - Status: Em desenvolvimento
   - Tipo: Feature
   - Prioridade: P0
   - Risco: Alto
-  - Ambiente: Dev
-  - Próxima ação: acompanhar App CI e Harness da PR #31
+  - Ambiente: Local
+  - Próxima ação: revisar delta, abrir PR e executar CI exato

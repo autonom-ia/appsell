@@ -2,7 +2,7 @@
 
 ## Fase atual
 
-Fase 4B — edição, preview e publicação por snapshot em Local/CI.
+Fase 4C — currículo multitenant e snapshot v2 em Local/CI.
 
 ## Concluído
 
@@ -66,22 +66,26 @@ Fase 4B — edição, preview e publicação por snapshot em Local/CI.
 - Issues #24 e #26 encerradas com evidência, sem deploy.
 - PR #29 mergeada em `a2695c7`; produto e curso draft persistentes, App CI
   pós-merge verde e Issue #28 encerrada sem deploy.
+- PR #31 mergeada em `b4f366a`; edição, oferta, preview e publicação imutável
+  verdes em CI e pós-merge, Issue #30 encerrada sem deploy.
 
 ## Em andamento
 
-- Issue #30 implementada localmente na branch `feat/30-product-publication`;
-- migration 0004 cria offer, publication append-only, receipt privado, RLS e
-  publicação multi-course transacional com SQLSTATE estável;
-- edição usa optimistic locking, idempotência e locks que preservam revogação
-  sem serializar produtos distintos do mesmo tenant;
-- BFF/API usam CSRF separado, parser 16 KiB exato, preview privado e retry de
-  publicação que retorna o mesmo receipt;
-- UI exige tenant na URL, protege dirty state/Back, contém foco nos diálogos,
-  rebasa 409 sem perder campos e não simula billing;
-- gates locais: 68 web, 84 PG/API, BFF vertical, 24 Playwright + 4 skips,
-  build, production fail-closed e dependency audits verdes;
-- reviews finais tenancy, API/BFF e UI/UX verdes com P0-P2=0;
-- PR #31 aberta e CI remoto em execução; nenhum deploy;
+- Issue #32 em implementação na branch `feat/32-curriculum`;
+- migration 0005 cria módulos/aulas text-only, FKs compostas, RLS forçado,
+  receipt privado, CAS/locks por curso, archive e reorder exact-set;
+- publicação gera snapshot schema v2 determinístico e preserva v1; limite de
+  1 MiB retorna P4221/422 antes de hash, receipt ou insert parcial;
+- API/BFF seller-scoped usam envelope de path até 512 caracteres, CSRF separado
+  por create/update/reorder/archive e parser limitado;
+- UI adiciona etapa Currículo, formulários independentes, botões Subir/Descer,
+  foco preservado, dirty guard, 320 px e 200% de texto;
+- receipts curriculares retidos por até 30 dias e no máximo 5.000 por curso;
+- gates locais: 69 web, 94 PG/API, BFF vertical com duas instâncias, 26
+  Playwright + 4 skips, build, production fail-closed e audits verdes;
+- PR ainda não aberta; nenhum deploy;
+- Issue #33 registrada no Project para tenant demo resetável, admin/comprador,
+  superadmin auditado e curso Codex com cinco PDFs verificados;
 - épica #8 permanece em desenvolvimento;
 - Identity real #13 permanece bloqueado por ausência de dev/hml e P0 upstream.
 
@@ -90,7 +94,7 @@ Fase 4B — edição, preview e publicação por snapshot em Local/CI.
 - spike com Autonom.ia Identity real (#13);
 - refresh real contra Identity (#18), bloqueado pelo contrato/ambiente da #13;
 - KMS real, vault durável/HA e restore (#19), bloqueado;
-- módulos/aulas, editor de blocos e assets privados após a publicação base;
+- assets privados e editor de blocos ricos após o currículo text-only;
 - RLS buyer/entitlements, checkout e biblioteca persistente;
 - integrações Neuro.ai e financeiro após contratos/repos reais.
 
@@ -120,6 +124,6 @@ Fase 4B — edição, preview e publicação por snapshot em Local/CI.
 
 ## Próximo passo recomendado
 
-Acompanhar a PR #31, atualizar Project e executar CI remoto. Não declarar acesso real
-de `comercial@autonomia.site`: isso depende do Identity #13 e de ambiente
+Abrir PR da Issue #32, passar reviews críticos e CI remoto. Não declarar acesso
+real de `comercial@autonomia.site`: isso depende do Identity #13 e de ambiente
 isolado com token/JWKS/MFA reais.

@@ -8,6 +8,10 @@ export const ONBOARD_SELLER_CSRF_ACTION = "POST:/api/sellers";
 export const CREATE_PRODUCT_DRAFT_CSRF_ACTION = "POST:/api/products";
 export const UPDATE_PRODUCT_DRAFT_CSRF_ACTION = "PATCH:/api/products";
 export const PUBLISH_PRODUCT_DRAFT_CSRF_ACTION = "POST:/api/products/publications";
+export const CREATE_CURRICULUM_CSRF_ACTION = "POST:/api/curriculum";
+export const UPDATE_CURRICULUM_CSRF_ACTION = "PATCH:/api/curriculum";
+export const REORDER_CURRICULUM_CSRF_ACTION = "PUT:/api/curriculum/order";
+export const ARCHIVE_CURRICULUM_CSRF_ACTION = "POST:/api/curriculum/archive";
 
 export function csrfTokenForSession(sessionId: string, action: string) {
   return deriveCsrfToken(sessionId, action, csrfKey());

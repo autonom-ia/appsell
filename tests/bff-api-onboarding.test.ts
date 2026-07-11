@@ -188,7 +188,7 @@ test.skipIf(!domainApiUrl)("two BFFs persist seller onboarding through the real 
     expect(await duplicateResponse.json()).toEqual({ error: "invalid_product_input", field: "form" });
 
     const editedDetail = await fetch(detailUrl, { headers: { cookie } });
-    const edited = await editedDetail.json() as {
+    let edited = await editedDetail.json() as {
       product: {
         draft_version: number;
         title: string;
@@ -203,12 +203,167 @@ test.skipIf(!domainApiUrl)("two BFFs persist seller onboarding through the real 
       readiness: { can_publish: true }
     });
 
+    const curriculumUrl = `${detailUrl}/courses/${courseId}/curriculum`;
+    const emptyCurriculum = await fetch(curriculumUrl, { headers: { cookie } });
+    expect(emptyCurriculum.status, await emptyCurriculum.clone().text()).toBe(200);
+    const curriculum = await emptyCurriculum.json() as {
+      course: { draft_version: number };
+      modules: unknown[];
+      csrf: { create: string; update: string; reorder: string; archive: string };
+    };
+    expect(curriculum.modules).toEqual([]);
+    const moduleKey = randomUUID();
+    const moduleBody = new URLSearchParams({
+      _csrf: curriculum.csrf.create,
+      idempotency_key: moduleKey,
+      expected_course_version: String(curriculum.course.draft_version),
+      title: "Fundamentos"
+    });
+    const moduleCreated = await fetch(`${curriculumUrl.replace("/curriculum", "")}/modules`, {
+      method: "POST",
+      headers: { cookie, origin: `http://localhost:${firstPort}` },
+      body: moduleBody
+    });
+    expect(moduleCreated.status, await moduleCreated.clone().text()).toBe(201);
+    const createdModule = await moduleCreated.json() as {
+      module_id: string; course_version: number; created: boolean
+    };
+    expect(createdModule.created).toBe(true);
+    const moduleReplay = await fetch(
+      `${curriculumUrl.replace(`:${firstPort}`, `:${secondPort}`).replace("/curriculum", "")}/modules`,
+      {
+        method: "POST",
+        headers: { cookie, origin: `http://localhost:${firstPort}` },
+        body: moduleBody
+      }
+    );
+    expect(moduleReplay.status, await moduleReplay.clone().text()).toBe(200);
+    expect(await moduleReplay.json()).toMatchObject({ module_id: createdModule.module_id, created: false });
+
+    const lessonBody = new URLSearchParams({
+      _csrf: curriculum.csrf.create,
+      idempotency_key: randomUUID(),
+      expected_course_version: String(createdModule.course_version),
+      title: "Primeira aula",
+      kind: "text",
+      content: "Conteúdo textual publicado no snapshot v2."
+    });
+    const lessonCreated = await fetch(
+      `${curriculumUrl.replace("/curriculum", "")}/modules/${createdModule.module_id}/lessons`,
+      {
+        method: "POST",
+        headers: { cookie, origin: `http://localhost:${firstPort}` },
+        body: lessonBody
+      }
+    );
+    expect(lessonCreated.status, await lessonCreated.clone().text()).toBe(201);
+    const lesson = await lessonCreated.json() as { lesson_id: string; course_version: number };
+    expect(lesson.lesson_id).toBeTypeOf("string");
+
+    const maximumLessonContent = `${"é".repeat(4095)}\n\n`;
+    expect(Buffer.byteLength(maximumLessonContent)).toBe(8192);
+    const lessonUpdated = await fetch(
+      `${curriculumUrl.replace("/curriculum", "")}/modules/${createdModule.module_id}/lessons/${lesson.lesson_id}`,
+      {
+        method: "PATCH",
+        headers: { cookie, origin: `http://localhost:${firstPort}` },
+        body: new URLSearchParams({
+          _csrf: curriculum.csrf.update,
+          idempotency_key: randomUUID(),
+          expected_course_version: String(lesson.course_version),
+          title: "Primeira aula revisada",
+          kind: "text",
+          content: maximumLessonContent
+        })
+      }
+    );
+    expect(lessonUpdated.status, await lessonUpdated.clone().text()).toBe(200);
+    const updatedLesson = await lessonUpdated.json() as { course_version: number };
+
+    const oversizedLesson = await fetch(
+      `${curriculumUrl.replace("/curriculum", "")}/modules/${createdModule.module_id}/lessons/${lesson.lesson_id}`,
+      {
+        method: "PATCH",
+        headers: { cookie, origin: `http://localhost:${firstPort}` },
+        body: new URLSearchParams({
+          _csrf: curriculum.csrf.update,
+          idempotency_key: randomUUID(),
+          expected_course_version: String(updatedLesson.course_version),
+          title: "Primeira aula revisada",
+          kind: "text",
+          content: `${maximumLessonContent}x`
+        })
+      }
+    );
+    expect(oversizedLesson.status, await oversizedLesson.clone().text()).toBe(422);
+
+    const secondLessonCreated = await fetch(
+      `${curriculumUrl.replace("/curriculum", "")}/modules/${createdModule.module_id}/lessons`,
+      {
+        method: "POST",
+        headers: { cookie, origin: `http://localhost:${firstPort}` },
+        body: new URLSearchParams({
+          _csrf: curriculum.csrf.create,
+          idempotency_key: randomUUID(),
+          expected_course_version: String(updatedLesson.course_version),
+          title: "Segunda aula",
+          kind: "text",
+          content: "Conteúdo que permanecerá ativo."
+        })
+      }
+    );
+    expect(secondLessonCreated.status, await secondLessonCreated.clone().text()).toBe(201);
+    const secondLesson = await secondLessonCreated.json() as { lesson_id: string; course_version: number };
+
+    const reorderedLessons = await fetch(
+      `${curriculumUrl.replace("/curriculum", "")}/modules/${createdModule.module_id}/lessons/order`,
+      {
+        method: "PUT",
+        headers: { cookie, origin: `http://localhost:${firstPort}` },
+        body: new URLSearchParams({
+          _csrf: curriculum.csrf.reorder,
+          idempotency_key: randomUUID(),
+          expected_course_version: String(secondLesson.course_version),
+          ordered_ids: JSON.stringify([secondLesson.lesson_id, lesson.lesson_id])
+        })
+      }
+    );
+    expect(reorderedLessons.status, await reorderedLessons.clone().text()).toBe(200);
+    const reordered = await reorderedLessons.json() as { course_version: number };
+
+    const archivedLesson = await fetch(
+      `${curriculumUrl.replace("/curriculum", "")}/modules/${createdModule.module_id}/lessons/${lesson.lesson_id}/archive`,
+      {
+        method: "POST",
+        headers: { cookie, origin: `http://localhost:${firstPort}` },
+        body: new URLSearchParams({
+          _csrf: curriculum.csrf.archive,
+          idempotency_key: randomUUID(),
+          expected_course_version: String(reordered.course_version)
+        })
+      }
+    );
+    expect(archivedLesson.status, await archivedLesson.clone().text()).toBe(200);
+    const archived = await archivedLesson.json() as { course_version: number };
+
+    const curriculumAfter = await fetch(curriculumUrl, { headers: { cookie } });
+    expect(await curriculumAfter.json()).toMatchObject({
+      course: { draft_version: archived.course_version },
+      modules: [{ id: createdModule.module_id, title: "Fundamentos", lessons: [{ id: secondLesson.lesson_id }] }]
+    });
+    const refreshedAfterCurriculum = await fetch(detailUrl, { headers: { cookie } });
+    edited = await refreshedAfterCurriculum.json() as typeof edited;
+
     const preview = await fetch(`${detailUrl}/preview`, { headers: { cookie } });
     expect(preview.status, await preview.clone().text()).toBe(200);
     expect(await preview.json()).toMatchObject({
       preview: true,
       state: "unpublished_draft",
-      snapshot: { product: { title: "Produto Integrado Editado" } }
+      snapshot: {
+        schema_version: 2,
+        product: { title: "Produto Integrado Editado" },
+        courses: [{ modules: [{ title: "Fundamentos", lessons: [{ title: "Segunda aula" }] }] }]
+      }
     });
 
     const publicationBody = new URLSearchParams({

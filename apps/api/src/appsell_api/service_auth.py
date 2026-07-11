@@ -386,4 +386,4 @@ def _safe_subject(value: str) -> bool:
 
 
 def _canonical_path(value: str) -> bool:
-    return 1 <= len(value) <= 160 and _PATH_PATTERN.fullmatch(value) is not None
+    return 1 <= len(value) <= 512 and _PATH_PATTERN.fullmatch(value) is not None

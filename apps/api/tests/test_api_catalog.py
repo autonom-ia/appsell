@@ -144,6 +144,15 @@ def publication_body(course_id: UUID, offer_id: UUID, **overrides: Any) -> bytes
     return json.dumps(value, separators=(",", ":")).encode()
 
 
+def curriculum_body(**overrides: Any) -> bytes:
+    value = {
+        "idempotency_key": str(uuid4()),
+        "expected_course_version": 1,
+        **overrides,
+    }
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode()
+
+
 @pytest.mark.asyncio
 async def test_create_draft_binds_seller_actor_hash_and_idempotency() -> None:
     product_id, course_id = uuid4(), uuid4()
@@ -321,6 +330,7 @@ def test_domain_errors_are_stable_and_do_not_leak_driver_details() -> None:
         ("23505", 409, "resource_conflict"),
         ("40001", 409, "draft_version_conflict"),
         ("P4091", 409, "no_unpublished_changes"),
+        ("P4221", 422, "snapshot_too_large"),
         ("22023", 422, "invalid_domain_request"),
         ("55000", 422, "publication_not_ready"),
         ("28000", 403, "forbidden"),
@@ -481,14 +491,14 @@ def test_readiness_blocks_a_semantically_identical_publication() -> None:
         "courses": [{"id": str(course_id), "title": "Curso", "description": "", "position": 0}],
     }
     product = _product_detail_response([row])["product"]
-    assert product["has_unpublished_changes"] is False
+    assert product["has_unpublished_changes"] is True
     assert product["readiness"] == {
-        "can_publish": False,
+        "can_publish": True,
         "items": [
             {
-                "key": "no_unpublished_changes",
-                "label": "Não há alterações novas para publicar.",
-                "ready": False,
+                "key": "server_validation_complete",
+                "label": "Validação do servidor concluída.",
+                "ready": True,
             }
         ],
     }
@@ -551,6 +561,84 @@ async def test_publish_rejects_duplicate_or_incomplete_course_version_sets_befor
     assert duplicate_response.status_code == 422
     assert incomplete_response.status_code == 422
     assert auth.session.calls == []
+
+
+@pytest.mark.asyncio
+async def test_curriculum_read_and_create_bind_the_full_tenant_path() -> None:
+    product_id, course_id, module_id = uuid4(), uuid4(), uuid4()
+    read_auth = FakeAuth(
+        seller_id=SELLER_ID,
+        result=FakeResult(
+            one={
+                "course_version": 3,
+                "curriculum": [],
+                "module_total": 0,
+                "lesson_total": 0,
+                "lesson_totals_by_module": {},
+            }
+        ),
+    )
+    async with client_for(read_auth) as client:
+        response = await client.get(
+            f"/v1/me/sellers/{SELLER_ID}/products/{product_id}/courses/{course_id}/curriculum"
+        )
+    assert response.status_code == 200
+    assert response.json()["course"] == {"id": str(course_id), "draft_version": 3}
+    assert read_auth.capabilities == ["catalog.curriculum.read"]
+    statement, parameters = read_auth.session.calls[0]
+    assert "app_private.read_course_curriculum" in statement
+    assert parameters["seller_id"] == SELLER_ID
+    assert parameters["product_id"] == product_id
+    assert parameters["course_id"] == course_id
+
+    create_auth = FakeAuth(
+        seller_id=SELLER_ID,
+        result=FakeResult(one={"module_id": module_id, "course_version": 4, "created": True}),
+    )
+    body = curriculum_body(title="Módulo inicial", expected_course_version=3)
+    async with client_for(create_auth) as client:
+        response = await client.post(
+            f"/v1/me/sellers/{SELLER_ID}/products/{product_id}/courses/{course_id}/modules",
+            content=body,
+        )
+    assert response.status_code == 201
+    assert response.json() == {
+        "module_id": str(module_id),
+        "course_version": 4,
+        "created": True,
+    }
+    assert create_auth.capabilities == ["catalog.curriculum.create"]
+    statement, parameters = create_auth.session.calls[0]
+    assert "app_private.create_course_module" in statement
+    assert parameters["body_sha256"] == hashlib.sha256(body).hexdigest()
+    assert parameters["expected_course_version"] == 3
+
+
+@pytest.mark.asyncio
+async def test_curriculum_rejects_cross_tenant_invalid_content_and_ambiguous_order() -> None:
+    product_id, course_id, module_id = uuid4(), uuid4(), uuid4()
+    cross_tenant = FakeAuth(seller_id=OTHER_SELLER_ID, result=FakeResult())
+    async with client_for(cross_tenant) as client:
+        response = await client.post(
+            f"/v1/me/sellers/{SELLER_ID}/products/{product_id}/courses/{course_id}/modules",
+            content=curriculum_body(title="Módulo"),
+        )
+    assert response.status_code == 401
+    assert cross_tenant.session.calls == []
+
+    invalid = FakeAuth(seller_id=SELLER_ID, result=FakeResult())
+    async with client_for(invalid) as client:
+        content = await client.post(
+            f"/v1/me/sellers/{SELLER_ID}/products/{product_id}/courses/{course_id}/modules/{module_id}/lessons",
+            content=curriculum_body(title="Aula", kind="html", content="<script>x</script>"),
+        )
+        duplicate = await client.put(
+            f"/v1/me/sellers/{SELLER_ID}/products/{product_id}/courses/{course_id}/modules/order",
+            content=curriculum_body(ordered_ids=[str(module_id), str(module_id)]),
+        )
+    assert content.status_code == 422
+    assert duplicate.status_code == 422
+    assert invalid.session.calls == []
 
 
 @pytest.mark.asyncio

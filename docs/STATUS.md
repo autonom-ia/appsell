@@ -7,8 +7,8 @@ Atualizado em pontos de marco (PR aberta, deploy, incidente). Diferente de MEMOR
 | Indicador | Status | Última verificação |
 |-----------|:------:|--------------------|
 | Build | 🟢 web + API container local verdes | 2026-07-11 |
-| Testes | 🟢 68 web + 84 PG/API + BFF real + 24 browser; build verde | 2026-07-11 |
-| CI | 🟡 PR #31 aberta; checks remotos em execução | 2026-07-11 |
+| Testes | 🟢 69 web + 90 PG/API + BFF real + 25 browser; build verde | 2026-07-11 |
+| CI | 🟢 PR #31 e CI pós-merge verdes; #32 ainda local | 2026-07-11 |
 | Deploy produção | 🟡 não configurado/não executado | 2026-07-10 |
 | Harness instalado | 2.0.2 | 2026-07-10 |
 | Harness drift | ⚠️ 2.0.2 → 2.1.2 | 2026-07-11 |
@@ -17,8 +17,8 @@ Atualizado em pontos de marco (PR aberta, deploy, incidente). Diferente de MEMOR
 
 O protótipo Studio mobile-first foi mergeado pela PR #23, a fundação
 persistente pela PR #25, a ponte BFF/API pela PR #27 e os drafts persistentes
-pela PR #29. A Fase 4B está ativa na Issue #30 para edição, preview privado,
-oferta informativa e publicação por snapshot imutável.
+pela PR #29 e edição/publicação pela PR #31. A Fase 4C está ativa na Issue #32
+para currículo multitenant com módulos, aulas de texto e snapshot schema v2.
 A fundação inclui FastAPI, PostgreSQL 16, Alembic forward-only,
 roles owner/migrator/runtime, RLS forçado, contexto transacional assinado,
 auditoria append-only e bootstrap one-shot do superadmin com atestação separada.
@@ -26,12 +26,12 @@ Este marco é Local/CI; não é o Identity real e não concede conta de produç�
 
 ## Última mudança relevante
 
-2026-07-11 — branch `feat/30-product-publication`: migration 0004, oferta draft,
-optimistic locking, preview privado multi-course e publicação idempotente por
-snapshot append-only. UI mobile-first protege Back/dirty state e separa
-publicação de billing. Gates locais: 68 web, 84 PG/API, BFF vertical, 24
-Playwright + 4 skips deliberados, build e production fail-closed verdes; três
-reviews finais com P0-P2=0. PR #31 aberta; CI remoto em execução.
+2026-07-11 — PR #31 mergeada em `b4f366a`, sem deploy. Branch
+`feat/32-curriculum`: migration 0005, RLS/FKs compostas, locks por curso,
+receipts idempotentes, archive/reorder exato, snapshot v2 e editor mobile de
+módulos/aulas. Gates locais: 69 web, 94 PG/API, BFF vertical com duas
+instâncias, 26 Playwright + 4 skips deliberados, build, audit e production
+fail-closed verdes.
 
 ## O que está funcionando
 
@@ -72,6 +72,14 @@ reviews finais com P0-P2=0. PR #31 aberta; CI remoto em execução.
   idêntico é negado no PostgreSQL e retry exato retorna o receipt original.
 - Editor 320 px com rebase de conflito, guard de Back/gesture, modal com foco
   contido, 200% de texto e oferta explicitamente sem cobrança.
+- Currículo Course → Module → Lesson text-only com RLS forçado, runtime sem DML,
+  CAS por `course.draft_version`, retry idempotente, archive e reordenação por
+  conjunto completo; UI usa botões/teclado e preserva foco.
+- Receipts curriculares têm janela operacional explícita de até 30 dias e
+  retenção máxima de 5.000 por curso; retries fora dessa janela são nova
+  operação e continuam sujeitos a versão esperada/autorização.
+- Snapshot schema v2 determinístico inclui módulos/aulas; snapshots v1 continuam
+  imutáveis. Payload >1 MiB falha em 422 antes de publication/receipt parcial.
 
 ## O que está quebrado / em degradação
 
@@ -79,6 +87,8 @@ reviews finais com P0-P2=0. PR #31 aberta; CI remoto em execução.
 - Refresh real com Identity — bloqueado por #13.
 - KMS real/vault HA — provider/infra/staging não decididos — Issue #19.
 - Staging/VPS/TLS — não certificado e fora do escopo atual — Issue #5.
+- Tenant/admin/comprador demo e curso Codex com cinco PDFs — planejados na
+  Issue #33, dependente do currículo #32; nenhuma credencial hardcoded.
 
 ## Bloqueios
 
@@ -88,8 +98,8 @@ reviews finais com P0-P2=0. PR #31 aberta; CI remoto em execução.
 
 ## Próxima ação
 
-Acompanhar a PR #31 no Project e executar o gate de CI remoto.
-Depois avançar para módulos/aulas/assets e buyer/entitlements. Identity real
+Abrir a PR da Issue #32, executar reviews críticos de tenancy/API/UI e CI exato.
+Depois avançar para assets privados e buyer/entitlements. Identity real
 (#13), KMS (#19), billing/Financial e produção continuam bloqueados até
 ambientes e contratos reais.
 

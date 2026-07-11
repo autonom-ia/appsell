@@ -304,7 +304,7 @@ def test_schema_rls_and_runtime_privileges_are_minimal() -> None:
         ("offer", "appsell_owner", True, True),
         ("publication", "appsell_owner", True, True),
     ]
-    assert privileges == ("0004_product_publication", True, False, True, False, False)
+    assert privileges == ("0005_curriculum", True, False, True, False, False)
     assert membership_key == ("UNIQUE (seller_organization_id, identity_user_id, role, status)",)
 
 
@@ -904,7 +904,7 @@ def test_upgrade_from_0003_preserves_existing_draft() -> None:
                 from catalog_product where seller_organization_id = %s and id = %s
                 """,
                 (seller_id, product_id),
-            ).fetchone() == ("0004_product_publication", "draft", None, True)
+            ).fetchone() == ("0005_curriculum", "draft", None, True)
     finally:
         with psycopg.connect(maintenance_url, autocommit=True) as connection:
             connection.execute(
