@@ -37,19 +37,19 @@ Project status:
 ## Sessão: 2026-07-11 10:27 — produto e curso draft persistentes
 Issue: #28
 Branch: feat/28-product-course-drafts
-PR: não aberta
+PR: #29
 Estado: em_progresso
 Modelo: strong + human
 Arquivos alterados: migration 0003, FastAPI catálogo, BFF seller/product, workspace mobile, CSRF, testes PG/API/BFF/E2E, compose e docs
 Comandos executados: lint; typecheck; Vitest; Ruff; mypy; pytest; build; Playwright; test-postgres-foundation; reviews críticos
 Validação: local verde — 67 web, 68 PostgreSQL/API, 2-BFF real, 22 browser + 2 skips; preview local persiste tenant/produto/curso; três reviews P0-P2=0
 Bloqueios: CI remoto; Identity real #13, KMS #19 e produção continuam bloqueados
-Próxima ação: abrir PR da #28, atualizar Project, executar CI remoto e não fazer deploy
+Próxima ação: acompanhar CI e reviews da PR #29; não fazer deploy
 Project status:
   - Projeto: sem opção AppSell no campo do Project
-  - Status: Em desenvolvimento
+  - Status: PR aberta
   - Tipo: Feature
   - Prioridade: P0
   - Risco: Alto
   - Ambiente: Dev
-  - Próxima ação: PR, CI remoto e review
+  - Próxima ação: CI remoto e review da PR #29

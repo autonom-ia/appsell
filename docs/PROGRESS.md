@@ -73,7 +73,9 @@ Fase 4A — produto e curso draft persistentes em Local/CI.
 - UI exige tenant explícito e cria/lista rascunhos privados sem preço ou publicação;
 - preview local isolado persiste tenant, produto e curso sintéticos;
 - gates locais: 67 web, 68 PG/API, dois BFFs, 22 Playwright e build verdes;
-- reviews críticos tenancy, API/CI e UX verdes com P0-P2=0; PR/CI remoto pendentes;
+- reviews críticos tenancy, API/CI e UX verdes com P0-P2=0;
+- PR #29 aberta em draft e vinculada à Issue #28; Project em `PR aberta`;
+- App CI e Harness remotos em execução; nenhum deploy;
 - épica #8 permanece em desenvolvimento;
 - Identity real #13 permanece bloqueado por ausência de dev/hml e P0 upstream.
 

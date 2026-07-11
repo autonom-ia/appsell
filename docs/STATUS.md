@@ -8,7 +8,7 @@ Atualizado em pontos de marco (PR aberta, deploy, incidente). Diferente de MEMOR
 |-----------|:------:|--------------------|
 | Build | 🟢 web + API container local verdes | 2026-07-11 |
 | Testes | 🟢 67 web + 68 PG/API + 22 browser; build verde | 2026-07-11 |
-| CI | 🟡 Fase 4A verde localmente; PR/CI remoto pendentes | 2026-07-11 |
+| CI | 🟡 PR #29 aberta; checks remotos em execução | 2026-07-11 |
 | Deploy produção | 🟡 não configurado/não executado | 2026-07-10 |
 | Harness instalado | 2.0.2 | 2026-07-10 |
 | Harness drift | ⚠️ 2.0.2 → 2.1.2 | 2026-07-11 |
