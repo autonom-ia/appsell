@@ -13,6 +13,7 @@ import pytest
 from fastapi import FastAPI
 
 from appsell_api.learning_routes import _learning_domain_error, router
+from appsell_api.storage_s3 import PresignedRequest
 
 IDENTITY_ID = UUID("81000000-0000-4000-8000-000000000001")
 SELLER_ID = UUID("82000000-0000-4000-8000-000000000001")
@@ -29,6 +30,21 @@ class FakeSession:
     async def scalar(self, statement: Any, parameters: dict[str, Any]) -> Any:
         self.calls.append((str(statement), parameters))
         return self.result
+
+    async def execute(self, statement: Any, parameters: dict[str, Any]) -> Any:
+        self.calls.append((str(statement), parameters))
+        return FakeMappingResult(self.result)
+
+
+class FakeMappingResult:
+    def __init__(self, value: Any) -> None:
+        self.value = value
+
+    def mappings(self) -> FakeMappingResult:
+        return self
+
+    def one(self) -> Any:
+        return self.value
 
 
 class FakeAuth:
@@ -59,10 +75,11 @@ class FakeAuth:
 
 
 @asynccontextmanager
-async def client_for(auth: FakeAuth) -> AsyncIterator[httpx.AsyncClient]:
+async def client_for(auth: FakeAuth, storage: Any = None) -> AsyncIterator[httpx.AsyncClient]:
     app = FastAPI()
     app.include_router(router)
     app.state.internal_auth = auth
+    app.state.storage = storage
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://api.test"
     ) as client:
@@ -86,6 +103,86 @@ def completion_body(**overrides: Any) -> bytes:
         **overrides,
     }
     return json.dumps(value, separators=(",", ":")).encode()
+
+
+@pytest.mark.asyncio
+async def test_legacy_asset_authorization_preserves_local_bundle_contract() -> None:
+    auth = FakeAuth(
+        {
+            "asset_id": ASSET_ID,
+            "asset_version": 1,
+            "file_name": "codex-lesson-1.pdf",
+            "title": "Aula Codex",
+            "media_type": "application/pdf",
+            "byte_size": 128,
+            "sha256": "ab" * 32,
+            "storage_driver": "legacy_bundle",
+            "storage_bucket": "legacy",
+            "object_key": "legacy",
+            "storage_version_id": "legacy",
+            "storage_etag": "legacy",
+        }
+    )
+    async with client_for(auth) as client:
+        response = await client.get(f"/v1/me/learning/items/{ENTITLEMENT_ID}/assets/{ASSET_ID}")
+    assert response.status_code == 200
+    assert response.json()["asset"] == {
+        "id": str(ASSET_ID),
+        "delivery": "legacy_bundle",
+        "seed_key": "codex-lesson-1",
+        "file_name": "codex-lesson-1.pdf",
+        "title": "Aula Codex",
+        "media_type": "application/pdf",
+        "byte_size": 128,
+        "sha256": "ab" * 32,
+    }
+    assert "authorize_publication_asset" in auth.session.calls[0][0]
+
+
+@pytest.mark.asyncio
+async def test_s3_asset_returns_only_short_version_pinned_download_url() -> None:
+    auth = FakeAuth(
+        {
+            "asset_id": ASSET_ID,
+            "asset_version": 2,
+            "file_name": "material seguro.pdf",
+            "title": "Material seguro",
+            "media_type": "application/pdf",
+            "byte_size": 120,
+            "sha256": "cd" * 32,
+            "storage_driver": "s3",
+            "storage_bucket": "appsell-ready",
+            "object_key": "tenants/seller/assets/asset/v2/blob",
+            "storage_version_id": "ready-v2",
+            "storage_etag": "etag-v2",
+        }
+    )
+    calls: list[dict[str, Any]] = []
+
+    class Storage:
+        def presign_get(self, **kwargs: Any) -> PresignedRequest:
+            calls.append(kwargs)
+            return PresignedRequest(
+                url="http://127.0.0.1:8333/ready/key?X-Amz-Signature=signed",
+                headers={},
+                expires_in_seconds=60,
+            )
+
+    async with client_for(auth, Storage()) as client:
+        response = await client.get(f"/v1/me/learning/items/{ENTITLEMENT_ID}/assets/{ASSET_ID}")
+    assert response.status_code == 200
+    asset = response.json()["asset"]
+    assert asset["delivery"] == "redirect"
+    assert asset["download_url"].endswith("X-Amz-Signature=signed")
+    assert "storage_bucket" not in asset and "object_key" not in asset
+    assert calls == [
+        {
+            "bucket": "appsell-ready",
+            "key": "tenants/seller/assets/asset/v2/blob",
+            "version_id": "ready-v2",
+            "file_name": "material seguro.pdf",
+        }
+    ]
 
 
 @pytest.mark.asyncio

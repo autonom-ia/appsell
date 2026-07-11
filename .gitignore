@@ -20,6 +20,7 @@ coverage/
 tsconfig.tsbuildinfo
 .playwright-cli/
 output/playwright/
+tmp/
 test-results/
 playwright-report/
 blob-report/

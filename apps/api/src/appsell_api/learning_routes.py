@@ -4,6 +4,7 @@ import json
 from typing import Any
 from uuid import UUID
 
+from anyio import to_thread
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from sqlalchemy import text
@@ -11,6 +12,7 @@ from sqlalchemy.exc import DBAPIError
 
 from .catalog_routes import _domain_error
 from .internal_requests import AuthenticatedInternalRequest, InternalRequestAuthenticator
+from .storage_s3 import S3Storage, StorageError
 
 router = APIRouter(prefix="/v1")
 _MAX_LEARNING_BODY_BYTES = 4_096
@@ -79,8 +81,9 @@ async def authorize_asset(request: Request, entitlement_id: UUID, asset_id: UUID
                 (
                     await session.execute(
                         text(
-                            "select asset_id,seed_key,file_name,title,media_type,byte_size,sha256 "
-                            "from app_private.authorize_learning_asset("
+                            "select asset_id,asset_version,file_name,title,media_type,byte_size,"
+                            "sha256,storage_driver,storage_bucket,object_key,storage_version_id,"
+                            "storage_etag from app_private.authorize_publication_asset("
                             ":identity_user_id,:entitlement_id,:asset_id)"
                         ),
                         {
@@ -95,10 +98,50 @@ async def authorize_asset(request: Request, entitlement_id: UUID, asset_id: UUID
             )
     except DBAPIError as error:
         raise _domain_error(error) from error
+    if row["storage_driver"] == "s3":
+        storage: S3Storage | None = getattr(request.app.state, "storage", None)
+        if storage is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="asset_storage_unavailable",
+            )
+        try:
+            signed = await to_thread.run_sync(
+                lambda: storage.presign_get(
+                    bucket=str(row["storage_bucket"]),
+                    key=str(row["object_key"]),
+                    version_id=str(row["storage_version_id"]),
+                    file_name=str(row["file_name"]),
+                )
+            )
+        except (StorageError, ValueError) as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="asset_storage_unavailable",
+            ) from error
+        return {
+            "asset": {
+                "id": str(row["asset_id"]),
+                "delivery": "redirect",
+                "download_url": signed.url,
+                "expires_in_seconds": signed.expires_in_seconds,
+                "file_name": row["file_name"],
+                "title": row["title"],
+                "media_type": row["media_type"],
+                "byte_size": row["byte_size"],
+                "sha256": row["sha256"],
+            }
+        }
+    if row["storage_driver"] != "legacy_bundle":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="asset_storage_driver_unavailable",
+        )
     return {
         "asset": {
             "id": str(row["asset_id"]),
-            "seed_key": row["seed_key"],
+            "delivery": "legacy_bundle",
+            "seed_key": str(row["file_name"]).removesuffix(".pdf"),
             "file_name": row["file_name"],
             "title": row["title"],
             "media_type": row["media_type"],

@@ -2,7 +2,7 @@
 
 ## Fase atual
 
-Fase 5 — player, progresso e retomada multitenant em Local/CI.
+Fase 5 — entrega de conteúdo e assets privados multitenant em Local/CI.
 
 ## Concluído
 
@@ -71,6 +71,20 @@ Fase 5 — player, progresso e retomada multitenant em Local/CI.
 
 ## Em andamento
 
+- Issue #40 na branch `feat/40-private-asset-upload`: migration 0008, quotas e
+  RLS forçados, upload direto S3-compatible em quarentena, worker separado,
+  PDF sandbox sem rede e publicação pinada à versão imutável do objeto;
+- download exige sessão opaca, entitlement ativo, publicação exata e URL
+  assinada com origem de storage validada; acesso público anônimo é auditado;
+- uploader mobile tem progresso, retry idempotente, cancelamento, archive e
+  bloqueio seguro de navegação/logout enquanto cancela transferências;
+- demo mantém `admin.demo@autonomia.site`, `user.demo@autonomia.site` e o curso
+  Codex na prática com cinco PDFs; `comercial@autonomia.site` continua apenas
+  como bootstrap local, sem alegação de acesso no Identity real;
+- gates locais atuais: 116 Vitest, suíte Python, Ruff/mypy, 148 PG/API, 3 BFF,
+  3 storage, 31 Playwright focados + 5 skips deliberados, build e audit Node;
+- aguardando review crítico final e abertura de PR; nenhum merge/deploy;
+
 - Issue #38 na branch `feat/38-learning-progress`: migration 0007, player
   mobile-first, progresso monotônico/idempotente e retomada multi-course;
 - assets protegidos por entitlement+asset, stream privado e validação de
@@ -103,7 +117,7 @@ Fase 5 — player, progresso e retomada multitenant em Local/CI.
 - spike com Autonom.ia Identity real (#13);
 - refresh real contra Identity (#18), bloqueado pelo contrato/ambiente da #13;
 - KMS real, vault durável/HA e restore (#19), bloqueado;
-- assets privados e editor de blocos ricos após o currículo text-only;
+- storage/ClamAV externos de staging, backup/restore e editor de blocos ricos;
 - checkout/billing e storage privado externo para conteúdo de clientes;
 - integrações Neuro.ai e financeiro após contratos/repos reais.
 

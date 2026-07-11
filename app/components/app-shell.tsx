@@ -10,13 +10,21 @@ import {
   DEMO_ADMIN_EMAIL,
   DEMO_BUYER_EMAIL,
   type DemoProfile
-} from "@/lib/demo-config";
+} from "../../lib/demo-config";
 
 type DemoShellProfile = Pick<DemoProfile, "persona" | "email" | "label" | "home">;
 type ProfileState =
   | { status: "loading" }
   | { status: "ready"; profile: DemoShellProfile | null }
   | { status: "failed" };
+
+const ASSET_DISCARD_REQUEST_EVENT = "appsell:asset-discard-request";
+
+interface AssetDiscardRequestDetail {
+  register(task: Promise<void>): void;
+}
+
+export type ConfirmedExitType = "navigate" | "history" | "logout";
 
 interface AppShellProps {
   children: ReactNode;
@@ -44,12 +52,53 @@ function readCsrfCookie() {
 }
 
 function LogoutForm({ mobile = false, onAttempt }: { mobile?: boolean; onAttempt?: (event: FormEvent<HTMLFormElement>) => boolean }) {
-  function attachCsrf(event: FormEvent<HTMLFormElement>) {
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
     if (onAttempt?.(event) === false) return;
-    const input = event.currentTarget.elements.namedItem("_csrf");
-    if (input instanceof HTMLInputElement) input.value = readCsrfCookie();
+    event.preventDefault();
+    if (submitting) return;
+    // React clears SyntheticEvent.currentTarget after the synchronous handler
+    // returns. Keep the concrete form across the asynchronous upload-discard
+    // gate so the signed logout body cannot silently degrade to an empty form.
+    const form = event.currentTarget;
+    const input = form.elements.namedItem("_csrf");
+    const token = readCsrfCookie();
+    if (!(input instanceof HTMLInputElement) || !token) {
+      setError("Não foi possível validar a saída. Recarregue a página.");
+      return;
+    }
+    input.value = token;
+    // Snapshot the signed body before setState can rerender the uncontrolled
+    // hidden field back to its empty default while the discard gate awaits.
+    const logoutBody = new URLSearchParams({ _csrf: token });
+    setSubmitting(true);
+    setError("");
+    try {
+      await discardActiveAssetUploads();
+      // A native form POST inherits the global no-referrer policy and Chromium
+      // serializes its Origin as "null". Fetch keeps the exact same-origin
+      // Origin header required by the server while the CSRF token stays bound
+      // to this opaque session.
+      const response = await fetch("/auth/logout", {
+        method: "POST",
+        body: logoutBody,
+        credentials: "same-origin",
+        redirect: "follow"
+      });
+      if (!response.ok || !response.redirected) throw new Error("logout_failed");
+      const destination = new URL(response.url);
+      if (destination.origin !== window.location.origin || destination.pathname !== "/") {
+        throw new Error("logout_redirect_invalid");
+      }
+      window.location.replace(destination.href);
+    } catch {
+      setSubmitting(false);
+      setError("Não foi possível sair com segurança. Tente novamente.");
+    }
   }
-  return <form action="/auth/logout" method="post" onSubmit={attachCsrf}><input type="hidden" name="_csrf" defaultValue=""/><button className={mobile ? "mobile-logout" : "logout-button"} type="submit" aria-label={mobile ? "Sair com segurança" : undefined}>{mobile ? "Sair" : "Sair com segurança"}</button><noscript><small>Ative JavaScript para assinar o logout com segurança.</small></noscript></form>;
+  return <form action="/auth/logout" method="post" onSubmit={(event) => void submit(event)}><input type="hidden" name="_csrf" defaultValue=""/><button className={mobile ? "mobile-logout" : "logout-button"} type="submit" aria-label={mobile ? "Sair com segurança" : undefined} disabled={submitting}>{submitting ? "Saindo…" : mobile ? "Sair" : "Sair com segurança"}</button>{error ? <span className="form-error" role="alert">{error}</span> : null}<noscript><small>Ative JavaScript para assinar o logout com segurança.</small></noscript></form>;
 }
 
 export function AppShell({ children }: AppShellProps) {
@@ -58,6 +107,8 @@ export function AppShell({ children }: AppShellProps) {
   const [pageDirty, setPageDirty] = useState(false);
   const [profileState, setProfileState] = useState<ProfileState>({ status: "loading" });
   const [pendingAction, setPendingAction] = useState<{ type: "navigate"; href: string } | { type: "logout"; form: HTMLFormElement } | { type: "history" } | null>(null);
+  const [discarding, setDiscarding] = useState(false);
+  const [discardError, setDiscardError] = useState("");
   const cancelDialogButton = useRef<HTMLButtonElement>(null);
   const dirtyDialogTrigger = useRef<HTMLElement | null>(null);
   const allowNextLogout = useRef(false);
@@ -129,25 +180,41 @@ export function AppShell({ children }: AppShellProps) {
   }
 
   function closeDirtyDialog() {
+    if (discarding) return;
     setPendingAction(null);
+    setDiscardError("");
     queueMicrotask(() => dirtyDialogTrigger.current?.focus());
   }
 
-  function discardAndContinue() {
+  async function discardAndContinue() {
     const action = pendingAction;
+    if (!action) return;
+    setDiscarding(true);
+    setDiscardError("");
+    try {
+      await continueConfirmedExit(action.type, {
+        history: () => {
+          window.dispatchEvent(new Event(DIRTY_HISTORY_CONTINUE_EVENT));
+        },
+        navigate: () => {
+          allowUnsavedNavigation();
+          router.push(action.type === "navigate" ? action.href : pathname);
+        },
+        logout: () => {
+          if (action.type !== "logout") return;
+          allowUnsavedNavigation();
+          allowNextLogout.current = true;
+          action.form.requestSubmit();
+        }
+      });
+    } catch {
+      setDiscarding(false);
+      setDiscardError("Não foi possível cancelar o envio com segurança. Tente novamente antes de sair.");
+      return;
+    }
+    setDiscarding(false);
     setPendingAction(null);
     setPageDirty(false);
-    if (!action) return;
-    if (action.type === "history") {
-      window.dispatchEvent(new Event(DIRTY_HISTORY_CONTINUE_EVENT));
-    } else if (action.type === "navigate") {
-      allowUnsavedNavigation();
-      router.push(action.href);
-    } else {
-      allowUnsavedNavigation();
-      allowNextLogout.current = true;
-      action.form.requestSubmit();
-    }
   }
 
   return (
@@ -194,14 +261,33 @@ export function AppShell({ children }: AppShellProps) {
             <p className="eyebrow">Alterações não salvas</p>
             <h2 id="dirty-dialog-title">Sair desta edição?</h2>
             <p id="dirty-dialog-description">Os campos alterados neste dispositivo serão descartados.</p>
+            {discardError ? <p className="form-error" role="alert">{discardError}</p> : null}
             <div className="dialog-actions">
-              <button ref={cancelDialogButton} type="button" className="secondary-button" onClick={closeDirtyDialog}>Continuar editando</button>
-              <button type="button" className="danger-button" onClick={discardAndContinue}>Descartar e sair</button>
+              <button ref={cancelDialogButton} type="button" className="secondary-button" onClick={closeDirtyDialog} disabled={discarding}>Continuar editando</button>
+              <button type="button" className="danger-button" onClick={() => void discardAndContinue()} disabled={discarding}>{discarding ? "Cancelando envio…" : "Descartar e sair"}</button>
             </div>
         </AccessibleDialog>
       ) : null}
     </div>
   );
+}
+
+export async function discardActiveAssetUploads(target: EventTarget = window): Promise<void> {
+  const tasks: Promise<void>[] = [];
+  const detail: AssetDiscardRequestDetail = { register: (task) => tasks.push(task) };
+  target.dispatchEvent(new CustomEvent<AssetDiscardRequestDetail>(ASSET_DISCARD_REQUEST_EVENT, { detail }));
+  const results = await Promise.allSettled(tasks);
+  const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+  if (failures.length > 0) throw new AggregateError(failures.map((failure) => failure.reason), "asset_discard_failed");
+}
+
+export async function continueConfirmedExit(
+  type: ConfirmedExitType,
+  continuations: Record<ConfirmedExitType, () => void>,
+  target: EventTarget = window
+): Promise<void> {
+  await discardActiveAssetUploads(target);
+  continuations[type]();
 }
 
 function parseProfileState(payload: unknown): ProfileState {

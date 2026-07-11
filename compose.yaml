@@ -13,10 +13,24 @@ services:
       APPSELL_API_INTERNAL_HMAC_KEYRING_B64_JSON: ${APPSELL_INTERNAL_HMAC_KEYRING_B64_JSON:-}
       APPSELL_API_CONTEXT_HMAC_KEY_B64: ${APPSELL_API_CONTEXT_HMAC_KEY_B64:-}
       APPSELL_API_SERVICE_CREDENTIAL_B64: ${APPSELL_SERVICE_CREDENTIAL_B64:-}
+      APPSELL_API_STORAGE_PROVIDER: ${APPSELL_API_STORAGE_PROVIDER:-disabled}
+      APPSELL_API_STORAGE_INTERNAL_ENDPOINT: ${APPSELL_API_STORAGE_INTERNAL_ENDPOINT:-}
+      APPSELL_API_STORAGE_PUBLIC_ENDPOINT: ${APPSELL_API_STORAGE_PUBLIC_ENDPOINT:-}
+      APPSELL_API_STORAGE_REGION: ${APPSELL_API_STORAGE_REGION:-us-east-1}
+      APPSELL_API_STORAGE_QUARANTINE_BUCKET: ${APPSELL_API_STORAGE_QUARANTINE_BUCKET:-}
+      APPSELL_API_STORAGE_READY_BUCKET: ${APPSELL_API_STORAGE_READY_BUCKET:-}
+      APPSELL_API_STORAGE_CONTROL_ACCESS_KEY: ${APPSELL_STORAGE_CONTROL_ACCESS_KEY:-}
+      APPSELL_API_STORAGE_CONTROL_SECRET_KEY: ${APPSELL_STORAGE_CONTROL_SECRET_KEY:-}
+      APPSELL_API_STORAGE_ALLOWED_ORIGIN: ${APPSELL_STORAGE_ALLOWED_ORIGIN:-}
+      APPSELL_API_MALWARE_SCANNER_PROVIDER: ${APPSELL_API_MALWARE_SCANNER_PROVIDER:-disabled}
+      APPSELL_API_PDF_SANDBOX_URL: ""
+      APPSELL_API_PDF_SANDBOX_SOCKET: /run/appsell-pdf/pdf.sock
     ports:
       - "127.0.0.1:${APPSELL_API_PORT:-58000}:8000"
     depends_on:
       postgres:
+        condition: service_healthy
+      pdf-sandbox:
         condition: service_healthy
     healthcheck:
       test:
@@ -28,6 +42,32 @@ services:
       timeout: 3s
       retries: 20
     restart: unless-stopped
+    volumes:
+      - appsell_pdf_socket:/run/appsell-pdf:ro
+
+  pdf-sandbox:
+    build:
+      context: ./apps/api
+    command: ["python", "-m", "appsell_api.pdf_sandbox_runner"]
+    environment:
+      PYTHONUNBUFFERED: "1"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 64
+    mem_limit: 768m
+    cpus: 1.0
+    tmpfs:
+      - /tmp:size=33554432,mode=1777,noexec,nosuid
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; t=httpx.HTTPTransport(uds='/run/appsell-pdf/pdf.sock'); r=httpx.Client(transport=t,trust_env=False,timeout=1).get('http://pdf-sandbox/health'); assert r.status_code==200 and r.json()=={'status':'ok'}"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    restart: unless-stopped
+    network_mode: none
+    volumes:
+      - appsell_pdf_socket:/run/appsell-pdf
 
   postgres:
     image: postgres:16.9-alpine@sha256:7c688148e5e156d0e86df7ba8ae5a05a2386aaec1e2ad8e6d11bdf10504b1fb7
@@ -49,5 +89,30 @@ services:
       retries: 30
     restart: unless-stopped
 
+  seaweedfs:
+    profiles: ["storage"]
+    image: chrislusf/seaweedfs:4.39@sha256:c7d6c721b30ae711db766bbbfd40192776e263d4e51e22f57baef7bef93c12c6
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        test -n "$${AWS_ACCESS_KEY_ID}" && test -n "$${AWS_SECRET_ACCESS_KEY}";
+        exec weed mini -dir=/data -s3.allowedOrigins="$${APPSELL_STORAGE_ALLOWED_ORIGIN}"
+    environment:
+      AWS_ACCESS_KEY_ID: ${APPSELL_STORAGE_CONTROL_ACCESS_KEY:-}
+      AWS_SECRET_ACCESS_KEY: ${APPSELL_STORAGE_CONTROL_SECRET_KEY:-}
+      S3_BUCKET: ${APPSELL_STORAGE_BUCKETS:-appsell-quarantine,appsell-ready}
+      APPSELL_STORAGE_ALLOWED_ORIGIN: ${APPSELL_STORAGE_ALLOWED_ORIGIN:-http://localhost:3000}
+    ports:
+      - "127.0.0.1:${APPSELL_STORAGE_S3_PORT:-58333}:8333"
+    tmpfs:
+      - /data:size=536870912,mode=0700
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9333/cluster/status"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+    restart: unless-stopped
+
 volumes:
   appsell_postgres_data:
+  appsell_pdf_socket:

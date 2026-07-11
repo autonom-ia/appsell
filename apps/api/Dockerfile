@@ -8,9 +8,12 @@ RUN uv sync --frozen --no-dev --no-install-project
 
 FROM python:3.12.11-slim@sha256:47ae396f09c1303b8653019811a8498470603d7ffefc29cb07c88f1f8cb3d19f AS runtime
 ENV PATH="/opt/app/.venv/bin:${PATH}" \
+    PYTHONPATH="/opt/app/src" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
-RUN groupadd --system appsell && useradd --system --gid appsell --home /opt/app appsell
+RUN groupadd --system --gid 10001 appsell \
+    && useradd --system --uid 10001 --gid 10001 --home /opt/app appsell \
+    && install -d -o appsell -g appsell -m 0770 /run/appsell-pdf
 WORKDIR /opt/app
 COPY --from=builder /opt/app/.venv .venv
 COPY src src
