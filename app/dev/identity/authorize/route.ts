@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { OAuthFlowError } from "@/lib/oauth-service";
 import { oauthService } from "@/lib/oauth-service.server";
 import { isOAuthStoreUnavailable } from "@/lib/redis-oauth-service";
+import { configuredPublicOrigin } from "@/lib/public-origin";
 
 export const dynamic = "force-dynamic";
 
@@ -17,8 +18,8 @@ export async function GET(request: Request) {
       state,
       nonce: url.searchParams.get("nonce") ?? "",
       codeChallenge: url.searchParams.get("code_challenge") ?? ""
-    }, request.headers.get("x-forwarded-for")?.split(",", 1)[0]?.trim() || "local");
-    const callback = new URL("/auth/callback", request.url);
+    }, "local");
+    const callback = new URL("/auth/callback", configuredPublicOrigin());
     callback.searchParams.set("code", code);
     callback.searchParams.set("state", state);
     const response = NextResponse.redirect(callback);

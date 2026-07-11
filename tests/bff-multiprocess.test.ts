@@ -21,6 +21,8 @@ test("two real Next BFF processes share an opaque Redis session", async () => {
     APPSELL_REDIS_URL: redis.url,
     APPSELL_REDIS_PREFIX: `appsell:test:bff-${suffix}`,
     APPSELL_SESSION_HMAC_KEY_B64: randomBytes(32).toString("base64"),
+    APPSELL_CSRF_HMAC_KEY_B64: randomBytes(32).toString("base64"),
+    APPSELL_PUBLIC_ORIGIN: `http://localhost:${firstPort}`,
     APPSELL_VAULT_LOCAL_KEYRING_B64_JSON: JSON.stringify([
       { id: "test-v1", key: vaultKey.toString("base64"), active: true }
     ]),
@@ -51,19 +53,31 @@ test("two real Next BFF processes share an opaque Redis session", async () => {
       headers: { cookie: transactionCookie }
     });
     expect(callback.status).toBe(307);
-    const sessionCookie = cookiePair(callback.headers.get("set-cookie"), "appsell_session");
+    const setCookie = callback.headers.get("set-cookie");
+    const sessionCookie = cookiePair(setCookie, "appsell_session");
+    const csrfCookie = cookiePair(setCookie, "appsell_csrf");
+    const csrfToken = csrfCookie.slice(csrfCookie.indexOf("=") + 1);
 
     const sharedSession = await fetch(`http://127.0.0.1:${firstPort}/api/session`, {
       headers: { cookie: sessionCookie }
     });
     expect(sharedSession.status).toBe(200);
-    expect(await sharedSession.json()).toMatchObject({ authenticated: true, subject: "dev-user-001" });
+    const sessionView = await sharedSession.json() as {
+      authenticated: boolean;
+    };
+    expect(sessionView.authenticated).toBe(true);
+    expect(sessionView).not.toHaveProperty("csrf");
 
     await redis.client.shutdown("NOSAVE").catch(() => undefined);
     const unavailableLogout = await fetch(`http://localhost:${firstPort}/auth/logout`, {
       method: "POST",
       redirect: "manual",
-      headers: { cookie: sessionCookie, origin: `http://localhost:${firstPort}` }
+      headers: {
+        cookie: `${sessionCookie}; ${csrfCookie}`,
+        origin: `http://localhost:${firstPort}`,
+        "content-type": "application/x-www-form-urlencoded"
+      },
+      body: new URLSearchParams({ _csrf: csrfToken })
     });
     expect(unavailableLogout.status).toBe(503);
     expect(unavailableLogout.headers.get("set-cookie")).toBeNull();

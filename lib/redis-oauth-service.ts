@@ -497,7 +497,12 @@ export class RedisOAuthService {
       const current = await this.readValidatedSessionBundle(sessionId);
       if (!current) return null;
       const { session } = current;
-      return { subject: session.subject, createdAt: session.createdAt, expiresAt: session.expiresAt };
+      return {
+        subject: session.subject,
+        createdAt: session.createdAt,
+        expiresAt: session.expiresAt,
+        tokenRevision: session.tokenRevision
+      };
     });
   }
 

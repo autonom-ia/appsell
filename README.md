@@ -58,7 +58,8 @@ Limites deliberados do spike:
 - a sessão Redis contém somente identidade e metadados sanitizados; access e
   refresh tokens sintéticos aparecem apenas no vault cifrado server-side;
 - o mock `/dev/identity/*` não é uma implementação de produção;
-- nenhuma autorização multi-tenant/RBAC está implementada nesta etapa.
+- a autorização seller/RBAC já existe no domínio Local/CI, mas produto, buyer e
+  entitlement persistentes ainda não estão implementados.
 
 ### Rotação do keyring local
 
@@ -119,6 +120,28 @@ implicitamente no startup.
 Esta fundação ainda não concede o superadmin nem integra o Identity externo. O
 bootstrap one-shot exige claims reais verificadas e MFA/passkey; não deve ser
 simulado em produção.
+
+### Ponte BFF→API e onboarding seller Local/CI
+
+O BFF sincroniza a identidade local na API e assina cada chamada interna com um
+envelope ligado a método, path, query, hash do corpo, capability, sessão,
+identidade, issuer/audience, `kid` e TTL. A API valida a credencial de serviço,
+consome o nonce de replay no PostgreSQL e instala contexto RLS assinado apenas
+dentro da transação.
+
+Após o login local, a tela Produtos permite criar uma organização seller. O
+POST público exige origem canônica e token CSRF derivado da sessão e da ação;
+o corpo é lido em streaming com teto de 16 KiB. A criação é idempotente e
+atômica e concede `seller_owner` ao criador. O teste de fundação cobre o fluxo
+real com dois BFFs, Redis, FastAPI e PostgreSQL:
+
+```bash
+./scripts/test-postgres-foundation.sh
+```
+
+Este fluxo não transforma a identidade sintética em conta real. Em particular,
+`comercial@autonomia.site` só poderá ser superadmin real após integração e
+prova do Identity externo com issuer/JWKS/audience/client/MFA válidos.
 
 ### Refresh distribuído Local/CI
 

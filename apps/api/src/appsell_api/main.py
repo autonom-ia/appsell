@@ -5,7 +5,9 @@ from fastapi import FastAPI, Response, status
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from .config import get_settings
-from .db import create_engine, database_ready
+from .db import create_engine, create_session_factory, database_ready
+from .internal_requests import InternalRequestAuthenticator
+from .routes import router
 
 
 @asynccontextmanager
@@ -13,6 +15,13 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     settings = get_settings()
     engine = create_engine(settings)
     app.state.db_engine = engine
+    session_factory = create_session_factory(engine)
+    app.state.db_session_factory = session_factory
+    app.state.internal_auth = (
+        InternalRequestAuthenticator.from_settings(settings, session_factory)
+        if settings.internal_auth_configured
+        else None
+    )
     yield
     await engine.dispose()
 
@@ -24,6 +33,7 @@ app = FastAPI(
     redoc_url=None,
     lifespan=lifespan,
 )
+app.include_router(router)
 
 
 @app.get("/health/live")

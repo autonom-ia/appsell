@@ -15,6 +15,7 @@ credential.env
 node_modules/
 .next/
 .next-bff-*/
+.next-*/
 coverage/
 tsconfig.tsbuildinfo
 .playwright-cli/

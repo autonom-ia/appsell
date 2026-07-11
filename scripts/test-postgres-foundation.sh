@@ -9,6 +9,8 @@ migrator_secret="$(openssl rand -hex 24)"
 runtime_secret="$(openssl rand -hex 24)"
 context_key="$(openssl rand -hex 32)"
 bootstrap_key="$(openssl rand -hex 32)"
+internal_key_b64="$(openssl rand -base64 32)"
+service_credential_b64="$(openssl rand -base64 32)"
 
 cleanup() {
   docker compose -p "$project" down --rmi local --volumes --remove-orphans >/dev/null 2>&1 || true
@@ -20,6 +22,12 @@ export APPSELL_API_PORT="$api_port"
 export APPSELL_POSTGRES_SUPERUSER_PASSWORD="$superuser_secret"
 export APPSELL_MIGRATOR_PASSWORD="$migrator_secret"
 export APPSELL_RUNTIME_PASSWORD="$runtime_secret"
+export APPSELL_INTERNAL_ISSUER="appsell-bff-test"
+export APPSELL_INTERNAL_AUDIENCE="appsell-api-test"
+export APPSELL_IDENTITY_ISSUER="https://identity.test.autonomia.site"
+export APPSELL_INTERNAL_HMAC_KEYRING_B64_JSON="[{\"id\":\"test-v1\",\"key\":\"${internal_key_b64}\",\"active\":true}]"
+export APPSELL_API_CONTEXT_HMAC_KEY_B64="$(printf '%s' "$context_key" | xxd -r -p | base64)"
+export APPSELL_SERVICE_CREDENTIAL_B64="$service_credential_b64"
 
 docker compose -p "$project" up -d --wait postgres
 
@@ -46,7 +54,10 @@ export APPSELL_TEST_POSTGRES_ADMIN_URL="postgresql://postgres:${superuser_secret
 export APPSELL_TEST_POSTGRES_RUNTIME_URL="postgresql://appsell_runtime:${runtime_secret}@127.0.0.1:${port}/appsell"
 export APPSELL_TEST_CONTEXT_KEY_HEX="$context_key"
 export APPSELL_TEST_BOOTSTRAP_KEY_HEX="$bootstrap_key"
-uv run --project apps/api pytest apps/api/tests/test_postgres_foundation.py
+uv run --project apps/api pytest \
+  apps/api/tests/test_postgres_foundation.py \
+  apps/api/tests/test_postgres_bff_onboarding.py \
+  apps/api/tests/test_api_onboarding.py
 if uv run --project apps/api python -m appsell_api.configure_context_key 2>/dev/null; then
   echo "configure_context_key re-enabled a consumed bootstrap" >&2
   exit 1
@@ -55,3 +66,6 @@ fi
 docker compose -p "$project" up -d --build --wait api
 curl --fail --silent "http://127.0.0.1:${api_port}/health/live"
 curl --fail --silent "http://127.0.0.1:${api_port}/health/ready"
+APPSELL_TEST_DOMAIN_API_URL="http://127.0.0.1:${api_port}" \
+APPSELL_LOCAL_IDENTITY_EMAIL="creator@example.test" \
+pnpm exec vitest run tests/bff-api-onboarding.test.ts
