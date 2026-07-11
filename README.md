@@ -58,8 +58,8 @@ Limites deliberados do spike:
 - a sessão Redis contém somente identidade e metadados sanitizados; access e
   refresh tokens sintéticos aparecem apenas no vault cifrado server-side;
 - o mock `/dev/identity/*` não é uma implementação de produção;
-- a autorização seller/RBAC já existe no domínio Local/CI, mas produto, buyer e
-  entitlement persistentes ainda não estão implementados.
+- a autorização seller/RBAC, buyer entitlement e assets privados existem no
+  domínio Local/CI; checkout, cobrança e Identity externo continuam ausentes.
 
 ### Rotação do keyring local
 
@@ -120,6 +120,37 @@ implicitamente no startup.
 Esta fundação ainda não concede o superadmin nem integra o Identity externo. O
 bootstrap one-shot exige claims reais verificadas e MFA/passkey; não deve ser
 simulado em produção.
+
+### Tenant e contas demo Local/CI
+
+O modo demo cria uma tenant dedicada e resetável com duas personas fixas, sem
+senha hardcoded: `admin.demo@autonomia.site` e `user.demo@autonomia.site`. O
+comprador recebe somente o produto publicado **Codex na prática**, com cinco
+PDFs protegidos pelo BFF; o admin não herda o entitlement do comprador.
+
+Depois de configurar o PostgreSQL/API local conforme a seção anterior, habilite
+o modo somente no ambiente Local/CI, marque explicitamente esse banco local
+descartável e execute o reset:
+
+```bash
+docker compose exec -T postgres psql -U postgres -d appsell \
+  -c "comment on database appsell is 'appsell-demo-reset-target-v1'"
+
+APPSELL_DEMO_ENABLED=true \
+APPSELL_API_ENVIRONMENT=local \
+APPSELL_API_IDENTITY_ISSUER="$APPSELL_IDENTITY_ISSUER" \
+APPSELL_DEMO_DATABASE_URL="postgresql://postgres:${APPSELL_POSTGRES_SUPERUSER_PASSWORD}@127.0.0.1:${APPSELL_POSTGRES_PORT:-55432}/appsell" \
+uv run --project apps/api python -m appsell_api.reset_demo_tenant \
+  --confirm-demo-key autonomia-demo-v1
+
+APPSELL_DEMO_ENABLED=true corepack pnpm dev
+```
+
+Abra `http://localhost:3000` e escolha **Entrar como admin demo** ou **Entrar
+como aluno demo**. O reset usa advisory lock, IDs determinísticos e valida hash
+e tamanho dos cinco PDFs antes de alterar a tenant. O comando recusa ambiente
+fora de Local/CI, DSN fora de loopback ou banco sem o marcador explícito; o
+modo demo recusa `NODE_ENV=production`.
 
 ### Ponte BFF→API e onboarding seller Local/CI
 

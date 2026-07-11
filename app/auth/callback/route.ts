@@ -23,6 +23,7 @@ import { isOAuthStoreUnavailable } from "@/lib/redis-oauth-service";
 import { configuredPublicOrigin } from "@/lib/public-origin";
 import { DomainApiError, isDomainApiConfigured, syncDomainIdentity } from "@/lib/internal-api-client.server";
 import { ONBOARD_SELLER_CSRF_ACTION } from "@/lib/mutation-protection.server";
+import { demoProfileForSubject } from "@/lib/demo-config";
 
 export const dynamic = "force-dynamic";
 
@@ -41,9 +42,9 @@ export async function GET(request: NextRequest) {
       code: request.nextUrl.searchParams.get("code") ?? undefined,
       state: request.nextUrl.searchParams.get("state") ?? undefined
     });
+    const session = await oauthService().getSession(sessionId);
+    if (!session) throw new DomainApiError(503, "session_unavailable_after_callback");
     if (isDomainApiConfigured()) {
-      const session = await oauthService().getSession(sessionId);
-      if (!session) throw new DomainApiError(503, "session_unavailable_after_callback");
       try {
         await syncDomainIdentity(sessionId, session);
       } catch (error) {
@@ -51,7 +52,10 @@ export async function GET(request: NextRequest) {
         throw error;
       }
     }
-    const response = NextResponse.redirect(new URL("/dashboard", configuredPublicOrigin()));
+    const response = NextResponse.redirect(new URL(
+      demoProfileForSubject(session.subject)?.home ?? "/dashboard",
+      configuredPublicOrigin()
+    ));
     expireTransactionCookie(response);
     response.cookies.set(sessionCookieName(), sessionId, sessionCookieOptions());
     response.cookies.set(csrfCookieName(), csrfTokenForSession(sessionId, LOGOUT_CSRF_ACTION), csrfCookieOptions());

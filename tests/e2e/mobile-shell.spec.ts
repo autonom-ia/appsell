@@ -23,9 +23,8 @@ test("keeps the core journey usable without horizontal overflow", async ({ page 
     expect(dimensions.scroll).toBeLessThanOrEqual(dimensions.client);
   }
   await expect(page.getByRole("heading", { name: "Minha biblioteca" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Outros produtos de Autonom.ia Lab" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Launch Lab" })).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "Growth Systems" })).toHaveCount(1);
+  await expect(page.getByText("A biblioteca não respondeu. Tente novamente.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Tentar novamente" })).toBeVisible();
 });
 
 test("does not render protected preview content for an anonymous request", async ({ request }) => {

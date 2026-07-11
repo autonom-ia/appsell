@@ -1,0 +1,485 @@
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+from typing import Any
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
+
+import psycopg
+from psycopg.conninfo import conninfo_to_dict
+from psycopg.types.json import Jsonb
+
+DEMO_KEY = "autonomia-demo-v1"
+DEMO_DATABASE_MARKER = "appsell-demo-reset-target-v1"
+ROOT = Path(__file__).resolve().parents[4]
+MANIFEST_PATH = ROOT / "demo" / "content" / "codex-na-pratica" / "manifest.json"
+PDF_ROOT = ROOT / "output" / "pdf" / "codex"
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Reset the isolated AppSell demo tenant.")
+    parser.add_argument("--confirm-demo-key", required=True)
+    parser.add_argument("--dry-run", action="store_true")
+    return parser.parse_args()
+
+
+def load_manifest() -> tuple[dict[str, Any], str]:
+    raw = MANIFEST_PATH.read_bytes()
+    manifest = json.loads(raw)
+    if manifest.get("seed_key") != DEMO_KEY or manifest.get("version") != 1:
+        raise RuntimeError("unsupported demo manifest")
+    personas = manifest.get("personas", {})
+    expected = {
+        "admin": ("demo-admin-v1", "admin.demo@autonomia.site"),
+        "buyer": ("demo-user-v1", "user.demo@autonomia.site"),
+    }
+    for role, (subject, email) in expected.items():
+        persona = personas.get(role, {})
+        if persona.get("subject") != subject or persona.get("email") != email:
+            raise RuntimeError(f"invalid {role} demo persona")
+    if personas["admin"]["subject"] == personas["buyer"]["subject"]:
+        raise RuntimeError("demo personas must be distinct")
+    lessons = manifest.get("lessons")
+    if not isinstance(lessons, list) or len(lessons) != 5:
+        raise RuntimeError("demo course must contain exactly five lessons")
+    for position, lesson in enumerate(lessons):
+        if lesson.get("position") != position:
+            raise RuntimeError("demo lesson positions must be contiguous")
+        file_name = f"{lesson['slug']}.pdf"
+        path = PDF_ROOT / file_name
+        payload = path.read_bytes()
+        if len(payload) != lesson.get("bytes"):
+            raise RuntimeError(f"demo PDF size mismatch: {file_name}")
+        if hashlib.sha256(payload).hexdigest() != lesson.get("sha256"):
+            raise RuntimeError(f"demo PDF hash mismatch: {file_name}")
+    return manifest, hashlib.sha256(raw).hexdigest()
+
+
+def identity_id(issuer: str, subject: str) -> UUID:
+    return uuid5(NAMESPACE_URL, f"{issuer}\0{subject}")
+
+
+def require_environment(args: argparse.Namespace) -> tuple[str, str]:
+    if args.confirm_demo_key != DEMO_KEY:
+        raise RuntimeError("demo confirmation key mismatch")
+    if os.environ.get("APPSELL_DEMO_ENABLED", "").lower() != "true":
+        raise RuntimeError("APPSELL_DEMO_ENABLED must be true")
+    environment = os.environ.get("APPSELL_API_ENVIRONMENT", "").lower()
+    if environment not in {"local", "ci"}:
+        raise RuntimeError("APPSELL_API_ENVIRONMENT must explicitly be local or ci")
+    issuer = os.environ.get("APPSELL_API_IDENTITY_ISSUER", "").strip()
+    if not issuer or any(ord(character) < 0x20 for character in issuer):
+        raise RuntimeError("APPSELL_API_IDENTITY_ISSUER is required")
+    database_url = os.environ.get("APPSELL_DEMO_DATABASE_URL", "")
+    if not database_url.startswith(("postgresql://", "postgres://")):
+        raise RuntimeError("APPSELL_DEMO_DATABASE_URL must be a PostgreSQL DSN")
+    connection_info = conninfo_to_dict(database_url)
+    if connection_info.get("host") not in {"127.0.0.1", "localhost", "::1"}:
+        raise RuntimeError("demo reset database must be loopback-only")
+    return issuer, database_url
+
+
+def validate_demo_database(connection: psycopg.Connection[Any]) -> None:
+    marker = connection.execute(
+        "select shobj_description(oid,'pg_database') from pg_database "
+        "where datname=current_database()"
+    ).fetchone()
+    if marker != (DEMO_DATABASE_MARKER,):
+        raise RuntimeError("database is not marked as an AppSell demo reset target")
+
+
+def snapshot_for(manifest: dict[str, Any]) -> dict[str, Any]:
+    seller = manifest["seller"]
+    product = manifest["product"]
+    course = manifest["course"]
+    module = manifest["module"]
+    offer = manifest["offer"]
+    lessons = manifest["lessons"]
+    return {
+        "schema_version": 2,
+        "seller_organization_id": seller["id"],
+        "product": {
+            "id": product["id"],
+            "slug": product["slug"],
+            "title": product["title"],
+            "description": product["description"],
+        },
+        "offer": {
+            "id": offer["id"],
+            "title": offer["title"],
+            "summary": offer["summary"],
+            "billing_authority": "external_unconfigured",
+        },
+        "courses": [
+            {
+                "id": course["id"],
+                "title": course["title"],
+                "description": course["description"],
+                "position": 0,
+                "modules": [
+                    {
+                        "id": module["id"],
+                        "title": module["title"],
+                        "status": "active",
+                        "position": 0,
+                        "lessons": [
+                            {
+                                "id": lesson["lesson_id"],
+                                "title": lesson["title"],
+                                "kind": "text",
+                                "content": lesson["summary"],
+                                "status": "active",
+                                "position": lesson["position"],
+                            }
+                            for lesson in lessons
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def reset_demo(
+    connection: psycopg.Connection[Any], manifest: dict[str, Any], manifest_sha: str, issuer: str
+) -> None:
+    seller = manifest["seller"]
+    product = manifest["product"]
+    course = manifest["course"]
+    module = manifest["module"]
+    offer = manifest["offer"]
+    publication = manifest["publication"]
+    entitlement = manifest["entitlement"]
+    lessons = manifest["lessons"]
+    admin = manifest["personas"]["admin"]
+    buyer = manifest["personas"]["buyer"]
+    admin_id = identity_id(issuer, admin["subject"])
+    buyer_id = identity_id(issuer, buyer["subject"])
+    seller_id = UUID(seller["id"])
+    product_id = UUID(product["id"])
+    course_id = UUID(course["id"])
+    module_id = UUID(module["id"])
+    offer_id = UUID(offer["id"])
+    publication_id = UUID(publication["id"])
+    entitlement_id = UUID(entitlement["id"])
+    lesson_ids = [UUID(lesson["lesson_id"]) for lesson in lessons]
+
+    connection.execute("select pg_advisory_xact_lock(hashtextextended(%s,0))", (DEMO_KEY,))
+    validate_demo_database(connection)
+    connection.execute("select set_config('appsell.demo_reset_key',%s,true)", (DEMO_KEY,))
+    version = connection.execute("select version_num from alembic_version").fetchone()
+    if version != ("0006_demo_learning",):
+        raise RuntimeError("database must be migrated to 0006_demo_learning")
+
+    for identity, identity_uuid in ((admin, admin_id), (buyer, buyer_id)):
+        connection.execute(
+            """
+            insert into identity_user(
+              id,identity_issuer,identity_sub,email_normalized,email_verified
+            ) values(%s,%s,%s,%s,true)
+            on conflict(identity_issuer,identity_sub) do update set
+              email_normalized=excluded.email_normalized,email_verified=true,
+              updated_at=clock_timestamp()
+            where identity_user.id=excluded.id
+            """,
+            (identity_uuid, issuer, identity["subject"], identity["email"]),
+        )
+        row = connection.execute(
+            "select id,email_normalized,email_verified from identity_user "
+            "where identity_issuer=%s and identity_sub=%s",
+            (issuer, identity["subject"]),
+        ).fetchone()
+        if row != (identity_uuid, identity["email"], True):
+            raise RuntimeError("demo identity conflicts with existing identity")
+
+    connection.execute(
+        """
+        insert into seller_organization(id,slug,display_name,status)
+        values(%s,%s,%s,'active') on conflict(id) do update set
+          slug=excluded.slug,display_name=excluded.display_name,status='active',
+          updated_at=clock_timestamp()
+        """,
+        (seller_id, seller["slug"], seller["display_name"]),
+    )
+    connection.execute(
+        "delete from seller_membership where seller_organization_id=%s", (seller_id,)
+    )
+    connection.execute(
+        """
+        insert into seller_membership(seller_organization_id,identity_user_id,role,status)
+        values(%s,%s,'seller_owner','active')
+        on conflict(seller_organization_id,identity_user_id) do update set
+          role='seller_owner',status='active',updated_at=clock_timestamp()
+        """,
+        (seller_id, admin_id),
+    )
+
+    # The demo tenant is disposable. Clear its complete mutable graph so a
+    # previous presentation cannot leak extra products, courses or buyers.
+    connection.execute(
+        "delete from app_private.demo_tenant_registry where seller_organization_id=%s",
+        (seller_id,),
+    )
+    connection.execute(
+        "delete from app_private.curriculum_mutation_request where seller_organization_id=%s",
+        (seller_id,),
+    )
+    connection.execute(
+        "delete from app_private.catalog_mutation_request where seller_organization_id=%s",
+        (seller_id,),
+    )
+    connection.execute(
+        "delete from app_private.product_draft_request where seller_organization_id=%s",
+        (seller_id,),
+    )
+    connection.execute("delete from learning_asset where seller_organization_id=%s", (seller_id,))
+    connection.execute(
+        "delete from buyer_entitlement where seller_organization_id=%s", (seller_id,)
+    )
+    connection.execute("delete from lesson where seller_organization_id=%s", (seller_id,))
+    connection.execute("delete from course_module where seller_organization_id=%s", (seller_id,))
+    connection.execute(
+        "update catalog_product set status='draft',published_snapshot_id=null "
+        "where seller_organization_id=%s",
+        (seller_id,),
+    )
+    connection.execute("delete from publication where seller_organization_id=%s", (seller_id,))
+    connection.execute("delete from offer where seller_organization_id=%s", (seller_id,))
+    connection.execute("delete from product_course where seller_organization_id=%s", (seller_id,))
+    connection.execute("delete from course where seller_organization_id=%s", (seller_id,))
+    connection.execute("delete from catalog_product where seller_organization_id=%s", (seller_id,))
+    connection.execute(
+        """
+        insert into seller_membership(seller_organization_id,identity_user_id,role,status)
+        select %s,grant_row.identity_user_id,'seller_admin','active'
+        from platform_grant grant_row
+        where grant_row.role='platform_superadmin' and grant_row.status='active'
+          and grant_row.identity_user_id<>%s
+        on conflict(seller_organization_id,identity_user_id) do update set
+          role='seller_admin',status='active',updated_at=clock_timestamp()
+        """,
+        (seller_id, admin_id),
+    )
+
+    connection.execute(
+        """
+        insert into catalog_product(
+          seller_organization_id,id,slug,title,description,status,version
+        ) values(%s,%s,%s,%s,%s,'draft',1)
+        on conflict(seller_organization_id,id) do update set
+          slug=excluded.slug,title=excluded.title,description=excluded.description,
+          status=case when catalog_product.published_snapshot_id is null then 'draft'
+            else catalog_product.status end,updated_at=clock_timestamp()
+        """,
+        (seller_id, product_id, product["slug"], product["title"], product["description"]),
+    )
+    connection.execute(
+        """
+        insert into course(
+          seller_organization_id,id,title,description,status,draft_version
+        ) values(%s,%s,%s,%s,'draft',1)
+        on conflict(seller_organization_id,id) do update set
+          title=excluded.title,description=excluded.description,status='draft',
+          updated_at=clock_timestamp()
+        """,
+        (seller_id, course_id, course["title"], course["description"]),
+    )
+    connection.execute(
+        """
+        insert into product_course(
+          seller_organization_id,catalog_product_id,course_id,position
+        ) values(%s,%s,%s,0)
+        on conflict(seller_organization_id,catalog_product_id,course_id)
+        do update set position=0
+        """,
+        (seller_id, product_id, course_id),
+    )
+    connection.execute(
+        """
+        insert into offer(
+          seller_organization_id,id,catalog_product_id,title,summary,status,version
+        ) values(%s,%s,%s,%s,%s,'draft',1)
+        on conflict(seller_organization_id,id) do update set
+          title=excluded.title,summary=excluded.summary,status='draft',
+          updated_at=clock_timestamp()
+        """,
+        (seller_id, offer_id, product_id, offer["title"], offer["summary"]),
+    )
+
+    connection.execute(
+        """
+        insert into course_module(
+          seller_organization_id,id,course_id,title,status,position
+        ) values(%s,%s,%s,%s,'active',0)
+        """,
+        (seller_id, module_id, course_id, module["title"]),
+    )
+    for lesson, lesson_id in zip(lessons, lesson_ids, strict=True):
+        connection.execute(
+            """
+            insert into lesson(
+              seller_organization_id,id,course_id,module_id,title,body_text,status,position
+            ) values(%s,%s,%s,%s,%s,%s,'active',%s)
+            """,
+            (
+                seller_id,
+                lesson_id,
+                course_id,
+                module_id,
+                lesson["title"],
+                lesson["summary"],
+                lesson["position"],
+            ),
+        )
+        connection.execute(
+            """
+            insert into learning_asset(
+              seller_organization_id,id,catalog_product_id,course_id,module_id,
+              lesson_id,seed_key,file_name,title,media_type,byte_size,sha256,
+              position,status
+            ) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,'application/pdf',%s,%s,%s,'active')
+            """,
+            (
+                seller_id,
+                UUID(lesson["asset_id"]),
+                product_id,
+                course_id,
+                module_id,
+                lesson_id,
+                lesson["slug"],
+                f"{lesson['slug']}.pdf",
+                lesson["title"],
+                lesson["bytes"],
+                lesson["sha256"],
+                lesson["position"],
+            ),
+        )
+
+    snapshot = snapshot_for(manifest)
+    connection.execute(
+        """
+        with payload as (select %s::jsonb as snapshot)
+        insert into publication(
+          seller_organization_id,id,catalog_product_id,version,schema_version,
+          source_sha256,snapshot,actor_identity_user_id
+        ) select %s,%s,%s,1,2,
+          encode(digest(convert_to(snapshot::text,'UTF8'),'sha256'),'hex'),
+          snapshot,%s from payload
+        on conflict(seller_organization_id,id) do nothing
+        """,
+        (Jsonb(snapshot), seller_id, publication_id, product_id, admin_id),
+    )
+    baseline = connection.execute(
+        "select snapshot from publication where seller_organization_id=%s and id=%s",
+        (seller_id, publication_id),
+    ).fetchone()
+    if baseline != (snapshot,):
+        raise RuntimeError("immutable baseline publication differs from manifest")
+    connection.execute(
+        """
+        update catalog_product set status='published',published_snapshot_id=%s,
+          slug=%s,title=%s,description=%s,updated_at=clock_timestamp()
+        where seller_organization_id=%s and id=%s
+        """,
+        (
+            publication_id,
+            product["slug"],
+            product["title"],
+            product["description"],
+            seller_id,
+            product_id,
+        ),
+    )
+    connection.execute(
+        "update course set status='published',updated_at=clock_timestamp() "
+        "where seller_organization_id=%s and id=%s",
+        (seller_id, course_id),
+    )
+    connection.execute(
+        """
+        insert into buyer_entitlement(
+          seller_organization_id,id,buyer_identity_user_id,catalog_product_id,
+          reference_key,source,status,progress_percent
+        ) values(%s,%s,%s,%s,'demo-user-codex-v1','demo_seed','active',0)
+        on conflict(seller_organization_id,buyer_identity_user_id,catalog_product_id)
+        do update set status='active',progress_percent=0,expires_at=null,
+          updated_at=clock_timestamp()
+        """,
+        (seller_id, entitlement_id, buyer_id, product_id),
+    )
+    connection.execute(
+        """
+        insert into app_private.demo_tenant_registry(
+          seed_key,seed_version,manifest_sha256,identity_issuer,
+          admin_identity_user_id,buyer_identity_user_id,seller_organization_id,
+          catalog_product_id,course_id,offer_id,baseline_publication_id
+        ) values(%s,1,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        on conflict(seed_key) do update set
+          seed_version=excluded.seed_version,manifest_sha256=excluded.manifest_sha256,
+          identity_issuer=excluded.identity_issuer,
+          admin_identity_user_id=excluded.admin_identity_user_id,
+          buyer_identity_user_id=excluded.buyer_identity_user_id,
+          seller_organization_id=excluded.seller_organization_id,
+          catalog_product_id=excluded.catalog_product_id,course_id=excluded.course_id,
+          offer_id=excluded.offer_id,
+          baseline_publication_id=excluded.baseline_publication_id,
+          reset_at=clock_timestamp()
+        """,
+        (
+            DEMO_KEY,
+            manifest_sha,
+            issuer,
+            admin_id,
+            buyer_id,
+            seller_id,
+            product_id,
+            course_id,
+            offer_id,
+            publication_id,
+        ),
+    )
+    connection.execute(
+        """
+        insert into audit_event(
+          seller_organization_id,actor_identity_user_id,action,target_type,
+          target_id,result,request_id,metadata
+        ) values(%s,%s,'demo.tenant_reset','seller_organization',%s,
+          'succeeded',%s,jsonb_build_object(
+            'seed_key',%s::text,'manifest_sha256',%s::text,
+            'buyer_identity_user_id',%s::uuid
+          ))
+        """,
+        (seller_id, admin_id, seller_id, uuid4(), DEMO_KEY, manifest_sha, buyer_id),
+    )
+
+
+def main() -> None:
+    args = parse_args()
+    issuer, database_url = require_environment(args)
+    manifest, manifest_sha = load_manifest()
+    if args.dry_run:
+        print(
+            json.dumps(
+                {
+                    "status": "valid",
+                    "seed_key": DEMO_KEY,
+                    "manifest_sha256": manifest_sha,
+                    "seller_id": manifest["seller"]["id"],
+                    "admin_email": manifest["personas"]["admin"]["email"],
+                    "buyer_email": manifest["personas"]["buyer"]["email"],
+                    "lessons": len(manifest["lessons"]),
+                }
+            )
+        )
+        return
+    with psycopg.connect(database_url) as connection:
+        reset_demo(connection, manifest, manifest_sha, issuer)
+        connection.commit()
+    print(json.dumps({"status": "reset", "seed_key": DEMO_KEY, "manifest_sha256": manifest_sha}))
+
+
+if __name__ == "__main__":
+    main()

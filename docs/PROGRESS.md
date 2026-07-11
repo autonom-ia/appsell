@@ -84,8 +84,9 @@ Fase 4C — currículo multitenant e snapshot v2 em Local/CI.
 - gates locais: 69 web, 94 PG/API, BFF vertical com duas instâncias, 26
   Playwright + 4 skips, build, production fail-closed e audits verdes;
 - PR #35 aberta; aguardando App CI e review do SHA remoto; nenhum deploy;
-- Issue #33 registrada no Project para tenant demo resetável, admin/comprador,
-  superadmin auditado e curso Codex com cinco PDFs verificados;
+- Issue #33 implementada localmente em branch empilhada: tenant demo resetável,
+  admin/comprador `@autonomia.site`, entitlement buyer, biblioteca persistente e
+  curso Codex com cinco PDFs protegidos e verificados;
 - épica #8 permanece em desenvolvimento;
 - Identity real #13 permanece bloqueado por ausência de dev/hml e P0 upstream.
 

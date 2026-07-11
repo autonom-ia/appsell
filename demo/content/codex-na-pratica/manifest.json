@@ -1,0 +1,107 @@
+{
+  "seed_key": "autonomia-demo-v1",
+  "version": 1,
+  "personas": {
+    "admin": {
+      "subject": "demo-admin-v1",
+      "email": "admin.demo@autonomia.site"
+    },
+    "buyer": {
+      "subject": "demo-user-v1",
+      "email": "user.demo@autonomia.site"
+    }
+  },
+  "seller": {
+    "id": "90718777-93de-5e7a-aaa4-45b25051582c",
+    "slug": "autonomia-demo",
+    "display_name": "Autonom.ia Demo"
+  },
+  "product": {
+    "id": "4fca40d6-6991-559a-9625-be6e245d8b4f",
+    "slug": "codex-na-pratica",
+    "title": "Codex na prática",
+    "description": "Um curso direto para trabalhar com Codex com contexto, segurança e evidência."
+  },
+  "course": {
+    "id": "572e994a-6f43-52fa-afa5-eada9a3902fe",
+    "title": "Codex na prática",
+    "description": "Cinco aulas para operar Codex como parceiro de engenharia."
+  },
+  "module": {
+    "id": "fc1fa7f0-4651-52f7-8034-600c1a85d44f",
+    "title": "Fundamentos"
+  },
+  "offer": {
+    "id": "655555a7-1111-54d5-adfa-120b488951e5",
+    "title": "Acesso demonstrativo",
+    "summary": "Acesso gratuito e não comercial à tenant de demonstração."
+  },
+  "publication": {
+    "id": "61831a73-f4ce-5b05-be58-f61890d3cc8a"
+  },
+  "entitlement": {
+    "id": "bee105e2-7809-5bf5-874a-d6332dc4a4ef"
+  },
+  "lessons": [
+    {
+      "seller_id": "90718777-93de-5e7a-aaa4-45b25051582c",
+      "position": 0,
+      "slug": "01-o-que-e-codex",
+      "title": "O que é Codex e quando usar",
+      "summary": "Entenda o papel do Codex como parceiro de engenharia e operador de software.",
+      "href": "/api/library/assets/01-o-que-e-codex",
+      "bytes": 3181,
+      "sha256": "835910e25afe0285dc4bf02230ee769c9e108a6011611b9520662cebb3dfc651",
+      "lesson_id": "a39181dd-c70c-57b3-935d-d97fd834d709",
+      "asset_id": "a6f01626-8b83-55e5-becc-fbab785f1493"
+    },
+    {
+      "seller_id": "90718777-93de-5e7a-aaa4-45b25051582c",
+      "position": 1,
+      "slug": "02-contexto-repo-objetivo",
+      "title": "Como preparar contexto, repo e objetivo",
+      "summary": "Dê ao agente informação suficiente para agir sem inventar fatos.",
+      "href": "/api/library/assets/02-contexto-repo-objetivo",
+      "bytes": 3133,
+      "sha256": "fa406ffe19a7e2cbef3aa216c493e8447c3a1449816cf4613178dfd2ea4a4a1b",
+      "lesson_id": "c27222bd-9a83-5317-a870-f7076bdc8fc5",
+      "asset_id": "53c0e256-4b88-568b-ac98-4e8455ebc659"
+    },
+    {
+      "seller_id": "90718777-93de-5e7a-aaa4-45b25051582c",
+      "position": 2,
+      "slug": "03-implementar-com-seguranca",
+      "title": "Como pedir implementação com segurança",
+      "summary": "Transforme intenção em mudanças pequenas, revisáveis e reversíveis.",
+      "href": "/api/library/assets/03-implementar-com-seguranca",
+      "bytes": 3165,
+      "sha256": "0acf0ad5a533d216a2ee96792a8e0446e88b57c239af6b9f5316f25b8905a00b",
+      "lesson_id": "52a6eb00-d861-551e-a009-688e5a08bf4f",
+      "asset_id": "a8b3d580-3da0-543d-9cbc-d4471f5f6745"
+    },
+    {
+      "seller_id": "90718777-93de-5e7a-aaa4-45b25051582c",
+      "position": 3,
+      "slug": "04-revisar-testes-pr",
+      "title": "Como revisar testes, PR e evidências",
+      "summary": "Avalie o que foi provado, e não apenas o que foi declarado.",
+      "href": "/api/library/assets/04-revisar-testes-pr",
+      "bytes": 3092,
+      "sha256": "16e4ef0d61a6a02f6561c41eaf4085e78aec486cfffd280ac9d17b34b271cc0a",
+      "lesson_id": "5ecf3b9a-6a5e-5734-8038-2620946f4ce0",
+      "asset_id": "1c63d96f-cc32-5932-9a2c-51a6ba2d5a29"
+    },
+    {
+      "seller_id": "90718777-93de-5e7a-aaa4-45b25051582c",
+      "position": 4,
+      "slug": "05-deploy-e-rollback",
+      "title": "Como operar deploy e rollback",
+      "summary": "Promova mudanças com gates claros e retorno seguro.",
+      "href": "/api/library/assets/05-deploy-e-rollback",
+      "bytes": 3051,
+      "sha256": "897ac7362560610cb1c33a595edf905fb8274899e09b53b274d602e32007227e",
+      "lesson_id": "56b743f6-398b-515d-b1e0-2a5beb93f449",
+      "asset_id": "fd2be673-d5bc-56c3-88a1-6966fc069d35"
+    }
+  ]
+}

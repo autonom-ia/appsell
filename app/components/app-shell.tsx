@@ -6,9 +6,11 @@ import { useEffect, useRef, useState } from "react";
 import type { FormEvent, MouseEvent, ReactNode } from "react";
 import { AccessibleDialog } from "./accessible-dialog";
 import { allowUnsavedNavigation, DIRTY_HISTORY_BLOCKED_EVENT, DIRTY_HISTORY_CONTINUE_EVENT, DIRTY_NAVIGATION_REQUEST_EVENT, DIRTY_STATE_EVENT } from "./use-unsaved-changes";
+import type { DemoProfile } from "@/lib/demo-config";
 
 interface AppShellProps {
   children: ReactNode;
+  demoProfile?: DemoProfile | null;
 }
 
 const navigation = [
@@ -41,7 +43,7 @@ function LogoutForm({ mobile = false, onAttempt }: { mobile?: boolean; onAttempt
   return <form action="/auth/logout" method="post" onSubmit={attachCsrf}><input type="hidden" name="_csrf" defaultValue=""/><button className={mobile ? "mobile-logout" : "logout-button"} type="submit" aria-label={mobile ? "Sair com segurança" : undefined}>{mobile ? "Sair" : "Sair com segurança"}</button><noscript><small>Ative JavaScript para assinar o logout com segurança.</small></noscript></form>;
 }
 
-export function AppShell({ children }: AppShellProps) {
+export function AppShell({ children, demoProfile }: AppShellProps) {
   const pathname = usePathname();
   const router = useRouter();
   const [pageDirty, setPageDirty] = useState(false);
@@ -49,6 +51,10 @@ export function AppShell({ children }: AppShellProps) {
   const cancelDialogButton = useRef<HTMLButtonElement>(null);
   const dirtyDialogTrigger = useRef<HTMLElement | null>(null);
   const allowNextLogout = useRef(false);
+  const visibleNavigation = demoProfile?.persona === "buyer"
+    ? navigation.filter((item) => item.href === "/library")
+    : navigation;
+  const home = demoProfile?.home ?? "/dashboard";
 
   useEffect(() => {
     const updateDirtyState = (event: Event) => {
@@ -121,32 +127,36 @@ export function AppShell({ children }: AppShellProps) {
     <div className="app-shell">
       <a className="skip-link" href="#conteudo">Pular para o conteúdo</a>
       <aside className="app-sidebar" aria-label="Navegação principal">
-        <Link className="brand" href="/dashboard" aria-label="Autonom.ia Sell — início" onClick={(event) => guardLink(event, "/dashboard")}>
+        <Link className="brand" href={home} aria-label="Autonom.ia Sell — início" onClick={(event) => guardLink(event, home)}>
           <span className="brand-mark" aria-hidden="true">a</span>
           <span><strong>sell<span>.</span></strong><small>by Autonom.ia</small></span>
         </Link>
         <nav>
-          <p className="nav-eyebrow">Seu negócio</p>
-          {navigation.map((item) => {
+          <p className="nav-eyebrow">{demoProfile?.persona === "buyer" ? "Área do aluno" : "Seu negócio"}</p>
+          {visibleNavigation.map((item) => {
             const active = pathname === item.href;
             return <Link key={item.href} href={item.href} onClick={(event) => guardLink(event, item.href)} className={active ? "nav-link active" : "nav-link"} aria-current={active ? "page" : undefined}><NavIcon name={item.mark}/><span>{item.label}</span></Link>;
           })}
         </nav>
         <div className="sidebar-footer">
           <span className="avatar" aria-hidden="true">AU</span>
-          <span><strong>Ambiente demo</strong><small>Sessão protegida</small></span>
+          <span><strong>{demoProfile ? `${demoProfile.label} demo` : "Ambiente demo"}</strong><small>{demoProfile?.email ?? "Sessão protegida"}</small></span>
         </div>
         <LogoutForm onAttempt={guardLogout}/>
       </aside>
       <div className="app-content">
         <header className="mobile-topbar">
-          <Link className="mobile-brand" href="/dashboard" onClick={(event) => guardLink(event, "/dashboard")}><span className="brand-mark" aria-hidden="true">a</span><strong>sell<span>.</span></strong></Link>
+          <Link className="mobile-brand" href={home} onClick={(event) => guardLink(event, home)}><span className="brand-mark" aria-hidden="true">a</span><strong>sell<span>.</span></strong></Link>
           <LogoutForm mobile onAttempt={guardLogout}/>
         </header>
-        <div className="environment-banner" role="status"><strong>Ambiente local, não é grant.</strong> Draft e publicação local podem persistir; cobrança, checkout, Identity e integrações reais continuam desativados.</div>
+        <div className="environment-banner" role="note"><strong>{demoProfile ? `DEMO · ${demoProfile.label} · ${demoProfile.email} · Autonom.ia Demo` : "Ambiente local, não é grant."}</strong> Cobrança, checkout e Identity real continuam desativados.</div>
         <main id="conteudo" className="app-main" tabIndex={-1}>{children}</main>
-        <nav className="bottom-nav" aria-label="Navegação móvel">
-          {navigation.map((item) => {
+        <nav
+          className="bottom-nav"
+          aria-label="Navegação móvel"
+          style={{ gridTemplateColumns: `repeat(${visibleNavigation.length}, minmax(0, 1fr))` }}
+        >
+          {visibleNavigation.map((item) => {
             const active = pathname === item.href;
             return <Link key={item.href} href={item.href} onClick={(event) => guardLink(event, item.href)} className={active ? "active" : ""} aria-current={active ? "page" : undefined}><NavIcon name={item.mark}/><span>{item.label}</span></Link>;
           })}
