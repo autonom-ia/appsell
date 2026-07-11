@@ -149,7 +149,8 @@ a:focus-visible, button:focus-visible { outline: 3px solid rgba(59,130,246,.55);
 .seller-ready ul { margin: 0; padding: 0; display: grid; gap: 8px; list-style: none; }
 .seller-ready li { min-width: 0; padding: 12px 14px; display: grid; gap: 4px; border: 1px solid rgba(5,150,105,.18); border-radius: 12px; background: rgba(255,255,255,.7); }
 .seller-ready li strong, .seller-ready li span { overflow-wrap: anywhere; }
-.catalog-workspace { display: grid; gap: 24px; }
+.catalog-workspace { width: 100%; min-width: 0; display: grid; grid-template-columns: minmax(0,1fr); gap: 24px; }
+.catalog-workspace > *, .catalog-workspace-heading > div, .catalog-workspace-grid > * { min-width: 0; max-width: 100%; }
 .catalog-workspace-heading { display: flex; flex-direction: column; align-items: flex-start; gap: 16px; }
 .catalog-workspace-heading h1 { margin-bottom: 10px; font-size: clamp(2.35rem,10vw,4.25rem); }
 .catalog-workspace-heading > div > p:last-child { max-width: 680px; margin: 0; color: var(--text); line-height: 1.6; }
@@ -177,7 +178,9 @@ a:focus-visible, button:focus-visible { outline: 3px solid rgba(59,130,246,.55);
 .form-feedback p { margin: 0; font-size: .76rem; line-height: 1.5; }
 .form-error { color: #b42318; font-weight: 700; }
 .form-note { color: var(--soft); }
-.draft-list-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.draft-list-heading { min-width: 0; display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 16px; margin-bottom: 16px; }
+.draft-list-heading > div { min-width: 0; }
+.draft-list-heading h2 { overflow-wrap: anywhere; }
 .draft-list-heading > strong { display: grid; width: 42px; height: 42px; place-items: center; flex: 0 0 auto; border-radius: 14px; background: rgba(59,130,246,.1); color: var(--blue); font-variant-numeric: tabular-nums; }
 .draft-card { min-width: 0; padding: 17px; border: 1px solid var(--border); border-radius: 16px; background: linear-gradient(145deg,#fff,#f8fbff); }
 .draft-card + .draft-card { margin-top: 12px; }
