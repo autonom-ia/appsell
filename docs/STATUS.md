@@ -6,26 +6,25 @@ Atualizado em pontos de marco (PR aberta, deploy, incidente). Diferente de MEMOR
 
 | Indicador | Status | Última verificação |
 |-----------|:------:|--------------------|
-| Build | 🟢 branch #22 local verde | 2026-07-10 |
-| Testes | 🟢 55 unitários + 17 browser + 1 production local | 2026-07-10 |
-| CI | 🟡 branch #22 ainda não publicada | 2026-07-10 |
+| Build | 🟢 web + API container local verdes | 2026-07-11 |
+| Testes | 🟢 55 web + 32 API/PG + 17 browser + 1 production | 2026-07-11 |
+| CI | 🟡 branch #24 ainda não publicada | 2026-07-11 |
 | Deploy produção | 🟡 não configurado/não executado | 2026-07-10 |
 | Harness instalado | 2.0.2 | 2026-07-10 |
-| Harness drift | OK | 2026-07-10 |
+| Harness drift | ⚠️ 2.0.2 → 2.1.2 | 2026-07-11 |
 
 ## Estado atual
 
-Foundation local em Next.js com sessão opaca, Redis isolado, vault cifrado e
-refresh distribuído foi mergeada até a PR #21. A Issue #22 implementa o
-protótipo Studio mobile-first: landing, shell persistente, catálogo do produtor
-e biblioteca multi-seller demonstrativa. O gate das rotas protegidas ocorre no
-`proxy.ts`; a página não recebe o cookie HttpOnly no payload RSC. Todo conteúdo
-está rotulado como prévia local, sem grant, persistência, billing ou publicação.
+O protótipo Studio mobile-first foi mergeado pela PR #23. A Issue #24 implementa
+a primeira fundação persistente: FastAPI, PostgreSQL 16, Alembic forward-only,
+roles owner/migrator/runtime, RLS forçado, contexto transacional assinado,
+auditoria append-only e bootstrap one-shot do superadmin com atestação separada.
+Este marco é Local/CI; não é o Identity real e não concede conta de produção.
 
 ## Última mudança relevante
 
-2026-07-10 — branch `feat/22-studio-mobile-shell`: slice Fase 2 local validado;
-PR ainda não aberta.
+2026-07-11 — branch `feat/24-domain-foundation`: migration limpa, 25 testes
+PostgreSQL adversariais, 7 testes API/config, container non-root e readiness verdes.
 
 ## O que está funcionando
 
@@ -47,6 +46,13 @@ PR ainda não aberta.
   draft nem outro seller.
 - Mobile/desktop: 360, 390, 768, 1024 e 1440 sem overflow; alvos >= 44 px;
   Chromium e WebKit, reduced motion, deep link e reload verdes.
+- PostgreSQL 16 isolado com PUBLIC CONNECT revogado, runtime sem ownership,
+  `SUPERUSER` ou `BYPASSRLS`, RLS e grants mínimos verificados diretamente.
+- Bootstrap local one-shot: issuer/audience/client fixados, claims vinculados a
+  atestação HMAC exclusiva, e-mail verificado exato, MFA/passkey, advisory lock,
+  um vencedor entre 20 concorrentes, audit e auto-disable.
+- CI Python com lock, Ruff, mypy strict, pip-audit, migration limpa, testes PG,
+  build do container por digest e healthcheck real.
 
 ## O que está quebrado / em degradação
 
@@ -63,9 +69,10 @@ PR ainda não aberta.
 
 ## Próxima ação
 
-Abrir a PR da Issue #22, executar CI remoto e manter merge dependente da
-aprovação do Rodrigo. Em PR separada, atualizar Harness 2.0.2 para 2.1.2. A
-integração Identity real (#13), KMS real (#19) e produção continuam bloqueadas.
+Concluir reviews críticos da fundação #24, abrir PR parcial vinculada à Issue,
+executar CI remoto e atualizar o Project. Depois implementar ponte BFF→API,
+onboarding seller e jornadas persistentes. Identity real (#13), KMS (#19) e
+produção continuam bloqueados até ambientes/contratos reais.
 
 ## Links
 

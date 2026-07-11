@@ -34,22 +34,22 @@ Project status:
 
 <!-- Substituir abaixo a cada nova sessão. Sessões anteriores vão para PROGRESS.md. -->
 
-## Sessão: 2026-07-10 22:03 — shell Studio mobile-first e jornadas seller/buyer
-Issue: #22
-Branch: feat/22-studio-mobile-shell
+## Sessão: 2026-07-11 07:50 — foundation PostgreSQL, tenancy e bootstrap one-shot
+Issue: #24
+Branch: feat/24-domain-foundation
 PR: não aberta
 Estado: em_progresso
 Modelo: strong + human
-Arquivos alterados: app público/protegido, proxy, componentes, design system, projeções demo, testes, STATUS/PROGRESS/DECISIONS/audit
-Comandos executados: validate-harness/doctor; pnpm lint/typecheck/test/build/test:e2e/test:e2e:production; Playwright CLI/screenshot; reviews críticos
-Validação: local verde — Harness completo com drift 2.0.2→2.1.2; lint/typecheck/build; 55 unitários; 17 browser + 1 skip de matriz; 1 production local; três reviews P0-P3=0
-Bloqueios: CI remoto e aprovação de merge; Identity real #13, KMS #19 e produção continuam bloqueados
-Próxima ação: commit/push, abrir PR draft da #22, atualizar Project e aguardar CI
+Arquivos alterados: apps/api, migration Alembic, compose/Postgres init, CI, env/README, scripts e docs de status/audit
+Comandos executados: Harness doctor; uv lock/sync/ruff/mypy/pytest/pip-audit; Docker compose migration/PG/API; pnpm lint/typecheck/test/audit/build/E2E; reviews críticos
+Validação: local verde — 7 API/config, 25 PostgreSQL/RLS/bootstrap, 55 web, 17 browser, 1 production; container non-root healthy; cleanup sem resíduos
+Bloqueios: CI remoto; Identity real #13, KMS #19 e produção continuam bloqueados
+Próxima ação: abrir PR parcial da #24, atualizar Project e executar CI remoto
 Project status:
   - Projeto: AppSell
-  - Status: Em review
+  - Status: Em desenvolvimento
   - Tipo: Feature
   - Prioridade: P1
   - Risco: Médio
   - Ambiente: Dev
-  - Próxima ação: abrir PR draft e executar CI remoto
+  - Próxima ação: review final, PR parcial e CI remoto

@@ -2,7 +2,7 @@
 
 ## Fase atual
 
-Fase 2 — design system e protótipo Studio mobile-first.
+Fase 3 — foundation executável Local/CI.
 
 ## Concluído
 
@@ -44,13 +44,21 @@ Fase 2 — design system e protótipo Studio mobile-first.
 - matriz real 360/390/768/1024/1440, 44 px, WebKit/Chromium, reload,
   teclado e reduced motion;
 - 55 unitários, 17 E2E e 1 teste production local verdes.
+- PR #23 do shell Studio mobile-first mergeada em `main`;
+- scaffold FastAPI/Python 3.12 com container non-root por imagens digest-pinned;
+- PostgreSQL 16, Alembic forward-only e roles owner/migrator/runtime separadas;
+- identidade global, grants, seller organization/membership, bootstrap e audit;
+- contexto HMAC transacional revalidado pelas policies e RLS forçado;
+- bootstrap one-shot com atestação de claims em chave separada, trust policy,
+  janela disabled-by-default, auto-disable e 20 concorrentes;
+- 7 testes API/config + 25 testes PostgreSQL reais, pip-audit sem vulnerabilidade;
+- CI Python/PG/container acrescentado ao App CI, com actions fixadas por SHA.
 
 ## Em andamento
 
-- Issue #22 implementada e validada localmente;
-- reviews independentes tenancy/AppSec, mobile UX/a11y e Next/testes verdes,
-  P0-P3=0;
-- PR da #22 ainda não aberta; CI remoto pendente;
+- Issue #24 em implementação; fundação DB/API/tenancy/bootstrap validada localmente;
+- reviews independentes tenancy, testes e API/CI em rodada final;
+- PR parcial da #24 ainda não aberta; CI remoto pendente;
 - épica #8 permanece em desenvolvimento;
 - Identity real #13 permanece bloqueado por ausência de dev/hml e P0 upstream.
 
@@ -59,8 +67,9 @@ Fase 2 — design system e protótipo Studio mobile-first.
 - spike com Autonom.ia Identity real (#13);
 - refresh real contra Identity (#18), bloqueado pelo contrato/ambiente da #13;
 - KMS real, vault durável/HA e restore (#19), bloqueado;
-- CSRF generalizado para todas as futuras mutações;
-- RBAC e isolamento multi-tenant.
+- ponte BFF→API, endpoint bootstrap e CSRF/origin;
+- onboarding seller owner e repositories tipados;
+- RLS buyer/entitlements e domínio de produto/curso.
 
 ## Falhas encontradas e corrigidas
 
@@ -81,5 +90,6 @@ Fase 2 — design system e protótipo Studio mobile-first.
 
 ## Próximo passo recomendado
 
-Abrir PR da #22, rodar CI remoto e aguardar aprovação de merge. Não integrar
-Identity real nem iniciar KMS real #19; não reutilizar preview/mock em produção.
+Após reviews finais verdes, abrir PR parcial da #24, rodar CI remoto e atualizar
+Project. Não declarar acesso real de `comercial@autonomia.site`: isso depende do
+Identity #13 e de ambiente isolado com token/JWKS/MFA reais.

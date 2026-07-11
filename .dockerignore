@@ -1,0 +1,11 @@
+.git
+.github
+.next
+.playwright-cli
+.ruff_cache
+.mypy_cache
+node_modules
+test-results
+apps/api/.venv
+apps/api/tests
+docs
