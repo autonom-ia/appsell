@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, MouseEvent, ReactNode } from "react";
 import { AccessibleDialog } from "./accessible-dialog";
 import { allowUnsavedNavigation, DIRTY_HISTORY_BLOCKED_EVENT, DIRTY_HISTORY_CONTINUE_EVENT, DIRTY_NAVIGATION_REQUEST_EVENT, DIRTY_STATE_EVENT } from "./use-unsaved-changes";
@@ -35,6 +35,7 @@ const navigation = [
   { href: "/products", label: "Produtos", mark: "products" },
   { href: "/library", label: "Minha biblioteca", mark: "library" },
 ] as const;
+const recoveryNavigation = [{ href: "/", label: "Entrada", mark: "home" }] as const;
 
 function NavIcon({ name }: { name: (typeof navigation)[number]["mark"] }) {
   const paths = {
@@ -113,26 +114,46 @@ export function AppShell({ children }: AppShellProps) {
   const dirtyDialogTrigger = useRef<HTMLElement | null>(null);
   const allowNextLogout = useRef(false);
   const demoProfile = profileState.status === "ready" ? profileState.profile : undefined;
-  const visibleNavigation = profileState.status !== "ready"
-    ? []
+  const visibleNavigation = profileState.status === "failed"
+    ? recoveryNavigation
+    : profileState.status !== "ready"
+      ? []
     : demoProfile?.persona === "buyer"
       ? navigation.filter((item) => item.href === "/library")
       : navigation;
-  const home = profileState.status === "ready" ? demoProfile?.home ?? "/dashboard" : pathname;
+  const home = profileState.status === "failed" ? "/" : profileState.status === "ready" ? demoProfile?.home ?? "/dashboard" : pathname;
+
+  const loadProfile = useCallback(async (signal?: AbortSignal) => {
+    const controller = new AbortController();
+    const abortFromParent = () => controller.abort();
+    signal?.addEventListener("abort", abortFromParent, { once: true });
+    const timeout = window.setTimeout(() => controller.abort(), 8_000);
+    try {
+      const response = await fetch("/api/session", { cache: "no-store", signal: controller.signal });
+      if (!response.ok) throw new Error("session_profile_unavailable");
+      const payload: unknown = await response.json();
+      if (!controller.signal.aborted) setProfileState(parseProfileState(payload));
+    } catch {
+      if (!signal?.aborted) setProfileState({ status: "failed" });
+    } finally {
+      window.clearTimeout(timeout);
+      signal?.removeEventListener("abort", abortFromParent);
+    }
+  }, []);
+
+  function retryProfile() {
+    setProfileState({ status: "loading" });
+    void loadProfile();
+  }
 
   useEffect(() => {
     const controller = new AbortController();
-    void fetch("/api/session", { cache: "no-store", signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) throw new Error("session_profile_unavailable");
-        return response.json() as Promise<unknown>;
-      })
-      .then((payload) => setProfileState(parseProfileState(payload)))
-      .catch(() => {
-        if (!controller.signal.aborted) setProfileState({ status: "failed" });
-      });
-    return () => controller.abort();
-  }, []);
+    const start = window.setTimeout(() => void loadProfile(controller.signal), 0);
+    return () => {
+      window.clearTimeout(start);
+      controller.abort();
+    };
+  }, [loadProfile]);
 
   useEffect(() => {
     const updateDirtyState = (event: Event) => {
@@ -231,6 +252,7 @@ export function AppShell({ children }: AppShellProps) {
             const active = pathname === item.href;
             return <Link key={item.href} href={item.href} onClick={(event) => guardLink(event, item.href)} className={active ? "nav-link active" : "nav-link"} aria-current={active ? "page" : undefined}><NavIcon name={item.mark}/><span>{item.label}</span></Link>;
           })}
+          {profileState.status === "failed" ? <div className="session-recovery" role="alert"><p>Não foi possível validar seu acesso.</p><button type="button" className="secondary-button" onClick={retryProfile}>Tentar novamente</button><Link href="/">Voltar para a entrada</Link></div> : null}
         </nav>
         <div className="sidebar-footer">
           <span className="avatar" aria-hidden="true">AU</span>
@@ -243,7 +265,8 @@ export function AppShell({ children }: AppShellProps) {
           <Link className="mobile-brand" href={home} onClick={(event) => guardLink(event, home)}><span className="brand-mark" aria-hidden="true">a</span><strong>sell<span>.</span></strong></Link>
           <LogoutForm mobile onAttempt={guardLogout}/>
         </header>
-        <div className="environment-banner" role="note"><strong>{demoProfile ? `DEMO · ${demoProfile.label} · ${demoProfile.email} · Autonom.ia Demo` : "Ambiente local, não é grant."}</strong> Cobrança, checkout e Identity real continuam desativados.</div>
+        <div className="environment-banner" role="note"><strong>{demoProfile ? `DEMO · ${demoProfile.label} · ${demoProfile.email} · Autonom.ia Demo` : "Ambiente local de demonstração."}</strong> Pagamentos, checkout e login comercial continuam desativados.</div>
+        {profileState.status === "failed" ? <div className="mobile-session-recovery" role="alert"><p>Não foi possível validar seu acesso.</p><button type="button" className="secondary-button" onClick={retryProfile}>Tentar novamente</button><Link href="/">Voltar para a entrada</Link></div> : null}
         <main id="conteudo" className="app-main" tabIndex={-1}>{children}</main>
         <nav
           className="bottom-nav"

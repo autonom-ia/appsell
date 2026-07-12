@@ -38,7 +38,7 @@ test("keeps the opaque session out of browser-readable surfaces", async ({ conte
   await page.goto("/");
   await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
   await expect(page).toHaveURL("/dashboard");
-  await expect(page.getByRole("heading", { name: "Bom dia, creator." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Seu negócio em um só lugar." })).toBeVisible();
 
   const sessionCookie = (await context.cookies()).find((cookie) => cookie.name === "appsell_session");
   expect(sessionCookie).toMatchObject({ httpOnly: true, sameSite: "Lax" });
@@ -85,7 +85,7 @@ test("keeps the opaque session out of browser-readable surfaces", async ({ conte
   }
 
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Bom dia, creator." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Seu negócio em um só lugar." })).toBeVisible();
   await Promise.all(bodyReads);
   expect(responseBodies.some((body) => containsRawOrBase64Encoded(body, rawSession))).toBe(false);
   expect(page.url()).not.toMatch(/[?&](code|state)=/);

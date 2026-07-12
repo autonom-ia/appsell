@@ -125,11 +125,16 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   const publishCancelButton = useRef<HTMLButtonElement>(null);
   const leaveCancelButton = useRef<HTMLButtonElement>(null);
   const publishTriggerButton = useRef<HTMLButtonElement>(null);
+  const publishStatus = useRef<HTMLDivElement>(null);
   const listLink = useRef<HTMLAnchorElement>(null);
   const dirty = !sameFields(fields, savedFields);
   const editorDirty = dirty || curriculumDirty;
 
   useUnsavedChanges(editorDirty);
+  useEffect(() => {
+    if (publishState !== "publishing") return;
+    requestAnimationFrame(() => publishStatus.current?.focus());
+  }, [publishState]);
   const handleCurriculumDirty = useCallback((nextDirty: boolean) => setCurriculumDirty(nextDirty), []);
   const handleCurriculumBusy = useCallback((nextBusy: boolean) => {
     setCurriculumBusy(nextBusy);
@@ -385,7 +390,6 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
 
   function closePublishDialog() {
     setPublishDialogOpen(false);
-    queueMicrotask(() => publishTriggerButton.current?.focus());
   }
 
   function closeLeaveDialog() {
@@ -407,7 +411,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       <header className="editor-header">
         <div className="editor-breadcrumb"><Link ref={listLink} href={`/products?seller=${encodeURIComponent(sellerId)}`} onClick={requestListNavigation}>Produtos</Link><span aria-hidden="true">/</span><span aria-current="page">{detail.title}</span></div>
         <div className="editor-title-row">
-          <div><p className="eyebrow">Tenant explícito · {shortId(sellerId)}</p><h1 id="product-editor-title">{detail.title}</h1><p>@{detail.slug} · curso {detail.course.title}</p></div>
+          <div><p className="eyebrow">Espaço selecionado · {shortId(sellerId)}</p><h1 id="product-editor-title">{detail.title}</h1><p>@{detail.slug} · curso {detail.course.title}</p></div>
           <span className={`status status-${detail.status}`}>{detail.status === "published" ? `Publicado${publicationVersion ? ` v${publicationVersion}` : ""}` : detail.status === "draft" ? "Rascunho privado" : detail.status === "unpublished" ? "Despublicado" : "Arquivado"}</span>
         </div>
         <div className={`save-indicator save-${saveState}`}>
@@ -429,7 +433,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
         {section === "produto" ? (
           <fieldset disabled={detail.status === "archived"}>
             <legend>Identidade do produto</legend>
-            <p className="section-intro">Edite o rascunho deste tenant. Uma publicação existente permanece estável até você publicar outra versão.</p>
+            <p className="section-intro">Edite o rascunho deste espaço. Uma publicação existente permanece estável até você publicar outra versão.</p>
             <EditorField label="Nome do produto" name="product_title" value={fields.product_title} onChange={(value) => updateField("product_title", value)} minLength={2} maxLength={160} required invalid={invalidField === "product_title"}/>
             <EditorField label="Endereço do produto" name="slug" value={fields.slug} onChange={(value) => updateField("slug", value)} minLength={3} maxLength={63} required invalid={invalidField === "slug"} pattern="[a-z0-9]+(?:-[a-z0-9]+)*" help="Somente letras minúsculas, números e hífens."/>
             <EditorField label="Descrição curta" name="product_description" value={fields.product_description} onChange={(value) => updateField("product_description", value)} maxLength={2000} multiline invalid={invalidField === "product_description"}/>
@@ -450,15 +454,16 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
 
         {section === "publicar" ? (
           <section className="publish-panel" aria-labelledby="publish-panel-title">
-            <p className="eyebrow">Validação server-side</p><h2 id="publish-panel-title">Preparar publicação</h2>
-            <p>A publicação cria um snapshot versionado com produto, oferta, módulos, aulas e PDFs já verificados. Cobrança e checkout continuam desativados.</p>
+            <p className="eyebrow">Validação de segurança</p><h2 id="publish-panel-title">Preparar publicação</h2>
+            <p>A publicação cria uma versão fixa com produto, oferta, módulos, aulas e PDFs já verificados. Cobrança e checkout continuam desativados.</p>
             {readiness ? (
               <ul className="readiness-list">{readiness.items.map((item, index) => <li key={item.key ?? `${item.label}-${index}`} className={item.ready ? "ready" : "blocked"}><span aria-hidden="true">{item.ready ? "✓" : "!"}</span><div><strong>{item.label}</strong>{item.detail ? <p>{item.detail}</p> : null}</div><span className="sr-only">{item.ready ? "Pronto" : "Pendente"}</span></li>)}</ul>
             ) : <p className="form-note" role="status">A API ainda não retornou a validação de publicação. Nada será publicado.</p>}
             {editorDirty ? <p className="form-note" role="status">Salve as alterações e aguarde os materiais em verificação antes de publicar.</p> : null}
-            {!dirty && detail.publication && !hasUnpublishedChanges ? <p className="form-note" role="status">Nenhuma mudança desde o snapshot publicado. Edite e salve o rascunho antes de criar outra versão.</p> : null}
+            {!dirty && detail.publication && !hasUnpublishedChanges ? <p className="form-note" role="status">Nenhuma mudança desde a versão publicada. Edite e salve o rascunho antes de criar outra versão.</p> : null}
             <div className="publish-action"><button ref={publishTriggerButton} className="primary-button" type="button" disabled={!canPublish} onClick={() => setPublishDialogOpen(true)}><span>{publishState === "publishing" ? "Publicando…" : `Publicar${publicationVersion ? ` nova versão após v${publicationVersion}` : " primeira versão"}`}</span></button></div>
-            <div className="form-feedback" aria-live="polite" aria-atomic="true">
+            <div ref={publishStatus} className="form-feedback" aria-live="polite" aria-atomic="true" tabIndex={-1}>
+              {publishState === "publishing" ? <p className="form-note">Publicando uma versão fixa e verificável…</p> : null}
               {publishState === "published" ? <p className="form-success">Versão publicada com sucesso. O rascunho futuro continuará separado.</p> : null}
               {publishState === "conflict" ? <p className="form-error">O produto mudou ou não está pronto. Recarregue os dados antes de publicar.</p> : null}
               {publishState === "forbidden" ? <p className="form-error">Sua sessão ou permissão mudou. Entre novamente.</p> : null}
@@ -479,9 +484,9 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
 
       {publishDialogOpen ? (
         <AccessibleDialog titleId="publish-dialog-title" descriptionId="publish-dialog-description" initialFocusRef={publishCancelButton} returnFocusRef={publishTriggerButton} onClose={closePublishDialog}>
-            <p className="eyebrow">Confirmação de publicação</p><h2 id="publish-dialog-title">Publicar este snapshot?</h2>
-            <p id="publish-dialog-description">Produto, oferta, módulos, aulas e PDFs verificados ficarão fixos nesta versão publicada. Nenhuma cobrança, checkout ou entitlement será criado.</p>
-            <div className="dialog-actions"><button ref={publishCancelButton} className="secondary-button" type="button" onClick={closePublishDialog}>Revisar novamente</button><button className="primary-button" type="button" onClick={() => void publish()}>Publicar snapshot</button></div>
+            <p className="eyebrow">Confirmação de publicação</p><h2 id="publish-dialog-title">Publicar esta versão?</h2>
+            <p id="publish-dialog-description">Produto, oferta, módulos, aulas e PDFs verificados ficarão fixos nesta versão publicada. Nenhuma cobrança, checkout ou acesso pago será criado.</p>
+            <div className="dialog-actions"><button ref={publishCancelButton} className="secondary-button" type="button" onClick={closePublishDialog}>Revisar novamente</button><button className="primary-button" type="button" onClick={() => void publish()}>Publicar versão</button></div>
         </AccessibleDialog>
       ) : null}
 
@@ -499,8 +504,8 @@ function EditorLoadState({ state, sellerId, onRetry }: { state: LoadState; selle
   const messages: Record<Exclude<LoadState, "ready">, string> = {
     loading: "Carregando produto…",
     unauthorized: "Sua sessão expirou. Entre novamente.",
-    forbidden: "Você não possui permissão ativa neste tenant.",
-    not_found: "Produto não encontrado neste tenant.",
+    forbidden: "Você não possui permissão ativa neste espaço.",
+    not_found: "Produto não encontrado neste espaço.",
     unavailable: "A API está indisponível. Nenhum dado demonstrativo substituiu o produto real.",
     error: "Não foi possível carregar o editor."
   };
@@ -515,12 +520,12 @@ function EditorField({ label, name, value, onChange, multiline = false, invalid 
 }
 
 function PrivatePreviewPanel({ state, preview, detail, dirty, onReload }: { state: PreviewState; preview: PrivatePreview | null; detail: ProductDetail; dirty: boolean; onReload: () => void }) {
-  if (dirty) return <section className="private-preview preview-blocked"><span className="private-badge">Prévia privada</span><h2>Salve para atualizar a prévia</h2><p>Esta tela nunca mistura alterações locais ainda não confirmadas com o draft persistido.</p></section>;
+  if (dirty) return <section className="private-preview preview-blocked"><span className="private-badge">Prévia privada</span><h2>Salve para atualizar a prévia</h2><p>Esta tela nunca mistura alterações locais ainda não confirmadas com a versão salva.</p></section>;
   if (state === "loading" || state === "idle") return <p className="empty-state" role="status">Montando prévia privada…</p>;
-  if (state === "unavailable" || state === "error") return <section className="private-preview preview-blocked"><span className="private-badge">Prévia privada</span><h2>Prévia indisponível</h2><p>O draft permanece protegido. Tente carregar novamente.</p><button className="secondary-button" type="button" onClick={onReload}>Tentar novamente</button></section>;
+  if (state === "unavailable" || state === "error") return <section className="private-preview preview-blocked"><span className="private-badge">Prévia privada</span><h2>Prévia indisponível</h2><p>A versão salva permanece protegida. Tente carregar novamente.</p><button className="secondary-button" type="button" onClick={onReload}>Tentar novamente</button></section>;
   const product = preview?.product;
   const offer = preview?.offer;
-  return <section className="private-preview" aria-labelledby="private-preview-title"><div className="preview-context"><span className="private-badge">Prévia privada</span><span>Tenant {preview?.seller?.display_name ?? shortId(detail.seller_organization_id ?? "")}</span><span>Draft v{preview?.draft_version ?? preview?.version ?? detail.draft_version}</span></div><div className="preview-hero"><p className="eyebrow">Ainda não publicado</p><h2 id="private-preview-title">{product?.title ?? detail.title}</h2><p>{product?.description || detail.description || "Descrição ainda não informada."}</p></div><div className="preview-course"><span>Curso incluído</span><strong>{preview?.course?.title ?? detail.course.title}</strong></div><div className="preview-offer"><span>Oferta informativa</span><strong>{offer?.title || detail.offer.title || "Oferta ainda não configurada"}</strong><p>{offer?.summary || detail.offer.summary || "Configure e salve a oferta antes de publicar."}</p><button type="button" disabled>Compra indisponível nesta prévia</button></div></section>;
+  return <section className="private-preview" aria-labelledby="private-preview-title"><div className="preview-context"><span className="private-badge">Prévia privada</span><span>Espaço {preview?.seller?.display_name ?? shortId(detail.seller_organization_id ?? "")}</span><span>Versão {preview?.draft_version ?? preview?.version ?? detail.draft_version}</span></div><div className="preview-hero"><p className="eyebrow">Ainda não publicado</p><h2 id="private-preview-title">{product?.title ?? detail.title}</h2><p>{product?.description || detail.description || "Descrição ainda não informada."}</p></div><div className="preview-course"><span>Curso incluído</span><strong>{preview?.course?.title ?? detail.course.title}</strong></div><div className="preview-offer"><span>Oferta informativa</span><strong>{offer?.title || detail.offer.title || "Oferta ainda não configurada"}</strong><p>{offer?.summary || detail.offer.summary || "Configure e salve a oferta antes de publicar."}</p><button type="button" disabled>Compra indisponível nesta prévia</button></div></section>;
 }
 
 function normalizeEditorPayload(payload: EditorPayload & Partial<ProductDetail>): ProductDetail | null {

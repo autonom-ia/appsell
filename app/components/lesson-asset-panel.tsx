@@ -124,6 +124,7 @@ export function LessonAssetPanel({
   const [loaded, setLoaded] = useState(false);
   const [archiveTarget, setArchiveTarget] = useState<AssetView | null>(null);
   const [archiveError, setArchiveError] = useState("");
+  const [archiving, setArchiving] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const xhrRef = useRef<XMLHttpRequest | null>(null);
   const pollTimerRef = useRef<number | null>(null);
@@ -426,14 +427,17 @@ export function LessonAssetPanel({
   }
 
   async function archiveAsset() {
-    if (!archiveTarget || !csrf) return;
+    if (!archiveTarget || !csrf || archiving) return;
+    setArchiving(true);
     setArchiveError("");
     const body = new FormData();
     body.set("_csrf", csrf.archive);
     body.set("idempotency_key", crypto.randomUUID());
     body.set("expected_course_version", String(courseVersion));
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 8_000);
     try {
-      const response = await fetch(`${base}/${archiveTarget.id}/archive`, { method: "POST", body });
+      const response = await fetch(`${base}/${archiveTarget.id}/archive`, { method: "POST", body, signal: controller.signal });
       if (!response.ok) throw new Error("archive_failed");
       setAssets((current) => current.filter((asset) => asset.id !== archiveTarget.id));
       setArchiveTarget(null);
@@ -442,6 +446,9 @@ export function LessonAssetPanel({
       queueMicrotask(() => summaryRef.current?.focus());
     } catch {
       setArchiveError("Não foi possível arquivar. Recarregue os materiais e tente novamente.");
+    } finally {
+      window.clearTimeout(timeout);
+      setArchiving(false);
     }
   }
 
@@ -460,7 +467,7 @@ export function LessonAssetPanel({
       <div className="lesson-assets-body" aria-busy={busy}>
         {readyAsset ? <article className="asset-status-card state-ready">
           <div><span className="asset-state">PDF pronto para publicar</span><strong dir="auto">{readyAsset.title}</strong><small dir="auto">{readyAsset.file_name} · {formatBytes(readyAsset.byte_size)}</small></div>
-          {!archived ? <div className="asset-actions"><button className="secondary-button" type="button" onClick={() => inputRef.current?.click()}>Substituir PDF</button><button className="danger-button" type="button" onClick={() => setArchiveTarget(readyAsset)}>Arquivar PDF</button></div> : null}
+          {!archived ? <div className="asset-actions"><button className="secondary-button" type="button" disabled={busy} onClick={() => inputRef.current?.click()}>Substituir PDF</button><button className="danger-button" type="button" disabled={busy} onClick={() => setArchiveTarget(readyAsset)}>Arquivar PDF</button></div> : null}
         </article> : null}
 
         {!archived && loaded ? <div className="asset-uploader">
@@ -480,12 +487,12 @@ export function LessonAssetPanel({
       </div>
     </details>
 
-    {archiveTarget ? <AccessibleDialog titleId={`archive-asset-title-${lessonId}`} descriptionId={`archive-asset-description-${lessonId}`} initialFocusRef={archiveCancelRef} returnFocusRef={summaryRef} onClose={() => setArchiveTarget(null)}>
+    {archiveTarget ? <AccessibleDialog titleId={`archive-asset-title-${lessonId}`} descriptionId={`archive-asset-description-${lessonId}`} initialFocusRef={archiveCancelRef} returnFocusRef={summaryRef} onClose={() => { if (!archiving) setArchiveTarget(null); }}>
       <p className="eyebrow">Arquivar material</p>
       <h2 id={`archive-asset-title-${lessonId}`}>Arquivar este PDF?</h2>
       <p id={`archive-asset-description-${lessonId}`}>Ele sairá do rascunho da aula <strong>{lessonTitle}</strong>. Publicações anteriores e alunos com acesso a elas continuarão usando a versão já publicada.</p>
       {archiveError ? <p className="form-error" role="alert">{archiveError}</p> : null}
-      <div className="dialog-actions"><button ref={archiveCancelRef} className="secondary-button" type="button" onClick={() => setArchiveTarget(null)}>Manter PDF</button><button className="danger-button" type="button" onClick={() => void archiveAsset()}>Arquivar PDF</button></div>
+      <div className="dialog-actions"><button ref={archiveCancelRef} className="secondary-button" type="button" disabled={archiving} onClick={() => setArchiveTarget(null)}>Manter PDF</button><button className="danger-button" type="button" disabled={archiving} onClick={() => void archiveAsset()}>{archiving ? "Arquivando…" : "Arquivar PDF"}</button></div>
     </AccessibleDialog> : null}
   </div>;
 }

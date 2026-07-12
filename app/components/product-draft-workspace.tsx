@@ -24,7 +24,7 @@ interface ProductDraft {
   course_title?: string;
 }
 
-type LoadState = "loading" | "idle" | "unauthorized" | "unavailable" | "error";
+type LoadState = "loading" | "loading_more" | "page_error" | "idle" | "unauthorized" | "unavailable" | "error";
 type SaveState = "idle" | "saving" | "conflict" | "forbidden" | "invalid" | "unavailable" | "error";
 
 export function ProductDraftWorkspace() {
@@ -32,6 +32,7 @@ export function ProductDraftWorkspace() {
   const [sellers, setSellers] = useState<Seller[] | null>(null);
   const [selectedSellerId, setSelectedSellerId] = useState("");
   const [products, setProducts] = useState<ProductDraft[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [sellerState, setSellerState] = useState<LoadState>("loading");
   const [catalogState, setCatalogState] = useState<LoadState>("idle");
   const [saveState, setSaveState] = useState<SaveState>("idle");
@@ -43,37 +44,44 @@ export function ProductDraftWorkspace() {
   const selectedSellerIdRef = useRef("");
   const catalogRequest = useRef<{ controller: AbortController; version: number } | null>(null);
   const catalogVersion = useRef(0);
+  const catalogHeading = useRef<HTMLHeadingElement>(null);
 
   useUnsavedChanges(formDirty);
 
-  const loadProducts = useCallback(async (sellerId: string) => {
+  const loadProducts = useCallback(async (sellerId: string, cursor?: string) => {
     catalogRequest.current?.controller.abort();
     const version = ++catalogVersion.current;
     if (!sellerId) {
       setProducts([]);
+      setNextCursor(null);
       setCatalogState("idle");
       catalogRequest.current = null;
       return;
     }
-    setCatalogState("loading");
+    setCatalogState(cursor ? "loading_more" : "loading");
     const controller = new AbortController();
     catalogRequest.current = { controller, version };
     const timeout = setTimeout(() => controller.abort(), 5_000);
     try {
-      const response = await fetch(`/api/sellers/${sellerId}/products`, {
+      const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+      const response = await fetch(`/api/sellers/${sellerId}/products${query}`, {
         cache: "no-store",
         signal: controller.signal
       });
       if (catalogRequest.current?.version !== version) return;
       if (response.status === 401) return setCatalogState("unauthorized");
-      if (response.status === 503) return setCatalogState("unavailable");
-      if (!response.ok) return setCatalogState("error");
-      const payload = await response.json() as { products?: ProductDraft[] };
-      setProducts(Array.isArray(payload.products) ? payload.products : []);
+      if (response.status === 503) return setCatalogState(cursor ? "page_error" : "unavailable");
+      if (!response.ok) return setCatalogState(cursor ? "page_error" : "error");
+      const payload = await response.json() as { products?: ProductDraft[]; next_cursor?: string | null };
+      const loaded = Array.isArray(payload.products) ? payload.products : [];
+      setProducts((current) => cursor ? [...current, ...loaded] : loaded);
+      const followingCursor = typeof payload.next_cursor === "string" ? payload.next_cursor : null;
+      setNextCursor(followingCursor);
       setCatalogState("idle");
+      if (cursor && !followingCursor) queueMicrotask(() => catalogHeading.current?.focus());
     } catch {
       if (catalogRequest.current?.version !== version) return;
-      setCatalogState("unavailable");
+      setCatalogState(cursor ? "page_error" : "unavailable");
     } finally {
       clearTimeout(timeout);
       if (catalogRequest.current?.version === version) catalogRequest.current = null;
@@ -198,11 +206,11 @@ export function ProductDraftWorkspace() {
     <section className="catalog-workspace" aria-labelledby="catalog-workspace-title">
       <div className="catalog-workspace-heading">
         <div>
-          <p className="eyebrow">Catálogo persistente</p>
-          <h1 id="catalog-workspace-title">Produtos</h1>
+          <p className="eyebrow">Seu catálogo</p>
+          <h2 id="catalog-workspace-title">Organize seus produtos</h2>
           <p>Crie o produto e o primeiro curso juntos. Tudo permanece privado até uma publicação futura.</p>
         </div>
-        <span className="private-badge">Catálogo por tenant</span>
+        <span className="private-badge">Catálogo por espaço</span>
       </div>
 
       <div className="tenant-picker">
@@ -220,7 +228,7 @@ export function ProductDraftWorkspace() {
             switchSeller(sellerId);
           }}
         >
-          <option value="">Selecione o tenant para continuar</option>
+          <option value="">Selecione o espaço para continuar</option>
           {sellers?.map((seller) => (
             <option key={seller.id} value={seller.id}>{seller.display_name} · @{seller.slug}</option>
           ))}
@@ -246,35 +254,36 @@ export function ProductDraftWorkspace() {
             <div className="form-heading">
               <p className="eyebrow">Novo rascunho</p>
               <h2>Estruture sua próxima oferta</h2>
-              <p>Tenant: <strong>{selectedSeller.display_name}</strong>. Nenhuma cobrança ou publicação acontece nesta etapa.</p>
+              <p>Espaço: <strong>{selectedSeller.display_name}</strong>. Nenhuma cobrança ou publicação acontece nesta etapa.</p>
             </div>
             <fieldset className="product-create-fields" disabled={saveState === "saving"}>
               <legend className="sr-only">Dados do novo produto</legend>
               <input type="hidden" name="_csrf" defaultValue="" />
               <input type="hidden" name="idempotency_key" defaultValue="" />
-              <label>Nome do produto<input name="product_title" minLength={2} maxLength={160} required autoComplete="off" placeholder="Ex.: Creator OS" aria-invalid={isInvalid("product_title")} aria-describedby={isInvalid("product_title") ? "product-title-error" : undefined} />{isInvalid("product_title") ? <span id="product-title-error" className="form-error">Informe um nome entre 2 e 160 bytes, sem espaços nas pontas.</span> : null}</label>
-              <label>Endereço do produto<input name="slug" minLength={3} maxLength={63} required autoComplete="off" autoCapitalize="none" spellCheck={false} pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="creator-os" aria-invalid={isInvalid("slug")} aria-describedby={isInvalid("slug") ? "product-slug-help product-slug-error" : "product-slug-help"} /><span id="product-slug-help">Somente letras minúsculas, números e hífens.</span>{isInvalid("slug") ? <span id="product-slug-error" className="form-error">Use de 3 a 63 caracteres válidos.</span> : null}</label>
-              <label>Descrição curta<textarea name="product_description" maxLength={2000} rows={4} placeholder="O que o aluno vai transformar com este produto?" aria-invalid={isInvalid("product_description")} aria-describedby={isInvalid("product_description") ? "product-description-error" : undefined} />{isInvalid("product_description") ? <span id="product-description-error" className="form-error">A descrição deve ter até 2.000 bytes e não pode conter controles.</span> : null}</label>
-              <label>Nome do curso inicial<input name="course_title" minLength={2} maxLength={160} required autoComplete="off" placeholder="Ex.: Fundamentos do Creator OS" aria-invalid={isInvalid("course_title")} aria-describedby={isInvalid("course_title") ? "course-title-error" : undefined} />{isInvalid("course_title") ? <span id="course-title-error" className="form-error">Informe um nome entre 2 e 160 bytes, sem espaços nas pontas.</span> : null}</label>
+              <label>Nome do produto<input name="product_title" minLength={2} maxLength={160} required autoComplete="off" placeholder="Ex.: Codex na prática…" aria-invalid={isInvalid("product_title")} aria-describedby={isInvalid("product_title") ? "product-title-error" : undefined} />{isInvalid("product_title") ? <span id="product-title-error" className="form-error">Informe um nome entre 2 e 160 bytes, sem espaços nas pontas.</span> : null}</label>
+              <label>Endereço do produto<input name="slug" minLength={3} maxLength={63} required autoComplete="off" autoCapitalize="none" spellCheck={false} pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="codex-na-pratica…" aria-invalid={isInvalid("slug")} aria-describedby={isInvalid("slug") ? "product-slug-help product-slug-error" : "product-slug-help"} /><span id="product-slug-help">Somente letras minúsculas, números e hífens.</span>{isInvalid("slug") ? <span id="product-slug-error" className="form-error">Use de 3 a 63 caracteres válidos.</span> : null}</label>
+              <label>Descrição curta<textarea name="product_description" maxLength={2000} rows={4} placeholder="Ex.: Aprenda a trabalhar com Codex com segurança…" aria-invalid={isInvalid("product_description")} aria-describedby={isInvalid("product_description") ? "product-description-error" : undefined} />{isInvalid("product_description") ? <span id="product-description-error" className="form-error">A descrição deve ter até 2.000 bytes e não pode conter controles.</span> : null}</label>
+              <label>Nome do curso inicial<input name="course_title" minLength={2} maxLength={160} required autoComplete="off" placeholder="Ex.: Fundamentos do Codex…" aria-invalid={isInvalid("course_title")} aria-describedby={isInvalid("course_title") ? "course-title-error" : undefined} />{isInvalid("course_title") ? <span id="course-title-error" className="form-error">Informe um nome entre 2 e 160 bytes, sem espaços nas pontas.</span> : null}</label>
               <button className="primary-button" type="submit">{saveState === "saving" ? "Salvando rascunho…" : "Criar produto e curso"}</button>
             </fieldset>
             <div className="form-feedback" aria-live="polite" aria-atomic="true">
               {saveState === "invalid" ? <p className="form-error">Revise o campo {fieldLabel(invalidField)}.</p> : null}
-              {saveState === "conflict" ? <p className="form-error">Este endereço já existe neste tenant. Escolha outro slug.</p> : null}
+              {saveState === "conflict" ? <p className="form-error">Este endereço já existe neste espaço. Escolha outro.</p> : null}
               {saveState === "forbidden" ? <p className="form-error">Sua sessão ou permissão mudou. Entre novamente antes de tentar.</p> : null}
               {saveState === "unavailable" ? <p className="form-note">A API está indisponível. Seus campos e a chave desta tentativa foram preservados; tente novamente.</p> : null}
               {saveState === "error" ? <p className="form-error">Não foi possível salvar. Tente novamente sem alterar os dados.</p> : null}
             </div>
           </form>
 
-          <div className="draft-list" aria-live="polite">
-            <div className="draft-list-heading"><div><p className="eyebrow">Neste tenant</p><h2>Produtos do tenant</h2></div><strong>{products.length}</strong></div>
+          <div className="draft-list">
+            <div className="draft-list-heading"><div><p className="eyebrow">Neste espaço</p><h2 ref={catalogHeading} tabIndex={-1}>Produtos cadastrados</h2></div><strong aria-label={`${products.length} produtos carregados`}>{products.length}</strong></div>
+            <div className="sr-only" aria-live="polite" aria-atomic="true">{catalogState === "idle" ? `${products.length} ${products.length === 1 ? "produto carregado" : "produtos carregados"}.` : ""}</div>
             {catalogState === "loading" ? <p className="empty-state">Carregando produtos…</p> : null}
-            {catalogState === "unavailable" ? <p className="empty-state">A API local está indisponível. Tente selecionar o tenant novamente.</p> : null}
+            {catalogState === "unavailable" ? <p className="empty-state">O catálogo está indisponível. Tente selecionar o espaço novamente.</p> : null}
             {catalogState === "unauthorized" ? <p className="empty-state">Sua sessão expirou.</p> : null}
             {catalogState === "error" ? <p className="empty-state">Não foi possível carregar este catálogo.</p> : null}
             {catalogState === "idle" && products.length === 0 ? <p className="empty-state">Nenhum produto ainda. Crie o primeiro como rascunho privado.</p> : null}
-            {catalogState === "idle" ? products.map((product) => (
+            {catalogState === "idle" || catalogState === "loading_more" || catalogState === "page_error" ? products.map((product) => (
               <article className="draft-card" key={product.id}>
                 <div><span className={`status status-${product.status}`}>{productStatusLabel(product.status)}</span><span>@{product.slug}</span></div>
                 <h3>{product.title}</h3>
@@ -287,10 +296,12 @@ export function ProductDraftWorkspace() {
                 }}>{product.status === "published" ? "Editar nova versão" : "Continuar edição"} <span aria-hidden="true">→</span></Link>
               </article>
             )) : null}
+            {catalogState === "page_error" ? <p className="form-note" role="alert">Não foi possível carregar a próxima página. Os produtos já carregados foram preservados.</p> : null}
+            {(catalogState === "idle" || catalogState === "loading_more" || catalogState === "page_error") && nextCursor ? <button type="button" className="secondary-button load-more" disabled={catalogState === "loading_more"} onClick={() => void loadProducts(selectedSeller.id, nextCursor)}>{catalogState === "loading_more" ? "Carregando…" : catalogState === "page_error" ? "Tentar carregar novamente" : "Carregar mais produtos"}</button> : null}
           </div>
         </div>
       ) : (
-        <div className="tenant-required"><strong>Escolha o contexto antes de editar.</strong><p>O tenant nunca é inferido silenciosamente da sua conta.</p></div>
+        <div className="tenant-required"><strong>Escolha o espaço antes de editar.</strong><p>O espaço de vendas nunca é inferido silenciosamente da sua conta.</p></div>
       )}
     </section>
   );

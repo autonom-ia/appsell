@@ -1,19 +1,45 @@
 import { expect, test } from "@playwright/test";
 
+async function expectVisualViewportIntersection(locator: import("@playwright/test").Locator, minimumWidth: number, minimumHeight: number) {
+  const geometry = await locator.evaluate(async (element) => {
+    element.scrollIntoView({ block: "center", inline: "center" });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const rect = element.getBoundingClientRect();
+    const viewport = window.visualViewport;
+    if (!viewport) throw new Error("visualViewport is unavailable");
+    const bounds = {
+      left: viewport.offsetLeft,
+      top: viewport.offsetTop,
+      right: viewport.offsetLeft + viewport.width,
+      bottom: viewport.offsetTop + viewport.height
+    };
+    return {
+      scale: viewport.scale,
+      bounds,
+      rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
+      intersectionWidth: Math.max(0, Math.min(rect.right, bounds.right) - Math.max(rect.left, bounds.left)),
+      intersectionHeight: Math.max(0, Math.min(rect.bottom, bounds.bottom) - Math.max(rect.top, bounds.top))
+    };
+  });
+  expect(geometry.scale).toBeGreaterThanOrEqual(1.9);
+  expect(geometry.intersectionWidth, JSON.stringify(geometry)).toBeGreaterThanOrEqual(minimumWidth);
+  expect(geometry.intersectionHeight, JSON.stringify(geometry)).toBeGreaterThanOrEqual(minimumHeight);
+}
+
 async function login(page: import("@playwright/test").Page) {
   await page.goto("/");
   const sessionReady = page.waitForResponse((response) =>
     response.url().endsWith("/api/session") && response.status() === 200);
   await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
   await expect(page).toHaveURL("/dashboard");
-  await expect(page.getByRole("heading", { name: "Bom dia, creator." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Seu negócio em um só lugar." })).toBeVisible();
   await sessionReady;
 }
 
 test("keeps the core journey usable without horizontal overflow", async ({ page }) => {
   await login(page);
   for (const target of [
-    { path: "/dashboard", heading: "Bom dia, creator." },
+    { path: "/dashboard", heading: "Seu negócio em um só lugar." },
     { path: "/products", heading: "Produtos" },
     { path: "/library", heading: "Minha biblioteca" },
   ]) {
@@ -38,7 +64,7 @@ test("does not render protected preview content for an anonymous request", async
   expect(response.status()).toBe(307);
   expect(response.headers().location).toBe("/");
   const body = await response.text();
-  expect(body).not.toContain("Bom dia, creator.");
+  expect(body).not.toContain("Seu negócio em um só lugar.");
   expect(body).not.toContain("Creator OS");
 });
 
@@ -59,7 +85,7 @@ test("supports keyboard skip navigation and reduced motion", async ({ page }) =>
   await login(page);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Bom dia, creator." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Seu negócio em um só lugar." })).toBeVisible();
   const skipLink = page.getByRole("link", { name: "Pular para o conteúdo" });
   await skipLink.focus();
   await expect(skipLink).toBeFocused();
@@ -92,7 +118,7 @@ test("keeps seller navigation hidden until the shell profile resolves", async ({
   await page.goto("/");
   await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
   await expect(page).toHaveURL("/dashboard");
-  await expect(page.getByRole("heading", { name: "Bom dia, creator." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Seu negócio em um só lugar." })).toBeVisible();
   await expect(page.getByRole("link", { name: "Produtos" })).toHaveCount(0);
   await expect(page.locator(".nav-eyebrow")).toHaveText("Carregando acesso");
   await expect(page.getByRole("navigation", { name: "Navegação móvel" }).getByRole("link")).toHaveCount(0);
@@ -111,7 +137,8 @@ test("keeps seller navigation hidden when the shell profile is unavailable", asy
   await expect(page).toHaveURL("/dashboard");
   await expect(page.locator(".nav-eyebrow")).toHaveText("Acesso indisponível");
   await expect(page.getByRole("link", { name: "Produtos" })).toHaveCount(0);
-  await expect(page.getByRole("navigation", { name: "Navegação móvel" }).getByRole("link")).toHaveCount(0);
+  await expect(page.getByRole("link", { name: /Voltar para a entrada|Entrada/ }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Tentar novamente" })).toBeVisible();
 });
 
 test("keeps seller onboarding recoverable when the domain API is unavailable", async ({ page }) => {
@@ -127,6 +154,239 @@ test("keeps seller onboarding recoverable when the domain API is unavailable", a
   await expect(page.getByText("A API está indisponível.")).toBeVisible();
   await expect(submit).toBeEnabled();
   await expect(page.getByLabel("Nome do negócio")).toHaveValue("Studio Mobile");
+});
+
+test("recovers after seller creation succeeds but the list refresh fails without creating a duplicate", async ({ page }) => {
+  const seller = { id: "42000000-0000-4000-8000-000000000001", slug: "studio-recuperado", display_name: "Studio Recuperado", role: "seller_owner" };
+  let created = false;
+  let postCount = 0;
+  let refreshesAfterCreate = 0;
+  const postKeys: string[] = [];
+
+  await page.route("**/api/sellers", async (route) => {
+    if (route.request().method() === "POST") {
+      postCount += 1;
+      const posted = route.request().postDataBuffer();
+      const form = await new Request(route.request().url(), { method: "POST", headers: route.request().headers(), body: posted ? new Uint8Array(posted) : undefined }).formData();
+      postKeys.push(String(form.get("idempotency_key")));
+      created = true;
+      return route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ seller, created: true }) });
+    }
+    if (!created) return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ sellers: [] }) });
+    refreshesAfterCreate += 1;
+    if (refreshesAfterCreate === 1) return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "temporarily_unavailable" }) });
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ sellers: [seller] }) });
+  });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await login(page);
+  await page.goto("/products");
+  await page.getByLabel("Nome do negócio").fill("Studio Recuperado");
+  await page.getByLabel("Endereço público").fill("studio-recuperado");
+  await page.getByRole("button", { name: "Ativar meu espaço" }).click();
+
+  await expect(page.getByText("Espaço criado, mas não foi possível atualizar a lista.", { exact: false })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Espaço criado" })).toBeDisabled();
+  await expect(page.getByLabel("Nome do negócio")).toBeDisabled();
+  expect(postCount).toBe(1);
+
+  await page.getByRole("button", { name: "Atualizar lista de espaços" }).click();
+  await expect(page.getByRole("heading", { name: "Seu espaço está pronto" })).toBeVisible();
+  await expect(page.getByText("Studio Recuperado", { exact: true })).toBeVisible();
+  expect(postCount).toBe(1);
+  expect(postKeys).toHaveLength(1);
+  expect(postKeys[0]).toMatch(/^[0-9a-f-]{36}$/);
+});
+
+test("preserves the created seller state when the post-create refresh returns 401", async ({ page }) => {
+  let created = false;
+  let postCount = 0;
+  await page.route("**/api/sellers", async (route) => {
+    if (route.request().method() === "POST") {
+      postCount += 1;
+      created = true;
+      return route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ created: true }) });
+    }
+    if (created) return route.fulfill({ status: 401, contentType: "application/json", body: JSON.stringify({ error: "unauthorized" }) });
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ sellers: [] }) });
+  });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await login(page);
+  await page.goto("/products");
+  await page.getByLabel("Nome do negócio").fill("Studio Sessão");
+  await page.getByLabel("Endereço público").fill("studio-sessao");
+  await page.getByRole("button", { name: "Ativar meu espaço" }).click();
+
+  await expect(page.getByText("Espaço criado, mas sua sessão expirou", { exact: false })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Entre novamente" })).toHaveAttribute("href", "/auth/login");
+  await expect(page.getByRole("button", { name: "Espaço criado" })).toBeDisabled();
+  await expect(page.getByLabel("Nome do negócio")).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Atualizar lista de espaços" })).toHaveCount(0);
+  expect(postCount).toBe(1);
+});
+
+test("reuses the idempotency key after an ambiguous seller response", async ({ page }) => {
+  const seller = { id: "47000000-0000-4000-8000-000000000001", slug: "studio-idempotente", display_name: "Studio Idempotente", role: "seller_owner" };
+  const postKeys: string[] = [];
+  let persistedCreates = 0;
+  let created = false;
+
+  await page.route("**/api/sellers", async (route) => {
+    if (route.request().method() === "GET") {
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ sellers: created ? [seller] : [] }) });
+    }
+    const posted = route.request().postDataBuffer();
+    const form = await new Request(route.request().url(), { method: "POST", headers: route.request().headers(), body: posted ? new Uint8Array(posted) : undefined }).formData();
+    postKeys.push(String(form.get("idempotency_key")));
+    if (postKeys.length === 1) {
+      created = true;
+      persistedCreates += 1;
+      return route.abort("failed");
+    }
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ seller, created: false, replayed: true }) });
+  });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await login(page);
+  await page.goto("/products");
+  await page.getByLabel("Nome do negócio").fill("Studio Idempotente");
+  await page.getByLabel("Endereço público").fill("studio-idempotente");
+  await page.getByRole("button", { name: "Ativar meu espaço" }).click();
+  await expect(page.getByText("Não foi possível concluir.", { exact: false })).toBeVisible();
+  await expect(page.getByLabel("Nome do negócio")).toHaveValue("Studio Idempotente");
+
+  await page.getByRole("button", { name: "Ativar meu espaço" }).click();
+  await expect(page.getByRole("heading", { name: "Seu espaço está pronto" })).toBeVisible();
+  expect(postKeys).toHaveLength(2);
+  expect(postKeys[0]).toMatch(/^[0-9a-f-]{36}$/);
+  expect(postKeys[1]).toBe(postKeys[0]);
+  expect(persistedCreates).toBe(1);
+});
+
+test("aborts the post-create refresh without dispatching after the onboarding card unmounts", async ({ page }) => {
+  const seller = { id: "48000000-0000-4000-8000-000000000001", slug: "studio-unmount", display_name: "Studio Unmount", role: "seller_owner" };
+  let created = false;
+  let releaseRefresh: (() => void) | undefined;
+  let markRefreshStarted: (() => void) | undefined;
+  const refreshStarted = new Promise<void>((resolve) => { markRefreshStarted = resolve; });
+
+  await page.route("**/api/sellers", async (route) => {
+    if (route.request().method() === "POST") {
+      created = true;
+      return route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ seller, created: true }) });
+    }
+    if (!created) return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ sellers: [] }) });
+    markRefreshStarted?.();
+    await new Promise<void>((resolve) => { releaseRefresh = resolve; });
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ sellers: [seller] }) }).catch(() => undefined);
+  });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await login(page);
+  await page.goto("/products");
+  await page.evaluate(() => {
+    (window as typeof window & { __sellerChanged?: number }).__sellerChanged = 0;
+    window.addEventListener("appsell:sellers-changed", () => {
+      const tracked = window as typeof window & { __sellerChanged?: number };
+      tracked.__sellerChanged = (tracked.__sellerChanged ?? 0) + 1;
+    });
+  });
+  await page.getByLabel("Nome do negócio").fill("Studio Unmount");
+  await page.getByLabel("Endereço público").fill("studio-unmount");
+  await page.getByRole("button", { name: "Ativar meu espaço" }).click();
+  await refreshStarted;
+  await page.getByRole("navigation", { name: "Navegação móvel" }).getByRole("link", { name: "Visão geral" }).click();
+  await expect(page).toHaveURL("/dashboard");
+  releaseRefresh?.();
+  await page.waitForTimeout(100);
+  expect(await page.evaluate(() => (window as typeof window & { __sellerChanged?: number }).__sellerChanged)).toBe(0);
+});
+
+test("keeps editor controls usable at a real 200% Chromium page scale", async ({ page, context }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium", "CDP page scale is only available in Chromium");
+  const sellerId = "43000000-0000-4000-8000-000000000001";
+  const productId = "44000000-0000-4000-8000-000000000001";
+  const courseId = "45000000-0000-4000-8000-000000000001";
+  const offerId = "46000000-0000-4000-8000-000000000001";
+  let savedTitle = "Produto Zoom";
+  let productVersion = 1;
+  let patchCount = 0;
+  const detail = () => ({
+    product: {
+      id: productId,
+      seller_organization_id: sellerId,
+      slug: "produto-zoom",
+      title: savedTitle,
+      description: "Validação em escala real.",
+      status: "draft",
+      version: productVersion,
+      draft_version: productVersion,
+      course: { id: courseId, title: "Curso Zoom", description: "", status: "draft", draft_version: 1, position: 1 },
+      courses: [{ id: courseId, title: "Curso Zoom", description: "", status: "draft", draft_version: 1, position: 1 }],
+      offer: { id: offerId, title: "Oferta Zoom", summary: "Somente informativa.", status: "draft", version: 1, draft_version: 1 },
+      publication: null,
+      has_unpublished_changes: true,
+      readiness: { can_publish: true, items: [{ key: "server", label: "Validação concluída", ready: true }] }
+    },
+    csrf: { update: "csrf-update", publish: "csrf-publish" }
+  });
+
+  await page.route(`**/api/sellers/${sellerId}/products/${productId}`, async (route) => {
+    if (route.request().method() === "PATCH") {
+      const posted = route.request().postDataBuffer();
+      const form = await new Request(route.request().url(), { method: "PATCH", headers: route.request().headers(), body: posted ? new Uint8Array(posted) : undefined }).formData();
+      savedTitle = String(form.get("product_title"));
+      productVersion += 1;
+      patchCount += 1;
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ product_id: productId, product_version: productVersion }) });
+    }
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(detail()) });
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await login(page);
+  await page.goto(`/products/${sellerId}/${productId}`);
+  await expect(page.getByRole("heading", { name: "Produto Zoom", exact: true })).toBeVisible();
+
+  const cdp = await context.newCDPSession(page);
+  try {
+    await cdp.send("Emulation.setPageScaleFactor", { pageScaleFactor: 2 });
+    await expect.poll(() => page.evaluate(() => window.visualViewport?.scale ?? 1)).toBeGreaterThanOrEqual(1.9);
+
+    await page.getByLabel("Nome do produto").fill("Produto Zoom alterado");
+    const saveBar = page.locator(".editor-save-bar");
+    const saveButton = page.getByRole("button", { name: "Salvar rascunho" });
+    const bottomNav = page.getByRole("navigation", { name: "Navegação móvel" });
+    await page.mouse.wheel(0, 700);
+    await expect.poll(() => page.evaluate(() => window.visualViewport?.offsetTop ?? 0)).toBeGreaterThan(100);
+    await page.mouse.wheel(0, 300);
+    await saveButton.focus();
+    await expect(saveButton).toBeFocused();
+    await expectVisualViewportIntersection(saveBar, 44, 44);
+    await expectVisualViewportIntersection(saveButton, 44, 44);
+    await page.keyboard.press("Enter");
+    await expect(page.getByText("Rascunho salvo com segurança.")).toBeVisible();
+    expect(patchCount).toBe(1);
+
+    await page.getByLabel("Nome do produto").fill("Produto Zoom com nova alteração");
+
+    const libraryLink = bottomNav.getByRole("link", { name: "Minha biblioteca" });
+    await libraryLink.focus();
+    await expectVisualViewportIntersection(bottomNav, 44, 44);
+    await expectVisualViewportIntersection(libraryLink, 44, 44);
+    await page.keyboard.press("Enter");
+    const dialog = page.getByRole("dialog", { name: "Sair desta edição?" });
+    await expect(dialog).toBeVisible();
+    const continueButton = dialog.getByRole("button", { name: "Continuar editando" });
+    await expect(continueButton).toBeFocused();
+    await expectVisualViewportIntersection(dialog, 44, 44);
+    await expectVisualViewportIntersection(continueButton, 44, 44);
+    const documentOverflow = await page.evaluate(() => ({ client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }));
+    expect(documentOverflow.scroll).toBeLessThanOrEqual(documentOverflow.client);
+  } finally {
+    if (!page.isClosed()) await cdp.send("Emulation.setPageScaleFactor", { pageScaleFactor: 1 });
+    await cdp.detach().catch(() => undefined);
+  }
 });
 
 test("creates a tenant-scoped product draft in the mobile UI", async ({ page }, testInfo) => {
@@ -256,6 +516,42 @@ test("creates a tenant-scoped product draft in the mobile UI", async ({ page }, 
   expect(scaled.scroll, JSON.stringify(scaled.offenders)).toBeLessThanOrEqual(scaled.client);
 });
 
+test("preserves loaded products when the next catalog page fails", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium", "catalog pagination behavior runs once in Chromium");
+  const sellerId = "52000000-0000-4000-8000-000000000001";
+  const cursor = "53000000-0000-4000-8000-000000000001";
+  await page.route("**/api/sellers", async (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ sellers: [{ id: sellerId, slug: "studio-mobile", display_name: "Studio Mobile", role: "seller_owner" }] })
+  }));
+  await page.route(`**/api/sellers/${sellerId}/products*`, async (route) => {
+    const requestUrl = new URL(route.request().url());
+    if (requestUrl.searchParams.has("cursor")) {
+      expect(requestUrl.searchParams.get("cursor")).toBe(cursor);
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "unavailable" }) });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        products: [{ id: cursor, slug: "pagina-um", title: "Produto da primeira página", description: "Preservado.", status: "draft", created_at: "2026-07-11T11:00:00Z", course: { id: "54000000-0000-4000-8000-000000000001", title: "Curso preservado", status: "draft" } }],
+        next_cursor: cursor
+      })
+    });
+  });
+
+  await login(page);
+  await page.goto("/products");
+  await page.getByLabel("Espaço de vendas").selectOption(sellerId);
+  await expect(page.getByRole("heading", { name: "Produto da primeira página" })).toBeVisible();
+  await page.getByRole("button", { name: "Carregar mais produtos" }).click();
+  await expect(page.getByText("Os produtos já carregados foram preservados.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Produto da primeira página" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Tentar carregar novamente" })).toBeVisible();
+});
+
 test("edits, previews and publishes a tenant-scoped product at 320px", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "authoring flow runs once in Chromium");
   const sellerId = "62000000-0000-4000-8000-000000000001";
@@ -372,18 +668,18 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   await expect(page.getByText("Compra indisponível nesta prévia")).toBeVisible();
   await page.getByRole("link", { name: /^Publicar/ }).click();
   await page.getByRole("button", { name: "Publicar primeira versão" }).click();
-  await expect(page.getByRole("dialog", { name: "Publicar este snapshot?" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Publicar esta versão?" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Revisar novamente" })).toBeFocused();
   await page.keyboard.press("Shift+Tab");
-  await expect(page.getByRole("button", { name: "Publicar snapshot" })).toBeFocused();
+  await expect(page.getByRole("button", { name: "Publicar versão" })).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(page.getByRole("button", { name: "Revisar novamente" })).toBeFocused();
-  await page.getByRole("button", { name: "Publicar snapshot" }).click();
+  await page.getByRole("button", { name: "Publicar versão" }).click();
   await expect(page.getByText("A API não respondeu.", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "Publicar primeira versão" }).click();
-  await page.getByRole("button", { name: "Publicar snapshot" }).click();
+  await page.getByRole("button", { name: "Publicar versão" }).click();
   await expect(page.getByText("Versão publicada com sucesso.", { exact: false })).toBeVisible();
-  await expect(page.getByText("Nenhuma mudança desde o snapshot publicado.", { exact: false })).toBeVisible();
+  await expect(page.getByText("Nenhuma mudança desde a versão publicada.", { exact: false })).toBeVisible();
   await expect(page.getByRole("button", { name: /Publicar nova versão/ })).toBeDisabled();
   await page.getByRole("link", { name: /^Produto Identidade/ }).click();
   await page.getByLabel("Descrição curta").fill("Novo draft depois do snapshot.");
@@ -392,10 +688,10 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   await page.getByRole("link", { name: /^Publicar/ }).click();
   await expect(page.getByRole("button", { name: "Publicar nova versão após v1" })).toBeEnabled();
   await page.getByRole("button", { name: "Publicar nova versão após v1" }).click();
-  await page.getByRole("button", { name: "Publicar snapshot" }).click();
+  await page.getByRole("button", { name: "Publicar versão" }).click();
   await expect(page.getByText("O produto mudou ou não está pronto.", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "Publicar nova versão após v1" }).click();
-  await page.getByRole("button", { name: "Publicar snapshot" }).click();
+  await page.getByRole("button", { name: "Publicar versão" }).click();
   await expect(page.getByText("Versão publicada com sucesso.", { exact: false })).toBeVisible();
   expect(publishKeys).toHaveLength(4);
 

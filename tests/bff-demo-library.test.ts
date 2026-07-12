@@ -134,7 +134,7 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     await adminPage.goto(origin);
     await adminPage.getByRole("link", { name: "Entrar como admin demo" }).click();
     await adminPage.waitForURL(`${origin}/dashboard`);
-    await pwExpect(adminPage.getByRole("heading", { name: "Bom dia, creator." })).toBeVisible();
+    await pwExpect(adminPage.getByRole("heading", { name: "Seu negócio em um só lugar." })).toBeVisible();
     await pwExpect(adminPage.getByRole("link", { name: "Produtos" }).first()).toBeVisible();
     await adminPage.goto(`${origin}/library`);
     await pwExpect(adminPage.getByText("Nenhum produto ativo está disponível para esta conta.")).toBeVisible();

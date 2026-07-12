@@ -143,6 +143,18 @@ test.skipIf(!domainApiUrl)("two BFFs persist seller onboarding through the real 
       products: [{ slug: productSlug, title: "Produto Integrado", course: { title: "Curso Integrado" } }]
     });
 
+    const pagedCatalog = await fetch(`http://127.0.0.1:${secondPort}/api/sellers/${sellerId}/products?cursor=${createdPayload.product_id}`, {
+      headers: { cookie: session }
+    });
+    expect(pagedCatalog.status, await pagedCatalog.clone().text()).toBe(200);
+    expect(await pagedCatalog.json()).toEqual({ products: [], next_cursor: null });
+
+    const invalidCursor = await fetch(`http://127.0.0.1:${firstPort}/api/sellers/${sellerId}/products?cursor=invalid`, {
+      headers: { cookie: session }
+    });
+    expect(invalidCursor.status).toBe(422);
+    expect(await invalidCursor.json()).toEqual({ error: "invalid_product_input", field: "cursor" });
+
     const productId = createdPayload.product_id;
     const courseId = createdPayload.course_id;
     expect(productId).toBeTypeOf("string");
