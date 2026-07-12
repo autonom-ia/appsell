@@ -1979,6 +1979,9 @@ async function buildReport(
       bff_cpu_scope: "auxiliary_ps_lifetime_average_process_tree_normalized_by_logical_cpus_0_to_100",
       max_bff_host_samples: Math.ceil(CAPACITY_TEST_TIMEOUT_MS / 250) + 1,
       executor_timeout_ms: CAPACITY_TEST_TIMEOUT_MS,
+      outer_executor_timeout_seconds: Number(
+        requiredEnvironment("APPSELL_CAPACITY_OUTER_TIMEOUT_SECONDS")
+      ),
       oauth_rate_limit_scope: "runtime_default_1000_per_action_per_60s_across_two_windows",
       asset_session_scope: "1000_buyer_sessions_across_100_tenants_through_bff",
       s3_vertical_scope: "single_representative_tenant_direct_worker_and_storage",

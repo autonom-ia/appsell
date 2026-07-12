@@ -15,6 +15,7 @@ service_credential_b64="$(openssl rand -base64 32)"
 storage_access="capacity-$(openssl rand -hex 8)"
 storage_secret="$(openssl rand -hex 32)"
 report="${APPSELL_CAPACITY_REPORT:-$PWD/tmp/capacity-100.json}"
+capacity_executor_timeout_seconds=960
 fixture="${report%.json}-fixture.json"
 worker_metrics="${report%.json}-worker-rss.json"
 vitest_metrics="${report%.json}-vitest-rss.json"
@@ -281,9 +282,10 @@ export APPSELL_CAPACITY_STORAGE_VERTICAL_TREE_RSS_BYTES="$(
   WORKER_METRICS="$worker_metrics" python3 -c \
     'import json,os; print(json.load(open(os.environ["WORKER_METRICS"], encoding="utf-8"))["peak_rss_bytes"])'
 )"
+export APPSELL_CAPACITY_OUTER_TIMEOUT_SECONDS="$capacity_executor_timeout_seconds"
 export NEXT_TELEMETRY_DISABLED="1"
 
-python3 scripts/run_with_rss.py --timeout 660 --output "$vitest_metrics" -- \
+python3 scripts/run_with_rss.py --timeout "$capacity_executor_timeout_seconds" --output "$vitest_metrics" -- \
   pnpm exec vitest run tests/bff-capacity-100-tenants.test.ts
 
 REPORT_PATH="$report" python3 -c \
