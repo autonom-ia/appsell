@@ -7,7 +7,7 @@ Atualizado em pontos de marco (PR aberta, deploy, incidente). Diferente de MEMOR
 | Indicador | Status | Última verificação |
 |-----------|:------:|--------------------|
 | Build | 🟢 web + API/PDF sandbox containers locais verdes | 2026-07-12 |
-| Testes | 🟢 116 web + suíte Python + 148 PG/API + 3 BFF + 3 storage; 31 browser focados | 2026-07-12 |
+| Testes | 🟢 baseline Local/CI de 100 tenants + suítes anteriores verdes | 2026-07-12 |
 | CI | 🟢 PRs #35/#36/#37/#39 e #41 verdes | 2026-07-12 |
 | Deploy produção | 🟡 não configurado/não executado | 2026-07-10 |
 | Harness instalado em `main` | 2.0.2 | 2026-07-10 |
@@ -25,6 +25,16 @@ auditoria append-only e bootstrap one-shot do superadmin com atestação separad
 Este marco é Local/CI; não é o Identity real e não concede conta de produção.
 
 ## Última mudança relevante
+
+2026-07-12 — Issue #42 implementada localmente na branch
+`feat/42-capacity-100-tenants`: 100 organizações, owners, produtos publicados,
+buyers e entitlements determinísticos; 200 sujeitos OAuth; BFF/API/PostgreSQL/
+Redis reais; vertical S3 real; carga concorrente 10; p50/p95/p99/max,
+throughput, RSS, conexões e hardware registrados. O run local passou com
+100/100 catálogos, 100/100 mutações de produto, 100/100 bibliotecas, 100/100
+assets autorizados e 200/200 tentativas cross-tenant negadas em 404, sem 5xx,
+timeout ou payload cruzado. Isso é baseline Local/CI, não certificação de
+staging, VPS ou produção.
 
 2026-07-12 — Issue #40 implementada localmente na branch
 `feat/40-private-asset-upload`: migration 0008, upload direto S3-compatible,
@@ -111,9 +121,10 @@ verdes no SHA `0b416e4`.
 - Staging/VPS/TLS — não certificado e fora do escopo atual — Issue #5.
 - Assets privados da Issue #40 estão na PR #41, com review crítico e CI verdes;
   ainda dependem de aprovação/merges ordenados e permanecem somente Local/CI.
-- Capacidade de lançamento para 100 tenants/clientes ainda não está certificada:
-  os testes cobrem 100 buyers no banco e 100 requisições concorrentes full-path,
-  mas não um soak/load test de 100 tenants com p95/p99 em staging.
+- A baseline de regressão Local/CI para uma instalação com 100 tenants está
+  comprovada na Issue #42, mas capacidade de lançamento ainda não está
+  certificada em staging/VPS: faltam carga com margem 2x, soak, restore,
+  rollback e observabilidade reais.
 
 ## Bloqueios
 
@@ -123,7 +134,8 @@ verdes no SHA `0b416e4`.
 
 ## Próxima ação
 
-Aguardar decisão humana e merges empilhados #35 → #36 → #39 → #41, sem deploy.
+Aguardar review crítico, CI e PR da #42; depois, decisão humana e merges
+empilhados #35 → #36 → #39 → #41 → futura PR #42, sem deploy.
 Identity real (#13), KMS (#19), billing/Financial, storage externo de staging e
 produção continuam bloqueados.
 
