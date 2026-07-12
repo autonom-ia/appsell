@@ -61,14 +61,31 @@ cleanup() {
   trap - EXIT INT TERM
   docker compose -p "$project" --profile storage down --rmi local --volumes --remove-orphans \
     >/dev/null 2>&1 || original_status=1
+  docker image rm "${project}-api:latest" "${project}-pdf-sandbox:latest" \
+    >/dev/null 2>&1 || true
   local leftover_containers leftover_networks leftover_volumes leftover_images
-  leftover_containers="$(docker ps -aq --filter "label=com.docker.compose.project=$project" || true)"
-  leftover_networks="$(docker network ls -q --filter "label=com.docker.compose.project=$project" || true)"
-  leftover_volumes="$(docker volume ls -q --filter "label=com.docker.compose.project=$project" || true)"
-  leftover_images="$(
-    docker image ls -q "${project}-api:latest" 2>/dev/null || true
-    docker image ls -q "${project}-pdf-sandbox:latest" 2>/dev/null || true
-  )"
+  local api_images pdf_images
+  if ! leftover_containers="$(docker ps -aq --filter "label=com.docker.compose.project=$project")"; then
+    leftover_containers="docker_inspection_failed"
+    original_status=1
+  fi
+  if ! leftover_networks="$(docker network ls -q --filter "label=com.docker.compose.project=$project")"; then
+    leftover_networks="docker_inspection_failed"
+    original_status=1
+  fi
+  if ! leftover_volumes="$(docker volume ls -q --filter "label=com.docker.compose.project=$project")"; then
+    leftover_volumes="docker_inspection_failed"
+    original_status=1
+  fi
+  if ! api_images="$(docker image ls -q "${project}-api:latest")"; then
+    api_images="docker_inspection_failed"
+    original_status=1
+  fi
+  if ! pdf_images="$(docker image ls -q "${project}-pdf-sandbox:latest")"; then
+    pdf_images="docker_inspection_failed"
+    original_status=1
+  fi
+  leftover_images="${api_images}${api_images:+$'\n'}${pdf_images}"
   if [[ -n "$leftover_containers$leftover_networks$leftover_volumes$leftover_images" ]]; then
     echo "capacity teardown failed: disposable Docker resources remain" >&2
     original_status=1
