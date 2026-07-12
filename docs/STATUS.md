@@ -26,6 +26,17 @@ Este marco é Local/CI; não é o Identity real e não concede conta de produç�
 
 ## Última mudança relevante
 
+2026-07-12 — Issue #44 implementada localmente na branch
+`fix/44-postgres-startup-headroom`: stability gate PostgreSQL read-only antes da
+migration, máximo de duas falhas transitórias e três probes consecutivas;
+fault injection descartável comprovou shutdown/restart e teardown 0/0/0;
+artifacts usam códigos allowlist e scanner pré-upload. A vertical local de 100
+tenants passou com margem acima do orçamento mínimo de 9 slots/40%, sem erro de
+sampler. Métricas exatas permanecem no artifact do run e só serão usadas para
+calibração após CI em source limpo. Este orçamento é somente Local/CI e não
+define sizing de produção nem comprova worker dedicado concorrente, staging ou
+HA.
+
 2026-07-12 — Issue #42 implementada localmente na branch
 `feat/42-capacity-100-tenants`: 100 organizações, owners, produtos publicados,
 buyers e entitlements determinísticos; 200 sujeitos OAuth; BFF/API/PostgreSQL/

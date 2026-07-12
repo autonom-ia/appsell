@@ -18,7 +18,11 @@ def create_engine(settings: Settings) -> AsyncEngine:
         pool_size=5,
         max_overflow=5,
         pool_timeout=3,
-        connect_args={"timeout": 3, "command_timeout": 3},
+        connect_args={
+            "timeout": 3,
+            "command_timeout": 3,
+            "server_settings": {"application_name": settings.database_application_name},
+        },
     )
 
 

@@ -8,6 +8,11 @@ import { promisify } from "node:util";
 import { test } from "vitest";
 
 import { RedisOAuthService } from "../lib/redis-oauth-service";
+import {
+  calculatePostgresHeadroom,
+  postgresHeadroomFailures
+} from "../lib/capacity-postgres-headroom";
+import { samplePostgresConnections } from "../lib/capacity-postgres-sampler";
 import { startIsolatedRedis, unusedNonDefaultPort } from "./helpers/isolated-redis";
 
 const execFileAsync = promisify(execFile);
@@ -80,11 +85,18 @@ interface ResourcePeaks {
   redis_rss_bytes: number;
   container_rss_bytes: Record<string, number>;
   postgres_connections: number;
+  postgres_workload_connections: number;
+  postgres_runtime_connections: number;
+  postgres_api_connections: number;
   postgres_active_connections: number;
   postgres_idle_connections: number;
   postgres_active_waiting: number;
   postgres_samples_with_active_waiting: number;
-  postgres_active_waiting_nominal_observed_ms: number;
+  postgres_active_waiting_observed_ms: number;
+  postgres_sample_errors: number;
+  postgres_max_sample_gap_ms: number;
+  postgres_max_connections: number;
+  postgres_reserved_connections: number;
   samples: number;
 }
 
@@ -449,7 +461,7 @@ test.skipIf(!domainApiUrl)("certifies a Local/CI baseline for 100 isolated tenan
       cleanup_errors: cleanupErrors
     };
     if (cleanupErrors.length > 0 && !testFailure) {
-      testFailure = new Error(`runtime cleanup failed: ${cleanupErrors.join(" | ")}`);
+      testFailure = new Error("runtime_cleanup_failed");
     }
     if (!testFailure) {
       try {
@@ -473,7 +485,7 @@ test.skipIf(!domainApiUrl)("certifies a Local/CI baseline for 100 isolated tenan
     await writeCapacityReport(report);
   }
 
-  if (testFailure) throw testFailure;
+  if (testFailure) throw new Error(safeError(testFailure));
 }, 240_000);
 
 function capacityEnvironment(redisUrl: string, port: number, suffix: string) {
@@ -520,7 +532,7 @@ async function createSession(
     }
   );
   if (response.status !== 307) {
-    throw new Error(`OAuth callback for ${subject} returned ${response.status}: ${await response.text()}`);
+    throw new Error(`oauth_callback_status_${response.status}`);
   }
   const setCookie = response.headers.get("set-cookie");
   const sessionCookie = cookiePair(setCookie, "appsell_session");
@@ -641,9 +653,16 @@ function requireResourceThresholds(resources: ResourcePeaks) {
   const totalLimit = Math.min(4 * gib, totalmem() * 0.7);
   if (total > totalLimit) failures.push(`total measured RSS ${total}>${totalLimit}`);
   if (resources.samples < 2) failures.push("resource sampler produced fewer than two samples");
-  if (resources.postgres_connections <= 0 || resources.postgres_connections > 12) {
-    failures.push(`Postgres connections out of baseline: ${resources.postgres_connections}`);
-  }
+  failures.push(...postgresHeadroomFailures({
+    rawConnections: resources.postgres_connections,
+    workloadConnections: resources.postgres_workload_connections,
+    runtimeConnections: resources.postgres_runtime_connections,
+    apiConnections: resources.postgres_api_connections,
+    maxConnections: resources.postgres_max_connections,
+    reservedConnections: resources.postgres_reserved_connections,
+    sampleErrors: resources.postgres_sample_errors,
+    maxSampleGapMs: resources.postgres_max_sample_gap_ms
+  }));
   if (resources.postgres_active_connections > 11) {
     failures.push(`Postgres active connections out of baseline: ${resources.postgres_active_connections}`);
   }
@@ -661,29 +680,68 @@ function startResourceSampler(
     redis_rss_bytes: 0,
     container_rss_bytes: Object.fromEntries(Object.keys(containers).map((name) => [name, 0])),
     postgres_connections: 0,
+    postgres_workload_connections: 0,
+    postgres_runtime_connections: 0,
+    postgres_api_connections: 0,
     postgres_active_connections: 0,
     postgres_idle_connections: 0,
     postgres_active_waiting: 0,
     postgres_samples_with_active_waiting: 0,
-    postgres_active_waiting_nominal_observed_ms: 0,
+    postgres_active_waiting_observed_ms: 0,
+    postgres_sample_errors: 0,
+    postgres_max_sample_gap_ms: 0,
+    postgres_max_connections: 0,
+    postgres_reserved_connections: 0,
     samples: 0
   };
+  let previousSampleStarted = 0;
   const loop = (async () => {
     while (running) {
-      const [bff, redis, containerSamples, connections] = await Promise.all([
-        processTreeRss(bffPid),
-        processTreeRss(redisPid),
-        Promise.all(
-          Object.entries(containers).map(async ([name, id]) => [name, await containerRss(id)] as const)
-        ),
-        postgresConnections(containers.postgres)
-      ]);
+      const sampleStarted = performance.now();
+      const sampleGap = previousSampleStarted > 0 ? sampleStarted - previousSampleStarted : 0;
+      if (previousSampleStarted > 0) {
+        peaks.postgres_max_sample_gap_ms = Math.max(
+          peaks.postgres_max_sample_gap_ms,
+          sampleGap
+        );
+      }
+      previousSampleStarted = sampleStarted;
+      let bff: number;
+      let redis: number;
+      let containerSamples: ReadonlyArray<readonly [string, number]>;
+      let connections: Awaited<ReturnType<typeof samplePostgresConnections>>;
+      try {
+        [bff, redis, containerSamples, connections] = await Promise.all([
+          processTreeRss(bffPid),
+          processTreeRss(redisPid),
+          Promise.all(
+            Object.entries(containers).map(async ([name, id]) => [name, await containerRss(id)] as const)
+          ),
+          samplePostgresConnections(containers.postgres)
+        ]);
+      } catch {
+        peaks.postgres_sample_errors += 1;
+        running = false;
+        continue;
+      }
       peaks.bff_rss_bytes = Math.max(peaks.bff_rss_bytes, bff);
       peaks.redis_rss_bytes = Math.max(peaks.redis_rss_bytes, redis);
       for (const [name, bytes] of containerSamples) {
         peaks.container_rss_bytes[name] = Math.max(peaks.container_rss_bytes[name] ?? 0, bytes);
       }
       peaks.postgres_connections = Math.max(peaks.postgres_connections, connections.total);
+      peaks.postgres_workload_connections = Math.max(
+        peaks.postgres_workload_connections,
+        connections.workload
+      );
+      peaks.postgres_runtime_connections = Math.max(
+        peaks.postgres_runtime_connections,
+        connections.runtime
+      );
+      peaks.postgres_api_connections = Math.max(
+        peaks.postgres_api_connections,
+        connections.api
+      );
       peaks.postgres_active_connections = Math.max(
         peaks.postgres_active_connections,
         connections.active
@@ -695,8 +753,10 @@ function startResourceSampler(
       );
       if (connections.activeWaiting > 0) {
         peaks.postgres_samples_with_active_waiting += 1;
-        peaks.postgres_active_waiting_nominal_observed_ms += 250;
+        peaks.postgres_active_waiting_observed_ms += Math.max(0, sampleGap);
       }
+      peaks.postgres_max_connections = connections.maxConnections;
+      peaks.postgres_reserved_connections = connections.reservedConnections;
       peaks.samples += 1;
       await delay(250);
     }
@@ -716,11 +776,18 @@ function emptyResourcePeaks(containers: Record<string, string>): ResourcePeaks {
     redis_rss_bytes: 0,
     container_rss_bytes: Object.fromEntries(Object.keys(containers).map((name) => [name, 0])),
     postgres_connections: 0,
+    postgres_workload_connections: 0,
+    postgres_runtime_connections: 0,
+    postgres_api_connections: 0,
     postgres_active_connections: 0,
     postgres_idle_connections: 0,
     postgres_active_waiting: 0,
     postgres_samples_with_active_waiting: 0,
-    postgres_active_waiting_nominal_observed_ms: 0,
+    postgres_active_waiting_observed_ms: 0,
+    postgres_sample_errors: 0,
+    postgres_max_sample_gap_ms: 0,
+    postgres_max_connections: 0,
+    postgres_reserved_connections: 0,
     samples: 0
   };
 }
@@ -807,32 +874,6 @@ async function containerRss(containerId: string | undefined) {
   }
 }
 
-async function postgresConnections(containerId: string | undefined) {
-  if (!containerId) return { total: 0, active: 0, idle: 0, activeWaiting: 0 };
-  try {
-    const { stdout } = await execFileAsync(
-      "docker",
-      [
-        "exec", containerId, "psql", "-U", "postgres", "-d", "appsell", "-Atc",
-        "select count(*),count(*) filter(where state='active')," +
-          "count(*) filter(where state='idle')," +
-          "count(*) filter(where state='active' and wait_event is not null) " +
-          "from pg_stat_activity where datname=current_database()"
-      ],
-      { timeout: 3_000 }
-    );
-    const [total, active, idle, activeWaiting] = stdout.trim().split("|").map(Number);
-    return {
-      total: total || 0,
-      active: active || 0,
-      idle: idle || 0,
-      activeWaiting: activeWaiting || 0
-    };
-  } catch {
-    return { total: 0, active: 0, idle: 0, activeWaiting: 0 };
-  }
-}
-
 async function buildReport(
   manifest: FixtureManifest,
   scenarios: Record<string, ScenarioResult>,
@@ -872,11 +913,52 @@ async function buildReport(
     0
   );
   const workerRss = Number(requiredEnvironment("APPSELL_CAPACITY_STORAGE_VERTICAL_TREE_RSS_BYTES"));
+  const startup = JSON.parse(
+    await readFile(requiredEnvironment("APPSELL_CAPACITY_STARTUP_REPORT"), "utf8")
+  ) as {
+    status?: string;
+    calibration_eligible?: boolean;
+    recovered?: boolean;
+    fault_injection?: { occurred?: boolean };
+  };
+  const postgresHeadroom = calculatePostgresHeadroom({
+    rawConnections: resources.postgres_connections,
+    workloadConnections: resources.postgres_workload_connections,
+    runtimeConnections: resources.postgres_runtime_connections,
+    apiConnections: resources.postgres_api_connections,
+    maxConnections: resources.postgres_max_connections,
+    reservedConnections: resources.postgres_reserved_connections,
+    sampleErrors: resources.postgres_sample_errors,
+    maxSampleGapMs: resources.postgres_max_sample_gap_ms
+  });
+  const failureCode = failure ? safeError(failure) : null;
+  const cleanupFailed = Array.isArray(runtimeTeardown.cleanup_errors) &&
+    runtimeTeardown.cleanup_errors.length > 0;
   return {
-    schema_version: 1,
+    schema_version: 2,
     status: failure ? "failed" : "passed",
     mode: "local_ci",
     production_certified: false,
+    calibration_eligible:
+      !failure &&
+      startup.status === "passed" &&
+      startup.calibration_eligible === true &&
+      sourceEvidence.dirty === false &&
+      sourceEvidence.changed_file_count === 0,
+    phases: {
+      postgres_startup: {
+        status: startup.status === "passed" ? "passed" : "failed",
+        recovered: startup.recovered === true,
+        fault_injected: startup.fault_injection?.occurred === true
+      },
+      workload: {
+        status: failureCode === "workload_failed" ? "failed" : failure ? "not_certified" : "passed"
+      },
+      thresholds: {
+        status: failureCode === "threshold_failed" ? "failed" : failure ? "not_certified" : "passed"
+      },
+      teardown: { status: cleanupFailed ? "failed" : "passed" }
+    },
     generated_at: new Date().toISOString(),
     git_sha: process.env.GITHUB_SHA || sourceEvidence.git_sha,
     source_evidence: sourceEvidence,
@@ -902,7 +984,13 @@ async function buildReport(
       )
     },
     scenarios,
-    resources: { ...resources, storage_vertical_process_tree_rss_bytes: workerRss },
+    resources: {
+      ...resources,
+      storage_vertical_process_tree_rss_bytes: workerRss,
+      postgres_usable_connections: postgresHeadroom.usableConnections,
+      postgres_headroom_connections: postgresHeadroom.headroomConnections,
+      postgres_headroom_percent: postgresHeadroom.headroomPercent
+    },
     hardware: {
       platform: platform(),
       release: release(),
@@ -933,7 +1021,13 @@ async function buildReport(
           }
         ])
       ),
-      max_postgres_connections: 12,
+      max_postgres_raw_connections: 13,
+      max_postgres_workload_connections: 12,
+      max_postgres_runtime_connections: 10,
+      postgres_server_max_connections: 24,
+      postgres_reserved_connections: 3,
+      min_postgres_headroom_connections: 9,
+      min_postgres_headroom_percent: 40,
       resource_rss_bytes: {
         bff: 2 * 1024 ** 3,
         redis: 128 * 1024 ** 2,
@@ -948,11 +1042,15 @@ async function buildReport(
       scanner: "deterministic_local_ci_not_clamav",
       asset_session_scope: "100_tenant_legacy_bundle_through_bff",
       s3_vertical_scope: "single_representative_tenant_direct_worker_and_storage",
+      database_topology: "one_api_process_with_inline_worker_during_capacity_workload",
+      dedicated_worker_concurrent_during_capacity_workload: false,
+      postgres_server_budget_scope: "disposable_local_ci_only_not_production_sizing",
       high_availability: false,
       staging_load_2x: false,
       vps_sizing: false
     },
-    failure: failure ? safeError(failure) : null
+    postgres_startup: startup,
+    failure: failureCode
   };
 }
 
@@ -1054,6 +1152,8 @@ async function writeCapacityReport(report: Record<string, unknown>) {
   );
   const resources = report.resources as ResourcePeaks & {
     storage_vertical_process_tree_rss_bytes: number;
+    postgres_headroom_connections: number;
+    postgres_headroom_percent: number;
   };
   const markdown = [
     "# AppSell capacity baseline — 100 tenants",
@@ -1074,7 +1174,10 @@ async function writeCapacityReport(report: Record<string, unknown>) {
     `- BFF RSS: ${resources.bff_rss_bytes} bytes`,
     `- Storage vertical process-tree RSS: ${resources.storage_vertical_process_tree_rss_bytes} bytes`,
     `- Redis RSS: ${resources.redis_rss_bytes} bytes`,
-    `- Postgres connections: ${resources.postgres_connections}`,
+    `- Postgres raw connections: ${resources.postgres_connections}`,
+    `- Postgres workload connections (sampler excluded): ${resources.postgres_workload_connections}`,
+    `- Postgres runtime/API connections: ${resources.postgres_runtime_connections}/${resources.postgres_api_connections}`,
+    `- Postgres headroom: ${resources.postgres_headroom_connections} slots (${resources.postgres_headroom_percent}%)`,
     "",
     "This artifact is a regression baseline for disposable Local/CI infrastructure. It is not VPS, staging, HA, restore, ClamAV, billing, DNS or production evidence.",
     ""
@@ -1126,7 +1229,7 @@ function timedFetch(input: string | URL, init: RequestInit = {}, timeoutMs = 5_0
 async function requireStatus(responsePromise: Promise<Response>, expected: number, label: string) {
   const response = await responsePromise;
   if (response.status !== expected) {
-    throw new Error(`${label}: expected ${expected}, got ${response.status}: ${await response.text()}`);
+    throw new Error(`${label.replace(/[^a-z0-9]+/gi, "_").toLowerCase()}_status_${response.status}`);
   }
 }
 
@@ -1143,7 +1246,14 @@ function requiredEnvironment(name: string) {
 }
 
 function safeError(error: unknown) {
-  return error instanceof Error ? `${error.name}: ${error.message}`.slice(0, 1_000) : "unknown error";
+  if (!(error instanceof Error)) return "unexpected_error";
+  const message = error.message.toLowerCase();
+  if (/timeout|timed out|abort/.test(message)) return "request_timeout";
+  if (message.includes("threshold")) return "threshold_failed";
+  if (message.includes("cleanup")) return "teardown_failed";
+  if (message.startsWith("oauth_callback_status_")) return "oauth_callback_failed";
+  if (message.includes("_status_")) return "unexpected_http_status";
+  return "workload_failed";
 }
 
 // Kept below the test helpers so the spawned process cannot accidentally inherit

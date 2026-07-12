@@ -7,6 +7,7 @@ services:
     environment:
       APPSELL_API_ENVIRONMENT: local
       APPSELL_API_DATABASE_URL: postgresql+asyncpg://appsell_runtime:${APPSELL_RUNTIME_PASSWORD:?set in local env}@postgres:5432/appsell
+      APPSELL_API_DATABASE_APPLICATION_NAME: ${APPSELL_API_DATABASE_APPLICATION_NAME:-appsell_api}
       APPSELL_API_INTERNAL_ISSUER: ${APPSELL_INTERNAL_ISSUER:-}
       APPSELL_API_INTERNAL_AUDIENCE: ${APPSELL_INTERNAL_AUDIENCE:-}
       APPSELL_API_IDENTITY_ISSUER: ${APPSELL_IDENTITY_ISSUER:-}
@@ -71,6 +72,7 @@ services:
 
   postgres:
     image: postgres:16.9-alpine@sha256:7c688148e5e156d0e86df7ba8ae5a05a2386aaec1e2ad8e6d11bdf10504b1fb7
+    command: ["postgres", "-c", "max_connections=24"]
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${APPSELL_POSTGRES_SUPERUSER_PASSWORD:?set in local env}
