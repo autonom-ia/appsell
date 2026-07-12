@@ -12,7 +12,11 @@ import {
   calculatePostgresHeadroom,
   postgresHeadroomFailures
 } from "../lib/capacity-postgres-headroom";
-import { samplePostgresConnections } from "../lib/capacity-postgres-sampler";
+import {
+  accumulatePostgresWaitDiagnostics,
+  emptyPostgresWaitDiagnostics,
+  samplePostgresConnections
+} from "../lib/capacity-postgres-sampler";
 import { startIsolatedRedis, unusedNonDefaultPort } from "./helpers/isolated-redis";
 
 const execFileAsync = promisify(execFile);
@@ -126,6 +130,14 @@ interface ResourcePeaks {
   postgres_samples_with_active_waiting: number;
   postgres_samples_with_lock_waiting: number;
   postgres_active_waiting_observed_ms: number;
+  postgres_wait_event_peaks: Record<string, number>;
+  postgres_api_active_waiting: number;
+  postgres_api_wait_event_peaks: Record<string, number>;
+  postgres_waiting_samples_by_phase: Record<string, number>;
+  postgres_full_api_pool_waiting_samples: number;
+  postgres_full_api_pool_waiting_observed_ms: number;
+  postgres_max_consecutive_full_api_pool_waiting_samples: number;
+  postgres_max_consecutive_full_api_pool_waiting_ms: number;
   postgres_sample_errors: number;
   postgres_max_sample_gap_ms: number;
   postgres_max_connections: number;
@@ -174,7 +186,7 @@ test.skipIf(!domainApiUrl)(
     const activeOauth = RedisOAuthService.fromEnvironment(shared);
     oauth = activeOauth;
     await waitForBff(bff, port);
-    sampler = startResourceSampler(bff.pid!, redis.pid, containers);
+    sampler = startResourceSampler(bff.pid!, redis.pid, containers, () => failurePhase);
 
     // Warm compilation, OAuth callback, domain sync and both read route families.
     const warmupStarted = performance.now();
@@ -323,6 +335,7 @@ test.skipIf(!domainApiUrl)(
 
     const ownerSessions = new Map<number, CapacitySession>();
     const buyerSessions = new Map<string, CapacitySession>();
+    failurePhase = "scenario_oauth_callback_and_sync";
     scenarios.oauth_callback_and_sync = await measureScenario(
       manifest.tenants.flatMap((tenant) => [
         { tenant, role: "owner" as const, subject: tenant.owner_subject, buyer: undefined },
@@ -369,6 +382,7 @@ test.skipIf(!domainApiUrl)(
       throw new Error("oauth session cardinality mismatch");
     }
 
+    failurePhase = "scenario_owner_catalog";
     scenarios.owner_catalog = await measureScenario(manifest.tenants, async (tenant) => {
       const response = await timedFetch(`${origin(port)}/api/sellers/${tenant.seller_id}/products`, {
         headers: { cookie: requiredSession(ownerSessions, tenant.ordinal, "owner").sessionCookie }
@@ -397,6 +411,7 @@ test.skipIf(!domainApiUrl)(
     requireScenarioClean("owner_catalog", scenarios.owner_catalog);
 
     const createdProducts = new Map<number, { productId: string; title: string }>();
+    failurePhase = "scenario_product_create";
     scenarios.product_create = await measureScenario(manifest.tenants, async (tenant) => {
       const session = requiredSession(ownerSessions, tenant.ordinal, "owner");
       const response = await timedFetch(
@@ -441,6 +456,7 @@ test.skipIf(!domainApiUrl)(
     );
     requireScenarioClean("product_create", scenarios.product_create);
 
+    failurePhase = "scenario_product_create_verify";
     scenarios.product_create_verify = await measureScenario(manifest.tenants, async (tenant) => {
       const created = createdProducts.get(tenant.ordinal);
       if (!created) throw new Error(`missing created product for tenant ${tenant.ordinal}`);
@@ -470,6 +486,7 @@ test.skipIf(!domainApiUrl)(
     const tenantBuyers = manifest.tenants.flatMap((tenant) =>
       tenant.buyers.map((buyer) => ({ tenant, buyer }))
     );
+    failurePhase = "scenario_buyer_library";
     scenarios.buyer_library = await measureScenario(tenantBuyers, async ({ tenant, buyer }) => {
       const response = await timedFetch(`${origin(port)}/api/library`, {
         headers: {
@@ -500,6 +517,7 @@ test.skipIf(!domainApiUrl)(
     );
     requireScenarioClean("buyer_library", scenarios.buyer_library);
 
+    failurePhase = "scenario_buyer_product_denial";
     scenarios.buyer_product_denial = await measureScenario(
       tenantBuyers,
       async ({ tenant, buyer }) => {
@@ -544,6 +562,7 @@ test.skipIf(!domainApiUrl)(
       enrollmentId: string;
       version: number;
     }>();
+    failurePhase = "scenario_buyer_player";
     scenarios.buyer_player = await measureScenario(tenantBuyers, async ({ tenant, buyer }) => {
       const response = await timedFetch(
         `${origin(port)}/api/library/items/${buyer.entitlement_id}/lessons/${tenant.lesson_id}`,
@@ -602,6 +621,7 @@ test.skipIf(!domainApiUrl)(
       throw new Error("buyer enrollment cardinality mismatch");
     }
 
+    failurePhase = "scenario_cross_tenant_player_denial";
     scenarios.cross_tenant_player_denial = await measureScenario(
       tenantBuyers,
       async ({ tenant, buyer }) => {
@@ -647,6 +667,7 @@ test.skipIf(!domainApiUrl)(
       throw new Error("cross-tenant player denial budget was not 1,000/1,000");
     }
 
+    failurePhase = "scenario_buyer_progress";
     scenarios.buyer_progress = await measureScenario(tenantBuyers, async ({ tenant, buyer }) => {
       const key = buyerSessionKey(tenant.ordinal, buyer.ordinal);
       const state = playerStates.get(key);
@@ -692,6 +713,7 @@ test.skipIf(!domainApiUrl)(
     );
     requireScenarioClean("buyer_progress", scenarios.buyer_progress);
 
+    failurePhase = "scenario_cross_tenant_progress_denial";
     scenarios.cross_tenant_progress_denial = await measureScenario(
       tenantBuyers,
       async ({ tenant, buyer }) => {
@@ -744,6 +766,7 @@ test.skipIf(!domainApiUrl)(
       throw new Error("cross-tenant progress denial budget was not 1,000/1,000");
     }
 
+    failurePhase = "scenario_buyer_asset";
     scenarios.buyer_asset = await measureScenario(tenantBuyers, async ({ tenant, buyer }) => {
       const response = await timedFetch(
         `${origin(port)}/api/library/items/${buyer.entitlement_id}/assets/${tenant.asset_id}`,
@@ -771,6 +794,7 @@ test.skipIf(!domainApiUrl)(
     );
     requireScenarioClean("buyer_asset", scenarios.buyer_asset);
 
+    failurePhase = "scenario_cross_tenant_denial";
     scenarios.cross_tenant_denial = await measureScenario(manifest.tenants, async (tenant) => {
       const target = manifest.tenants[(tenant.ordinal + 1) % TENANT_CAPACITY]!;
       const response = await timedFetch(
@@ -802,6 +826,7 @@ test.skipIf(!domainApiUrl)(
       throw new Error("cross-tenant owner denial budget was not 100/100");
     }
 
+    failurePhase = "scenario_cross_tenant_asset_denial";
     scenarios.cross_tenant_asset_denial = await measureScenario(
       tenantBuyers,
       async ({ tenant, buyer }) => {
@@ -1146,7 +1171,8 @@ function requireResourceThresholds(resources: ResourcePeaks) {
 function startResourceSampler(
   bffPid: number,
   redisPid: number,
-  containers: Record<string, string>
+  containers: Record<string, string>,
+  currentPhase: () => string
 ) {
   let running = true;
   const peaks: ResourcePeaks = {
@@ -1173,6 +1199,14 @@ function startResourceSampler(
     postgres_samples_with_active_waiting: 0,
     postgres_samples_with_lock_waiting: 0,
     postgres_active_waiting_observed_ms: 0,
+    postgres_wait_event_peaks: {},
+    postgres_api_active_waiting: 0,
+    postgres_api_wait_event_peaks: {},
+    postgres_waiting_samples_by_phase: {},
+    postgres_full_api_pool_waiting_samples: 0,
+    postgres_full_api_pool_waiting_observed_ms: 0,
+    postgres_max_consecutive_full_api_pool_waiting_samples: 0,
+    postgres_max_consecutive_full_api_pool_waiting_ms: 0,
     postgres_sample_errors: 0,
     postgres_max_sample_gap_ms: 0,
     postgres_max_connections: 0,
@@ -1180,6 +1214,7 @@ function startResourceSampler(
     samples: 0
   };
   let previousSampleStarted = 0;
+  let waitDiagnostics = emptyPostgresWaitDiagnostics();
   const loop = (async () => {
     while (running) {
       const sampleStarted = performance.now();
@@ -1191,6 +1226,7 @@ function startResourceSampler(
         );
       }
       previousSampleStarted = sampleStarted;
+      const samplePhase = currentPhase();
       let bff: number;
       let redis: number;
       let containerSamples: ReadonlyArray<readonly [string, number]>;
@@ -1276,10 +1312,32 @@ function startResourceSampler(
         peaks.postgres_other_waiting,
         connections.otherWaiting
       );
+      peaks.postgres_api_active_waiting = Math.max(
+        peaks.postgres_api_active_waiting,
+        connections.apiActiveWaiting
+      );
       if (connections.activeWaiting > 0) {
         peaks.postgres_samples_with_active_waiting += 1;
         peaks.postgres_active_waiting_observed_ms += Math.max(0, sampleGap);
       }
+      waitDiagnostics = accumulatePostgresWaitDiagnostics(
+        waitDiagnostics,
+        connections,
+        samplePhase,
+        sampleGap,
+        CONCURRENCY
+      );
+      peaks.postgres_wait_event_peaks = waitDiagnostics.waitEventPeaks;
+      peaks.postgres_api_wait_event_peaks = waitDiagnostics.apiWaitEventPeaks;
+      peaks.postgres_waiting_samples_by_phase = waitDiagnostics.waitingSamplesByPhase;
+      peaks.postgres_full_api_pool_waiting_samples =
+        waitDiagnostics.fullApiPoolWaitingSamples;
+      peaks.postgres_full_api_pool_waiting_observed_ms =
+        waitDiagnostics.fullApiPoolWaitingObservedMs;
+      peaks.postgres_max_consecutive_full_api_pool_waiting_samples =
+        waitDiagnostics.maxConsecutiveFullApiPoolWaitingSamples;
+      peaks.postgres_max_consecutive_full_api_pool_waiting_ms =
+        waitDiagnostics.maxConsecutiveFullApiPoolWaitingMs;
       if (connections.lockWaiting > 0) peaks.postgres_samples_with_lock_waiting += 1;
       peaks.postgres_max_connections = connections.maxConnections;
       peaks.postgres_reserved_connections = connections.reservedConnections;
@@ -1321,6 +1379,14 @@ function emptyResourcePeaks(containers: Record<string, string>): ResourcePeaks {
     postgres_samples_with_active_waiting: 0,
     postgres_samples_with_lock_waiting: 0,
     postgres_active_waiting_observed_ms: 0,
+    postgres_wait_event_peaks: {},
+    postgres_api_active_waiting: 0,
+    postgres_api_wait_event_peaks: {},
+    postgres_waiting_samples_by_phase: {},
+    postgres_full_api_pool_waiting_samples: 0,
+    postgres_full_api_pool_waiting_observed_ms: 0,
+    postgres_max_consecutive_full_api_pool_waiting_samples: 0,
+    postgres_max_consecutive_full_api_pool_waiting_ms: 0,
     postgres_sample_errors: 0,
     postgres_max_sample_gap_ms: 0,
     postgres_max_connections: 0,
@@ -1757,6 +1823,12 @@ async function writeCapacityReport(report: Record<string, unknown>) {
     `- Postgres BufferPin waits: ${resources.postgres_buffer_pin_waiting}`,
     `- Postgres wait peaks (Client/IO/IPC/Activity/Timeout/Extension/Other): ${resources.postgres_client_waiting}/${resources.postgres_io_waiting}/${resources.postgres_ipc_waiting}/${resources.postgres_activity_waiting}/${resources.postgres_timeout_waiting}/${resources.postgres_extension_waiting}/${resources.postgres_other_waiting}`,
     `- Postgres active-wait samples: ${resources.postgres_samples_with_active_waiting}/${resources.samples}`,
+    `- Postgres exact wait-event peaks: ${JSON.stringify(resources.postgres_wait_event_peaks)}`,
+    `- Postgres API-pool active-wait peak: ${resources.postgres_api_active_waiting}`,
+    `- Postgres API-pool exact wait-event peaks: ${JSON.stringify(resources.postgres_api_wait_event_peaks)}`,
+    `- Postgres waiting samples by phase: ${JSON.stringify(resources.postgres_waiting_samples_by_phase)}`,
+    `- Postgres full API-pool waiting: ${resources.postgres_full_api_pool_waiting_samples} samples / ${round(resources.postgres_full_api_pool_waiting_observed_ms)} ms between consecutive positive samples`,
+    `- Postgres max consecutive full API-pool waiting: ${resources.postgres_max_consecutive_full_api_pool_waiting_samples} samples / ${round(resources.postgres_max_consecutive_full_api_pool_waiting_ms)} ms between consecutive positive samples`,
     "",
     "These are synthetic Local/CI subjects with concurrency 10, not 1,100 simultaneous or real Identity accounts. This artifact is not VPS, staging, HA, restore, ClamAV, billing, DNS or production evidence.",
     ""
