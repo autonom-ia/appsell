@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     database_url: str = Field(
         default="postgresql+asyncpg://appsell_runtime@127.0.0.1:55432/appsell"
     )
+    database_application_name: str = Field(default="appsell_api", pattern=r"^[a-z][a-z0-9_]{2,31}$")
     log_level: str = "INFO"
     internal_issuer: str = ""
     internal_audience: str = ""

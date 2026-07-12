@@ -18,12 +18,13 @@ report="${APPSELL_CAPACITY_REPORT:-$PWD/tmp/capacity-100.json}"
 fixture="${report%.json}-fixture.json"
 worker_metrics="${report%.json}-worker-rss.json"
 vitest_metrics="${report%.json}-vitest-rss.json"
+startup_report="${report%.json}-postgres-startup.json"
 cleanup_started="false"
 
 mark_report_failed() {
   local exit_code="$1"
   mkdir -p "$(dirname "$report")"
-  REPORT_PATH="$report" EXIT_CODE="$exit_code" python3 -c '
+  REPORT_PATH="$report" STARTUP_REPORT_PATH="$startup_report" EXIT_CODE="$exit_code" python3 -c '
 import json, os
 path = os.environ["REPORT_PATH"]
 try:
@@ -31,13 +32,24 @@ try:
         report = json.load(source)
 except (FileNotFoundError, json.JSONDecodeError):
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "mode": "local_ci",
         "production_certified": False,
         "scenarios": {},
     }
 report["status"] = "failed"
 report["executor_exit_code"] = int(os.environ["EXIT_CODE"])
+try:
+    with open(os.environ["STARTUP_REPORT_PATH"], encoding="utf-8") as source:
+        report["postgres_startup"] = json.load(source)
+except (FileNotFoundError, json.JSONDecodeError):
+    report["postgres_startup"] = {
+        "schema_version": 1,
+        "phase": "postgres_startup",
+        "status": "failed",
+        "code": "startup_evidence_unavailable",
+        "calibration_eligible": False,
+    }
 if not report.get("failure"):
     report["failure"] = "executor_failed_before_complete_capacity_evidence"
 with open(path, "w", encoding="utf-8") as destination:
@@ -59,8 +71,12 @@ cleanup() {
   if [[ "$cleanup_started" == "true" ]]; then return "$original_status"; fi
   cleanup_started="true"
   trap - EXIT INT TERM
-  docker compose -p "$project" --profile storage down --rmi local --volumes --remove-orphans \
-    >/dev/null 2>&1 || original_status=1
+  local down_failed="false"
+  if ! docker compose -p "$project" --profile storage down --rmi local --volumes --remove-orphans \
+    >/dev/null 2>&1; then
+    down_failed="true"
+    original_status=1
+  fi
   docker image rm "${project}-api:latest" "${project}-pdf-sandbox:latest" \
     >/dev/null 2>&1 || true
   local leftover_containers leftover_networks leftover_volumes leftover_images
@@ -96,6 +112,7 @@ cleanup() {
     NETWORKS_REMAINING="$leftover_networks" \
     VOLUMES_REMAINING="$leftover_volumes" \
     IMAGES_REMAINING="$leftover_images" \
+    DOWN_FAILED="$down_failed" \
     python3 -c '
 import json, os
 path = os.environ["REPORT_PATH"]
@@ -103,13 +120,14 @@ try:
     with open(path, encoding="utf-8") as source:
         report = json.load(source)
 except (FileNotFoundError, json.JSONDecodeError):
-    report = {"schema_version": 1, "mode": "local_ci", "production_certified": False}
+    report = {"schema_version": 2, "mode": "local_ci", "production_certified": False}
 report["docker_teardown"] = {
     "containers_remaining": len(os.environ["CONTAINERS_REMAINING"].split()),
     "networks_remaining": len(os.environ["NETWORKS_REMAINING"].split()),
     "volumes_remaining": len(os.environ["VOLUMES_REMAINING"].split()),
     "images_remaining": len(os.environ["IMAGES_REMAINING"].split()),
-    "status": "passed" if not any((os.environ["CONTAINERS_REMAINING"], os.environ["NETWORKS_REMAINING"], os.environ["VOLUMES_REMAINING"], os.environ["IMAGES_REMAINING"])) else "failed",
+    "down_succeeded": os.environ["DOWN_FAILED"] == "false",
+    "status": "passed" if os.environ["DOWN_FAILED"] == "false" and not any((os.environ["CONTAINERS_REMAINING"], os.environ["NETWORKS_REMAINING"], os.environ["VOLUMES_REMAINING"], os.environ["IMAGES_REMAINING"])) else "failed",
 }
 with open(path, "w", encoding="utf-8") as destination:
     json.dump(report, destination, indent=2, sort_keys=True)
@@ -124,6 +142,15 @@ with open(path, "w", encoding="utf-8") as destination:
       echo "Docker containers, networks, volumes and local images remaining: 0."
     } >>"${report%.json}.md"
   fi
+  local artifact_paths=()
+  for artifact in "$report" "${report%.json}.md" "$startup_report"; do
+    if [[ -f "$artifact" ]]; then artifact_paths+=("$artifact"); fi
+  done
+  if ((${#artifact_paths[@]} == 0)) || \
+    ! python3 scripts/assert_capacity_artifact_safe.py "${artifact_paths[@]}"; then
+    original_status=1
+    mark_report_failed "$original_status"
+  fi
   exit "$original_status"
 }
 trap cleanup EXIT
@@ -131,11 +158,11 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 mkdir -p "$(dirname "$report")"
-rm -f -- "$report" "${report%.json}.md" "$fixture" "$worker_metrics" "$vitest_metrics"
+rm -f -- "$report" "${report%.json}.md" "$fixture" "$worker_metrics" "$vitest_metrics" "$startup_report"
 REPORT_PATH="$report" python3 -c '
 import json, os
 with open(os.environ["REPORT_PATH"], "w", encoding="utf-8") as destination:
-    json.dump({"schema_version": 1, "status": "running", "mode": "local_ci", "production_certified": False}, destination, indent=2, sort_keys=True)
+    json.dump({"schema_version": 2, "status": "running", "mode": "local_ci", "production_certified": False}, destination, indent=2, sort_keys=True)
     destination.write("\n")
 '
 
@@ -149,13 +176,23 @@ export APPSELL_STORAGE_CONTROL_ACCESS_KEY="$storage_access"
 export APPSELL_STORAGE_CONTROL_SECRET_KEY="$storage_secret"
 export APPSELL_STORAGE_ALLOWED_ORIGIN="http://localhost:3000"
 export APPSELL_STORAGE_BUCKETS="appsell-quarantine,appsell-ready"
+export APPSELL_API_ENVIRONMENT="ci"
+export APPSELL_API_DATABASE_APPLICATION_NAME="appsell_capacity_api"
+export APPSELL_MIGRATOR_DATABASE_URL="postgresql+psycopg://appsell_migrator:${migrator_secret}@127.0.0.1:${postgres_port}/appsell"
 
-docker compose -p "$project" --profile storage up -d --wait --wait-timeout 60 postgres seaweedfs
+if ! docker compose -p "$project" --profile storage up -d --wait --wait-timeout 60 postgres seaweedfs; then
+  uv run --project apps/api python scripts/capacity_postgres_startup.py \
+    --project "$project" --report "$startup_report" --capture-compose-failure || true
+  exit 1
+fi
+if ! uv run --project apps/api python scripts/capacity_postgres_startup.py \
+  --project "$project" --report "$startup_report"; then
+  exit 1
+fi
 docker compose -p "$project" exec -T postgres psql -U postgres -d appsell \
   -v ON_ERROR_STOP=1 \
   -c "comment on database appsell is 'appsell-demo-reset-target-v1'" >/dev/null
 
-export APPSELL_MIGRATOR_DATABASE_URL="postgresql+psycopg://appsell_migrator:${migrator_secret}@127.0.0.1:${postgres_port}/appsell"
 uv run --project apps/api alembic -c apps/api/alembic.ini upgrade head
 
 export APPSELL_CONTEXT_SIGNING_KEY_HEX="$context_key"
@@ -184,7 +221,6 @@ export APPSELL_API_INTERNAL_ISSUER="$APPSELL_INTERNAL_ISSUER"
 export APPSELL_API_INTERNAL_AUDIENCE="$APPSELL_INTERNAL_AUDIENCE"
 export APPSELL_API_INTERNAL_HMAC_KEYRING_B64_JSON="$APPSELL_INTERNAL_HMAC_KEYRING_B64_JSON"
 export APPSELL_API_SERVICE_CREDENTIAL_B64="$APPSELL_SERVICE_CREDENTIAL_B64"
-export APPSELL_API_ENVIRONMENT="ci"
 export APPSELL_API_IDENTITY_ISSUER="$APPSELL_IDENTITY_ISSUER"
 export APPSELL_API_STORAGE_PROVIDER="s3"
 export APPSELL_API_STORAGE_INTERNAL_ENDPOINT="http://seaweedfs:8333"
@@ -199,7 +235,14 @@ export APPSELL_API_MALWARE_SCANNER_PROVIDER="deterministic"
 export APPSELL_API_PDF_SANDBOX_URL="http://pdf-sandbox.internal:8081/normalize"
 
 if ! docker compose -p "$project" --profile storage up -d --build --wait --wait-timeout 60 api; then
-  docker compose -p "$project" --profile storage logs --no-color api pdf-sandbox seaweedfs >&2
+  for service in api pdf-sandbox seaweedfs postgres; do
+    container_id="$(docker compose -p "$project" --profile storage ps --all --quiet "$service")"
+    if [[ -n "$container_id" ]]; then
+      docker inspect --format \
+        '{{.Name}} status={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} restart_count={{.RestartCount}}' \
+        "$container_id" >&2 || true
+    fi
+  done
   exit 1
 fi
 uv run --project apps/api --frozen python -m appsell_api.storage_public_audit
@@ -232,6 +275,7 @@ export APPSELL_CAPACITY_CONTAINER_IDS_JSON="$(
 export APPSELL_TEST_DOMAIN_API_URL="http://127.0.0.1:${api_port}"
 export APPSELL_CAPACITY_MANIFEST="$fixture"
 export APPSELL_CAPACITY_REPORT="$report"
+export APPSELL_CAPACITY_STARTUP_REPORT="$startup_report"
 export APPSELL_CAPACITY_STORAGE_VERTICAL="passed"
 export APPSELL_CAPACITY_STORAGE_VERTICAL_TREE_RSS_BYTES="$(
   WORKER_METRICS="$worker_metrics" python3 -c \
@@ -244,4 +288,6 @@ python3 scripts/run_with_rss.py --timeout 300 --output "$vitest_metrics" -- \
 
 REPORT_PATH="$report" python3 -c \
   'import json,os; result=json.load(open(os.environ["REPORT_PATH"], encoding="utf-8")); assert result["status"] == "passed" and result["tenant_count"] == 100 and result["production_certified"] is False'
+python3 scripts/assert_capacity_artifact_safe.py \
+  "$report" "${report%.json}.md" "$startup_report"
 echo "capacity report: $report"

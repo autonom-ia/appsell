@@ -161,3 +161,11 @@ def test_storage_readiness_cache_must_outlive_health_probe_interval() -> None:
             storage_health_probe_interval_seconds=30,
             storage_readiness_stale_after_seconds=30,
         )
+
+
+def test_database_application_name_is_bounded_and_machine_readable() -> None:
+    assert Settings(database_application_name="appsell_capacity_api").database_application_name == (
+        "appsell_capacity_api"
+    )
+    with pytest.raises(ValidationError):
+        Settings(database_application_name="unsafe name; select 1")

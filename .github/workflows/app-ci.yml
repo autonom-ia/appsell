@@ -32,16 +32,40 @@ jobs:
         with:
           version: "0.11.13"
       - run: uv sync --project apps/api --frozen
+      - name: Prove capacity scanner redacts console output
+        run: ./scripts/test-capacity-artifact-scan.sh
+      - name: Fault-inject PostgreSQL restart after Compose health
+        run: ./scripts/test-capacity-postgres-startup.sh
       - name: Certify 100 isolated tenants on disposable Local/CI infrastructure
         run: ./scripts/test-capacity-100-tenants.sh
-      - name: Upload capacity evidence
+      - name: Scan capacity evidence before upload
+        id: capacity-evidence-scan
         if: always()
+        run: |
+          python3 scripts/assert_capacity_artifact_safe.py --self-test
+          files=()
+          for candidate in \
+            tmp/capacity-100.json \
+            tmp/capacity-100.md \
+            tmp/capacity-100-postgres-startup.json \
+            tmp/capacity-postgres-fault.json; do
+            if [[ -f "$candidate" ]]; then files+=("$candidate"); fi
+          done
+          if [[ "${#files[@]}" -eq 0 ]]; then
+            echo "No capacity evidence was produced" >&2
+            exit 1
+          fi
+          python3 scripts/assert_capacity_artifact_safe.py "${files[@]}"
+      - name: Upload capacity evidence
+        if: always() && steps.capacity-evidence-scan.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: capacity-100-tenants-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             tmp/capacity-100.json
             tmp/capacity-100.md
+            tmp/capacity-100-postgres-startup.json
+            tmp/capacity-postgres-fault.json
           if-no-files-found: error
           retention-days: 30
 

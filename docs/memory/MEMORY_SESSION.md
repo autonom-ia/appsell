@@ -34,22 +34,22 @@ Project status:
 
 <!-- Substituir abaixo a cada nova sessão. Sessões anteriores vão para PROGRESS.md. -->
 
-## Sessão: 2026-07-11 22:00 — player, progresso e retomada multitenant
-Issue: #38
-Branch: feat/38-learning-progress
-PR: #39
-Estado: pr_aberta
+## Sessão: 2026-07-12 08:53 — startup PostgreSQL e headroom da baseline de 100 tenants
+Issue: #44
+Branch: fix/44-postgres-startup-headroom
+PR: não aberta
+Estado: em_progresso
 Modelo: strong + human
-Arquivos alterados: migration 0007, FastAPI/BFF learning, player e library mobile-first, asset stream tenant-bound, testes PG/API/BFF/E2E e docs
-Comandos executados: lint; typecheck; Vitest; Ruff; mypy; pytest; audit; build; Playwright Chromium/WebKit; production fail-closed; test-postgres-foundation; review de design/tenancy/API
-Validação: local verde — 84 web, 137 PostgreSQL/API, 3 BFF verticais reais, 42 browser + 4 skips deliberados; build sem warning e audits verdes
-Bloqueios: CI/review remoto; Identity real #13, KMS #19, Financial/Neuro, storage externo e produção continuam bloqueados
-Próxima ação: aguardar CI e review do SHA da PR #39; não fazer merge/deploy
+Arquivos alterados: gate/fault/scanner PostgreSQL, sampler/headroom, workflow CI, config API/Compose, testes e docs
+Comandos executados: vertical 100 tenants; fault injection real; Vitest; pytest; Ruff; mypy; lint; typecheck; build; audits; scanners; Harness
+Validação: local verde — 121 Vitest, 7 Vitest focados, 36 pytest startup/config, suíte Python, vertical 100 tenants, fault 2 transitórios + 3 ready, scanner e teardown verdes
+Bloqueios: parecer final P0-P3; autorização para commit/push/PR; PR stack #41/#43 ainda sem merge; staging/Identity/KMS/HA continuam externos
+Próxima ação: receber reviews finais, corrigir P0-P3 e pedir autorização para publicar a PR empilhada; não fazer merge/deploy
 Project status:
-  - Projeto: Studio
-  - Status: PR aberta
-  - Tipo: Feature
-  - Prioridade: P0
-  - Risco: Alto
+  - Projeto: Infra
+  - Status: Em desenvolvimento
+  - Tipo: Infra
+  - Prioridade: P3
+  - Risco: Médio
   - Ambiente: Local
-  - Próxima ação: aguardar CI e review do SHA da PR #39
+  - Próxima ação: revisar implementação local e corrigir P0-P3 antes da PR
