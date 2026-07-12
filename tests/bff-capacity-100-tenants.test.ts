@@ -25,6 +25,7 @@ const TENANT_CAPACITY = 100;
 const BUYERS_PER_TENANT = 10;
 const BUYER_CAPACITY = TENANT_CAPACITY * BUYERS_PER_TENANT;
 const CONCURRENCY = 10;
+const CAPACITY_TEST_TIMEOUT_MS = 900_000;
 const OAUTH_RATE_WINDOW_MS = 60_000;
 const OAUTH_FIRST_WINDOW_CAPACITY = 990;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -936,7 +937,7 @@ test.skipIf(!domainApiUrl)(
 
     if (testFailure) throw new Error(safeError(testFailure));
   },
-  600_000
+  CAPACITY_TEST_TIMEOUT_MS
 );
 
 function capacityEnvironment(redisUrl: string, port: number, suffix: string) {
@@ -1672,6 +1673,7 @@ async function buildReport(
       account_cardinality_scope: "100_synthetic_owners_and_1000_synthetic_buyers_local_ci",
       identity_scope: "synthetic_subjects_not_real_identity_accounts",
       concurrency_scope: "10_concurrent_requests_not_1100_simultaneous_users",
+      executor_timeout_ms: CAPACITY_TEST_TIMEOUT_MS,
       oauth_rate_limit_scope: "runtime_default_1000_per_action_per_60s_across_two_windows",
       asset_session_scope: "1000_buyer_sessions_across_100_tenants_through_bff",
       s3_vertical_scope: "single_representative_tenant_direct_worker_and_storage",
