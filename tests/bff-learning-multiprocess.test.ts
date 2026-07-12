@@ -43,10 +43,12 @@ test.skipIf(!domainApiUrl)("persists fail-closed learning progress across two re
     NEXT_TELEMETRY_DISABLED: "1"
   };
   const first = startBff(firstPort, firstDist, shared);
-  const second = startBff(secondPort, secondDist, shared);
+  let second: ChildProcess | undefined;
 
   try {
-    await Promise.all([waitForBff(first, firstPort), waitForBff(second, secondPort)]);
+    await waitForBff(first, firstPort);
+    second = startBff(secondPort, secondDist, shared);
+    await waitForBff(second, secondPort);
     const buyer = await login(publicOrigin, "buyer");
     const admin = await login(publicOrigin, "admin");
     const firstOrigin = `http://127.0.0.1:${firstPort}`;
@@ -143,7 +145,7 @@ test.skipIf(!domainApiUrl)("persists fail-closed learning progress across two re
       player: { state_version: firstResult.progress.state_version }
     });
   } finally {
-    await Promise.all([stopBff(first), stopBff(second)]);
+    await Promise.all([stopBff(first), ...(second ? [stopBff(second)] : [])]);
     await redis.stop();
     await Promise.all([
       rm(join(process.cwd(), firstDist), { recursive: true, force: true }),
