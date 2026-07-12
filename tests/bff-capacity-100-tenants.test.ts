@@ -252,6 +252,53 @@ test.skipIf(!domainApiUrl)(
       throw new Error("warm product create did not return a product id");
     }
     const warmProductId = warmProductPayload.product_id;
+    failurePhase = "warmup_product_verify";
+    await requireStatus(
+      timedFetch(
+        `${origin(port)}/api/sellers/${manifest.tenants[0]!.seller_id}/products/${warmProductId}`,
+        { headers: { cookie: warmOwner.sessionCookie } },
+        30_000
+      ),
+      200,
+      "warm product verify"
+    );
+    failurePhase = "warmup_buyer_player";
+    const warmPlayer = await timedFetch(
+      `${origin(port)}/api/library/items/${manifest.tenants[0]!.buyers[0]!.entitlement_id}` +
+        `/lessons/${manifest.tenants[0]!.lesson_id}`,
+      { headers: { cookie: warmBuyer.sessionCookie } },
+      30_000
+    );
+    if (warmPlayer.status !== 200) {
+      throw new Error(`warm buyer player expected 200, got ${warmPlayer.status}`);
+    }
+    const warmPlayerPayload = await warmPlayer.json() as { csrf?: { progress?: string } };
+    if (typeof warmPlayerPayload.csrf?.progress !== "string") {
+      throw new Error("warm buyer player did not return progress CSRF");
+    }
+    failurePhase = "warmup_cross_tenant_progress";
+    await requireStatus(
+      timedFetch(
+        `${origin(port)}/api/library/items/${manifest.tenants[1]!.buyers[0]!.entitlement_id}` +
+          `/lessons/${manifest.tenants[1]!.lesson_id}/progress`,
+        {
+          method: "PUT",
+          headers: {
+            cookie: warmBuyer.sessionCookie,
+            origin: shared.APPSELL_PUBLIC_ORIGIN
+          },
+          body: new URLSearchParams({
+            _csrf: warmPlayerPayload.csrf.progress,
+            idempotency_key: randomUUID(),
+            progress_percent: "50",
+            expected_version: "0"
+          })
+        },
+        30_000
+      ),
+      404,
+      "warm cross-tenant progress denial"
+    );
     failurePhase = "warmup_own_asset";
     const warmAsset = await timedFetch(
       `${origin(port)}/api/library/items/${manifest.tenants[0]!.buyers[0]!.entitlement_id}/assets/${manifest.tenants[0]!.asset_id}`,
