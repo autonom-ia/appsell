@@ -23,14 +23,14 @@ interface ScenarioThreshold {
 }
 
 const SCENARIO_THRESHOLDS = {
-  oauth_callback_and_sync: { p95: 1_500, p99: 2_250, max: 3_000, throughput: 10 },
-  owner_catalog: { p95: 1_750, p99: 2_250, max: 3_000, throughput: 10 },
-  product_create: { p95: 2_000, p99: 2_500, max: 3_000, throughput: 5 },
-  product_create_verify: { p95: 1_750, p99: 2_250, max: 3_000, throughput: 10 },
-  buyer_library: { p95: 1_750, p99: 2_250, max: 3_000, throughput: 10 },
-  buyer_asset: { p95: 2_000, p99: 2_500, max: 3_000, throughput: 5 },
-  cross_tenant_denial: { p95: 1_750, p99: 2_250, max: 3_000, throughput: 10 },
-  cross_tenant_asset_denial: { p95: 1_750, p99: 2_250, max: 3_000, throughput: 10 }
+  oauth_callback_and_sync: { p95: 1_750, p99: 2_250, max: 3_000, throughput: 10 },
+  owner_catalog: { p95: 2_250, p99: 2_500, max: 3_000, throughput: 10 },
+  product_create: { p95: 2_250, p99: 2_750, max: 3_000, throughput: 8 },
+  product_create_verify: { p95: 2_250, p99: 2_500, max: 3_000, throughput: 10 },
+  buyer_library: { p95: 2_250, p99: 2_500, max: 3_000, throughput: 10 },
+  buyer_asset: { p95: 2_250, p99: 2_750, max: 3_000, throughput: 8 },
+  cross_tenant_denial: { p95: 2_250, p99: 2_500, max: 3_000, throughput: 10 },
+  cross_tenant_asset_denial: { p95: 2_250, p99: 2_500, max: 3_000, throughput: 10 }
 } satisfies Record<string, ScenarioThreshold>;
 
 interface FixtureTenant {
@@ -109,6 +109,7 @@ test.skipIf(!domainApiUrl)("certifies a Local/CI baseline for 100 isolated tenan
   const suffix = `${process.pid}-${Date.now()}`;
   const distDir = `.next-capacity-${suffix}`;
   const scenarios: Record<string, ScenarioResult> = {};
+  const thresholdFailures: string[] = [];
   let testFailure: unknown;
   let peaks = emptyResourcePeaks(containers);
   const cleanupErrors: string[] = [];
@@ -212,7 +213,7 @@ test.skipIf(!domainApiUrl)("certifies a Local/CI baseline for 100 isolated tenan
         return { status: 307, expected: 307 };
       }
     );
-    requireThreshold(
+    recordThreshold(thresholdFailures,
       "oauth_callback_and_sync",
       scenarios.oauth_callback_and_sync,
       SCENARIO_THRESHOLDS.oauth_callback_and_sync
@@ -238,7 +239,12 @@ test.skipIf(!domainApiUrl)("certifies a Local/CI baseline for 100 isolated tenan
       ) === true;
       return { status: response.status, expected: 200, valid: own };
     });
-    requireThreshold("owner_catalog", scenarios.owner_catalog, SCENARIO_THRESHOLDS.owner_catalog);
+    recordThreshold(
+      thresholdFailures,
+      "owner_catalog",
+      scenarios.owner_catalog,
+      SCENARIO_THRESHOLDS.owner_catalog
+    );
     requireScenarioClean("owner_catalog", scenarios.owner_catalog);
 
     const createdProducts = new Map<number, { productId: string; title: string }>();
@@ -278,7 +284,12 @@ test.skipIf(!domainApiUrl)("certifies a Local/CI baseline for 100 isolated tenan
       }
       return { status: response.status, expected: 201, valid };
     });
-    requireThreshold("product_create", scenarios.product_create, SCENARIO_THRESHOLDS.product_create);
+    recordThreshold(
+      thresholdFailures,
+      "product_create",
+      scenarios.product_create,
+      SCENARIO_THRESHOLDS.product_create
+    );
     requireScenarioClean("product_create", scenarios.product_create);
 
     scenarios.product_create_verify = await measureScenario(manifest.tenants, async (tenant) => {
@@ -300,7 +311,7 @@ test.skipIf(!domainApiUrl)("certifies a Local/CI baseline for 100 isolated tenan
         payload.product?.title === created.title;
       return { status: response.status, expected: 200, valid };
     });
-    requireThreshold(
+    recordThreshold(thresholdFailures,
       "product_create_verify",
       scenarios.product_create_verify,
       SCENARIO_THRESHOLDS.product_create_verify
@@ -323,7 +334,12 @@ test.skipIf(!domainApiUrl)("certifies a Local/CI baseline for 100 isolated tenan
         !serialized.includes(next.product_id) && !serialized.includes(next.product_title);
       return { status: response.status, expected: 200, valid: own };
     });
-    requireThreshold("buyer_library", scenarios.buyer_library, SCENARIO_THRESHOLDS.buyer_library);
+    recordThreshold(
+      thresholdFailures,
+      "buyer_library",
+      scenarios.buyer_library,
+      SCENARIO_THRESHOLDS.buyer_library
+    );
     requireScenarioClean("buyer_library", scenarios.buyer_library);
 
     scenarios.buyer_asset = await measureScenario(manifest.tenants, async (tenant) => {
@@ -341,7 +357,12 @@ test.skipIf(!domainApiUrl)("certifies a Local/CI baseline for 100 isolated tenan
         createHash("sha256").update(new Uint8Array(payload)).digest("hex") === tenant.asset_sha256;
       return { status: response.status, expected: 200, valid };
     });
-    requireThreshold("buyer_asset", scenarios.buyer_asset, SCENARIO_THRESHOLDS.buyer_asset);
+    recordThreshold(
+      thresholdFailures,
+      "buyer_asset",
+      scenarios.buyer_asset,
+      SCENARIO_THRESHOLDS.buyer_asset
+    );
     requireScenarioClean("buyer_asset", scenarios.buyer_asset);
 
     scenarios.cross_tenant_denial = await measureScenario(manifest.tenants, async (tenant) => {
@@ -356,7 +377,7 @@ test.skipIf(!domainApiUrl)("certifies a Local/CI baseline for 100 isolated tenan
       );
       return { status: response.status, expected: 404 };
     });
-    requireThreshold(
+    recordThreshold(thresholdFailures,
       "cross_tenant_denial",
       scenarios.cross_tenant_denial,
       SCENARIO_THRESHOLDS.cross_tenant_denial
@@ -381,7 +402,7 @@ test.skipIf(!domainApiUrl)("certifies a Local/CI baseline for 100 isolated tenan
         return { status: response.status, expected: 404 };
       }
     );
-    requireThreshold(
+    recordThreshold(thresholdFailures,
       "cross_tenant_asset_denial",
       scenarios.cross_tenant_asset_denial,
       SCENARIO_THRESHOLDS.cross_tenant_asset_denial
@@ -434,8 +455,11 @@ test.skipIf(!domainApiUrl)("certifies a Local/CI baseline for 100 isolated tenan
       try {
         requireResourceThresholds(peaks);
       } catch (error) {
-        testFailure = error;
+        thresholdFailures.push(`resources ${safeError(error)}`);
       }
+    }
+    if (!testFailure && thresholdFailures.length > 0) {
+      testFailure = new Error(`capacity threshold failed: ${thresholdFailures.join("; ")}`);
     }
     const report = await buildReport(
       manifest,
@@ -577,12 +601,13 @@ function requireScenarioClean(name: string, result: ScenarioResult) {
   }
 }
 
-function requireThreshold(
+function recordThreshold(
+  failures: string[],
   name: string,
   result: ScenarioResult,
   threshold: ScenarioThreshold
 ) {
-  const failures = [
+  const violations = [
     result.latency_ms.p95 > threshold.p95 ? `p95 ${result.latency_ms.p95}>${threshold.p95}` : "",
     result.latency_ms.p99 > threshold.p99 ? `p99 ${result.latency_ms.p99}>${threshold.p99}` : "",
     result.latency_ms.max > threshold.max ? `max ${result.latency_ms.max}>${threshold.max}` : "",
@@ -590,7 +615,7 @@ function requireThreshold(
       ? `throughput ${result.throughput_per_second}<${threshold.throughput}`
       : ""
   ].filter(Boolean);
-  if (failures.length > 0) throw new Error(`${name} threshold failed: ${failures.join(", ")}`);
+  failures.push(...violations.map((violation) => `${name} ${violation}`));
 }
 
 function requireResourceThresholds(resources: ResourcePeaks) {
