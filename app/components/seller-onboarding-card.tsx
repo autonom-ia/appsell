@@ -9,60 +9,79 @@ interface Seller {
   role: string;
 }
 
+type SellerStatus = "loading" | "idle" | "saving" | "created_pending_refresh" | "created_unauthorized" | "refreshing_created" | "preview" | "unauthorized" | "conflict" | "invalid_slug" | "invalid_name" | "error";
+
 export function SellerOnboardingCard() {
   const [sellers, setSellers] = useState<Seller[] | null>(null);
-  const [status, setStatus] = useState<"loading" | "idle" | "saving" | "preview" | "unauthorized" | "conflict" | "invalid_slug" | "invalid_name" | "error">("loading");
+  const [status, setStatus] = useState<SellerStatus>("loading");
   const [creationSucceeded, setCreationSucceeded] = useState(false);
   const idempotencyKey = useRef<string | null>(null);
+  const creationSucceededRef = useRef(false);
+  const mounted = useRef(false);
+  const loadVersion = useRef(0);
+  const loadRequest = useRef<{ controller: AbortController; version: number } | null>(null);
+  const submitRequest = useRef<AbortController | null>(null);
+  const submissionInFlight = useRef(false);
 
   const loadSellers = useCallback(async (): Promise<boolean> => {
+    loadRequest.current?.controller.abort();
     const controller = new AbortController();
+    const version = ++loadVersion.current;
+    loadRequest.current = { controller, version };
+    const isCurrent = () => mounted.current && loadRequest.current?.version === version;
     const timeout = setTimeout(() => controller.abort(), 5_000);
     try {
       const response = await fetch("/api/sellers", {
         cache: "no-store",
         signal: controller.signal
       });
-      if (response.status === 401) { setStatus("unauthorized"); return false; }
-      if (response.status === 503) { setStatus("preview"); return false; }
-      if (!response.ok) { setStatus("error"); return false; }
+      if (!isCurrent()) return false;
+      if (!response.ok) {
+        if (creationSucceededRef.current && response.status === 401) setStatus("created_unauthorized");
+        else if (creationSucceededRef.current) setStatus("created_pending_refresh");
+        else if (response.status === 401) setStatus("unauthorized");
+        else if (response.status === 503) setStatus("preview");
+        else setStatus("error");
+        return false;
+      }
       const payload = await response.json() as { sellers?: Seller[] };
-      setSellers(Array.isArray(payload.sellers) ? payload.sellers : []);
+      if (!isCurrent()) return false;
+      const nextSellers = Array.isArray(payload.sellers) ? payload.sellers : [];
+      setSellers(nextSellers);
+      if (creationSucceededRef.current && nextSellers.length === 0) {
+        setStatus("created_pending_refresh");
+        return false;
+      }
+      creationSucceededRef.current = false;
+      idempotencyKey.current = null;
       setStatus("idle");
       return true;
     } catch {
+      if (isCurrent()) setStatus(creationSucceededRef.current ? "created_pending_refresh" : "error");
       return false;
     } finally {
       clearTimeout(timeout);
+      if (loadRequest.current?.version === version) loadRequest.current = null;
     }
   }, []);
 
   useEffect(() => {
-    const controller = new AbortController();
-    let active = true;
-    const timeout = setTimeout(() => controller.abort(), 5_000);
-    void fetch("/api/sellers", { cache: "no-store", signal: controller.signal })
-      .then(async (response) => {
-        if (response.status === 401) return setStatus("unauthorized");
-        if (response.status === 503) return setStatus("preview");
-        if (!response.ok) return setStatus("error");
-        const payload = await response.json() as { sellers?: Seller[] };
-        setSellers(Array.isArray(payload.sellers) ? payload.sellers : []);
-        setStatus("idle");
-      })
-      .catch(() => {
-        if (active) setStatus("error");
-      })
-      .finally(() => clearTimeout(timeout));
+    mounted.current = true;
+    const start = window.setTimeout(() => void loadSellers(), 0);
     return () => {
-      active = false;
-      clearTimeout(timeout);
-      controller.abort();
+      mounted.current = false;
+      window.clearTimeout(start);
+      loadRequest.current?.controller.abort();
+      loadRequest.current = null;
+      submitRequest.current?.abort();
+      submitRequest.current = null;
     };
-  }, []);
+  }, [loadSellers]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (creationSucceededRef.current || submissionInFlight.current) return;
+    submissionInFlight.current = true;
     const form = event.currentTarget;
     const data = new FormData(form);
     const csrfCookie = process.env.NODE_ENV === "production"
@@ -73,6 +92,7 @@ export function SellerOnboardingCard() {
     data.set("idempotency_key", idempotencyKey.current);
     setStatus("saving");
     const controller = new AbortController();
+    submitRequest.current = controller;
     const timeout = setTimeout(() => controller.abort(), 8_000);
     try {
       const response = await fetch("/api/sellers", {
@@ -80,11 +100,13 @@ export function SellerOnboardingCard() {
         body: data,
         signal: controller.signal
       });
+      if (!mounted.current || submitRequest.current !== controller) return;
       if (!response.ok) {
         if (response.status === 401) setStatus("unauthorized");
         else if (response.status === 409) setStatus("conflict");
         else if (response.status === 422) {
           const payload = await response.json().catch(() => null) as { field?: string } | null;
+          if (!mounted.current || submitRequest.current !== controller) return;
           const field = payload?.field === "display_name" ? "display_name" : "slug";
           setStatus(field === "display_name" ? "invalid_name" : "invalid_slug");
           const input = form.elements.namedItem(field);
@@ -93,16 +115,24 @@ export function SellerOnboardingCard() {
         else setStatus("error");
         return;
       }
-      idempotencyKey.current = null;
+      creationSucceededRef.current = true;
       form.reset();
       setCreationSucceeded(true);
-      await loadSellers();
-      window.dispatchEvent(new Event("appsell:sellers-changed"));
+      setStatus("created_pending_refresh");
+      if (await loadSellers() && mounted.current) window.dispatchEvent(new Event("appsell:sellers-changed"));
     } catch {
-      setStatus("error");
+      if (mounted.current && submitRequest.current === controller) setStatus("error");
     } finally {
       clearTimeout(timeout);
+      if (submitRequest.current === controller) submitRequest.current = null;
+      submissionInFlight.current = false;
     }
+  }
+
+  async function refreshCreatedSeller() {
+    if (!mounted.current) return;
+    setStatus("refreshing_created");
+    if (await loadSellers() && mounted.current) window.dispatchEvent(new Event("appsell:sellers-changed"));
   }
 
   if (sellers?.length) {
@@ -115,16 +145,18 @@ export function SellerOnboardingCard() {
       <form action="/api/sellers" method="post" onSubmit={submit}>
         <input type="hidden" name="_csrf" defaultValue=""/>
         <input type="hidden" name="idempotency_key" defaultValue=""/>
-        <label>Nome do negócio<input name="display_name" minLength={2} maxLength={120} required autoComplete="organization" placeholder="Ex.: Studio Rodrigo…" aria-invalid={status === "invalid_name"} aria-describedby={status === "invalid_name" ? "seller-name-error" : undefined}/>{status === "invalid_name" ? <span id="seller-name-error" className="form-error">Informe o nome sem espaços extras no início ou no fim.</span> : null}</label>
-        <label>Endereço público<input name="slug" minLength={3} maxLength={63} required autoComplete="off" autoCapitalize="none" spellCheck={false} pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="studio-rodrigo…" aria-invalid={status === "invalid_slug"} aria-describedby={status === "invalid_slug" ? "seller-slug-error" : undefined}/>{status === "invalid_slug" ? <span id="seller-slug-error" className="form-error">Use letras minúsculas, números e hífens.</span> : null}</label>
-        <button className="primary-button" type="submit" disabled={status === "saving" || status === "loading"}>{status === "saving" ? "Criando…" : status === "loading" ? "Verificando…" : "Ativar meu espaço"}</button>
+        <label>Nome do negócio<input name="display_name" minLength={2} maxLength={120} required autoComplete="organization" placeholder="Ex.: Studio Rodrigo…" disabled={creationSucceeded} aria-invalid={status === "invalid_name"} aria-describedby={status === "invalid_name" ? "seller-name-error" : undefined}/>{status === "invalid_name" ? <span id="seller-name-error" className="form-error">Informe o nome sem espaços extras no início ou no fim.</span> : null}</label>
+        <label>Endereço público<input name="slug" minLength={3} maxLength={63} required autoComplete="off" autoCapitalize="none" spellCheck={false} pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="studio-rodrigo…" disabled={creationSucceeded} aria-invalid={status === "invalid_slug"} aria-describedby={status === "invalid_slug" ? "seller-slug-error" : undefined}/>{status === "invalid_slug" ? <span id="seller-slug-error" className="form-error">Use letras minúsculas, números e hífens.</span> : null}</label>
+        <button className="primary-button" type="submit" disabled={status === "saving" || status === "loading" || creationSucceeded}>{creationSucceeded ? "Espaço criado" : status === "saving" ? "Criando…" : status === "loading" ? "Verificando…" : "Ativar meu espaço"}</button>
         <div aria-live="polite" aria-atomic="true">
           {status === "preview" ? <p className="form-note">A API está indisponível. Você pode tentar novamente sem duplicar o cadastro.</p> : null}
-          {creationSucceeded && status !== "idle" ? <p className="form-note">Espaço criado. Não repita o cadastro; atualize a lista abaixo.</p> : null}
+          {status === "created_pending_refresh" ? <p className="form-note">Espaço criado, mas não foi possível atualizar a lista. Não envie o cadastro novamente.</p> : null}
+          {status === "created_unauthorized" ? <p className="form-error">Espaço criado, mas sua sessão expirou antes de atualizar a lista. Não envie o cadastro novamente. <a href="/auth/login">Entre novamente</a>.</p> : null}
+          {status === "refreshing_created" ? <p className="form-note">Espaço criado. Atualizando a lista…</p> : null}
           {status === "unauthorized" ? <p className="form-error">Sua sessão expirou. <a href="/auth/login">Entre novamente</a>.</p> : null}
           {status === "conflict" ? <p className="form-error">Este endereço já está em uso ou sua conta já possui um espaço.</p> : null}
           {status === "error" ? <p className="form-error">Não foi possível concluir. Tente novamente; a mesma tentativa não será duplicada.</p> : null}
-          {creationSucceeded && status !== "idle" ? <button type="button" className="secondary-button" onClick={() => void loadSellers()}>Atualizar lista de espaços</button> : null}
+          {creationSucceeded && (status === "created_pending_refresh" || status === "refreshing_created") ? <button type="button" className="secondary-button" disabled={status === "refreshing_created"} onClick={() => void refreshCreatedSeller()}>{status === "refreshing_created" ? "Atualizando lista…" : "Atualizar lista de espaços"}</button> : null}
         </div>
         <noscript><p className="form-note">Ative JavaScript para assinar esta operação com segurança.</p></noscript>
       </form>
