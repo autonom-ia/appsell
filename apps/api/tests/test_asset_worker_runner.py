@@ -1,0 +1,338 @@
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+from typing import Any, cast
+from uuid import UUID, uuid4
+
+import pytest
+from fastapi import FastAPI
+from sqlalchemy.exc import DBAPIError
+
+from appsell_api import asset_worker_runner
+from appsell_api.internal_requests import InternalRequestAuthenticator
+from appsell_api.pdf_verifier import PdfSandboxUnavailable
+from appsell_api.storage_s3 import StoredObject
+from appsell_api.storage_worker import VerifiedAssetResult
+
+
+class FakeSession:
+    def __init__(self, events: list[str], *, fail_finalize: int = 0, fail_register: int = 0):
+        self.events = events
+        self.fail_finalize = fail_finalize
+        self.fail_register = fail_register
+
+    async def scalar(self, statement: Any, _parameters: dict[str, Any]) -> Any:
+        sql = str(statement)
+        if "claim_asset_verification_jobs" in sql:
+            self.events.append("claim")
+            return []
+        if "claim_asset_storage_cleanup_jobs" in sql:
+            self.events.append("claim-cleanup")
+            return []
+        if "complete_asset_storage_cleanup" in sql:
+            self.events.append("complete-cleanup")
+            return True
+        if "retry_asset_storage_cleanup" in sql:
+            self.events.append("retry-cleanup")
+            return "queued"
+        if "begin_asset_verification" in sql:
+            self.events.append("begin")
+            return {
+                "quarantine_bucket": "appsell-quarantine",
+                "ready_bucket": "appsell-ready",
+                "quarantine_key": f"tenants/{SELLER}/quarantine/{UPLOAD}",
+                "ready_key": f"tenants/{SELLER}/assets/{uuid4()}/v1/{uuid4()}",
+                "source_version_id": "source-v1",
+                "expected_byte_size": 128,
+                "expected_sha256": "ab" * 32,
+                "expected_media_type": "application/pdf",
+                "file_name": "material.pdf",
+            }
+        if "finalize_asset_verification" in sql:
+            self.events.append("finalize")
+            if self.fail_finalize:
+                self.fail_finalize -= 1
+                raise DBAPIError("finalize", {}, RuntimeError("injected commit uncertainty"))
+            return {"status": "ready"}
+        if "register_asset_ready_candidate" in sql:
+            self.events.append("register-ready")
+            if self.fail_register:
+                self.fail_register -= 1
+                raise DBAPIError("register", {}, RuntimeError("injected commit uncertainty"))
+            return {"registered": True}
+        raise AssertionError(sql)
+
+
+class FakeAuth:
+    def __init__(self, session: FakeSession):
+        self.session = session
+        self.contexts: list[tuple[str, UUID | None]] = []
+
+    @asynccontextmanager
+    async def domain_session(self, envelope: Any) -> AsyncIterator[FakeSession]:
+        self.contexts.append((envelope.capability, envelope.seller_organization_id))
+        yield self.session
+
+
+class FakeWorker:
+    events: list[str] = []
+    result: VerifiedAssetResult
+
+    def __init__(self, _storage: Any, _scanner: Any):
+        pass
+
+    def process(self, _job: Any) -> VerifiedAssetResult:
+        self.events.append("process")
+        return self.result
+
+    def cleanup_source_after_commit(self, _result: VerifiedAssetResult) -> None:
+        self.events.append("cleanup")
+
+    def compensate_ready_after_finalize_failure(self, _result: VerifiedAssetResult) -> None:
+        self.events.append("compensate")
+
+
+class UnavailableParserWorker(FakeWorker):
+    def process(self, _job: Any) -> VerifiedAssetResult:
+        self.events.append("process")
+        raise PdfSandboxUnavailable("injected sidecar outage")
+
+
+class FakeStorage:
+    def __init__(self, events: list[str], *, fail_delete: bool = False):
+        self.events = events
+        self.fail_delete = fail_delete
+
+    def delete_version(self, **_kwargs: Any) -> None:
+        self.events.append("delete-version")
+        if self.fail_delete:
+            raise OSError("injected storage failure")
+
+    def delete_all_versions(self, **_kwargs: Any) -> int:
+        self.events.append("delete-all-versions")
+        return 1
+
+
+SELLER = UUID("52000000-0000-4000-8000-000000000001")
+UPLOAD = UUID("59000000-0000-4000-8000-000000000001")
+WORKER_ID = UUID("51000000-0000-4000-8000-000000000099")
+
+
+def stored(bucket: str, key: str, version: str) -> StoredObject:
+    return StoredObject(
+        bucket=bucket,
+        key=key,
+        version_id=version,
+        size=128,
+        content_type="application/pdf",
+        checksum_sha256_b64="checksum",
+        etag="etag",
+        appsell_upload_id=str(UPLOAD),
+    )
+
+
+def build_app(
+    events: list[str], fail_finalize: int, fail_register: int = 0
+) -> tuple[FastAPI, FakeAuth]:
+    source = stored("appsell-quarantine", f"tenants/{SELLER}/quarantine/{UPLOAD}", "s1")
+    ready = stored("appsell-ready", f"tenants/{SELLER}/assets/a/v1/b", "r1")
+    FakeWorker.events = events
+    FakeWorker.result = VerifiedAssetResult(
+        source=source,
+        ready=ready,
+        source_byte_size=128,
+        source_sha256_hex="ab" * 32,
+        ready_byte_size=120,
+        ready_sha256_hex="cd" * 32,
+        pdf_page_count=1,
+        scanner_provider="deterministic-local",
+    )
+    auth = FakeAuth(FakeSession(events, fail_finalize=fail_finalize, fail_register=fail_register))
+    app = FastAPI()
+    app.state.settings = SimpleNamespace(
+        environment="local",
+        identity_issuer="https://identity.test.autonomia.site",
+        internal_issuer="appsell-bff",
+        internal_audience="appsell-api",
+    )
+    app.state.internal_auth = auth
+    app.state.storage = FakeStorage(events)
+    app.state.asset_scanner = object()
+    return app, auth
+
+
+@pytest.mark.asyncio
+async def test_worker_finalizes_database_before_source_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    app, auth = build_app(events, fail_finalize=0)
+    monkeypatch.setattr(asset_worker_runner, "PdfStorageWorker", FakeWorker)
+    monkeypatch.setattr(asset_worker_runner, "_worker_id", lambda _settings: WORKER_ID)
+
+    await asset_worker_runner.process_asset_upload(app, SELLER, UPLOAD)
+
+    assert events == ["begin", "process", "register-ready", "finalize", "cleanup"]
+    assert all(
+        capability == "catalog.asset.verify" and seller is None
+        for capability, seller in auth.contexts
+    )
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_finalize_replays_same_receipt_before_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    app, _auth = build_app(events, fail_finalize=1)
+    monkeypatch.setattr(asset_worker_runner, "PdfStorageWorker", FakeWorker)
+    monkeypatch.setattr(asset_worker_runner, "_worker_id", lambda _settings: WORKER_ID)
+
+    await asset_worker_runner.process_asset_upload(app, SELLER, UPLOAD)
+
+    assert events == [
+        "begin",
+        "process",
+        "register-ready",
+        "finalize",
+        "finalize",
+        "cleanup",
+    ]
+    assert "compensate" not in events
+
+
+@pytest.mark.asyncio
+async def test_unresolved_commit_uncertainty_preserves_ready_and_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    app, _auth = build_app(events, fail_finalize=2)
+    monkeypatch.setattr(asset_worker_runner, "PdfStorageWorker", FakeWorker)
+    monkeypatch.setattr(asset_worker_runner, "_worker_id", lambda _settings: WORKER_ID)
+
+    await asset_worker_runner.process_asset_upload(app, SELLER, UPLOAD)
+
+    assert events == ["begin", "process", "register-ready", "finalize", "finalize"]
+    assert "cleanup" not in events and "compensate" not in events
+
+
+@pytest.mark.asyncio
+async def test_durable_claim_uses_null_tenant_worker_context() -> None:
+    events: list[str] = []
+    app, auth = build_app(events, fail_finalize=0)
+
+    claimed = await asset_worker_runner._claim_jobs(  # noqa: SLF001
+        cast(InternalRequestAuthenticator, auth), app.state.settings, WORKER_ID
+    )
+
+    assert claimed == []
+    assert events == ["claim"]
+    assert auth.contexts == [("catalog.asset.verify", None)]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_deletes_exact_version_before_marking_job_complete() -> None:
+    events: list[str] = []
+    app, auth = build_app(events, fail_finalize=0)
+    cleanup_id = uuid4()
+
+    await asset_worker_runner._process_cleanup_job(  # noqa: SLF001
+        app,
+        cast(InternalRequestAuthenticator, auth),
+        app.state.settings,
+        WORKER_ID,
+        {
+            "id": cleanup_id,
+            "seller_organization_id": SELLER,
+            "storage_driver": "s3",
+            "bucket": "appsell-quarantine",
+            "object_key": f"tenants/{SELLER}/quarantine/{UPLOAD}",
+            "storage_version_id": "source-v1",
+        },
+    )
+
+    assert events == ["delete-version", "complete-cleanup"]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_storage_failure_records_durable_retry() -> None:
+    events: list[str] = []
+    app, auth = build_app(events, fail_finalize=0)
+    app.state.storage = FakeStorage(events, fail_delete=True)
+
+    await asset_worker_runner._process_cleanup_job(  # noqa: SLF001
+        app,
+        cast(InternalRequestAuthenticator, auth),
+        app.state.settings,
+        WORKER_ID,
+        {
+            "id": uuid4(),
+            "seller_organization_id": SELLER,
+            "storage_driver": "s3",
+            "bucket": "appsell-quarantine",
+            "object_key": f"tenants/{SELLER}/quarantine/{UPLOAD}",
+            "storage_version_id": "source-v1",
+        },
+    )
+
+    assert events == ["delete-version", "retry-cleanup"]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_reconcile_deletes_all_versions_for_unique_quarantine_key() -> None:
+    events: list[str] = []
+    app, auth = build_app(events, fail_finalize=0)
+
+    await asset_worker_runner._process_cleanup_job(  # noqa: SLF001
+        app,
+        cast(InternalRequestAuthenticator, auth),
+        app.state.settings,
+        WORKER_ID,
+        {
+            "id": uuid4(),
+            "seller_organization_id": SELLER,
+            "storage_driver": "s3",
+            "delete_mode": "delete_all_versions",
+            "bucket": "appsell-quarantine",
+            "object_key": f"tenants/{SELLER}/quarantine/{UPLOAD}",
+            "storage_version_id": None,
+        },
+    )
+
+    assert events == ["delete-all-versions", "complete-cleanup"]
+
+
+@pytest.mark.asyncio
+async def test_ready_registration_failure_compensates_exact_ready_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    app, _auth = build_app(events, fail_finalize=0, fail_register=2)
+    monkeypatch.setattr(asset_worker_runner, "PdfStorageWorker", FakeWorker)
+    monkeypatch.setattr(asset_worker_runner, "_worker_id", lambda _settings: WORKER_ID)
+
+    await asset_worker_runner.process_asset_upload(app, SELLER, UPLOAD)
+
+    assert events == [
+        "begin",
+        "process",
+        "register-ready",
+        "register-ready",
+        "compensate",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_parser_outage_leaves_job_for_retry_without_rejecting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    app, _auth = build_app(events, fail_finalize=0)
+    monkeypatch.setattr(asset_worker_runner, "PdfStorageWorker", UnavailableParserWorker)
+    monkeypatch.setattr(asset_worker_runner, "_worker_id", lambda _settings: WORKER_ID)
+
+    await asset_worker_runner.process_asset_upload(app, SELLER, UPLOAD)
+
+    assert events == ["begin", "process"]

@@ -116,6 +116,8 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   const [publishDialogOpen, setPublishDialogOpen] = useState(false);
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
   const [curriculumDirty, setCurriculumDirty] = useState(false);
+  const [curriculumBusy, setCurriculumBusy] = useState(false);
+  const [assetNavigationWarning, setAssetNavigationWarning] = useState(false);
   const updateIdempotencyKey = useRef<string | null>(null);
   const publishIdempotencyKey = useRef<string | null>(null);
   const offerId = useRef<string | null>(null);
@@ -129,6 +131,10 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
 
   useUnsavedChanges(editorDirty);
   const handleCurriculumDirty = useCallback((nextDirty: boolean) => setCurriculumDirty(nextDirty), []);
+  const handleCurriculumBusy = useCallback((nextBusy: boolean) => {
+    setCurriculumBusy(nextBusy);
+    if (!nextBusy) setAssetNavigationWarning(false);
+  }, []);
 
   const loadDetail = useCallback(async () => {
     const controller = new AbortController();
@@ -296,7 +302,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
 
   async function publish() {
     const hasChanges = detail?.has_unpublished_changes ?? detail?.readiness?.has_unpublished_changes;
-    if (!detail || dirty || publishState === "publishing" || detail.readiness?.can_publish !== true || (detail.publication && hasChanges !== true)) return;
+    if (!detail || editorDirty || publishState === "publishing" || detail.readiness?.can_publish !== true || (detail.publication && hasChanges !== true)) return;
     setPublishDialogOpen(false);
     setPublishState("publishing");
     const versions = versionsFromDetail(detail);
@@ -347,12 +353,22 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   }
 
   function requestListNavigation(event: MouseEvent<HTMLAnchorElement>) {
+    if (curriculumBusy) {
+      event.preventDefault();
+      setAssetNavigationWarning(true);
+      return;
+    }
     if (!editorDirty || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
     setLeaveDialogOpen(true);
   }
 
   function requestSectionNavigation(event: MouseEvent<HTMLAnchorElement>, target: EditorSection) {
+    if (target !== section && curriculumBusy) {
+      event.preventDefault();
+      setAssetNavigationWarning(true);
+      return;
+    }
     if (target === section || !editorDirty || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     if (!window.confirm("Há alterações não salvas nesta etapa. Descartar e continuar?")) {
       event.preventDefault();
@@ -383,7 +399,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
 
   const readiness = detail.readiness;
   const hasUnpublishedChanges = detail.has_unpublished_changes ?? readiness?.has_unpublished_changes ?? !detail.publication;
-  const canPublish = readiness?.can_publish === true && hasUnpublishedChanges && !dirty && publishState !== "publishing";
+  const canPublish = readiness?.can_publish === true && hasUnpublishedChanges && !editorDirty && publishState !== "publishing";
   const publicationVersion = detail.publication?.version;
 
   return (
@@ -406,8 +422,9 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
           return <Link key={item.id} href={`?section=${item.id}`} replace scroll={false} className={active ? "active" : ""} aria-current={active ? "step" : undefined} onClick={(event) => requestSectionNavigation(event, item.id)}><strong>{item.label}</strong><span>{item.hint}</span></Link>;
         })}
       </nav>
+      {assetNavigationWarning ? <p className="form-note asset-navigation-warning" role="alert">Há um PDF sendo enviado ou verificado. Cancele ou aguarde a conclusão antes de sair do currículo.</p> : null}
 
-      {section === "curriculo" ? <CurriculumWorkspace sellerId={sellerId} productId={productId} courseId={detail.course.id} courseTitle={detail.course.title} archived={detail.status === "archived"} onDirtyChange={handleCurriculumDirty} onCommitted={handleCurriculumCommitted}/> : (
+      {section === "curriculo" ? <CurriculumWorkspace sellerId={sellerId} productId={productId} courseId={detail.course.id} courseTitle={detail.course.title} archived={detail.status === "archived"} onDirtyChange={handleCurriculumDirty} onBusyChange={handleCurriculumBusy} onCommitted={handleCurriculumCommitted}/> : (
       <form ref={formElement} className="editor-form" onSubmit={saveDraft}>
         {section === "produto" ? (
           <fieldset disabled={detail.status === "archived"}>
@@ -434,11 +451,11 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
         {section === "publicar" ? (
           <section className="publish-panel" aria-labelledby="publish-panel-title">
             <p className="eyebrow">Validação server-side</p><h2 id="publish-panel-title">Preparar publicação</h2>
-            <p>A publicação cria um snapshot versionado com produto, oferta, módulos e aulas de texto. Cobrança e checkout continuam desativados.</p>
+            <p>A publicação cria um snapshot versionado com produto, oferta, módulos, aulas e PDFs já verificados. Cobrança e checkout continuam desativados.</p>
             {readiness ? (
               <ul className="readiness-list">{readiness.items.map((item, index) => <li key={item.key ?? `${item.label}-${index}`} className={item.ready ? "ready" : "blocked"}><span aria-hidden="true">{item.ready ? "✓" : "!"}</span><div><strong>{item.label}</strong>{item.detail ? <p>{item.detail}</p> : null}</div><span className="sr-only">{item.ready ? "Pronto" : "Pendente"}</span></li>)}</ul>
             ) : <p className="form-note" role="status">A API ainda não retornou a validação de publicação. Nada será publicado.</p>}
-            {dirty ? <p className="form-note" role="status">Salve as alterações antes de publicar.</p> : null}
+            {editorDirty ? <p className="form-note" role="status">Salve as alterações e aguarde os materiais em verificação antes de publicar.</p> : null}
             {!dirty && detail.publication && !hasUnpublishedChanges ? <p className="form-note" role="status">Nenhuma mudança desde o snapshot publicado. Edite e salve o rascunho antes de criar outra versão.</p> : null}
             <div className="publish-action"><button ref={publishTriggerButton} className="primary-button" type="button" disabled={!canPublish} onClick={() => setPublishDialogOpen(true)}><span>{publishState === "publishing" ? "Publicando…" : `Publicar${publicationVersion ? ` nova versão após v${publicationVersion}` : " primeira versão"}`}</span></button></div>
             <div className="form-feedback" aria-live="polite" aria-atomic="true">
@@ -463,7 +480,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       {publishDialogOpen ? (
         <AccessibleDialog titleId="publish-dialog-title" descriptionId="publish-dialog-description" initialFocusRef={publishCancelButton} returnFocusRef={publishTriggerButton} onClose={closePublishDialog}>
             <p className="eyebrow">Confirmação de publicação</p><h2 id="publish-dialog-title">Publicar este snapshot?</h2>
-            <p id="publish-dialog-description">Produto, oferta, módulos e aulas de texto ficarão disponíveis na versão publicada. Nenhuma cobrança, checkout ou entitlement será criado.</p>
+            <p id="publish-dialog-description">Produto, oferta, módulos, aulas e PDFs verificados ficarão fixos nesta versão publicada. Nenhuma cobrança, checkout ou entitlement será criado.</p>
             <div className="dialog-actions"><button ref={publishCancelButton} className="secondary-button" type="button" onClick={closePublishDialog}>Revisar novamente</button><button className="primary-button" type="button" onClick={() => void publish()}>Publicar snapshot</button></div>
         </AccessibleDialog>
       ) : null}

@@ -14,6 +14,8 @@ from psycopg.types.json import Jsonb
 
 DEMO_KEY = "autonomia-demo-v1"
 DEMO_DATABASE_MARKER = "appsell-demo-reset-target-v1"
+ASSET_WORKER_SUBJECT = "asset-worker-v1"
+ASSET_WORKER_EMAIL = "asset.worker@autonomia.site"
 ROOT = Path(__file__).resolve().parents[4]
 MANIFEST_PATH = ROOT / "demo" / "content" / "codex-na-pratica" / "manifest.json"
 PDF_ROOT = ROOT / "output" / "pdf" / "codex"
@@ -23,6 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Reset the isolated AppSell demo tenant.")
     parser.add_argument("--confirm-demo-key", required=True)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--prepare-storage-cleanup", action="store_true")
     return parser.parse_args()
 
 
@@ -99,7 +102,7 @@ def snapshot_for(manifest: dict[str, Any]) -> dict[str, Any]:
     offer = manifest["offer"]
     lessons = manifest["lessons"]
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "seller_organization_id": seller["id"],
         "product": {
             "id": product["id"],
@@ -133,6 +136,18 @@ def snapshot_for(manifest: dict[str, Any]) -> dict[str, Any]:
                                 "content": lesson["summary"],
                                 "status": "active",
                                 "position": lesson["position"],
+                                "assets": [
+                                    {
+                                        "id": lesson["asset_id"],
+                                        "version": 1,
+                                        "title": lesson["title"],
+                                        "file_name": f"{lesson['slug']}.pdf",
+                                        "media_type": "application/pdf",
+                                        "byte_size": lesson["bytes"],
+                                        "sha256": lesson["sha256"],
+                                        "position": lesson["position"],
+                                    }
+                                ],
                             }
                             for lesson in lessons
                         ],
@@ -141,6 +156,111 @@ def snapshot_for(manifest: dict[str, Any]) -> dict[str, Any]:
             }
         ],
     }
+
+
+def prepare_demo_storage_cleanup(
+    connection: psycopg.Connection[Any], manifest: dict[str, Any]
+) -> int:
+    seller_id = UUID(manifest["seller"]["id"])
+    connection.execute("select pg_advisory_xact_lock(hashtextextended(%s,0))", (DEMO_KEY,))
+    connection.execute(
+        "select pg_advisory_xact_lock(hashtextextended(%s,0))",
+        (f"appsell.asset/reset/{seller_id}",),
+    )
+    connection.execute(
+        "select pg_advisory_xact_lock(hashtextextended(%s,0))",
+        (f"appsell.asset/quota/{seller_id}",),
+    )
+    validate_demo_database(connection)
+    connection.execute("select set_config('appsell.demo_reset_key',%s,true)", (DEMO_KEY,))
+    version = connection.execute("select version_num from alembic_version").fetchone()
+    if version != ("0008_private_asset_storage",):
+        raise RuntimeError("database must be migrated to 0008_private_asset_storage")
+
+    connection.execute(
+        """
+        update app_private.asset_upload set status='cancelled',
+          failure_code='demo_reset_requested',updated_at=clock_timestamp()
+        where seller_organization_id=%s and status in ('pending','uploaded','verifying')
+        """,
+        (seller_id,),
+    )
+    connection.execute(
+        """
+        update app_private.asset_verification_job verification set status='failed',
+          lease_expires_at=null,updated_at=clock_timestamp()
+        where verification.seller_organization_id=%s
+          and verification.status in ('queued','leased')
+        """,
+        (seller_id,),
+    )
+    connection.execute(
+        """
+        update app_private.asset_storage_cleanup_job
+        set status='queued',attempts=0,worker_id=null,lease_expires_at=null,
+          available_at=clock_timestamp(),failure_code=null,updated_at=clock_timestamp()
+        where seller_organization_id=%s and status<>'completed'
+        """,
+        (seller_id,),
+    )
+    connection.execute(
+        """
+        update app_private.asset_storage_cleanup_job cleanup
+        set status='queued',attempts=0,worker_id=null,lease_expires_at=null,
+          available_at=clock_timestamp(),failure_code=null,updated_at=clock_timestamp()
+        from app_private.asset_upload upload, asset_blob blob
+        where upload.seller_organization_id=%s
+          and blob.seller_organization_id=upload.seller_organization_id
+          and blob.id=upload.blob_id and blob.storage_driver='s3'
+          and cleanup.seller_organization_id=upload.seller_organization_id
+          and cleanup.upload_id=upload.id and cleanup.kind='ready_orphan'
+          and cleanup.storage_driver=blob.storage_driver
+          and cleanup.bucket=blob.storage_bucket and cleanup.object_key=blob.object_key
+          and cleanup.storage_version_id=blob.storage_version_id
+        """,
+        (seller_id,),
+    )
+    connection.execute(
+        """
+        insert into app_private.asset_storage_cleanup_job(
+          seller_organization_id,upload_id,kind,storage_driver,bucket,object_key,
+          storage_version_id,storage_etag,byte_size,sha256,media_type,status,available_at
+        )
+        select upload.seller_organization_id,upload.id,'ready_orphan',blob.storage_driver,
+          blob.storage_bucket,blob.object_key,blob.storage_version_id,blob.storage_etag,
+          blob.byte_size,blob.sha256,blob.media_type,'queued',clock_timestamp()
+        from app_private.asset_upload upload
+        join asset_blob blob on blob.seller_organization_id=upload.seller_organization_id
+          and blob.id=upload.blob_id and blob.storage_driver='s3'
+        where upload.seller_organization_id=%s and not exists(
+          select 1 from app_private.asset_storage_cleanup_job cleanup
+          where cleanup.seller_organization_id=upload.seller_organization_id
+            and cleanup.upload_id=upload.id and cleanup.kind='ready_orphan'
+            and cleanup.storage_driver=blob.storage_driver
+            and cleanup.bucket=blob.storage_bucket and cleanup.object_key=blob.object_key
+            and cleanup.storage_version_id=blob.storage_version_id
+        )
+        """,
+        (seller_id,),
+    )
+    connection.execute(
+        """
+        update app_private.asset_storage_cleanup_job
+        set status='queued',attempts=0,worker_id=null,lease_expires_at=null,
+          available_at=clock_timestamp(),failure_code=null,updated_at=clock_timestamp()
+        where seller_organization_id=%s
+          and kind in ('quarantine_reconcile','ready_reconcile')
+        """,
+        (seller_id,),
+    )
+    pending = connection.execute(
+        "select count(*) from app_private.asset_storage_cleanup_job "
+        "where seller_organization_id=%s and status<>'completed'",
+        (seller_id,),
+    ).fetchone()
+    if pending is None:
+        raise RuntimeError("demo cleanup count is unavailable")
+    return int(pending[0])
 
 
 def reset_demo(
@@ -158,6 +278,7 @@ def reset_demo(
     buyer = manifest["personas"]["buyer"]
     admin_id = identity_id(issuer, admin["subject"])
     buyer_id = identity_id(issuer, buyer["subject"])
+    asset_worker_id = identity_id(issuer, ASSET_WORKER_SUBJECT)
     seller_id = UUID(seller["id"])
     product_id = UUID(product["id"])
     course_id = UUID(course["id"])
@@ -168,11 +289,54 @@ def reset_demo(
     lesson_ids = [UUID(lesson["lesson_id"]) for lesson in lessons]
 
     connection.execute("select pg_advisory_xact_lock(hashtextextended(%s,0))", (DEMO_KEY,))
+    connection.execute(
+        "select pg_advisory_xact_lock(hashtextextended(%s,0))",
+        (f"appsell.asset/reset/{seller_id}",),
+    )
+    connection.execute(
+        "select pg_advisory_xact_lock(hashtextextended(%s,0))",
+        (f"appsell.asset/quota/{seller_id}",),
+    )
     validate_demo_database(connection)
     connection.execute("select set_config('appsell.demo_reset_key',%s,true)", (DEMO_KEY,))
     version = connection.execute("select version_num from alembic_version").fetchone()
-    if version != ("0007_learning_progress",):
-        raise RuntimeError("database must be migrated to 0007_learning_progress")
+    if version != ("0008_private_asset_storage",):
+        raise RuntimeError("database must be migrated to 0008_private_asset_storage")
+    unsafe_storage = connection.execute(
+        """
+        select exists(
+          select 1 from asset_blob blob
+          left join app_private.asset_upload upload
+            on upload.seller_organization_id=blob.seller_organization_id
+           and upload.blob_id=blob.id
+          where blob.seller_organization_id=%s and blob.storage_driver='s3'
+            and (upload.id is null or not exists(
+              select 1 from app_private.asset_storage_cleanup_job cleanup
+              where cleanup.seller_organization_id=upload.seller_organization_id
+                and cleanup.upload_id=upload.id and cleanup.kind='ready_orphan'
+                and cleanup.storage_driver=blob.storage_driver
+                and cleanup.bucket=blob.storage_bucket
+                and cleanup.object_key=blob.object_key
+                and cleanup.storage_version_id=blob.storage_version_id
+                and cleanup.status='completed'
+            ))
+        ) or exists(
+          select 1 from app_private.asset_storage_cleanup_job
+          where seller_organization_id=%s and status<>'completed'
+        ) or exists(
+          select 1 from app_private.asset_upload upload
+          where upload.seller_organization_id=%s and not exists(
+            select 1 from app_private.asset_storage_cleanup_job reconcile
+            where reconcile.seller_organization_id=upload.seller_organization_id
+              and reconcile.upload_id=upload.id and reconcile.kind='quarantine_reconcile'
+              and reconcile.status='completed'
+          )
+        )
+        """,
+        (seller_id, seller_id, seller_id),
+    ).fetchone()
+    if unsafe_storage != (False,):
+        raise RuntimeError("demo reset blocked until private S3 storage cleanup is drained")
 
     for identity, identity_uuid in ((admin, admin_id), (buyer, buyer_id)):
         connection.execute(
@@ -194,6 +358,28 @@ def reset_demo(
         ).fetchone()
         if row != (identity_uuid, identity["email"], True):
             raise RuntimeError("demo identity conflicts with existing identity")
+
+    connection.execute(
+        """
+        insert into identity_user(
+          id,identity_issuer,identity_sub,email_normalized,email_verified
+        ) values(%s,%s,%s,%s,true)
+        on conflict(identity_issuer,identity_sub) do update set
+          email_normalized=excluded.email_normalized,email_verified=true,
+          updated_at=clock_timestamp()
+        where identity_user.id=excluded.id
+        """,
+        (asset_worker_id, issuer, ASSET_WORKER_SUBJECT, ASSET_WORKER_EMAIL),
+    )
+    connection.execute(
+        """
+        insert into app_private.asset_worker_identity(identity_user_id,status,label)
+        values(%s,'active','Local and CI private asset worker')
+        on conflict(identity_user_id) do update set status='active',
+          label=excluded.label,updated_at=clock_timestamp()
+        """,
+        (asset_worker_id,),
+    )
 
     connection.execute(
         """
@@ -239,6 +425,22 @@ def reset_demo(
         "delete from app_private.learning_progress_request where seller_organization_id=%s",
         (seller_id,),
     )
+    connection.execute(
+        "delete from app_private.asset_mutation_request where seller_organization_id=%s",
+        (seller_id,),
+    )
+    connection.execute(
+        "delete from app_private.asset_verification_job where seller_organization_id=%s",
+        (seller_id,),
+    )
+    connection.execute(
+        "delete from app_private.asset_storage_cleanup_job where seller_organization_id=%s",
+        (seller_id,),
+    )
+    connection.execute(
+        "delete from app_private.asset_upload where seller_organization_id=%s",
+        (seller_id,),
+    )
     connection.execute("delete from lesson_progress where seller_organization_id=%s", (seller_id,))
     connection.execute(
         "delete from course_learning_state where seller_organization_id=%s", (seller_id,)
@@ -246,6 +448,15 @@ def reset_demo(
     connection.execute(
         "delete from learning_enrollment where seller_organization_id=%s", (seller_id,)
     )
+    connection.execute(
+        "delete from publication_asset where seller_organization_id=%s", (seller_id,)
+    )
+    connection.execute(
+        "delete from lesson_asset_draft where seller_organization_id=%s", (seller_id,)
+    )
+    connection.execute("delete from asset_version where seller_organization_id=%s", (seller_id,))
+    connection.execute("delete from asset_blob where seller_organization_id=%s", (seller_id,))
+    connection.execute("delete from asset_record where seller_organization_id=%s", (seller_id,))
     connection.execute("delete from learning_asset where seller_organization_id=%s", (seller_id,))
     connection.execute(
         "delete from buyer_entitlement where seller_organization_id=%s", (seller_id,)
@@ -353,6 +564,58 @@ def reset_demo(
         )
         connection.execute(
             """
+            insert into asset_record(
+              seller_organization_id,id,catalog_product_id,title,status
+            ) values(%s,%s,%s,%s,'active')
+            """,
+            (seller_id, UUID(lesson["asset_id"]), product_id, lesson["title"]),
+        )
+        connection.execute(
+            """
+            insert into asset_blob(
+              seller_organization_id,id,storage_driver,storage_bucket,object_key,
+              file_name,media_type,byte_size,sha256,magic_type,scanner_result,verified_at
+            ) values(%s,app_private.legacy_asset_blob_id(%s),'legacy_bundle','codex-demo',
+              %s,%s,'application/pdf',%s,%s,'application/pdf','legacy_trusted',
+              clock_timestamp())
+            """,
+            (
+                seller_id,
+                UUID(lesson["asset_id"]),
+                f"{lesson['slug']}.pdf",
+                f"{lesson['slug']}.pdf",
+                lesson["bytes"],
+                lesson["sha256"],
+            ),
+        )
+        connection.execute(
+            """
+            insert into asset_version(
+              seller_organization_id,asset_id,version,blob_id,actor_identity_user_id
+            ) values(%s,%s,1,app_private.legacy_asset_blob_id(%s),%s)
+            """,
+            (seller_id, UUID(lesson["asset_id"]), UUID(lesson["asset_id"]), admin_id),
+        )
+        connection.execute(
+            """
+            insert into lesson_asset_draft(
+              seller_organization_id,catalog_product_id,course_id,module_id,lesson_id,
+              asset_id,asset_version,blob_id,position,status
+            ) values(%s,%s,%s,%s,%s,%s,1,app_private.legacy_asset_blob_id(%s),%s,'active')
+            """,
+            (
+                seller_id,
+                product_id,
+                course_id,
+                module_id,
+                lesson_id,
+                UUID(lesson["asset_id"]),
+                UUID(lesson["asset_id"]),
+                lesson["position"],
+            ),
+        )
+        connection.execute(
+            """
             insert into learning_asset(
               seller_organization_id,id,catalog_product_id,course_id,module_id,
               lesson_id,seed_key,file_name,title,media_type,byte_size,sha256,
@@ -382,7 +645,7 @@ def reset_demo(
         insert into publication(
           seller_organization_id,id,catalog_product_id,version,schema_version,
           source_sha256,snapshot,actor_identity_user_id
-        ) select %s,%s,%s,1,2,
+        ) select %s,%s,%s,1,3,
           encode(digest(convert_to(snapshot::text,'UTF8'),'sha256'),'hex'),
           snapshot,%s from payload
         on conflict(seller_organization_id,id) do nothing
@@ -488,7 +751,22 @@ def main() -> None:
                     "seller_id": manifest["seller"]["id"],
                     "admin_email": manifest["personas"]["admin"]["email"],
                     "buyer_email": manifest["personas"]["buyer"]["email"],
+                    "asset_worker_identity_user_id": str(identity_id(issuer, ASSET_WORKER_SUBJECT)),
                     "lessons": len(manifest["lessons"]),
+                }
+            )
+        )
+        return
+    if args.prepare_storage_cleanup:
+        with psycopg.connect(database_url) as connection:
+            pending_cleanup_jobs = prepare_demo_storage_cleanup(connection, manifest)
+            connection.commit()
+        print(
+            json.dumps(
+                {
+                    "status": "storage_cleanup_prepared",
+                    "seed_key": DEMO_KEY,
+                    "pending_cleanup_jobs": pending_cleanup_jobs,
                 }
             )
         )
@@ -496,7 +774,16 @@ def main() -> None:
     with psycopg.connect(database_url) as connection:
         reset_demo(connection, manifest, manifest_sha, issuer)
         connection.commit()
-    print(json.dumps({"status": "reset", "seed_key": DEMO_KEY, "manifest_sha256": manifest_sha}))
+    print(
+        json.dumps(
+            {
+                "status": "reset",
+                "seed_key": DEMO_KEY,
+                "manifest_sha256": manifest_sha,
+                "asset_worker_identity_user_id": str(identity_id(issuer, ASSET_WORKER_SUBJECT)),
+            }
+        )
+    )
 
 
 if __name__ == "__main__":

@@ -577,6 +577,7 @@ test("authors and reorders a tenant curriculum at 320px without drag", async ({ 
   const scaled = await page.evaluate(() => ({
     client: document.documentElement.clientWidth,
     scroll: document.documentElement.scrollWidth,
+    moduleIntrinsicInlineSize: getComputedStyle(document.querySelector(".curriculum-module")!).containIntrinsicInlineSize,
     clipped: [...document.querySelectorAll("a,button,input,textarea,summary")].flatMap((element) => {
       const rect = element.getBoundingClientRect();
       return rect.width > 0 && (rect.left < -1 || rect.right > document.documentElement.clientWidth + 1)
@@ -585,6 +586,7 @@ test("authors and reorders a tenant curriculum at 320px without drag", async ({ 
     })
   }));
   expect(scaled.scroll).toBeLessThanOrEqual(scaled.client);
+  expect(scaled.moduleIntrinsicInlineSize).not.toContain("520px");
   expect(scaled.clipped, JSON.stringify(scaled)).toEqual([]);
   await page.evaluate(() => { document.documentElement.style.fontSize = "100%"; });
   await page.setViewportSize({ width: 568, height: 320 });
@@ -599,6 +601,202 @@ test("authors and reorders a tenant curriculum at 320px without drag", async ({ 
   await expect(archivedOrderButtons).toHaveCount(4);
   expect(await archivedOrderButtons.evaluateAll((buttons) => buttons.every((button) => (button as HTMLButtonElement).disabled))).toBe(true);
   await expect(page.getByText("Editar aula")).toHaveCount(0);
+});
+
+test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium", "asset upload interaction runs once in Chromium");
+  const sellerId = "92000000-0000-4000-8000-000000000001";
+  const productId = "93000000-0000-4000-8000-000000000001";
+  const courseId = "94000000-0000-4000-8000-000000000001";
+  const moduleId = "95000000-0000-4000-8000-000000000001";
+  const lessonId = "96000000-0000-4000-8000-000000000001";
+  const assetId = "97000000-0000-4000-8000-000000000001";
+  const uploadId = "98000000-0000-4000-8000-000000000001";
+  const productPath = `/api/sellers/${sellerId}/products/${productId}`;
+  const curriculumPath = `${productPath}/courses/${courseId}`;
+  const assetsPath = `${curriculumPath}/modules/${moduleId}/lessons/${lessonId}/assets`;
+  let intentAttempts = 0;
+  let releaseUpload!: () => void;
+  let markUploadStarted!: () => void;
+  let markCancelCalled!: () => void;
+  const uploadStarted = new Promise<void>((resolve) => { markUploadStarted = resolve; });
+  const cancelCalled = new Promise<void>((resolve) => { markCancelCalled = resolve; });
+
+  await page.setViewportSize({ width: 360, height: 844 });
+  await login(page);
+  await page.route("http://127.0.0.1:8333/**", async (route) => {
+    if (route.request().method() === "OPTIONS") {
+      await route.fulfill({
+        status: 204,
+        headers: {
+          "access-control-allow-origin": "http://localhost:3000",
+          "access-control-allow-methods": "PUT,OPTIONS",
+          "access-control-allow-headers": "content-type,x-amz-checksum-sha256,x-amz-meta-appsell-upload-id"
+        }
+      });
+      return;
+    }
+    markUploadStarted();
+    await new Promise<void>((resolve) => { releaseUpload = resolve; });
+    await route.fulfill({ status: 200, headers: { "access-control-allow-origin": "http://localhost:3000" }, body: "" });
+  });
+  await page.route("**/api/sellers/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === productPath && request.method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        product: {
+          id: productId,
+          seller_organization_id: sellerId,
+          slug: "pdf-mobile",
+          title: "PDF Mobile",
+          description: "Editor de material privado.",
+          status: "draft",
+          draft_version: 2,
+          course: { id: courseId, title: "Curso PDF", status: "draft", draft_version: 4 },
+          courses: [{ id: courseId, title: "Curso PDF", status: "draft", draft_version: 4 }],
+          offer: { id: null, title: "", summary: "", status: "draft", draft_version: 0 },
+          publication: null,
+          has_unpublished_changes: true,
+          readiness: { can_publish: false, items: [{ key: "offer_required", label: "Crie a oferta.", ready: false }] }
+        },
+        csrf: { update: "update-token", publish: "publish-token" }
+      }) });
+      return;
+    }
+    if (path === `${curriculumPath}/curriculum` && request.method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        course: { id: courseId, draft_version: 4 },
+        modules: [{
+          id: moduleId,
+          title: "Base PDF",
+          status: "active",
+          position: 0,
+          lessons: [{ id: lessonId, title: "Aula PDF", kind: "text", content: "Material complementar.", status: "active", position: 0 }]
+        }],
+        csrf: { create: "create-token", update: "update-token", reorder: "reorder-token", archive: "archive-token" },
+        limits: { modules_per_course: 50, lessons_per_module: 100, lessons_per_course: 500, title_bytes: 160, lesson_content_bytes: 8192 }
+      }) });
+      return;
+    }
+    if (path === assetsPath && request.method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        assets: [{ id: assetId, title: "Guia atual", file_name: "guia-atual.pdf", byte_size: 3181, status: "ready", safe_reason: null }],
+        uploads: [],
+        csrf: { intent: "intent-token", confirm: "confirm-token", cancel: "cancel-token", archive: "asset-archive-token" }
+      }) });
+      return;
+    }
+    if (path === `${assetsPath}/upload-intents` && request.method() === "POST") {
+      intentAttempts += 1;
+      if (intentAttempts === 1) {
+        await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "temporarily_unavailable" }) });
+        return;
+      }
+      await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({
+        upload_id: uploadId,
+        asset_id: "99000000-0000-4000-8000-000000000001",
+        upload_url: `http://127.0.0.1:8333/appsell-quarantine/${uploadId}?X-Amz-Signature=test`,
+        upload_origin: "http://127.0.0.1:8333",
+        expires_at: new Date(Date.now() + 300_000).toISOString(),
+        required_headers: {
+          "Content-Type": "application/pdf",
+          "x-amz-checksum-sha256": "test-checksum",
+          "x-amz-meta-appsell-upload-id": uploadId
+        }
+      }) });
+      return;
+    }
+    if (path === `${assetsPath}/uploads/${uploadId}/cancel` && request.method() === "POST") {
+      const posted = request.postDataBuffer();
+      const form = await new Request(request.url(), {
+        method: "POST",
+        headers: request.headers(),
+        body: posted ? new Uint8Array(posted) : undefined
+      }).formData();
+      expect(form.get("_csrf")).toBe("cancel-token");
+      markCancelCalled();
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ upload_id: uploadId, status: "cancelled" }) });
+      return;
+    }
+    if (path === `${assetsPath}/${assetId}/archive` && request.method() === "POST") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ asset_id: assetId, archived: true, course_version: 5 }) });
+      return;
+    }
+    await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "unexpected_test_route" }) });
+  });
+
+  await page.goto(`/products/${sellerId}/${productId}?section=curriculo`);
+  const lesson = page.getByTestId(`lesson-${lessonId}`);
+  const summary = lesson.locator(".lesson-assets summary");
+  await expect(summary).toContainText("Materiais da aula");
+  await summary.click();
+  await expect(lesson.getByText("1 PDF pronto", { exact: true })).toBeVisible();
+  const input = lesson.getByLabel("Escolher PDF substituto");
+  const feedback = lesson.locator(".asset-feedback");
+  await expect(feedback).toHaveAttribute("role", "status");
+  await expect(feedback).toHaveAttribute("aria-live", "polite");
+  await expect(feedback).toHaveAttribute("aria-atomic", "true");
+
+  const pdf = { name: "guia-novo.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF") };
+  await input.setInputFiles(pdf);
+  await expect(feedback).toContainText("Não foi possível preparar o PDF");
+  const retry = lesson.getByRole("button", { name: "Tentar novamente" });
+  await expect(retry).toBeVisible();
+  await retry.focus();
+  await expect(retry).toBeFocused();
+  await input.setInputFiles(pdf);
+  await uploadStarted;
+  await expect(feedback).toContainText("Enviando PDF");
+  await expect(lesson.getByRole("progressbar", { name: "Progresso do envio" })).toBeVisible();
+  await lesson.getByRole("button", { name: "Cancelar envio" }).click();
+  await cancelCalled;
+  releaseUpload();
+  await expect(feedback).toContainText("Selecione um PDF para iniciar.");
+  await expect(lesson.getByRole("button", { name: "Cancelar envio" })).toHaveCount(0);
+
+  for (const width of [320, 360, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    const layout = await lesson.evaluate((element) => ({
+      client: document.documentElement.clientWidth,
+      scroll: document.documentElement.scrollWidth,
+      shortTargets: [...element.querySelectorAll("button,input,summary")].flatMap((target) => {
+        const rect = target.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 && (rect.width < 44 || rect.height < 44)
+          ? [{ name: target.textContent?.trim() || target.getAttribute("aria-label") || target.getAttribute("id"), width: rect.width, height: rect.height }]
+          : [];
+      })
+    }));
+    expect(layout.scroll, `overflow at ${width}px`).toBeLessThanOrEqual(layout.client);
+    expect(layout.shortTargets, `short targets at ${width}px`).toEqual([]);
+  }
+
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.evaluate(() => { document.documentElement.style.fontSize = "200%"; });
+  const zoomed = await lesson.evaluate((element) => ({
+    client: document.documentElement.clientWidth,
+    scroll: document.documentElement.scrollWidth,
+    clipped: [...element.querySelectorAll("button,input,summary,.asset-feedback")].flatMap((target) => {
+      const rect = target.getBoundingClientRect();
+      return rect.width > 0 && (rect.left < -1 || rect.right > document.documentElement.clientWidth + 1)
+        ? [{ name: target.textContent?.trim() || target.getAttribute("id"), left: rect.left, right: rect.right }]
+        : [];
+    })
+  }));
+  expect(zoomed.scroll).toBeLessThanOrEqual(zoomed.client);
+  expect(zoomed.clipped).toEqual([]);
+  await page.evaluate(() => { document.documentElement.style.fontSize = "100%"; });
+
+  const currentDetails = lesson.locator(".lesson-assets details");
+  if ((await currentDetails.getAttribute("open")) === null) await summary.click();
+  const archive = lesson.getByRole("button", { name: "Arquivar PDF" });
+  await archive.click();
+  const archiveDialog = page.getByRole("dialog", { name: "Arquivar este PDF?" });
+  await expect(archiveDialog).toBeVisible();
+  await expect(archiveDialog.getByRole("button", { name: "Manter PDF" })).toBeFocused();
+  await archiveDialog.getByRole("button", { name: "Manter PDF" }).click();
+  await expect(archiveDialog).toHaveCount(0);
+  await expect(summary).toBeFocused();
 });
 
 test("fails publication closed for string readiness and a missing offer", async ({ page }, testInfo) => {

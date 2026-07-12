@@ -24,7 +24,9 @@ interface ApiRequest {
     "catalog.draft.preview" | "catalog.publication.read" | "catalog.publication.create" |
     "catalog.curriculum.read" | "catalog.curriculum.create" |
     "catalog.curriculum.update" | "catalog.curriculum.archive" |
-    "catalog.curriculum.reorder" | "library.read" | "library.asset.read" |
+    "catalog.curriculum.reorder" | "catalog.asset.read" | "catalog.asset.create" |
+    "catalog.asset.upload.confirm" | "catalog.asset.upload.cancel" |
+    "catalog.asset.archive" | "library.read" | "library.asset.read" |
     "learning.player.read" | "learning.progress.write";
   sellerOrganizationId?: string;
   body?: Record<string, unknown>;
@@ -384,6 +386,126 @@ export async function reorderDomainCourseLessons(
     capability: "catalog.curriculum.reorder",
     sellerOrganizationId,
     body: curriculumBody(input, { ordered_ids: input.orderedIds })
+  });
+}
+
+interface LessonAssetPath {
+  sellerOrganizationId: string;
+  productId: string;
+  courseId: string;
+  moduleId: string;
+  lessonId: string;
+}
+
+function lessonAssetPath(input: LessonAssetPath) {
+  return `/v1/me/sellers/${input.sellerOrganizationId}/products/${input.productId}`
+    + `/courses/${input.courseId}/modules/${input.moduleId}/lessons/${input.lessonId}/assets`;
+}
+
+export async function readDomainLessonAssets(
+  sessionId: string,
+  session: ServerSession,
+  input: LessonAssetPath
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: lessonAssetPath(input),
+    capability: "catalog.asset.read",
+    sellerOrganizationId: input.sellerOrganizationId
+  });
+}
+
+export async function createDomainAssetUploadIntent(
+  sessionId: string,
+  session: ServerSession,
+  input: LessonAssetPath & {
+    idempotencyKey: string;
+    expectedCourseVersion: number;
+    existingAssetId?: string;
+    title: string;
+    fileName: string;
+    mediaType: "application/pdf";
+    byteSize: number;
+    sha256: string;
+  }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `${lessonAssetPath(input)}/upload-intents`,
+    capability: "catalog.asset.create",
+    sellerOrganizationId: input.sellerOrganizationId,
+    body: {
+      idempotency_key: input.idempotencyKey,
+      expected_course_version: input.expectedCourseVersion,
+      ...(input.existingAssetId ? { existing_asset_id: input.existingAssetId } : {}),
+      title: input.title,
+      file_name: input.fileName,
+      media_type: input.mediaType,
+      byte_size: input.byteSize,
+      sha256: input.sha256
+    }
+  });
+}
+
+export async function readDomainAssetUploadStatus(
+  sessionId: string,
+  session: ServerSession,
+  input: LessonAssetPath & { uploadId: string }
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `${lessonAssetPath(input)}/uploads/${input.uploadId}`,
+    capability: "catalog.asset.read",
+    sellerOrganizationId: input.sellerOrganizationId
+  });
+}
+
+export async function confirmDomainAssetUpload(
+  sessionId: string,
+  session: ServerSession,
+  input: LessonAssetPath & { uploadId: string; idempotencyKey: string }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `${lessonAssetPath(input)}/uploads/${input.uploadId}/confirm`,
+    capability: "catalog.asset.upload.confirm",
+    sellerOrganizationId: input.sellerOrganizationId,
+    body: { idempotency_key: input.idempotencyKey }
+  });
+}
+
+export async function cancelDomainAssetUpload(
+  sessionId: string,
+  session: ServerSession,
+  input: LessonAssetPath & { uploadId: string; idempotencyKey: string }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `${lessonAssetPath(input)}/uploads/${input.uploadId}/cancel`,
+    capability: "catalog.asset.upload.cancel",
+    sellerOrganizationId: input.sellerOrganizationId,
+    body: { idempotency_key: input.idempotencyKey }
+  });
+}
+
+export async function archiveDomainLessonAsset(
+  sessionId: string,
+  session: ServerSession,
+  input: LessonAssetPath & {
+    assetId: string;
+    idempotencyKey: string;
+    expectedCourseVersion: number;
+  }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `${lessonAssetPath(input)}/${input.assetId}/archive`,
+    capability: "catalog.asset.archive",
+    sellerOrganizationId: input.sellerOrganizationId,
+    body: {
+      idempotency_key: input.idempotencyKey,
+      expected_course_version: input.expectedCourseVersion
+    }
   });
 }
 

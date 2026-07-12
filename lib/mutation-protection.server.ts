@@ -12,6 +12,10 @@ export const CREATE_CURRICULUM_CSRF_ACTION = "POST:/api/curriculum";
 export const UPDATE_CURRICULUM_CSRF_ACTION = "PATCH:/api/curriculum";
 export const REORDER_CURRICULUM_CSRF_ACTION = "PUT:/api/curriculum/order";
 export const ARCHIVE_CURRICULUM_CSRF_ACTION = "POST:/api/curriculum/archive";
+export const CREATE_ASSET_UPLOAD_CSRF_ACTION = "POST:/api/assets/upload-intents";
+export const CONFIRM_ASSET_UPLOAD_CSRF_ACTION = "POST:/api/assets/uploads/confirm";
+export const CANCEL_ASSET_UPLOAD_CSRF_ACTION = "POST:/api/assets/uploads/cancel";
+export const ARCHIVE_ASSET_CSRF_ACTION = "POST:/api/assets/archive";
 export const UPDATE_LEARNING_PROGRESS_CSRF_ACTION = "PUT:/api/library/progress";
 export const COMPLETE_LEARNING_LESSON_CSRF_ACTION = "POST:/api/library/complete";
 

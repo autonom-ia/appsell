@@ -11,6 +11,7 @@ next_dist_dir=".next-preview-${project}"
 postgres_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
 api_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
 redis_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+storage_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
 redis_dir="$(mktemp -d "${TMPDIR:-/tmp}/appsell-preview-redis.XXXXXX")"
 generated_backup="$(mktemp -d "${TMPDIR:-/tmp}/appsell-preview-generated.XXXXXX")"
 
@@ -25,12 +26,19 @@ session_key_b64="$(openssl rand -base64 32)"
 csrf_key_b64="$(openssl rand -base64 32)"
 vault_key_b64="$(openssl rand -base64 32)"
 redis_password="$(openssl rand -hex 32)"
+storage_access_key="preview-$(openssl rand -hex 12)"
+storage_secret_key="$(openssl rand -hex 32)"
 next_pid=""
 redis_pid=""
 cleanup_started="false"
 
 cp next-env.d.ts "$generated_backup/next-env.d.ts"
 cp tsconfig.json "$generated_backup/tsconfig.json"
+
+restore_generated_config() {
+  cp "$generated_backup/next-env.d.ts" next-env.d.ts
+  cp "$generated_backup/tsconfig.json" tsconfig.json
+}
 
 cleanup() {
   if [[ "$cleanup_started" == "true" ]]; then return; fi
@@ -41,8 +49,7 @@ cleanup() {
   wait "$next_pid" >/dev/null 2>&1 || true
   wait "$redis_pid" >/dev/null 2>&1 || true
   docker compose -p "$project" down --rmi local --volumes --remove-orphans >/dev/null 2>&1 || true
-  cp "$generated_backup/next-env.d.ts" next-env.d.ts
-  cp "$generated_backup/tsconfig.json" tsconfig.json
+  restore_generated_config
   rm -rf -- "$redis_dir" "$generated_backup" "$next_dist_dir"
 }
 trap cleanup EXIT
@@ -60,6 +67,14 @@ export APPSELL_IDENTITY_ISSUER="https://identity.preview.autonomia.site"
 export APPSELL_INTERNAL_HMAC_KEYRING_B64_JSON="[{\"id\":\"preview-v1\",\"key\":\"${internal_key_b64}\",\"active\":true}]"
 export APPSELL_API_CONTEXT_HMAC_KEY_B64="$(printf '%s' "$context_key" | xxd -r -p | base64)"
 export APPSELL_SERVICE_CREDENTIAL_B64="$service_credential_b64"
+# Docker Compose maps the generic variables above into the API container.
+# Host-side API CLIs read the APPSELL_API_ namespace directly, so provide the
+# same complete authentication tuple before invoking any of them.
+export APPSELL_API_INTERNAL_ISSUER="$APPSELL_INTERNAL_ISSUER"
+export APPSELL_API_INTERNAL_AUDIENCE="$APPSELL_INTERNAL_AUDIENCE"
+export APPSELL_API_INTERNAL_HMAC_KEYRING_B64_JSON="$APPSELL_INTERNAL_HMAC_KEYRING_B64_JSON"
+export APPSELL_API_SERVICE_CREDENTIAL_B64="$APPSELL_SERVICE_CREDENTIAL_B64"
+origin="http://localhost:${web_port}"
 
 docker compose -p "$project" up -d --wait postgres
 docker compose -p "$project" exec -T postgres psql -U postgres -d appsell \
@@ -82,27 +97,65 @@ export APPSELL_DEMO_DATABASE_URL="postgresql://postgres:${superuser_secret}@127.
 uv run --project apps/api python -m appsell_api.reset_demo_tenant \
   --confirm-demo-key autonomia-demo-v1
 
-docker compose -p "$project" up -d --build --wait api
+export APPSELL_STORAGE_S3_PORT="$storage_port"
+export APPSELL_STORAGE_CONTROL_ACCESS_KEY="$storage_access_key"
+export APPSELL_STORAGE_CONTROL_SECRET_KEY="$storage_secret_key"
+export APPSELL_STORAGE_ALLOWED_ORIGIN="$origin"
+export APPSELL_STORAGE_BUCKETS="appsell-quarantine,appsell-ready"
+export APPSELL_API_STORAGE_PROVIDER="s3"
+export APPSELL_API_STORAGE_INTERNAL_ENDPOINT="http://seaweedfs:8333"
+export APPSELL_API_STORAGE_PUBLIC_ENDPOINT="http://127.0.0.1:${storage_port}"
+export APPSELL_API_STORAGE_REGION="us-east-1"
+export APPSELL_API_STORAGE_QUARANTINE_BUCKET="appsell-quarantine"
+export APPSELL_API_STORAGE_READY_BUCKET="appsell-ready"
+export APPSELL_API_STORAGE_CONTROL_ACCESS_KEY="$storage_access_key"
+export APPSELL_API_STORAGE_CONTROL_SECRET_KEY="$storage_secret_key"
+export APPSELL_API_STORAGE_ALLOWED_ORIGIN="$origin"
+export APPSELL_API_MALWARE_SCANNER_PROVIDER="deterministic"
+docker compose -p "$project" --profile storage up -d --wait seaweedfs
+if ! docker compose -p "$project" --profile storage up -d --build --wait api; then
+  docker compose -p "$project" --profile storage logs --no-color api pdf-sandbox seaweedfs >&2
+  exit 1
+fi
+APPSELL_API_PDF_SANDBOX_SOCKET="/run/appsell-pdf/pdf.sock" \
+  uv run --project apps/api --frozen python -m appsell_api.storage_public_audit
 redis-server --bind 127.0.0.1 --port "$redis_port" --dir "$redis_dir" \
   --save '' --appendonly no --protected-mode yes --requirepass "$redis_password" \
   >"$redis_dir/redis.log" 2>&1 &
 redis_pid="$!"
 
-origin="http://localhost:${web_port}"
 export APPSELL_REDIS_URL="redis://:${redis_password}@127.0.0.1:${redis_port}/0"
 export APPSELL_REDIS_PREFIX="appsell:preview:${project}"
 export APPSELL_SESSION_HMAC_KEY_B64="$session_key_b64"
 export APPSELL_CSRF_HMAC_KEY_B64="$csrf_key_b64"
 export APPSELL_PUBLIC_ORIGIN="$origin"
+export APPSELL_STORAGE_PUBLIC_ORIGIN="http://127.0.0.1:${storage_port}"
 export APPSELL_VAULT_LOCAL_KEYRING_B64_JSON="[{\"id\":\"preview-v1\",\"key\":\"${vault_key_b64}\",\"active\":true}]"
 export APPSELL_DOMAIN_API_URL="http://127.0.0.1:${api_port}"
 export APPSELL_DEMO_ENABLED="true"
 export APPSELL_NEXT_DIST_DIR="$next_dist_dir"
 export NEXT_TELEMETRY_DISABLED="1"
 
+pnpm dev --hostname 127.0.0.1 --port "$web_port" &
+next_pid="$!"
+preview_ready="false"
+for _ in $(seq 1 120); do
+  if curl --silent --fail --max-time 1 "$origin" >/dev/null; then
+    preview_ready="true"
+    break
+  fi
+  if ! kill -0 "$next_pid" >/dev/null 2>&1; then
+    wait "$next_pid"
+    exit $?
+  fi
+  sleep 0.1
+done
+if [[ "$preview_ready" != "true" ]]; then
+  echo "preview local não ficou pronto em 12 segundos" >&2
+  exit 1
+fi
+restore_generated_config
 echo "AppSell demo local: $origin"
 echo "Use os botões 'Entrar como admin demo' e 'Entrar como aluno demo'."
 echo "Pressione Ctrl+C para remover toda a infraestrutura descartável."
-pnpm dev --hostname 127.0.0.1 --port "$web_port" &
-next_pid="$!"
 wait "$next_pid"

@@ -6,9 +6,9 @@ Atualizado em pontos de marco (PR aberta, deploy, incidente). Diferente de MEMOR
 
 | Indicador | Status | Última verificação |
 |-----------|:------:|--------------------|
-| Build | 🟢 web + API container local verdes | 2026-07-11 |
-| Testes | 🟢 84 web + 137 Python/PG/API + 3 verticais BFF + 42 browser; build verde | 2026-07-11 |
-| CI | 🟢 PRs #35/#36/#37 verdes; PR #39 aberta/empilhada | 2026-07-11 |
+| Build | 🟢 web + API/PDF sandbox containers locais verdes | 2026-07-12 |
+| Testes | 🟢 116 web + suíte Python + 148 PG/API + 3 BFF + 3 storage; 31 browser focados | 2026-07-12 |
+| CI | 🟢 PRs #35/#36/#37/#39 e #41 verdes | 2026-07-12 |
 | Deploy produção | 🟡 não configurado/não executado | 2026-07-10 |
 | Harness instalado em `main` | 2.0.2 | 2026-07-10 |
 | Harness upgrade | 🟢 PR #37 em 2.1.2, review e 10/10 checks verdes; sem merge | 2026-07-11 |
@@ -26,11 +26,13 @@ Este marco é Local/CI; não é o Identity real e não concede conta de produç�
 
 ## Última mudança relevante
 
-2026-07-11 — Issue #38 implementada localmente: migration 0007, entitlement
-pinado à publicação, player mobile-first, progresso monotônico/idempotente,
-retomada multi-course e PDFs por `entitlement_id + asset_id` com stream privado.
-Gates reais: 84 web, 137 Python/PG/API, 3 verticais BFF/API/PG, 42 Playwright +
-4 skips deliberados, build sem warning NFT, audits e production fail-closed.
+2026-07-12 — Issue #40 implementada localmente na branch
+`feat/40-private-asset-upload`: migration 0008, upload direto S3-compatible,
+quarentena, verificação PDF isolada, worker, publicação imutável e download
+autorizado por entitlement. Gates reais: 116 Vitest, suíte Python, 148 PG/API,
+3 verticais BFF, 3 verticais storage, 31 Playwright focados + 5 skips
+deliberados, build e audits verdes. PR #41 aberta e os três checks remotos
+verdes no SHA `0b416e4`.
 
 ## O que está funcionando
 
@@ -84,6 +86,18 @@ Gates reais: 84 web, 137 Python/PG/API, 3 verticais BFF/API/PG, 42 Playwright +
   fora da biblioteca do comprador.
 - Cinco PDFs do curso Codex ficam fora de `public/`; cada leitura exige sessão,
   capability, entitlement, snapshot publicado e validação de hash/tamanho.
+- Upload PDF seller-scoped usa intent curta, chave opaca, checksum SHA-256,
+  quota transacional e objeto privado versionado; o browser nunca recebe
+  credencial S3 e não consegue tornar um asset `ready` diretamente.
+- Worker separado move o objeto de quarentena somente após conferir tamanho,
+  hash, estrutura PDF e resultado do antimalware; staging/produção falham
+  fechados sem ClamAV configurado.
+- Publicação fixa `asset_version_id`, hash e tamanho no snapshot. Download do
+  comprador revalida sessão, entitlement, publicação e origem do storage.
+- Auditoria externa comprova acesso anônimo negado no endpoint S3-compatible;
+  reconciliação e cleanup são duráveis e tenant-scoped.
+- Uploader mobile permite cancelar, repetir e arquivar com gate de navegação,
+  foco preservado, alvos de 44 px e cobertura em 320/360/390 px e texto 200%.
 - Player retoma por aula/curso, grava progresso com versão esperada e receipt
   persistente, revalida revogação e não confia em seller vindo do browser.
 - Testes cobrem mesma chave, versões concorrentes, revogação, republicação
@@ -95,8 +109,8 @@ Gates reais: 84 web, 137 Python/PG/API, 3 verticais BFF/API/PG, 42 Playwright +
 - Refresh real com Identity — bloqueado por #13.
 - KMS real/vault HA — provider/infra/staging não decididos — Issue #19.
 - Staging/VPS/TLS — não certificado e fora do escopo atual — Issue #5.
-- Tenant/admin/comprador demo está na PR #36; player/progresso da Issue #38
-  ainda dependem de review final, PR, CI remoto e merges ordenados.
+- Assets privados da Issue #40 estão na PR #41, com review crítico e CI verdes;
+  ainda dependem de aprovação/merges ordenados e permanecem somente Local/CI.
 - Capacidade de lançamento para 100 tenants/clientes ainda não está certificada:
   os testes cobrem 100 buyers no banco e 100 requisições concorrentes full-path,
   mas não um soak/load test de 100 tenants com p95/p99 em staging.
@@ -109,9 +123,9 @@ Gates reais: 84 web, 137 Python/PG/API, 3 verticais BFF/API/PG, 42 Playwright +
 
 ## Próxima ação
 
-Aguardar CI e review do SHA remoto da PR #39, empilhada sobre #36. Identity
-real (#13), KMS (#19), billing/Financial e produção
-continuam bloqueados até ambientes e contratos reais.
+Aguardar decisão humana e merges empilhados #35 → #36 → #39 → #41, sem deploy.
+Identity real (#13), KMS (#19), billing/Financial, storage externo de staging e
+produção continuam bloqueados.
 
 ## Links
 

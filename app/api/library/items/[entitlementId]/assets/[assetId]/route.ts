@@ -14,6 +14,11 @@ import {
   learningUnauthorized,
   type LearningAssetRouteContext
 } from "../../../_route-shared";
+import { configuredPublicOrigin } from "@/lib/public-origin";
+import {
+  configuredStorageUploadOrigin,
+  trustedStorageDownloadUrl
+} from "@/lib/storage-upload-policy.server";
 
 const FILE_NAME = /^[a-z0-9][a-z0-9-]{1,123}[.]pdf$/;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -22,7 +27,20 @@ const MAX_ASSET_BYTES = 10 * 1024 * 1024;
 
 interface AssetMetadata {
   id: string;
+  delivery: "legacy_bundle";
   seed_key: string;
+  file_name: string;
+  title: string;
+  media_type: "application/pdf";
+  byte_size: number;
+  sha256: string;
+}
+
+interface RedirectAssetMetadata {
+  id: string;
+  delivery: "redirect";
+  download_url: string;
+  expires_in_seconds: number;
   file_name: string;
   title: string;
   media_type: "application/pdf";
@@ -44,6 +62,15 @@ export async function GET(request: NextRequest, context: LearningAssetRouteConte
     );
     const metadata = authorizedMetadata(authorization, ids.assetId);
     if (!metadata) return assetUnavailable("asset_metadata_invalid");
+    if (metadata.delivery === "redirect") {
+      const response = NextResponse.redirect(metadata.download_url, 303);
+      response.headers.set("cache-control", "private, no-store, max-age=0");
+      response.headers.set("referrer-policy", "no-referrer");
+      response.headers.set("surrogate-control", "no-store");
+      response.headers.set("vary", "Cookie");
+      response.headers.set("x-content-type-options", "nosniff");
+      return response;
+    }
     const asset = await prepareVerifiedPrivateLearningAsset(
       metadata,
       configuredPrivateLearningAssetRoot()
@@ -70,31 +97,57 @@ export async function GET(request: NextRequest, context: LearningAssetRouteConte
   }
 }
 
-function authorizedMetadata(value: unknown, expectedAssetId: string): AssetMetadata | null {
+function authorizedMetadata(value: unknown, expectedAssetId: string): AssetMetadata | RedirectAssetMetadata | null {
   if (!isRecord(value) || !hasExactKeys(value, ["asset"]) || !isRecord(value.asset)) {
     return null;
   }
   const asset = value.asset;
-  if (!hasExactKeys(asset, [
+  const commonValid = asset.id === expectedAssetId && typeof asset.id === "string" && UUID.test(asset.id)
+    && typeof asset.file_name === "string" && asset.file_name.length >= 1 && asset.file_name.length <= 160
+    && !/[\\/\u0000-\u001f\u007f]/.test(asset.file_name)
+    && typeof asset.title === "string" && asset.title.length >= 2
+    && asset.media_type === "application/pdf"
+    && Number.isInteger(asset.byte_size) && Number(asset.byte_size) >= 1
+    && Number(asset.byte_size) <= MAX_ASSET_BYTES
+    && typeof asset.sha256 === "string" && SHA256.test(asset.sha256);
+  if (!commonValid) return null;
+  if (asset.delivery === "legacy_bundle" && hasExactKeys(asset, [
     "byte_size",
+    "delivery",
     "file_name",
     "id",
     "media_type",
     "seed_key",
     "sha256",
     "title"
-  ])) return null;
-  if (
-    asset.id !== expectedAssetId || typeof asset.id !== "string" || !UUID.test(asset.id) ||
-    typeof asset.seed_key !== "string" ||
-    typeof asset.file_name !== "string" || !FILE_NAME.test(asset.file_name) ||
-    typeof asset.title !== "string" || asset.title.length < 2 ||
-    asset.media_type !== "application/pdf" ||
-    !Number.isInteger(asset.byte_size) || Number(asset.byte_size) < 1 ||
-    Number(asset.byte_size) > MAX_ASSET_BYTES ||
-    typeof asset.sha256 !== "string" || !SHA256.test(asset.sha256)
-  ) return null;
-  return asset as unknown as AssetMetadata;
+  ]) && typeof asset.seed_key === "string" && FILE_NAME.test(`${asset.seed_key}.pdf`)) {
+    return asset as unknown as AssetMetadata;
+  }
+  if (asset.delivery === "redirect" && hasExactKeys(asset, [
+    "byte_size",
+    "delivery",
+    "download_url",
+    "expires_in_seconds",
+    "file_name",
+    "id",
+    "media_type",
+    "sha256",
+    "title"
+  ]) && validDownloadUrl(asset.download_url, asset.expires_in_seconds)) {
+    return asset as unknown as RedirectAssetMetadata;
+  }
+  return null;
+}
+
+function validDownloadUrl(value: unknown, expires: unknown) {
+  try {
+    const storageOrigin = configuredStorageUploadOrigin();
+    const appOrigin = new URL(configuredPublicOrigin());
+    return storageOrigin !== appOrigin.origin
+      && trustedStorageDownloadUrl(value, expires, storageOrigin);
+  } catch {
+    return false;
+  }
 }
 
 function assetUnavailable(error: string) {
