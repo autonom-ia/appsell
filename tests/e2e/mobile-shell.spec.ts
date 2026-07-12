@@ -6,14 +6,14 @@ async function login(page: import("@playwright/test").Page) {
     response.url().endsWith("/api/session") && response.status() === 200);
   await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
   await expect(page).toHaveURL("/dashboard");
-  await expect(page.getByRole("heading", { name: "Bom dia, creator." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Seu negócio em um só lugar." })).toBeVisible();
   await sessionReady;
 }
 
 test("keeps the core journey usable without horizontal overflow", async ({ page }) => {
   await login(page);
   for (const target of [
-    { path: "/dashboard", heading: "Bom dia, creator." },
+    { path: "/dashboard", heading: "Seu negócio em um só lugar." },
     { path: "/products", heading: "Produtos" },
     { path: "/library", heading: "Minha biblioteca" },
   ]) {
@@ -38,7 +38,7 @@ test("does not render protected preview content for an anonymous request", async
   expect(response.status()).toBe(307);
   expect(response.headers().location).toBe("/");
   const body = await response.text();
-  expect(body).not.toContain("Bom dia, creator.");
+  expect(body).not.toContain("Seu negócio em um só lugar.");
   expect(body).not.toContain("Creator OS");
 });
 
@@ -59,7 +59,7 @@ test("supports keyboard skip navigation and reduced motion", async ({ page }) =>
   await login(page);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Bom dia, creator." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Seu negócio em um só lugar." })).toBeVisible();
   const skipLink = page.getByRole("link", { name: "Pular para o conteúdo" });
   await skipLink.focus();
   await expect(skipLink).toBeFocused();
@@ -92,7 +92,7 @@ test("keeps seller navigation hidden until the shell profile resolves", async ({
   await page.goto("/");
   await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
   await expect(page).toHaveURL("/dashboard");
-  await expect(page.getByRole("heading", { name: "Bom dia, creator." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Seu negócio em um só lugar." })).toBeVisible();
   await expect(page.getByRole("link", { name: "Produtos" })).toHaveCount(0);
   await expect(page.locator(".nav-eyebrow")).toHaveText("Carregando acesso");
   await expect(page.getByRole("navigation", { name: "Navegação móvel" }).getByRole("link")).toHaveCount(0);
@@ -111,7 +111,8 @@ test("keeps seller navigation hidden when the shell profile is unavailable", asy
   await expect(page).toHaveURL("/dashboard");
   await expect(page.locator(".nav-eyebrow")).toHaveText("Acesso indisponível");
   await expect(page.getByRole("link", { name: "Produtos" })).toHaveCount(0);
-  await expect(page.getByRole("navigation", { name: "Navegação móvel" }).getByRole("link")).toHaveCount(0);
+  await expect(page.getByRole("link", { name: /Voltar para a entrada|Entrada/ }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Tentar novamente" })).toBeVisible();
 });
 
 test("keeps seller onboarding recoverable when the domain API is unavailable", async ({ page }) => {
@@ -256,6 +257,42 @@ test("creates a tenant-scoped product draft in the mobile UI", async ({ page }, 
   expect(scaled.scroll, JSON.stringify(scaled.offenders)).toBeLessThanOrEqual(scaled.client);
 });
 
+test("preserves loaded products when the next catalog page fails", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium", "catalog pagination behavior runs once in Chromium");
+  const sellerId = "52000000-0000-4000-8000-000000000001";
+  const cursor = "53000000-0000-4000-8000-000000000001";
+  await page.route("**/api/sellers", async (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ sellers: [{ id: sellerId, slug: "studio-mobile", display_name: "Studio Mobile", role: "seller_owner" }] })
+  }));
+  await page.route(`**/api/sellers/${sellerId}/products*`, async (route) => {
+    const requestUrl = new URL(route.request().url());
+    if (requestUrl.searchParams.has("cursor")) {
+      expect(requestUrl.searchParams.get("cursor")).toBe(cursor);
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "unavailable" }) });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        products: [{ id: cursor, slug: "pagina-um", title: "Produto da primeira página", description: "Preservado.", status: "draft", created_at: "2026-07-11T11:00:00Z", course: { id: "54000000-0000-4000-8000-000000000001", title: "Curso preservado", status: "draft" } }],
+        next_cursor: cursor
+      })
+    });
+  });
+
+  await login(page);
+  await page.goto("/products");
+  await page.getByLabel("Espaço de vendas").selectOption(sellerId);
+  await expect(page.getByRole("heading", { name: "Produto da primeira página" })).toBeVisible();
+  await page.getByRole("button", { name: "Carregar mais produtos" }).click();
+  await expect(page.getByText("Os produtos já carregados foram preservados.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Produto da primeira página" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Tentar carregar novamente" })).toBeVisible();
+});
+
 test("edits, previews and publishes a tenant-scoped product at 320px", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "authoring flow runs once in Chromium");
   const sellerId = "62000000-0000-4000-8000-000000000001";
@@ -372,18 +409,18 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   await expect(page.getByText("Compra indisponível nesta prévia")).toBeVisible();
   await page.getByRole("link", { name: /^Publicar/ }).click();
   await page.getByRole("button", { name: "Publicar primeira versão" }).click();
-  await expect(page.getByRole("dialog", { name: "Publicar este snapshot?" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Publicar esta versão?" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Revisar novamente" })).toBeFocused();
   await page.keyboard.press("Shift+Tab");
-  await expect(page.getByRole("button", { name: "Publicar snapshot" })).toBeFocused();
+  await expect(page.getByRole("button", { name: "Publicar versão" })).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(page.getByRole("button", { name: "Revisar novamente" })).toBeFocused();
-  await page.getByRole("button", { name: "Publicar snapshot" }).click();
+  await page.getByRole("button", { name: "Publicar versão" }).click();
   await expect(page.getByText("A API não respondeu.", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "Publicar primeira versão" }).click();
-  await page.getByRole("button", { name: "Publicar snapshot" }).click();
+  await page.getByRole("button", { name: "Publicar versão" }).click();
   await expect(page.getByText("Versão publicada com sucesso.", { exact: false })).toBeVisible();
-  await expect(page.getByText("Nenhuma mudança desde o snapshot publicado.", { exact: false })).toBeVisible();
+  await expect(page.getByText("Nenhuma mudança desde a versão publicada.", { exact: false })).toBeVisible();
   await expect(page.getByRole("button", { name: /Publicar nova versão/ })).toBeDisabled();
   await page.getByRole("link", { name: /^Produto Identidade/ }).click();
   await page.getByLabel("Descrição curta").fill("Novo draft depois do snapshot.");
@@ -392,10 +429,10 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   await page.getByRole("link", { name: /^Publicar/ }).click();
   await expect(page.getByRole("button", { name: "Publicar nova versão após v1" })).toBeEnabled();
   await page.getByRole("button", { name: "Publicar nova versão após v1" }).click();
-  await page.getByRole("button", { name: "Publicar snapshot" }).click();
+  await page.getByRole("button", { name: "Publicar versão" }).click();
   await expect(page.getByText("O produto mudou ou não está pronto.", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "Publicar nova versão após v1" }).click();
-  await page.getByRole("button", { name: "Publicar snapshot" }).click();
+  await page.getByRole("button", { name: "Publicar versão" }).click();
   await expect(page.getByText("Versão publicada com sucesso.", { exact: false })).toBeVisible();
   expect(publishKeys).toHaveLength(4);
 

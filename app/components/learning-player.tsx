@@ -85,15 +85,18 @@ export function LearningPlayer({ entitlementId, lessonId }: { entitlementId: str
   const errorRef = useRef<HTMLHeadingElement>(null);
   const lastFocusedKey = useRef("");
 
-  const load = useCallback(async (targetLessonId?: string) => {
+  const load = useCallback(async (targetLessonId?: string, options: { silent?: boolean } = {}) => {
+    const silent = options.silent === true;
     const requestKey = `${entitlementId}:${targetLessonId ?? "resume"}`;
     requestRef.current?.abort();
-    mutationRef.current?.abort();
+    if (!silent) mutationRef.current?.abort();
     const controller = new AbortController();
     requestRef.current = controller;
-    setFeedback("");
-    setMutationState("idle");
-    setState({ status: "loading", requestKey });
+    if (!silent) {
+      setFeedback("");
+      setMutationState("idle");
+      setState({ status: "loading", requestKey });
+    }
     let timedOut = false;
     const timeout = window.setTimeout(() => {
       timedOut = true;
@@ -108,25 +111,28 @@ export function LearningPlayer({ entitlementId, lessonId }: { entitlementId: str
       if (controller.signal.aborted) return;
       if (response.status === 401) return setState({ status: "unauthorized", requestKey });
       if (response.status === 403) return setState({ status: "forbidden", requestKey });
+      // A 404 during background revalidation is an access revocation signal,
+      // not a transient transport failure. Remove previously delivered content.
       if (response.status === 404) return setState({ status: "missing", requestKey });
       if (response.status === 409) return setState({ status: "conflict", requestKey });
-      if (response.status === 503) return setState({ status: "unavailable", requestKey });
-      if (!response.ok) return setState({ status: "invalid", requestKey });
+      if (response.status === 503) return silent ? setFeedback("A atualização automática falhou; seu conteúdo continua disponível.") : setState({ status: "unavailable", requestKey });
+      if (!response.ok) return silent ? setFeedback("A atualização automática falhou; seu conteúdo continua disponível.") : setState({ status: "invalid", requestKey });
       const responsePayload: unknown = await response.json();
       if (!isLearningPlayerResponse(responsePayload)) {
-        return setState({ status: "invalid", requestKey });
+        return silent ? setFeedback("A atualização automática não pôde ser validada.") : setState({ status: "invalid", requestKey });
       }
       const payload: LearningPlayerPayload = { ...responsePayload.player, csrf: responsePayload.csrf };
       if (payload.entitlement_id !== entitlementId || (targetLessonId && payload.selected_lesson_id !== targetLessonId)) {
-        return setState({ status: "invalid", requestKey });
+        return silent ? setFeedback("A atualização automática não pôde ser validada.") : setState({ status: "invalid", requestKey });
       }
       setState({ status: "ready", requestKey, payload });
-      if (!targetLessonId) {
+      if (!targetLessonId && !silent) {
         router.replace(lessonHref(entitlementId, payload.selected_lesson_id), { scroll: false });
       }
     } catch {
       if (!controller.signal.aborted || timedOut) {
-        setState({ status: "unavailable", requestKey });
+        if (silent) setFeedback("A atualização automática falhou; seu conteúdo continua disponível.");
+        else setState({ status: "unavailable", requestKey });
       }
     } finally {
       window.clearTimeout(timeout);
@@ -164,7 +170,10 @@ export function LearningPlayer({ entitlementId, lessonId }: { entitlementId: str
 
   useEffect(() => {
     if (!payload) return;
-    const revalidate = () => void load(payload.selected_lesson_id);
+    const revalidate = () => {
+      if (mutationRef.current) return;
+      void load(payload.selected_lesson_id, { silent: true });
+    };
     const onVisibility = () => {
       if (document.visibilityState === "visible") revalidate();
     };
@@ -190,6 +199,7 @@ export function LearningPlayer({ entitlementId, lessonId }: { entitlementId: str
 
   async function saveProgress(current: LearningPlayerPayload, currentLessonId: string, percent: number) {
     if (mutationState !== "idle") return;
+    requestRef.current?.abort();
     const operation = `progress:${currentLessonId}:${percent}`;
     const controller = new AbortController();
     mutationRef.current?.abort();
@@ -206,6 +216,7 @@ export function LearningPlayer({ entitlementId, lessonId }: { entitlementId: str
 
   async function completeLesson() {
     if (!payload || !selected || mutationState !== "idle") return;
+    requestRef.current?.abort();
     const currentLessonId = selected.lesson.id;
     const controller = new AbortController();
     mutationRef.current?.abort();
@@ -249,7 +260,7 @@ export function LearningPlayer({ entitlementId, lessonId }: { entitlementId: str
         setState({ status: "loading", requestKey: `${entitlementId}:${nextId}` });
         router.push(lessonHref(entitlementId, nextId));
       } else {
-        setFeedback(complete ? "Aula concluída. Seu progresso foi salvo." : "Progresso salvo.");
+        setFeedback(complete ? "Curso concluído. Seu progresso foi salvo." : "Progresso salvo.");
       }
     } catch {
       if (!controller.signal.aborted) setFeedback("Seu progresso não foi salvo. Verifique a conexão e tente novamente.");
@@ -327,6 +338,8 @@ export function LearningPlayer({ entitlementId, lessonId }: { entitlementId: str
           {previousId ? <Link className="secondary-button" href={lessonHref(entitlementId, previousId)} onClick={(event) => prepareNavigation(event, previousId)}>← Aula anterior</Link> : <span/>}
           {completed && nextId
             ? <Link className="primary-button" href={lessonHref(entitlementId, nextId)} onClick={(event) => prepareNavigation(event, nextId)}>Próxima aula →</Link>
+            : completed
+              ? <Link className="primary-button" href="/library">Curso concluído · voltar à biblioteca</Link>
             : <button type="button" className="primary-button" disabled={mutationState !== "idle" || completed} onClick={() => void completeLesson()}>{completed ? "Aula concluída" : nextId ? "Concluir e avançar" : "Concluir curso"}</button>}
         </nav>
       </article>

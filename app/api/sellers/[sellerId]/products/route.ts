@@ -26,13 +26,16 @@ interface RouteContext {
 export async function GET(request: NextRequest, context: RouteContext) {
   const sellerId = await sellerIdFrom(context);
   if (!sellerId) return invalidInput("seller");
+  const cursor = request.nextUrl.searchParams.get("cursor");
+  if (cursor !== null && !UUID.test(cursor)) return invalidInput("cursor");
   try {
     const authenticated = await authenticatedSession(request);
     if (!authenticated) return unauthorized();
     const payload = await listDomainProductDrafts(
       authenticated.sessionId,
       authenticated.session,
-      sellerId
+      sellerId,
+      cursor
     );
     return NextResponse.json(payload, { headers: { "cache-control": "no-store" } });
   } catch (error) {
@@ -133,7 +136,7 @@ function unauthorized() {
   });
 }
 
-function invalidInput(fieldName: "seller" | "form" | "slug" | "product_title" | "product_description" | "course_title") {
+function invalidInput(fieldName: "seller" | "cursor" | "form" | "slug" | "product_title" | "product_description" | "course_title") {
   return NextResponse.json({ error: "invalid_product_input", field: fieldName }, {
     status: 422,
     headers: { "cache-control": "no-store" }

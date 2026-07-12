@@ -85,7 +85,7 @@ export function LibraryWorkspace() {
   }
 
   if (!items.length) {
-    return <p className="empty-state">Nenhum produto ativo está disponível para esta conta.</p>;
+    return <section className="empty-state library-empty" aria-labelledby="library-empty-title"><h2 id="library-empty-title">Sua biblioteca está vazia</h2><p>Nenhum produto ativo está disponível para esta conta. Se você acabou de receber acesso, atualize a lista.</p><button type="button" className="primary-button" onClick={() => void load()}>Atualizar biblioteca</button><Link className="secondary-button" href="/">Voltar para a entrada</Link></section>;
   }
 
   return <div className="learner-library">{items.map((item) => {

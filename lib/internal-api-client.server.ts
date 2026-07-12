@@ -19,6 +19,7 @@ interface ServerSession {
 interface ApiRequest {
   method: "GET" | "POST" | "PUT" | "PATCH";
   path: string;
+  query?: string;
   capability: "identity.sync" | "platform.grants.read" | "seller.list" | "seller.onboard" |
     "catalog.draft.read" | "catalog.draft.create" | "catalog.draft.update" |
     "catalog.draft.preview" | "catalog.publication.read" | "catalog.publication.create" |
@@ -90,11 +91,13 @@ export async function onboardDomainSeller(
 export async function listDomainProductDrafts(
   sessionId: string,
   session: ServerSession,
-  sellerOrganizationId: string
+  sellerOrganizationId: string,
+  cursor: string | null = null
 ) {
   return domainRequest(sessionId, session, {
     method: "GET",
     path: `/v1/me/sellers/${sellerOrganizationId}/products`,
+    query: cursor ? `cursor=${encodeURIComponent(cursor)}` : undefined,
     capability: "catalog.draft.read",
     sellerOrganizationId
   });
@@ -619,6 +622,7 @@ async function domainRequest(
 ) {
   const config = internalConfig();
   const body = request.body ? Buffer.from(JSON.stringify(request.body), "utf8") : Buffer.alloc(0);
+  const query = Buffer.from(request.query ?? "", "ascii");
   const envelopeInput: SignInternalEnvelopeInput = {
     sessionId,
     sessionEpoch: session.tokenRevision,
@@ -630,13 +634,16 @@ async function domainRequest(
     sellerOrganizationId: request.sellerOrganizationId ?? null,
     method: request.method,
     path: request.path,
+    query,
     body
   };
   const { token } = signInternalEnvelope(envelopeInput, config.signing);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 3_000);
   try {
-    const response = await fetch(new URL(request.path, config.apiOrigin), {
+    const requestUrl = new URL(request.path, config.apiOrigin);
+    requestUrl.search = request.query ?? "";
+    const response = await fetch(requestUrl, {
       method: request.method,
       body: request.method === "GET" ? undefined : body,
       headers: {
