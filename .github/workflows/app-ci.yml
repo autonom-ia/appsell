@@ -111,7 +111,7 @@ jobs:
       - run: uv run --project apps/api ruff check apps/api
       - run: uv run --project apps/api mypy --config-file apps/api/pyproject.toml apps/api/src apps/api/tests
       - run: uv run --project apps/api pip-audit --local
-      - run: uv run --project apps/api pytest apps/api/tests/test_config.py apps/api/tests/test_health.py
+      - run: uv run --project apps/api pytest apps/api/tests/test_config.py apps/api/tests/test_health.py apps/api/tests/test_capacity_telemetry.py
       - run: pnpm exec playwright install --with-deps chromium
       - run: ./scripts/test-postgres-foundation.sh
 

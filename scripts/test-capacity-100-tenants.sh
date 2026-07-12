@@ -178,6 +178,7 @@ export APPSELL_STORAGE_CONTROL_SECRET_KEY="$storage_secret"
 export APPSELL_STORAGE_ALLOWED_ORIGIN="http://localhost:3000"
 export APPSELL_STORAGE_BUCKETS="appsell-quarantine,appsell-ready"
 export APPSELL_API_ENVIRONMENT="ci"
+export APPSELL_API_CAPACITY_PRODUCT_CREATE_TELEMETRY="true"
 export APPSELL_API_DATABASE_APPLICATION_NAME="appsell_capacity_api"
 export APPSELL_MIGRATOR_DATABASE_URL="postgresql+psycopg://appsell_migrator:${migrator_secret}@127.0.0.1:${postgres_port}/appsell"
 
@@ -284,6 +285,8 @@ export APPSELL_CAPACITY_STORAGE_VERTICAL_TREE_RSS_BYTES="$(
 )"
 export APPSELL_CAPACITY_OUTER_TIMEOUT_SECONDS="$capacity_executor_timeout_seconds"
 export NEXT_TELEMETRY_DISABLED="1"
+export APPSELL_CAPACITY_PRODUCT_CREATE_TELEMETRY="true"
+export APPSELL_ENVIRONMENT="ci"
 
 python3 scripts/run_with_rss.py --timeout "$capacity_executor_timeout_seconds" --output "$vitest_metrics" -- \
   pnpm exec vitest run tests/bff-capacity-100-tenants.test.ts

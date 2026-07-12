@@ -2,6 +2,10 @@ import "server-only";
 
 import { timingSafeEqual } from "node:crypto";
 import { demoProfileForSubject } from "./demo-config";
+import {
+  capacityProductCreateTelemetryEnabled,
+  validCapacityProductCreateTrace
+} from "./capacity-product-create-telemetry";
 
 import {
   parseInternalSigningConfig,
@@ -30,6 +34,7 @@ interface ApiRequest {
     "learning.player.read" | "learning.progress.write";
   sellerOrganizationId?: string;
   body?: Record<string, unknown>;
+  capacityTrace?: string | null;
 }
 
 export class DomainApiError extends Error {
@@ -110,6 +115,7 @@ export async function createDomainProductDraft(
     productTitle: string;
     productDescription: string;
     courseTitle: string;
+    capacityTrace?: string | null;
   }
 ) {
   return domainRequest(sessionId, session, {
@@ -117,6 +123,7 @@ export async function createDomainProductDraft(
     path: `/v1/me/sellers/${sellerOrganizationId}/products`,
     capability: "catalog.draft.create",
     sellerOrganizationId,
+    capacityTrace: input.capacityTrace,
     body: {
       idempotency_key: input.idempotencyKey,
       slug: input.slug,
@@ -636,13 +643,19 @@ async function domainRequest(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 3_000);
   try {
+    const capacityTrace = capacityProductCreateTelemetryEnabled() &&
+      request.capability === "catalog.draft.create" &&
+      validCapacityProductCreateTrace(request.capacityTrace)
+      ? request.capacityTrace
+      : null;
     const response = await fetch(new URL(request.path, config.apiOrigin), {
       method: request.method,
       body: request.method === "GET" ? undefined : body,
       headers: {
         "content-type": "application/json",
         "x-appsell-internal-envelope": token,
-        "x-appsell-service-credential": config.serviceCredentialEncoded
+        "x-appsell-service-credential": config.serviceCredentialEncoded,
+        ...(capacityTrace ? { "x-appsell-capacity-trace": capacityTrace } : {})
       },
       cache: "no-store",
       signal: controller.signal

@@ -17,6 +17,14 @@ import {
   emptyPostgresWaitDiagnostics,
   samplePostgresConnections
 } from "../lib/capacity-postgres-sampler";
+import {
+  aggregateCapacityProductCreateTraces,
+  capacityProductCreateTelemetryEnabled,
+  parseCapacityProductCreateTraceLine,
+  validCapacityProductCreateTrace,
+  type CapacityProductCreateTelemetryAggregate,
+  type CapacityProductCreateTrace
+} from "../lib/capacity-product-create-telemetry";
 import { startIsolatedRedis, unusedNonDefaultPort } from "./helpers/isolated-redis";
 
 const execFileAsync = promisify(execFile);
@@ -26,6 +34,7 @@ const BUYERS_PER_TENANT = 10;
 const BUYER_CAPACITY = TENANT_CAPACITY * BUYERS_PER_TENANT;
 const CONCURRENCY = 10;
 const CAPACITY_TEST_TIMEOUT_MS = 900_000;
+const CAPACITY_TRACE_DRAIN_TIMEOUT_MS = 30_000;
 const OAUTH_RATE_WINDOW_MS = 60_000;
 const OAUTH_FIRST_WINDOW_CAPACITY = 990;
 const DIAGNOSTIC_CLOCK_ORIGIN_MS = performance.now();
@@ -214,6 +223,7 @@ test.skipIf(!domainApiUrl)(
   ) as Record<string, string>;
   let redis: Awaited<ReturnType<typeof startIsolatedRedis>> | undefined;
   let bff: ChildProcess | undefined;
+  let bffTraceCollector: ReturnType<typeof startBffCapacityTraceCollector> | undefined;
   let oauth: RedisOAuthService | undefined;
   let sampler: ReturnType<typeof startResourceSampler> | undefined;
   let port = 0;
@@ -229,12 +239,14 @@ test.skipIf(!domainApiUrl)(
   let observedOwnerSessions = 0;
   let observedBuyerSessions = 0;
   let failurePhase = "runtime_startup";
+  let productCreateTelemetry = aggregateCapacityProductCreateTraces([], [], 0, true);
 
   try {
     redis = await startIsolatedRedis();
     port = await unusedNonDefaultPort();
     const shared = capacityEnvironment(redis.url, port, suffix);
     bff = startBff(port, distDir, shared);
+    bffTraceCollector = startBffCapacityTraceCollector(bff);
     const activeOauth = RedisOAuthService.fromEnvironment(shared);
     oauth = activeOauth;
     await waitForBff(bff, port);
@@ -472,7 +484,8 @@ test.skipIf(!domainApiUrl)(
           method: "POST",
           headers: {
             cookie: session.cookieHeader,
-            origin: shared.APPSELL_PUBLIC_ORIGIN
+            origin: shared.APPSELL_PUBLIC_ORIGIN,
+            "x-appsell-capacity-trace": `pc-${tenant.ordinal.toString().padStart(3, "0")}`
           },
           body: new URLSearchParams({
             _csrf: session.productCsrf,
@@ -922,6 +935,13 @@ test.skipIf(!domainApiUrl)(
   } catch (error) {
     testFailure = error;
   } finally {
+    await cleanupStep(cleanupErrors, "product-create telemetry", async () => {
+      productCreateTelemetry = await collectCapacityProductCreateTelemetry(
+        bffTraceCollector,
+        containers.api,
+        scenarios.product_create !== undefined
+      );
+    });
     if (sampler) {
       await cleanupStep(cleanupErrors, "resource sampler", async () => {
         peaks = await withTimeout(sampler!.stop(), 10_000, "resource sampler stop");
@@ -961,6 +981,12 @@ test.skipIf(!domainApiUrl)(
       testFailure = new Error("runtime_cleanup_failed");
     }
     if (!testFailure) {
+      if (productCreateTelemetry.status !== "passed") {
+        failurePhase = "product_create_telemetry";
+        testFailure = new Error("product_create_telemetry_incomplete");
+      }
+    }
+    if (!testFailure) {
       failurePhase = "threshold_validation";
       try {
         requireResourceThresholds(peaks);
@@ -980,6 +1006,7 @@ test.skipIf(!domainApiUrl)(
       warmupDurationMs,
       observedOwnerSessions,
       observedBuyerSessions,
+      productCreateTelemetry,
       testFailure,
       failurePhase
     );
@@ -1011,6 +1038,8 @@ function capacityEnvironment(redisUrl: string, port: number, suffix: string) {
     APPSELL_SERVICE_CREDENTIAL_B64: requiredEnvironment("APPSELL_SERVICE_CREDENTIAL_B64"),
     APPSELL_LOCAL_IDENTITY_EMAIL: "capacity.synthetic@autonomia.site",
     APPSELL_DEMO_ENABLED: "false",
+    APPSELL_CAPACITY_PRODUCT_CREATE_TELEMETRY: "true",
+    APPSELL_ENVIRONMENT: "ci",
     NEXT_TELEMETRY_DISABLED: "1"
   };
 }
@@ -1296,6 +1325,95 @@ test("serializes and scans maximum cardinality diagnostics", async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("capacity product-create telemetry is default-off and refuses remote environments", () => {
+  expect(capacityProductCreateTelemetryEnabled({})).toBe(false);
+  expect(capacityProductCreateTelemetryEnabled({
+    APPSELL_CAPACITY_PRODUCT_CREATE_TELEMETRY: "true",
+    APPSELL_ENVIRONMENT: "ci"
+  })).toBe(true);
+  expect(() => capacityProductCreateTelemetryEnabled({
+    APPSELL_CAPACITY_PRODUCT_CREATE_TELEMETRY: "true",
+    APPSELL_ENVIRONMENT: "staging"
+  })).toThrow("capacity_product_create_telemetry_forbidden_environment");
+  expect(() => capacityProductCreateTelemetryEnabled({
+    APPSELL_CAPACITY_PRODUCT_CREATE_TELEMETRY: "true",
+    APPSELL_ENVIRONMENT: "production"
+  })).toThrow("capacity_product_create_telemetry_forbidden_environment");
+  expect(() => capacityProductCreateTelemetryEnabled({
+    APPSELL_CAPACITY_PRODUCT_CREATE_TELEMETRY: "true",
+    APPSELL_ENVIRONMENT: "ci",
+    NODE_ENV: "production"
+  })).toThrow("capacity_product_create_telemetry_forbidden_environment");
+});
+
+test("capacity trace parser accepts only strict opaque JSON events", () => {
+  expect(validCapacityProductCreateTrace("pc-000")).toBe(true);
+  expect(validCapacityProductCreateTrace("pc-099")).toBe(true);
+  for (const invalid of ["pc-100", "pc-00", "pc-001-extra", "tenant-001", "PC-001", ""]) {
+    expect(validCapacityProductCreateTrace(invalid)).toBe(false);
+  }
+  expect(parseCapacityProductCreateTraceLine("ready on localhost")).toBeNull();
+  expect(() => parseCapacityProductCreateTraceLine(JSON.stringify({
+    ...capacityTraceFixture("bff", "pc-001"),
+    url: "https://forbidden.example.test/tenant/1"
+  }))).toThrow("rejected_capacity_trace_event");
+});
+
+test("capacity trace aggregate proves cardinality, scans safe and retains late counts", async () => {
+  const bff = Array.from({ length: 100 }, (_, index) =>
+    capacityTraceFixture("bff", `pc-${index.toString().padStart(3, "0")}`, index === 99 ? 5_001 : 10)
+  );
+  const api = Array.from({ length: 100 }, (_, index) =>
+    capacityTraceFixture("api", `pc-${index.toString().padStart(3, "0")}`, index === 98 ? 5_100 : 8)
+  );
+  const aggregate = aggregateCapacityProductCreateTraces(bff, api);
+  expect(aggregate.status).toBe("passed");
+  expect(aggregate.matched_trace_cardinality).toBe(100);
+  expect(aggregate.bff.late_completions).toBe(1);
+  expect(aggregate.api.late_completions).toBe(1);
+  expect(JSON.stringify(aggregate)).not.toContain("pc-000");
+  expect(aggregateCapacityProductCreateTraces(bff.slice(0, 99), api).status).toBe("failed");
+  const directory = await mkdtemp(join(tmpdir(), "appsell-capacity-traces-"));
+  const artifact = join(directory, "telemetry.json");
+  try {
+    await writeFile(artifact, JSON.stringify(aggregate), { mode: 0o600 });
+    const { stdout } = await execFileAsync(
+      "python3",
+      ["scripts/assert_capacity_artifact_safe.py", artifact],
+      { timeout: 5_000 }
+    );
+    expect(stdout).toContain("capacity artifact scan: passed");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+function capacityTraceFixture(
+  layer: "bff" | "api",
+  trace: string,
+  totalMs = 10
+): CapacityProductCreateTrace {
+  const stages: Record<string, number> = layer === "bff"
+    ? { session_auth: 1, form_csrf: 1, domain_fetch: totalMs - 4, response: 2 }
+    : {
+        internal_auth_replay: 1,
+        pool_checkout_apply_context: 1,
+        sql: totalMs - 4,
+        commit_response: 2
+      };
+  return {
+    schema_version: 1,
+    event: "appsell_capacity_product_create_trace",
+    layer,
+    trace,
+    status: 201,
+    outcome: "success",
+    total_ms: totalMs,
+    late_completion: totalMs >= 5_000,
+    durations_ms: stages
+  };
+}
 
 async function genericDenialResponse(
   response: Response,
@@ -1788,6 +1906,7 @@ async function buildReport(
   warmupDurationMs: number,
   observedOwnerSessions: number,
   observedBuyerSessions: number,
+  productCreateTelemetry: CapacityProductCreateTelemetryAggregate,
   failure: unknown,
   failurePhase: string
 ) {
@@ -1905,6 +2024,7 @@ async function buildReport(
       )
     },
     scenarios,
+    product_create_telemetry: productCreateTelemetry,
     resources: {
       ...resources,
       storage_vertical_process_tree_rss_bytes: workerRss,
@@ -2241,6 +2361,91 @@ function safeError(error: unknown) {
   if (message.startsWith("oauth_callback_status_")) return "oauth_callback_failed";
   if (message.includes("_status_")) return "unexpected_http_status";
   return "workload_failed";
+}
+
+function startBffCapacityTraceCollector(process: ChildProcess) {
+  let buffer = "";
+  const events: CapacityProductCreateTrace[] = [];
+  let rejected = 0;
+  const consumeLine = (line: string) => {
+    if (!line.trim()) return;
+    try {
+      const event = parseCapacityProductCreateTraceLine(line.trim());
+      if (event) {
+        if (event.layer === "bff") events.push(event);
+        else rejected += 1;
+      }
+    } catch {
+      rejected += 1;
+    }
+  };
+  process.stdout?.on("data", (chunk) => {
+    buffer += String(chunk);
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() ?? "";
+    for (const line of lines) consumeLine(line);
+  });
+  return {
+    snapshot: () => ({ events: [...events], rejected }),
+    flush: () => {
+      consumeLine(buffer);
+      buffer = "";
+      return { events: [...events], rejected };
+    }
+  };
+}
+
+async function collectCapacityProductCreateTelemetry(
+  bffCollector: ReturnType<typeof startBffCapacityTraceCollector> | undefined,
+  apiContainerId: string | undefined,
+  scenarioStarted: boolean
+) {
+  if (!bffCollector || !apiContainerId) {
+    return aggregateCapacityProductCreateTraces([], [], 0, true);
+  }
+  const deadline = Date.now() + (scenarioStarted ? CAPACITY_TRACE_DRAIN_TIMEOUT_MS : 0);
+  let apiEvents: CapacityProductCreateTrace[] = [];
+  let apiRejected = 0;
+  do {
+    const { stdout, stderr } = await execFileAsync(
+      "docker",
+      ["logs", apiContainerId],
+      { timeout: 5_000, maxBuffer: 20 * 1024 * 1024 }
+    );
+    ({ events: apiEvents, rejected: apiRejected } = parseApiCapacityTraceLogs(
+      `${stdout}\n${stderr}`
+    ));
+    if (!scenarioStarted ||
+        (bffCollector.snapshot().events.length >= TENANT_CAPACITY &&
+         apiEvents.length >= TENANT_CAPACITY)) break;
+    await delay(100);
+  } while (Date.now() < deadline);
+  const bff = bffCollector.flush();
+  return aggregateCapacityProductCreateTraces(
+    bff.events,
+    apiEvents,
+    bff.rejected + apiRejected,
+    true
+  );
+}
+
+function parseApiCapacityTraceLogs(content: string) {
+  const events: CapacityProductCreateTrace[] = [];
+  let rejected = 0;
+  for (const raw of content.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    try {
+      const event = parseCapacityProductCreateTraceLine(line);
+      if (event) {
+        if (event.layer === "api") events.push(event);
+        else rejected += 1;
+      }
+    } catch {
+      rejected += 1;
+    }
+  }
+  return { events, rejected };
 }
 
 // Kept below the test helpers so the spawned process cannot accidentally inherit
