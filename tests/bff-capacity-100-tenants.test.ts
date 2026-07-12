@@ -164,6 +164,7 @@ test.skipIf(!domainApiUrl)(
   let warmupDurationMs = 0;
   let observedOwnerSessions = 0;
   let observedBuyerSessions = 0;
+  let failurePhase = "runtime_startup";
 
   try {
     redis = await startIsolatedRedis();
@@ -177,40 +178,53 @@ test.skipIf(!domainApiUrl)(
 
     // Warm compilation, OAuth callback, domain sync and both read route families.
     const warmupStarted = performance.now();
+    failurePhase = "warmup_owner_session";
     const warmOwner = await createSession(
       activeOauth,
       port,
       manifest.tenants[0]!.owner_subject,
-      "warm-owner"
+      "warm-owner",
+      30_000
     );
+    failurePhase = "warmup_buyer_session";
     const warmBuyer = await createSession(
       activeOauth,
       port,
       manifest.tenants[0]!.buyers[0]!.subject,
-      "warm-buyer"
+      "warm-buyer",
+      30_000
     );
+    failurePhase = "warmup_owner_catalog";
     await requireStatus(
       timedFetch(`${origin(port)}/api/sellers/${manifest.tenants[0]!.seller_id}/products`, {
         headers: { cookie: warmOwner.sessionCookie }
-      }),
+      }, 30_000),
       200,
       "warm owner catalog"
     );
+    failurePhase = "warmup_buyer_library";
     await requireStatus(
-      timedFetch(`${origin(port)}/api/library`, { headers: { cookie: warmBuyer.sessionCookie } }),
+      timedFetch(
+        `${origin(port)}/api/library`,
+        { headers: { cookie: warmBuyer.sessionCookie } },
+        30_000
+      ),
       200,
       "warm buyer library"
     );
+    failurePhase = "warmup_cross_tenant_product";
     await requireStatus(
       timedFetch(
         `${origin(port)}/api/sellers/${manifest.tenants[1]!.seller_id}/products/${manifest.tenants[1]!.product_id}`,
         {
           headers: { cookie: warmOwner.sessionCookie }
-        }
+        },
+        30_000
       ),
       404,
       "warm cross-tenant denial"
     );
+    failurePhase = "warmup_product_create";
     const warmProduct = await timedFetch(
       `${origin(port)}/api/sellers/${manifest.tenants[0]!.seller_id}/products`,
       {
@@ -227,7 +241,8 @@ test.skipIf(!domainApiUrl)(
           product_description: "Fora das métricas.",
           course_title: "Curso de warmup"
         })
-      }
+      },
+      30_000
     );
     if (warmProduct.status !== 201) {
       throw new Error(`warm product create expected 201, got ${warmProduct.status}`);
@@ -237,22 +252,27 @@ test.skipIf(!domainApiUrl)(
       throw new Error("warm product create did not return a product id");
     }
     const warmProductId = warmProductPayload.product_id;
+    failurePhase = "warmup_own_asset";
     const warmAsset = await timedFetch(
       `${origin(port)}/api/library/items/${manifest.tenants[0]!.buyers[0]!.entitlement_id}/assets/${manifest.tenants[0]!.asset_id}`,
-      { headers: { cookie: warmBuyer.sessionCookie } }
+      { headers: { cookie: warmBuyer.sessionCookie } },
+      30_000
     );
     if (warmAsset.status !== 200 || (await warmAsset.arrayBuffer()).byteLength === 0) {
       throw new Error(`warm own asset expected non-empty 200, got ${warmAsset.status}`);
     }
+    failurePhase = "warmup_cross_tenant_asset";
     await requireStatus(
       timedFetch(
         `${origin(port)}/api/library/items/${manifest.tenants[1]!.buyers[0]!.entitlement_id}/assets/${manifest.tenants[1]!.asset_id}`,
-        { headers: { cookie: warmBuyer.sessionCookie } }
+        { headers: { cookie: warmBuyer.sessionCookie } },
+        30_000
       ),
       404,
       "warm cross-tenant asset denial"
     );
     warmupDurationMs = round(performance.now() - warmupStarted);
+    failurePhase = "measured_workload";
 
     const ownerSessions = new Map<number, CapacitySession>();
     const buyerSessions = new Map<string, CapacitySession>();
@@ -813,9 +833,11 @@ test.skipIf(!domainApiUrl)(
       cleanup_errors: cleanupErrors
     };
     if (cleanupErrors.length > 0 && !testFailure) {
+      failurePhase = "teardown";
       testFailure = new Error("runtime_cleanup_failed");
     }
     if (!testFailure) {
+      failurePhase = "threshold_validation";
       try {
         requireResourceThresholds(peaks);
       } catch (error) {
@@ -834,7 +856,8 @@ test.skipIf(!domainApiUrl)(
       warmupDurationMs,
       observedOwnerSessions,
       observedBuyerSessions,
-      testFailure
+      testFailure,
+      failurePhase
     );
     await writeCapacityReport(report);
   }
@@ -872,7 +895,8 @@ async function createSession(
   oauth: RedisOAuthService,
   port: number,
   subject: string,
-  clientKey: string
+  clientKey: string,
+  timeoutMs = 5_000
 ) {
   const login = await oauth.beginLogin(clientKey);
   const code = await oauth.authorize(
@@ -885,7 +909,8 @@ async function createSession(
     {
       redirect: "manual",
       headers: { cookie: `appsell_oauth_tx=${login.transactionId}` }
-    }
+    },
+    timeoutMs
   );
   if (response.status !== 307) {
     throw new Error(`oauth_callback_status_${response.status}`);
@@ -1348,7 +1373,8 @@ async function buildReport(
   warmupDurationMs: number,
   observedOwnerSessions: number,
   observedBuyerSessions: number,
-  failure: unknown
+  failure: unknown,
+  failurePhase: string
 ) {
   let dockerVersion = "unavailable";
   try {
@@ -1544,7 +1570,8 @@ async function buildReport(
       vps_sizing: false
     },
     postgres_startup: startup,
-    failure: failureCode
+    failure: failureCode,
+    failure_phase: failure ? failurePhase : null
   };
 }
 
