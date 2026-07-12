@@ -67,6 +67,13 @@ export APPSELL_IDENTITY_ISSUER="https://identity.preview.autonomia.site"
 export APPSELL_INTERNAL_HMAC_KEYRING_B64_JSON="[{\"id\":\"preview-v1\",\"key\":\"${internal_key_b64}\",\"active\":true}]"
 export APPSELL_API_CONTEXT_HMAC_KEY_B64="$(printf '%s' "$context_key" | xxd -r -p | base64)"
 export APPSELL_SERVICE_CREDENTIAL_B64="$service_credential_b64"
+# Docker Compose maps the generic variables above into the API container.
+# Host-side API CLIs read the APPSELL_API_ namespace directly, so provide the
+# same complete authentication tuple before invoking any of them.
+export APPSELL_API_INTERNAL_ISSUER="$APPSELL_INTERNAL_ISSUER"
+export APPSELL_API_INTERNAL_AUDIENCE="$APPSELL_INTERNAL_AUDIENCE"
+export APPSELL_API_INTERNAL_HMAC_KEYRING_B64_JSON="$APPSELL_INTERNAL_HMAC_KEYRING_B64_JSON"
+export APPSELL_API_SERVICE_CREDENTIAL_B64="$APPSELL_SERVICE_CREDENTIAL_B64"
 origin="http://localhost:${web_port}"
 
 docker compose -p "$project" up -d --wait postgres
@@ -101,6 +108,9 @@ export APPSELL_API_STORAGE_PUBLIC_ENDPOINT="http://127.0.0.1:${storage_port}"
 export APPSELL_API_STORAGE_REGION="us-east-1"
 export APPSELL_API_STORAGE_QUARANTINE_BUCKET="appsell-quarantine"
 export APPSELL_API_STORAGE_READY_BUCKET="appsell-ready"
+export APPSELL_API_STORAGE_CONTROL_ACCESS_KEY="$storage_access_key"
+export APPSELL_API_STORAGE_CONTROL_SECRET_KEY="$storage_secret_key"
+export APPSELL_API_STORAGE_ALLOWED_ORIGIN="$origin"
 export APPSELL_API_MALWARE_SCANNER_PROVIDER="deterministic"
 docker compose -p "$project" --profile storage up -d --wait seaweedfs
 if ! docker compose -p "$project" --profile storage up -d --build --wait api; then
