@@ -39,10 +39,12 @@ test.skipIf(!domainApiUrl)("two BFFs persist seller onboarding through the real 
     NEXT_TELEMETRY_DISABLED: "1"
   };
   const first = startBff(firstPort, firstDist, shared);
-  const second = startBff(secondPort, secondDist, shared);
+  let second: ChildProcess | undefined;
 
   try {
-    await Promise.all([waitForBff(first, firstPort), waitForBff(second, secondPort)]);
+    await waitForBff(first, firstPort);
+    second = startBff(secondPort, secondDist, shared);
+    await waitForBff(second, secondPort);
     const login = await fetch(`http://127.0.0.1:${firstPort}/auth/login`, { redirect: "manual" });
     const transaction = cookiePair(login.headers.get("set-cookie"), "appsell_oauth_tx");
     const authorize = await fetch(requiredHeader(login, "location"), { redirect: "manual" });
@@ -433,7 +435,7 @@ test.skipIf(!domainApiUrl)("two BFFs persist seller onboarding through the real 
     expect(duplicateSnapshot.status).toBe(409);
     expect(await duplicateSnapshot.json()).toEqual({ error: "no_unpublished_changes" });
   } finally {
-    await Promise.all([stopBff(first), stopBff(second)]);
+    await Promise.all([stopBff(first), ...(second ? [stopBff(second)] : [])]);
     await redis.stop();
     await Promise.all([
       rm(join(process.cwd(), firstDist), { recursive: true, force: true }),

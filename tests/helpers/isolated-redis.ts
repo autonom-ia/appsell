@@ -10,6 +10,7 @@ import Redis from "ioredis";
 export interface IsolatedRedis {
   url: string;
   port: number;
+  pid: number;
   client: Redis;
   stop: () => Promise<void>;
 }
@@ -42,6 +43,7 @@ export async function startIsolatedRedis(): Promise<IsolatedRedis> {
   return {
     url,
     port,
+    pid: process.pid!,
     client,
     stop: async () => {
       try {
