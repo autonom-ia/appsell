@@ -1,11 +1,11 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { access, readFile, rm, writeFile } from "node:fs/promises";
-import { cpus, freemem, platform, arch, release, totalmem } from "node:os";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cpus, freemem, loadavg, platform, arch, release, tmpdir, totalmem } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import { test } from "vitest";
+import { expect, test } from "vitest";
 
 import { RedisOAuthService } from "../lib/redis-oauth-service";
 import {
@@ -28,6 +28,7 @@ const CONCURRENCY = 10;
 const CAPACITY_TEST_TIMEOUT_MS = 900_000;
 const OAUTH_RATE_WINDOW_MS = 60_000;
 const OAUTH_FIRST_WINDOW_CAPACITY = 990;
+const DIAGNOSTIC_CLOCK_ORIGIN_MS = performance.now();
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 interface ScenarioThreshold {
@@ -105,6 +106,52 @@ interface ScenarioResult {
   excluded_wait_ms: number;
   throughput_per_second: number;
   latency_ms: { p50: number; p95: number; p99: number; max: number };
+  wave_diagnostics: ScenarioWaveDiagnostic[];
+}
+
+interface RequestObservation {
+  index: number;
+  started_ms: number;
+  ended_ms: number;
+  status: number | null;
+  expected: number | null;
+  valid: boolean | null;
+  timeout: boolean;
+}
+
+interface ScenarioWaveDiagnostic {
+  ordinal: number;
+  start_ms: number;
+  end_ms: number;
+  elapsed_ms: number;
+  requests: number;
+  responses: number;
+  exceptions: number;
+  statuses: Record<string, number>;
+  expected_matches: number;
+  validation_failures: number;
+  timeouts: number;
+  latency_ms: { p95: number; max: number };
+}
+
+interface BffHostResourceSample {
+  elapsed_ms: number;
+  phase: string;
+  process_tree_sample_valid: boolean;
+  bff_cpu_percent: number | null;
+  host_cpu_percent: number;
+  load_average: { one_minute: number; five_minutes: number; fifteen_minutes: number };
+}
+
+interface ProcessTreeStats {
+  rssBytes: number;
+  cpuPercent: number;
+}
+
+interface ProcessTreeSample {
+  valid: boolean;
+  bff: ProcessTreeStats;
+  redis: ProcessTreeStats;
 }
 
 interface ResourcePeaks {
@@ -143,6 +190,10 @@ interface ResourcePeaks {
   postgres_max_sample_gap_ms: number;
   postgres_max_connections: number;
   postgres_reserved_connections: number;
+  bff_cpu_percent: number;
+  host_cpu_percent: number;
+  process_tree_sample_errors: number;
+  bff_host_samples: BffHostResourceSample[];
   samples: number;
 }
 
@@ -1014,6 +1065,7 @@ async function measureScenario<T>(
   let validationFailures = 0;
   let timeouts = 0;
   const errors: string[] = [];
+  const observations: RequestObservation[] = [];
   const batches = options
     ? [items.slice(0, options.pauseAfter), items.slice(options.pauseAfter)]
     : [items];
@@ -1032,7 +1084,17 @@ async function measureScenario<T>(
           const itemStarted = performance.now();
           try {
             const result = await operation(batch[localIndex]!);
-            latencies.push(performance.now() - itemStarted);
+            const ended = performance.now();
+            latencies.push(ended - itemStarted);
+            observations.push({
+              index,
+              started_ms: itemStarted - DIAGNOSTIC_CLOCK_ORIGIN_MS,
+              ended_ms: ended - DIAGNOSTIC_CLOCK_ORIGIN_MS,
+              status: result.status,
+              expected: result.expected,
+              valid: result.valid ?? true,
+              timeout: false
+            });
             statuses[String(result.status)] = (statuses[String(result.status)] ?? 0) + 1;
             if (result.status === result.expected && result.valid !== false) {
               successes += 1;
@@ -1043,9 +1105,20 @@ async function measureScenario<T>(
               errors.push(`request ${index}: expected ${result.expected}, got ${result.status}, valid=${result.valid}`);
             }
           } catch (error) {
-            latencies.push(performance.now() - itemStarted);
+            const ended = performance.now();
+            const timedOut = /timeout|timed out|abort/i.test(safeError(error));
+            latencies.push(ended - itemStarted);
+            observations.push({
+              index,
+              started_ms: itemStarted - DIAGNOSTIC_CLOCK_ORIGIN_MS,
+              ended_ms: ended - DIAGNOSTIC_CLOCK_ORIGIN_MS,
+              status: null,
+              expected: null,
+              valid: null,
+              timeout: timedOut
+            });
             unexpectedErrors += 1;
-            if (/timeout|timed out|abort/i.test(safeError(error))) timeouts += 1;
+            if (timedOut) timeouts += 1;
             errors.push(`request ${index}: ${safeError(error)}`);
           }
         }
@@ -1074,10 +1147,155 @@ async function measureScenario<T>(
       p95: percentile(latencies, 95),
       p99: percentile(latencies, 99),
       max: round(Math.max(...latencies, 0))
-    }
+    },
+    wave_diagnostics: aggregateRequestWaves(observations, CONCURRENCY)
   };
   return result;
 }
+
+function aggregateRequestWaves(
+  observations: RequestObservation[],
+  waveSize: number
+): ScenarioWaveDiagnostic[] {
+  if (!Number.isSafeInteger(waveSize) || waveSize <= 0) throw new Error("invalid_wave_size");
+  const sorted = [...observations].sort((left, right) => left.index - right.index);
+  const waves: ScenarioWaveDiagnostic[] = [];
+  for (let offset = 0; offset < sorted.length; offset += waveSize) {
+    const wave = sorted.slice(offset, offset + waveSize);
+    const latencies = wave.map((observation) => observation.ended_ms - observation.started_ms);
+    const start = Math.min(...wave.map((observation) => observation.started_ms));
+    const end = Math.max(...wave.map((observation) => observation.ended_ms));
+    const statuses: Record<string, number> = {};
+    for (const observation of wave) {
+      if (observation.status !== null) {
+        statuses[String(observation.status)] = (statuses[String(observation.status)] ?? 0) + 1;
+      }
+    }
+    waves.push({
+      ordinal: waves.length + 1,
+      start_ms: round(start),
+      end_ms: round(end),
+      elapsed_ms: round(end - start),
+      requests: wave.length,
+      responses: wave.filter((observation) => observation.status !== null).length,
+      exceptions: wave.filter((observation) => observation.status === null).length,
+      statuses,
+      expected_matches: wave.filter((observation) =>
+        observation.status !== null && observation.status === observation.expected
+      ).length,
+      validation_failures: wave.filter((observation) => observation.valid === false).length,
+      timeouts: wave.filter((observation) => observation.timeout).length,
+      latency_ms: {
+        p95: percentile(latencies, 95),
+        max: round(Math.max(...latencies, 0))
+      }
+    });
+  }
+  return waves;
+}
+
+test("aggregates sanitized request waves without changing scheduling", () => {
+  const observations = Array.from({ length: 12 }, (_, index): RequestObservation => ({
+    index,
+    started_ms: index < 10 ? index : 100 + index,
+    ended_ms: (index < 10 ? index : 100 + index) + 20 + index,
+    status: index === 10 ? null : index === 11 ? 403 : 200,
+    expected: index === 10 ? null : index === 11 ? 403 : 200,
+    valid: index === 10 ? null : index !== 9,
+    timeout: index === 10
+  }));
+  const waves = aggregateRequestWaves(observations.reverse(), 10);
+  expect(waves).toEqual([
+    {
+      ordinal: 1,
+      start_ms: 0,
+      end_ms: 38,
+      elapsed_ms: 38,
+      requests: 10,
+      responses: 10,
+      exceptions: 0,
+      statuses: { "200": 10 },
+      expected_matches: 10,
+      validation_failures: 1,
+      timeouts: 0,
+      latency_ms: { p95: 29, max: 29 }
+    },
+    {
+      ordinal: 2,
+      start_ms: 110,
+      end_ms: 142,
+      elapsed_ms: 32,
+      requests: 2,
+      responses: 1,
+      exceptions: 1,
+      statuses: { "403": 1 },
+      expected_matches: 1,
+      validation_failures: 0,
+      timeouts: 1,
+      latency_ms: { p95: 31, max: 31 }
+    }
+  ]);
+  expect(Object.keys(waves[0]!)).not.toContain("ids");
+  expect(Object.keys(waves[0]!)).not.toContain("payloads");
+});
+
+test("clamps host and BFF process-tree CPU diagnostics", () => {
+  expect(clampPercent(-1)).toBe(0);
+  expect(clampPercent(140)).toBe(100);
+  expect(clampPercent(Number.NaN)).toBe(0);
+  expect(hostCpuUtilizationPercent({ idle: 100, total: 200 }, { idle: 110, total: 220 })).toBe(50);
+  expect(aggregateProcessTree([
+    [10, 1, 100, 90],
+    [11, 10, 50, 30],
+    [12, 1, 500, 99]
+  ], 10, 2)).toEqual({ rssBytes: 153_600, cpuPercent: 60 });
+});
+
+test("serializes and scans maximum cardinality diagnostics", async () => {
+  const waves = Array.from({ length: 950 }, (_, index) => ({
+    ordinal: index + 1,
+    start_ms: index * 10,
+    end_ms: index * 10 + 20,
+    elapsed_ms: 20,
+    requests: 10,
+    responses: 10,
+    exceptions: 0,
+    statuses: { "200": 10 },
+    expected_matches: 10,
+    validation_failures: 0,
+    timeouts: 0,
+    latency_ms: { p95: 20, max: 20 }
+  }));
+  const samples = Array.from({ length: 3_601 }, (_, index): BffHostResourceSample => ({
+    elapsed_ms: index * 250,
+    phase: "scenario_buyer_library",
+    process_tree_sample_valid: true,
+    bff_cpu_percent: 50,
+    host_cpu_percent: 50,
+    load_average: { one_minute: 1, five_minutes: 1, fifteen_minutes: 1 }
+  }));
+  const serialized = JSON.stringify({
+    schema_version: 2,
+    scenarios: { maximum_cardinality_fixture: { wave_diagnostics: waves } },
+    resources: { bff_host_samples: samples }
+  });
+  expect(waves).toHaveLength(950);
+  expect(samples).toHaveLength(3_601);
+  expect(Buffer.byteLength(serialized)).toBeLessThan(5 * 1024 * 1024);
+  const directory = await mkdtemp(join(tmpdir(), "appsell-capacity-diagnostics-"));
+  const artifact = join(directory, "capacity-100.json");
+  try {
+    await writeFile(artifact, serialized, { mode: 0o600 });
+    const { stdout } = await execFileAsync(
+      "python3",
+      ["scripts/assert_capacity_artifact_safe.py", artifact],
+      { timeout: 5_000 }
+    );
+    expect(stdout).toContain("capacity artifact scan: passed");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 async function genericDenialResponse(
   response: Response,
@@ -1147,6 +1365,13 @@ function requireResourceThresholds(resources: ResourcePeaks) {
   const totalLimit = Math.min(4 * gib, totalmem() * 0.7);
   if (total > totalLimit) failures.push(`total measured RSS ${total}>${totalLimit}`);
   if (resources.samples < 2) failures.push("resource sampler produced fewer than two samples");
+  if (resources.process_tree_sample_errors > 0) {
+    failures.push(`process-tree sampler errors: ${resources.process_tree_sample_errors}`);
+  }
+  const maxBffHostSamples = Math.ceil(CAPACITY_TEST_TIMEOUT_MS / 250) + 1;
+  if (resources.bff_host_samples.length > maxBffHostSamples) {
+    failures.push(`BFF host samples ${resources.bff_host_samples.length}>${maxBffHostSamples}`);
+  }
   failures.push(...postgresHeadroomFailures({
     rawConnections: resources.postgres_connections,
     workloadConnections: resources.postgres_workload_connections,
@@ -1212,9 +1437,14 @@ function startResourceSampler(
     postgres_max_sample_gap_ms: 0,
     postgres_max_connections: 0,
     postgres_reserved_connections: 0,
+    bff_cpu_percent: 0,
+    host_cpu_percent: 0,
+    process_tree_sample_errors: 0,
+    bff_host_samples: [],
     samples: 0
   };
   let previousSampleStarted = 0;
+  let previousHostCpu = hostCpuTimes();
   let waitDiagnostics = emptyPostgresWaitDiagnostics();
   const loop = (async () => {
     while (running) {
@@ -1228,14 +1458,12 @@ function startResourceSampler(
       }
       previousSampleStarted = sampleStarted;
       const samplePhase = currentPhase();
-      let bff: number;
-      let redis: number;
+      let processTrees: ProcessTreeSample;
       let containerSamples: ReadonlyArray<readonly [string, number]>;
       let connections: Awaited<ReturnType<typeof samplePostgresConnections>>;
       try {
-        [bff, redis, containerSamples, connections] = await Promise.all([
-          processTreeRss(bffPid),
-          processTreeRss(redisPid),
+        [processTrees, containerSamples, connections] = await Promise.all([
+          sampleProcessTrees(bffPid, redisPid),
           Promise.all(
             Object.entries(containers).map(async ([name, id]) => [name, await containerRss(id)] as const)
           ),
@@ -1246,8 +1474,30 @@ function startResourceSampler(
         running = false;
         continue;
       }
-      peaks.bff_rss_bytes = Math.max(peaks.bff_rss_bytes, bff);
-      peaks.redis_rss_bytes = Math.max(peaks.redis_rss_bytes, redis);
+      const currentHostCpu = hostCpuTimes();
+      const hostCpuPercent = hostCpuUtilizationPercent(previousHostCpu, currentHostCpu);
+      previousHostCpu = currentHostCpu;
+      const loads = loadavg();
+      if (processTrees.valid) {
+        peaks.bff_rss_bytes = Math.max(peaks.bff_rss_bytes, processTrees.bff.rssBytes);
+        peaks.redis_rss_bytes = Math.max(peaks.redis_rss_bytes, processTrees.redis.rssBytes);
+        peaks.bff_cpu_percent = Math.max(peaks.bff_cpu_percent, processTrees.bff.cpuPercent);
+      } else {
+        peaks.process_tree_sample_errors += 1;
+      }
+      peaks.host_cpu_percent = Math.max(peaks.host_cpu_percent, hostCpuPercent);
+      peaks.bff_host_samples.push({
+        elapsed_ms: round(sampleStarted - DIAGNOSTIC_CLOCK_ORIGIN_MS),
+        phase: samplePhase,
+        process_tree_sample_valid: processTrees.valid,
+        bff_cpu_percent: processTrees.valid ? processTrees.bff.cpuPercent : null,
+        host_cpu_percent: hostCpuPercent,
+        load_average: {
+          one_minute: round(loads[0] ?? 0),
+          five_minutes: round(loads[1] ?? 0),
+          fifteen_minutes: round(loads[2] ?? 0)
+        }
+      });
       for (const [name, bytes] of containerSamples) {
         peaks.container_rss_bytes[name] = Math.max(peaks.container_rss_bytes[name] ?? 0, bytes);
       }
@@ -1392,6 +1642,10 @@ function emptyResourcePeaks(containers: Record<string, string>): ResourcePeaks {
     postgres_max_sample_gap_ms: 0,
     postgres_max_connections: 0,
     postgres_reserved_connections: 0,
+    bff_cpu_percent: 0,
+    host_cpu_percent: 0,
+    process_tree_sample_errors: 0,
+    bff_host_samples: [],
     samples: 0
   };
 }
@@ -1436,29 +1690,76 @@ async function pathExists(path: string) {
   }
 }
 
-async function processTreeRss(rootPid: number) {
+async function sampleProcessTrees(bffPid: number, redisPid: number) {
   try {
     const { stdout } = await execFileAsync(
       "ps",
-      ["-axo", "pid=,ppid=,rss="],
+      ["-axo", "pid=,ppid=,rss=,%cpu="],
       { timeout: 3_000 }
     );
     const rows = stdout.trim().split("\n").map((line) => line.trim().split(/\s+/).map(Number));
-    const selected = new Set([rootPid]);
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const [pid, parent] of rows) {
-        if (selected.has(parent!) && !selected.has(pid!)) {
-          selected.add(pid!);
-          changed = true;
-        }
+    const logicalCpuCount = Math.max(cpus().length, 1);
+    return {
+      valid: true,
+      bff: aggregateProcessTree(rows, bffPid, logicalCpuCount),
+      redis: aggregateProcessTree(rows, redisPid, logicalCpuCount)
+    };
+  } catch {
+    return {
+      valid: false,
+      bff: { rssBytes: 0, cpuPercent: 0 },
+      redis: { rssBytes: 0, cpuPercent: 0 }
+    };
+  }
+}
+
+function aggregateProcessTree(
+  rows: number[][],
+  rootPid: number,
+  logicalCpuCount: number
+): ProcessTreeStats {
+  const selected = new Set([rootPid]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [pid, parent] of rows) {
+      if (selected.has(parent!) && !selected.has(pid!)) {
+        selected.add(pid!);
+        changed = true;
       }
     }
-    return rows.reduce((sum, [pid, , rss]) => sum + (selected.has(pid!) ? (rss ?? 0) * 1024 : 0), 0);
-  } catch {
-    return 0;
   }
+  const totals = rows.reduce((aggregate, [pid, , rss, cpu]) => {
+    if (!selected.has(pid!)) return aggregate;
+    return {
+      rssBytes: aggregate.rssBytes + (Number.isFinite(rss) ? rss! * 1024 : 0),
+      cpuPercent: aggregate.cpuPercent + (Number.isFinite(cpu) ? cpu! : 0)
+    };
+  }, { rssBytes: 0, cpuPercent: 0 });
+  return {
+    ...totals,
+    cpuPercent: clampPercent(totals.cpuPercent / Math.max(logicalCpuCount, 1))
+  };
+}
+
+function hostCpuTimes() {
+  return cpus().reduce((aggregate, cpu) => {
+    const total = Object.values(cpu.times).reduce((sum, value) => sum + value, 0);
+    return { idle: aggregate.idle + cpu.times.idle, total: aggregate.total + total };
+  }, { idle: 0, total: 0 });
+}
+
+function hostCpuUtilizationPercent(
+  previous: { idle: number; total: number },
+  current: { idle: number; total: number }
+) {
+  const totalDelta = current.total - previous.total;
+  const idleDelta = current.idle - previous.idle;
+  return clampPercent(totalDelta > 0 ? ((totalDelta - idleDelta) / totalDelta) * 100 : 0);
+}
+
+function clampPercent(value: number) {
+  return round(Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : 0);
 }
 
 async function containerRss(containerId: string | undefined) {
@@ -1673,6 +1974,10 @@ async function buildReport(
       account_cardinality_scope: "100_synthetic_owners_and_1000_synthetic_buyers_local_ci",
       identity_scope: "synthetic_subjects_not_real_identity_accounts",
       concurrency_scope: "10_concurrent_requests_not_1100_simultaneous_users",
+      diagnostic_clock_scope: "monotonic_capacity_executor_origin_shared_by_waves_and_resource_samples",
+      wave_diagnostics_scope: "index_cohorts_of_10_observations_may_overlap_in_time_no_scheduling_barrier",
+      bff_cpu_scope: "auxiliary_ps_lifetime_average_process_tree_normalized_by_logical_cpus_0_to_100",
+      max_bff_host_samples: Math.ceil(CAPACITY_TEST_TIMEOUT_MS / 250) + 1,
       executor_timeout_ms: CAPACITY_TEST_TIMEOUT_MS,
       oauth_rate_limit_scope: "runtime_default_1000_per_action_per_60s_across_two_windows",
       asset_session_scope: "1000_buyer_sessions_across_100_tenants_through_bff",

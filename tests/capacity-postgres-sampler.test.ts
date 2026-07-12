@@ -36,14 +36,22 @@ describe("PostgreSQL capacity sampler", () => {
       apiWaitEvents: { WALWrite: 7 }
     });
     expect(executor.mock.calls[0]?.[1]).toContain("PGAPPNAME=appsell_capacity_sampler");
-    expect(executor.mock.calls[0]?.[1].at(-1)).toContain("pid<>pg_backend_pid()");
-    expect(executor.mock.calls[0]?.[1].at(-1)).toContain("wait_event_type='Lock'");
-    expect(executor.mock.calls[0]?.[1].at(-1)).toContain("wait_event_type='LWLock'");
-    expect(executor.mock.calls[0]?.[1].at(-1)).toContain("wait_event_type='BufferPin'");
-    expect(executor.mock.calls[0]?.[1].at(-1)).toContain("wait_event_type='Client'");
-    expect(executor.mock.calls[0]?.[1].at(-1)).toContain("wait_event_type='IO'");
-    expect(executor.mock.calls[0]?.[1].at(-1)).toContain("wait_event_type='IPC'");
-    expect(executor.mock.calls[0]?.[1].at(-1)).toContain("string_agg(wait_event");
+    const query = String(executor.mock.calls[0]?.[1].at(-1));
+    expect(query).toContain("activity as materialized");
+    expect(query.match(/pg_stat_activity/g)).toHaveLength(1);
+    expect(query).toContain(
+      "select pid,backend_type,usename,application_name,state,wait_event_type,wait_event from pg_stat_activity"
+    );
+    expect(query).not.toMatch(/select \*/i);
+    expect(query).not.toMatch(/\b(query|client_addr|backend_start|xact_start|query_start)\b/i);
+    expect(query).toContain("pid<>pg_backend_pid()");
+    expect(query).toContain("wait_event_type='Lock'");
+    expect(query).toContain("wait_event_type='LWLock'");
+    expect(query).toContain("wait_event_type='BufferPin'");
+    expect(query).toContain("wait_event_type='Client'");
+    expect(query).toContain("wait_event_type='IO'");
+    expect(query).toContain("wait_event_type='IPC'");
+    expect(query).toContain("string_agg(wait_event");
   });
 
   it("propagates docker/psql failure instead of returning a zero sample", async () => {

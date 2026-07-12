@@ -56,7 +56,19 @@ export async function samplePostgresConnections(
     [
       "exec", "-e", "PGAPPNAME=appsell_capacity_sampler", containerId,
       "psql", "-U", "postgres", "-d", "appsell", "-Atc",
-      "select current_setting('max_connections')::int," +
+      "with activity as materialized (" +
+        "select pid,backend_type,usename,application_name,state,wait_event_type,wait_event " +
+        "from pg_stat_activity where datname=current_database()" +
+        "), exact_waits as (" +
+        "select wait_event,count(*) event_count from activity " +
+        "where pid<>pg_backend_pid() and state='active' and wait_event is not null " +
+        "group by wait_event" +
+        "), api_waits as (" +
+        "select wait_event,count(*) event_count from activity " +
+        "where pid<>pg_backend_pid() and usename='appsell_runtime' " +
+        "and application_name='appsell_capacity_api' and state='active' " +
+        "and wait_event is not null group by wait_event" +
+        ") select current_setting('max_connections')::int," +
         "current_setting('superuser_reserved_connections')::int," +
         "count(*)," +
         "count(*) filter(where pid<>pg_backend_pid() and backend_type='client backend')," +
@@ -81,15 +93,9 @@ export async function samplePostgresConnections(
         "and application_name='appsell_capacity_api' and state='active' " +
         "and wait_event is not null)," +
         "coalesce((select string_agg(wait_event || ':' || event_count::text,',' order by wait_event) " +
-        "from (select wait_event,count(*) event_count from pg_stat_activity " +
-        "where datname=current_database() and pid<>pg_backend_pid() and state='active' " +
-        "and wait_event is not null group by wait_event) exact_waits),'')," +
+        "from exact_waits),'')," +
         "coalesce((select string_agg(wait_event || ':' || event_count::text,',' order by wait_event) " +
-        "from (select wait_event,count(*) event_count from pg_stat_activity " +
-        "where datname=current_database() and pid<>pg_backend_pid() " +
-        "and usename='appsell_runtime' and application_name='appsell_capacity_api' " +
-        "and state='active' and wait_event is not null group by wait_event) api_waits),'') " +
-        "from pg_stat_activity where datname=current_database()"
+        "from api_waits),'') from activity"
     ],
     { timeout: 3_000 }
   );
