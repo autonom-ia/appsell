@@ -9,6 +9,15 @@ export interface PostgresHeadroomSample {
   maxSampleGapMs: number;
 }
 
+export interface PostgresCapacitySample extends PostgresHeadroomSample {
+  activeWaitingConnections: number;
+  lockWaitingConnections: number;
+  bufferPinWaitingConnections: number;
+  otherWaitingConnections: number;
+  samplesWithActiveWaiting: number;
+  samples: number;
+}
+
 export interface PostgresHeadroom {
   usableConnections: number;
   headroomConnections: number;
@@ -24,7 +33,7 @@ export function calculatePostgresHeadroom(sample: PostgresHeadroomSample): Postg
   return { usableConnections, headroomConnections, headroomPercent };
 }
 
-export function postgresHeadroomFailures(sample: PostgresHeadroomSample): string[] {
+export function postgresHeadroomFailures(sample: PostgresCapacitySample): string[] {
   const failures: string[] = [];
   if (sample.sampleErrors > 0) failures.push("sampler_invalid");
   if (sample.maxSampleGapMs > 2_000) failures.push("sampler_gap_exceeded");
@@ -39,6 +48,17 @@ export function postgresHeadroomFailures(sample: PostgresHeadroomSample): string
   }
   if (sample.runtimeConnections > 10 || sample.apiConnections > 10) {
     failures.push("runtime_pool_out_of_budget");
+  }
+  if (sample.lockWaitingConnections > 0) failures.push("postgres_lock_wait_observed");
+  if (sample.bufferPinWaitingConnections > 0) {
+    failures.push("postgres_buffer_pin_wait_observed");
+  }
+  if (sample.otherWaitingConnections > 0) failures.push("postgres_unclassified_wait_observed");
+  const waitingSampleRatio = sample.samples > 0
+    ? sample.samplesWithActiveWaiting / sample.samples
+    : 1;
+  if (sample.activeWaitingConnections > 5 || waitingSampleRatio > 0.25) {
+    failures.push("postgres_wait_budget_exceeded");
   }
   const headroom = calculatePostgresHeadroom(sample);
   if (headroom.headroomConnections < 9 || headroom.headroomPercent < 40) {

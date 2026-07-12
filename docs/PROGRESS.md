@@ -71,6 +71,20 @@ Fase 5 — entrega de conteúdo e assets privados multitenant em Local/CI.
 
 ## Em andamento
 
+- Issue #46 na branch `feat/46-capacity-1000-buyers`: vertical Local/CI ampliada
+  para 100 admins/tenants e 1.000 buyers, com dez buyers e dez entitlements
+  distintos por tenant; 1.100 sessões OAuth foram observadas de fato;
+- a cobertura ampliada concluiu 1.000 library/player/progress/asset e negações
+  cross-tenant de produto, player/progresso e asset, sem 5xx, timeout, payload
+  inválido ou acesso cruzado; o certificado final faz 9.500 requests, 4.100 negações
+  esperadas, BFF abaixo de 2 GiB, headroom PostgreSQL acima de 40% e teardown
+  limpo; as métricas exatas de cada execução ficam no artifact JSON;
+- thresholds continuam provisórios até três runs verdes em CI sobre source
+  limpo; esta evidência não certifica Identity real, staging, HA ou produção;
+- a evidência é de cardinalidade sintética Local/CI, não simultaneidade de 1.100
+  usuários, Identity real, staging ou produção; publicação permanece
+  condicionada ao gate crítico final e ao CI remoto;
+
 - Issue #40 na branch `feat/40-private-asset-upload`: migration 0008, quotas e
   RLS forçados, upload direto S3-compatible em quarentena, worker separado,
   PDF sandbox sem rede e publicação pinada à versão imutável do objeto;
@@ -148,6 +162,7 @@ Fase 5 — entrega de conteúdo e assets privados multitenant em Local/CI.
 
 ## Próximo passo recomendado
 
-Aguardar decisão e merges empilhados #35 → #36 → #39 → #41. Não declarar acesso
-real de `comercial@autonomia.site`: isso depende do Identity #13 e de ambiente
-isolado com token/JWKS/MFA reais.
+Concluir as revisões de tenancy e capacidade da Issue #46, corrigir qualquer
+P0-P3 e repetir o run exato antes de solicitar autorização para commit/push/PR
+empilhada sobre #45. Não declarar acesso real de `comercial@autonomia.site`:
+isso depende do Identity #13 e de ambiente isolado com token/JWKS/MFA reais.

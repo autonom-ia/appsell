@@ -57,7 +57,7 @@ with open(path, "w", encoding="utf-8") as destination:
     destination.write("\n")
 '
   {
-    echo "# AppSell capacity baseline — 100 tenants"
+    echo "# AppSell capacity baseline — 100 admins and 1,000 buyers"
     echo
     echo "- Status: **failed**"
     echo "- Mode: Local/CI"
@@ -283,11 +283,11 @@ export APPSELL_CAPACITY_STORAGE_VERTICAL_TREE_RSS_BYTES="$(
 )"
 export NEXT_TELEMETRY_DISABLED="1"
 
-python3 scripts/run_with_rss.py --timeout 300 --output "$vitest_metrics" -- \
+python3 scripts/run_with_rss.py --timeout 660 --output "$vitest_metrics" -- \
   pnpm exec vitest run tests/bff-capacity-100-tenants.test.ts
 
 REPORT_PATH="$report" python3 -c \
-  'import json,os; result=json.load(open(os.environ["REPORT_PATH"], encoding="utf-8")); assert result["status"] == "passed" and result["tenant_count"] == 100 and result["production_certified"] is False'
+  'import json,os; result=json.load(open(os.environ["REPORT_PATH"], encoding="utf-8")); assert result["status"] == "passed" and result["tenant_count"] == 100 and result["admin_accounts"] == 100 and result["buyers_per_admin"] == 10 and result["buyer_accounts"] == 1000 and result["owner_sessions_observed"] == 100 and result["buyer_sessions_observed"] == 1000 and result["distinct_subjects"] == 1100 and result["production_certified"] is False'
 python3 scripts/assert_capacity_artifact_safe.py \
   "$report" "${report%.json}.md" "$startup_report"
 echo "capacity report: $report"

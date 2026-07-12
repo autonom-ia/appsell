@@ -13,6 +13,16 @@ export interface PostgresConnectionSample {
   active: number;
   idle: number;
   activeWaiting: number;
+  lockWaiting: number;
+  lwLockWaiting: number;
+  bufferPinWaiting: number;
+  clientWaiting: number;
+  ioWaiting: number;
+  ipcWaiting: number;
+  activityWaiting: number;
+  timeoutWaiting: number;
+  extensionWaiting: number;
+  otherWaiting: number;
 }
 
 type Executor = (
@@ -39,16 +49,32 @@ export async function samplePostgresConnections(
         "count(*) filter(where pid<>pg_backend_pid() and application_name='appsell_capacity_api')," +
         "count(*) filter(where pid<>pg_backend_pid() and state='active')," +
         "count(*) filter(where pid<>pg_backend_pid() and state='idle')," +
-        "count(*) filter(where pid<>pg_backend_pid() and state='active' and wait_event is not null) " +
+        "count(*) filter(where pid<>pg_backend_pid() and state='active' and wait_event is not null)," +
+        "count(*) filter(where pid<>pg_backend_pid() and state='active' and wait_event_type='Lock')," +
+        "count(*) filter(where pid<>pg_backend_pid() and state='active' and wait_event_type='LWLock')," +
+        "count(*) filter(where pid<>pg_backend_pid() and state='active' and wait_event_type='BufferPin')," +
+        "count(*) filter(where pid<>pg_backend_pid() and state='active' and wait_event_type='Client')," +
+        "count(*) filter(where pid<>pg_backend_pid() and state='active' and wait_event_type='IO')," +
+        "count(*) filter(where pid<>pg_backend_pid() and state='active' and wait_event_type='IPC')," +
+        "count(*) filter(where pid<>pg_backend_pid() and state='active' and wait_event_type='Activity')," +
+        "count(*) filter(where pid<>pg_backend_pid() and state='active' and wait_event_type='Timeout')," +
+        "count(*) filter(where pid<>pg_backend_pid() and state='active' and wait_event_type='Extension')," +
+        "count(*) filter(where pid<>pg_backend_pid() and state='active' and wait_event is not null " +
+        "and coalesce(wait_event_type,'') not in " +
+        "('Lock','LWLock','BufferPin','Client','IO','IPC','Activity','Timeout','Extension')) " +
         "from pg_stat_activity where datname=current_database()"
     ],
     { timeout: 3_000 }
   );
   const values = stdout.trim().split("|").map(Number);
-  if (values.length !== 9 || values.some((value) => !Number.isFinite(value))) {
+  if (values.length !== 19 || values.some((value) => !Number.isFinite(value))) {
     throw new Error("postgres_sample_invalid");
   }
-  const [maxConnections, reservedConnections, total, workload, runtime, api, active, idle, activeWaiting] = values;
+  const [
+    maxConnections, reservedConnections, total, workload, runtime, api,
+    active, idle, activeWaiting, lockWaiting, lwLockWaiting, bufferPinWaiting, clientWaiting,
+    ioWaiting, ipcWaiting, activityWaiting, timeoutWaiting, extensionWaiting, otherWaiting
+  ] = values;
   return {
     maxConnections: maxConnections!,
     reservedConnections: reservedConnections!,
@@ -58,6 +84,16 @@ export async function samplePostgresConnections(
     api: api!,
     active: active!,
     idle: idle!,
-    activeWaiting: activeWaiting!
+    activeWaiting: activeWaiting!,
+    lockWaiting: lockWaiting!,
+    lwLockWaiting: lwLockWaiting!,
+    bufferPinWaiting: bufferPinWaiting!,
+    clientWaiting: clientWaiting!,
+    ioWaiting: ioWaiting!,
+    ipcWaiting: ipcWaiting!,
+    activityWaiting: activityWaiting!,
+    timeoutWaiting: timeoutWaiting!,
+    extensionWaiting: extensionWaiting!,
+    otherWaiting: otherWaiting!
   };
 }

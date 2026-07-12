@@ -17,8 +17,13 @@ import { startIsolatedRedis, unusedNonDefaultPort } from "./helpers/isolated-red
 
 const execFileAsync = promisify(execFile);
 const domainApiUrl = process.env.APPSELL_TEST_DOMAIN_API_URL;
-const CAPACITY = 100;
+const TENANT_CAPACITY = 100;
+const BUYERS_PER_TENANT = 10;
+const BUYER_CAPACITY = TENANT_CAPACITY * BUYERS_PER_TENANT;
 const CONCURRENCY = 10;
+const OAUTH_RATE_WINDOW_MS = 60_000;
+const OAUTH_FIRST_WINDOW_CAPACITY = 990;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 interface ScenarioThreshold {
   p95: number;
@@ -33,21 +38,34 @@ const SCENARIO_THRESHOLDS = {
   product_create: { p95: 2_250, p99: 2_750, max: 3_000, throughput: 8 },
   product_create_verify: { p95: 2_250, p99: 2_500, max: 3_000, throughput: 10 },
   buyer_library: { p95: 2_250, p99: 2_500, max: 3_000, throughput: 10 },
+  buyer_product_denial: { p95: 2_250, p99: 2_500, max: 3_000, throughput: 10 },
+  buyer_player: { p95: 2_250, p99: 2_500, max: 3_000, throughput: 10 },
+  cross_tenant_player_denial: { p95: 2_250, p99: 2_500, max: 3_000, throughput: 10 },
+  buyer_progress: { p95: 2_250, p99: 2_750, max: 3_000, throughput: 8 },
+  cross_tenant_progress_denial: { p95: 2_250, p99: 2_500, max: 3_000, throughput: 10 },
   buyer_asset: { p95: 2_250, p99: 2_750, max: 3_000, throughput: 8 },
   cross_tenant_denial: { p95: 2_250, p99: 2_500, max: 3_000, throughput: 10 },
   cross_tenant_asset_denial: { p95: 2_250, p99: 2_500, max: 3_000, throughput: 10 }
 } satisfies Record<string, ScenarioThreshold>;
 
+interface FixtureBuyer {
+  ordinal: number;
+  subject: string;
+  identity_id: string;
+  entitlement_id: string;
+}
+
 interface FixtureTenant {
   ordinal: number;
   owner_subject: string;
-  buyer_subject: string;
   seller_id: string;
   seller_slug: string;
   product_id: string;
   product_slug: string;
   product_title: string;
-  entitlement_id: string;
+  buyers: FixtureBuyer[];
+  publication_id: string;
+  lesson_id: string;
   asset_id: string;
   asset_sha256: string;
 }
@@ -62,6 +80,9 @@ interface FixtureManifest {
   schema_version: number;
   mode: string;
   tenant_count: number;
+  admin_count: number;
+  buyers_per_tenant: number;
+  buyer_count: number;
   distinct_subjects: number;
   tenants: FixtureTenant[];
 }
@@ -76,6 +97,7 @@ interface ScenarioResult {
   diagnostics: string[];
   statuses: Record<string, number>;
   duration_ms: number;
+  excluded_wait_ms: number;
   throughput_per_second: number;
   latency_ms: { p50: number; p95: number; p99: number; max: number };
 }
@@ -91,7 +113,18 @@ interface ResourcePeaks {
   postgres_active_connections: number;
   postgres_idle_connections: number;
   postgres_active_waiting: number;
+  postgres_lock_waiting: number;
+  postgres_lwlock_waiting: number;
+  postgres_buffer_pin_waiting: number;
+  postgres_client_waiting: number;
+  postgres_io_waiting: number;
+  postgres_ipc_waiting: number;
+  postgres_activity_waiting: number;
+  postgres_timeout_waiting: number;
+  postgres_extension_waiting: number;
+  postgres_other_waiting: number;
   postgres_samples_with_active_waiting: number;
+  postgres_samples_with_lock_waiting: number;
   postgres_active_waiting_observed_ms: number;
   postgres_sample_errors: number;
   postgres_max_sample_gap_ms: number;
@@ -100,7 +133,9 @@ interface ResourcePeaks {
   samples: number;
 }
 
-test.skipIf(!domainApiUrl)("certifies a Local/CI baseline for 100 isolated tenants", async () => {
+test.skipIf(!domainApiUrl)(
+  "certifies 100 admins and 1,000 buyers across 100 isolated tenants in Local/CI",
+  async () => {
   const manifest = JSON.parse(
     await readFile(requiredEnvironment("APPSELL_CAPACITY_MANIFEST"), "utf8")
   ) as FixtureManifest;
@@ -127,6 +162,8 @@ test.skipIf(!domainApiUrl)("certifies a Local/CI baseline for 100 isolated tenan
   const cleanupErrors: string[] = [];
   let redisKeysBeforeShutdown = 0;
   let warmupDurationMs = 0;
+  let observedOwnerSessions = 0;
+  let observedBuyerSessions = 0;
 
   try {
     redis = await startIsolatedRedis();
@@ -135,13 +172,23 @@ test.skipIf(!domainApiUrl)("certifies a Local/CI baseline for 100 isolated tenan
     bff = startBff(port, distDir, shared);
     const activeOauth = RedisOAuthService.fromEnvironment(shared);
     oauth = activeOauth;
-    sampler = startResourceSampler(bff.pid!, redis.pid, containers);
     await waitForBff(bff, port);
+    sampler = startResourceSampler(bff.pid!, redis.pid, containers);
 
     // Warm compilation, OAuth callback, domain sync and both read route families.
     const warmupStarted = performance.now();
-    const warmOwner = await createSession(activeOauth, port, manifest.tenants[0]!.owner_subject, "warm-owner");
-    const warmBuyer = await createSession(activeOauth, port, manifest.tenants[0]!.buyer_subject, "warm-buyer");
+    const warmOwner = await createSession(
+      activeOauth,
+      port,
+      manifest.tenants[0]!.owner_subject,
+      "warm-owner"
+    );
+    const warmBuyer = await createSession(
+      activeOauth,
+      port,
+      manifest.tenants[0]!.buyers[0]!.subject,
+      "warm-buyer"
+    );
     await requireStatus(
       timedFetch(`${origin(port)}/api/sellers/${manifest.tenants[0]!.seller_id}/products`, {
         headers: { cookie: warmOwner.sessionCookie }
@@ -170,7 +217,7 @@ test.skipIf(!domainApiUrl)("certifies a Local/CI baseline for 100 isolated tenan
         method: "POST",
         headers: {
           cookie: warmOwner.cookieHeader,
-          origin: `http://localhost:${port}`
+          origin: shared.APPSELL_PUBLIC_ORIGIN
         },
         body: new URLSearchParams({
           _csrf: warmOwner.productCsrf,
@@ -191,7 +238,7 @@ test.skipIf(!domainApiUrl)("certifies a Local/CI baseline for 100 isolated tenan
     }
     const warmProductId = warmProductPayload.product_id;
     const warmAsset = await timedFetch(
-      `${origin(port)}/api/library/items/${manifest.tenants[0]!.entitlement_id}/assets/${manifest.tenants[0]!.asset_id}`,
+      `${origin(port)}/api/library/items/${manifest.tenants[0]!.buyers[0]!.entitlement_id}/assets/${manifest.tenants[0]!.asset_id}`,
       { headers: { cookie: warmBuyer.sessionCookie } }
     );
     if (warmAsset.status !== 200 || (await warmAsset.arrayBuffer()).byteLength === 0) {
@@ -199,7 +246,7 @@ test.skipIf(!domainApiUrl)("certifies a Local/CI baseline for 100 isolated tenan
     }
     await requireStatus(
       timedFetch(
-        `${origin(port)}/api/library/items/${manifest.tenants[1]!.entitlement_id}/assets/${manifest.tenants[1]!.asset_id}`,
+        `${origin(port)}/api/library/items/${manifest.tenants[1]!.buyers[0]!.entitlement_id}/assets/${manifest.tenants[1]!.asset_id}`,
         { headers: { cookie: warmBuyer.sessionCookie } }
       ),
       404,
@@ -208,21 +255,36 @@ test.skipIf(!domainApiUrl)("certifies a Local/CI baseline for 100 isolated tenan
     warmupDurationMs = round(performance.now() - warmupStarted);
 
     const ownerSessions = new Map<number, CapacitySession>();
-    const buyerSessions = new Map<number, CapacitySession>();
+    const buyerSessions = new Map<string, CapacitySession>();
     scenarios.oauth_callback_and_sync = await measureScenario(
       manifest.tenants.flatMap((tenant) => [
-        { tenant, role: "owner" as const, subject: tenant.owner_subject },
-        { tenant, role: "buyer" as const, subject: tenant.buyer_subject }
+        { tenant, role: "owner" as const, subject: tenant.owner_subject, buyer: undefined },
+        ...tenant.buyers.map((buyer) => ({
+          tenant,
+          role: "buyer" as const,
+          subject: buyer.subject,
+          buyer
+        }))
       ]),
-      async ({ tenant, role, subject }) => {
+      async ({ tenant, role, subject, buyer }) => {
         const cookie = await createSession(
           activeOauth,
           port,
           subject,
-          `capacity-${role}-${tenant.ordinal.toString().padStart(3, "0")}`
+          role === "owner"
+            ? `capacity-owner-${tenant.ordinal.toString().padStart(3, "0")}`
+            : `capacity-buyer-${tenant.ordinal.toString().padStart(3, "0")}-${buyer!.ordinal.toString().padStart(2, "0")}`
         );
-        (role === "owner" ? ownerSessions : buyerSessions).set(tenant.ordinal, cookie);
+        if (role === "owner") {
+          ownerSessions.set(tenant.ordinal, cookie);
+        } else {
+          buyerSessions.set(buyerSessionKey(tenant.ordinal, buyer!.ordinal), cookie);
+        }
         return { status: 307, expected: 307 };
+      },
+      {
+        pauseAfter: OAUTH_FIRST_WINDOW_CAPACITY,
+        betweenBatches: waitForNextOauthRateWindow
       }
     );
     recordThreshold(thresholdFailures,
@@ -231,6 +293,14 @@ test.skipIf(!domainApiUrl)("certifies a Local/CI baseline for 100 isolated tenan
       SCENARIO_THRESHOLDS.oauth_callback_and_sync
     );
     requireScenarioClean("oauth_callback_and_sync", scenarios.oauth_callback_and_sync);
+    observedOwnerSessions = ownerSessions.size;
+    observedBuyerSessions = buyerSessions.size;
+    if (
+      observedOwnerSessions !== TENANT_CAPACITY ||
+      observedBuyerSessions !== BUYER_CAPACITY
+    ) {
+      throw new Error("oauth session cardinality mismatch");
+    }
 
     scenarios.owner_catalog = await measureScenario(manifest.tenants, async (tenant) => {
       const response = await timedFetch(`${origin(port)}/api/sellers/${tenant.seller_id}/products`, {
@@ -268,7 +338,7 @@ test.skipIf(!domainApiUrl)("certifies a Local/CI baseline for 100 isolated tenan
           method: "POST",
           headers: {
             cookie: session.cookieHeader,
-            origin: `http://localhost:${port}`
+            origin: shared.APPSELL_PUBLIC_ORIGIN
           },
           body: new URLSearchParams({
             _csrf: session.productCsrf,
@@ -330,17 +400,26 @@ test.skipIf(!domainApiUrl)("certifies a Local/CI baseline for 100 isolated tenan
     );
     requireScenarioClean("product_create_verify", scenarios.product_create_verify);
 
-    scenarios.buyer_library = await measureScenario(manifest.tenants, async (tenant) => {
+    const tenantBuyers = manifest.tenants.flatMap((tenant) =>
+      tenant.buyers.map((buyer) => ({ tenant, buyer }))
+    );
+    scenarios.buyer_library = await measureScenario(tenantBuyers, async ({ tenant, buyer }) => {
       const response = await timedFetch(`${origin(port)}/api/library`, {
-        headers: { cookie: requiredSession(buyerSessions, tenant.ordinal, "buyer").sessionCookie }
+        headers: {
+          cookie: requiredSession(
+            buyerSessions,
+            buyerSessionKey(tenant.ordinal, buyer.ordinal),
+            "buyer"
+          ).sessionCookie
+        }
       });
       const payload = await response.clone().json() as {
         items?: Array<{ entitlement_id?: string; product?: { id?: string; title?: string } }>;
       };
       const serialized = JSON.stringify(payload);
-      const next = manifest.tenants[(tenant.ordinal + 1) % CAPACITY]!;
+      const next = manifest.tenants[(tenant.ordinal + 1) % TENANT_CAPACITY]!;
       const own = payload.items?.length === 1 &&
-        payload.items[0]?.entitlement_id === tenant.entitlement_id &&
+        payload.items[0]?.entitlement_id === buyer.entitlement_id &&
         payload.items[0]?.product?.id === tenant.product_id &&
         payload.items[0]?.product?.title === tenant.product_title &&
         !serialized.includes(next.product_id) && !serialized.includes(next.product_title);
@@ -354,12 +433,260 @@ test.skipIf(!domainApiUrl)("certifies a Local/CI baseline for 100 isolated tenan
     );
     requireScenarioClean("buyer_library", scenarios.buyer_library);
 
-    scenarios.buyer_asset = await measureScenario(manifest.tenants, async (tenant) => {
+    scenarios.buyer_product_denial = await measureScenario(
+      tenantBuyers,
+      async ({ tenant, buyer }) => {
+        const target = manifest.tenants[(tenant.ordinal + 1) % TENANT_CAPACITY]!;
+        const response = await timedFetch(
+          `${origin(port)}/api/sellers/${target.seller_id}/products/${target.product_id}`,
+          {
+            headers: {
+              cookie: requiredSession(
+                buyerSessions,
+                buyerSessionKey(tenant.ordinal, buyer.ordinal),
+                "buyer"
+              ).sessionCookie
+            }
+          }
+        );
+        return {
+          status: response.status,
+          expected: 404,
+          valid: await genericDenialResponse(response, "product_not_found", [
+            target.seller_id,
+            target.product_id,
+            target.product_title,
+            target.publication_id
+          ])
+        };
+      }
+    );
+    recordThreshold(
+      thresholdFailures,
+      "buyer_product_denial",
+      scenarios.buyer_product_denial,
+      SCENARIO_THRESHOLDS.buyer_product_denial
+    );
+    requireScenarioClean("buyer_product_denial", scenarios.buyer_product_denial);
+    if (scenarios.buyer_product_denial.expected_denials !== BUYER_CAPACITY) {
+      throw new Error("cross-tenant buyer product denial budget was not 1,000/1,000");
+    }
+
+    const playerStates = new Map<string, {
+      csrf: string;
+      enrollmentId: string;
+      version: number;
+    }>();
+    scenarios.buyer_player = await measureScenario(tenantBuyers, async ({ tenant, buyer }) => {
       const response = await timedFetch(
-        `${origin(port)}/api/library/items/${tenant.entitlement_id}/assets/${tenant.asset_id}`,
+        `${origin(port)}/api/library/items/${buyer.entitlement_id}/lessons/${tenant.lesson_id}`,
         {
           headers: {
-            cookie: requiredSession(buyerSessions, tenant.ordinal, "buyer").sessionCookie
+            cookie: requiredSession(
+              buyerSessions,
+              buyerSessionKey(tenant.ordinal, buyer.ordinal),
+              "buyer"
+            ).sessionCookie
+          }
+        }
+      );
+      const payload = await response.clone().json() as {
+        player?: {
+          seller?: { id?: string };
+          product?: { id?: string };
+          publication?: { id?: string };
+          entitlement_id?: string;
+          enrollment_id?: string;
+          selected_lesson_id?: string;
+          state_version?: number;
+        };
+        csrf?: { progress?: string };
+      };
+      const valid = payload.player?.seller?.id === tenant.seller_id &&
+        payload.player?.product?.id === tenant.product_id &&
+        payload.player?.publication?.id === tenant.publication_id &&
+        payload.player?.entitlement_id === buyer.entitlement_id &&
+        typeof payload.player?.enrollment_id === "string" &&
+        UUID.test(payload.player.enrollment_id) &&
+        payload.player?.selected_lesson_id === tenant.lesson_id &&
+        payload.player?.state_version === 0 &&
+        typeof payload.csrf?.progress === "string" && payload.csrf.progress.length >= 32;
+      if (valid) {
+        playerStates.set(buyerSessionKey(tenant.ordinal, buyer.ordinal), {
+          csrf: payload.csrf!.progress!,
+          enrollmentId: payload.player!.enrollment_id!,
+          version: payload.player!.state_version!
+        });
+      }
+      return { status: response.status, expected: 200, valid };
+    });
+    recordThreshold(
+      thresholdFailures,
+      "buyer_player",
+      scenarios.buyer_player,
+      SCENARIO_THRESHOLDS.buyer_player
+    );
+    requireScenarioClean("buyer_player", scenarios.buyer_player);
+    if (
+      playerStates.size !== BUYER_CAPACITY ||
+      new Set([...playerStates.values()].map((state) => state.enrollmentId)).size !==
+        BUYER_CAPACITY
+    ) {
+      throw new Error("buyer enrollment cardinality mismatch");
+    }
+
+    scenarios.cross_tenant_player_denial = await measureScenario(
+      tenantBuyers,
+      async ({ tenant, buyer }) => {
+        const target = manifest.tenants[(tenant.ordinal + 1) % TENANT_CAPACITY]!;
+        const targetBuyer = target.buyers[buyer.ordinal]!;
+        const response = await timedFetch(
+          `${origin(port)}/api/library/items/${targetBuyer.entitlement_id}` +
+            `/lessons/${target.lesson_id}`,
+          {
+            headers: {
+              cookie: requiredSession(
+                buyerSessions,
+                buyerSessionKey(tenant.ordinal, buyer.ordinal),
+                "buyer"
+              ).sessionCookie
+            }
+          }
+        );
+        return {
+          status: response.status,
+          expected: 404,
+          valid: await genericDenialResponse(response, "learning_item_unavailable", [
+            target.seller_id,
+            target.product_id,
+            target.publication_id,
+            targetBuyer.entitlement_id,
+            target.lesson_id
+          ])
+        };
+      }
+    );
+    recordThreshold(
+      thresholdFailures,
+      "cross_tenant_player_denial",
+      scenarios.cross_tenant_player_denial,
+      SCENARIO_THRESHOLDS.cross_tenant_player_denial
+    );
+    requireScenarioClean(
+      "cross_tenant_player_denial",
+      scenarios.cross_tenant_player_denial
+    );
+    if (scenarios.cross_tenant_player_denial.expected_denials !== BUYER_CAPACITY) {
+      throw new Error("cross-tenant player denial budget was not 1,000/1,000");
+    }
+
+    scenarios.buyer_progress = await measureScenario(tenantBuyers, async ({ tenant, buyer }) => {
+      const key = buyerSessionKey(tenant.ordinal, buyer.ordinal);
+      const state = playerStates.get(key);
+      if (!state) throw new Error(`missing player state for buyer ${key}`);
+      const response = await timedFetch(
+        `${origin(port)}/api/library/items/${buyer.entitlement_id}/lessons/${tenant.lesson_id}/progress`,
+        {
+          method: "PUT",
+          headers: {
+            cookie: requiredSession(buyerSessions, key, "buyer").sessionCookie,
+            origin: shared.APPSELL_PUBLIC_ORIGIN
+          },
+          body: new URLSearchParams({
+            _csrf: state.csrf,
+            idempotency_key: randomUUID(),
+            progress_percent: "25",
+            expected_version: String(state.version)
+          })
+        }
+      );
+      const payload = await response.clone().json() as {
+        progress?: {
+          entitlement_id?: string;
+          enrollment_id?: string;
+          lesson_id?: string;
+          lesson_progress_percent?: number;
+          state_version?: number;
+          applied?: boolean;
+        };
+      };
+      const valid = payload.progress?.entitlement_id === buyer.entitlement_id &&
+        payload.progress?.enrollment_id === state.enrollmentId &&
+        payload.progress?.lesson_id === tenant.lesson_id &&
+        payload.progress?.lesson_progress_percent === 25 &&
+        payload.progress?.state_version === 1 && payload.progress?.applied === true;
+      return { status: response.status, expected: 200, valid };
+    });
+    recordThreshold(
+      thresholdFailures,
+      "buyer_progress",
+      scenarios.buyer_progress,
+      SCENARIO_THRESHOLDS.buyer_progress
+    );
+    requireScenarioClean("buyer_progress", scenarios.buyer_progress);
+
+    scenarios.cross_tenant_progress_denial = await measureScenario(
+      tenantBuyers,
+      async ({ tenant, buyer }) => {
+        const key = buyerSessionKey(tenant.ordinal, buyer.ordinal);
+        const state = playerStates.get(key);
+        if (!state) throw new Error(`missing player state for buyer ${key}`);
+        const target = manifest.tenants[(tenant.ordinal + 1) % TENANT_CAPACITY]!;
+        const targetBuyer = target.buyers[buyer.ordinal]!;
+        const response = await timedFetch(
+          `${origin(port)}/api/library/items/${targetBuyer.entitlement_id}` +
+            `/lessons/${target.lesson_id}/progress`,
+          {
+            method: "PUT",
+            headers: {
+              cookie: requiredSession(buyerSessions, key, "buyer").sessionCookie,
+              origin: shared.APPSELL_PUBLIC_ORIGIN
+            },
+            body: new URLSearchParams({
+              _csrf: state.csrf,
+              idempotency_key: randomUUID(),
+              progress_percent: "50",
+              expected_version: "1"
+            })
+          }
+        );
+        return {
+          status: response.status,
+          expected: 404,
+          valid: await genericDenialResponse(response, "learning_item_unavailable", [
+            target.seller_id,
+            target.product_id,
+            target.publication_id,
+            targetBuyer.entitlement_id,
+            target.lesson_id
+          ])
+        };
+      }
+    );
+    recordThreshold(
+      thresholdFailures,
+      "cross_tenant_progress_denial",
+      scenarios.cross_tenant_progress_denial,
+      SCENARIO_THRESHOLDS.cross_tenant_progress_denial
+    );
+    requireScenarioClean(
+      "cross_tenant_progress_denial",
+      scenarios.cross_tenant_progress_denial
+    );
+    if (scenarios.cross_tenant_progress_denial.expected_denials !== BUYER_CAPACITY) {
+      throw new Error("cross-tenant progress denial budget was not 1,000/1,000");
+    }
+
+    scenarios.buyer_asset = await measureScenario(tenantBuyers, async ({ tenant, buyer }) => {
+      const response = await timedFetch(
+        `${origin(port)}/api/library/items/${buyer.entitlement_id}/assets/${tenant.asset_id}`,
+        {
+          headers: {
+            cookie: requiredSession(
+              buyerSessions,
+              buyerSessionKey(tenant.ordinal, buyer.ordinal),
+              "buyer"
+            ).sessionCookie
           }
         }
       );
@@ -378,7 +705,7 @@ test.skipIf(!domainApiUrl)("certifies a Local/CI baseline for 100 isolated tenan
     requireScenarioClean("buyer_asset", scenarios.buyer_asset);
 
     scenarios.cross_tenant_denial = await measureScenario(manifest.tenants, async (tenant) => {
-      const target = manifest.tenants[(tenant.ordinal + 1) % CAPACITY]!;
+      const target = manifest.tenants[(tenant.ordinal + 1) % TENANT_CAPACITY]!;
       const response = await timedFetch(
         `${origin(port)}/api/sellers/${target.seller_id}/products/${target.product_id}`,
         {
@@ -387,7 +714,16 @@ test.skipIf(!domainApiUrl)("certifies a Local/CI baseline for 100 isolated tenan
           }
         }
       );
-      return { status: response.status, expected: 404 };
+      return {
+        status: response.status,
+        expected: 404,
+        valid: await genericDenialResponse(response, "product_not_found", [
+          target.seller_id,
+          target.product_id,
+          target.product_title,
+          target.publication_id
+        ])
+      };
     });
     recordThreshold(thresholdFailures,
       "cross_tenant_denial",
@@ -395,23 +731,39 @@ test.skipIf(!domainApiUrl)("certifies a Local/CI baseline for 100 isolated tenan
       SCENARIO_THRESHOLDS.cross_tenant_denial
     );
     requireScenarioClean("cross_tenant_denial", scenarios.cross_tenant_denial);
-    if (scenarios.cross_tenant_denial.expected_denials !== CAPACITY) {
-      throw new Error("cross-tenant denial budget was not 100/100");
+    if (scenarios.cross_tenant_denial.expected_denials !== TENANT_CAPACITY) {
+      throw new Error("cross-tenant owner denial budget was not 100/100");
     }
 
     scenarios.cross_tenant_asset_denial = await measureScenario(
-      manifest.tenants,
-      async (tenant) => {
-        const target = manifest.tenants[(tenant.ordinal + 1) % CAPACITY]!;
+      tenantBuyers,
+      async ({ tenant, buyer }) => {
+        const target = manifest.tenants[(tenant.ordinal + 1) % TENANT_CAPACITY]!;
+        const targetBuyer = target.buyers[buyer.ordinal]!;
         const response = await timedFetch(
-          `${origin(port)}/api/library/items/${target.entitlement_id}/assets/${target.asset_id}`,
+          `${origin(port)}/api/library/items/${targetBuyer.entitlement_id}/assets/${target.asset_id}`,
           {
             headers: {
-              cookie: requiredSession(buyerSessions, tenant.ordinal, "buyer").sessionCookie
+              cookie: requiredSession(
+                buyerSessions,
+                buyerSessionKey(tenant.ordinal, buyer.ordinal),
+                "buyer"
+              ).sessionCookie
             }
           }
         );
-        return { status: response.status, expected: 404 };
+        return {
+          status: response.status,
+          expected: 404,
+          valid: await genericDenialResponse(response, "learning_item_unavailable", [
+            target.seller_id,
+            target.product_id,
+            target.publication_id,
+            targetBuyer.entitlement_id,
+            target.lesson_id,
+            target.asset_id
+          ])
+        };
       }
     );
     recordThreshold(thresholdFailures,
@@ -420,8 +772,8 @@ test.skipIf(!domainApiUrl)("certifies a Local/CI baseline for 100 isolated tenan
       SCENARIO_THRESHOLDS.cross_tenant_asset_denial
     );
     requireScenarioClean("cross_tenant_asset_denial", scenarios.cross_tenant_asset_denial);
-    if (scenarios.cross_tenant_asset_denial.expected_denials !== CAPACITY) {
-      throw new Error("cross-tenant asset denial budget was not 100/100");
+    if (scenarios.cross_tenant_asset_denial.expected_denials !== BUYER_CAPACITY) {
+      throw new Error("cross-tenant asset denial budget was not 1,000/1,000");
     }
   } catch (error) {
     testFailure = error;
@@ -480,13 +832,17 @@ test.skipIf(!domainApiUrl)("certifies a Local/CI baseline for 100 isolated tenan
       containers,
       runtimeTeardown,
       warmupDurationMs,
+      observedOwnerSessions,
+      observedBuyerSessions,
       testFailure
     );
     await writeCapacityReport(report);
   }
 
-  if (testFailure) throw new Error(safeError(testFailure));
-}, 240_000);
+    if (testFailure) throw new Error(safeError(testFailure));
+  },
+  600_000
+);
 
 function capacityEnvironment(redisUrl: string, port: number, suffix: string) {
   return {
@@ -546,7 +902,11 @@ async function createSession(
 
 async function measureScenario<T>(
   items: T[],
-  operation: (item: T) => Promise<{ status: number; expected: number; valid?: boolean }>
+  operation: (item: T) => Promise<{ status: number; expected: number; valid?: boolean }>,
+  options?: {
+    pauseAfter: number;
+    betweenBatches: () => Promise<number>;
+  }
 ): Promise<ScenarioResult> {
   const latencies: number[] = [];
   const statuses: Record<string, number> = {};
@@ -555,37 +915,50 @@ async function measureScenario<T>(
   let unexpectedErrors = 0;
   let validationFailures = 0;
   let timeouts = 0;
-  let cursor = 0;
-  const started = performance.now();
   const errors: string[] = [];
-  await Promise.all(
-    Array.from({ length: Math.min(CONCURRENCY, items.length) }, async () => {
-      while (true) {
-        const index = cursor++;
-        if (index >= items.length) return;
-        const itemStarted = performance.now();
-        try {
-          const result = await operation(items[index]!);
-          latencies.push(performance.now() - itemStarted);
-          statuses[String(result.status)] = (statuses[String(result.status)] ?? 0) + 1;
-          if (result.status === result.expected && result.valid !== false) {
-            successes += 1;
-            if (result.expected === 403 || result.expected === 404) expectedDenials += 1;
-          } else {
+  const batches = options
+    ? [items.slice(0, options.pauseAfter), items.slice(options.pauseAfter)]
+    : [items];
+  let activeDuration = 0;
+  let excludedWait = 0;
+  let offset = 0;
+  for (const [batchIndex, batch] of batches.entries()) {
+    let cursor = 0;
+    const started = performance.now();
+    await Promise.all(
+      Array.from({ length: Math.min(CONCURRENCY, batch.length) }, async () => {
+        while (true) {
+          const localIndex = cursor++;
+          if (localIndex >= batch.length) return;
+          const index = offset + localIndex;
+          const itemStarted = performance.now();
+          try {
+            const result = await operation(batch[localIndex]!);
+            latencies.push(performance.now() - itemStarted);
+            statuses[String(result.status)] = (statuses[String(result.status)] ?? 0) + 1;
+            if (result.status === result.expected && result.valid !== false) {
+              successes += 1;
+              if (result.expected === 403 || result.expected === 404) expectedDenials += 1;
+            } else {
+              unexpectedErrors += 1;
+              if (result.valid === false) validationFailures += 1;
+              errors.push(`request ${index}: expected ${result.expected}, got ${result.status}, valid=${result.valid}`);
+            }
+          } catch (error) {
+            latencies.push(performance.now() - itemStarted);
             unexpectedErrors += 1;
-            if (result.valid === false) validationFailures += 1;
-            errors.push(`request ${index}: expected ${result.expected}, got ${result.status}, valid=${result.valid}`);
+            if (/timeout|timed out|abort/i.test(safeError(error))) timeouts += 1;
+            errors.push(`request ${index}: ${safeError(error)}`);
           }
-        } catch (error) {
-          latencies.push(performance.now() - itemStarted);
-          unexpectedErrors += 1;
-          if (/timeout|timed out|abort/i.test(safeError(error))) timeouts += 1;
-          errors.push(`request ${index}: ${safeError(error)}`);
         }
-      }
-    })
-  );
-  const duration = performance.now() - started;
+      })
+    );
+    activeDuration += performance.now() - started;
+    offset += batch.length;
+    if (options && batchIndex < batches.length - 1 && batches[batchIndex + 1]!.length > 0) {
+      excludedWait += await options.betweenBatches();
+    }
+  }
   const result: ScenarioResult = {
     requests: items.length,
     successes,
@@ -595,8 +968,9 @@ async function measureScenario<T>(
     timeouts,
     diagnostics: errors.slice(0, 5),
     statuses,
-    duration_ms: round(duration),
-    throughput_per_second: round(items.length / Math.max(duration / 1_000, 0.001)),
+    duration_ms: round(activeDuration),
+    excluded_wait_ms: round(excludedWait),
+    throughput_per_second: round(items.length / Math.max(activeDuration / 1_000, 0.001)),
     latency_ms: {
       p50: percentile(latencies, 50),
       p95: percentile(latencies, 95),
@@ -605,6 +979,28 @@ async function measureScenario<T>(
     }
   };
   return result;
+}
+
+async function genericDenialResponse(
+  response: Response,
+  expectedError: string,
+  forbiddenValues: string[]
+) {
+  const contentType = response.headers.get("content-type") ?? "";
+  const cacheControl = response.headers.get("cache-control") ?? "";
+  const body = await response.clone().text();
+  let payload: unknown;
+  try {
+    payload = JSON.parse(body);
+  } catch {
+    return false;
+  }
+  return contentType.toLowerCase().startsWith("application/json") &&
+    cacheControl.toLowerCase().split(/\s*,\s*/).some((directive) => directive === "no-store") &&
+    typeof payload === "object" && payload !== null && !Array.isArray(payload) &&
+    Object.keys(payload).length === 1 &&
+    (payload as { error?: unknown }).error === expectedError &&
+    forbiddenValues.every((value) => value.length > 0 && !body.includes(value));
 }
 
 function requireScenarioClean(name: string, result: ScenarioResult) {
@@ -661,7 +1057,13 @@ function requireResourceThresholds(resources: ResourcePeaks) {
     maxConnections: resources.postgres_max_connections,
     reservedConnections: resources.postgres_reserved_connections,
     sampleErrors: resources.postgres_sample_errors,
-    maxSampleGapMs: resources.postgres_max_sample_gap_ms
+    maxSampleGapMs: resources.postgres_max_sample_gap_ms,
+    activeWaitingConnections: resources.postgres_active_waiting,
+    lockWaitingConnections: resources.postgres_lock_waiting,
+    bufferPinWaitingConnections: resources.postgres_buffer_pin_waiting,
+    otherWaitingConnections: resources.postgres_other_waiting,
+    samplesWithActiveWaiting: resources.postgres_samples_with_active_waiting,
+    samples: resources.samples
   }));
   if (resources.postgres_active_connections > 11) {
     failures.push(`Postgres active connections out of baseline: ${resources.postgres_active_connections}`);
@@ -686,7 +1088,18 @@ function startResourceSampler(
     postgres_active_connections: 0,
     postgres_idle_connections: 0,
     postgres_active_waiting: 0,
+    postgres_lock_waiting: 0,
+    postgres_lwlock_waiting: 0,
+    postgres_buffer_pin_waiting: 0,
+    postgres_client_waiting: 0,
+    postgres_io_waiting: 0,
+    postgres_ipc_waiting: 0,
+    postgres_activity_waiting: 0,
+    postgres_timeout_waiting: 0,
+    postgres_extension_waiting: 0,
+    postgres_other_waiting: 0,
     postgres_samples_with_active_waiting: 0,
+    postgres_samples_with_lock_waiting: 0,
     postgres_active_waiting_observed_ms: 0,
     postgres_sample_errors: 0,
     postgres_max_sample_gap_ms: 0,
@@ -751,10 +1164,51 @@ function startResourceSampler(
         peaks.postgres_active_waiting,
         connections.activeWaiting
       );
+      peaks.postgres_lock_waiting = Math.max(
+        peaks.postgres_lock_waiting,
+        connections.lockWaiting
+      );
+      peaks.postgres_lwlock_waiting = Math.max(
+        peaks.postgres_lwlock_waiting,
+        connections.lwLockWaiting
+      );
+      peaks.postgres_buffer_pin_waiting = Math.max(
+        peaks.postgres_buffer_pin_waiting,
+        connections.bufferPinWaiting
+      );
+      peaks.postgres_client_waiting = Math.max(
+        peaks.postgres_client_waiting,
+        connections.clientWaiting
+      );
+      peaks.postgres_io_waiting = Math.max(
+        peaks.postgres_io_waiting,
+        connections.ioWaiting
+      );
+      peaks.postgres_ipc_waiting = Math.max(
+        peaks.postgres_ipc_waiting,
+        connections.ipcWaiting
+      );
+      peaks.postgres_activity_waiting = Math.max(
+        peaks.postgres_activity_waiting,
+        connections.activityWaiting
+      );
+      peaks.postgres_timeout_waiting = Math.max(
+        peaks.postgres_timeout_waiting,
+        connections.timeoutWaiting
+      );
+      peaks.postgres_extension_waiting = Math.max(
+        peaks.postgres_extension_waiting,
+        connections.extensionWaiting
+      );
+      peaks.postgres_other_waiting = Math.max(
+        peaks.postgres_other_waiting,
+        connections.otherWaiting
+      );
       if (connections.activeWaiting > 0) {
         peaks.postgres_samples_with_active_waiting += 1;
         peaks.postgres_active_waiting_observed_ms += Math.max(0, sampleGap);
       }
+      if (connections.lockWaiting > 0) peaks.postgres_samples_with_lock_waiting += 1;
       peaks.postgres_max_connections = connections.maxConnections;
       peaks.postgres_reserved_connections = connections.reservedConnections;
       peaks.samples += 1;
@@ -782,7 +1236,18 @@ function emptyResourcePeaks(containers: Record<string, string>): ResourcePeaks {
     postgres_active_connections: 0,
     postgres_idle_connections: 0,
     postgres_active_waiting: 0,
+    postgres_lock_waiting: 0,
+    postgres_lwlock_waiting: 0,
+    postgres_buffer_pin_waiting: 0,
+    postgres_client_waiting: 0,
+    postgres_io_waiting: 0,
+    postgres_ipc_waiting: 0,
+    postgres_activity_waiting: 0,
+    postgres_timeout_waiting: 0,
+    postgres_extension_waiting: 0,
+    postgres_other_waiting: 0,
     postgres_samples_with_active_waiting: 0,
+    postgres_samples_with_lock_waiting: 0,
     postgres_active_waiting_observed_ms: 0,
     postgres_sample_errors: 0,
     postgres_max_sample_gap_ms: 0,
@@ -881,6 +1346,8 @@ async function buildReport(
   containers: Record<string, string>,
   runtimeTeardown: Record<string, unknown>,
   warmupDurationMs: number,
+  observedOwnerSessions: number,
+  observedBuyerSessions: number,
   failure: unknown
 ) {
   let dockerVersion = "unavailable";
@@ -904,7 +1371,13 @@ async function buildReport(
     ),
     0
   );
-  const crossTenant2xx = ["cross_tenant_denial", "cross_tenant_asset_denial"].reduce(
+  const crossTenant2xx = [
+    "buyer_product_denial",
+    "cross_tenant_player_denial",
+    "cross_tenant_denial",
+    "cross_tenant_asset_denial",
+    "cross_tenant_progress_denial"
+  ].reduce(
     (scenarioSum, name) => scenarioSum + Object.entries(scenarios[name]?.statuses ?? {}).reduce(
       (sum, [status, count]) =>
         sum + (Number(status) >= 200 && Number(status) < 300 ? count : 0),
@@ -963,9 +1436,16 @@ async function buildReport(
     git_sha: process.env.GITHUB_SHA || sourceEvidence.git_sha,
     source_evidence: sourceEvidence,
     tenant_count: manifest.tenant_count,
+    admin_role: "seller_owner",
+    admin_accounts: manifest.admin_count,
+    buyers_per_admin: manifest.buyers_per_tenant,
+    buyer_accounts: manifest.buyer_count,
+    entitlement_count: manifest.buyer_count,
     distinct_subjects: manifest.distinct_subjects,
-    owner_sessions: manifest.tenant_count,
-    buyer_sessions: manifest.tenant_count,
+    owner_sessions: observedOwnerSessions,
+    buyer_sessions: observedBuyerSessions,
+    owner_sessions_observed: observedOwnerSessions,
+    buyer_sessions_observed: observedBuyerSessions,
     concurrency: CONCURRENCY,
     bff_instances: 1,
     warmup: { excluded_from_scenarios: true, duration_ms: warmupDurationMs },
@@ -1028,6 +1508,14 @@ async function buildReport(
       postgres_reserved_connections: 3,
       min_postgres_headroom_connections: 9,
       min_postgres_headroom_percent: 40,
+      max_postgres_active_waiting_connections: 5,
+      max_postgres_lock_waiting_connections: 0,
+      max_postgres_buffer_pin_waiting_connections: 0,
+      max_postgres_unclassified_waiting_connections: 0,
+      max_postgres_waiting_sample_ratio: 0.25,
+      oauth_default_max_global_per_action_per_window: 1_000,
+      oauth_rate_window_ms: OAUTH_RATE_WINDOW_MS,
+      oauth_first_window_capacity: OAUTH_FIRST_WINDOW_CAPACITY,
       resource_rss_bytes: {
         bff: 2 * 1024 ** 3,
         redis: 128 * 1024 ** 2,
@@ -1040,7 +1528,13 @@ async function buildReport(
     },
     limits: {
       scanner: "deterministic_local_ci_not_clamav",
-      asset_session_scope: "100_tenant_legacy_bundle_through_bff",
+      bff_runtime_scope: "next_dev_webpack_local_ci_not_production_runtime",
+      bff_node_max_old_space_mb: 768,
+      account_cardinality_scope: "100_synthetic_owners_and_1000_synthetic_buyers_local_ci",
+      identity_scope: "synthetic_subjects_not_real_identity_accounts",
+      concurrency_scope: "10_concurrent_requests_not_1100_simultaneous_users",
+      oauth_rate_limit_scope: "runtime_default_1000_per_action_per_60s_across_two_windows",
+      asset_session_scope: "1000_buyer_sessions_across_100_tenants_through_bff",
       s3_vertical_scope: "single_representative_tenant_direct_worker_and_storage",
       database_topology: "one_api_process_with_inline_worker_during_capacity_workload",
       dedicated_worker_concurrent_during_capacity_workload: false,
@@ -1156,13 +1650,19 @@ async function writeCapacityReport(report: Record<string, unknown>) {
     postgres_headroom_percent: number;
   };
   const markdown = [
-    "# AppSell capacity baseline — 100 tenants",
+    "# AppSell capacity baseline — 100 admins and 1,000 buyers",
     "",
     `- Status: **${String(report.status)}**`,
     `- Mode: Local/CI`,
     `- Tenants: ${String(report.tenant_count)}`,
+    `- Admin accounts (seller_owner): ${String(report.admin_accounts)}`,
+    `- Buyers per admin: ${String(report.buyers_per_admin)}`,
+    `- Buyer accounts: ${String(report.buyer_accounts)}`,
+    `- Owner sessions observed: ${String(report.owner_sessions_observed)}`,
+    `- Buyer sessions observed: ${String(report.buyer_sessions_observed)}`,
     `- Distinct OAuth subjects: ${String(report.distinct_subjects)}`,
     `- Concurrency: ${String(report.concurrency)}`,
+    `- OAuth rate-window wait excluded from active throughput: ${String((report.scenarios as Record<string, ScenarioResult>).oauth_callback_and_sync?.excluded_wait_ms ?? 0)} ms`,
     `- Production certified: **no**`,
     "",
     "| Scenario | Requests | p50 ms | p95 ms | p99 ms | max ms | req/s | errors |",
@@ -1178,8 +1678,13 @@ async function writeCapacityReport(report: Record<string, unknown>) {
     `- Postgres workload connections (sampler excluded): ${resources.postgres_workload_connections}`,
     `- Postgres runtime/API connections: ${resources.postgres_runtime_connections}/${resources.postgres_api_connections}`,
     `- Postgres headroom: ${resources.postgres_headroom_connections} slots (${resources.postgres_headroom_percent}%)`,
+    `- Postgres lock waits: ${resources.postgres_lock_waiting}`,
+    `- Postgres LWLock wait peak: ${resources.postgres_lwlock_waiting}`,
+    `- Postgres BufferPin waits: ${resources.postgres_buffer_pin_waiting}`,
+    `- Postgres wait peaks (Client/IO/IPC/Activity/Timeout/Extension/Other): ${resources.postgres_client_waiting}/${resources.postgres_io_waiting}/${resources.postgres_ipc_waiting}/${resources.postgres_activity_waiting}/${resources.postgres_timeout_waiting}/${resources.postgres_extension_waiting}/${resources.postgres_other_waiting}`,
+    `- Postgres active-wait samples: ${resources.postgres_samples_with_active_waiting}/${resources.samples}`,
     "",
-    "This artifact is a regression baseline for disposable Local/CI infrastructure. It is not VPS, staging, HA, restore, ClamAV, billing, DNS or production evidence.",
+    "These are synthetic Local/CI subjects with concurrency 10, not 1,100 simultaneous or real Identity accounts. This artifact is not VPS, staging, HA, restore, ClamAV, billing, DNS or production evidence.",
     ""
   ].join("\n");
   await writeFile(output.replace(/\.json$/, ".md"), markdown, { encoding: "utf8" });
@@ -1187,23 +1692,42 @@ async function writeCapacityReport(report: Record<string, unknown>) {
 
 function assertFixture(manifest: FixtureManifest) {
   if (
-    manifest.schema_version !== 1 || manifest.mode !== "local_ci" ||
-    manifest.tenant_count !== CAPACITY || manifest.distinct_subjects !== CAPACITY * 2 ||
-    manifest.tenants.length !== CAPACITY
+    manifest.schema_version !== 2 || manifest.mode !== "local_ci" ||
+    manifest.tenant_count !== TENANT_CAPACITY ||
+    manifest.admin_count !== TENANT_CAPACITY ||
+    manifest.buyers_per_tenant !== BUYERS_PER_TENANT ||
+    manifest.buyer_count !== BUYER_CAPACITY ||
+    manifest.distinct_subjects !== TENANT_CAPACITY + BUYER_CAPACITY ||
+    manifest.tenants.length !== TENANT_CAPACITY ||
+    manifest.tenants.some((tenant) => tenant.buyers.length !== BUYERS_PER_TENANT)
   ) {
     throw new Error("invalid capacity fixture manifest");
   }
   const sellers = new Set(manifest.tenants.map((tenant) => tenant.seller_id));
   const products = new Set(manifest.tenants.map((tenant) => tenant.product_id));
-  const subjects = new Set(manifest.tenants.flatMap((tenant) => [tenant.owner_subject, tenant.buyer_subject]));
-  if (sellers.size !== CAPACITY || products.size !== CAPACITY || subjects.size !== CAPACITY * 2) {
+  const buyers = manifest.tenants.flatMap((tenant) => tenant.buyers);
+  const subjects = new Set([
+    ...manifest.tenants.map((tenant) => tenant.owner_subject),
+    ...buyers.map((buyer) => buyer.subject)
+  ]);
+  const buyerIdentities = new Set(buyers.map((buyer) => buyer.identity_id));
+  const entitlements = new Set(buyers.map((buyer) => buyer.entitlement_id));
+  if (
+    sellers.size !== TENANT_CAPACITY || products.size !== TENANT_CAPACITY ||
+    subjects.size !== TENANT_CAPACITY + BUYER_CAPACITY ||
+    buyerIdentities.size !== BUYER_CAPACITY || entitlements.size !== BUYER_CAPACITY
+  ) {
     throw new Error("capacity fixture does not contain distinct tenants and subjects");
   }
 }
 
-function requiredSession<T>(sessions: Map<number, T>, ordinal: number, role: string) {
-  const value = sessions.get(ordinal);
-  if (!value) throw new Error(`missing ${role} session for tenant ${ordinal}`);
+function buyerSessionKey(tenantOrdinal: number, buyerOrdinal: number) {
+  return `${tenantOrdinal}:${buyerOrdinal}`;
+}
+
+function requiredSession<K, T>(sessions: Map<K, T>, key: K, role: string) {
+  const value = sessions.get(key);
+  if (!value) throw new Error(`missing ${role} session`);
   return value;
 }
 
@@ -1226,6 +1750,13 @@ function timedFetch(input: string | URL, init: RequestInit = {}, timeoutMs = 5_0
   return fetch(input, { ...init, signal: AbortSignal.timeout(timeoutMs) });
 }
 
+async function waitForNextOauthRateWindow() {
+  const elapsedInWindow = Date.now() % OAUTH_RATE_WINDOW_MS;
+  const waitMs = OAUTH_RATE_WINDOW_MS - elapsedInWindow + 100;
+  await new Promise((resolve) => setTimeout(resolve, waitMs));
+  return waitMs;
+}
+
 async function requireStatus(responsePromise: Promise<Response>, expected: number, label: string) {
   const response = await responsePromise;
   if (response.status !== expected) {
@@ -1233,16 +1764,16 @@ async function requireStatus(responsePromise: Promise<Response>, expected: numbe
   }
 }
 
-function cookiePair(setCookie: string | null, name: string) {
-  const match = setCookie?.match(new RegExp(`(?:^|,\\s*)(${name}=[^;]+)`));
-  if (!match) throw new Error(`Missing ${name} cookie.`);
-  return match[1] ?? "";
-}
-
 function requiredEnvironment(name: string) {
   const value = process.env[name];
   if (!value) throw new Error(`Missing capacity test setting: ${name}`);
   return value;
+}
+
+function cookiePair(setCookie: string | null, name: string) {
+  const match = setCookie?.match(new RegExp(`(?:^|,\\s*)(${name}=[^;]+)`));
+  if (!match) throw new Error(`Missing ${name} cookie.`);
+  return match[1] ?? "";
 }
 
 function safeError(error: unknown) {
@@ -1261,13 +1792,22 @@ function safeError(error: unknown) {
 function startBff(port: number, distDir: string, shared: Record<string, string>) {
   return spawn(
     process.execPath,
-    [join(process.cwd(), "node_modules/next/dist/bin/next"), "dev", "-H", "127.0.0.1", "-p", String(port)],
+    [
+      join(process.cwd(), "node_modules/next/dist/bin/next"),
+      "dev",
+      "--webpack",
+      "-H",
+      "127.0.0.1",
+      "-p",
+      String(port)
+    ],
     {
       cwd: process.cwd(),
       env: {
         PATH: process.env.PATH,
         HOME: process.env.HOME,
         NODE_ENV: "development",
+        NODE_OPTIONS: "--max-old-space-size=768",
         ...shared,
         APPSELL_NEXT_DIST_DIR: distDir
       },
