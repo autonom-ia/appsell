@@ -4,12 +4,15 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
+import { chromium, type Browser } from "@playwright/test";
 import { expect, test } from "vitest";
 
+import { deriveCsrfToken } from "../lib/csrf";
 import { startIsolatedRedis, unusedNonDefaultPort } from "./helpers/isolated-redis";
 
 const execFileAsync = promisify(execFile);
 const domainApiUrl = process.env.APPSELL_TEST_DOMAIN_API_URL;
+const CREATE_PRODUCT_DRAFT_CSRF_ACTION = "POST:/api/products";
 
 interface MultiSellerFixture {
   schema_version: 1;
@@ -44,11 +47,12 @@ test.skipIf(!domainApiUrl)(
     const suffix = `${process.pid}-${Date.now()}`;
     const distDir = `.next-multi-seller-${suffix}`;
     const origin = `http://localhost:${port}`;
+    const csrfKey = randomBytes(32);
     const server = startBff(port, distDir, {
       APPSELL_REDIS_URL: redis.url,
       APPSELL_REDIS_PREFIX: `appsell:test:multi-seller-${suffix}`,
       APPSELL_SESSION_HMAC_KEY_B64: randomBytes(32).toString("base64"),
-      APPSELL_CSRF_HMAC_KEY_B64: randomBytes(32).toString("base64"),
+      APPSELL_CSRF_HMAC_KEY_B64: csrfKey.toString("base64"),
       APPSELL_PUBLIC_ORIGIN: origin,
       APPSELL_VAULT_LOCAL_KEYRING_B64_JSON: JSON.stringify([
         { id: "test-v1", key: randomBytes(32).toString("base64"), active: true }
@@ -67,6 +71,7 @@ test.skipIf(!domainApiUrl)(
     const started = performance.now();
     let testStatus: "passed" | "failed" = "failed";
     let crossScopeDenials = 0;
+    let browser: Browser | undefined;
 
     try {
       await waitForBff(server, port);
@@ -109,6 +114,27 @@ test.skipIf(!domainApiUrl)(
       expect(serializedStorefront).not.toContain(fixture.product_a);
       expect(serializedStorefront).not.toContain(fixture.product_b);
       expect(serializedStorefront).not.toContain(fixture.draft_product_a);
+
+      const purchasedTitleA = productTitle(products.payload, fixture.product_a);
+      const purchasedTitleB = productTitle(products.payload, fixture.product_b);
+      const otherProductTitle = productTitle(sellerAStorefront.payload, fixture.other_product_a);
+      browser = await chromium.launch({ headless: true });
+      const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+      const page = await context.newPage();
+      await page.goto(`${origin}/auth/login?persona=buyer`);
+      await page.waitForURL(`${origin}/library`);
+      await page.getByRole("heading", { name: purchasedTitleA }).waitFor({ state: "visible" });
+      await page.getByRole("heading", { name: purchasedTitleB }).waitFor({ state: "visible" });
+      const sellerACard = page.locator("article.library-product-card").filter({
+        has: page.getByRole("heading", { name: purchasedTitleA })
+      });
+      await sellerACard.getByRole("button", { name: /^Ver outros produtos de / }).click();
+      const sellerProducts = sellerACard.locator(".seller-product-list");
+      await sellerProducts.getByText(otherProductTitle, { exact: true }).waitFor({ state: "visible" });
+      expect(await sellerProducts.locator("li").count()).toBe(1);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      await browser.close();
+      browser = undefined;
 
       const sellerBStorefront = await jsonGet(
         `${origin}/api/me/products/${fixture.entitlement_b}/seller-products`,
@@ -213,15 +239,20 @@ test.skipIf(!domainApiUrl)(
       const sellerCrud = await fetch(`${origin}/api/sellers/${fixture.seller_a}/products`, {
         headers: { cookie: buyer.session }
       });
-      expect(sellerCrud.status).toBe(200);
-      expect(await sellerCrud.json()).toEqual({ products: [], next_cursor: null });
+      expect(sellerCrud.status).toBe(403);
+      expect(await sellerCrud.json()).toEqual({ error: "demo_buyer_capability_forbidden" });
+      crossScopeDenials += 1;
       const forbiddenCreate = await fetch(
         `${origin}/api/sellers/${fixture.seller_a}/products`,
         {
           method: "POST",
-          headers: { cookie: buyer.cookieHeader, origin },
+          headers: { cookie: buyer.session, origin },
           body: new URLSearchParams({
-            _csrf: buyer.productCsrf,
+            _csrf: deriveCsrfToken(
+              buyer.session.slice(buyer.session.indexOf("=") + 1),
+              CREATE_PRODUCT_DRAFT_CSRF_ACTION,
+              csrfKey
+            ),
             idempotency_key: randomUUID(),
             slug: "buyer-nao-pode-criar",
             product_title: "Buyer não pode criar",
@@ -295,6 +326,7 @@ test.skipIf(!domainApiUrl)(
       )).payload.player).toMatchObject({ state_version: initialVersionB + 2 });
       testStatus = "passed";
     } finally {
+      await browser?.close();
       await stopBff(server);
       await redis.stop();
       await rm(join(process.cwd(), distDir), { recursive: true, force: true });
@@ -340,15 +372,7 @@ async function login(origin: string, persona: "admin" | "buyer") {
   });
   expect(callback.status, await callback.clone().text()).toBe(307);
   const session = cookiePair(callback.headers.get("set-cookie"), "appsell_session");
-  const productCsrfCookie = cookiePair(
-    callback.headers.get("set-cookie"),
-    "appsell_product_csrf"
-  );
-  return {
-    session,
-    cookieHeader: `${session}; ${productCsrfCookie}`,
-    productCsrf: productCsrfCookie.slice(productCsrfCookie.indexOf("=") + 1)
-  };
+  return { session };
 }
 
 async function jsonGet(url: string, session: string) {
@@ -370,6 +394,13 @@ function productPairs(payload: Record<string, unknown>) {
 function storefrontPairs(payload: Record<string, unknown>) {
   const items = payload.items as Array<{ seller: { id: string }; product: { id: string } }>;
   return items.map((item) => `${item.seller.id}:${item.product.id}`).sort();
+}
+
+function productTitle(payload: Record<string, unknown>, productId: string) {
+  const items = payload.items as Array<{ product: { id: string; title: string } }>;
+  const title = items.find((item) => item.product.id === productId)?.product.title;
+  if (!title) throw new Error(`Missing product ${productId} in payload.`);
+  return title;
 }
 
 function isProgressEntry(value: unknown): value is { lesson_id: string; progress_percent: number } {
