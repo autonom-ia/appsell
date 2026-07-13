@@ -19,6 +19,12 @@ jobs:
           node-version: 22
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
+      - name: Install isolated-test Redis binary
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y redis-server
+          sudo systemctl stop redis-server || true
+          redis-server --version
       - name: Certify disposable OpenBao Transit wrap, rotation, and fail-closed BFF
         run: ./scripts/test-openbao-transit.sh
 
