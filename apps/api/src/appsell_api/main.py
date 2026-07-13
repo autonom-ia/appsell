@@ -9,6 +9,7 @@ from .config import get_settings
 from .db import create_engine, create_session_factory, database_ready
 from .internal_requests import InternalRequestAuthenticator
 from .learning_routes import router as learning_router
+from .platform_routes import router as platform_router
 from .routes import router
 
 
@@ -31,6 +32,7 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
 app = FastAPI(
     title="Autonom.ia Sell Domain API",
     version="0.1.0",
+    openapi_url=None,
     docs_url=None,
     redoc_url=None,
     lifespan=lifespan,
@@ -38,6 +40,7 @@ app = FastAPI(
 app.include_router(router)
 app.include_router(catalog_router)
 app.include_router(learning_router)
+app.include_router(platform_router)
 
 
 @app.get("/health/live")

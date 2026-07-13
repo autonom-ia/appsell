@@ -21,7 +21,12 @@ import {
 } from "@/lib/mutation-protection.server";
 import { isOAuthStoreUnavailable } from "@/lib/redis-oauth-service";
 import { configuredPublicOrigin } from "@/lib/public-origin";
-import { DomainApiError, isDomainApiConfigured, syncDomainIdentity } from "@/lib/internal-api-client.server";
+import {
+  DomainApiError,
+  isDomainApiConfigured,
+  readDomainIdentity,
+  syncDomainIdentity
+} from "@/lib/internal-api-client.server";
 import { ONBOARD_SELLER_CSRF_ACTION } from "@/lib/mutation-protection.server";
 import { demoProfileForSubject } from "@/lib/demo-config";
 
@@ -36,31 +41,48 @@ export async function GET(request: NextRequest) {
     expireTransactionCookie(response);
     return response;
   }
+  let issuedSessionId: string | undefined;
+  let demoSuperadmin = false;
   try {
     const sessionId = await oauthService().callback({
       transactionId: request.cookies.get(transactionCookieName())?.value,
       code: request.nextUrl.searchParams.get("code") ?? undefined,
       state: request.nextUrl.searchParams.get("state") ?? undefined
     });
+    issuedSessionId = sessionId;
     const session = await oauthService().getSession(sessionId);
     if (!session) throw new DomainApiError(503, "session_unavailable_after_callback");
+    const demoProfile = demoProfileForSubject(session.subject);
+    demoSuperadmin = demoProfile?.persona === "superadmin";
+    let platformSuperadmin = false;
+    if (demoSuperadmin && !isDomainApiConfigured()) {
+      await oauthService().logout(sessionId);
+      throw new DomainApiError(503, "domain_api_not_configured");
+    }
     if (isDomainApiConfigured()) {
       try {
         await syncDomainIdentity(sessionId, session);
+        if (!demoProfile || demoProfile.persona === "superadmin") {
+          platformSuperadmin = hasPlatformSuperadminGrant(
+            await readDomainIdentity(sessionId, session)
+          );
+          if (demoProfile?.persona === "superadmin" && !platformSuperadmin) {
+            throw new DomainApiError(403, "demo_superadmin_grant_required");
+          }
+        }
       } catch (error) {
         await oauthService().logout(sessionId);
         throw error;
       }
     }
-    const demoProfile = demoProfileForSubject(session.subject);
     const response = NextResponse.redirect(new URL(
-      demoProfile?.home ?? "/dashboard",
+      platformSuperadmin ? "/platform/demo-inspection" : demoProfile?.home ?? "/dashboard",
       configuredPublicOrigin()
     ));
     expireTransactionCookie(response);
     response.cookies.set(sessionCookieName(), sessionId, sessionCookieOptions());
     response.cookies.set(csrfCookieName(), csrfTokenForSession(sessionId, LOGOUT_CSRF_ACTION), csrfCookieOptions());
-    if (demoProfile?.persona === "buyer") {
+    if (demoProfile?.persona === "buyer" || demoSuperadmin) {
       expireSellerCookies(response);
     } else {
       response.cookies.set(sellerCsrfCookieName(), csrfTokenForSession(sessionId, ONBOARD_SELLER_CSRF_ACTION), csrfCookieOptions());
@@ -71,14 +93,26 @@ export async function GET(request: NextRequest) {
     response.headers.set("cache-control", "no-store");
     return response;
   } catch (error) {
-    return NextResponse.json({
+    const response = NextResponse.json({
       error: isOAuthStoreUnavailable(error) ? "oauth_store_unavailable" :
         error instanceof DomainApiError ? error.code : "invalid_oauth_callback"
     }, {
       status: isOAuthStoreUnavailable(error) || error instanceof DomainApiError ? 503 : 400,
       headers: { "cache-control": "no-store" }
     });
+    if (issuedSessionId) {
+      expireTransactionCookie(response);
+      response.cookies.set(sessionCookieName(), "", { ...sessionCookieOptions(), maxAge: 0 });
+      if (demoSuperadmin) expireSellerCookies(response);
+    }
+    return response;
   }
+}
+
+function hasPlatformSuperadminGrant(value: unknown) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) &&
+    Array.isArray((value as Record<string, unknown>).platform_roles) &&
+    ((value as Record<string, unknown>).platform_roles as unknown[]).includes("platform_superadmin");
 }
 
 function expireSellerCookies(response: NextResponse) {

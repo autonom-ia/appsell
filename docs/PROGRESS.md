@@ -95,6 +95,30 @@ Fase 4C — currículo multitenant e snapshot v2 em Local/CI.
   duas personas;
 - gates do delta #33: 113 testes Python/PG/API, 74 web, 2 verticais BFF/API/PG,
   30 Playwright + 4 skips deliberados e 1 production fail-closed;
+- PR #36 da Issue #33 aberta em Draft, App CI 2/2 verde e review crítico
+  P0=P1=P2=P3=0; nenhum merge ou deploy;
+- Issue #56 em branch empilhada local adiciona inspeção superadmin temporária e
+  read-only da demo: migration 0007, token com hash-only no banco, TTL máximo de
+  15 minutos, seller fixo server-side, auditoria append-only e revogação;
+- callbacks exigem grant `platform_superadmin` ativo por issuer+sub; a persona
+  sintética `comercial@autonomia.site` é oculta e Local/CI, não recebe papel por
+  e-mail e não equivale a uma conta Identity real;
+- gates locais da Issue #56: 126 Python/PG/API, 83 web, 4 verticais BFF/API/PG,
+  30 Playwright + 4 skips deliberados, 1 production fail-closed, build, Ruff,
+  mypy strict, lint, typecheck e audits verdes; navegador real 390 px sem
+  overflow e sem controles seller;
+- primeiro review crítico retornou RED: rotas FastAPI não estavam restritas a
+  Local/CI e faltavam provas BFF de POST de catálogo/PATCH de currículo; ambos
+  foram corrigidos antes de qualquer commit/push e exigem novo ciclo completo;
+- teste adversarial adicional detectou token HttpOnly serializado pelo RSC; a
+  página deixou de ler cookies e passou a consumir apenas um GET BFF sanitizado.
+  O gate full-path agora prova ausência tanto do token quanto da sessão no HTML;
+- segundo review crítico retornou RED porque o callback superadmin ainda emitia
+  sessão sem Domain API e as rotas eram enumeráveis no OpenAPI; o fluxo agora
+  revoga a sessão/expira cookies/falha em 503 e o OpenAPI foi desabilitado, com
+  testes regressivos verdes antes de qualquer commit/push;
+- review crítico independente, commit/push, Draft PR e CI remoto da Issue #56
+  ainda pendentes; nenhum merge, deploy, VPS, DNS ou produção;
 - épica #8 permanece em desenvolvimento;
 - Identity real #13 permanece bloqueado por ausência de dev/hml e P0 upstream.
 

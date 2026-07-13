@@ -184,8 +184,29 @@ def reset_demo(
     validate_demo_database(connection)
     connection.execute("select set_config('appsell.demo_reset_key',%s,true)", (DEMO_KEY,))
     version = connection.execute("select version_num from alembic_version").fetchone()
-    if version != ("0006_demo_learning",):
-        raise RuntimeError("database must be migrated to 0006_demo_learning")
+    if version != ("0007_superadmin_demo_inspection",):
+        raise RuntimeError("database must be migrated to 0007_superadmin_demo_inspection")
+    revoked_inspections = connection.execute(
+        """
+        update app_private.demo_inspection_ticket set
+          state='revoked',revoked_at=clock_timestamp(),
+          revoked_reason='Revoked by isolated demo tenant reset'
+        where seller_organization_id=%s and state='active'
+        returning id,actor_identity_user_id
+        """,
+        (seller_id,),
+    ).fetchall()
+    for inspection_id, actor_identity_user_id in revoked_inspections:
+        connection.execute(
+            """
+            insert into audit_event(
+              seller_organization_id,actor_identity_user_id,action,target_type,
+              target_id,result,request_id,metadata
+            ) values(%s,%s,'platform.demo_inspection.revoked','demo_inspection',%s,
+              'succeeded',%s,jsonb_build_object('trigger','demo_reset'))
+            """,
+            (seller_id, actor_identity_user_id, inspection_id, uuid4()),
+        )
 
     for identity, identity_uuid in ((admin, admin_id), (buyer, buyer_id)):
         connection.execute(

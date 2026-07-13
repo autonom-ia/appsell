@@ -21,13 +21,29 @@ interface ApiRequest {
   method: "GET" | "POST" | "PUT" | "PATCH";
   path: string;
   capability: "identity.sync" | "platform.grants.read" | "seller.list" | "seller.onboard" |
+    "platform.demo.inspect.start" | "platform.demo.inspect.read" |
+    "platform.demo.inspect.revoke" |
     "catalog.draft.read" | "catalog.draft.create" | "catalog.draft.update" |
     "catalog.draft.preview" | "catalog.publication.read" | "catalog.publication.create" |
     "catalog.curriculum.read" | "catalog.curriculum.create" |
     "catalog.curriculum.update" | "catalog.curriculum.archive" |
     "catalog.curriculum.reorder" | "library.read" | "library.asset.read";
   sellerOrganizationId?: string;
+  inspectionToken?: string;
   body?: Record<string, unknown>;
+}
+
+export interface DemoInspectionProjection {
+  inspection: { id: string; started_at: string; expires_at: string };
+  seller: { id: string; slug: string; display_name: string; status: string };
+  product: { id: string; slug: string; title: string; status: string };
+  publication: {
+    id: string;
+    version: number;
+    schema_version: number;
+    published_at: string;
+  };
+  courses: Array<{ id: string; title: string; position: number }>;
 }
 
 export class DomainApiError extends Error {
@@ -83,6 +99,54 @@ export async function onboardDomainSeller(
       display_name: input.displayName
     }
   });
+}
+
+export async function startDomainDemoInspection(
+  sessionId: string,
+  session: ServerSession,
+  input: { reason: string; ttlSeconds: number }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: "/v1/platform/demo-inspections",
+    capability: "platform.demo.inspect.start",
+    body: { reason: input.reason, ttl_seconds: input.ttlSeconds }
+  }) as Promise<{
+    inspection_id: string;
+    inspection_token: string;
+    expires_at: string;
+    seller: { id: string; slug: string; display_name: string };
+  }>;
+}
+
+export async function readDomainDemoInspection(
+  sessionId: string,
+  session: ServerSession,
+  inspectionId: string,
+  inspectionToken: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/platform/demo-inspections/${inspectionId}`,
+    capability: "platform.demo.inspect.read",
+    inspectionToken
+  }) as Promise<DemoInspectionProjection>;
+}
+
+export async function revokeDomainDemoInspection(
+  sessionId: string,
+  session: ServerSession,
+  inspectionId: string,
+  inspectionToken: string,
+  reason: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `/v1/platform/demo-inspections/${inspectionId}/revoke`,
+    capability: "platform.demo.inspect.revoke",
+    inspectionToken,
+    body: { reason }
+  }) as Promise<{ inspection_id: string; status: "revoked"; revoked_at: string }>;
 }
 
 export async function listDomainProductDrafts(
@@ -450,7 +514,10 @@ async function domainRequest(
       headers: {
         "content-type": "application/json",
         "x-appsell-internal-envelope": token,
-        "x-appsell-service-credential": config.serviceCredentialEncoded
+        "x-appsell-service-credential": config.serviceCredentialEncoded,
+        ...(request.inspectionToken
+          ? { "x-appsell-inspection-token": request.inspectionToken }
+          : {})
       },
       cache: "no-store",
       signal: controller.signal
@@ -474,13 +541,23 @@ async function domainRequest(
 function requireDemoCapability(subject: string, request: ApiRequest) {
   const profile = demoProfileForSubject(subject);
   if (!profile) return;
-  if (["identity.sync", "library.read", "library.asset.read"].includes(request.capability)) return;
+  if (request.capability === "identity.sync") return;
+  if (profile.persona === "buyer" &&
+      ["library.read", "library.asset.read"].includes(request.capability)) {
+    return;
+  }
   if (profile.persona === "admin") {
     if (request.capability === "seller.list") return;
+    if (["library.read", "library.asset.read"].includes(request.capability)) return;
     const demoSellerId = demoCodexAssets[0]?.seller_id;
     if (request.capability.startsWith("catalog.") && request.sellerOrganizationId === demoSellerId) {
       return;
     }
+  }
+  if (profile.persona === "superadmin" &&
+      (request.capability === "platform.grants.read" ||
+       request.capability.startsWith("platform.demo.inspect."))) {
+    return;
   }
   throw new DomainApiError(403, `demo_${profile.persona}_capability_forbidden`);
 }

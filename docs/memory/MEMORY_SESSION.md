@@ -34,22 +34,22 @@ Project status:
 
 <!-- Substituir abaixo a cada nova sessão. Sessões anteriores vão para PROGRESS.md. -->
 
-## Sessão: 2026-07-13 09:58 — hardening da tenant demo e curso Codex
-Issue: #33
-Branch: feat/33-demo-tenant
-PR: #36
+## Sessão: 2026-07-13 11:05 — inspeção superadmin temporária da demo
+Issue: #56
+Branch: feat/56-superadmin-demo-inspection
+PR: não aberta
 Estado: em_progresso
 Modelo: strong + human
-Arquivos alterados: reset demo/hostaddr/env libpq, memberships/grants, allowlist server-side buyer/admin, cookies CSRF, layout de produtos, PDFs/manifests, testes PG/BFF/browser e docs
-Comandos executados: test-postgres-foundation; lint; typecheck; Vitest; Ruff; mypy; pytest; pip-audit; pnpm audit; build; Playwright Chromium/WebKit; production fail-closed; inspeção PDF por stream e raster
-Validação: local verde — 113 Python/PG/API, 74 web, 2 verticais BFF/API/PG, 30 browser + 4 skips deliberados, 1 production fail-closed; build e audits verdes
-Bloqueios: review crítico do delta staged e CI remoto; superadmin auditado da Issue #33; Identity real #13, KMS #19, Financial/Neuro e produção continuam bloqueados
-Próxima ação: concluir review crítico; se P0-P2=0, commitar/push na PR #36 Draft e aguardar CI exato; não fazer merge/deploy
+Arquivos alterados: migration 0007, rotas FastAPI/BFF de inspeção, ticket HttpOnly, grant/capabilities, shell superadmin, reset demo, testes PG/API/BFF/browser e docs
+Comandos executados: test-postgres-foundation; lint; typecheck; Vitest; Ruff; mypy; pytest; pip-audit; pnpm audit; build; Playwright Chromium/WebKit; production fail-closed; inspeção no navegador interno 390 px
+Validação: local verde após dois ciclos RED corrigidos — 126 Python/PG/API, 83 web, 4 verticais BFF/API/PG, 30 browser + 4 skips deliberados, 1 production fail-closed; build e audits verdes; callback sem Domain API falha fechado; OpenAPI desabilitado; token/sessão ausentes do HTML/RSC bruto
+Bloqueios: review crítico independente, commit/push, Draft PR e CI remoto; Identity real #13, staging, KMS #19, Financial/Neuro e produção continuam bloqueados
+Próxima ação: review crítico do hash final após correções; somente se P0-P3=0, commitar/push e abrir Draft PR empilhada sobre #36; não fazer merge/deploy
 Project status:
   - Projeto: Studio
-  - Status: Ajustes
+  - Status: Em desenvolvimento
   - Tipo: Feature
-  - Prioridade: P1
+  - Prioridade: P0
   - Risco: Alto
   - Ambiente: Local
-  - Próxima ação: review crítico do staged; depois commit/push e CI exato
+  - Próxima ação: gates + novo review crítico P0-P3=0; depois commit/push, Draft PR e CI exato

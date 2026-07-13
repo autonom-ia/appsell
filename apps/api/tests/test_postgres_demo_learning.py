@@ -135,9 +135,9 @@ def test_reset_is_repeatable_concurrent_and_does_not_duplicate_graph() -> None:
             (contaminated_seller, admin, contaminated_seller, buyer),
         )
         connection.execute(
-            "insert into platform_grant(id,identity_user_id,role,status) "
+            "insert into platform_grant(id,identity_user_id,role,status,revoked_at) "
             "values('72000000-0000-4000-8000-000000000006',%s,"
-            "'platform_superadmin','active')",
+            "'platform_superadmin','revoked',clock_timestamp())",
             (admin,),
         )
         connection.commit()

@@ -6,12 +6,12 @@ Atualizado em pontos de marco (PR aberta, deploy, incidente). Diferente de MEMOR
 
 | Indicador | Status | Última verificação |
 |-----------|:------:|--------------------|
-| Build | 🟢 web + API container local verdes | 2026-07-11 |
-| Testes | 🟢 74 web + 103 Python/PG/API + 2 verticais BFF + 26 browser; build verde | 2026-07-11 |
-| CI | 🟢 PR #35 inteira verde; #33 ainda local/empilhada | 2026-07-11 |
+| Build | 🟢 web + API container local verdes | 2026-07-13 |
+| Testes | 🟢 82 web + 126 Python/PG/API + 3 verticais BFF + 30 browser; build verde | 2026-07-13 |
+| CI | 🟢 PRs #35/#36 verdes; #56 ainda local/empilhada | 2026-07-13 |
 | Deploy produção | 🟡 não configurado/não executado | 2026-07-10 |
 | Harness instalado | 2.0.2 | 2026-07-10 |
-| Harness drift | ⚠️ 2.0.2 → 2.1.2 | 2026-07-11 |
+| Harness drift | ⚠️ PR #37 atualiza 2.0.2 → 2.1.2; sem merge | 2026-07-13 |
 
 ## Estado atual
 
@@ -26,14 +26,13 @@ Este marco é Local/CI; não é o Identity real e não concede conta de produç�
 
 ## Última mudança relevante
 
-2026-07-13 — PR #35 de currículo aberta com todos os checks verdes, sem merge
-ou deploy. Delta local da PR #36: migration 0006, entitlement buyer, assets
-privados, tenant resetável, personas admin/aluno `@autonomia.site`, allowlist
-server-side de capabilities para comprador/admin e curso Codex com cinco PDFs.
-Gates locais: 74 web, 113 Python/PG/API (incluindo 100 buyers sob paralelismo
-limitado), 2 verticais BFF/API/PG com 100 leituras de biblioteca e 100 downloads
-concorrentes, 30 Playwright + 4 skips deliberados, build, audit e production
-fail-closed verdes.
+2026-07-13 — PRs #35 e #36 abertas e com App CI verde, sem merge ou deploy.
+Delta local da Issue #56 adiciona migration 0007 e inspeção superadmin da tenant
+demo com ticket temporário, token somente em cookie HttpOnly/header interno,
+hash no banco, projeção mínima, audit append-only e revogação explícita. Gates
+locais: 82 web, 126 Python/PG/API, 3 verticais BFF/API/PG, 30 Playwright + 4
+skips deliberados, build, audits e production fail-closed verdes. Inspeção real
+em navegador a 390 px confirmou 0 links de seller e 0 overflow horizontal.
 
 ## O que está funcionando
 
@@ -90,6 +89,16 @@ fail-closed verdes.
   seller UUID fixo; o reset remove memberships e grants legados das personas.
 - Cinco PDFs do curso Codex ficam fora de `public/`; cada leitura exige sessão,
   capability, entitlement, snapshot publicado e validação de hash/tamanho.
+- Inspeção superadmin Local/CI usa persona oculta, grant ativo por issuer+sub,
+  ticket de até 15 minutos, seller fixo server-side, projeção sem PII/assets e
+  auditoria append-only; não concede membership e falha fechado no BFF e na
+  API quando o ambiente não é Local/CI.
+- A página de inspeção não lê cookies no React Server Component. O GET BFF
+  sanitizado valida sessão/grant/ticket e retorna somente projeção mínima +
+  CSRF; testes procuram o token e a sessão no HTML/RSC bruto e não os encontram.
+- O callback da persona superadmin exige Domain API e grant ativo antes de
+  emitir sessão; ausência da API revoga a sessão e expira cookies. O OpenAPI da
+  Domain API está desabilitado, evitando enumerar as rotas restritas.
 
 ## O que está quebrado / em degradação
 
@@ -97,9 +106,9 @@ fail-closed verdes.
 - Refresh real com Identity — bloqueado por #13.
 - KMS real/vault HA — provider/infra/staging não decididos — Issue #19.
 - Staging/VPS/TLS — não certificado e fora do escopo atual — Issue #5.
-- Tenant/admin/comprador demo e curso Codex têm delta staged somente na branch
-  da Issue #33; ainda dependem de review crítico, commit/push, CI remoto e merge
-  da base #35.
+- A inspeção superadmin está somente na branch local da Issue #56 e ainda
+  depende de review crítico independente, commit/push, Draft PR e CI remoto.
+- As PRs #35/#36 continuam sem merge; seus recursos não estão em produção.
 - Capacidade de lançamento para 100 tenants/clientes ainda não está certificada:
   os testes cobrem 100 buyers no banco e 100 requisições concorrentes full-path,
   mas não um soak/load test de 100 tenants com p95/p99 em staging.
@@ -112,9 +121,10 @@ fail-closed verdes.
 
 ## Próxima ação
 
-Concluir reviews críticos da Issue #33, abrir PR empilhada sobre #35 e executar
-CI no SHA remoto. Identity real (#13), KMS (#19), billing/Financial e produção
-continuam bloqueados até ambientes e contratos reais.
+Concluir o review crítico da Issue #56; somente com P0-P3 zerados, commitar,
+abrir Draft PR empilhada sobre #36 e executar CI no SHA remoto. Identity real
+(#13), KMS (#19), billing/Financial e produção continuam bloqueados até
+ambientes e contratos reais.
 
 ## Links
 
