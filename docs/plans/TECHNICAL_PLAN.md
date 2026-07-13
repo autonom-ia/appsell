@@ -178,7 +178,7 @@ Reutilizar OAuth Code + PKCE e allowlist de callback. Registrar:
 
 - `client_id`: `appsell-web`;
 - callback produção: `https://sell.autonomia.site/auth/callback`;
-- logout produção: `https://sell.autonomia.site/login`;
+- logout produção: `https://sell.autonomia.site/auth/login`;
 - callbacks/origins explícitos de localhost e staging.
 
 ### Admin
