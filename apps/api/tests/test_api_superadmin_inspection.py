@@ -186,9 +186,7 @@ async def test_api_starts_reads_and_revokes_only_the_server_demo(client: httpx.A
     read = await client.get(
         path,
         headers={
-            **signed_headers(
-                method="GET", path=path, capability="platform.demo.inspect.read"
-            ),
+            **signed_headers(method="GET", path=path, capability="platform.demo.inspect.read"),
             "x-appsell-inspection-token": token,
         },
     )
@@ -220,9 +218,7 @@ async def test_api_starts_reads_and_revokes_only_the_server_demo(client: httpx.A
     after_revoke = await client.get(
         path,
         headers={
-            **signed_headers(
-                method="GET", path=path, capability="platform.demo.inspect.read"
-            ),
+            **signed_headers(method="GET", path=path, capability="platform.demo.inspect.read"),
             "x-appsell-inspection-token": token,
         },
     )

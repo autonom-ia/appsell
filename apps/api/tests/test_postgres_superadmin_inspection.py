@@ -43,9 +43,7 @@ RACE_GRANT_FIRST_SUB = "inspection-race-grant-first"
 RACE_GRANT_FIRST_ID = uuid5(NAMESPACE_URL, f"{ISSUER}\0{RACE_GRANT_FIRST_SUB}")
 
 
-def apply_context(
-    connection: psycopg.Connection[Any], actor: UUID, capability: str
-) -> None:
+def apply_context(connection: psycopg.Connection[Any], actor: UUID, capability: str) -> None:
     issued = int(time.time())
     expires = issued + 60
     payload = f"{actor}::{capability}:{issued}:{expires}"
@@ -382,9 +380,7 @@ def test_demo_reset_serializes_after_concurrent_start_and_revokes_ticket() -> No
             reset_connection.commit()
 
     with psycopg.connect(RUNTIME_URL) as connection:
-        connection.execute(
-            "select pg_advisory_xact_lock(hashtextextended('autonomia-demo-v1',0))"
-        )
+        connection.execute("select pg_advisory_xact_lock(hashtextextended('autonomia-demo-v1',0))")
         inspection_id = start_inspection(connection, token)[0]
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(reset_in_parallel)
