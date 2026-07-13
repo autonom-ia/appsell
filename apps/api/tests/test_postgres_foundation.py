@@ -28,6 +28,7 @@ SELLER_B = UUID("20000000-0000-4000-8000-000000000002")
 BOOTSTRAP_ISSUER = "https://identity.dev.autonomia.site"
 BOOTSTRAP_AUDIENCE = "appsell-web-dev"
 BOOTSTRAP_CLIENT_ID = "appsell-web-dev"
+FOUNDATION_DATABASE_WORKERS = 12
 
 
 def derived_identity_user_id(issuer: str, subject: str) -> UUID:
@@ -766,7 +767,7 @@ def test_bootstrap_has_exactly_one_concurrent_winner_and_grant_survives_email_ch
         ):
             return None
 
-    with ThreadPoolExecutor(max_workers=20) as executor:
+    with ThreadPoolExecutor(max_workers=FOUNDATION_DATABASE_WORKERS) as executor:
         results = list(executor.map(attempt, candidates))
 
     winners = [result for result in results if result is not None]

@@ -15,7 +15,7 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from appsell_api.catalog_routes import _domain_error, _product_detail_response, router
 from appsell_api.config import get_settings
@@ -65,13 +65,17 @@ class FakeAuth:
         *,
         seller_id: UUID | None,
         result: FakeResult,
+        auth_error: HTTPException | None = None,
     ) -> None:
         self.seller_id = seller_id
         self.session = FakeSession(result)
         self.capabilities: list[str] = []
         self.domain_sessions = 0
+        self.auth_error = auth_error
 
     async def authenticate(self, request: Any, capability: str) -> Any:
+        if self.auth_error is not None:
+            raise self.auth_error
         body = await request.body()
         self.capabilities.append(capability)
         return SimpleNamespace(
@@ -91,10 +95,15 @@ class FakeAuth:
 
 
 @asynccontextmanager
-async def client_for(auth: FakeAuth) -> AsyncIterator[httpx.AsyncClient]:
+async def client_for(
+    auth: FakeAuth, *, capacity_product_create_telemetry: bool = False
+) -> AsyncIterator[httpx.AsyncClient]:
     app = FastAPI()
     app.include_router(router)
     app.state.internal_auth = auth
+    app.state.settings = SimpleNamespace(
+        capacity_product_create_telemetry=capacity_product_create_telemetry
+    )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://api.test"
     ) as client:
@@ -212,6 +221,71 @@ async def test_create_idempotent_replay_returns_200() -> None:
         )
     assert response.status_code == 200
     assert response.json()["created"] is False
+
+
+@pytest.mark.asyncio
+async def test_create_capacity_trace_emits_allowlisted_completion(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    auth = FakeAuth(
+        seller_id=SELLER_ID,
+        result=FakeResult(
+            one={
+                "catalog_product_id": uuid4(),
+                "course_id": uuid4(),
+                "created": True,
+            }
+        ),
+    )
+    async with client_for(auth, capacity_product_create_telemetry=True) as client:
+        response = await client.post(
+            f"/v1/me/sellers/{SELLER_ID}/products",
+            content=draft_body(),
+            headers={
+                "content-type": "application/json",
+                "x-appsell-capacity-trace": "pc-007",
+            },
+        )
+    assert response.status_code == 201
+    event = json.loads(capsys.readouterr().out)
+    assert event["layer"] == "api"
+    assert event["trace"] == "pc-007"
+    assert event["status"] == 201
+    assert event["outcome"] == "success"
+    assert set(event["durations_ms"]) == {
+        "internal_auth_replay",
+        "pool_checkout_apply_context",
+        "sql",
+        "commit_response",
+    }
+    assert abs(event["total_ms"] - sum(event["durations_ms"].values())) <= 1
+
+
+@pytest.mark.asyncio
+async def test_capacity_trace_preserves_internal_auth_failure_completion(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    auth = FakeAuth(
+        seller_id=SELLER_ID,
+        result=FakeResult(),
+        auth_error=HTTPException(status_code=401, detail="invalid_internal_request"),
+    )
+    async with client_for(auth, capacity_product_create_telemetry=True) as client:
+        response = await client.post(
+            f"/v1/me/sellers/{SELLER_ID}/products",
+            content=draft_body(),
+            headers={
+                "content-type": "application/json",
+                "x-appsell-capacity-trace": "pc-008",
+            },
+        )
+    assert response.status_code == 401
+    event = json.loads(capsys.readouterr().out)
+    assert event["status"] == 401
+    assert event["outcome"] == "http_error"
+    assert event["durations_ms"]["internal_auth_replay"] >= 0
+    assert event["durations_ms"]["pool_checkout_apply_context"] == 0
+    assert abs(event["total_ms"] - sum(event["durations_ms"].values())) <= 1
 
 
 @pytest.mark.asyncio

@@ -57,7 +57,8 @@ heads Alembic. Nenhum merge em `main`, deploy ou produção foi executado.
   `SUPERUSER` ou `BYPASSRLS`, RLS e grants mínimos verificados diretamente.
 - Bootstrap local one-shot: issuer/audience/client fixados, claims vinculados a
   atestação HMAC exclusiva, e-mail verificado exato, MFA/passkey, advisory lock,
-  um vencedor entre 20 concorrentes, audit e auto-disable.
+  um vencedor entre 20 candidatos com fan-out concorrente limitado a 12,
+  audit e auto-disable.
 - CI Python com lock, Ruff, mypy strict, pip-audit, migration limpa, testes PG,
   build do container por digest e healthcheck real.
 - Ponte BFF→API Local/CI com credencial de serviço e envelope HMAC vinculado a
@@ -124,7 +125,8 @@ heads Alembic. Nenhum merge em `main`, deploy ou produção foi executado.
 - Assets privados da Issue #40 estão na PR #41, com review crítico e CI verdes;
   ainda dependem de aprovação/merges ordenados e permanecem somente Local/CI.
 - A baseline de regressão Local/CI para uma instalação com 100 tenants está
-  comprovada na Issue #42, mas capacidade de lançamento ainda não está
+  comprovada e foi ampliada localmente na Issue #46 para dez buyers por tenant,
+  mas capacidade de lançamento ainda não está
   certificada em staging/VPS: faltam carga com margem 2x, soak, restore,
   rollback e observabilidade reais.
 - A inspeção superadmin está na PR #57 e está sendo portada para a linha

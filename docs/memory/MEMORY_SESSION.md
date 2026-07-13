@@ -47,9 +47,9 @@ Bloqueios: incorporar #53/#55/#60, implementar storefront/CTA e rodar vertical i
 Próxima ação: fechar runtime/migrations, testes completos, review crítico e Draft PR; sem merge/deploy
 Project status:
   - Projeto: Infra
-  - Status: Em desenvolvimento
+  - Status: Em review
   - Tipo: Infra
-  - Prioridade: P3
+  - Prioridade: P0
   - Risco: Médio
   - Ambiente: Local
   - Próxima ação: consolidar RC, E2E e review crítico antes da Draft PR

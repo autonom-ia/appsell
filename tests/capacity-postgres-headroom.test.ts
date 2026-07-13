@@ -3,10 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   calculatePostgresHeadroom,
   postgresHeadroomFailures,
-  type PostgresHeadroomSample
+  type PostgresCapacitySample
 } from "../lib/capacity-postgres-headroom";
 
-const baseline: PostgresHeadroomSample = {
+const baseline: PostgresCapacitySample = {
   rawConnections: 13,
   workloadConnections: 12,
   runtimeConnections: 10,
@@ -14,7 +14,13 @@ const baseline: PostgresHeadroomSample = {
   maxConnections: 24,
   reservedConnections: 3,
   sampleErrors: 0,
-  maxSampleGapMs: 1_999
+  maxSampleGapMs: 1_999,
+  activeWaitingConnections: 5,
+  lockWaitingConnections: 0,
+  bufferPinWaitingConnections: 0,
+  otherWaitingConnections: 0,
+  samplesWithActiveWaiting: 25,
+  samples: 100
 };
 
 describe("PostgreSQL capacity headroom", () => {
@@ -49,5 +55,31 @@ describe("PostgreSQL capacity headroom", () => {
     expect(postgresHeadroomFailures({ ...baseline, maxSampleGapMs: 2_001 })).toContain(
       "sampler_gap_exceeded"
     );
+  });
+
+  it("rejects lock waits and any excess in the bounded non-lock wait budget", () => {
+    expect(postgresHeadroomFailures({ ...baseline, lockWaitingConnections: 1 })).toContain(
+      "postgres_lock_wait_observed"
+    );
+    expect(postgresHeadroomFailures({ ...baseline, bufferPinWaitingConnections: 1 })).toContain(
+      "postgres_buffer_pin_wait_observed"
+    );
+    expect(postgresHeadroomFailures({ ...baseline, activeWaitingConnections: 6 })).toContain(
+      "postgres_wait_budget_exceeded"
+    );
+    expect(postgresHeadroomFailures({ ...baseline, otherWaitingConnections: 1 })).toContain(
+      "postgres_unclassified_wait_observed"
+    );
+    expect(postgresHeadroomFailures({ ...baseline, samplesWithActiveWaiting: 26 })).toContain(
+      "postgres_wait_budget_exceeded"
+    );
+  });
+
+  it("normalizes non-lock waits by samples instead of total workload duration", () => {
+    expect(postgresHeadroomFailures({
+      ...baseline,
+      samplesWithActiveWaiting: 50,
+      samples: 200
+    })).not.toContain("postgres_wait_budget_exceeded");
   });
 });

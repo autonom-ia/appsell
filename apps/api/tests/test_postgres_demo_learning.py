@@ -25,6 +25,7 @@ pytestmark = pytest.mark.skipif(
 ISSUER = "https://identity.demo.test.autonomia.site"
 OTHER_USER = UUID("71000000-0000-4000-8000-000000000099")
 ACTIVE_SUPERADMIN = UUID("71000000-0000-4000-8000-000000000100")
+FOUNDATION_DATABASE_WORKERS = 12
 
 
 def identity_id(subject: str) -> UUID:
@@ -433,7 +434,7 @@ def test_one_hundred_buyers_read_their_entitlement_under_bounded_parallel_load()
 
     started = time.monotonic()
     try:
-        with ThreadPoolExecutor(max_workers=20) as executor:
+        with ThreadPoolExecutor(max_workers=FOUNDATION_DATABASE_WORKERS) as executor:
             results = list(executor.map(read_library, buyers))
         elapsed = time.monotonic() - started
         assert results == [(1, str(product))] * 100
