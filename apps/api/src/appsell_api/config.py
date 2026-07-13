@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     malware_scanner_socket: str = ""
     pdf_sandbox_url: str = ""
     pdf_sandbox_socket: str = ""
+    capacity_product_create_telemetry: bool = False
 
     @property
     def is_production(self) -> bool:
@@ -56,6 +57,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_fail_closed_environment(self) -> Self:
+        if self.capacity_product_create_telemetry and self.environment not in {"local", "ci"}:
+            raise ValueError("capacity product-create telemetry is forbidden outside local/CI")
         if self.storage_readiness_stale_after_seconds <= self.storage_health_probe_interval_seconds:
             raise ValueError("storage readiness staleness must exceed the health probe interval")
         internal_values = (

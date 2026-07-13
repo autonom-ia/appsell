@@ -24,11 +24,12 @@ import { configuredPublicOrigin } from "@/lib/public-origin";
 import { DomainApiError, isDomainApiConfigured, syncDomainIdentity } from "@/lib/internal-api-client.server";
 import { ONBOARD_SELLER_CSRF_ACTION } from "@/lib/mutation-protection.server";
 import { demoProfileForSubject } from "@/lib/demo-config";
+import { capacityLocalCiRuntimeEnabled } from "@/lib/capacity-local-ci-runtime";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
-  if (process.env.NODE_ENV === "production") {
+  if (process.env.NODE_ENV === "production" && !capacityLocalCiRuntimeEnabled()) {
     const response = NextResponse.json({ error: "identity_not_configured" }, {
       status: 503,
       headers: { "cache-control": "no-store" }

@@ -1,7 +1,12 @@
 import "server-only";
 
 import { timingSafeEqual } from "node:crypto";
+import { capacityLocalCiRuntimeEnabled } from "./capacity-local-ci-runtime";
 import { demoProfileForSubject } from "./demo-config";
+import {
+  capacityProductCreateTelemetryEnabled,
+  validCapacityProductCreateTrace
+} from "./capacity-product-create-telemetry";
 
 import {
   parseInternalSigningConfig,
@@ -30,6 +35,7 @@ interface ApiRequest {
     "learning.player.read" | "learning.progress.write";
   sellerOrganizationId?: string;
   body?: Record<string, unknown>;
+  capacityTrace?: string | null;
 }
 
 export class DomainApiError extends Error {
@@ -110,6 +116,7 @@ export async function createDomainProductDraft(
     productTitle: string;
     productDescription: string;
     courseTitle: string;
+    capacityTrace?: string | null;
   }
 ) {
   return domainRequest(sessionId, session, {
@@ -117,6 +124,7 @@ export async function createDomainProductDraft(
     path: `/v1/me/sellers/${sellerOrganizationId}/products`,
     capability: "catalog.draft.create",
     sellerOrganizationId,
+    capacityTrace: input.capacityTrace,
     body: {
       idempotency_key: input.idempotencyKey,
       slug: input.slug,
@@ -636,13 +644,19 @@ async function domainRequest(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 3_000);
   try {
+    const capacityTrace = capacityProductCreateTelemetryEnabled() &&
+      request.capability === "catalog.draft.create" &&
+      validCapacityProductCreateTrace(request.capacityTrace)
+      ? request.capacityTrace
+      : null;
     const response = await fetch(new URL(request.path, config.apiOrigin), {
       method: request.method,
       body: request.method === "GET" ? undefined : body,
       headers: {
         "content-type": "application/json",
         "x-appsell-internal-envelope": token,
-        "x-appsell-service-credential": config.serviceCredentialEncoded
+        "x-appsell-service-credential": config.serviceCredentialEncoded,
+        ...(capacityTrace ? { "x-appsell-capacity-trace": capacityTrace } : {})
       },
       cache: "no-store",
       signal: controller.signal
@@ -713,7 +727,11 @@ function configuredApiOrigin() {
   if (raw !== parsed.origin || parsed.username || parsed.password || parsed.pathname !== "/") {
     throw new DomainApiError(503, "invalid_domain_api_url");
   }
-  if (process.env.NODE_ENV === "production" && parsed.protocol !== "https:") {
+  if (
+    process.env.NODE_ENV === "production" &&
+    parsed.protocol !== "https:" &&
+    !capacityLocalCiRuntimeEnabled()
+  ) {
     throw new DomainApiError(503, "insecure_domain_api_url");
   }
   return parsed.origin;
@@ -722,7 +740,7 @@ function configuredApiOrigin() {
 function localIdentityEmail(subject: string) {
   const demo = demoProfileForSubject(subject);
   if (demo) return demo.email;
-  if (process.env.NODE_ENV === "production") {
+  if (process.env.NODE_ENV === "production" && !capacityLocalCiRuntimeEnabled()) {
     throw new DomainApiError(503, "real_identity_claims_required");
   }
   const email = requiredEnvironment("APPSELL_LOCAL_IDENTITY_EMAIL");

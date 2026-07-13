@@ -4,6 +4,7 @@ import {
   randomBytes,
   timingSafeEqual
 } from "node:crypto";
+import { capacityLocalCiRuntimeEnabled } from "./capacity-local-ci-runtime";
 
 const AES_KEY_BYTES = 32;
 const GCM_IV_BYTES = 12;
@@ -154,7 +155,10 @@ export class LocalAesKeyEnvelopeProvider implements KeyEnvelopeProvider {
     entries: LocalKeyEntry[],
     options: { nodeEnvironment?: string; forbiddenKeys?: Buffer[] } = {}
   ) {
-    if (process.env.NODE_ENV === "production" || options.nodeEnvironment === "production") {
+    if (
+      (process.env.NODE_ENV === "production" || options.nodeEnvironment === "production") &&
+      !capacityLocalCiRuntimeEnabled()
+    ) {
       throw new TokenVaultConfigurationError("Local vault key provider is forbidden in production.");
     }
     if (!Array.isArray(entries) || entries.length === 0 || entries.length > 16) {
@@ -190,7 +194,10 @@ export class LocalAesKeyEnvelopeProvider implements KeyEnvelopeProvider {
     environment: Partial<Record<string, string | undefined>> = process.env,
     forbiddenKeys: Buffer[] = []
   ) {
-    if (process.env.NODE_ENV === "production" || environment.NODE_ENV === "production") {
+    if (
+      (process.env.NODE_ENV === "production" || environment.NODE_ENV === "production") &&
+      !capacityLocalCiRuntimeEnabled(environment)
+    ) {
       throw new TokenVaultConfigurationError("Local vault key provider is forbidden in production.");
     }
     const raw = environment.APPSELL_VAULT_LOCAL_KEYRING_B64_JSON ?? "";

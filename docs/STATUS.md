@@ -7,8 +7,8 @@ Atualizado em pontos de marco (PR aberta, deploy, incidente). Diferente de MEMOR
 | Indicador | Status | Última verificação |
 |-----------|:------:|--------------------|
 | Build | 🟢 web + API/PDF sandbox containers locais verdes | 2026-07-12 |
-| Testes | 🟢 baseline Local/CI de 100 tenants + suítes anteriores verdes | 2026-07-12 |
-| CI | 🟢 PRs #35/#36/#37/#39 e #41 verdes | 2026-07-12 |
+| Testes | 🟢 vertical Local/CI de 100 admins + 1.000 buyers verde; calibração remota pendente | 2026-07-12 |
+| CI | 🟢 PRs #35/#36/#37/#39/#41/#43/#45 verdes | 2026-07-12 |
 | Deploy produção | 🟡 não configurado/não executado | 2026-07-10 |
 | Harness instalado em `main` | 2.0.2 | 2026-07-10 |
 | Harness upgrade | 🟢 PR #37 em 2.1.2, review e 10/10 checks verdes; sem merge | 2026-07-11 |
@@ -25,6 +25,32 @@ auditoria append-only e bootstrap one-shot do superadmin com atestação separad
 Este marco é Local/CI; não é o Identity real e não concede conta de produção.
 
 ## Última mudança relevante
+
+2026-07-12 — Issue #46 em implementação local na branch
+`feat/46-capacity-1000-buyers`: o seed e o runner agora materializam 100 tenants
+com um `seller_owner` e dez buyers por tenant, totalizando 1.100 sujeitos e
+1.000 entitlements/sessões buyer observadas. A cobertura foi ampliada para
+1.000 bibliotecas, players, mutações de progresso e assets autorizados, além de
+1.000 negações cross-tenant de produto, player/progresso e asset. O workload
+mais recente completou sem 5xx, timeout, payload inválido ou acesso cruzado,
+mas a certificação terminou `threshold_failed`: o host chegou a load average
+131 e excedeu o orçamento de espera/sampling PostgreSQL. A repetição com host
+estável completou 8.500 operações funcionais dentro dos SLAs, mas expôs dois
+erros do certificado: RSS incluía workers Turbopack de `next dev`, e wait era
+limitado por tempo absoluto apesar do workload quase dobrado. O runner agora
+usa webpack Local/CI com heap de 768 MiB explicitamente declarado e normaliza
+waits por pico/razão, mantendo zero Lock/BufferPin/unclassified. O certificado
+final separa as negações de player e de mutação de progresso: 1.100
+callbacks/sessões, 1.000 library/player/progress/asset, 9.500 operações, 4.100
+negações esperadas e zero 5xx/timeout/payload cruzado. O BFF permaneceu abaixo
+do limite de 2 GiB; os waits PostgreSQL ficaram abaixo do pico 5 e da razão de
+25%, com zero Lock/BufferPin/unclassified. As métricas exatas de cada execução
+ficam no artifact JSON correspondente, evitando registrar como atuais valores
+voláteis de uma rodada anterior. A calibração continua provisória até três runs
+verdes em CI sobre source limpo.
+A concorrência permanece 10 e está separada da cardinalidade: esta é evidência
+sintética Local/CI, não 1.100 usuários simultâneos, Identity real, staging, HA
+ou produção.
 
 2026-07-12 — Issue #44 implementada localmente na branch
 `fix/44-postgres-startup-headroom`: stability gate PostgreSQL read-only antes da
@@ -79,7 +105,8 @@ verdes no SHA `0b416e4`.
   `SUPERUSER` ou `BYPASSRLS`, RLS e grants mínimos verificados diretamente.
 - Bootstrap local one-shot: issuer/audience/client fixados, claims vinculados a
   atestação HMAC exclusiva, e-mail verificado exato, MFA/passkey, advisory lock,
-  um vencedor entre 20 concorrentes, audit e auto-disable.
+  um vencedor entre 20 candidatos com fan-out concorrente limitado a 12,
+  audit e auto-disable.
 - CI Python com lock, Ruff, mypy strict, pip-audit, migration limpa, testes PG,
   build do container por digest e healthcheck real.
 - Ponte BFF→API Local/CI com credencial de serviço e envelope HMAC vinculado a
@@ -133,7 +160,8 @@ verdes no SHA `0b416e4`.
 - Assets privados da Issue #40 estão na PR #41, com review crítico e CI verdes;
   ainda dependem de aprovação/merges ordenados e permanecem somente Local/CI.
 - A baseline de regressão Local/CI para uma instalação com 100 tenants está
-  comprovada na Issue #42, mas capacidade de lançamento ainda não está
+  comprovada e foi ampliada localmente na Issue #46 para dez buyers por tenant,
+  mas capacidade de lançamento ainda não está
   certificada em staging/VPS: faltam carga com margem 2x, soak, restore,
   rollback e observabilidade reais.
 

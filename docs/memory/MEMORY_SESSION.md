@@ -34,22 +34,22 @@ Project status:
 
 <!-- Substituir abaixo a cada nova sessão. Sessões anteriores vão para PROGRESS.md. -->
 
-## Sessão: 2026-07-12 08:53 — startup PostgreSQL e headroom da baseline de 100 tenants
-Issue: #44
-Branch: fix/44-postgres-startup-headroom
+## Sessão: 2026-07-12 09:14 — capacidade de 100 admins e 1.000 buyers
+Issue: #46
+Branch: feat/46-capacity-1000-buyers
 PR: não aberta
 Estado: em_progresso
 Modelo: strong + human
-Arquivos alterados: gate/fault/scanner PostgreSQL, sampler/headroom, workflow CI, config API/Compose, testes e docs
-Comandos executados: vertical 100 tenants; fault injection real; Vitest; pytest; Ruff; mypy; lint; typecheck; build; audits; scanners; Harness
-Validação: local verde — 121 Vitest, 7 Vitest focados, 36 pytest startup/config, suíte Python, vertical 100 tenants, fault 2 transitórios + 3 ready, scanner e teardown verdes
-Bloqueios: parecer final P0-P3; autorização para commit/push/PR; PR stack #41/#43 ainda sem merge; staging/Identity/KMS/HA continuam externos
-Próxima ação: receber reviews finais, corrigir P0-P3 e pedir autorização para publicar a PR empilhada; não fazer merge/deploy
+Arquivos alterados: seed/manifest de capacidade, testes Python, runner BFF, executor e documentação de estado/auditoria
+Comandos executados: Ruff; pytest; ESLint; typecheck; verticais reais `scripts/test-capacity-100-tenants.sh`; scanner; inspeção de artifacts/teardown/host; Harness
+Validação: local verde — 1.100 sessões, 1.000 library/player/progress/asset e negações separadas de produto/player/progress/asset; certificado final de 9.500 requests e 4.100 negações, zero 5xx/timeout/payload cruzado; BFF abaixo de 2 GiB; waits PostgreSQL abaixo do pico 5 e da razão de 25%, sem Lock/BufferPin/unclassified; headroom acima de 40%; teardown limpo; métricas exatas preservadas no artifact JSON; 126 Vitest, Python, lint/typecheck/build/audits verdes; publicação condicionada ao gate crítico final de proveniência
+Bloqueios: autorização específica para commit/push/Draft PR; três runs CI para calibrar thresholds; staging/Identity/KMS/HA continuam externos
+Próxima ação: obter autorização explícita para publicar PR empilhada sobre #45 e aguardar CI; não fazer merge/deploy
 Project status:
   - Projeto: Infra
-  - Status: Em desenvolvimento
+  - Status: Em review
   - Tipo: Infra
-  - Prioridade: P3
+  - Prioridade: P0
   - Risco: Médio
   - Ambiente: Local
-  - Próxima ação: revisar implementação local e corrigir P0-P3 antes da PR
+  - Próxima ação: Rodrigo autorizar commit/push/Draft PR; depois CI e review, sem merge
