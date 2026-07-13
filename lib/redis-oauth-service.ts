@@ -459,11 +459,17 @@ export class RedisOAuthService {
     });
   }
 
-  static fromEnvironment(environment: Partial<Record<string, string | undefined>> = process.env) {
+  static fromEnvironment(
+    environment: Partial<Record<string, string | undefined>> = process.env,
+    tokenVaultFactory: (
+      environment: Partial<Record<string, string | undefined>>,
+      forbiddenKeys: Buffer[]
+    ) => TokenVault = createLocalTokenVaultFromEnvironment
+  ) {
     const sessionHmacKey = parseSessionHmacKey(environment.APPSELL_SESSION_HMAC_KEY_B64 ?? "");
     let tokenVault: TokenVault;
     try {
-      tokenVault = createLocalTokenVaultFromEnvironment(environment, [sessionHmacKey]);
+      tokenVault = tokenVaultFactory(environment, [sessionHmacKey]);
     } catch (error) {
       if (error instanceof TokenVaultConfigurationError) {
         throw new OAuthVaultConfigurationError("Token vault configuration is unavailable.");
