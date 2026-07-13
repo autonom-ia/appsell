@@ -9,7 +9,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
-from typing import Any
+from typing import Any, cast
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import psycopg
@@ -76,7 +76,7 @@ def start_inspection(
         ),
     ).fetchone()
     assert row is not None
-    return row
+    return cast(tuple[Any, ...], row)
 
 
 @pytest.fixture(scope="module", autouse=True)
