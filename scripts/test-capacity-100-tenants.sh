@@ -213,6 +213,11 @@ export APPSELL_TEST_S3_ACCESS_KEY="$storage_access"
 export APPSELL_TEST_S3_SECRET_KEY="$storage_secret"
 uv run --project apps/api pytest -ra apps/api/tests/test_storage_s3_contract.py
 
+postgres_id="$(docker compose -p "$project" ps -q postgres)"
+export APPSELL_TEST_POSTGRES_CONTAINER_ID="$postgres_id"
+pnpm exec vitest run tests/capacity-postgres-sampler.test.ts
+unset APPSELL_TEST_POSTGRES_CONTAINER_ID
+
 export APPSELL_INTERNAL_ISSUER="appsell-bff-capacity"
 export APPSELL_INTERNAL_AUDIENCE="appsell-api-capacity"
 export APPSELL_IDENTITY_ISSUER="https://identity.capacity.test.autonomia.site"
@@ -266,7 +271,6 @@ uv run --project apps/api pytest -q apps/api/tests/test_seed_capacity_tenants.py
 uv run --project apps/api python -m appsell_api.seed_capacity_tenants \
   --confirm capacity-100-tenants-v1 --output "$fixture"
 
-postgres_id="$(docker compose -p "$project" ps -q postgres)"
 api_id="$(docker compose -p "$project" ps -q api)"
 pdf_id="$(docker compose -p "$project" ps -q pdf-sandbox)"
 storage_id="$(docker compose -p "$project" ps -q seaweedfs)"

@@ -191,6 +191,9 @@ interface ResourcePeaks {
   postgres_api_active_waiting: number;
   postgres_api_wait_event_peaks: Record<string, number>;
   postgres_waiting_samples_by_phase: Record<string, number>;
+  postgres_wait_event_type_peaks_by_phase: Record<string, Record<string, number>>;
+  postgres_api_wait_event_type_peaks_by_phase: Record<string, Record<string, number>>;
+  postgres_lock_event_scope_peaks_by_phase: Record<string, Record<string, number>>;
   postgres_full_api_pool_waiting_samples: number;
   postgres_full_api_pool_waiting_observed_ms: number;
   postgres_max_consecutive_full_api_pool_waiting_samples: number;
@@ -1303,10 +1306,33 @@ test("serializes and scans maximum cardinality diagnostics", async () => {
     host_cpu_percent: 50,
     load_average: { one_minute: 1, five_minutes: 1, fifteen_minutes: 1 }
   }));
+  const typedWaitsByPhase = Object.fromEntries(
+    Array.from({ length: 32 }, (_, phase) => [
+      `scenario_phase_${phase}`,
+      Object.fromEntries(
+        Array.from({ length: 64 }, (_, event) => [`Extension/WaitEvent_${event}`, 10])
+      )
+    ])
+  );
+  const blockingEventScopesByPhase = Object.fromEntries(
+    Array.from({ length: 32 }, (_, phase) => [
+      `scenario_phase_${phase}`,
+      Object.fromEntries(
+        Array.from({ length: 64 }, (_, event) => [
+          `Lock/relation_${event}@api>autovacuum`, 10
+        ])
+      )
+    ])
+  );
   const serialized = JSON.stringify({
     schema_version: 2,
     scenarios: { maximum_cardinality_fixture: { wave_diagnostics: waves } },
-    resources: { bff_host_samples: samples }
+    resources: {
+      bff_host_samples: samples,
+      postgres_wait_event_type_peaks_by_phase: typedWaitsByPhase,
+      postgres_api_wait_event_type_peaks_by_phase: typedWaitsByPhase,
+      postgres_lock_event_scope_peaks_by_phase: blockingEventScopesByPhase
+    }
   });
   expect(waves).toHaveLength(950);
   expect(samples).toHaveLength(3_601);
@@ -1547,6 +1573,9 @@ function startResourceSampler(
     postgres_api_active_waiting: 0,
     postgres_api_wait_event_peaks: {},
     postgres_waiting_samples_by_phase: {},
+    postgres_wait_event_type_peaks_by_phase: {},
+    postgres_api_wait_event_type_peaks_by_phase: {},
+    postgres_lock_event_scope_peaks_by_phase: {},
     postgres_full_api_pool_waiting_samples: 0,
     postgres_full_api_pool_waiting_observed_ms: 0,
     postgres_max_consecutive_full_api_pool_waiting_samples: 0,
@@ -1699,6 +1728,12 @@ function startResourceSampler(
       peaks.postgres_wait_event_peaks = waitDiagnostics.waitEventPeaks;
       peaks.postgres_api_wait_event_peaks = waitDiagnostics.apiWaitEventPeaks;
       peaks.postgres_waiting_samples_by_phase = waitDiagnostics.waitingSamplesByPhase;
+      peaks.postgres_wait_event_type_peaks_by_phase =
+        waitDiagnostics.waitEventTypePeaksByPhase;
+      peaks.postgres_api_wait_event_type_peaks_by_phase =
+        waitDiagnostics.apiWaitEventTypePeaksByPhase;
+      peaks.postgres_lock_event_scope_peaks_by_phase =
+        waitDiagnostics.blockingEventScopePeaksByPhase;
       peaks.postgres_full_api_pool_waiting_samples =
         waitDiagnostics.fullApiPoolWaitingSamples;
       peaks.postgres_full_api_pool_waiting_observed_ms =
@@ -1752,6 +1787,9 @@ function emptyResourcePeaks(containers: Record<string, string>): ResourcePeaks {
     postgres_api_active_waiting: 0,
     postgres_api_wait_event_peaks: {},
     postgres_waiting_samples_by_phase: {},
+    postgres_wait_event_type_peaks_by_phase: {},
+    postgres_api_wait_event_type_peaks_by_phase: {},
+    postgres_lock_event_scope_peaks_by_phase: {},
     postgres_full_api_pool_waiting_samples: 0,
     postgres_full_api_pool_waiting_observed_ms: 0,
     postgres_max_consecutive_full_api_pool_waiting_samples: 0,
@@ -2257,6 +2295,9 @@ async function writeCapacityReport(report: Record<string, unknown>) {
     `- Postgres API-pool active-wait peak: ${resources.postgres_api_active_waiting}`,
     `- Postgres API-pool exact wait-event peaks: ${JSON.stringify(resources.postgres_api_wait_event_peaks)}`,
     `- Postgres waiting samples by phase: ${JSON.stringify(resources.postgres_waiting_samples_by_phase)}`,
+    `- Postgres typed wait-event peaks by phase: ${JSON.stringify(resources.postgres_wait_event_type_peaks_by_phase)}`,
+    `- Postgres API-pool typed wait-event peaks by phase: ${JSON.stringify(resources.postgres_api_wait_event_type_peaks_by_phase)}`,
+    `- Postgres correlated lock/waiter/blocker peaks by phase: ${JSON.stringify(resources.postgres_lock_event_scope_peaks_by_phase)}`,
     `- Postgres full API-pool waiting: ${resources.postgres_full_api_pool_waiting_samples} samples / ${round(resources.postgres_full_api_pool_waiting_observed_ms)} ms between consecutive positive samples`,
     `- Postgres max consecutive full API-pool waiting: ${resources.postgres_max_consecutive_full_api_pool_waiting_samples} samples / ${round(resources.postgres_max_consecutive_full_api_pool_waiting_ms)} ms between consecutive positive samples`,
     "",
