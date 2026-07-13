@@ -58,17 +58,47 @@ async def _authenticate(
 
 @router.get("/me/library")
 async def read_library(request: Request) -> dict[str, Any]:
+    return await _read_buyer_products(request)
+
+
+@router.get("/me/products")
+async def read_buyer_products(request: Request) -> dict[str, Any]:
+    return await _read_buyer_products(request)
+
+
+async def _read_buyer_products(request: Request) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "library.read")
     _require_buyer_scope(internal)
     try:
         async with auth.domain_session(internal.envelope) as session:
-            library = await session.scalar(
-                text("select app_private.read_buyer_library(:identity_user_id)"),
+            products = await session.scalar(
+                text("select app_private.read_buyer_products(:identity_user_id)"),
                 {"identity_user_id": internal.envelope.identity.user_id},
             )
     except DBAPIError as error:
         raise _domain_error(error) from error
-    return {"items": library or []}
+    return {"items": products or []}
+
+
+@router.get("/me/products/{entitlement_id}/seller-products")
+async def read_buyer_seller_products(request: Request, entitlement_id: UUID) -> dict[str, Any]:
+    auth, internal = await _authenticate(request, "library.read")
+    _require_buyer_scope(internal)
+    try:
+        async with auth.domain_session(internal.envelope) as session:
+            products = await session.scalar(
+                text(
+                    "select app_private.read_buyer_seller_storefront("
+                    ":identity_user_id,:entitlement_id)"
+                ),
+                {
+                    "identity_user_id": internal.envelope.identity.user_id,
+                    "entitlement_id": entitlement_id,
+                },
+            )
+    except DBAPIError as error:
+        raise _learning_domain_error(error) from error
+    return {"items": products or []}
 
 
 @router.get("/me/learning/items/{entitlement_id}/assets/{asset_id}")

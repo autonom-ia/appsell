@@ -6,8 +6,8 @@ Atualizado em pontos de marco (PR aberta, deploy, incidente). Diferente de MEMOR
 
 | Indicador | Status | Última verificação |
 |-----------|:------:|--------------------|
-| Build | 🟢 web + API/PDF sandbox containers locais verdes | 2026-07-12 |
-| Testes | 🟢 vertical Local/CI de 100 admins + 1.000 buyers verde; calibração remota pendente | 2026-07-12 |
+| Build | 🟢 web + API/PDF sandbox containers locais verdes | 2026-07-13 |
+| Testes | 🟢 buyer global A+B e vertical de 100 admins + 1.000 buyers verdes; calibração remota pendente | 2026-07-13 |
 | CI | 🟢 PRs #35/#36/#37/#39/#41/#43/#45 verdes | 2026-07-12 |
 | Deploy produção | 🟡 não configurado/não executado | 2026-07-10 |
 | Harness instalado em `main` | 2.0.2 | 2026-07-10 |
@@ -25,6 +25,18 @@ auditoria append-only e bootstrap one-shot do superadmin com atestação separad
 Este marco é Local/CI; não é o Identity real e não concede conta de produção.
 
 ## Última mudança relevante
+
+2026-07-13 — Issue #54 implementada localmente na branch
+`feat/54-buyer-multi-seller`, empilhada em `feat/46-capacity-1000-buyers`:
+projeção canônica de produtos do buyer global e vitrine do seller derivada de
+entitlement ativo, sem aceitar seller do browser. A vertical descartável prova
+dois sellers e dois produtos para a mesma identidade buyer, progresso e assets
+independentes, negações cruzadas e revogação de A sem retirar acesso a B. Admin
+com membership e sem entitlement recebe biblioteca vazia e storefront 404.
+Gates locais: 154 testes Python/Postgres, três verticais BFF existentes + A/B,
+136 Vitest, 43 Playwright em desktop/mobile, lint, typecheck, build, artifact
+sanitizado e revisão crítica sem P0-P3. Isso é evidência Local/CI, não cria
+contas no Identity real, não certifica produção e não toca VPS, billing ou DNS.
 
 2026-07-12 — Issue #46 em implementação local na branch
 `feat/46-capacity-1000-buyers`: o seed e o runner agora materializam 100 tenants
