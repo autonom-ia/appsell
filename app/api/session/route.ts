@@ -7,7 +7,7 @@ import { demoProfileForSubject } from "@/lib/demo-config";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
-  if (process.env.NODE_ENV === "production") {
+  if (process.env.NODE_ENV === "production" && process.env.APPSELL_OAUTH_MODE !== "identity") {
     return NextResponse.json({ authenticated: false }, {
       status: 401,
       headers: { "cache-control": "no-store" }
