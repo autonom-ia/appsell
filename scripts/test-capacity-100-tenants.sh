@@ -2,6 +2,7 @@
 set -euo pipefail
 
 project="appsell_capacity_${RANDOM}_$$"
+bff_dist=".next-capacity-${project}"
 postgres_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
 api_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
 storage_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
@@ -21,6 +22,40 @@ worker_metrics="${report%.json}-worker-rss.json"
 vitest_metrics="${report%.json}-vitest-rss.json"
 startup_report="${report%.json}-postgres-startup.json"
 cleanup_started="false"
+
+restore_next_generated_config() {
+  BFF_DIST="$bff_dist" python3 -c '
+import os
+from pathlib import Path
+dist = os.environ["BFF_DIST"]
+next_env = Path("next-env.d.ts")
+if next_env.exists():
+    source = next_env.read_text()
+    source = source.replace(
+        f"import \"./{dist}/types/routes.d.ts\";",
+        "import \"./.next/dev/types/routes.d.ts\";",
+    )
+    next_env.write_text(source)
+tsconfig = Path("tsconfig.json")
+if tsconfig.exists():
+    source = tsconfig.read_text()
+    source = source.replace(
+        f"    \"{dist}/types/**/*.ts\",\n"
+        f"    \"{dist}/dev/types/**/*.ts\"\n",
+        "",
+    )
+    source = source.replace(
+        f",\n    \"{dist}/types/**/*.ts\",\n"
+        f"    \"{dist}/dev/types/**/*.ts\"",
+        "",
+    )
+    source = source.replace(
+        "    \".next/dev/types/**/*.ts\",\n  ],",
+        "    \".next/dev/types/**/*.ts\"\n  ],",
+    )
+    tsconfig.write_text(source)
+'
+}
 
 mark_report_failed() {
   local exit_code="$1"
@@ -72,6 +107,8 @@ cleanup() {
   if [[ "$cleanup_started" == "true" ]]; then return "$original_status"; fi
   cleanup_started="true"
   trap - EXIT INT TERM
+  restore_next_generated_config
+  rm -rf -- "$bff_dist"
   local down_failed="false"
   if ! docker compose -p "$project" --profile storage down --rmi local --volumes --remove-orphans \
     >/dev/null 2>&1; then
@@ -291,6 +328,12 @@ export APPSELL_CAPACITY_OUTER_TIMEOUT_SECONDS="$capacity_executor_timeout_second
 export NEXT_TELEMETRY_DISABLED="1"
 export APPSELL_CAPACITY_PRODUCT_CREATE_TELEMETRY="true"
 export APPSELL_ENVIRONMENT="ci"
+export APPSELL_CAPACITY_BFF_RUNTIME="production"
+export APPSELL_CAPACITY_LOCAL_CI_RUNTIME="synthetic-loopback-v1"
+export APPSELL_CAPACITY_BFF_DIST_DIR="$bff_dist"
+
+APPSELL_NEXT_DIST_DIR="$bff_dist" NODE_ENV="production" pnpm exec next build
+restore_next_generated_config
 
 python3 scripts/run_with_rss.py --timeout "$capacity_executor_timeout_seconds" --output "$vitest_metrics" -- \
   pnpm exec vitest run tests/bff-capacity-100-tenants.test.ts

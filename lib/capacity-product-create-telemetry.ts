@@ -1,3 +1,5 @@
+import { capacityLocalCiRuntimeEnabled } from "./capacity-local-ci-runtime";
+
 const TRACE_ID = /^pc-(?:0[0-9]{2})$/;
 const EVENT = "appsell_capacity_product_create_trace";
 const CLIENT_TIMEOUT_BUDGET_MS = 5_000;
@@ -52,7 +54,7 @@ export function capacityProductCreateTelemetryEnabled(
   if (raw === undefined || raw === "" || raw === "false") return false;
   if (raw !== "true") throw new Error("invalid_capacity_product_create_telemetry_flag");
   const appEnvironment = environment.APPSELL_ENVIRONMENT;
-  if (environment.NODE_ENV === "production" ||
+  if ((environment.NODE_ENV === "production" && !capacityLocalCiRuntimeEnabled(environment)) ||
       (appEnvironment !== "local" && appEnvironment !== "ci")) {
     throw new Error("capacity_product_create_telemetry_forbidden_environment");
   }

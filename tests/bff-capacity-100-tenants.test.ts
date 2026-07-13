@@ -7,6 +7,12 @@ import { promisify } from "node:util";
 
 import { expect, test } from "vitest";
 
+import {
+  productCsrfCookieName,
+  sessionCookieName,
+  transactionCookieName
+} from "../lib/cookies";
+import { CAPACITY_LOCAL_CI_RUNTIME } from "../lib/capacity-local-ci-runtime";
 import { RedisOAuthService } from "../lib/redis-oauth-service";
 import {
   calculatePostgresHeadroom,
@@ -241,7 +247,7 @@ test.skipIf(!domainApiUrl)(
   let sampler: Awaited<ReturnType<typeof startResourceSampler>> | undefined;
   let port = 0;
   const suffix = `${process.pid}-${Date.now()}`;
-  const distDir = `.next-capacity-${suffix}`;
+  const distDir = capacityBffDistDir(process.env);
   const scenarios: Record<string, ScenarioResult> = {};
   const thresholdFailures: string[] = [];
   let testFailure: unknown;
@@ -1037,7 +1043,7 @@ function capacityEnvironment(redisUrl: string, port: number, suffix: string) {
     APPSELL_REDIS_PREFIX: `appsell:test:capacity-${suffix}`,
     APPSELL_SESSION_HMAC_KEY_B64: randomBytes(32).toString("base64"),
     APPSELL_CSRF_HMAC_KEY_B64: randomBytes(32).toString("base64"),
-    APPSELL_PUBLIC_ORIGIN: `http://localhost:${port}`,
+    APPSELL_PUBLIC_ORIGIN: origin(port),
     APPSELL_VAULT_LOCAL_KEYRING_B64_JSON: JSON.stringify([
       { id: "capacity-v1", key: randomBytes(32).toString("base64"), active: true }
     ]),
@@ -1052,6 +1058,9 @@ function capacityEnvironment(redisUrl: string, port: number, suffix: string) {
     APPSELL_LOCAL_IDENTITY_EMAIL: "capacity.synthetic@autonomia.site",
     APPSELL_DEMO_ENABLED: "false",
     APPSELL_CAPACITY_PRODUCT_CREATE_TELEMETRY: "true",
+    APPSELL_CAPACITY_BFF_RUNTIME: "production",
+    APPSELL_CAPACITY_LOCAL_CI_RUNTIME: CAPACITY_LOCAL_CI_RUNTIME,
+    APPSELL_PRIVATE_LEARNING_ASSET_ROOT: join(process.cwd(), "output", "pdf", "codex"),
     APPSELL_ENVIRONMENT: "ci",
     NEXT_TELEMETRY_DISABLED: "1"
   };
@@ -1074,7 +1083,7 @@ async function createSession(
     `${origin(port)}/auth/callback?code=${encodeURIComponent(code)}&state=${encodeURIComponent(login.state)}`,
     {
       redirect: "manual",
-      headers: { cookie: `appsell_oauth_tx=${login.transactionId}` }
+      headers: { cookie: `${transactionCookieName(true)}=${login.transactionId}` }
     },
     timeoutMs
   );
@@ -1082,8 +1091,8 @@ async function createSession(
     throw new Error(`oauth_callback_status_${response.status}`);
   }
   const setCookie = response.headers.get("set-cookie");
-  const sessionCookie = cookiePair(setCookie, "appsell_session");
-  const productCsrfCookie = cookiePair(setCookie, "appsell_product_csrf");
+  const sessionCookie = cookiePair(setCookie, sessionCookieName(true));
+  const productCsrfCookie = cookiePair(setCookie, productCsrfCookieName(true));
   return {
     sessionCookie,
     cookieHeader: `${sessionCookie}; ${productCsrfCookie}`,
@@ -1455,6 +1464,21 @@ test("capacity product-create telemetry is default-off and refuses remote enviro
     APPSELL_ENVIRONMENT: "ci",
     NODE_ENV: "production"
   })).toThrow("capacity_product_create_telemetry_forbidden_environment");
+});
+
+test("capacity BFF runtime accepts only a generated production build", () => {
+  expect(capacityBffRuntime({ APPSELL_CAPACITY_BFF_RUNTIME: "production" })).toBe("production");
+  expect(capacityBffDistDir({ APPSELL_CAPACITY_BFF_DIST_DIR: ".next-capacity-appsell_capacity_1_2" }))
+    .toBe(".next-capacity-appsell_capacity_1_2");
+  expect(() => capacityBffRuntime({ APPSELL_CAPACITY_BFF_RUNTIME: "development" })).toThrow(
+    "capacity_bff_runtime_invalid"
+  );
+  expect(() => capacityBffDistDir({ APPSELL_CAPACITY_BFF_DIST_DIR: ".next" })).toThrow(
+    "capacity_bff_dist_invalid"
+  );
+  expect(() => capacityBffDistDir({ APPSELL_CAPACITY_BFF_DIST_DIR: "../outside" })).toThrow(
+    "capacity_bff_dist_invalid"
+  );
 });
 
 test("capacity trace parser accepts only strict opaque JSON events", () => {
@@ -2330,7 +2354,7 @@ async function buildReport(
     },
     limits: {
       scanner: "deterministic_local_ci_not_clamav",
-      bff_runtime_scope: "next_dev_webpack_local_ci_not_production_runtime",
+      bff_runtime_scope: "next_build_start_local_ci_not_staging_or_production_infrastructure",
       bff_node_max_old_space_mb: 768,
       account_cardinality_scope: "100_synthetic_owners_and_1000_synthetic_buyers_local_ci",
       identity_scope: "synthetic_subjects_not_real_identity_accounts",
@@ -2705,12 +2729,12 @@ function parseApiCapacityTraceLogs(content: string) {
 // Kept below the test helpers so the spawned process cannot accidentally inherit
 // fixture paths or database superuser credentials not explicitly provided.
 function startBff(port: number, distDir: string, shared: Record<string, string>) {
+  capacityBffRuntime(process.env);
   return spawn(
     process.execPath,
     [
       join(process.cwd(), "node_modules/next/dist/bin/next"),
-      "dev",
-      "--webpack",
+      "start",
       "-H",
       "127.0.0.1",
       "-p",
@@ -2721,7 +2745,7 @@ function startBff(port: number, distDir: string, shared: Record<string, string>)
       env: {
         PATH: process.env.PATH,
         HOME: process.env.HOME,
-        NODE_ENV: "development",
+        NODE_ENV: "production",
         NODE_OPTIONS: "--max-old-space-size=768",
         ...shared,
         APPSELL_NEXT_DIST_DIR: distDir
@@ -2729,6 +2753,21 @@ function startBff(port: number, distDir: string, shared: Record<string, string>)
       stdio: ["ignore", "pipe", "pipe"]
     }
   );
+}
+
+function capacityBffRuntime(environment: NodeJS.ProcessEnv | Record<string, string | undefined>) {
+  if (environment.APPSELL_CAPACITY_BFF_RUNTIME !== "production") {
+    throw new Error("capacity_bff_runtime_invalid");
+  }
+  return "production" as const;
+}
+
+function capacityBffDistDir(environment: NodeJS.ProcessEnv | Record<string, string | undefined>) {
+  const value = environment.APPSELL_CAPACITY_BFF_DIST_DIR;
+  if (!value || !/^\.next-capacity-appsell_capacity_[0-9]+_[0-9]+$/.test(value)) {
+    throw new Error("capacity_bff_dist_invalid");
+  }
+  return value;
 }
 
 async function waitForBff(process: ChildProcess, port: number) {
