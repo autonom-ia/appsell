@@ -204,6 +204,7 @@ def test_runtime_cannot_write_domain_or_idempotency_tables_directly() -> None:
 
 def test_bff_request_replay_has_exactly_one_concurrent_winner() -> None:
     assert RUNTIME_URL and ADMIN_URL
+    cleanup_request_id = uuid4()
     request_id = uuid4()
     stale_request_id = uuid4()
     expires_at = int(time.time()) + 60
@@ -218,6 +219,21 @@ def test_bff_request_replay_has_exactly_one_concurrent_winner() -> None:
             (stale_request_id,),
         )
         connection.commit()
+
+    # Prove bounded stale cleanup without racing it against transactions that
+    # intentionally roll back after losing the unique-key contest below.
+    with psycopg.connect(RUNTIME_URL) as connection:
+        connection.execute(
+            "select app_private.consume_bff_request(%s, %s)",
+            (cleanup_request_id, expires_at),
+        )
+        connection.commit()
+
+    with psycopg.connect(ADMIN_URL) as connection:
+        assert connection.execute(
+            "select count(*) from app_private.bff_request_replay where request_id = %s",
+            (stale_request_id,),
+        ).fetchone() == (0,)
 
     def attempt() -> bool:
         try:
@@ -235,12 +251,6 @@ def test_bff_request_replay_has_exactly_one_concurrent_winner() -> None:
         results = list(executor.map(lambda _: attempt(), range(16)))
     assert results.count(True) == 1
     assert results.count(False) == 15
-
-    with psycopg.connect(ADMIN_URL) as connection:
-        assert connection.execute(
-            "select count(*) from app_private.bff_request_replay where request_id = %s",
-            (stale_request_id,),
-        ).fetchone() == (0,)
 
     with psycopg.connect(RUNTIME_URL) as connection:
         with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
