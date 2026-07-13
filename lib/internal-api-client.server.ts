@@ -779,7 +779,12 @@ function requireDemoCapability(subject: string, request: ApiRequest) {
   if (!profile) return;
   if (request.capability === "identity.sync") return;
   if (profile.persona === "buyer" &&
-      ["library.read", "library.asset.read"].includes(request.capability)) {
+      [
+        "library.read",
+        "library.asset.read",
+        "learning.player.read",
+        "learning.progress.write"
+      ].includes(request.capability)) {
     return;
   }
   if (profile.persona === "admin") {

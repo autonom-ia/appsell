@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import secrets
 from typing import Annotated, Any, cast
@@ -11,7 +12,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
-from .config import get_settings
 from .routes import _authenticate, _domain_error, _model_from_body, _require_no_seller
 
 router = APIRouter(prefix="/v1/platform/demo-inspections")
@@ -161,7 +161,9 @@ def _validated_reason(value: str) -> str:
 
 
 def _require_local_ci() -> None:
-    if get_settings().environment not in {"local", "ci"}:
+    # Keep this kill switch independent from unrelated runtime configuration.
+    # Missing, malformed, staging and production values all fail closed.
+    if os.environ.get("APPSELL_API_ENVIRONMENT", "").strip().lower() not in {"local", "ci"}:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="not_found",

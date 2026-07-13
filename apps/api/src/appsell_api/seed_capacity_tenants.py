@@ -18,7 +18,7 @@ CAPACITY_DATABASE_MARKER = "appsell-capacity-target-v1"
 CAPACITY_TENANTS = 100
 CAPACITY_BUYERS_PER_TENANT = 10
 CAPACITY_BUYERS = CAPACITY_TENANTS * CAPACITY_BUYERS_PER_TENANT
-EXPECTED_MIGRATION = "0009_buyer_multi_seller"
+EXPECTED_MIGRATION = "0010_release_candidate"
 
 
 def parse_args() -> argparse.Namespace:

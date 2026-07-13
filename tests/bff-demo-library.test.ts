@@ -195,8 +195,7 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     const backBox = await buyerPage.getByRole("link", { name: "Minha biblioteca" }).boundingBox();
     expect(backBox?.height ?? 0).toBeGreaterThanOrEqual(44);
     const buyerNav = buyerPage.getByRole("navigation", { name: "Navegação móvel" });
-    const navBox = await buyerNav.getByRole("link", { name: "Minha biblioteca" }).boundingBox();
-    expect(navBox?.width ?? 0).toBeGreaterThanOrEqual(290);
+    await pwExpect(buyerNav).toBeHidden();
     await expectNoHorizontalOverflow(buyerPage);
     await buyerPage.goto(`${origin}/products`);
     await buyerPage.waitForURL(`${origin}/library`);

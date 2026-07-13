@@ -78,7 +78,7 @@ def test_projection_pin_rls_and_player_are_bound_to_the_buyer() -> None:
             (entitlement, publication, publication),
         ).fetchone()
     assert state == (
-        "0009_buyer_multi_seller",
+        "0010_release_candidate",
         publication,
         1,
         5,

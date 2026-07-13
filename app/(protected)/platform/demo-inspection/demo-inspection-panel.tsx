@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 
 interface DemoInspectionProjection {
   inspection: { id: string; started_at: string; expires_at: string };
@@ -105,6 +105,7 @@ function UnavailableInspection() {
 }
 
 function StartInspection({ csrf, expired }: { csrf: string; expired: boolean }) {
+  const submission = useInspectionSubmission("started");
   return (
     <section className="inspection-card" aria-labelledby="start-inspection-title">
       <div>
@@ -113,7 +114,7 @@ function StartInspection({ csrf, expired }: { csrf: string; expired: boolean }) 
         <p>A projeção contém somente metadados operacionais da Autonom.ia Demo. Conteúdo privado, PII de compradores, billing e secrets permanecem fora do alcance.</p>
       </div>
       {expired ? <p className="inspection-feedback warning" role="status">O ticket anterior expirou ou foi revogado. Inicie outro somente se ainda houver necessidade.</p> : null}
-      <form action="/api/platform/demo-inspections" method="post">
+      <form action="/api/platform/demo-inspections" method="post" onSubmit={submission.submit}>
         <input type="hidden" name="_csrf" value={csrf}/>
         <label>Motivo operacional
           <textarea name="reason" minLength={8} maxLength={500} required defaultValue="Demonstração comercial supervisionada da tenant Autonom.ia Demo."/>
@@ -126,13 +127,17 @@ function StartInspection({ csrf, expired }: { csrf: string; expired: boolean }) 
             <option value="900">15 minutos</option>
           </select>
         </label>
-        <button className="primary-button" type="submit">Iniciar inspeção read-only</button>
+        <button className="primary-button" type="submit" disabled={submission.pending}>
+          {submission.pending ? "Iniciando inspeção…" : "Iniciar inspeção read-only"}
+        </button>
+        {submission.error ? <p className="form-error" role="alert">{submission.error}</p> : null}
       </form>
     </section>
   );
 }
 
 function ActiveInspection({ projection, csrf }: { projection: DemoInspectionProjection; csrf: string }) {
+  const submission = useInspectionSubmission("revoked");
   return (
     <div className="inspection-grid">
       <section className="inspection-card inspection-active" aria-labelledby="active-inspection-title">
@@ -156,16 +161,63 @@ function ActiveInspection({ projection, csrf }: { projection: DemoInspectionProj
           <h2 id="revoke-inspection-title">Revogar agora</h2>
           <p>A revogação invalida o token imediatamente e gera outro evento append-only.</p>
         </div>
-        <form action="/api/platform/demo-inspections/revoke" method="post">
+        <form action="/api/platform/demo-inspections/revoke" method="post" onSubmit={submission.submit}>
           <input type="hidden" name="_csrf" value={csrf}/>
           <label>Motivo do encerramento
             <textarea name="reason" minLength={8} maxLength={500} required defaultValue="Inspeção comercial concluída com segurança."/>
           </label>
-          <button className="danger-button" type="submit">Encerrar e revogar acesso</button>
+          <button className="danger-button" type="submit" disabled={submission.pending}>
+            {submission.pending ? "Revogando acesso…" : "Encerrar e revogar acesso"}
+          </button>
+          {submission.error ? <p className="form-error" role="alert">{submission.error}</p> : null}
         </form>
       </section>
     </div>
   );
+}
+
+function useInspectionSubmission(expectedStatus: "started" | "revoked") {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (pending) return;
+    const form = event.currentTarget;
+    const body = new URLSearchParams();
+    for (const [name, value] of new FormData(form).entries()) {
+      if (typeof value !== "string") {
+        setError("O formulário contém um valor inválido.");
+        return;
+      }
+      body.append(name, value);
+    }
+    setPending(true);
+    setError("");
+    try {
+      const response = await fetch(form.action, {
+        method: "POST",
+        body,
+        credentials: "same-origin",
+        redirect: "follow"
+      });
+      if (!response.ok || !response.redirected) throw new Error("inspection_submit_failed");
+      const destination = new URL(response.url);
+      if (
+        destination.origin !== window.location.origin ||
+        destination.pathname !== "/platform/demo-inspection" ||
+        destination.searchParams.get("status") !== expectedStatus
+      ) {
+        throw new Error("inspection_redirect_invalid");
+      }
+      window.location.assign(destination.href);
+    } catch {
+      setPending(false);
+      setError("Não foi possível concluir a operação com segurança. Tente novamente.");
+    }
+  }
+
+  return { pending, error, submit };
 }
 
 function parseAccess(value: unknown): InspectionAccess | null {

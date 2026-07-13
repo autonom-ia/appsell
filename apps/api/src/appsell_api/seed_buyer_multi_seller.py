@@ -18,7 +18,7 @@ from .reset_demo_tenant import (
     snapshot_for,
 )
 
-EXPECTED_MIGRATION = "0009_buyer_multi_seller"
+EXPECTED_MIGRATION = "0010_release_candidate"
 CONFIRMATION = "buyer-multi-seller-v1"
 NAMESPACE = UUID("01a6463f-d696-4c34-b939-237fd53a7edf")
 
