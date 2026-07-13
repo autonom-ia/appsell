@@ -105,7 +105,8 @@ verdes no SHA `0b416e4`.
   `SUPERUSER` ou `BYPASSRLS`, RLS e grants mínimos verificados diretamente.
 - Bootstrap local one-shot: issuer/audience/client fixados, claims vinculados a
   atestação HMAC exclusiva, e-mail verificado exato, MFA/passkey, advisory lock,
-  um vencedor entre 20 concorrentes, audit e auto-disable.
+  um vencedor entre 20 candidatos com fan-out concorrente limitado a 12,
+  audit e auto-disable.
 - CI Python com lock, Ruff, mypy strict, pip-audit, migration limpa, testes PG,
   build do container por digest e healthcheck real.
 - Ponte BFF→API Local/CI com credencial de serviço e envelope HMAC vinculado a
