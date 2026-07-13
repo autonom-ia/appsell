@@ -37,19 +37,19 @@ Project status:
 ## Sessão: 2026-07-12 16:00 — preço, cadastro Neuro.ai e PIX
 Issue: #52
 Branch: feat/52-pricing-neuro-pix-plan
-PR: não aberta
-Estado: em_progresso
+PR: #60 (Draft)
+Estado: em_review
 Modelo: strong + human
 Arquivos alterados: simulador econômico; testes; pesquisa/contrato Neuro-Financial-PIX; audit; memória
 Comandos executados: inspeção GitHub read-only de Admin/Financial/Neuro; fontes oficiais; ESLint; typecheck; Vitest; benchmark Eduzz; relatório executivo MCP; review FinOps/AppSec
 Validação: contrato v3 + manifest 19/19 focado e suíte 87 pass/1 skip; ESLint, typecheck, diff check e scan verdes; re-review independente GREEN (P0=P1=P2=P3=0)
 Bloqueios: Admin #3/#4; fan-out sem convergência; Financial one-time/PIX; custos reconciliados; Connect/MoR; Stripe autenticada; Identity/KMS/staging
-Próxima ação: preparar Draft PR do slice #52 após autorização; manter cadastro e pedido PIX inativos
+Próxima ação: acompanhar CI/review da Draft PR #60; manter cadastro e pedido PIX inativos
 Project status:
   - Projeto: Infra
-  - Status: Em desenvolvimento
+  - Status: Em review
   - Tipo: Feature
   - Prioridade: P0
   - Risco: Alto
   - Ambiente: Local
-  - Próxima ação: Draft PR após autorização; sem cadastro/Stripe real
+  - Próxima ação: acompanhar CI/review da PR #60; sem cadastro/Stripe real
