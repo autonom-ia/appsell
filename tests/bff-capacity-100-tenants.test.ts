@@ -1056,6 +1056,7 @@ function capacityEnvironment(redisUrl: string, port: number, suffix: string) {
     ),
     APPSELL_SERVICE_CREDENTIAL_B64: requiredEnvironment("APPSELL_SERVICE_CREDENTIAL_B64"),
     APPSELL_LOCAL_IDENTITY_EMAIL: "capacity.synthetic@autonomia.site",
+    APPSELL_OAUTH_MODE: "local",
     APPSELL_DEMO_ENABLED: "false",
     APPSELL_CAPACITY_PRODUCT_CREATE_TELEMETRY: "true",
     APPSELL_CAPACITY_BFF_RUNTIME: "production",

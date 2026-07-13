@@ -155,6 +155,36 @@ def signed_headers(
 
 
 @pytest.mark.asyncio
+async def test_public_storefront_requires_service_credential_and_exposes_only_catalog(
+    client: httpx.AsyncClient,
+) -> None:
+    manifest, _ = load_manifest()
+    path = f"/v1/public/sellers/{manifest['seller']['slug']}"
+    unauthorized = await client.get(path)
+    assert unauthorized.status_code == 401
+
+    response = await client.get(
+        path,
+        headers={"x-appsell-service-credential": base64.b64encode(SERVICE_CREDENTIAL).decode()},
+    )
+    assert response.status_code == 200
+    assert response.json()["seller"] == {
+        "id": manifest["seller"]["id"],
+        "slug": manifest["seller"]["slug"],
+        "name": manifest["seller"]["display_name"],
+    }
+    assert [product["id"] for product in response.json()["products"]] == [manifest["product"]["id"]]
+    assert "email" not in response.text and "buyer" not in response.text
+
+    missing = await client.get(
+        "/v1/public/sellers/seller-inexistente",
+        headers={"x-appsell-service-credential": base64.b64encode(SERVICE_CREDENTIAL).decode()},
+    )
+    assert missing.status_code == 404
+    assert missing.json() == {"detail": "storefront_not_found"}
+
+
+@pytest.mark.asyncio
 async def test_api_starts_reads_and_revokes_only_the_server_demo(client: httpx.AsyncClient) -> None:
     manifest, _ = load_manifest()
     start_body = json.dumps(

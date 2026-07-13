@@ -127,6 +127,7 @@ uv run --project apps/api pytest \
   apps/api/tests/test_postgres_learning_progress.py \
   apps/api/tests/test_postgres_private_assets.py \
   apps/api/tests/test_postgres_superadmin_inspection.py \
+  apps/api/tests/test_postgres_public_storefront.py \
   apps/api/tests/test_demo_codex_pdfs.py \
   apps/api/tests/test_reset_demo_tenant.py \
   apps/api/tests/test_seed_buyer_multi_seller.py \

@@ -34,22 +34,22 @@ Project status:
 
 <!-- Substituir abaixo a cada nova sessão. Sessões anteriores vão para PROGRESS.md. -->
 
-## Sessão: 2026-07-13 21:40 — release candidate E2E integrada
+## Sessão: 2026-07-13 22:36 — release candidate E2E integrada
 Issue: #61
 Branch: feat/61-release-candidate-e2e
 PR: não aberta
 Estado: em_progresso
 Modelo: strong + human
-Arquivos alterados: combinação UI/Identity/OpenBao/superadmin; migration sequencial; testes e docs de integração
-Comandos executados: inventário DAG; merge controlado #57 sobre #59; resolução de contratos em andamento
-Validação: branches fonte e reviews verdes; release candidate ainda não certificada
-Bloqueios: incorporar #53/#55/#60, implementar storefront/CTA e rodar vertical integrada; externos exigem ambientes isolados
-Próxima ação: fechar runtime/migrations, testes completos, review crítico e Draft PR; sem merge/deploy
+Arquivos alterados: combinação UI/Identity/OpenBao/superadmin; migrations sequenciais até 0011; buyer multi-seller; storefront público; testes e docs
+Comandos executados: test-postgres-foundation; test-capacity-100-tenants; test-openbao-transit; pnpm lint/typecheck/test/build; test:e2e; test:e2e:production; audits Node/Python
+Validação: 180/180 PG/API; 264 unitários + 8 skips condicionais; 44 Playwright + 6 skips previstos; produção 1/1; OpenBao 7/7; capacidade 100 admins/1.000 buyers verde; scanner verde
+Bloqueios: checkout e adapters externos pertencem aos próximos slices; staging exige ambiente isolado e aprovação explícita
+Próxima ação: commitar, review crítico do SHA, corrigir achados e abrir Draft PR; sem merge/deploy
 Project status:
   - Projeto: Infra
-  - Status: Em review
+  - Status: Em desenvolvimento
   - Tipo: Infra
   - Prioridade: P0
   - Risco: Médio
   - Ambiente: Local
-  - Próxima ação: consolidar RC, E2E e review crítico antes da Draft PR
+  - Próxima ação: review crítico do SHA e Draft PR antes de CI remoto

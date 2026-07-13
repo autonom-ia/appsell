@@ -6,12 +6,13 @@ Atualizado em pontos de marco (PR aberta, deploy, incidente). Diferente de MEMOR
 
 | Indicador | Status | Última verificação |
 |-----------|:------:|--------------------|
-| Build | 🟡 release candidate #61 em consolidação; branches-fonte verdes | 2026-07-13 |
-| Testes | 🟡 suites fonte verdes; combinação #61 ainda não certificada | 2026-07-13 |
-| CI | 🟢 PRs fonte até #60 verdes; RC ainda local | 2026-07-13 |
+| Build | 🟢 release candidate #61 compila em modo produção | 2026-07-13 |
+| Testes | 🟢 vertical Local/CI integrada e capacidade 100/1.000 verdes | 2026-07-13 |
+| CI | 🟡 PRs fonte até #60 verdes; RC aguarda Draft PR/CI remoto | 2026-07-13 |
 | Deploy produção | 🟡 não configurado/não executado | 2026-07-10 |
 | Harness instalado em `main` | 2.0.2 | 2026-07-10 |
 | Harness upgrade | 🟢 PR #37 em 2.1.2, review e 10/10 checks verdes; sem merge | 2026-07-11 |
+| Harness no RC #61 | 🟢 2.1.2 | 2026-07-13 |
 
 ## Estado atual
 
@@ -26,16 +27,17 @@ Este marco é Local/CI; não é o Identity real e não concede conta de produç�
 
 ## Última mudança relevante
 
-2026-07-13 — Issue #61 criada para consolidar uma release candidate única.
-A base é a PR #59 (UI + Identity + OpenBao); estão sendo portadas a inspeção
-superadmin #57, a linha completa de capacidade/multi-seller #53/#55 e os
-contratos de pricing/Neuro/PIX #60. A migration superadmin foi renumerada para
+2026-07-13 — Issue #61 consolida uma release candidate única sobre a PR #59
+(UI + Identity + OpenBao), com inspeção superadmin #57, capacidade/multi-seller
+#53/#55 e contratos de pricing/Neuro/PIX #60. A migration superadmin foi renumerada para
 `0010_release_candidate`, sequencial a `0009_buyer_multi_seller`, evitando duas
 heads Alembic. Nenhum merge em `main`, deploy ou produção foi executado.
 
-A linha de capacidade #53 e o runtime multi-seller #55 foram incorporados. A
-projeção buyer continua derivada de entitlement ativo e nunca aceita seller do
-browser; a UI/storefront público ainda é o próximo slice desta Issue.
+A linha de capacidade #53, o runtime multi-seller #55 e o storefront público
+foram incorporados. A projeção buyer continua derivada de entitlement ativo e
+nunca aceita seller do browser. O storefront `/s/{sellerSlug}` expõe apenas
+seller ativo e publicação vigente por uma projeção SQL mínima; a credencial de
+serviço permanece server-side e o CTA informa que checkout ainda não está ativo.
 
 ## O que está funcionando
 
@@ -119,6 +121,15 @@ browser; a UI/storefront público ainda é o próximo slice desta Issue.
 - O callback da persona superadmin exige Domain API e grant ativo antes de
   emitir sessão; ausência da API revoga a sessão e expira cookies. O OpenAPI da
   Domain API está desabilitado, evitando enumerar as rotas restritas.
+- Storefront público mobile-first por seller com 320/390 px, landscape,
+  reduced motion, CTA >=44 px e ausência de overflow verificados; draft,
+  buyer/e-mail, asset e dados de checkout não fazem parte da projeção pública.
+- Certificado Local/CI de capacidade executou 100 owners + 1.000 buyers,
+  1.100 callbacks/sessões, leituras, mutações e negações cross-tenant sem erro;
+  thresholds e teardown passaram. É baseline provisória, não sizing de VPS.
+- Vertical integrada atual: 180/180 testes PG/API, 264 unitários verdes com 8
+  integrações condicionais ignoradas, 44/44 Playwright executados com 6 skips
+  previstos, produção fail-closed 1/1, OpenBao 7/7, audits Node/Python verdes.
 
 ## O que está quebrado / em degradação
 
@@ -136,8 +147,9 @@ browser; a UI/storefront público ainda é o próximo slice desta Issue.
 - A inspeção superadmin está na PR #57 e está sendo portada para a linha
   sequencial de migrations da release candidate #61.
 - As PRs #35/#36 continuam sem merge; seus recursos não estão em produção.
-- Storefront público, CTA de outros produtos e checkout ainda não estão
-  implementados na release candidate.
+- Checkout, criação de cobrança, webhooks e reconciliação financeira reais
+  ainda não estão implementados na release candidate. Os contratos de pricing,
+  Neuro e PIX não equivalem a uma cobrança executável.
 
 ## Bloqueios
 
@@ -147,10 +159,10 @@ browser; a UI/storefront público ainda é o próximo slice desta Issue.
 
 ## Próxima ação
 
-Concluir a combinação da Issue #61, implementar storefront/CTA ausentes e
-executar a vertical E2E local integrada. Depois, review crítico e Draft PR sem
-merge/deploy. Identity/Financial/Admin/Neuro externos e staging continuam
-dependentes de ambientes e credenciais isolados.
+Concluir o review crítico do SHA da Issue #61 e abrir Draft PR sem merge/deploy.
+Depois, executar três runs verdes de CI no mesmo SHA para calibrar a baseline.
+Identity/Financial/Admin/Neuro externos, checkout e staging continuam em slices
+seguintes com ambientes/credenciais isolados e mudanças somente aditivas.
 
 ## Links
 

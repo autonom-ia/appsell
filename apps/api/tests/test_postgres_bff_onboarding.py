@@ -140,7 +140,7 @@ def test_schema_ready_targets_head_and_runtime_has_only_function_access() -> Non
               )
             """
         ).fetchone()
-    assert state == ("0010_release_candidate", False, False, True, True, True)
+    assert state == ("0011_public_storefront", False, False, True, True, True)
 
 
 def test_identity_is_scoped_by_issuer_and_sync_creates_no_privilege() -> None:

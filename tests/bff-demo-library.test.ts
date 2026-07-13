@@ -175,8 +175,22 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     expect(forbiddenPdf.status).not.toBe(200);
 
     browser = await chromium.launch();
-    const buyerContext = await browser.newContext({ viewport: { width: 320, height: 720 } });
+    const buyerContext = await browser.newContext({
+      viewport: { width: 320, height: 720 },
+      reducedMotion: "reduce"
+    });
     const buyerPage = await buyerContext.newPage();
+    await buyerPage.goto(`${origin}/s/autonomia-demo`);
+    await pwExpect(buyerPage.getByRole("heading", { level: 1, name: "Autonom.ia Demo" })).toBeVisible();
+    await pwExpect(buyerPage.getByRole("heading", { level: 3, name: "Codex na prática" })).toBeVisible();
+    const storefrontCta = buyerPage.getByRole("link", { name: "Entrar para acessar" });
+    await pwExpect(storefrontCta).toBeVisible();
+    expect((await storefrontCta.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+    await expectNoHorizontalOverflow(buyerPage);
+    await buyerPage.setViewportSize({ width: 844, height: 390 });
+    await expectNoHorizontalOverflow(buyerPage);
+    await buyerPage.setViewportSize({ width: 390, height: 844 });
+    await expectNoHorizontalOverflow(buyerPage);
     await buyerPage.goto(origin);
     await buyerPage.getByRole("link", { name: "Entrar como aluno demo" }).click();
     await buyerPage.waitForURL(`${origin}/library`);

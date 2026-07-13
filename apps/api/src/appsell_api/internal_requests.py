@@ -113,6 +113,14 @@ class InternalRequestAuthenticator:
             ) from error
         return AuthenticatedInternalRequest(envelope=envelope, body=body)
 
+    def require_service_credential(self, request: Request) -> None:
+        credential = request.headers.get("x-appsell-service-credential", "")
+        provided_credential = _decode_presented_credential(credential)
+        if provided_credential is None or not hmac.compare_digest(
+            provided_credential, self._service_credential
+        ):
+            raise _unauthorized()
+
     @asynccontextmanager
     async def domain_session(self, envelope: ServiceEnvelope) -> AsyncIterator[AsyncSession]:
         now = int(time.time())

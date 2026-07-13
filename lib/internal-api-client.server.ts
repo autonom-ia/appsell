@@ -71,6 +71,35 @@ export function isDomainApiConfigured() {
   return Boolean(process.env.APPSELL_DOMAIN_API_URL);
 }
 
+export async function readPublicStorefront(sellerSlug: string) {
+  const config = internalConfig();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3_000);
+  try {
+    const response = await fetch(
+      new URL(`/v1/public/sellers/${encodeURIComponent(sellerSlug)}`, config.apiOrigin),
+      {
+        headers: { "x-appsell-service-credential": config.serviceCredentialEncoded },
+        cache: "no-store",
+        signal: controller.signal
+      }
+    );
+    const payload = await response.json().catch(() => null) as unknown;
+    if (!response.ok) {
+      const code = isRecord(payload) && typeof payload.detail === "string"
+        ? payload.detail
+        : "domain_api_error";
+      throw new DomainApiError(response.status, code);
+    }
+    return payload;
+  } catch (error) {
+    if (error instanceof DomainApiError) throw error;
+    throw new DomainApiError(503, "domain_api_unavailable");
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export async function syncDomainIdentity(sessionId: string, session: ServerSession) {
   return domainRequest(sessionId, session, {
     method: "PUT",

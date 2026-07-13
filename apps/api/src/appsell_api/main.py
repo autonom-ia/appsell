@@ -16,6 +16,7 @@ from .db import create_engine, create_session_factory, database_ready
 from .internal_requests import InternalRequestAuthenticator
 from .learning_routes import router as learning_router
 from .platform_routes import router as platform_router
+from .public_routes import router as public_router
 from .routes import router
 from .storage_s3 import S3Storage
 from .storage_worker import (
@@ -121,6 +122,7 @@ app.include_router(catalog_router)
 app.include_router(learning_router)
 app.include_router(asset_router)
 app.include_router(platform_router)
+app.include_router(public_router)
 
 
 @app.get("/health/live")
