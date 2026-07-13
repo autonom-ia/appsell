@@ -2,21 +2,12 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  parseBuyerProductsPayload,
+  type BuyerProductItem
+} from "../../lib/buyer-products";
 
-export interface LibraryItem {
-  entitlement_id: string;
-  resume_lesson_id: string | null;
-  seller: { id: string; slug: string; name: string };
-  product: {
-    id: string;
-    slug: string;
-    title: string;
-    description: string;
-    publication_id: string;
-    publication_version: number;
-  };
-  progress_percent: number;
-}
+export type LibraryItem = BuyerProductItem;
 
 type State = "loading" | "ready" | "unauthorized" | "forbidden" | "unavailable" | "error";
 
@@ -45,7 +36,7 @@ export function LibraryWorkspace() {
       controller.abort();
     }, 8_000);
     try {
-      const response = await fetch("/api/library", { cache: "no-store", signal: controller.signal });
+      const response = await fetch("/api/me/products", { cache: "no-store", signal: controller.signal });
       if (controller.signal.aborted) return;
       if (response.status === 401) return setState("unauthorized");
       if (response.status === 403 || response.status === 404) return setState("forbidden");
@@ -121,40 +112,5 @@ function LibrarySkeleton() {
 }
 
 export function isLibraryPayload(value: unknown): value is { items: LibraryItem[] } {
-  if (!isRecord(value) || !Array.isArray(value.items)) return false;
-  const entitlementIds = new Set<string>();
-  return value.items.every((item) => {
-    if (!isLibraryItem(item) || entitlementIds.has(item.entitlement_id)) return false;
-    entitlementIds.add(item.entitlement_id);
-    return true;
-  });
-}
-
-function isLibraryItem(value: unknown): value is LibraryItem {
-  if (!isRecord(value)) return false;
-  return isUuid(value.entitlement_id) && (value.resume_lesson_id === null || isUuid(value.resume_lesson_id)) &&
-    isStringRecord(value.seller, ["id", "slug", "name"]) && isProduct(value.product) &&
-    Number.isInteger(value.progress_percent) && typeof value.progress_percent === "number" &&
-    value.progress_percent >= 0 && value.progress_percent <= 100;
-}
-
-function isProduct(value: unknown) {
-  return isStringRecord(value, ["id", "slug", "title", "publication_id"]) && typeof value.description === "string" &&
-    Number.isInteger(value.publication_version) && (value.publication_version as number) > 0;
-}
-
-function isStringRecord(value: unknown, keys: string[]): value is Record<string, unknown> {
-  return isRecord(value) && keys.every((key) => isNonEmptyString(value[key]));
-}
-
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
-}
-
-function isUuid(value: unknown): value is string {
-  return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+  return parseBuyerProductsPayload(value) !== null;
 }

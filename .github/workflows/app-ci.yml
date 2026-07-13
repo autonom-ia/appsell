@@ -114,6 +114,21 @@ jobs:
       - run: uv run --project apps/api pytest apps/api/tests/test_config.py apps/api/tests/test_health.py apps/api/tests/test_capacity_telemetry.py
       - run: pnpm exec playwright install --with-deps chromium
       - run: ./scripts/test-postgres-foundation.sh
+      - name: Scan buyer multi-seller evidence
+        id: buyer-multi-seller-evidence
+        if: always()
+        run: |
+          python3 scripts/assert_capacity_artifact_safe.py --self-test
+          test -f tmp/buyer-multi-seller.json
+          python3 scripts/assert_capacity_artifact_safe.py tmp/buyer-multi-seller.json
+      - name: Upload buyer multi-seller evidence
+        if: always() && steps.buyer-multi-seller-evidence.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: buyer-multi-seller-${{ github.run_id }}-${{ github.run_attempt }}
+          path: tmp/buyer-multi-seller.json
+          if-no-files-found: error
+          retention-days: 30
 
   verify:
     runs-on: ubuntu-latest

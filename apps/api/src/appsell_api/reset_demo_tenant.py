@@ -174,8 +174,8 @@ def prepare_demo_storage_cleanup(
     validate_demo_database(connection)
     connection.execute("select set_config('appsell.demo_reset_key',%s,true)", (DEMO_KEY,))
     version = connection.execute("select version_num from alembic_version").fetchone()
-    if version != ("0008_private_asset_storage",):
-        raise RuntimeError("database must be migrated to 0008_private_asset_storage")
+    if version != ("0009_buyer_multi_seller",):
+        raise RuntimeError("database must be migrated to 0009_buyer_multi_seller")
 
     connection.execute(
         """
@@ -300,8 +300,8 @@ def reset_demo(
     validate_demo_database(connection)
     connection.execute("select set_config('appsell.demo_reset_key',%s,true)", (DEMO_KEY,))
     version = connection.execute("select version_num from alembic_version").fetchone()
-    if version != ("0008_private_asset_storage",):
-        raise RuntimeError("database must be migrated to 0008_private_asset_storage")
+    if version != ("0009_buyer_multi_seller",):
+        raise RuntimeError("database must be migrated to 0009_buyer_multi_seller")
     unsafe_storage = connection.execute(
         """
         select exists(
