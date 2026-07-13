@@ -9,6 +9,25 @@ permissions:
   contents: read
 
 jobs:
+  openbao-transit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - name: Install isolated-test Redis binary
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y redis-server
+          sudo systemctl stop redis-server || true
+          redis-server --version
+      - name: Certify disposable OpenBao Transit wrap, rotation, and fail-closed BFF
+        run: ./scripts/test-openbao-transit.sh
+
   capacity-100-tenants:
     runs-on: ubuntu-latest
     timeout-minutes: 25

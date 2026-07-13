@@ -6,6 +6,7 @@ export {
   oauthRuntimeMode
 } from "./oauth-runtime-mode";
 import { RedisOAuthService } from "./redis-oauth-service";
+import { createTokenVaultFromEnvironment } from "./token-vault-provider.server";
 
 declare global {
   var __appsellRedisOAuth: RedisOAuthService | undefined;
@@ -13,7 +14,10 @@ declare global {
 }
 
 export function oauthService() {
-  globalThis.__appsellRedisOAuth ??= RedisOAuthService.fromEnvironment();
+  globalThis.__appsellRedisOAuth ??= RedisOAuthService.fromEnvironment(
+    process.env,
+    createTokenVaultFromEnvironment
+  );
   return globalThis.__appsellRedisOAuth;
 }
 

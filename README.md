@@ -8,6 +8,7 @@ Plataforma SaaS white-label mobile-first para produtos digitais e áreas de memb
 - [Plano Técnico](docs/plans/TECHNICAL_PLAN.md)
 - [Relatório de Verificação](docs/research/VERIFICATION_REPORT.md)
 - [Arquitetura, ADRs e threat model](docs/architecture/README.md)
+- [OpenBao Transit Local/CI](docs/openbao-transit-local-ci.md)
 
 ## Spike OAuth/BFF local
 
@@ -52,9 +53,10 @@ de testar e aguarda seu encerramento antes de remover o diretório temporário.
 
 Limites deliberados do spike:
 
-- não há Identity externo, refresh real, HA/failover ou integração KMS real;
-- o provider de keyring por env é exclusivo de Local/CI e falha fechado em
-  `NODE_ENV=production`; ele prova o contrato de envelope encryption, não KMS;
+- o adapter Identity e o OpenBao Transit são reais em Local/CI, mas ainda não
+  existe certificação de staging, HA/failover ou workload identity;
+- ambos os providers de vault falham fechados em `NODE_ENV=production` neste
+  slice; o keyring por env continua sendo somente uma compatibilidade Local/CI;
 - a sessão Redis contém somente identidade e metadados sanitizados; access e
   refresh tokens sintéticos aparecem apenas no vault cifrado server-side;
 - o mock `/dev/identity/*` não é uma implementação de produção;

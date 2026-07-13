@@ -21,7 +21,10 @@ const PROVIDER_ID_PATTERN = /^[a-z][a-z0-9._-]{0,63}$/;
 const SESSION_HASH_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const NAMESPACE_PATTERN = /^appsell:[a-z0-9][a-z0-9_-]{1,31}:[a-z0-9][a-z0-9_-]{5,63}$/;
 const LOCAL_PROVIDER_ID = "local-aes-gcm-v1";
+export const OPENBAO_TRANSIT_PROVIDER_ID = "openbao-transit-v1";
 const TOKEN_VAULT_VERSION = 2;
+const OPENBAO_CIPHERTEXT_PATTERN = /^vault:v([1-9]\d*):([A-Za-z0-9+/]+={0,2})$/;
+const MIN_OPENBAO_CIPHERTEXT_BYTES = 16;
 
 export interface TokenBundle {
   subject: string;
@@ -52,11 +55,21 @@ interface AeadRecord {
   tag: string;
 }
 
-export interface KeyEnvelope extends AeadRecord {
+export interface LocalKeyEnvelope extends AeadRecord {
   provider: string;
   kid: string;
   alg: "A256GCM";
 }
+
+export interface OpenBaoTransitKeyEnvelope {
+  provider: typeof OPENBAO_TRANSIT_PROVIDER_ID;
+  kid: string;
+  alg: "OPENBAO_TRANSIT";
+  ciphertext: string;
+  keyVersion: number;
+}
+
+export type KeyEnvelope = LocalKeyEnvelope | OpenBaoTransitKeyEnvelope;
 
 interface TokenVaultEnvelope {
   v: 2;
@@ -299,6 +312,14 @@ function parseEnvelope(serialized: string): TokenVaultEnvelope {
 }
 
 function parseKeyEnvelope(value: unknown): KeyEnvelope {
+  if (
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    (value as Record<string, unknown>).alg === "OPENBAO_TRANSIT"
+  ) {
+    return parseOpenBaoTransitKeyEnvelope(value);
+  }
   const record = exactObject(
     value,
     ["provider", "kid", "alg", "iv", "ct", "tag"],
@@ -325,6 +346,55 @@ function parseKeyEnvelope(value: unknown): KeyEnvelope {
     alg: "A256GCM",
     ...aead
   };
+}
+
+function parseOpenBaoTransitKeyEnvelope(value: unknown): OpenBaoTransitKeyEnvelope {
+  const record = exactObject(
+    value,
+    ["provider", "kid", "alg", "ciphertext", "keyVersion"],
+    "Token vault key envelope is invalid."
+  );
+  if (
+    record.provider !== OPENBAO_TRANSIT_PROVIDER_ID ||
+    typeof record.kid !== "string" ||
+    !KEY_ID_PATTERN.test(record.kid) ||
+    record.alg !== "OPENBAO_TRANSIT" ||
+    typeof record.ciphertext !== "string" ||
+    !positiveSafeInteger(record.keyVersion)
+  ) {
+    throw new TokenVaultMalformedError("Token vault key envelope is invalid.");
+  }
+  const parsedVersion = parseOpenBaoTransitCiphertextVersion(record.ciphertext);
+  if (parsedVersion !== record.keyVersion) {
+    throw new TokenVaultMalformedError("Token vault key envelope is invalid.");
+  }
+  return {
+    provider: OPENBAO_TRANSIT_PROVIDER_ID,
+    kid: record.kid,
+    alg: "OPENBAO_TRANSIT",
+    ciphertext: record.ciphertext,
+    keyVersion: record.keyVersion
+  };
+}
+
+export function parseOpenBaoTransitCiphertextVersion(ciphertext: string) {
+  if (typeof ciphertext !== "string" || Buffer.byteLength(ciphertext, "utf8") > MAX_CIPHERTEXT_BYTES) {
+    throw new TokenVaultMalformedError("Token vault key envelope is invalid.");
+  }
+  const match = OPENBAO_CIPHERTEXT_PATTERN.exec(ciphertext);
+  const version = match ? Number(match[1]) : 0;
+  const encoded = match?.[2] ?? "";
+  const decoded = Buffer.from(encoded, "base64");
+  if (
+    !match ||
+    !Number.isSafeInteger(version) ||
+    version <= 0 ||
+    decoded.length < MIN_OPENBAO_CIPHERTEXT_BYTES ||
+    decoded.toString("base64") !== encoded
+  ) {
+    throw new TokenVaultMalformedError("Token vault key envelope is invalid.");
+  }
+  return version;
 }
 
 function parseAeadRecord(

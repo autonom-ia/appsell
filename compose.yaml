@@ -115,6 +115,35 @@ services:
       retries: 60
     restart: unless-stopped
 
+  openbao:
+    profiles: ["transit"]
+    image: quay.io/openbao/openbao:2.5.4@sha256:436eaf9778cad75507ff70ea26ace30dcbe15606e619ac3823495663d7f7c115
+    user: "100:1000"
+    command: ["server", "-dev", "-dev-listen-address=0.0.0.0:8200"]
+    environment:
+      BAO_ADDR: http://127.0.0.1:8200
+      BAO_DEV_ROOT_TOKEN_ID: ${APPSELL_OPENBAO_DEV_ROOT_TOKEN:-local-only-invalid}
+      HOME: /tmp
+      SKIP_CHOWN: "true"
+    ports:
+      - "127.0.0.1:${APPSELL_OPENBAO_PORT:-58200}:8200"
+    read_only: true
+    cap_drop: ["ALL"]
+    cap_add: ["IPC_LOCK"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: 0.5
+    tmpfs:
+      - /tmp:size=16777216,mode=1777,noexec,nosuid
+      - /openbao/file:size=33554432,mode=0700
+    healthcheck:
+      test: ["CMD", "bao", "status", "-address=http://127.0.0.1:8200"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+    restart: "no"
+
 volumes:
   appsell_postgres_data:
   appsell_pdf_socket:
