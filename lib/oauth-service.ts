@@ -85,7 +85,11 @@ export class DevOAuthService {
     };
   }
 
-  authorize(input: { state: string; nonce: string; codeChallenge: string }, clientKey = "local") {
+  authorize(
+    input: { state: string; nonce: string; codeChallenge: string },
+    clientKey = "local",
+    subject = "dev-user-001"
+  ) {
     if (!input.state || !input.nonce || !input.codeChallenge) throw new OAuthFlowError("Invalid authorization request.");
     this.maintain();
     this.assertCapacity(this.codes, "authorization codes");
@@ -95,7 +99,7 @@ export class DevOAuthService {
       state: input.state,
       nonce: input.nonce,
       challenge: input.codeChallenge,
-      subject: "dev-user-001",
+      subject,
       expiresAt: this.now() + this.codeTtlMs
     });
     return code;

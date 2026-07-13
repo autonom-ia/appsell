@@ -8,6 +8,7 @@ from .catalog_routes import router as catalog_router
 from .config import get_settings
 from .db import create_engine, create_session_factory, database_ready
 from .internal_requests import InternalRequestAuthenticator
+from .learning_routes import router as learning_router
 from .routes import router
 
 
@@ -36,6 +37,7 @@ app = FastAPI(
 )
 app.include_router(router)
 app.include_router(catalog_router)
+app.include_router(learning_router)
 
 
 @app.get("/health/live")

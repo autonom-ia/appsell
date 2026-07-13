@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+uv run --project apps/api python scripts/generate-demo-codex-pdfs.py
+git diff --exit-code -- \
+  output/pdf/codex \
+  demo/content/codex-na-pratica/manifest.json \
+  lib/demo-codex-assets.json
+
 project="appsell_pg_${RANDOM}_$$"
 port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
 api_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
@@ -30,6 +36,8 @@ export APPSELL_API_CONTEXT_HMAC_KEY_B64="$(printf '%s' "$context_key" | xxd -r -
 export APPSELL_SERVICE_CREDENTIAL_B64="$service_credential_b64"
 
 docker compose -p "$project" up -d --wait postgres
+docker compose -p "$project" exec -T postgres psql -U postgres -d appsell \
+  -v ON_ERROR_STOP=1 -c "comment on database appsell is 'appsell-demo-reset-target-v1'"
 
 export APPSELL_MIGRATOR_DATABASE_URL="postgresql+psycopg://appsell_migrator:${migrator_secret}@127.0.0.1:${port}/appsell"
 uv run --project apps/api alembic -c apps/api/alembic.ini upgrade 0004_product_publication
@@ -100,6 +108,9 @@ uv run --project apps/api pytest \
   apps/api/tests/test_postgres_product_course.py \
   apps/api/tests/test_postgres_product_publication.py \
   apps/api/tests/test_postgres_curriculum.py \
+  apps/api/tests/test_postgres_demo_learning.py \
+  apps/api/tests/test_demo_codex_pdfs.py \
+  apps/api/tests/test_reset_demo_tenant.py \
   apps/api/tests/test_api_catalog.py \
   apps/api/tests/test_api_onboarding.py
 if uv run --project apps/api python -m appsell_api.configure_context_key 2>/dev/null; then
@@ -107,9 +118,18 @@ if uv run --project apps/api python -m appsell_api.configure_context_key 2>/dev/
   exit 1
 fi
 
+APPSELL_DEMO_ENABLED="true" \
+APPSELL_API_ENVIRONMENT="ci" \
+APPSELL_API_IDENTITY_ISSUER="$APPSELL_IDENTITY_ISSUER" \
+APPSELL_DEMO_DATABASE_URL="$APPSELL_TEST_POSTGRES_ADMIN_URL" \
+uv run --project apps/api python -m appsell_api.reset_demo_tenant \
+  --confirm-demo-key autonomia-demo-v1
+
 docker compose -p "$project" up -d --build --wait api
 curl --fail --silent "http://127.0.0.1:${api_port}/health/live"
 curl --fail --silent "http://127.0.0.1:${api_port}/health/ready"
 APPSELL_TEST_DOMAIN_API_URL="http://127.0.0.1:${api_port}" \
 APPSELL_LOCAL_IDENTITY_EMAIL="creator@example.test" \
-pnpm exec vitest run tests/bff-api-onboarding.test.ts
+pnpm exec vitest run --no-file-parallelism \
+  tests/bff-api-onboarding.test.ts tests/bff-demo-library.test.ts
+git diff --exit-code -- next-env.d.ts tsconfig.json

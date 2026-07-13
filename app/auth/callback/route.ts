@@ -23,6 +23,7 @@ import { isOAuthStoreUnavailable } from "@/lib/redis-oauth-service";
 import { configuredPublicOrigin } from "@/lib/public-origin";
 import { DomainApiError, isDomainApiConfigured, syncDomainIdentity } from "@/lib/internal-api-client.server";
 import { ONBOARD_SELLER_CSRF_ACTION } from "@/lib/mutation-protection.server";
+import { demoProfileForSubject } from "@/lib/demo-config";
 
 export const dynamic = "force-dynamic";
 
@@ -41,9 +42,9 @@ export async function GET(request: NextRequest) {
       code: request.nextUrl.searchParams.get("code") ?? undefined,
       state: request.nextUrl.searchParams.get("state") ?? undefined
     });
+    const session = await oauthService().getSession(sessionId);
+    if (!session) throw new DomainApiError(503, "session_unavailable_after_callback");
     if (isDomainApiConfigured()) {
-      const session = await oauthService().getSession(sessionId);
-      if (!session) throw new DomainApiError(503, "session_unavailable_after_callback");
       try {
         await syncDomainIdentity(sessionId, session);
       } catch (error) {
@@ -51,14 +52,22 @@ export async function GET(request: NextRequest) {
         throw error;
       }
     }
-    const response = NextResponse.redirect(new URL("/dashboard", configuredPublicOrigin()));
+    const demoProfile = demoProfileForSubject(session.subject);
+    const response = NextResponse.redirect(new URL(
+      demoProfile?.home ?? "/dashboard",
+      configuredPublicOrigin()
+    ));
     expireTransactionCookie(response);
     response.cookies.set(sessionCookieName(), sessionId, sessionCookieOptions());
     response.cookies.set(csrfCookieName(), csrfTokenForSession(sessionId, LOGOUT_CSRF_ACTION), csrfCookieOptions());
-    response.cookies.set(sellerCsrfCookieName(), csrfTokenForSession(sessionId, ONBOARD_SELLER_CSRF_ACTION), csrfCookieOptions());
-    response.cookies.set(productCsrfCookieName(), csrfTokenForSession(sessionId, CREATE_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
-    response.cookies.set(productUpdateCsrfCookieName(), csrfTokenForSession(sessionId, UPDATE_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
-    response.cookies.set(productPublishCsrfCookieName(), csrfTokenForSession(sessionId, PUBLISH_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
+    if (demoProfile?.persona === "buyer") {
+      expireSellerCookies(response);
+    } else {
+      response.cookies.set(sellerCsrfCookieName(), csrfTokenForSession(sessionId, ONBOARD_SELLER_CSRF_ACTION), csrfCookieOptions());
+      response.cookies.set(productCsrfCookieName(), csrfTokenForSession(sessionId, CREATE_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
+      response.cookies.set(productUpdateCsrfCookieName(), csrfTokenForSession(sessionId, UPDATE_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
+      response.cookies.set(productPublishCsrfCookieName(), csrfTokenForSession(sessionId, PUBLISH_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
+    }
     response.headers.set("cache-control", "no-store");
     return response;
   } catch (error) {
@@ -69,6 +78,17 @@ export async function GET(request: NextRequest) {
       status: isOAuthStoreUnavailable(error) || error instanceof DomainApiError ? 503 : 400,
       headers: { "cache-control": "no-store" }
     });
+  }
+}
+
+function expireSellerCookies(response: NextResponse) {
+  for (const name of [
+    sellerCsrfCookieName(),
+    productCsrfCookieName(),
+    productUpdateCsrfCookieName(),
+    productPublishCsrfCookieName()
+  ]) {
+    response.cookies.set(name, "", { ...csrfCookieOptions(), maxAge: 0 });
   }
 }
 

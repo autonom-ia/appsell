@@ -1,6 +1,6 @@
 import Redis from "ioredis";
 
-import { hmacSha256, pkceChallenge, randomOpaque, sha256 } from "./crypto";
+import { hmacSha256, pkceChallenge, randomOpaque, safeEqual, sha256 } from "./crypto";
 import { OAuthFlowError } from "./oauth-service";
 import {
   OAuthRefreshProviderProtocolError,
@@ -42,6 +42,7 @@ interface AuthorizationCode {
   nonce: string;
   challenge: string;
   subject: string;
+  integrity: string;
 }
 
 interface SessionRecord {
@@ -125,6 +126,7 @@ if transaction.state ~= ARGV[1] then return 'INVALID_STATE' end
 
 local code_json = redis.call('GET', KEYS[2])
 if not code_json then return 'CODE_MISSING' end
+if code_json ~= ARGV[7] then return 'CODE_INTEGRITY_MISMATCH' end
 local code = cjson.decode(code_json)
 if code.state ~= transaction.state then return 'CODE_STATE_MISMATCH' end
 if code.nonce ~= transaction.nonce then return 'NONCE_MISMATCH' end
@@ -399,18 +401,26 @@ export class RedisOAuthService {
     });
   }
 
-  async authorize(input: { state: string; nonce: string; codeChallenge: string }, clientKey = "local") {
+  async authorize(
+    input: { state: string; nonce: string; codeChallenge: string },
+    clientKey = "local",
+    subject = "dev-user-001"
+  ) {
     if (!input.state || !input.nonce || !input.codeChallenge) {
       throw new OAuthFlowError("Invalid authorization request.");
     }
     return this.withRedis(async () => {
       await this.assertAllowed("authorize", clientKey);
       const code = randomOpaque();
-      const record: AuthorizationCode = {
+      const unsignedRecord = {
         state: input.state,
         nonce: input.nonce,
         challenge: input.codeChallenge,
-        subject: "dev-user-001"
+        subject
+      };
+      const record: AuthorizationCode = {
+        ...unsignedRecord,
+        integrity: authorizationCodeIntegrity(this.sessionHmacKey, unsignedRecord)
       };
       await this.setUnique(this.key("code", code), record, this.codeTtlMs);
       return code;
@@ -428,7 +438,13 @@ export class RedisOAuthService {
       const sessionId = hmacSha256(this.sessionHmacKey, transactionId);
       const callbackFingerprint = sha256(`${code}\0${state}`);
       const now = Date.now();
-      const subject = "dev-user-001";
+      const rawCode = await this.redis.get(this.key("code", code));
+      const retryPair = rawCode ? null : await this.readSessionVaultPair(sessionId);
+      const subject = rawCode
+        ? parseAuthorizationCode(rawCode, this.sessionHmacKey).subject
+        : retryPair
+          ? parseSessionRecord(retryPair.session).subject
+          : (() => { throw new OAuthFlowError("Authorization code expired or replayed."); })();
       const session: SessionRecord = {
         subject,
         createdAt: now,
@@ -462,7 +478,8 @@ export class RedisOAuthService {
         String(this.sessionTtlMs),
         callbackFingerprint,
         String(Math.min(this.receiptTtlMs, this.sessionTtlMs)),
-        vaultEnvelope
+        vaultEnvelope,
+        rawCode ?? ""
       );
       switch (result) {
         case "OK": return sessionId;
@@ -480,6 +497,7 @@ export class RedisOAuthService {
         case "TRANSACTION_MISSING": throw new OAuthFlowError("Login transaction expired.");
         case "INVALID_STATE": throw new OAuthFlowError("Invalid OAuth state.");
         case "CODE_MISSING": throw new OAuthFlowError("Authorization code expired or replayed.");
+        case "CODE_INTEGRITY_MISMATCH": throw new OAuthVaultIntegrityError("OAuth authorization code integrity failure.");
         case "CODE_STATE_MISMATCH": throw new OAuthFlowError("Authorization code state mismatch.");
         case "NONCE_MISMATCH": throw new OAuthFlowError("Authorization nonce mismatch.");
         case "PKCE_MISMATCH": throw new OAuthFlowError("PKCE validation failed.");
@@ -1038,6 +1056,42 @@ function parseSessionRecord(value: string): SessionRecord {
     throw new OAuthVaultIntegrityError("OAuth session vault integrity failure.");
   }
   return record as unknown as SessionRecord;
+}
+
+function authorizationCodeIntegrity(
+  key: Buffer,
+  record: Pick<AuthorizationCode, "state" | "nonce" | "challenge" | "subject">
+) {
+  return hmacSha256(key, [record.state, record.nonce, record.challenge, record.subject].join("\0"));
+}
+
+function parseAuthorizationCode(value: string | null, key: Buffer): AuthorizationCode {
+  if (!value) throw new OAuthFlowError("Authorization code expired or replayed.");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new OAuthVaultIntegrityError("OAuth authorization code integrity failure.");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new OAuthVaultIntegrityError("OAuth authorization code integrity failure.");
+  }
+  const record = parsed as Record<string, unknown>;
+  if (
+    Object.keys(record).sort().join(",") !== "challenge,integrity,nonce,state,subject" ||
+    typeof record.state !== "string" || !record.state ||
+    typeof record.nonce !== "string" || !record.nonce ||
+    typeof record.challenge !== "string" || !record.challenge ||
+    typeof record.subject !== "string" || !record.subject ||
+    typeof record.integrity !== "string" || !record.integrity
+  ) {
+    throw new OAuthVaultIntegrityError("OAuth authorization code integrity failure.");
+  }
+  const authorizationCode = record as unknown as AuthorizationCode;
+  if (!safeEqual(authorizationCode.integrity, authorizationCodeIntegrity(key, authorizationCode))) {
+    throw new OAuthVaultIntegrityError("OAuth authorization code integrity failure.");
+  }
+  return authorizationCode;
 }
 
 function assertSessionBundleRevision(session: SessionRecord, bundle: TokenBundle) {

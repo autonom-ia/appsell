@@ -7,8 +7,8 @@ Atualizado em pontos de marco (PR aberta, deploy, incidente). Diferente de MEMOR
 | Indicador | Status | Última verificação |
 |-----------|:------:|--------------------|
 | Build | 🟢 web + API container local verdes | 2026-07-11 |
-| Testes | 🟢 69 web + 90 PG/API + BFF real + 25 browser; build verde | 2026-07-11 |
-| CI | 🟢 PR #31 e CI pós-merge verdes; #32 ainda local | 2026-07-11 |
+| Testes | 🟢 74 web + 103 Python/PG/API + 2 verticais BFF + 26 browser; build verde | 2026-07-11 |
+| CI | 🟢 PR #35 inteira verde; #33 ainda local/empilhada | 2026-07-11 |
 | Deploy produção | 🟡 não configurado/não executado | 2026-07-10 |
 | Harness instalado | 2.0.2 | 2026-07-10 |
 | Harness drift | ⚠️ 2.0.2 → 2.1.2 | 2026-07-11 |
@@ -26,13 +26,14 @@ Este marco é Local/CI; não é o Identity real e não concede conta de produç�
 
 ## Última mudança relevante
 
-2026-07-11 — PR #31 mergeada em `b4f366a`, sem deploy. Branch
-`feat/32-curriculum`: migration 0005, RLS/FKs compostas, locks por curso,
-receipts idempotentes, archive/reorder exato, snapshot v2 e editor mobile de
-módulos/aulas. Gates locais: 69 web, 94 PG/API, BFF vertical com duas
-instâncias, 26 Playwright + 4 skips deliberados, build, audit e production
+2026-07-13 — PR #35 de currículo aberta com todos os checks verdes, sem merge
+ou deploy. Delta local da PR #36: migration 0006, entitlement buyer, assets
+privados, tenant resetável, personas admin/aluno `@autonomia.site`, allowlist
+server-side de capabilities para comprador/admin e curso Codex com cinco PDFs.
+Gates locais: 74 web, 113 Python/PG/API (incluindo 100 buyers sob paralelismo
+limitado), 2 verticais BFF/API/PG com 100 leituras de biblioteca e 100 downloads
+concorrentes, 30 Playwright + 4 skips deliberados, build, audit e production
 fail-closed verdes.
-PR #35 aberta; nenhum merge ou deploy executado.
 
 ## O que está funcionando
 
@@ -81,6 +82,14 @@ PR #35 aberta; nenhum merge ou deploy executado.
   operação e continuam sujeitos a versão esperada/autorização.
 - Snapshot schema v2 determinístico inclui módulos/aulas; snapshots v1 continuam
   imutáveis. Payload >1 MiB falha em 422 antes de publication/receipt parcial.
+- Tenant demo Local/CI usa reset sob advisory lock, IDs determinísticos e duas
+  personas fixas; o buyer recebe apenas entitlement ativo e o admin permanece
+  fora da biblioteca do comprador. O buyer recebe 403 para capabilities de
+  seller/catálogo mesmo com CSRF válido e acesso direto a `/products` volta para
+  `/library`. O admin demo não pode criar outra tenant nem usar catálogo fora do
+  seller UUID fixo; o reset remove memberships e grants legados das personas.
+- Cinco PDFs do curso Codex ficam fora de `public/`; cada leitura exige sessão,
+  capability, entitlement, snapshot publicado e validação de hash/tamanho.
 
 ## O que está quebrado / em degradação
 
@@ -88,8 +97,12 @@ PR #35 aberta; nenhum merge ou deploy executado.
 - Refresh real com Identity — bloqueado por #13.
 - KMS real/vault HA — provider/infra/staging não decididos — Issue #19.
 - Staging/VPS/TLS — não certificado e fora do escopo atual — Issue #5.
-- Tenant/admin/comprador demo e curso Codex com cinco PDFs — planejados na
-  Issue #33, dependente do currículo #32; nenhuma credencial hardcoded.
+- Tenant/admin/comprador demo e curso Codex têm delta staged somente na branch
+  da Issue #33; ainda dependem de review crítico, commit/push, CI remoto e merge
+  da base #35.
+- Capacidade de lançamento para 100 tenants/clientes ainda não está certificada:
+  os testes cobrem 100 buyers no banco e 100 requisições concorrentes full-path,
+  mas não um soak/load test de 100 tenants com p95/p99 em staging.
 
 ## Bloqueios
 
@@ -99,10 +112,9 @@ PR #35 aberta; nenhum merge ou deploy executado.
 
 ## Próxima ação
 
-Abrir a PR da Issue #32, executar reviews críticos de tenancy/API/UI e CI exato.
-Depois avançar para assets privados e buyer/entitlements. Identity real
-(#13), KMS (#19), billing/Financial e produção continuam bloqueados até
-ambientes e contratos reais.
+Concluir reviews críticos da Issue #33, abrir PR empilhada sobre #35 e executar
+CI no SHA remoto. Identity real (#13), KMS (#19), billing/Financial e produção
+continuam bloqueados até ambientes e contratos reais.
 
 ## Links
 

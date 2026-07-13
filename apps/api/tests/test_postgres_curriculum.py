@@ -198,7 +198,7 @@ def test_schema_rls_privileges_and_composite_fks() -> None:
                 ") values(%s,%s,'Cross tenant',0)",
                 (SELLER_A, COURSE_B),
             )
-    assert state == ("0005_curriculum", True, False, False, False, True)
+    assert state == ("0006_demo_learning", True, False, False, False, True)
     assert tables == [("course_module", True, True), ("lesson", True, True)]
     with psycopg.connect(RUNTIME_URL) as connection:
         assert connection.execute("select count(*) from course_module").fetchone() == (0,)

@@ -279,7 +279,7 @@ describe("Redis OAuth store", () => {
     await store.close();
   });
 
-  it("binds the session subject to the authorization code inside the atomic callback", async () => {
+  it("rejects a tampered authorization-code subject before creating a session", async () => {
     const suffix = `subject-${++sequence}`;
     const prefix = `appsell:test:${suffix}`;
     const store = service(suffix);
@@ -290,7 +290,7 @@ describe("Redis OAuth store", () => {
     codeRecord.subject = "attacker-subject";
     await isolated.client.set(codeKey, JSON.stringify(codeRecord), "PX", 1_000);
     await expect(store.callback({ transactionId: login.transactionId, code, state: login.state }))
-      .rejects.toThrow("Authorization subject mismatch");
+      .rejects.toThrow("OAuth authorization code integrity failure");
     const sessionId = hmacSha256(sessionHmacKey, login.transactionId);
     expect(await isolated.client.get(`${scope}:session:${sha256(sessionId)}`)).toBeNull();
     expect(await isolated.client.get(`${scope}:vault:${sha256(sessionId)}`)).toBeNull();

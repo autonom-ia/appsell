@@ -1,6 +1,8 @@
 import "server-only";
 
 import { timingSafeEqual } from "node:crypto";
+import demoCodexAssets from "./demo-codex-assets.json";
+import { demoProfileForSubject } from "./demo-config";
 
 import {
   parseInternalSigningConfig,
@@ -23,7 +25,7 @@ interface ApiRequest {
     "catalog.draft.preview" | "catalog.publication.read" | "catalog.publication.create" |
     "catalog.curriculum.read" | "catalog.curriculum.create" |
     "catalog.curriculum.update" | "catalog.curriculum.archive" |
-    "catalog.curriculum.reorder";
+    "catalog.curriculum.reorder" | "library.read" | "library.asset.read";
   sellerOrganizationId?: string;
   body?: Record<string, unknown>;
 }
@@ -44,7 +46,7 @@ export async function syncDomainIdentity(sessionId: string, session: ServerSessi
     path: "/v1/me",
     capability: "identity.sync",
     body: {
-      email: localIdentityEmail(),
+      email: localIdentityEmail(session.subject),
       email_verified: true
     }
   });
@@ -385,6 +387,27 @@ export async function reorderDomainCourseLessons(
   });
 }
 
+export async function readDomainLibrary(sessionId: string, session: ServerSession) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: "/v1/me/library",
+    capability: "library.read"
+  });
+}
+
+export async function authorizeDomainLearningAsset(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  assetId: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/library/assets/${sellerOrganizationId}/${assetId}`,
+    capability: "library.asset.read"
+  });
+}
+
 function curriculumBody(
   input: CurriculumMutationInput,
   extra: Record<string, unknown> = {}
@@ -401,6 +424,7 @@ async function domainRequest(
   session: ServerSession,
   request: ApiRequest
 ) {
+  requireDemoCapability(session.subject, request);
   const config = internalConfig();
   const body = request.body ? Buffer.from(JSON.stringify(request.body), "utf8") : Buffer.alloc(0);
   const envelopeInput: SignInternalEnvelopeInput = {
@@ -445,6 +469,20 @@ async function domainRequest(
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function requireDemoCapability(subject: string, request: ApiRequest) {
+  const profile = demoProfileForSubject(subject);
+  if (!profile) return;
+  if (["identity.sync", "library.read", "library.asset.read"].includes(request.capability)) return;
+  if (profile.persona === "admin") {
+    if (request.capability === "seller.list") return;
+    const demoSellerId = demoCodexAssets[0]?.seller_id;
+    if (request.capability.startsWith("catalog.") && request.sellerOrganizationId === demoSellerId) {
+      return;
+    }
+  }
+  throw new DomainApiError(403, `demo_${profile.persona}_capability_forbidden`);
 }
 
 function internalConfig() {
@@ -503,7 +541,9 @@ function configuredApiOrigin() {
   return parsed.origin;
 }
 
-function localIdentityEmail() {
+function localIdentityEmail(subject: string) {
+  const demo = demoProfileForSubject(subject);
+  if (demo) return demo.email;
   if (process.env.NODE_ENV === "production") {
     throw new DomainApiError(503, "real_identity_claims_required");
   }

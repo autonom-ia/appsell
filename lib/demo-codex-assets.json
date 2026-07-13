@@ -1,0 +1,62 @@
+[
+  {
+    "seller_id": "90718777-93de-5e7a-aaa4-45b25051582c",
+    "position": 0,
+    "slug": "01-o-que-e-codex",
+    "title": "O que é Codex e quando usar",
+    "summary": "Entenda o papel do Codex como parceiro de engenharia e operador de software.",
+    "href": "/api/library/assets/01-o-que-e-codex",
+    "bytes": 3197,
+    "sha256": "1a182ac49637d0b6ae9bf105fd8eccdfd651d75e920aaa2d65869b826878f887",
+    "lesson_id": "a39181dd-c70c-57b3-935d-d97fd834d709",
+    "asset_id": "a6f01626-8b83-55e5-becc-fbab785f1493"
+  },
+  {
+    "seller_id": "90718777-93de-5e7a-aaa4-45b25051582c",
+    "position": 1,
+    "slug": "02-contexto-repo-objetivo",
+    "title": "Como preparar contexto, repo e objetivo",
+    "summary": "Dê ao agente informação suficiente para agir sem inventar fatos.",
+    "href": "/api/library/assets/02-contexto-repo-objetivo",
+    "bytes": 3148,
+    "sha256": "e0b4fa62f5cc6ee0d0457b639db12fba42603220bc0c34fd539cd3ba8c0eba16",
+    "lesson_id": "c27222bd-9a83-5317-a870-f7076bdc8fc5",
+    "asset_id": "53c0e256-4b88-568b-ac98-4e8455ebc659"
+  },
+  {
+    "seller_id": "90718777-93de-5e7a-aaa4-45b25051582c",
+    "position": 2,
+    "slug": "03-implementar-com-seguranca",
+    "title": "Como pedir implementação com segurança",
+    "summary": "Transforme intenção em mudanças pequenas, revisáveis e reversíveis.",
+    "href": "/api/library/assets/03-implementar-com-seguranca",
+    "bytes": 3181,
+    "sha256": "8982fcb9dcea64f8eddd939e3f9eafe474fd9e9b0fa23b17f25f9fafe0c94a98",
+    "lesson_id": "52a6eb00-d861-551e-a009-688e5a08bf4f",
+    "asset_id": "a8b3d580-3da0-543d-9cbc-d4471f5f6745"
+  },
+  {
+    "seller_id": "90718777-93de-5e7a-aaa4-45b25051582c",
+    "position": 3,
+    "slug": "04-revisar-testes-pr",
+    "title": "Como revisar testes, PR e evidências",
+    "summary": "Avalie o que foi provado, e não apenas o que foi declarado.",
+    "href": "/api/library/assets/04-revisar-testes-pr",
+    "bytes": 3107,
+    "sha256": "235019ac6df0194a8c5bd4aea0a5037b7534dac906ab58dc4c310dfedf385513",
+    "lesson_id": "5ecf3b9a-6a5e-5734-8038-2620946f4ce0",
+    "asset_id": "1c63d96f-cc32-5932-9a2c-51a6ba2d5a29"
+  },
+  {
+    "seller_id": "90718777-93de-5e7a-aaa4-45b25051582c",
+    "position": 4,
+    "slug": "05-deploy-e-rollback",
+    "title": "Como operar deploy e rollback",
+    "summary": "Promova mudanças com gates claros e retorno seguro.",
+    "href": "/api/library/assets/05-deploy-e-rollback",
+    "bytes": 3067,
+    "sha256": "59cabda6e11e2b1a1ee2af480e4f242dd1ac941ae62ab20e06f12104f691b270",
+    "lesson_id": "56b743f6-398b-515d-b1e0-2a5beb93f449",
+    "asset_id": "fd2be673-d5bc-56c3-88a1-6966fc069d35"
+  }
+]
