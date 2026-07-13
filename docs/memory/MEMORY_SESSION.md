@@ -34,22 +34,22 @@ Project status:
 
 <!-- Substituir abaixo a cada nova sessão. Sessões anteriores vão para PROGRESS.md. -->
 
-## Sessão: 2026-07-11 13:38 — currículo multitenant e snapshot v2
-Issue: #32
-Branch: feat/32-curriculum
-PR: #35
-Estado: pr_aberta
+## Sessão: 2026-07-13 09:58 — hardening da tenant demo e curso Codex
+Issue: #33
+Branch: feat/33-demo-tenant
+PR: #36
+Estado: em_progresso
 Modelo: strong + human
-Arquivos alterados: migration 0005, FastAPI/BFF curriculum CRUD/order/archive, internal envelope, snapshot v2, editor currículo, CSRF por ação, testes PG/API/BFF/E2E e docs
-Comandos executados: lint; typecheck; Vitest; Ruff; mypy; pytest; audit; build; Playwright Chromium/WebKit; production fail-closed; test-postgres-foundation; review de design/tenancy/API
-Validação: local verde — 69 web, 94 PostgreSQL/API, BFF vertical real em duas instâncias, 26 browser + 4 skips deliberados; build e audit verdes
-Bloqueios: PR/reviews/CI remoto; Identity real #13, KMS #19, Financial/Neuro e produção continuam bloqueados
-Próxima ação: aguardar App CI e review do SHA remoto da PR #35; depois executar Issue #33 da tenant demo/curso Codex e Issue #34 do Harness 2.1.2; não fazer deploy
+Arquivos alterados: reset demo/hostaddr/env libpq, memberships/grants, allowlist server-side buyer/admin, cookies CSRF, layout de produtos, PDFs/manifests, testes PG/BFF/browser e docs
+Comandos executados: test-postgres-foundation; lint; typecheck; Vitest; Ruff; mypy; pytest; pip-audit; pnpm audit; build; Playwright Chromium/WebKit; production fail-closed; inspeção PDF por stream e raster
+Validação: local verde — 113 Python/PG/API, 74 web, 2 verticais BFF/API/PG, 30 browser + 4 skips deliberados, 1 production fail-closed; build e audits verdes
+Bloqueios: review crítico do delta staged e CI remoto; superadmin auditado da Issue #33; Identity real #13, KMS #19, Financial/Neuro e produção continuam bloqueados
+Próxima ação: concluir review crítico; se P0-P2=0, commitar/push na PR #36 Draft e aguardar CI exato; não fazer merge/deploy
 Project status:
   - Projeto: Studio
-  - Status: Em desenvolvimento
+  - Status: Ajustes
   - Tipo: Feature
-  - Prioridade: P0
+  - Prioridade: P1
   - Risco: Alto
   - Ambiente: Local
-  - Próxima ação: revisar delta, abrir PR e executar CI exato
+  - Próxima ação: review crítico do staged; depois commit/push e CI exato

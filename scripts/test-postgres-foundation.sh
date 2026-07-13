@@ -109,6 +109,7 @@ uv run --project apps/api pytest \
   apps/api/tests/test_postgres_product_publication.py \
   apps/api/tests/test_postgres_curriculum.py \
   apps/api/tests/test_postgres_demo_learning.py \
+  apps/api/tests/test_demo_codex_pdfs.py \
   apps/api/tests/test_reset_demo_tenant.py \
   apps/api/tests/test_api_catalog.py \
   apps/api/tests/test_api_onboarding.py

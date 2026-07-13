@@ -26,13 +26,14 @@ Este marco é Local/CI; não é o Identity real e não concede conta de produç�
 
 ## Última mudança relevante
 
-2026-07-11 — PR #35 de currículo aberta com todos os checks verdes, sem merge
-ou deploy. Branch empilhada `feat/33-demo-tenant`: migration 0006, entitlement
-buyer, assets privados, tenant resetável, personas admin/aluno `@autonomia.site`
-e curso Codex com cinco PDFs. Gates locais: 74 web, 103 Python/PG/API (incluindo 100
-buyers sob paralelismo limitado), 2 verticais BFF/API/PG com 100 leituras de
-biblioteca e 100 downloads concorrentes, 26 Playwright + 4
-skips deliberados, build, audit e production fail-closed verdes.
+2026-07-13 — PR #35 de currículo aberta com todos os checks verdes, sem merge
+ou deploy. Delta local da PR #36: migration 0006, entitlement buyer, assets
+privados, tenant resetável, personas admin/aluno `@autonomia.site`, allowlist
+server-side de capabilities para comprador/admin e curso Codex com cinco PDFs.
+Gates locais: 74 web, 113 Python/PG/API (incluindo 100 buyers sob paralelismo
+limitado), 2 verticais BFF/API/PG com 100 leituras de biblioteca e 100 downloads
+concorrentes, 30 Playwright + 4 skips deliberados, build, audit e production
+fail-closed verdes.
 
 ## O que está funcionando
 
@@ -83,7 +84,10 @@ skips deliberados, build, audit e production fail-closed verdes.
   imutáveis. Payload >1 MiB falha em 422 antes de publication/receipt parcial.
 - Tenant demo Local/CI usa reset sob advisory lock, IDs determinísticos e duas
   personas fixas; o buyer recebe apenas entitlement ativo e o admin permanece
-  fora da biblioteca do comprador.
+  fora da biblioteca do comprador. O buyer recebe 403 para capabilities de
+  seller/catálogo mesmo com CSRF válido e acesso direto a `/products` volta para
+  `/library`. O admin demo não pode criar outra tenant nem usar catálogo fora do
+  seller UUID fixo; o reset remove memberships e grants legados das personas.
 - Cinco PDFs do curso Codex ficam fora de `public/`; cada leitura exige sessão,
   capability, entitlement, snapshot publicado e validação de hash/tamanho.
 
@@ -93,8 +97,9 @@ skips deliberados, build, audit e production fail-closed verdes.
 - Refresh real com Identity — bloqueado por #13.
 - KMS real/vault HA — provider/infra/staging não decididos — Issue #19.
 - Staging/VPS/TLS — não certificado e fora do escopo atual — Issue #5.
-- Tenant/admin/comprador demo e curso Codex estão implementados somente na
-  branch local da Issue #33; ainda dependem de review, PR, CI e merge de #35.
+- Tenant/admin/comprador demo e curso Codex têm delta staged somente na branch
+  da Issue #33; ainda dependem de review crítico, commit/push, CI remoto e merge
+  da base #35.
 - Capacidade de lançamento para 100 tenants/clientes ainda não está certificada:
   os testes cobrem 100 buyers no banco e 100 requisições concorrentes full-path,
   mas não um soak/load test de 100 tenants com p95/p99 em staging.

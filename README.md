@@ -126,7 +126,12 @@ simulado em produção.
 O modo demo cria uma tenant dedicada e resetável com duas personas fixas, sem
 senha hardcoded: `admin.demo@autonomia.site` e `user.demo@autonomia.site`. O
 comprador recebe somente o produto publicado **Codex na prática**, com cinco
-PDFs protegidos pelo BFF; o admin não herda o entitlement do comprador.
+PDFs protegidos pelo BFF; o admin não herda o entitlement do comprador. O BFF
+nega ao comprador demo todas as capabilities de seller/catálogo antes da chamada
+server-to-server, expira os cookies CSRF de produtor sem entregar tokens úteis e
+redireciona acesso direto a `/products` para `/library`. O admin demo pode listar
+somente seu contexto e usar capabilities de catálogo apenas no UUID fixo da
+tenant demo; onboarding de outra tenant e seller IDs diferentes falham em 403.
 
 Depois de configurar o PostgreSQL/API local conforme a seção anterior, habilite
 o modo somente no ambiente Local/CI, marque explicitamente esse banco local
@@ -150,7 +155,8 @@ Abra `http://localhost:3000` e escolha **Entrar como admin demo** ou **Entrar
 como aluno demo**. O reset usa advisory lock, IDs determinísticos e valida hash
 e tamanho dos cinco PDFs antes de alterar a tenant. O comando recusa ambiente
 fora de Local/CI, DSN fora de loopback ou banco sem o marcador explícito; o
-modo demo recusa `NODE_ENV=production`.
+modo demo também recusa redirectors libpq de rede/serviço (`PGHOST*`, `PGPORT`,
+`PGDATABASE`, `PGSERVICE*`, `PGSYSCONFDIR`) e `NODE_ENV=production`.
 
 ### Ponte BFF→API e onboarding seller Local/CI
 

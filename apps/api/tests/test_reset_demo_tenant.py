@@ -32,3 +32,38 @@ def test_reset_rejects_a_non_loopback_database(monkeypatch: pytest.MonkeyPatch) 
     )
     with pytest.raises(RuntimeError, match="loopback-only"):
         require_environment(Namespace(confirm_demo_key=DEMO_KEY))
+
+
+def test_reset_rejects_a_libpq_hostaddr_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    base_environment(monkeypatch)
+    monkeypatch.setenv("APPSELL_API_ENVIRONMENT", "ci")
+    monkeypatch.setenv(
+        "APPSELL_DEMO_DATABASE_URL",
+        "postgresql://postgres:secret@localhost/appsell?hostaddr=203.0.113.7",
+    )
+
+    with pytest.raises(RuntimeError, match="loopback-only"):
+        require_environment(Namespace(confirm_demo_key=DEMO_KEY))
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "PGHOST",
+        "PGHOSTADDR",
+        "PGPORT",
+        "PGDATABASE",
+        "PGSERVICE",
+        "PGSERVICEFILE",
+        "PGSYSCONFDIR",
+    ],
+)
+def test_reset_rejects_libpq_redirect_environment(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    base_environment(monkeypatch)
+    monkeypatch.setenv("APPSELL_API_ENVIRONMENT", "local")
+    monkeypatch.setenv(name, "attacker-controlled")
+
+    with pytest.raises(RuntimeError, match="environment overrides are forbidden"):
+        require_environment(Namespace(confirm_demo_key=DEMO_KEY))

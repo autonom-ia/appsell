@@ -14,6 +14,15 @@ from psycopg.types.json import Jsonb
 
 DEMO_KEY = "autonomia-demo-v1"
 DEMO_DATABASE_MARKER = "appsell-demo-reset-target-v1"
+LIBPQ_REDIRECT_ENVIRONMENT = (
+    "PGHOST",
+    "PGHOSTADDR",
+    "PGPORT",
+    "PGDATABASE",
+    "PGSERVICE",
+    "PGSERVICEFILE",
+    "PGSYSCONFDIR",
+)
 ROOT = Path(__file__).resolve().parents[4]
 MANIFEST_PATH = ROOT / "demo" / "content" / "codex-na-pratica" / "manifest.json"
 PDF_ROOT = ROOT / "output" / "pdf" / "codex"
@@ -76,8 +85,12 @@ def require_environment(args: argparse.Namespace) -> tuple[str, str]:
     database_url = os.environ.get("APPSELL_DEMO_DATABASE_URL", "")
     if not database_url.startswith(("postgresql://", "postgres://")):
         raise RuntimeError("APPSELL_DEMO_DATABASE_URL must be a PostgreSQL DSN")
+    if any(os.environ.get(name) for name in LIBPQ_REDIRECT_ENVIRONMENT):
+        raise RuntimeError("libpq network and service environment overrides are forbidden")
     connection_info = conninfo_to_dict(database_url)
-    if connection_info.get("host") not in {"127.0.0.1", "localhost", "::1"}:
+    if connection_info.get("host") not in {"127.0.0.1", "localhost", "::1"} or connection_info.get(
+        "hostaddr"
+    ):
         raise RuntimeError("demo reset database must be loopback-only")
     return issuer, database_url
 
@@ -205,6 +218,15 @@ def reset_demo(
         (seller_id, seller["slug"], seller["display_name"]),
     )
     connection.execute(
+        "delete from platform_grant where identity_user_id in (%s,%s)",
+        (admin_id, buyer_id),
+    )
+    connection.execute(
+        "delete from seller_membership where identity_user_id=%s "
+        "or (identity_user_id=%s and seller_organization_id<>%s)",
+        (buyer_id, admin_id, seller_id),
+    )
+    connection.execute(
         "delete from seller_membership where seller_organization_id=%s", (seller_id,)
     )
     connection.execute(
@@ -251,19 +273,6 @@ def reset_demo(
     connection.execute("delete from product_course where seller_organization_id=%s", (seller_id,))
     connection.execute("delete from course where seller_organization_id=%s", (seller_id,))
     connection.execute("delete from catalog_product where seller_organization_id=%s", (seller_id,))
-    connection.execute(
-        """
-        insert into seller_membership(seller_organization_id,identity_user_id,role,status)
-        select %s,grant_row.identity_user_id,'seller_admin','active'
-        from platform_grant grant_row
-        where grant_row.role='platform_superadmin' and grant_row.status='active'
-          and grant_row.identity_user_id<>%s
-        on conflict(seller_organization_id,identity_user_id) do update set
-          role='seller_admin',status='active',updated_at=clock_timestamp()
-        """,
-        (seller_id, admin_id),
-    )
-
     connection.execute(
         """
         insert into catalog_product(

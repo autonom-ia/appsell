@@ -52,17 +52,22 @@ export async function GET(request: NextRequest) {
         throw error;
       }
     }
+    const demoProfile = demoProfileForSubject(session.subject);
     const response = NextResponse.redirect(new URL(
-      demoProfileForSubject(session.subject)?.home ?? "/dashboard",
+      demoProfile?.home ?? "/dashboard",
       configuredPublicOrigin()
     ));
     expireTransactionCookie(response);
     response.cookies.set(sessionCookieName(), sessionId, sessionCookieOptions());
     response.cookies.set(csrfCookieName(), csrfTokenForSession(sessionId, LOGOUT_CSRF_ACTION), csrfCookieOptions());
-    response.cookies.set(sellerCsrfCookieName(), csrfTokenForSession(sessionId, ONBOARD_SELLER_CSRF_ACTION), csrfCookieOptions());
-    response.cookies.set(productCsrfCookieName(), csrfTokenForSession(sessionId, CREATE_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
-    response.cookies.set(productUpdateCsrfCookieName(), csrfTokenForSession(sessionId, UPDATE_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
-    response.cookies.set(productPublishCsrfCookieName(), csrfTokenForSession(sessionId, PUBLISH_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
+    if (demoProfile?.persona === "buyer") {
+      expireSellerCookies(response);
+    } else {
+      response.cookies.set(sellerCsrfCookieName(), csrfTokenForSession(sessionId, ONBOARD_SELLER_CSRF_ACTION), csrfCookieOptions());
+      response.cookies.set(productCsrfCookieName(), csrfTokenForSession(sessionId, CREATE_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
+      response.cookies.set(productUpdateCsrfCookieName(), csrfTokenForSession(sessionId, UPDATE_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
+      response.cookies.set(productPublishCsrfCookieName(), csrfTokenForSession(sessionId, PUBLISH_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
+    }
     response.headers.set("cache-control", "no-store");
     return response;
   } catch (error) {
@@ -73,6 +78,17 @@ export async function GET(request: NextRequest) {
       status: isOAuthStoreUnavailable(error) || error instanceof DomainApiError ? 503 : 400,
       headers: { "cache-control": "no-store" }
     });
+  }
+}
+
+function expireSellerCookies(response: NextResponse) {
+  for (const name of [
+    sellerCsrfCookieName(),
+    productCsrfCookieName(),
+    productUpdateCsrfCookieName(),
+    productPublishCsrfCookieName()
+  ]) {
+    response.cookies.set(name, "", { ...csrfCookieOptions(), maxAge: 0 });
   }
 }
 

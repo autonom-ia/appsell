@@ -1,6 +1,7 @@
 import "server-only";
 
 import { timingSafeEqual } from "node:crypto";
+import demoCodexAssets from "./demo-codex-assets.json";
 import { demoProfileForSubject } from "./demo-config";
 
 import {
@@ -423,6 +424,7 @@ async function domainRequest(
   session: ServerSession,
   request: ApiRequest
 ) {
+  requireDemoCapability(session.subject, request);
   const config = internalConfig();
   const body = request.body ? Buffer.from(JSON.stringify(request.body), "utf8") : Buffer.alloc(0);
   const envelopeInput: SignInternalEnvelopeInput = {
@@ -467,6 +469,20 @@ async function domainRequest(
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function requireDemoCapability(subject: string, request: ApiRequest) {
+  const profile = demoProfileForSubject(subject);
+  if (!profile) return;
+  if (["identity.sync", "library.read", "library.asset.read"].includes(request.capability)) return;
+  if (profile.persona === "admin") {
+    if (request.capability === "seller.list") return;
+    const demoSellerId = demoCodexAssets[0]?.seller_id;
+    if (request.capability.startsWith("catalog.") && request.sellerOrganizationId === demoSellerId) {
+      return;
+    }
+  }
+  throw new DomainApiError(403, `demo_${profile.persona}_capability_forbidden`);
 }
 
 function internalConfig() {

@@ -76,6 +76,9 @@ def test_reset_is_repeatable_concurrent_and_does_not_duplicate_graph() -> None:
     assert ADMIN_URL
     manifest, manifest_sha = load_manifest()
     seller = UUID(manifest["seller"]["id"])
+    admin = identity_id(manifest["personas"]["admin"]["subject"])
+    buyer = identity_id(manifest["personas"]["buyer"]["subject"])
+    contaminated_seller = UUID("72000000-0000-4000-8000-000000000099")
     extra_product = UUID("72000000-0000-4000-8000-000000000001")
     extra_course = UUID("72000000-0000-4000-8000-000000000002")
     extra_offer = UUID("72000000-0000-4000-8000-000000000003")
@@ -120,11 +123,27 @@ def test_reset_is_repeatable_concurrent_and_does_not_duplicate_graph() -> None:
             "values(%s,%s,'seller_admin','active')",
             (seller, OTHER_USER),
         )
+        connection.execute(
+            "insert into seller_organization(id,slug,display_name,status) "
+            "values(%s,'demo-admin-contamination','Must remain inaccessible','active')",
+            (contaminated_seller,),
+        )
+        connection.execute(
+            "insert into seller_membership("
+            "seller_organization_id,identity_user_id,role,status) "
+            "values(%s,%s,'seller_owner','active'),(%s,%s,'seller_admin','active')",
+            (contaminated_seller, admin, contaminated_seller, buyer),
+        )
+        connection.execute(
+            "insert into platform_grant(id,identity_user_id,role,status) "
+            "values('72000000-0000-4000-8000-000000000006',%s,"
+            "'platform_superadmin','active')",
+            (admin,),
+        )
         connection.commit()
     with ThreadPoolExecutor(max_workers=8) as executor:
         list(executor.map(lambda _: reset_once(manifest, manifest_sha), range(8)))
     product = UUID(manifest["product"]["id"])
-    admin = identity_id(manifest["personas"]["admin"]["subject"])
     with psycopg.connect(ADMIN_URL) as connection:
         counts = connection.execute(
             """
@@ -166,31 +185,32 @@ def test_reset_is_repeatable_concurrent_and_does_not_duplicate_graph() -> None:
             "where seller_organization_id=%s order by identity_user_id",
             (seller,),
         ).fetchall()
-        active_superadmins = connection.execute(
-            "select count(*) from platform_grant where role='platform_superadmin' "
-            "and status='active' and identity_user_id<>%s",
-            (admin,),
-        ).fetchone()
         invalid_memberships = connection.execute(
             """
             select count(*) from seller_membership membership
             where membership.seller_organization_id=%s and not (
-              (membership.identity_user_id=%s and membership.role='seller_owner'
-                and membership.status='active')
-              or (membership.role='seller_admin' and membership.status='active' and exists (
-                select 1 from platform_grant grant_row
-                where grant_row.identity_user_id=membership.identity_user_id
-                  and grant_row.role='platform_superadmin' and grant_row.status='active'
-              ))
+              membership.identity_user_id=%s and membership.role='seller_owner'
+                and membership.status='active'
             )
             """,
             (seller, admin),
         ).fetchone()
-    assert active_superadmins is not None
-    assert counts == (1, 1, 1, 1, 1, 1 + active_superadmins[0], 1, 5, 5, 1, 1, 1)
+        demo_persona_memberships = connection.execute(
+            "select seller_organization_id,identity_user_id,role,status "
+            "from seller_membership where identity_user_id in (%s,%s) "
+            "order by seller_organization_id,identity_user_id",
+            (admin, buyer),
+        ).fetchall()
+        demo_persona_grants = connection.execute(
+            "select count(*) from platform_grant where identity_user_id in (%s,%s)",
+            (admin, buyer),
+        ).fetchone()
+    assert counts == (1, 1, 1, 1, 1, 1, 1, 5, 5, 1, 1, 1)
     assert invalid_memberships == (0,)
+    assert demo_persona_memberships == [(seller, admin, "seller_owner", "active")]
+    assert demo_persona_grants == (0,)
     assert (OTHER_USER, "seller_admin", "active") not in memberships
-    assert (ACTIVE_SUPERADMIN, "seller_admin", "active") in memberships
+    assert (ACTIVE_SUPERADMIN, "seller_admin", "active") not in memberships
 
 
 def test_buyer_reads_only_active_entitlement_and_published_snapshot() -> None:
