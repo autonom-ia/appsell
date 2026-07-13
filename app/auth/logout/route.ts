@@ -7,6 +7,8 @@ import {
   productCsrfCookieName,
   productPublishCsrfCookieName,
   productUpdateCsrfCookieName,
+  demoInspectionCookieName,
+  demoInspectionCookieOptions,
   sellerCsrfCookieName,
   sessionCookieName,
   sessionCookieOptions
@@ -46,4 +48,5 @@ function expireAuthCookies(response: NextResponse) {
   response.cookies.set(productCsrfCookieName(), "", { ...csrfCookieOptions(), maxAge: 0 });
   response.cookies.set(productUpdateCsrfCookieName(), "", { ...csrfCookieOptions(), maxAge: 0 });
   response.cookies.set(productPublishCsrfCookieName(), "", { ...csrfCookieOptions(), maxAge: 0 });
+  response.cookies.set(demoInspectionCookieName(), "", { ...demoInspectionCookieOptions(), maxAge: 0 });
 }

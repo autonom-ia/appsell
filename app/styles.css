@@ -133,6 +133,28 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .blocked-icon { display: grid; width: 34px; height: 34px; place-items: center; flex: 0 0 auto; border-radius: 50%; background: var(--blue); color: #fff; font-weight: 800; }
 .blocked-card strong { display: block; margin-bottom: 6px; }
 .blocked-card p { margin: 0; color: var(--text); font-size: .78rem; line-height: 1.55; }
+.inspection-header { align-items: flex-start; }
+.inspection-safety-badge { min-height: 36px; padding: 0 12px; display: inline-flex; align-items: center; border: 1px solid rgba(8,122,75,.25); border-radius: 99px; background: #e6f7ef; color: var(--success); font-size: .7rem; font-weight: 850; letter-spacing: .08em; white-space: nowrap; }
+.inspection-grid { min-width: 0; display: grid; gap: 18px; }
+.inspection-card, .inspection-denied { min-width: 0; padding: 22px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow-sm); }
+.inspection-card h2, .inspection-denied h1 { margin: 5px 0 10px; font-size: clamp(1.75rem,7vw,2.8rem); overflow-wrap: anywhere; }
+.inspection-card p, .inspection-denied > p { color: var(--text); line-height: 1.6; }
+.inspection-card form { min-width: 0; margin-top: 20px; display: grid; gap: 14px; }
+.inspection-card label { min-width: 0; display: grid; gap: 7px; color: var(--ink); font-size: .76rem; font-weight: 800; }
+.inspection-card textarea, .inspection-card select { width: 100%; min-width: 0; max-width: 100%; min-height: 48px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: #fff; color: var(--ink); font-size: 1rem; line-height: 1.5; }
+.inspection-card textarea { min-height: 112px; resize: vertical; }
+.inspection-card label > span { color: var(--soft); font-size: .7rem; font-weight: 600; line-height: 1.45; }
+.inspection-card textarea:focus-visible, .inspection-card select:focus-visible { outline: 3px solid rgba(59,130,246,.2); outline-offset: 2px; border-color: var(--bright); }
+.inspection-card button { width: 100%; }
+.inspection-active { border-color: rgba(8,122,75,.25); background: linear-gradient(145deg,#ecfdf5,#fff); }
+.inspection-facts { margin: 20px 0 0; display: grid; gap: 10px; }
+.inspection-facts div { min-width: 0; padding: 13px 14px; display: grid; gap: 4px; border: 1px solid rgba(8,122,75,.15); border-radius: 13px; background: rgba(255,255,255,.76); }
+.inspection-facts dt { color: var(--soft); font-size: .68rem; font-weight: 750; }
+.inspection-facts dd { min-width: 0; margin: 0; font-weight: 800; overflow-wrap: anywhere; }
+.inspection-feedback { margin: 0 0 18px; padding: 13px 15px; border: 1px solid var(--border); border-radius: 13px; background: #f8fbff; color: var(--text); line-height: 1.5; }
+.inspection-feedback.success { border-color: rgba(8,122,75,.22); background: #edf9f3; color: #07613d; }
+.inspection-feedback.warning { border-color: rgba(154,103,0,.24); background: #fff9e7; color: #6b4d00; }
+.inspection-feedback.error { border-color: rgba(180,35,24,.24); background: #fff5f4; color: #8d251d; }
 .filter-row { margin: -4px 0 22px; display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; }
 .filter { min-height: 44px; padding: 0 15px; display: inline-flex; align-items: center; gap: 8px; flex: 0 0 auto; border: 1px solid var(--border); border-radius: 99px; background: white; color: var(--text); font-weight: 700; cursor: pointer; }
 .filter span { color: var(--soft); font-size: .7rem; }
@@ -384,6 +406,8 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
   .preview-hero { padding: 48px 38px; }
   .preview-course, .preview-offer { margin-right: 38px; margin-left: 38px; }
   .dialog-actions { grid-template-columns: minmax(0,1fr) minmax(0,1fr); }
+  .inspection-grid { grid-template-columns: minmax(0,1.25fr) minmax(280px,.75fr); align-items: start; }
+  .inspection-card, .inspection-denied { padding: 30px; }
 }
 
 @media (min-width: 1025px) {

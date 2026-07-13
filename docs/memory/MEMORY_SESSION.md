@@ -34,17 +34,17 @@ Project status:
 
 <!-- Substituir abaixo a cada nova sessão. Sessões anteriores vão para PROGRESS.md. -->
 
-## Sessão: 2026-07-12 08:53 — startup PostgreSQL e headroom da baseline de 100 tenants
-Issue: #44
-Branch: fix/44-postgres-startup-headroom
+## Sessão: 2026-07-13 21:40 — release candidate E2E integrada
+Issue: #61
+Branch: feat/61-release-candidate-e2e
 PR: não aberta
 Estado: em_progresso
 Modelo: strong + human
-Arquivos alterados: gate/fault/scanner PostgreSQL, sampler/headroom, workflow CI, config API/Compose, testes e docs
-Comandos executados: vertical 100 tenants; fault injection real; Vitest; pytest; Ruff; mypy; lint; typecheck; build; audits; scanners; Harness
-Validação: local verde — 121 Vitest, 7 Vitest focados, 36 pytest startup/config, suíte Python, vertical 100 tenants, fault 2 transitórios + 3 ready, scanner e teardown verdes
-Bloqueios: parecer final P0-P3; autorização para commit/push/PR; PR stack #41/#43 ainda sem merge; staging/Identity/KMS/HA continuam externos
-Próxima ação: receber reviews finais, corrigir P0-P3 e pedir autorização para publicar a PR empilhada; não fazer merge/deploy
+Arquivos alterados: combinação UI/Identity/OpenBao/superadmin; migration sequencial; testes e docs de integração
+Comandos executados: inventário DAG; merge controlado #57 sobre #59; resolução de contratos em andamento
+Validação: branches fonte e reviews verdes; release candidate ainda não certificada
+Bloqueios: incorporar #53/#55/#60, implementar storefront/CTA e rodar vertical integrada; externos exigem ambientes isolados
+Próxima ação: fechar runtime/migrations, testes completos, review crítico e Draft PR; sem merge/deploy
 Project status:
   - Projeto: Infra
   - Status: Em desenvolvimento
@@ -52,4 +52,4 @@ Project status:
   - Prioridade: P3
   - Risco: Médio
   - Ambiente: Local
-  - Próxima ação: revisar implementação local e corrigir P0-P3 antes da PR
+  - Próxima ação: consolidar RC, E2E e review crítico antes da Draft PR

@@ -16,6 +16,15 @@ DEMO_KEY = "autonomia-demo-v1"
 DEMO_DATABASE_MARKER = "appsell-demo-reset-target-v1"
 ASSET_WORKER_SUBJECT = "asset-worker-v1"
 ASSET_WORKER_EMAIL = "asset.worker@autonomia.site"
+LIBPQ_REDIRECT_ENVIRONMENT = (
+    "PGHOST",
+    "PGHOSTADDR",
+    "PGPORT",
+    "PGDATABASE",
+    "PGSERVICE",
+    "PGSERVICEFILE",
+    "PGSYSCONFDIR",
+)
 ROOT = Path(__file__).resolve().parents[4]
 MANIFEST_PATH = ROOT / "demo" / "content" / "codex-na-pratica" / "manifest.json"
 PDF_ROOT = ROOT / "output" / "pdf" / "codex"
@@ -79,8 +88,12 @@ def require_environment(args: argparse.Namespace) -> tuple[str, str]:
     database_url = os.environ.get("APPSELL_DEMO_DATABASE_URL", "")
     if not database_url.startswith(("postgresql://", "postgres://")):
         raise RuntimeError("APPSELL_DEMO_DATABASE_URL must be a PostgreSQL DSN")
+    if any(os.environ.get(name) for name in LIBPQ_REDIRECT_ENVIRONMENT):
+        raise RuntimeError("libpq network and service environment overrides are forbidden")
     connection_info = conninfo_to_dict(database_url)
-    if connection_info.get("host") not in {"127.0.0.1", "localhost", "::1"}:
+    if connection_info.get("host") not in {"127.0.0.1", "localhost", "::1"} or connection_info.get(
+        "hostaddr"
+    ):
         raise RuntimeError("demo reset database must be loopback-only")
     return issuer, database_url
 
@@ -300,8 +313,8 @@ def reset_demo(
     validate_demo_database(connection)
     connection.execute("select set_config('appsell.demo_reset_key',%s,true)", (DEMO_KEY,))
     version = connection.execute("select version_num from alembic_version").fetchone()
-    if version != ("0008_private_asset_storage",):
-        raise RuntimeError("database must be migrated to 0008_private_asset_storage")
+    if version != ("0010_release_candidate",):
+        raise RuntimeError("database must be migrated to 0010_release_candidate")
     unsafe_storage = connection.execute(
         """
         select exists(
@@ -337,6 +350,27 @@ def reset_demo(
     ).fetchone()
     if unsafe_storage != (False,):
         raise RuntimeError("demo reset blocked until private S3 storage cleanup is drained")
+    revoked_inspections = connection.execute(
+        """
+        update app_private.demo_inspection_ticket set
+          state='revoked',revoked_at=clock_timestamp(),
+          revoked_reason='Revoked by isolated demo tenant reset'
+        where seller_organization_id=%s and state='active'
+        returning id,actor_identity_user_id
+        """,
+        (seller_id,),
+    ).fetchall()
+    for inspection_id, actor_identity_user_id in revoked_inspections:
+        connection.execute(
+            """
+            insert into audit_event(
+              seller_organization_id,actor_identity_user_id,action,target_type,
+              target_id,result,request_id,metadata
+            ) values(%s,%s,'platform.demo_inspection.revoked','demo_inspection',%s,
+              'succeeded',%s,jsonb_build_object('trigger','demo_reset'))
+            """,
+             (seller_id, actor_identity_user_id, inspection_id, uuid4()),
+        )
 
     for identity, identity_uuid in ((admin, admin_id), (buyer, buyer_id)):
         connection.execute(
@@ -389,6 +423,15 @@ def reset_demo(
           updated_at=clock_timestamp()
         """,
         (seller_id, seller["slug"], seller["display_name"]),
+    )
+    connection.execute(
+        "delete from platform_grant where identity_user_id in (%s,%s)",
+        (admin_id, buyer_id),
+    )
+    connection.execute(
+        "delete from seller_membership where identity_user_id=%s "
+        "or (identity_user_id=%s and seller_organization_id<>%s)",
+        (buyer_id, admin_id, seller_id),
     )
     connection.execute(
         "delete from seller_membership where seller_organization_id=%s", (seller_id,)
@@ -479,19 +522,6 @@ def reset_demo(
     connection.execute("delete from product_course where seller_organization_id=%s", (seller_id,))
     connection.execute("delete from course where seller_organization_id=%s", (seller_id,))
     connection.execute("delete from catalog_product where seller_organization_id=%s", (seller_id,))
-    connection.execute(
-        """
-        insert into seller_membership(seller_organization_id,identity_user_id,role,status)
-        select %s,grant_row.identity_user_id,'seller_admin','active'
-        from platform_grant grant_row
-        where grant_row.role='platform_superadmin' and grant_row.status='active'
-          and grant_row.identity_user_id<>%s
-        on conflict(seller_organization_id,identity_user_id) do update set
-          role='seller_admin',status='active',updated_at=clock_timestamp()
-        """,
-        (seller_id, admin_id),
-    )
-
     connection.execute(
         """
         insert into catalog_product(
