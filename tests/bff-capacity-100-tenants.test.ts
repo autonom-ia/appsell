@@ -17,6 +17,7 @@ import {
   emptyPostgresWaitDiagnostics,
   samplePostgresConnections
 } from "../lib/capacity-postgres-sampler";
+import { runCapacitySamplerLoop, type CapacitySamplerLoopMetrics } from "../lib/capacity-sampler-loop";
 import {
   aggregateCapacityProductCreateTraces,
   capacityProductCreateTelemetryEnabled,
@@ -161,12 +162,21 @@ interface ProcessTreeSample {
   valid: boolean;
   bff: ProcessTreeStats;
   redis: ProcessTreeStats;
+  containers: Record<string, number>;
 }
 
 interface ResourcePeaks {
   bff_rss_bytes: number;
   redis_rss_bytes: number;
   container_rss_bytes: Record<string, number>;
+  container_rss_sample_counts: Record<string, number>;
+  container_rss_sample_errors: Record<string, number>;
+  container_rss_last_error_codes: Record<string, string | null>;
+  container_rss_zero_rows: Record<string, number>;
+  container_rss_max_sample_gap_ms: Record<string, number>;
+  container_rss_sampler_mode: "host_process_tree" | "docker_top_fallback";
+  postgres_sampler: CapacitySamplerLoopMetrics;
+  resource_sampler: CapacitySamplerLoopMetrics;
   postgres_connections: number;
   postgres_workload_connections: number;
   postgres_runtime_connections: number;
@@ -228,7 +238,7 @@ test.skipIf(!domainApiUrl)(
   let bff: ChildProcess | undefined;
   let bffTraceCollector: ReturnType<typeof startBffCapacityTraceCollector> | undefined;
   let oauth: RedisOAuthService | undefined;
-  let sampler: ReturnType<typeof startResourceSampler> | undefined;
+  let sampler: Awaited<ReturnType<typeof startResourceSampler>> | undefined;
   let port = 0;
   const suffix = `${process.pid}-${Date.now()}`;
   const distDir = `.next-capacity-${suffix}`;
@@ -253,7 +263,7 @@ test.skipIf(!domainApiUrl)(
     const activeOauth = RedisOAuthService.fromEnvironment(shared);
     oauth = activeOauth;
     await waitForBff(bff, port);
-    sampler = startResourceSampler(bff.pid!, redis.pid, containers, () => failurePhase);
+    sampler = await startResourceSampler(bff.pid!, redis.pid, containers, () => failurePhase);
 
     // Warm compilation, OAuth callback, domain sync and both read route families.
     const warmupStarted = performance.now();
@@ -1352,6 +1362,80 @@ test("serializes and scans maximum cardinality diagnostics", async () => {
   }
 });
 
+test("rotates portable container RSS probes in complete deterministic pairs", () => {
+  const entries = [
+    ["postgres", "p"],
+    ["api", "a"],
+    ["pdf_sandbox", "d"],
+    ["seaweedfs", "s"]
+  ] as Array<[string, string]>;
+
+  expect(containerProbeTargets(entries, 0, false).map(([name]) => name)).toEqual(["postgres", "api"]);
+  expect(containerProbeTargets(entries, 1, false).map(([name]) => name)).toEqual(["pdf_sandbox", "seaweedfs"]);
+  expect(containerProbeTargets(entries, 2, false).map(([name]) => name)).toEqual(["postgres", "api"]);
+  expect(containerProbeTargets(entries, 99, true)).toEqual(entries);
+});
+
+test("counts transient zero-RSS process rows without hiding invalid docker-top output", () => {
+  expect(parseContainerRssOutput("RSS PID PPID COMMAND\n1024 1 0 postgres\n0 2 1 postgres")).toEqual({
+    bytes: 1024 * 1024,
+    zeroRows: 1
+  });
+  expect(() => parseContainerRssOutput("RSS PID PPID COMMAND\n- 2 1 postgres")).toThrow(
+    "container_rss_invalid"
+  );
+});
+
+test("accepts independent sampler coverage inside the unchanged two-second ceiling", () => {
+  const resources = samplerCoverageFixture();
+  expect(resourceSamplerFailures(resources)).toEqual([]);
+});
+
+test("fails closed on scheduler gaps and container probe errors", () => {
+  const resources = samplerCoverageFixture();
+  resources.resource_sampler.max_gap_ms = 2_001;
+  resources.resource_sampler.widest_gap_phase = "scenario_buyer_player";
+  resources.container_rss_sample_errors.api = 1;
+  expect(resourceSamplerFailures(resources)).toEqual([
+    "resource sampler max gap 2001>2000 during scenario_buyer_player",
+    "api container RSS sampler errors: 1"
+  ]);
+});
+
+function samplerCoverageFixture() {
+  const resources = emptyResourcePeaks({
+    postgres: "p",
+    api: "a",
+    pdf_sandbox: "d",
+    seaweedfs: "s"
+  });
+  resources.postgres_sampler = {
+    starts: 3,
+    successes: 3,
+    errors: 0,
+    skipped_deadlines: 0,
+    max_gap_ms: 500,
+    widest_gap_phase: "postgres",
+    max_duration_ms: 100,
+    slowest_phase: "postgres"
+  };
+  resources.resource_sampler = {
+    starts: 3,
+    successes: 3,
+    errors: 0,
+    skipped_deadlines: 0,
+    max_gap_ms: 750,
+    widest_gap_phase: "resources",
+    max_duration_ms: 500,
+    slowest_phase: "resources"
+  };
+  for (const name of Object.keys(resources.container_rss_bytes)) {
+    resources.container_rss_sample_counts[name] = 2;
+    resources.container_rss_max_sample_gap_ms[name] = 1_000;
+  }
+  return resources;
+}
+
 test("capacity product-create telemetry is default-off and refuses remote environments", () => {
   expect(capacityProductCreateTelemetryEnabled({})).toBe(false);
   expect(capacityProductCreateTelemetryEnabled({
@@ -1512,6 +1596,7 @@ function requireResourceThresholds(resources: ResourcePeaks) {
   if (resources.process_tree_sample_errors > 0) {
     failures.push(`process-tree sampler errors: ${resources.process_tree_sample_errors}`);
   }
+  failures.push(...resourceSamplerFailures(resources));
   const maxBffHostSamples = Math.ceil(CAPACITY_TEST_TIMEOUT_MS / 250) + 1;
   if (resources.bff_host_samples.length > maxBffHostSamples) {
     failures.push(`BFF host samples ${resources.bff_host_samples.length}>${maxBffHostSamples}`);
@@ -1538,182 +1623,83 @@ function requireResourceThresholds(resources: ResourcePeaks) {
   if (failures.length > 0) throw new Error(`resource threshold failed: ${failures.join(", ")}`);
 }
 
-function startResourceSampler(
+function resourceSamplerFailures(resources: ResourcePeaks) {
+  const failures: string[] = [];
+  const samplerLimitMs = 2_000;
+  for (const [name, sampler] of [
+    ["Postgres", resources.postgres_sampler],
+    ["resource", resources.resource_sampler]
+  ] as const) {
+    if (sampler.starts < 2 || sampler.successes < 2) {
+      failures.push(`${name} sampler produced fewer than two successful samples`);
+    }
+    if (sampler.errors > 0) failures.push(`${name} sampler errors: ${sampler.errors}`);
+    if (sampler.max_gap_ms > samplerLimitMs) {
+      failures.push(
+        `${name} sampler max gap ${round(sampler.max_gap_ms)}>${samplerLimitMs}` +
+          ` during ${sampler.widest_gap_phase ?? "unknown"}`
+      );
+    }
+  }
+  for (const name of Object.keys(resources.container_rss_bytes)) {
+    const count = resources.container_rss_sample_counts[name] ?? 0;
+    const errors = resources.container_rss_sample_errors[name] ?? 0;
+    const gap = resources.container_rss_max_sample_gap_ms[name] ?? 0;
+    if (count < 2) failures.push(`${name} container RSS produced fewer than two samples`);
+    if (errors > 0) failures.push(`${name} container RSS sampler errors: ${errors}`);
+    if (gap > samplerLimitMs) {
+      failures.push(`${name} container RSS max gap ${round(gap)}>${samplerLimitMs}`);
+    }
+  }
+  return failures;
+}
+
+async function startResourceSampler(
   bffPid: number,
   redisPid: number,
   containers: Record<string, string>,
   currentPhase: () => string
 ) {
   let running = true;
-  const peaks: ResourcePeaks = {
-    bff_rss_bytes: 0,
-    redis_rss_bytes: 0,
-    container_rss_bytes: Object.fromEntries(Object.keys(containers).map((name) => [name, 0])),
-    postgres_connections: 0,
-    postgres_workload_connections: 0,
-    postgres_runtime_connections: 0,
-    postgres_api_connections: 0,
-    postgres_active_connections: 0,
-    postgres_idle_connections: 0,
-    postgres_active_waiting: 0,
-    postgres_lock_waiting: 0,
-    postgres_lwlock_waiting: 0,
-    postgres_buffer_pin_waiting: 0,
-    postgres_client_waiting: 0,
-    postgres_io_waiting: 0,
-    postgres_ipc_waiting: 0,
-    postgres_activity_waiting: 0,
-    postgres_timeout_waiting: 0,
-    postgres_extension_waiting: 0,
-    postgres_other_waiting: 0,
-    postgres_samples_with_active_waiting: 0,
-    postgres_samples_with_lock_waiting: 0,
-    postgres_active_waiting_observed_ms: 0,
-    postgres_wait_event_peaks: {},
-    postgres_api_active_waiting: 0,
-    postgres_api_wait_event_peaks: {},
-    postgres_waiting_samples_by_phase: {},
-    postgres_wait_event_type_peaks_by_phase: {},
-    postgres_api_wait_event_type_peaks_by_phase: {},
-    postgres_lock_event_scope_peaks_by_phase: {},
-    postgres_full_api_pool_waiting_samples: 0,
-    postgres_full_api_pool_waiting_observed_ms: 0,
-    postgres_max_consecutive_full_api_pool_waiting_samples: 0,
-    postgres_max_consecutive_full_api_pool_waiting_ms: 0,
-    postgres_sample_errors: 0,
-    postgres_max_sample_gap_ms: 0,
-    postgres_max_connections: 0,
-    postgres_reserved_connections: 0,
-    bff_cpu_percent: 0,
-    host_cpu_percent: 0,
-    process_tree_sample_errors: 0,
-    bff_host_samples: [],
-    samples: 0
-  };
-  let previousSampleStarted = 0;
+  const containerRootPids = await resolveContainerRootPids(containers);
+  const samplerMode = containerRootPids ? "host_process_tree" : "docker_top_fallback";
+  const peaks = emptyResourcePeaks(containers, samplerMode);
+  const containerEntries = Object.entries(containers);
+  const previousContainerSampleStarted: Record<string, number> = {};
   let previousHostCpu = hostCpuTimes();
   let waitDiagnostics = emptyPostgresWaitDiagnostics();
-  const loop = (async () => {
-    while (running) {
+  let previousPostgresSampleStarted = 0;
+  let resourceCycle = 0;
+  let previousResourcePhase: string | undefined;
+
+  const postgresLoop = runCapacitySamplerLoop({
+    intervalMs: 250,
+    isRunning: () => running,
+    getPhase: currentPhase,
+    probe: async (samplePhase) => {
       const sampleStarted = performance.now();
-      const sampleGap = previousSampleStarted > 0 ? sampleStarted - previousSampleStarted : 0;
-      if (previousSampleStarted > 0) {
-        peaks.postgres_max_sample_gap_ms = Math.max(
-          peaks.postgres_max_sample_gap_ms,
-          sampleGap
-        );
-      }
-      previousSampleStarted = sampleStarted;
-      const samplePhase = currentPhase();
-      let processTrees: ProcessTreeSample;
-      let containerSamples: ReadonlyArray<readonly [string, number]>;
-      let connections: Awaited<ReturnType<typeof samplePostgresConnections>>;
-      try {
-        [processTrees, containerSamples, connections] = await Promise.all([
-          sampleProcessTrees(bffPid, redisPid),
-          Promise.all(
-            Object.entries(containers).map(async ([name, id]) => [name, await containerRss(id)] as const)
-          ),
-          samplePostgresConnections(containers.postgres)
-        ]);
-      } catch {
-        peaks.postgres_sample_errors += 1;
-        running = false;
-        continue;
-      }
-      const currentHostCpu = hostCpuTimes();
-      const hostCpuPercent = hostCpuUtilizationPercent(previousHostCpu, currentHostCpu);
-      previousHostCpu = currentHostCpu;
-      const loads = loadavg();
-      if (processTrees.valid) {
-        peaks.bff_rss_bytes = Math.max(peaks.bff_rss_bytes, processTrees.bff.rssBytes);
-        peaks.redis_rss_bytes = Math.max(peaks.redis_rss_bytes, processTrees.redis.rssBytes);
-        peaks.bff_cpu_percent = Math.max(peaks.bff_cpu_percent, processTrees.bff.cpuPercent);
-      } else {
-        peaks.process_tree_sample_errors += 1;
-      }
-      peaks.host_cpu_percent = Math.max(peaks.host_cpu_percent, hostCpuPercent);
-      peaks.bff_host_samples.push({
-        elapsed_ms: round(sampleStarted - DIAGNOSTIC_CLOCK_ORIGIN_MS),
-        phase: samplePhase,
-        process_tree_sample_valid: processTrees.valid,
-        bff_cpu_percent: processTrees.valid ? processTrees.bff.cpuPercent : null,
-        host_cpu_percent: hostCpuPercent,
-        load_average: {
-          one_minute: round(loads[0] ?? 0),
-          five_minutes: round(loads[1] ?? 0),
-          fifteen_minutes: round(loads[2] ?? 0)
-        }
-      });
-      for (const [name, bytes] of containerSamples) {
-        peaks.container_rss_bytes[name] = Math.max(peaks.container_rss_bytes[name] ?? 0, bytes);
-      }
+      const sampleGap = previousPostgresSampleStarted > 0 ? sampleStarted - previousPostgresSampleStarted : 0;
+      previousPostgresSampleStarted = sampleStarted;
+      const connections = await samplePostgresConnections(containers.postgres);
+      peaks.postgres_max_sample_gap_ms = Math.max(peaks.postgres_max_sample_gap_ms, sampleGap);
       peaks.postgres_connections = Math.max(peaks.postgres_connections, connections.total);
-      peaks.postgres_workload_connections = Math.max(
-        peaks.postgres_workload_connections,
-        connections.workload
-      );
-      peaks.postgres_runtime_connections = Math.max(
-        peaks.postgres_runtime_connections,
-        connections.runtime
-      );
-      peaks.postgres_api_connections = Math.max(
-        peaks.postgres_api_connections,
-        connections.api
-      );
-      peaks.postgres_active_connections = Math.max(
-        peaks.postgres_active_connections,
-        connections.active
-      );
+      peaks.postgres_workload_connections = Math.max(peaks.postgres_workload_connections, connections.workload);
+      peaks.postgres_runtime_connections = Math.max(peaks.postgres_runtime_connections, connections.runtime);
+      peaks.postgres_api_connections = Math.max(peaks.postgres_api_connections, connections.api);
+      peaks.postgres_active_connections = Math.max(peaks.postgres_active_connections, connections.active);
       peaks.postgres_idle_connections = Math.max(peaks.postgres_idle_connections, connections.idle);
-      peaks.postgres_active_waiting = Math.max(
-        peaks.postgres_active_waiting,
-        connections.activeWaiting
-      );
-      peaks.postgres_lock_waiting = Math.max(
-        peaks.postgres_lock_waiting,
-        connections.lockWaiting
-      );
-      peaks.postgres_lwlock_waiting = Math.max(
-        peaks.postgres_lwlock_waiting,
-        connections.lwLockWaiting
-      );
-      peaks.postgres_buffer_pin_waiting = Math.max(
-        peaks.postgres_buffer_pin_waiting,
-        connections.bufferPinWaiting
-      );
-      peaks.postgres_client_waiting = Math.max(
-        peaks.postgres_client_waiting,
-        connections.clientWaiting
-      );
-      peaks.postgres_io_waiting = Math.max(
-        peaks.postgres_io_waiting,
-        connections.ioWaiting
-      );
-      peaks.postgres_ipc_waiting = Math.max(
-        peaks.postgres_ipc_waiting,
-        connections.ipcWaiting
-      );
-      peaks.postgres_activity_waiting = Math.max(
-        peaks.postgres_activity_waiting,
-        connections.activityWaiting
-      );
-      peaks.postgres_timeout_waiting = Math.max(
-        peaks.postgres_timeout_waiting,
-        connections.timeoutWaiting
-      );
-      peaks.postgres_extension_waiting = Math.max(
-        peaks.postgres_extension_waiting,
-        connections.extensionWaiting
-      );
-      peaks.postgres_other_waiting = Math.max(
-        peaks.postgres_other_waiting,
-        connections.otherWaiting
-      );
-      peaks.postgres_api_active_waiting = Math.max(
-        peaks.postgres_api_active_waiting,
-        connections.apiActiveWaiting
-      );
+      peaks.postgres_active_waiting = Math.max(peaks.postgres_active_waiting, connections.activeWaiting);
+      peaks.postgres_lock_waiting = Math.max(peaks.postgres_lock_waiting, connections.lockWaiting);
+      peaks.postgres_lwlock_waiting = Math.max(peaks.postgres_lwlock_waiting, connections.lwLockWaiting);
+      peaks.postgres_buffer_pin_waiting = Math.max(peaks.postgres_buffer_pin_waiting, connections.bufferPinWaiting);
+      peaks.postgres_client_waiting = Math.max(peaks.postgres_client_waiting, connections.clientWaiting);
+      peaks.postgres_io_waiting = Math.max(peaks.postgres_io_waiting, connections.ioWaiting);
+      peaks.postgres_ipc_waiting = Math.max(peaks.postgres_ipc_waiting, connections.ipcWaiting);
+      peaks.postgres_activity_waiting = Math.max(peaks.postgres_activity_waiting, connections.activityWaiting);
+      peaks.postgres_timeout_waiting = Math.max(peaks.postgres_timeout_waiting, connections.timeoutWaiting);
+      peaks.postgres_extension_waiting = Math.max(peaks.postgres_extension_waiting, connections.extensionWaiting);
+      peaks.postgres_other_waiting = Math.max(peaks.postgres_other_waiting, connections.otherWaiting);
+      peaks.postgres_api_active_waiting = Math.max(peaks.postgres_api_active_waiting, connections.apiActiveWaiting);
       if (connections.activeWaiting > 0) {
         peaks.postgres_samples_with_active_waiting += 1;
         peaks.postgres_active_waiting_observed_ms += Math.max(0, sampleGap);
@@ -1728,41 +1714,185 @@ function startResourceSampler(
       peaks.postgres_wait_event_peaks = waitDiagnostics.waitEventPeaks;
       peaks.postgres_api_wait_event_peaks = waitDiagnostics.apiWaitEventPeaks;
       peaks.postgres_waiting_samples_by_phase = waitDiagnostics.waitingSamplesByPhase;
-      peaks.postgres_wait_event_type_peaks_by_phase =
-        waitDiagnostics.waitEventTypePeaksByPhase;
-      peaks.postgres_api_wait_event_type_peaks_by_phase =
-        waitDiagnostics.apiWaitEventTypePeaksByPhase;
-      peaks.postgres_lock_event_scope_peaks_by_phase =
-        waitDiagnostics.blockingEventScopePeaksByPhase;
-      peaks.postgres_full_api_pool_waiting_samples =
-        waitDiagnostics.fullApiPoolWaitingSamples;
-      peaks.postgres_full_api_pool_waiting_observed_ms =
-        waitDiagnostics.fullApiPoolWaitingObservedMs;
+      peaks.postgres_wait_event_type_peaks_by_phase = waitDiagnostics.waitEventTypePeaksByPhase;
+      peaks.postgres_api_wait_event_type_peaks_by_phase = waitDiagnostics.apiWaitEventTypePeaksByPhase;
+      peaks.postgres_lock_event_scope_peaks_by_phase = waitDiagnostics.blockingEventScopePeaksByPhase;
+      peaks.postgres_full_api_pool_waiting_samples = waitDiagnostics.fullApiPoolWaitingSamples;
+      peaks.postgres_full_api_pool_waiting_observed_ms = waitDiagnostics.fullApiPoolWaitingObservedMs;
       peaks.postgres_max_consecutive_full_api_pool_waiting_samples =
         waitDiagnostics.maxConsecutiveFullApiPoolWaitingSamples;
-      peaks.postgres_max_consecutive_full_api_pool_waiting_ms =
-        waitDiagnostics.maxConsecutiveFullApiPoolWaitingMs;
+      peaks.postgres_max_consecutive_full_api_pool_waiting_ms = waitDiagnostics.maxConsecutiveFullApiPoolWaitingMs;
       if (connections.lockWaiting > 0) peaks.postgres_samples_with_lock_waiting += 1;
       peaks.postgres_max_connections = connections.maxConnections;
       peaks.postgres_reserved_connections = connections.reservedConnections;
       peaks.samples += 1;
-      await delay(250);
+    },
+    onError: (error) => {
+      void error;
+      peaks.postgres_sample_errors += 1;
     }
-  })();
+  });
+
+  const sampleResources = async (samplePhase: string, forceAll: boolean) => {
+    const sampleStarted = performance.now();
+    const phaseChanged = previousResourcePhase !== samplePhase;
+    previousResourcePhase = samplePhase;
+    const processTreesPromise = sampleProcessTrees(bffPid, redisPid, containerRootPids ?? {});
+    const targets = containerRootPids
+      ? []
+      : containerProbeTargets(containerEntries, resourceCycle, forceAll || phaseChanged);
+    const [processTrees, portableSamples] = await Promise.all([
+      processTreesPromise,
+      Promise.allSettled(
+        targets.map(async ([name, id]) => ({
+          name,
+          ...(await containerRss(id))
+        }))
+      )
+    ]);
+    resourceCycle += 1;
+    if (!processTrees.valid) {
+      peaks.process_tree_sample_errors += 1;
+      if (containerRootPids) {
+        for (const name of Object.keys(containers)) peaks.container_rss_sample_errors[name]! += 1;
+      }
+      throw new Error("process_tree_sample_invalid");
+    }
+    const currentHostCpu = hostCpuTimes();
+    const hostCpuPercent = hostCpuUtilizationPercent(previousHostCpu, currentHostCpu);
+    previousHostCpu = currentHostCpu;
+    const loads = loadavg();
+    if (processTrees.valid) {
+      peaks.bff_rss_bytes = Math.max(peaks.bff_rss_bytes, processTrees.bff.rssBytes);
+      peaks.redis_rss_bytes = Math.max(peaks.redis_rss_bytes, processTrees.redis.rssBytes);
+      peaks.bff_cpu_percent = Math.max(peaks.bff_cpu_percent, processTrees.bff.cpuPercent);
+    } else {
+      peaks.process_tree_sample_errors += 1;
+    }
+    peaks.host_cpu_percent = Math.max(peaks.host_cpu_percent, hostCpuPercent);
+    peaks.bff_host_samples.push({
+      elapsed_ms: round(sampleStarted - DIAGNOSTIC_CLOCK_ORIGIN_MS),
+      phase: samplePhase,
+      process_tree_sample_valid: processTrees.valid,
+      bff_cpu_percent: processTrees.valid ? processTrees.bff.cpuPercent : null,
+      host_cpu_percent: hostCpuPercent,
+      load_average: {
+        one_minute: round(loads[0] ?? 0),
+        five_minutes: round(loads[1] ?? 0),
+        fifteen_minutes: round(loads[2] ?? 0)
+      }
+    });
+    if (containerRootPids) {
+      for (const [name, bytes] of Object.entries(processTrees.containers)) {
+        recordContainerRss(peaks, previousContainerSampleStarted, name, bytes, sampleStarted);
+      }
+    } else {
+      const portableErrors: unknown[] = [];
+      for (let index = 0; index < portableSamples.length; index += 1) {
+        const result = portableSamples[index]!;
+        const name = targets[index]![0];
+        if (result.status === "fulfilled") {
+          recordContainerRss(
+            peaks,
+            previousContainerSampleStarted,
+            result.value.name,
+            result.value.bytes,
+            sampleStarted,
+            result.value.zeroRows
+          );
+        } else {
+          peaks.container_rss_sample_errors[name]! += 1;
+          peaks.container_rss_last_error_codes[name] = containerProbeErrorCode(result.reason);
+          portableErrors.push(result.reason);
+        }
+      }
+      if (portableErrors.length > 0) {
+        throw new AggregateError(portableErrors, "container_rss_probe_failed");
+      }
+    }
+  };
+
+  const resourceLoop = runCapacitySamplerLoop({
+    intervalMs: 250,
+    isRunning: () => running,
+    getPhase: currentPhase,
+    probe: (samplePhase) => sampleResources(samplePhase, false),
+    onError: () => undefined,
+    continueAfterError: true
+  });
+
   return {
     stop: async () => {
       running = false;
-      await loop;
+      const [postgresResult, resourceResult] = await Promise.all([postgresLoop, resourceLoop]);
+      peaks.postgres_sampler = postgresResult;
+      peaks.resource_sampler = resourceResult;
+      peaks.postgres_sample_errors = Math.max(peaks.postgres_sample_errors, postgresResult.errors);
+      try {
+        await sampleResources(currentPhase(), true);
+      } catch {}
       return peaks;
     }
   };
 }
 
-function emptyResourcePeaks(containers: Record<string, string>): ResourcePeaks {
+function recordContainerRss(
+  peaks: ResourcePeaks,
+  previousStarts: Record<string, number>,
+  name: string,
+  bytes: number,
+  sampleStarted: number,
+  zeroRows = 0
+) {
+  if (!(name in peaks.container_rss_bytes) || !Number.isSafeInteger(bytes) || bytes <= 0) {
+    if (name in peaks.container_rss_sample_errors) peaks.container_rss_sample_errors[name]! += 1;
+    throw new Error("container_rss_sample_invalid");
+  }
+  const previous = previousStarts[name];
+  if (previous !== undefined) {
+    peaks.container_rss_max_sample_gap_ms[name] = Math.max(
+      peaks.container_rss_max_sample_gap_ms[name] ?? 0,
+      sampleStarted - previous
+    );
+  }
+  previousStarts[name] = sampleStarted;
+  peaks.container_rss_sample_counts[name]! += 1;
+  peaks.container_rss_zero_rows[name]! += zeroRows;
+  peaks.container_rss_bytes[name] = Math.max(peaks.container_rss_bytes[name] ?? 0, bytes);
+}
+
+function emptySamplerLoopMetrics(): CapacitySamplerLoopMetrics {
+  return {
+    starts: 0,
+    successes: 0,
+    errors: 0,
+    skipped_deadlines: 0,
+    max_gap_ms: 0,
+    widest_gap_phase: null,
+    max_duration_ms: 0,
+    slowest_phase: null
+  };
+}
+
+function emptyResourcePeaks(
+  containers: Record<string, string>,
+  samplerMode: ResourcePeaks["container_rss_sampler_mode"] = platform() === "linux"
+    ? "host_process_tree"
+    : "docker_top_fallback"
+): ResourcePeaks {
+  const containerNames = Object.keys(containers);
   return {
     bff_rss_bytes: 0,
     redis_rss_bytes: 0,
-    container_rss_bytes: Object.fromEntries(Object.keys(containers).map((name) => [name, 0])),
+    container_rss_bytes: Object.fromEntries(containerNames.map((name) => [name, 0])),
+    container_rss_sample_counts: Object.fromEntries(containerNames.map((name) => [name, 0])),
+    container_rss_sample_errors: Object.fromEntries(containerNames.map((name) => [name, 0])),
+    container_rss_last_error_codes: Object.fromEntries(containerNames.map((name) => [name, null])),
+    container_rss_zero_rows: Object.fromEntries(containerNames.map((name) => [name, 0])),
+    container_rss_max_sample_gap_ms: Object.fromEntries(containerNames.map((name) => [name, 0])),
+    container_rss_sampler_mode: samplerMode,
+    postgres_sampler: emptySamplerLoopMetrics(),
+    resource_sampler: emptySamplerLoopMetrics(),
     postgres_connections: 0,
     postgres_workload_connections: 0,
     postgres_runtime_connections: 0,
@@ -1837,6 +1967,40 @@ function processExists(pid: number) {
   }
 }
 
+async function resolveContainerRootPids(containers: Record<string, string>) {
+  if (platform() !== "linux") return null;
+  const entries = Object.entries(containers);
+  const { stdout } = await execFileAsync(
+    "docker",
+    ["inspect", "--format", "{{.Id}}|{{.State.Pid}}|{{.State.Running}}", ...entries.map(([, id]) => id)],
+    { timeout: 3_000 }
+  );
+  const byId = new Map(
+    stdout
+      .trim()
+      .split("\n")
+      .map((line) => {
+        const [id, rawPid, running] = line.split("|");
+        const pid = Number(rawPid);
+        if (!id || running !== "true" || !Number.isSafeInteger(pid) || pid <= 0) {
+          throw new Error("container_root_pid_invalid");
+        }
+        return [id, pid] as const;
+      })
+  );
+  const resolved = Object.fromEntries(
+    entries.map(([name, id]) => {
+      const match = [...byId.entries()].find(([observed]) => observed.startsWith(id) || id.startsWith(observed));
+      if (!match) throw new Error("container_root_pid_missing");
+      return [name, match[1]];
+    })
+  );
+  if (Object.keys(resolved).length !== entries.length) {
+    throw new Error("container_root_pid_cardinality_mismatch");
+  }
+  return resolved;
+}
+
 async function pathExists(path: string) {
   try {
     await access(path);
@@ -1846,25 +2010,38 @@ async function pathExists(path: string) {
   }
 }
 
-async function sampleProcessTrees(bffPid: number, redisPid: number) {
+async function sampleProcessTrees(
+  bffPid: number,
+  redisPid: number,
+  containerRootPids: Record<string, number> = {}
+): Promise<ProcessTreeSample> {
   try {
-    const { stdout } = await execFileAsync(
-      "ps",
-      ["-axo", "pid=,ppid=,rss=,%cpu="],
-      { timeout: 3_000 }
-    );
-    const rows = stdout.trim().split("\n").map((line) => line.trim().split(/\s+/).map(Number));
+    const { stdout } = await execFileAsync("ps", ["-axo", "pid=,ppid=,rss=,%cpu="], {
+      timeout: 3_000
+    });
+    const rows = stdout
+      .trim()
+      .split("\n")
+      .map((line) => line.trim().split(/\s+/).map(Number));
     const logicalCpuCount = Math.max(cpus().length, 1);
+    const containers = Object.fromEntries(
+      Object.entries(containerRootPids).map(([name, pid]) => [
+        name,
+        aggregateProcessTree(rows, pid, logicalCpuCount).rssBytes
+      ])
+    );
     return {
       valid: true,
       bff: aggregateProcessTree(rows, bffPid, logicalCpuCount),
-      redis: aggregateProcessTree(rows, redisPid, logicalCpuCount)
+      redis: aggregateProcessTree(rows, redisPid, logicalCpuCount),
+      containers
     };
   } catch {
     return {
       valid: false,
       bff: { rssBytes: 0, cpuPercent: 0 },
-      redis: { rssBytes: 0, cpuPercent: 0 }
+      redis: { rssBytes: 0, cpuPercent: 0 },
+      containers: {}
     };
   }
 }
@@ -1919,20 +2096,42 @@ function clampPercent(value: number) {
 }
 
 async function containerRss(containerId: string | undefined) {
-  if (!containerId) return 0;
-  try {
-    const { stdout } = await execFileAsync(
-      "docker",
-      ["top", containerId, "-eo", "rss,pid,ppid,comm"],
-      { timeout: 3_000 }
-    );
-    return stdout.trim().split("\n").slice(1).reduce((sum, line) => {
-      const rss = Number(line.trim().split(/\s+/)[0]);
-      return sum + (Number.isFinite(rss) ? rss * 1024 : 0);
-    }, 0);
-  } catch {
-    return 0;
-  }
+  if (!containerId) throw new Error("container_rss_id_missing");
+  const { stdout } = await execFileAsync("docker", ["top", containerId, "-eo", "rss,pid,ppid,comm"], {
+    timeout: 3_000
+  });
+  return parseContainerRssOutput(stdout);
+}
+
+function parseContainerRssOutput(stdout: string) {
+  const rows = stdout.trim().split("\n").slice(1);
+  if (rows.length === 0) throw new Error("container_rss_empty");
+  let zeroRows = 0;
+  const bytes = rows.reduce((sum, line) => {
+    const rss = Number(line.trim().split(/\s+/)[0]);
+    if (!Number.isFinite(rss) || rss < 0) throw new Error("container_rss_invalid");
+    if (rss === 0) {
+      zeroRows += 1;
+      return sum;
+    }
+    return sum + rss * 1024;
+  }, 0);
+  if (!Number.isSafeInteger(bytes) || bytes <= 0) throw new Error("container_rss_invalid");
+  return { bytes, zeroRows };
+}
+
+function containerProbeErrorCode(error: unknown) {
+  if (!(error instanceof Error)) return "container_rss_unexpected_error";
+  if (error.message.startsWith("container_rss_")) return error.message;
+  if (/timeout|timed out/i.test(error.message)) return "container_rss_command_timeout";
+  return "container_rss_command_failed";
+}
+
+function containerProbeTargets(entries: Array<[string, string]>, cycle: number, forceAll: boolean) {
+  if (forceAll || entries.length <= 2) return entries;
+  const pairCount = Math.ceil(entries.length / 2);
+  const start = (cycle % pairCount) * 2;
+  return entries.slice(start, start + 2);
 }
 
 async function buildReport(
@@ -2112,6 +2311,10 @@ async function buildReport(
       max_postgres_buffer_pin_waiting_connections: 0,
       max_postgres_unclassified_waiting_connections: 0,
       max_postgres_waiting_sample_ratio: 0.25,
+      max_sampler_gap_ms: 2_000,
+      min_successful_sampler_samples: 2,
+      max_sampler_errors: 0,
+      max_container_rss_sample_errors: 0,
       oauth_default_max_global_per_action_per_window: 1_000,
       oauth_rate_window_ms: OAUTH_RATE_WINDOW_MS,
       oauth_first_window_capacity: OAUTH_FIRST_WINDOW_CAPACITY,
@@ -2133,6 +2336,8 @@ async function buildReport(
       identity_scope: "synthetic_subjects_not_real_identity_accounts",
       concurrency_scope: "10_concurrent_requests_not_1100_simultaneous_users",
       diagnostic_clock_scope: "monotonic_capacity_executor_origin_shared_by_waves_and_resource_samples",
+      sampler_scope: "independent_monotonic_single_flight_postgres_and_resource_loops",
+      container_rss_sampler_mode: resources.container_rss_sampler_mode,
       wave_diagnostics_scope: "index_cohorts_of_10_observations_may_overlap_in_time_no_scheduling_barrier",
       bff_cpu_scope: "auxiliary_ps_lifetime_average_process_tree_normalized_by_logical_cpus_0_to_100",
       max_bff_host_samples: Math.ceil(CAPACITY_TEST_TIMEOUT_MS / 250) + 1,
@@ -2282,6 +2487,14 @@ async function writeCapacityReport(report: Record<string, unknown>) {
     `- BFF RSS: ${resources.bff_rss_bytes} bytes`,
     `- Storage vertical process-tree RSS: ${resources.storage_vertical_process_tree_rss_bytes} bytes`,
     `- Redis RSS: ${resources.redis_rss_bytes} bytes`,
+    `- Container RSS sampler: ${resources.container_rss_sampler_mode}`,
+    `- Container RSS sample counts: ${JSON.stringify(resources.container_rss_sample_counts)}`,
+    `- Container RSS sample errors: ${JSON.stringify(resources.container_rss_sample_errors)}`,
+    `- Container RSS last error codes: ${JSON.stringify(resources.container_rss_last_error_codes)}`,
+    `- Container RSS zero-RSS process rows: ${JSON.stringify(resources.container_rss_zero_rows)}`,
+    `- Container RSS max gaps: ${JSON.stringify(resources.container_rss_max_sample_gap_ms)}`,
+    `- Postgres sampler: ${JSON.stringify(resources.postgres_sampler)}`,
+    `- Resource sampler: ${JSON.stringify(resources.resource_sampler)}`,
     `- Postgres raw connections: ${resources.postgres_connections}`,
     `- Postgres workload connections (sampler excluded): ${resources.postgres_workload_connections}`,
     `- Postgres runtime/API connections: ${resources.postgres_runtime_connections}/${resources.postgres_api_connections}`,
