@@ -33,6 +33,10 @@ contratos de pricing/Neuro/PIX #60. A migration superadmin foi renumerada para
 `0010_release_candidate`, sequencial a `0009_buyer_multi_seller`, evitando duas
 heads Alembic. Nenhum merge em `main`, deploy ou produção foi executado.
 
+A linha de capacidade #53 e o runtime multi-seller #55 foram incorporados. A
+projeção buyer continua derivada de entitlement ativo e nunca aceita seller do
+browser; a UI/storefront público ainda é o próximo slice desta Issue.
+
 ## O que está funcionando
 
 - OAuth/BFF local — state, nonce, PKCE, sessão opaca e browser sem token;

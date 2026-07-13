@@ -591,9 +591,25 @@ export async function archiveDomainLessonAsset(
 }
 
 export async function readDomainLibrary(sessionId: string, session: ServerSession) {
+  return readDomainBuyerProducts(sessionId, session);
+}
+
+export async function readDomainBuyerProducts(sessionId: string, session: ServerSession) {
   return domainRequest(sessionId, session, {
     method: "GET",
-    path: "/v1/me/library",
+    path: "/v1/me/products",
+    capability: "library.read"
+  });
+}
+
+export async function readDomainBuyerSellerProducts(
+  sessionId: string,
+  session: ServerSession,
+  entitlementId: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/products/${entitlementId}/seller-products`,
     capability: "library.read"
   });
 }

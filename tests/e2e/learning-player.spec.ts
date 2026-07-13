@@ -4,6 +4,15 @@ const entitlementId = "bee105e2-7809-5bf5-874a-d6332dc4a4ef";
 const lessonOne = "a39181dd-c70c-57b3-935d-d97fd834d709";
 const lessonTwo = "c27222bd-9a83-5317-a870-f7076bdc8fc5";
 const assetId = "a6f01626-8b83-55e5-becc-fbab785f1493";
+const sellerId = "4df98a2e-d1dd-5f25-bbea-58b8072a0e7b";
+const productId = "82efefc5-a3c9-5126-a7d1-4918d5428d63";
+const publicationId = "8418ebec-fecc-5765-b461-305801484915";
+const enrollmentId = "14c10114-b046-518d-b6d8-9d9c913d8a8a";
+const courseId = "9a4a73d6-bf11-5429-8582-89434000af44";
+const moduleId = "b67e8100-c7d0-5ed4-a91c-469846eb2091";
+const secondCourseId = "fb740e5c-2d01-5cc2-8397-bb09188d416a";
+const secondModuleId = "ebf42728-a9d9-53da-b68f-4146539f9295";
+const foreignEnrollmentId = "36a59404-d3f3-5309-95d9-258f4303e687";
 
 async function login(page: Page) {
   await page.goto("/");
@@ -16,14 +25,14 @@ async function login(page: Page) {
 function playerEnvelope(selectedLessonId: string, version = 1, firstCompleted = false, resumeLessonId = selectedLessonId) {
   return {
     player: {
-      seller: { id: "seller" },
-      product: { id: "product", slug: "codex-na-pratica", title: "Codex na prática", description: "Curso seguro e direto." },
-      publication: { id: "publication", version: 1, source_sha256: "a".repeat(64) },
+      seller: { id: sellerId },
+      product: { id: productId, slug: "codex-na-pratica", title: "Codex na prática", description: "Curso seguro e direto." },
+      publication: { id: publicationId, version: 1, source_sha256: "a".repeat(64) },
       entitlement_id: entitlementId,
-      enrollment_id: "enrollment",
+      enrollment_id: enrollmentId,
       course: {
-        id: "course", title: "Codex na prática", description: "Curso", position: 0,
-        modules: [{ id: "module", title: "Fundamentos", status: "active", position: 0, lessons: [
+        id: courseId, title: "Codex na prática", description: "Curso", position: 0,
+        modules: [{ id: moduleId, title: "Fundamentos", status: "active", position: 0, lessons: [
           { id: lessonOne, title: "O que é Codex", kind: "text", content: "Conteúdo exclusivo da primeira aula.", status: "active", position: 0 },
           { id: lessonTwo, title: "Preparando o contexto", kind: "text", content: "Conteúdo exclusivo da segunda aula.", status: "active", position: 1 }
         ] }]
@@ -44,9 +53,9 @@ function playerEnvelope(selectedLessonId: string, version = 1, firstCompleted = 
 function secondCourseEnvelope() {
   const response = playerEnvelope(lessonTwo, 1, false, lessonTwo);
   response.player.course = {
-    id: "second-course", title: "Codex avançado", description: "Segundo curso do produto", position: 1,
+    id: secondCourseId, title: "Codex avançado", description: "Segundo curso do produto", position: 1,
     modules: [{
-      id: "second-module", title: "Prática", status: "active", position: 0,
+      id: secondModuleId, title: "Prática", status: "active", position: 0,
       lessons: [{ id: lessonTwo, title: "Preparando o contexto", kind: "text", content: "Conteúdo exclusivo da segunda aula.", status: "active", position: 0 }]
     }]
   };
@@ -64,22 +73,22 @@ async function mockLearningApi(
 ) {
   const mutations: string[] = [];
   let firstLessonReads = 0;
-  await page.route("**/api/library**", async (route) => {
+  const handleLearningRoute = async (route: Route) => {
     const request = route.request();
     const url = new URL(request.url());
-    if (url.pathname === "/api/library" && request.method() === "GET") {
+    if (["/api/library", "/api/me/products"].includes(url.pathname) && request.method() === "GET") {
       return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [{
         entitlement_id: entitlementId,
         resume_lesson_id: options.libraryResume === undefined ? lessonOne : options.libraryResume,
-        seller: { id: "seller", slug: "autonomia-demo", name: "Autonom.ia Demo" },
-        product: { id: "product", slug: "codex-na-pratica", title: "Codex na prática", description: "Curso seguro e direto.", publication_id: "publication", publication_version: 1 },
+        seller: { id: sellerId, slug: "autonomia-demo", name: "Autonom.ia Demo" },
+        product: { id: productId, slug: "codex-na-pratica", title: "Codex na prática", description: "Curso seguro e direto.", publication_id: publicationId, publication_version: 1 },
         progress_percent: 0
       }] }) });
     }
     if (request.method() === "PUT" && url.pathname.endsWith(`/lessons/${lessonOne}/progress`)) {
       mutations.push(request.postData() ?? "");
       return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ progress: {
-        entitlement_id: entitlementId, enrollment_id: options.progressEnrollment ?? "enrollment", lesson_id: lessonOne,
+        entitlement_id: entitlementId, enrollment_id: options.progressEnrollment ?? enrollmentId, lesson_id: lessonOne,
         lesson_progress_percent: 1, course_progress_percent: 0, resume_lesson_id: lessonOne,
         state_version: 2, applied: true
       } }) });
@@ -87,14 +96,14 @@ async function mockLearningApi(
     if (request.method() === "POST" && url.pathname.endsWith(`/lessons/${lessonOne}/complete`)) {
       mutations.push(request.postData() ?? "");
       return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ progress: {
-        entitlement_id: entitlementId, enrollment_id: "enrollment", lesson_id: lessonOne,
+        entitlement_id: entitlementId, enrollment_id: enrollmentId, lesson_id: lessonOne,
         lesson_progress_percent: 100, course_progress_percent: 50, resume_lesson_id: lessonOne,
         state_version: 3, applied: true
       } }) });
     }
     if (request.method() === "PUT" && url.pathname.endsWith(`/lessons/${lessonTwo}/progress`)) {
       return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ progress: {
-        entitlement_id: entitlementId, enrollment_id: "enrollment", lesson_id: lessonTwo,
+        entitlement_id: entitlementId, enrollment_id: enrollmentId, lesson_id: lessonTwo,
         lesson_progress_percent: 1, course_progress_percent: 50, resume_lesson_id: lessonTwo,
         state_version: 4, applied: true
       } }) });
@@ -113,7 +122,9 @@ async function mockLearningApi(
       return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(playerEnvelope(lessonOne)) });
     }
     return route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "unexpected_test_route" }) });
-  });
+  };
+  await page.route("**/api/library**", handleLearningRoute);
+  await page.route("**/api/me/products**", handleLearningRoute);
   return mutations;
 }
 
@@ -192,7 +203,7 @@ test("renders a product without lessons without hiding the shelf", async ({ page
 });
 
 test("rejects a progress response from another enrollment", async ({ page }) => {
-  await mockLearningApi(page, { progressEnrollment: "foreign-enrollment" });
+  await mockLearningApi(page, { progressEnrollment: foreignEnrollmentId });
   await login(page);
   await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
   await expect(page.getByRole("heading", { level: 1, name: "O que é Codex" })).toBeVisible();
