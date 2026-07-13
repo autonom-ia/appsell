@@ -14,6 +14,11 @@ interface ServerSession {
   createdAt: number;
   expiresAt: number;
   tokenRevision: number;
+  identity?: {
+    issuer: string;
+    email: string;
+    emailVerified: true;
+  } | null;
 }
 
 interface ApiRequest {
@@ -49,7 +54,7 @@ export async function syncDomainIdentity(sessionId: string, session: ServerSessi
     path: "/v1/me",
     capability: "identity.sync",
     body: {
-      email: localIdentityEmail(session.subject),
+      email: identityEmail(session),
       email_verified: true
     }
   });
@@ -726,8 +731,9 @@ function configuredApiOrigin() {
   return parsed.origin;
 }
 
-function localIdentityEmail(subject: string) {
-  const demo = demoProfileForSubject(subject);
+function identityEmail(session: ServerSession) {
+  if (session.identity?.emailVerified === true) return session.identity.email;
+  const demo = demoProfileForSubject(session.subject);
   if (demo) return demo.email;
   if (process.env.NODE_ENV === "production") {
     throw new DomainApiError(503, "real_identity_claims_required");

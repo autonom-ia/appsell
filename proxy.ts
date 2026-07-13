@@ -5,13 +5,14 @@ import { oauthService } from "./lib/oauth-service.server";
 import { demoProfileForSubject } from "./lib/demo-config";
 
 export async function proxy(request: NextRequest) {
-  if (process.env.NODE_ENV === "production") {
+  if (process.env.NODE_ENV === "production" && process.env.APPSELL_OAUTH_MODE !== "identity") {
     return NextResponse.redirect(new URL("/", request.url));
   }
 
   try {
     const session = await oauthService().getSession(request.cookies.get(sessionCookieName())?.value);
-    if (!canAccessDemoPreview(session?.subject, process.env.NODE_ENV, process.env)) {
+    const verifiedIdentity = session?.identity?.emailVerified === true;
+    if (!verifiedIdentity && !canAccessDemoPreview(session?.subject, process.env.NODE_ENV, process.env)) {
       return NextResponse.redirect(new URL("/", request.url));
     }
     const demoProfile = demoProfileForSubject(session?.subject);

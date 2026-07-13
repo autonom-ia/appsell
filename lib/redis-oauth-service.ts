@@ -23,6 +23,9 @@ const DEFAULT_RATE_WINDOW_MS = 60_000;
 const DEFAULT_MAX_PER_CLIENT = 120;
 const DEFAULT_MAX_GLOBAL = 1_000;
 const DEFAULT_RECEIPT_TTL_MS = 30_000;
+const DEFAULT_IDENTITY_CALLBACK_LEASE_TTL_MS = 30_000;
+const DEFAULT_IDENTITY_CALLBACK_WAIT_TIMEOUT_MS = 35_000;
+const DEFAULT_IDENTITY_CALLBACK_POLL_INTERVAL_MS = 20;
 const DEFAULT_REFRESH_LEASE_TTL_MS = 2_000;
 const DEFAULT_REFRESH_PROVIDER_TIMEOUT_MS = 1_000;
 const DEFAULT_REFRESH_WAIT_TIMEOUT_MS = 5_000;
@@ -35,6 +38,27 @@ interface LoginTransaction {
   state: string;
   nonce: string;
   challenge: string;
+  verifier: string;
+}
+
+export interface IdentityAuthorizationCodeExchanger {
+  exchangeAuthorizationCode(input: {
+    code: string;
+    codeVerifier: string;
+    expectedNonce: string;
+  }): Promise<{
+    accessToken: string;
+    refreshToken?: string;
+    tokenType: "Bearer";
+    expiresAt: number;
+    refreshTokenExpiresAt?: number;
+    identity: {
+      issuer: string;
+      sub: string;
+      email: string;
+      emailVerified: true;
+    };
+  }>;
 }
 
 interface AuthorizationCode {
@@ -94,6 +118,9 @@ export interface RedisOAuthOptions {
   refreshProviderTimeoutMs?: number;
   refreshWaitTimeoutMs?: number;
   refreshPollIntervalMs?: number;
+  identityCallbackLeaseTtlMs?: number;
+  identityCallbackWaitTimeoutMs?: number;
+  identityCallbackPollIntervalMs?: number;
 }
 
 const RATE_LIMIT_SCRIPT = `
@@ -140,6 +167,69 @@ redis.call('PSETEX', KEYS[5], ARGV[3], ARGV[6])
 redis.call('PSETEX', KEYS[4], ARGV[5], ARGV[4])
 redis.call('DEL', KEYS[1], KEYS[2])
 return 'OK'
+`;
+
+const ACQUIRE_IDENTITY_CALLBACK_SCRIPT = `
+local transaction_json = redis.call('GET', KEYS[1])
+if not transaction_json then
+  local receipt = redis.call('GET', KEYS[4])
+  if receipt and receipt == ARGV[5] then
+    local session_exists = redis.call('EXISTS', KEYS[3])
+    local vault_exists = redis.call('EXISTS', KEYS[5])
+    if session_exists == 1 and vault_exists == 1 then return 'RETRY_OK' end
+    if session_exists ~= vault_exists then return 'PAIR_INTEGRITY_ERROR' end
+  end
+  return 'TRANSACTION_MISSING'
+end
+if transaction_json ~= ARGV[2] then return 'TRANSACTION_INTEGRITY_ERROR' end
+local transaction = cjson.decode(transaction_json)
+if transaction.state ~= ARGV[1] then return 'INVALID_STATE' end
+local session_exists = redis.call('EXISTS', KEYS[3])
+local vault_exists = redis.call('EXISTS', KEYS[5])
+if session_exists ~= vault_exists then return 'PAIR_INTEGRITY_ERROR' end
+if session_exists == 1 then return 'PAIR_COLLISION' end
+local claim = redis.call('GET', KEYS[2])
+if claim == 'ambiguous' then return 'AMBIGUOUS' end
+if claim then return 'BUSY' end
+local acquired = redis.call('SET', KEYS[2], ARGV[3], 'PX', ARGV[4], 'NX')
+if not acquired then return 'BUSY' end
+return 'ACQUIRED'
+`;
+
+const COMMIT_IDENTITY_CALLBACK_SCRIPT = `
+local transaction_json = redis.call('GET', KEYS[1])
+if not transaction_json then
+  local receipt = redis.call('GET', KEYS[4])
+  if receipt and receipt == ARGV[6] then
+    local session_exists = redis.call('EXISTS', KEYS[3])
+    local vault_exists = redis.call('EXISTS', KEYS[5])
+    if session_exists == 1 and vault_exists == 1 then return 'RETRY_OK' end
+    if session_exists ~= vault_exists then return 'PAIR_INTEGRITY_ERROR' end
+  end
+  return 'TRANSACTION_MISSING'
+end
+if transaction_json ~= ARGV[2] then return 'TRANSACTION_INTEGRITY_ERROR' end
+if redis.call('GET', KEYS[2]) ~= ARGV[3] then return 'STALE_CLAIM' end
+local transaction = cjson.decode(transaction_json)
+if transaction.state ~= ARGV[1] then return 'INVALID_STATE' end
+if redis.call('EXISTS', KEYS[3]) == 1 or redis.call('EXISTS', KEYS[5]) == 1 then return 'PAIR_COLLISION' end
+redis.call('PSETEX', KEYS[3], ARGV[5], ARGV[4])
+redis.call('PSETEX', KEYS[5], ARGV[5], ARGV[8])
+redis.call('PSETEX', KEYS[4], ARGV[7], ARGV[6])
+redis.call('DEL', KEYS[1], KEYS[2])
+return 'OK'
+`;
+
+const MARK_IDENTITY_CALLBACK_AMBIGUOUS_SCRIPT = `
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+if redis.call('GET', KEYS[2]) ~= ARGV[2] then return 0 end
+local ttl = redis.call('PTTL', KEYS[1])
+if ttl <= 0 then
+  redis.call('DEL', KEYS[2])
+  return 0
+end
+redis.call('PSETEX', KEYS[2], ttl, 'ambiguous')
+return 1
 `;
 
 const READ_SESSION_VAULT_SCRIPT = `
@@ -315,6 +405,7 @@ export class OAuthRefreshUnavailableError extends OAuthFlowError {}
 export class OAuthRefreshAmbiguousError extends OAuthFlowError {}
 export class OAuthRefreshInvalidGrantError extends OAuthFlowError {}
 export class OAuthRefreshRevisionError extends OAuthFlowError {}
+export class OAuthIdentityCallbackUnavailableError extends OAuthFlowError {}
 
 export class RedisOAuthService {
   private readonly redis: Redis;
@@ -332,6 +423,9 @@ export class RedisOAuthService {
   private readonly refreshProviderTimeoutMs: number;
   private readonly refreshWaitTimeoutMs: number;
   private readonly refreshPollIntervalMs: number;
+  private readonly identityCallbackLeaseTtlMs: number;
+  private readonly identityCallbackWaitTimeoutMs: number;
+  private readonly identityCallbackPollIntervalMs: number;
   private connectPromise: Promise<void> | undefined;
 
   constructor(options: RedisOAuthOptions) {
@@ -350,6 +444,9 @@ export class RedisOAuthService {
     this.refreshProviderTimeoutMs = options.refreshProviderTimeoutMs ?? DEFAULT_REFRESH_PROVIDER_TIMEOUT_MS;
     this.refreshWaitTimeoutMs = options.refreshWaitTimeoutMs ?? DEFAULT_REFRESH_WAIT_TIMEOUT_MS;
     this.refreshPollIntervalMs = options.refreshPollIntervalMs ?? DEFAULT_REFRESH_POLL_INTERVAL_MS;
+    this.identityCallbackLeaseTtlMs = options.identityCallbackLeaseTtlMs ?? DEFAULT_IDENTITY_CALLBACK_LEASE_TTL_MS;
+    this.identityCallbackWaitTimeoutMs = options.identityCallbackWaitTimeoutMs ?? DEFAULT_IDENTITY_CALLBACK_WAIT_TIMEOUT_MS;
+    this.identityCallbackPollIntervalMs = options.identityCallbackPollIntervalMs ?? DEFAULT_IDENTITY_CALLBACK_POLL_INTERVAL_MS;
     this.redis = new Redis(options.redisUrl, {
       lazyConnect: true,
       enableOfflineQueue: false,
@@ -389,7 +486,8 @@ export class RedisOAuthService {
       const transaction: LoginTransaction = {
         state: randomOpaque(),
         nonce: randomOpaque(),
-        challenge: pkceChallenge(verifier)
+        challenge: pkceChallenge(verifier),
+        verifier
       };
       await this.setUnique(this.key("tx", transactionId), transaction, this.transactionTtlMs);
       return {
@@ -509,6 +607,154 @@ export class RedisOAuthService {
     });
   }
 
+  async callbackIdentity(
+    input: { transactionId?: string; code?: string; state?: string },
+    exchanger: IdentityAuthorizationCodeExchanger
+  ) {
+    if (!input.transactionId || !input.code || !input.state) {
+      throw new OAuthFlowError("Missing callback parameters.");
+    }
+    if (!exchanger || typeof exchanger.exchangeAuthorizationCode !== "function") {
+      throw new OAuthFlowError("Identity OAuth provider is unavailable.");
+    }
+    const transactionId = input.transactionId;
+    const code = input.code;
+    const state = input.state;
+    return this.withRedis(async () => {
+      const sessionId = hmacSha256(this.sessionHmacKey, transactionId);
+      const callbackFingerprint = sha256(`${code}\0${state}`);
+      const rawTransaction = await this.redis.get(this.key("tx", transactionId));
+      if (!rawTransaction) {
+        if (await this.isValidIdentityCallbackRetry(transactionId, sessionId, callbackFingerprint)) {
+          return sessionId;
+        }
+        throw new OAuthFlowError("Login transaction expired.");
+      }
+      const transaction = parseLoginTransaction(rawTransaction);
+      if (!safeEqual(transaction.state, state)) throw new OAuthFlowError("Invalid OAuth state.");
+      const claimOwner = randomOpaque(24);
+      const acquisition = await this.redis.eval(
+        ACQUIRE_IDENTITY_CALLBACK_SCRIPT,
+        5,
+        this.key("tx", transactionId),
+        this.key("identity-callback-claim", transactionId),
+        this.key("session", sessionId),
+        this.key("receipt", transactionId),
+        this.key("vault", sessionId),
+        state,
+        rawTransaction,
+        claimOwner,
+        String(this.identityCallbackLeaseTtlMs),
+        callbackFingerprint
+      );
+      switch (acquisition) {
+        case "RETRY_OK": {
+          if (await this.isValidIdentityCallbackRetry(transactionId, sessionId, callbackFingerprint)) {
+            return sessionId;
+          }
+          throw new OAuthVaultIntegrityError("OAuth session vault integrity failure.");
+        }
+        case "BUSY":
+          return this.waitForIdentityCallbackWinner(transactionId, sessionId, callbackFingerprint);
+        case "AMBIGUOUS":
+          throw new OAuthIdentityCallbackUnavailableError("Identity callback outcome is ambiguous.");
+        case "TRANSACTION_MISSING": throw new OAuthFlowError("Login transaction expired.");
+        case "INVALID_STATE": throw new OAuthFlowError("Invalid OAuth state.");
+        case "TRANSACTION_INTEGRITY_ERROR":
+        case "PAIR_INTEGRITY_ERROR":
+          throw new OAuthVaultIntegrityError("OAuth session vault integrity failure.");
+        case "PAIR_COLLISION": throw new OAuthFlowError("Could not create session vault.");
+        case "ACQUIRED": break;
+        default: throw new OAuthFlowError("Could not coordinate identity callback.");
+      }
+
+      try {
+        const verified = await exchanger.exchangeAuthorizationCode({
+          code,
+          codeVerifier: transaction.verifier,
+          expectedNonce: transaction.nonce
+        });
+        if (
+          verified.tokenType !== "Bearer" ||
+          !positiveSafeInteger(verified.expiresAt) ||
+          verified.expiresAt <= Date.now() ||
+          !verified.refreshToken ||
+          !positiveSafeInteger(verified.refreshTokenExpiresAt) ||
+          verified.refreshTokenExpiresAt <= verified.expiresAt
+        ) {
+          throw new OAuthFlowError("Identity refresh grant is unavailable.");
+        }
+        const now = Date.now();
+        const effectiveTtlMs = Math.min(this.sessionTtlMs, verified.refreshTokenExpiresAt - now);
+        if (!positiveSafeInteger(effectiveTtlMs)) {
+          throw new OAuthFlowError("Identity session already expired.");
+        }
+        const session: SessionRecord = {
+          subject: verified.identity.sub,
+          createdAt: now,
+          expiresAt: now + effectiveTtlMs,
+          tokenRevision: 1
+        };
+        const tokenBundle: TokenBundle = {
+          subject: verified.identity.sub,
+          tokenType: "Bearer",
+          accessToken: verified.accessToken,
+          refreshToken: verified.refreshToken,
+          accessTokenExpiresAt: verified.expiresAt,
+          refreshTokenExpiresAt: verified.refreshTokenExpiresAt,
+          scopes: ["email", "openid", "profile"],
+          revision: 1,
+          identity: {
+            issuer: verified.identity.issuer,
+            email: verified.identity.email,
+            emailVerified: true
+          }
+        };
+        const vaultEnvelope = await this.tokenVault.seal(
+          tokenBundle,
+          this.vaultContext(sessionId, session.subject, session.tokenRevision)
+        );
+        const result = await this.redis.eval(
+          COMMIT_IDENTITY_CALLBACK_SCRIPT,
+          5,
+          this.key("tx", transactionId),
+          this.key("identity-callback-claim", transactionId),
+          this.key("session", sessionId),
+          this.key("receipt", transactionId),
+          this.key("vault", sessionId),
+          state,
+          rawTransaction,
+          claimOwner,
+          JSON.stringify(session),
+          String(effectiveTtlMs),
+          callbackFingerprint,
+          String(Math.min(this.receiptTtlMs, effectiveTtlMs)),
+          vaultEnvelope
+        );
+        switch (result) {
+          case "OK": return sessionId;
+          case "RETRY_OK": {
+            if (await this.isValidIdentityCallbackRetry(transactionId, sessionId, callbackFingerprint)) {
+              return sessionId;
+            }
+            throw new OAuthVaultIntegrityError("OAuth session vault integrity failure.");
+          }
+          case "TRANSACTION_MISSING": throw new OAuthIdentityCallbackUnavailableError("Identity callback outcome is ambiguous.");
+          case "STALE_CLAIM": throw new OAuthIdentityCallbackUnavailableError("Identity callback claim expired.");
+          case "INVALID_STATE": throw new OAuthFlowError("Invalid OAuth state.");
+          case "TRANSACTION_INTEGRITY_ERROR":
+          case "PAIR_INTEGRITY_ERROR":
+            throw new OAuthVaultIntegrityError("OAuth session vault integrity failure.");
+          case "PAIR_COLLISION": throw new OAuthFlowError("Could not create session vault.");
+          default: throw new OAuthIdentityCallbackUnavailableError("Could not commit identity session.");
+        }
+      } catch (error) {
+        await this.markIdentityCallbackAmbiguous(transactionId, rawTransaction, claimOwner).catch(() => undefined);
+        throw error;
+      }
+    }, isIdentityClientError);
+  }
+
   async getSession(sessionId?: string) {
     if (!sessionId) return null;
     return this.withRedis(async () => {
@@ -519,7 +765,8 @@ export class RedisOAuthService {
         subject: session.subject,
         createdAt: session.createdAt,
         expiresAt: session.expiresAt,
-        tokenRevision: session.tokenRevision
+        tokenRevision: session.tokenRevision,
+        identity: current.bundle.identity ?? null
       };
     });
   }
@@ -664,6 +911,58 @@ export class RedisOAuthService {
     return { session, bundle };
   }
 
+  private async isValidIdentityCallbackRetry(
+    transactionId: string,
+    sessionId: string,
+    callbackFingerprint: string
+  ) {
+    const receipt = await this.redis.get(this.key("receipt", transactionId));
+    if (!receipt || !safeEqual(receipt, callbackFingerprint)) return false;
+    const pair = await this.readSessionVaultPair(sessionId);
+    if (!pair) throw new OAuthVaultIntegrityError("OAuth session vault integrity failure.");
+    const session = parseSessionRecord(pair.session);
+    const bundle = await this.tokenVault.open(
+      pair.vault,
+      this.vaultContext(sessionId, session.subject, session.tokenRevision)
+    );
+    assertSessionBundleRevision(session, bundle);
+    return true;
+  }
+
+  private async waitForIdentityCallbackWinner(
+    transactionId: string,
+    sessionId: string,
+    callbackFingerprint: string
+  ) {
+    const deadline = Date.now() + this.identityCallbackWaitTimeoutMs;
+    while (Date.now() <= deadline) {
+      if (await this.isValidIdentityCallbackRetry(transactionId, sessionId, callbackFingerprint)) {
+        return sessionId;
+      }
+      const claim = await this.redis.get(this.key("identity-callback-claim", transactionId));
+      if (claim === "ambiguous") {
+        throw new OAuthIdentityCallbackUnavailableError("Identity callback outcome is ambiguous.");
+      }
+      await sleep(this.identityCallbackPollIntervalMs);
+    }
+    throw new OAuthIdentityCallbackUnavailableError("Timed out waiting for identity callback coordination.");
+  }
+
+  private async markIdentityCallbackAmbiguous(
+    transactionId: string,
+    rawTransaction: string,
+    claimOwner: string
+  ) {
+    await this.redis.eval(
+      MARK_IDENTITY_CALLBACK_AMBIGUOUS_SCRIPT,
+      2,
+      this.key("tx", transactionId),
+      this.key("identity-callback-claim", transactionId),
+      rawTransaction,
+      claimOwner
+    );
+  }
+
   private async acquireRefreshLease(
     sessionId: string,
     expectedRevision: number
@@ -756,7 +1055,8 @@ export class RedisOAuthService {
       accessTokenExpiresAt: providerResult.accessTokenExpiresAt,
       refreshTokenExpiresAt: providerResult.refreshTokenExpiresAt,
       scopes: normalizedScopes,
-      revision: nextRevision
+      revision: nextRevision,
+      ...(current.bundle.identity ? { identity: current.bundle.identity } : {})
     };
     const nextSession: SessionRecord = { ...current.session, tokenRevision: nextRevision };
     let nextEnvelope: string;
@@ -950,11 +1250,12 @@ export class RedisOAuthService {
     throw new OAuthRefreshUnavailableError("Token refresh winner is not available.");
   }
 
-  private async withRedis<T>(operation: () => Promise<T>) {
+  private async withRedis<T>(operation: () => Promise<T>, passthrough: (error: unknown) => boolean = () => false) {
     try {
       await this.ensureConnected();
       return await operation();
     } catch (error) {
+      if (passthrough(error)) throw error;
       if (error instanceof OAuthFlowError) throw error;
       if (error instanceof TokenVaultConfigurationError) {
         throw new OAuthVaultConfigurationError("Token vault configuration is unavailable.");
@@ -965,6 +1266,19 @@ export class RedisOAuthService {
       throw new OAuthStoreUnavailableError("OAuth store unavailable.");
     }
   }
+}
+
+function isIdentityClientError(error: unknown) {
+  return error instanceof Error && [
+    "IdentityOAuthAmbiguousError",
+    "IdentityOAuthConfigurationError",
+    "IdentityOAuthProtocolError",
+    "IdentityOAuthUnavailableError"
+  ].includes(error.name);
+}
+
+export function isOAuthIdentityCallbackUnavailable(error: unknown) {
+  return error instanceof OAuthIdentityCallbackUnavailableError;
 }
 
 export function isOAuthStoreUnavailable(error: unknown) {
@@ -1000,7 +1314,10 @@ function validateConfiguration(options: RedisOAuthOptions) {
     ["refresh lease TTL", options.refreshLeaseTtlMs ?? DEFAULT_REFRESH_LEASE_TTL_MS],
     ["refresh provider timeout", options.refreshProviderTimeoutMs ?? DEFAULT_REFRESH_PROVIDER_TIMEOUT_MS],
     ["refresh wait timeout", options.refreshWaitTimeoutMs ?? DEFAULT_REFRESH_WAIT_TIMEOUT_MS],
-    ["refresh poll interval", options.refreshPollIntervalMs ?? DEFAULT_REFRESH_POLL_INTERVAL_MS]
+    ["refresh poll interval", options.refreshPollIntervalMs ?? DEFAULT_REFRESH_POLL_INTERVAL_MS],
+    ["identity callback lease TTL", options.identityCallbackLeaseTtlMs ?? DEFAULT_IDENTITY_CALLBACK_LEASE_TTL_MS],
+    ["identity callback wait timeout", options.identityCallbackWaitTimeoutMs ?? DEFAULT_IDENTITY_CALLBACK_WAIT_TIMEOUT_MS],
+    ["identity callback poll interval", options.identityCallbackPollIntervalMs ?? DEFAULT_IDENTITY_CALLBACK_POLL_INTERVAL_MS]
   ] as const) {
     if (!Number.isSafeInteger(value) || value <= 0) {
       throw new OAuthStoreConfigurationError(`${label} must be a positive integer.`);
@@ -1015,6 +1332,15 @@ function validateConfiguration(options: RedisOAuthOptions) {
   }
   if (refreshWaitTimeoutMs < refreshPollIntervalMs) {
     throw new OAuthStoreConfigurationError("Refresh wait timeout must be at least one poll interval.");
+  }
+  const identityCallbackLeaseTtlMs = options.identityCallbackLeaseTtlMs ?? DEFAULT_IDENTITY_CALLBACK_LEASE_TTL_MS;
+  const identityCallbackWaitTimeoutMs = options.identityCallbackWaitTimeoutMs ?? DEFAULT_IDENTITY_CALLBACK_WAIT_TIMEOUT_MS;
+  const identityCallbackPollIntervalMs = options.identityCallbackPollIntervalMs ?? DEFAULT_IDENTITY_CALLBACK_POLL_INTERVAL_MS;
+  if (identityCallbackLeaseTtlMs <= identityCallbackPollIntervalMs) {
+    throw new OAuthStoreConfigurationError("Identity callback lease TTL must exceed its poll interval.");
+  }
+  if (identityCallbackWaitTimeoutMs < identityCallbackLeaseTtlMs) {
+    throw new OAuthStoreConfigurationError("Identity callback wait timeout must cover the callback lease TTL.");
   }
   if (!Buffer.isBuffer(options.sessionHmacKey) || options.sessionHmacKey.length !== 32) {
     throw new OAuthStoreConfigurationError("APPSELL_SESSION_HMAC_KEY_B64 must decode to exactly 32 bytes.");
@@ -1092,6 +1418,30 @@ function parseAuthorizationCode(value: string | null, key: Buffer): Authorizatio
     throw new OAuthVaultIntegrityError("OAuth authorization code integrity failure.");
   }
   return authorizationCode;
+}
+
+function parseLoginTransaction(value: string): LoginTransaction {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new OAuthVaultIntegrityError("OAuth login transaction integrity failure.");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new OAuthVaultIntegrityError("OAuth login transaction integrity failure.");
+  }
+  const record = parsed as Record<string, unknown>;
+  if (
+    Object.keys(record).sort().join(",") !== "challenge,nonce,state,verifier" ||
+    typeof record.state !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(record.state) ||
+    typeof record.nonce !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(record.nonce) ||
+    typeof record.challenge !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(record.challenge) ||
+    typeof record.verifier !== "string" || !/^[A-Za-z0-9_-]{64}$/.test(record.verifier) ||
+    !safeEqual(pkceChallenge(record.verifier), record.challenge)
+  ) {
+    throw new OAuthVaultIntegrityError("OAuth login transaction integrity failure.");
+  }
+  return record as unknown as LoginTransaction;
 }
 
 function assertSessionBundleRevision(session: SessionRecord, bundle: TokenBundle) {

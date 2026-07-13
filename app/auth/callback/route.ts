@@ -1,5 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { oauthService } from "@/lib/oauth-service.server";
+import {
+  IdentityOAuthAmbiguousError,
+  IdentityOAuthConfigurationError,
+  IdentityOAuthUnavailableError
+} from "@/lib/identity-oauth-client.server";
+import {
+  identityOAuthClient,
+  isOAuthRuntimeConfigurationError,
+  oauthRuntimeMode,
+  oauthService
+} from "@/lib/oauth-service.server";
 import {
   csrfCookieName,
   csrfCookieOptions,
@@ -19,7 +29,10 @@ import {
   PUBLISH_PRODUCT_DRAFT_CSRF_ACTION,
   UPDATE_PRODUCT_DRAFT_CSRF_ACTION
 } from "@/lib/mutation-protection.server";
-import { isOAuthStoreUnavailable } from "@/lib/redis-oauth-service";
+import {
+  isOAuthIdentityCallbackUnavailable,
+  isOAuthStoreUnavailable
+} from "@/lib/redis-oauth-service";
 import { configuredPublicOrigin } from "@/lib/public-origin";
 import { DomainApiError, isDomainApiConfigured, syncDomainIdentity } from "@/lib/internal-api-client.server";
 import { ONBOARD_SELLER_CSRF_ACTION } from "@/lib/mutation-protection.server";
@@ -28,20 +41,16 @@ import { demoProfileForSubject } from "@/lib/demo-config";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
-  if (process.env.NODE_ENV === "production") {
-    const response = NextResponse.json({ error: "identity_not_configured" }, {
-      status: 503,
-      headers: { "cache-control": "no-store" }
-    });
-    expireTransactionCookie(response);
-    return response;
-  }
   try {
-    const sessionId = await oauthService().callback({
+    const mode = oauthRuntimeMode();
+    const callbackInput = {
       transactionId: request.cookies.get(transactionCookieName())?.value,
       code: request.nextUrl.searchParams.get("code") ?? undefined,
       state: request.nextUrl.searchParams.get("state") ?? undefined
-    });
+    };
+    const sessionId = mode === "identity"
+      ? await oauthService().callbackIdentity(callbackInput, identityOAuthClient())
+      : await oauthService().callback(callbackInput);
     const session = await oauthService().getSession(sessionId);
     if (!session) throw new DomainApiError(503, "session_unavailable_after_callback");
     if (isDomainApiConfigured()) {
@@ -66,13 +75,25 @@ export async function GET(request: NextRequest) {
     response.headers.set("cache-control", "no-store");
     return response;
   } catch (error) {
-    return NextResponse.json({
-      error: isOAuthStoreUnavailable(error) ? "oauth_store_unavailable" :
+    const configurationError = isOAuthRuntimeConfigurationError(error) ||
+      error instanceof IdentityOAuthConfigurationError;
+    const unavailable = error instanceof IdentityOAuthUnavailableError;
+    const ambiguous = error instanceof IdentityOAuthAmbiguousError ||
+      isOAuthIdentityCallbackUnavailable(error);
+    const response = NextResponse.json({
+      error: configurationError ? "identity_not_configured" :
+        ambiguous ? "identity_callback_ambiguous" :
+        unavailable ? "identity_unavailable" :
+        isOAuthStoreUnavailable(error) ? "oauth_store_unavailable" :
         error instanceof DomainApiError ? error.code : "invalid_oauth_callback"
     }, {
-      status: isOAuthStoreUnavailable(error) || error instanceof DomainApiError ? 503 : 400,
+      status: configurationError || ambiguous || unavailable || isOAuthStoreUnavailable(error) || error instanceof DomainApiError
+        ? 503
+        : 400,
       headers: { "cache-control": "no-store" }
     });
+    if (configurationError) expireTransactionCookie(response);
+    return response;
   }
 }
 
