@@ -24,4 +24,22 @@ test("fails closed when the real Identity backend is not configured", async ({ r
   expect(session.status()).toBe(401);
   expect(session.headers()["cache-control"]).toBe("no-store");
   expect(await session.json()).toEqual({ authenticated: false });
+
+  const inspectionState = await request.get("/api/platform/demo-inspections");
+  expect(inspectionState.status()).toBe(404);
+  expect(inspectionState.headers()["cache-control"]).toBe("no-store");
+  expect(await inspectionState.json()).toEqual({ error: "not_found" });
+
+  const inspection = await request.post("/api/platform/demo-inspections", {
+    form: { reason: "Production must fail closed", ttl_seconds: "300" }
+  });
+  expect(inspection.status()).toBe(404);
+  expect(inspection.headers()["cache-control"]).toBe("no-store");
+  expect(await inspection.json()).toEqual({ error: "not_found" });
+
+  const revokeInspection = await request.post("/api/platform/demo-inspections/revoke", {
+    form: { reason: "Production must fail closed" }
+  });
+  expect(revokeInspection.status()).toBe(404);
+  expect(await revokeInspection.json()).toEqual({ error: "not_found" });
 });

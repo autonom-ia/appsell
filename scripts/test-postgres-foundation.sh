@@ -109,10 +109,12 @@ uv run --project apps/api pytest \
   apps/api/tests/test_postgres_product_publication.py \
   apps/api/tests/test_postgres_curriculum.py \
   apps/api/tests/test_postgres_demo_learning.py \
+  apps/api/tests/test_postgres_superadmin_inspection.py \
   apps/api/tests/test_demo_codex_pdfs.py \
   apps/api/tests/test_reset_demo_tenant.py \
   apps/api/tests/test_api_catalog.py \
-  apps/api/tests/test_api_onboarding.py
+  apps/api/tests/test_api_onboarding.py \
+  apps/api/tests/test_api_superadmin_inspection.py
 if uv run --project apps/api python -m appsell_api.configure_context_key 2>/dev/null; then
   echo "configure_context_key re-enabled a consumed bootstrap" >&2
   exit 1
@@ -131,5 +133,7 @@ curl --fail --silent "http://127.0.0.1:${api_port}/health/ready"
 APPSELL_TEST_DOMAIN_API_URL="http://127.0.0.1:${api_port}" \
 APPSELL_LOCAL_IDENTITY_EMAIL="creator@example.test" \
 pnpm exec vitest run --no-file-parallelism \
-  tests/bff-api-onboarding.test.ts tests/bff-demo-library.test.ts
+  tests/bff-api-onboarding.test.ts \
+  tests/bff-demo-library.test.ts \
+  tests/bff-superadmin-inspection.test.ts
 git diff --exit-code -- next-env.d.ts tsconfig.json

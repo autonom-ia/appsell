@@ -12,6 +12,8 @@ export const CREATE_CURRICULUM_CSRF_ACTION = "POST:/api/curriculum";
 export const UPDATE_CURRICULUM_CSRF_ACTION = "PATCH:/api/curriculum";
 export const REORDER_CURRICULUM_CSRF_ACTION = "PUT:/api/curriculum/order";
 export const ARCHIVE_CURRICULUM_CSRF_ACTION = "POST:/api/curriculum/archive";
+export const START_DEMO_INSPECTION_CSRF_ACTION = "POST:/api/platform/demo-inspections";
+export const REVOKE_DEMO_INSPECTION_CSRF_ACTION = "POST:/api/platform/demo-inspections/revoke";
 
 export function csrfTokenForSession(sessionId: string, action: string) {
   return deriveCsrfToken(sessionId, action, csrfKey());

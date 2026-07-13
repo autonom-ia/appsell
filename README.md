@@ -158,6 +158,23 @@ fora de Local/CI, DSN fora de loopback ou banco sem o marcador explícito; o
 modo demo também recusa redirectors libpq de rede/serviço (`PGHOST*`, `PGPORT`,
 `PGDATABASE`, `PGSERVICE*`, `PGSYSCONFDIR`) e `NODE_ENV=production`.
 
+#### Inspeção superadmin da demo
+
+O fluxo `/platform/demo-inspection` é uma projeção temporária, read-only e
+auditada da tenant demo. Ele não impersona o seller, não cria membership e não
+expõe PII de compradores, conteúdo privado, billing, assets ou secrets. O
+seller inspecionado é fixado no servidor; formulário, query string e cookie não
+podem selecionar outra tenant. Cada ticket tem TTL máximo de 15 minutos, guarda
+somente o SHA-256 do token no PostgreSQL e exige revogação explícita ou expiração.
+
+A persona sintética `comercial@autonomia.site` permanece oculta da landing e só
+existe quando `APPSELL_DEMO_ENABLED=true` e
+`APPSELL_DEMO_SUPERADMIN_ENABLED=true` em Local/CI. Essas flags **não concedem**
+o papel: o callback ainda exige um `platform_superadmin` ativo vinculado ao
+issuer + `sub`. Em produção, persona e APIs de inspeção falham fechado. O e-mail
+nunca é usado como autorização permanente e não representa uma conta Identity
+real.
+
 ### Ponte BFF→API e onboarding seller Local/CI
 
 O BFF sincroniza a identidade local na API e assina cada chamada interna com um

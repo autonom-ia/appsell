@@ -9,6 +9,7 @@ import { allowUnsavedNavigation, DIRTY_HISTORY_BLOCKED_EVENT, DIRTY_HISTORY_CONT
 import {
   DEMO_ADMIN_EMAIL,
   DEMO_BUYER_EMAIL,
+  DEMO_SUPERADMIN_EMAIL,
   type DemoProfile
 } from "@/lib/demo-config";
 
@@ -28,11 +29,18 @@ const navigation = [
   { href: "/library", label: "Minha biblioteca", mark: "library" },
 ] as const;
 
-function NavIcon({ name }: { name: (typeof navigation)[number]["mark"] }) {
+const platformNavigation = [
+  { href: "/platform/demo-inspection", label: "Inspeção demo", mark: "inspection" }
+] as const;
+
+type NavigationMark = (typeof navigation)[number]["mark"] | (typeof platformNavigation)[number]["mark"];
+
+function NavIcon({ name }: { name: NavigationMark }) {
   const paths = {
     home: <><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M9 21v-7h6v7"/></>,
     products: <><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M8 4v16M8 9h13"/></>,
     library: <><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/></>,
+    inspection: <><path d="M12 3 4.5 6v5.5c0 4.8 3.1 8 7.5 9.5 4.4-1.5 7.5-4.7 7.5-9.5V6L12 3Z"/><path d="M9.5 12.2 11.2 14l3.6-4"/></>
   };
   return <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
 }
@@ -62,12 +70,17 @@ export function AppShell({ children }: AppShellProps) {
   const dirtyDialogTrigger = useRef<HTMLElement | null>(null);
   const allowNextLogout = useRef(false);
   const demoProfile = profileState.status === "ready" ? profileState.profile : undefined;
+  const platformMode = pathname.startsWith("/platform/");
   const visibleNavigation = profileState.status !== "ready"
     ? []
-    : demoProfile?.persona === "buyer"
+    : platformMode
+      ? platformNavigation
+      : demoProfile?.persona === "buyer"
       ? navigation.filter((item) => item.href === "/library")
       : navigation;
-  const home = profileState.status === "ready" ? demoProfile?.home ?? "/dashboard" : pathname;
+  const home = platformMode
+    ? "/platform/demo-inspection"
+    : profileState.status === "ready" ? demoProfile?.home ?? "/dashboard" : pathname;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -159,7 +172,7 @@ export function AppShell({ children }: AppShellProps) {
           <span><strong>sell<span>.</span></strong><small>by Autonom.ia</small></span>
         </Link>
         <nav>
-          <p className="nav-eyebrow">{profileState.status === "loading" ? "Carregando acesso" : profileState.status === "failed" ? "Acesso indisponível" : demoProfile?.persona === "buyer" ? "Área do aluno" : "Seu negócio"}</p>
+          <p className="nav-eyebrow">{profileState.status === "loading" ? "Carregando acesso" : profileState.status === "failed" ? "Acesso indisponível" : platformMode ? "Operação de plataforma" : demoProfile?.persona === "buyer" ? "Área do aluno" : "Seu negócio"}</p>
           {visibleNavigation.map((item) => {
             const active = pathname === item.href;
             return <Link key={item.href} href={item.href} onClick={(event) => guardLink(event, item.href)} className={active ? "nav-link active" : "nav-link"} aria-current={active ? "page" : undefined}><NavIcon name={item.mark}/><span>{item.label}</span></Link>;
@@ -176,7 +189,7 @@ export function AppShell({ children }: AppShellProps) {
           <Link className="mobile-brand" href={home} onClick={(event) => guardLink(event, home)}><span className="brand-mark" aria-hidden="true">a</span><strong>sell<span>.</span></strong></Link>
           <LogoutForm mobile onAttempt={guardLogout}/>
         </header>
-        <div className="environment-banner" role="note"><strong>{demoProfile ? `DEMO · ${demoProfile.label} · ${demoProfile.email} · Autonom.ia Demo` : "Ambiente local, não é grant."}</strong> Cobrança, checkout e Identity real continuam desativados.</div>
+        <div className="environment-banner" role="note"><strong>{platformMode ? "INSPEÇÃO SUPERADMIN · LOCAL/CI · READ-ONLY" : demoProfile ? `DEMO · ${demoProfile.label} · ${demoProfile.email} · Autonom.ia Demo` : "Ambiente local, não é grant."}</strong> {platformMode ? "Sem impersonação, membership ou acesso a PII/secret." : "Cobrança, checkout e Identity real continuam desativados."}</div>
         <main id="conteudo" className="app-main" tabIndex={-1}>{children}</main>
         <nav
           className="bottom-nav"
@@ -215,7 +228,9 @@ function parseProfileState(payload: unknown): ProfileState {
     record.label === "Administrador" && record.home === "/dashboard";
   const buyer = record.persona === "buyer" && record.email === DEMO_BUYER_EMAIL &&
     record.label === "Aluno" && record.home === "/library";
-  return admin || buyer
+  const superadmin = record.persona === "superadmin" && record.email === DEMO_SUPERADMIN_EMAIL &&
+    record.label === "Superadmin simulado" && record.home === "/platform/demo-inspection";
+  return admin || buyer || superadmin
     ? { status: "ready", profile: record as unknown as DemoShellProfile }
     : { status: "failed" };
 }
