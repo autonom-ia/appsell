@@ -81,9 +81,7 @@ async def _read_buyer_products(request: Request) -> dict[str, Any]:
 
 
 @router.get("/me/products/{entitlement_id}/seller-products")
-async def read_buyer_seller_products(
-    request: Request, entitlement_id: UUID
-) -> dict[str, Any]:
+async def read_buyer_seller_products(request: Request, entitlement_id: UUID) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "library.read")
     _require_buyer_scope(internal)
     try:

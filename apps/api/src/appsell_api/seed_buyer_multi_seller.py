@@ -66,8 +66,7 @@ def require_environment(confirmation: str) -> tuple[str, str]:
     ]
     if inherited_routing:
         raise RuntimeError(
-            "multi-seller database must not inherit libpq routing: "
-            + ",".join(inherited_routing)
+            "multi-seller database must not inherit libpq routing: " + ",".join(inherited_routing)
         )
     return issuer, database_url
 
@@ -121,9 +120,7 @@ def insert_publication(
 
 def seed(connection: psycopg.Connection[Any], issuer: str) -> dict[str, Any]:
     validate_database(connection)
-    connection.execute(
-        "select pg_advisory_xact_lock(hashtextextended(%s,0))", (CONFIRMATION,)
-    )
+    connection.execute("select pg_advisory_xact_lock(hashtextextended(%s,0))", (CONFIRMATION,))
     manifest, _manifest_sha = load_manifest()
     seller_a = UUID(manifest["seller"]["id"])
     product_a = UUID(manifest["product"]["id"])
