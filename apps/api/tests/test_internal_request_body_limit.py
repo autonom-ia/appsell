@@ -14,11 +14,15 @@ def _request(chunks: list[bytes], headers: list[tuple[bytes, bytes]] | None = No
     ]
 
     async def receive() -> dict[str, Any]:
-        return messages.pop(0) if messages else {
-            "type": "http.request",
-            "body": b"",
-            "more_body": False,
-        }
+        return (
+            messages.pop(0)
+            if messages
+            else {
+                "type": "http.request",
+                "body": b"",
+                "more_body": False,
+            }
+        )
 
     scope: dict[str, Any] = {
         "type": "http",
