@@ -1640,7 +1640,8 @@ function requireResourceThresholds(resources: ResourcePeaks) {
     bufferPinWaitingConnections: resources.postgres_buffer_pin_waiting,
     otherWaitingConnections: resources.postgres_other_waiting,
     samplesWithActiveWaiting: resources.postgres_samples_with_active_waiting,
-    samples: resources.samples
+    samples: resources.samples,
+    fullApiPoolWaitingSamples: resources.postgres_full_api_pool_waiting_samples
   }));
   if (resources.postgres_active_connections > 11) {
     failures.push(`Postgres active connections out of baseline: ${resources.postgres_active_connections}`);
@@ -1685,6 +1686,7 @@ async function startResourceSampler(
   containers: Record<string, string>,
   currentPhase: () => string
 ) {
+  const apiPoolSize = requiredPositiveIntegerEnvironment("APPSELL_CAPACITY_API_POOL_SIZE");
   let running = true;
   const containerRootPids = await resolveContainerRootPids(containers);
   const samplerMode = containerRootPids ? "host_process_tree" : "docker_top_fallback";
@@ -1734,7 +1736,7 @@ async function startResourceSampler(
         connections,
         samplePhase,
         sampleGap,
-        CONCURRENCY
+        apiPoolSize
       );
       peaks.postgres_wait_event_peaks = waitDiagnostics.waitEventPeaks;
       peaks.postgres_api_wait_event_peaks = waitDiagnostics.apiWaitEventPeaks;
@@ -2336,6 +2338,7 @@ async function buildReport(
       max_postgres_buffer_pin_waiting_connections: 0,
       max_postgres_unclassified_waiting_connections: 0,
       max_postgres_waiting_sample_ratio: 0.25,
+      max_postgres_full_api_pool_waiting_samples: 0,
       max_sampler_gap_ms: 2_000,
       min_successful_sampler_samples: 2,
       max_sampler_errors: 0,
@@ -2623,6 +2626,14 @@ function requiredEnvironment(name: string) {
   const value = process.env[name];
   if (!value) throw new Error(`Missing capacity test setting: ${name}`);
   return value;
+}
+
+function requiredPositiveIntegerEnvironment(name: string) {
+  const value = requiredEnvironment(name);
+  if (!/^[1-9][0-9]*$/.test(value)) {
+    throw new Error(`Invalid positive integer capacity test setting: ${name}`);
+  }
+  return Number(value);
 }
 
 function cookiePair(setCookie: string | null, name: string) {

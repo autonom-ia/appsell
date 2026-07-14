@@ -217,6 +217,9 @@ export APPSELL_STORAGE_BUCKETS="appsell-quarantine,appsell-ready"
 export APPSELL_API_ENVIRONMENT="ci"
 export APPSELL_API_CAPACITY_PRODUCT_CREATE_TELEMETRY="true"
 export APPSELL_API_DATABASE_APPLICATION_NAME="appsell_capacity_api"
+export APPSELL_CAPACITY_API_POOL_SIZE="$(
+  uv run --project apps/api python -c 'from appsell_api.db import API_POOL_SIZE; print(API_POOL_SIZE)'
+)"
 export APPSELL_MIGRATOR_DATABASE_URL="postgresql+psycopg://appsell_migrator:${migrator_secret}@127.0.0.1:${postgres_port}/appsell"
 
 if ! docker compose -p "$project" --profile storage up -d --wait --wait-timeout 60 postgres seaweedfs; then

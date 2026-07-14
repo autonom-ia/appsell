@@ -20,7 +20,8 @@ const baseline: PostgresCapacitySample = {
   bufferPinWaitingConnections: 0,
   otherWaitingConnections: 0,
   samplesWithActiveWaiting: 25,
-  samples: 100
+  samples: 100,
+  fullApiPoolWaitingSamples: 0
 };
 
 describe("PostgreSQL capacity headroom", () => {
@@ -72,6 +73,9 @@ describe("PostgreSQL capacity headroom", () => {
     );
     expect(postgresHeadroomFailures({ ...baseline, samplesWithActiveWaiting: 26 })).toContain(
       "postgres_wait_budget_exceeded"
+    );
+    expect(postgresHeadroomFailures({ ...baseline, fullApiPoolWaitingSamples: 1 })).toContain(
+      "postgres_full_api_pool_wait_observed"
     );
   });
 
