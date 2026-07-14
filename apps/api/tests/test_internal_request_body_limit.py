@@ -31,7 +31,7 @@ def _request(chunks: list[bytes], headers: list[tuple[bytes, bytes]] | None = No
         "query_string": b"",
         "headers": headers or [],
     }
-    return Request(scope, receive=receive)  # type: ignore[arg-type]
+    return Request(scope, receive=receive)
 
 
 @pytest.mark.asyncio
@@ -60,6 +60,6 @@ async def test_private_api_rejects_oversized_content_length_before_reading() -> 
         "headers": [(b"content-length", b"65537")],
     }
     with pytest.raises(HTTPException) as error:
-        await _read_limited_body(Request(scope, receive=receive))  # type: ignore[arg-type]
+        await _read_limited_body(Request(scope, receive=receive))
     assert error.value.status_code == 413
     assert called is False

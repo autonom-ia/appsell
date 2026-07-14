@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import json
+from typing import Any
 
 import pytest
 
@@ -111,7 +112,7 @@ def test_rejects_expired_timestamp_and_unknown_payload_fields() -> None:
 
 def test_local_resolver_rejects_secret_reuse_and_non_local_configuration() -> None:
     internal = _key(1)
-    base = dict(
+    base: dict[str, Any] = dict(
         internal_issuer="appsell-bff",
         internal_audience="appsell-api",
         identity_issuer="https://identity.example",

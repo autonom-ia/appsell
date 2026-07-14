@@ -216,7 +216,9 @@ def test_event_is_immutable_and_runtime_has_function_only_access() -> None:
     with psycopg.connect(ADMIN_URL) as connection:
         event_id = connection.execute(
             "select id from webhook_event where seller_organization_id=%s", (SELLER,)
-        ).fetchone()[0]
+        ).fetchone()
+        assert event_id is not None
+        event_id = event_id[0]
         with pytest.raises(psycopg.errors.ObjectNotInPrerequisiteState):
             connection.execute(
                 "update webhook_event set event_type='purchase.refunded' "
