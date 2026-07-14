@@ -17,6 +17,7 @@ export interface PostgresCapacitySample extends PostgresHeadroomSample {
   samplesWithActiveWaiting: number;
   samples: number;
   fullApiPoolWaitingSamples: number;
+  maxConsecutiveFullApiPoolWaitingSamples: number;
 }
 
 export interface PostgresHeadroom {
@@ -61,7 +62,7 @@ export function postgresHeadroomFailures(sample: PostgresCapacitySample): string
   if (sample.activeWaitingConnections > 5 || waitingSampleRatio > 0.25) {
     failures.push("postgres_wait_budget_exceeded");
   }
-  if (sample.fullApiPoolWaitingSamples > 0) {
+  if (sample.maxConsecutiveFullApiPoolWaitingSamples >= 2) {
     failures.push("postgres_full_api_pool_wait_observed");
   }
   const headroom = calculatePostgresHeadroom(sample);

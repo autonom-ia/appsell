@@ -27,16 +27,21 @@ Este marco é Local/CI; não é o Identity real e não concede conta de produç�
 
 ## Última mudança relevante
 
-2026-07-14 — A calibração remota da Draft PR #62 teve um run 5/5 verde e um
-run com falha exclusiva no orçamento PostgreSQL: 193/568 amostras com espera
-ativa, contra limite provisório de 25%, sem erro funcional, Lock, BufferPin ou
-espera não classificada. O review crítico encontrou que o detector de pool API
-completo usava concorrência HTTP 10, apesar do pool real ser 5, e por isso não
-marcou uma amostra 5/5. A correção passa o tamanho real do pool diretamente do
-contrato Python para o runner, mantém o limite de 25% e agora falha em qualquer
-amostra com o pool inteiro esperando. A vertical local corrigida passou com
-0 amostras de pool completo, razão de espera 63/458 e zero erro funcional. A
-calibração de três runs CI será reiniciada em source limpo após novo review.
+2026-07-14 — O SHA corrigido da Draft PR #62 registrou uma única amostra 5/5
+esperando entre 724, sem duração sustentada, erro funcional, timeout, 5xx,
+Lock ou BufferPin. Review independente classificou como P2 o hard gate de zero
+amostras porque ele depende da fase aleatória do sampler. O gate agora reprova
+persistência comprovada (duas amostras consecutivas), mantém integralmente o
+limite global de 25% e registra uma amostra isolada como warning que torna o
+run inelegível para calibração e exige repetição no mesmo SHA. Markdown e Job
+Summary exibem a inelegibilidade; a certificação final aceita somente três
+artifacts elegíveis, distintos e do mesmo head SHA por
+`scripts/report_capacity_calibration.py --certify-three`. O job fixa o checkout
+no head SHA, registra `git rev-parse HEAD` como autoridade e rejeita SHA não
+canônico, divergência da evidência de origem e reruns do mesmo run ID. O
+artifact vermelho anterior não foi promovido manualmente. O review crítico
+final ficou GREEN (P0/P1/P2/P3 = 0) e o gate local completo passou com 268
+testes, 8 skips condicionais, lint, typecheck, build e audit verdes.
 
 2026-07-13 — Issue #61 consolida uma release candidate única sobre a PR #59
 (UI + Identity + OpenBao), com inspeção superadmin #57, capacidade/multi-seller

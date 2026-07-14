@@ -40,11 +40,11 @@ Branch: feat/61-release-candidate-e2e
 PR: #62 (Draft, empilhada na #59)
 Estado: em_progresso
 Modelo: strong + human
-Arquivos alterados: lib/capacity-postgres-headroom.ts; scripts/test-capacity-100-tenants.sh; tests/bff-capacity-100-tenants.test.ts; tests/capacity-postgres-headroom.test.ts; docs/STATUS.md; docs/memory/MEMORY_SESSION.md
+Arquivos alterados: lib/capacity-postgres-headroom.ts; scripts/test-capacity-100-tenants.sh; scripts/report_capacity_calibration.py; tests/bff-capacity-100-tenants.test.ts; tests/capacity-postgres-headroom.test.ts; .github/workflows/app-ci.yml; docs/STATUS.md; docs/memory/MEMORY_SESSION.md
 Comandos executados: gh run rerun/cancel; vitest headroom/sampler; eslint direcionado; bash -n; test-capacity-100-tenants; pnpm lint/typecheck/test/build/audit
-Validação: review crítico RED/P1 no SHA 5d8933b; correção local com 266 testes e 8 skips condicionais, vertical 100 admins/1.000 buyers, lint/typecheck/build/audit verdes; pool API 5 vindo do contrato Python; 0 amostras de pool completo; wait 63/458; zero erro funcional
-Bloqueios: novo SHA ainda precisa review crítico e três runs CI verdes; checkout/provider/Financial runtime/Neuro permanecem fora deste slice e sem produção
-Próxima ação: commitar/push, obter review verde e reiniciar três runs CI no mesmo SHA
+Validação: review crítico final GREEN (P0/P1/P2/P3=0); gate local com 268 testes e 8 skips condicionais, lint/typecheck/build/audit verdes; correção exige streak >=2, preserva wait ratio 25%, marca ponto isolado como warning inelegível, fixa checkout no head e certifica apenas três artifacts distintos/elegíveis cujo SHA canônico coincide com git rev-parse HEAD
+Bloqueios: novo SHA ainda precisa três runs CI elegíveis; checkout/provider/Financial runtime/Neuro permanecem fora deste slice e sem produção
+Próxima ação: commitar/push e iniciar três runs CI elegíveis no mesmo SHA
 Project status:
   - Projeto: Infra
   - Status: Ajustes

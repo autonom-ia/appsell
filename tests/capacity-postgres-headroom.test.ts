@@ -21,7 +21,8 @@ const baseline: PostgresCapacitySample = {
   otherWaitingConnections: 0,
   samplesWithActiveWaiting: 25,
   samples: 100,
-  fullApiPoolWaitingSamples: 0
+  fullApiPoolWaitingSamples: 0,
+  maxConsecutiveFullApiPoolWaitingSamples: 0
 };
 
 describe("PostgreSQL capacity headroom", () => {
@@ -74,9 +75,29 @@ describe("PostgreSQL capacity headroom", () => {
     expect(postgresHeadroomFailures({ ...baseline, samplesWithActiveWaiting: 26 })).toContain(
       "postgres_wait_budget_exceeded"
     );
-    expect(postgresHeadroomFailures({ ...baseline, fullApiPoolWaitingSamples: 1 })).toContain(
+    expect(postgresHeadroomFailures({
+      ...baseline,
+      fullApiPoolWaitingSamples: 2,
+      maxConsecutiveFullApiPoolWaitingSamples: 2
+    })).toContain(
       "postgres_full_api_pool_wait_observed"
     );
+  });
+
+  it("records but does not hard-fail one point sample without sustained evidence", () => {
+    expect(postgresHeadroomFailures({
+      ...baseline,
+      fullApiPoolWaitingSamples: 1,
+      maxConsecutiveFullApiPoolWaitingSamples: 1
+    })).not.toContain("postgres_full_api_pool_wait_observed");
+  });
+
+  it("does not treat two non-consecutive point samples as sustained waiting", () => {
+    expect(postgresHeadroomFailures({
+      ...baseline,
+      fullApiPoolWaitingSamples: 2,
+      maxConsecutiveFullApiPoolWaitingSamples: 1
+    })).not.toContain("postgres_full_api_pool_wait_observed");
   });
 
   it("normalizes non-lock waits by samples instead of total workload duration", () => {

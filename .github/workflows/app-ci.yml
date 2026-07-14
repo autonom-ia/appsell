@@ -33,6 +33,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12.11"
@@ -57,11 +59,14 @@ jobs:
         run: ./scripts/test-capacity-postgres-startup.sh
       - name: Certify 100 admins and 1,000 buyers on disposable Local/CI infrastructure
         run: ./scripts/test-capacity-100-tenants.sh
+        env:
+          APPSELL_CAPACITY_CALIBRATION_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Scan capacity evidence before upload
         id: capacity-evidence-scan
         if: always()
         run: |
           python3 scripts/assert_capacity_artifact_safe.py --self-test
+          python3 scripts/report_capacity_calibration.py --self-test
           files=()
           for candidate in \
             tmp/capacity-100.json \
