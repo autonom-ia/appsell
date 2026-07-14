@@ -18,7 +18,7 @@ from .reset_demo_tenant import (
     snapshot_for,
 )
 
-EXPECTED_MIGRATION = "0011_public_storefront"
+EXPECTED_MIGRATION = "0012_checkout_webhook_ingress"
 CONFIRMATION = "buyer-multi-seller-v1"
 NAMESPACE = UUID("01a6463f-d696-4c34-b939-237fd53a7edf")
 

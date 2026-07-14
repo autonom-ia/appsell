@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     pdf_sandbox_url: str = ""
     pdf_sandbox_socket: str = ""
     capacity_product_create_telemetry: bool = False
+    webhook_local_keyring_b64_json: str = ""
+    webhook_forbidden_key_sha256_json: str = "[]"
 
     @property
     def is_production(self) -> bool:
@@ -57,6 +59,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_fail_closed_environment(self) -> Self:
+        if self.webhook_local_keyring_b64_json and self.environment not in {"local", "ci"}:
+            raise ValueError("local webhook secrets are forbidden outside local/CI")
         if self.capacity_product_create_telemetry and self.environment not in {"local", "ci"}:
             raise ValueError("capacity product-create telemetry is forbidden outside local/CI")
         if self.storage_readiness_stale_after_seconds <= self.storage_health_probe_interval_seconds:

@@ -78,7 +78,7 @@ def test_projection_pin_rls_and_player_are_bound_to_the_buyer() -> None:
             (entitlement, publication, publication),
         ).fetchone()
     assert state == (
-        "0011_public_storefront",
+        "0012_checkout_webhook_ingress",
         publication,
         1,
         5,

@@ -34,22 +34,22 @@ Project status:
 
 <!-- Substituir abaixo a cada nova sessão. Sessões anteriores vão para PROGRESS.md. -->
 
-## Sessão: 2026-07-14 10:40 — fechar replay transacional e capacidade da RC
-Issue: #61
-Branch: feat/61-release-candidate-e2e
-PR: #62 (Draft, empilhada na #59)
-Estado: em_progresso
+## Sessão: 2026-07-14 11:15 — sincronizar webhook com replay transacional da RC
+Issue: #63
+Branch: feat/63-generic-webhook-ingress
+PR: #64 (Draft, empilhada na #62)
+Estado: em_review
 Modelo: strong + human
-Arquivos alterados: internal_requests.py; rotas asset/catalog/learning/platform/onboarding; asset_worker_runner.py; telemetry Python/TypeScript; testes API/auth/worker/storage/capacity; test-postgres-foundation.sh; docs/STATUS.md; docs/memory/MEMORY_SESSION.md
-Comandos executados: test-storage-vertical; test-postgres-foundation; test-capacity-100-tenants; pytest completo; ruff/mypy/pip-audit; pnpm lint/typecheck/test/build/audit; test:e2e; validate-harness
-Validação: dois reviews críticos finais GREEN para commit/PR (P0/P1/P2/P3 bloqueantes=0); PG 195 + boundary/worker 24; BFF 5; multi-seller 1; storage real API+auth+PG+S3 1; E2E 44 pass/6 skips; Harness 2.1.2 íntegro; capacidade passed com 107/487 waits (21,97%), zero erros, uma amostra isolada e artifact local inelegível por design
-Bloqueios: novo SHA limpo ainda precisa CI e três runs de capacidade elegíveis; checkout/provider/Financial runtime/Neuro permanecem fora deste slice e sem produção
-Próxima ação: commitar/push na Draft PR #62, acompanhar CI e repetir capacidade elegível no mesmo SHA; sem merge/deploy
+Arquivos alterados: migration 0012; API webhook adapter/routes/secrets; rota e proxy BFF; testes unitários/PG/BFF; compose/env; hardening transacional e testes herdados da #62; docs
+Comandos executados: pytest/ruff/mypy; vitest/typecheck/eslint; test-postgres-foundation repetido; inspeção de artifacts CI #62/#64; merge sem rebase/force da base revisada; resolução explícita de conflitos de auth/docs
+Validação: composição passou 207 testes PG/API + 24 boundary/worker + 6 BFF reais + 1 multi-seller e artifact scan; 274 Vitest/9 skips; E2E 44/6 skips + produção 1/1; lint/typecheck/build/audits/Harness 2.1.2 verdes; dois reviews críticos GREEN P0=P1=P2=P3 bloqueantes=0; base #62 tem 2 artifacts elegíveis, 1 run corretamente rejeitado e repetição sequencial em andamento
+Bloqueios: merge aditivo precisa CI do novo SHA; provider/Financial/Neuro/Identity/staging dependem de ambientes e contratos isolados em slices posteriores
+Próxima ação: concluir merge commit/push e aguardar CI da Draft PR #64; sem merge/deploy de PR
 Project status:
-  - Projeto: Infra
+  - Projeto: Autonom.ia Dev
   - Status: Em review
-  - Tipo: Infra
+  - Tipo: Feature
   - Prioridade: P0
-  - Risco: Médio
+  - Risco: Alto
   - Ambiente: Local
-  - Próxima ação: publicar a correção revisada na Draft PR #62 e certificar o novo SHA no CI; sem merge/deploy
+  - Próxima ação: aguardar CI da Draft PR #64 sobre base corrigida; sem merge/deploy

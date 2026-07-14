@@ -123,9 +123,7 @@ class InternalRequestAuthenticator:
         ):
             raise _unauthorized()
 
-        body = await request.body()
-        if len(body) > _MAX_BODY_BYTES:
-            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+        body = await _read_limited_body(request)
         try:
             envelope = self._verifier.verify_request(
                 request.headers.get("x-appsell-internal-envelope", ""),
@@ -331,6 +329,27 @@ def _decode_presented_credential(value: str) -> bytes | None:
     if len(decoded) != 32 or base64.b64encode(decoded).decode("ascii") != value:
         return None
     return decoded
+
+
+async def _read_limited_body(request: Request) -> bytes:
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            declared = int(content_length)
+        except ValueError as error:
+            raise _unauthorized() from error
+        if declared < 0:
+            raise _unauthorized()
+        if declared > _MAX_BODY_BYTES:
+            raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE)
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > _MAX_BODY_BYTES:
+            raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE)
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _unauthorized() -> HTTPException:
