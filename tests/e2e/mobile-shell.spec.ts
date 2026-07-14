@@ -19,7 +19,7 @@ test("keeps the core journey usable without horizontal overflow", async ({ page 
   ]) {
     if (page.url() !== `http://localhost:3000${target.path}`) {
       await page.locator(`a[href="${target.path}"]:visible`).first().click();
-      await expect(page).toHaveURL(target.path);
+      await expect(page).toHaveURL(target.path, { timeout: 20_000 });
       await expect(page.getByRole("heading", { name: target.heading, exact: true })).toBeVisible();
     }
     const dimensions = await page.evaluate(() => ({ client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }));

@@ -6,9 +6,9 @@ Atualizado em pontos de marco (PR aberta, deploy, incidente). Diferente de MEMOR
 
 | Indicador | Status | Última verificação |
 |-----------|:------:|--------------------|
-| Build | 🟢 release candidate #61 compila em modo produção | 2026-07-13 |
-| Testes | 🟢 vertical Local/CI integrada e capacidade 100/1.000 verdes | 2026-07-13 |
-| CI | 🟡 Draft PR #62: novo SHA teve 1 amostra isolada de pool cheio; gate sob correção P2 | 2026-07-14 |
+| Build | 🟢 release candidate #61 compila em modo produção | 2026-07-14 |
+| Testes | 🟢 vertical real API/PG/S3 e capacidade 100/1.000 verdes localmente | 2026-07-14 |
+| CI | 🟡 Draft PR #62: 2 artifacts elegíveis; 1 run rejeitado; repetição sequencial em andamento | 2026-07-14 |
 | Deploy produção | 🟡 não configurado/não executado | 2026-07-10 |
 | Harness instalado em `main` | 2.0.2 | 2026-07-10 |
 | Harness upgrade | 🟢 PR #37 em 2.1.2, review e 10/10 checks verdes; sem merge | 2026-07-11 |
@@ -37,6 +37,38 @@ slice. O outbox nasce `blocked_retention` e não pode ser reclamado por worker.
 A prova integrada inclui PostgreSQL real, duas BFFs, Redis indisponível
 e restart da API; reviews AppSec, PostgreSQL e contrato ficaram GREEN. A Draft
 PR #64 permanece sem merge/deploy e aguarda CI no topo da base corrigida.
+
+Após sincronizar a base corrigida, o webhook passou a usar o mesmo outer
+transaction/savepoint do replay: rejeições duravelmente consomem o request e
+desfazem evento, outbox e auditoria. O teste real agora prova essa diferença de
+estado. A composição passou 207 testes PostgreSQL/API, 24 testes de boundary e
+worker, 6 testes BFF reais e 1 multi-seller, com artifact scan verde. O heading
+assíncrono do editor ganhou timeout explícito de 20 segundos porque o default de
+5 segundos falhou sob a carga do próprio gate, mesmo com a tela ainda em estado
+de carregamento. Dois reviews críticos independentes ficaram GREEN para o
+merge commit/push, com P0/P1/P2/P3 bloqueantes em zero. O CI do novo SHA
+continua pendente; merge da PR e deploy permanecem proibidos.
+
+2026-07-14 — A saturação sustentada do capacity gate foi rastreada ao replay
+anti-repetição em uma transação durável separada de cada operação de domínio.
+O autenticador agora consome o replay no outer transaction e executa o domínio
+em savepoint; sucesso confirma ambos uma vez, enquanto falha de domínio ou de
+constraint diferida desfaz somente o negócio e preserva o replay. Rejeições
+pós-envelope e pré-domínio também consomem o request, e continuations ficam
+vinculadas ao envelope completo, à instância do autenticador, à mesma asyncio
+Task e a transições de capability explícitas. O worker privado valida shape,
+identidade UUIDv5, issuer/audience, hashes e janela temporal exatos.
+
+O gate PostgreSQL passou com 195 testes integrados e 24 testes explícitos de
+boundary/worker; BFF real passou 5/5 e multi-seller 1/1. O storage vertical
+agora cria e confirma o PDF pela rota FastAPI com autenticador, PostgreSQL e S3
+reais antes de processar, publicar e autorizar o download, e passou 1/1. A
+carga 100 admins/1.000 buyers passou sem erro com 107/487 amostras de espera
+(21,97%, limite 25%) e uma única amostra isolada de pool cheio; por isso o
+artifact local é deliberadamente inelegível e exige repetição no mesmo SHA.
+Dois reviews críticos independentes ficaram GREEN para commit/push da Draft PR,
+com P0/P1/P2/P3 bloqueantes em zero. Merge, deploy e certificação de produção
+continuam não autorizados.
 
 2026-07-14 — O SHA corrigido da Draft PR #62 registrou uma única amostra 5/5
 esperando entre 724, sem duração sustentada, erro funcional, timeout, 5xx,

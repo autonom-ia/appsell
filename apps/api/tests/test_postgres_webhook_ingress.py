@@ -13,6 +13,12 @@ import pytest
 ADMIN_URL = os.getenv("APPSELL_TEST_POSTGRES_ADMIN_URL")
 RUNTIME_URL = os.getenv("APPSELL_TEST_POSTGRES_RUNTIME_URL")
 CONTEXT_KEY = bytes.fromhex(os.getenv("APPSELL_TEST_CONTEXT_KEY_HEX", ""))
+
+pytestmark = pytest.mark.skipif(
+    not all((ADMIN_URL, RUNTIME_URL, CONTEXT_KEY)),
+    reason="isolated PostgreSQL environment is required",
+)
+
 SELLER = UUID("dd000000-0000-4000-8000-000000000001")
 INTEGRATION = UUID("dd000000-0000-4000-8000-000000000002")
 ENDPOINT = UUID("dd000000-0000-4000-8000-000000000003")

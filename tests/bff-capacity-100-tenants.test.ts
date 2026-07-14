@@ -1532,8 +1532,8 @@ function capacityTraceFixture(
   const stages: Record<string, number> = layer === "bff"
     ? { session_auth: 1, form_csrf: 1, domain_fetch: totalMs - 4, response: 2 }
     : {
-        internal_auth_replay: 1,
-        pool_checkout_apply_context: 1,
+        internal_auth_verification: 1,
+        pool_checkout_replay_apply_context: 1,
         sql: totalMs - 4,
         commit_response: 2
       };

@@ -75,9 +75,10 @@ test.skipIf(!domainApiUrl)("signed webhook crosses the real BFF, API, and Postgr
     const divergent = await sendWebhook(firstPort, { eventId, timestamp, body: divergentBody, secret });
     expect(divergent.status).toBe(409);
     expect(await divergent.json()).toEqual({ error: "webhook_event_conflict" });
-    expect(await databaseState()).toBe(stateBeforeConflict);
+    const stateAfterConflict = await databaseState();
+    expectReplayConsumedWithoutDomainMutation(stateBeforeConflict, stateAfterConflict);
 
-    const stateBeforeRejected = await databaseState();
+    let stateBeforeRejected = stateAfterConflict;
     const invalidSignature = await sendWebhook(secondPort, {
       eventId: `evt-invalid-${randomUUID()}`,
       timestamp,
@@ -86,7 +87,9 @@ test.skipIf(!domainApiUrl)("signed webhook crosses the real BFF, API, and Postgr
     });
     expect(invalidSignature.status).toBe(401);
     expect(await invalidSignature.json()).toEqual({ error: "webhook_rejected" });
-    expect(await databaseState()).toBe(stateBeforeRejected);
+    let stateAfterRejected = await databaseState();
+    expectReplayConsumedWithoutDomainMutation(stateBeforeRejected, stateAfterRejected);
+    stateBeforeRejected = stateAfterRejected;
 
     const unavailable = await sendWebhook(secondPort, {
       endpointKey: missingSecretEndpointKey,
@@ -97,7 +100,9 @@ test.skipIf(!domainApiUrl)("signed webhook crosses the real BFF, API, and Postgr
     });
     expect(unavailable.status).toBe(503);
     expect(await unavailable.json()).toEqual({ error: "webhook_unavailable" });
-    expect(await databaseState()).toBe(stateBeforeRejected);
+    stateAfterRejected = await databaseState();
+    expectReplayConsumedWithoutDomainMutation(stateBeforeRejected, stateAfterRejected);
+    stateBeforeRejected = stateAfterRejected;
 
     const tenantInjectedBody = Buffer.from(body.toString("utf8").replace(
       /}\n$/, ',"seller_organization_id":"00000000-0000-0000-0000-000000000000"}\n'
@@ -110,7 +115,9 @@ test.skipIf(!domainApiUrl)("signed webhook crosses the real BFF, API, and Postgr
       secret
     });
     expect(tenantInjected.status).toBe(401);
-    expect(await databaseState()).toBe(stateBeforeRejected);
+    stateAfterRejected = await databaseState();
+    expectReplayConsumedWithoutDomainMutation(stateBeforeRejected, stateAfterRejected);
+    stateBeforeRejected = stateAfterRejected;
 
     const staleTimestamp = String(Number(timestamp) - 901);
     const stale = await sendWebhook(firstPort, {
@@ -120,7 +127,8 @@ test.skipIf(!domainApiUrl)("signed webhook crosses the real BFF, API, and Postgr
       secret
     });
     expect(stale.status).toBe(401);
-    expect(await databaseState()).toBe(stateBeforeRejected);
+    stateAfterRejected = await databaseState();
+    expectReplayConsumedWithoutDomainMutation(stateBeforeRejected, stateAfterRejected);
 
     const exactEventId = `evt-exact-${randomUUID()}`;
     const exactBase = Buffer.from(JSON.stringify({
@@ -151,7 +159,7 @@ test.skipIf(!domainApiUrl)("signed webhook crosses the real BFF, API, and Postgr
     });
     expect(tooLarge.status).toBe(413);
     expect(await tooLarge.json()).toEqual({ error: "payload_too_large" });
-    expect(await databaseState()).toBe(stateBeforeOversized);
+    expect(await databaseState()).toEqual(stateBeforeOversized);
   } finally {
     await Promise.all([stopBff(first), ...(second ? [stopBff(second)] : [])]);
     await Promise.all([
@@ -233,7 +241,26 @@ async function databaseState() {
   child.stderr?.on("data", (chunk) => { stderr += String(chunk); });
   const exitCode = await new Promise<number | null>((resolve) => child.once("exit", resolve));
   if (exitCode !== 0) throw new Error(`PostgreSQL state probe failed: ${stderr.slice(-1_000)}`);
-  return stdout.trim();
+  const values = stdout.trim().split("\n").map(Number);
+  if (values.length !== 4 || values.some((value) => !Number.isSafeInteger(value))) {
+    throw new Error(`PostgreSQL state probe returned invalid counts: ${stdout.slice(-1_000)}`);
+  }
+  return {
+    replayRequests: values[0]!,
+    webhookEvents: values[1]!,
+    outboxEvents: values[2]!,
+    webhookAudits: values[3]!
+  };
+}
+
+function expectReplayConsumedWithoutDomainMutation(
+  before: Awaited<ReturnType<typeof databaseState>>,
+  after: Awaited<ReturnType<typeof databaseState>>
+) {
+  expect(after).toEqual({
+    ...before,
+    replayRequests: before.replayRequests + 1
+  });
 }
 
 async function databaseEventDigest(eventId: string) {

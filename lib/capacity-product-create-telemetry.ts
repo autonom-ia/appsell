@@ -9,7 +9,12 @@ export type CapacityTraceOutcome = "success" | "http_error" | "exception";
 
 const STAGES = {
   bff: ["session_auth", "form_csrf", "domain_fetch", "response"],
-  api: ["internal_auth_replay", "pool_checkout_apply_context", "sql", "commit_response"]
+  api: [
+    "internal_auth_verification",
+    "pool_checkout_replay_apply_context",
+    "sql",
+    "commit_response"
+  ]
 } as const satisfies Record<CapacityTraceLayer, readonly string[]>;
 
 export interface CapacityProductCreateTrace {

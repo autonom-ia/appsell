@@ -115,6 +115,7 @@ def signed_headers(
     subject: str = SUPERADMIN_SUB,
     user_id: object = SUPERADMIN_ID,
     seller_id: str | None = None,
+    request_id: str | None = None,
 ) -> dict[str, str]:
     now = int(time.time())
     payload = {
@@ -137,7 +138,7 @@ def signed_headers(
         "path": path,
         "query_sha256": hashlib.sha256(b"").hexdigest(),
         "body_sha256": hashlib.sha256(body).hexdigest(),
-        "request_id": str(uuid4()),
+        "request_id": request_id or str(uuid4()),
         "iat": now,
         "exp": now + 30,
     }
@@ -289,13 +290,21 @@ async def test_api_rejects_missing_token_unauthorized_identity_and_tenant_input(
     assert ordinary.status_code == 403
 
     missing_path = f"/v1/platform/demo-inspections/{uuid4()}"
+    missing_request_id = str(uuid4())
+    missing_headers = signed_headers(
+        method="GET",
+        path=missing_path,
+        capability="platform.demo.inspect.read",
+        request_id=missing_request_id,
+    )
     missing = await client.get(
         missing_path,
-        headers=signed_headers(
-            method="GET", path=missing_path, capability="platform.demo.inspect.read"
-        ),
+        headers=missing_headers,
     )
     assert missing.status_code == 404
+    replayed_missing = await client.get(missing_path, headers=missing_headers)
+    assert replayed_missing.status_code == 401
+    assert replayed_missing.json() == {"detail": "invalid_internal_request"}
 
 
 @pytest.mark.asyncio

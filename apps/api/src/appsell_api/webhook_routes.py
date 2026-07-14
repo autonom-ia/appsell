@@ -32,8 +32,9 @@ async def accept_checkout_webhook(endpoint_key: str, request: Request) -> dict[s
     secrets: WebhookSecretResolver | None = getattr(request.app.state, "webhook_secrets", None)
     if auth is None or secrets is None:
         raise _unavailable()
-    internal = await auth.authenticate_without_replay(request, "commerce.webhook.ingest")
+    internal = await auth.authenticate(request, "commerce.webhook.ingest")
     if internal.envelope.seller_organization_id is not None:
+        await internal.consume_rejected_request()
         raise _rejected()
 
     endpoint_hash = hashlib.sha256(endpoint_key.encode()).hexdigest()
@@ -70,7 +71,6 @@ async def accept_checkout_webhook(endpoint_key: str, request: Request) -> dict[s
             if resolution["adapter"] != "generic_hmac_v1":
                 raise _unavailable()
             normalized = parse_generic_hmac_v1(internal.body)
-            await auth.consume_replay(session, internal.envelope)
             result = (
                 (
                     await session.execute(

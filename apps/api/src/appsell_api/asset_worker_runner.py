@@ -99,7 +99,7 @@ async def _claim_jobs(
     settings: Settings,
     worker_id: UUID,
 ) -> list[dict[str, Any]]:
-    async with auth.domain_session(_worker_envelope(settings, worker_id)) as session:
+    async with auth.trusted_domain_session(_worker_envelope(settings, worker_id)) as session:
         value = await session.scalar(
             text(
                 "select app_private.claim_asset_verification_jobs("
@@ -122,7 +122,7 @@ async def _claim_cleanup_jobs(
     settings: Settings,
     worker_id: UUID,
 ) -> list[dict[str, Any]]:
-    async with auth.domain_session(_worker_envelope(settings, worker_id)) as session:
+    async with auth.trusted_domain_session(_worker_envelope(settings, worker_id)) as session:
         value = await session.scalar(
             text(
                 "select app_private.claim_asset_storage_cleanup_jobs("
@@ -194,7 +194,7 @@ async def _complete_cleanup(
     seller_id: UUID,
     cleanup_id: UUID,
 ) -> None:
-    async with auth.domain_session(_worker_envelope(settings, worker_id)) as session:
+    async with auth.trusted_domain_session(_worker_envelope(settings, worker_id)) as session:
         await session.scalar(
             text("select app_private.complete_asset_storage_cleanup(:actor,:worker,:seller,:job)"),
             {
@@ -214,7 +214,7 @@ async def _retry_cleanup(
     cleanup_id: UUID,
     failure_code: str,
 ) -> None:
-    async with auth.domain_session(_worker_envelope(settings, worker_id)) as session:
+    async with auth.trusted_domain_session(_worker_envelope(settings, worker_id)) as session:
         await session.scalar(
             text(
                 "select app_private.retry_asset_storage_cleanup("
@@ -317,7 +317,7 @@ async def _begin_job(
     seller_id: UUID,
     upload_id: UUID,
 ) -> dict[str, Any]:
-    async with auth.domain_session(_worker_envelope(settings, worker_id)) as session:
+    async with auth.trusted_domain_session(_worker_envelope(settings, worker_id)) as session:
         value = await session.scalar(
             text(
                 "select app_private.begin_asset_verification("
@@ -365,7 +365,7 @@ async def _register_ready_candidate(
     upload_id: UUID,
     result: VerifiedAssetResult,
 ) -> None:
-    async with auth.domain_session(_worker_envelope(settings, worker_id)) as session:
+    async with auth.trusted_domain_session(_worker_envelope(settings, worker_id)) as session:
         await session.scalar(
             text(
                 "select app_private.register_asset_ready_candidate("
@@ -428,7 +428,7 @@ async def _finalize(
         NAMESPACE_URL,
         f"appsell.asset.finalize\0{upload_id}\0{values['verdict']}",
     )
-    async with auth.domain_session(_worker_envelope(settings, worker_id)) as session:
+    async with auth.trusted_domain_session(_worker_envelope(settings, worker_id)) as session:
         await session.scalar(
             text(
                 "select app_private.finalize_asset_verification("
