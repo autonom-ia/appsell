@@ -109,11 +109,13 @@ verify_run() {
 
 verify_current_auth_approval() {
   local repo=autonom-ia/autonomia-identity-auth
-  local run_file pr_file reviews_file author actor triggering_actor latest
+  local run_file pr_file timeline_file reviews_file author actor triggering_actor latest
   run_file="$download_root/$(safe_label "$repo")-$auth_run_id.run.json"
   pr_file="$download_root/auth-pr-$auth_pr.json"
+  timeline_file="$download_root/auth-pr-$auth_pr.timeline.json"
   reviews_file="$download_root/auth-pr-$auth_pr.reviews.json"
   gh api "repos/$repo/pulls/$auth_pr" >"$pr_file"
+  gh api --paginate --slurp "repos/$repo/issues/$auth_pr/timeline?per_page=100" >"$timeline_file"
   gh api --paginate --slurp "repos/$repo/pulls/$auth_pr/reviews?per_page=100" >"$reviews_file"
   author="$(jq -r '.user.login' "$pr_file")"
   actor="$(jq -r '.actor.login' "$run_file")"
@@ -135,11 +137,20 @@ verify_current_auth_approval() {
       .state == "open" and
       .draft == false and
       .head.sha == $source_sha and
-      .head.repo.full_name == $repo
+      .head.repo.full_name == $repo and
+      .base.ref == "main" and
+      .base.repo.full_name == $repo
     ' "$pr_file" >/dev/null || {
-      echo "Auth source PR is not an open, ready PR at the exact source SHA" >&2
+      echo "Auth source PR is not an open, ready, main-targeted PR at the exact source SHA" >&2
       exit 2
     }
+  jq -e '
+    add
+    | ([.[] | select(.event == "base_ref_changed")] | length) == 0
+  ' "$timeline_file" >/dev/null || {
+    echo "Auth source PR was retargeted after creation" >&2
+    exit 2
+  }
   jq -e \
     --arg author "$author" \
     --arg actor "$actor" \

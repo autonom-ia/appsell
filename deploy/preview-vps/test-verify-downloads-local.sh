@@ -128,8 +128,10 @@ jq -n \
   --arg source_sha "$auth_sha" \
   '{
     state: "open", draft: false, user: {login: "author"},
-    head: {sha: $source_sha, repo: {full_name: "autonom-ia/autonomia-identity-auth"}}
+    head: {sha: $source_sha, repo: {full_name: "autonom-ia/autonomia-identity-auth"}},
+    base: {ref: "main", repo: {full_name: "autonom-ia/autonomia-identity-auth"}}
   }' >"$tmp/api/auth-pr-$auth_pr.json"
+printf '[[]]\n' >"$tmp/api/auth-pr-$auth_pr.timeline.json"
 jq -n \
   --arg source_sha "$auth_sha" \
   '[[{
@@ -181,6 +183,11 @@ case "$endpoint" in
     pr="${endpoint#*/pulls/}"
     pr="${pr%/reviews?per_page=100}"
     cat "$MOCK_ROOT/api/auth-pr-$pr.reviews.json"
+    ;;
+  repos/autonom-ia/autonomia-identity-auth/issues/*/timeline\?per_page=100)
+    pr="${endpoint#*/issues/}"
+    pr="${pr%/timeline?per_page=100}"
+    cat "$MOCK_ROOT/api/auth-pr-$pr.timeline.json"
     ;;
   repos/autonom-ia/autonomia-identity-auth/pulls/*)
     pr="${endpoint##*/}"
@@ -277,6 +284,40 @@ if PATH="$tmp/bin:$PATH" MOCK_ROOT="$tmp" "$verifier" \
   exit 1
 fi
 cp "$tmp/auth-reviews-approved.json" "$tmp/api/auth-pr-$auth_pr.reviews.json"
+
+cp "$tmp/api/auth-pr-$auth_pr.json" "$tmp/auth-pr-main.json"
+jq '.base.ref = "stacked-feature"' "$tmp/auth-pr-main.json" \
+  >"$tmp/api/auth-pr-$auth_pr.json"
+install -d "$tmp/base-branch-failure"
+if PATH="$tmp/bin:$PATH" MOCK_ROOT="$tmp" "$verifier" \
+  "$tmp/base-branch-failure" "$appsell_sha" "$auth_sha" "$foundation_sha" \
+  "$appsell_run" "$auth_run" "$foundation_run" "$auth_pr" "$auth_workflow_sha" >/dev/null 2>&1; then
+  echo "Verifier accepted an Auth source PR not targeting main" >&2
+  exit 1
+fi
+cp "$tmp/auth-pr-main.json" "$tmp/api/auth-pr-$auth_pr.json"
+
+jq '.base.repo.full_name = "attacker/fork"' "$tmp/auth-pr-main.json" \
+  >"$tmp/api/auth-pr-$auth_pr.json"
+install -d "$tmp/base-repo-failure"
+if PATH="$tmp/bin:$PATH" MOCK_ROOT="$tmp" "$verifier" \
+  "$tmp/base-repo-failure" "$appsell_sha" "$auth_sha" "$foundation_sha" \
+  "$appsell_run" "$auth_run" "$foundation_run" "$auth_pr" "$auth_workflow_sha" >/dev/null 2>&1; then
+  echo "Verifier accepted an Auth source PR with a foreign base repository" >&2
+  exit 1
+fi
+cp "$tmp/auth-pr-main.json" "$tmp/api/auth-pr-$auth_pr.json"
+
+jq -n '[[{event: "base_ref_changed", created_at: "2026-07-14T18:00:30Z"}]]' \
+  >"$tmp/api/auth-pr-$auth_pr.timeline.json"
+install -d "$tmp/retarget-failure"
+if PATH="$tmp/bin:$PATH" MOCK_ROOT="$tmp" "$verifier" \
+  "$tmp/retarget-failure" "$appsell_sha" "$auth_sha" "$foundation_sha" \
+  "$appsell_run" "$auth_run" "$foundation_run" "$auth_pr" "$auth_workflow_sha" >/dev/null 2>&1; then
+  echo "Verifier accepted an Auth source PR retargeted after approval" >&2
+  exit 1
+fi
+printf '[[]]\n' >"$tmp/api/auth-pr-$auth_pr.timeline.json"
 
 appsell_artifacts="$tmp/api/autonom-ia/appsell/$appsell_run/artifacts.json"
 cp "$appsell_artifacts" "$tmp/appsell-artifacts-original.json"
