@@ -1,4 +1,4 @@
-# appsell
+# Autonom.ia Sell
 
 Plataforma SaaS white-label mobile-first para produtos digitais e áreas de membros da Autonom.ia
 
@@ -251,5 +251,5 @@ A versão 2 do envelope inclui `revision` na AAD e `tokenRevision` na sessão,
 tornando envelopes
 anteriores incompatíveis de propósito. Como este slice é apenas Local/CI,
 upgrade ou rollback exige apagar somente o namespace Redis descartável do
-AppSell usado no teste. Não migrar nem limpar Redis compartilhado, staging ou
+Autonom.ia Sell usado no teste. Não migrar nem limpar Redis compartilhado, staging ou
 produção.

@@ -19,7 +19,8 @@ x-app-security: &app-security
 
 services:
   netns:
-    image: alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+    image: ${APPSELL_ALPINE_IMAGE:?APPSELL_ALPINE_IMAGE is required}
+    pull_policy: never
     command: ["sh", "-ec", "trap 'exit 0' TERM INT; while :; do sleep 3600 & wait $${!}; done"]
     ports:
       - "127.0.0.1:13200:13200"
@@ -40,7 +41,8 @@ services:
     logging: *preview-logging
 
   domain-postgres:
-    image: postgres:16.9-alpine@sha256:7c688148e5e156d0e86df7ba8ae5a05a2386aaec1e2ad8e6d11bdf10504b1fb7
+    image: ${APPSELL_POSTGRES_IMAGE:?APPSELL_POSTGRES_IMAGE is required}
+    pull_policy: never
     network_mode: "service:netns"
     command: ["postgres", "-p", "15432", "-c", "listen_addresses=127.0.0.1", "-c", "max_connections=40"]
     environment:
@@ -68,7 +70,8 @@ services:
     logging: *preview-logging
 
   identity-postgres:
-    image: postgres:16.9-alpine@sha256:7c688148e5e156d0e86df7ba8ae5a05a2386aaec1e2ad8e6d11bdf10504b1fb7
+    image: ${APPSELL_POSTGRES_IMAGE:?APPSELL_POSTGRES_IMAGE is required}
+    pull_policy: never
     network_mode: "service:netns"
     command: ["postgres", "-p", "15433", "-c", "listen_addresses=127.0.0.1", "-c", "max_connections=30"]
     environment:
@@ -93,7 +96,8 @@ services:
     logging: *preview-logging
 
   redis:
-    image: redis:8.2.1-alpine@sha256:987c376c727652f99625c7d205a1cba3cb2c53b92b0b62aade2bd48ee1593232
+    image: ${APPSELL_REDIS_IMAGE:?APPSELL_REDIS_IMAGE is required}
+    pull_policy: never
     network_mode: "service:netns"
     command:
       - redis-server
@@ -130,6 +134,7 @@ services:
 
   foundation:
     image: ${IDENTITY_FOUNDATION_IMAGE:?IDENTITY_FOUNDATION_IMAGE digest is required}
+    pull_policy: never
     network_mode: "service:netns"
     command: ["corepack", "pnpm", "local:http"]
     environment:
@@ -164,6 +169,7 @@ services:
 
   domain-bootstrap:
     image: ${APPSELL_DOMAIN_IMAGE:?APPSELL_DOMAIN_IMAGE digest is required}
+    pull_policy: never
     network_mode: "service:netns"
     command: ["bash", "deploy/preview-vps/bootstrap-domain.sh"]
     environment:
@@ -192,6 +198,7 @@ services:
 
   domain-api:
     image: ${APPSELL_DOMAIN_IMAGE:?APPSELL_DOMAIN_IMAGE digest is required}
+    pull_policy: never
     network_mode: "service:netns"
     command: ["uvicorn", "appsell_api.main:app", "--host", "127.0.0.1", "--port", "15800"]
     environment:
@@ -225,6 +232,7 @@ services:
 
   auth:
     image: ${IDENTITY_AUTH_IMAGE:?IDENTITY_AUTH_IMAGE digest is required}
+    pull_policy: never
     network_mode: "service:netns"
     environment:
       NODE_ENV: development
@@ -262,6 +270,7 @@ services:
 
   sell:
     image: ${APPSELL_SELL_IMAGE:?APPSELL_SELL_IMAGE digest is required}
+    pull_policy: never
     network_mode: "service:netns"
     command: ["./node_modules/.bin/next", "dev", "--hostname", "127.0.0.1", "-p", "13200"]
     environment: &sell-environment
@@ -309,7 +318,8 @@ services:
 
   evidence-init:
     profiles: ["e2e"]
-    image: alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+    image: ${APPSELL_ALPINE_IMAGE:?APPSELL_ALPINE_IMAGE is required}
+    pull_policy: never
     network_mode: none
     user: "0:0"
     command: ["sh", "-ec", "chown 1000:1000 /evidence && chmod 0700 /evidence"]
@@ -328,6 +338,7 @@ services:
   e2e:
     profiles: ["e2e"]
     image: ${APPSELL_SELL_IMAGE:?APPSELL_SELL_IMAGE digest is required}
+    pull_policy: never
     network_mode: "service:netns"
     command: ["bash", "deploy/preview-vps/run-e2e.sh"]
     environment:

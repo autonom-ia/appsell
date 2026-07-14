@@ -13,7 +13,7 @@ load_preview_env "$env_file"
 unit="autonomia-sell-preview-66-${APPSELL_SOURCE_SHA:0:12}-expiry"
 service_file="/etc/systemd/system/$unit.service"
 timer_file="/etc/systemd/system/$unit.timer"
-[[ ! -e "$service_file" && ! -e "$timer_file" ]] || { echo "Expiry unit collision" >&2; exit 2; }
+[[ ! -e "$service_file" && ! -L "$service_file" && ! -e "$timer_file" && ! -L "$timer_file" ]] || { echo "Expiry unit collision" >&2; exit 2; }
 
 umask 022
 tmp_service="$(mktemp)"
@@ -28,7 +28,11 @@ printf '%s\n' \
   '' \
   '[Service]' \
   'Type=oneshot' \
-  "ExecStart=/usr/bin/env bash $config_dir/teardown.sh $compose_file $env_file" \
+  'Environment=DOCKER_HOST=unix:///var/run/docker.sock' \
+  'UnsetEnvironment=DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH DOCKER_CONFIG DOCKER_API_VERSION' \
+  "ExecStart=/usr/bin/timeout --signal=TERM --kill-after=30s 10m /usr/bin/env bash $config_dir/teardown.sh $compose_file $env_file" \
+  'TimeoutStartSec=11min' \
+  'TimeoutStopSec=1min' \
   'Restart=on-failure' \
   'RestartSec=60s' >"$tmp_service"
 printf '%s\n' \

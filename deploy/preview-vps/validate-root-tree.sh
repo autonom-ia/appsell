@@ -5,6 +5,7 @@ if [[ $# -ne 1 ]]; then
   echo "Usage: $0 DIRECTORY" >&2
   exit 2
 fi
+[[ -d "$1" && ! -L "$1" ]] || { echo "Tree root must be a non-symlink directory" >&2; exit 2; }
 root="$(realpath -e "$1")"
 [[ "$(stat -c '%u:%g' "$root")" == "0:0" ]] || { echo "Tree root must be root-owned" >&2; exit 2; }
 if find "$root" -xdev \( -type l -o ! -user root -o -perm /022 \) -print -quit | grep -q .; then

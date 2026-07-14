@@ -11,7 +11,12 @@ output="$1"
   echo "Snapshot path is outside the exact Issue #66 run root" >&2
   exit 2
 }
-[[ ! -e "$output" ]] || { echo "Refusing to overwrite $output" >&2; exit 2; }
+run_root="$(dirname "$(dirname "$output")")"
+config_dir="$run_root/config"
+# shellcheck source=docker-local-guard.sh
+source "$config_dir/docker-local-guard.sh"
+pin_local_preview_docker
+[[ ! -e "$output" && ! -L "$output" ]] || { echo "Refusing to overwrite $output" >&2; exit 2; }
 install -d -o root -g root -m 0700 "$output"
 
 docker service ls --format '{{.ID}}\t{{.Name}}\t{{.Image}}\t{{.Mode}}\t{{.Replicas}}' \

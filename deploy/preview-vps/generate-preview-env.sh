@@ -22,13 +22,33 @@ done
   echo "OUTPUT_ENV directory must match the Autonom.ia Sell SHA" >&2
   exit 2
 }
-[[ ! -e "$output" ]] || { echo "Refusing to overwrite $output" >&2; exit 2; }
+config_dir="$(dirname "$output")/config"
+# shellcheck source=docker-local-guard.sh
+source "$config_dir/docker-local-guard.sh"
+pin_local_preview_docker
+output_dir="$(dirname "$output")"
+[[ -d "$output_dir" && ! -L "$output_dir" ]] || { echo "Invalid preview env parent directory" >&2; exit 2; }
+[[ "$(stat -c '%u:%g:%a' "$output_dir")" == "0:0:700" ]] || {
+  echo "Preview env parent must be root:root 0700" >&2
+  exit 2
+}
+[[ ! -e "$output" && ! -L "$output" ]] || { echo "Refusing to overwrite $output" >&2; exit 2; }
 
 sell_image="autonomia-sell-preview-sell:$appsell_sha"
 domain_image="autonomia-sell-preview-domain:$appsell_sha"
+alpine_image="autonomia-sell-preview-base-alpine:$appsell_sha"
+postgres_image="autonomia-sell-preview-base-postgres:$appsell_sha"
+redis_image="autonomia-sell-preview-base-redis:$appsell_sha"
 auth_image="autonomia-identity-auth-preview:$auth_sha"
 foundation_image="autonomia-identity-foundation-preview:$foundation_sha"
-for record in "$sell_image|$appsell_sha" "$domain_image|$appsell_sha" "$auth_image|$auth_sha" "$foundation_image|$foundation_sha"; do
+for record in \
+  "$sell_image|$appsell_sha" \
+  "$domain_image|$appsell_sha" \
+  "$alpine_image|$appsell_sha" \
+  "$postgres_image|$appsell_sha" \
+  "$redis_image|$appsell_sha" \
+  "$auth_image|$auth_sha" \
+  "$foundation_image|$foundation_sha"; do
   IFS='|' read -r image sha <<<"$record"
   [[ "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" == "$sha" ]] || exit 2
 done
@@ -45,8 +65,10 @@ vault_key="$(b64 32)"
 context_key_b64="$(b64 32)"
 context_key_hex="$(printf '%s' "$context_key_b64" | openssl base64 -d -A | od -An -tx1 | tr -d ' \n')"
 
-install -d -o root -g root -m 0700 "$(dirname "$output")"
 umask 077
+tmp_output="$(mktemp "$output_dir/.preview.env.XXXXXX")"
+cleanup() { rm -f -- "$tmp_output"; }
+trap cleanup EXIT
 {
   printf 'PREVIEW_PROJECT_NAME=autonomia_sell_preview_66_%s\n' "$short_sha"
   printf 'PREVIEW_EXPIRES_AT=%s\n' "$expires_at"
@@ -55,10 +77,16 @@ umask 077
   printf 'IDENTITY_FOUNDATION_SOURCE_SHA=%s\n' "$foundation_sha"
   printf 'APPSELL_SELL_IMAGE=%s\n' "$sell_image"
   printf 'APPSELL_DOMAIN_IMAGE=%s\n' "$domain_image"
+  printf 'APPSELL_ALPINE_IMAGE=%s\n' "$alpine_image"
+  printf 'APPSELL_POSTGRES_IMAGE=%s\n' "$postgres_image"
+  printf 'APPSELL_REDIS_IMAGE=%s\n' "$redis_image"
   printf 'IDENTITY_AUTH_IMAGE=%s\n' "$auth_image"
   printf 'IDENTITY_FOUNDATION_IMAGE=%s\n' "$foundation_image"
   printf 'APPSELL_SELL_IMAGE_ID=%s\n' "$(docker image inspect --format '{{.Id}}' "$sell_image")"
   printf 'APPSELL_DOMAIN_IMAGE_ID=%s\n' "$(docker image inspect --format '{{.Id}}' "$domain_image")"
+  printf 'APPSELL_ALPINE_IMAGE_ID=%s\n' "$(docker image inspect --format '{{.Id}}' "$alpine_image")"
+  printf 'APPSELL_POSTGRES_IMAGE_ID=%s\n' "$(docker image inspect --format '{{.Id}}' "$postgres_image")"
+  printf 'APPSELL_REDIS_IMAGE_ID=%s\n' "$(docker image inspect --format '{{.Id}}' "$redis_image")"
   printf 'IDENTITY_AUTH_IMAGE_ID=%s\n' "$(docker image inspect --format '{{.Id}}' "$auth_image")"
   printf 'IDENTITY_FOUNDATION_IMAGE_ID=%s\n' "$(docker image inspect --format '{{.Id}}' "$foundation_image")"
   printf 'IDENTITY_DATABASE_NAME=identity_oauth_local_%s\n' "$(hex 16)"
@@ -79,6 +107,12 @@ umask 077
   printf 'APPSELL_CONTEXT_SIGNING_KEY_HEX=%s\n' "$context_key_hex"
   printf 'APPSELL_BOOTSTRAP_ATTESTATION_KEY_HEX=%s\n' "$(hex 32)"
   printf 'APPSELL_SERVICE_CREDENTIAL_B64=%s\n' "$(b64 32)"
-} >"$output"
-chmod 600 "$output"
+} >"$tmp_output"
+chown root:root "$tmp_output"
+chmod 600 "$tmp_output"
+sync -f "$tmp_output"
+[[ ! -e "$output" && ! -L "$output" ]] || { echo "Preview env appeared during creation" >&2; exit 2; }
+mv -T -- "$tmp_output" "$output"
+tmp_output=""
+trap - EXIT
 echo "Created an ephemeral preview env at $output (root:root 0600)."

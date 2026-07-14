@@ -18,6 +18,9 @@ config_dir="$(dirname "$compose_file")"
 [[ "$(stat -c '%h' "$config_dir/validate-root-tree.sh")" == "1" ]] || exit 2
 [[ ! -w "$config_dir/validate-root-tree.sh" || "$(id -u)" == "0" ]] || exit 2
 bash "$config_dir/validate-root-tree.sh" "$config_dir"
+# shellcheck source=docker-local-guard.sh
+source "$config_dir/docker-local-guard.sh"
+pin_local_preview_docker
 # shellcheck source=load-preview-env.sh
 source "$config_dir/load-preview-env.sh"
 load_preview_env "$env_file"
@@ -26,6 +29,8 @@ load_preview_env "$env_file"
   echo "Unexpected preview project name" >&2
   exit 2
 }
+unset COMPOSE_PROJECT_NAME COMPOSE_FILE COMPOSE_PROFILES COMPOSE_ENV_FILES
+compose=(docker compose --project-name "$PREVIEW_PROJECT_NAME" --env-file "$env_file" -f "$compose_file")
 [[ "$IDENTITY_DATABASE_NAME" =~ ^identity_oauth_local_[0-9a-f]{32}$ ]] || {
   echo "Invalid Identity database sentinel" >&2
   exit 2
@@ -43,6 +48,9 @@ now_epoch="$(date -u +%s)"
 records=(
   "$APPSELL_SELL_IMAGE|autonomia-sell-preview-sell:$APPSELL_SOURCE_SHA|$APPSELL_SELL_IMAGE_ID|$APPSELL_SOURCE_SHA"
   "$APPSELL_DOMAIN_IMAGE|autonomia-sell-preview-domain:$APPSELL_SOURCE_SHA|$APPSELL_DOMAIN_IMAGE_ID|$APPSELL_SOURCE_SHA"
+  "$APPSELL_ALPINE_IMAGE|autonomia-sell-preview-base-alpine:$APPSELL_SOURCE_SHA|$APPSELL_ALPINE_IMAGE_ID|$APPSELL_SOURCE_SHA"
+  "$APPSELL_POSTGRES_IMAGE|autonomia-sell-preview-base-postgres:$APPSELL_SOURCE_SHA|$APPSELL_POSTGRES_IMAGE_ID|$APPSELL_SOURCE_SHA"
+  "$APPSELL_REDIS_IMAGE|autonomia-sell-preview-base-redis:$APPSELL_SOURCE_SHA|$APPSELL_REDIS_IMAGE_ID|$APPSELL_SOURCE_SHA"
   "$IDENTITY_AUTH_IMAGE|autonomia-identity-auth-preview:$IDENTITY_AUTH_SOURCE_SHA|$IDENTITY_AUTH_IMAGE_ID|$IDENTITY_AUTH_SOURCE_SHA"
   "$IDENTITY_FOUNDATION_IMAGE|autonomia-identity-foundation-preview:$IDENTITY_FOUNDATION_SOURCE_SHA|$IDENTITY_FOUNDATION_IMAGE_ID|$IDENTITY_FOUNDATION_SOURCE_SHA"
 )
@@ -74,6 +82,18 @@ for service in netns domain-postgres identity-postgres redis foundation domain-b
     exit 2
   fi
 done
+if [[ -n "$(docker ps -aq --filter "label=com.docker.compose.project=$PREVIEW_PROJECT_NAME")" ]]; then
+  echo "A container already claims the exact preview Compose project label" >&2
+  exit 2
+fi
+if [[ -n "$(docker network ls -q --filter "label=com.docker.compose.project=$PREVIEW_PROJECT_NAME")" ]]; then
+  echo "A network already claims the exact preview Compose project label" >&2
+  exit 2
+fi
+if [[ -n "$(docker volume ls -q --filter "label=com.docker.compose.project=$PREVIEW_PROJECT_NAME")" ]]; then
+  echo "A volume already claims the exact preview Compose project label" >&2
+  exit 2
+fi
 for network in "${PREVIEW_PROJECT_NAME}_preview"; do
   if docker network ls --format '{{.Name}}' | grep -Fxq "$network"; then
     echo "Network name collision: $network" >&2
@@ -101,9 +121,19 @@ cpu_count="$(getconf _NPROCESSORS_ONLN)"
 (( cpu_count >= 8 )) || { echo "Fewer than 8 logical CPUs are available" >&2; exit 2; }
 load_milli="$(awk '{printf "%d", $1 * 1000}' /proc/loadavg)"
 (( load_milli <= cpu_count * 500 )) || { echo "One-minute load exceeds 50% of logical CPU capacity" >&2; exit 2; }
-unit="autonomia-sell-preview-66-${APPSELL_SOURCE_SHA:0:12}-expiry.timer"
-[[ "$(systemctl show -p LoadState --value "$unit" 2>/dev/null || true)" != "loaded" ]] || { echo "Expiry timer collision" >&2; exit 2; }
-[[ ! -e "/etc/systemd/system/$unit" && ! -e "/etc/systemd/system/${unit%.timer}.service" ]] || { echo "Expiry unit file collision" >&2; exit 2; }
+unit_base="autonomia-sell-preview-66-${APPSELL_SOURCE_SHA:0:12}-expiry"
+for unit in "$unit_base.timer" "$unit_base.service"; do
+  [[ "$(systemctl show -p LoadState --value "$unit" 2>/dev/null || true)" != "loaded" ]] || {
+    echo "Expiry unit collision: $unit" >&2
+    exit 2
+  }
+  [[ ! -e "/etc/systemd/system/$unit" && ! -L "/etc/systemd/system/$unit" ]] || { echo "Expiry unit file collision: $unit" >&2; exit 2; }
+done
 
-docker compose --env-file "$env_file" -f "$compose_file" config --quiet
+"${compose[@]}" config --quiet
+resolved_project="$("${compose[@]}" config --format json | jq -r '.name')"
+[[ "$resolved_project" == "$PREVIEW_PROJECT_NAME" ]] || {
+  echo "Compose resolved an unexpected project name" >&2
+  exit 2
+}
 echo "Preview preflight passed without creating resources."
