@@ -158,6 +158,20 @@ Fase 5 — entrega de conteúdo e assets privados multitenant em Local/CI.
   ainda pendentes; nenhum merge, deploy, VPS, DNS ou produção;
 - épica #8 permanece em desenvolvimento;
 - Identity real #13 permanece bloqueado por ausência de dev/hml e P0 upstream.
+- Issue #65 implementada na branch `test/65-real-identity-cross-repo`: Auth,
+  Identity Foundation, Domain API, dois PostgreSQL e Redis são exercitados com
+  recursos descartáveis; as contas `admin.demo@autonomia.site` e
+  `user.demo@autonomia.site` atravessam o OAuth real até dashboard e biblioteca;
+- gate cross-repo cobre replay rejeitado, refresh lógico, membership admin,
+  tenant alheio, cinco aulas/PDFs protegidos, progresso, cookies HttpOnly e
+  ausência de bearer do provider em browser/respostas/Redis;
+- gates locais do SHA da Issue #65: 268 testes web verdes, typecheck, lint,
+  build, E2E 2/2, Harness 2.1.2 e reviews P0=P1=P2=0;
+- Draft PR #67 aberta, empilhada na Draft PR #62; Draft PR Foundation #36
+  aberta e empilhada na #34; nenhum merge ou deploy;
+- Issue #66 criada para repetir o gate em preview VPS aditiva e isolada, sem
+  alterar a stack Easypanel/Swarm existente. Progresso total estimado para
+  lançamento: 79%.
 
 ## Pendente
 
@@ -194,7 +208,7 @@ Fase 5 — entrega de conteúdo e assets privados multitenant em Local/CI.
 
 ## Próximo passo recomendado
 
-Concluir as revisões de tenancy e capacidade da Issue #46, corrigir qualquer
-P0-P3 e repetir o run exato antes de solicitar autorização para commit/push/PR
-empilhada sobre #45. Não declarar acesso real de `comercial@autonomia.site`:
-isso depende do Identity #13 e de ambiente isolado com token/JWKS/MFA reais.
+Concluir o CI das Draft PRs #36 e #67 e executar os SHAs publicados no preview
+VPS isolado da Issue #66. Não declarar acesso real de
+`comercial@autonomia.site`: isso depende do Identity #13 e de ambiente isolado
+com token/JWKS/MFA reais.
