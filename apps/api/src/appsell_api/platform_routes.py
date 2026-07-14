@@ -45,10 +45,11 @@ class InspectionRevokeBody(BaseModel):
 async def start_demo_inspection(request: Request) -> dict[str, Any]:
     _require_local_ci()
     auth, internal = await _authenticate(request, "platform.demo.inspect.start")
-    _require_no_seller(internal)
-    body = _model_from_body(InspectionStartBody, internal.body)
+    await _require_no_seller(internal)
+    body = await _model_from_body(InspectionStartBody, internal)
     token = secrets.token_urlsafe(32)
     if _OPAQUE_TOKEN.fullmatch(token) is None:  # defensive: token_urlsafe contract
+        await internal.consume_rejected_request()
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
     envelope = internal.envelope
     try:
@@ -92,8 +93,8 @@ async def start_demo_inspection(request: Request) -> dict[str, Any]:
 async def read_demo_inspection(inspection_id: UUID, request: Request) -> dict[str, Any]:
     _require_local_ci()
     auth, internal = await _authenticate(request, "platform.demo.inspect.read")
-    _require_no_seller(internal)
-    token_hash = _inspection_token_hash(request)
+    await _require_no_seller(internal)
+    token_hash = await _inspection_token_hash(request, internal)
     envelope = internal.envelope
     try:
         async with auth.domain_session(envelope) as session:
@@ -122,9 +123,9 @@ async def read_demo_inspection(inspection_id: UUID, request: Request) -> dict[st
 async def revoke_demo_inspection(inspection_id: UUID, request: Request) -> dict[str, Any]:
     _require_local_ci()
     auth, internal = await _authenticate(request, "platform.demo.inspect.revoke")
-    _require_no_seller(internal)
-    body = _model_from_body(InspectionRevokeBody, internal.body)
-    token_hash = _inspection_token_hash(request)
+    await _require_no_seller(internal)
+    body = await _model_from_body(InspectionRevokeBody, internal)
+    token_hash = await _inspection_token_hash(request, internal)
     envelope = internal.envelope
     try:
         async with auth.domain_session(envelope) as session:
@@ -170,9 +171,10 @@ def _require_local_ci() -> None:
         )
 
 
-def _inspection_token_hash(request: Request) -> str:
+async def _inspection_token_hash(request: Request, internal: Any) -> str:
     token = request.headers.get("x-appsell-inspection-token", "")
     if _OPAQUE_TOKEN.fullmatch(token) is None:
+        await internal.consume_rejected_request()
         raise _inspection_not_found()
     return _token_sha256(token)
 

@@ -53,6 +53,7 @@ class FakeAuth:
         self.seller_id = seller_id
         self.capabilities: list[str] = []
         self.domain_sessions = 0
+        self.rejected_requests = 0
         self.request_id = uuid4()
 
     async def authenticate(self, request: Any, capability: str) -> Any:
@@ -66,7 +67,11 @@ class FakeAuth:
                 request_id=self.request_id,
             ),
             body=body,
+            consume_rejected_request=self.consume_rejected_request,
         )
+
+    async def consume_rejected_request(self) -> None:
+        self.rejected_requests += 1
 
     @asynccontextmanager
     async def domain_session(self, _envelope: Any) -> AsyncIterator[FakeSession]:

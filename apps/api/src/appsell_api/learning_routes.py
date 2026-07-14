@@ -68,7 +68,7 @@ async def read_buyer_products(request: Request) -> dict[str, Any]:
 
 async def _read_buyer_products(request: Request) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "library.read")
-    _require_buyer_scope(internal)
+    await _require_buyer_scope(internal)
     try:
         async with auth.domain_session(internal.envelope) as session:
             products = await session.scalar(
@@ -83,7 +83,7 @@ async def _read_buyer_products(request: Request) -> dict[str, Any]:
 @router.get("/me/products/{entitlement_id}/seller-products")
 async def read_buyer_seller_products(request: Request, entitlement_id: UUID) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "library.read")
-    _require_buyer_scope(internal)
+    await _require_buyer_scope(internal)
     try:
         async with auth.domain_session(internal.envelope) as session:
             products = await session.scalar(
@@ -104,7 +104,7 @@ async def read_buyer_seller_products(request: Request, entitlement_id: UUID) -> 
 @router.get("/me/learning/items/{entitlement_id}/assets/{asset_id}")
 async def authorize_asset(request: Request, entitlement_id: UUID, asset_id: UUID) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "library.asset.read")
-    _require_buyer_scope(internal)
+    await _require_buyer_scope(internal)
     try:
         async with auth.domain_session(internal.envelope) as session:
             row = (
@@ -184,7 +184,7 @@ async def authorize_asset(request: Request, entitlement_id: UUID, asset_id: UUID
 @router.get("/me/learning/items/{entitlement_id}/resume")
 async def read_learning_resume(request: Request, entitlement_id: UUID) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "learning.player.read")
-    _require_buyer_scope(internal)
+    await _require_buyer_scope(internal)
     player = await _read_player(auth, internal, entitlement_id, None)
     return {"player": player}
 
@@ -194,7 +194,7 @@ async def read_learning_lesson(
     request: Request, entitlement_id: UUID, lesson_id: UUID
 ) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "learning.player.read")
-    _require_buyer_scope(internal)
+    await _require_buyer_scope(internal)
     player = await _read_player(auth, internal, entitlement_id, lesson_id)
     return {"player": player}
 
@@ -204,8 +204,8 @@ async def update_learning_progress(
     request: Request, entitlement_id: UUID, lesson_id: UUID
 ) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "learning.progress.write")
-    _require_buyer_scope(internal)
-    body = _model_from_internal_body(request, internal, LessonProgressBody)
+    await _require_buyer_scope(internal)
+    body = await _model_from_internal_body(request, internal, LessonProgressBody)
     result = await _record_progress(
         auth,
         internal,
@@ -223,8 +223,8 @@ async def complete_learning_lesson(
     request: Request, entitlement_id: UUID, lesson_id: UUID
 ) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "learning.progress.write")
-    _require_buyer_scope(internal)
-    body = _model_from_internal_body(request, internal, LessonCompletionBody)
+    await _require_buyer_scope(internal)
+    body = await _model_from_internal_body(request, internal, LessonCompletionBody)
     result = await _record_progress(
         auth,
         internal,
@@ -299,25 +299,28 @@ async def _record_progress(
     return player
 
 
-def _require_buyer_scope(internal: AuthenticatedInternalRequest) -> None:
+async def _require_buyer_scope(internal: AuthenticatedInternalRequest) -> None:
     if internal.envelope.seller_organization_id is not None:
+        await internal.consume_rejected_request()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid_internal_request",
         )
 
 
-def _model_from_internal_body(
+async def _model_from_internal_body(
     request: Request,
     internal: AuthenticatedInternalRequest,
     model: type[BaseModel],
 ) -> Any:
     if request.headers.get("content-type") != "application/json":
+        await internal.consume_rejected_request()
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             detail="invalid_content_type",
         )
     if len(internal.body) > _MAX_LEARNING_BODY_BYTES:
+        await internal.consume_rejected_request()
         raise HTTPException(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail="payload_too_large",
@@ -326,6 +329,7 @@ def _model_from_internal_body(
         value = json.loads(internal.body, object_pairs_hook=_reject_duplicate_keys)
         return model.model_validate(value)
     except (UnicodeDecodeError, json.JSONDecodeError, ValidationError, ValueError) as error:
+        await internal.consume_rejected_request()
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="invalid_request_body",

@@ -6,9 +6,9 @@ Atualizado em pontos de marco (PR aberta, deploy, incidente). Diferente de MEMOR
 
 | Indicador | Status | Última verificação |
 |-----------|:------:|--------------------|
-| Build | 🟢 release candidate #61 compila em modo produção | 2026-07-13 |
-| Testes | 🟢 vertical Local/CI integrada e capacidade 100/1.000 verdes | 2026-07-13 |
-| CI | 🟡 Draft PR #62: 1 run verde; gate de capacidade em correção após review P1 | 2026-07-14 |
+| Build | 🟢 release candidate #61 compila em modo produção | 2026-07-14 |
+| Testes | 🟢 vertical real API/PG/S3 e capacidade 100/1.000 verdes localmente | 2026-07-14 |
+| CI | 🟡 Draft PR #62: correção revisada GREEN; novo SHA/3 runs ainda pendentes | 2026-07-14 |
 | Deploy produção | 🟡 não configurado/não executado | 2026-07-10 |
 | Harness instalado em `main` | 2.0.2 | 2026-07-10 |
 | Harness upgrade | 🟢 PR #37 em 2.1.2, review e 10/10 checks verdes; sem merge | 2026-07-11 |
@@ -26,6 +26,27 @@ auditoria append-only e bootstrap one-shot do superadmin com atestação separad
 Este marco é Local/CI; não é o Identity real e não concede conta de produção.
 
 ## Última mudança relevante
+
+2026-07-14 — A saturação sustentada do capacity gate foi rastreada ao replay
+anti-repetição em uma transação durável separada de cada operação de domínio.
+O autenticador agora consome o replay no outer transaction e executa o domínio
+em savepoint; sucesso confirma ambos uma vez, enquanto falha de domínio ou de
+constraint diferida desfaz somente o negócio e preserva o replay. Rejeições
+pós-envelope e pré-domínio também consomem o request, e continuations ficam
+vinculadas ao envelope completo, à instância do autenticador, à mesma asyncio
+Task e a transições de capability explícitas. O worker privado valida shape,
+identidade UUIDv5, issuer/audience, hashes e janela temporal exatos.
+
+O gate PostgreSQL passou com 195 testes integrados e 24 testes explícitos de
+boundary/worker; BFF real passou 5/5 e multi-seller 1/1. O storage vertical
+agora cria e confirma o PDF pela rota FastAPI com autenticador, PostgreSQL e S3
+reais antes de processar, publicar e autorizar o download, e passou 1/1. A
+carga 100 admins/1.000 buyers passou sem erro com 107/487 amostras de espera
+(21,97%, limite 25%) e uma única amostra isolada de pool cheio; por isso o
+artifact local é deliberadamente inelegível e exige repetição no mesmo SHA.
+Dois reviews críticos independentes ficaram GREEN para commit/push da Draft PR,
+com P0/P1/P2/P3 bloqueantes em zero. Merge, deploy e certificação de produção
+continuam não autorizados.
 
 2026-07-14 — O SHA corrigido da Draft PR #62 registrou uma única amostra 5/5
 esperando entre 724, sem duração sustentada, erro funcional, timeout, 5xx,

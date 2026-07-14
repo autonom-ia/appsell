@@ -71,7 +71,7 @@ class FakeAuth:
         self.contexts: list[tuple[str, UUID | None]] = []
 
     @asynccontextmanager
-    async def domain_session(self, envelope: Any) -> AsyncIterator[FakeSession]:
+    async def trusted_domain_session(self, envelope: Any) -> AsyncIterator[FakeSession]:
         self.contexts.append((envelope.capability, envelope.seller_organization_id))
         yield self.session
 

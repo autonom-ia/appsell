@@ -27,8 +27,8 @@ def test_event_is_allowlisted_json_without_request_material(
         outcome="success",
         total_ms=5_001,
         durations_ms={
-            "internal_auth_replay": 10,
-            "pool_checkout_apply_context": 20,
+            "internal_auth_verification": 10,
+            "pool_checkout_replay_apply_context": 20,
             "sql": 4_960,
             "commit_response": 11,
         },

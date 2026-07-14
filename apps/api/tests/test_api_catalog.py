@@ -71,6 +71,7 @@ class FakeAuth:
         self.session = FakeSession(result)
         self.capabilities: list[str] = []
         self.domain_sessions = 0
+        self.rejected_requests = 0
         self.auth_error = auth_error
 
     async def authenticate(self, request: Any, capability: str) -> Any:
@@ -86,7 +87,11 @@ class FakeAuth:
                 request_id=uuid4(),
             ),
             body=body,
+            consume_rejected_request=self.consume_rejected_request,
         )
+
+    async def consume_rejected_request(self) -> None:
+        self.rejected_requests += 1
 
     @asynccontextmanager
     async def domain_session(self, _envelope: Any) -> AsyncIterator[FakeSession]:
@@ -253,8 +258,8 @@ async def test_create_capacity_trace_emits_allowlisted_completion(
     assert event["status"] == 201
     assert event["outcome"] == "success"
     assert set(event["durations_ms"]) == {
-        "internal_auth_replay",
-        "pool_checkout_apply_context",
+        "internal_auth_verification",
+        "pool_checkout_replay_apply_context",
         "sql",
         "commit_response",
     }
@@ -283,8 +288,8 @@ async def test_capacity_trace_preserves_internal_auth_failure_completion(
     event = json.loads(capsys.readouterr().out)
     assert event["status"] == 401
     assert event["outcome"] == "http_error"
-    assert event["durations_ms"]["internal_auth_replay"] >= 0
-    assert event["durations_ms"]["pool_checkout_apply_context"] == 0
+    assert event["durations_ms"]["internal_auth_verification"] >= 0
+    assert event["durations_ms"]["pool_checkout_replay_apply_context"] == 0
     assert abs(event["total_ms"] - sum(event["durations_ms"].values())) <= 1
 
 

@@ -23,6 +23,7 @@ from .catalog_routes import (
     _model_from_body,
     _require_seller,
 )
+from .internal_requests import AuthenticatedInternalRequest
 from .storage_s3 import S3Storage, StorageError
 
 router = APIRouter(prefix="/v1")
@@ -112,7 +113,7 @@ async def list_lesson_assets(
     lesson_id: UUID,
 ) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "catalog.asset.read")
-    _require_seller(internal, seller_id)
+    await _require_seller(internal, seller_id)
     try:
         async with auth.domain_session(internal.envelope) as session:
             row = (
@@ -160,9 +161,9 @@ async def create_asset_upload_intent(
     lesson_id: UUID,
 ) -> JSONResponse:
     auth, internal = await _authenticate(request, "catalog.asset.create")
-    _require_seller(internal, seller_id)
-    body = _model_from_body(AssetUploadIntentBody, internal.body)
-    storage = _storage(request)
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(AssetUploadIntentBody, internal)
+    storage = await _storage(request, internal)
     settings = request.app.state.settings
     parameters = _route_parameters(
         internal.envelope.identity.user_id,
@@ -268,7 +269,7 @@ async def read_asset_upload_status(
     upload_id: UUID,
 ) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "catalog.asset.read")
-    _require_seller(internal, seller_id)
+    await _require_seller(internal, seller_id)
     try:
         async with auth.domain_session(internal.envelope) as session:
             value = await session.scalar(
@@ -309,9 +310,9 @@ async def confirm_asset_upload(
     upload_id: UUID,
 ) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "catalog.asset.upload.confirm")
-    _require_seller(internal, seller_id)
-    body = _model_from_body(AssetMutationBody, internal.body)
-    storage = _storage(request)
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(AssetMutationBody, internal)
+    storage = await _storage(request, internal)
     replay_parameters = {
         **_route_parameters(
             internal.envelope.identity.user_id,
@@ -359,7 +360,7 @@ async def confirm_asset_upload(
                 detail="asset_upload_metadata_mismatch",
             )
         checksum_hex = _checksum_hex(observed.checksum_sha256_b64)
-        async with auth.domain_session(internal.envelope) as session:
+        async with auth.continuation_domain_session(internal.envelope) as session:
             value = await session.scalar(
                 text(
                     "select app_private.confirm_asset_upload("
@@ -420,8 +421,8 @@ async def cancel_asset_upload(
     upload_id: UUID,
 ) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "catalog.asset.upload.cancel")
-    _require_seller(internal, seller_id)
-    body = _model_from_body(AssetMutationBody, internal.body)
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(AssetMutationBody, internal)
     try:
         async with auth.domain_session(internal.envelope) as session:
             value = await session.scalar(
@@ -468,8 +469,8 @@ async def archive_lesson_asset(
     asset_id: UUID,
 ) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "catalog.asset.archive")
-    _require_seller(internal, seller_id)
-    body = _model_from_body(AssetArchiveBody, internal.body)
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(AssetArchiveBody, internal)
     try:
         async with auth.domain_session(internal.envelope) as session:
             value = await session.scalar(
@@ -515,7 +516,7 @@ async def _read_upload_for_signing(
     upload_id: UUID,
 ) -> dict[str, Any]:
     signing_envelope = replace(envelope, capability="catalog.asset.upload.sign")
-    async with auth.domain_session(signing_envelope) as session:
+    async with auth.continuation_domain_session(signing_envelope) as session:
         value = await session.scalar(
             text(
                 "select app_private.read_asset_upload_for_signing("
@@ -554,9 +555,10 @@ def _route_parameters(
     }
 
 
-def _storage(request: Request) -> S3Storage:
+async def _storage(request: Request, internal: AuthenticatedInternalRequest) -> S3Storage:
     storage: S3Storage | None = getattr(request.app.state, "storage", None)
     if storage is None:
+        await internal.consume_rejected_request()
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="asset_storage_unavailable",

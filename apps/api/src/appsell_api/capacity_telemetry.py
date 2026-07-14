@@ -7,8 +7,8 @@ from typing import Literal
 
 _TRACE = re.compile(r"^pc-0[0-9]{2}$")
 _STAGES = (
-    "internal_auth_replay",
-    "pool_checkout_apply_context",
+    "internal_auth_verification",
+    "pool_checkout_replay_apply_context",
     "sql",
     "commit_response",
 )
