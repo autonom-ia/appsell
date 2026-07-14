@@ -1,0 +1,376 @@
+name: ${PREVIEW_PROJECT_NAME:?PREVIEW_PROJECT_NAME is required}
+
+x-preview-labels: &preview-labels
+  com.autonomia.preview: "true"
+  com.autonomia.issue: "66"
+  com.autonomia.environment: "local-ci-vps-preview"
+  com.autonomia.source-sha: ${APPSELL_SOURCE_SHA:?APPSELL_SOURCE_SHA is required}
+  com.autonomia.expires-at: ${PREVIEW_EXPIRES_AT:?PREVIEW_EXPIRES_AT is required}
+
+x-preview-logging: &preview-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-app-security: &app-security
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+
+services:
+  netns:
+    image: ${APPSELL_ALPINE_IMAGE:?APPSELL_ALPINE_IMAGE is required}
+    pull_policy: never
+    command: ["sh", "-ec", "trap 'exit 0' TERM INT; while :; do sleep 3600 & wait $${!}; done"]
+    ports:
+      - "127.0.0.1:13200:13200"
+      - "127.0.0.1:13217:13217"
+    networks: [preview]
+    labels: *preview-labels
+    healthcheck:
+      test: ["CMD", "sh", "-ec", "test -r /etc/alpine-release"]
+      interval: 2s
+      timeout: 1s
+      retries: 10
+    restart: "no"
+    mem_limit: 32m
+    cpus: 0.05
+    pids_limit: 32
+    read_only: true
+    <<: *app-security
+    logging: *preview-logging
+
+  domain-postgres:
+    image: ${APPSELL_POSTGRES_IMAGE:?APPSELL_POSTGRES_IMAGE is required}
+    pull_policy: never
+    network_mode: "service:netns"
+    command: ["postgres", "-p", "15432", "-c", "listen_addresses=127.0.0.1", "-c", "max_connections=40"]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${APPSELL_POSTGRES_SUPERUSER_PASSWORD:?APPSELL_POSTGRES_SUPERUSER_PASSWORD is required}
+      POSTGRES_DB: appsell_preview_66
+      PGPORT: "15432"
+      APPSELL_MIGRATOR_PASSWORD: ${APPSELL_MIGRATOR_PASSWORD:?APPSELL_MIGRATOR_PASSWORD is required}
+      APPSELL_RUNTIME_PASSWORD: ${APPSELL_RUNTIME_PASSWORD:?APPSELL_RUNTIME_PASSWORD is required}
+    volumes:
+      - domain_pg_data:/var/lib/postgresql/data
+      - ./init-domain-marker.sh:/docker-entrypoint-initdb.d/001_preview_domain.sh:ro
+    labels: *preview-labels
+    depends_on:
+      netns: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 15432 -U postgres -d appsell_preview_66"]
+      interval: 2s
+      timeout: 2s
+      retries: 45
+    restart: "no"
+    mem_limit: 384m
+    cpus: 0.35
+    pids_limit: 256
+    logging: *preview-logging
+
+  identity-postgres:
+    image: ${APPSELL_POSTGRES_IMAGE:?APPSELL_POSTGRES_IMAGE is required}
+    pull_policy: never
+    network_mode: "service:netns"
+    command: ["postgres", "-p", "15433", "-c", "listen_addresses=127.0.0.1", "-c", "max_connections=30"]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${IDENTITY_POSTGRES_PASSWORD:?IDENTITY_POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${IDENTITY_DATABASE_NAME:?IDENTITY_DATABASE_NAME is required}
+      PGPORT: "15433"
+    volumes:
+      - identity_pg_data:/var/lib/postgresql/data
+    labels: *preview-labels
+    depends_on:
+      netns: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 15433 -U postgres -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 2s
+      retries: 45
+    restart: "no"
+    mem_limit: 384m
+    cpus: 0.35
+    pids_limit: 192
+    logging: *preview-logging
+
+  redis:
+    image: ${APPSELL_REDIS_IMAGE:?APPSELL_REDIS_IMAGE is required}
+    pull_policy: never
+    network_mode: "service:netns"
+    command:
+      - redis-server
+      - --bind
+      - 127.0.0.1
+      - --port
+      - "16380"
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --protected-mode
+      - "yes"
+      - --requirepass
+      - ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    tmpfs:
+      - /data:size=134217728,mode=0700
+    labels: *preview-labels
+    depends_on:
+      netns: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$${REDIS_PASSWORD} redis-cli -h 127.0.0.1 -p 16380 ping | grep -qx PONG"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    restart: "no"
+    mem_limit: 128m
+    cpus: 0.10
+    pids_limit: 96
+    <<: *app-security
+    logging: *preview-logging
+
+  foundation:
+    image: ${IDENTITY_FOUNDATION_IMAGE:?IDENTITY_FOUNDATION_IMAGE digest is required}
+    pull_policy: never
+    network_mode: "service:netns"
+    command: ["corepack", "pnpm", "local:http"]
+    environment:
+      NODE_ENV: test
+      APP_ENV: ci
+      DATABASE_URL: postgresql://postgres:${IDENTITY_POSTGRES_PASSWORD}@127.0.0.1:15433/${IDENTITY_DATABASE_NAME}
+      IDENTITY_LOCAL_DATABASE_SENTINEL: ${IDENTITY_DATABASE_NAME}
+      IDENTITY_LOCAL_HTTP_PORT: "13218"
+      IDENTITY_LOCAL_OIDC_ISSUER: https://identity.preview.local
+      IDENTITY_LOCAL_OAUTH_REDIRECT_URI: http://localhost:13200/auth/callback
+      OAUTH_PROVIDER_SESSION_CALLER_ID: identity-auth-local
+      OAUTH_PROVIDER_SESSION_CALLER_ARN: arn:aws:iam::000000000000:role/identity-auth-local
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: AKIDLOCALCI000000000
+      AWS_SECRET_ACCESS_KEY: local-ci-secret-access-key-01234567890123456789
+    labels: *preview-labels
+    depends_on:
+      identity-postgres: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:13218/health').then(r=>{if(!r.ok)process.exit(1)})"]
+      interval: 3s
+      timeout: 2s
+      retries: 40
+    restart: "no"
+    mem_limit: 384m
+    cpus: 0.30
+    pids_limit: 160
+    read_only: true
+    tmpfs: ["/tmp:size=67108864,mode=1777,noexec,nosuid"]
+    <<: *app-security
+    logging: *preview-logging
+
+  domain-bootstrap:
+    image: ${APPSELL_DOMAIN_IMAGE:?APPSELL_DOMAIN_IMAGE digest is required}
+    pull_policy: never
+    network_mode: "service:netns"
+    command: ["bash", "deploy/preview-vps/bootstrap-domain.sh"]
+    environment:
+      APPSELL_API_ENVIRONMENT: ci
+      APPSELL_MIGRATOR_DATABASE_URL: postgresql+psycopg://appsell_migrator:${APPSELL_MIGRATOR_PASSWORD}@127.0.0.1:15432/appsell_preview_66
+      APPSELL_DEMO_DATABASE_URL: postgresql://postgres:${APPSELL_POSTGRES_SUPERUSER_PASSWORD}@127.0.0.1:15432/appsell_preview_66
+      APPSELL_CONTEXT_SIGNING_KEY_HEX: ${APPSELL_CONTEXT_SIGNING_KEY_HEX}
+      APPSELL_BOOTSTRAP_ATTESTATION_KEY_HEX: ${APPSELL_BOOTSTRAP_ATTESTATION_KEY_HEX}
+      APPSELL_BOOTSTRAP_EXPECTED_ISSUER: https://identity.preview.local
+      APPSELL_BOOTSTRAP_EXPECTED_AUDIENCE: appsell-web
+      APPSELL_BOOTSTRAP_EXPECTED_CLIENT_ID: appsell-web
+      APPSELL_BOOTSTRAP_ENABLED: "false"
+      APPSELL_IDENTITY_ISSUER: https://identity.preview.local
+      APPSELL_API_IDENTITY_ISSUER: https://identity.preview.local
+    labels: *preview-labels
+    depends_on:
+      domain-postgres: { condition: service_healthy }
+    restart: "no"
+    mem_limit: 384m
+    cpus: 0.30
+    pids_limit: 128
+    read_only: true
+    tmpfs: ["/tmp:size=67108864,mode=1777,noexec,nosuid"]
+    <<: *app-security
+    logging: *preview-logging
+
+  domain-api:
+    image: ${APPSELL_DOMAIN_IMAGE:?APPSELL_DOMAIN_IMAGE digest is required}
+    pull_policy: never
+    network_mode: "service:netns"
+    command: ["uvicorn", "appsell_api.main:app", "--host", "127.0.0.1", "--port", "15800"]
+    environment:
+      APPSELL_API_ENVIRONMENT: ci
+      APPSELL_API_DATABASE_URL: postgresql+asyncpg://appsell_runtime:${APPSELL_RUNTIME_PASSWORD}@127.0.0.1:15432/appsell_preview_66
+      APPSELL_API_DATABASE_APPLICATION_NAME: appsell_vps_preview_66
+      APPSELL_API_INTERNAL_ISSUER: appsell-bff-vps-preview-66
+      APPSELL_API_INTERNAL_AUDIENCE: appsell-api-vps-preview-66
+      APPSELL_API_IDENTITY_ISSUER: https://identity.preview.local
+      APPSELL_API_INTERNAL_HMAC_KEYRING_B64_JSON: ${APPSELL_INTERNAL_HMAC_KEYRING_B64_JSON}
+      APPSELL_API_CONTEXT_HMAC_KEY_B64: ${APPSELL_API_CONTEXT_HMAC_KEY_B64}
+      APPSELL_API_SERVICE_CREDENTIAL_B64: ${APPSELL_SERVICE_CREDENTIAL_B64}
+      APPSELL_API_STORAGE_PROVIDER: disabled
+      APPSELL_API_PDF_SANDBOX_URL: ""
+    labels: *preview-labels
+    depends_on:
+      domain-bootstrap: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:15800/health/ready')"]
+      interval: 3s
+      timeout: 2s
+      retries: 40
+    restart: "no"
+    mem_limit: 512m
+    cpus: 0.40
+    pids_limit: 192
+    read_only: true
+    tmpfs: ["/tmp:size=134217728,mode=1777,noexec,nosuid"]
+    <<: *app-security
+    logging: *preview-logging
+
+  auth:
+    image: ${IDENTITY_AUTH_IMAGE:?IDENTITY_AUTH_IMAGE digest is required}
+    pull_policy: never
+    network_mode: "service:netns"
+    environment:
+      NODE_ENV: development
+      IDENTITY_AUTH_PREVIEW_PORT: "13217"
+      IDENTITY_COGNITO_PROVIDER: demo
+      IDENTITY_DEMO_PASSWORD: ${IDENTITY_DEMO_PASSWORD}
+      IDENTITY_SESSION_STORE_PROVIDER: memory
+      IDENTITY_SESSION_PROTECTION_PROVIDER: local
+      IDENTITY_SESSION_LOCAL_KEY_B64: ${IDENTITY_SESSION_LOCAL_KEY_B64}
+      IDENTITY_PUBLIC_ORIGIN: http://localhost:13217
+      IDENTITY_ALLOWED_LOGOUT_URIS: http://localhost:13200/auth/login
+      IDENTITY_API_BASE_URL: http://127.0.0.1:13218
+      IDENTITY_PROVIDER_SESSION_BROKER_URL: http://127.0.0.1:13218
+      IDENTITY_PROVIDER_SESSION_BROKER_ALLOWED_HOSTS: 127.0.0.1
+      IDENTITY_PROVIDER_SESSION_CALLER_ID: identity-auth-local
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: AKIDLOCALCI000000000
+      AWS_SECRET_ACCESS_KEY: local-ci-secret-access-key-01234567890123456789
+      NEXT_PUBLIC_USE_MOCKS: "false"
+      NEXT_PUBLIC_ENABLE_LEGACY_BROWSER_TOKEN_FLOWS: "false"
+    labels: *preview-labels
+    depends_on:
+      foundation: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:13217/login/').then(r=>{if(!r.ok)process.exit(1)})"]
+      interval: 3s
+      timeout: 2s
+      retries: 60
+    restart: "no"
+    mem_limit: 512m
+    cpus: 0.40
+    pids_limit: 256
+    <<: *app-security
+    logging: *preview-logging
+
+  sell:
+    image: ${APPSELL_SELL_IMAGE:?APPSELL_SELL_IMAGE digest is required}
+    pull_policy: never
+    network_mode: "service:netns"
+    command: ["./node_modules/.bin/next", "dev", "--hostname", "127.0.0.1", "-p", "13200"]
+    environment: &sell-environment
+      NODE_ENV: development
+      APPSELL_OAUTH_MODE: identity
+      APPSELL_PUBLIC_ORIGIN: http://localhost:13200
+      APPSELL_DEMO_ENABLED: "false"
+      APPSELL_IDENTITY_DEMO_ENABLED: "true"
+      APPSELL_IDENTITY_E2E_CONTROL_TOKEN: ${APPSELL_IDENTITY_E2E_CONTROL_TOKEN}
+      APPSELL_REDIS_URL: redis://:${REDIS_PASSWORD}@127.0.0.1:16380/0
+      APPSELL_REDIS_PREFIX: ${APPSELL_REDIS_PREFIX}
+      APPSELL_SESSION_HMAC_KEY_B64: ${APPSELL_SESSION_HMAC_KEY_B64}
+      APPSELL_CSRF_HMAC_KEY_B64: ${APPSELL_CSRF_HMAC_KEY_B64}
+      APPSELL_VAULT_LOCAL_KEYRING_B64_JSON: ${APPSELL_VAULT_LOCAL_KEYRING_B64_JSON}
+      APPSELL_DOMAIN_API_URL: http://127.0.0.1:15800
+      APPSELL_INTERNAL_ISSUER: appsell-bff-vps-preview-66
+      APPSELL_INTERNAL_AUDIENCE: appsell-api-vps-preview-66
+      APPSELL_INTERNAL_HMAC_KEYRING_B64_JSON: ${APPSELL_INTERNAL_HMAC_KEYRING_B64_JSON}
+      APPSELL_SERVICE_CREDENTIAL_B64: ${APPSELL_SERVICE_CREDENTIAL_B64}
+      APPSELL_IDENTITY_LOGICAL_OAUTH_CLIENT_ID: appsell-web
+      APPSELL_IDENTITY_EXPECTED_AUDIENCE: appsell-web
+      APPSELL_IDENTITY_ISSUER: https://identity.preview.local
+      APPSELL_IDENTITY_AUTHORIZATION_URL: http://localhost:13217/login/
+      APPSELL_IDENTITY_TOKEN_URL: http://127.0.0.1:13218/oauth/token
+      APPSELL_IDENTITY_JWKS_URL: http://127.0.0.1:13218/.well-known/jwks.json
+      APPSELL_IDENTITY_ALLOWED_ORIGINS: https://identity.preview.local,http://localhost:13217,http://127.0.0.1:13218
+      APPSELL_IDENTITY_REDIRECT_URI: http://localhost:13200/auth/callback
+      APPSELL_IDENTITY_REFRESH_HANDLE_TTL_SECONDS: "86400"
+    labels: *preview-labels
+    depends_on:
+      redis: { condition: service_healthy }
+      domain-api: { condition: service_healthy }
+      auth: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:13200/').then(r=>{if(!r.ok)process.exit(1)})"]
+      interval: 3s
+      timeout: 2s
+      retries: 60
+    restart: "no"
+    mem_limit: 1024m
+    cpus: 0.65
+    pids_limit: 384
+    <<: *app-security
+    logging: *preview-logging
+
+  evidence-init:
+    profiles: ["e2e"]
+    image: ${APPSELL_ALPINE_IMAGE:?APPSELL_ALPINE_IMAGE is required}
+    pull_policy: never
+    network_mode: none
+    user: "0:0"
+    command: ["sh", "-ec", "chown 1000:1000 /evidence && chmod 0700 /evidence"]
+    volumes: ["e2e_evidence:/evidence"]
+    labels: *preview-labels
+    restart: "no"
+    mem_limit: 16m
+    cpus: 0.05
+    pids_limit: 16
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN"]
+    logging: *preview-logging
+
+  e2e:
+    profiles: ["e2e"]
+    image: ${APPSELL_SELL_IMAGE:?APPSELL_SELL_IMAGE digest is required}
+    pull_policy: never
+    network_mode: "service:netns"
+    command: ["bash", "deploy/preview-vps/run-e2e.sh"]
+    environment:
+      <<: *sell-environment
+      E2E_REAL_IDENTITY_PASSWORD: ${IDENTITY_DEMO_PASSWORD}
+      E2E_REAL_CONTROL_TOKEN: ${APPSELL_IDENTITY_E2E_CONTROL_TOKEN}
+      E2E_REAL_SELL_ORIGIN: http://localhost:13200
+      E2E_REAL_AUTH_ORIGIN: http://localhost:13217
+      E2E_REAL_EVIDENCE_DIR: /evidence/staged
+    volumes: ["e2e_evidence:/evidence"]
+    labels: *preview-labels
+    depends_on:
+      evidence-init: { condition: service_completed_successfully }
+      sell: { condition: service_healthy }
+    restart: "no"
+    mem_limit: 1024m
+    cpus: 0.50
+    pids_limit: 384
+    <<: *app-security
+    logging: *preview-logging
+
+networks:
+  preview:
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+    labels: *preview-labels
+
+volumes:
+  domain_pg_data:
+    labels: *preview-labels
+  identity_pg_data:
+    labels: *preview-labels
+  e2e_evidence:
+    labels: *preview-labels

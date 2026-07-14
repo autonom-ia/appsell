@@ -1,0 +1,195 @@
+name: VPS preview artifacts
+
+on:
+  push:
+    branches: ["infra/66-vps-preview"]
+    paths:
+      - "app/**"
+      - "apps/api/**"
+      - "components/**"
+      - "demo/**"
+      - "deploy/preview-vps/**"
+      - "lib/**"
+      - "output/pdf/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - ".dockerignore"
+      - ".github/workflows/preview-images.yml"
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_SHA: ${{ github.sha }}
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+      - name: Validate scripts and Compose without starting containers
+        run: |
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          for script in deploy/preview-vps/*.sh; do bash -n "$script"; done
+          node --check deploy/preview-vps/verify-redis.mjs
+          env -u COMPOSE_PROJECT_NAME -u COMPOSE_FILE -u COMPOSE_PROFILES -u COMPOSE_ENV_FILES docker compose \
+            --project-name autonomia_sell_preview_66_0123456789ab \
+            --env-file deploy/preview-vps/preview.env.example \
+            -f deploy/preview-vps/compose.preview.yaml \
+            config --quiet
+          bash deploy/preview-vps/test-compose-project-pin.sh
+          bash deploy/preview-vps/test-directory-invariants.sh
+          bash deploy/preview-vps/test-verify-downloads-local.sh
+
+  config-artifact:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+      - name: Package config
+        env:
+          ARTIFACT_NAME: appsell-vps-preview-config-${{ env.SOURCE_SHA }}
+          SUBJECT_FILENAME: config-${{ env.SOURCE_SHA }}.tar.gz
+        run: |
+          install -d /tmp/preview-bundle/config
+          cp -a deploy/preview-vps/. /tmp/preview-bundle/config/
+          cd /tmp/preview-bundle/config
+          if find . -type l -print -quit | grep -q .; then
+            echo "Refusing to package a symlink in the preview config" >&2
+            exit 2
+          fi
+          find . -type f ! -path './SHA256SUMS' -printf '%P\0' | sort -z | xargs -0 sha256sum > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf "/tmp/config-${SOURCE_SHA}.tar.gz" -C /tmp/preview-bundle config
+          install -d /tmp/config-artifact
+          cp "/tmp/$SUBJECT_FILENAME" /tmp/config-artifact/
+          subject_sha256="$(sha256sum "/tmp/$SUBJECT_FILENAME" | awk '{print $1}')"
+          jq -n \
+            --arg schema_version autonomia.preview-artifact.v1 \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg workflow_path .github/workflows/preview-images.yml \
+            --arg workflow_ref "$GITHUB_WORKFLOW_REF" \
+            --arg source_sha "$SOURCE_SHA" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg event "$GITHUB_EVENT_NAME" \
+            --arg runner_environment "${{ runner.environment }}" \
+            --arg artifact_name "$ARTIFACT_NAME" \
+            --arg subject_filename "$SUBJECT_FILENAME" \
+            --arg subject_sha256 "$subject_sha256" \
+            '{
+              schema_version: $schema_version,
+              repository: $repository,
+              workflow_path: $workflow_path,
+              workflow_ref: $workflow_ref,
+              source_sha: $source_sha,
+              run_id: $run_id,
+              run_attempt: $run_attempt,
+              event: $event,
+              runner_environment: $runner_environment,
+              artifact_name: $artifact_name,
+              subject_filename: $subject_filename,
+              subject_sha256: $subject_sha256
+            }' \
+            > /tmp/config-artifact/provenance.json
+          jq -e '.runner_environment == "github-hosted"' /tmp/config-artifact/provenance.json >/dev/null
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: appsell-vps-preview-config-${{ env.SOURCE_SHA }}
+          path: /tmp/config-artifact/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
+
+  image-artifacts:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: sell
+            dockerfile: deploy/preview-vps/Dockerfile.sell
+          - name: domain
+            dockerfile: deploy/preview-vps/Dockerfile.domain
+          - name: base-alpine
+            dockerfile: deploy/preview-vps/Dockerfile.base-alpine
+          - name: base-postgres
+            dockerfile: deploy/preview-vps/Dockerfile.base-postgres
+          - name: base-redis
+            dockerfile: deploy/preview-vps/Dockerfile.base-redis
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: false
+          tags: autonomia-sell-preview-${{ matrix.name }}:${{ env.SOURCE_SHA }}
+          build-args: SOURCE_SHA=${{ env.SOURCE_SHA }}
+          outputs: type=docker,dest=/tmp/${{ matrix.name }}-${{ env.SOURCE_SHA }}.tar
+          cache-from: type=gha,scope=preview-${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=preview-${{ matrix.name }}
+      - name: Bind artifact to the exact GitHub-hosted run
+        env:
+          ARTIFACT_NAME: appsell-vps-preview-${{ matrix.name }}-${{ env.SOURCE_SHA }}
+          SUBJECT_FILENAME: ${{ matrix.name }}-${{ env.SOURCE_SHA }}.tar
+        run: |
+          install -d "/tmp/${{ matrix.name }}-artifact"
+          cp "/tmp/$SUBJECT_FILENAME" "/tmp/${{ matrix.name }}-artifact/"
+          subject_sha256="$(sha256sum "/tmp/$SUBJECT_FILENAME" | awk '{print $1}')"
+          jq -n \
+            --arg schema_version autonomia.preview-artifact.v1 \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg workflow_path .github/workflows/preview-images.yml \
+            --arg workflow_ref "$GITHUB_WORKFLOW_REF" \
+            --arg source_sha "$SOURCE_SHA" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg event "$GITHUB_EVENT_NAME" \
+            --arg runner_environment "${{ runner.environment }}" \
+            --arg artifact_name "$ARTIFACT_NAME" \
+            --arg subject_filename "$SUBJECT_FILENAME" \
+            --arg subject_sha256 "$subject_sha256" \
+            '{
+              schema_version: $schema_version,
+              repository: $repository,
+              workflow_path: $workflow_path,
+              workflow_ref: $workflow_ref,
+              source_sha: $source_sha,
+              run_id: $run_id,
+              run_attempt: $run_attempt,
+              event: $event,
+              runner_environment: $runner_environment,
+              artifact_name: $artifact_name,
+              subject_filename: $subject_filename,
+              subject_sha256: $subject_sha256
+            }' \
+            > "/tmp/${{ matrix.name }}-artifact/provenance.json"
+          jq -e '.runner_environment == "github-hosted"' "/tmp/${{ matrix.name }}-artifact/provenance.json" >/dev/null
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: appsell-vps-preview-${{ matrix.name }}-${{ env.SOURCE_SHA }}
+          path: /tmp/${{ matrix.name }}-artifact/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
