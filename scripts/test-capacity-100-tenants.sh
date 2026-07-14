@@ -345,4 +345,5 @@ REPORT_PATH="$report" python3 -c \
   'import json,os; result=json.load(open(os.environ["REPORT_PATH"], encoding="utf-8")); assert result["status"] == "passed" and result["tenant_count"] == 100 and result["admin_accounts"] == 100 and result["buyers_per_admin"] == 10 and result["buyer_accounts"] == 1000 and result["owner_sessions_observed"] == 100 and result["buyer_sessions_observed"] == 1000 and result["distinct_subjects"] == 1100 and result["production_certified"] is False'
 python3 scripts/assert_capacity_artifact_safe.py \
   "$report" "${report%.json}.md" "$startup_report"
+python3 scripts/report_capacity_calibration.py --report "$report"
 echo "capacity report: $report"

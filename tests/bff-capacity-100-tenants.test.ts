@@ -1641,7 +1641,9 @@ function requireResourceThresholds(resources: ResourcePeaks) {
     otherWaitingConnections: resources.postgres_other_waiting,
     samplesWithActiveWaiting: resources.postgres_samples_with_active_waiting,
     samples: resources.samples,
-    fullApiPoolWaitingSamples: resources.postgres_full_api_pool_waiting_samples
+    fullApiPoolWaitingSamples: resources.postgres_full_api_pool_waiting_samples,
+    maxConsecutiveFullApiPoolWaitingSamples:
+      resources.postgres_max_consecutive_full_api_pool_waiting_samples
   }));
   if (resources.postgres_active_connections > 11) {
     failures.push(`Postgres active connections out of baseline: ${resources.postgres_active_connections}`);
@@ -2229,6 +2231,18 @@ async function buildReport(
     maxSampleGapMs: resources.postgres_max_sample_gap_ms
   });
   const failureCode = failure ? safeError(failure) : null;
+  const isolatedFullApiPoolWait =
+    resources.postgres_full_api_pool_waiting_samples > 0 &&
+    resources.postgres_max_consecutive_full_api_pool_waiting_samples < 2;
+  const expectedCalibrationSha =
+    process.env.APPSELL_CAPACITY_CALIBRATION_SHA || sourceEvidence.git_sha;
+  const checkoutShaMismatch = sourceEvidence.git_sha !== expectedCalibrationSha;
+  const calibrationWarnings = [
+    ...(isolatedFullApiPoolWait
+      ? ["isolated_full_api_pool_wait_requires_same_sha_rerun"]
+      : []),
+    ...(checkoutShaMismatch ? ["capacity_checkout_sha_mismatch"] : [])
+  ];
   const cleanupFailed = Array.isArray(runtimeTeardown.cleanup_errors) &&
     runtimeTeardown.cleanup_errors.length > 0;
   return {
@@ -2236,12 +2250,21 @@ async function buildReport(
     status: failure ? "failed" : "passed",
     mode: "local_ci",
     production_certified: false,
+    calibration_sha: sourceEvidence.git_sha,
+    calibration_expected_sha: expectedCalibrationSha,
+    calibration_run_identity:
+      process.env.GITHUB_RUN_ID
+        ? process.env.GITHUB_RUN_ID
+        : `local-${sourceEvidence.git_sha}`,
+    calibration_run_attempt: process.env.GITHUB_RUN_ATTEMPT || "local",
     calibration_eligible:
       !failure &&
       startup.status === "passed" &&
       startup.calibration_eligible === true &&
       sourceEvidence.dirty === false &&
-      sourceEvidence.changed_file_count === 0,
+      sourceEvidence.changed_file_count === 0 &&
+      calibrationWarnings.length === 0,
+    warnings: calibrationWarnings,
     phases: {
       postgres_startup: {
         status: startup.status === "passed" ? "passed" : "failed",
@@ -2257,7 +2280,8 @@ async function buildReport(
       teardown: { status: cleanupFailed ? "failed" : "passed" }
     },
     generated_at: new Date().toISOString(),
-    git_sha: process.env.GITHUB_SHA || sourceEvidence.git_sha,
+    git_sha: sourceEvidence.git_sha,
+    workflow_sha: process.env.GITHUB_SHA || sourceEvidence.git_sha,
     source_evidence: sourceEvidence,
     tenant_count: manifest.tenant_count,
     admin_role: "seller_owner",
@@ -2338,7 +2362,8 @@ async function buildReport(
       max_postgres_buffer_pin_waiting_connections: 0,
       max_postgres_unclassified_waiting_connections: 0,
       max_postgres_waiting_sample_ratio: 0.25,
-      max_postgres_full_api_pool_waiting_samples: 0,
+      max_postgres_consecutive_full_api_pool_waiting_samples: 1,
+      isolated_full_api_pool_waiting_policy: "warning_not_calibration_eligible",
       max_sampler_gap_ms: 2_000,
       min_successful_sampler_samples: 2,
       max_sampler_errors: 0,
@@ -2494,6 +2519,9 @@ async function writeCapacityReport(report: Record<string, unknown>) {
     "# AppSell capacity baseline — 100 admins and 1,000 buyers",
     "",
     `- Status: **${String(report.status)}**`,
+    `- Calibration eligible: **${report.calibration_eligible === true ? "yes" : "no"}**`,
+    `- Calibration SHA: \`${String(report.calibration_sha)}\``,
+    `- Calibration warnings: ${JSON.stringify(report.warnings ?? [])}`,
     `- Mode: Local/CI`,
     `- Tenants: ${String(report.tenant_count)}`,
     `- Admin accounts (seller_owner): ${String(report.admin_accounts)}`,

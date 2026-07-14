@@ -37,14 +37,14 @@ Project status:
 ## Sessão: 2026-07-14 08:10 — implementar webhook genérico e outbox durável
 Issue: #63
 Branch: feat/63-generic-webhook-ingress
-PR: não aberta
-Estado: em_progresso
+PR: #64 (Draft, empilhada na #62)
+Estado: em_review
 Modelo: strong + human
-Arquivos alterados: migration 0012; API webhook adapter/routes/secrets; rota e proxy BFF; testes unitários/PG/BFF; compose/env; docs
-Comandos executados: pytest/ruff/mypy; vitest/typecheck/eslint; test-postgres-foundation; inspeção do artifact CI #62
-Validação: gate isolado exit 0 com 193 PG/API, 6 BFF, multi-seller 1/1 e artifact scan verde; 272 Vitest + 9 skips condicionais, lint/typecheck/build/audits verdes; Harness 2.1.2 sem faltas; reviews AppSec, PostgreSQL e contrato GREEN P0=P1=P2=P3=0
-Bloqueios: nenhum bloqueio local; provider/Financial/Neuro/Identity/staging dependem de ambientes e contratos isolados em slices posteriores
-Próxima ação: commit/push e abrir Draft PR empilhada sobre #62; sem merge/deploy
+Arquivos alterados: migration 0012; API webhook adapter/routes/secrets; rota e proxy BFF; testes unitários/PG/BFF; compose/env; docs; sincronização aditiva da base #62 com certificador de capacidade
+Comandos executados: pytest/ruff/mypy; vitest/typecheck/eslint; test-postgres-foundation; inspeção de artifacts CI #62/#64; merge sem rebase/force da base revisada
+Validação: gate isolado exit 0 com 193 PG/API, 6 BFF, multi-seller 1/1 e artifact scan verde; 272 Vitest + 9 skips condicionais, lint/typecheck/build/audits verdes; Harness 2.1.2 sem faltas; reviews AppSec, PostgreSQL e contrato GREEN P0=P1=P2=P3=0; base capacity review crítico GREEN
+Bloqueios: CI do novo SHA e três runs elegíveis da base ainda pendentes; provider/Financial/Neuro/Identity/staging dependem de ambientes e contratos isolados em slices posteriores
+Próxima ação: concluir merge aditivo da base, push e aguardar CI; sem merge/deploy de PR
 Project status:
   - Projeto: Autonom.ia Dev
   - Status: Em review
@@ -52,4 +52,4 @@ Project status:
   - Prioridade: P0
   - Risco: Alto
   - Ambiente: Local
-  - Próxima ação: publicar Draft PR empilhada; sem merge/deploy
+  - Próxima ação: aguardar CI da Draft PR #64 sobre base corrigida; sem merge/deploy

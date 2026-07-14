@@ -35,16 +35,24 @@ O banco retém somente hashes/tamanhos e o fato normalizado. Provider real,
 worker, entitlement, Financial, Neuro, staging e produção permanecem fora do
 slice. O outbox nasce `blocked_retention` e não pode ser reclamado por worker.
 A prova integrada inclui PostgreSQL real, duas BFFs, Redis indisponível
-e restart da API; review independente e CI ainda são gates pendentes.
+e restart da API; reviews AppSec, PostgreSQL e contrato ficaram GREEN. A Draft
+PR #64 permanece sem merge/deploy e aguarda CI no topo da base corrigida.
 
-2026-07-14 — A calibração remota da Draft PR #62 teve um run inicial verde e,
-no SHA corrigido, falhou por uma única amostra 5/5 esperando entre 724, sem
-duração sustentada, erro funcional, timeout, 5xx, Lock ou BufferPin. O review
-independente classificou como P2 o hard gate de zero amostras: ele depende da
-fase aleatória do sampler. A correção deve reprovar persistência comprovada
-(duas amostras consecutivas/duração positiva), manter integralmente o limite
-global de 25% e registrar o ponto isolado como alerta que exige repetição. O
-artefato vermelho não foi promovido manualmente.
+2026-07-14 — O SHA corrigido da Draft PR #62 registrou uma única amostra 5/5
+esperando entre 724, sem duração sustentada, erro funcional, timeout, 5xx,
+Lock ou BufferPin. Review independente classificou como P2 o hard gate de zero
+amostras porque ele depende da fase aleatória do sampler. O gate agora reprova
+persistência comprovada (duas amostras consecutivas), mantém integralmente o
+limite global de 25% e registra uma amostra isolada como warning que torna o
+run inelegível para calibração e exige repetição no mesmo SHA. Markdown e Job
+Summary exibem a inelegibilidade; a certificação final aceita somente três
+artifacts elegíveis, distintos e do mesmo head SHA por
+`scripts/report_capacity_calibration.py --certify-three`. O job fixa o checkout
+no head SHA, registra `git rev-parse HEAD` como autoridade e rejeita SHA não
+canônico, divergência da evidência de origem e reruns do mesmo run ID. O
+artifact vermelho anterior não foi promovido manualmente. O review crítico
+final ficou GREEN (P0/P1/P2/P3 = 0) e o gate local completo passou com 268
+testes, 8 skips condicionais, lint, typecheck, build e audit verdes.
 
 2026-07-13 — Issue #61 consolida uma release candidate única sobre a PR #59
 (UI + Identity + OpenBao), com inspeção superadmin #57, capacidade/multi-seller
