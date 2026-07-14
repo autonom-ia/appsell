@@ -7,6 +7,13 @@ test("fails closed when the real Identity backend is not configured", async ({ r
   expect(mock.status()).toBe(404);
   expect(mock.headers()["cache-control"]).toBe("no-store");
 
+  const refresh = await request.post("/dev/identity/refresh", {
+    headers: { "x-autonomia-e2e-control": "x".repeat(32) }
+  });
+  expect(refresh.status()).toBe(404);
+  expect(refresh.headers()["cache-control"]).toBe("no-store");
+  expect(await refresh.json()).toEqual({ error: "not_found" });
+
   const login = await request.get("/auth/login");
   expect(login.status()).toBe(503);
   expect(login.headers()["cache-control"]).toBe("no-store");

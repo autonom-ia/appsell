@@ -95,6 +95,20 @@ function internalRedis(service: RedisOAuthService) {
   return (service as unknown as { redis: RedisEvalClient }).redis;
 }
 
+async function readPairTtls(firstKey: string, secondKey: string): Promise<[number, number]> {
+  const result = await isolated.client.eval(
+    "return {redis.call('PTTL', KEYS[1]), redis.call('PTTL', KEYS[2])}",
+    2,
+    firstKey,
+    secondKey
+  );
+  if (!Array.isArray(result) || result.length !== 2 ||
+      typeof result[0] !== "number" || typeof result[1] !== "number") {
+    throw new Error("Redis returned an invalid paired TTL result");
+  }
+  return [result[0], result[1]];
+}
+
 describe("distributed Redis token refresh", () => {
   it("singleflights 50 callers across two independent connections", async () => {
     const context = await createSession();
@@ -424,22 +438,18 @@ describe("distributed Redis token refresh", () => {
     const vaultRecordKey = key(context.prefix, "vault", context.sessionId);
     await isolated.client.pexpire(sessionKey, 1_500);
     await isolated.client.pexpire(vaultRecordKey, 700);
-    const before = Math.min(
-      await isolated.client.pttl(sessionKey),
-      await isolated.client.pttl(vaultRecordKey)
-    );
+    const before = Math.min(...await readPairTtls(sessionKey, vaultRecordKey));
     await context.first.refreshSession(context.sessionId, 1, {
       async refresh() {
         return successFor(context.initial);
       }
     });
-    const sessionTtl = await isolated.client.pttl(sessionKey);
-    const vaultTtl = await isolated.client.pttl(vaultRecordKey);
+    const [sessionTtl, vaultTtl] = await readPairTtls(sessionKey, vaultRecordKey);
     expect(sessionTtl).toBeGreaterThan(0);
     expect(vaultTtl).toBeGreaterThan(0);
     expect(sessionTtl).toBeLessThanOrEqual(before);
     expect(vaultTtl).toBeLessThanOrEqual(before);
-    expect(Math.abs(sessionTtl - vaultTtl)).toBeLessThanOrEqual(5);
+    expect(sessionTtl).toBe(vaultTtl);
 
     const persistent = await createSession();
     let calls = 0;

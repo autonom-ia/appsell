@@ -2,6 +2,8 @@ export type DemoPersona = "admin" | "buyer" | "superadmin";
 
 export const DEMO_ADMIN_SUBJECT = "demo-admin-v1";
 export const DEMO_BUYER_SUBJECT = "demo-user-v1";
+export const IDENTITY_DEMO_ADMIN_SUBJECT = "demo-admin";
+export const IDENTITY_DEMO_BUYER_SUBJECT = "demo-user";
 export const DEMO_SUPERADMIN_SUBJECT = "inspection-superadmin";
 export const DEMO_ADMIN_EMAIL = "admin.demo@autonomia.site";
 export const DEMO_BUYER_EMAIL = "user.demo@autonomia.site";
@@ -44,6 +46,11 @@ export function demoModeEnabled(environment: Partial<Record<string, string | und
     environment.APPSELL_DEMO_ENABLED?.toLowerCase() === "true";
 }
 
+export function identityDemoModeEnabled(environment: Partial<Record<string, string | undefined>> = process.env) {
+  return environment.NODE_ENV !== "production" &&
+    environment.APPSELL_IDENTITY_DEMO_ENABLED?.toLowerCase() === "true";
+}
+
 export function demoProfileForPersona(
   value: string | null | undefined,
   environment: Partial<Record<string, string | undefined>> = process.env
@@ -60,10 +67,10 @@ export function demoProfileForSubject(
   subject: string | null | undefined,
   environment: Partial<Record<string, string | undefined>> = process.env
 ) {
-  if (!demoModeEnabled(environment)) return null;
-  if (subject === DEMO_ADMIN_SUBJECT) return profiles.admin;
-  if (subject === DEMO_BUYER_SUBJECT) return profiles.buyer;
-  if (subject === DEMO_SUPERADMIN_SUBJECT &&
+  if (!demoModeEnabled(environment) && !identityDemoModeEnabled(environment)) return null;
+  if (subject === DEMO_ADMIN_SUBJECT || subject === IDENTITY_DEMO_ADMIN_SUBJECT) return profiles.admin;
+  if (subject === DEMO_BUYER_SUBJECT || subject === IDENTITY_DEMO_BUYER_SUBJECT) return profiles.buyer;
+  if (demoModeEnabled(environment) && subject === DEMO_SUPERADMIN_SUBJECT &&
       environment.APPSELL_DEMO_SUPERADMIN_ENABLED?.toLowerCase() === "true") {
     return profiles.superadmin;
   }
