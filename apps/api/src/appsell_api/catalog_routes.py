@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
@@ -11,6 +12,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
+from .capacity_telemetry import (
+    capacity_product_create_trace,
+    emit_capacity_product_create_trace,
+)
 from .internal_requests import AuthenticatedInternalRequest, InternalRequestAuthenticator
 
 router = APIRouter(prefix="/v1")
@@ -204,7 +209,7 @@ async def list_product_drafts(
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "catalog.draft.read")
-    _require_seller(internal, seller_id)
+    await _require_seller(internal, seller_id)
     try:
         async with auth.domain_session(internal.envelope) as session:
             rows = (
@@ -260,60 +265,120 @@ async def list_product_drafts(
 
 @router.post("/me/sellers/{seller_id}/products", response_model=None)
 async def create_product_draft(request: Request, seller_id: UUID) -> JSONResponse:
-    auth, internal = await _authenticate(request, "catalog.draft.create")
-    _require_seller(internal, seller_id)
-    body = _model_from_body(ProductCourseDraftBody, internal.body)
-    envelope = internal.envelope
+    route_started = time.perf_counter()
+    settings = getattr(request.app.state, "settings", None)
+    trace = capacity_product_create_trace(
+        request.headers.get("x-appsell-capacity-trace"),
+        enabled=bool(getattr(settings, "capacity_product_create_telemetry", False)),
+    )
+    durations = {
+        "internal_auth_verification": 0.0,
+        "pool_checkout_replay_apply_context": 0.0,
+        "sql": 0.0,
+        "commit_response": 0.0,
+    }
+    trace_status = 500
+    trace_outcome: Literal["success", "http_error", "exception"] = "exception"
+    pre_domain_completed = False
+    session_started: float | None = None
+    sql_started: float | None = None
+    sql_finished: float | None = None
     try:
+        auth, internal = await _authenticate(request, "catalog.draft.create")
+        await _require_seller(internal, seller_id)
+        body = await _model_from_body(ProductCourseDraftBody, internal)
+        envelope = internal.envelope
+        session_started = time.perf_counter()
+        durations["internal_auth_verification"] = (session_started - route_started) * 1_000
+        pre_domain_completed = True
         async with auth.domain_session(envelope) as session:
-            row = (
-                (
-                    await session.execute(
-                        text(
-                            "select catalog_product_id, course_id, created "
-                            "from app_private.create_product_course_draft("
-                            ":identity_user_id, :seller_id, :slug, :title, :description, "
-                            ":course_title, :idempotency_key, :body_sha256, :request_id)"
-                        ),
-                        {
-                            "identity_user_id": envelope.identity.user_id,
-                            "seller_id": seller_id,
-                            "slug": body.slug,
-                            "title": body.title,
-                            "description": body.description,
-                            "course_title": body.course_title,
-                            "idempotency_key": UUID(body.idempotency_key),
-                            "body_sha256": envelope.body_sha256,
-                            "request_id": envelope.request_id,
-                        },
+            sql_started = time.perf_counter()
+            durations["pool_checkout_replay_apply_context"] = (
+                sql_started - session_started
+            ) * 1_000
+            try:
+                row = (
+                    (
+                        await session.execute(
+                            text(
+                                "select catalog_product_id, course_id, created "
+                                "from app_private.create_product_course_draft("
+                                ":identity_user_id, :seller_id, :slug, :title, :description, "
+                                ":course_title, :idempotency_key, :body_sha256, :request_id)"
+                            ),
+                            {
+                                "identity_user_id": envelope.identity.user_id,
+                                "seller_id": seller_id,
+                                "slug": body.slug,
+                                "title": body.title,
+                                "description": body.description,
+                                "course_title": body.course_title,
+                                "idempotency_key": UUID(body.idempotency_key),
+                                "body_sha256": envelope.body_sha256,
+                                "request_id": envelope.request_id,
+                            },
+                        )
                     )
+                    .mappings()
+                    .one()
                 )
-                .mappings()
-                .one()
-            )
+            finally:
+                sql_finished = time.perf_counter()
+                durations["sql"] = (sql_finished - sql_started) * 1_000
+        created = bool(row["created"])
+        response = JSONResponse(
+            status_code=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+            content={
+                "product_id": str(row["catalog_product_id"]),
+                "course_id": str(row["course_id"]),
+                "status": "draft",
+                "created": created,
+            },
+        )
+        trace_status = response.status_code
+        trace_outcome = "success"
+        return response
     except IntegrityError as error:
+        trace_status = status.HTTP_409_CONFLICT
+        trace_outcome = "http_error"
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="product_draft_conflict"
         ) from error
     except DBAPIError as error:
-        raise _domain_error(error) from error
-
-    created = bool(row["created"])
-    return JSONResponse(
-        status_code=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
-        content={
-            "product_id": str(row["catalog_product_id"]),
-            "course_id": str(row["course_id"]),
-            "status": "draft",
-            "created": created,
-        },
-    )
+        mapped = _domain_error(error)
+        trace_status = mapped.status_code
+        trace_outcome = "http_error"
+        raise mapped from error
+    except HTTPException as error:
+        trace_status = error.status_code
+        trace_outcome = "http_error"
+        raise
+    except Exception:
+        raise
+    finally:
+        concluded_at = time.perf_counter()
+        if not pre_domain_completed:
+            durations["internal_auth_verification"] = (concluded_at - route_started) * 1_000
+        elif sql_started is None and session_started is not None:
+            durations["pool_checkout_replay_apply_context"] = (
+                concluded_at - session_started
+            ) * 1_000
+        elif sql_finished is not None:
+            durations["commit_response"] = (concluded_at - sql_finished) * 1_000
+        if trace is not None:
+            emit_capacity_product_create_trace(
+                trace=trace,
+                status_code=trace_status,
+                outcome=trace_outcome,
+                total_ms=(concluded_at - route_started) * 1_000,
+                durations_ms=durations,
+            )
 
 
 @router.get("/me/sellers/{seller_id}/products/{product_id}")
 async def get_product_draft(request: Request, seller_id: UUID, product_id: UUID) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "catalog.draft.read")
-    _require_seller(internal, seller_id)
+    await _require_seller(internal, seller_id)
     rows = await _read_product_draft(auth, internal, seller_id, product_id)
     return _product_detail_response(rows)
 
@@ -323,7 +388,7 @@ async def preview_product_draft(
     request: Request, seller_id: UUID, product_id: UUID
 ) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "catalog.draft.preview")
-    _require_seller(internal, seller_id)
+    await _require_seller(internal, seller_id)
     rows = await _read_product_draft(auth, internal, seller_id, product_id)
     row = rows[0]
     detail = _product_detail_response(rows)
@@ -350,7 +415,7 @@ async def read_course_curriculum(
     request: Request, seller_id: UUID, product_id: UUID, course_id: UUID
 ) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "catalog.curriculum.read")
-    _require_seller(internal, seller_id)
+    await _require_seller(internal, seller_id)
     row = await _execute_curriculum(
         auth,
         internal,
@@ -390,8 +455,8 @@ async def create_course_module(
     request: Request, seller_id: UUID, product_id: UUID, course_id: UUID
 ) -> JSONResponse:
     auth, internal = await _authenticate(request, "catalog.curriculum.create")
-    _require_seller(internal, seller_id)
-    body = _model_from_body(ModuleMutationBody, internal.body)
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(ModuleMutationBody, internal)
     row = await _execute_curriculum(
         auth,
         internal,
@@ -423,8 +488,8 @@ async def update_course_module(
     module_id: UUID,
 ) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "catalog.curriculum.update")
-    _require_seller(internal, seller_id)
-    body = _model_from_body(ModuleMutationBody, internal.body)
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(ModuleMutationBody, internal)
     row = await _execute_curriculum(
         auth,
         internal,
@@ -452,8 +517,8 @@ async def archive_course_module(
     module_id: UUID,
 ) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "catalog.curriculum.archive")
-    _require_seller(internal, seller_id)
-    body = _model_from_body(CurriculumMutationBody, internal.body)
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(CurriculumMutationBody, internal)
     row = await _execute_curriculum(
         auth,
         internal,
@@ -475,8 +540,8 @@ async def reorder_course_modules(
     request: Request, seller_id: UUID, product_id: UUID, course_id: UUID
 ) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "catalog.curriculum.reorder")
-    _require_seller(internal, seller_id)
-    body = _model_from_body(ModuleOrderBody, internal.body)
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(ModuleOrderBody, internal)
     row = await _execute_curriculum(
         auth,
         internal,
@@ -501,8 +566,8 @@ async def create_course_lesson(
     module_id: UUID,
 ) -> JSONResponse:
     auth, internal = await _authenticate(request, "catalog.curriculum.create")
-    _require_seller(internal, seller_id)
-    body = _model_from_body(LessonMutationBody, internal.body)
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(LessonMutationBody, internal)
     row = await _execute_curriculum(
         auth,
         internal,
@@ -535,8 +600,8 @@ async def update_course_lesson(
     lesson_id: UUID,
 ) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "catalog.curriculum.update")
-    _require_seller(internal, seller_id)
-    body = _model_from_body(LessonMutationBody, internal.body)
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(LessonMutationBody, internal)
     row = await _execute_curriculum(
         auth,
         internal,
@@ -571,8 +636,8 @@ async def archive_course_lesson(
     lesson_id: UUID,
 ) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "catalog.curriculum.archive")
-    _require_seller(internal, seller_id)
-    body = _model_from_body(CurriculumMutationBody, internal.body)
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(CurriculumMutationBody, internal)
     row = await _execute_curriculum(
         auth,
         internal,
@@ -600,8 +665,8 @@ async def reorder_course_lessons(
     module_id: UUID,
 ) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "catalog.curriculum.reorder")
-    _require_seller(internal, seller_id)
-    body = _model_from_body(LessonOrderBody, internal.body)
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(LessonOrderBody, internal)
     row = await _execute_curriculum(
         auth,
         internal,
@@ -622,8 +687,8 @@ async def update_product_draft(
     request: Request, seller_id: UUID, product_id: UUID
 ) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "catalog.draft.update")
-    _require_seller(internal, seller_id)
-    body = _model_from_body(ProductCourseOfferUpdateBody, internal.body)
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(ProductCourseOfferUpdateBody, internal)
     envelope = internal.envelope
     try:
         async with auth.domain_session(envelope) as session:
@@ -680,8 +745,8 @@ async def update_product_draft(
 @router.post("/me/sellers/{seller_id}/products/{product_id}/publications", response_model=None)
 async def publish_product(request: Request, seller_id: UUID, product_id: UUID) -> JSONResponse:
     auth, internal = await _authenticate(request, "catalog.publication.create")
-    _require_seller(internal, seller_id)
-    body = _model_from_body(ProductPublicationBody, internal.body)
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(ProductPublicationBody, internal)
     envelope = internal.envelope
     expected_courses = json.dumps(
         {course.id: course.version for course in body.course_versions}, sort_keys=True
@@ -777,16 +842,18 @@ async def _authenticate(
     return auth, await auth.authenticate(request, capability)
 
 
-def _require_seller(internal: AuthenticatedInternalRequest, seller_id: UUID) -> None:
+async def _require_seller(internal: AuthenticatedInternalRequest, seller_id: UUID) -> None:
     if internal.envelope.seller_organization_id != seller_id:
+        await internal.consume_rejected_request()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
 
-def _model_from_body(model: type[BaseModel], raw: bytes) -> Any:
+async def _model_from_body(model: type[BaseModel], internal: AuthenticatedInternalRequest) -> Any:
     try:
-        value = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+        value = json.loads(internal.body, object_pairs_hook=_reject_duplicate_keys)
         return model.model_validate(value)
     except (UnicodeDecodeError, json.JSONDecodeError, ValidationError, ValueError) as error:
+        await internal.consume_rejected_request()
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="invalid_request_body",

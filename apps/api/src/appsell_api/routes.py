@@ -75,8 +75,8 @@ class SellerOnboardingBody(BaseModel):
 @router.put("/me")
 async def sync_me(request: Request) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "identity.sync")
-    _require_no_seller(internal)
-    body = _model_from_body(IdentitySyncBody, internal.body)
+    await _require_no_seller(internal)
+    body = await _model_from_body(IdentitySyncBody, internal)
     envelope = internal.envelope
     try:
         async with auth.domain_session(envelope) as session:
@@ -103,7 +103,7 @@ async def sync_me(request: Request) -> dict[str, Any]:
 @router.get("/me")
 async def read_me(request: Request) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "platform.grants.read")
-    _require_no_seller(internal)
+    await _require_no_seller(internal)
     try:
         async with auth.domain_session(internal.envelope) as session:
             identity = (
@@ -148,7 +148,7 @@ async def read_me(request: Request) -> dict[str, Any]:
 @router.get("/me/sellers")
 async def list_sellers(request: Request) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "seller.list")
-    _require_no_seller(internal)
+    await _require_no_seller(internal)
     try:
         async with auth.domain_session(internal.envelope) as session:
             rows = (
@@ -186,8 +186,8 @@ async def list_sellers(request: Request) -> dict[str, Any]:
 @router.post("/me/sellers", status_code=status.HTTP_201_CREATED)
 async def onboard_seller(request: Request) -> dict[str, str]:
     auth, internal = await _authenticate(request, "seller.onboard")
-    _require_no_seller(internal)
-    body = _model_from_body(SellerOnboardingBody, internal.body)
+    await _require_no_seller(internal)
+    body = await _model_from_body(SellerOnboardingBody, internal)
     envelope = internal.envelope
     try:
         async with auth.domain_session(envelope) as session:
@@ -227,16 +227,18 @@ async def _authenticate(
     return auth, await auth.authenticate(request, capability)
 
 
-def _require_no_seller(internal: AuthenticatedInternalRequest) -> None:
+async def _require_no_seller(internal: AuthenticatedInternalRequest) -> None:
     if internal.envelope.seller_organization_id is not None:
+        await internal.consume_rejected_request()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
 
-def _model_from_body(model: type[BaseModel], raw: bytes) -> Any:
+async def _model_from_body(model: type[BaseModel], internal: AuthenticatedInternalRequest) -> Any:
     try:
-        value = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+        value = json.loads(internal.body, object_pairs_hook=_reject_duplicate_keys)
         return model.model_validate(value)
     except (UnicodeDecodeError, json.JSONDecodeError, ValidationError, ValueError) as error:
+        await internal.consume_rejected_request()
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="invalid_request_body",

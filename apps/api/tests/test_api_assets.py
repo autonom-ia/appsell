@@ -67,6 +67,7 @@ class FakeAuth:
         self.session = FakeSession(scalar_values, execute_values)
         self.authenticated_capabilities: list[str] = []
         self.context_capabilities: list[str] = []
+        self.rejected_requests = 0
 
     async def authenticate(self, request: Any, capability: str) -> AuthenticatedInternalRequest:
         body = await request.body()
@@ -96,12 +97,23 @@ class FakeAuth:
                 exp=now + 60,
             ),
             body=body,
+            authenticator=self,
         )
 
     @asynccontextmanager
     async def domain_session(self, envelope: ServiceEnvelope) -> AsyncIterator[FakeSession]:
         self.context_capabilities.append(envelope.capability)
         yield self.session
+
+    @asynccontextmanager
+    async def continuation_domain_session(
+        self, envelope: ServiceEnvelope
+    ) -> AsyncIterator[FakeSession]:
+        self.context_capabilities.append(envelope.capability)
+        yield self.session
+
+    async def consume_rejected_request(self, _envelope: ServiceEnvelope) -> None:
+        self.rejected_requests += 1
 
 
 class FakeStorage:
@@ -157,7 +169,9 @@ def intent_body(**overrides: Any) -> bytes:
 
 
 @asynccontextmanager
-async def client_for(auth: FakeAuth, storage: FakeStorage) -> AsyncIterator[httpx.AsyncClient]:
+async def client_for(
+    auth: FakeAuth, storage: FakeStorage | None
+) -> AsyncIterator[httpx.AsyncClient]:
     app = FastAPI()
     app.include_router(router)
     app.state.internal_auth = auth
@@ -373,6 +387,23 @@ async def test_envelope_seller_mismatch_fails_before_database_or_storage() -> No
     assert response.status_code == 401
     assert auth.session.calls == []
     assert storage.presign_calls == []
+    assert auth.rejected_requests == 1
+
+
+@pytest.mark.asyncio
+async def test_storage_unavailable_consumes_authenticated_request() -> None:
+    auth = FakeAuth(seller=SELLER, scalar_values=[])
+    async with client_for(auth, None) as client:
+        response = await client.post(
+            asset_path("/upload-intents"),
+            content=intent_body(),
+            headers={"content-type": "application/json"},
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "asset_storage_unavailable"}
+    assert auth.rejected_requests == 1
+    assert auth.session.calls == []
 
 
 @pytest.mark.asyncio

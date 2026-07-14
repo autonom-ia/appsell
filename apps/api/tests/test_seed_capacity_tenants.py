@@ -5,8 +5,11 @@ from uuid import UUID
 import pytest
 
 from appsell_api.seed_capacity_tenants import (
+    CAPACITY_BUYERS,
+    CAPACITY_BUYERS_PER_TENANT,
     CAPACITY_CONFIRMATION,
     CAPACITY_TENANTS,
+    buyer_manifest,
     identity_id,
     require_environment,
     snapshot_for,
@@ -23,9 +26,28 @@ def test_capacity_manifest_is_deterministic_and_tenant_scoped() -> None:
     assert first == repeated
     assert first["seller_id"] != last["seller_id"]
     assert first["owner_identity_id"] == str(identity_id(issuer, "capacity-owner-000"))
-    assert UUID(str(first["buyer_identity_id"]))
     assert first["seller_slug"] == "capacity-seller-000"
     assert last["seller_slug"] == "capacity-seller-099"
+    buyers = first["buyers"]
+    assert isinstance(buyers, list)
+    assert len(buyers) == CAPACITY_BUYERS_PER_TENANT
+    assert buyers[0] == buyer_manifest(issuer, 0, 0)
+    assert buyers[-1] == buyer_manifest(issuer, 0, 9)
+    assert UUID(str(buyers[0]["identity_id"]))
+
+
+def test_capacity_manifest_has_ten_buyers_per_tenant_and_one_thousand_total() -> None:
+    issuer = "https://identity.capacity.test.autonomia.site"
+    tenants = [tenant_manifest(issuer, ordinal) for ordinal in range(CAPACITY_TENANTS)]
+    buyers = [buyer for tenant in tenants for buyer in tenant["buyers"]]
+
+    assert len(buyers) == CAPACITY_BUYERS == 1_000
+    assert all(len(tenant["buyers"]) == CAPACITY_BUYERS_PER_TENANT for tenant in tenants)
+    assert len({buyer["subject"] for buyer in buyers}) == CAPACITY_BUYERS
+    assert len({buyer["identity_id"] for buyer in buyers}) == CAPACITY_BUYERS
+    assert len({buyer["entitlement_id"] for buyer in buyers}) == CAPACITY_BUYERS
+    assert buyers[0]["subject"] == "capacity-buyer-000-00"
+    assert buyers[-1]["subject"] == "capacity-buyer-099-09"
 
 
 def test_capacity_snapshot_is_schema_three_with_verified_legacy_asset() -> None:

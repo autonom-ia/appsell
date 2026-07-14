@@ -1,3 +1,5 @@
+import { capacityLocalCiRuntimeEnabled } from "./capacity-local-ci-runtime";
+
 export class PublicOriginConfigurationError extends Error {}
 
 export function configuredPublicOrigin(
@@ -20,7 +22,11 @@ export function configuredPublicOrigin(
   ) {
     throw new PublicOriginConfigurationError("APPSELL_PUBLIC_ORIGIN must contain only scheme and host.");
   }
-  if (environment.NODE_ENV === "production" && url.protocol !== "https:") {
+  if (
+    environment.NODE_ENV === "production" &&
+    url.protocol !== "https:" &&
+    !capacityLocalCiRuntimeEnabled(environment)
+  ) {
     throw new PublicOriginConfigurationError("Production public origin must use HTTPS.");
   }
   return url.origin;

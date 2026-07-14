@@ -231,6 +231,10 @@ def styles() -> dict[str, ParagraphStyle]:
 def page_chrome(canvas, document) -> None:  # type: ignore[no-untyped-def]
     canvas.saveState()
     width, height = A4
+    # Paint an explicit opaque page background. Leaving the PDF page transparent
+    # makes some native and Poppler renderers choose a black canvas.
+    canvas.setFillColor(WHITE)
+    canvas.rect(0, 0, width, height, stroke=0, fill=1)
     canvas.setFillColor(BLUE)
     canvas.rect(0, height - 8 * mm, width, 8 * mm, stroke=0, fill=1)
     canvas.setFillColor(INK)

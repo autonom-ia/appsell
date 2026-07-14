@@ -128,7 +128,12 @@ simulado em produção.
 O modo demo cria uma tenant dedicada e resetável com duas personas fixas, sem
 senha hardcoded: `admin.demo@autonomia.site` e `user.demo@autonomia.site`. O
 comprador recebe somente o produto publicado **Codex na prática**, com cinco
-PDFs protegidos pelo BFF; o admin não herda o entitlement do comprador.
+PDFs protegidos pelo BFF; o admin não herda o entitlement do comprador. O BFF
+nega ao comprador demo todas as capabilities de seller/catálogo antes da chamada
+server-to-server, expira os cookies CSRF de produtor sem entregar tokens úteis e
+redireciona acesso direto a `/products` para `/library`. O admin demo pode listar
+somente seu contexto e usar capabilities de catálogo apenas no UUID fixo da
+tenant demo; onboarding de outra tenant e seller IDs diferentes falham em 403.
 
 Depois de configurar o PostgreSQL/API local conforme a seção anterior, habilite
 o modo somente no ambiente Local/CI, marque explicitamente esse banco local
@@ -152,7 +157,25 @@ Abra `http://localhost:3000` e escolha **Entrar como admin demo** ou **Entrar
 como aluno demo**. O reset usa advisory lock, IDs determinísticos e valida hash
 e tamanho dos cinco PDFs antes de alterar a tenant. O comando recusa ambiente
 fora de Local/CI, DSN fora de loopback ou banco sem o marcador explícito; o
-modo demo recusa `NODE_ENV=production`.
+modo demo também recusa redirectors libpq de rede/serviço (`PGHOST*`, `PGPORT`,
+`PGDATABASE`, `PGSERVICE*`, `PGSYSCONFDIR`) e `NODE_ENV=production`.
+
+#### Inspeção superadmin da demo
+
+O fluxo `/platform/demo-inspection` é uma projeção temporária, read-only e
+auditada da tenant demo. Ele não impersona o seller, não cria membership e não
+expõe PII de compradores, conteúdo privado, billing, assets ou secrets. O
+seller inspecionado é fixado no servidor; formulário, query string e cookie não
+podem selecionar outra tenant. Cada ticket tem TTL máximo de 15 minutos, guarda
+somente o SHA-256 do token no PostgreSQL e exige revogação explícita ou expiração.
+
+A persona sintética `comercial@autonomia.site` permanece oculta da landing e só
+existe quando `APPSELL_DEMO_ENABLED=true` e
+`APPSELL_DEMO_SUPERADMIN_ENABLED=true` em Local/CI. Essas flags **não concedem**
+o papel: o callback ainda exige um `platform_superadmin` ativo vinculado ao
+issuer + `sub`. Em produção, persona e APIs de inspeção falham fechado. O e-mail
+nunca é usado como autorização permanente e não representa uma conta Identity
+real.
 
 Os PDFs ficam fora do web root e são autorizados novamente por
 `entitlement_id + asset_id` antes de cada stream. Em Local/CI, a raiz privada

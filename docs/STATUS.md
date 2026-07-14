@@ -6,54 +6,75 @@ Atualizado em pontos de marco (PR aberta, deploy, incidente). Diferente de MEMOR
 
 | Indicador | Status | Última verificação |
 |-----------|:------:|--------------------|
-| Build | 🟢 web + API/PDF sandbox containers locais verdes | 2026-07-12 |
-| Testes | 🟢 baseline Local/CI de 100 tenants + suítes anteriores verdes | 2026-07-12 |
-| CI | 🟢 PRs #35/#36/#37/#39 e #41 verdes | 2026-07-12 |
+| Build | 🟢 release candidate #61 compila em modo produção | 2026-07-14 |
+| Testes | 🟢 vertical real API/PG/S3 e capacidade 100/1.000 verdes localmente | 2026-07-14 |
+| CI | 🟡 Draft PR #62: correção revisada GREEN; novo SHA/3 runs ainda pendentes | 2026-07-14 |
 | Deploy produção | 🟡 não configurado/não executado | 2026-07-10 |
 | Harness instalado em `main` | 2.0.2 | 2026-07-10 |
 | Harness upgrade | 🟢 PR #37 em 2.1.2, review e 10/10 checks verdes; sem merge | 2026-07-11 |
+| Harness no RC #61 | 🟢 2.1.2 | 2026-07-13 |
 
 ## Estado atual
 
-O protótipo Studio mobile-first foi mergeado pela PR #23, a fundação
-persistente pela PR #25, a ponte BFF/API pela PR #27 e os drafts persistentes
-pela PR #29 e edição/publicação pela PR #31. A Fase 5 está ativa na Issue #38
-para player, progresso e retomada multitenant, empilhada nas PRs #35 e #36.
-A fundação inclui FastAPI, PostgreSQL 16, Alembic forward-only,
+O release candidate da Issue #61 consolida o protótipo Studio mobile-first, a
+fundação persistente, a ponte BFF/API, autoria/publicação, buyer multi-seller,
+player/progresso, storage privado, superadmin demo, Identity/OpenBao Local/CI,
+pricing fail-closed e storefront público. A fundação inclui FastAPI,
+PostgreSQL 16, Alembic forward-only,
 roles owner/migrator/runtime, RLS forçado, contexto transacional assinado,
 auditoria append-only e bootstrap one-shot do superadmin com atestação separada.
 Este marco é Local/CI; não é o Identity real e não concede conta de produção.
 
 ## Última mudança relevante
 
-2026-07-12 — Issue #44 implementada localmente na branch
-`fix/44-postgres-startup-headroom`: stability gate PostgreSQL read-only antes da
-migration, máximo de duas falhas transitórias e três probes consecutivas;
-fault injection descartável comprovou shutdown/restart e teardown 0/0/0;
-artifacts usam códigos allowlist e scanner pré-upload. A vertical local de 100
-tenants passou com margem acima do orçamento mínimo de 9 slots/40%, sem erro de
-sampler. Métricas exatas permanecem no artifact do run e só serão usadas para
-calibração após CI em source limpo. Este orçamento é somente Local/CI e não
-define sizing de produção nem comprova worker dedicado concorrente, staging ou
-HA.
+2026-07-14 — A saturação sustentada do capacity gate foi rastreada ao replay
+anti-repetição em uma transação durável separada de cada operação de domínio.
+O autenticador agora consome o replay no outer transaction e executa o domínio
+em savepoint; sucesso confirma ambos uma vez, enquanto falha de domínio ou de
+constraint diferida desfaz somente o negócio e preserva o replay. Rejeições
+pós-envelope e pré-domínio também consomem o request, e continuations ficam
+vinculadas ao envelope completo, à instância do autenticador, à mesma asyncio
+Task e a transições de capability explícitas. O worker privado valida shape,
+identidade UUIDv5, issuer/audience, hashes e janela temporal exatos.
 
-2026-07-12 — Issue #42 implementada localmente na branch
-`feat/42-capacity-100-tenants`: 100 organizações, owners, produtos publicados,
-buyers e entitlements determinísticos; 200 sujeitos OAuth; BFF/API/PostgreSQL/
-Redis reais; vertical S3 real; carga concorrente 10; p50/p95/p99/max,
-throughput, RSS, conexões e hardware registrados. O run local passou com
-100/100 catálogos, 100/100 mutações de produto, 100/100 bibliotecas, 100/100
-assets autorizados e 200/200 tentativas cross-tenant negadas em 404, sem 5xx,
-timeout ou payload cruzado. Isso é baseline Local/CI, não certificação de
-staging, VPS ou produção.
+O gate PostgreSQL passou com 195 testes integrados e 24 testes explícitos de
+boundary/worker; BFF real passou 5/5 e multi-seller 1/1. O storage vertical
+agora cria e confirma o PDF pela rota FastAPI com autenticador, PostgreSQL e S3
+reais antes de processar, publicar e autorizar o download, e passou 1/1. A
+carga 100 admins/1.000 buyers passou sem erro com 107/487 amostras de espera
+(21,97%, limite 25%) e uma única amostra isolada de pool cheio; por isso o
+artifact local é deliberadamente inelegível e exige repetição no mesmo SHA.
+Dois reviews críticos independentes ficaram GREEN para commit/push da Draft PR,
+com P0/P1/P2/P3 bloqueantes em zero. Merge, deploy e certificação de produção
+continuam não autorizados.
 
-2026-07-12 — Issue #40 implementada localmente na branch
-`feat/40-private-asset-upload`: migration 0008, upload direto S3-compatible,
-quarentena, verificação PDF isolada, worker, publicação imutável e download
-autorizado por entitlement. Gates reais: 116 Vitest, suíte Python, 148 PG/API,
-3 verticais BFF, 3 verticais storage, 31 Playwright focados + 5 skips
-deliberados, build e audits verdes. PR #41 aberta e os três checks remotos
-verdes no SHA `0b416e4`.
+2026-07-14 — O SHA corrigido da Draft PR #62 registrou uma única amostra 5/5
+esperando entre 724, sem duração sustentada, erro funcional, timeout, 5xx,
+Lock ou BufferPin. Review independente classificou como P2 o hard gate de zero
+amostras porque ele depende da fase aleatória do sampler. O gate agora reprova
+persistência comprovada (duas amostras consecutivas), mantém integralmente o
+limite global de 25% e registra uma amostra isolada como warning que torna o
+run inelegível para calibração e exige repetição no mesmo SHA. Markdown e Job
+Summary exibem a inelegibilidade; a certificação final aceita somente três
+artifacts elegíveis, distintos e do mesmo head SHA por
+`scripts/report_capacity_calibration.py --certify-three`. O job fixa o checkout
+no head SHA, registra `git rev-parse HEAD` como autoridade e rejeita SHA não
+canônico, divergência da evidência de origem e reruns do mesmo run ID. O
+artifact vermelho anterior não foi promovido manualmente. O review crítico
+final ficou GREEN (P0/P1/P2/P3 = 0) e o gate local completo passou com 268
+testes, 8 skips condicionais, lint, typecheck, build e audit verdes.
+
+2026-07-13 — Issue #61 consolida uma release candidate única sobre a PR #59
+(UI + Identity + OpenBao), com inspeção superadmin #57, capacidade/multi-seller
+#53/#55 e contratos de pricing/Neuro/PIX #60. A migration superadmin foi renumerada para
+`0010_release_candidate`, sequencial a `0009_buyer_multi_seller`, evitando duas
+heads Alembic. Nenhum merge em `main`, deploy ou produção foi executado.
+
+A linha de capacidade #53, o runtime multi-seller #55 e o storefront público
+foram incorporados. A projeção buyer continua derivada de entitlement ativo e
+nunca aceita seller do browser. O storefront `/s/{sellerSlug}` expõe apenas
+seller ativo e publicação vigente por uma projeção SQL mínima; a credencial de
+serviço permanece server-side e o CTA informa que checkout ainda não está ativo.
 
 ## O que está funcionando
 
@@ -79,7 +100,8 @@ verdes no SHA `0b416e4`.
   `SUPERUSER` ou `BYPASSRLS`, RLS e grants mínimos verificados diretamente.
 - Bootstrap local one-shot: issuer/audience/client fixados, claims vinculados a
   atestação HMAC exclusiva, e-mail verificado exato, MFA/passkey, advisory lock,
-  um vencedor entre 20 concorrentes, audit e auto-disable.
+  um vencedor entre 20 candidatos com fan-out concorrente limitado a 12,
+  audit e auto-disable.
 - CI Python com lock, Ruff, mypy strict, pip-audit, migration limpa, testes PG,
   build do container por digest e healthcheck real.
 - Ponte BFF→API Local/CI com credencial de serviço e envelope HMAC vinculado a
@@ -104,7 +126,10 @@ verdes no SHA `0b416e4`.
   imutáveis. Payload >1 MiB falha em 422 antes de publication/receipt parcial.
 - Tenant demo Local/CI usa reset sob advisory lock, IDs determinísticos e duas
   personas fixas; o buyer recebe apenas entitlement ativo e o admin permanece
-  fora da biblioteca do comprador.
+  fora da biblioteca do comprador. O buyer recebe 403 para capabilities de
+  seller/catálogo mesmo com CSRF válido e acesso direto a `/products` volta para
+  `/library`. O admin demo não pode criar outra tenant nem usar catálogo fora do
+  seller UUID fixo; o reset remove memberships e grants legados das personas.
 - Cinco PDFs do curso Codex ficam fora de `public/`; cada leitura exige sessão,
   capability, entitlement, snapshot publicado e validação de hash/tamanho.
 - Upload PDF seller-scoped usa intent curta, chave opaca, checksum SHA-256,
@@ -123,6 +148,25 @@ verdes no SHA `0b416e4`.
   persistente, revalida revogação e não confia em seller vindo do browser.
 - Testes cobrem mesma chave, versões concorrentes, revogação, republicação
   pinada, multi-course e 100 buyers sem bypass de RLS.
+- Inspeção superadmin Local/CI usa persona oculta, grant ativo por issuer+sub,
+  ticket de até 15 minutos, seller fixo server-side, projeção sem PII/assets e
+  auditoria append-only; não concede membership e falha fechado no BFF e na
+  API quando o ambiente não é Local/CI.
+- A página de inspeção não lê cookies no React Server Component. O GET BFF
+  sanitizado valida sessão/grant/ticket e retorna somente projeção mínima +
+  CSRF; testes procuram o token e a sessão no HTML/RSC bruto e não os encontram.
+- O callback da persona superadmin exige Domain API e grant ativo antes de
+  emitir sessão; ausência da API revoga a sessão e expira cookies. O OpenAPI da
+  Domain API está desabilitado, evitando enumerar as rotas restritas.
+- Storefront público mobile-first por seller com 320/390 px, landscape,
+  reduced motion, CTA >=44 px e ausência de overflow verificados; draft,
+  buyer/e-mail, asset e dados de checkout não fazem parte da projeção pública.
+- Certificado Local/CI de capacidade executou 100 owners + 1.000 buyers,
+  1.100 callbacks/sessões, leituras, mutações e negações cross-tenant sem erro;
+  thresholds e teardown passaram. É baseline provisória, não sizing de VPS.
+- Vertical integrada atual: 181/181 testes PG/API, 266 unitários verdes com 8
+  integrações condicionais ignoradas, 44/44 Playwright executados com 6 skips
+  previstos, produção fail-closed 1/1, OpenBao 7/7, audits Node/Python verdes.
 
 ## O que está quebrado / em degradação
 
@@ -133,9 +177,16 @@ verdes no SHA `0b416e4`.
 - Assets privados da Issue #40 estão na PR #41, com review crítico e CI verdes;
   ainda dependem de aprovação/merges ordenados e permanecem somente Local/CI.
 - A baseline de regressão Local/CI para uma instalação com 100 tenants está
-  comprovada na Issue #42, mas capacidade de lançamento ainda não está
+  comprovada e foi ampliada localmente na Issue #46 para dez buyers por tenant,
+  mas capacidade de lançamento ainda não está
   certificada em staging/VPS: faltam carga com margem 2x, soak, restore,
   rollback e observabilidade reais.
+- A inspeção superadmin da PR #57 foi portada para a migration sequencial 0010
+  da release candidate #61; continua exclusiva de Local/CI e read-only.
+- As PRs #35/#36 continuam sem merge; seus recursos não estão em produção.
+- Checkout, criação de cobrança, webhooks e reconciliação financeira reais
+  ainda não estão implementados na release candidate. Os contratos de pricing,
+  Neuro e PIX não equivalem a uma cobrança executável.
 
 ## Bloqueios
 
@@ -145,10 +196,10 @@ verdes no SHA `0b416e4`.
 
 ## Próxima ação
 
-Aguardar review crítico, CI e PR da #42; depois, decisão humana e merges
-empilhados #35 → #36 → #39 → #41 → futura PR #42, sem deploy.
-Identity real (#13), KMS (#19), billing/Financial, storage externo de staging e
-produção continuam bloqueados.
+Concluir o review crítico do SHA da Issue #61 e abrir Draft PR sem merge/deploy.
+Depois, executar três runs verdes de CI no mesmo SHA para calibrar a baseline.
+Identity/Financial/Admin/Neuro externos, checkout e staging continuam em slices
+seguintes com ambientes/credenciais isolados e mudanças somente aditivas.
 
 ## Links
 

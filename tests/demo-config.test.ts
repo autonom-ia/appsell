@@ -13,7 +13,7 @@ import {
 const localDemo = { NODE_ENV: "development", APPSELL_DEMO_ENABLED: "true" };
 
 describe("demo personas", () => {
-  it("uses only the two fixed autonomia.site identities", () => {
+  it("uses the two public demo identities", () => {
     expect(demoProfileForPersona("admin", localDemo)).toMatchObject({
       subject: DEMO_ADMIN_SUBJECT,
       email: DEMO_ADMIN_EMAIL,
@@ -30,13 +30,26 @@ describe("demo personas", () => {
 
   it("rejects arbitrary personas and subjects", () => {
     expect(demoProfileForPersona("superadmin", localDemo)).toBeNull();
+    expect(demoProfileForPersona("superadmin", {
+      ...localDemo,
+      APPSELL_DEMO_SUPERADMIN_ENABLED: "true"
+    })).toMatchObject({
+      subject: "inspection-superadmin",
+      email: "comercial@autonomia.site",
+      home: "/platform/demo-inspection"
+    });
     expect(demoProfileForSubject("attacker", localDemo)).toBeNull();
   });
 
   it("fails closed in production even when the demo flag is present", () => {
-    const production = { NODE_ENV: "production", APPSELL_DEMO_ENABLED: "true" };
+    const production = {
+      NODE_ENV: "production",
+      APPSELL_DEMO_ENABLED: "true",
+      APPSELL_DEMO_SUPERADMIN_ENABLED: "true"
+    };
     expect(demoModeEnabled(production)).toBe(false);
     expect(demoProfileForPersona("admin", production)).toBeNull();
     expect(demoProfileForSubject(DEMO_BUYER_SUBJECT, production)).toBeNull();
+    expect(demoProfileForPersona("superadmin", production)).toBeNull();
   });
 });

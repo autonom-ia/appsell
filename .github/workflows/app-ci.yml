@@ -33,6 +33,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12.11"
@@ -55,13 +57,16 @@ jobs:
         run: ./scripts/test-capacity-artifact-scan.sh
       - name: Fault-inject PostgreSQL restart after Compose health
         run: ./scripts/test-capacity-postgres-startup.sh
-      - name: Certify 100 isolated tenants on disposable Local/CI infrastructure
+      - name: Certify 100 admins and 1,000 buyers on disposable Local/CI infrastructure
         run: ./scripts/test-capacity-100-tenants.sh
+        env:
+          APPSELL_CAPACITY_CALIBRATION_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Scan capacity evidence before upload
         id: capacity-evidence-scan
         if: always()
         run: |
           python3 scripts/assert_capacity_artifact_safe.py --self-test
+          python3 scripts/report_capacity_calibration.py --self-test
           files=()
           for candidate in \
             tmp/capacity-100.json \
@@ -79,7 +84,7 @@ jobs:
         if: always() && steps.capacity-evidence-scan.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: capacity-100-tenants-${{ github.run_id }}-${{ github.run_attempt }}
+          name: capacity-100-admins-1000-buyers-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             tmp/capacity-100.json
             tmp/capacity-100.md
@@ -130,9 +135,29 @@ jobs:
       - run: uv run --project apps/api ruff check apps/api
       - run: uv run --project apps/api mypy --config-file apps/api/pyproject.toml apps/api/src apps/api/tests
       - run: uv run --project apps/api pip-audit --local
-      - run: uv run --project apps/api pytest apps/api/tests/test_config.py apps/api/tests/test_health.py
+      - run: >-
+          uv run --project apps/api pytest
+          apps/api/tests/test_config.py
+          apps/api/tests/test_health.py
+          apps/api/tests/test_capacity_telemetry.py
+          apps/api/tests/test_db_pool_budget.py
       - run: pnpm exec playwright install --with-deps chromium
       - run: ./scripts/test-postgres-foundation.sh
+      - name: Scan buyer multi-seller evidence
+        id: buyer-multi-seller-evidence
+        if: always()
+        run: |
+          python3 scripts/assert_capacity_artifact_safe.py --self-test
+          test -f tmp/buyer-multi-seller.json
+          python3 scripts/assert_capacity_artifact_safe.py tmp/buyer-multi-seller.json
+      - name: Upload buyer multi-seller evidence
+        if: always() && steps.buyer-multi-seller-evidence.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: buyer-multi-seller-${{ github.run_id }}-${{ github.run_attempt }}
+          path: tmp/buyer-multi-seller.json
+          if-no-files-found: error
+          retention-days: 30
 
   verify:
     runs-on: ubuntu-latest

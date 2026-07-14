@@ -29,9 +29,12 @@ context_key="$(openssl rand -hex 32)"
 bootstrap_key="$(openssl rand -hex 32)"
 internal_key_b64="$(openssl rand -base64 32)"
 service_credential_b64="$(openssl rand -base64 32)"
+multi_seller_fixture="$(mktemp -t appsell-buyer-multi-seller.XXXXXX.json)"
+multi_seller_report="tmp/buyer-multi-seller.json"
 
 cleanup() {
   docker compose -p "$project" down --rmi local --volumes --remove-orphans >/dev/null 2>&1 || true
+  rm -f -- "$multi_seller_fixture"
 }
 trap cleanup EXIT
 
@@ -123,10 +126,19 @@ uv run --project apps/api pytest \
   apps/api/tests/test_postgres_demo_learning.py \
   apps/api/tests/test_postgres_learning_progress.py \
   apps/api/tests/test_postgres_private_assets.py \
+  apps/api/tests/test_postgres_superadmin_inspection.py \
+  apps/api/tests/test_postgres_public_storefront.py \
+  apps/api/tests/test_demo_codex_pdfs.py \
   apps/api/tests/test_reset_demo_tenant.py \
+  apps/api/tests/test_seed_buyer_multi_seller.py \
   apps/api/tests/test_api_catalog.py \
   apps/api/tests/test_api_onboarding.py \
-  apps/api/tests/test_api_learning.py
+  apps/api/tests/test_api_learning.py \
+  apps/api/tests/test_api_assets.py \
+  apps/api/tests/test_api_superadmin_inspection.py
+uv run --project apps/api pytest \
+  apps/api/tests/test_internal_requests.py \
+  apps/api/tests/test_asset_worker_runner.py
 if uv run --project apps/api python -m appsell_api.configure_context_key 2>/dev/null; then
   echo "configure_context_key re-enabled a consumed bootstrap" >&2
   exit 1
@@ -146,5 +158,21 @@ APPSELL_TEST_DOMAIN_API_URL="http://127.0.0.1:${api_port}" \
 APPSELL_LOCAL_IDENTITY_EMAIL="creator@example.test" \
 pnpm exec vitest run --no-file-parallelism \
   tests/bff-api-onboarding.test.ts tests/bff-learning-multiprocess.test.ts \
-  tests/bff-demo-library.test.ts
+  tests/bff-demo-library.test.ts \
+  tests/bff-superadmin-inspection.test.ts
+export APPSELL_MULTI_SELLER_ENABLED="true"
+export APPSELL_MULTI_SELLER_DATABASE_URL="$APPSELL_TEST_POSTGRES_ADMIN_URL"
+export APPSELL_MULTI_SELLER_MANIFEST="$multi_seller_fixture"
+export APPSELL_MULTI_SELLER_REPORT="$multi_seller_report"
+export APPSELL_API_ENVIRONMENT="ci"
+export APPSELL_API_IDENTITY_ISSUER="$APPSELL_IDENTITY_ISSUER"
+export APPSELL_TEST_DOMAIN_API_URL="http://127.0.0.1:${api_port}"
+rm -f -- "$multi_seller_report"
+uv run --project apps/api python -m appsell_api.seed_buyer_multi_seller \
+  --action seed --confirm buyer-multi-seller-v1 --output "$multi_seller_fixture"
+pnpm exec vitest run --no-file-parallelism tests/bff-buyer-multi-seller.test.ts
+python3 scripts/assert_capacity_artifact_safe.py "$multi_seller_report"
+unset APPSELL_MULTI_SELLER_ENABLED APPSELL_MULTI_SELLER_DATABASE_URL \
+  APPSELL_MULTI_SELLER_MANIFEST APPSELL_MULTI_SELLER_REPORT \
+  APPSELL_API_ENVIRONMENT APPSELL_API_IDENTITY_ISSUER
 git diff --exit-code -- next-env.d.ts tsconfig.json

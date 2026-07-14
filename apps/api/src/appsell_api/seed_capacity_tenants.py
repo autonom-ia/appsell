@@ -16,7 +16,9 @@ from appsell_api.reset_demo_tenant import load_manifest
 CAPACITY_CONFIRMATION = "capacity-100-tenants-v1"
 CAPACITY_DATABASE_MARKER = "appsell-capacity-target-v1"
 CAPACITY_TENANTS = 100
-EXPECTED_MIGRATION = "0008_private_asset_storage"
+CAPACITY_BUYERS_PER_TENANT = 10
+CAPACITY_BUYERS = CAPACITY_TENANTS * CAPACITY_BUYERS_PER_TENANT
+EXPECTED_MIGRATION = "0011_public_storefront"
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,6 +32,13 @@ def parse_args() -> argparse.Namespace:
 
 def deterministic_id(kind: str, ordinal: int) -> UUID:
     return uuid5(NAMESPACE_URL, f"appsell-capacity-v1/{kind}/{ordinal:03d}")
+
+
+def deterministic_buyer_id(kind: str, tenant_ordinal: int, buyer_ordinal: int) -> UUID:
+    return uuid5(
+        NAMESPACE_URL,
+        f"appsell-capacity-v2/{kind}/{tenant_ordinal:03d}/{buyer_ordinal:02d}",
+    )
 
 
 def identity_id(issuer: str, subject: str) -> UUID:
@@ -143,18 +152,29 @@ def snapshot_for(tenant: dict[str, str]) -> dict[str, Any]:
     }
 
 
-def tenant_manifest(issuer: str, ordinal: int) -> dict[str, str | int]:
+def buyer_manifest(issuer: str, tenant_ordinal: int, buyer_ordinal: int) -> dict[str, str | int]:
+    subject = f"capacity-buyer-{tenant_ordinal:03d}-{buyer_ordinal:02d}"
+    return {
+        "ordinal": buyer_ordinal,
+        "subject": subject,
+        "identity_id": str(identity_id(issuer, subject)),
+        "entitlement_id": str(deterministic_buyer_id("entitlement", tenant_ordinal, buyer_ordinal)),
+    }
+
+
+def tenant_manifest(issuer: str, ordinal: int) -> dict[str, Any]:
     demo_manifest, _manifest_sha = load_manifest()
     demo_lessons = demo_manifest["lessons"]
     demo_asset = demo_lessons[ordinal % len(demo_lessons)]
     owner_subject = f"capacity-owner-{ordinal:03d}"
-    buyer_subject = f"capacity-buyer-{ordinal:03d}"
     return {
         "ordinal": ordinal,
         "owner_subject": owner_subject,
-        "buyer_subject": buyer_subject,
         "owner_identity_id": str(identity_id(issuer, owner_subject)),
-        "buyer_identity_id": str(identity_id(issuer, buyer_subject)),
+        "buyers": [
+            buyer_manifest(issuer, ordinal, buyer_ordinal)
+            for buyer_ordinal in range(CAPACITY_BUYERS_PER_TENANT)
+        ],
         "seller_id": str(deterministic_id("seller", ordinal)),
         "seller_slug": f"capacity-seller-{ordinal:03d}",
         "product_id": str(deterministic_id("product", ordinal)),
@@ -166,7 +186,6 @@ def tenant_manifest(issuer: str, ordinal: int) -> dict[str, str | int]:
         "lesson_id": str(deterministic_id("lesson", ordinal)),
         "offer_id": str(deterministic_id("offer", ordinal)),
         "publication_id": str(deterministic_id("publication", ordinal)),
-        "entitlement_id": str(deterministic_id("entitlement", ordinal)),
         "asset_id": str(deterministic_id("asset", ordinal)),
         "asset_title": str(demo_asset["title"]),
         "asset_file_name": f"{demo_asset['slug']}.pdf",
@@ -176,11 +195,8 @@ def tenant_manifest(issuer: str, ordinal: int) -> dict[str, str | int]:
     }
 
 
-def seed_tenant(
-    connection: psycopg.Connection[Any], tenant: dict[str, str | int], issuer: str
-) -> None:
+def seed_tenant(connection: psycopg.Connection[Any], tenant: dict[str, Any], issuer: str) -> None:
     owner_id = UUID(str(tenant["owner_identity_id"]))
-    buyer_id = UUID(str(tenant["buyer_identity_id"]))
     seller_id = UUID(str(tenant["seller_id"]))
     product_id = UUID(str(tenant["product_id"]))
     course_id = UUID(str(tenant["course_id"]))
@@ -188,21 +204,35 @@ def seed_tenant(
     lesson_id = UUID(str(tenant["lesson_id"]))
     offer_id = UUID(str(tenant["offer_id"]))
     publication_id = UUID(str(tenant["publication_id"]))
-    entitlement_id = UUID(str(tenant["entitlement_id"]))
     asset_id = UUID(str(tenant["asset_id"]))
     ordinal = int(tenant["ordinal"])
 
-    for identity_uuid, subject, role in (
-        (owner_id, str(tenant["owner_subject"]), "owner"),
-        (buyer_id, str(tenant["buyer_subject"]), "buyer"),
-    ):
+    connection.execute(
+        """
+        insert into identity_user(
+          id,identity_issuer,identity_sub,email_normalized,email_verified
+        ) values(%s,%s,%s,%s,true)
+        """,
+        (
+            owner_id,
+            issuer,
+            tenant["owner_subject"],
+            f"capacity.owner.{ordinal:03d}@autonomia.site",
+        ),
+    )
+    for buyer in tenant["buyers"]:
         connection.execute(
             """
             insert into identity_user(
               id,identity_issuer,identity_sub,email_normalized,email_verified
             ) values(%s,%s,%s,%s,true)
             """,
-            (identity_uuid, issuer, subject, f"capacity.{role}@autonomia.site"),
+            (
+                UUID(str(buyer["identity_id"])),
+                issuer,
+                buyer["subject"],
+                f"capacity.buyer.{ordinal:03d}.{int(buyer['ordinal']):02d}@autonomia.site",
+            ),
         )
     connection.execute(
         "insert into seller_organization(id,slug,display_name,status) values(%s,%s,%s,'active')",
@@ -355,25 +385,26 @@ def seed_tenant(
         "update course set status='published' where seller_organization_id=%s and id=%s",
         (seller_id, course_id),
     )
-    connection.execute(
-        """
-        insert into buyer_entitlement(
-          seller_organization_id,id,buyer_identity_user_id,catalog_product_id,
-          publication_id,reference_key,source,status,progress_percent
-        ) values(%s,%s,%s,%s,%s,%s,'manual','active',0)
-        """,
-        (
-            seller_id,
-            entitlement_id,
-            buyer_id,
-            product_id,
-            publication_id,
-            f"capacity-{ordinal:03d}",
-        ),
-    )
+    for buyer in tenant["buyers"]:
+        connection.execute(
+            """
+            insert into buyer_entitlement(
+              seller_organization_id,id,buyer_identity_user_id,catalog_product_id,
+              publication_id,reference_key,source,status,progress_percent
+            ) values(%s,%s,%s,%s,%s,%s,'manual','active',0)
+            """,
+            (
+                seller_id,
+                UUID(str(buyer["entitlement_id"])),
+                UUID(str(buyer["identity_id"])),
+                product_id,
+                publication_id,
+                f"capacity-{ordinal:03d}-{int(buyer['ordinal']):02d}",
+            ),
+        )
 
 
-def seed_capacity(connection: psycopg.Connection[Any], issuer: str) -> list[dict[str, str | int]]:
+def seed_capacity(connection: psycopg.Connection[Any], issuer: str) -> list[dict[str, Any]]:
     validate_database(connection)
     connection.execute(
         "select pg_advisory_xact_lock(hashtextextended(%s,0))", (CAPACITY_CONFIRMATION,)
@@ -408,7 +439,17 @@ def seed_capacity(connection: psycopg.Connection[Any], issuer: str) -> list[dict
         where organization.slug like 'capacity-seller-%'
         """
     ).fetchone()
-    if counts != (CAPACITY_TENANTS,) * 8:
+    expected_counts = (
+        CAPACITY_TENANTS,
+        CAPACITY_TENANTS,
+        CAPACITY_BUYERS,
+        CAPACITY_TENANTS,
+        CAPACITY_BUYERS,
+        CAPACITY_TENANTS,
+        CAPACITY_TENANTS,
+        CAPACITY_TENANTS,
+    )
+    if counts != expected_counts:
         raise RuntimeError(f"capacity fixture count mismatch: {counts}")
     return tenants
 
@@ -419,10 +460,13 @@ def main() -> None:
     with psycopg.connect(database_url) as connection:
         tenants = seed_capacity(connection, issuer)
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "mode": "local_ci",
         "tenant_count": CAPACITY_TENANTS,
-        "distinct_subjects": CAPACITY_TENANTS * 2,
+        "admin_count": CAPACITY_TENANTS,
+        "buyers_per_tenant": CAPACITY_BUYERS_PER_TENANT,
+        "buyer_count": CAPACITY_BUYERS,
+        "distinct_subjects": CAPACITY_TENANTS + CAPACITY_BUYERS,
         "tenants": tenants,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

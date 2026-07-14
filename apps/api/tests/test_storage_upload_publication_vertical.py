@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import base64
 import hashlib
 import hmac
 import io
@@ -13,7 +15,9 @@ import psycopg
 import pytest
 from reportlab.pdfgen.canvas import Canvas  # type: ignore[import-untyped]
 
-from appsell_api.config import Settings
+from appsell_api import main as main_module
+from appsell_api.config import Settings, get_settings
+from appsell_api.main import app
 from appsell_api.reset_demo_tenant import (
     ASSET_WORKER_SUBJECT,
     load_manifest,
@@ -29,6 +33,11 @@ ENDPOINT = os.environ.get("APPSELL_TEST_S3_ENDPOINT")
 ACCESS_KEY = os.environ.get("APPSELL_TEST_S3_ACCESS_KEY")
 SECRET_KEY = os.environ.get("APPSELL_TEST_S3_SECRET_KEY")
 ISSUER = "https://identity.storage-vertical.test.autonomia.site"
+INTERNAL_ISSUER = "appsell-storage-bff-test"
+INTERNAL_AUDIENCE = "appsell-storage-api-test"
+INTERNAL_KEY = bytes(range(64, 96))
+SERVICE_CREDENTIAL = bytes(range(96, 128))
+KEY_ID = "storage-test-v1"
 
 pytestmark = pytest.mark.skipif(
     not all(
@@ -45,7 +54,186 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def test_new_pdf_upload_worker_publication_and_entitled_download() -> None:
+def signed_headers(
+    *,
+    method: str,
+    path: str,
+    capability: str,
+    subject: str,
+    user_id: UUID,
+    seller_id: UUID,
+    body: bytes,
+) -> dict[str, str]:
+    now = int(time.time())
+    payload = {
+        "version": 1,
+        "kid": KEY_ID,
+        "issuer": INTERNAL_ISSUER,
+        "audience": INTERNAL_AUDIENCE,
+        "session_ref": hashlib.sha256(b"storage-route-real-session").hexdigest(),
+        "session_epoch": 1,
+        "identity": {"issuer": ISSUER, "sub": subject, "user_id": str(user_id)},
+        "capability": capability,
+        "seller_organization_id": str(seller_id),
+        "method": method,
+        "path": path,
+        "query_sha256": hashlib.sha256(b"").hexdigest(),
+        "body_sha256": hashlib.sha256(body).hexdigest(),
+        "request_id": str(uuid4()),
+        "iat": now,
+        "exp": now + 30,
+    }
+    encoded = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).rstrip(
+        b"="
+    )
+    signature = base64.urlsafe_b64encode(
+        hmac.digest(INTERNAL_KEY, b"appsell.internal.v1." + encoded, "sha256")
+    ).rstrip(b"=")
+    return {
+        "x-appsell-service-credential": base64.b64encode(SERVICE_CREDENTIAL).decode(),
+        "x-appsell-internal-envelope": f"v1.{encoded.decode()}.{signature.decode()}",
+        "content-type": "application/json",
+    }
+
+
+async def create_and_confirm_via_routes(
+    *,
+    monkeypatch: pytest.MonkeyPatch,
+    admin_subject: str,
+    admin: UUID,
+    seller: UUID,
+    product: UUID,
+    course: UUID,
+    module: UUID,
+    lesson: UUID,
+    source_pdf: bytes,
+    source_sha: str,
+) -> UUID:
+    environment = {
+        "APPSELL_API_ENVIRONMENT": "ci",
+        "APPSELL_API_DATABASE_URL": str(RUNTIME_URL).replace(
+            "postgresql://", "postgresql+asyncpg://", 1
+        ),
+        "APPSELL_API_INTERNAL_ISSUER": INTERNAL_ISSUER,
+        "APPSELL_API_INTERNAL_AUDIENCE": INTERNAL_AUDIENCE,
+        "APPSELL_API_IDENTITY_ISSUER": ISSUER,
+        "APPSELL_API_INTERNAL_HMAC_KEYRING_B64_JSON": json.dumps(
+            [
+                {
+                    "id": KEY_ID,
+                    "key": base64.b64encode(INTERNAL_KEY).decode(),
+                    "active": True,
+                }
+            ]
+        ),
+        "APPSELL_API_CONTEXT_HMAC_KEY_B64": base64.b64encode(
+            bytes.fromhex(str(CONTEXT_KEY_HEX))
+        ).decode(),
+        "APPSELL_API_SERVICE_CREDENTIAL_B64": base64.b64encode(SERVICE_CREDENTIAL).decode(),
+        "APPSELL_API_STORAGE_PROVIDER": "s3",
+        "APPSELL_API_STORAGE_INTERNAL_ENDPOINT": str(ENDPOINT),
+        "APPSELL_API_STORAGE_PUBLIC_ENDPOINT": str(ENDPOINT),
+        "APPSELL_API_STORAGE_QUARANTINE_BUCKET": "appsell-quarantine",
+        "APPSELL_API_STORAGE_READY_BUCKET": "appsell-ready",
+        "APPSELL_API_STORAGE_CONTROL_ACCESS_KEY": str(ACCESS_KEY),
+        "APPSELL_API_STORAGE_CONTROL_SECRET_KEY": str(SECRET_KEY),
+        "APPSELL_API_STORAGE_ALLOWED_ORIGIN": "http://localhost:3000",
+        "APPSELL_API_MALWARE_SCANNER_PROVIDER": "deterministic",
+        "APPSELL_API_PDF_SANDBOX_URL": "http://pdf-sandbox.internal:8081/normalize",
+    }
+    previous = {key: os.environ.get(key) for key in environment}
+    os.environ.update(environment)
+    get_settings.cache_clear()
+
+    async def parser_ready(_settings: Settings) -> bool:
+        return True
+
+    async def idle_worker(_app: object, stop: asyncio.Event) -> None:
+        await stop.wait()
+
+    monkeypatch.setattr(main_module, "_pdf_sandbox_ready", parser_ready)
+    monkeypatch.setattr(main_module, "run_asset_worker_loop", idle_worker)
+    try:
+        path = (
+            f"/v1/me/sellers/{seller}/products/{product}/courses/{course}"
+            f"/modules/{module}/lessons/{lesson}/assets/upload-intents"
+        )
+        create_body = json.dumps(
+            {
+                "idempotency_key": str(uuid4()),
+                "expected_course_version": 1,
+                "title": "PDF route real",
+                "file_name": "route-real.pdf",
+                "media_type": "application/pdf",
+                "byte_size": len(source_pdf),
+                "sha256": source_sha,
+            },
+            separators=(",", ":"),
+        ).encode()
+        async with app.router.lifespan_context(app):
+            app.state.inline_asset_worker_enabled = False
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://api.test"
+            ) as client:
+                created = await client.post(
+                    path,
+                    content=create_body,
+                    headers=signed_headers(
+                        method="POST",
+                        path=path,
+                        capability="catalog.asset.create",
+                        subject=admin_subject,
+                        user_id=admin,
+                        seller_id=seller,
+                        body=create_body,
+                    ),
+                )
+                assert created.status_code == 201, created.text
+                payload = created.json()
+                async with httpx.AsyncClient() as storage_http:
+                    uploaded = await storage_http.put(
+                        payload["upload_url"],
+                        content=source_pdf,
+                        headers=payload["required_headers"],
+                    )
+                assert uploaded.status_code in {200, 201}, uploaded.text
+
+                upload_id = UUID(payload["upload_id"])
+                confirm_path = (
+                    path.removesuffix("/upload-intents") + f"/uploads/{upload_id}/confirm"
+                )
+                confirm_body = json.dumps(
+                    {"idempotency_key": str(uuid4())}, separators=(",", ":")
+                ).encode()
+                confirmed = await client.post(
+                    confirm_path,
+                    content=confirm_body,
+                    headers=signed_headers(
+                        method="POST",
+                        path=confirm_path,
+                        capability="catalog.asset.upload.confirm",
+                        subject=admin_subject,
+                        user_id=admin,
+                        seller_id=seller,
+                        body=confirm_body,
+                    ),
+                )
+                assert confirmed.status_code == 202, confirmed.text
+                assert confirmed.json()["status"] == "uploaded"
+                return upload_id
+    finally:
+        get_settings.cache_clear()
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+@pytest.mark.asyncio
+async def test_new_pdf_upload_worker_publication_and_entitled_download(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     manifest, manifest_sha = load_manifest()
     seller = UUID(manifest["seller"]["id"])
     product = UUID(manifest["product"]["id"])
@@ -53,7 +241,8 @@ def test_new_pdf_upload_worker_publication_and_entitled_download() -> None:
     module = UUID(manifest["module"]["id"])
     lesson = UUID(manifest["lessons"][0]["lesson_id"])
     offer = UUID(manifest["offer"]["id"])
-    admin = identity_id(manifest["personas"]["admin"]["subject"])
+    admin_subject = manifest["personas"]["admin"]["subject"]
+    admin = identity_id(admin_subject)
     worker = identity_id(ASSET_WORKER_SUBJECT)
     buyer = uuid4()
     entitlement = uuid4()
@@ -89,87 +278,20 @@ def test_new_pdf_upload_worker_publication_and_entitled_download() -> None:
     storage.ensure_local_ci_controls(allowed_origin="http://localhost:3000")
     source_pdf = valid_pdf()
     source_sha = hashlib.sha256(source_pdf).hexdigest()
-    upload_id: UUID
-
-    with psycopg.connect(str(RUNTIME_URL)) as connection:
-        apply_context(connection, admin, seller, "catalog.asset.create")
-        created_row = connection.execute(
-            """
-            select app_private.create_asset_upload_intent(
-              %s,%s,%s,%s,%s,%s,null,1,'PDF vertical real','vertical-real.pdf',
-              'application/pdf',%s,%s,'s3','appsell-quarantine','appsell-ready',%s,%s,%s
-            )
-            """,
-            (
-                admin,
-                seller,
-                product,
-                course,
-                module,
-                lesson,
-                len(source_pdf),
-                source_sha,
-                uuid4(),
-                hashlib.sha256(b"create vertical").hexdigest(),
-                uuid4(),
-            ),
-        ).fetchone()
-        assert created_row is not None
-        created = created_row[0]
-        connection.commit()
-        upload_id = UUID(created["upload_id"])
-
-        apply_context(connection, admin, seller, "catalog.asset.upload.sign")
-        signing_row = connection.execute(
-            "select app_private.read_asset_upload_for_signing(%s,%s,%s,%s,%s,%s,%s)",
-            (admin, seller, product, course, module, lesson, upload_id),
-        ).fetchone()
-        assert signing_row is not None
-        signing = signing_row[0]
-        connection.commit()
-
-    upload = storage.presign_put(
-        bucket=signing["bucket"],
-        key=signing["object_key"],
-        content_type=signing["content_type"],
-        sha256_hex=signing["sha256"],
-        byte_size=signing["byte_size"],
-        upload_request_id=str(upload_id),
+    upload_id = await create_and_confirm_via_routes(
+        monkeypatch=monkeypatch,
+        admin_subject=admin_subject,
+        admin=admin,
+        seller=seller,
+        product=product,
+        course=course,
+        module=module,
+        lesson=lesson,
+        source_pdf=source_pdf,
+        source_sha=source_sha,
     )
-    uploaded = httpx.put(upload.url, content=source_pdf, headers=upload.headers, timeout=10)
-    assert uploaded.status_code in {200, 201}, uploaded.text
-    source = storage.head(bucket=signing["bucket"], key=signing["object_key"])
 
     with psycopg.connect(str(RUNTIME_URL)) as connection:
-        apply_context(connection, admin, seller, "catalog.asset.upload.confirm")
-        confirmed_row = connection.execute(
-            """
-            select app_private.confirm_asset_upload(
-              %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
-            )
-            """,
-            (
-                admin,
-                seller,
-                product,
-                course,
-                module,
-                lesson,
-                upload_id,
-                source.version_id,
-                source.size,
-                source_sha,
-                source.etag,
-                uuid4(),
-                hashlib.sha256(b"confirm vertical").hexdigest(),
-                uuid4(),
-            ),
-        ).fetchone()
-        assert confirmed_row is not None
-        confirmed = confirmed_row[0]
-        connection.commit()
-        assert confirmed["status"] == "uploaded"
-
         apply_context(connection, worker, None, "catalog.asset.verify")
         lease_row = connection.execute(
             "select app_private.begin_asset_verification(%s,%s,%s,'storage-vertical',120)",
@@ -309,14 +431,13 @@ def test_new_pdf_upload_worker_publication_and_entitled_download() -> None:
         version_id=authorized[10],
         file_name=authorized[2],
     )
-    downloaded = httpx.get(signed.url, timeout=10)
+    async with httpx.AsyncClient() as storage_http:
+        downloaded = await storage_http.get(signed.url, timeout=10)
     assert downloaded.status_code == 200
     assert len(downloaded.content) == authorized[5]
     assert hashlib.sha256(downloaded.content).hexdigest() == authorized[6]
     assert downloaded.headers["cache-control"] == "private, no-store, max-age=0"
-    assert downloaded.headers["content-disposition"] == (
-        "inline; filename*=UTF-8''vertical-real.pdf"
-    )
+    assert downloaded.headers["content-disposition"] == ("inline; filename*=UTF-8''route-real.pdf")
 
 
 def identity_id(subject: str) -> UUID:

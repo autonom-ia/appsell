@@ -10,16 +10,22 @@ from collections.abc import AsyncIterator
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import httpx
+import psycopg
 import pytest
+from fastapi import HTTPException
+from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 from appsell_api.config import get_settings
 from appsell_api.main import app
+from appsell_api.service_auth import ServiceEnvelope, ServiceIdentity
 
+ADMIN_URL = os.environ.get("APPSELL_TEST_POSTGRES_ADMIN_URL")
 RUNTIME_URL = os.environ.get("APPSELL_TEST_POSTGRES_RUNTIME_URL")
 CONTEXT_KEY_HEX = os.environ.get("APPSELL_TEST_CONTEXT_KEY_HEX")
 
 pytestmark = pytest.mark.skipif(
-    not all((RUNTIME_URL, CONTEXT_KEY_HEX)),
+    not all((ADMIN_URL, RUNTIME_URL, CONTEXT_KEY_HEX)),
     reason="isolated PostgreSQL environment is required",
 )
 
@@ -79,6 +85,9 @@ def signed_headers(
     body: bytes = b"",
     query: bytes = b"",
     request_id: str | None = None,
+    seller_id: str | None = None,
+    issued_at: int | None = None,
+    expires_at: int | None = None,
 ) -> dict[str, str]:
     now = int(time.time())
     payload = {
@@ -96,14 +105,14 @@ def signed_headers(
             "user_id": str(IDENTITY_ID),
         },
         "capability": capability,
-        "seller_organization_id": None,
+        "seller_organization_id": seller_id,
         "method": method,
         "path": path,
         "query_sha256": hashlib.sha256(query).hexdigest(),
         "body_sha256": hashlib.sha256(body).hexdigest(),
         "request_id": request_id or str(uuid4()),
-        "iat": now,
-        "exp": now + 30,
+        "iat": issued_at if issued_at is not None else now,
+        "exp": expires_at if expires_at is not None else now + 30,
     }
     encoded = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).rstrip(
         b"="
@@ -206,6 +215,49 @@ async def test_replay_and_request_substitution_fail_closed(client: httpx.AsyncCl
         )
     ).status_code == 401
 
+    expired_now = int(time.time())
+    expired_in_clock_skew = signed_headers(
+        method="GET",
+        path="/v1/me/sellers",
+        capability="seller.list",
+        issued_at=expired_now - 2,
+        expires_at=expired_now - 1,
+    )
+    expired = await client.get("/v1/me/sellers", headers=expired_in_clock_skew)
+    assert expired.status_code == 401
+    assert expired.json() == {"detail": "invalid_internal_request"}
+
+
+@pytest.mark.asyncio
+async def test_domain_rejection_rolls_back_business_work_but_consumes_replay(
+    client: httpx.AsyncClient,
+) -> None:
+    seller_id = str(uuid4())
+    path = f"/v1/me/sellers/{seller_id}/products"
+    body = json.dumps(
+        {
+            "idempotency_key": str(uuid4()),
+            "slug": "replay-rejected-product",
+            "title": "Replay Rejected Product",
+            "description": "Must roll back",
+            "course_title": "Replay Rejected Course",
+        },
+        separators=(",", ":"),
+    ).encode()
+    rejected_headers = signed_headers(
+        method="POST",
+        path=path,
+        capability="catalog.draft.create",
+        body=body,
+        seller_id=seller_id,
+    )
+    rejected = await client.post(path, content=body, headers=rejected_headers)
+    assert rejected.status_code == 403
+    assert rejected.json() == {"detail": "forbidden"}
+    replayed = await client.post(path, content=body, headers=rejected_headers)
+    assert replayed.status_code == 401
+    assert replayed.json() == {"detail": "invalid_internal_request"}
+
 
 @pytest.mark.asyncio
 async def test_duplicate_or_unsigned_business_fields_are_rejected(
@@ -216,16 +268,79 @@ async def test_duplicate_or_unsigned_business_fields_are_rejected(
         + str(uuid4()).encode()
         + b'","slug":"seller-one","slug":"seller-two","display_name":"Duplicado"}'
     )
+    duplicate_headers = signed_headers(
+        method="POST",
+        path="/v1/me/sellers",
+        capability="seller.onboard",
+        body=duplicate,
+    )
     response = await client.post(
         "/v1/me/sellers",
         content=duplicate,
-        headers=signed_headers(
-            method="POST",
-            path="/v1/me/sellers",
-            capability="seller.onboard",
-            body=duplicate,
-        ),
+        headers=duplicate_headers,
     )
     assert response.status_code == 422
     assert "seller-one" not in response.text
     assert "seller-two" not in response.text
+    replayed = await client.post("/v1/me/sellers", content=duplicate, headers=duplicate_headers)
+    assert replayed.status_code == 401
+    assert replayed.json() == {"detail": "invalid_internal_request"}
+
+
+@pytest.mark.asyncio
+async def test_deferred_constraint_failure_preserves_replay_guard(
+    client: httpx.AsyncClient,
+) -> None:
+    assert ADMIN_URL
+    table_name = f"deferred_replay_probe_{uuid4().hex}"
+    async with await psycopg.AsyncConnection.connect(ADMIN_URL) as admin:
+        await admin.execute(
+            f'create table public."{table_name}" ('
+            "id integer primary key, parent_id integer, "
+            f'constraint "{table_name}_fk" foreign key(parent_id) '
+            f'references public."{table_name}"(id) deferrable initially deferred)'
+        )
+        await admin.execute(f'grant insert on public."{table_name}" to appsell_runtime')
+        await admin.commit()
+
+    now = int(time.time())
+    envelope = ServiceEnvelope(
+        version=1,
+        kid=KEY_ID,
+        issuer=INTERNAL_ISSUER,
+        audience=INTERNAL_AUDIENCE,
+        session_ref=hashlib.sha256(b"deferred-replay-probe").hexdigest(),
+        session_epoch=1,
+        identity=ServiceIdentity(
+            issuer=IDENTITY_ISSUER,
+            sub=SUBJECT,
+            user_id=IDENTITY_ID,
+        ),
+        capability="catalog.draft.create",
+        seller_organization_id=None,
+        method="POST",
+        path="/v1/deferred-replay-probe",
+        query_sha256=hashlib.sha256(b"").hexdigest(),
+        body_sha256=hashlib.sha256(b"").hexdigest(),
+        request_id=uuid4(),
+        iat=now,
+        exp=now + 30,
+    )
+    auth = app.state.internal_auth
+    assert auth is not None
+    try:
+        with pytest.raises(DBAPIError):
+            async with auth.domain_session(envelope) as session:
+                await session.execute(
+                    text(f'insert into public."{table_name}"(id,parent_id) values(1,2)')
+                )
+
+        with pytest.raises(HTTPException) as replayed:
+            async with auth.domain_session(envelope):
+                pytest.fail("deferred constraint failure did not consume replay")
+        assert replayed.value.status_code == 401
+        assert replayed.value.detail == "invalid_internal_request"
+    finally:
+        async with await psycopg.AsyncConnection.connect(ADMIN_URL) as admin:
+            await admin.execute(f'drop table if exists public."{table_name}"')
+            await admin.commit()

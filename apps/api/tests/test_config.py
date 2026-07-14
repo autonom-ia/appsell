@@ -169,3 +169,28 @@ def test_database_application_name_is_bounded_and_machine_readable() -> None:
     )
     with pytest.raises(ValidationError):
         Settings(database_application_name="unsafe name; select 1")
+
+
+def test_capacity_product_create_telemetry_is_default_off_and_local_ci_only() -> None:
+    assert Settings(environment="local").capacity_product_create_telemetry is False
+    assert (
+        Settings(
+            environment="ci", capacity_product_create_telemetry=True
+        ).capacity_product_create_telemetry
+        is True
+    )
+    with pytest.raises(ValidationError, match="telemetry is forbidden"):
+        Settings(
+            environment="staging",
+            capacity_product_create_telemetry=True,
+            **INTERNAL_AUTH,
+            **REMOTE_STORAGE,
+        )
+    with pytest.raises(ValidationError, match="telemetry is forbidden"):
+        Settings(
+            environment="production",
+            database_url=("postgresql+asyncpg://runtime@db.example.test:5432/appsell?ssl=require"),
+            capacity_product_create_telemetry=True,
+            **INTERNAL_AUTH,
+            **REMOTE_STORAGE,
+        )

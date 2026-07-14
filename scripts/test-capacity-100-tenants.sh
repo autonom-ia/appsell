@@ -2,6 +2,7 @@
 set -euo pipefail
 
 project="appsell_capacity_${RANDOM}_$$"
+bff_dist=".next-capacity-${project}"
 postgres_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
 api_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
 storage_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
@@ -15,11 +16,46 @@ service_credential_b64="$(openssl rand -base64 32)"
 storage_access="capacity-$(openssl rand -hex 8)"
 storage_secret="$(openssl rand -hex 32)"
 report="${APPSELL_CAPACITY_REPORT:-$PWD/tmp/capacity-100.json}"
+capacity_executor_timeout_seconds=960
 fixture="${report%.json}-fixture.json"
 worker_metrics="${report%.json}-worker-rss.json"
 vitest_metrics="${report%.json}-vitest-rss.json"
 startup_report="${report%.json}-postgres-startup.json"
 cleanup_started="false"
+
+restore_next_generated_config() {
+  BFF_DIST="$bff_dist" python3 -c '
+import os
+from pathlib import Path
+dist = os.environ["BFF_DIST"]
+next_env = Path("next-env.d.ts")
+if next_env.exists():
+    source = next_env.read_text()
+    source = source.replace(
+        f"import \"./{dist}/types/routes.d.ts\";",
+        "import \"./.next/dev/types/routes.d.ts\";",
+    )
+    next_env.write_text(source)
+tsconfig = Path("tsconfig.json")
+if tsconfig.exists():
+    source = tsconfig.read_text()
+    source = source.replace(
+        f"    \"{dist}/types/**/*.ts\",\n"
+        f"    \"{dist}/dev/types/**/*.ts\"\n",
+        "",
+    )
+    source = source.replace(
+        f",\n    \"{dist}/types/**/*.ts\",\n"
+        f"    \"{dist}/dev/types/**/*.ts\"",
+        "",
+    )
+    source = source.replace(
+        "    \".next/dev/types/**/*.ts\",\n  ],",
+        "    \".next/dev/types/**/*.ts\"\n  ],",
+    )
+    tsconfig.write_text(source)
+'
+}
 
 mark_report_failed() {
   local exit_code="$1"
@@ -57,7 +93,7 @@ with open(path, "w", encoding="utf-8") as destination:
     destination.write("\n")
 '
   {
-    echo "# AppSell capacity baseline — 100 tenants"
+    echo "# AppSell capacity baseline — 100 admins and 1,000 buyers"
     echo
     echo "- Status: **failed**"
     echo "- Mode: Local/CI"
@@ -71,6 +107,8 @@ cleanup() {
   if [[ "$cleanup_started" == "true" ]]; then return "$original_status"; fi
   cleanup_started="true"
   trap - EXIT INT TERM
+  restore_next_generated_config
+  rm -rf -- "$bff_dist"
   local down_failed="false"
   if ! docker compose -p "$project" --profile storage down --rmi local --volumes --remove-orphans \
     >/dev/null 2>&1; then
@@ -177,7 +215,11 @@ export APPSELL_STORAGE_CONTROL_SECRET_KEY="$storage_secret"
 export APPSELL_STORAGE_ALLOWED_ORIGIN="http://localhost:3000"
 export APPSELL_STORAGE_BUCKETS="appsell-quarantine,appsell-ready"
 export APPSELL_API_ENVIRONMENT="ci"
+export APPSELL_API_CAPACITY_PRODUCT_CREATE_TELEMETRY="true"
 export APPSELL_API_DATABASE_APPLICATION_NAME="appsell_capacity_api"
+export APPSELL_CAPACITY_API_POOL_SIZE="$(
+  uv run --project apps/api python -c 'from appsell_api.db import API_POOL_SIZE; print(API_POOL_SIZE)'
+)"
 export APPSELL_MIGRATOR_DATABASE_URL="postgresql+psycopg://appsell_migrator:${migrator_secret}@127.0.0.1:${postgres_port}/appsell"
 
 if ! docker compose -p "$project" --profile storage up -d --wait --wait-timeout 60 postgres seaweedfs; then
@@ -210,6 +252,11 @@ export APPSELL_TEST_S3_ENDPOINT="http://127.0.0.1:${storage_port}"
 export APPSELL_TEST_S3_ACCESS_KEY="$storage_access"
 export APPSELL_TEST_S3_SECRET_KEY="$storage_secret"
 uv run --project apps/api pytest -ra apps/api/tests/test_storage_s3_contract.py
+
+postgres_id="$(docker compose -p "$project" ps -q postgres)"
+export APPSELL_TEST_POSTGRES_CONTAINER_ID="$postgres_id"
+pnpm exec vitest run tests/capacity-postgres-sampler.test.ts
+unset APPSELL_TEST_POSTGRES_CONTAINER_ID
 
 export APPSELL_INTERNAL_ISSUER="appsell-bff-capacity"
 export APPSELL_INTERNAL_AUDIENCE="appsell-api-capacity"
@@ -264,7 +311,6 @@ uv run --project apps/api pytest -q apps/api/tests/test_seed_capacity_tenants.py
 uv run --project apps/api python -m appsell_api.seed_capacity_tenants \
   --confirm capacity-100-tenants-v1 --output "$fixture"
 
-postgres_id="$(docker compose -p "$project" ps -q postgres)"
 api_id="$(docker compose -p "$project" ps -q api)"
 pdf_id="$(docker compose -p "$project" ps -q pdf-sandbox)"
 storage_id="$(docker compose -p "$project" ps -q seaweedfs)"
@@ -281,13 +327,23 @@ export APPSELL_CAPACITY_STORAGE_VERTICAL_TREE_RSS_BYTES="$(
   WORKER_METRICS="$worker_metrics" python3 -c \
     'import json,os; print(json.load(open(os.environ["WORKER_METRICS"], encoding="utf-8"))["peak_rss_bytes"])'
 )"
+export APPSELL_CAPACITY_OUTER_TIMEOUT_SECONDS="$capacity_executor_timeout_seconds"
 export NEXT_TELEMETRY_DISABLED="1"
+export APPSELL_CAPACITY_PRODUCT_CREATE_TELEMETRY="true"
+export APPSELL_ENVIRONMENT="ci"
+export APPSELL_CAPACITY_BFF_RUNTIME="production"
+export APPSELL_CAPACITY_LOCAL_CI_RUNTIME="synthetic-loopback-v1"
+export APPSELL_CAPACITY_BFF_DIST_DIR="$bff_dist"
 
-python3 scripts/run_with_rss.py --timeout 300 --output "$vitest_metrics" -- \
+APPSELL_NEXT_DIST_DIR="$bff_dist" NODE_ENV="production" pnpm exec next build
+restore_next_generated_config
+
+python3 scripts/run_with_rss.py --timeout "$capacity_executor_timeout_seconds" --output "$vitest_metrics" -- \
   pnpm exec vitest run tests/bff-capacity-100-tenants.test.ts
 
 REPORT_PATH="$report" python3 -c \
-  'import json,os; result=json.load(open(os.environ["REPORT_PATH"], encoding="utf-8")); assert result["status"] == "passed" and result["tenant_count"] == 100 and result["production_certified"] is False'
+  'import json,os; result=json.load(open(os.environ["REPORT_PATH"], encoding="utf-8")); assert result["status"] == "passed" and result["tenant_count"] == 100 and result["admin_accounts"] == 100 and result["buyers_per_admin"] == 10 and result["buyer_accounts"] == 1000 and result["owner_sessions_observed"] == 100 and result["buyer_sessions_observed"] == 1000 and result["distinct_subjects"] == 1100 and result["production_certified"] is False'
 python3 scripts/assert_capacity_artifact_safe.py \
   "$report" "${report%.json}.md" "$startup_report"
+python3 scripts/report_capacity_calibration.py --report "$report"
 echo "capacity report: $report"

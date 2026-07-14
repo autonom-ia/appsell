@@ -16,6 +16,10 @@ export async function proxy(request: NextRequest) {
       return NextResponse.redirect(new URL("/", request.url));
     }
     const demoProfile = demoProfileForSubject(session?.subject);
+    if (demoProfile?.persona === "superadmin" &&
+        !request.nextUrl.pathname.startsWith("/platform/")) {
+      return NextResponse.redirect(new URL("/platform/demo-inspection", request.url));
+    }
     if (demoProfile?.persona === "buyer" && !request.nextUrl.pathname.startsWith("/library")) {
       return NextResponse.redirect(new URL("/library", request.url));
     }
@@ -26,5 +30,5 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/dashboard/:path*", "/products/:path*", "/library/:path*"],
+  matcher: ["/dashboard/:path*", "/products/:path*", "/library/:path*", "/platform/:path*"],
 };

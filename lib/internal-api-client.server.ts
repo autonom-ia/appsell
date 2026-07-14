@@ -1,7 +1,13 @@
 import "server-only";
 
 import { timingSafeEqual } from "node:crypto";
+import demoCodexAssets from "./demo-codex-assets.json";
+import { capacityLocalCiRuntimeEnabled } from "./capacity-local-ci-runtime";
 import { demoProfileForSubject } from "./demo-config";
+import {
+  capacityProductCreateTelemetryEnabled,
+  validCapacityProductCreateTrace
+} from "./capacity-product-create-telemetry";
 
 import {
   parseInternalSigningConfig,
@@ -26,6 +32,8 @@ interface ApiRequest {
   path: string;
   query?: string;
   capability: "identity.sync" | "platform.grants.read" | "seller.list" | "seller.onboard" |
+    "platform.demo.inspect.start" | "platform.demo.inspect.read" |
+    "platform.demo.inspect.revoke" |
     "catalog.draft.read" | "catalog.draft.create" | "catalog.draft.update" |
     "catalog.draft.preview" | "catalog.publication.read" | "catalog.publication.create" |
     "catalog.curriculum.read" | "catalog.curriculum.create" |
@@ -35,7 +43,22 @@ interface ApiRequest {
     "catalog.asset.archive" | "library.read" | "library.asset.read" |
     "learning.player.read" | "learning.progress.write";
   sellerOrganizationId?: string;
+  inspectionToken?: string;
   body?: Record<string, unknown>;
+  capacityTrace?: string | null;
+}
+
+export interface DemoInspectionProjection {
+  inspection: { id: string; started_at: string; expires_at: string };
+  seller: { id: string; slug: string; display_name: string; status: string };
+  product: { id: string; slug: string; title: string; status: string };
+  publication: {
+    id: string;
+    version: number;
+    schema_version: number;
+    published_at: string;
+  };
+  courses: Array<{ id: string; title: string; position: number }>;
 }
 
 export class DomainApiError extends Error {
@@ -46,6 +69,35 @@ export class DomainApiError extends Error {
 
 export function isDomainApiConfigured() {
   return Boolean(process.env.APPSELL_DOMAIN_API_URL);
+}
+
+export async function readPublicStorefront(sellerSlug: string) {
+  const config = internalConfig();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3_000);
+  try {
+    const response = await fetch(
+      new URL(`/v1/public/sellers/${encodeURIComponent(sellerSlug)}`, config.apiOrigin),
+      {
+        headers: { "x-appsell-service-credential": config.serviceCredentialEncoded },
+        cache: "no-store",
+        signal: controller.signal
+      }
+    );
+    const payload = await response.json().catch(() => null) as unknown;
+    if (!response.ok) {
+      const code = isRecord(payload) && typeof payload.detail === "string"
+        ? payload.detail
+        : "domain_api_error";
+      throw new DomainApiError(response.status, code);
+    }
+    return payload;
+  } catch (error) {
+    if (error instanceof DomainApiError) throw error;
+    throw new DomainApiError(503, "domain_api_unavailable");
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export async function syncDomainIdentity(sessionId: string, session: ServerSession) {
@@ -93,6 +145,54 @@ export async function onboardDomainSeller(
   });
 }
 
+export async function startDomainDemoInspection(
+  sessionId: string,
+  session: ServerSession,
+  input: { reason: string; ttlSeconds: number }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: "/v1/platform/demo-inspections",
+    capability: "platform.demo.inspect.start",
+    body: { reason: input.reason, ttl_seconds: input.ttlSeconds }
+  }) as Promise<{
+    inspection_id: string;
+    inspection_token: string;
+    expires_at: string;
+    seller: { id: string; slug: string; display_name: string };
+  }>;
+}
+
+export async function readDomainDemoInspection(
+  sessionId: string,
+  session: ServerSession,
+  inspectionId: string,
+  inspectionToken: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/platform/demo-inspections/${inspectionId}`,
+    capability: "platform.demo.inspect.read",
+    inspectionToken
+  }) as Promise<DemoInspectionProjection>;
+}
+
+export async function revokeDomainDemoInspection(
+  sessionId: string,
+  session: ServerSession,
+  inspectionId: string,
+  inspectionToken: string,
+  reason: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `/v1/platform/demo-inspections/${inspectionId}/revoke`,
+    capability: "platform.demo.inspect.revoke",
+    inspectionToken,
+    body: { reason }
+  }) as Promise<{ inspection_id: string; status: "revoked"; revoked_at: string }>;
+}
+
 export async function listDomainProductDrafts(
   sessionId: string,
   session: ServerSession,
@@ -118,6 +218,7 @@ export async function createDomainProductDraft(
     productTitle: string;
     productDescription: string;
     courseTitle: string;
+    capacityTrace?: string | null;
   }
 ) {
   return domainRequest(sessionId, session, {
@@ -125,6 +226,7 @@ export async function createDomainProductDraft(
     path: `/v1/me/sellers/${sellerOrganizationId}/products`,
     capability: "catalog.draft.create",
     sellerOrganizationId,
+    capacityTrace: input.capacityTrace,
     body: {
       idempotency_key: input.idempotencyKey,
       slug: input.slug,
@@ -518,9 +620,25 @@ export async function archiveDomainLessonAsset(
 }
 
 export async function readDomainLibrary(sessionId: string, session: ServerSession) {
+  return readDomainBuyerProducts(sessionId, session);
+}
+
+export async function readDomainBuyerProducts(sessionId: string, session: ServerSession) {
   return domainRequest(sessionId, session, {
     method: "GET",
-    path: "/v1/me/library",
+    path: "/v1/me/products",
+    capability: "library.read"
+  });
+}
+
+export async function readDomainBuyerSellerProducts(
+  sessionId: string,
+  session: ServerSession,
+  entitlementId: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/products/${entitlementId}/seller-products`,
     capability: "library.read"
   });
 }
@@ -625,6 +743,7 @@ async function domainRequest(
   session: ServerSession,
   request: ApiRequest
 ) {
+  requireDemoCapability(session.subject, request);
   const config = internalConfig();
   const body = request.body ? Buffer.from(JSON.stringify(request.body), "utf8") : Buffer.alloc(0);
   const query = Buffer.from(request.query ?? "", "ascii");
@@ -648,14 +767,23 @@ async function domainRequest(
   try {
     const requestUrl = new URL(request.path, config.apiOrigin);
     requestUrl.search = request.query ?? "";
+    const capacityTrace = capacityProductCreateTelemetryEnabled() &&
+      request.capability === "catalog.draft.create" &&
+      validCapacityProductCreateTrace(request.capacityTrace)
+      ? request.capacityTrace
+      : null;
     const response = await fetch(requestUrl, {
       method: request.method,
       body: request.method === "GET" ? undefined : body,
       headers: {
-        "content-type": "application/json",
-        "x-appsell-internal-envelope": token,
-        "x-appsell-service-credential": config.serviceCredentialEncoded
-      },
+          "content-type": "application/json",
+          "x-appsell-internal-envelope": token,
+          "x-appsell-service-credential": config.serviceCredentialEncoded,
+          ...(request.inspectionToken
+            ? { "x-appsell-inspection-token": request.inspectionToken }
+            : {}),
+          ...(capacityTrace ? { "x-appsell-capacity-trace": capacityTrace } : {})
+        },
       cache: "no-store",
       signal: controller.signal
     });
@@ -673,6 +801,35 @@ async function domainRequest(
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function requireDemoCapability(subject: string, request: ApiRequest) {
+  const profile = demoProfileForSubject(subject);
+  if (!profile) return;
+  if (request.capability === "identity.sync") return;
+  if (profile.persona === "buyer" &&
+      [
+        "library.read",
+        "library.asset.read",
+        "learning.player.read",
+        "learning.progress.write"
+      ].includes(request.capability)) {
+    return;
+  }
+  if (profile.persona === "admin") {
+    if (request.capability === "seller.list") return;
+    if (["library.read", "library.asset.read"].includes(request.capability)) return;
+    const demoSellerId = demoCodexAssets[0]?.seller_id;
+    if (request.capability.startsWith("catalog.") && request.sellerOrganizationId === demoSellerId) {
+      return;
+    }
+  }
+  if (profile.persona === "superadmin" &&
+      (request.capability === "platform.grants.read" ||
+       request.capability.startsWith("platform.demo.inspect."))) {
+    return;
+  }
+  throw new DomainApiError(403, `demo_${profile.persona}_capability_forbidden`);
 }
 
 function internalConfig() {
@@ -725,7 +882,11 @@ function configuredApiOrigin() {
   if (raw !== parsed.origin || parsed.username || parsed.password || parsed.pathname !== "/") {
     throw new DomainApiError(503, "invalid_domain_api_url");
   }
-  if (process.env.NODE_ENV === "production" && parsed.protocol !== "https:") {
+  if (
+    process.env.NODE_ENV === "production" &&
+    parsed.protocol !== "https:" &&
+    !capacityLocalCiRuntimeEnabled()
+  ) {
     throw new DomainApiError(503, "insecure_domain_api_url");
   }
   return parsed.origin;
@@ -735,7 +896,7 @@ function identityEmail(session: ServerSession) {
   if (session.identity?.emailVerified === true) return session.identity.email;
   const demo = demoProfileForSubject(session.subject);
   if (demo) return demo.email;
-  if (process.env.NODE_ENV === "production") {
+  if (process.env.NODE_ENV === "production" && !capacityLocalCiRuntimeEnabled()) {
     throw new DomainApiError(503, "real_identity_claims_required");
   }
   const email = requiredEnvironment("APPSELL_LOCAL_IDENTITY_EMAIL");

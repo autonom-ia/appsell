@@ -5,11 +5,11 @@
 
 Este projeto usa o Autonom.ia Agent Harness.
 
-Fonte local:
-`~/Documents/agent-harness`
-
 Fonte oficial:
 `https://github.com/autonom-ia/agent-harness`
+
+Fonte local preferencial:
+`~/Documents/agent-harness`
 
 Project:
 `https://github.com/users/autonom-ia/projects/3`
@@ -17,8 +17,10 @@ Project:
 Regras:
 - Preservar regras específicas deste projeto.
 - Em caso de conflito entre regra local e harness, pedir decisão ao Rodrigo.
-- Não fazer merge, deploy, rebase, reset hard, rotação de secrets, migration de produção ou alteração de infraestrutura sem aprovação explícita.
+- Operar pelas faixas de `.claude/rules/prod-approval.md`, com a regra local mais restritiva prevalecendo: merge, deploy, rebase, reset hard, rotação de secrets, migration de produção e alteração de infraestrutura exigem aprovação explícita do Rodrigo.
+- Não fazer merge sem aprovação explícita do Rodrigo.
 <!-- AUTONOMIA_AGENT_HARNESS_END -->
+
 
 # CLAUDE.md
 

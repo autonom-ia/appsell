@@ -18,6 +18,7 @@ ADMIN_URL = os.environ.get("APPSELL_TEST_POSTGRES_ADMIN_URL")
 RUNTIME_URL = os.environ.get("APPSELL_TEST_POSTGRES_RUNTIME_URL")
 CONTEXT_KEY_HEX = os.environ.get("APPSELL_TEST_CONTEXT_KEY_HEX")
 ISSUER = "https://identity.demo.test.autonomia.site"
+FOUNDATION_DATABASE_WORKERS = 12
 
 pytestmark = pytest.mark.skipif(
     not all((ADMIN_URL, RUNTIME_URL, CONTEXT_KEY_HEX)),
@@ -77,7 +78,7 @@ def test_projection_pin_rls_and_player_are_bound_to_the_buyer() -> None:
             (entitlement, publication, publication),
         ).fetchone()
     assert state == (
-        "0008_private_asset_storage",
+        "0011_public_storefront",
         publication,
         1,
         5,
@@ -607,7 +608,7 @@ def test_one_hundred_buyers_write_and_resume_under_bounded_parallel_load() -> No
 
     started = time.monotonic()
     try:
-        with ThreadPoolExecutor(max_workers=20) as executor:
+        with ThreadPoolExecutor(max_workers=FOUNDATION_DATABASE_WORKERS) as executor:
             results = list(executor.map(write_and_resume, zip(buyers, entitlements, strict=True)))
         elapsed = time.monotonic() - started
         assert results == [(20, manifest["lessons"][1]["lesson_id"])] * 100

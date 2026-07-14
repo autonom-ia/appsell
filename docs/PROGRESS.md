@@ -71,6 +71,20 @@ Fase 5 — entrega de conteúdo e assets privados multitenant em Local/CI.
 
 ## Em andamento
 
+- Issue #46 na branch `feat/46-capacity-1000-buyers`: vertical Local/CI ampliada
+  para 100 admins/tenants e 1.000 buyers, com dez buyers e dez entitlements
+  distintos por tenant; 1.100 sessões OAuth foram observadas de fato;
+- a cobertura ampliada concluiu 1.000 library/player/progress/asset e negações
+  cross-tenant de produto, player/progresso e asset, sem 5xx, timeout, payload
+  inválido ou acesso cruzado; o certificado final faz 9.500 requests, 4.100 negações
+  esperadas, BFF abaixo de 2 GiB, headroom PostgreSQL acima de 40% e teardown
+  limpo; as métricas exatas de cada execução ficam no artifact JSON;
+- thresholds continuam provisórios até três runs verdes em CI sobre source
+  limpo; esta evidência não certifica Identity real, staging, HA ou produção;
+- a evidência é de cardinalidade sintética Local/CI, não simultaneidade de 1.100
+  usuários, Identity real, staging ou produção; publicação permanece
+  condicionada ao gate crítico final e ao CI remoto;
+
 - Issue #40 na branch `feat/40-private-asset-upload`: migration 0008, quotas e
   RLS forçados, upload direto S3-compatible em quarentena, worker separado,
   PDF sandbox sem rede e publicação pinada à versão imutável do objeto;
@@ -107,9 +121,41 @@ Fase 5 — entrega de conteúdo e assets privados multitenant em Local/CI.
 - gates locais: 69 web, 94 PG/API, BFF vertical com duas instâncias, 26
   Playwright + 4 skips, build, production fail-closed e audits verdes;
 - PR #35 aberta; aguardando App CI e review do SHA remoto; nenhum deploy;
-- Issue #33 implementada localmente em branch empilhada: tenant demo resetável,
+- slice parcial da Issue #33 implementado localmente em branch empilhada: tenant demo resetável,
   admin/comprador `@autonomia.site`, entitlement buyer, biblioteca persistente e
-  curso Codex com cinco PDFs protegidos e verificados;
+  curso Codex com cinco PDFs protegidos e verificados; comprador demo fica
+  restrito server-side a `identity.sync`, `library.read` e `library.asset.read`,
+  com cookies CSRF de produtor expirados e sem acesso direto ao workspace
+  `/products`;
+- admin demo confinado ao seller UUID da tenant demo; onboarding e catálogo
+  cross-tenant falham em 403, e o reset remove memberships/grants legados das
+  duas personas;
+- gates do delta #33: 113 testes Python/PG/API, 74 web, 2 verticais BFF/API/PG,
+  30 Playwright + 4 skips deliberados e 1 production fail-closed;
+- PR #36 da Issue #33 aberta em Draft, App CI 2/2 verde e review crítico
+  P0=P1=P2=P3=0; nenhum merge ou deploy;
+- Issue #56 em branch empilhada local adiciona inspeção superadmin temporária e
+  read-only da demo: migration 0007, token com hash-only no banco, TTL máximo de
+  15 minutos, seller fixo server-side, auditoria append-only e revogação;
+- callbacks exigem grant `platform_superadmin` ativo por issuer+sub; a persona
+  sintética `comercial@autonomia.site` é oculta e Local/CI, não recebe papel por
+  e-mail e não equivale a uma conta Identity real;
+- gates locais da Issue #56: 126 Python/PG/API, 83 web, 4 verticais BFF/API/PG,
+  30 Playwright + 4 skips deliberados, 1 production fail-closed, build, Ruff,
+  mypy strict, lint, typecheck e audits verdes; navegador real 390 px sem
+  overflow e sem controles seller;
+- primeiro review crítico retornou RED: rotas FastAPI não estavam restritas a
+  Local/CI e faltavam provas BFF de POST de catálogo/PATCH de currículo; ambos
+  foram corrigidos antes de qualquer commit/push e exigem novo ciclo completo;
+- teste adversarial adicional detectou token HttpOnly serializado pelo RSC; a
+  página deixou de ler cookies e passou a consumir apenas um GET BFF sanitizado.
+  O gate full-path agora prova ausência tanto do token quanto da sessão no HTML;
+- segundo review crítico retornou RED porque o callback superadmin ainda emitia
+  sessão sem Domain API e as rotas eram enumeráveis no OpenAPI; o fluxo agora
+  revoga a sessão/expira cookies/falha em 503 e o OpenAPI foi desabilitado, com
+  testes regressivos verdes antes de qualquer commit/push;
+- review crítico independente, commit/push, Draft PR e CI remoto da Issue #56
+  ainda pendentes; nenhum merge, deploy, VPS, DNS ou produção;
 - épica #8 permanece em desenvolvimento;
 - Identity real #13 permanece bloqueado por ausência de dev/hml e P0 upstream.
 
@@ -148,6 +194,7 @@ Fase 5 — entrega de conteúdo e assets privados multitenant em Local/CI.
 
 ## Próximo passo recomendado
 
-Aguardar decisão e merges empilhados #35 → #36 → #39 → #41. Não declarar acesso
-real de `comercial@autonomia.site`: isso depende do Identity #13 e de ambiente
-isolado com token/JWKS/MFA reais.
+Concluir as revisões de tenancy e capacidade da Issue #46, corrigir qualquer
+P0-P3 e repetir o run exato antes de solicitar autorização para commit/push/PR
+empilhada sobre #45. Não declarar acesso real de `comercial@autonomia.site`:
+isso depende do Identity #13 e de ambiente isolado com token/JWKS/MFA reais.

@@ -1,0 +1,20 @@
+{
+  "key": "appsell",
+  "name": "AppSell by Autonom.ia",
+  "oauthClientId": "appsell-web",
+  "allowedRedirectUris": [
+    "https://sell.autonomia.site/auth/callback"
+  ],
+  "allowedLogoutUris": [
+    "https://sell.autonomia.site/auth/login"
+  ],
+  "allowedOrigins": [
+    "https://sell.autonomia.site"
+  ],
+  "allowEmailPasswordLogin": true,
+  "allowGoogleLogin": false,
+  "allowGithubLogin": false,
+  "allowPasskeyLogin": false,
+  "allowBackgroundAuth": false,
+  "status": "inactive"
+}
