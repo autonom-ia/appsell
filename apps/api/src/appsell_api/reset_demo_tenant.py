@@ -187,8 +187,8 @@ def prepare_demo_storage_cleanup(
     validate_demo_database(connection)
     connection.execute("select set_config('appsell.demo_reset_key',%s,true)", (DEMO_KEY,))
     version = connection.execute("select version_num from alembic_version").fetchone()
-    if version != ("0011_public_storefront",):
-        raise RuntimeError("database must be migrated to 0011_public_storefront")
+    if version != ("0012_checkout_webhook_ingress",):
+        raise RuntimeError("database must be migrated to 0012_checkout_webhook_ingress")
 
     connection.execute(
         """
@@ -313,8 +313,8 @@ def reset_demo(
     validate_demo_database(connection)
     connection.execute("select set_config('appsell.demo_reset_key',%s,true)", (DEMO_KEY,))
     version = connection.execute("select version_num from alembic_version").fetchone()
-    if version != ("0011_public_storefront",):
-        raise RuntimeError("database must be migrated to 0011_public_storefront")
+    if version != ("0012_checkout_webhook_ingress",):
+        raise RuntimeError("database must be migrated to 0012_checkout_webhook_ingress")
     unsafe_storage = connection.execute(
         """
         select exists(

@@ -8,7 +8,7 @@ Atualizado em pontos de marco (PR aberta, deploy, incidente). Diferente de MEMOR
 |-----------|:------:|--------------------|
 | Build | 🟢 release candidate #61 compila em modo produção | 2026-07-13 |
 | Testes | 🟢 vertical Local/CI integrada e capacidade 100/1.000 verdes | 2026-07-13 |
-| CI | 🟡 Draft PR #62: 1 run verde; gate de capacidade em correção após review P1 | 2026-07-14 |
+| CI | 🟡 Draft PR #62: novo SHA teve 1 amostra isolada de pool cheio; gate sob correção P2 | 2026-07-14 |
 | Deploy produção | 🟡 não configurado/não executado | 2026-07-10 |
 | Harness instalado em `main` | 2.0.2 | 2026-07-10 |
 | Harness upgrade | 🟢 PR #37 em 2.1.2, review e 10/10 checks verdes; sem merge | 2026-07-11 |
@@ -27,16 +27,24 @@ Este marco é Local/CI; não é o Identity real e não concede conta de produç�
 
 ## Última mudança relevante
 
-2026-07-14 — A calibração remota da Draft PR #62 teve um run 5/5 verde e um
-run com falha exclusiva no orçamento PostgreSQL: 193/568 amostras com espera
-ativa, contra limite provisório de 25%, sem erro funcional, Lock, BufferPin ou
-espera não classificada. O review crítico encontrou que o detector de pool API
-completo usava concorrência HTTP 10, apesar do pool real ser 5, e por isso não
-marcou uma amostra 5/5. A correção passa o tamanho real do pool diretamente do
-contrato Python para o runner, mantém o limite de 25% e agora falha em qualquer
-amostra com o pool inteiro esperando. A vertical local corrigida passou com
-0 amostras de pool completo, razão de espera 63/458 e zero erro funcional. A
-calibração de três runs CI será reiniciada em source limpo após novo review.
+2026-07-14 — Issue #63 iniciou a Fase 6A em branch própria, empilhada sobre a
+release candidate. O webhook genérico Local/CI preserva os bytes no trânsito,
+valida HMAC, timestamp e event ID, resolve tenant exclusivamente por endpoint
+opaco server-side e grava evento imutável, auditoria e outbox na mesma transação.
+O banco retém somente hashes/tamanhos e o fato normalizado. Provider real,
+worker, entitlement, Financial, Neuro, staging e produção permanecem fora do
+slice. O outbox nasce `blocked_retention` e não pode ser reclamado por worker.
+A prova integrada inclui PostgreSQL real, duas BFFs, Redis indisponível
+e restart da API; review independente e CI ainda são gates pendentes.
+
+2026-07-14 — A calibração remota da Draft PR #62 teve um run inicial verde e,
+no SHA corrigido, falhou por uma única amostra 5/5 esperando entre 724, sem
+duração sustentada, erro funcional, timeout, 5xx, Lock ou BufferPin. O review
+independente classificou como P2 o hard gate de zero amostras: ele depende da
+fase aleatória do sampler. A correção deve reprovar persistência comprovada
+(duas amostras consecutivas/duração positiva), manter integralmente o limite
+global de 25% e registrar o ponto isolado como alerta que exige repetição. O
+artefato vermelho não foi promovido manualmente.
 
 2026-07-13 — Issue #61 consolida uma release candidate única sobre a PR #59
 (UI + Identity + OpenBao), com inspeção superadmin #57, capacidade/multi-seller
@@ -138,7 +146,7 @@ serviço permanece server-side e o CTA informa que checkout ainda não está ati
 - Certificado Local/CI de capacidade executou 100 owners + 1.000 buyers,
   1.100 callbacks/sessões, leituras, mutações e negações cross-tenant sem erro;
   thresholds e teardown passaram. É baseline provisória, não sizing de VPS.
-- Vertical integrada atual: 181/181 testes PG/API, 266 unitários verdes com 8
+- Vertical integrada atual: 193/193 testes PG/API, 272 unitários verdes com 9
   integrações condicionais ignoradas, 44/44 Playwright executados com 6 skips
   previstos, produção fail-closed 1/1, OpenBao 7/7, audits Node/Python verdes.
 
@@ -170,10 +178,11 @@ serviço permanece server-side e o CTA informa que checkout ainda não está ati
 
 ## Próxima ação
 
-Concluir o review crítico do SHA da Issue #61 e abrir Draft PR sem merge/deploy.
-Depois, executar três runs verdes de CI no mesmo SHA para calibrar a baseline.
-Identity/Financial/Admin/Neuro externos, checkout e staging continuam em slices
-seguintes com ambientes/credenciais isolados e mudanças somente aditivas.
+Fechar os testes e três reviews independentes da Issue #63, corrigir achados e
+abrir Draft PR empilhada sem merge/deploy. Em paralelo, corrigir o P2 do gate
+de capacidade da #62 e reiniciar três runs verdes no mesmo SHA. Identity,
+Financial/Admin/Neuro externos e staging continuam em slices seguintes com
+ambientes isolados e mudanças somente aditivas.
 
 ## Links
 

@@ -34,22 +34,22 @@ Project status:
 
 <!-- Substituir abaixo a cada nova sessão. Sessões anteriores vão para PROGRESS.md. -->
 
-## Sessão: 2026-07-14 07:55 — corrigir certificado de capacidade da RC
-Issue: #61
-Branch: feat/61-release-candidate-e2e
-PR: #62 (Draft, empilhada na #59)
+## Sessão: 2026-07-14 08:10 — implementar webhook genérico e outbox durável
+Issue: #63
+Branch: feat/63-generic-webhook-ingress
+PR: não aberta
 Estado: em_progresso
 Modelo: strong + human
-Arquivos alterados: lib/capacity-postgres-headroom.ts; scripts/test-capacity-100-tenants.sh; tests/bff-capacity-100-tenants.test.ts; tests/capacity-postgres-headroom.test.ts; docs/STATUS.md; docs/memory/MEMORY_SESSION.md
-Comandos executados: gh run rerun/cancel; vitest headroom/sampler; eslint direcionado; bash -n; test-capacity-100-tenants; pnpm lint/typecheck/test/build/audit
-Validação: review crítico RED/P1 no SHA 5d8933b; correção local com 266 testes e 8 skips condicionais, vertical 100 admins/1.000 buyers, lint/typecheck/build/audit verdes; pool API 5 vindo do contrato Python; 0 amostras de pool completo; wait 63/458; zero erro funcional
-Bloqueios: novo SHA ainda precisa review crítico e três runs CI verdes; checkout/provider/Financial runtime/Neuro permanecem fora deste slice e sem produção
-Próxima ação: commitar/push, obter review verde e reiniciar três runs CI no mesmo SHA
+Arquivos alterados: migration 0012; API webhook adapter/routes/secrets; rota e proxy BFF; testes unitários/PG/BFF; compose/env; docs
+Comandos executados: pytest/ruff/mypy; vitest/typecheck/eslint; test-postgres-foundation; inspeção do artifact CI #62
+Validação: gate isolado exit 0 com 193 PG/API, 6 BFF, multi-seller 1/1 e artifact scan verde; 272 Vitest + 9 skips condicionais, lint/typecheck/build/audits verdes; Harness 2.1.2 sem faltas; reviews AppSec, PostgreSQL e contrato GREEN P0=P1=P2=P3=0
+Bloqueios: nenhum bloqueio local; provider/Financial/Neuro/Identity/staging dependem de ambientes e contratos isolados em slices posteriores
+Próxima ação: commit/push e abrir Draft PR empilhada sobre #62; sem merge/deploy
 Project status:
-  - Projeto: Infra
-  - Status: Ajustes
-  - Tipo: Infra
+  - Projeto: Autonom.ia Dev
+  - Status: Em review
+  - Tipo: Feature
   - Prioridade: P0
-  - Risco: Médio
+  - Risco: Alto
   - Ambiente: Local
-  - Próxima ação: validar e publicar correção do capacity gate na Draft PR #62; sem merge/deploy
+  - Próxima ação: publicar Draft PR empilhada; sem merge/deploy

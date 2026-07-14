@@ -25,6 +25,8 @@ from .storage_worker import (
     MalwareScanner,
     assert_storage_worker_ready,
 )
+from .webhook_routes import router as webhook_router
+from .webhook_secrets import WebhookSecretResolver
 
 
 @asynccontextmanager
@@ -40,6 +42,7 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         if settings.internal_auth_configured
         else None
     )
+    app.state.webhook_secrets = WebhookSecretResolver.from_settings(settings)
     app.state.storage = None
     app.state.asset_scanner = None
     app.state.inline_asset_worker_enabled = False
@@ -123,6 +126,7 @@ app.include_router(learning_router)
 app.include_router(asset_router)
 app.include_router(platform_router)
 app.include_router(public_router)
+app.include_router(webhook_router)
 
 
 @app.get("/health/live")

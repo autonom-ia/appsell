@@ -21,4 +21,4 @@ COPY pyproject.toml ./
 RUN chown -R appsell:appsell /opt/app
 USER appsell
 EXPOSE 8000
-CMD ["uvicorn", "appsell_api.main:app", "--app-dir", "src", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "appsell_api.main:app", "--app-dir", "src", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]

@@ -2,7 +2,7 @@
 
 ## Fase atual
 
-Fase 5 — entrega de conteúdo e assets privados multitenant em Local/CI.
+Fase 6A — ingresso genérico de webhook assinado e outbox durável em Local/CI.
 
 ## Concluído
 
@@ -70,6 +70,17 @@ Fase 5 — entrega de conteúdo e assets privados multitenant em Local/CI.
   verdes em CI e pós-merge, Issue #30 encerrada sem deploy.
 
 ## Em andamento
+
+- Issue #63 na branch `feat/63-generic-webhook-ingress`: endpoint público BFF,
+  autenticação HMAC na API privada, migration `0012`, evento imutável e outbox
+  atômico; raw preservado somente em trânsito e banco sem PII/raw plaintext;
+- testes cobrem bytes exatos, limite de 64 KiB, timestamp, assinatura, replay
+  concorrente, conflito de payload, RLS/grants, rollback transacional, duas
+  BFFs, Redis indisponível e replay após restart da API;
+- gate isolado verde: 193 PG/API, 6 BFF, multi-seller 1/1, 272 Vitest,
+  build/audits e Harness 2.1.2; reviews AppSec, PostgreSQL e contrato sem P0-P3;
+- provider real, worker, entitlement, Financial, Neuro, staging, VPS e produção
+  continuam fora do escopo; Draft PR e reviews independentes ainda pendentes;
 
 - Issue #46 na branch `feat/46-capacity-1000-buyers`: vertical Local/CI ampliada
   para 100 admins/tenants e 1.000 buyers, com dez buyers e dez entitlements
@@ -194,7 +205,7 @@ Fase 5 — entrega de conteúdo e assets privados multitenant em Local/CI.
 
 ## Próximo passo recomendado
 
-Concluir as revisões de tenancy e capacidade da Issue #46, corrigir qualquer
-P0-P3 e repetir o run exato antes de solicitar autorização para commit/push/PR
-empilhada sobre #45. Não declarar acesso real de `comercial@autonomia.site`:
-isso depende do Identity #13 e de ambiente isolado com token/JWKS/MFA reais.
+Concluir a vertical da Issue #63, obter reviews independentes de AppSec,
+PostgreSQL/multitenancy e contrato BFF/API, corrigir todos os achados e abrir
+Draft PR empilhada sobre #62, sem merge/deploy. Não declarar acesso real de
+`comercial@autonomia.site`: isso depende do Identity #13 e de ambiente isolado.

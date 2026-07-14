@@ -76,6 +76,24 @@ class InternalRequestAuthenticator:
         request: Request,
         expected_capability: str,
     ) -> AuthenticatedInternalRequest:
+        authenticated = await self.authenticate_without_replay(request, expected_capability)
+        try:
+            async with self._session_factory() as replay_session, replay_session.begin():
+                await self.consume_replay(replay_session, authenticated.envelope)
+        except IntegrityError as error:
+            raise _unauthorized() from error
+        except DBAPIError as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="request_guard_unavailable",
+            ) from error
+        return authenticated
+
+    async def authenticate_without_replay(
+        self,
+        request: Request,
+        expected_capability: str,
+    ) -> AuthenticatedInternalRequest:
         credential = request.headers.get("x-appsell-service-credential", "")
         provided_credential = _decode_presented_credential(credential)
         if provided_credential is None or not hmac.compare_digest(
@@ -83,9 +101,7 @@ class InternalRequestAuthenticator:
         ):
             raise _unauthorized()
 
-        body = await request.body()
-        if len(body) > _MAX_BODY_BYTES:
-            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+        body = await _read_limited_body(request)
         try:
             envelope = self._verifier.verify_request(
                 request.headers.get("x-appsell-internal-envelope", ""),
@@ -98,20 +114,16 @@ class InternalRequestAuthenticator:
         except ServiceAuthError as error:
             raise _unauthorized() from error
 
+        return AuthenticatedInternalRequest(envelope=envelope, body=body)
+
+    async def consume_replay(self, session: AsyncSession, envelope: ServiceEnvelope) -> None:
         try:
-            async with self._session_factory() as replay_session, replay_session.begin():
-                await replay_session.execute(
-                    text("select app_private.consume_bff_request(:request_id, :expires_at)"),
-                    {"request_id": envelope.request_id, "expires_at": envelope.exp},
-                )
+            await session.execute(
+                text("select app_private.consume_bff_request(:request_id, :expires_at)"),
+                {"request_id": envelope.request_id, "expires_at": envelope.exp},
+            )
         except IntegrityError as error:
             raise _unauthorized() from error
-        except DBAPIError as error:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="request_guard_unavailable",
-            ) from error
-        return AuthenticatedInternalRequest(envelope=envelope, body=body)
 
     def require_service_credential(self, request: Request) -> None:
         credential = request.headers.get("x-appsell-service-credential", "")
@@ -198,6 +210,27 @@ def _decode_presented_credential(value: str) -> bytes | None:
     if len(decoded) != 32 or base64.b64encode(decoded).decode("ascii") != value:
         return None
     return decoded
+
+
+async def _read_limited_body(request: Request) -> bytes:
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            declared = int(content_length)
+        except ValueError as error:
+            raise _unauthorized() from error
+        if declared < 0:
+            raise _unauthorized()
+        if declared > _MAX_BODY_BYTES:
+            raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE)
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > _MAX_BODY_BYTES:
+            raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE)
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _unauthorized() -> HTTPException:
