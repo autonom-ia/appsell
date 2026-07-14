@@ -44,6 +44,14 @@ sha256_file() {
   fi
 }
 
+file_size() {
+  if stat -c '%s' "$1" >/dev/null 2>&1; then
+    stat -c '%s' "$1"
+  else
+    stat -f '%z' "$1"
+  fi
+}
+
 safe_label() {
   tr '/.' '__' <<<"$1"
 }
@@ -192,7 +200,7 @@ download_and_verify_artifact() {
   api_digest="$(jq -r '.digest | sub("^sha256:"; "")' "$artifact_file")"
   api_size="$(jq -r '.size_in_bytes' "$artifact_file")"
   gh api "repos/$repo/actions/artifacts/$artifact_id/zip" >"$archive"
-  archive_size="$(stat -f '%z' "$archive" 2>/dev/null || stat -c '%s' "$archive")"
+  archive_size="$(file_size "$archive")"
   [[ "$archive_size" == "$api_size" ]] || {
     echo "GitHub artifact archive size mismatch: $artifact_name" >&2
     exit 2
@@ -227,7 +235,7 @@ PY
   unzip -p "$archive" provenance.json >"$provenance_file"
   unzip -p "$archive" "$subject_filename" >"$subject_file"
   chmod 0600 "$provenance_file" "$subject_file"
-  subject_size="$(stat -f '%z' "$subject_file" 2>/dev/null || stat -c '%s' "$subject_file")"
+  subject_size="$(file_size "$subject_file")"
   (( subject_size > 0 && subject_size <= subject_limit )) || {
     echo "Artifact subject size rejected: $artifact_name" >&2
     exit 2
