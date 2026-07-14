@@ -1,0 +1,117 @@
+name: VPS preview artifacts
+
+on:
+  push:
+    branches: ["infra/66-vps-preview"]
+    paths:
+      - "app/**"
+      - "apps/api/**"
+      - "components/**"
+      - "demo/**"
+      - "deploy/preview-vps/**"
+      - "lib/**"
+      - "output/pdf/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - ".dockerignore"
+      - ".github/workflows/preview-images.yml"
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_SHA: ${{ github.sha }}
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+      - name: Validate scripts and Compose without starting containers
+        run: |
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          for script in deploy/preview-vps/*.sh; do bash -n "$script"; done
+          node --check deploy/preview-vps/verify-redis.mjs
+          docker compose \
+            --env-file deploy/preview-vps/preview.env.example \
+            -f deploy/preview-vps/compose.preview.yaml \
+            config --quiet
+
+  config-artifact:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+      - name: Package config
+        run: |
+          install -d /tmp/preview-bundle/config
+          cp -a deploy/preview-vps/. /tmp/preview-bundle/config/
+          cd /tmp/preview-bundle/config
+          find . -type f ! -path './SHA256SUMS' -printf '%P\0' | sort -z | xargs -0 sha256sum > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf "/tmp/config-${SOURCE_SHA}.tar.gz" -C /tmp/preview-bundle config
+      - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: /tmp/config-${{ env.SOURCE_SHA }}.tar.gz
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: appsell-vps-preview-config-${{ env.SOURCE_SHA }}
+          path: /tmp/config-${{ env.SOURCE_SHA }}.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  image-artifacts:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: sell
+            dockerfile: deploy/preview-vps/Dockerfile.sell
+          - name: domain
+            dockerfile: deploy/preview-vps/Dockerfile.domain
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: false
+          tags: autonomia-sell-preview-${{ matrix.name }}:${{ env.SOURCE_SHA }}
+          build-args: SOURCE_SHA=${{ env.SOURCE_SHA }}
+          outputs: type=docker,dest=/tmp/${{ matrix.name }}-${{ env.SOURCE_SHA }}.tar
+          cache-from: type=gha,scope=preview-${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=preview-${{ matrix.name }}
+      - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: /tmp/${{ matrix.name }}-${{ env.SOURCE_SHA }}.tar
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: appsell-vps-preview-${{ matrix.name }}-${{ env.SOURCE_SHA }}
+          path: /tmp/${{ matrix.name }}-${{ env.SOURCE_SHA }}.tar
+          if-no-files-found: error
+          retention-days: 14
