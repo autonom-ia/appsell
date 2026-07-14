@@ -16,11 +16,11 @@ Atualizado em pontos de marco (PR aberta, deploy, incidente). Diferente de MEMOR
 
 ## Estado atual
 
-O protótipo Studio mobile-first foi mergeado pela PR #23, a fundação
-persistente pela PR #25, a ponte BFF/API pela PR #27 e os drafts persistentes
-pela PR #29 e edição/publicação pela PR #31. A Fase 5 está ativa na Issue #38
-para player, progresso e retomada multitenant, empilhada nas PRs #35 e #36.
-A fundação inclui FastAPI, PostgreSQL 16, Alembic forward-only,
+O release candidate da Issue #61 consolida o protótipo Studio mobile-first, a
+fundação persistente, a ponte BFF/API, autoria/publicação, buyer multi-seller,
+player/progresso, storage privado, superadmin demo, Identity/OpenBao Local/CI,
+pricing fail-closed e storefront público. A fundação inclui FastAPI,
+PostgreSQL 16, Alembic forward-only,
 roles owner/migrator/runtime, RLS forçado, contexto transacional assinado,
 auditoria append-only e bootstrap one-shot do superadmin com atestação separada.
 Este marco é Local/CI; não é o Identity real e não concede conta de produção.
@@ -127,7 +127,7 @@ serviço permanece server-side e o CTA informa que checkout ainda não está ati
 - Certificado Local/CI de capacidade executou 100 owners + 1.000 buyers,
   1.100 callbacks/sessões, leituras, mutações e negações cross-tenant sem erro;
   thresholds e teardown passaram. É baseline provisória, não sizing de VPS.
-- Vertical integrada atual: 180/180 testes PG/API, 264 unitários verdes com 8
+- Vertical integrada atual: 181/181 testes PG/API, 266 unitários verdes com 8
   integrações condicionais ignoradas, 44/44 Playwright executados com 6 skips
   previstos, produção fail-closed 1/1, OpenBao 7/7, audits Node/Python verdes.
 
@@ -144,8 +144,8 @@ serviço permanece server-side e o CTA informa que checkout ainda não está ati
   mas capacidade de lançamento ainda não está
   certificada em staging/VPS: faltam carga com margem 2x, soak, restore,
   rollback e observabilidade reais.
-- A inspeção superadmin está na PR #57 e está sendo portada para a linha
-  sequencial de migrations da release candidate #61.
+- A inspeção superadmin da PR #57 foi portada para a migration sequencial 0010
+  da release candidate #61; continua exclusiva de Local/CI e read-only.
 - As PRs #35/#36 continuam sem merge; seus recursos não estão em produção.
 - Checkout, criação de cobrança, webhooks e reconciliação financeira reais
   ainda não estão implementados na release candidate. Os contratos de pricing,

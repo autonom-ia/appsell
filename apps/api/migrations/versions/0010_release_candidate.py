@@ -26,7 +26,7 @@ def upgrade() -> None:
             where platform.role='platform_superadmin' and platform.status='active'
               and membership.status='active'
           ) then
-            raise exception '0007 rejects active superadmin seller memberships; revoke one side before upgrade';
+            raise exception '0010 rejects active superadmin seller memberships; revoke one side before upgrade';
           end if;
         end $$
         """,
@@ -472,10 +472,56 @@ def upgrade() -> None:
         create or replace function app_private.schema_ready() returns boolean
         language sql stable security definer set search_path=pg_catalog,app_private as $$
           select to_regclass('public.identity_user') is not null
+            and to_regclass('public.platform_grant') is not null
+            and to_regclass('public.superadmin_bootstrap') is not null
+            and to_regclass('public.seller_organization') is not null
+            and to_regclass('public.seller_membership') is not null
+            and to_regclass('public.audit_event') is not null
             and to_regclass('public.catalog_product') is not null
+            and to_regclass('public.course') is not null
+            and to_regclass('public.product_course') is not null
+            and to_regclass('public.offer') is not null
             and to_regclass('public.publication') is not null
+            and to_regclass('public.course_module') is not null
+            and to_regclass('public.lesson') is not null
+            and to_regclass('public.buyer_entitlement') is not null
+            and to_regclass('public.learning_asset') is not null
+            and to_regclass('public.publication_course') is not null
+            and to_regclass('public.publication_lesson') is not null
+            and to_regclass('public.learning_enrollment') is not null
+            and to_regclass('public.lesson_progress') is not null
+            and to_regclass('public.course_learning_state') is not null
+            and to_regclass('public.asset_record') is not null
+            and to_regclass('public.asset_blob') is not null
+            and to_regclass('public.asset_version') is not null
+            and to_regclass('public.lesson_asset_draft') is not null
+            and to_regclass('public.publication_asset') is not null
+            and to_regclass('app_private.bff_request_replay') is not null
+            and to_regclass('app_private.seller_onboarding_request') is not null
+            and to_regclass('app_private.product_draft_request') is not null
+            and to_regclass('app_private.catalog_mutation_request') is not null
+            and to_regclass('app_private.curriculum_mutation_request') is not null
             and to_regclass('app_private.demo_tenant_registry') is not null
+            and to_regclass('app_private.learning_progress_request') is not null
+            and to_regclass('app_private.asset_upload') is not null
+            and to_regclass('app_private.asset_verification_job') is not null
+            and to_regclass('app_private.asset_storage_cleanup_job') is not null
+            and to_regclass('app_private.asset_mutation_request') is not null
+            and to_regclass('app_private.asset_worker_identity') is not null
             and to_regclass('app_private.demo_inspection_ticket') is not null
+            and to_regprocedure('app_private.read_buyer_products(uuid)') is not null
+            and to_regprocedure(
+              'app_private.read_buyer_seller_storefront(uuid,uuid)'
+            ) is not null
+            and to_regprocedure(
+              'app_private.start_demo_inspection(uuid,text,text,integer,text,uuid)'
+            ) is not null
+            and to_regprocedure(
+              'app_private.read_demo_inspection(uuid,text,uuid,text,uuid)'
+            ) is not null
+            and to_regprocedure(
+              'app_private.revoke_demo_inspection(uuid,text,uuid,text,text,uuid)'
+            ) is not null
             and exists(select 1 from public.alembic_version
               where version_num='0010_release_candidate')
             and exists(select 1 from app_private.context_signing_key where singleton)

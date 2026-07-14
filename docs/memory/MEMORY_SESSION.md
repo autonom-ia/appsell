@@ -42,7 +42,7 @@ Estado: em_progresso
 Modelo: strong + human
 Arquivos alterados: combinação UI/Identity/OpenBao/superadmin; migrations sequenciais até 0011; buyer multi-seller; storefront público; testes e docs
 Comandos executados: test-postgres-foundation; test-capacity-100-tenants; test-openbao-transit; pnpm lint/typecheck/test/build; test:e2e; test:e2e:production; audits Node/Python
-Validação: 180/180 PG/API; 264 unitários + 8 skips condicionais; 44 Playwright + 6 skips previstos; produção 1/1; OpenBao 7/7; capacidade 100 admins/1.000 buyers verde; scanner verde
+Validação: 181/181 PG/API; 266 unitários + 8 skips condicionais; 44 Playwright + 6 skips previstos; produção 1/1; OpenBao 7/7; capacidade 100 admins/1.000 buyers verde; scanner verde
 Bloqueios: checkout e adapters externos pertencem aos próximos slices; staging exige ambiente isolado e aprovação explícita
 Próxima ação: commitar, review crítico do SHA, corrigir achados e abrir Draft PR; sem merge/deploy
 Project status:

@@ -42,6 +42,7 @@ import {
 } from "@/lib/internal-api-client.server";
 import { ONBOARD_SELLER_CSRF_ACTION } from "@/lib/mutation-protection.server";
 import { demoProfileForSubject } from "@/lib/demo-config";
+import { oauthCallbackHome } from "@/lib/oauth-callback-home";
 
 export const dynamic = "force-dynamic";
 
@@ -63,7 +64,6 @@ export async function GET(request: NextRequest) {
     if (!session) throw new DomainApiError(503, "session_unavailable_after_callback");
     const demoProfile = demoProfileForSubject(session.subject);
     demoSuperadmin = demoProfile?.persona === "superadmin";
-    let platformSuperadmin = false;
     if (demoSuperadmin && !isDomainApiConfigured()) {
       await oauthService().logout(sessionId);
       throw new DomainApiError(503, "domain_api_not_configured");
@@ -71,11 +71,11 @@ export async function GET(request: NextRequest) {
     if (isDomainApiConfigured()) {
       try {
         await syncDomainIdentity(sessionId, session);
-        if (!demoProfile || demoProfile.persona === "superadmin") {
-          platformSuperadmin = hasPlatformSuperadminGrant(
+        if (demoProfile?.persona === "superadmin") {
+          const platformSuperadmin = hasPlatformSuperadminGrant(
             await readDomainIdentity(sessionId, session)
           );
-          if (demoProfile?.persona === "superadmin" && !platformSuperadmin) {
+          if (!platformSuperadmin) {
             throw new DomainApiError(403, "demo_superadmin_grant_required");
           }
         }
@@ -85,7 +85,7 @@ export async function GET(request: NextRequest) {
       }
     }
     const response = NextResponse.redirect(new URL(
-      platformSuperadmin ? "/platform/demo-inspection" : demoProfile?.home ?? "/dashboard",
+      oauthCallbackHome(demoProfile),
       configuredPublicOrigin()
     ));
     expireTransactionCookie(response);

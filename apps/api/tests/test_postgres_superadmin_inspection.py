@@ -610,7 +610,7 @@ def test_upgrade_rejects_existing_active_superadmin_membership_contamination() -
             text=True,
         )
         assert upgrade.returncode != 0
-        assert "0007 rejects active superadmin seller memberships" in (
+        assert "0010 rejects active superadmin seller memberships" in (
             upgrade.stdout + upgrade.stderr
         )
         with psycopg.connect(target_url) as connection:

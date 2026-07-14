@@ -143,6 +143,21 @@ def test_schema_ready_targets_head_and_runtime_has_only_function_access() -> Non
     assert state == ("0011_public_storefront", False, False, True, True, True)
 
 
+def test_schema_ready_fails_when_cumulative_buyer_or_storage_dependency_is_missing() -> None:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "alter table app_private.asset_upload rename to asset_upload_readiness_probe"
+        )
+        assert connection.execute("select app_private.schema_ready()").fetchone() == (False,)
+        connection.rollback()
+
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute("drop function app_private.read_buyer_products(uuid)")
+        assert connection.execute("select app_private.schema_ready()").fetchone() == (False,)
+        connection.rollback()
+
+
 def test_identity_is_scoped_by_issuer_and_sync_creates_no_privilege() -> None:
     subject = f"shared-sub-{uuid4()}"
     first_id = uuid5(NAMESPACE_URL, f"{ISSUER_A}\0{subject}")
