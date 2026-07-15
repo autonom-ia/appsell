@@ -13,6 +13,9 @@ ENV PATH="/opt/app/.venv/bin:${PATH}" \
     PYTHONDONTWRITEBYTECODE=1
 RUN groupadd --system --gid 10001 appsell \
     && useradd --system --uid 10001 --gid 10001 --home /opt/app appsell \
+    && apt-get update \
+    && apt-get install --yes --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/* \
     && install -d -o appsell -g appsell -m 0770 /run/appsell-pdf
 WORKDIR /opt/app
 COPY --from=builder /opt/app/.venv .venv

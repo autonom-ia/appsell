@@ -62,6 +62,16 @@ function secondCourseEnvelope() {
   return response;
 }
 
+function videoPlayerEnvelope() {
+  const response = playerEnvelope(lessonOne);
+  response.player.selected_asset = {
+    href: `/api/library/items/${entitlementId}/assets/${assetId}`,
+    title: "Codex em 3 passos",
+    media_type: "video/mp4"
+  };
+  return response;
+}
+
 async function mockLearningApi(
   page: Page,
   options: {
@@ -69,10 +79,12 @@ async function mockLearningApi(
     progressEnrollment?: string;
     onSecondLesson?: (route: Route) => Promise<void>;
     onFirstLesson?: (route: Route, requestNumber: number) => Promise<void>;
+    onFirstProgress?: (route: Route, requestNumber: number, requestedPercent: number) => Promise<void>;
   } = {}
 ) {
   const mutations: string[] = [];
   let firstLessonReads = 0;
+  let firstProgressWrites = 0;
   const handleLearningRoute = async (route: Route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -86,11 +98,15 @@ async function mockLearningApi(
       }] }) });
     }
     if (request.method() === "PUT" && url.pathname.endsWith(`/lessons/${lessonOne}/progress`)) {
-      mutations.push(request.postData() ?? "");
+      const body = request.postData() ?? "";
+      mutations.push(body);
+      const requestedPercent = Number(/name="progress_percent"\r\n\r\n(\d+)/.exec(body)?.[1] ?? 0);
+      firstProgressWrites += 1;
+      if (options.onFirstProgress) return options.onFirstProgress(route, firstProgressWrites, requestedPercent);
       return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ progress: {
         entitlement_id: entitlementId, enrollment_id: options.progressEnrollment ?? enrollmentId, lesson_id: lessonOne,
-        lesson_progress_percent: 1, course_progress_percent: 0, resume_lesson_id: lessonOne,
-        state_version: 2, applied: true
+        lesson_progress_percent: requestedPercent, course_progress_percent: 0, resume_lesson_id: lessonOne,
+        state_version: firstProgressWrites + 1, applied: true
       } }) });
     }
     if (request.method() === "POST" && url.pathname.endsWith(`/lessons/${lessonOne}/complete`)) {
@@ -151,6 +167,105 @@ test("opens the mobile shelf, protects the PDF and completes into the next lesso
   expect(mutations.some((body) => body.includes("complete-token") && body.includes("idempotency_key"))).toBe(true);
   const size = await page.evaluate(() => ({ client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }));
   expect(size.scroll).toBeLessThanOrEqual(size.client);
+});
+
+test("streams protected video on mobile and persists stepped and ended progress", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 800 });
+  const mutations = await mockLearningApi(page, {
+    onFirstLesson: async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(videoPlayerEnvelope())
+      });
+    }
+  });
+  await login(page);
+  await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
+
+  const video = page.locator('video[aria-label="Codex em 3 passos"]');
+  await expect(video).toHaveAttribute("src", `/api/library/items/${entitlementId}/assets/${assetId}`);
+  await expect(video).toHaveAttribute("controls", "");
+  await expect(video).toHaveAttribute("preload", "metadata");
+  await expect(video).toHaveAttribute("playsinline", "");
+  await page.waitForTimeout(150);
+  expect(mutations).toHaveLength(0);
+
+  await video.evaluate((element) => {
+    Object.defineProperty(element, "duration", { configurable: true, value: 100 });
+    Object.defineProperty(element, "currentTime", { configurable: true, value: 25 });
+    element.dispatchEvent(new Event("timeupdate"));
+  });
+  await expect.poll(() => mutations.some((body) => body.includes('name="progress_percent"\r\n\r\n25'))).toBe(true);
+
+  await video.evaluate((element) => element.dispatchEvent(new Event("ended")));
+  await expect.poll(() => mutations.some((body) => body.includes('name="progress_percent"\r\n\r\n100'))).toBe(true);
+  const size = await page.evaluate(() => ({
+    client: document.documentElement.clientWidth,
+    scroll: document.documentElement.scrollWidth
+  }));
+  expect(size.scroll).toBeLessThanOrEqual(size.client);
+});
+
+test("retries unacknowledged video progress and preserves the final percentage", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 800 });
+  const mutations = await mockLearningApi(page, {
+    onFirstLesson: async (route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(videoPlayerEnvelope()) });
+    },
+    onFirstProgress: async (route, requestNumber, requestedPercent) => {
+      if (requestNumber === 1) {
+        await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "temporary" }) });
+        return;
+      }
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ progress: {
+        entitlement_id: entitlementId, enrollment_id: enrollmentId, lesson_id: lessonOne,
+        lesson_progress_percent: requestedPercent, course_progress_percent: requestedPercent === 100 ? 50 : 0,
+        resume_lesson_id: lessonOne, state_version: requestNumber + 1, applied: true
+      } }) });
+    }
+  });
+  await login(page);
+  await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
+  const video = page.locator('video[aria-label="Codex em 3 passos"]');
+  await video.evaluate((element) => {
+    Object.defineProperty(element, "duration", { configurable: true, value: 100 });
+    Object.defineProperty(element, "currentTime", { configurable: true, value: 25 });
+    element.dispatchEvent(new Event("pause"));
+  });
+  await expect.poll(() => mutations.filter((body) => body.includes('name="progress_percent"\r\n\r\n25')).length, { timeout: 5_000 }).toBe(2);
+  await video.evaluate((element) => element.dispatchEvent(new Event("ended")));
+  await expect.poll(() => mutations.some((body) => body.includes('name="progress_percent"\r\n\r\n100'))).toBe(true);
+});
+
+test("bounds automatic video progress retries during a sustained outage", async ({ page }) => {
+  let writes = 0;
+  await mockLearningApi(page, {
+    onFirstLesson: async (route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(videoPlayerEnvelope()) });
+    },
+    onFirstProgress: async (route) => {
+      writes += 1;
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "temporary" }) });
+    }
+  });
+  await login(page);
+  await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
+  await page.locator('video[aria-label="Codex em 3 passos"]').evaluate((element) => {
+    Object.defineProperty(element, "duration", { configurable: true, value: 100 });
+    Object.defineProperty(element, "currentTime", { configurable: true, value: 25 });
+    element.dispatchEvent(new Event("pause"));
+    let currentTime = 25;
+    const progression = window.setInterval(() => {
+      currentTime += 5;
+      Object.defineProperty(element, "currentTime", { configurable: true, value: currentTime });
+      element.dispatchEvent(new Event("timeupdate"));
+      if (currentTime >= 80) window.clearInterval(progression);
+    }, 250);
+  });
+  await expect.poll(() => writes, { timeout: 8_000 }).toBe(4);
+  await page.waitForTimeout(2_300);
+  expect(writes).toBe(4);
 });
 
 test("clears stale lesson content before a denied cross-resource navigation resolves", async ({ page }) => {

@@ -80,6 +80,7 @@ def test_production_accepts_remote_postgres_with_tls() -> None:
 
 
 def test_local_allows_storage_disabled_but_rejects_partial_s3() -> None:
+    assert Settings(environment="local").video_upload_enabled is False
     assert Settings(environment="local").storage_configured is False
     assert (
         Settings(
@@ -101,6 +102,27 @@ def test_local_accepts_pdf_sandbox_unix_socket() -> None:
     }
     settings = Settings(environment="local", **storage)
     assert settings.pdf_sandbox_socket == "/run/appsell-pdf/pdf.sock"
+
+
+def test_video_upload_requires_s3_and_a_local_unix_socket_sandbox() -> None:
+    with pytest.raises(ValidationError, match="video upload requires"):
+        Settings(environment="local", video_upload_enabled=True)
+    with pytest.raises(ValidationError, match="video upload requires"):
+        Settings(
+            environment="production",
+            video_upload_enabled=True,
+            database_url="postgresql+asyncpg://runtime@db.example.test:5432/appsell?ssl=require",
+            **INTERNAL_AUTH,
+            **REMOTE_STORAGE,
+        )
+    storage = {
+        **REMOTE_STORAGE,
+        "malware_scanner_provider": "deterministic",
+        "malware_scanner_socket": "",
+        "pdf_sandbox_url": "",
+        "pdf_sandbox_socket": "/run/appsell-pdf/pdf.sock",
+    }
+    assert Settings(environment="local", video_upload_enabled=True, **storage).video_upload_enabled
 
 
 @pytest.mark.parametrize(

@@ -147,6 +147,10 @@ def upload_ready_asset(
     lesson: UUID,
     course_version: int,
     existing_asset: UUID | None = None,
+    media_type: str = "application/pdf",
+    file_name: str = "guia-privado.pdf",
+    source_size: int = 1024,
+    ready_size: int = 900,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     assert RUNTIME_URL
     worker = ensure_worker()
@@ -158,8 +162,8 @@ def upload_ready_asset(
         created_row = connection.execute(
             """
             select app_private.create_asset_upload_intent(
-              %s,%s,%s,%s,%s,%s,%s,%s,'Guia privado','guia-privado.pdf',
-              'application/pdf',1024,%s,'s3','appsell-quarantine','appsell-ready',%s,%s,%s
+              %s,%s,%s,%s,%s,%s,%s,%s,'Material privado',%s,
+              %s,%s,%s,'s3','appsell-quarantine','appsell-ready',%s,%s,%s
             )
             """,
             (
@@ -171,6 +175,9 @@ def upload_ready_asset(
                 lesson,
                 existing_asset,
                 course_version,
+                file_name,
+                media_type,
+                source_size,
                 asset_hash,
                 uuid4(),
                 payload_hash,
@@ -199,7 +206,7 @@ def upload_ready_asset(
         connection.execute(
             """
             select app_private.confirm_asset_upload(
-              %s,%s,%s,%s,%s,%s,%s,'source-version-1',1024,%s,'source-etag',%s,%s,%s
+              %s,%s,%s,%s,%s,%s,%s,'source-version-1',%s,%s,'source-etag',%s,%s,%s
             )
             """,
             (
@@ -210,6 +217,7 @@ def upload_ready_asset(
                 module,
                 lesson,
                 created["upload_id"],
+                source_size,
                 asset_hash,
                 confirm_key,
                 confirm_body,
@@ -274,10 +282,10 @@ def upload_ready_asset(
         connection.execute(
             """
             select app_private.register_asset_ready_candidate(
-              %s,%s,%s,'scanner-test','ready-version-1','ready-etag',900,%s,
-              'application/pdf','application/pdf','clean')
+              %s,%s,%s,'scanner-test','ready-version-1','ready-etag',%s,%s,
+              %s,%s,'clean')
             """,
-            (worker, seller, created["upload_id"], ready_hash),
+            (worker, seller, created["upload_id"], ready_size, ready_hash, media_type, media_type),
         )
         connection.commit()
 
@@ -287,7 +295,7 @@ def upload_ready_asset(
         finalized_row = connection.execute(
             """
             select app_private.finalize_asset_verification(
-              %s,%s,%s,'scanner-test',1024,%s,900,%s,'application/pdf','application/pdf',
+              %s,%s,%s,'scanner-test',%s,%s,%s,%s,%s,%s,
               'clean','ready-version-1','ready-etag','ready',%s,%s,%s
             )
             """,
@@ -295,8 +303,12 @@ def upload_ready_asset(
                 worker,
                 seller,
                 created["upload_id"],
+                source_size,
                 asset_hash,
+                ready_size,
                 ready_hash,
+                media_type,
+                media_type,
                 finalize_key,
                 finalize_body,
                 uuid4(),
@@ -309,7 +321,7 @@ def upload_ready_asset(
         replay_row = connection.execute(
             """
             select app_private.finalize_asset_verification(
-              %s,%s,%s,'scanner-test',1024,%s,900,%s,'application/pdf','application/pdf',
+              %s,%s,%s,'scanner-test',%s,%s,%s,%s,%s,%s,
               'clean','ready-version-1','ready-etag','ready',%s,%s,%s
             )
             """,
@@ -317,8 +329,12 @@ def upload_ready_asset(
                 worker,
                 seller,
                 created["upload_id"],
+                source_size,
                 asset_hash,
+                ready_size,
                 ready_hash,
+                media_type,
+                media_type,
                 finalize_key,
                 finalize_body,
                 uuid4(),
@@ -375,6 +391,80 @@ def upload_ready_asset(
     assert replay["ready"] is True and replay["applied"] is False
     finalized["_ready_hash"] = ready_hash
     return created, finalized
+
+
+def test_demo_reset_pins_the_verified_video_to_the_baseline_publication() -> None:
+    assert ADMIN_URL
+    manifest, _ = load_manifest()
+    seller = UUID(manifest["seller"]["id"])
+    publication = UUID(manifest["publication"]["id"])
+    video = manifest["video"]
+    with psycopg.connect(ADMIN_URL) as connection:
+        state = connection.execute(
+            """
+            select blob.media_type,blob.magic_type,blob.byte_size,blob.sha256,
+              published.media_type,published.byte_size,published.sha256,published.position
+            from asset_blob blob
+            join publication_asset published
+              on published.seller_organization_id=blob.seller_organization_id
+             and published.blob_id=blob.id
+            where blob.seller_organization_id=%s and published.publication_id=%s
+              and published.asset_id=%s
+            """,
+            (seller, publication, UUID(video["asset_id"])),
+        ).fetchone()
+    assert state == (
+        "video/mp4",
+        "video/mp4",
+        video["bytes"],
+        video["sha256"],
+        "video/mp4",
+        video["bytes"],
+        video["sha256"],
+        video["position"],
+    )
+
+
+def test_verified_mp4_uses_the_same_tenant_pinned_asset_state_machine() -> None:
+    assert ADMIN_URL
+    manifest, _ = load_manifest()
+    admin = identity_id(manifest["personas"]["admin"]["subject"])
+    seller = UUID(manifest["seller"]["id"])
+    product = UUID(manifest["product"]["id"])
+    course = UUID(manifest["course"]["id"])
+    module = UUID(manifest["module"]["id"])
+    lesson = UUID(manifest["lessons"][1]["lesson_id"])
+
+    created, finalized = upload_ready_asset(
+        admin=admin,
+        seller=seller,
+        product=product,
+        course=course,
+        module=module,
+        lesson=lesson,
+        course_version=1,
+        media_type="video/mp4",
+        file_name="aula-segura.mp4",
+        source_size=2_000_000,
+        ready_size=2_000_000,
+    )
+    with psycopg.connect(ADMIN_URL) as connection:
+        media = connection.execute(
+            """
+            select media_type,magic_type,byte_size,scanner_result
+            from asset_blob where seller_organization_id=%s and id=%s
+            """,
+            (seller, UUID(finalized["blob_id"])),
+        ).fetchone()
+        upload = connection.execute(
+            """
+            select expected_media_type,expected_byte_size,status
+            from app_private.asset_upload where seller_organization_id=%s and id=%s
+            """,
+            (seller, UUID(created["upload_id"])),
+        ).fetchone()
+    assert media == ("video/mp4", "video/mp4", 2_000_000, "clean")
+    assert upload == ("video/mp4", 2_000_000, "ready")
 
 
 def test_verified_versions_are_immutable_tenant_scoped_and_publication_pinned() -> None:
@@ -845,6 +935,44 @@ def test_open_upload_quota_is_atomic_under_concurrency() -> None:
             )
             connection.commit()
     assert create_intent(12) == "created"
+
+
+@pytest.mark.parametrize(
+    "file_name",
+    ["folder/material.pdf", "folder\\material.pdf", "line\nbreak.pdf"],
+)
+def test_upload_intent_rejects_path_separators_and_control_characters(file_name: str) -> None:
+    assert RUNTIME_URL
+    manifest, _ = load_manifest()
+    admin = identity_id(manifest["personas"]["admin"]["subject"])
+    seller = UUID(manifest["seller"]["id"])
+    product = UUID(manifest["product"]["id"])
+    course = UUID(manifest["course"]["id"])
+    module = UUID(manifest["module"]["id"])
+    lesson = UUID(manifest["lessons"][0]["lesson_id"])
+    with psycopg.connect(RUNTIME_URL) as connection:
+        apply_context(connection, admin, seller, "catalog.asset.create")
+        with pytest.raises(psycopg.errors.InvalidParameterValue):
+            connection.execute(
+                """
+                select app_private.create_asset_upload_intent(
+                  %s,%s,%s,%s,%s,%s,null,1,'Unsafe name',%s,
+                  'application/pdf',128,%s,'s3','appsell-quarantine','appsell-ready',%s,%s,%s)
+                """,
+                (
+                    admin,
+                    seller,
+                    product,
+                    course,
+                    module,
+                    lesson,
+                    file_name,
+                    digest("unsafe-file"),
+                    uuid4(),
+                    digest("unsafe-file-body"),
+                    uuid4(),
+                ),
+            )
 
 
 def test_cancel_and_finalize_are_linearizable_and_never_leave_partial_rows() -> None:

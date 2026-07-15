@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     pdf_sandbox_url: str = ""
     pdf_sandbox_socket: str = ""
     capacity_product_create_telemetry: bool = False
+    video_upload_enabled: bool = False
     webhook_local_keyring_b64_json: str = ""
     webhook_forbidden_key_sha256_json: str = "[]"
 
@@ -147,6 +148,11 @@ class Settings(BaseSettings):
             )
         ):
             raise ValueError("storage values require storage_provider=s3")
+
+        if self.video_upload_enabled and (
+            self.storage_provider != "s3" or not self.pdf_sandbox_socket
+        ):
+            raise ValueError("video upload requires S3 and an isolated Unix socket media sandbox")
 
         if self.malware_scanner_provider == "clamav":
             scanner_socket = Path(self.malware_scanner_socket)

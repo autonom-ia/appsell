@@ -7,6 +7,7 @@ import { expect, test } from "vitest";
 import { chromium, expect as pwExpect, type Browser, type Page } from "@playwright/test";
 
 import manifest from "../lib/demo-codex-assets.json";
+import seedManifest from "../demo/content/codex-na-pratica/manifest.json";
 import { deriveCsrfToken } from "../lib/csrf";
 import { startIsolatedRedis, unusedNonDefaultPort } from "./helpers/isolated-redis";
 
@@ -114,8 +115,43 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     expect(pdf.status, await pdf.clone().text()).toBe(200);
     expect(pdf.headers.get("content-type")).toBe("application/pdf");
     expect(pdf.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    expect(pdf.headers.get("referrer-policy")).toBe("no-referrer");
     expect(pdf.headers.get("x-content-type-options")).toBe("nosniff");
     expect((await pdf.arrayBuffer()).byteLength).toBe(firstAsset.bytes);
+
+    const videoPlayer = await fetch(
+      `${origin}/api/library/items/${entitlementId}/lessons/${seedManifest.video.lesson_id}`,
+      { headers: { cookie: buyer.session } }
+    );
+    expect(videoPlayer.status, await videoPlayer.clone().text()).toBe(200);
+    const videoPlayerPayload = await videoPlayer.json() as {
+      player: { selected_asset: { href: string; media_type: string } };
+    };
+    expect(videoPlayerPayload.player.selected_asset.media_type).toBe("video/mp4");
+    const videoHref = videoPlayerPayload.player.selected_asset.href;
+    const videoRange = await fetch(`${origin}${videoHref}`, {
+      headers: { cookie: buyer.session, range: "bytes=0-1023" }
+    });
+    expect(videoRange.status).toBe(206);
+    expect(videoRange.headers.get("content-type")).toBe("video/mp4");
+    expect(videoRange.headers.get("accept-ranges")).toBe("bytes");
+    expect(videoRange.headers.get("content-range")).toBe(`bytes 0-1023/${seedManifest.video.bytes}`);
+    expect((await videoRange.arrayBuffer()).byteLength).toBe(1024);
+    const videoHead = await fetch(`${origin}${videoHref}`, {
+      method: "HEAD",
+      headers: { cookie: buyer.session, range: "bytes=0-31" }
+    });
+    expect(videoHead.status).toBe(200);
+    expect(videoHead.headers.get("content-length")).toBe(String(seedManifest.video.bytes));
+    expect(videoHead.headers.get("content-range")).toBeNull();
+    expect(videoHead.headers.get("referrer-policy")).toBe("no-referrer");
+    const invalidVideoRange = await fetch(`${origin}${videoHref}`, {
+      headers: { cookie: buyer.session, range: `bytes=${seedManifest.video.bytes}-` }
+    });
+    expect(invalidVideoRange.status).toBe(416);
+    expect(invalidVideoRange.headers.get("content-range")).toBe(`bytes */${seedManifest.video.bytes}`);
+    expect(invalidVideoRange.headers.get("content-length")).toBe("0");
+    expect((await invalidVideoRange.arrayBuffer()).byteLength).toBe(0);
 
     const loadResults = await Promise.all(Array.from({ length: 100 }, async () => {
       const started = performance.now();
@@ -173,6 +209,10 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     expect(await adminLibrary.json()).toEqual({ items: [] });
     const forbiddenPdf = await fetch(`${origin}${assetHref}`, { headers: { cookie: admin.session } });
     expect(forbiddenPdf.status).not.toBe(200);
+    const forbiddenVideo = await fetch(`${origin}${videoHref}`, {
+      headers: { cookie: admin.session, range: "bytes=0-31" }
+    });
+    expect(forbiddenVideo.status).not.toBe(200);
 
     browser = await chromium.launch();
     const buyerContext = await browser.newContext({
@@ -202,6 +242,10 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     await pwExpect(buyerPage.getByRole("link", { name: /Abrir PDF/ })).toHaveCount(1);
     await buyerPage.getByRole("button", { name: "Concluir e avançar" }).click();
     await pwExpect(buyerPage.getByRole("heading", { level: 1, name: "Como preparar contexto, repo e objetivo" })).toBeVisible();
+    await buyerPage.goto(`${origin}/library/items/${entitlementId}/lessons/${seedManifest.video.lesson_id}`);
+    await pwExpect(buyerPage.getByRole("heading", { level: 1, name: "Como operar deploy e rollback" })).toBeVisible();
+    await pwExpect(buyerPage.locator('video[aria-label="Codex em 3 passos"]')).toBeVisible();
+    await expectNoHorizontalOverflow(buyerPage);
     await buyerPage.goto(`${origin}/library`);
     await buyerPage.getByRole("link", { name: "Continuar curso" }).click();
     await pwExpect(buyerPage.getByRole("heading", { level: 1, name: "Como preparar contexto, repo e objetivo" })).toBeVisible();

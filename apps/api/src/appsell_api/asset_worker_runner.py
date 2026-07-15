@@ -15,7 +15,7 @@ from sqlalchemy.exc import DBAPIError
 
 from .config import Settings
 from .internal_requests import InternalRequestAuthenticator
-from .pdf_verifier import PDF_MIME, PdfRejected, PdfSandboxUnavailable
+from .pdf_verifier import PdfRejected, PdfSandboxUnavailable
 from .service_auth import ServiceEnvelope, ServiceIdentity
 from .storage_s3 import S3Storage, StorageError
 from .storage_worker import (
@@ -27,6 +27,7 @@ from .storage_worker import (
     VerifiedAssetResult,
     VerifyPdfJob,
 )
+from .video_verifier import VideoRejected, VideoSandboxUnavailable
 
 _WORKER_SUBJECT = "asset-worker-v1"
 _WORKER_LABEL = f"api-inline-{os.getpid()}"
@@ -261,10 +262,16 @@ async def _process_claimed_job(
     )
     try:
         result = await _run_blocking(worker.process, job)
-    except (PdfRejected, ScanRejected) as error:
+    except (PdfRejected, VideoRejected, ScanRejected) as error:
         await _reject_job(auth, settings, worker_id, seller_id, upload_id, job, error)
         return
-    except (StorageError, PdfSandboxUnavailable, ScannerUnavailable, OSError):
+    except (
+        StorageError,
+        PdfSandboxUnavailable,
+        VideoSandboxUnavailable,
+        ScannerUnavailable,
+        OSError,
+    ):
         # Leave the lease/source intact. The durable consumer can retry after lease expiry.
         logger.warning("asset_worker_storage_retry", upload_id=str(upload_id))
         return
@@ -348,7 +355,7 @@ async def _finalize_ready(
         "ready_size": result.ready_byte_size,
         "ready_sha": result.ready_sha256_hex,
         "ready_media": result.ready.content_type,
-        "magic": PDF_MIME,
+        "magic": result.ready.content_type,
         "scanner_result": "clean",
         "ready_version_id": result.ready.version_id,
         "ready_etag": result.ready.etag,
@@ -382,7 +389,7 @@ async def _register_ready_candidate(
                 "ready_size": result.ready_byte_size,
                 "ready_sha": result.ready_sha256_hex,
                 "ready_media": result.ready.content_type,
-                "magic": PDF_MIME,
+                "magic": result.ready.content_type,
                 "scanner_result": "clean",
             },
         )
@@ -402,8 +409,8 @@ async def _reject_job(
         "source_sha": job.expected_sha256_hex,
         "ready_size": job.expected_size,
         "ready_sha": job.expected_sha256_hex,
-        "ready_media": PDF_MIME,
-        "magic": PDF_MIME,
+        "ready_media": job.declared_content_type,
+        "magic": job.declared_content_type,
         "scanner_result": "rejected",
         "ready_version_id": "",
         "ready_etag": "",

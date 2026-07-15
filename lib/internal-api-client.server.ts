@@ -534,7 +534,7 @@ export async function createDomainAssetUploadIntent(
     existingAssetId?: string;
     title: string;
     fileName: string;
-    mediaType: "application/pdf";
+    mediaType: "application/pdf" | "video/mp4";
     byteSize: number;
     sha256: string;
   }

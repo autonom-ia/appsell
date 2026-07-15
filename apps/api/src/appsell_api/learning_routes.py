@@ -142,6 +142,7 @@ async def authorize_asset(request: Request, entitlement_id: UUID, asset_id: UUID
                     key=str(row["object_key"]),
                     version_id=str(row["storage_version_id"]),
                     file_name=str(row["file_name"]),
+                    media_type=str(row["media_type"]),
                 )
             )
         except (StorageError, ValueError) as error:
@@ -171,7 +172,7 @@ async def authorize_asset(request: Request, entitlement_id: UUID, asset_id: UUID
         "asset": {
             "id": str(row["asset_id"]),
             "delivery": "legacy_bundle",
-            "seed_key": str(row["file_name"]).removesuffix(".pdf"),
+            "seed_key": str(row["file_name"]).rsplit(".", 1)[0],
             "file_name": row["file_name"],
             "title": row["title"],
             "media_type": row["media_type"],

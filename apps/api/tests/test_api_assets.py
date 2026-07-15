@@ -170,7 +170,7 @@ def intent_body(**overrides: Any) -> bytes:
 
 @asynccontextmanager
 async def client_for(
-    auth: FakeAuth, storage: FakeStorage | None
+    auth: FakeAuth, storage: FakeStorage | None, *, video_upload_enabled: bool = False
 ) -> AsyncIterator[httpx.AsyncClient]:
     app = FastAPI()
     app.include_router(router)
@@ -179,6 +179,7 @@ async def client_for(
     app.state.settings = SimpleNamespace(
         storage_quarantine_bucket="appsell-quarantine",
         storage_ready_bucket="appsell-ready",
+        video_upload_enabled=video_upload_enabled,
     )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://api.test"
@@ -275,6 +276,23 @@ async def test_create_intent_uses_server_bucket_key_and_internal_signing_context
     assert "object_key" not in create_parameters
     assert create_parameters["quarantine_bucket"] == "appsell-quarantine"
     assert create_parameters["ready_bucket"] == "appsell-ready"
+
+
+@pytest.mark.asyncio
+async def test_video_upload_intent_is_fail_closed_until_rollout_flag_is_enabled() -> None:
+    auth = FakeAuth(seller=SELLER, scalar_values=[])
+    storage = FakeStorage(uuid4())
+    async with client_for(auth, storage) as client:
+        response = await client.post(
+            asset_path("/upload-intents"),
+            content=intent_body(media_type="video/mp4", file_name="aula.mp4"),
+            headers={"content-type": "application/json"},
+        )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "video_upload_disabled"}
+    assert auth.session.calls == []
+    assert storage.presign_calls == []
 
 
 @pytest.mark.asyncio
@@ -413,6 +431,13 @@ async def test_storage_unavailable_consumes_authenticated_request() -> None:
         intent_body(byte_size=10 * 1024 * 1024 + 1),
         intent_body(file_name="../secret.pdf"),
         intent_body(media_type="text/html"),
+        intent_body(media_type="video/mp4", file_name="material.pdf"),
+        intent_body(media_type="application/pdf", file_name="material.mp4"),
+        intent_body(
+            media_type="video/mp4",
+            file_name="material.mp4",
+            byte_size=100 * 1024 * 1024 + 1,
+        ),
         intent_body(sha256="AB" * 32),
         intent_body(object_key="attacker/chosen"),
     ],
