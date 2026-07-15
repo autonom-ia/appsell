@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import re
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -11,13 +13,24 @@ from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import Response
 
 from .pdf_verifier import MAX_PDF_BYTES, PDF_MIME, PdfRejected, verified_pdf_file
+from .video_verifier import (
+    MAX_VIDEO_BYTES,
+    VIDEO_MP4_MIME,
+    VideoProbeUnavailable,
+    VideoRejected,
+    _validate_mp4_container,
+    probe_mp4_file,
+)
 
 app = FastAPI(title="AppSell isolated PDF parser", docs_url=None, redoc_url=None)
 _PARSER_SLOTS = asyncio.Semaphore(2)
+_VIDEO_PROBE_SLOTS = asyncio.Semaphore(1)
 
 
 @app.get("/health")
 async def health() -> dict[str, str]:
+    if shutil.which("ffprobe") is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
     return {"status": "ok"}
 
 
@@ -30,6 +43,17 @@ async def normalize(request: Request) -> Response:
         )
     async with _PARSER_SLOTS:
         return await _normalize_request(request)
+
+
+@app.post("/probe-video", status_code=status.HTTP_204_NO_CONTENT)
+async def probe_video(request: Request) -> Response:
+    if _VIDEO_PROBE_SLOTS.locked():
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            headers={"retry-after": "2"},
+        )
+    async with _VIDEO_PROBE_SLOTS:
+        return await _probe_video_request(request)
 
 
 async def _normalize_request(request: Request) -> Response:
@@ -100,3 +124,53 @@ def _normalize_file(
             verified.page_count,
             verified.ready_sha256_hex,
         )
+
+
+async def _probe_video_request(request: Request) -> Response:
+    if request.headers.get("content-type") != VIDEO_MP4_MIME:
+        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE)
+    try:
+        expected_size = int(request.headers["x-appsell-byte-size"])
+        expected_sha256 = request.headers["x-appsell-sha256"]
+    except (KeyError, ValueError) as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT) from error
+    if not 1 <= expected_size <= MAX_VIDEO_BYTES or not re.fullmatch(
+        r"[0-9a-f]{64}", expected_sha256
+    ):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT)
+
+    source_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix="appsell-video-probe-", suffix=".mp4", delete=False
+        ) as source:
+            source_path = Path(source.name)
+            digest = hashlib.sha256()
+            received = 0
+            async for chunk in request.stream():
+                received += len(chunk)
+                if received > expected_size or received > MAX_VIDEO_BYTES:
+                    raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE)
+                digest.update(chunk)
+                source.write(chunk)
+            source.flush()
+            os.fsync(source.fileno())
+        os.chmod(source_path, 0o600)
+        if received != expected_size or digest.hexdigest() != expected_sha256:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT)
+        await to_thread.run_sync(lambda: _probe_video_file(source_path, received))
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except HTTPException:
+        raise
+    except VideoRejected as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT) from error
+    except VideoProbeUnavailable as error:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE) from error
+    finally:
+        if source_path is not None:
+            source_path.unlink(missing_ok=True)
+
+
+def _probe_video_file(source: Path, expected_size: int) -> None:
+    _validate_mp4_container(source, expected_size)
+    probe_mp4_file(source)

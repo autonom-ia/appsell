@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { validAssetMediaFile } from "@/lib/asset-media";
 
 import { sessionCookieName } from "@/lib/cookies";
 import {
@@ -118,9 +119,9 @@ export function parseUploadIntent(fields: Record<string, string>) {
   const byteSize = safeVersion(fields.byte_size);
   const title = fields.title;
   const fileName = fields.file_name;
+  const mediaType = fields.media_type;
   if (!idempotencyKey || existingAssetId === null || expectedCourseVersion === null || byteSize === null
-    || byteSize > 10 * 1024 * 1024 || !validText(title, 2, 160)
-    || !validFileName(fileName) || fields.media_type !== "application/pdf"
+    || !validText(title, 2, 160) || !validFile(fileName) || !validAssetMediaFile(fileName, mediaType, byteSize)
     || !SHA256.test(fields.sha256 ?? "")) return null;
   return {
     idempotencyKey,
@@ -128,7 +129,7 @@ export function parseUploadIntent(fields: Record<string, string>) {
     expectedCourseVersion,
     title,
     fileName,
-    mediaType: "application/pdf" as const,
+    mediaType,
     byteSize,
     sha256: fields.sha256
   };
@@ -166,6 +167,6 @@ function validText(value: string | undefined, minimum: number, maximum: number):
   return bytes >= minimum && bytes <= maximum;
 }
 
-function validFileName(value: string | undefined) {
-  return validText(value, 1, 160) && !/[\\/]/.test(value) && value.toLowerCase().endsWith(".pdf");
+function validFile(value: string | undefined): value is string {
+  return validText(value, 1, 160) && !/[\\/]/.test(value);
 }

@@ -140,7 +140,7 @@ def test_schema_ready_targets_head_and_runtime_has_only_function_access() -> Non
               )
             """
         ).fetchone()
-    assert state == ("0011_public_storefront", False, False, True, True, True)
+    assert state == ("0013_private_media", False, False, True, True, True)
 
 
 def test_schema_ready_fails_when_cumulative_buyer_or_storage_dependency_is_missing() -> None:

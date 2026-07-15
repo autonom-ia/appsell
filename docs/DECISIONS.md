@@ -63,3 +63,18 @@ riscos e gates está em
   fail-closed fora de desenvolvimento; não representa grant seller/buyer.
 - Próximo gate: substituir a regra demo por RBAC/tenant context persistido e
   testes cross-tenant na Fase 3.
+
+## Decisão 008 — retenção mínima do webhook genérico
+
+- Data: 2026-07-14
+- Decisão: na Fase 6A, o raw body é preservado byte a byte apenas no trânsito
+  BFF→API para autenticação. O PostgreSQL retém hash/tamanho do raw, tipo e
+  horário normalizados e hashes/tamanhos das referências externas; não retém
+  raw, assinatura, endpoint key, segredo, e-mail ou PII em plaintext.
+- Trade-off aceito: esta fase prova autenticidade, idempotência e durabilidade,
+  mas não permite reprocessar o raw após mudança de parser. Retenção cifrada e
+  reconciliação entram em slice próprio antes de provider real.
+- Gate: nenhum worker ou entitlement pode consumir o outbox até existir decisão
+  explícita de retenção/reprocessamento e teste de reconciliação. Por isso, a
+  Fase 6A grava o outbox como `blocked_retention`, fora do índice `pending`;
+  somente uma migration futura pode liberá-lo.

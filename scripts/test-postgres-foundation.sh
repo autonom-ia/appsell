@@ -29,6 +29,10 @@ context_key="$(openssl rand -hex 32)"
 bootstrap_key="$(openssl rand -hex 32)"
 internal_key_b64="$(openssl rand -base64 32)"
 service_credential_b64="$(openssl rand -base64 32)"
+webhook_secret_b64="$(openssl rand -base64 32)"
+webhook_bff_session_b64="$(openssl rand -base64 32)"
+webhook_bff_csrf_b64="$(openssl rand -base64 32)"
+webhook_bff_vault_b64="$(openssl rand -base64 32)"
 multi_seller_fixture="$(mktemp -t appsell-buyer-multi-seller.XXXXXX.json)"
 multi_seller_report="tmp/buyer-multi-seller.json"
 
@@ -49,6 +53,29 @@ export APPSELL_IDENTITY_ISSUER="https://identity.test.autonomia.site"
 export APPSELL_INTERNAL_HMAC_KEYRING_B64_JSON="[{\"id\":\"test-v1\",\"key\":\"${internal_key_b64}\",\"active\":true}]"
 export APPSELL_API_CONTEXT_HMAC_KEY_B64="$(printf '%s' "$context_key" | xxd -r -p | base64)"
 export APPSELL_SERVICE_CREDENTIAL_B64="$service_credential_b64"
+export APPSELL_API_WEBHOOK_LOCAL_KEYRING_B64_JSON="[{\"reference\":\"checkout-demo-v1\",\"key\":\"${webhook_secret_b64}\"}]"
+export APPSELL_TEST_WEBHOOK_SECRET_B64="$webhook_secret_b64"
+export APPSELL_TEST_WEBHOOK_SESSION_KEY_B64="$webhook_bff_session_b64"
+export APPSELL_TEST_WEBHOOK_CSRF_KEY_B64="$webhook_bff_csrf_b64"
+export APPSELL_TEST_WEBHOOK_VAULT_KEY_B64="$webhook_bff_vault_b64"
+export APPSELL_TEST_COMPOSE_PROJECT="$project"
+webhook_forbidden_hashes="$(python3 - "$webhook_bff_session_b64" "$webhook_bff_csrf_b64" "$webhook_bff_vault_b64" <<'PY'
+import base64
+import hashlib
+import json
+import sys
+print(json.dumps([hashlib.sha256(base64.b64decode(value)).hexdigest() for value in sys.argv[1:]]))
+PY
+)"
+export APPSELL_API_WEBHOOK_FORBIDDEN_KEY_SHA256_JSON="$webhook_forbidden_hashes"
+
+if [[ "$webhook_secret_b64" == "$internal_key_b64" || "$webhook_secret_b64" == "$service_credential_b64" \
+  || "$webhook_secret_b64" == "$webhook_bff_session_b64" \
+  || "$webhook_secret_b64" == "$webhook_bff_csrf_b64" \
+  || "$webhook_secret_b64" == "$webhook_bff_vault_b64" ]]; then
+  echo "webhook signing secret must be independent from internal API credentials" >&2
+  exit 1
+fi
 
 docker compose -p "$project" up -d --wait postgres
 docker compose -p "$project" exec -T postgres psql -U postgres -d appsell \
@@ -85,6 +112,17 @@ upgrade_before="$(docker compose -p "$project" exec -T postgres psql -U postgres
     and publication.id=product.published_snapshot_id
   where product.id='63000000-0000-4000-8000-000000000001'
 ")"
+uv run --project apps/api alembic -c apps/api/alembic.ini upgrade 0011_public_storefront
+upgrade_0011="$(docker compose -p "$project" exec -T postgres psql -U postgres -d appsell -Atc "
+  select product.published_snapshot_id||'|'||publication.source_sha256||'|'||encode(convert_to(publication.snapshot::text,'UTF8'),'base64')
+  from catalog_product product join publication on publication.seller_organization_id=product.seller_organization_id
+    and publication.id=product.published_snapshot_id
+  where product.id='63000000-0000-4000-8000-000000000001'
+")"
+if [[ "$upgrade_before" != "$upgrade_0011" ]]; then
+  echo "0004 to 0011 changed the v1 publication pointer, hash, or canonical bytes" >&2
+  exit 1
+fi
 uv run --project apps/api alembic -c apps/api/alembic.ini upgrade head
 upgrade_after="$(docker compose -p "$project" exec -T postgres psql -U postgres -d appsell -Atc "
   select product.published_snapshot_id||'|'||publication.source_sha256||'|'||encode(convert_to(publication.snapshot::text,'UTF8'),'base64')
@@ -93,7 +131,7 @@ upgrade_after="$(docker compose -p "$project" exec -T postgres psql -U postgres 
   where product.id='63000000-0000-4000-8000-000000000001'
 ")"
 if [[ -z "$upgrade_before" || "$upgrade_before" != "$upgrade_after" ]]; then
-  echo "0004 to 0005 changed the v1 publication pointer, hash, or canonical bytes" >&2
+  echo "0011 to 0012 changed the v1 publication pointer, hash, or canonical bytes" >&2
   exit 1
 fi
 uv run --project apps/api alembic -c apps/api/alembic.ini upgrade head
@@ -128,6 +166,8 @@ uv run --project apps/api pytest \
   apps/api/tests/test_postgres_private_assets.py \
   apps/api/tests/test_postgres_superadmin_inspection.py \
   apps/api/tests/test_postgres_public_storefront.py \
+  apps/api/tests/test_postgres_webhook_ingress.py \
+  apps/api/tests/test_internal_request_body_limit.py \
   apps/api/tests/test_demo_codex_pdfs.py \
   apps/api/tests/test_reset_demo_tenant.py \
   apps/api/tests/test_seed_buyer_multi_seller.py \
@@ -162,7 +202,8 @@ APPSELL_LOCAL_IDENTITY_EMAIL="creator@example.test" \
 pnpm exec vitest run --no-file-parallelism \
   tests/bff-api-onboarding.test.ts tests/bff-learning-multiprocess.test.ts \
   tests/bff-demo-library.test.ts \
-  tests/bff-superadmin-inspection.test.ts
+  tests/bff-superadmin-inspection.test.ts \
+  tests/bff-webhook-ingress.test.ts
 export APPSELL_MULTI_SELLER_ENABLED="true"
 export APPSELL_MULTI_SELLER_DATABASE_URL="$APPSELL_TEST_POSTGRES_ADMIN_URL"
 export APPSELL_MULTI_SELLER_MANIFEST="$multi_seller_fixture"

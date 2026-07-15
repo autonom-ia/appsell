@@ -211,7 +211,7 @@ def test_reset_is_repeatable_concurrent_and_does_not_duplicate_graph() -> None:
             "select count(*) from platform_grant where identity_user_id in (%s,%s)",
             (admin, buyer),
         ).fetchone()
-    assert counts == (1, 1, 1, 1, 1, 1, 1, 5, 5, 1, 1, 1)
+    assert counts == (1, 1, 1, 1, 1, 1, 1, 5, 6, 1, 1, 1)
     assert invalid_memberships == (0,)
     assert demo_persona_memberships == [(seller, admin, "seller_owner", "active")]
     assert demo_persona_grants == (0,)

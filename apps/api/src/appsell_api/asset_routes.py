@@ -29,6 +29,7 @@ from .storage_s3 import S3Storage, StorageError
 router = APIRouter(prefix="/v1")
 _MAX_SAFE_INTEGER = (1 << 53) - 1
 _MAX_PDF_BYTES = 10 * 1024 * 1024
+_MAX_VIDEO_BYTES = 100 * 1024 * 1024
 
 
 class AssetUploadIntentBody(BaseModel):
@@ -38,9 +39,9 @@ class AssetUploadIntentBody(BaseModel):
     expected_course_version: int = Field(ge=1, le=_MAX_SAFE_INTEGER)
     existing_asset_id: str | None = None
     title: str
+    media_type: Literal["application/pdf", "video/mp4"]
     file_name: str
-    media_type: Literal["application/pdf"]
-    byte_size: int = Field(ge=1, le=_MAX_PDF_BYTES)
+    byte_size: int = Field(ge=1, le=_MAX_VIDEO_BYTES)
     sha256: str
 
     @field_validator("idempotency_key")
@@ -73,9 +74,28 @@ class AssetUploadIntentBody(BaseModel):
             or _contains_control(value)
             or "/" in value
             or "\\" in value
-            or not value.lower().endswith(".pdf")
+            or not value.lower().endswith((".pdf", ".mp4"))
         ):
-            raise ValueError("invalid PDF file name")
+            raise ValueError("invalid asset file name")
+        return value
+
+    @field_validator("byte_size")
+    @classmethod
+    def validate_media_size(cls, value: int, info: Any) -> int:
+        media_type = info.data.get("media_type")
+        maximum = _MAX_PDF_BYTES if media_type == "application/pdf" else _MAX_VIDEO_BYTES
+        if value > maximum:
+            raise ValueError("asset exceeds media size limit")
+        return value
+
+    @field_validator("file_name")
+    @classmethod
+    def validate_media_extension(cls, value: str, info: Any) -> str:
+        media_type = info.data.get("media_type")
+        if (media_type == "application/pdf" and not value.lower().endswith(".pdf")) or (
+            media_type == "video/mp4" and not value.lower().endswith(".mp4")
+        ):
+            raise ValueError("asset extension does not match MIME")
         return value
 
     @field_validator("sha256")
@@ -163,6 +183,8 @@ async def create_asset_upload_intent(
     auth, internal = await _authenticate(request, "catalog.asset.create")
     await _require_seller(internal, seller_id)
     body = await _model_from_body(AssetUploadIntentBody, internal)
+    if body.media_type == "video/mp4" and not request.app.state.settings.video_upload_enabled:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="video_upload_disabled")
     storage = await _storage(request, internal)
     settings = request.app.state.settings
     parameters = _route_parameters(

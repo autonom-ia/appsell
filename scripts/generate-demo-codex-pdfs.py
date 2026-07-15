@@ -370,6 +370,20 @@ def main() -> None:
     MANIFEST.write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
+    video_path = OUTPUT / "codex-em-3-passos.mp4"
+    if not video_path.is_file():
+        raise RuntimeError("committed demo video is missing")
+    video_payload = video_path.read_bytes()
+    video = {
+        "lesson_id": manifest[-1]["lesson_id"],
+        "asset_id": stable_id("asset:codex-em-3-passos-video"),
+        "slug": "codex-em-3-passos",
+        "file_name": video_path.name,
+        "title": "Codex em 3 passos",
+        "bytes": len(video_payload),
+        "sha256": hashlib.sha256(video_payload).hexdigest(),
+        "position": 0,
+    }
     SEED_MANIFEST.parent.mkdir(parents=True, exist_ok=True)
     seed = {
         "seed_key": "autonomia-demo-v1",
@@ -402,6 +416,7 @@ def main() -> None:
         },
         "publication": {"id": stable_id("publication:codex-na-pratica:v1")},
         "entitlement": {"id": stable_id("entitlement:demo-user:codex-na-pratica")},
+        "video": video,
         "lessons": manifest,
     }
     SEED_MANIFEST.write_text(
