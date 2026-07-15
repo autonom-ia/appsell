@@ -718,7 +718,7 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
     }
     if (path === assetsPath && request.method() === "GET") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
-        assets: [{ id: assetId, title: "Guia atual", file_name: "guia-atual.pdf", byte_size: 3181, status: "ready", safe_reason: null }],
+        assets: [{ id: assetId, title: "Guia atual", file_name: "guia-atual.pdf", media_type: "application/pdf", byte_size: 3181, status: "ready", safe_reason: null }],
         uploads: [],
         csrf: { intent: "intent-token", confirm: "confirm-token", cancel: "cancel-token", archive: "asset-archive-token" }
       }) });
@@ -769,7 +769,7 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
   await expect(summary).toContainText("Materiais da aula");
   await summary.click();
   await expect(lesson.getByText("1 PDF pronto", { exact: true })).toBeVisible();
-  const input = lesson.getByLabel("Escolher PDF substituto");
+  const input = lesson.getByLabel("Escolher arquivo substituto");
   const feedback = lesson.locator(".asset-feedback");
   await expect(feedback).toHaveAttribute("role", "status");
   await expect(feedback).toHaveAttribute("aria-live", "polite");
@@ -777,7 +777,7 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
 
   const pdf = { name: "guia-novo.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF") };
   await input.setInputFiles(pdf);
-  await expect(feedback).toContainText("Não foi possível preparar o PDF");
+  await expect(feedback).toContainText("Não foi possível preparar o arquivo");
   const retry = lesson.getByRole("button", { name: "Tentar novamente" });
   await expect(retry).toBeVisible();
   await retry.focus();
@@ -789,7 +789,7 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
   await lesson.getByRole("button", { name: "Cancelar envio" }).click();
   await cancelCalled;
   releaseUpload();
-  await expect(feedback).toContainText("Selecione um PDF para iniciar.");
+  await expect(feedback).toContainText("Selecione um PDF ou vídeo MP4 para iniciar.");
   await expect(lesson.getByRole("button", { name: "Cancelar envio" })).toHaveCount(0);
 
   for (const width of [320, 360, 390]) {
@@ -830,8 +830,8 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
   await archive.click();
   const archiveDialog = page.getByRole("dialog", { name: "Arquivar este PDF?" });
   await expect(archiveDialog).toBeVisible();
-  await expect(archiveDialog.getByRole("button", { name: "Manter PDF" })).toBeFocused();
-  await archiveDialog.getByRole("button", { name: "Manter PDF" }).click();
+  await expect(archiveDialog.getByRole("button", { name: "Manter material" })).toBeFocused();
+  await archiveDialog.getByRole("button", { name: "Manter material" }).click();
   await expect(archiveDialog).toHaveCount(0);
   await expect(summary).toBeFocused();
 });

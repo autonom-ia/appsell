@@ -15,6 +15,7 @@ from appsell_api.internal_requests import InternalRequestAuthenticator
 from appsell_api.pdf_verifier import PdfSandboxUnavailable
 from appsell_api.storage_s3 import StoredObject
 from appsell_api.storage_worker import VerifiedAssetResult
+from appsell_api.video_verifier import VideoSandboxUnavailable
 
 
 class FakeSession:
@@ -98,6 +99,12 @@ class UnavailableParserWorker(FakeWorker):
     def process(self, _job: Any) -> VerifiedAssetResult:
         self.events.append("process")
         raise PdfSandboxUnavailable("injected sidecar outage")
+
+
+class UnavailableVideoProbeWorker(FakeWorker):
+    def process(self, _job: Any) -> VerifiedAssetResult:
+        self.events.append("process")
+        raise VideoSandboxUnavailable("injected video probe outage")
 
 
 class FakeStorage:
@@ -325,12 +332,13 @@ async def test_ready_registration_failure_compensates_exact_ready_version(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("worker_type", [UnavailableParserWorker, UnavailableVideoProbeWorker])
 async def test_parser_outage_leaves_job_for_retry_without_rejecting(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, worker_type: type[FakeWorker]
 ) -> None:
     events: list[str] = []
     app, _auth = build_app(events, fail_finalize=0)
-    monkeypatch.setattr(asset_worker_runner, "PdfStorageWorker", UnavailableParserWorker)
+    monkeypatch.setattr(asset_worker_runner, "PdfStorageWorker", worker_type)
     monkeypatch.setattr(asset_worker_runner, "_worker_id", lambda _settings: WORKER_ID)
 
     await asset_worker_runner.process_asset_upload(app, SELLER, UPLOAD)

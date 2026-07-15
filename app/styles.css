@@ -559,6 +559,9 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .lesson-material h2 { margin: 3px 0 7px; font-size: 1.15rem; overflow-wrap: anywhere; }
 .lesson-material p:last-child { margin: 0; color: var(--text); font-size: .82rem; line-height: 1.55; }
 .lesson-material .secondary-button { width: 100%; }
+.lesson-material.lesson-video { background: #0b1220; border-color: rgba(148,163,184,.35); color: #f8fafc; }
+.lesson-material.lesson-video p:last-child { color: #cbd5e1; }
+.protected-video { display: block; width: 100%; max-height: min(62vh,520px); border-radius: 14px; background: #000; aspect-ratio: 16/9; }
 .asset-unavailable { margin: 24px 0 0; padding: 14px 16px; border: 1px dashed var(--border); border-radius: 14px; color: var(--soft); font-size: .85rem; line-height: 1.5; }
 .player-feedback { min-height: 26px; margin: 24px 0 6px; color: var(--text); font-size: .82rem; font-weight: 700; line-height: 1.5; }
 .lesson-actions { display: grid; grid-template-columns: minmax(0,1fr); gap: 9px; padding-top: 18px; border-top: 1px solid var(--border); }
@@ -582,6 +585,7 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
   .library-continue { width: auto; justify-self: start; }
   .lesson-material { grid-template-columns: minmax(0,1fr) auto; align-items: center; }
   .lesson-material .secondary-button { width: auto; }
+  .lesson-material.lesson-video { grid-template-columns: 1fr; }
   .lesson-actions { grid-template-columns: minmax(0,1fr) minmax(0,1fr); }
   .lesson-actions > span:empty { display: block; }
 }

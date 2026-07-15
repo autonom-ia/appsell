@@ -42,6 +42,16 @@
   "entitlement": {
     "id": "bee105e2-7809-5bf5-874a-d6332dc4a4ef"
   },
+  "video": {
+    "lesson_id": "56b743f6-398b-515d-b1e0-2a5beb93f449",
+    "asset_id": "a13c8fba-ca4f-5866-aecb-edc81687f983",
+    "slug": "codex-em-3-passos",
+    "file_name": "codex-em-3-passos.mp4",
+    "title": "Codex em 3 passos",
+    "bytes": 505682,
+    "sha256": "86b6f3efde35bafc18cec019a3f95ea50c5e89721f28cffb04f2b5f611ba97bd",
+    "position": 0
+  },
   "lessons": [
     {
       "seller_id": "90718777-93de-5e7a-aaa4-45b25051582c",

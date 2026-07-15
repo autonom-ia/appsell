@@ -1,8 +1,12 @@
+import json
+import shutil
 from argparse import Namespace
+from pathlib import Path
 
 import pytest
 
-from appsell_api.reset_demo_tenant import DEMO_KEY, require_environment
+from appsell_api import reset_demo_tenant
+from appsell_api.reset_demo_tenant import DEMO_KEY, load_manifest, require_environment
 
 
 def base_environment(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -67,3 +71,22 @@ def test_reset_rejects_libpq_redirect_environment(
 
     with pytest.raises(RuntimeError, match="environment overrides are forbidden"):
         require_environment(Namespace(confirm_demo_key=DEMO_KEY))
+
+
+def test_manifest_pins_the_committed_demo_video_bytes() -> None:
+    manifest, _ = load_manifest()
+    assert manifest["video"]["file_name"] == "codex-em-3-passos.mp4"
+
+
+def test_manifest_rejects_video_hash_drift(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    media_root = tmp_path / "media"
+    shutil.copytree(reset_demo_tenant.PDF_ROOT, media_root)
+    manifest = json.loads(reset_demo_tenant.MANIFEST_PATH.read_text())
+    manifest["video"]["sha256"] = "0" * 64
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+    monkeypatch.setattr(reset_demo_tenant, "PDF_ROOT", media_root)
+    monkeypatch.setattr(reset_demo_tenant, "MANIFEST_PATH", manifest_path)
+
+    with pytest.raises(RuntimeError, match="video hash mismatch"):
+        load_manifest()

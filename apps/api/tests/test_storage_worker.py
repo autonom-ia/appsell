@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import struct
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -43,6 +44,25 @@ def test_worker_normalizes_to_distinct_db_key_and_preserves_source_until_commit(
     worker = local_worker(storage, DeterministicLocalScanner())
     worker.cleanup_source_after_commit(result)
     assert storage.deleted == [("quarantine", job.source_key, "source-v1")]
+
+
+def test_worker_verifies_and_promotes_mp4_without_mutating_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(
+        "appsell_api.storage_worker.probe_video_safely", lambda _path: events.append("probe")
+    )
+    payload = valid_mp4()
+    job = make_job(payload, media_type="video/mp4", file_name="aula.mp4")
+    storage = FakeStorage(stored("quarantine", job.source_key, "source-v1", payload, job), payload)
+    scanner = RecordingScanner(reject_call=99, events=events)
+    result = local_worker(storage, scanner).process(job)
+    assert events == ["scan", "probe"]
+    assert storage.ready_payload == payload
+    assert result.ready.content_type == "video/mp4"
+    assert result.source_sha256_hex == result.ready_sha256_hex
+    assert result.pdf_page_count == 0
 
 
 def test_worker_rejects_before_ready_put_on_hash_or_metadata_mismatch() -> None:
@@ -169,7 +189,11 @@ class FakeStorage:
         upload_id: str,
         file_name: str,
     ) -> StoredObject:
-        assert file_name == "material.pdf"
+        assert (
+            file_name.endswith(".pdf")
+            if content_type == "application/pdf"
+            else file_name.endswith(".mp4")
+        )
         self.put_key = destination_key
         self.ready_payload = source_path.read_bytes()
         assert len(self.ready_payload) == byte_size
@@ -195,14 +219,17 @@ class RecordingScanner:
     provider_name = "recording-test"
     production_capable = False
 
-    def __init__(self, *, reject_call: int) -> None:
+    def __init__(self, *, reject_call: int, events: list[str] | None = None) -> None:
         self.reject_call = reject_call
         self.payloads: list[bytes] = []
+        self.events = events
 
     def healthy(self) -> bool:
         return True
 
     def scan(self, path: Path) -> bool:
+        if self.events is not None:
+            self.events.append("scan")
         self.payloads.append(path.read_bytes())
         return len(self.payloads) != self.reject_call
 
@@ -306,7 +333,12 @@ def test_clamav_health_requires_fresh_signatures(monkeypatch: pytest.MonkeyPatch
     assert ClamAvScanner("/run/appsell-clamav/clamd.sock").healthy() is True
 
 
-def make_job(payload: bytes) -> VerifyPdfJob:
+def make_job(
+    payload: bytes,
+    *,
+    media_type: str = "application/pdf",
+    file_name: str = "material.pdf",
+) -> VerifyPdfJob:
     upload_id = uuid4()
     return VerifyPdfJob(
         seller_id=(seller_id := uuid4()),
@@ -318,6 +350,8 @@ def make_job(payload: bytes) -> VerifyPdfJob:
         source_version_id="source-v1",
         expected_size=len(payload),
         expected_sha256_hex=hashlib.sha256(payload).hexdigest(),
+        declared_content_type=media_type,
+        file_name=file_name,
     )
 
 
@@ -329,7 +363,7 @@ def stored(
         key=key,
         version_id=version_id,
         size=len(payload),
-        content_type="application/pdf",
+        content_type=job.declared_content_type,
         checksum_sha256_b64=base64.b64encode(hashlib.sha256(payload).digest()).decode(),
         etag="etag",
         appsell_upload_id=str(job.upload_id),
@@ -343,3 +377,14 @@ def valid_pdf() -> bytes:
     canvas.showPage()
     canvas.save()
     return output.getvalue()
+
+
+def valid_mp4() -> bytes:
+    def mp4_box(kind: bytes, payload: bytes) -> bytes:
+        return struct.pack(">I4s", len(payload) + 8, kind) + payload
+
+    return (
+        mp4_box(b"ftyp", b"isom\0\0\0\0isommp42")
+        + mp4_box(b"moov", b"metadata")
+        + mp4_box(b"mdat", b"video")
+    )

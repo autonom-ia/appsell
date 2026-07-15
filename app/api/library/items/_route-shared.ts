@@ -26,7 +26,7 @@ const NO_STORE_HEADERS = {
 type DomainSelectedAsset = null | {
   id: string;
   title: string;
-  media_type: "application/pdf";
+  media_type: "application/pdf" | "video/mp4";
 };
 
 interface LearningPlayerEnvelope {
@@ -291,7 +291,7 @@ function isSelectedAsset(value: unknown): value is DomainSelectedAsset {
     hasExactKeys(value, ["id", "media_type", "title"]) &&
     typeof value.id === "string" && UUID.test(value.id) &&
     typeof value.title === "string" && value.title.length > 0 &&
-    value.media_type === "application/pdf"
+    (value.media_type === "application/pdf" || value.media_type === "video/mp4")
   );
 }
 

@@ -27,6 +27,7 @@ services:
       APPSELL_API_STORAGE_CONTROL_SECRET_KEY: ${APPSELL_STORAGE_CONTROL_SECRET_KEY:-}
       APPSELL_API_STORAGE_ALLOWED_ORIGIN: ${APPSELL_STORAGE_ALLOWED_ORIGIN:-}
       APPSELL_API_MALWARE_SCANNER_PROVIDER: ${APPSELL_API_MALWARE_SCANNER_PROVIDER:-disabled}
+      APPSELL_API_VIDEO_UPLOAD_ENABLED: ${APPSELL_API_VIDEO_UPLOAD_ENABLED:-false}
       APPSELL_API_PDF_SANDBOX_URL: ""
       APPSELL_API_PDF_SANDBOX_SOCKET: /run/appsell-pdf/pdf.sock
     ports:
@@ -62,7 +63,7 @@ services:
     mem_limit: 768m
     cpus: 1.0
     tmpfs:
-      - /tmp:size=33554432,mode=1777,noexec,nosuid
+      - /tmp:size=134217728,mode=1777,noexec,nosuid
     healthcheck:
       test: ["CMD", "python", "-c", "import httpx; t=httpx.HTTPTransport(uds='/run/appsell-pdf/pdf.sock'); r=httpx.Client(transport=t,trust_env=False,timeout=1).get('http://pdf-sandbox/health'); assert r.status_code==200 and r.json()=={'status':'ok'}"]
       interval: 2s

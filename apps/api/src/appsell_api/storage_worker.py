@@ -10,6 +10,7 @@ from uuid import UUID
 
 from .pdf_verifier import PDF_MIME, normalized_pdf_file, spooled_pdf_file
 from .storage_s3 import S3Storage, StorageCapabilityError, StoredObject, object_sha256_matches
+from .video_verifier import VIDEO_MP4_MIME, probe_video_safely, spooled_video_file
 
 _EICAR = b"EICAR-STANDARD-ANTIVIRUS-TEST-FILE"
 
@@ -184,6 +185,11 @@ class PdfStorageWorker:
         if source.appsell_upload_id != str(job.upload_id):
             raise ScanRejected("quarantine upload metadata differs from upload intent")
 
+        if job.declared_content_type == VIDEO_MP4_MIME:
+            return self._process_video(job, source)
+        if job.declared_content_type != PDF_MIME:
+            raise ScanRejected("job MIME is unsupported")
+
         ready: StoredObject | None = None
         try:
             with self.storage.open_download(
@@ -233,6 +239,55 @@ class PdfStorageWorker:
             except Exception as ready_cleanup_error:
                 raise ExceptionGroup(
                     "processing and ready compensation both failed",
+                    [processing_error, ready_cleanup_error],
+                ) from processing_error
+            raise
+
+    def _process_video(self, job: VerifyPdfJob, source: StoredObject) -> VerifiedAssetResult:
+        ready: StoredObject | None = None
+        try:
+            with self.storage.open_download(
+                bucket=source.bucket, key=source.key, version_id=source.version_id
+            ) as stream:
+                with spooled_video_file(
+                    stream,
+                    expected_size=job.expected_size,
+                    expected_sha256_hex=job.expected_sha256_hex,
+                    declared_content_type=job.declared_content_type,
+                ) as source_video:
+                    if not self.scanner.scan(source_video.path):
+                        raise ScanRejected("scanner rejected the quarantined video")
+                    probe_video_safely(source_video.path)
+                    ready = self.storage.put_verified(
+                        destination_bucket=job.ready_bucket,
+                        destination_key=job.ready_key,
+                        source_path=source_video.path,
+                        byte_size=source_video.byte_size,
+                        sha256_hex=source_video.sha256_hex,
+                        content_type=VIDEO_MP4_MIME,
+                        upload_id=str(job.upload_id),
+                        file_name=job.file_name,
+                    )
+                    return VerifiedAssetResult(
+                        source=source,
+                        ready=ready,
+                        source_byte_size=source_video.byte_size,
+                        source_sha256_hex=source_video.sha256_hex,
+                        ready_byte_size=source_video.byte_size,
+                        ready_sha256_hex=source_video.sha256_hex,
+                        pdf_page_count=0,
+                        scanner_provider=self.scanner.provider_name,
+                    )
+        except Exception as processing_error:
+            if ready is None:
+                raise
+            try:
+                self.storage.delete_version(
+                    bucket=ready.bucket, key=ready.key, version_id=ready.version_id
+                )
+            except Exception as ready_cleanup_error:
+                raise ExceptionGroup(
+                    "video processing and ready compensation both failed",
                     [processing_error, ready_cleanup_error],
                 ) from processing_error
             raise

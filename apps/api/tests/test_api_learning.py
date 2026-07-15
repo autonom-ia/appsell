@@ -184,9 +184,10 @@ async def test_s3_asset_returns_only_short_version_pinned_download_url() -> None
         {
             "bucket": "appsell-ready",
             "key": "tenants/seller/assets/asset/v2/blob",
-            "version_id": "ready-v2",
-            "file_name": "material seguro.pdf",
-        }
+                "version_id": "ready-v2",
+                "file_name": "material seguro.pdf",
+                "media_type": "application/pdf",
+            }
     ]
 
 

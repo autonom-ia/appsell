@@ -107,7 +107,11 @@ class S3Storage:
         byte_size: int,
         upload_request_id: str,
     ) -> PresignedRequest:
-        if byte_size < 1 or byte_size > 10 * 1024 * 1024:
+        maximum = {
+            "application/pdf": 10 * 1024 * 1024,
+            "video/mp4": 100 * 1024 * 1024,
+        }.get(content_type, 0)
+        if byte_size < 1 or byte_size > maximum:
             raise ValueError("upload byte_size is outside the allowed range")
         if not upload_request_id or len(upload_request_id) > 128:
             raise ValueError("upload_request_id is invalid")
@@ -136,11 +140,17 @@ class S3Storage:
         )
 
     def presign_get(
-        self, *, bucket: str, key: str, version_id: str, file_name: str
+        self,
+        *,
+        bucket: str,
+        key: str,
+        version_id: str,
+        file_name: str,
+        media_type: str = "application/pdf",
     ) -> PresignedRequest:
         if not version_id:
             raise StorageCapabilityError("download requires an immutable VersionId")
-        disposition = _pdf_content_disposition(file_name)
+        disposition = _asset_content_disposition(file_name, media_type)
         url = self._public.generate_presigned_url(
             "get_object",
             Params={
@@ -149,7 +159,7 @@ class S3Storage:
                 "VersionId": version_id,
                 "ResponseContentDisposition": disposition,
                 "ResponseCacheControl": "private, no-store, max-age=0",
-                "ResponseContentType": "application/pdf",
+                "ResponseContentType": media_type,
             },
             ExpiresIn=self.get_ttl,
             HttpMethod="GET",
@@ -247,7 +257,7 @@ class S3Storage:
         file_name: str,
     ) -> StoredObject:
         checksum = _checksum_b64(sha256_hex)
-        disposition = _pdf_content_disposition(file_name)
+        disposition = _asset_content_disposition(file_name, content_type)
         version_id = ""
         try:
             with source_path.open("rb") as source:
@@ -272,7 +282,7 @@ class S3Storage:
                 or ready.checksum_sha256_b64 != checksum
                 or ready.appsell_upload_id != upload_id
             ):
-                raise StorageError("ready object does not match normalized PDF")
+                raise StorageError("ready object does not match verified asset")
             return ready
         except Exception:
             if version_id:
@@ -466,16 +476,18 @@ def object_sha256_matches(stored: StoredObject, expected_hex: str) -> bool:
     return stored.checksum_sha256_b64 == _checksum_b64(expected_hex)
 
 
-def _pdf_content_disposition(file_name: str) -> str:
+def _asset_content_disposition(file_name: str, media_type: str) -> str:
     if (
         not file_name
         or len(file_name.encode("utf-8")) > 160
         or "/" in file_name
         or "\\" in file_name
         or any(ord(character) < 32 or ord(character) == 127 for character in file_name)
-        or not file_name.lower().endswith(".pdf")
+        or (media_type == "application/pdf" and not file_name.lower().endswith(".pdf"))
+        or (media_type == "video/mp4" and not file_name.lower().endswith(".mp4"))
+        or media_type not in {"application/pdf", "video/mp4"}
     ):
-        raise ValueError("PDF file_name is invalid")
+        raise ValueError("asset file_name or media_type is invalid")
     return f"inline; filename*=UTF-8''{quote(file_name, safe='')}"
 
 
