@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import io
 import struct
+from pathlib import Path
 
 import httpx
 import pytest
@@ -12,6 +13,7 @@ from reportlab.pdfgen.canvas import Canvas  # type: ignore[import-untyped]
 
 from appsell_api import pdf_sandbox_service
 from appsell_api.pdf_sandbox_service import app
+from appsell_api.video_verifier import VideoProbeUnavailable
 
 
 @pytest.mark.asyncio
@@ -96,8 +98,8 @@ async def test_isolated_service_probes_bounded_video_without_returning_bytes(
     payload = valid_mp4()
     probed: list[bytes] = []
 
-    def record_probe(path: object) -> None:
-        probed.append(path.read_bytes())  # type: ignore[union-attr]
+    def record_probe(path: Path) -> None:
+        probed.append(path.read_bytes())
 
     monkeypatch.setattr(pdf_sandbox_service, "probe_mp4_file", record_probe)
     async with httpx.AsyncClient(
@@ -154,7 +156,7 @@ async def test_isolated_video_probe_reports_missing_binary_as_retryable(
     payload = valid_mp4()
 
     def unavailable(_path: object) -> None:
-        raise pdf_sandbox_service.VideoProbeUnavailable("missing ffprobe")
+        raise VideoProbeUnavailable("missing ffprobe")
 
     monkeypatch.setattr(pdf_sandbox_service, "probe_mp4_file", unavailable)
     async with httpx.AsyncClient(
