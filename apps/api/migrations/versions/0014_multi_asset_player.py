@@ -14,6 +14,110 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+def _schema_ready_sql(expected_revision: str, *, include_multi_asset: bool) -> str:
+    multi_asset_contract = ""
+    if include_multi_asset:
+        multi_asset_contract = """
+            and to_regprocedure(
+              'app_private.read_learning_player_v2(uuid,uuid,uuid)'
+            ) is not null
+            and exists(select 1 from pg_catalog.pg_trigger
+              where tgrelid='public.publication_asset'::regclass
+                and tgname='publication_lesson_asset_limit' and not tgisinternal
+                and tgenabled='O')
+        """
+    # Both inputs are migration-owned constants, never request data.
+    return f"""
+        create or replace function app_private.schema_ready() returns boolean
+        language sql stable security definer set search_path=pg_catalog,app_private as $$
+          select to_regclass('public.identity_user') is not null
+            and to_regclass('public.platform_grant') is not null
+            and to_regclass('public.superadmin_bootstrap') is not null
+            and to_regclass('public.seller_organization') is not null
+            and to_regclass('public.seller_membership') is not null
+            and to_regclass('public.audit_event') is not null
+            and to_regclass('public.catalog_product') is not null
+            and to_regclass('public.course') is not null
+            and to_regclass('public.product_course') is not null
+            and to_regclass('public.offer') is not null
+            and to_regclass('public.publication') is not null
+            and to_regclass('public.course_module') is not null
+            and to_regclass('public.lesson') is not null
+            and to_regclass('public.buyer_entitlement') is not null
+            and to_regclass('public.learning_asset') is not null
+            and to_regclass('public.publication_course') is not null
+            and to_regclass('public.publication_lesson') is not null
+            and to_regclass('public.learning_enrollment') is not null
+            and to_regclass('public.lesson_progress') is not null
+            and to_regclass('public.course_learning_state') is not null
+            and to_regclass('public.asset_record') is not null
+            and to_regclass('public.asset_blob') is not null
+            and to_regclass('public.asset_version') is not null
+            and to_regclass('public.lesson_asset_draft') is not null
+            and to_regclass('public.publication_asset') is not null
+            and to_regclass('public.checkout_integration') is not null
+            and to_regclass('public.webhook_endpoint') is not null
+            and to_regclass('public.external_product_mapping') is not null
+            and to_regclass('public.webhook_event') is not null
+            and to_regclass('app_private.outbox_event') is not null
+            and to_regclass('app_private.bff_request_replay') is not null
+            and to_regclass('app_private.seller_onboarding_request') is not null
+            and to_regclass('app_private.product_draft_request') is not null
+            and to_regclass('app_private.catalog_mutation_request') is not null
+            and to_regclass('app_private.curriculum_mutation_request') is not null
+            and to_regclass('app_private.demo_tenant_registry') is not null
+            and to_regclass('app_private.learning_progress_request') is not null
+            and to_regclass('app_private.asset_upload') is not null
+            and to_regclass('app_private.asset_verification_job') is not null
+            and to_regclass('app_private.asset_storage_cleanup_job') is not null
+            and to_regclass('app_private.asset_mutation_request') is not null
+            and to_regclass('app_private.asset_worker_identity') is not null
+            and to_regclass('app_private.demo_inspection_ticket') is not null
+            and to_regprocedure('app_private.read_buyer_products(uuid)') is not null
+            and to_regprocedure(
+              'app_private.read_buyer_seller_storefront(uuid,uuid)'
+            ) is not null
+            and to_regprocedure(
+              'app_private.start_demo_inspection(uuid,text,text,integer,text,uuid)'
+            ) is not null
+            and to_regprocedure(
+              'app_private.read_demo_inspection(uuid,text,uuid,text,uuid)'
+            ) is not null
+            and to_regprocedure(
+              'app_private.revoke_demo_inspection(uuid,text,uuid,text,text,uuid)'
+            ) is not null
+            and to_regprocedure('app_private.read_public_storefront(text)') is not null
+            and to_regprocedure(
+              'app_private.resolve_webhook_endpoint(text)'
+            ) is not null
+            and to_regprocedure(
+              'app_private.accept_checkout_webhook(uuid,uuid,text,text,bigint,text,'
+              'smallint,text,integer,text,text,smallint,text,smallint,timestamptz,'
+              'bigint,uuid)'
+            ) is not null
+            {multi_asset_contract}
+            and exists(select 1 from pg_catalog.pg_trigger
+              where tgrelid='public.webhook_event'::regclass
+                and tgname='webhook_event_immutable' and not tgisinternal
+                and tgenabled='O')
+            and not exists(
+              select 1 from unnest(array[
+                'public.checkout_integration'::regclass,
+                'public.webhook_endpoint'::regclass,
+                'public.external_product_mapping'::regclass,
+                'public.webhook_event'::regclass
+              ]) relation(oid)
+              join pg_catalog.pg_class class on class.oid=relation.oid
+              where not class.relrowsecurity or not class.relforcerowsecurity
+            )
+            and exists(select 1 from public.alembic_version
+              where version_num='{expected_revision}')
+            and exists(select 1 from app_private.context_signing_key where singleton)
+            and exists(select 1 from app_private.bootstrap_trust_policy where singleton)
+        $$
+    """  # noqa: S608
+
+
 def upgrade() -> None:
     # Block concurrent publication projection while validating the legacy state and
     # installing the row trigger. Alembic keeps this lock until the migration commits.
@@ -92,9 +196,13 @@ def upgrade() -> None:
         "grant execute on function app_private.read_learning_player_v2(uuid,uuid,uuid) "
         "to appsell_runtime"
     )
+    op.execute(_schema_ready_sql(revision, include_multi_asset=True))
 
 
 def downgrade() -> None:
     op.execute("drop function app_private.read_learning_player_v2(uuid,uuid,uuid)")
     op.execute("drop trigger publication_lesson_asset_limit on public.publication_asset")
     op.execute("drop function app_private.enforce_publication_lesson_asset_limit()")
+    if down_revision is None:
+        raise RuntimeError("multi-asset downgrade requires its parent revision")
+    op.execute(_schema_ready_sql(down_revision, include_multi_asset=False))
