@@ -36,6 +36,7 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     APPSELL_IDENTITY_ISSUER: requiredEnvironment("APPSELL_IDENTITY_ISSUER"),
     APPSELL_INTERNAL_HMAC_KEYRING_B64_JSON: requiredEnvironment("APPSELL_INTERNAL_HMAC_KEYRING_B64_JSON"),
     APPSELL_SERVICE_CREDENTIAL_B64: requiredEnvironment("APPSELL_SERVICE_CREDENTIAL_B64"),
+    APP_ENV: "ci",
     APPSELL_DEMO_ENABLED: "true",
     NEXT_TELEMETRY_DISABLED: "1"
   });

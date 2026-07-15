@@ -105,6 +105,8 @@ try {
     path.join(sellDirectory, "scripts/run-real-domain-api-local.sh")
   ], sellDirectory, {
     ...toolEnvironment,
+    NODE_ENV: "test",
+    APP_ENV: "ci",
     E2E_DOMAIN_API_PORT: String(ports.domain),
     APPSELL_MIGRATOR_PASSWORD: domainMigratorPassword,
     APPSELL_RUNTIME_PASSWORD: domainRuntimePassword,
@@ -125,6 +127,7 @@ try {
     "pnpm", "exec", "next", "dev", "--hostname", "127.0.0.1", "-p", String(ports.auth)
   ], authDirectory, {
     ...toolEnvironment,
+    APP_ENV: "ci",
     IDENTITY_COGNITO_PROVIDER: "demo",
     IDENTITY_DEMO_PASSWORD: demoPassword,
     IDENTITY_SESSION_STORE_PROVIDER: "memory",
@@ -148,10 +151,12 @@ try {
   ], sellDirectory, {
     ...toolEnvironment,
     ...redisEnvironment,
+    APP_ENV: "ci",
     APPSELL_OAUTH_MODE: "identity",
     APPSELL_PUBLIC_ORIGIN: `http://localhost:${ports.sell}`,
     APPSELL_DEMO_ENABLED: "false",
     APPSELL_IDENTITY_DEMO_ENABLED: "true",
+    APPSELL_DEMO_SUPERADMIN_ENABLED: "true",
     APPSELL_IDENTITY_E2E_CONTROL_TOKEN: e2eControlToken,
     APPSELL_DOMAIN_API_URL: `http://127.0.0.1:${ports.domain}`,
     APPSELL_INTERNAL_ISSUER: domainInternalIssuer,

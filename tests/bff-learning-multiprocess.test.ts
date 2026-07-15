@@ -39,6 +39,7 @@ test.skipIf(!domainApiUrl)("persists fail-closed learning progress across two re
     ),
     APPSELL_SERVICE_CREDENTIAL_B64: requiredEnvironment("APPSELL_SERVICE_CREDENTIAL_B64"),
     APPSELL_PRIVATE_LEARNING_ASSET_ROOT: join(process.cwd(), "output", "pdf", "codex"),
+    APP_ENV: "ci",
     APPSELL_DEMO_ENABLED: "true",
     NEXT_TELEMETRY_DISABLED: "1"
   };

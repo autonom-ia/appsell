@@ -18,7 +18,12 @@ from psycopg import sql
 from psycopg.conninfo import make_conninfo
 from sqlalchemy.engine import make_url
 
-from appsell_api.reset_demo_tenant import load_manifest, reset_demo
+from appsell_api.reset_demo_tenant import (
+    DEMO_SUPERADMIN_EMAIL,
+    DEMO_SUPERADMIN_SUBJECT,
+    load_manifest,
+    reset_demo,
+)
 
 ADMIN_URL = os.environ.get("APPSELL_TEST_POSTGRES_ADMIN_URL")
 RUNTIME_URL = os.environ.get("APPSELL_TEST_POSTGRES_RUNTIME_URL")
@@ -31,7 +36,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 ISSUER = "https://identity.test.autonomia.site"
-SUPERADMIN_SUB = "inspection-superadmin"
+SUPERADMIN_SUB = DEMO_SUPERADMIN_SUBJECT
 SUPERADMIN_ID = uuid5(NAMESPACE_URL, f"{ISSUER}\0{SUPERADMIN_SUB}")
 ORDINARY_SUB = "inspection-ordinary"
 ORDINARY_ID = uuid5(NAMESPACE_URL, f"{ISSUER}\0{ORDINARY_SUB}")
@@ -84,7 +89,24 @@ def seed_demo_and_platform_identities() -> None:
     assert ADMIN_URL
     manifest, manifest_sha = load_manifest()
     with psycopg.connect(ADMIN_URL) as connection:
-        reset_demo(connection, manifest, manifest_sha, ISSUER)
+        reset_demo(
+            connection,
+            manifest,
+            manifest_sha,
+            ISSUER,
+            provision_superadmin=True,
+        )
+        assert connection.execute(
+            "select identity.email_normalized,identity.email_verified,grant_row.role,"
+            "grant_row.status from identity_user identity join platform_grant grant_row "
+            "on grant_row.identity_user_id=identity.id where identity.id=%s",
+            (SUPERADMIN_ID,),
+        ).fetchone() == (
+            DEMO_SUPERADMIN_EMAIL,
+            True,
+            "platform_superadmin",
+            "active",
+        )
         connection.execute(
             "insert into identity_user("
             "id,identity_issuer,identity_sub,email_normalized,email_verified) "
@@ -119,6 +141,55 @@ def seed_demo_and_platform_identities() -> None:
             "status='active',revoked_at=null",
             (SUPERADMIN_ID,),
         )
+        connection.commit()
+
+
+def test_demo_superadmin_reset_is_idempotent_revocable_and_reprovisionable() -> None:
+    assert ADMIN_URL
+    manifest, manifest_sha = load_manifest()
+    with psycopg.connect(ADMIN_URL) as connection:
+        reset_demo(
+            connection,
+            manifest,
+            manifest_sha,
+            ISSUER,
+            provision_superadmin=True,
+        )
+        reset_demo(
+            connection,
+            manifest,
+            manifest_sha,
+            ISSUER,
+            provision_superadmin=True,
+        )
+        assert connection.execute(
+            "select "
+            "(select count(*) from identity_user where identity_issuer=%s and identity_sub=%s),"
+            "(select count(*) from platform_grant where identity_user_id=%s "
+            "and role='platform_superadmin' and status='active'),"
+            "(select count(*) from seller_membership where identity_user_id=%s)",
+            (ISSUER, SUPERADMIN_SUB, SUPERADMIN_ID, SUPERADMIN_ID),
+        ).fetchone() == (1, 1, 0)
+
+        reset_demo(connection, manifest, manifest_sha, ISSUER)
+        assert connection.execute(
+            "select status,revoked_at is not null from platform_grant "
+            "where identity_user_id=%s and role='platform_superadmin'",
+            (SUPERADMIN_ID,),
+        ).fetchone() == ("revoked", True)
+
+        reset_demo(
+            connection,
+            manifest,
+            manifest_sha,
+            ISSUER,
+            provision_superadmin=True,
+        )
+        assert connection.execute(
+            "select status,revoked_at is null from platform_grant "
+            "where identity_user_id=%s and role='platform_superadmin'",
+            (SUPERADMIN_ID,),
+        ).fetchone() == ("active", True)
         connection.commit()
 
 

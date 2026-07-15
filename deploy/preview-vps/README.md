@@ -94,7 +94,9 @@ Depois acessar `http://localhost:13200`.
 Contas da preview:
 
 - `admin.demo@autonomia.site`;
-- `user.demo@autonomia.site`.
+- `user.demo@autonomia.site`;
+- `comercial@autonomia.site`, com grant `platform_superadmin` restrito à inspeção
+  Local/CI read-only da tenant demo.
 
 A senha é efêmera e fica apenas no `preview.env` da VPS. Como qualquer processo Docker
 administrado por root, os valores Local/CI podem ser vistos por root via inspect; nenhuma
@@ -103,6 +105,8 @@ credencial de produção, Financial, Neuro.ai, GitHub OAuth ou AWS real entra no
 ## Limite conhecido
 
 Esta preview prova a jornada integrada Local/CI na infraestrutura-alvo. Não é produção,
-não usa `sell.autonomia.site`, não valida Financial, Neuro.ai ou GitHub OAuth e não concede
-artificialmente superadmin a `comercial@autonomia.site`. Esses gates permanecem separados
-e fail-closed.
+não usa `sell.autonomia.site` e não valida Financial, Neuro.ai ou GitHub OAuth. O grant
+superadmin é criado apenas no PostgreSQL descartável, loopback-only e marcado da preview.
+Auth, Foundation e Sell usam `NODE_ENV=development|test` e `APP_ENV=local|ci` como
+allowlists explícitas; `NODE_ENV=production` bloqueia o reset antes de qualquer conexão. Os gates comerciais
+permanecem separados e fail-closed.

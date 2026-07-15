@@ -80,6 +80,7 @@ export APPSELL_BOOTSTRAP_ENABLED="false"
 uv run --project apps/api --frozen python -m appsell_api.configure_context_key
 
 export APPSELL_DEMO_ENABLED="true"
+export APPSELL_DEMO_SUPERADMIN_ENABLED="true"
 export APPSELL_API_ENVIRONMENT="ci"
 export APPSELL_DEMO_DATABASE_URL="$TEST_DATABASE_URL"
 uv run --project apps/api --frozen python -m appsell_api.reset_demo_tenant \
