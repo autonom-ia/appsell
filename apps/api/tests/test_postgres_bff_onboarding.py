@@ -140,10 +140,10 @@ def test_schema_ready_targets_head_and_runtime_has_only_function_access() -> Non
               )
             """
         ).fetchone()
-    assert state == ("0011_public_storefront", False, False, True, True, True)
+    assert state == ("0014_multi_asset_player", False, False, True, True, True)
 
 
-def test_schema_ready_fails_when_cumulative_buyer_or_storage_dependency_is_missing() -> None:
+def test_schema_ready_fails_when_cumulative_or_multi_asset_dependency_is_missing() -> None:
     assert ADMIN_URL
     with psycopg.connect(ADMIN_URL) as connection:
         connection.execute(
@@ -154,6 +154,18 @@ def test_schema_ready_fails_when_cumulative_buyer_or_storage_dependency_is_missi
 
     with psycopg.connect(ADMIN_URL) as connection:
         connection.execute("drop function app_private.read_buyer_products(uuid)")
+        assert connection.execute("select app_private.schema_ready()").fetchone() == (False,)
+        connection.rollback()
+
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute("drop function app_private.read_learning_player_v2(uuid,uuid,uuid)")
+        assert connection.execute("select app_private.schema_ready()").fetchone() == (False,)
+        connection.rollback()
+
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "alter table publication_asset disable trigger publication_lesson_asset_limit"
+        )
         assert connection.execute("select app_private.schema_ready()").fetchone() == (False,)
         connection.rollback()
 

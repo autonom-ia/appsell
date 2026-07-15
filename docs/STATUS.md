@@ -8,7 +8,7 @@ Atualizado em pontos de marco (PR aberta, deploy, incidente). Diferente de MEMOR
 |-----------|:------:|--------------------|
 | Build | 🟢 release candidate #61 compila em modo produção | 2026-07-14 |
 | Testes | 🟢 vertical real API/PG/S3 e capacidade 100/1.000 verdes localmente | 2026-07-14 |
-| CI | 🟡 Draft PR #62: correção revisada GREEN; novo SHA/3 runs ainda pendentes | 2026-07-14 |
+| CI | 🟡 Draft PR #62: 2 artifacts elegíveis; 1 run rejeitado; repetição sequencial em andamento | 2026-07-14 |
 | Deploy produção | 🟡 não configurado/não executado | 2026-07-10 |
 | Harness instalado em `main` | 2.0.2 | 2026-07-10 |
 | Harness upgrade | 🟢 PR #37 em 2.1.2, review e 10/10 checks verdes; sem merge | 2026-07-11 |
@@ -26,6 +26,28 @@ auditoria append-only e bootstrap one-shot do superadmin com atestação separad
 Este marco é Local/CI; não é o Identity real e não concede conta de produção.
 
 ## Última mudança relevante
+
+2026-07-14 — Issue #63 iniciou a Fase 6A em branch própria, empilhada sobre a
+release candidate. O webhook genérico Local/CI preserva os bytes no trânsito,
+valida HMAC, timestamp e event ID, resolve tenant exclusivamente por endpoint
+opaco server-side e grava evento imutável, auditoria e outbox na mesma transação.
+O banco retém somente hashes/tamanhos e o fato normalizado. Provider real,
+worker, entitlement, Financial, Neuro, staging e produção permanecem fora do
+slice. O outbox nasce `blocked_retention` e não pode ser reclamado por worker.
+A prova integrada inclui PostgreSQL real, duas BFFs, Redis indisponível
+e restart da API; reviews AppSec, PostgreSQL e contrato ficaram GREEN. A Draft
+PR #64 permanece sem merge/deploy e aguarda CI no topo da base corrigida.
+
+Após sincronizar a base corrigida, o webhook passou a usar o mesmo outer
+transaction/savepoint do replay: rejeições duravelmente consomem o request e
+desfazem evento, outbox e auditoria. O teste real agora prova essa diferença de
+estado. A composição passou 207 testes PostgreSQL/API, 24 testes de boundary e
+worker, 6 testes BFF reais e 1 multi-seller, com artifact scan verde. O heading
+assíncrono do editor ganhou timeout explícito de 20 segundos porque o default de
+5 segundos falhou sob a carga do próprio gate, mesmo com a tela ainda em estado
+de carregamento. Dois reviews críticos independentes ficaram GREEN para o
+merge commit/push, com P0/P1/P2/P3 bloqueantes em zero. O CI do novo SHA
+continua pendente; merge da PR e deploy permanecem proibidos.
 
 2026-07-14 — A saturação sustentada do capacity gate foi rastreada ao replay
 anti-repetição em uma transação durável separada de cada operação de domínio.
@@ -164,7 +186,7 @@ serviço permanece server-side e o CTA informa que checkout ainda não está ati
 - Certificado Local/CI de capacidade executou 100 owners + 1.000 buyers,
   1.100 callbacks/sessões, leituras, mutações e negações cross-tenant sem erro;
   thresholds e teardown passaram. É baseline provisória, não sizing de VPS.
-- Vertical integrada atual: 181/181 testes PG/API, 266 unitários verdes com 8
+- Vertical integrada atual: 193/193 testes PG/API, 272 unitários verdes com 9
   integrações condicionais ignoradas, 44/44 Playwright executados com 6 skips
   previstos, produção fail-closed 1/1, OpenBao 7/7, audits Node/Python verdes.
 
@@ -196,10 +218,11 @@ serviço permanece server-side e o CTA informa que checkout ainda não está ati
 
 ## Próxima ação
 
-Concluir o review crítico do SHA da Issue #61 e abrir Draft PR sem merge/deploy.
-Depois, executar três runs verdes de CI no mesmo SHA para calibrar a baseline.
-Identity/Financial/Admin/Neuro externos, checkout e staging continuam em slices
-seguintes com ambientes/credenciais isolados e mudanças somente aditivas.
+Fechar os testes e três reviews independentes da Issue #63, corrigir achados e
+abrir Draft PR empilhada sem merge/deploy. Em paralelo, corrigir o P2 do gate
+de capacidade da #62 e reiniciar três runs verdes no mesmo SHA. Identity,
+Financial/Admin/Neuro externos e staging continuam em slices seguintes com
+ambientes isolados e mudanças somente aditivas.
 
 ## Links
 

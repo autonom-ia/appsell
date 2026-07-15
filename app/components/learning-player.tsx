@@ -29,6 +29,12 @@ interface LessonProgress {
   updated_at: string | null;
 }
 
+interface LearningAsset {
+  href: string;
+  title: string;
+  media_type: "application/pdf" | "video/mp4";
+}
+
 interface LearningPlayerPayload {
   seller: { id: string };
   product: { id: string; slug: string; title: string; description: string };
@@ -41,7 +47,8 @@ interface LearningPlayerPayload {
   course_progress_percent: number;
   state_version: number;
   lesson_progress: LessonProgress[];
-  selected_asset?: { href: string; title: string; media_type: "application/pdf" } | null;
+  selected_asset: LearningAsset | null;
+  selected_assets: LearningAsset[];
   csrf: { progress: string; complete: string };
 }
 
@@ -203,11 +210,10 @@ export function LearningPlayer({ entitlementId, lessonId }: { entitlementId: str
   }
 
   async function saveProgress(current: LearningPlayerPayload, currentLessonId: string, percent: number) {
-    if (mutationState !== "idle") return;
+    if (mutationRef.current) return false;
     requestRef.current?.abort();
     const operation = `progress:${currentLessonId}:${percent}`;
     const controller = new AbortController();
-    mutationRef.current?.abort();
     mutationRef.current = controller;
     setMutationState("opening");
     setFeedback("");
@@ -216,15 +222,14 @@ export function LearningPlayer({ entitlementId, lessonId }: { entitlementId: str
     form.set("idempotency_key", idempotencyKey(idempotencyKeys.current, operation));
     form.set("progress_percent", String(percent));
     form.set("expected_version", String(current.state_version));
-    await mutate(`${lessonEndpoint(entitlementId, currentLessonId)}/progress`, "PUT", form, controller, currentLessonId, current.enrollment_id, false);
+    return await mutate(`${lessonEndpoint(entitlementId, currentLessonId)}/progress`, "PUT", form, controller, currentLessonId, current.enrollment_id, false, operation, percent);
   }
 
   async function completeLesson() {
-    if (!payload || !selected || mutationState !== "idle") return;
+    if (!payload || !selected || mutationRef.current) return;
     requestRef.current?.abort();
     const currentLessonId = selected.lesson.id;
     const controller = new AbortController();
-    mutationRef.current?.abort();
     mutationRef.current = controller;
     setMutationState("completing");
     setFeedback("");
@@ -232,27 +237,41 @@ export function LearningPlayer({ entitlementId, lessonId }: { entitlementId: str
     form.set("_csrf", payload.csrf.complete);
     form.set("idempotency_key", idempotencyKey(idempotencyKeys.current, `complete:${currentLessonId}`));
     form.set("expected_version", String(payload.state_version));
-    await mutate(`${lessonEndpoint(entitlementId, currentLessonId)}/complete`, "POST", form, controller, currentLessonId, payload.enrollment_id, true);
+    const operation = `complete:${currentLessonId}`;
+    await mutate(`${lessonEndpoint(entitlementId, currentLessonId)}/complete`, "POST", form, controller, currentLessonId, payload.enrollment_id, true, operation, 100);
   }
 
-  async function mutate(endpoint: string, method: "PUT" | "POST", form: FormData, controller: AbortController, currentLessonId: string, expectedEnrollmentId: string, complete: boolean) {
+  async function mutate(endpoint: string, method: "PUT" | "POST", form: FormData, controller: AbortController, currentLessonId: string, expectedEnrollmentId: string, complete: boolean, operation: string, expectedProgress: number) {
     try {
       const response = await fetch(endpoint, { method, body: form, cache: "no-store", signal: controller.signal });
-      if (controller.signal.aborted) return;
-      if (response.status === 401) return setState({ status: "unauthorized", requestKey: desiredKey });
-      if (response.status === 403 || response.status === 404) return setState({ status: "forbidden", requestKey: desiredKey });
-      if (response.status === 409) return setState({ status: "conflict", requestKey: desiredKey });
+      if (controller.signal.aborted) return false;
+      if (response.status === 401) {
+        setState({ status: "unauthorized", requestKey: desiredKey });
+        return false;
+      }
+      if (response.status === 403 || response.status === 404) {
+        setState({ status: "forbidden", requestKey: desiredKey });
+        return false;
+      }
+      if (response.status === 409) {
+        setState({ status: "conflict", requestKey: desiredKey });
+        return false;
+      }
       if (!response.ok) {
         setFeedback("Seu progresso não foi salvo. Tente novamente.");
-        return;
+        return false;
       }
       const responsePayload: unknown = await response.json();
       if (!isProgressMutationResponse(responsePayload) || responsePayload.progress.entitlement_id !== entitlementId ||
         responsePayload.progress.enrollment_id !== expectedEnrollmentId || responsePayload.progress.lesson_id !== currentLessonId) {
         setFeedback("A resposta de progresso não pôde ser validada.");
-        return;
+        return false;
       }
       const result = responsePayload.progress;
+      if (result.lesson_progress_percent < expectedProgress) {
+        setFeedback("A confirmação do progresso veio incompleta. Tentaremos novamente.");
+        return false;
+      }
       setState((currentState) => {
         if (currentState.status !== "ready" || currentState.payload.selected_lesson_id !== currentLessonId) return currentState;
         return {
@@ -260,7 +279,7 @@ export function LearningPlayer({ entitlementId, lessonId }: { entitlementId: str
           payload: applyProgressMutation(currentState.payload, result)
         };
       });
-      idempotencyKeys.current.delete(`${complete ? "complete" : "progress"}:${currentLessonId}${complete ? "" : ":1"}`);
+      idempotencyKeys.current.delete(operation);
       if (complete && nextId) {
         pendingRevalidationRef.current = false;
         setState({ status: "loading", requestKey: `${entitlementId}:${nextId}` });
@@ -268,8 +287,10 @@ export function LearningPlayer({ entitlementId, lessonId }: { entitlementId: str
       } else {
         setFeedback(complete ? "Curso concluído. Seu progresso foi salvo." : "Progresso salvo.");
       }
+      return true;
     } catch {
       if (!controller.signal.aborted) setFeedback("Seu progresso não foi salvo. Verifique a conexão e tente novamente.");
+      return false;
     } finally {
       if (mutationRef.current === controller) {
         mutationRef.current = null;
@@ -277,13 +298,14 @@ export function LearningPlayer({ entitlementId, lessonId }: { entitlementId: str
           pendingRevalidationRef.current = false;
           void load(currentLessonId, { silent: true });
         }
+        setMutationState("idle");
       }
-      setMutationState("idle");
     }
   }
 
   useEffect(() => {
-    if (!payload || !selected || selectedProgress?.completed || (selectedProgress?.progress_percent ?? 0) > 0) return;
+    if (!payload || !selected || payload.selected_assets.some((asset) => asset.media_type === "video/mp4") ||
+      selectedProgress?.completed || (selectedProgress?.progress_percent ?? 0) > 0) return;
     const start = window.setTimeout(() => void saveProgress(payload, selected.lesson.id, 1), 0);
     return () => window.clearTimeout(start);
     // The exact publication state is captured in payload.state_version for this attempt.
@@ -318,6 +340,10 @@ export function LearningPlayer({ entitlementId, lessonId }: { entitlementId: str
   const lessonNumber = selectedIndex + 1;
   const completed = selectedProgress?.completed === true;
   const lessonParagraphs = paragraphs(selected.lesson.content);
+  const saveVideoProgress = async (percent: number) => {
+    if (percent <= (selectedProgress?.progress_percent ?? 0)) return true;
+    return await saveProgress(payload, selected.lesson.id, percent);
+  };
   return <div className="learning-player">
     <div className="player-topline">
       <Link href="/library" className="player-back">← <span>Minha biblioteca</span></Link>
@@ -341,10 +367,16 @@ export function LearningPlayer({ entitlementId, lessonId }: { entitlementId: str
             ? lessonParagraphs.map((paragraph, index) => <p key={`${selected.lesson.id}:${index}`}>{paragraph}</p>)
             : <p className="lesson-content-empty">Esta aula não possui conteúdo textual.</p>}
         </section>
-        {payload.selected_asset ? <aside className="lesson-material" aria-labelledby="lesson-material-title">
-          <div><p className="eyebrow">Material complementar</p><h2 id="lesson-material-title">{payload.selected_asset.title}</h2><p>PDF protegido, aberto em uma nova aba. O texto principal da aula permanece disponível nesta página.</p></div>
-          <a className="secondary-button" href={payload.selected_asset.href} target="_blank" rel="noopener">Abrir PDF<span className="sr-only"> em nova aba</span></a>
-        </aside> : <p className="asset-unavailable" role="status">Material complementar indisponível para esta aula.</p>}
+        {payload.selected_assets.length > 0
+          ? payload.selected_assets.map((asset, index) => <LessonMaterial
+              key={asset.href}
+              asset={asset}
+              index={index}
+              initialProgress={selectedProgress?.progress_percent ?? 0}
+              busy={mutationState !== "idle"}
+              onVideoProgress={saveVideoProgress}
+            />)
+          : <p className="asset-unavailable" role="status">Material complementar indisponível para esta aula.</p>}
         <p className="player-feedback" aria-live="polite">{mutationState === "opening" ? "Salvando início da aula…" : mutationState === "completing" ? "Salvando conclusão…" : feedback}</p>
         <nav className="lesson-actions" aria-label="Navegação entre aulas">
           {previousId ? <Link className="secondary-button" href={lessonHref(entitlementId, previousId)} onClick={(event) => prepareNavigation(event, previousId)}>← Aula anterior</Link> : <span/>}
@@ -449,17 +481,183 @@ export function isLearningPlayerPayload(value: unknown): value is LearningPlayer
     !isNonEmptyString(value.selected_lesson_id) || !isNonEmptyString(value.resume_lesson_id) ||
     !isPercent(value.course_progress_percent) || !isNonNegativeInteger(value.state_version) ||
     !Array.isArray(value.lesson_progress) || !value.lesson_progress.every(isLessonProgress) ||
+    !Array.isArray(value.selected_assets) || value.selected_assets.length > 100 ||
     !isStringRecord(value.csrf, ["progress", "complete"])) return false;
-  if (value.selected_asset !== undefined && value.selected_asset !== null) {
-    if (!isStringRecord(value.selected_asset, ["href", "title"]) || value.selected_asset.media_type !== "application/pdf") return false;
-    const assetHref = (value.selected_asset.href as string).match(TENANT_ASSET_HREF);
-    if (!assetHref || assetHref[1] !== value.entitlement_id) return false;
-  }
+  if (!value.selected_assets.every((asset) => isLearningAsset(asset, value.entitlement_id))) return false;
+  const assetHrefs = value.selected_assets.map((asset) => asset.href);
+  if (new Set(assetHrefs).size !== assetHrefs.length) return false;
+  const firstAsset = value.selected_assets[0] ?? null;
+  if (value.selected_asset === undefined || !selectedAssetMatches(value.selected_asset, firstAsset)) return false;
   const lessonIds = flattenLessons(value.course.modules).map((entry) => entry.lesson.id);
   return lessonIds.length > 0 && new Set(lessonIds).size === lessonIds.length &&
     lessonIds.includes(value.selected_lesson_id) && lessonIds.includes(value.resume_lesson_id) &&
     value.lesson_progress.every((entry) => lessonIds.includes(entry.lesson_id)) &&
     new Set(value.lesson_progress.map((entry) => entry.lesson_id)).size === value.lesson_progress.length;
+}
+
+function isLearningAsset(value: unknown, entitlementId: unknown): value is LearningAsset {
+  if (!isStringRecord(value, ["href", "title"]) ||
+    !["application/pdf", "video/mp4"].includes(String(value.media_type))) return false;
+  const assetHref = (value.href as string).match(TENANT_ASSET_HREF);
+  return assetHref !== null && assetHref[1] === entitlementId;
+}
+
+function selectedAssetMatches(value: unknown, firstAsset: LearningAsset | null) {
+  if (firstAsset === null) return value === null;
+  return isLearningAsset(value, firstAsset.href.match(TENANT_ASSET_HREF)?.[1]) &&
+    value.href === firstAsset.href && value.title === firstAsset.title &&
+    value.media_type === firstAsset.media_type;
+}
+
+function LessonMaterial({ asset, index, initialProgress, busy, onVideoProgress }: {
+  asset: LearningAsset;
+  index: number;
+  initialProgress: number;
+  busy: boolean;
+  onVideoProgress: (percent: number) => Promise<boolean>;
+}) {
+  const video = asset.media_type === "video/mp4";
+  const titleId = `lesson-material-title-${index}`;
+  return <aside className={`lesson-material ${video ? "lesson-video" : ""}`} aria-labelledby={titleId}>
+    <div>
+      <p className="eyebrow">{video ? "Vídeo da aula" : "Material complementar"}</p>
+      <h2 id={titleId}>{asset.title}</h2>
+      {video
+        ? <p>Vídeo privado. O progresso é salvo em etapas enquanto você assiste.</p>
+        : <p>PDF protegido, aberto em uma nova aba. O texto principal da aula permanece disponível nesta página.</p>}
+    </div>
+    {video
+      ? <ProtectedVideo asset={asset} initialProgress={initialProgress} busy={busy} onProgress={onVideoProgress}/>
+      : <a className="secondary-button" href={asset.href} target="_blank" rel="noopener">Abrir PDF<span className="sr-only"> em nova aba</span></a>}
+  </aside>;
+}
+
+function ProtectedVideo({ asset, initialProgress, busy, onProgress }: {
+  asset: { href: string; title: string };
+  initialProgress: number;
+  busy: boolean;
+  onProgress: (percent: number) => Promise<boolean>;
+}) {
+  const lastAcknowledged = useRef(initialProgress);
+  const pending = useRef<number | null>(null);
+  const sending = useRef(false);
+  const automaticRetries = useRef(0);
+  const retriesExhausted = useRef(false);
+  const retryTimer = useRef<number | null>(null);
+  const mounted = useRef(true);
+  const busyRef = useRef(busy);
+  const onProgressRef = useRef(onProgress);
+  const flushRef = useRef<() => void>(() => undefined);
+
+  useEffect(() => {
+    busyRef.current = busy;
+    onProgressRef.current = onProgress;
+    if (!busy) flushRef.current();
+  }, [busy, onProgress]);
+
+  useEffect(() => {
+    lastAcknowledged.current = 0;
+    pending.current = null;
+    sending.current = false;
+    automaticRetries.current = 0;
+    retriesExhausted.current = false;
+    if (retryTimer.current !== null) window.clearTimeout(retryTimer.current);
+    retryTimer.current = null;
+  }, [asset.href]);
+
+  useEffect(() => {
+    lastAcknowledged.current = Math.max(lastAcknowledged.current, initialProgress);
+    if ((pending.current ?? 0) <= lastAcknowledged.current) pending.current = null;
+  }, [initialProgress]);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (retryTimer.current !== null) window.clearTimeout(retryTimer.current);
+    };
+  }, []);
+
+  const flush = useCallback(() => {
+    const scheduleFlush = (delay: number) => {
+      if (!mounted.current || retryTimer.current !== null) return;
+      retryTimer.current = window.setTimeout(() => {
+        retryTimer.current = null;
+        flushRef.current();
+      }, delay);
+    };
+    const percent = pending.current;
+    if (!mounted.current || busyRef.current || sending.current || retryTimer.current !== null ||
+      retriesExhausted.current || percent === null || percent <= lastAcknowledged.current) return;
+    sending.current = true;
+    void onProgressRef.current(percent).then((acknowledged) => {
+      if (!mounted.current) return;
+      sending.current = false;
+      if (acknowledged) {
+        lastAcknowledged.current = Math.max(lastAcknowledged.current, percent);
+        automaticRetries.current = 0;
+        retriesExhausted.current = false;
+        if ((pending.current ?? 0) <= lastAcknowledged.current) pending.current = null;
+        if (pending.current !== null) scheduleFlush(0);
+        return;
+      }
+      if (automaticRetries.current < 3) {
+        automaticRetries.current += 1;
+        scheduleFlush(2_000);
+      } else {
+        retriesExhausted.current = true;
+      }
+    }).catch(() => {
+      if (!mounted.current) return;
+      sending.current = false;
+      if (automaticRetries.current < 3) {
+        automaticRetries.current += 1;
+        scheduleFlush(2_000);
+      } else {
+        retriesExhausted.current = true;
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    flushRef.current = flush;
+  }, [flush]);
+
+  const requestProgress = (percent: number) => {
+    if (percent <= lastAcknowledged.current) return;
+    const previousPending = pending.current;
+    if (previousPending === null || (percent === 100 && previousPending < 100)) {
+      automaticRetries.current = 0;
+      retriesExhausted.current = false;
+    }
+    pending.current = Math.max(previousPending ?? 0, percent);
+    if (percent === 100 && retryTimer.current !== null) {
+      window.clearTimeout(retryTimer.current);
+      retryTimer.current = null;
+    }
+    flushRef.current();
+  };
+
+  const report = (video: HTMLVideoElement, force: boolean) => {
+    if (!Number.isFinite(video.duration) || video.duration <= 0 || !Number.isFinite(video.currentTime)) return;
+    const percent = Math.min(99, Math.max(1, Math.floor((video.currentTime / video.duration) * 100)));
+    const reportedBaseline = Math.max(lastAcknowledged.current, pending.current ?? 0);
+    if (percent <= reportedBaseline || (!force && percent - reportedBaseline < 10)) return;
+    requestProgress(percent);
+  };
+
+  return <video
+    className="protected-video"
+    controls
+    controlsList="nodownload"
+    playsInline
+    preload="metadata"
+    src={asset.href}
+    aria-label={asset.title}
+    onTimeUpdate={(event) => report(event.currentTarget, false)}
+    onPause={(event) => report(event.currentTarget, true)}
+    onEnded={() => requestProgress(100)}
+  >Seu navegador não consegue reproduzir este vídeo.</video>;
 }
 
 export function isLearningPlayerResponse(value: unknown): value is {

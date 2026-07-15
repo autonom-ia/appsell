@@ -13,12 +13,12 @@ from psycopg.types.json import Jsonb
 
 from .reset_demo_tenant import (
     DEMO_DATABASE_MARKER,
+    EXPECTED_MIGRATION,
     identity_id,
     load_manifest,
     snapshot_for,
 )
 
-EXPECTED_MIGRATION = "0011_public_storefront"
 CONFIRMATION = "buyer-multi-seller-v1"
 NAMESPACE = UUID("01a6463f-d696-4c34-b939-237fd53a7edf")
 

@@ -6,7 +6,12 @@ const nextConfig: NextConfig = {
   reactStrictMode: true,
   logging: {
     incomingRequests: {
-      ignore: [/\/auth\/login/, /\/auth\/callback/, /\/dev\/identity\/authorize/]
+      ignore: [
+        /\/auth\/login/,
+        /\/auth\/callback/,
+        /\/dev\/identity\/authorize/,
+        /\/api\/webhooks\/checkouts\//
+      ]
     }
   },
   experimental: {

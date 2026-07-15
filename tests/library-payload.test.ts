@@ -32,6 +32,11 @@ function libraryItem(overrides: Record<string, unknown> = {}) {
 }
 
 function playerResponse() {
+  const selectedAsset = {
+    href: `/api/library/items/${entitlementId}/assets/${assetId}`,
+    title: "Material",
+    media_type: "application/pdf"
+  };
   return {
     player: {
       seller: { id: "seller" },
@@ -51,7 +56,8 @@ function playerResponse() {
       course_progress_percent: 0,
       state_version: 0,
       lesson_progress: [] as Array<{ lesson_id: string; progress_percent: number; completed: boolean; updated_at: string }>,
-      selected_asset: { href: `/api/library/items/${entitlementId}/assets/${assetId}`, title: "Material", media_type: "application/pdf" }
+      selected_asset: selectedAsset,
+      selected_assets: [selectedAsset]
     },
     csrf: { progress: "progress-token", complete: "complete-token" }
   };
@@ -133,6 +139,17 @@ describe("learning player payload validation", () => {
     const external = playerResponse();
     external.player.selected_asset.href = "https://attacker.example/material.pdf";
     expect(isLearningPlayerResponse(external)).toBe(false);
+
+    const duplicateAssets = playerResponse();
+    duplicateAssets.player.selected_assets.push({ ...duplicateAssets.player.selected_assets[0]! });
+    expect(isLearningPlayerResponse(duplicateAssets)).toBe(false);
+
+    const mismatchedLegacyAsset = playerResponse();
+    mismatchedLegacyAsset.player.selected_asset = {
+      ...mismatchedLegacyAsset.player.selected_asset,
+      title: "Outro material"
+    };
+    expect(isLearningPlayerResponse(mismatchedLegacyAsset)).toBe(false);
   });
 
   it("accepts optional copy and empty modules from a valid published snapshot", () => {

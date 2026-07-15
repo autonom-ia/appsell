@@ -17,6 +17,7 @@ from .storage_s3 import S3Storage, StorageError
 router = APIRouter(prefix="/v1")
 _MAX_LEARNING_BODY_BYTES = 4_096
 _MAX_SAFE_INTEGER = (1 << 53) - 1
+_LEARNING_ASSETS_CONTRACT_HEADER = "x-appsell-learning-assets-contract"
 
 
 class LessonProgressBody(BaseModel):
@@ -142,6 +143,7 @@ async def authorize_asset(request: Request, entitlement_id: UUID, asset_id: UUID
                     key=str(row["object_key"]),
                     version_id=str(row["storage_version_id"]),
                     file_name=str(row["file_name"]),
+                    media_type=str(row["media_type"]),
                 )
             )
         except (StorageError, ValueError) as error:
@@ -171,7 +173,7 @@ async def authorize_asset(request: Request, entitlement_id: UUID, asset_id: UUID
         "asset": {
             "id": str(row["asset_id"]),
             "delivery": "legacy_bundle",
-            "seed_key": str(row["file_name"]).removesuffix(".pdf"),
+            "seed_key": str(row["file_name"]).rsplit(".", 1)[0],
             "file_name": row["file_name"],
             "title": row["title"],
             "media_type": row["media_type"],
@@ -185,7 +187,13 @@ async def authorize_asset(request: Request, entitlement_id: UUID, asset_id: UUID
 async def read_learning_resume(request: Request, entitlement_id: UUID) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "learning.player.read")
     await _require_buyer_scope(internal)
-    player = await _read_player(auth, internal, entitlement_id, None)
+    player = await _read_player(
+        auth,
+        internal,
+        entitlement_id,
+        None,
+        include_all_assets=request.headers.get(_LEARNING_ASSETS_CONTRACT_HEADER) == "v2",
+    )
     return {"player": player}
 
 
@@ -195,7 +203,13 @@ async def read_learning_lesson(
 ) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "learning.player.read")
     await _require_buyer_scope(internal)
-    player = await _read_player(auth, internal, entitlement_id, lesson_id)
+    player = await _read_player(
+        auth,
+        internal,
+        entitlement_id,
+        lesson_id,
+        include_all_assets=request.headers.get(_LEARNING_ASSETS_CONTRACT_HEADER) == "v2",
+    )
     return {"player": player}
 
 
@@ -242,14 +256,18 @@ async def _read_player(
     internal: AuthenticatedInternalRequest,
     entitlement_id: UUID,
     lesson_id: UUID | None,
+    *,
+    include_all_assets: bool = False,
 ) -> Any:
+    query = text(
+        "select app_private.read_learning_player_v2(:identity_user_id,:entitlement_id,:lesson_id)"
+        if include_all_assets
+        else "select app_private.read_learning_player(:identity_user_id,:entitlement_id,:lesson_id)"
+    )
     try:
         async with auth.domain_session(internal.envelope) as session:
             player = await session.scalar(
-                text(
-                    "select app_private.read_learning_player("
-                    ":identity_user_id,:entitlement_id,:lesson_id)"
-                ),
+                query,
                 {
                     "identity_user_id": internal.envelope.identity.user_id,
                     "entitlement_id": entitlement_id,

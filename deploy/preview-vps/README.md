@@ -25,6 +25,17 @@ bancos, Redis, redes ou volumes existentes.
 
 ## Artefatos CI
 
+Na Draft PR RC empilhada, selecione explicitamente a branch que produziu os
+artefatos antes de executar o verificador local:
+
+```bash
+export APPSELL_ARTIFACT_BRANCH=infra/66-easypanel-rc
+```
+
+Sem essa variável, o script mantém o padrão legado `infra/66-vps-preview`.
+O bundle RC inclui também os guards EasyPanel versionados no mesmo SHA; ele não
+autoriza a ativação da preview Compose legada nem qualquer deploy por si só.
+
 Sete TARs Docker são produzidos sem `packages: write`, login GHCR ou publicação:
 
 - `sell-<sha>.tar` e `domain-<sha>.tar`;

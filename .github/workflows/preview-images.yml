@@ -2,13 +2,14 @@ name: VPS preview artifacts
 
 on:
   push:
-    branches: ["infra/66-vps-preview"]
+    branches: ["infra/66-vps-preview", "infra/66-easypanel-rc"]
     paths:
       - "app/**"
       - "apps/api/**"
       - "components/**"
       - "demo/**"
       - "deploy/preview-vps/**"
+      - "deploy/easypanel/**"
       - "lib/**"
       - "output/pdf/**"
       - "package.json"
@@ -35,7 +36,7 @@ jobs:
         run: |
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-          for script in deploy/preview-vps/*.sh; do bash -n "$script"; done
+          for script in deploy/preview-vps/*.sh deploy/easypanel/*.sh; do bash -n "$script"; done
           node --check deploy/preview-vps/verify-redis.mjs
           env -u COMPOSE_PROJECT_NAME -u COMPOSE_FILE -u COMPOSE_PROFILES -u COMPOSE_ENV_FILES docker compose \
             --project-name autonomia_sell_preview_66_0123456789ab \
@@ -61,8 +62,9 @@ jobs:
           ARTIFACT_NAME: appsell-vps-preview-config-${{ env.SOURCE_SHA }}
           SUBJECT_FILENAME: config-${{ env.SOURCE_SHA }}.tar.gz
         run: |
-          install -d /tmp/preview-bundle/config
+          install -d /tmp/preview-bundle/config/easypanel
           cp -a deploy/preview-vps/. /tmp/preview-bundle/config/
+          cp -a deploy/easypanel/. /tmp/preview-bundle/config/easypanel/
           cd /tmp/preview-bundle/config
           if find . -type l -print -quit | grep -q .; then
             echo "Refusing to package a symlink in the preview config" >&2

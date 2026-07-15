@@ -46,6 +46,7 @@ interface ApiRequest {
   inspectionToken?: string;
   body?: Record<string, unknown>;
   capacityTrace?: string | null;
+  learningAssetsContract?: "v2";
 }
 
 export interface DemoInspectionProjection {
@@ -72,7 +73,7 @@ export function isDomainApiConfigured() {
 }
 
 export async function readPublicStorefront(sellerSlug: string) {
-  const config = internalConfig();
+  const config = internalServiceConfig();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 3_000);
   try {
@@ -534,7 +535,7 @@ export async function createDomainAssetUploadIntent(
     existingAssetId?: string;
     title: string;
     fileName: string;
-    mediaType: "application/pdf";
+    mediaType: "application/pdf" | "video/mp4";
     byteSize: number;
     sha256: string;
   }
@@ -664,7 +665,8 @@ export async function readDomainLearningResume(
   return domainRequest(sessionId, session, {
     method: "GET",
     path: `/v1/me/learning/items/${entitlementId}/resume`,
-    capability: "learning.player.read"
+    capability: "learning.player.read",
+    learningAssetsContract: "v2"
   });
 }
 
@@ -677,7 +679,8 @@ export async function readDomainLearningLesson(
   return domainRequest(sessionId, session, {
     method: "GET",
     path: `/v1/me/learning/items/${entitlementId}/lessons/${lessonId}`,
-    capability: "learning.player.read"
+    capability: "learning.player.read",
+    learningAssetsContract: "v2"
   });
 }
 
@@ -744,7 +747,7 @@ async function domainRequest(
   request: ApiRequest
 ) {
   requireDemoCapability(session.subject, request);
-  const config = internalConfig();
+  const config = internalServiceConfig();
   const body = request.body ? Buffer.from(JSON.stringify(request.body), "utf8") : Buffer.alloc(0);
   const query = Buffer.from(request.query ?? "", "ascii");
   const envelopeInput: SignInternalEnvelopeInput = {
@@ -782,7 +785,10 @@ async function domainRequest(
           ...(request.inspectionToken
             ? { "x-appsell-inspection-token": request.inspectionToken }
             : {}),
-          ...(capacityTrace ? { "x-appsell-capacity-trace": capacityTrace } : {})
+          ...(capacityTrace ? { "x-appsell-capacity-trace": capacityTrace } : {}),
+          ...(request.learningAssetsContract
+            ? { "x-appsell-learning-assets-contract": request.learningAssetsContract }
+            : {})
         },
       cache: "no-store",
       signal: controller.signal
@@ -832,7 +838,7 @@ function requireDemoCapability(subject: string, request: ApiRequest) {
   throw new DomainApiError(403, `demo_${profile.persona}_capability_forbidden`);
 }
 
-function internalConfig() {
+export function internalServiceConfig() {
   const forbidden = configuredNonInternalKeys();
   const signing = parseInternalSigningConfig(process.env, forbidden);
   const serviceCredentialEncoded = requiredEnvironment("APPSELL_SERVICE_CREDENTIAL_B64");

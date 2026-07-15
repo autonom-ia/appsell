@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
@@ -18,6 +19,7 @@ ASSET_WORKER_SUBJECT = "asset-worker-v1"
 ASSET_WORKER_EMAIL = "asset.worker@autonomia.site"
 DEMO_SUPERADMIN_SUBJECT = "demo-superadmin"
 DEMO_SUPERADMIN_EMAIL = "comercial@autonomia.site"
+EXPECTED_MIGRATION = "0014_multi_asset_player"
 LIBPQ_REDIRECT_ENVIRONMENT = (
     "PGHOST",
     "PGHOSTADDR",
@@ -69,6 +71,25 @@ def load_manifest() -> tuple[dict[str, Any], str]:
             raise RuntimeError(f"demo PDF size mismatch: {file_name}")
         if hashlib.sha256(payload).hexdigest() != lesson.get("sha256"):
             raise RuntimeError(f"demo PDF hash mismatch: {file_name}")
+    video = manifest.get("video")
+    expected_video_name = f"{video.get('slug')}.mp4" if isinstance(video, dict) else ""
+    if (
+        not isinstance(video, dict)
+        or video.get("lesson_id") != lessons[-1].get("lesson_id")
+        or video.get("file_name") != expected_video_name
+        or video.get("position") != 0
+        or not isinstance(video.get("bytes"), int)
+        or not 1 <= video["bytes"] <= 100 * 1024 * 1024
+        or not isinstance(video.get("sha256"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", video["sha256"])
+    ):
+        raise RuntimeError("invalid demo video manifest")
+    video_path = PDF_ROOT / video["file_name"]
+    video_payload = video_path.read_bytes()
+    if len(video_payload) != video["bytes"]:
+        raise RuntimeError(f"demo video size mismatch: {video['file_name']}")
+    if hashlib.sha256(video_payload).hexdigest() != video["sha256"]:
+        raise RuntimeError(f"demo video hash mismatch: {video['file_name']}")
     return manifest, hashlib.sha256(raw).hexdigest()
 
 
@@ -118,6 +139,37 @@ def validate_demo_database(connection: psycopg.Connection[Any]) -> None:
         raise RuntimeError("database is not marked as an AppSell demo reset target")
 
 
+def snapshot_assets(manifest: dict[str, Any], lesson: dict[str, Any]) -> list[dict[str, Any]]:
+    assets = [
+        {
+            "id": lesson["asset_id"],
+            "version": 1,
+            "title": lesson["title"],
+            "file_name": f"{lesson['slug']}.pdf",
+            "media_type": "application/pdf",
+            "byte_size": lesson["bytes"],
+            "sha256": lesson["sha256"],
+            "position": lesson["position"],
+        }
+    ]
+    video = manifest.get("video")
+    if isinstance(video, dict) and video.get("lesson_id") == lesson["lesson_id"]:
+        assets.insert(
+            0,
+            {
+                "id": video["asset_id"],
+                "version": 1,
+                "title": video["title"],
+                "file_name": video["file_name"],
+                "media_type": "video/mp4",
+                "byte_size": video["bytes"],
+                "sha256": video["sha256"],
+                "position": video["position"],
+            },
+        )
+    return assets
+
+
 def snapshot_for(manifest: dict[str, Any]) -> dict[str, Any]:
     seller = manifest["seller"]
     product = manifest["product"]
@@ -160,18 +212,7 @@ def snapshot_for(manifest: dict[str, Any]) -> dict[str, Any]:
                                 "content": lesson["summary"],
                                 "status": "active",
                                 "position": lesson["position"],
-                                "assets": [
-                                    {
-                                        "id": lesson["asset_id"],
-                                        "version": 1,
-                                        "title": lesson["title"],
-                                        "file_name": f"{lesson['slug']}.pdf",
-                                        "media_type": "application/pdf",
-                                        "byte_size": lesson["bytes"],
-                                        "sha256": lesson["sha256"],
-                                        "position": lesson["position"],
-                                    }
-                                ],
+                                "assets": snapshot_assets(manifest, lesson),
                             }
                             for lesson in lessons
                         ],
@@ -198,8 +239,8 @@ def prepare_demo_storage_cleanup(
     validate_demo_database(connection)
     connection.execute("select set_config('appsell.demo_reset_key',%s,true)", (DEMO_KEY,))
     version = connection.execute("select version_num from alembic_version").fetchone()
-    if version != ("0011_public_storefront",):
-        raise RuntimeError("database must be migrated to 0011_public_storefront")
+    if version != (EXPECTED_MIGRATION,):
+        raise RuntimeError(f"database must be migrated to {EXPECTED_MIGRATION}")
 
     connection.execute(
         """
@@ -330,8 +371,8 @@ def reset_demo(
     validate_demo_database(connection)
     connection.execute("select set_config('appsell.demo_reset_key',%s,true)", (DEMO_KEY,))
     version = connection.execute("select version_num from alembic_version").fetchone()
-    if version != ("0011_public_storefront",):
-        raise RuntimeError("database must be migrated to 0011_public_storefront")
+    if version != (EXPECTED_MIGRATION,):
+        raise RuntimeError(f"database must be migrated to {EXPECTED_MIGRATION}")
     unsafe_storage = connection.execute(
         """
         select exists(
@@ -733,6 +774,83 @@ def reset_demo(
                 lesson["position"],
             ),
         )
+        video = manifest.get("video")
+        if isinstance(video, dict) and video.get("lesson_id") == str(lesson_id):
+            video_asset_id = UUID(video["asset_id"])
+            connection.execute(
+                """
+                insert into asset_record(
+                  seller_organization_id,id,catalog_product_id,title,status
+                ) values(%s,%s,%s,%s,'active')
+                """,
+                (seller_id, video_asset_id, product_id, video["title"]),
+            )
+            connection.execute(
+                """
+                insert into asset_blob(
+                  seller_organization_id,id,storage_driver,storage_bucket,object_key,
+                  file_name,media_type,byte_size,sha256,magic_type,scanner_result,verified_at
+                ) values(%s,app_private.legacy_asset_blob_id(%s),'legacy_bundle','codex-demo',
+                  %s,%s,'video/mp4',%s,%s,'video/mp4','legacy_trusted',clock_timestamp())
+                """,
+                (
+                    seller_id,
+                    video_asset_id,
+                    video["file_name"],
+                    video["file_name"],
+                    video["bytes"],
+                    video["sha256"],
+                ),
+            )
+            connection.execute(
+                """
+                insert into asset_version(
+                  seller_organization_id,asset_id,version,blob_id,actor_identity_user_id
+                ) values(%s,%s,1,app_private.legacy_asset_blob_id(%s),%s)
+                """,
+                (seller_id, video_asset_id, video_asset_id, admin_id),
+            )
+            connection.execute(
+                """
+                insert into lesson_asset_draft(
+                  seller_organization_id,catalog_product_id,course_id,module_id,lesson_id,
+                  asset_id,asset_version,blob_id,position,status
+                ) values(%s,%s,%s,%s,%s,%s,1,app_private.legacy_asset_blob_id(%s),%s,'active')
+                """,
+                (
+                    seller_id,
+                    product_id,
+                    course_id,
+                    module_id,
+                    lesson_id,
+                    video_asset_id,
+                    video_asset_id,
+                    video["position"],
+                ),
+            )
+            connection.execute(
+                """
+                insert into learning_asset(
+                  seller_organization_id,id,catalog_product_id,course_id,module_id,
+                  lesson_id,seed_key,file_name,title,media_type,byte_size,sha256,
+                  position,status
+                ) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,'video/mp4',%s,%s,%s,'active')
+                """,
+                (
+                    seller_id,
+                    video_asset_id,
+                    product_id,
+                    course_id,
+                    module_id,
+                    lesson_id,
+                    video["slug"],
+                    video["file_name"],
+                    video["title"],
+                    video["bytes"],
+                    video["sha256"],
+                    video["position"],
+                ),
+            )
 
     snapshot = snapshot_for(manifest)
     connection.execute(

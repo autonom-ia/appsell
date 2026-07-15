@@ -73,12 +73,17 @@ def test_projection_pin_rls_and_player_are_bound_to_the_buyer() -> None:
               has_table_privilege('appsell_runtime','course_learning_state','SELECT'),
               has_table_privilege(
                 'appsell_runtime','app_private.learning_progress_request','SELECT'
+              ),
+              has_function_privilege(
+                'appsell_runtime',
+                'app_private.read_learning_player_v2(uuid,uuid,uuid)',
+                'EXECUTE'
               )
             """,
             (entitlement, publication, publication),
         ).fetchone()
     assert state == (
-        "0011_public_storefront",
+        "0014_multi_asset_player",
         publication,
         1,
         5,
@@ -87,6 +92,7 @@ def test_projection_pin_rls_and_player_are_bound_to_the_buyer() -> None:
         False,
         False,
         False,
+        True,
     )
 
     with psycopg.connect(RUNTIME_URL) as connection:
@@ -94,6 +100,12 @@ def test_projection_pin_rls_and_player_are_bound_to_the_buyer() -> None:
         player = connection.execute(
             "select app_private.read_learning_player(%s,%s,null)",
             (buyer, entitlement),
+        ).fetchone()
+        connection.rollback()
+        apply_context(connection, buyer, "learning.player.read")
+        final_player = connection.execute(
+            "select app_private.read_learning_player_v2(%s,%s,%s)",
+            (buyer, entitlement, UUID(manifest["video"]["lesson_id"])),
         ).fetchone()
         connection.rollback()
         apply_context(connection, admin, "learning.player.read")
@@ -106,11 +118,103 @@ def test_projection_pin_rls_and_player_are_bound_to_the_buyer() -> None:
     assert player[0]["publication"]["id"] == manifest["publication"]["id"]
     assert player[0]["selected_lesson_id"] == manifest["lessons"][0]["lesson_id"]
     assert player[0]["selected_asset"]["id"] == manifest["lessons"][0]["asset_id"]
+    assert "selected_assets" not in player[0]
+    assert final_player is not None
+    final_assets = final_player[0]["selected_assets"]
+    assert [asset["media_type"] for asset in final_assets] == ["video/mp4", "application/pdf"]
+    assert {asset["id"] for asset in final_assets} == {
+        manifest["video"]["asset_id"],
+        manifest["lessons"][-1]["asset_id"],
+    }
+    assert final_player[0]["selected_asset"] == final_assets[0]
     course_lessons = [
         lesson for module in player[0]["course"]["modules"] for lesson in module["lessons"]
     ]
     assert course_lessons[0]["content"] == manifest["lessons"][0]["summary"]
     assert all(lesson["content"] == "" for lesson in course_lessons[1:])
+
+
+def test_publication_rejects_a_101st_asset_for_one_lesson() -> None:
+    assert ADMIN_URL
+    manifest, _ = load_manifest()
+    seller = UUID(manifest["seller"]["id"])
+    product = UUID(manifest["product"]["id"])
+    publication = UUID(manifest["publication"]["id"])
+    course = UUID(manifest["course"]["id"])
+    module = UUID(manifest["module"]["id"])
+    lesson = UUID(manifest["video"]["lesson_id"])
+    admin = identity_id(manifest["personas"]["admin"]["subject"])
+
+    def insert_asset(connection: psycopg.Connection[Any], position: int) -> None:
+        asset = uuid4()
+        blob = uuid4()
+        file_name = f"limit-{position}.pdf"
+        object_key = f"asset-limit/{blob}.pdf"
+        sha256 = hashlib.sha256(object_key.encode()).hexdigest()
+        connection.execute(
+            "insert into asset_record(seller_organization_id,id,catalog_product_id,title) "
+            "values(%s,%s,%s,%s)",
+            (seller, asset, product, f"Material limite {position}"),
+        )
+        connection.execute(
+            """
+            insert into asset_blob(
+              seller_organization_id,id,storage_driver,storage_bucket,object_key,
+              file_name,media_type,byte_size,sha256,magic_type,scanner_result,verified_at
+            ) values(%s,%s,'legacy_bundle','asset-limit',%s,%s,'application/pdf',1,%s,
+              'application/pdf','legacy_trusted',clock_timestamp())
+            """,
+            (seller, blob, object_key, file_name, sha256),
+        )
+        connection.execute(
+            "insert into asset_version(seller_organization_id,asset_id,version,blob_id,"
+            "actor_identity_user_id) values(%s,%s,1,%s,%s)",
+            (seller, asset, blob, admin),
+        )
+        connection.execute(
+            """
+            insert into publication_asset(
+              seller_organization_id,catalog_product_id,publication_id,course_id,module_id,
+              lesson_id,asset_id,asset_version,blob_id,position,title,file_name,media_type,
+              byte_size,sha256,storage_driver,storage_bucket,object_key
+            ) values(%s,%s,%s,%s,%s,%s,%s,1,%s,%s,%s,%s,'application/pdf',1,%s,
+              'legacy_bundle','asset-limit',%s)
+            """,
+            (
+                seller,
+                product,
+                publication,
+                course,
+                module,
+                lesson,
+                asset,
+                blob,
+                position,
+                f"Material limite {position}",
+                file_name,
+                sha256,
+                object_key,
+            ),
+        )
+
+    with psycopg.connect(ADMIN_URL) as connection:
+        existing = connection.execute(
+            "select count(*) from publication_asset where seller_organization_id=%s "
+            "and publication_id=%s and lesson_id=%s",
+            (seller, publication, lesson),
+        ).fetchone()
+        assert existing is not None and existing[0] == 2
+        for position in range(existing[0], 100):
+            insert_asset(connection, 1_000 + position)
+        connection.commit()
+        count = connection.execute(
+            "select count(*) from publication_asset where seller_organization_id=%s "
+            "and publication_id=%s and lesson_id=%s",
+            (seller, publication, lesson),
+        ).fetchone()
+        assert count == (100,)
+        with pytest.raises(psycopg.errors.CheckViolation):
+            insert_asset(connection, 2_000)
 
 
 def test_learning_context_is_cleared_before_connection_reuse() -> None:

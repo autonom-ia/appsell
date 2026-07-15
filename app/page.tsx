@@ -6,7 +6,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ e
   return (
     <div className="landing">
       <a className="skip-link" href="#inicio">Pular para o conteúdo</a>
-      <header><nav className="landing-nav" aria-label="Navegação"><a className="landing-brand" href="#inicio"><span className="brand-mark" aria-hidden="true">a</span><strong>sell<span>.</span></strong></a><span className="demo-pill">DEMO LOCAL</span></nav></header>
+      <header><nav className="landing-nav" aria-label="Navegação"><a className="landing-brand" href="#inicio" aria-label="Autonom.ia Sell — início"><span className="brand-mark" aria-hidden="true">a</span><strong>Autonom.ia <span>Sell</span></strong></a><span className="demo-pill">DEMO LOCAL</span></nav></header>
       <main id="inicio" tabIndex={-1}>
       {error === "session_unavailable" ? <p className="landing-alert" role="alert"><strong>Sessão indisponível.</strong> O ambiente local não respondeu. Tente entrar novamente em alguns instantes.</p> : null}
       <section className="hero">

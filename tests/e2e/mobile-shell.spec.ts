@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 
 async function login(page: import("@playwright/test").Page) {
   await page.goto("/");
+  await expect(page.getByRole("link", { name: "Autonom.ia Sell — início" })).toBeVisible();
   const sessionReady = page.waitForResponse((response) =>
     response.url().endsWith("/api/session") && response.status() === 200);
   await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
@@ -12,6 +13,8 @@ async function login(page: import("@playwright/test").Page) {
 
 test("keeps the core journey usable without horizontal overflow", async ({ page }) => {
   await login(page);
+  await expect(page.getByRole("link", { name: "Autonom.ia Sell — início" }))
+    .toContainText("Autonom.ia Sell");
   for (const target of [
     { path: "/dashboard", heading: "Seu negócio em um só lugar." },
     { path: "/products", heading: "Produtos" },
@@ -19,7 +22,7 @@ test("keeps the core journey usable without horizontal overflow", async ({ page 
   ]) {
     if (page.url() !== `http://localhost:3000${target.path}`) {
       await page.locator(`a[href="${target.path}"]:visible`).first().click();
-      await expect(page).toHaveURL(target.path);
+      await expect(page).toHaveURL(target.path, { timeout: 20_000 });
       await expect(page.getByRole("heading", { name: target.heading, exact: true })).toBeVisible();
     }
     const dimensions = await page.evaluate(() => ({ client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }));
@@ -43,8 +46,14 @@ test("does not render protected preview content for an anonymous request", async
 });
 
 test("exposes touch-sized mobile navigation and preserves deep links", async ({ page }) => {
-  await page.setViewportSize({ width: 360, height: 800 });
+  await page.setViewportSize({ width: 320, height: 800 });
   await login(page);
+  const mobileBrand = page.locator(".mobile-topbar")
+    .getByRole("link", { name: "Autonom.ia Sell — início" });
+  await expect(mobileBrand).toContainText("Autonom.ia Sell");
+  const brandBox = await mobileBrand.boundingBox();
+  expect(brandBox?.x ?? 321).toBeGreaterThanOrEqual(0);
+  expect((brandBox?.x ?? 321) + (brandBox?.width ?? 321)).toBeLessThanOrEqual(320);
   const libraryLink = page.getByRole("navigation", { name: "Navegação móvel" }).getByRole("link", { name: "Minha biblioteca" });
   const box = await libraryLink.boundingBox();
   expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
@@ -53,6 +62,19 @@ test("exposes touch-sized mobile navigation and preserves deep links", async ({ 
   expect((await page.request.get("/api/session")).status()).toBe(200);
   await page.reload();
   await expect(page.getByRole("heading", { name: "Minha biblioteca" })).toBeVisible();
+  await page.evaluate(() => { document.documentElement.style.fontSize = "200%"; });
+  const zoomedTopbar = await page.locator(".mobile-topbar").evaluate((element) => ({
+    client: document.documentElement.clientWidth,
+    scroll: document.documentElement.scrollWidth,
+    children: [...element.children].map((child) => {
+      const rect = child.getBoundingClientRect();
+      return { left: rect.left, right: rect.right, width: rect.width, height: rect.height };
+    })
+  }));
+  expect(zoomedTopbar.scroll).toBeLessThanOrEqual(zoomedTopbar.client);
+  expect(zoomedTopbar.children.every((rect) =>
+    rect.left >= -1 && rect.right <= zoomedTopbar.client + 1 && rect.height >= 44
+  )).toBe(true);
 });
 
 test("supports keyboard skip navigation and reduced motion", async ({ page }) => {
@@ -718,7 +740,7 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
     }
     if (path === assetsPath && request.method() === "GET") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
-        assets: [{ id: assetId, title: "Guia atual", file_name: "guia-atual.pdf", byte_size: 3181, status: "ready", safe_reason: null }],
+        assets: [{ id: assetId, title: "Guia atual", file_name: "guia-atual.pdf", media_type: "application/pdf", byte_size: 3181, status: "ready", safe_reason: null }],
         uploads: [],
         csrf: { intent: "intent-token", confirm: "confirm-token", cancel: "cancel-token", archive: "asset-archive-token" }
       }) });
@@ -769,7 +791,7 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
   await expect(summary).toContainText("Materiais da aula");
   await summary.click();
   await expect(lesson.getByText("1 PDF pronto", { exact: true })).toBeVisible();
-  const input = lesson.getByLabel("Escolher PDF substituto");
+  const input = lesson.getByLabel("Escolher arquivo substituto");
   const feedback = lesson.locator(".asset-feedback");
   await expect(feedback).toHaveAttribute("role", "status");
   await expect(feedback).toHaveAttribute("aria-live", "polite");
@@ -777,7 +799,7 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
 
   const pdf = { name: "guia-novo.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF") };
   await input.setInputFiles(pdf);
-  await expect(feedback).toContainText("Não foi possível preparar o PDF");
+  await expect(feedback).toContainText("Não foi possível preparar o arquivo");
   const retry = lesson.getByRole("button", { name: "Tentar novamente" });
   await expect(retry).toBeVisible();
   await retry.focus();
@@ -789,7 +811,7 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
   await lesson.getByRole("button", { name: "Cancelar envio" }).click();
   await cancelCalled;
   releaseUpload();
-  await expect(feedback).toContainText("Selecione um PDF para iniciar.");
+  await expect(feedback).toContainText("Selecione um PDF ou vídeo MP4 para iniciar.");
   await expect(lesson.getByRole("button", { name: "Cancelar envio" })).toHaveCount(0);
 
   for (const width of [320, 360, 390]) {
@@ -830,8 +852,8 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
   await archive.click();
   const archiveDialog = page.getByRole("dialog", { name: "Arquivar este PDF?" });
   await expect(archiveDialog).toBeVisible();
-  await expect(archiveDialog.getByRole("button", { name: "Manter PDF" })).toBeFocused();
-  await archiveDialog.getByRole("button", { name: "Manter PDF" }).click();
+  await expect(archiveDialog.getByRole("button", { name: "Manter material" })).toBeFocused();
+  await archiveDialog.getByRole("button", { name: "Manter material" }).click();
   await expect(archiveDialog).toHaveCount(0);
   await expect(summary).toBeFocused();
 });

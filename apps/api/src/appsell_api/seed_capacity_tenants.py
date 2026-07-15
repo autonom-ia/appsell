@@ -11,14 +11,13 @@ import psycopg
 from psycopg.conninfo import conninfo_to_dict
 from psycopg.types.json import Jsonb
 
-from appsell_api.reset_demo_tenant import load_manifest
+from appsell_api.reset_demo_tenant import EXPECTED_MIGRATION, load_manifest
 
 CAPACITY_CONFIRMATION = "capacity-100-tenants-v1"
 CAPACITY_DATABASE_MARKER = "appsell-capacity-target-v1"
 CAPACITY_TENANTS = 100
 CAPACITY_BUYERS_PER_TENANT = 10
 CAPACITY_BUYERS = CAPACITY_TENANTS * CAPACITY_BUYERS_PER_TENANT
-EXPECTED_MIGRATION = "0011_public_storefront"
 
 
 def parse_args() -> argparse.Namespace:

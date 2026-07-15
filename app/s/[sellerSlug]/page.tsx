@@ -24,7 +24,7 @@ export default async function SellerStorefront({
     <header className="storefront-topbar">
       <Link className="landing-brand" href="/" aria-label="Autonom.ia Sell — início">
         <span className="brand-mark" aria-hidden="true">a</span>
-        <strong>sell<span>.</span></strong>
+        <strong>Autonom.ia <span>Sell</span></strong>
       </Link>
       <Link className="storefront-login" href={loginHref}>Entrar</Link>
     </header>

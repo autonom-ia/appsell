@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { discardPendingAssetUpload, formatBytes, validIntent, type UploadIntentPayload } from "../app/components/lesson-asset-panel";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { boundedAssetFetch, discardPendingAssetUpload, formatBytes, validIntent, type UploadIntentPayload } from "../app/components/lesson-asset-panel";
 
 const valid: UploadIntentPayload = {
   upload_id: "55000000-0000-4000-8000-000000000001",
@@ -15,6 +15,11 @@ const valid: UploadIntentPayload = {
 };
 const NOW = Date.parse("2026-07-11T20:00:00Z");
 const APP_ORIGIN = "http://localhost:3000";
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 describe("direct upload intent boundary", () => {
   it("accepts only the complete signed-header allowlist", () => {
@@ -45,6 +50,32 @@ describe("lesson asset size labels", () => {
   it("does not round a small PDF down to zero MiB", () => {
     expect(formatBytes(3181)).toBe("3,1 KiB");
     expect(formatBytes(2 * 1024 * 1024)).toBe("2 MiB");
+  });
+});
+
+describe("bounded asset control requests", () => {
+  it("reports a timeout as a failure instead of a voluntary cancellation", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+    }));
+    const request = boundedAssetFetch("/upload-intents", { method: "POST" }, 100, new Set());
+    const rejection = expect(request).rejects.toThrow("asset_request_timeout");
+    await vi.advanceTimersByTimeAsync(100);
+    await rejection;
+  });
+
+  it("preserves AbortError when transient work is explicitly stopped", async () => {
+    const controllers = new Set<AbortController>();
+    vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+    }));
+    const request = boundedAssetFetch("/uploads/status", {}, 10_000, controllers);
+    const rejection = expect(request).rejects.toMatchObject({ name: "AbortError" });
+    expect(controllers).toHaveLength(1);
+    for (const controller of controllers) controller.abort();
+    await rejection;
+    expect(controllers).toHaveLength(0);
   });
 });
 

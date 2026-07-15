@@ -1,9 +1,11 @@
 "use client";
 
 import { ChangeEvent, useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { sha256File } from "../../lib/file-sha256.client";
 import { AccessibleDialog } from "./accessible-dialog";
 
 const MAX_PDF_BYTES = 10 * 1024 * 1024;
+const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
 const ALLOWED_UPLOAD_HEADERS = new Set([
   "content-type",
   "x-amz-checksum-sha256",
@@ -24,6 +26,7 @@ interface AssetView {
   title: string;
   file_name: string;
   byte_size: number;
+  media_type: "application/pdf" | "video/mp4";
   status: AssetStatus;
   safe_reason?: string | null;
 }
@@ -75,7 +78,7 @@ type UploadAction =
 const initialUploadState: UploadState = {
   phase: "idle",
   progress: 0,
-  message: "Selecione um PDF para iniciar.",
+  message: "Selecione um PDF ou vídeo MP4 para iniciar.",
   uploadId: null,
   fileName: ""
 };
@@ -127,6 +130,7 @@ export function LessonAssetPanel({
   const [archiving, setArchiving] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const xhrRef = useRef<XMLHttpRequest | null>(null);
+  const hashControllerRef = useRef<AbortController | null>(null);
   const pollTimerRef = useRef<number | null>(null);
   const pollingUploadRef = useRef<string | null>(null);
   const generationRef = useRef(0);
@@ -134,6 +138,7 @@ export function LessonAssetPanel({
   const activeUploadIdRef = useRef<string | null>(null);
   const discardTaskRef = useRef<Promise<void> | null>(null);
   const cancelRequestsRef = useRef(new Map<string, Promise<void>>());
+  const fetchControllersRef = useRef(new Set<AbortController>());
   const progressFrameRef = useRef<number | null>(null);
   const pendingProgressRef = useRef(0);
   const archiveCancelRef = useRef<HTMLButtonElement>(null);
@@ -143,13 +148,21 @@ export function LessonAssetPanel({
   const busy = ["hashing", "creating", "uploading", "confirming", "verifying"].includes(state.phase);
   const dirty = busy || state.phase === "failed";
 
+  const boundedFetch = useCallback(async (input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = 15_000, abortOnStop = true) => {
+    return await boundedAssetFetch(input, init, timeoutMs, fetchControllersRef.current, abortOnStop);
+  }, []);
+
   useEffect(() => onActivityChange(lessonId, { dirty, busy }), [busy, dirty, lessonId, onActivityChange]);
   useEffect(() => () => onActivityChange(lessonId, { dirty: false, busy: false }), [lessonId, onActivityChange]);
 
   const stopTransientWork = useCallback(() => {
     generationRef.current += 1;
+    hashControllerRef.current?.abort();
+    hashControllerRef.current = null;
     xhrRef.current?.abort();
     xhrRef.current = null;
+    for (const controller of fetchControllersRef.current) controller.abort();
+    fetchControllersRef.current.clear();
     if (pollTimerRef.current !== null) window.clearTimeout(pollTimerRef.current);
     pollTimerRef.current = null;
     pollingUploadRef.current = null;
@@ -167,13 +180,13 @@ export function LessonAssetPanel({
       const body = new FormData();
       body.set("_csrf", csrf.cancel);
       body.set("idempotency_key", crypto.randomUUID());
-      const response = await fetch(`${base}/uploads/${uploadId}/cancel`, { method: "POST", body, keepalive: true });
+      const response = await boundedFetch(`${base}/uploads/${uploadId}/cancel`, { method: "POST", body, keepalive: true }, 10_000, false);
       if (!response.ok) throw new Error(`cancel_${response.status}`);
     })();
     cancelRequestsRef.current.set(uploadId, request);
     void request.catch(() => cancelRequestsRef.current.delete(uploadId));
     return request;
-  }, [base, csrf]);
+  }, [base, boundedFetch, csrf]);
 
   const discardCurrentUpload = useCallback(() => {
     if (discardTaskRef.current) return discardTaskRef.current;
@@ -213,7 +226,7 @@ export function LessonAssetPanel({
   const load = useCallback(async () => {
     dispatch({ type: "phase", phase: "loading", message: "Carregando materiais…" });
     try {
-      const response = await fetch(base, { cache: "no-store" });
+      const response = await boundedFetch(base, { cache: "no-store" }, 10_000);
       if (!response.ok) throw new Error("asset_list_failed");
       const payload = await response.json() as AssetListPayload;
       if (!validListPayload(payload)) throw new Error("asset_list_invalid");
@@ -231,7 +244,7 @@ export function LessonAssetPanel({
     } catch {
       dispatch({ type: "phase", phase: "failed", message: "Não foi possível carregar os materiais. Tente novamente." });
     }
-  }, [base]);
+  }, [base, boundedFetch]);
 
   useEffect(() => {
     if (!opened || loaded) return;
@@ -251,7 +264,7 @@ export function LessonAssetPanel({
         return;
       }
       try {
-        const response = await fetch(`${base}/uploads/${uploadId}`, { cache: "no-store" });
+        const response = await boundedFetch(`${base}/uploads/${uploadId}`, { cache: "no-store" }, 10_000);
         if (!response.ok) throw new Error("status_failed");
         const payload = await response.json() as UploadStatusPayload;
         if (payload.upload_id !== uploadId) throw new Error("status_invalid");
@@ -259,7 +272,7 @@ export function LessonAssetPanel({
           activeUploadIdRef.current = null;
           setAssets((current) => [payload.asset!, ...current.filter((asset) => asset.id !== payload.asset!.id)]);
           setUploads((current) => current.filter((upload) => upload.id !== uploadId));
-          dispatch({ type: "phase", phase: "ready", message: "PDF pronto para publicar.", uploadId });
+          dispatch({ type: "phase", phase: "ready", message: `${mediaLabel(payload.asset.media_type)} pronto para publicar.`, uploadId });
           pollingUploadRef.current = null;
           if (inputRef.current) inputRef.current.value = "";
           onCommitted();
@@ -286,13 +299,14 @@ export function LessonAssetPanel({
         attempt += 1;
         pollTimerRef.current = window.setTimeout(run, delay + Math.floor(Math.random() * 250));
       } catch {
+        if (generation !== generationRef.current) return;
         const delay = Math.min(5_000, [1_500, 2_000, 4_000, 5_000][attempt] ?? 5_000);
         attempt += 1;
         pollTimerRef.current = window.setTimeout(run, delay);
       }
     };
     void run();
-  }, [base, onCommitted]);
+  }, [base, boundedFetch, onCommitted]);
 
   useEffect(() => {
     if (opened && state.phase === "verifying" && state.uploadId && pollTimerRef.current === null) {
@@ -305,45 +319,51 @@ export function LessonAssetPanel({
     if (!file || busy || archived) return;
     stopTransientWork();
     const generation = generationRef.current;
-    if (file.size < 1 || file.size > MAX_PDF_BYTES) {
-      dispatch({ type: "phase", phase: "failed", message: "Escolha um PDF de até 10 MiB.", fileName: file.name });
+    const mediaType = selectedMediaType(file);
+    const maximum = mediaType === "application/pdf" ? MAX_PDF_BYTES : mediaType === "video/mp4" ? MAX_VIDEO_BYTES : 0;
+    if (!mediaType || file.size < 1 || file.size > maximum) {
+      dispatch({ type: "phase", phase: "failed", message: "Escolha um PDF de até 10 MiB ou vídeo MP4 de até 100 MiB.", fileName: file.name });
       event.target.value = "";
       return;
     }
-    if (!file.name.toLowerCase().endsWith(".pdf") || (file.type && file.type !== "application/pdf")) {
-      dispatch({ type: "phase", phase: "failed", message: "O arquivo precisa ser um PDF válido.", fileName: file.name });
-      event.target.value = "";
-      return;
-    }
-    dispatch({ type: "phase", phase: "hashing", message: "Verificando o arquivo neste dispositivo…", fileName: file.name });
+    dispatch({ type: "phase", phase: "hashing", message: "Verificando o arquivo neste dispositivo — 0%", fileName: file.name });
+    const hashController = new AbortController();
+    hashControllerRef.current = hashController;
     try {
-      const bytes = await file.arrayBuffer();
-      const digest = await crypto.subtle.digest("SHA-256", bytes);
+      const sha256 = await sha256File(file, hashController.signal, (progress) => {
+        if (generation === generationRef.current) {
+          dispatch({ type: "phase", phase: "hashing", message: `Verificando o arquivo neste dispositivo — ${progress}%` });
+        }
+      });
       if (generation !== generationRef.current) return;
-      const sha256 = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-      await createIntentAndUpload(file, sha256, generation);
-    } catch {
+      await createIntentAndUpload(file, mediaType, sha256, generation);
+    } catch (error) {
       if (generation !== generationRef.current) return;
-      dispatch({ type: "phase", phase: "failed", message: "Não foi possível preparar o PDF. Escolha o arquivo novamente." });
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      dispatch({ type: "phase", phase: "failed", message: "Não foi possível preparar o arquivo. Escolha-o novamente." });
+    } finally {
+      if (hashControllerRef.current === hashController) hashControllerRef.current = null;
     }
   }
 
-  async function createIntentAndUpload(file: File, sha256: string, generation: number) {
+  async function createIntentAndUpload(file: File, mediaType: "application/pdf" | "video/mp4", sha256: string, generation: number) {
     if (!csrf) throw new Error("missing_csrf");
     dispatch({ type: "phase", phase: "creating", message: "Preparando envio seguro…", fileName: file.name });
     const body = new FormData();
     body.set("_csrf", csrf.intent);
     body.set("idempotency_key", crypto.randomUUID());
     body.set("expected_course_version", String(courseVersion));
-    body.set("title", file.name.replace(/\.pdf$/i, ""));
+    body.set("title", file.name.replace(/[.](pdf|mp4)$/i, ""));
     body.set("file_name", file.name);
-    body.set("media_type", "application/pdf");
+    body.set("media_type", mediaType);
     body.set("byte_size", String(file.size));
     body.set("sha256", sha256);
     const currentAsset = assets.find((asset) => asset.status === "ready");
     if (currentAsset) body.set("existing_asset_id", currentAsset.id);
     const intentRequest = (async () => {
-      const response = await fetch(`${base}/upload-intents`, { method: "POST", body });
+      // Do not abort an ambiguous intent request during UI cancellation: wait for its
+      // bounded response, recover the upload id, then issue the durable cancel call.
+      const response = await boundedFetch(`${base}/upload-intents`, { method: "POST", body }, 15_000, false);
       if (!response.ok) throw new Error(`intent_${response.status}`);
       const intent = await response.json() as UploadIntentPayload;
       if (!validIntent(intent, window.location.origin)) throw new Error("intent_invalid");
@@ -363,7 +383,7 @@ export function LessonAssetPanel({
       if (!discardTaskRef.current) onCommitted();
       return;
     }
-    dispatch({ type: "phase", phase: "uploading", message: "Enviando PDF — 0%", uploadId: intent.upload_id });
+    dispatch({ type: "phase", phase: "uploading", message: `Enviando ${mediaLabel(mediaType)} — 0%`, uploadId: intent.upload_id });
     await uploadDirect(file, intent, generation);
   }
 
@@ -373,7 +393,7 @@ export function LessonAssetPanel({
       xhrRef.current = xhr;
       xhr.open("PUT", intent.upload_url, true);
       xhr.withCredentials = false;
-      xhr.timeout = 120_000;
+      xhr.timeout = 290_000;
       for (const [name, value] of Object.entries(intent.required_headers)) {
         if (!ALLOWED_UPLOAD_HEADERS.has(name.toLowerCase())) {
           reject(new Error("unsafe_upload_header"));
@@ -389,7 +409,7 @@ export function LessonAssetPanel({
           progressFrameRef.current = null;
           const progress = pendingProgressRef.current;
           dispatch({ type: "progress", progress });
-          dispatch({ type: "phase", phase: "uploading", message: `Enviando PDF — ${progress}%` });
+          dispatch({ type: "phase", phase: "uploading", message: `Enviando arquivo — ${progress}%` });
         });
       };
       xhr.onerror = () => reject(new Error("upload_network"));
@@ -415,7 +435,7 @@ export function LessonAssetPanel({
     const body = new FormData();
     body.set("_csrf", csrf.confirm);
     body.set("idempotency_key", crypto.randomUUID());
-    const response = await fetch(`${base}/uploads/${uploadId}/confirm`, { method: "POST", body });
+    const response = await boundedFetch(`${base}/uploads/${uploadId}/confirm`, { method: "POST", body }, 15_000);
     if (response.status !== 202 && !response.ok) throw new Error(`confirm_${response.status}`);
     if (generation !== generationRef.current) return;
     dispatch({ type: "phase", phase: "verifying", message: "Arquivo enviado. Verificando segurança…", uploadId });
@@ -434,10 +454,8 @@ export function LessonAssetPanel({
     body.set("_csrf", csrf.archive);
     body.set("idempotency_key", crypto.randomUUID());
     body.set("expected_course_version", String(courseVersion));
-    const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 8_000);
     try {
-      const response = await fetch(`${base}/${archiveTarget.id}/archive`, { method: "POST", body, signal: controller.signal });
+      const response = await boundedFetch(`${base}/${archiveTarget.id}/archive`, { method: "POST", body }, 8_000);
       if (!response.ok) throw new Error("archive_failed");
       setAssets((current) => current.filter((asset) => asset.id !== archiveTarget.id));
       setArchiveTarget(null);
@@ -447,16 +465,16 @@ export function LessonAssetPanel({
     } catch {
       setArchiveError("Não foi possível arquivar. Recarregue os materiais e tente novamente.");
     } finally {
-      window.clearTimeout(timeout);
       setArchiving(false);
     }
   }
 
   const readyAsset = assets.find((asset) => asset.status === "ready");
+  const readyLabel = readyAsset ? mediaLabel(readyAsset.media_type) : "material";
   const summary = !loaded
     ? "Abrir para carregar"
     : readyAsset
-      ? "1 PDF pronto"
+      ? `1 ${readyLabel} pronto`
       : uploads.some((upload) => ["pending", "uploaded", "verifying"].includes(upload.status))
         ? "Verificação em andamento"
         : "Nenhum material";
@@ -466,14 +484,14 @@ export function LessonAssetPanel({
       <summary ref={summaryRef}><span>Materiais da aula</span><small>{summary}</small></summary>
       <div className="lesson-assets-body" aria-busy={busy}>
         {readyAsset ? <article className="asset-status-card state-ready">
-          <div><span className="asset-state">PDF pronto para publicar</span><strong dir="auto">{readyAsset.title}</strong><small dir="auto">{readyAsset.file_name} · {formatBytes(readyAsset.byte_size)}</small></div>
-          {!archived ? <div className="asset-actions"><button className="secondary-button" type="button" disabled={busy} onClick={() => inputRef.current?.click()}>Substituir PDF</button><button className="danger-button" type="button" disabled={busy} onClick={() => setArchiveTarget(readyAsset)}>Arquivar PDF</button></div> : null}
+          <div><span className="asset-state">{readyLabel} pronto para publicar</span><strong dir="auto">{readyAsset.title}</strong><small dir="auto">{readyAsset.file_name} · {formatBytes(readyAsset.byte_size)}</small></div>
+          {!archived ? <div className="asset-actions"><button className="secondary-button" type="button" disabled={busy} onClick={() => inputRef.current?.click()}>Substituir {readyLabel}</button><button className="danger-button" type="button" disabled={busy} onClick={() => setArchiveTarget(readyAsset)}>Arquivar {readyLabel}</button></div> : null}
         </article> : null}
 
         {!archived && loaded ? <div className="asset-uploader">
-          <label className="asset-file-label" htmlFor={`asset-file-${lessonId}`}>{readyAsset ? "Escolher PDF substituto" : "Adicione um material em PDF"}</label>
-          <input ref={inputRef} id={`asset-file-${lessonId}`} type="file" accept="application/pdf,.pdf" onChange={(event) => void selectFile(event)} disabled={busy}/>
-          <p className="asset-help">PDF de até 10 MiB. O arquivo só entra em uma nova publicação depois da verificação.</p>
+          <label className="asset-file-label" htmlFor={`asset-file-${lessonId}`}>{readyAsset ? "Escolher arquivo substituto" : "Adicione um PDF ou vídeo MP4"}</label>
+          <input ref={inputRef} id={`asset-file-${lessonId}`} type="file" accept="application/pdf,.pdf,video/mp4,.mp4" onChange={(event) => void selectFile(event)} disabled={busy}/>
+          <p className="asset-help">PDF até 10 MiB ou MP4 até 100 MiB. O arquivo só entra em uma nova publicação depois da verificação.</p>
         </div> : null}
 
         <div className={`asset-feedback state-${state.phase}`} role="status" aria-live="polite" aria-atomic="true" tabIndex={state.phase === "failed" ? -1 : undefined}>
@@ -489,17 +507,29 @@ export function LessonAssetPanel({
 
     {archiveTarget ? <AccessibleDialog titleId={`archive-asset-title-${lessonId}`} descriptionId={`archive-asset-description-${lessonId}`} initialFocusRef={archiveCancelRef} returnFocusRef={summaryRef} onClose={() => { if (!archiving) setArchiveTarget(null); }}>
       <p className="eyebrow">Arquivar material</p>
-      <h2 id={`archive-asset-title-${lessonId}`}>Arquivar este PDF?</h2>
+      <h2 id={`archive-asset-title-${lessonId}`}>Arquivar este {archiveTarget ? mediaLabel(archiveTarget.media_type) : "material"}?</h2>
       <p id={`archive-asset-description-${lessonId}`}>Ele sairá do rascunho da aula <strong>{lessonTitle}</strong>. Publicações anteriores e alunos com acesso a elas continuarão usando a versão já publicada.</p>
       {archiveError ? <p className="form-error" role="alert">{archiveError}</p> : null}
-      <div className="dialog-actions"><button ref={archiveCancelRef} className="secondary-button" type="button" disabled={archiving} onClick={() => setArchiveTarget(null)}>Manter PDF</button><button className="danger-button" type="button" disabled={archiving} onClick={() => void archiveAsset()}>{archiving ? "Arquivando…" : "Arquivar PDF"}</button></div>
+      <div className="dialog-actions"><button ref={archiveCancelRef} className="secondary-button" type="button" disabled={archiving} onClick={() => setArchiveTarget(null)}>Manter material</button><button className="danger-button" type="button" disabled={archiving} onClick={() => void archiveAsset()}>{archiving ? "Arquivando…" : "Arquivar material"}</button></div>
     </AccessibleDialog> : null}
   </div>;
 }
 
 function validListPayload(value: AssetListPayload): boolean {
   return Array.isArray(value.assets) && Array.isArray(value.uploads) && Boolean(value.csrf)
+    && value.assets.every((asset) => asset.media_type === "application/pdf" || asset.media_type === "video/mp4")
     && ["intent", "confirm", "cancel", "archive"].every((key) => typeof value.csrf[key as keyof AssetListPayload["csrf"]] === "string");
+}
+
+function selectedMediaType(file: File): "application/pdf" | "video/mp4" | null {
+  const lower = file.name.toLowerCase();
+  if (lower.endsWith(".pdf") && (!file.type || file.type === "application/pdf")) return "application/pdf";
+  if (lower.endsWith(".mp4") && (!file.type || file.type === "video/mp4")) return "video/mp4";
+  return null;
+}
+
+function mediaLabel(mediaType: "application/pdf" | "video/mp4") {
+  return mediaType === "video/mp4" ? "vídeo" : "PDF";
 }
 
 export function validIntent(
@@ -532,6 +562,33 @@ export function formatBytes(value: number): string {
     return `${(value / 1024).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} KiB`;
   }
   return `${(value / (1024 * 1024)).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} MiB`;
+}
+
+export async function boundedAssetFetch(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  timeoutMs: number,
+  stopControllers: Set<AbortController>,
+  abortOnStop = true
+) {
+  const controller = new AbortController();
+  if (abortOnStop) stopControllers.add(controller);
+  let timedOut = false;
+  const timeout = globalThis.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (timedOut && error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("asset_request_timeout");
+    }
+    throw error;
+  } finally {
+    globalThis.clearTimeout(timeout);
+    if (abortOnStop) stopControllers.delete(controller);
+  }
 }
 
 export async function discardPendingAssetUpload(
