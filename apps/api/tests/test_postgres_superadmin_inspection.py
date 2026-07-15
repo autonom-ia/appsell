@@ -477,11 +477,15 @@ def test_concurrent_grant_revocation_prevents_inspection_start() -> None:
     assert ADMIN_URL and RUNTIME_URL
     token = "G" * 43
     start_entered = Event()
+    runtime_pid: list[int] = []
 
     def attempt_start() -> bool:
-        start_entered.set()
         try:
             with psycopg.connect(RUNTIME_URL) as runtime_connection:
+                pid = runtime_connection.execute("select pg_backend_pid()").fetchone()
+                assert pid is not None
+                runtime_pid.append(pid[0])
+                start_entered.set()
                 start_inspection(runtime_connection, token)
                 runtime_connection.commit()
             return True
@@ -490,16 +494,33 @@ def test_concurrent_grant_revocation_prevents_inspection_start() -> None:
 
     with psycopg.connect(ADMIN_URL) as admin_connection:
         admin_connection.execute(
-            "update platform_grant set status='revoked',revoked_at=clock_timestamp() "
+            "update platform_grant set status='active',revoked_at=null "
             "where identity_user_id=%s and role='platform_superadmin'",
             (SUPERADMIN_ID,),
         )
+        admin_connection.commit()
+        revoked = admin_connection.execute(
+            "update platform_grant set status='revoked',revoked_at=clock_timestamp() "
+            "where identity_user_id=%s and role='platform_superadmin' returning status",
+            (SUPERADMIN_ID,),
+        ).fetchone()
+        assert revoked == ("revoked",)
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(attempt_start)
             assert start_entered.wait(timeout=2)
-            time.sleep(0.1)
-            assert not future.done()
+            deadline = time.monotonic() + 2
+            lock_observed = False
+            while time.monotonic() < deadline:
+                wait_event = admin_connection.execute(
+                    "select wait_event_type from pg_stat_activity where pid=%s",
+                    (runtime_pid[0],),
+                ).fetchone()
+                if wait_event == ("Lock",):
+                    lock_observed = True
+                    break
+                time.sleep(0.01)
             admin_connection.commit()
+            assert lock_observed, "inspection start did not wait on the grant revocation lock"
             assert future.result(timeout=10) is False
     with psycopg.connect(ADMIN_URL) as connection:
         assert connection.execute(
