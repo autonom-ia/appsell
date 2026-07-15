@@ -259,7 +259,7 @@ export function AppShell({ children }: AppShellProps) {
       <aside className="app-sidebar" aria-label="Navegação principal">
         <Link className="brand" href={home} aria-label="Autonom.ia Sell — início" onClick={(event) => guardLink(event, home)}>
           <span className="brand-mark" aria-hidden="true">a</span>
-          <span><strong>sell<span>.</span></strong><small>by Autonom.ia</small></span>
+          <span><strong>Autonom.ia <span>Sell</span></strong><small>Produtos digitais</small></span>
         </Link>
         <nav>
           <p className="nav-eyebrow">{profileState.status === "loading" ? "Carregando acesso" : profileState.status === "failed" ? "Acesso indisponível" : platformMode ? "Operação de plataforma" : demoProfile?.persona === "buyer" ? "Área do aluno" : "Seu negócio"}</p>
@@ -277,7 +277,7 @@ export function AppShell({ children }: AppShellProps) {
       </aside>
       <div className="app-content">
         <header className="mobile-topbar">
-          <Link className="mobile-brand" href={home} onClick={(event) => guardLink(event, home)}><span className="brand-mark" aria-hidden="true">a</span><strong>sell<span>.</span></strong></Link>
+          <Link className="mobile-brand" href={home} aria-label="Autonom.ia Sell — início" onClick={(event) => guardLink(event, home)}><span className="brand-mark" aria-hidden="true">a</span><strong>Autonom.ia <span>Sell</span></strong></Link>
           <LogoutForm mobile onAttempt={guardLogout}/>
         </header>
         <div className="environment-banner" role="note"><strong>{platformMode ? "INSPEÇÃO SUPERADMIN · LOCAL/CI · READ-ONLY" : demoProfile ? `DEMO · ${demoProfile.label} · ${demoProfile.email} · Autonom.ia Demo` : "Ambiente local, não é grant."}</strong> {platformMode ? "Sem impersonação, membership ou acesso a PII/secret." : "Cobrança, checkout e Identity real continuam desativados."}</div>

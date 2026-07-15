@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 
 async function login(page: import("@playwright/test").Page) {
   await page.goto("/");
+  await expect(page.getByRole("link", { name: "Autonom.ia Sell — início" })).toBeVisible();
   const sessionReady = page.waitForResponse((response) =>
     response.url().endsWith("/api/session") && response.status() === 200);
   await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
@@ -12,6 +13,8 @@ async function login(page: import("@playwright/test").Page) {
 
 test("keeps the core journey usable without horizontal overflow", async ({ page }) => {
   await login(page);
+  await expect(page.getByRole("link", { name: "Autonom.ia Sell — início" }))
+    .toContainText("Autonom.ia Sell");
   for (const target of [
     { path: "/dashboard", heading: "Seu negócio em um só lugar." },
     { path: "/products", heading: "Produtos" },
@@ -43,8 +46,14 @@ test("does not render protected preview content for an anonymous request", async
 });
 
 test("exposes touch-sized mobile navigation and preserves deep links", async ({ page }) => {
-  await page.setViewportSize({ width: 360, height: 800 });
+  await page.setViewportSize({ width: 320, height: 800 });
   await login(page);
+  const mobileBrand = page.locator(".mobile-topbar")
+    .getByRole("link", { name: "Autonom.ia Sell — início" });
+  await expect(mobileBrand).toContainText("Autonom.ia Sell");
+  const brandBox = await mobileBrand.boundingBox();
+  expect(brandBox?.x ?? 321).toBeGreaterThanOrEqual(0);
+  expect((brandBox?.x ?? 321) + (brandBox?.width ?? 321)).toBeLessThanOrEqual(320);
   const libraryLink = page.getByRole("navigation", { name: "Navegação móvel" }).getByRole("link", { name: "Minha biblioteca" });
   const box = await libraryLink.boundingBox();
   expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
