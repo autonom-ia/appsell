@@ -288,8 +288,12 @@ def prepare_demo_storage_cleanup(
 
 
 def reset_demo(
-    connection: psycopg.Connection[Any], manifest: dict[str, Any], manifest_sha: str, issuer: str,
-    *, provision_superadmin: bool = False,
+    connection: psycopg.Connection[Any],
+    manifest: dict[str, Any],
+    manifest_sha: str,
+    issuer: str,
+    *,
+    provision_superadmin: bool = False,
 ) -> None:
     seller = manifest["seller"]
     product = manifest["product"]

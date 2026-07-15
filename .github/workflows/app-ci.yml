@@ -178,7 +178,7 @@ jobs:
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
-      - run: pnpm audit --prod
+      - run: corepack pnpm@11.13.0 --pm-on-fail=ignore audit --prod
       - run: pnpm build
       - run: pnpm exec playwright install --with-deps chromium webkit
       - run: pnpm test:e2e

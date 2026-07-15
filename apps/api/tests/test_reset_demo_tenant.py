@@ -28,7 +28,8 @@ def test_reset_requires_an_explicit_local_or_ci_environment(
 
 @pytest.mark.parametrize("node_environment", ["", "production", "preview", "staging"])
 def test_reset_rejects_node_outside_the_explicit_allowlist(
-    monkeypatch: pytest.MonkeyPatch, node_environment: str,
+    monkeypatch: pytest.MonkeyPatch,
+    node_environment: str,
 ) -> None:
     base_environment(monkeypatch)
     monkeypatch.setenv("NODE_ENV", node_environment)
@@ -40,7 +41,8 @@ def test_reset_rejects_node_outside_the_explicit_allowlist(
 
 @pytest.mark.parametrize("app_environment", ["", "preview", "staging", "production"])
 def test_reset_rejects_app_environment_outside_local_ci(
-    monkeypatch: pytest.MonkeyPatch, app_environment: str,
+    monkeypatch: pytest.MonkeyPatch,
+    app_environment: str,
 ) -> None:
     base_environment(monkeypatch)
     monkeypatch.setenv("APP_ENV", app_environment)
