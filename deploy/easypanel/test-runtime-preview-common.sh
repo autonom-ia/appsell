@@ -7,6 +7,46 @@ source "$here/runtime-preview-common.sh"
 RUNTIME_PREVIEW_API_TOKEN=fixture-token-long-enough-for-tests
 mock_mode=absent
 
+digest=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+runtime_preview_docker_config_path_is_safe "$digest.json"
+runtime_preview_docker_config_path_is_safe "blobs/sha256/$digest"
+for rejected in \
+  "blobs/sha256/$digest.json" \
+  "../$digest.json" \
+  "/blobs/sha256/$digest" \
+  "blobs/sha256/${digest}0" \
+  "sha256:$digest"; do
+  if runtime_preview_docker_config_path_is_safe "$rejected"; then
+    echo "unsafe Docker image config path was accepted: $rejected" >&2
+    exit 1
+  fi
+done
+
+archive_tmp="$(mktemp -d)"
+trap 'rm -rf -- "$archive_tmp"' EXIT
+mkdir -p "$archive_tmp/valid/blobs/sha256"
+printf '[]\n' >"$archive_tmp/valid/manifest.json"
+printf '{}\n' >"$archive_tmp/valid/blobs/sha256/$digest"
+tar -cf "$archive_tmp/valid.tar" -C "$archive_tmp/valid" manifest.json "blobs/sha256/$digest"
+runtime_preview_docker_tar_has_one_regular_member "$archive_tmp/valid.tar" manifest.json
+runtime_preview_docker_tar_has_one_regular_member "$archive_tmp/valid.tar" "blobs/sha256/$digest"
+
+cp "$archive_tmp/valid.tar" "$archive_tmp/duplicate.tar"
+tar -rf "$archive_tmp/duplicate.tar" -C "$archive_tmp/valid" "blobs/sha256/$digest"
+if runtime_preview_docker_tar_has_one_regular_member "$archive_tmp/duplicate.tar" "blobs/sha256/$digest"; then
+  echo "duplicate Docker TAR config member was accepted" >&2
+  exit 1
+fi
+
+mkdir -p "$archive_tmp/symlink/blobs/sha256"
+ln -s ../../manifest.json "$archive_tmp/symlink/blobs/sha256/$digest"
+printf '[]\n' >"$archive_tmp/symlink/manifest.json"
+tar -cf "$archive_tmp/symlink.tar" -C "$archive_tmp/symlink" manifest.json "blobs/sha256/$digest"
+if runtime_preview_docker_tar_has_one_regular_member "$archive_tmp/symlink.tar" "blobs/sha256/$digest"; then
+  echo "symlink Docker TAR config member was accepted" >&2
+  exit 1
+fi
+
 curl() {
   local output_file="" argument
   while [[ $# -gt 0 ]]; do

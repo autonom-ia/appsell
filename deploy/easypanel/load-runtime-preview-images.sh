@@ -32,10 +32,21 @@ for record in "${records[@]}"; do
     echo "unsafe path in Docker TAR: $filename" >&2
     exit 2
   fi
+  runtime_preview_docker_tar_has_one_regular_member "$file" manifest.json || {
+    echo "Docker TAR must contain one regular manifest.json: $filename" >&2
+    exit 2
+  }
   manifest="$(tar -xOf "$file" manifest.json)"
   jq -e --arg image "$image" 'length == 1 and .[0].RepoTags == [$image] and (.[0].Config | type == "string")' <<<"$manifest" >/dev/null || exit 2
   config_path="$(jq -r '.[0].Config' <<<"$manifest")"
-  [[ "$config_path" =~ ^[0-9a-f]{64}\.json$ ]] || exit 2
+  runtime_preview_docker_config_path_is_safe "$config_path" || {
+    echo "unsupported Docker image config path: $filename" >&2
+    exit 2
+  }
+  runtime_preview_docker_tar_has_one_regular_member "$file" "$config_path" || {
+    echo "Docker TAR must contain one regular image config: $filename" >&2
+    exit 2
+  }
   image_config="$(tar -xOf "$file" "$config_path")"
   jq -e --arg sha "$source_sha" \
     '.config.Labels["org.opencontainers.image.revision"] == $sha' <<<"$image_config" >/dev/null || exit 2

@@ -159,6 +159,26 @@ jobs:
           outputs: type=docker,dest=/tmp/${{ matrix.name }}-${{ env.SOURCE_SHA }}.tar
           cache-from: type=gha,scope=preview-${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=preview-${{ matrix.name }}
+      - name: Validate Docker archive metadata
+        env:
+          IMAGE_NAME: ${{ matrix.name }}
+          EXPECTED_ISSUE: ${{ github.ref_name == 'infra/77-easypanel-runtime-preview' && '77' || '66' }}
+        run: |
+          source deploy/easypanel/runtime-preview-common.sh
+          archive="/tmp/${IMAGE_NAME}-${SOURCE_SHA}.tar"
+          expected_tag="autonomia-sell-preview-${IMAGE_NAME}:${SOURCE_SHA}"
+          runtime_preview_docker_tar_has_one_regular_member "$archive" manifest.json
+          manifest="$(tar -xOf "$archive" manifest.json)"
+          jq -e --arg tag "$expected_tag" \
+            'length == 1 and .[0].RepoTags == [$tag] and (.[0].Config | type == "string")' \
+            <<<"$manifest" >/dev/null
+          config_path="$(jq -r '.[0].Config' <<<"$manifest")"
+          runtime_preview_docker_config_path_is_safe "$config_path"
+          runtime_preview_docker_tar_has_one_regular_member "$archive" "$config_path"
+          tar -xOf "$archive" "$config_path" | jq -e \
+            --arg sha "$SOURCE_SHA" --arg issue "$EXPECTED_ISSUE" \
+            '.config.Labels["org.opencontainers.image.revision"] == $sha and
+             .config.Labels["com.autonomia.issue"] == $issue' >/dev/null
       - name: Bind artifact to the exact GitHub-hosted run
         env:
           ARTIFACT_NAME: appsell-vps-preview-${{ matrix.name }}-${{ env.SOURCE_SHA }}

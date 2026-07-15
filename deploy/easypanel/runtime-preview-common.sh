@@ -25,6 +25,19 @@ runtime_preview_require_commands() {
   done
 }
 
+runtime_preview_docker_config_path_is_safe() {
+  [[ $# -eq 1 ]] || return 2
+  [[ "$1" =~ ^[0-9a-f]{64}\.json$ || "$1" =~ ^blobs/sha256/[0-9a-f]{64}$ ]]
+}
+
+runtime_preview_docker_tar_has_one_regular_member() {
+  [[ $# -eq 2 ]] || return 2
+  local archive="$1" member="$2" listing
+  [[ -f "$archive" && ! -L "$archive" ]] || return 1
+  listing="$(tar -tvf "$archive" -- "$member" 2>/dev/null)" || return 1
+  [[ "$listing" != *$'\n'* && "${listing:0:1}" == "-" ]]
+}
+
 runtime_preview_assert_run_root() {
   local candidate="$1" source_sha="$2" mode
   [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || { runtime_preview_fail "invalid AppSell source SHA"; return 1; }
