@@ -1,0 +1,179 @@
+x-runtime-labels: &runtime-labels
+  com.autonomia.project: sell-autonomia
+  com.autonomia.issue: "77"
+  com.autonomia.environment: local-ci-easypanel-preview
+  com.autonomia.source-sha: ${APPSELL_SOURCE_SHA:?APPSELL_SOURCE_SHA is required}
+
+x-runtime-security: &runtime-security
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+
+x-runtime-logging: &runtime-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  domain-bootstrap:
+    image: ${APPSELL_DOMAIN_IMAGE:?APPSELL_DOMAIN_IMAGE is required}
+    pull_policy: never
+    command: ["bash", "deploy/easypanel/bootstrap-runtime-preview.sh"]
+    environment:
+      APPSELL_POSTGRES_HOST: sell-autonomia_postgres
+      APPSELL_POSTGRES_PORT: "5432"
+      APPSELL_POSTGRES_ADMIN_USER: ${APPSELL_POSTGRES_ADMIN_USER:?APPSELL_POSTGRES_ADMIN_USER is required}
+      APPSELL_POSTGRES_ADMIN_PASSWORD: ${APPSELL_POSTGRES_ADMIN_PASSWORD:?APPSELL_POSTGRES_ADMIN_PASSWORD is required}
+      APPSELL_POSTGRES_DEFAULT_DATABASE: ${APPSELL_POSTGRES_DEFAULT_DATABASE:?APPSELL_POSTGRES_DEFAULT_DATABASE is required}
+      APPSELL_DATABASE_NAME: appsell_preview_77
+      APPSELL_MIGRATOR_PASSWORD: ${APPSELL_MIGRATOR_PASSWORD:?APPSELL_MIGRATOR_PASSWORD is required}
+      APPSELL_RUNTIME_PASSWORD: ${APPSELL_RUNTIME_PASSWORD:?APPSELL_RUNTIME_PASSWORD is required}
+      APPSELL_CONTEXT_SIGNING_KEY_HEX: ${APPSELL_CONTEXT_SIGNING_KEY_HEX:?APPSELL_CONTEXT_SIGNING_KEY_HEX is required}
+      APPSELL_BOOTSTRAP_ATTESTATION_KEY_HEX: ${APPSELL_BOOTSTRAP_ATTESTATION_KEY_HEX:?APPSELL_BOOTSTRAP_ATTESTATION_KEY_HEX is required}
+      APPSELL_BOOTSTRAP_EXPECTED_ISSUER: https://identity.runtime-preview.local
+      APPSELL_BOOTSTRAP_EXPECTED_AUDIENCE: appsell-api-runtime-preview-77
+      APPSELL_BOOTSTRAP_EXPECTED_CLIENT_ID: appsell-web-runtime-preview-77
+      APPSELL_IDENTITY_ISSUER: https://identity.runtime-preview.local
+    networks: [sell-private]
+    labels: *runtime-labels
+    restart: "no"
+    mem_limit: 384m
+    cpus: 0.30
+    pids_limit: 128
+    read_only: true
+    tmpfs: ["/tmp:size=67108864,mode=1777,noexec,nosuid"]
+    <<: *runtime-security
+    logging: *runtime-logging
+
+  domain-api:
+    image: ${APPSELL_DOMAIN_IMAGE:?APPSELL_DOMAIN_IMAGE is required}
+    pull_policy: never
+    command: ["uvicorn", "appsell_api.main:app", "--host", "0.0.0.0", "--port", "15800"]
+    environment:
+      APPSELL_API_ENVIRONMENT: ci
+      APPSELL_API_DATABASE_URL: postgresql+asyncpg://appsell_preview_77_runtime:${APPSELL_RUNTIME_PASSWORD}@sell-autonomia_postgres:5432/appsell_preview_77
+      APPSELL_API_DATABASE_APPLICATION_NAME: appsell_runtime_preview_77
+      APPSELL_API_INTERNAL_ISSUER: appsell-bff-runtime-preview-77
+      APPSELL_API_INTERNAL_AUDIENCE: appsell-api-runtime-preview-77
+      APPSELL_API_IDENTITY_ISSUER: https://identity.runtime-preview.local
+      APPSELL_API_INTERNAL_HMAC_KEYRING_B64_JSON: ${APPSELL_INTERNAL_HMAC_KEYRING_B64_JSON:?APPSELL_INTERNAL_HMAC_KEYRING_B64_JSON is required}
+      APPSELL_API_CONTEXT_HMAC_KEY_B64: ${APPSELL_API_CONTEXT_HMAC_KEY_B64:?APPSELL_API_CONTEXT_HMAC_KEY_B64 is required}
+      APPSELL_API_SERVICE_CREDENTIAL_B64: ${APPSELL_SERVICE_CREDENTIAL_B64:?APPSELL_SERVICE_CREDENTIAL_B64 is required}
+      APPSELL_API_WEBHOOK_LOCAL_KEYRING_B64_JSON: "[]"
+      APPSELL_API_WEBHOOK_FORBIDDEN_KEY_SHA256_JSON: "[]"
+      APPSELL_API_MALWARE_SCANNER_PROVIDER: deterministic
+      APPSELL_API_VIDEO_UPLOAD_ENABLED: "false"
+      APPSELL_API_STORAGE_PROVIDER: disabled
+      APPSELL_API_PDF_SANDBOX_URL: ""
+    networks: [sell-private]
+    labels: *runtime-labels
+    depends_on:
+      domain-bootstrap: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:15800/health/ready')"]
+      interval: 3s
+      timeout: 2s
+      retries: 40
+      start_period: 5s
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.40
+    pids_limit: 192
+    read_only: true
+    tmpfs: ["/tmp:size=134217728,mode=1777,noexec,nosuid"]
+    <<: *runtime-security
+    logging: *runtime-logging
+
+  sell-web:
+    image: ${APPSELL_SELL_IMAGE:?APPSELL_SELL_IMAGE is required}
+    pull_policy: never
+    command: ["./node_modules/.bin/next", "dev", "--hostname", "0.0.0.0", "-p", "13200"]
+    environment: &sell-environment
+      NODE_ENV: development
+      APP_ENV: ci
+      APPSELL_OAUTH_MODE: local
+      APPSELL_PUBLIC_ORIGIN: ${APPSELL_PUBLIC_ORIGIN:?APPSELL_PUBLIC_ORIGIN is required}
+      APPSELL_DEMO_ENABLED: "true"
+      APPSELL_IDENTITY_DEMO_ENABLED: "false"
+      APPSELL_DEMO_SUPERADMIN_ENABLED: "true"
+      APPSELL_REDIS_URL: redis://:${APPSELL_REDIS_PASSWORD:?APPSELL_REDIS_PASSWORD is required}@sell-autonomia_redis:6379/0
+      APPSELL_REDIS_PREFIX: appsell:runtime-preview:77
+      APPSELL_SESSION_HMAC_KEY_B64: ${APPSELL_SESSION_HMAC_KEY_B64:?APPSELL_SESSION_HMAC_KEY_B64 is required}
+      APPSELL_CSRF_HMAC_KEY_B64: ${APPSELL_CSRF_HMAC_KEY_B64:?APPSELL_CSRF_HMAC_KEY_B64 is required}
+      APPSELL_VAULT_PROVIDER: local
+      APPSELL_VAULT_LOCAL_KEYRING_B64_JSON: ${APPSELL_VAULT_LOCAL_KEYRING_B64_JSON:?APPSELL_VAULT_LOCAL_KEYRING_B64_JSON is required}
+      APPSELL_DOMAIN_API_URL: http://domain-api:15800
+      APPSELL_INTERNAL_ISSUER: appsell-bff-runtime-preview-77
+      APPSELL_INTERNAL_AUDIENCE: appsell-api-runtime-preview-77
+      APPSELL_INTERNAL_HMAC_KEYRING_B64_JSON: ${APPSELL_INTERNAL_HMAC_KEYRING_B64_JSON}
+      APPSELL_SERVICE_CREDENTIAL_B64: ${APPSELL_SERVICE_CREDENTIAL_B64}
+      APPSELL_IDENTITY_ISSUER: https://identity.runtime-preview.local
+      APPSELL_LOCAL_IDENTITY_EMAIL: creator.runtime-preview@autonomia.site
+      APPSELL_PRIVATE_LEARNING_ASSET_ROOT: /workspace/sell/output/pdf/codex
+    ports:
+      - "127.0.0.1:13200:13200"
+    networks: [sell-private]
+    labels: *runtime-labels
+    depends_on:
+      domain-api: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:13200/').then(r=>{if(!r.ok)process.exit(1)})"]
+      interval: 3s
+      timeout: 2s
+      retries: 60
+      start_period: 10s
+    restart: unless-stopped
+    mem_limit: 1024m
+    cpus: 0.65
+    pids_limit: 384
+    <<: *runtime-security
+    logging: *runtime-logging
+
+  evidence-init:
+    profiles: ["e2e"]
+    image: ${APPSELL_ALPINE_IMAGE:?APPSELL_ALPINE_IMAGE is required}
+    pull_policy: never
+    network_mode: none
+    user: "0:0"
+    command: ["sh", "-ec", "chown 1000:1000 /evidence && chmod 0700 /evidence"]
+    volumes: ["runtime_evidence:/evidence"]
+    labels: *runtime-labels
+    restart: "no"
+    mem_limit: 16m
+    cpus: 0.05
+    pids_limit: 16
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN"]
+    logging: *runtime-logging
+
+  e2e:
+    profiles: ["e2e"]
+    image: ${APPSELL_SELL_IMAGE:?APPSELL_SELL_IMAGE is required}
+    pull_policy: never
+    network_mode: "service:sell-web"
+    command: ["bash", "deploy/easypanel/run-runtime-preview-e2e.sh"]
+    environment:
+      E2E_RUNTIME_ORIGIN: http://localhost:13200
+      E2E_RUNTIME_EVIDENCE_DIR: /evidence/staged
+    volumes: ["runtime_evidence:/evidence"]
+    labels: *runtime-labels
+    depends_on:
+      evidence-init: { condition: service_completed_successfully }
+      sell-web: { condition: service_healthy }
+    restart: "no"
+    mem_limit: 1024m
+    cpus: 0.50
+    pids_limit: 384
+    <<: *runtime-security
+    logging: *runtime-logging
+
+networks:
+  sell-private:
+    external: true
+    name: easypanel-sell-autonomia
+
+volumes:
+  runtime_evidence:
+    labels: *runtime-labels

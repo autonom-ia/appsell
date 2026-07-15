@@ -106,8 +106,55 @@ printf '#!/usr/bin/env bash\nset -euo pipefail\n' \
   >"$tmp/subjects/config/easypanel/harden-sell-services.sh"
 printf '#!/usr/bin/env bash\nset -euo pipefail\n' \
   >"$tmp/subjects/config/easypanel/verify-sell-isolation.sh"
+printf '#!/usr/bin/env bash\nset -euo pipefail\n' \
+  >"$tmp/subjects/config/easypanel/bootstrap-runtime-preview.sh"
+printf '#!/usr/bin/env bash\nset -euo pipefail\n' \
+  >"$tmp/subjects/config/easypanel/generate-runtime-preview-env.sh"
+printf '#!/usr/bin/env bash\nset -euo pipefail\n' \
+  >"$tmp/subjects/config/easypanel/load-runtime-preview-images.sh"
+printf '#!/usr/bin/env bash\nset -euo pipefail\n' \
+  >"$tmp/subjects/config/easypanel/preflight-runtime-preview.sh"
+printf '#!/usr/bin/env bash\nset -euo pipefail\n' \
+  >"$tmp/subjects/config/easypanel/remove-runtime-preview-images.sh"
+printf '#!/usr/bin/env bash\nset -euo pipefail\n' \
+  >"$tmp/subjects/config/easypanel/run-runtime-preview-e2e.sh"
+printf '#!/usr/bin/env bash\n' \
+  >"$tmp/subjects/config/easypanel/runtime-preview-common.sh"
+printf '#!/usr/bin/env bash\nset -euo pipefail\n' \
+  >"$tmp/subjects/config/easypanel/retire-runtime-preview-credentials.sh"
+printf '#!/usr/bin/env bash\nset -euo pipefail\n' \
+  >"$tmp/subjects/config/easypanel/teardown-runtime-preview.sh"
+printf '#!/usr/bin/env bash\nset -euo pipefail\n' \
+  >"$tmp/subjects/config/easypanel/test-runtime-preview-common.sh"
+printf '#!/usr/bin/env bash\nset -euo pipefail\n' \
+  >"$tmp/subjects/config/easypanel/test-runtime-preview-env.sh"
+printf '#!/usr/bin/env bash\nset -euo pipefail\n' \
+  >"$tmp/subjects/config/easypanel/test-runtime-preview-lifecycle.sh"
+printf '#!/usr/bin/env bash\nset -euo pipefail\n' \
+  >"$tmp/subjects/config/easypanel/test-runtime-preview.sh"
+printf '#!/usr/bin/env bash\nset -euo pipefail\n' \
+  >"$tmp/subjects/config/easypanel/up-runtime-preview.sh"
+printf '#!/usr/bin/env bash\nset -euo pipefail\n' \
+  >"$tmp/subjects/config/easypanel/verify-runtime-preview.sh"
+printf 'services: {}\n' >"$tmp/subjects/config/easypanel/compose.runtime-preview.yaml"
+printf 'APPSELL_SOURCE_SHA=fixture\n' \
+  >"$tmp/subjects/config/easypanel/runtime-preview.env.example"
 chmod 0755 \
+  "$tmp/subjects/config/easypanel/bootstrap-runtime-preview.sh" \
+  "$tmp/subjects/config/easypanel/generate-runtime-preview-env.sh" \
   "$tmp/subjects/config/easypanel/harden-sell-services.sh" \
+  "$tmp/subjects/config/easypanel/load-runtime-preview-images.sh" \
+  "$tmp/subjects/config/easypanel/preflight-runtime-preview.sh" \
+  "$tmp/subjects/config/easypanel/remove-runtime-preview-images.sh" \
+  "$tmp/subjects/config/easypanel/run-runtime-preview-e2e.sh" \
+  "$tmp/subjects/config/easypanel/retire-runtime-preview-credentials.sh" \
+  "$tmp/subjects/config/easypanel/teardown-runtime-preview.sh" \
+  "$tmp/subjects/config/easypanel/test-runtime-preview-common.sh" \
+  "$tmp/subjects/config/easypanel/test-runtime-preview-env.sh" \
+  "$tmp/subjects/config/easypanel/test-runtime-preview-lifecycle.sh" \
+  "$tmp/subjects/config/easypanel/test-runtime-preview.sh" \
+  "$tmp/subjects/config/easypanel/up-runtime-preview.sh" \
+  "$tmp/subjects/config/easypanel/verify-runtime-preview.sh" \
   "$tmp/subjects/config/easypanel/verify-sell-isolation.sh"
 (
   cd "$tmp/subjects/config"
@@ -244,10 +291,69 @@ PATH="$tmp/bin:$PATH" MOCK_ROOT="$tmp" "$verifier" \
 test -f "$tmp/success/upload/config/SHA256SUMS"
 test -x "$tmp/success/upload/config/easypanel/harden-sell-services.sh"
 test -x "$tmp/success/upload/config/easypanel/verify-sell-isolation.sh"
+test -x "$tmp/success/upload/config/easypanel/bootstrap-runtime-preview.sh"
 test -f "$tmp/success/upload/artifacts/auth-$auth_sha.tar"
 test -f "$tmp/success/upload/artifacts/base-postgres-$appsell_sha.tar"
 upload_mode="$(stat -c '%a' "$tmp/success/upload" 2>/dev/null || stat -f '%Lp' "$tmp/success/upload")"
 [[ "$upload_mode" == "700" ]] || { echo "Verified upload root is not mode 0700" >&2; exit 1; }
+
+install -d "$tmp/runtime-success"
+PATH="$tmp/bin:$PATH" MOCK_ROOT="$tmp" "$verifier" \
+  "$tmp/runtime-success" "$appsell_sha" "$appsell_run" >/dev/null
+test -x "$tmp/runtime-success/upload/config/easypanel/bootstrap-runtime-preview.sh"
+test -f "$tmp/runtime-success/upload/artifacts/sell-$appsell_sha.tar"
+test -f "$tmp/runtime-success/upload/artifacts/domain-$appsell_sha.tar"
+test -f "$tmp/runtime-success/upload/artifacts/base-alpine-$appsell_sha.tar"
+test ! -e "$tmp/runtime-success/upload/artifacts/auth-$auth_sha.tar"
+test ! -e "$tmp/runtime-success/upload/artifacts/base-postgres-$appsell_sha.tar"
+
+# Prove that the legacy nine-argument verifier remains compatible with a
+# pre-Issue-77 config artifact containing only the original EasyPanel guards.
+cp "$tmp/api/artifact-1001.zip" "$tmp/artifact-1001-runtime.zip"
+cp "$tmp/api/autonom-ia/appsell/$appsell_run/artifacts.json" "$tmp/appsell-artifacts-runtime.json"
+cp "$tmp/artifact-1001/provenance.json" "$tmp/artifact-1001-runtime-provenance.json"
+cp "$tmp/artifact-1001/config-$appsell_sha.tar.gz" "$tmp/artifact-1001-runtime-subject.tar.gz"
+install -d "$tmp/legacy-subjects/config/easypanel"
+cp "$tmp/subjects/config/easypanel/README.md" \
+  "$tmp/subjects/config/easypanel/harden-sell-services.sh" \
+  "$tmp/subjects/config/easypanel/verify-sell-isolation.sh" \
+  "$tmp/legacy-subjects/config/easypanel/"
+(
+  cd "$tmp/legacy-subjects/config"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum easypanel/README.md easypanel/*.sh >SHA256SUMS
+  else
+    shasum -a 256 easypanel/README.md easypanel/*.sh >SHA256SUMS
+  fi
+)
+COPYFILE_DISABLE=1 tar -czf "$tmp/artifact-1001/config-$appsell_sha.tar.gz" \
+  -C "$tmp/legacy-subjects" config
+legacy_subject_digest="$(sha256_file "$tmp/artifact-1001/config-$appsell_sha.tar.gz")"
+jq --arg digest "$legacy_subject_digest" '.subject_sha256 = $digest' \
+  "$tmp/artifact-1001/provenance.json" >"$tmp/artifact-1001/legacy-provenance.json"
+mv "$tmp/artifact-1001/legacy-provenance.json" "$tmp/artifact-1001/provenance.json"
+rm -f "$tmp/api/artifact-1001.zip"
+(
+  cd "$tmp/artifact-1001"
+  zip -q "$tmp/api/artifact-1001.zip" "config-$appsell_sha.tar.gz" provenance.json
+)
+legacy_zip_digest="$(sha256_file "$tmp/api/artifact-1001.zip")"
+legacy_zip_size="$(wc -c <"$tmp/api/artifact-1001.zip" | tr -d ' ')"
+jq --arg digest "sha256:$legacy_zip_digest" --argjson size "$legacy_zip_size" '
+  (.artifacts[] | select(.id == 1001)).digest = $digest
+  | (.artifacts[] | select(.id == 1001)).size_in_bytes = $size
+' "$tmp/api/autonom-ia/appsell/$appsell_run/artifacts.json" >"$tmp/legacy-artifacts.json"
+mv "$tmp/legacy-artifacts.json" "$tmp/api/autonom-ia/appsell/$appsell_run/artifacts.json"
+install -d "$tmp/legacy-integrated-success"
+PATH="$tmp/bin:$PATH" MOCK_ROOT="$tmp" "$verifier" \
+  "$tmp/legacy-integrated-success" "$appsell_sha" "$auth_sha" "$foundation_sha" \
+  "$appsell_run" "$auth_run" "$foundation_run" "$auth_pr" "$auth_workflow_sha" >/dev/null
+test -x "$tmp/legacy-integrated-success/upload/config/easypanel/harden-sell-services.sh"
+test ! -e "$tmp/legacy-integrated-success/upload/config/easypanel/bootstrap-runtime-preview.sh"
+cp "$tmp/artifact-1001-runtime.zip" "$tmp/api/artifact-1001.zip"
+cp "$tmp/appsell-artifacts-runtime.json" "$tmp/api/autonom-ia/appsell/$appsell_run/artifacts.json"
+cp "$tmp/artifact-1001-runtime-provenance.json" "$tmp/artifact-1001/provenance.json"
+cp "$tmp/artifact-1001-runtime-subject.tar.gz" "$tmp/artifact-1001/config-$appsell_sha.tar.gz"
 
 install -d "$tmp/workflow-sha-failure"
 if PATH="$tmp/bin:$PATH" MOCK_ROOT="$tmp" "$verifier" \

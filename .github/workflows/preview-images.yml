@@ -2,7 +2,7 @@ name: VPS preview artifacts
 
 on:
   push:
-    branches: ["infra/66-vps-preview", "infra/66-easypanel-rc"]
+    branches: ["infra/66-vps-preview", "infra/66-easypanel-rc", "infra/77-easypanel-runtime-preview"]
     paths:
       - "app/**"
       - "apps/api/**"
@@ -12,6 +12,8 @@ on:
       - "deploy/easypanel/**"
       - "lib/**"
       - "output/pdf/**"
+      - "playwright.runtime-preview.config.ts"
+      - "tests/e2e-runtime-preview/**"
       - "package.json"
       - "pnpm-lock.yaml"
       - ".dockerignore"
@@ -46,6 +48,10 @@ jobs:
           bash deploy/preview-vps/test-compose-project-pin.sh
           bash deploy/preview-vps/test-directory-invariants.sh
           bash deploy/preview-vps/test-verify-downloads-local.sh
+          bash deploy/easypanel/test-runtime-preview-common.sh
+          bash deploy/easypanel/test-runtime-preview-env.sh
+          bash deploy/easypanel/test-runtime-preview.sh
+          sudo bash deploy/easypanel/test-runtime-preview-lifecycle.sh
 
   config-artifact:
     needs: validate
@@ -147,7 +153,9 @@ jobs:
           platforms: linux/amd64
           push: false
           tags: autonomia-sell-preview-${{ matrix.name }}:${{ env.SOURCE_SHA }}
-          build-args: SOURCE_SHA=${{ env.SOURCE_SHA }}
+          build-args: |
+            SOURCE_SHA=${{ env.SOURCE_SHA }}
+            ISSUE_NUMBER=${{ github.ref_name == 'infra/77-easypanel-runtime-preview' && '77' || '66' }}
           outputs: type=docker,dest=/tmp/${{ matrix.name }}-${{ env.SOURCE_SHA }}.tar
           cache-from: type=gha,scope=preview-${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=preview-${{ matrix.name }}
