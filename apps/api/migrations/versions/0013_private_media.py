@@ -576,7 +576,7 @@ create or replace function app_private.schema_ready() returns boolean
             and exists(select 1 from app_private.context_signing_key where singleton)
             and exists(select 1 from app_private.bootstrap_trust_policy where singleton)
         $$
-        """
+        """,
     ]
     for statement in statements:
         op.execute(statement)
