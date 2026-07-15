@@ -67,12 +67,15 @@ async function mockLearningApi(
   options: {
     libraryResume?: string | null;
     progressEnrollment?: string;
-    onSecondLesson?: (route: Route) => Promise<void>;
+    onSecondLesson?: (route: Route, requestNumber: number) => Promise<void>;
     onFirstLesson?: (route: Route, requestNumber: number) => Promise<void>;
+    beforeProgressResponse?: () => Promise<void>;
+    beforeCompleteResponse?: (lessonId: string) => Promise<void>;
   } = {}
 ) {
   const mutations: string[] = [];
   let firstLessonReads = 0;
+  let secondLessonReads = 0;
   const handleLearningRoute = async (route: Route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -86,6 +89,7 @@ async function mockLearningApi(
       }] }) });
     }
     if (request.method() === "PUT" && url.pathname.endsWith(`/lessons/${lessonOne}/progress`)) {
+      await options.beforeProgressResponse?.();
       mutations.push(request.postData() ?? "");
       return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ progress: {
         entitlement_id: entitlementId, enrollment_id: options.progressEnrollment ?? enrollmentId, lesson_id: lessonOne,
@@ -93,12 +97,16 @@ async function mockLearningApi(
         state_version: 2, applied: true
       } }) });
     }
-    if (request.method() === "POST" && url.pathname.endsWith(`/lessons/${lessonOne}/complete`)) {
+    const completedLessonId = [lessonOne, lessonTwo].find((id) =>
+      url.pathname.endsWith(`/lessons/${id}/complete`)
+    );
+    if (request.method() === "POST" && completedLessonId) {
+      await options.beforeCompleteResponse?.(completedLessonId);
       mutations.push(request.postData() ?? "");
       return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ progress: {
-        entitlement_id: entitlementId, enrollment_id: enrollmentId, lesson_id: lessonOne,
-        lesson_progress_percent: 100, course_progress_percent: 50, resume_lesson_id: lessonOne,
-        state_version: 3, applied: true
+        entitlement_id: entitlementId, enrollment_id: enrollmentId, lesson_id: completedLessonId,
+        lesson_progress_percent: 100, course_progress_percent: completedLessonId === lessonOne ? 50 : 100,
+        resume_lesson_id: completedLessonId, state_version: completedLessonId === lessonOne ? 3 : 5, applied: true
       } }) });
     }
     if (request.method() === "PUT" && url.pathname.endsWith(`/lessons/${lessonTwo}/progress`)) {
@@ -109,7 +117,8 @@ async function mockLearningApi(
       } }) });
     }
     if (request.method() === "GET" && url.pathname.endsWith(`/lessons/${lessonTwo}`) && options.onSecondLesson) {
-      return options.onSecondLesson(route);
+      secondLessonReads += 1;
+      return options.onSecondLesson(route, secondLessonReads);
     }
     if (request.method() === "GET" && url.pathname.endsWith(`/lessons/${lessonTwo}`)) {
       return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(playerEnvelope(lessonTwo, 3, true, lessonOne)) });
@@ -211,7 +220,16 @@ test("rejects a progress response from another enrollment", async ({ page }) => 
 });
 
 test("removes delivered content when focus revalidation reports revocation", async ({ page }) => {
-  await mockLearningApi(page, { onFirstLesson: async (route, requestNumber) => {
+  let releaseProgress: (() => void) | undefined;
+  const progressRelease = new Promise<void>((resolve) => { releaseProgress = resolve; });
+  let markProgressStarted: (() => void) | undefined;
+  const progressStarted = new Promise<void>((resolve) => { markProgressStarted = resolve; });
+  await mockLearningApi(page, {
+    beforeProgressResponse: async () => {
+      markProgressStarted?.();
+      await progressRelease;
+    },
+    onFirstLesson: async (route, requestNumber) => {
       if (requestNumber === 1) {
         await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(playerEnvelope(lessonOne)) });
       } else {
@@ -222,7 +240,51 @@ test("removes delivered content when focus revalidation reports revocation", asy
   await login(page);
   await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
   await expect(page.getByText("Conteúdo exclusivo da primeira aula.")).toBeVisible();
+  await progressStarted;
+  const revokedResponse = page.waitForResponse((response) =>
+    response.request().method() === "GET" &&
+    response.url().endsWith(`/lessons/${lessonOne}`) &&
+    response.status() === 404
+  );
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  releaseProgress?.();
+  await revokedResponse;
   await expect(page.getByText("Conteúdo exclusivo da primeira aula.")).toHaveCount(0);
+  await expect(page.getByRole("heading", { level: 1, name: "Conteúdo indisponível" })).toBeFocused();
+});
+
+test("revalidates revocation after completing the final lesson", async ({ page }) => {
+  let releaseCompletion: (() => void) | undefined;
+  const completionRelease = new Promise<void>((resolve) => { releaseCompletion = resolve; });
+  let markCompletionStarted: (() => void) | undefined;
+  const completionStarted = new Promise<void>((resolve) => { markCompletionStarted = resolve; });
+  await mockLearningApi(page, {
+    beforeCompleteResponse: async (completedLessonId) => {
+      if (completedLessonId !== lessonTwo) return;
+      markCompletionStarted?.();
+      await completionRelease;
+    },
+    onSecondLesson: async (route, requestNumber) => {
+      if (requestNumber === 1) {
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(playerEnvelope(lessonTwo, 4, true, lessonTwo)) });
+      } else {
+        await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "learning_item_unavailable" }) });
+      }
+    }
+  });
+  await login(page);
+  await page.goto(`/library/items/${entitlementId}/lessons/${lessonTwo}`);
+  await expect(page.getByText("Conteúdo exclusivo da segunda aula.")).toBeVisible();
+  await page.getByRole("button", { name: "Concluir curso" }).click();
+  await completionStarted;
+  const revokedResponse = page.waitForResponse((response) =>
+    response.request().method() === "GET" &&
+    response.url().endsWith(`/lessons/${lessonTwo}`) &&
+    response.status() === 404
+  );
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  releaseCompletion?.();
+  await revokedResponse;
+  await expect(page.getByText("Conteúdo exclusivo da segunda aula.")).toHaveCount(0);
   await expect(page.getByRole("heading", { level: 1, name: "Conteúdo indisponível" })).toBeFocused();
 });

@@ -144,13 +144,15 @@ docker compose exec -T postgres psql -U postgres -d appsell \
   -c "comment on database appsell is 'appsell-demo-reset-target-v1'"
 
 APPSELL_DEMO_ENABLED=true \
+NODE_ENV=development \
+APP_ENV=local \
 APPSELL_API_ENVIRONMENT=local \
 APPSELL_API_IDENTITY_ISSUER="$APPSELL_IDENTITY_ISSUER" \
 APPSELL_DEMO_DATABASE_URL="postgresql://postgres:${APPSELL_POSTGRES_SUPERUSER_PASSWORD}@127.0.0.1:${APPSELL_POSTGRES_PORT:-55432}/appsell" \
 uv run --project apps/api python -m appsell_api.reset_demo_tenant \
   --confirm-demo-key autonomia-demo-v1
 
-APPSELL_DEMO_ENABLED=true corepack pnpm dev
+NODE_ENV=development APP_ENV=local APPSELL_DEMO_ENABLED=true corepack pnpm dev
 ```
 
 Abra `http://localhost:3000` e escolha **Entrar como admin demo** ou **Entrar
@@ -169,13 +171,14 @@ seller inspecionado é fixado no servidor; formulário, query string e cookie n�
 podem selecionar outra tenant. Cada ticket tem TTL máximo de 15 minutos, guarda
 somente o SHA-256 do token no PostgreSQL e exige revogação explícita ou expiração.
 
-A persona sintética `comercial@autonomia.site` permanece oculta da landing e só
-existe quando `APPSELL_DEMO_ENABLED=true` e
-`APPSELL_DEMO_SUPERADMIN_ENABLED=true` em Local/CI. Essas flags **não concedem**
-o papel: o callback ainda exige um `platform_superadmin` ativo vinculado ao
-issuer + `sub`. Em produção, persona e APIs de inspeção falham fechado. O e-mail
-nunca é usado como autorização permanente e não representa uma conta Identity
-real.
+A conta sintética `comercial@autonomia.site` permanece oculta da landing e só
+existe quando `NODE_ENV` está em `development|test`, `APP_ENV` está em
+`local|ci`, o modo demo correspondente está ativo e
+`APPSELL_DEMO_SUPERADMIN_ENABLED=true`. Essas flags **não concedem** o papel: o
+callback ainda exige um `platform_superadmin` ativo vinculado ao issuer + `sub`.
+Auth, Foundation e Sell usam allowlists positivas Local/CI; valores ausentes,
+`preview`, `staging` ou `production` falham fechado. O e-mail nunca é usado como
+autorização permanente e a identidade demo não existe no provider AWS real.
 
 Os PDFs ficam fora do web root e são autorizados novamente por
 `entitlement_id + asset_id` antes de cada stream. Em Local/CI, a raiz privada

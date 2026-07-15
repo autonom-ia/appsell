@@ -33,6 +33,7 @@ test("fails a demo superadmin callback closed without the Domain API", async () 
       { id: "test-v1", key: randomBytes(32).toString("base64"), active: true }
     ]),
     APPSELL_DOMAIN_API_URL: "",
+    APP_ENV: "ci",
     APPSELL_DEMO_ENABLED: "true",
     APPSELL_DEMO_SUPERADMIN_ENABLED: "true",
     NEXT_TELEMETRY_DISABLED: "1"
@@ -91,6 +92,7 @@ test.skipIf(!domainApiUrl)("keeps superadmin demo inspection temporary, read-onl
     APPSELL_IDENTITY_ISSUER: requiredEnvironment("APPSELL_IDENTITY_ISSUER"),
     APPSELL_INTERNAL_HMAC_KEYRING_B64_JSON: requiredEnvironment("APPSELL_INTERNAL_HMAC_KEYRING_B64_JSON"),
     APPSELL_SERVICE_CREDENTIAL_B64: requiredEnvironment("APPSELL_SERVICE_CREDENTIAL_B64"),
+    APP_ENV: "ci",
     APPSELL_DEMO_ENABLED: "true",
     APPSELL_DEMO_SUPERADMIN_ENABLED: "true",
     NEXT_TELEMETRY_DISABLED: "1"

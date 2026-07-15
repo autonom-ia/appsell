@@ -16,6 +16,8 @@ DEMO_KEY = "autonomia-demo-v1"
 DEMO_DATABASE_MARKER = "appsell-demo-reset-target-v1"
 ASSET_WORKER_SUBJECT = "asset-worker-v1"
 ASSET_WORKER_EMAIL = "asset.worker@autonomia.site"
+DEMO_SUPERADMIN_SUBJECT = "demo-superadmin"
+DEMO_SUPERADMIN_EMAIL = "comercial@autonomia.site"
 LIBPQ_REDIRECT_ENVIRONMENT = (
     "PGHOST",
     "PGHOSTADDR",
@@ -74,9 +76,15 @@ def identity_id(issuer: str, subject: str) -> UUID:
     return uuid5(NAMESPACE_URL, f"{issuer}\0{subject}")
 
 
-def require_environment(args: argparse.Namespace) -> tuple[str, str]:
+def require_environment(args: argparse.Namespace) -> tuple[str, str, bool]:
     if args.confirm_demo_key != DEMO_KEY:
         raise RuntimeError("demo confirmation key mismatch")
+    node_environment = os.environ.get("NODE_ENV", "").strip().lower()
+    if node_environment not in {"development", "test"}:
+        raise RuntimeError("NODE_ENV must explicitly be development or test")
+    app_environment = os.environ.get("APP_ENV", "").strip().lower()
+    if app_environment not in {"local", "ci"}:
+        raise RuntimeError("APP_ENV must explicitly be local or ci")
     if os.environ.get("APPSELL_DEMO_ENABLED", "").lower() != "true":
         raise RuntimeError("APPSELL_DEMO_ENABLED must be true")
     environment = os.environ.get("APPSELL_API_ENVIRONMENT", "").lower()
@@ -95,7 +103,10 @@ def require_environment(args: argparse.Namespace) -> tuple[str, str]:
         "hostaddr"
     ):
         raise RuntimeError("demo reset database must be loopback-only")
-    return issuer, database_url
+    superadmin_value = os.environ.get("APPSELL_DEMO_SUPERADMIN_ENABLED", "").strip().lower()
+    if superadmin_value not in {"", "false", "true"}:
+        raise RuntimeError("APPSELL_DEMO_SUPERADMIN_ENABLED must explicitly be true or false")
+    return issuer, database_url, superadmin_value == "true"
 
 
 def validate_demo_database(connection: psycopg.Connection[Any]) -> None:
@@ -277,7 +288,12 @@ def prepare_demo_storage_cleanup(
 
 
 def reset_demo(
-    connection: psycopg.Connection[Any], manifest: dict[str, Any], manifest_sha: str, issuer: str
+    connection: psycopg.Connection[Any],
+    manifest: dict[str, Any],
+    manifest_sha: str,
+    issuer: str,
+    *,
+    provision_superadmin: bool = False,
 ) -> None:
     seller = manifest["seller"]
     product = manifest["product"]
@@ -291,6 +307,7 @@ def reset_demo(
     buyer = manifest["personas"]["buyer"]
     admin_id = identity_id(issuer, admin["subject"])
     buyer_id = identity_id(issuer, buyer["subject"])
+    superadmin_id = identity_id(issuer, DEMO_SUPERADMIN_SUBJECT)
     asset_worker_id = identity_id(issuer, ASSET_WORKER_SUBJECT)
     seller_id = UUID(seller["id"])
     product_id = UUID(product["id"])
@@ -392,6 +409,55 @@ def reset_demo(
         ).fetchone()
         if row != (identity_uuid, identity["email"], True):
             raise RuntimeError("demo identity conflicts with existing identity")
+
+    connection.execute(
+        "update platform_grant set status='revoked',revoked_at=clock_timestamp() "
+        "where identity_user_id=%s "
+        "and role='platform_superadmin' and status='active'",
+        (superadmin_id,),
+    )
+    if provision_superadmin:
+        membership = connection.execute(
+            "select exists(select 1 from seller_membership where identity_user_id=%s)",
+            (superadmin_id,),
+        ).fetchone()
+        if membership != (False,):
+            raise RuntimeError("demo superadmin identity must not have seller memberships")
+        connection.execute(
+            """
+            insert into identity_user(
+              id,identity_issuer,identity_sub,email_normalized,email_verified
+            ) values(%s,%s,%s,%s,true)
+            on conflict(identity_issuer,identity_sub) do update set
+              email_normalized=excluded.email_normalized,email_verified=true,
+              updated_at=clock_timestamp()
+            where identity_user.id=excluded.id
+            """,
+            (
+                superadmin_id,
+                issuer,
+                DEMO_SUPERADMIN_SUBJECT,
+                DEMO_SUPERADMIN_EMAIL,
+            ),
+        )
+        row = connection.execute(
+            "select id,email_normalized,email_verified from identity_user "
+            "where identity_issuer=%s and identity_sub=%s",
+            (issuer, DEMO_SUPERADMIN_SUBJECT),
+        ).fetchone()
+        if row != (superadmin_id, DEMO_SUPERADMIN_EMAIL, True):
+            raise RuntimeError("demo superadmin identity conflicts with existing identity")
+        connection.execute(
+            """
+            insert into platform_grant(
+              identity_user_id,role,status,granted_by_identity_user_id
+            ) values(%s,'platform_superadmin','active',%s)
+            on conflict(identity_user_id,role) do update set
+              status='active',granted_by_identity_user_id=excluded.granted_by_identity_user_id,
+              granted_at=clock_timestamp(),revoked_at=null
+            """,
+            (superadmin_id, superadmin_id),
+        )
 
     connection.execute(
         """
@@ -769,7 +835,7 @@ def reset_demo(
 
 def main() -> None:
     args = parse_args()
-    issuer, database_url = require_environment(args)
+    issuer, database_url, provision_superadmin = require_environment(args)
     manifest, manifest_sha = load_manifest()
     if args.dry_run:
         print(
@@ -781,6 +847,7 @@ def main() -> None:
                     "seller_id": manifest["seller"]["id"],
                     "admin_email": manifest["personas"]["admin"]["email"],
                     "buyer_email": manifest["personas"]["buyer"]["email"],
+                    "superadmin_email": DEMO_SUPERADMIN_EMAIL if provision_superadmin else None,
                     "asset_worker_identity_user_id": str(identity_id(issuer, ASSET_WORKER_SUBJECT)),
                     "lessons": len(manifest["lessons"]),
                 }
@@ -802,7 +869,13 @@ def main() -> None:
         )
         return
     with psycopg.connect(database_url) as connection:
-        reset_demo(connection, manifest, manifest_sha, issuer)
+        reset_demo(
+            connection,
+            manifest,
+            manifest_sha,
+            issuer,
+            provision_superadmin=provision_superadmin,
+        )
         connection.commit()
     print(
         json.dumps(
@@ -810,6 +883,7 @@ def main() -> None:
                 "status": "reset",
                 "seed_key": DEMO_KEY,
                 "manifest_sha256": manifest_sha,
+                "superadmin_email": DEMO_SUPERADMIN_EMAIL if provision_superadmin else None,
                 "asset_worker_identity_user_id": str(identity_id(issuer, ASSET_WORKER_SUBJECT)),
             }
         )

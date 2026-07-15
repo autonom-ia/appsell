@@ -13,8 +13,12 @@ import {
   demoProfileForSubject
 } from "../lib/demo-config";
 
-const localDemo = { NODE_ENV: "development", APPSELL_DEMO_ENABLED: "true" };
-const localIdentityDemo = { NODE_ENV: "development", APPSELL_IDENTITY_DEMO_ENABLED: "true" };
+const localDemo = { NODE_ENV: "development", APP_ENV: "local", APPSELL_DEMO_ENABLED: "true" };
+const localIdentityDemo = {
+  NODE_ENV: "development",
+  APP_ENV: "local",
+  APPSELL_IDENTITY_DEMO_ENABLED: "true"
+};
 
 describe("demo personas", () => {
   it("uses the two public demo identities", () => {
@@ -46,7 +50,7 @@ describe("demo personas", () => {
       ...localDemo,
       APPSELL_DEMO_SUPERADMIN_ENABLED: "true"
     })).toMatchObject({
-      subject: "inspection-superadmin",
+      subject: "demo-superadmin",
       email: "comercial@autonomia.site",
       home: "/platform/demo-inspection"
     });
@@ -56,6 +60,7 @@ describe("demo personas", () => {
   it("fails closed in production even when the demo flag is present", () => {
     const production = {
       NODE_ENV: "production",
+      APP_ENV: "local",
       APPSELL_DEMO_ENABLED: "true",
       APPSELL_DEMO_SUPERADMIN_ENABLED: "true"
     };
@@ -68,5 +73,37 @@ describe("demo personas", () => {
       ...production,
       APPSELL_IDENTITY_DEMO_ENABLED: "true"
     })).toBeNull();
+  });
+
+  it("recognizes only the exact superadmin subject in an Identity Local/CI preview", () => {
+    expect(demoProfileForSubject("demo-superadmin", {
+      NODE_ENV: "test",
+      APP_ENV: "ci",
+      APPSELL_IDENTITY_DEMO_ENABLED: "true",
+      APPSELL_DEMO_SUPERADMIN_ENABLED: "true"
+    })).toMatchObject({
+      persona: "superadmin",
+      email: "comercial@autonomia.site",
+      home: "/platform/demo-inspection"
+    });
+    expect(demoProfileForSubject("demo-superadmin", localIdentityDemo)).toBeNull();
+  });
+
+  it.each([
+    [undefined, "local"],
+    ["preview", "ci"],
+    ["development", undefined],
+    ["development", "staging"]
+  ])("fails closed outside the explicit Local/CI allowlist: %s/%s", (nodeEnvironment, appEnvironment) => {
+    const environment = {
+      NODE_ENV: nodeEnvironment,
+      APP_ENV: appEnvironment,
+      APPSELL_DEMO_ENABLED: "true",
+      APPSELL_IDENTITY_DEMO_ENABLED: "true",
+      APPSELL_DEMO_SUPERADMIN_ENABLED: "true"
+    };
+    expect(demoModeEnabled(environment)).toBe(false);
+    expect(identityDemoModeEnabled(environment)).toBe(false);
+    expect(demoProfileForSubject("demo-superadmin", environment)).toBeNull();
   });
 });

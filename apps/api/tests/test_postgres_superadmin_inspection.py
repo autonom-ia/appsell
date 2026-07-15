@@ -18,7 +18,12 @@ from psycopg import sql
 from psycopg.conninfo import make_conninfo
 from sqlalchemy.engine import make_url
 
-from appsell_api.reset_demo_tenant import load_manifest, reset_demo
+from appsell_api.reset_demo_tenant import (
+    DEMO_SUPERADMIN_EMAIL,
+    DEMO_SUPERADMIN_SUBJECT,
+    load_manifest,
+    reset_demo,
+)
 
 ADMIN_URL = os.environ.get("APPSELL_TEST_POSTGRES_ADMIN_URL")
 RUNTIME_URL = os.environ.get("APPSELL_TEST_POSTGRES_RUNTIME_URL")
@@ -31,7 +36,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 ISSUER = "https://identity.test.autonomia.site"
-SUPERADMIN_SUB = "inspection-superadmin"
+SUPERADMIN_SUB = DEMO_SUPERADMIN_SUBJECT
 SUPERADMIN_ID = uuid5(NAMESPACE_URL, f"{ISSUER}\0{SUPERADMIN_SUB}")
 ORDINARY_SUB = "inspection-ordinary"
 ORDINARY_ID = uuid5(NAMESPACE_URL, f"{ISSUER}\0{ORDINARY_SUB}")
@@ -84,7 +89,24 @@ def seed_demo_and_platform_identities() -> None:
     assert ADMIN_URL
     manifest, manifest_sha = load_manifest()
     with psycopg.connect(ADMIN_URL) as connection:
-        reset_demo(connection, manifest, manifest_sha, ISSUER)
+        reset_demo(
+            connection,
+            manifest,
+            manifest_sha,
+            ISSUER,
+            provision_superadmin=True,
+        )
+        assert connection.execute(
+            "select identity.email_normalized,identity.email_verified,grant_row.role,"
+            "grant_row.status from identity_user identity join platform_grant grant_row "
+            "on grant_row.identity_user_id=identity.id where identity.id=%s",
+            (SUPERADMIN_ID,),
+        ).fetchone() == (
+            DEMO_SUPERADMIN_EMAIL,
+            True,
+            "platform_superadmin",
+            "active",
+        )
         connection.execute(
             "insert into identity_user("
             "id,identity_issuer,identity_sub,email_normalized,email_verified) "
@@ -119,6 +141,55 @@ def seed_demo_and_platform_identities() -> None:
             "status='active',revoked_at=null",
             (SUPERADMIN_ID,),
         )
+        connection.commit()
+
+
+def test_demo_superadmin_reset_is_idempotent_revocable_and_reprovisionable() -> None:
+    assert ADMIN_URL
+    manifest, manifest_sha = load_manifest()
+    with psycopg.connect(ADMIN_URL) as connection:
+        reset_demo(
+            connection,
+            manifest,
+            manifest_sha,
+            ISSUER,
+            provision_superadmin=True,
+        )
+        reset_demo(
+            connection,
+            manifest,
+            manifest_sha,
+            ISSUER,
+            provision_superadmin=True,
+        )
+        assert connection.execute(
+            "select "
+            "(select count(*) from identity_user where identity_issuer=%s and identity_sub=%s),"
+            "(select count(*) from platform_grant where identity_user_id=%s "
+            "and role='platform_superadmin' and status='active'),"
+            "(select count(*) from seller_membership where identity_user_id=%s)",
+            (ISSUER, SUPERADMIN_SUB, SUPERADMIN_ID, SUPERADMIN_ID),
+        ).fetchone() == (1, 1, 0)
+
+        reset_demo(connection, manifest, manifest_sha, ISSUER)
+        assert connection.execute(
+            "select status,revoked_at is not null from platform_grant "
+            "where identity_user_id=%s and role='platform_superadmin'",
+            (SUPERADMIN_ID,),
+        ).fetchone() == ("revoked", True)
+
+        reset_demo(
+            connection,
+            manifest,
+            manifest_sha,
+            ISSUER,
+            provision_superadmin=True,
+        )
+        assert connection.execute(
+            "select status,revoked_at is null from platform_grant "
+            "where identity_user_id=%s and role='platform_superadmin'",
+            (SUPERADMIN_ID,),
+        ).fetchone() == ("active", True)
         connection.commit()
 
 
@@ -406,11 +477,15 @@ def test_concurrent_grant_revocation_prevents_inspection_start() -> None:
     assert ADMIN_URL and RUNTIME_URL
     token = "G" * 43
     start_entered = Event()
+    runtime_pid: list[int] = []
 
     def attempt_start() -> bool:
-        start_entered.set()
         try:
             with psycopg.connect(RUNTIME_URL) as runtime_connection:
+                pid = runtime_connection.execute("select pg_backend_pid()").fetchone()
+                assert pid is not None
+                runtime_pid.append(pid[0])
+                start_entered.set()
                 start_inspection(runtime_connection, token)
                 runtime_connection.commit()
             return True
@@ -419,16 +494,33 @@ def test_concurrent_grant_revocation_prevents_inspection_start() -> None:
 
     with psycopg.connect(ADMIN_URL) as admin_connection:
         admin_connection.execute(
-            "update platform_grant set status='revoked',revoked_at=clock_timestamp() "
+            "update platform_grant set status='active',revoked_at=null "
             "where identity_user_id=%s and role='platform_superadmin'",
             (SUPERADMIN_ID,),
         )
+        admin_connection.commit()
+        revoked = admin_connection.execute(
+            "update platform_grant set status='revoked',revoked_at=clock_timestamp() "
+            "where identity_user_id=%s and role='platform_superadmin' returning status",
+            (SUPERADMIN_ID,),
+        ).fetchone()
+        assert revoked == ("revoked",)
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(attempt_start)
             assert start_entered.wait(timeout=2)
-            time.sleep(0.1)
-            assert not future.done()
+            deadline = time.monotonic() + 2
+            lock_observed = False
+            while time.monotonic() < deadline:
+                wait_event = admin_connection.execute(
+                    "select wait_event_type from pg_stat_activity where pid=%s",
+                    (runtime_pid[0],),
+                ).fetchone()
+                if wait_event == ("Lock",):
+                    lock_observed = True
+                    break
+                time.sleep(0.01)
             admin_connection.commit()
+            assert lock_observed, "inspection start did not wait on the grant revocation lock"
             assert future.result(timeout=10) is False
     with psycopg.connect(ADMIN_URL) as connection:
         assert connection.execute(

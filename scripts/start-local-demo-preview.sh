@@ -91,6 +91,9 @@ export APPSELL_BOOTSTRAP_ENABLED="false"
 uv run --project apps/api python -m appsell_api.configure_context_key
 
 export APPSELL_DEMO_ENABLED="true"
+export APPSELL_DEMO_SUPERADMIN_ENABLED="true"
+export NODE_ENV="development"
+export APP_ENV="local"
 export APPSELL_API_ENVIRONMENT="local"
 export APPSELL_API_IDENTITY_ISSUER="$APPSELL_IDENTITY_ISSUER"
 export APPSELL_DEMO_DATABASE_URL="postgresql://postgres:${superuser_secret}@127.0.0.1:${postgres_port}/appsell"
@@ -133,6 +136,7 @@ export APPSELL_STORAGE_PUBLIC_ORIGIN="http://127.0.0.1:${storage_port}"
 export APPSELL_VAULT_LOCAL_KEYRING_B64_JSON="[{\"id\":\"preview-v1\",\"key\":\"${vault_key_b64}\",\"active\":true}]"
 export APPSELL_DOMAIN_API_URL="http://127.0.0.1:${api_port}"
 export APPSELL_DEMO_ENABLED="true"
+export APPSELL_DEMO_SUPERADMIN_ENABLED="true"
 export APPSELL_NEXT_DIST_DIR="$next_dist_dir"
 export NEXT_TELEMETRY_DISABLED="1"
 

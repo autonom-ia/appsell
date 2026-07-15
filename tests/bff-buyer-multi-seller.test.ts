@@ -65,6 +65,7 @@ test.skipIf(!domainApiUrl)(
         "APPSELL_INTERNAL_HMAC_KEYRING_B64_JSON"
       ),
       APPSELL_SERVICE_CREDENTIAL_B64: requiredEnvironment("APPSELL_SERVICE_CREDENTIAL_B64"),
+      APP_ENV: "ci",
       APPSELL_DEMO_ENABLED: "true",
       NEXT_TELEMETRY_DISABLED: "1"
     });

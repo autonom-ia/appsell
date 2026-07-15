@@ -19,6 +19,7 @@ alembic -c apps/api/alembic.ini upgrade head
 python -m appsell_api.configure_context_key
 
 APPSELL_DEMO_ENABLED=true \
+APPSELL_DEMO_SUPERADMIN_ENABLED=true \
 APPSELL_API_ENVIRONMENT=ci \
 python -m appsell_api.reset_demo_tenant --confirm-demo-key autonomia-demo-v1
 

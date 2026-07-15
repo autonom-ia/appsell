@@ -100,6 +100,28 @@ test("user demo crosses Auth and Foundation into the Autonom.ia Sell library", a
   await evidence.assertClean();
 });
 
+test("superadmin demo crosses Auth and Foundation into a temporary read-only inspection", async ({ context, page }) => {
+  const evidence = observeReadableResponses(page);
+  await login(page, "comercial@autonomia.site", "/platform/demo-inspection");
+  await expect(page.getByRole("heading", { level: 1, name: "Inspeção da tenant demo" })).toBeVisible();
+  await assertProtectedBrowserSurface(context, page, "superadmin");
+
+  const sellersResponse = await page.request.get("/api/sellers");
+  expect(sellersResponse.status()).toBe(403);
+  expect(await sellersResponse.json()).toEqual({ error: "demo_superadmin_capability_forbidden" });
+
+  await page.getByRole("button", { name: "Iniciar inspeção read-only" }).click();
+  await expect(page).toHaveURL(/\/platform\/demo-inspection\?status=started$/);
+  await expect(page.getByRole("heading", { level: 2, name: "Autonom.ia Demo" })).toBeVisible();
+  await expect(page.getByText("Codex na prática", { exact: true })).toBeVisible();
+  await page.screenshot({ path: path.join(evidenceDirectory, "superadmin-demo-inspection.png"), fullPage: true });
+
+  await page.getByRole("button", { name: "Encerrar e revogar acesso" }).click();
+  await expect(page).toHaveURL(/\/platform\/demo-inspection\?status=revoked$/);
+  await expect(page.getByText("Inspeção encerrada e token revogado.")).toBeVisible();
+  await evidence.assertClean();
+});
+
 async function login(page: Page, email: string, expectedPath: string) {
   await page.goto("/");
   await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
@@ -115,7 +137,7 @@ async function login(page: Page, email: string, expectedPath: string) {
 async function assertProtectedBrowserSurface(
   context: import("@playwright/test").BrowserContext,
   page: Page,
-  persona: "admin" | "buyer"
+  persona: "admin" | "buyer" | "superadmin"
 ) {
   const cookies = await context.cookies();
   const session = cookies.find((cookie) => cookie.name === "appsell_session");

@@ -4,7 +4,7 @@ export const DEMO_ADMIN_SUBJECT = "demo-admin-v1";
 export const DEMO_BUYER_SUBJECT = "demo-user-v1";
 export const IDENTITY_DEMO_ADMIN_SUBJECT = "demo-admin";
 export const IDENTITY_DEMO_BUYER_SUBJECT = "demo-user";
-export const DEMO_SUPERADMIN_SUBJECT = "inspection-superadmin";
+export const DEMO_SUPERADMIN_SUBJECT = "demo-superadmin";
 export const DEMO_ADMIN_EMAIL = "admin.demo@autonomia.site";
 export const DEMO_BUYER_EMAIL = "user.demo@autonomia.site";
 export const DEMO_SUPERADMIN_EMAIL = "comercial@autonomia.site";
@@ -42,13 +42,18 @@ const profiles: Record<DemoPersona, DemoProfile> = {
 };
 
 export function demoModeEnabled(environment: Partial<Record<string, string | undefined>> = process.env) {
-  return environment.NODE_ENV !== "production" &&
+  return localCiRuntime(environment) &&
     environment.APPSELL_DEMO_ENABLED?.toLowerCase() === "true";
 }
 
 export function identityDemoModeEnabled(environment: Partial<Record<string, string | undefined>> = process.env) {
-  return environment.NODE_ENV !== "production" &&
+  return localCiRuntime(environment) &&
     environment.APPSELL_IDENTITY_DEMO_ENABLED?.toLowerCase() === "true";
+}
+
+function localCiRuntime(environment: Partial<Record<string, string | undefined>>) {
+  return (environment.NODE_ENV === "development" || environment.NODE_ENV === "test") &&
+    (environment.APP_ENV === "local" || environment.APP_ENV === "ci");
 }
 
 export function demoProfileForPersona(
@@ -70,7 +75,8 @@ export function demoProfileForSubject(
   if (!demoModeEnabled(environment) && !identityDemoModeEnabled(environment)) return null;
   if (subject === DEMO_ADMIN_SUBJECT || subject === IDENTITY_DEMO_ADMIN_SUBJECT) return profiles.admin;
   if (subject === DEMO_BUYER_SUBJECT || subject === IDENTITY_DEMO_BUYER_SUBJECT) return profiles.buyer;
-  if (demoModeEnabled(environment) && subject === DEMO_SUPERADMIN_SUBJECT &&
+  if ((demoModeEnabled(environment) || identityDemoModeEnabled(environment)) &&
+      subject === DEMO_SUPERADMIN_SUBJECT &&
       environment.APPSELL_DEMO_SUPERADMIN_ENABLED?.toLowerCase() === "true") {
     return profiles.superadmin;
   }

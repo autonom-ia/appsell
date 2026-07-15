@@ -145,6 +145,9 @@ if uv run --project apps/api python -m appsell_api.configure_context_key 2>/dev/
 fi
 
 APPSELL_DEMO_ENABLED="true" \
+APPSELL_DEMO_SUPERADMIN_ENABLED="true" \
+NODE_ENV="test" \
+APP_ENV="ci" \
 APPSELL_API_ENVIRONMENT="ci" \
 APPSELL_API_IDENTITY_ISSUER="$APPSELL_IDENTITY_ISSUER" \
 APPSELL_DEMO_DATABASE_URL="$APPSELL_TEST_POSTGRES_ADMIN_URL" \

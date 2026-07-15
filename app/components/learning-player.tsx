@@ -80,6 +80,7 @@ export function LearningPlayer({ entitlementId, lessonId }: { entitlementId: str
   const [feedback, setFeedback] = useState("");
   const requestRef = useRef<AbortController | null>(null);
   const mutationRef = useRef<AbortController | null>(null);
+  const pendingRevalidationRef = useRef(false);
   const idempotencyKeys = useRef(new Map<string, string>());
   const titleRef = useRef<HTMLHeadingElement>(null);
   const errorRef = useRef<HTMLHeadingElement>(null);
@@ -171,7 +172,10 @@ export function LearningPlayer({ entitlementId, lessonId }: { entitlementId: str
   useEffect(() => {
     if (!payload) return;
     const revalidate = () => {
-      if (mutationRef.current) return;
+      if (mutationRef.current) {
+        pendingRevalidationRef.current = true;
+        return;
+      }
       void load(payload.selected_lesson_id, { silent: true });
     };
     const onVisibility = () => {
@@ -191,6 +195,7 @@ export function LearningPlayer({ entitlementId, lessonId }: { entitlementId: str
 
   function prepareNavigation(event: MouseEvent<HTMLAnchorElement>, targetLessonId: string) {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    pendingRevalidationRef.current = false;
     requestRef.current?.abort();
     mutationRef.current?.abort();
     setFeedback("");
@@ -257,6 +262,7 @@ export function LearningPlayer({ entitlementId, lessonId }: { entitlementId: str
       });
       idempotencyKeys.current.delete(`${complete ? "complete" : "progress"}:${currentLessonId}${complete ? "" : ":1"}`);
       if (complete && nextId) {
+        pendingRevalidationRef.current = false;
         setState({ status: "loading", requestKey: `${entitlementId}:${nextId}` });
         router.push(lessonHref(entitlementId, nextId));
       } else {
@@ -265,7 +271,13 @@ export function LearningPlayer({ entitlementId, lessonId }: { entitlementId: str
     } catch {
       if (!controller.signal.aborted) setFeedback("Seu progresso não foi salvo. Verifique a conexão e tente novamente.");
     } finally {
-      if (mutationRef.current === controller) mutationRef.current = null;
+      if (mutationRef.current === controller) {
+        mutationRef.current = null;
+        if (!controller.signal.aborted && pendingRevalidationRef.current) {
+          pendingRevalidationRef.current = false;
+          void load(currentLessonId, { silent: true });
+        }
+      }
       setMutationState("idle");
     }
   }
