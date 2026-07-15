@@ -93,7 +93,7 @@ database_marker="$(psql -XAt --set=ON_ERROR_STOP=1 \
   --set=database_name="$APPSELL_DATABASE_NAME" <<'SQL'
 select case
   when not exists(select 1 from pg_database where datname=:'database_name') then 'absent'
-  else coalesce((select obj_description(oid,'pg_database') from pg_database
+  else coalesce((select shobj_description(oid,'pg_database') from pg_database
     where datname=:'database_name'),'unmarked')
 end;
 SQL

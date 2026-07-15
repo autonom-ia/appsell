@@ -41,7 +41,7 @@ expected_state=$'appsell_preview_77_migrator|appsell-runtime-preview-77-v1\napps
 
 database_marker="$(docker exec "$container" psql -X -U "$postgres_user" \
   -d "$postgres_database" -Atc "
-    select coalesce(obj_description(oid,'pg_database'),'')
+    select coalesce(shobj_description(oid,'pg_database'),'')
     from pg_database where datname='appsell_preview_77'
   ")"
 [[ "$database_marker" == "appsell-demo-reset-target-v1" ]] || {

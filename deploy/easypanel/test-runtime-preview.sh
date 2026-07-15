@@ -66,6 +66,14 @@ grep -Fq 'APPSELL_DATABASE_NAME: appsell_preview_77' "$here/compose.runtime-prev
 grep -Fq '127.0.0.1:13200:13200' "$here/compose.runtime-preview.yaml"
 grep -Fq 'network_mode: "service:sell-web"' "$here/compose.runtime-preview.yaml"
 grep -Fq 'APPSELL_OAUTH_MODE: local' "$here/compose.runtime-preview.yaml"
+for marker_script in bootstrap-runtime-preview.sh retire-runtime-preview-credentials.sh; do
+  grep -Fq "shobj_description(oid,'pg_database')" "$here/$marker_script"
+  if grep -Eq "(^|[^[:alnum:]_])obj_description\\(oid,'pg_database'\\)" \
+    "$here/$marker_script"; then
+    echo "runtime-preview database marker must use the shared-object comment catalog" >&2
+    exit 1
+  fi
+done
 if grep -Eq '(^|[^a-z])(down|rm|prune|drop database)([^a-z]|$)' \
   "$here/bootstrap-runtime-preview.sh"; then
   echo "runtime bootstrap contains a destructive operation" >&2
@@ -73,7 +81,7 @@ if grep -Eq '(^|[^a-z])(down|rm|prune|drop database)([^a-z]|$)' \
 fi
 for script in load-runtime-preview-images.sh preflight-runtime-preview.sh \
   remove-runtime-preview-images.sh up-runtime-preview.sh verify-runtime-preview.sh \
-  teardown-runtime-preview.sh test-runtime-preview-common.sh \
+  teardown-runtime-preview.sh retire-runtime-preview-credentials.sh test-runtime-preview-common.sh \
   test-runtime-preview-lifecycle.sh; do
   test -x "$here/$script"
 done
