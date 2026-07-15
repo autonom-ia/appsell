@@ -181,6 +181,7 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     });
     const buyerPage = await buyerContext.newPage();
     await buyerPage.goto(`${origin}/s/autonomia-demo`);
+    await pwExpect(buyerPage.getByRole("link", { name: "Autonom.ia Sell — início" })).toContainText("Autonom.ia Sell");
     await pwExpect(buyerPage.getByRole("heading", { level: 1, name: "Autonom.ia Demo" })).toBeVisible();
     await pwExpect(buyerPage.getByRole("heading", { level: 3, name: "Codex na prática" })).toBeVisible();
     const storefrontCta = buyerPage.getByRole("link", { name: "Entrar para acessar" });
