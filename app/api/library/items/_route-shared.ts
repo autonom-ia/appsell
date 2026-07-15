@@ -23,14 +23,17 @@ const NO_STORE_HEADERS = {
   "x-content-type-options": "nosniff"
 } as const;
 
-type DomainSelectedAsset = null | {
+type DomainSelectedAsset = {
   id: string;
   title: string;
   media_type: "application/pdf" | "video/mp4";
 };
 
 interface LearningPlayerEnvelope {
-  player: Record<string, unknown> & { selected_asset: DomainSelectedAsset };
+  player: Record<string, unknown> & {
+    selected_asset: DomainSelectedAsset | null;
+    selected_assets?: DomainSelectedAsset[];
+  };
 }
 
 export interface LearningItemRouteContext {
@@ -153,17 +156,18 @@ export function learningPlayerResponse(payload: unknown, sessionId: string) {
   if (!isLearningPlayerEnvelope(payload)) {
     return learningJsonError("invalid_learning_response", 503);
   }
-  const asset = payload.player.selected_asset;
+  const domainAssets = payload.player.selected_assets ??
+    (payload.player.selected_asset === null ? [] : [payload.player.selected_asset]);
+  const selectedAssets = domainAssets.map((asset) => ({
+    href: `/api/library/items/${encodeURIComponent(String(payload.player.entitlement_id))}` +
+      `/assets/${encodeURIComponent(asset.id)}`,
+    title: asset.title,
+    media_type: asset.media_type
+  }));
   const player = {
     ...payload.player,
-    selected_asset: asset === null
-      ? null
-      : {
-          href: `/api/library/items/${encodeURIComponent(String(payload.player.entitlement_id))}` +
-            `/assets/${encodeURIComponent(asset.id)}`,
-          title: asset.title,
-          media_type: asset.media_type
-        }
+    selected_asset: selectedAssets[0] ?? null,
+    selected_assets: selectedAssets
   };
   return NextResponse.json({ player, csrf: learningCsrf(sessionId) }, {
     headers: NO_STORE_HEADERS
@@ -232,7 +236,7 @@ function safeInteger(value: string | undefined, minimum: number, maximum: number
 function isLearningPlayerEnvelope(value: unknown): value is LearningPlayerEnvelope {
   if (!hasExactKeys(value, ["player"]) || !isRecord(value.player)) return false;
   const player = value.player;
-  return hasExactKeys(player, [
+  const playerKeys = [
     "course",
     "course_progress_percent",
     "enrollment_id",
@@ -245,11 +249,20 @@ function isLearningPlayerEnvelope(value: unknown): value is LearningPlayerEnvelo
     "selected_lesson_id",
     "seller",
     "state_version"
-  ]) && isUuidRecord(player.seller, ["id"]) &&
+  ];
+  const hasMultiAssetContract = Object.hasOwn(player, "selected_assets");
+  if (!hasExactKeys(player, hasMultiAssetContract
+    ? [...playerKeys, "selected_assets"]
+    : playerKeys)) return false;
+  if (!isSelectedAsset(player.selected_asset)) return false;
+  if (hasMultiAssetContract && !isSelectedAssets(player.selected_assets, player.selected_asset)) {
+    return false;
+  }
+  return isUuidRecord(player.seller, ["id"]) &&
     isProduct(player.product) && isPublication(player.publication) &&
     UUID.test(String(player.entitlement_id)) && UUID.test(String(player.enrollment_id)) &&
     isCourse(player.course) && nullableUuid(player.selected_lesson_id) &&
-    nullableUuid(player.resume_lesson_id) && isSelectedAsset(player.selected_asset) &&
+    nullableUuid(player.resume_lesson_id) &&
     isPercent(player.course_progress_percent) &&
     isVersion(player.state_version) && Array.isArray(player.lesson_progress) &&
     player.lesson_progress.every(isLessonProgress);
@@ -286,13 +299,35 @@ function isPublication(value: unknown) {
     typeof value.source_sha256 === "string" && SHA256.test(value.source_sha256);
 }
 
-function isSelectedAsset(value: unknown): value is DomainSelectedAsset {
+function isSelectedAsset(value: unknown): value is DomainSelectedAsset | null {
   return value === null || (
     hasExactKeys(value, ["id", "media_type", "title"]) &&
     typeof value.id === "string" && UUID.test(value.id) &&
     typeof value.title === "string" && value.title.length > 0 &&
     (value.media_type === "application/pdf" || value.media_type === "video/mp4")
   );
+}
+
+function isSelectedAssets(
+  value: unknown,
+  legacySelection: DomainSelectedAsset | null
+): value is DomainSelectedAsset[] {
+  if (!Array.isArray(value) || value.length > 100 || !value.every(isSelectedAssetRecord)) {
+    return false;
+  }
+  if (new Set(value.map((asset) => asset.id)).size !== value.length) return false;
+  const first = value[0] ?? null;
+  return first === null
+    ? legacySelection === null
+    : legacySelection !== null && selectedAssetsEqual(first, legacySelection);
+}
+
+function isSelectedAssetRecord(value: unknown): value is DomainSelectedAsset {
+  return isSelectedAsset(value) && value !== null;
+}
+
+function selectedAssetsEqual(left: DomainSelectedAsset, right: DomainSelectedAsset) {
+  return left.id === right.id && left.title === right.title && left.media_type === right.media_type;
 }
 
 function isCourse(value: unknown) {

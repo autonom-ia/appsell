@@ -29,6 +29,12 @@ interface LessonProgress {
   updated_at: string | null;
 }
 
+interface LearningAsset {
+  href: string;
+  title: string;
+  media_type: "application/pdf" | "video/mp4";
+}
+
 interface LearningPlayerPayload {
   seller: { id: string };
   product: { id: string; slug: string; title: string; description: string };
@@ -41,7 +47,8 @@ interface LearningPlayerPayload {
   course_progress_percent: number;
   state_version: number;
   lesson_progress: LessonProgress[];
-  selected_asset?: { href: string; title: string; media_type: "application/pdf" | "video/mp4" } | null;
+  selected_asset: LearningAsset | null;
+  selected_assets: LearningAsset[];
   csrf: { progress: string; complete: string };
 }
 
@@ -297,7 +304,7 @@ export function LearningPlayer({ entitlementId, lessonId }: { entitlementId: str
   }
 
   useEffect(() => {
-    if (!payload || !selected || payload.selected_asset?.media_type === "video/mp4" ||
+    if (!payload || !selected || payload.selected_assets.some((asset) => asset.media_type === "video/mp4") ||
       selectedProgress?.completed || (selectedProgress?.progress_percent ?? 0) > 0) return;
     const start = window.setTimeout(() => void saveProgress(payload, selected.lesson.id, 1), 0);
     return () => window.clearTimeout(start);
@@ -360,16 +367,16 @@ export function LearningPlayer({ entitlementId, lessonId }: { entitlementId: str
             ? lessonParagraphs.map((paragraph, index) => <p key={`${selected.lesson.id}:${index}`}>{paragraph}</p>)
             : <p className="lesson-content-empty">Esta aula não possui conteúdo textual.</p>}
         </section>
-        {payload.selected_asset ? <aside className={`lesson-material ${payload.selected_asset.media_type === "video/mp4" ? "lesson-video" : ""}`} aria-labelledby="lesson-material-title">
-          <div><p className="eyebrow">{payload.selected_asset.media_type === "video/mp4" ? "Vídeo da aula" : "Material complementar"}</p><h2 id="lesson-material-title">{payload.selected_asset.title}</h2>
-            {payload.selected_asset.media_type === "application/pdf"
-              ? <p>PDF protegido, aberto em uma nova aba. O texto principal da aula permanece disponível nesta página.</p>
-              : <p>Vídeo privado. O progresso é salvo em etapas enquanto você assiste.</p>}
-          </div>
-          {payload.selected_asset.media_type === "application/pdf"
-            ? <a className="secondary-button" href={payload.selected_asset.href} target="_blank" rel="noopener">Abrir PDF<span className="sr-only"> em nova aba</span></a>
-            : <ProtectedVideo asset={payload.selected_asset} initialProgress={selectedProgress?.progress_percent ?? 0} busy={mutationState !== "idle"} onProgress={saveVideoProgress}/>}
-        </aside> : <p className="asset-unavailable" role="status">Material complementar indisponível para esta aula.</p>}
+        {payload.selected_assets.length > 0
+          ? payload.selected_assets.map((asset, index) => <LessonMaterial
+              key={asset.href}
+              asset={asset}
+              index={index}
+              initialProgress={selectedProgress?.progress_percent ?? 0}
+              busy={mutationState !== "idle"}
+              onVideoProgress={saveVideoProgress}
+            />)
+          : <p className="asset-unavailable" role="status">Material complementar indisponível para esta aula.</p>}
         <p className="player-feedback" aria-live="polite">{mutationState === "opening" ? "Salvando início da aula…" : mutationState === "completing" ? "Salvando conclusão…" : feedback}</p>
         <nav className="lesson-actions" aria-label="Navegação entre aulas">
           {previousId ? <Link className="secondary-button" href={lessonHref(entitlementId, previousId)} onClick={(event) => prepareNavigation(event, previousId)}>← Aula anterior</Link> : <span/>}
@@ -474,18 +481,55 @@ export function isLearningPlayerPayload(value: unknown): value is LearningPlayer
     !isNonEmptyString(value.selected_lesson_id) || !isNonEmptyString(value.resume_lesson_id) ||
     !isPercent(value.course_progress_percent) || !isNonNegativeInteger(value.state_version) ||
     !Array.isArray(value.lesson_progress) || !value.lesson_progress.every(isLessonProgress) ||
+    !Array.isArray(value.selected_assets) || value.selected_assets.length > 100 ||
     !isStringRecord(value.csrf, ["progress", "complete"])) return false;
-  if (value.selected_asset !== undefined && value.selected_asset !== null) {
-    if (!isStringRecord(value.selected_asset, ["href", "title"]) ||
-      !["application/pdf", "video/mp4"].includes(String(value.selected_asset.media_type))) return false;
-    const assetHref = (value.selected_asset.href as string).match(TENANT_ASSET_HREF);
-    if (!assetHref || assetHref[1] !== value.entitlement_id) return false;
-  }
+  if (!value.selected_assets.every((asset) => isLearningAsset(asset, value.entitlement_id))) return false;
+  const assetHrefs = value.selected_assets.map((asset) => asset.href);
+  if (new Set(assetHrefs).size !== assetHrefs.length) return false;
+  const firstAsset = value.selected_assets[0] ?? null;
+  if (value.selected_asset === undefined || !selectedAssetMatches(value.selected_asset, firstAsset)) return false;
   const lessonIds = flattenLessons(value.course.modules).map((entry) => entry.lesson.id);
   return lessonIds.length > 0 && new Set(lessonIds).size === lessonIds.length &&
     lessonIds.includes(value.selected_lesson_id) && lessonIds.includes(value.resume_lesson_id) &&
     value.lesson_progress.every((entry) => lessonIds.includes(entry.lesson_id)) &&
     new Set(value.lesson_progress.map((entry) => entry.lesson_id)).size === value.lesson_progress.length;
+}
+
+function isLearningAsset(value: unknown, entitlementId: unknown): value is LearningAsset {
+  if (!isStringRecord(value, ["href", "title"]) ||
+    !["application/pdf", "video/mp4"].includes(String(value.media_type))) return false;
+  const assetHref = (value.href as string).match(TENANT_ASSET_HREF);
+  return assetHref !== null && assetHref[1] === entitlementId;
+}
+
+function selectedAssetMatches(value: unknown, firstAsset: LearningAsset | null) {
+  if (firstAsset === null) return value === null;
+  return isLearningAsset(value, firstAsset.href.match(TENANT_ASSET_HREF)?.[1]) &&
+    value.href === firstAsset.href && value.title === firstAsset.title &&
+    value.media_type === firstAsset.media_type;
+}
+
+function LessonMaterial({ asset, index, initialProgress, busy, onVideoProgress }: {
+  asset: LearningAsset;
+  index: number;
+  initialProgress: number;
+  busy: boolean;
+  onVideoProgress: (percent: number) => Promise<boolean>;
+}) {
+  const video = asset.media_type === "video/mp4";
+  const titleId = `lesson-material-title-${index}`;
+  return <aside className={`lesson-material ${video ? "lesson-video" : ""}`} aria-labelledby={titleId}>
+    <div>
+      <p className="eyebrow">{video ? "Vídeo da aula" : "Material complementar"}</p>
+      <h2 id={titleId}>{asset.title}</h2>
+      {video
+        ? <p>Vídeo privado. O progresso é salvo em etapas enquanto você assiste.</p>
+        : <p>PDF protegido, aberto em uma nova aba. O texto principal da aula permanece disponível nesta página.</p>}
+    </div>
+    {video
+      ? <ProtectedVideo asset={asset} initialProgress={initialProgress} busy={busy} onProgress={onVideoProgress}/>
+      : <a className="secondary-button" href={asset.href} target="_blank" rel="noopener">Abrir PDF<span className="sr-only"> em nova aba</span></a>}
+  </aside>;
 }
 
 function ProtectedVideo({ asset, initialProgress, busy, onProgress }: {

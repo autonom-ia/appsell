@@ -46,6 +46,7 @@ interface ApiRequest {
   inspectionToken?: string;
   body?: Record<string, unknown>;
   capacityTrace?: string | null;
+  learningAssetsContract?: "v2";
 }
 
 export interface DemoInspectionProjection {
@@ -664,7 +665,8 @@ export async function readDomainLearningResume(
   return domainRequest(sessionId, session, {
     method: "GET",
     path: `/v1/me/learning/items/${entitlementId}/resume`,
-    capability: "learning.player.read"
+    capability: "learning.player.read",
+    learningAssetsContract: "v2"
   });
 }
 
@@ -677,7 +679,8 @@ export async function readDomainLearningLesson(
   return domainRequest(sessionId, session, {
     method: "GET",
     path: `/v1/me/learning/items/${entitlementId}/lessons/${lessonId}`,
-    capability: "learning.player.read"
+    capability: "learning.player.read",
+    learningAssetsContract: "v2"
   });
 }
 
@@ -782,7 +785,10 @@ async function domainRequest(
           ...(request.inspectionToken
             ? { "x-appsell-inspection-token": request.inspectionToken }
             : {}),
-          ...(capacityTrace ? { "x-appsell-capacity-trace": capacityTrace } : {})
+          ...(capacityTrace ? { "x-appsell-capacity-trace": capacityTrace } : {}),
+          ...(request.learningAssetsContract
+            ? { "x-appsell-learning-assets-contract": request.learningAssetsContract }
+            : {})
         },
       cache: "no-store",
       signal: controller.signal

@@ -637,9 +637,19 @@ def test_verified_versions_are_immutable_tenant_scoped_and_publication_pinned() 
             "select * from app_private.authorize_publication_asset(%s,%s,%s)",
             (pinned_buyer, pinned_entitlement, asset),
         ).fetchone()
+        connection.rollback()
+        apply_context(connection, pinned_buyer, None, "learning.player.read")
+        player = connection.execute(
+            "select app_private.read_learning_player_v2(%s,%s,%s)",
+            (pinned_buyer, pinned_entitlement, lesson),
+        ).fetchone()
     assert authorized is not None and authorized[1] == 1
     assert authorized[7] == "s3"
     assert authorized[5] == 900 and authorized[6] == first["_ready_hash"]
+    assert player is not None
+    assert player[0]["publication"]["id"] == str(publication_one[0])
+    assert player[0]["selected_asset"] == player[0]["selected_assets"][0]
+    assert str(asset) in {item["id"] for item in player[0]["selected_assets"]}
 
 
 def test_rejected_verification_never_creates_blob_version_or_draft() -> None:

@@ -18,6 +18,7 @@ appsell_run=101
 foundation_run=102
 auth_run=103
 auth_pr=28
+appsell_branch="${APPSELL_ARTIFACT_BRANCH:-infra/66-vps-preview}"
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -99,12 +100,22 @@ make_artifact() {
     }' >"$directory/artifact-$artifact_id.json"
 }
 
-install -d "$tmp/subjects/config"
-printf 'preview fixture\n' >"$tmp/subjects/config/README"
+install -d "$tmp/subjects/config/easypanel"
+printf 'preview fixture\n' >"$tmp/subjects/config/easypanel/README.md"
+printf '#!/usr/bin/env bash\nset -euo pipefail\n' \
+  >"$tmp/subjects/config/easypanel/harden-sell-services.sh"
+printf '#!/usr/bin/env bash\nset -euo pipefail\n' \
+  >"$tmp/subjects/config/easypanel/verify-sell-isolation.sh"
+chmod 0755 \
+  "$tmp/subjects/config/easypanel/harden-sell-services.sh" \
+  "$tmp/subjects/config/easypanel/verify-sell-isolation.sh"
 (
   cd "$tmp/subjects/config"
-  sha256_file README >"$tmp/readme.digest"
-  printf '%s  README\n' "$(cat "$tmp/readme.digest")" >SHA256SUMS
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum easypanel/README.md easypanel/*.sh >SHA256SUMS
+  else
+    shasum -a 256 easypanel/README.md easypanel/*.sh >SHA256SUMS
+  fi
 )
 COPYFILE_DISABLE=1 tar -czf "$tmp/subjects/config-$appsell_sha.tar.gz" -C "$tmp/subjects" config
 printf 'sell image\n' >"$tmp/subjects/sell-$appsell_sha.tar"
@@ -116,7 +127,7 @@ printf 'foundation image\n' >"$tmp/subjects/foundation-$foundation_sha.tar"
 printf 'auth image\n' >"$tmp/subjects/auth-$auth_sha.tar"
 
 make_run autonom-ia/appsell "$appsell_run" "VPS preview artifacts" \
-  .github/workflows/preview-images.yml push infra/66-vps-preview "$appsell_sha"
+  .github/workflows/preview-images.yml push "$appsell_branch" "$appsell_sha"
 make_run autonom-ia/autonomia-identity-foundation "$foundation_run" \
   "Foundation Local CI preview artifact" .github/workflows/preview-image.yml \
   push infra/37-preview-artifact "$foundation_sha"
@@ -140,22 +151,22 @@ jq -n \
   }]]' >"$tmp/api/auth-pr-$auth_pr.reviews.json"
 
 make_artifact autonom-ia/appsell .github/workflows/preview-images.yml \
-  infra/66-vps-preview "$appsell_sha" "$appsell_run" push \
+  "$appsell_branch" "$appsell_sha" "$appsell_run" push \
   "appsell-vps-preview-config-$appsell_sha" "$tmp/subjects/config-$appsell_sha.tar.gz" 1001 ""
 make_artifact autonom-ia/appsell .github/workflows/preview-images.yml \
-  infra/66-vps-preview "$appsell_sha" "$appsell_run" push \
+  "$appsell_branch" "$appsell_sha" "$appsell_run" push \
   "appsell-vps-preview-sell-$appsell_sha" "$tmp/subjects/sell-$appsell_sha.tar" 1002 ""
 make_artifact autonom-ia/appsell .github/workflows/preview-images.yml \
-  infra/66-vps-preview "$appsell_sha" "$appsell_run" push \
+  "$appsell_branch" "$appsell_sha" "$appsell_run" push \
   "appsell-vps-preview-domain-$appsell_sha" "$tmp/subjects/domain-$appsell_sha.tar" 1003 ""
 make_artifact autonom-ia/appsell .github/workflows/preview-images.yml \
-  infra/66-vps-preview "$appsell_sha" "$appsell_run" push \
+  "$appsell_branch" "$appsell_sha" "$appsell_run" push \
   "appsell-vps-preview-base-alpine-$appsell_sha" "$tmp/subjects/base-alpine-$appsell_sha.tar" 1006 ""
 make_artifact autonom-ia/appsell .github/workflows/preview-images.yml \
-  infra/66-vps-preview "$appsell_sha" "$appsell_run" push \
+  "$appsell_branch" "$appsell_sha" "$appsell_run" push \
   "appsell-vps-preview-base-postgres-$appsell_sha" "$tmp/subjects/base-postgres-$appsell_sha.tar" 1007 ""
 make_artifact autonom-ia/appsell .github/workflows/preview-images.yml \
-  infra/66-vps-preview "$appsell_sha" "$appsell_run" push \
+  "$appsell_branch" "$appsell_sha" "$appsell_run" push \
   "appsell-vps-preview-base-redis-$appsell_sha" "$tmp/subjects/base-redis-$appsell_sha.tar" 1008 ""
 make_artifact autonom-ia/autonomia-identity-foundation .github/workflows/preview-image.yml \
   infra/37-preview-artifact "$foundation_sha" "$foundation_run" push \
@@ -231,6 +242,8 @@ PATH="$tmp/bin:$PATH" MOCK_ROOT="$tmp" "$verifier" \
   "$tmp/success" "$appsell_sha" "$auth_sha" "$foundation_sha" \
   "$appsell_run" "$auth_run" "$foundation_run" "$auth_pr" "$auth_workflow_sha" >/dev/null
 test -f "$tmp/success/upload/config/SHA256SUMS"
+test -x "$tmp/success/upload/config/easypanel/harden-sell-services.sh"
+test -x "$tmp/success/upload/config/easypanel/verify-sell-isolation.sh"
 test -f "$tmp/success/upload/artifacts/auth-$auth_sha.tar"
 test -f "$tmp/success/upload/artifacts/base-postgres-$appsell_sha.tar"
 upload_mode="$(stat -c '%a' "$tmp/success/upload" 2>/dev/null || stat -f '%Lp' "$tmp/success/upload")"

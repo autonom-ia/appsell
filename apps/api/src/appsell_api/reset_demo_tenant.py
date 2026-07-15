@@ -19,6 +19,7 @@ ASSET_WORKER_SUBJECT = "asset-worker-v1"
 ASSET_WORKER_EMAIL = "asset.worker@autonomia.site"
 DEMO_SUPERADMIN_SUBJECT = "demo-superadmin"
 DEMO_SUPERADMIN_EMAIL = "comercial@autonomia.site"
+EXPECTED_MIGRATION = "0014_multi_asset_player"
 LIBPQ_REDIRECT_ENVIRONMENT = (
     "PGHOST",
     "PGHOSTADDR",
@@ -238,8 +239,8 @@ def prepare_demo_storage_cleanup(
     validate_demo_database(connection)
     connection.execute("select set_config('appsell.demo_reset_key',%s,true)", (DEMO_KEY,))
     version = connection.execute("select version_num from alembic_version").fetchone()
-    if version != ("0013_private_media",):
-        raise RuntimeError("database must be migrated to 0013_private_media")
+    if version != (EXPECTED_MIGRATION,):
+        raise RuntimeError(f"database must be migrated to {EXPECTED_MIGRATION}")
 
     connection.execute(
         """
@@ -370,8 +371,8 @@ def reset_demo(
     validate_demo_database(connection)
     connection.execute("select set_config('appsell.demo_reset_key',%s,true)", (DEMO_KEY,))
     version = connection.execute("select version_num from alembic_version").fetchone()
-    if version != ("0013_private_media",):
-        raise RuntimeError("database must be migrated to 0013_private_media")
+    if version != (EXPECTED_MIGRATION,):
+        raise RuntimeError(f"database must be migrated to {EXPECTED_MIGRATION}")
     unsafe_storage = connection.execute(
         """
         select exists(

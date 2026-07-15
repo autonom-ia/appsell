@@ -106,9 +106,10 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     });
     expect(player.status, await player.clone().text()).toBe(200);
     const playerPayload = await player.json() as {
-      player: { selected_asset: { href: string } };
+      player: { selected_asset: { href: string }; selected_assets: Array<{ href: string }> };
     };
     const assetHref = playerPayload.player.selected_asset.href;
+    expect(playerPayload.player.selected_assets).toEqual([playerPayload.player.selected_asset]);
     expect(assetHref).toMatch(new RegExp(
       `^/api/library/items/${entitlementId}/assets/[0-9a-f-]{36}$`
     ));
@@ -126,10 +127,28 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     );
     expect(videoPlayer.status, await videoPlayer.clone().text()).toBe(200);
     const videoPlayerPayload = await videoPlayer.json() as {
-      player: { selected_asset: { href: string; media_type: string } };
+      player: {
+        selected_asset: { href: string; media_type: string };
+        selected_assets: Array<{ href: string; media_type: string }>;
+      };
     };
     expect(videoPlayerPayload.player.selected_asset.media_type).toBe("video/mp4");
-    const videoHref = videoPlayerPayload.player.selected_asset.href;
+    expect(videoPlayerPayload.player.selected_assets.map((asset) => asset.media_type))
+      .toEqual(["video/mp4", "application/pdf"]);
+    const videoAsset = videoPlayerPayload.player.selected_assets.find(
+      (asset) => asset.media_type === "video/mp4"
+    );
+    const finalPdfAsset = videoPlayerPayload.player.selected_assets.find(
+      (asset) => asset.media_type === "application/pdf"
+    );
+    expect(videoAsset).toBeDefined();
+    expect(finalPdfAsset).toBeDefined();
+    const videoHref = videoAsset!.href;
+    const finalPdf = await fetch(`${origin}${finalPdfAsset!.href}`, {
+      headers: { cookie: buyer.session }
+    });
+    expect(finalPdf.status, await finalPdf.clone().text()).toBe(200);
+    expect(finalPdf.headers.get("content-type")).toBe("application/pdf");
     const videoRange = await fetch(`${origin}${videoHref}`, {
       headers: { cookie: buyer.session, range: "bytes=0-1023" }
     });

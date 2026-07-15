@@ -16,6 +16,12 @@ auth_run_id="$6"
 foundation_run_id="$7"
 auth_pr="$8"
 auth_workflow_sha="$9"
+appsell_branch="${APPSELL_ARTIFACT_BRANCH:-infra/66-vps-preview}"
+
+case "$appsell_branch" in
+  infra/66-vps-preview|infra/66-easypanel-rc) ;;
+  *) echo "Unsupported AppSell artifact branch" >&2; exit 2 ;;
+esac
 
 for command_name in gh jq unzip python3; do
   command -v "$command_name" >/dev/null 2>&1 || {
@@ -288,7 +294,7 @@ PY
 
 verify_run \
   autonom-ia/appsell "$appsell_run_id" "VPS preview artifacts" \
-  .github/workflows/preview-images.yml push infra/66-vps-preview "$appsell_sha" yes
+  .github/workflows/preview-images.yml push "$appsell_branch" "$appsell_sha" yes
 verify_run \
   autonom-ia/autonomia-identity-foundation "$foundation_run_id" \
   "Foundation Local CI preview artifact" .github/workflows/preview-image.yml \
@@ -301,27 +307,27 @@ verify_current_auth_approval
 
 download_and_verify_artifact \
   autonom-ia/appsell "$appsell_run_id" .github/workflows/preview-images.yml \
-  infra/66-vps-preview "$appsell_sha" push \
+  "$appsell_branch" "$appsell_sha" push \
   "appsell-vps-preview-config-$appsell_sha" "config-$appsell_sha.tar.gz" ""
 download_and_verify_artifact \
   autonom-ia/appsell "$appsell_run_id" .github/workflows/preview-images.yml \
-  infra/66-vps-preview "$appsell_sha" push \
+  "$appsell_branch" "$appsell_sha" push \
   "appsell-vps-preview-sell-$appsell_sha" "sell-$appsell_sha.tar" ""
 download_and_verify_artifact \
   autonom-ia/appsell "$appsell_run_id" .github/workflows/preview-images.yml \
-  infra/66-vps-preview "$appsell_sha" push \
+  "$appsell_branch" "$appsell_sha" push \
   "appsell-vps-preview-domain-$appsell_sha" "domain-$appsell_sha.tar" ""
 download_and_verify_artifact \
   autonom-ia/appsell "$appsell_run_id" .github/workflows/preview-images.yml \
-  infra/66-vps-preview "$appsell_sha" push \
+  "$appsell_branch" "$appsell_sha" push \
   "appsell-vps-preview-base-alpine-$appsell_sha" "base-alpine-$appsell_sha.tar" ""
 download_and_verify_artifact \
   autonom-ia/appsell "$appsell_run_id" .github/workflows/preview-images.yml \
-  infra/66-vps-preview "$appsell_sha" push \
+  "$appsell_branch" "$appsell_sha" push \
   "appsell-vps-preview-base-postgres-$appsell_sha" "base-postgres-$appsell_sha.tar" ""
 download_and_verify_artifact \
   autonom-ia/appsell "$appsell_run_id" .github/workflows/preview-images.yml \
-  infra/66-vps-preview "$appsell_sha" push \
+  "$appsell_branch" "$appsell_sha" push \
   "appsell-vps-preview-base-redis-$appsell_sha" "base-redis-$appsell_sha.tar" ""
 download_and_verify_artifact \
   autonom-ia/autonomia-identity-foundation "$foundation_run_id" \
@@ -371,6 +377,13 @@ with tarfile.open(archive, mode="r:gz") as bundle:
         raise SystemExit("config archive contains too many members")
     if sum(member.size for member in members) > 64 * 1024 * 1024:
         raise SystemExit("config archive expands beyond 64 MiB")
+    by_name = {member.name.rstrip("/"): member for member in members}
+    required_files = {
+        "config/SHA256SUMS": False,
+        "config/easypanel/README.md": False,
+        "config/easypanel/harden-sell-services.sh": True,
+        "config/easypanel/verify-sell-isolation.sh": True,
+    }
     for member in members:
         path = pathlib.PurePosixPath(member.name)
         if path.is_absolute() or ".." in path.parts:
@@ -379,6 +392,20 @@ with tarfile.open(archive, mode="r:gz") as bundle:
             raise SystemExit(f"config archive contains an unexpected root: {member.name}")
         if member.issym() or member.islnk() or member.isdev() or member.isfifo():
             raise SystemExit("config archive contains a special or linked entry")
+    for name, executable in required_files.items():
+        member = by_name.get(name)
+        if member is None or not member.isfile():
+            raise SystemExit(f"config archive is missing required regular file: {name}")
+        if executable and member.mode & 0o111 == 0:
+            raise SystemExit(f"config archive script is not executable: {name}")
 PY
 tar -xzf "$download_root/config-$appsell_sha.tar.gz" -C "$upload_root"
+(
+  cd "$upload_root/config"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum --check SHA256SUMS
+  else
+    shasum -a 256 --check SHA256SUMS
+  fi
+) >/dev/null
 echo "Eight exact GitHub-hosted artifacts verified by run metadata, API digest and embedded checksums; upload/ is ready."

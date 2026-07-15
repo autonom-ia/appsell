@@ -4,6 +4,7 @@ const entitlementId = "bee105e2-7809-5bf5-874a-d6332dc4a4ef";
 const lessonOne = "a39181dd-c70c-57b3-935d-d97fd834d709";
 const lessonTwo = "c27222bd-9a83-5317-a870-f7076bdc8fc5";
 const assetId = "a6f01626-8b83-55e5-becc-fbab785f1493";
+const videoAssetId = "15944f42-57c4-56ed-a15c-c09a523fd997";
 const sellerId = "4df98a2e-d1dd-5f25-bbea-58b8072a0e7b";
 const productId = "82efefc5-a3c9-5126-a7d1-4918d5428d63";
 const publicationId = "8418ebec-fecc-5765-b461-305801484915";
@@ -23,6 +24,9 @@ async function login(page: Page) {
 }
 
 function playerEnvelope(selectedLessonId: string, version = 1, firstCompleted = false, resumeLessonId = selectedLessonId) {
+  const selectedAsset = selectedLessonId === lessonOne
+    ? { href: `/api/library/items/${entitlementId}/assets/${assetId}`, title: "Guia da aula", media_type: "application/pdf" }
+    : null;
   return {
     player: {
       seller: { id: sellerId },
@@ -42,9 +46,8 @@ function playerEnvelope(selectedLessonId: string, version = 1, firstCompleted = 
       course_progress_percent: firstCompleted ? 50 : 0,
       state_version: version,
       lesson_progress: firstCompleted ? [{ lesson_id: lessonOne, progress_percent: 100, completed: true, updated_at: "2026-07-11T12:00:00Z" }] : [],
-      selected_asset: selectedLessonId === lessonOne
-        ? { href: `/api/library/items/${entitlementId}/assets/${assetId}`, title: "Guia da aula", media_type: "application/pdf" }
-        : null
+      selected_asset: selectedAsset,
+      selected_assets: selectedAsset === null ? [] : [selectedAsset]
     },
     csrf: { progress: "progress-token", complete: "complete-token" }
   };
@@ -64,11 +67,13 @@ function secondCourseEnvelope() {
 
 function videoPlayerEnvelope() {
   const response = playerEnvelope(lessonOne);
-  response.player.selected_asset = {
-    href: `/api/library/items/${entitlementId}/assets/${assetId}`,
+  const videoAsset = {
+    href: `/api/library/items/${entitlementId}/assets/${videoAssetId}`,
     title: "Codex em 3 passos",
     media_type: "video/mp4"
   };
+  response.player.selected_assets = [videoAsset, response.player.selected_asset!];
+  response.player.selected_asset = videoAsset;
   return response;
 }
 
@@ -193,7 +198,9 @@ test("streams protected video on mobile and persists stepped and ended progress"
   await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
 
   const video = page.locator('video[aria-label="Codex em 3 passos"]');
-  await expect(video).toHaveAttribute("src", `/api/library/items/${entitlementId}/assets/${assetId}`);
+  await expect(video).toHaveAttribute("src", `/api/library/items/${entitlementId}/assets/${videoAssetId}`);
+  await expect(page.getByRole("link", { name: /Abrir PDF/ }))
+    .toHaveAttribute("href", `/api/library/items/${entitlementId}/assets/${assetId}`);
   await expect(video).toHaveAttribute("controls", "");
   await expect(video).toHaveAttribute("preload", "metadata");
   await expect(video).toHaveAttribute("playsinline", "");

@@ -202,12 +202,47 @@ async def test_resume_derives_every_scope_from_actor_and_entitlement() -> None:
     assert response.json() == {"player": player}
     assert auth.capabilities == ["learning.player.read"]
     statement, parameters = auth.session.calls[0]
-    assert "app_private.read_learning_player" in statement
+    assert "app_private.read_learning_player_v2" not in statement
+    assert "app_private.read_learning_player(" in statement
     assert parameters == {
         "identity_user_id": IDENTITY_ID,
         "entitlement_id": ENTITLEMENT_ID,
         "lesson_id": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_resume_negotiates_additive_multi_asset_contract_explicitly() -> None:
+    player = {
+        "entitlement_id": str(ENTITLEMENT_ID),
+        "selected_lesson_id": str(LESSON_ID),
+        "selected_assets": [],
+    }
+    auth = FakeAuth(player)
+    async with client_for(auth) as client:
+        response = await client.get(
+            f"/v1/me/learning/items/{ENTITLEMENT_ID}/resume",
+            headers={"x-appsell-learning-assets-contract": "v2"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"player": player}
+    statement, _ = auth.session.calls[0]
+    assert "app_private.read_learning_player_v2" in statement
+
+
+@pytest.mark.asyncio
+async def test_unknown_learning_asset_contract_remains_on_legacy_projection() -> None:
+    auth = FakeAuth({"selected_lesson_id": str(LESSON_ID)})
+    async with client_for(auth) as client:
+        response = await client.get(
+            f"/v1/me/learning/items/{ENTITLEMENT_ID}/resume",
+            headers={"x-appsell-learning-assets-contract": "v3"},
+        )
+
+    assert response.status_code == 200
+    statement, _ = auth.session.calls[0]
+    assert "app_private.read_learning_player_v2" not in statement
 
 
 @pytest.mark.asyncio

@@ -129,6 +129,9 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .app-content { min-width: 0; padding-bottom: calc(86px + env(safe-area-inset-bottom)); }
 .mobile-topbar { min-width: 0; min-height: calc(68px + env(safe-area-inset-top)); padding: env(safe-area-inset-top) max(16px,env(safe-area-inset-right)) 0 max(16px,env(safe-area-inset-left)); display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--border); background: rgba(255,255,255,.88); backdrop-filter: blur(18px); }
 .mobile-topbar > *, .mobile-topbar form, .mobile-brand { min-width: 0; }
+.mobile-topbar form { flex: 0 0 auto; }
+.mobile-brand { flex: 1 1 auto; max-width: 100%; }
+.mobile-brand strong { min-width: 0; line-height: 1.05; white-space: normal; overflow-wrap: anywhere; }
 .mobile-brand .brand-mark { width: 36px; height: 36px; border-radius: 12px; font-size: 1rem; }
 .environment-banner { min-width: 0; padding: 10px max(16px,env(safe-area-inset-right)) 10px max(16px,env(safe-area-inset-left)); border-bottom: 1px solid rgba(198,138,18,.2); background: #fff8df; color: #6b4d00; font-size: .76rem; line-height: 1.5; overflow-wrap: anywhere; }
 .app-main { width: 100%; min-width: 0; max-width: 1120px; margin: 0 auto; padding: 34px max(16px,env(safe-area-inset-right)) 52px max(16px,env(safe-area-inset-left)); }

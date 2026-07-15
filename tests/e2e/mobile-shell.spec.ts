@@ -62,6 +62,19 @@ test("exposes touch-sized mobile navigation and preserves deep links", async ({ 
   expect((await page.request.get("/api/session")).status()).toBe(200);
   await page.reload();
   await expect(page.getByRole("heading", { name: "Minha biblioteca" })).toBeVisible();
+  await page.evaluate(() => { document.documentElement.style.fontSize = "200%"; });
+  const zoomedTopbar = await page.locator(".mobile-topbar").evaluate((element) => ({
+    client: document.documentElement.clientWidth,
+    scroll: document.documentElement.scrollWidth,
+    children: [...element.children].map((child) => {
+      const rect = child.getBoundingClientRect();
+      return { left: rect.left, right: rect.right, width: rect.width, height: rect.height };
+    })
+  }));
+  expect(zoomedTopbar.scroll).toBeLessThanOrEqual(zoomedTopbar.client);
+  expect(zoomedTopbar.children.every((rect) =>
+    rect.left >= -1 && rect.right <= zoomedTopbar.client + 1 && rect.height >= 44
+  )).toBe(true);
 });
 
 test("supports keyboard skip navigation and reduced motion", async ({ page }) => {

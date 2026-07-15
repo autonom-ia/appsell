@@ -11,6 +11,8 @@ Autonom.ia Sell. Ele nunca opera serviços dos projetos `dados` ou `flow`.
 - todos têm healthcheck contínuo e precisam estar `healthy`;
 - alterações feitas pelo EasyPanel podem recriar a rede e o healthcheck, então
   o guard deve rodar depois de cada atualização pelo painel.
+- o artefato de configuração da release inclui `easypanel/` com os dois scripts;
+  a aplicação do hardening deve usar esse par proveniente do mesmo SHA aprovado.
 
 ## Verificação read-only
 
@@ -21,7 +23,11 @@ sudo deploy/easypanel/verify-sell-isolation.sh
 ## Reaplicação idempotente
 
 Esta ação reinicia somente os três serviços novos do projeto Sell. Ela exige
-confirmação explícita e termina executando a verificação read-only.
+confirmação explícita, valida os três serviços e o verificador antes da primeira
+mutação, e termina executando a verificação read-only com valores exatos de
+CPU, memória e healthcheck. Serviços já conformes não são reiniciados; quando
+há drift, o comando só retorna sucesso depois de `UpdateStatus=completed`, troca
+da task e saúde confirmada na task nova.
 
 ```bash
 sudo env CONFIRM_SELL_AUTONOMIA_HARDENING=sell-autonomia-v1 \

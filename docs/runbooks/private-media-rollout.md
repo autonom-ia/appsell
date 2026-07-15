@@ -4,10 +4,16 @@ O upload de vídeo nasce desativado (`APPSELL_API_VIDEO_UPLOAD_ENABLED=false`). 
 
 ## Ordem obrigatória
 
-1. Aplicar a migration `0013_private_media` mantendo a flag desativada.
+1. Aplicar `alembic upgrade head` até `0014_multi_asset_player`, mantendo a flag
+   desativada. A 0014 cria somente o reader v2 aditivo; o reader legado permanece
+   inalterado para instâncias antigas.
 2. Publicar o sandbox de mídia com `/health`, `/normalize` e `/probe-video`; confirmar `network_mode: none`, filesystem read-only, limites de processo/memória e `ffprobe` saudável.
 3. Publicar somente workers `media-v1`, verificar ClamAV saudável e drenar/remover todos os workers anteriores.
-4. Publicar API e BFF compatíveis, executar upload MP4 sintético em homologação e provar a ordem `quarentena -> ClamAV -> sandbox ffprobe -> ready`.
+4. Publicar API e BFF compatíveis. O BFF novo pede explicitamente o contrato
+   `x-appsell-learning-assets-contract: v2`; API antiga ignora o header e API nova
+   mantém a resposta legada quando ele não existe, permitindo rollout misto.
+   Executar upload MP4 sintético em homologação e provar a ordem
+   `quarentena -> ClamAV -> sandbox ffprobe -> ready`.
 5. Ativar `APPSELL_API_VIDEO_UPLOAD_ENABLED=true` apenas na API após a drenagem. Fazer rollback da flag para `false` antes de qualquer rollback de worker.
 
 ## Rollback
