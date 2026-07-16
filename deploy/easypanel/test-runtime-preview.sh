@@ -57,12 +57,14 @@ if not isinstance(evidence_init, list) or evidence_init[:2] != ["sh", "-ec"]:
     raise SystemExit("evidence-init command shell drifted")
 evidence_init_script = evidence_init[2] if len(evidence_init) == 3 else ""
 for required_guard in (
+    'state="$$(stat -c \'%a:%u:%g\' /evidence)"',
+    'case "$$state" in',
     '700:1001:1001) ;;',
     '755:0:0|700:0:0)',
     'chmod 0700 /evidence',
     'chown 1001:1001 /evidence',
     'unexpected evidence volume state',
-    'test "$(stat -c \'%a:%u:%g\' /evidence)" = "700:1001:1001"',
+    'test "$$(stat -c \'%a:%u:%g\' /evidence)" = "700:1001:1001"',
 ):
     if required_guard not in evidence_init_script:
         raise SystemExit(f"evidence-init state guard drifted: {required_guard}")
