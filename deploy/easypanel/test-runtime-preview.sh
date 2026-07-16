@@ -298,6 +298,8 @@ if "appsell_preview_77" not in rendered:
 verifier = pathlib.Path(sys.argv[2]).read_text()
 for required_verifier_guard in (
     '.[0].Config.Labels["org.opencontainers.image.revision"] == $source_sha',
+    'domain_image_env_json="$(jq -ce',
+    '.[0].Config.Env == $domain_image_env',
     '.[0].Image == $domain_image_id',
     '.[0].Config.Cmd == $expected_cmd',
     '.[0].Config.Entrypoint == null',
@@ -313,6 +315,8 @@ for required_verifier_guard in (
 ):
     if required_verifier_guard not in verifier:
         raise SystemExit(f"runtime verifier guard drifted: {required_verifier_guard}")
+if 'select(test("APPSELL|PASSWORD|SECRET|TOKEN|KEY|REDIS|DATABASE"))' in verifier:
+    raise SystemExit("runtime verifier still rejects inherited image environment by variable name")
 
 common = pathlib.Path(sys.argv[3]).read_text()
 for required_common_guard in (
@@ -335,6 +339,32 @@ if up_script.index("runtime_preview_acquire_transition_lock") > up_script.index(
 ):
     raise SystemExit("runtime-preview up must acquire the transition lock before preflight")
 PY
+
+domain_image_fixture='[{"Config":{"Env":["PATH=/usr/local/bin:/usr/bin","GPG_KEY=public-image-key"]}}]'
+domain_image_env_fixture="$(jq -ce '
+  .[0].Config.Env |
+  if . == null then .
+  elif type == "array" and all(.[]; type == "string") then .
+  else error("domain runtime image environment is invalid")
+  end
+' <<<"$domain_image_fixture")"
+matching_container_fixture='[{"Config":{"Env":["PATH=/usr/local/bin:/usr/bin","GPG_KEY=public-image-key"]}}]'
+jq -e --argjson domain_image_env "$domain_image_env_fixture" '
+  type == "array" and length == 1 and .[0].Config.Env == $domain_image_env
+' <<<"$matching_container_fixture" >/dev/null
+
+for rejected_container_fixture in \
+  '[{"Config":{"Env":["PATH=/usr/local/bin:/usr/bin","GPG_KEY=public-image-key","APPSELL_SECRET=unexpected"]}}]' \
+  '[{"Config":{"Env":["PATH=/usr/local/bin:/usr/bin","GPG_KEY=public-image-key","EXTRA_RUNTIME=value"]}}]' \
+  '[{"Config":{"Env":["PATH=/usr/local/bin:/usr/bin","GPG_KEY=drifted"]}}]'
+do
+  if jq -e --argjson domain_image_env "$domain_image_env_fixture" '
+    type == "array" and length == 1 and .[0].Config.Env == $domain_image_env
+  ' <<<"$rejected_container_fixture" >/dev/null; then
+    echo "runtime verifier environment fixture accepted container drift" >&2
+    exit 1
+  fi
+done
 
 grep -Fq 'APPSELL_DATABASE_NAME: appsell_preview_77' "$here/compose.runtime-preview.yaml"
 grep -Fq '127.0.0.1:13200:13200' "$here/compose.runtime-preview.yaml"

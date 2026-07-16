@@ -81,6 +81,13 @@ jq -e --arg image_id "$domain_image_id" --arg source_sha "$source_sha" '
   echo "domain runtime image identity or OCI revision drifted" >&2
   exit 1
 }
+domain_image_env_json="$(jq -ce '
+  .[0].Config.Env |
+  if . == null then .
+  elif type == "array" and all(.[]; type == "string") then .
+  else error("domain runtime image environment is invalid")
+  end
+' <<<"$domain_image_json")"
 
 for service in domain-bootstrap domain-api sell-web ingress-proxy; do
   mapfile -t service_ids < <(docker ps -aq \
@@ -111,10 +118,11 @@ for service in domain-bootstrap domain-api sell-web ingress-proxy; do
       jq -e --arg ingress "$RUNTIME_PREVIEW_INGRESS_NETWORK" \
         --arg public "$RUNTIME_PREVIEW_EASYPANEL_NETWORK" --arg alias "$RUNTIME_PREVIEW_INGRESS_ALIAS" \
         --arg domain_image_id "$domain_image_id" --arg source_sha "$source_sha" \
+        --argjson domain_image_env "$domain_image_env_json" \
         --argjson expected_cmd "$expected_ingress_command_json" '
         (.[0].NetworkSettings.Networks | keys | sort) == ([$ingress,$public] | sort) and
         ((.[0].NetworkSettings.Networks[$public].Aliases // []) | index($alias)) != null and
-        ([.[0].Config.Env[] | split("=")[0] | select(test("APPSELL|PASSWORD|SECRET|TOKEN|KEY|REDIS|DATABASE"))] | length) == 0 and
+        .[0].Config.Env == $domain_image_env and
         .[0].Image == $domain_image_id and
         .[0].Config.Image == ("autonomia-sell-preview-domain:" + $source_sha) and
         .[0].Config.Cmd == $expected_cmd and .[0].Config.Entrypoint == null and
