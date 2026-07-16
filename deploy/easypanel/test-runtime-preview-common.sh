@@ -8,6 +8,20 @@ RUNTIME_PREVIEW_API_TOKEN=fixture-token-long-enough-for-tests
 mock_mode=absent
 
 digest=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+exact_network_fixture='[{"NetworkSettings":{"Networks":{"easypanel-sell-autonomia":{}}}}]'
+runtime_preview_inspect_has_exact_network "$exact_network_fixture" "easypanel-sell-autonomia"
+for rejected_network_fixture in \
+  '[{"NetworkSettings":{"Networks":{}}}]' \
+  '[{"NetworkSettings":{"Networks":{"bridge":{}}}}]' \
+  '[{"NetworkSettings":{"Networks":{"easypanel-sell-autonomia":{},"bridge":{}}}}]' \
+  '[{"NetworkSettings":{"Networks":{"easypanel-sell-autonomia":{}}}},{"NetworkSettings":{"Networks":{"easypanel-sell-autonomia":{}}}}]'; do
+  if runtime_preview_inspect_has_exact_network "$rejected_network_fixture" "easypanel-sell-autonomia"; then
+    echo "invalid runtime-preview network inspection was accepted" >&2
+    exit 1
+  fi
+done
+
 runtime_preview_docker_config_path_is_safe "$digest.json"
 runtime_preview_docker_config_path_is_safe "blobs/sha256/$digest"
 for rejected in \

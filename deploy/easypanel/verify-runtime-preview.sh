@@ -58,10 +58,15 @@ done
 [[ ${#seen[@]} -eq 3 ]] || exit 1
 
 for service in domain-bootstrap domain-api sell-web; do
-  id="$(docker ps -aq --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT" \
-    --filter "label=com.docker.compose.service=$service")"
-  mapfile -t networks < <(docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' "$id")
-  [[ ${#networks[@]} -eq 1 && "${networks[0]}" == "$RUNTIME_PREVIEW_NETWORK" ]] || {
+  mapfile -t service_ids < <(docker ps -aq \
+    --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT" \
+    --filter "label=com.docker.compose.service=$service")
+  [[ ${#service_ids[@]} -eq 1 ]] || {
+    echo "$service does not have exactly one runtime-preview container" >&2
+    exit 1
+  }
+  inspect_json="$(docker inspect "${service_ids[0]}")"
+  runtime_preview_inspect_has_exact_network "$inspect_json" "$RUNTIME_PREVIEW_NETWORK" || {
     echo "$service escaped the exclusive sell network" >&2
     exit 1
   }

@@ -25,6 +25,16 @@ runtime_preview_require_commands() {
   done
 }
 
+runtime_preview_inspect_has_exact_network() {
+  [[ $# -eq 2 ]] || return 2
+  local inspect_json="$1" expected_network="$2"
+  jq -e --arg expected "$expected_network" '
+    type == "array" and
+    length == 1 and
+    (.[0].NetworkSettings.Networks | type == "object" and keys == [$expected])
+  ' <<<"$inspect_json" >/dev/null
+}
+
 runtime_preview_docker_config_path_is_safe() {
   [[ $# -eq 1 ]] || return 2
   [[ "$1" =~ ^[0-9a-f]{64}\.json$ || "$1" =~ ^blobs/sha256/[0-9a-f]{64}$ ]]
