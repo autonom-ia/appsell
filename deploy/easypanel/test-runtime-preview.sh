@@ -104,6 +104,11 @@ grep -Fq 'APPSELL_DATABASE_NAME: appsell_preview_77' "$here/compose.runtime-prev
 grep -Fq '127.0.0.1:13200:13200' "$here/compose.runtime-preview.yaml"
 grep -Fq 'network_mode: "service:sell-web"' "$here/compose.runtime-preview.yaml"
 grep -Fq 'APPSELL_OAUTH_MODE: local' "$here/compose.runtime-preview.yaml"
+grep -Fq 'state="$$(stat -c '\''%a:%u:%g'\'' /evidence)"' \
+  "$here/compose.runtime-preview.yaml"
+grep -Fq 'case "$$state" in' "$here/compose.runtime-preview.yaml"
+grep -Fq 'test "$$(stat -c '\''%a:%u:%g'\'' /evidence)" = "700:1001:1001"' \
+  "$here/compose.runtime-preview.yaml"
 grep -Fq 'test "$(id -u pwuser):$(id -g pwuser)" = "1001:1001"' \
   "$here/../preview-vps/Dockerfile.sell"
 grep -Fq 'USER pwuser' "$here/../preview-vps/Dockerfile.sell"

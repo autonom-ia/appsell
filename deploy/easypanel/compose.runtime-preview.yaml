@@ -142,8 +142,8 @@ services:
       - sh
       - -ec
       - |
-        state="$(stat -c '%a:%u:%g' /evidence)"
-        case "$state" in
+        state="$$(stat -c '%a:%u:%g' /evidence)"
+        case "$$state" in
           700:1001:1001) ;;
           755:0:0|700:0:0)
             chmod 0700 /evidence
@@ -154,7 +154,7 @@ services:
             exit 1
             ;;
         esac
-        test "$(stat -c '%a:%u:%g' /evidence)" = "700:1001:1001"
+        test "$$(stat -c '%a:%u:%g' /evidence)" = "700:1001:1001"
     volumes: ["runtime_evidence:/evidence"]
     labels: *runtime-labels
     restart: "no"
