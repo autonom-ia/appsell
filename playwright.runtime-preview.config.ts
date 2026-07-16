@@ -21,6 +21,7 @@ export default defineConfig({
   use: {
     baseURL: origin,
     ...devices["iPhone 15"],
+    browserName: "chromium",
     launchOptions: {
       args: ["--host-resolver-rules=MAP sell.autonomia.site 127.0.0.1"]
     },

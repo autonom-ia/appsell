@@ -348,6 +348,16 @@ if resolver_args != [expected_resolver_arg]:
     raise SystemExit(f"runtime-preview Chromium resolver args drifted: {resolver_args}")
 if "*" in resolver_args[0] or "85.31.60.100" in resolver_args[0]:
     raise SystemExit("runtime-preview Chromium resolver must not use a wildcard or public IP")
+device_spread = '...devices["iPhone 15"]'
+if playwright_config.count(device_spread) != 1:
+    raise SystemExit("runtime-preview must inherit the iPhone 15 device exactly once")
+browser_names = re.findall(r'\bbrowserName\s*:\s*["\']([^"\']+)["\']', playwright_config)
+if browser_names != ["chromium"]:
+    raise SystemExit(f"runtime-preview browser target drifted: {browser_names}")
+if playwright_config.index('browserName: "chromium"') < playwright_config.index(device_spread):
+    raise SystemExit("runtime-preview Chromium override must follow the iPhone device spread")
+if re.search(r'\b(browserName|defaultBrowserType)\s*:\s*["\']webkit["\']', playwright_config):
+    raise SystemExit("runtime-preview must not resolve its launch target to WebKit")
 PY
 
 domain_image_fixture='[{"Config":{"Env":["PATH=/usr/local/bin:/usr/bin","GPG_KEY=public-image-key"]}}]'
