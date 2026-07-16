@@ -15,6 +15,7 @@ def base_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("APPSELL_DEMO_SUPERADMIN_ENABLED", raising=False)
     monkeypatch.setenv("APPSELL_DEMO_ENABLED", "true")
     monkeypatch.setenv("APPSELL_API_IDENTITY_ISSUER", "https://identity.test.autonomia.site")
+    monkeypatch.delenv("APPSELL_DEMO_REMOTE_RESET_SCOPE", raising=False)
     monkeypatch.setenv(
         "APPSELL_DEMO_DATABASE_URL",
         "postgresql://postgres:secret@127.0.0.1:55432/appsell",
@@ -80,7 +81,84 @@ def test_reset_rejects_a_non_loopback_database(monkeypatch: pytest.MonkeyPatch) 
         "APPSELL_DEMO_DATABASE_URL",
         "postgresql://postgres:secret@database.example.com/appsell",
     )
-    with pytest.raises(RuntimeError, match="loopback-only"):
+    with pytest.raises(RuntimeError, match="loopback-only or the exact runtime-preview-77 target"):
+        require_environment(Namespace(confirm_demo_key=DEMO_KEY))
+
+
+def exact_remote_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    base_environment(monkeypatch)
+    monkeypatch.setenv("NODE_ENV", "test")
+    monkeypatch.setenv("APP_ENV", "ci")
+    monkeypatch.setenv("APPSELL_API_ENVIRONMENT", "ci")
+    monkeypatch.setenv("APPSELL_API_IDENTITY_ISSUER", "https://identity.runtime-preview.local")
+    monkeypatch.setenv("APPSELL_DEMO_REMOTE_RESET_SCOPE", "appsell-runtime-preview-77")
+    monkeypatch.setenv(
+        "APPSELL_DEMO_DATABASE_URL",
+        "postgresql://appsell_preview_77_migrator:secret@"
+        "sell-autonomia_postgres:5432/appsell_preview_77",
+    )
+
+
+def test_reset_accepts_only_the_exact_remote_runtime_preview_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exact_remote_environment(monkeypatch)
+    _issuer, database_url, _provision_superadmin = require_environment(
+        Namespace(confirm_demo_key=DEMO_KEY)
+    )
+    assert "sell-autonomia_postgres:5432/appsell_preview_77" in database_url
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("APPSELL_DEMO_REMOTE_RESET_SCOPE", "another-preview"),
+        ("NODE_ENV", "development"),
+        ("APP_ENV", "local"),
+        ("APPSELL_API_ENVIRONMENT", "local"),
+        ("APPSELL_API_IDENTITY_ISSUER", "https://identity.example.test"),
+    ],
+)
+def test_remote_reset_rejects_any_scope_or_environment_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    value: str,
+) -> None:
+    exact_remote_environment(monkeypatch)
+    monkeypatch.setenv(name, value)
+    with pytest.raises(RuntimeError):
+        require_environment(Namespace(confirm_demo_key=DEMO_KEY))
+
+
+@pytest.mark.parametrize(
+    "database_url",
+    [
+        "postgresql://appsell_preview_77_migrator:secret@database.example.com:5432/appsell_preview_77",
+        "postgresql://appsell_preview_77_migrator:secret@sell-autonomia_postgres:55432/appsell_preview_77",
+        "postgresql://appsell_preview_77_migrator:secret@sell-autonomia_postgres:5432/another_database",
+        "postgresql://postgres:secret@sell-autonomia_postgres:5432/appsell_preview_77",
+        "postgresql://appsell_preview_77_migrator:secret@sell-autonomia_postgres,localhost:5432/appsell_preview_77",
+        "postgresql://appsell_preview_77_migrator:secret@sell-autonomia_postgres:5432/apps"
+        "ell_preview_77?hostaddr=203.0.113.7",
+        "postgresql://appsell_preview_77_migrator:secret@sell-autonomia_postgres:5432/apps"
+        "ell_preview_77?service=attacker",
+    ],
+)
+def test_remote_reset_rejects_any_database_target_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    database_url: str,
+) -> None:
+    exact_remote_environment(monkeypatch)
+    monkeypatch.setenv("APPSELL_DEMO_DATABASE_URL", database_url)
+    with pytest.raises(RuntimeError, match="exact runtime-preview-77 target"):
+        require_environment(Namespace(confirm_demo_key=DEMO_KEY))
+
+
+def test_loopback_reset_rejects_remote_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    base_environment(monkeypatch)
+    monkeypatch.setenv("APPSELL_API_ENVIRONMENT", "ci")
+    monkeypatch.setenv("APPSELL_DEMO_REMOTE_RESET_SCOPE", "appsell-runtime-preview-77")
+    with pytest.raises(RuntimeError, match="forbidden for a loopback"):
         require_environment(Namespace(confirm_demo_key=DEMO_KEY))
 
 

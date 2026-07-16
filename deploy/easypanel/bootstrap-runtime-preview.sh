@@ -2,6 +2,7 @@
 set -euo pipefail
 
 for name in \
+  NODE_ENV APP_ENV APPSELL_DEMO_REMOTE_RESET_SCOPE \
   APPSELL_POSTGRES_HOST APPSELL_POSTGRES_PORT APPSELL_POSTGRES_ADMIN_USER \
   APPSELL_POSTGRES_ADMIN_PASSWORD APPSELL_POSTGRES_DEFAULT_DATABASE \
   APPSELL_DATABASE_NAME \
@@ -11,6 +12,17 @@ for name in \
   APPSELL_BOOTSTRAP_EXPECTED_CLIENT_ID APPSELL_IDENTITY_ISSUER; do
   [[ -n "${!name:-}" ]] || { echo "$name is required" >&2; exit 2; }
 done
+
+[[ "$NODE_ENV" == "test" && "$APP_ENV" == "ci" \
+  && "$APPSELL_DEMO_REMOTE_RESET_SCOPE" == "appsell-runtime-preview-77" ]] || {
+  echo "runtime preview demo reset environment is invalid" >&2
+  exit 2
+}
+[[ "$APPSELL_POSTGRES_HOST" == "sell-autonomia_postgres" \
+  && "$APPSELL_POSTGRES_PORT" == "5432" ]] || {
+  echo "runtime preview PostgreSQL target is invalid" >&2
+  exit 2
+}
 
 [[ "$APPSELL_DATABASE_NAME" == "appsell_preview_77" ]] || {
   echo "runtime preview database must be appsell_preview_77" >&2
@@ -144,11 +156,9 @@ from urllib.parse import quote
 host = os.environ["APPSELL_POSTGRES_HOST"]
 port = os.environ["APPSELL_POSTGRES_PORT"]
 database = os.environ["APPSELL_DATABASE_NAME"]
-admin_user = quote(os.environ["APPSELL_POSTGRES_ADMIN_USER"], safe="")
-admin_password = quote(os.environ["APPSELL_POSTGRES_ADMIN_PASSWORD"], safe="")
 migrator_password = quote(os.environ["APPSELL_MIGRATOR_PASSWORD"], safe="")
 print(f"postgresql+psycopg://appsell_preview_77_migrator:{migrator_password}@{host}:{port}/{database}")
-print(f"postgresql://{admin_user}:{admin_password}@{host}:{port}/{database}")
+print(f"postgresql://appsell_preview_77_migrator:{migrator_password}@{host}:{port}/{database}")
 PY
 )
 export APPSELL_MIGRATOR_DATABASE_URL="${database_urls[0]}"
@@ -159,8 +169,12 @@ export APPSELL_API_IDENTITY_ISSUER="$APPSELL_IDENTITY_ISSUER"
 
 alembic -c apps/api/alembic.ini upgrade head
 python -m appsell_api.configure_context_key
-APPSELL_DEMO_ENABLED=true APPSELL_DEMO_SUPERADMIN_ENABLED=true \
-  python -m appsell_api.reset_demo_tenant --confirm-demo-key autonomia-demo-v1
+(
+  unset PGHOST PGHOSTADDR PGPORT PGDATABASE PGUSER PGPASSWORD PGPASSFILE
+  unset PGSERVICE PGSERVICEFILE PGSYSCONFDIR PGOPTIONS PGAPPNAME
+  APPSELL_DEMO_ENABLED=true APPSELL_DEMO_SUPERADMIN_ENABLED=true \
+    python -m appsell_api.reset_demo_tenant --confirm-demo-key autonomia-demo-v1
+)
 
 psql --dbname="$APPSELL_DATABASE_NAME" -XAt --set=ON_ERROR_STOP=1 \
   --command="select case when app_private.schema_ready() then 'ready' else 'not-ready' end" \

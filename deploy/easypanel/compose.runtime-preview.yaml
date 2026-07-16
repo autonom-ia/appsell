@@ -20,6 +20,9 @@ services:
     pull_policy: never
     command: ["bash", "deploy/easypanel/bootstrap-runtime-preview.sh"]
     environment:
+      NODE_ENV: test
+      APP_ENV: ci
+      APPSELL_DEMO_REMOTE_RESET_SCOPE: appsell-runtime-preview-77
       APPSELL_POSTGRES_HOST: sell-autonomia_postgres
       APPSELL_POSTGRES_PORT: "5432"
       APPSELL_POSTGRES_ADMIN_USER: ${APPSELL_POSTGRES_ADMIN_USER:?APPSELL_POSTGRES_ADMIN_USER is required}

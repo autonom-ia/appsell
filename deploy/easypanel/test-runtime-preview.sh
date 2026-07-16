@@ -53,6 +53,20 @@ if services["e2e"].get("environment") != {
     "E2E_RUNTIME_EVIDENCE_DIR": "/evidence/staged",
 }:
     raise SystemExit("E2E received application secrets or unexpected environment")
+bootstrap_environment = services["domain-bootstrap"].get("environment", {})
+for key, expected_value in {
+    "NODE_ENV": "test",
+    "APP_ENV": "ci",
+    "APPSELL_DEMO_REMOTE_RESET_SCOPE": "appsell-runtime-preview-77",
+    "APPSELL_POSTGRES_HOST": "sell-autonomia_postgres",
+    "APPSELL_POSTGRES_PORT": "5432",
+    "APPSELL_DATABASE_NAME": "appsell_preview_77",
+}.items():
+    if bootstrap_environment.get(key) != expected_value:
+        raise SystemExit(f"domain-bootstrap {key} escaped the exact preview target")
+for service_name in ("domain-api", "sell-web", "evidence-init", "e2e"):
+    if "APPSELL_DEMO_REMOTE_RESET_SCOPE" in services[service_name].get("environment", {}):
+        raise SystemExit("remote demo reset scope leaked beyond the one-shot bootstrap")
 
 rendered = pathlib.Path(sys.argv[1]).read_text().lower()
 for forbidden in ("dados", "flow", "identity-postgres", "domain-postgres"):
@@ -66,6 +80,10 @@ grep -Fq 'APPSELL_DATABASE_NAME: appsell_preview_77' "$here/compose.runtime-prev
 grep -Fq '127.0.0.1:13200:13200' "$here/compose.runtime-preview.yaml"
 grep -Fq 'network_mode: "service:sell-web"' "$here/compose.runtime-preview.yaml"
 grep -Fq 'APPSELL_OAUTH_MODE: local' "$here/compose.runtime-preview.yaml"
+grep -Fq 'unset PGHOST PGHOSTADDR PGPORT PGDATABASE PGUSER PGPASSWORD PGPASSFILE' \
+  "$here/bootstrap-runtime-preview.sh"
+grep -Fq 'unset PGSERVICE PGSERVICEFILE PGSYSCONFDIR PGOPTIONS PGAPPNAME' \
+  "$here/bootstrap-runtime-preview.sh"
 for marker_script in bootstrap-runtime-preview.sh retire-runtime-preview-credentials.sh; do
   grep -Fq "shobj_description(oid,'pg_database')" "$here/$marker_script"
   if grep -Eq "(^|[^[:alnum:]_])obj_description\\(oid,'pg_database'\\)" \
