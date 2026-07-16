@@ -21,6 +21,9 @@ export default defineConfig({
   use: {
     baseURL: origin,
     ...devices["iPhone 15"],
+    launchOptions: {
+      args: ["--host-resolver-rules=MAP sell.autonomia.site 127.0.0.1"]
+    },
     screenshot: "only-on-failure",
     trace: "retain-on-failure",
     video: "off"

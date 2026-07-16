@@ -11,9 +11,11 @@ env -u COMPOSE_PROJECT_NAME -u COMPOSE_FILE -u COMPOSE_PROFILES -u COMPOSE_ENV_F
   -f "$here/compose.runtime-preview.yaml" config --format json >"$tmp/config.json"
 
 python3 - "$tmp/config.json" "$here/verify-runtime-preview.sh" \
-  "$here/runtime-preview-common.sh" "$here/up-runtime-preview.sh" <<'PY'
+  "$here/runtime-preview-common.sh" "$here/up-runtime-preview.sh" \
+  "$here/../../playwright.runtime-preview.config.ts" <<'PY'
 import json
 import pathlib
+import re
 import sys
 
 config = json.loads(pathlib.Path(sys.argv[1]).read_text())
@@ -338,6 +340,14 @@ if up_script.index("runtime_preview_acquire_transition_lock") > up_script.index(
     '"$here/preflight-runtime-preview.sh"'
 ):
     raise SystemExit("runtime-preview up must acquire the transition lock before preflight")
+
+playwright_config = pathlib.Path(sys.argv[5]).read_text()
+resolver_args = re.findall(r'["\'](--host-resolver-rules=[^"\']+)["\']', playwright_config)
+expected_resolver_arg = "--host-resolver-rules=MAP sell.autonomia.site 127.0.0.1"
+if resolver_args != [expected_resolver_arg]:
+    raise SystemExit(f"runtime-preview Chromium resolver args drifted: {resolver_args}")
+if "*" in resolver_args[0] or "85.31.60.100" in resolver_args[0]:
+    raise SystemExit("runtime-preview Chromium resolver must not use a wildcard or public IP")
 PY
 
 domain_image_fixture='[{"Config":{"Env":["PATH=/usr/local/bin:/usr/bin","GPG_KEY=public-image-key"]}}]'
