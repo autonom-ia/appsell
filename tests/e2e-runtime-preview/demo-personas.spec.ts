@@ -53,11 +53,14 @@ test("admin demo entra no tenant correto", async ({ context, page }) => {
 });
 
 test("buyer demo abre PDF e vídeo protegidos", async ({ context, page }) => {
-  await login(page, "buyer", "/checkout");
+  await login(page, "buyer", "/library");
   await expect(page.getByRole("note")).toContainText(
     "DEMO · Aluno · user.demo@autonomia.site"
   );
   await expect(page.getByText("Não foi possível validar seu acesso.")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Sua biblioteca está vazia" })).toBeVisible();
+  await page.getByRole("link", { name: "Comprar com cupom demo" }).click();
+  await expect(page).toHaveURL((url) => url.pathname === "/checkout");
   await expect(page.getByRole("heading", { name: "Codex na prática" })).toBeVisible();
   await page.getByLabel("Cupom de demonstração").fill("AUTONOMIA100");
   await page.getByRole("button", { name: "Concluir compra por R$ 0,00" }).click();

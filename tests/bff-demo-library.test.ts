@@ -340,14 +340,11 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     await expectNoHorizontalOverflow(buyerPage);
     await buyerPage.goto(origin);
     await buyerPage.getByRole("link", { name: "Entrar como aluno demo" }).click();
-    await buyerPage.waitForURL(`${origin}/checkout`);
-    await pwExpect(buyerPage.getByRole("heading", { name: "Compra demo aprovada" })).toBeVisible();
+    await buyerPage.waitForURL(`${origin}/library`);
     await pwExpect(buyerPage.getByRole("note")).toContainText(
       "DEMO · Aluno · user.demo@autonomia.site"
     );
     await pwExpect(buyerPage.getByText("Não foi possível validar seu acesso.")).toHaveCount(0);
-    await buyerPage.getByRole("link", { name: "Abrir minha biblioteca" }).click();
-    await buyerPage.waitForURL(`${origin}/library`);
     await pwExpect(buyerPage.getByRole("heading", { name: "Minha biblioteca" })).toBeVisible();
     await pwExpect(buyerPage.getByRole("heading", { level: 2, name: "Codex na prática", exact: true })).toBeVisible();
     await buyerPage.getByRole("link", { name: "Começar curso" }).click();
