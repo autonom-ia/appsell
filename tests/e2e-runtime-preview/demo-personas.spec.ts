@@ -24,7 +24,7 @@ test.beforeAll(async () => {
 test("admin demo entra no tenant correto", async ({ context, page }) => {
   await login(page, "admin", "/dashboard");
   await expect(page.getByRole("heading", { name: "Seu negócio em um só lugar." })).toBeVisible();
-  await expect(page.getByText("admin.demo@autonomia.site", { exact: true })).toBeVisible();
+  await expect(page.getByRole("note")).toContainText("admin.demo@autonomia.site");
   const sellers = await page.request.get("/api/sellers");
   expect(sellers.status()).toBe(200);
   expect((await sellers.json()) as unknown).toMatchObject({
