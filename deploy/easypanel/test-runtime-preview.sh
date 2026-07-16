@@ -17,15 +17,31 @@ import sys
 
 config = json.loads(pathlib.Path(sys.argv[1]).read_text())
 services = config["services"]
-expected = {"domain-bootstrap", "domain-api", "sell-web", "evidence-init", "e2e"}
+expected = {
+    "domain-bootstrap",
+    "domain-api",
+    "sell-web",
+    "evidence-init",
+    "e2e-transport-init",
+    "e2e-bridge",
+    "e2e",
+}
 if set(services) != expected:
     raise SystemExit(f"unexpected runtime-preview services: {sorted(services)}")
 
-network = config["networks"].get("sell-private")
+networks = config["networks"]
+network = networks.get("sell-private")
 if network is None or network.get("external") is not True:
     raise SystemExit("sell-private must be external")
 if network.get("name") != "easypanel-sell-autonomia":
     raise SystemExit("runtime-preview escaped the exclusive sell network")
+e2e_network = networks.get("sell-public-e2e")
+if e2e_network is None or e2e_network.get("internal") is True:
+    raise SystemExit("sell-public-e2e must permit only the bridge to reach the public endpoint")
+if e2e_network.get("external") is True:
+    raise SystemExit("sell-public-e2e must be owned by this Compose project")
+if e2e_network.get("name") != "sell_autonomia_runtime_preview_77_sell-public-e2e":
+    raise SystemExit("sell-public-e2e escaped the exact test Compose project")
 
 for name, service in services.items():
     if service.get("pull_policy") != "never":
@@ -42,16 +58,61 @@ if len(ports) != 1 or ports[0].get("host_ip") != "127.0.0.1":
 if ports[0].get("published") != "13200" or ports[0].get("target") != 13200:
     raise SystemExit("sell-web loopback port drifted")
 
-if services["domain-api"].get("networks") != {"sell-private": None}:
-    raise SystemExit("domain-api must use only the exclusive sell network")
+for service_name in ("domain-bootstrap", "domain-api"):
+    if services[service_name].get("networks") != {"sell-private": None}:
+        raise SystemExit(f"{service_name} must use only the exclusive sell network")
 if services["sell-web"].get("networks") != {"sell-private": None}:
-    raise SystemExit("sell-web must start only on the exclusive sell network")
+    raise SystemExit("sell-web must use only the private network")
+if services["sell-web"].get("command") != [
+    "./node_modules/.bin/next", "start", "--hostname", "0.0.0.0", "-p", "13200"
+]:
+    raise SystemExit("sell-web must run the built Next production server")
+if services["sell-web"].get("environment", {}).get("NODE_ENV") != "production":
+    raise SystemExit("public sell-web must use production runtime semantics")
+if services["sell-web"].get("environment", {}).get("APPSELL_PUBLIC_DEMO_RUNTIME") != (
+    "sell-autonomia-runtime-preview-77"
+):
+    raise SystemExit("public demo runtime marker drifted")
 if services["sell-web"].get("environment", {}).get("APPSELL_REDIS_PREFIX") != (
     "appsell:runtime-preview:issue77"
 ):
     raise SystemExit("sell-web Redis prefix must satisfy the OAuth namespace contract")
-if services["e2e"].get("network_mode") != "service:sell-web":
-    raise SystemExit("E2E must share the loopback namespace of sell-web")
+if services["sell-web"].get("environment", {}).get("APPSELL_PUBLIC_ORIGIN") != (
+    "https://sell.autonomia.site"
+):
+    raise SystemExit("sell-web public origin must use the approved HTTPS domain")
+if services["e2e-bridge"].get("networks") != {"sell-public-e2e": None}:
+    raise SystemExit("E2E bridge must use only its dedicated public-test network")
+if services["e2e"].get("network_mode") != "none" or services["e2e"].get("networks"):
+    raise SystemExit("E2E must have no IP network")
+if services["e2e"].get("cap_add") != ["NET_BIND_SERVICE"]:
+    raise SystemExit("E2E must receive only the capability required for its loopback TLS listener")
+if services["e2e"].get("extra_hosts") != ["sell.autonomia.site=127.0.0.1"]:
+    raise SystemExit("E2E must resolve only the approved public host through its loopback proxy")
+e2e_members = {
+    name for name, service in services.items() if "sell-public-e2e" in service.get("networks", {})
+}
+if e2e_members != {"e2e-bridge"}:
+    raise SystemExit(f"unexpected services on sell-public-e2e: {sorted(e2e_members)}")
+private_members = {
+    name for name, service in services.items() if "sell-private" in service.get("networks", {})
+}
+if private_members != {"domain-bootstrap", "domain-api", "sell-web"}:
+    raise SystemExit(f"unexpected services on sell-private: {sorted(private_members)}")
+volumes = config["volumes"]
+for volume_name, purpose in {
+    "runtime_evidence": "runtime-e2e-evidence",
+    "runtime_e2e_transport": "runtime-e2e-transport",
+}.items():
+    labels = volumes[volume_name].get("labels", {})
+    expected_labels = {
+        "com.autonomia.project": "sell-autonomia",
+        "com.autonomia.issue": "77",
+        "com.autonomia.environment": "local-ci-easypanel-preview",
+        "com.autonomia.purpose": purpose,
+    }
+    if labels != expected_labels or "com.autonomia.source-sha" in labels:
+        raise SystemExit(f"{volume_name} ownership labels drifted")
 evidence_init = services["evidence-init"].get("command")
 if not isinstance(evidence_init, list) or evidence_init[:2] != ["sh", "-ec"]:
     raise SystemExit("evidence-init command shell drifted")
@@ -75,10 +136,33 @@ if evidence_init_script.index("chmod 0700 /evidence") > evidence_init_script.ind
 if services["evidence-init"].get("cap_add") != ["CHOWN"]:
     raise SystemExit("evidence-init must not require FOWNER or broader capabilities")
 if services["e2e"].get("environment") != {
-    "E2E_RUNTIME_ORIGIN": "http://localhost:13200",
+    "E2E_RUNTIME_BRIDGE_SOCKET": "/transport/sell.sock",
+    "E2E_RUNTIME_ORIGIN": "https://sell.autonomia.site",
     "E2E_RUNTIME_EVIDENCE_DIR": "/evidence/staged",
 }:
     raise SystemExit("E2E received application secrets or unexpected environment")
+if services["e2e-bridge"].get("environment") != {
+    "E2E_RUNTIME_BRIDGE_SOCKET": "/transport/sell.sock"
+}:
+    raise SystemExit("E2E bridge received application secrets or unexpected environment")
+if services["e2e-bridge"].get("ports"):
+    raise SystemExit("E2E bridge must not publish a port")
+transport_init = services["e2e-transport-init"]
+if transport_init.get("network_mode") != "none" or transport_init.get("networks"):
+    raise SystemExit("E2E transport init must have no IP network")
+transport_init_command = transport_init.get("command")
+if not isinstance(transport_init_command, list) or transport_init_command[:2] != ["sh", "-ec"]:
+    raise SystemExit("E2E transport init command shell drifted")
+transport_init_script = transport_init_command[2] if len(transport_init_command) == 3 else ""
+for required_guard in (
+    'test -L /transport/sell.sock',
+    'test -S /transport/sell.sock',
+    '600:1001:1001',
+    'rm -f /transport/sell.sock',
+    'find /transport -mindepth 1 -maxdepth 1',
+):
+    if required_guard not in transport_init_script:
+        raise SystemExit(f"E2E transport init guard drifted: {required_guard}")
 bootstrap_environment = services["domain-bootstrap"].get("environment", {})
 for key, expected_value in {
     "NODE_ENV": "test",
@@ -90,7 +174,14 @@ for key, expected_value in {
 }.items():
     if bootstrap_environment.get(key) != expected_value:
         raise SystemExit(f"domain-bootstrap {key} escaped the exact preview target")
-for service_name in ("domain-api", "sell-web", "evidence-init", "e2e"):
+for service_name in (
+    "domain-api",
+    "sell-web",
+    "evidence-init",
+    "e2e-transport-init",
+    "e2e-bridge",
+    "e2e",
+):
     if "APPSELL_DEMO_REMOTE_RESET_SCOPE" in services[service_name].get("environment", {}):
         raise SystemExit("remote demo reset scope leaked beyond the one-shot bootstrap")
 
@@ -104,7 +195,10 @@ PY
 
 grep -Fq 'APPSELL_DATABASE_NAME: appsell_preview_77' "$here/compose.runtime-preview.yaml"
 grep -Fq '127.0.0.1:13200:13200' "$here/compose.runtime-preview.yaml"
-grep -Fq 'network_mode: "service:sell-web"' "$here/compose.runtime-preview.yaml"
+if grep -Fq 'network_mode: "service:sell-web"' "$here/compose.runtime-preview.yaml"; then
+  echo "runtime-preview E2E still shares the sell-web network namespace" >&2
+  exit 1
+fi
 grep -Fq 'APPSELL_OAUTH_MODE: local' "$here/compose.runtime-preview.yaml"
 grep -Fq 'state="$$(stat -c '\''%a:%u:%g'\'' /evidence)"' \
   "$here/compose.runtime-preview.yaml"
@@ -114,7 +208,25 @@ grep -Fq 'test "$$(stat -c '\''%a:%u:%g'\'' /evidence)" = "700:1001:1001"' \
 grep -Fq 'test "$(id -u pwuser):$(id -g pwuser)" = "1001:1001"' \
   "$here/../preview-vps/Dockerfile.sell"
 grep -Fq 'USER pwuser' "$here/../preview-vps/Dockerfile.sell"
+grep -Fq 'corepack pnpm build' "$here/../preview-vps/Dockerfile.sell"
+grep -Fq '__Host-appsell_session' "$here/../../tests/e2e-runtime-preview/demo-personas.spec.ts"
+grep -Fq 'secure: true' "$here/../../tests/e2e-runtime-preview/demo-personas.spec.ts"
 grep -Fq -- '--entrypoint sh e2e -ec' "$here/verify-runtime-preview.sh"
+grep -Fq -- '--rm --no-deps e2e' "$here/verify-runtime-preview.sh"
+grep -Fq 'runtime-preview remained healthy with stable IDs and zero restarts for 30 seconds after E2E' \
+  "$here/verify-runtime-preview.sh"
+grep -Fq 'runtime-preview-loopback-proxy.mjs' "$here/run-runtime-preview-e2e.sh"
+grep -Fq 'upstreamSocket: "/transport/sell.sock"' "$here/runtime-preview-loopback-proxy.mjs"
+grep -Fq 'upstreamHost: "85.31.60.100"' "$here/runtime-preview-unix-bridge.mjs"
+grep -Fq 'upstreamPort: 443' "$here/runtime-preview-unix-bridge.mjs"
+grep -Fq 'server.listen({ host, port: listenPort, ipv6Only: host === "::1" }' \
+  "$here/runtime-preview-loopback-proxy.mjs"
+node --check "$here/runtime-preview-loopback-proxy.mjs"
+node --check "$here/test-runtime-preview-loopback-proxy.mjs"
+node --check "$here/runtime-preview-unix-bridge.mjs"
+node --check "$here/test-runtime-preview-unix-bridge.mjs"
+node --test "$here/test-runtime-preview-loopback-proxy.mjs"
+node --test "$here/test-runtime-preview-unix-bridge.mjs"
 grep -Fq 'unset PGHOST PGHOSTADDR PGPORT PGDATABASE PGUSER PGPASSWORD PGPASSFILE' \
   "$here/bootstrap-runtime-preview.sh"
 grep -Fq 'unset PGSERVICE PGSERVICEFILE PGSYSCONFDIR PGOPTIONS PGAPPNAME' \
@@ -132,14 +244,31 @@ if grep -Eq '(^|[^a-z])(down|rm|prune|drop database)([^a-z]|$)' \
   echo "runtime bootstrap contains a destructive operation" >&2
   exit 1
 fi
-for script in load-runtime-preview-images.sh preflight-runtime-preview.sh \
+for script in activate-public-runtime-preview.sh deactivate-public-runtime-preview.sh \
+  load-runtime-preview-images.sh migrate-legacy-runtime-evidence.sh preflight-runtime-preview.sh \
   remove-runtime-preview-images.sh up-runtime-preview.sh verify-runtime-preview.sh \
   teardown-runtime-preview.sh retire-runtime-preview-credentials.sh test-runtime-preview-common.sh \
+  test-runtime-preview-domain.sh test-runtime-preview-evidence-migration.sh \
   test-runtime-preview-lifecycle.sh; do
   test -x "$here/$script"
 done
 grep -Fq 'RUNTIME_PREVIEW_PROJECT="sell-autonomia"' "$here/runtime-preview-common.sh"
 grep -Fq 'RUNTIME_PREVIEW_SERVICE="runtime-preview"' "$here/runtime-preview-common.sh"
+grep -Fq 'RUNTIME_PREVIEW_E2E_NETWORK="${RUNTIME_PREVIEW_COMPOSE_PROJECT}_sell-public-e2e"' \
+  "$here/runtime-preview-common.sh"
+grep -Fq 'RUNTIME_PREVIEW_EVIDENCE_VOLUME="${RUNTIME_PREVIEW_COMPOSE_PROJECT}_runtime_evidence"' \
+  "$here/runtime-preview-common.sh"
+grep -Fq 'RUNTIME_PREVIEW_E2E_TRANSPORT_VOLUME="${RUNTIME_PREVIEW_COMPOSE_PROJECT}_runtime_e2e_transport"' \
+  "$here/runtime-preview-common.sh"
+grep -Fq 'runtime_preview_lifecycle_fingerprint_from_inspect' \
+  "$here/verify-runtime-preview.sh"
+grep -Fq 'runtime_preview_verify_public_attestation' "$here/verify-runtime-preview.sh"
+grep -Fq 'runtime_preview_ensure_owned_volume' "$here/verify-runtime-preview.sh"
+grep -Fq 'runtime_preview_delete_exact_public_domain' "$here/activate-public-runtime-preview.sh"
+grep -Fq 'CONFIRM_RUNTIME_PREVIEW_PUBLIC_RETRY=sell-autonomia-public-retry-77' \
+  "$here/activate-public-runtime-preview.sh"
+grep -Fq '/api/rpc/domains/deleteDomain' "$here/runtime-preview-common.sh"
+grep -Fq 'strict-transport-security:' "$here/activate-public-runtime-preview.sh"
 grep -Fq 'http://127.0.0.1:3000' "$here/runtime-preview-common.sh"
 grep -Fq 'CONFIRM_RUNTIME_PREVIEW_UP=appsell-runtime-preview-77' "$here/up-runtime-preview.sh"
 grep -Fq 'CONFIRM_RUNTIME_PREVIEW_TEARDOWN=appsell-runtime-preview-77-teardown' "$here/teardown-runtime-preview.sh"

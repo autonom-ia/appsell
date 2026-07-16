@@ -22,6 +22,33 @@ for rejected_network_fixture in \
   fi
 done
 
+lifecycle_fixture='[{"Id":"container-a","Config":{"Labels":{"com.docker.compose.service":"sell-web"}},"State":{"StartedAt":"2026-07-16T12:00:00Z","FinishedAt":"0001-01-01T00:00:00Z","ExitCode":0},"RestartCount":0}]'
+baseline_fingerprint="$(runtime_preview_lifecycle_fingerprint_from_inspect "$lifecycle_fixture")"
+[[ "$baseline_fingerprint" == 'sell-web|container-a|2026-07-16T12:00:00Z|0001-01-01T00:00:00Z|0|0' ]]
+for mutation in \
+  '.[0].Config.Labels["com.docker.compose.service"]="domain-api"' \
+  '.[0].Id="container-b"' \
+  '.[0].State.StartedAt="2026-07-16T12:01:00Z"' \
+  '.[0].State.FinishedAt="2026-07-16T12:02:00Z"' \
+  '.[0].RestartCount=1' \
+  '.[0].State.ExitCode=1'; do
+  mutated_fixture="$(jq -c "$mutation" <<<"$lifecycle_fixture")"
+  mutated_fingerprint="$(runtime_preview_lifecycle_fingerprint_from_inspect "$mutated_fixture")"
+  [[ "$mutated_fingerprint" != "$baseline_fingerprint" ]] || {
+    echo "runtime-preview lifecycle mutation was not detected: $mutation" >&2
+    exit 1
+  }
+done
+for rejected_lifecycle_fixture in \
+  '[]' \
+  '[{},{}]' \
+  '[{"Id":"container-a","Config":{"Labels":{"com.docker.compose.service":"e2e"}},"State":{"StartedAt":"x","FinishedAt":"y","ExitCode":0},"RestartCount":0}]'; do
+  if runtime_preview_lifecycle_fingerprint_from_inspect "$rejected_lifecycle_fixture" >/dev/null 2>&1; then
+    echo "invalid runtime-preview lifecycle inspection was accepted" >&2
+    exit 1
+  fi
+done
+
 runtime_preview_docker_config_path_is_safe "$digest.json"
 runtime_preview_docker_config_path_is_safe "blobs/sha256/$digest"
 for rejected in \
@@ -111,5 +138,63 @@ if runtime_preview_expect_api_success '{"json":{"code":"BAD_REQUEST"}}' fixture-
   echo "API application error was accepted" >&2
   exit 1
 fi
+
+volume_name="$RUNTIME_PREVIEW_E2E_TRANSPORT_VOLUME"
+volume_fixture="$(jq -cn \
+  --arg name "$volume_name" \
+  --arg project "$RUNTIME_PREVIEW_COMPOSE_PROJECT" '
+  [{Name:$name,Driver:"local",Scope:"local",Options:null,Labels:{
+    "com.docker.compose.project":$project,
+    "com.docker.compose.volume":"runtime_e2e_transport",
+    "com.autonomia.project":"sell-autonomia",
+    "com.autonomia.issue":"77",
+    "com.autonomia.environment":"local-ci-easypanel-preview",
+    "com.autonomia.purpose":"runtime-e2e-transport"
+  }}]')"
+volume_state_file="$archive_tmp/volume-created"
+volume_inspect_error=0
+volume_consumers=""
+docker() {
+  if [[ "$1 $2" == "volume inspect" ]]; then
+    [[ "$volume_inspect_error" == "0" && -f "$volume_state_file" ]] || return 1
+    printf '%s' "$volume_fixture"
+  elif [[ "$1 $2" == "volume ls" ]]; then
+    if [[ -f "$volume_state_file" ]]; then printf '%s\n' "$volume_name"; fi
+    return 0
+  elif [[ "$1 $2" == "volume create" ]]; then
+    touch "$volume_state_file"
+    printf '%s\n' "$volume_name"
+  elif [[ "$1 $2" == "ps -aq" ]]; then
+    printf '%s' "$volume_consumers"
+  else
+    return 2
+  fi
+}
+
+runtime_preview_ensure_owned_volume \
+  "$volume_name" runtime_e2e_transport runtime-e2e-transport
+[[ -f "$volume_state_file" ]]
+volume_consumers=unexpected-container
+if runtime_preview_verify_owned_volume \
+  "$volume_name" runtime_e2e_transport runtime-e2e-transport yes >/dev/null 2>&1; then
+  echo "pre-existing volume consumer was accepted" >&2
+  exit 1
+fi
+volume_consumers=""
+exact_volume_fixture="$volume_fixture"
+volume_fixture="$(jq -c '.[0].Labels["com.autonomia.purpose"]="other-project"' \
+  <<<"$exact_volume_fixture")"
+if runtime_preview_verify_owned_volume \
+  "$volume_name" runtime_e2e_transport runtime-e2e-transport yes >/dev/null 2>&1; then
+  echo "foreign volume labels were accepted" >&2
+  exit 1
+fi
+volume_fixture="$exact_volume_fixture"
+volume_inspect_error=1
+if runtime_preview_volume_inspect "$volume_name" >/dev/null 2>&1; then
+  echo "Docker inspect failure was confused with an absent volume" >&2
+  exit 1
+fi
+unset -f docker
 
 echo "EasyPanel runtime-preview API parser: passed"

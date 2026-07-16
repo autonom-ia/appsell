@@ -82,7 +82,7 @@ trap 'rm -f -- "$output_file"' ERR INT TERM
   printf 'APPSELL_DOMAIN_IMAGE=autonomia-sell-preview-domain:%s\n' "$source_sha"
   printf 'APPSELL_SELL_IMAGE=autonomia-sell-preview-sell:%s\n' "$source_sha"
   printf 'APPSELL_ALPINE_IMAGE=autonomia-sell-preview-base-alpine:%s\n' "$source_sha"
-  printf 'APPSELL_PUBLIC_ORIGIN=http://localhost:13200\n'
+  printf 'APPSELL_PUBLIC_ORIGIN=https://sell.autonomia.site\n'
   printf 'APPSELL_POSTGRES_ADMIN_USER=%s\n' "$postgres_user"
   printf 'APPSELL_POSTGRES_ADMIN_PASSWORD=%s\n' "$postgres_password"
   printf 'APPSELL_POSTGRES_DEFAULT_DATABASE=%s\n' "$postgres_database"

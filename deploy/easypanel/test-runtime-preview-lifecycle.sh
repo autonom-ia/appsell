@@ -57,6 +57,21 @@ mock_response="$(jq -cn \
     source:{type:"inline",content:$content}}}')"
 runtime_preview_api_inspect() { printf '%s' "$mock_response"; }
 runtime_preview_verify_live_record yes
+
+public_domain_id=domain-runtime-preview-77
+mock_response="$(jq -cn \
+  --arg token "$token" --arg content "$compose_content" --arg domain_id "$public_domain_id" \
+  '{json:{projectName:"sell-autonomia",name:"runtime-preview",type:"compose",
+    createDotEnv:false,primaryDomainId:$domain_id,env:"",token:$token,
+    source:{type:"inline",content:$content}}}')"
+runtime_preview_verify_public_domain() { printf '%s' "$public_domain_id"; }
+runtime_preview_verify_live_record yes
+runtime_preview_verify_public_domain() { printf '%s' other-domain; }
+if runtime_preview_verify_live_record yes >/dev/null 2>&1; then
+  echo "live ownership accepted a mismatched verified public domain" >&2
+  exit 1
+fi
+
 mock_response="$(jq -cn --arg token 'ZYXWVUTSRQPONMLKJIHGFEDCBA9876543210_-changed' \
   --arg content "$compose_content" \
   '{json:{projectName:"sell-autonomia",name:"runtime-preview",type:"compose",

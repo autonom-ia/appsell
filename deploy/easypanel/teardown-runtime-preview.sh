@@ -28,6 +28,10 @@ done
 runtime_preview_api_login
 [[ "$(runtime_preview_service_state)" == "present" ]] || { echo "attested EasyPanel runtime-preview record is absent" >&2; exit 2; }
 runtime_preview_verify_live_record yes
+runtime_preview_verify_public_domain_absent || {
+  echo "deactivate the exact public domain before stopping runtime-preview" >&2
+  exit 2
+}
 runtime_preview_compose_down
 runtime_preview_remove_easypanel_env
 runtime_preview_write_attestation stopped "$token_fingerprint"

@@ -5,6 +5,7 @@ import {
   timingSafeEqual
 } from "node:crypto";
 import { capacityLocalCiRuntimeEnabled } from "./capacity-local-ci-runtime";
+import { publicDemoRuntimeEnabled } from "./public-demo-runtime";
 
 const AES_KEY_BYTES = 32;
 const GCM_IV_BYTES = 12;
@@ -177,7 +178,7 @@ export class LocalAesKeyEnvelopeProvider implements KeyEnvelopeProvider {
   ) {
     if (
       (process.env.NODE_ENV === "production" || options.nodeEnvironment === "production") &&
-      !capacityLocalCiRuntimeEnabled()
+      !capacityLocalCiRuntimeEnabled() && !publicDemoRuntimeEnabled()
     ) {
       throw new TokenVaultConfigurationError("Local vault key provider is forbidden in production.");
     }
@@ -216,7 +217,7 @@ export class LocalAesKeyEnvelopeProvider implements KeyEnvelopeProvider {
   ) {
     if (
       (process.env.NODE_ENV === "production" || environment.NODE_ENV === "production") &&
-      !capacityLocalCiRuntimeEnabled(environment)
+      !capacityLocalCiRuntimeEnabled(environment) && !publicDemoRuntimeEnabled(environment)
     ) {
       throw new TokenVaultConfigurationError("Local vault key provider is forbidden in production.");
     }

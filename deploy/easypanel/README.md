@@ -22,8 +22,12 @@ o artifact do Identity Auth. Ele contém somente:
 - `domain-bootstrap`, que cria de forma aditiva o database marcado
   `appsell_preview_77`, aplica migrations e refaz exclusivamente a tenant demo;
 - `domain-api`, privado na rede `easypanel-sell-autonomia`;
-- `sell-web`, com OAuth local e três personas demo;
-- `evidence-init` e `e2e`, habilitados apenas pelo profile `e2e`.
+- `sell-web`, executado com `next start`, cookies `Secure`/`__Host-`, OAuth local
+  explicitamente limitado ao contrato imutável desta homologação e três personas demo;
+- `evidence-init`, `e2e-transport-init`, `e2e-bridge` e `e2e`, habilitados
+  apenas pelo profile `e2e`. O navegador de teste não recebe rede IP: um proxy
+  loopback encaminha TLS bruto por Unix socket para a bridge efêmera, que é o
+  único container na rede pública de teste.
 
 O Compose reutiliza `sell-autonomia_postgres` e `sell-autonomia_redis`; não cria
 outra infraestrutura e não referencia `dados` ou `flow`. Na primeira ativação,
@@ -67,15 +71,59 @@ sudo -E env CONFIRM_RUNTIME_PREVIEW_UP=appsell-runtime-preview-77 \
   "$RUN_ROOT" "$ENV_FILE" APPSELL_SHA
 sudo -E "$RUN_ROOT/config/easypanel/verify-runtime-preview.sh" \
   "$RUN_ROOT" "$ENV_FILE" APPSELL_SHA
+```
+
+O primeiro deploy permanece privado até a verificação acima ficar verde. Depois,
+a ativação pública aditiva cria exatamente um domínio EasyPanel para
+`sell-autonomia/runtime-preview`, exige DNS exclusivo em `85.31.60.100`, valida
+o certificado emitido para `sell.autonomia.site` e registra uma attestation
+root-only. Ela não altera nem reinicia `dados`, `flow` ou qualquer serviço n8n:
+
+```bash
+sudo -E env CONFIRM_RUNTIME_PREVIEW_PUBLIC=sell-autonomia-public-77 \
+  "$RUN_ROOT/config/easypanel/activate-public-runtime-preview.sh" \
+  "$RUN_ROOT" "$ENV_FILE" APPSELL_SHA
 sudo -E env RUN_RUNTIME_PREVIEW_E2E=1 \
   "$RUN_ROOT/config/easypanel/verify-runtime-preview.sh" \
   "$RUN_ROOT" "$ENV_FILE" APPSELL_SHA
 ```
 
-O primeiro deploy permanece sem domínio e deve ser acessado por túnel SSH.
-Rode o profile `e2e`; somente com admin,
-buyer, superadmin, PDF e vídeo verdes o `sell-web` pode receber rede Traefik,
-TLS e `APPSELL_PUBLIC_ORIGIN=https://sell.autonomia.site`.
+O E2E público resolve `sell.autonomia.site` pelo proxy loopback, mas mantém TLS
+fim a fim até o Traefik e só passa com admin, buyer, superadmin, PDF e vídeo
+verdes. Esta etapa é homologação pública com identidades sintéticas; OAuth,
+billing e onboarding de clientes reais continuam dependendo dos respectivos
+gates de integração.
+
+Se uma execução anterior deixou o volume de evidências no contrato legado com
+label de SHA, migre-o uma única vez depois que o novo runtime estiver ativo e
+antes do E2E. O script exige o SHA legado observado, recusa consumidores,
+arquiva o conteúdo em modo `0600` dentro do novo run root e só então substitui
+o volume exclusivo por outro com ownership estável:
+
+```bash
+sudo -E env CONFIRM_RUNTIME_PREVIEW_EVIDENCE_MIGRATION=sell-autonomia-evidence-v1 \
+  "$RUN_ROOT/config/easypanel/migrate-legacy-runtime-evidence.sh" \
+  "$RUN_ROOT" "$ENV_FILE" APPSELL_SHA LEGACY_EVIDENCE_SOURCE_SHA
+```
+
+Antes de teardown, rollback ou troca de SHA, a rota pública deve ser removida
+com ownership exato. A ação só apaga o único domínio pertencente a
+`sell-autonomia/runtime-preview`, preserva o serviço, banco e volumes e confirma
+novamente o snapshot dos demais serviços:
+
+```bash
+sudo -E env CONFIRM_RUNTIME_PREVIEW_PRIVATE=sell-autonomia-private-77 \
+  "$RUN_ROOT/config/easypanel/deactivate-public-runtime-preview.sh" \
+  "$RUN_ROOT" "$ENV_FILE" APPSELL_SHA
+```
+
+Se a emissão/validação TLS falhar durante a primeira ativação, o script usa uma
+intent root-only e remove automaticamente somente o domínio recém-criado. Uma
+interrupção pode ser retomada pelo mesmo SHA sem adotar domínio de outro serviço.
+Se `createDomain` tiver resultado incerto e nenhum domínio aparecer durante a
+janela de reconciliação, a intent é preservada e a repetição falha fechada. Uma
+nova tentativa de criação exige revisão dessa intent e a confirmação adicional
+`CONFIRM_RUNTIME_PREVIEW_PUBLIC_RETRY=sell-autonomia-public-retry-77`.
 
 Rollback inicial: o comando abaixo remove apenas os containers Compose
 `sell-autonomia_runtime-preview`, verifica que os hashes dos serviços anteriores

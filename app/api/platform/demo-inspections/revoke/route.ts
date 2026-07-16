@@ -15,9 +15,12 @@ import {
 import { oauthService } from "@/lib/oauth-service.server";
 import { configuredPublicOrigin, hasConfiguredOrigin } from "@/lib/public-origin";
 import { isOAuthStoreUnavailable } from "@/lib/redis-oauth-service";
+import { publicDemoRuntimeEnabled } from "@/lib/public-demo-runtime";
 
 export async function POST(request: NextRequest) {
-  if (process.env.NODE_ENV === "production") return jsonError(404, "not_found");
+  if (process.env.NODE_ENV === "production" && !publicDemoRuntimeEnabled()) {
+    return jsonError(404, "not_found");
+  }
   const sessionId = request.cookies.get(sessionCookieName())?.value;
   if (!sessionId || !hasConfiguredOrigin(request, configuredPublicOrigin())) return forbidden();
   const ticket = parseDemoInspectionTicket(request.cookies.get(demoInspectionCookieName())?.value);

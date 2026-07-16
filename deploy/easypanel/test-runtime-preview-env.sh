@@ -55,6 +55,7 @@ assert values["APPSELL_POSTGRES_ADMIN_USER"] == "postgres"
 assert values["APPSELL_POSTGRES_ADMIN_PASSWORD"] == "exclusive-postgres-fixture"
 assert values["APPSELL_POSTGRES_DEFAULT_DATABASE"] == "appsell"
 assert values["APPSELL_REDIS_PASSWORD"] == "exclusive-redis-fixture"
+assert values["APPSELL_PUBLIC_ORIGIN"] == "https://sell.autonomia.site"
 assert re.fullmatch(r"[0-9a-f]{48}", values["APPSELL_MIGRATOR_PASSWORD"])
 assert re.fullmatch(r"[0-9a-f]{48}", values["APPSELL_RUNTIME_PASSWORD"])
 assert re.fullmatch(r"[0-9a-f]{64}", values["APPSELL_CONTEXT_SIGNING_KEY_HEX"])

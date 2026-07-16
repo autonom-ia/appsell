@@ -100,15 +100,19 @@ test("superadmin demo inspeciona e revoga sem impersonar", async ({ context, pag
   await expect(page.getByRole("heading", { level: 2, name: "Autonom.ia Demo" })).toBeVisible();
   await expect(page.getByText("Codex na prática", { exact: true })).toBeVisible();
   const activeCookies = await context.cookies();
-  const sessionCookie = activeCookies.find((cookie) => cookie.name === "appsell_session");
-  const inspectionCookie = activeCookies.find((cookie) => cookie.name === "appsell_demo_inspection");
+  const sessionCookie = activeCookies.find((cookie) => cookie.name === "__Host-appsell_session");
+  const inspectionCookie = activeCookies.find(
+    (cookie) => cookie.name === "__Host-appsell_demo_inspection"
+  );
   expect(sessionCookie?.value).toMatch(/^[A-Za-z0-9_-]{43}$/);
   expect(inspectionCookie?.value).toMatch(/^[0-9a-f-]{36}\.[A-Za-z0-9_-]{43}$/);
+  expect(sessionCookie).toMatchObject({ secure: true, httpOnly: true, path: "/" });
+  expect(inspectionCookie).toMatchObject({ secure: true, httpOnly: true, path: "/" });
   await page.getByRole("button", { name: "Encerrar e revogar acesso" }).click();
   await expect(page.getByText("Inspeção encerrada e token revogado.")).toBeVisible();
   const replay = await page.request.get("/api/platform/demo-inspections", {
     headers: {
-      cookie: `appsell_session=${sessionCookie!.value}; appsell_demo_inspection=${inspectionCookie!.value}`
+      cookie: `__Host-appsell_session=${sessionCookie!.value}; __Host-appsell_demo_inspection=${inspectionCookie!.value}`
     }
   });
   expect(replay.status()).toBe(200);
@@ -135,10 +139,12 @@ async function assertOpaqueSession(
   page: Page,
   persona: "admin" | "buyer" | "superadmin"
 ) {
-  const session = (await context.cookies()).find((cookie) => cookie.name === "appsell_session");
-  expect(session).toMatchObject({ httpOnly: true, sameSite: "Lax" });
+  const session = (await context.cookies()).find(
+    (cookie) => cookie.name === "__Host-appsell_session"
+  );
+  expect(session).toMatchObject({ httpOnly: true, secure: true, sameSite: "Lax", path: "/" });
   expect(session?.value).toMatch(/^[A-Za-z0-9_-]{43}$/);
-  expect(await page.evaluate(() => document.cookie)).not.toContain("appsell_session");
+  expect(await page.evaluate(() => document.cookie)).not.toContain("__Host-appsell_session");
   const response = await page.request.get("/api/session");
   expect(response.status()).toBe(200);
   expect(await response.json()).toMatchObject({

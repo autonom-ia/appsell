@@ -3,6 +3,7 @@ import "server-only";
 import { timingSafeEqual } from "node:crypto";
 import demoCodexAssets from "./demo-codex-assets.json";
 import { capacityLocalCiRuntimeEnabled } from "./capacity-local-ci-runtime";
+import { publicDemoRuntimeEnabled } from "./public-demo-runtime";
 import { demoProfileForSubject } from "./demo-config";
 import {
   capacityProductCreateTelemetryEnabled,
@@ -891,7 +892,8 @@ function configuredApiOrigin() {
   if (
     process.env.NODE_ENV === "production" &&
     parsed.protocol !== "https:" &&
-    !capacityLocalCiRuntimeEnabled()
+    !capacityLocalCiRuntimeEnabled() &&
+    !publicDemoRuntimeEnabled()
   ) {
     throw new DomainApiError(503, "insecure_domain_api_url");
   }
@@ -902,7 +904,8 @@ function identityEmail(session: ServerSession) {
   if (session.identity?.emailVerified === true) return session.identity.email;
   const demo = demoProfileForSubject(session.subject);
   if (demo) return demo.email;
-  if (process.env.NODE_ENV === "production" && !capacityLocalCiRuntimeEnabled()) {
+  if (process.env.NODE_ENV === "production" && !capacityLocalCiRuntimeEnabled() &&
+      !publicDemoRuntimeEnabled()) {
     throw new DomainApiError(503, "real_identity_claims_required");
   }
   const email = requiredEnvironment("APPSELL_LOCAL_IDENTITY_EMAIL");

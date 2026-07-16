@@ -1,3 +1,5 @@
+import { publicDemoRuntimeEnabled } from "./public-demo-runtime";
+
 export type DemoPersona = "admin" | "buyer" | "superadmin";
 
 export const DEMO_ADMIN_SUBJECT = "demo-admin-v1";
@@ -42,7 +44,7 @@ const profiles: Record<DemoPersona, DemoProfile> = {
 };
 
 export function demoModeEnabled(environment: Partial<Record<string, string | undefined>> = process.env) {
-  return localCiRuntime(environment) &&
+  return (localCiRuntime(environment) || publicDemoRuntimeEnabled(environment)) &&
     environment.APPSELL_DEMO_ENABLED?.toLowerCase() === "true";
 }
 

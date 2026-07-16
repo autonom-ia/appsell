@@ -4,7 +4,14 @@ RUNTIME_PREVIEW_PROJECT="sell-autonomia"
 RUNTIME_PREVIEW_SERVICE="runtime-preview"
 RUNTIME_PREVIEW_COMPOSE_PROJECT="sell-autonomia_runtime-preview"
 RUNTIME_PREVIEW_NETWORK="easypanel-sell-autonomia"
+RUNTIME_PREVIEW_E2E_NETWORK="${RUNTIME_PREVIEW_COMPOSE_PROJECT}_sell-public-e2e"
+RUNTIME_PREVIEW_EVIDENCE_VOLUME="${RUNTIME_PREVIEW_COMPOSE_PROJECT}_runtime_evidence"
+RUNTIME_PREVIEW_E2E_TRANSPORT_VOLUME="${RUNTIME_PREVIEW_COMPOSE_PROJECT}_runtime_e2e_transport"
 RUNTIME_PREVIEW_API_BASE="${EASYPANEL_API_BASE:-http://127.0.0.1:3000}"
+RUNTIME_PREVIEW_PUBLIC_HOST="sell.autonomia.site"
+RUNTIME_PREVIEW_PUBLIC_ORIGIN="https://sell.autonomia.site"
+RUNTIME_PREVIEW_PUBLIC_IPV4="85.31.60.100"
+RUNTIME_PREVIEW_VOLUME_ENVIRONMENT="local-ci-easypanel-preview"
 
 runtime_preview_fail() {
   echo "$*" >&2
@@ -33,6 +40,128 @@ runtime_preview_inspect_has_exact_network() {
     length == 1 and
     (.[0].NetworkSettings.Networks | type == "object" and keys == [$expected])
   ' <<<"$inspect_json" >/dev/null
+}
+
+runtime_preview_lifecycle_fingerprint_from_inspect() {
+  [[ $# -eq 1 ]] || return 2
+  jq -er '
+    if type == "array" and length == 1 then
+      .[0] as $container |
+      $container.Config.Labels["com.docker.compose.service"] as $service |
+      if $service == "domain-bootstrap" or $service == "domain-api" or $service == "sell-web" then
+        [
+          $service,
+          $container.Id,
+          $container.State.StartedAt,
+          $container.State.FinishedAt,
+          ($container.RestartCount | tostring),
+          ($container.State.ExitCode | tostring)
+        ] | join("|")
+      else error("unexpected runtime-preview lifecycle service") end
+    else error("invalid runtime-preview lifecycle inspection") end
+  ' <<<"$1"
+}
+
+runtime_preview_verify_public_dns() {
+  local a_records aaaa_records cname_records
+  a_records="$(dig +short A "$RUNTIME_PREVIEW_PUBLIC_HOST")" || return 1
+  aaaa_records="$(dig +short AAAA "$RUNTIME_PREVIEW_PUBLIC_HOST")" || return 1
+  cname_records="$(dig +short CNAME "$RUNTIME_PREVIEW_PUBLIC_HOST")" || return 1
+  [[ "$a_records" == "$RUNTIME_PREVIEW_PUBLIC_IPV4" && -z "$aaaa_records" && -z "$cname_records" ]] || {
+    runtime_preview_fail "public DNS must contain only the approved IPv4 and no AAAA or CNAME"
+    return 1
+  }
+}
+
+runtime_preview_volume_inspect() {
+  [[ $# -eq 1 ]] || return 2
+  local volume="$1" output names
+  if output="$(docker volume inspect "$volume" 2>/dev/null)"; then
+    printf '%s' "$output"
+    return 0
+  fi
+  names="$(docker volume ls --format '{{.Name}}')" || {
+    runtime_preview_fail "could not inventory Docker volumes after inspect failure"
+    return 1
+  }
+  if grep -Fxq "$volume" <<<"$names"; then
+    runtime_preview_fail "Docker volume exists but could not be inspected"
+    return 1
+  fi
+  return 3
+}
+
+runtime_preview_verify_owned_volume() {
+  [[ $# -eq 4 ]] || return 2
+  local volume="$1" compose_volume="$2" purpose="$3" require_unused="$4" inspect consumers
+  inspect="$(runtime_preview_volume_inspect "$volume")" || return 1
+  jq -e \
+    --arg volume "$volume" \
+    --arg compose_project "$RUNTIME_PREVIEW_COMPOSE_PROJECT" \
+    --arg compose_volume "$compose_volume" \
+    --arg project "$RUNTIME_PREVIEW_PROJECT" \
+    --arg environment "$RUNTIME_PREVIEW_VOLUME_ENVIRONMENT" \
+    --arg purpose "$purpose" '
+      type == "array" and length == 1 and
+      .[0].Name == $volume and .[0].Driver == "local" and .[0].Scope == "local" and
+      (.[0].Options == null or .[0].Options == {}) and
+      .[0].Labels["com.docker.compose.project"] == $compose_project and
+      .[0].Labels["com.docker.compose.volume"] == $compose_volume and
+      .[0].Labels["com.autonomia.project"] == $project and
+      .[0].Labels["com.autonomia.issue"] == "77" and
+      .[0].Labels["com.autonomia.environment"] == $environment and
+      .[0].Labels["com.autonomia.purpose"] == $purpose and
+      .[0].Labels["com.autonomia.source-sha"] == null and
+      ((.[0].Labels | keys) - [
+        "com.docker.compose.config-hash", "com.docker.compose.project", "com.docker.compose.version",
+        "com.docker.compose.volume", "com.autonomia.project",
+        "com.autonomia.issue", "com.autonomia.environment", "com.autonomia.purpose"
+      ] | length == 0)
+    ' <<<"$inspect" >/dev/null || {
+    runtime_preview_fail "runtime-preview volume ownership drifted: $volume"
+    return 1
+  }
+  case "$require_unused" in
+    yes)
+      consumers="$(docker ps -aq --filter "volume=$volume")" || {
+        runtime_preview_fail "could not inventory runtime-preview volume consumers"
+        return 1
+      }
+      [[ -z "$consumers" ]] || {
+        runtime_preview_fail "runtime-preview volume has pre-existing container consumers: $volume"
+        return 1
+      }
+      ;;
+    no) ;;
+    *) return 2 ;;
+  esac
+}
+
+runtime_preview_ensure_owned_volume() {
+  [[ $# -eq 3 ]] || return 2
+  local volume="$1" compose_volume="$2" purpose="$3" inspect status created
+  if inspect="$(runtime_preview_volume_inspect "$volume")"; then
+    status=0
+  else
+    status=$?
+  fi
+  if [[ "$status" == "3" ]]; then
+    created="$(docker volume create --driver local \
+      --label "com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT" \
+      --label "com.docker.compose.volume=$compose_volume" \
+      --label "com.autonomia.project=$RUNTIME_PREVIEW_PROJECT" \
+      --label 'com.autonomia.issue=77' \
+      --label "com.autonomia.environment=$RUNTIME_PREVIEW_VOLUME_ENVIRONMENT" \
+      --label "com.autonomia.purpose=$purpose" \
+      "$volume")" || return 1
+    [[ "$created" == "$volume" ]] || {
+      runtime_preview_fail "Docker created an unexpected volume"
+      return 1
+    }
+  elif [[ "$status" != "0" ]]; then
+    return "$status"
+  fi
+  runtime_preview_verify_owned_volume "$volume" "$compose_volume" "$purpose" yes
 }
 
 runtime_preview_docker_config_path_is_safe() {
@@ -184,6 +313,213 @@ runtime_preview_api_post() {
   fi
   exec 9<&-
   printf '%s' "$response"
+}
+
+runtime_preview_domain_api_post() {
+  local endpoint="$1" payload="$2" auth_config response
+  case "$endpoint" in
+    /api/rpc/domains/listDomains|/api/rpc/domains/createDomain|/api/rpc/domains/setPrimaryDomain|/api/rpc/domains/deleteDomain) ;;
+    *) runtime_preview_fail "unexpected EasyPanel domain endpoint"; return 1 ;;
+  esac
+  auth_config="$(mktemp)" || return 1
+  chmod 0600 "$auth_config" || { rm -f -- "$auth_config"; return 1; }
+  printf 'header = "authorization: Bearer %s"\n' "$RUNTIME_PREVIEW_API_TOKEN" >"$auth_config" || {
+    rm -f -- "$auth_config"
+    return 1
+  }
+  exec 9<"$auth_config" || { rm -f -- "$auth_config"; return 1; }
+  rm -f -- "$auth_config" || { exec 9<&-; return 1; }
+  if ! response="$(printf '%s' "$payload" | curl -fsS --connect-timeout 5 --max-time 30 \
+    --config /dev/fd/9 -H 'content-type: application/json' \
+    --data-binary @- "$RUNTIME_PREVIEW_API_BASE$endpoint")"; then
+    exec 9<&-
+    return 1
+  fi
+  exec 9<&-
+  printf '%s' "$response"
+}
+
+runtime_preview_list_domains() {
+  local payload
+  if [[ "${1:-service}" == "service" ]]; then
+    payload="$(jq -cn --arg projectName "$RUNTIME_PREVIEW_PROJECT" --arg serviceName "$RUNTIME_PREVIEW_SERVICE" \
+      '{json:{projectName:$projectName,serviceName:$serviceName}}')" || return 1
+  elif [[ "$1" == "all" ]]; then
+    payload='{"json":{}}'
+  else
+    runtime_preview_fail "invalid EasyPanel domain list scope"
+    return 1
+  fi
+  runtime_preview_domain_api_post /api/rpc/domains/listDomains "$payload"
+}
+
+runtime_preview_exact_public_domain_json() {
+  local response count
+  response="$(runtime_preview_list_domains service)" || return 1
+  jq -e '.json | type == "array"' <<<"$response" >/dev/null || return 1
+  count="$(jq -r '.json | length' <<<"$response")" || return 1
+  [[ "$count" == "1" ]] || {
+    [[ "$count" == "0" ]] && return 3
+    runtime_preview_fail "runtime-preview must own exactly one EasyPanel domain"
+    return 1
+  }
+  jq -ec \
+    --arg host "$RUNTIME_PREVIEW_PUBLIC_HOST" \
+    --arg project "$RUNTIME_PREVIEW_PROJECT" \
+    --arg service "$RUNTIME_PREVIEW_SERVICE" '
+      .json[0] |
+      select(
+        (.id | type == "string" and test("^[A-Za-z0-9._-]{8,128}$")) and
+        .host == $host and .https == true and .path == "/" and
+        .wildcard == false and .certificateResolver == "" and
+        .middlewares == [] and .destinationType == "service" and
+        .serviceDestination == {
+          composeService:"sell-web", path:"/", port:13200,
+          projectName:$project, protocol:"http", serviceName:$service
+        }
+      )
+    ' <<<"$response" || {
+      runtime_preview_fail "EasyPanel public domain configuration drifted"
+      return 1
+    }
+}
+
+runtime_preview_verify_public_domain() {
+  local domain_json domain_id global_response global_domain_id host_count payload response
+  domain_json="$(runtime_preview_exact_public_domain_json)" || return 1
+  domain_id="$(jq -er '.id' <<<"$domain_json")" || return 1
+  global_response="$(runtime_preview_list_domains all)" || return 1
+  jq -e '.json | type == "array"' <<<"$global_response" >/dev/null || {
+    runtime_preview_fail "EasyPanel global domain list has an invalid type"
+    return 1
+  }
+  host_count="$(jq -r --arg host "$RUNTIME_PREVIEW_PUBLIC_HOST" '[.json[] | select(.host == $host)] | length' \
+    <<<"$global_response")" || return 1
+  [[ "$host_count" == "1" ]] || {
+    runtime_preview_fail "public host is missing or duplicated in EasyPanel"
+    return 1
+  }
+  global_domain_id="$(jq -er --arg host "$RUNTIME_PREVIEW_PUBLIC_HOST" \
+    '.json[] | select(.host == $host) | .id' <<<"$global_response")" || return 1
+  [[ "$global_domain_id" == "$domain_id" ]] || {
+    runtime_preview_fail "global public host belongs to a different EasyPanel domain"
+    return 1
+  }
+  payload="$(jq -cn --arg projectName "$RUNTIME_PREVIEW_PROJECT" --arg serviceName "$RUNTIME_PREVIEW_SERVICE" \
+    '{json:{projectName:$projectName,serviceName:$serviceName}}')" || return 1
+  response="$(runtime_preview_api_inspect "$payload")" || return 1
+  [[ "$(jq -er '.json.primaryDomainId' <<<"$response")" == "$domain_id" ]] || {
+    runtime_preview_fail "EasyPanel primary domain does not match the exact public domain"
+    return 1
+  }
+  printf '%s' "$domain_id"
+}
+
+runtime_preview_verify_public_domain_absent() {
+  local service_response global_response payload inspect_response
+  service_response="$(runtime_preview_list_domains service)" || return 1
+  global_response="$(runtime_preview_list_domains all)" || return 1
+  jq -e '.json | type == "array"' <<<"$service_response" >/dev/null || {
+    runtime_preview_fail "EasyPanel service domain list has an invalid type"
+    return 1
+  }
+  jq -e '.json | type == "array"' <<<"$global_response" >/dev/null || {
+    runtime_preview_fail "EasyPanel global domain list has an invalid type"
+    return 1
+  }
+  [[ "$(jq -er '.json | length' <<<"$service_response")" == "0" ]] || {
+    runtime_preview_fail "runtime-preview still owns an EasyPanel domain"
+    return 1
+  }
+  [[ "$(jq -r --arg host "$RUNTIME_PREVIEW_PUBLIC_HOST" \
+    '[.json[] | select(.host == $host)] | length' <<<"$global_response")" == "0" ]] || {
+    runtime_preview_fail "public host still exists in EasyPanel"
+    return 1
+  }
+  payload="$(jq -cn --arg projectName "$RUNTIME_PREVIEW_PROJECT" --arg serviceName "$RUNTIME_PREVIEW_SERVICE" \
+    '{json:{projectName:$projectName,serviceName:$serviceName}}')" || return 1
+  inspect_response="$(runtime_preview_api_inspect "$payload")" || return 1
+  jq -e '.json.primaryDomainId == null or .json.primaryDomainId == ""' \
+    <<<"$inspect_response" >/dev/null || {
+    runtime_preview_fail "runtime-preview primary domain was not cleared"
+    return 1
+  }
+}
+
+runtime_preview_delete_exact_public_domain() {
+  local domain_json domain_id payload response
+  domain_json="$(runtime_preview_exact_public_domain_json)" || return 1
+  domain_id="$(jq -er '.id' <<<"$domain_json")" || return 1
+  payload="$(jq -cn --arg id "$domain_id" '{json:{id:$id}}')" || return 1
+  if ! response="$(runtime_preview_domain_api_post /api/rpc/domains/deleteDomain "$payload")"; then
+    runtime_preview_verify_public_domain_absent && return 0
+    return 1
+  fi
+  if ! runtime_preview_expect_api_success "$response" deleteDomain; then
+    runtime_preview_verify_public_domain_absent && return 0
+    return 1
+  fi
+  runtime_preview_verify_public_domain_absent
+}
+
+runtime_preview_verify_public_attestation() {
+  local attestation domain_id certificate certificate_pem certificate_sha256 headers
+  attestation="$RUNTIME_PREVIEW_RUN_ROOT/public-domain.attestation.json"
+  runtime_preview_assert_protected_file "$attestation" || return 1
+  runtime_preview_verify_public_dns || return 1
+  domain_id="$(runtime_preview_verify_public_domain)" || return 1
+  headers="$(mktemp)" || return 1
+  if ! curl -fsS --connect-timeout 5 --max-time 20 -D "$headers" -o /dev/null \
+    "$RUNTIME_PREVIEW_PUBLIC_ORIGIN/" ||
+    ! grep -Eiq '^strict-transport-security:[[:space:]]*max-age=31536000;[[:space:]]*includeSubDomains[[:space:]]*$' \
+      "$headers"; then
+    rm -f -- "$headers"
+    runtime_preview_fail "public HTTPS trust or HSTS verification failed"
+    return 1
+  fi
+  rm -f -- "$headers"
+  certificate="$(mktemp)" || return 1
+  if ! certificate_pem="$(timeout 15 openssl s_client \
+    -connect "$RUNTIME_PREVIEW_PUBLIC_HOST:443" \
+    -servername "$RUNTIME_PREVIEW_PUBLIC_HOST" </dev/null 2>/dev/null)"; then
+    rm -f -- "$certificate"
+    runtime_preview_fail "could not read the public TLS certificate"
+    return 1
+  fi
+  if ! printf '%s' "$certificate_pem" | openssl x509 -out "$certificate"; then
+    rm -f -- "$certificate"
+    runtime_preview_fail "public TLS certificate parsing failed"
+    return 1
+  fi
+  unset certificate_pem
+  openssl x509 -in "$certificate" -noout -checkhost "$RUNTIME_PREVIEW_PUBLIC_HOST" >/dev/null || {
+    rm -f -- "$certificate"
+    return 1
+  }
+  openssl x509 -in "$certificate" -noout -checkend 604800 >/dev/null || {
+    rm -f -- "$certificate"
+    return 1
+  }
+  certificate_sha256="$(openssl x509 -in "$certificate" -outform DER | sha256sum | awk '{print $1}')" || {
+    rm -f -- "$certificate"
+    return 1
+  }
+  rm -f -- "$certificate"
+  jq -e \
+    --arg project "$RUNTIME_PREVIEW_PROJECT" --arg service "$RUNTIME_PREVIEW_SERVICE" \
+    --arg source_sha "$(runtime_preview_env_value APPSELL_SOURCE_SHA)" \
+    --arg domain_id "$domain_id" --arg host "$RUNTIME_PREVIEW_PUBLIC_HOST" \
+    --arg origin "$RUNTIME_PREVIEW_PUBLIC_ORIGIN" --arg ipv4 "$RUNTIME_PREVIEW_PUBLIC_IPV4" \
+    --arg certificate_sha256 "$certificate_sha256" '
+      .schema_version == "autonomia.easypanel-public-domain.v1" and
+      .project == $project and .service == $service and .source_sha == $source_sha and
+      .domain_id == $domain_id and .host == $host and .origin == $origin and
+      .ipv4 == $ipv4 and .certificate_sha256 == $certificate_sha256 and
+      (.checked_at | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+    ' "$attestation" >/dev/null || {
+    runtime_preview_fail "public-domain attestation mismatch"
+    return 1
+  }
 }
 
 runtime_preview_api_inspect() {
@@ -360,7 +696,7 @@ runtime_preview_attestation_value() {
 }
 
 runtime_preview_verify_live_record() {
-  local require_inline="$1" payload response token_fingerprint expected_token compose_file compose_sha source_sha code_file
+  local require_inline="$1" payload response token_fingerprint expected_token compose_file compose_sha source_sha code_file primary_domain_id verified_domain_id
   payload="$(jq -cn --arg projectName "$RUNTIME_PREVIEW_PROJECT" --arg serviceName "$RUNTIME_PREVIEW_SERVICE" \
     '{json:{projectName:$projectName,serviceName:$serviceName}}')"
   response="$(runtime_preview_api_inspect "$payload")" || return 1
@@ -368,9 +704,18 @@ runtime_preview_verify_live_record() {
     --arg project "$RUNTIME_PREVIEW_PROJECT" --arg service "$RUNTIME_PREVIEW_SERVICE" '
       .json.projectName == $project and .json.name == $service and
       .json.type == "compose" and .json.createDotEnv == false and
-      (.json.primaryDomainId == null or .json.primaryDomainId == "") and
+      (.json.primaryDomainId == null or .json.primaryDomainId == "" or
+       (.json.primaryDomainId | type == "string" and test("^[A-Za-z0-9._-]{8,128}$"))) and
       .json.env == ""
     ' <<<"$response" >/dev/null || { runtime_preview_fail "EasyPanel runtime-preview record metadata mismatch"; return 1; }
+  primary_domain_id="$(jq -r '.json.primaryDomainId // empty' <<<"$response")" || return 1
+  if [[ -n "$primary_domain_id" ]]; then
+    verified_domain_id="$(runtime_preview_verify_public_domain)" || return 1
+    [[ "$verified_domain_id" == "$primary_domain_id" ]] || {
+      runtime_preview_fail "EasyPanel live record references an unowned primary domain"
+      return 1
+    }
+  fi
   expected_token="$(runtime_preview_attestation_value token_sha256)" || return 1
   token_fingerprint="$(jq -jer '.json.token' <<<"$response" | sha256sum | awk '{print $1}')" || return 1
   [[ "$token_fingerprint" == "$expected_token" ]] || { runtime_preview_fail "EasyPanel runtime-preview token fingerprint mismatch"; return 1; }

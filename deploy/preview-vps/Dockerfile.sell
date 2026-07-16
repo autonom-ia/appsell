@@ -18,5 +18,6 @@ RUN corepack pnpm install --frozen-lockfile
 COPY . .
 RUN test -n "${SOURCE_SHA}" \
     && test "$(id -u pwuser):$(id -g pwuser)" = "1001:1001" \
+    && corepack pnpm build \
     && chown -R pwuser:pwuser /workspace/sell
 USER pwuser
