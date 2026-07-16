@@ -90,7 +90,12 @@ test("buyer demo abre PDF e vídeo protegidos", async ({ context, page }) => {
 test("superadmin demo inspeciona e revoga sem impersonar", async ({ context, page }) => {
   await login(page, "superadmin", "/platform/demo-inspection");
   await expect(page.getByRole("heading", { name: "Inspeção da tenant demo" })).toBeVisible();
-  await expect(page.getByText("comercial@autonomia.site", { exact: true })).toBeVisible();
+  const profile = await page.request.get("/api/session");
+  expect(profile.status()).toBe(200);
+  expect(await profile.json()).toMatchObject({
+    authenticated: true,
+    demoProfile: { persona: "superadmin", email: "comercial@autonomia.site" }
+  });
   await page.getByRole("button", { name: "Iniciar inspeção read-only" }).click();
   await expect(page.getByRole("heading", { level: 2, name: "Autonom.ia Demo" })).toBeVisible();
   await expect(page.getByText("Codex na prática", { exact: true })).toBeVisible();
