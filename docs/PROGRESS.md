@@ -219,7 +219,13 @@ Fase 6A — ingresso genérico de webhook assinado e outbox durável em Local/CI
 
 ## Próximo passo recomendado
 
-Consolidar as Draft PRs aprovadas na release candidate da Issue #66, publicar
-os artefatos do SHA exato e executar a aplicação no projeto EasyPanel isolado
-`sell-autonomia`. Não declarar acesso real de `comercial@autonomia.site`: isso
-depende do Identity #13 e de ambiente isolado com token/JWKS/MFA reais.
+A Draft PR #76 consolidou a release candidate da Issue #66 e fechou 12/12 checks
+no SHA `a901e1f`, incluindo PostgreSQL real, capacidade 100/1.000, E2E e cinco
+artifacts de aplicação. O próximo slice é a Issue #77: publicar um único Compose
+`runtime-preview` no projeto EasyPanel isolado, com OAuth demo Local/CI e database
+aditivo `appsell_preview_77`, primeiro por túnel e depois em
+`sell.autonomia.site`. Loader, preflight, attestation, rollback, teardown e E2E
+foram implementados e receberam dois reviews independentes GREEN; faltam
+commit/push/Draft PR, CI do SHA publicado e autorização de deploy. Não declarar acesso Identity real de
+`comercial@autonomia.site`: isso depende do Identity #13 e de ambiente isolado
+com token/JWKS/MFA reais.

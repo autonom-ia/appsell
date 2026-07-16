@@ -20,6 +20,14 @@ ASSET_WORKER_EMAIL = "asset.worker@autonomia.site"
 DEMO_SUPERADMIN_SUBJECT = "demo-superadmin"
 DEMO_SUPERADMIN_EMAIL = "comercial@autonomia.site"
 EXPECTED_MIGRATION = "0014_multi_asset_player"
+REMOTE_RESET_SCOPE = "appsell-runtime-preview-77"
+REMOTE_RESET_TARGET = {
+    "user": "appsell_preview_77_migrator",
+    "host": "sell-autonomia_postgres",
+    "port": "5432",
+    "dbname": "appsell_preview_77",
+}
+REMOTE_RESET_ISSUER = "https://identity.runtime-preview.local"
 LIBPQ_REDIRECT_ENVIRONMENT = (
     "PGHOST",
     "PGHOSTADDR",
@@ -120,10 +128,26 @@ def require_environment(args: argparse.Namespace) -> tuple[str, str, bool]:
     if any(os.environ.get(name) for name in LIBPQ_REDIRECT_ENVIRONMENT):
         raise RuntimeError("libpq network and service environment overrides are forbidden")
     connection_info = conninfo_to_dict(database_url)
-    if connection_info.get("host") not in {"127.0.0.1", "localhost", "::1"} or connection_info.get(
-        "hostaddr"
-    ):
-        raise RuntimeError("demo reset database must be loopback-only")
+    remote_scope = os.environ.get("APPSELL_DEMO_REMOTE_RESET_SCOPE", "").strip()
+    is_loopback = connection_info.get("host") in {"127.0.0.1", "localhost", "::1"}
+    if is_loopback and not connection_info.get("hostaddr"):
+        if remote_scope:
+            raise RuntimeError("remote demo reset scope is forbidden for a loopback database")
+    else:
+        allowed_connection_fields = {"user", "password", "host", "port", "dbname"}
+        if (
+            remote_scope != REMOTE_RESET_SCOPE
+            or node_environment != "test"
+            or app_environment != "ci"
+            or environment != "ci"
+            or issuer != REMOTE_RESET_ISSUER
+            or any(connection_info.get(key) != value for key, value in REMOTE_RESET_TARGET.items())
+            or set(connection_info) != allowed_connection_fields
+            or not connection_info.get("password")
+        ):
+            raise RuntimeError(
+                "demo reset database must be loopback-only or the exact runtime-preview-77 target"
+            )
     superadmin_value = os.environ.get("APPSELL_DEMO_SUPERADMIN_ENABLED", "").strip().lower()
     if superadmin_value not in {"", "false", "true"}:
         raise RuntimeError("APPSELL_DEMO_SUPERADMIN_ENABLED must explicitly be true or false")
@@ -132,10 +156,17 @@ def require_environment(args: argparse.Namespace) -> tuple[str, str, bool]:
 
 def validate_demo_database(connection: psycopg.Connection[Any]) -> None:
     marker = connection.execute(
-        "select shobj_description(oid,'pg_database') from pg_database "
+        "select current_database(),shobj_description(oid,'pg_database') from pg_database "
         "where datname=current_database()"
     ).fetchone()
-    if marker != (DEMO_DATABASE_MARKER,):
+    expected_database = (
+        REMOTE_RESET_TARGET["dbname"]
+        if os.environ.get("APPSELL_DEMO_REMOTE_RESET_SCOPE", "").strip() == REMOTE_RESET_SCOPE
+        else marker[0]
+        if marker
+        else None
+    )
+    if marker != (expected_database, DEMO_DATABASE_MARKER):
         raise RuntimeError("database is not marked as an AppSell demo reset target")
 
 

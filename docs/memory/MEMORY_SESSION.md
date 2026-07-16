@@ -34,22 +34,22 @@ Project status:
 
 <!-- Substituir abaixo a cada nova sessão. Sessões anteriores vão para PROGRESS.md. -->
 
-## Sessão: 2026-07-14 11:15 — sincronizar webhook com replay transacional da RC
-Issue: #63
-Branch: feat/63-generic-webhook-ingress
-PR: #64 (Draft, empilhada na #62)
-Estado: em_review
+## Sessão: 2026-07-15 16:40 — publicar runtime preview isolado no EasyPanel
+Issue: #77 (parent #66)
+Branch: infra/77-easypanel-runtime-preview
+PR: não aberta
+Estado: em_progresso
 Modelo: strong + human
-Arquivos alterados: migration 0012; API webhook adapter/routes/secrets; rota e proxy BFF; testes unitários/PG/BFF; compose/env; hardening transacional e testes herdados da #62; docs
-Comandos executados: pytest/ruff/mypy; vitest/typecheck/eslint; test-postgres-foundation repetido; inspeção de artifacts CI #62/#64; merge sem rebase/force da base revisada; resolução explícita de conflitos de auth/docs
-Validação: composição passou 207 testes PG/API + 24 boundary/worker + 6 BFF reais + 1 multi-seller e artifact scan; 274 Vitest/9 skips; E2E 44/6 skips + produção 1/1; lint/typecheck/build/audits/Harness 2.1.2 verdes; dois reviews críticos GREEN P0=P1=P2=P3 bloqueantes=0; base #62 tem 2 artifacts elegíveis, 1 run corretamente rejeitado e repetição sequencial em andamento
-Bloqueios: merge aditivo precisa CI do novo SHA; provider/Financial/Neuro/Identity/staging dependem de ambientes e contratos isolados em slices posteriores
-Próxima ação: concluir merge commit/push e aguardar CI da Draft PR #64; sem merge/deploy de PR
+Arquivos alterados: Compose/env/bootstrap/E2E EasyPanel; loader/preflight/up/verify/teardown com rollback; verifier de artifact em modo Appsell-only; workflow; Playwright runtime; docs
+Comandos executados: Bash syntax; fixtures do env/verifier; Compose real na VPS sem criação de recurso; ESLint; TypeScript; Vitest; Next build; Harness Doctor 2.1.2; inspeção de CI e artifacts da PR #76
+Validação: PR #76 12/12 checks e review crítico GREEN; slice #77 com Compose/artefatos/ESLint/typecheck/build e 295 Vitest verdes; Harness 0 erros/0 warnings; reviews crítico e isolamento GREEN com P0/P1/P2=0; lifecycle mockado passou no Docker real da VPS sem criar runtime
+Bloqueios: obter autorização explícita para commit/push/Draft PR e fechar CI antes de qualquer deploy; Identity/GitHub OAuth, Financial, Neuro.ai e mídia de produção são slices posteriores
+Próxima ação: após autorização, commitar, fazer push e abrir Draft PR #77 sem merge/deploy; aguardar CI completo
 Project status:
   - Projeto: Autonom.ia Dev
-  - Status: Em review
-  - Tipo: Feature
+  - Status: Em desenvolvimento
+  - Tipo: Infra
   - Prioridade: P0
   - Risco: Alto
-  - Ambiente: Local
-  - Próxima ação: aguardar CI da Draft PR #64 sobre base corrigida; sem merge/deploy
+  - Ambiente: Staging
+  - Próxima ação: autorização para commit/push/Draft PR; depois CI, sem merge/deploy

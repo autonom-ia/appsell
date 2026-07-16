@@ -1,4 +1,6 @@
 FROM postgres:16.9-alpine@sha256:7c688148e5e156d0e86df7ba8ae5a05a2386aaec1e2ad8e6d11bdf10504b1fb7
 
 ARG SOURCE_SHA
-LABEL org.opencontainers.image.revision=$SOURCE_SHA
+ARG ISSUE_NUMBER=66
+LABEL org.opencontainers.image.revision=$SOURCE_SHA \
+      com.autonomia.issue=$ISSUE_NUMBER

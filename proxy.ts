@@ -3,9 +3,11 @@ import { sessionCookieName } from "./lib/cookies";
 import { canAccessDemoPreview } from "./lib/demo-view";
 import { oauthService } from "./lib/oauth-service.server";
 import { demoProfileForSubject } from "./lib/demo-config";
+import { publicDemoRuntimeEnabled } from "./lib/public-demo-runtime";
 
 export async function proxy(request: NextRequest) {
-  if (process.env.NODE_ENV === "production" && process.env.APPSELL_OAUTH_MODE !== "identity") {
+  if (process.env.NODE_ENV === "production" && process.env.APPSELL_OAUTH_MODE !== "identity" &&
+      !publicDemoRuntimeEnabled()) {
     return NextResponse.redirect(new URL("/", request.url));
   }
 

@@ -1,10 +1,11 @@
 FROM mcr.microsoft.com/playwright:v1.61.1-noble@sha256:5b8f294aff9041b7191c34a4bab3ac270157a28774d4b0660e9743297b697e48
 
 ARG SOURCE_SHA
+ARG ISSUE_NUMBER=66
 LABEL org.opencontainers.image.source="https://github.com/autonom-ia/appsell" \
       org.opencontainers.image.revision="${SOURCE_SHA}" \
       com.autonomia.preview="true" \
-      com.autonomia.issue="66"
+      com.autonomia.issue="${ISSUE_NUMBER}"
 
 ENV COREPACK_HOME=/opt/corepack \
     PNPM_HOME=/opt/pnpm \
@@ -15,5 +16,8 @@ RUN corepack enable
 COPY package.json pnpm-lock.yaml ./
 RUN corepack pnpm install --frozen-lockfile
 COPY . .
-RUN test -n "${SOURCE_SHA}" && chown -R pwuser:pwuser /workspace/sell
+RUN test -n "${SOURCE_SHA}" \
+    && test "$(id -u pwuser):$(id -g pwuser)" = "1001:1001" \
+    && corepack pnpm build \
+    && chown -R pwuser:pwuser /workspace/sell
 USER pwuser

@@ -1,25 +1,43 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 9 ]]; then
-  echo "Usage: $0 ROOT APPSELL_SHA AUTH_SHA FOUNDATION_SHA APPSELL_RUN_ID AUTH_RUN_ID FOUNDATION_RUN_ID AUTH_PR AUTH_WORKFLOW_SHA" >&2
-  exit 2
-fi
+mode=integrated
+case $# in
+  3)
+    mode=runtime-preview
+    ;;
+  9) ;;
+  *)
+    echo "Usage: $0 ROOT APPSELL_SHA APPSELL_RUN_ID" >&2
+    echo "   or: $0 ROOT APPSELL_SHA AUTH_SHA FOUNDATION_SHA APPSELL_RUN_ID AUTH_RUN_ID FOUNDATION_RUN_ID AUTH_PR AUTH_WORKFLOW_SHA" >&2
+    exit 2
+    ;;
+esac
 
 [[ -d "$1" && ! -L "$1" ]] || { echo "ROOT must be an existing non-symlink directory" >&2; exit 2; }
 root="$(cd "$1" && pwd -P)"
 appsell_sha="$2"
-auth_sha="$3"
-foundation_sha="$4"
-appsell_run_id="$5"
-auth_run_id="$6"
-foundation_run_id="$7"
-auth_pr="$8"
-auth_workflow_sha="$9"
+if [[ "$mode" == "runtime-preview" ]]; then
+  appsell_run_id="$3"
+  auth_sha=""
+  foundation_sha=""
+  auth_run_id=""
+  foundation_run_id=""
+  auth_pr=""
+  auth_workflow_sha=""
+else
+  auth_sha="$3"
+  foundation_sha="$4"
+  appsell_run_id="$5"
+  auth_run_id="$6"
+  foundation_run_id="$7"
+  auth_pr="$8"
+  auth_workflow_sha="$9"
+fi
 appsell_branch="${APPSELL_ARTIFACT_BRANCH:-infra/66-vps-preview}"
 
 case "$appsell_branch" in
-  infra/66-vps-preview|infra/66-easypanel-rc) ;;
+  infra/66-vps-preview|infra/66-easypanel-rc|infra/77-easypanel-runtime-preview) ;;
   *) echo "Unsupported AppSell artifact branch" >&2; exit 2 ;;
 esac
 
@@ -29,10 +47,16 @@ for command_name in gh jq unzip python3; do
     exit 2
   }
 done
-for sha in "$appsell_sha" "$auth_sha" "$foundation_sha" "$auth_workflow_sha"; do
+shas=("$appsell_sha")
+numbers=("$appsell_run_id")
+if [[ "$mode" == "integrated" ]]; then
+  shas+=("$auth_sha" "$foundation_sha" "$auth_workflow_sha")
+  numbers+=("$auth_run_id" "$foundation_run_id" "$auth_pr")
+fi
+for sha in "${shas[@]}"; do
   [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid source SHA" >&2; exit 2; }
 done
-for number in "$appsell_run_id" "$auth_run_id" "$foundation_run_id" "$auth_pr"; do
+for number in "${numbers[@]}"; do
   [[ "$number" =~ ^[1-9][0-9]*$ ]] || { echo "Invalid numeric identifier" >&2; exit 2; }
 done
 
@@ -295,15 +319,17 @@ PY
 verify_run \
   autonom-ia/appsell "$appsell_run_id" "VPS preview artifacts" \
   .github/workflows/preview-images.yml push "$appsell_branch" "$appsell_sha" yes
-verify_run \
-  autonom-ia/autonomia-identity-foundation "$foundation_run_id" \
-  "Foundation Local CI preview artifact" .github/workflows/preview-image.yml \
-  push infra/37-preview-artifact "$foundation_sha" yes
-verify_run \
-  autonom-ia/autonomia-identity-auth "$auth_run_id" \
-  "Trusted Identity Auth preview artifact" \
-  .github/workflows/trusted-preview-artifact.yml workflow_dispatch main "$auth_workflow_sha" yes
-verify_current_auth_approval
+if [[ "$mode" == "integrated" ]]; then
+  verify_run \
+    autonom-ia/autonomia-identity-foundation "$foundation_run_id" \
+    "Foundation Local CI preview artifact" .github/workflows/preview-image.yml \
+    push infra/37-preview-artifact "$foundation_sha" yes
+  verify_run \
+    autonom-ia/autonomia-identity-auth "$auth_run_id" \
+    "Trusted Identity Auth preview artifact" \
+    .github/workflows/trusted-preview-artifact.yml workflow_dispatch main "$auth_workflow_sha" yes
+  verify_current_auth_approval
+fi
 
 download_and_verify_artifact \
   autonom-ia/appsell "$appsell_run_id" .github/workflows/preview-images.yml \
@@ -321,54 +347,58 @@ download_and_verify_artifact \
   autonom-ia/appsell "$appsell_run_id" .github/workflows/preview-images.yml \
   "$appsell_branch" "$appsell_sha" push \
   "appsell-vps-preview-base-alpine-$appsell_sha" "base-alpine-$appsell_sha.tar" ""
-download_and_verify_artifact \
-  autonom-ia/appsell "$appsell_run_id" .github/workflows/preview-images.yml \
-  "$appsell_branch" "$appsell_sha" push \
-  "appsell-vps-preview-base-postgres-$appsell_sha" "base-postgres-$appsell_sha.tar" ""
-download_and_verify_artifact \
-  autonom-ia/appsell "$appsell_run_id" .github/workflows/preview-images.yml \
-  "$appsell_branch" "$appsell_sha" push \
-  "appsell-vps-preview-base-redis-$appsell_sha" "base-redis-$appsell_sha.tar" ""
-download_and_verify_artifact \
-  autonom-ia/autonomia-identity-foundation "$foundation_run_id" \
-  .github/workflows/preview-image.yml infra/37-preview-artifact "$foundation_sha" push \
-  "identity-foundation-preview-$foundation_sha" "foundation-$foundation_sha.tar" ""
-download_and_verify_artifact \
-  autonom-ia/autonomia-identity-auth "$auth_run_id" \
-  .github/workflows/trusted-preview-artifact.yml main "$auth_sha" workflow_dispatch \
-  "identity-auth-preview-$auth_sha" "auth-$auth_sha.tar" "$auth_pr"
+if [[ "$mode" == "integrated" ]]; then
+  download_and_verify_artifact \
+    autonom-ia/appsell "$appsell_run_id" .github/workflows/preview-images.yml \
+    "$appsell_branch" "$appsell_sha" push \
+    "appsell-vps-preview-base-postgres-$appsell_sha" "base-postgres-$appsell_sha.tar" ""
+  download_and_verify_artifact \
+    autonom-ia/appsell "$appsell_run_id" .github/workflows/preview-images.yml \
+    "$appsell_branch" "$appsell_sha" push \
+    "appsell-vps-preview-base-redis-$appsell_sha" "base-redis-$appsell_sha.tar" ""
+  download_and_verify_artifact \
+    autonom-ia/autonomia-identity-foundation "$foundation_run_id" \
+    .github/workflows/preview-image.yml infra/37-preview-artifact "$foundation_sha" push \
+    "identity-foundation-preview-$foundation_sha" "foundation-$foundation_sha.tar" ""
+  download_and_verify_artifact \
+    autonom-ia/autonomia-identity-auth "$auth_run_id" \
+    .github/workflows/trusted-preview-artifact.yml main "$auth_sha" workflow_dispatch \
+    "identity-auth-preview-$auth_sha" "auth-$auth_sha.tar" "$auth_pr"
+fi
 
 cp \
   "$download_root/sell-$appsell_sha.tar" \
   "$download_root/domain-$appsell_sha.tar" \
   "$download_root/base-alpine-$appsell_sha.tar" \
-  "$download_root/base-postgres-$appsell_sha.tar" \
-  "$download_root/base-redis-$appsell_sha.tar" \
-  "$download_root/auth-$auth_sha.tar" \
-  "$download_root/foundation-$foundation_sha.tar" \
   "$upload_root/artifacts/"
+if [[ "$mode" == "integrated" ]]; then
+  cp \
+    "$download_root/base-postgres-$appsell_sha.tar" \
+    "$download_root/base-redis-$appsell_sha.tar" \
+    "$download_root/auth-$auth_sha.tar" \
+    "$download_root/foundation-$foundation_sha.tar" \
+    "$upload_root/artifacts/"
+fi
 (
   cd "$upload_root/artifacts"
+  artifacts=("sell-$appsell_sha.tar" "domain-$appsell_sha.tar" "base-alpine-$appsell_sha.tar")
+  if [[ "$mode" == "integrated" ]]; then
+    artifacts+=("base-postgres-$appsell_sha.tar" "base-redis-$appsell_sha.tar")
+    artifacts+=("auth-$auth_sha.tar" "foundation-$foundation_sha.tar")
+  fi
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum \
-      "sell-$appsell_sha.tar" "domain-$appsell_sha.tar" \
-      "base-alpine-$appsell_sha.tar" "base-postgres-$appsell_sha.tar" \
-      "base-redis-$appsell_sha.tar" \
-      "auth-$auth_sha.tar" "foundation-$foundation_sha.tar" > SHA256SUMS
+    sha256sum "${artifacts[@]}" > SHA256SUMS
   else
-    shasum -a 256 \
-      "sell-$appsell_sha.tar" "domain-$appsell_sha.tar" \
-      "base-alpine-$appsell_sha.tar" "base-postgres-$appsell_sha.tar" \
-      "base-redis-$appsell_sha.tar" \
-      "auth-$auth_sha.tar" "foundation-$foundation_sha.tar" > SHA256SUMS
+    shasum -a 256 "${artifacts[@]}" > SHA256SUMS
   fi
 )
-python3 - "$download_root/config-$appsell_sha.tar.gz" <<'PY'
+python3 - "$download_root/config-$appsell_sha.tar.gz" "$mode" <<'PY'
 import pathlib
 import sys
 import tarfile
 
 archive = pathlib.Path(sys.argv[1])
+mode = sys.argv[2]
 with tarfile.open(archive, mode="r:gz") as bundle:
     members = bundle.getmembers()
     if not members:
@@ -384,6 +414,26 @@ with tarfile.open(archive, mode="r:gz") as bundle:
         "config/easypanel/harden-sell-services.sh": True,
         "config/easypanel/verify-sell-isolation.sh": True,
     }
+    if mode == "runtime-preview":
+        required_files.update({
+        "config/easypanel/bootstrap-runtime-preview.sh": True,
+        "config/easypanel/compose.runtime-preview.yaml": False,
+        "config/easypanel/generate-runtime-preview-env.sh": True,
+        "config/easypanel/load-runtime-preview-images.sh": True,
+        "config/easypanel/preflight-runtime-preview.sh": True,
+        "config/easypanel/remove-runtime-preview-images.sh": True,
+        "config/easypanel/run-runtime-preview-e2e.sh": True,
+        "config/easypanel/runtime-preview-common.sh": False,
+        "config/easypanel/retire-runtime-preview-credentials.sh": True,
+        "config/easypanel/runtime-preview.env.example": False,
+        "config/easypanel/teardown-runtime-preview.sh": True,
+        "config/easypanel/test-runtime-preview-common.sh": True,
+        "config/easypanel/test-runtime-preview-env.sh": True,
+        "config/easypanel/test-runtime-preview-lifecycle.sh": True,
+        "config/easypanel/test-runtime-preview.sh": True,
+        "config/easypanel/up-runtime-preview.sh": True,
+        "config/easypanel/verify-runtime-preview.sh": True,
+        })
     for member in members:
         path = pathlib.PurePosixPath(member.name)
         if path.is_absolute() or ".." in path.parts:
@@ -408,4 +458,8 @@ tar -xzf "$download_root/config-$appsell_sha.tar.gz" -C "$upload_root"
     shasum -a 256 --check SHA256SUMS
   fi
 ) >/dev/null
-echo "Eight exact GitHub-hosted artifacts verified by run metadata, API digest and embedded checksums; upload/ is ready."
+if [[ "$mode" == "runtime-preview" ]]; then
+  echo "Four exact GitHub-hosted runtime-preview artifacts verified; upload/ is ready."
+else
+  echo "Eight exact GitHub-hosted artifacts verified by run metadata, API digest and embedded checksums; upload/ is ready."
+fi
