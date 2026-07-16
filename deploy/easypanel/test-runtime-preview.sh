@@ -46,8 +46,32 @@ if services["domain-api"].get("networks") != {"sell-private": None}:
     raise SystemExit("domain-api must use only the exclusive sell network")
 if services["sell-web"].get("networks") != {"sell-private": None}:
     raise SystemExit("sell-web must start only on the exclusive sell network")
+if services["sell-web"].get("environment", {}).get("APPSELL_REDIS_PREFIX") != (
+    "appsell:runtime-preview:issue77"
+):
+    raise SystemExit("sell-web Redis prefix must satisfy the OAuth namespace contract")
 if services["e2e"].get("network_mode") != "service:sell-web":
     raise SystemExit("E2E must share the loopback namespace of sell-web")
+evidence_init = services["evidence-init"].get("command")
+if not isinstance(evidence_init, list) or evidence_init[:2] != ["sh", "-ec"]:
+    raise SystemExit("evidence-init command shell drifted")
+evidence_init_script = evidence_init[2] if len(evidence_init) == 3 else ""
+for required_guard in (
+    '700:1001:1001) ;;',
+    '755:0:0|700:0:0)',
+    'chmod 0700 /evidence',
+    'chown 1001:1001 /evidence',
+    'unexpected evidence volume state',
+    'test "$(stat -c \'%a:%u:%g\' /evidence)" = "700:1001:1001"',
+):
+    if required_guard not in evidence_init_script:
+        raise SystemExit(f"evidence-init state guard drifted: {required_guard}")
+if evidence_init_script.index("chmod 0700 /evidence") > evidence_init_script.index(
+    "chown 1001:1001 /evidence"
+):
+    raise SystemExit("evidence-init must set mode before dropping volume ownership")
+if services["evidence-init"].get("cap_add") != ["CHOWN"]:
+    raise SystemExit("evidence-init must not require FOWNER or broader capabilities")
 if services["e2e"].get("environment") != {
     "E2E_RUNTIME_ORIGIN": "http://localhost:13200",
     "E2E_RUNTIME_EVIDENCE_DIR": "/evidence/staged",
@@ -80,6 +104,10 @@ grep -Fq 'APPSELL_DATABASE_NAME: appsell_preview_77' "$here/compose.runtime-prev
 grep -Fq '127.0.0.1:13200:13200' "$here/compose.runtime-preview.yaml"
 grep -Fq 'network_mode: "service:sell-web"' "$here/compose.runtime-preview.yaml"
 grep -Fq 'APPSELL_OAUTH_MODE: local' "$here/compose.runtime-preview.yaml"
+grep -Fq 'test "$(id -u pwuser):$(id -g pwuser)" = "1001:1001"' \
+  "$here/../preview-vps/Dockerfile.sell"
+grep -Fq 'USER pwuser' "$here/../preview-vps/Dockerfile.sell"
+grep -Fq -- '--entrypoint sh e2e -ec' "$here/verify-runtime-preview.sh"
 grep -Fq 'unset PGHOST PGHOSTADDR PGPORT PGDATABASE PGUSER PGPASSWORD PGPASSFILE' \
   "$here/bootstrap-runtime-preview.sh"
 grep -Fq 'unset PGSERVICE PGSERVICEFILE PGSYSCONFDIR PGOPTIONS PGAPPNAME' \

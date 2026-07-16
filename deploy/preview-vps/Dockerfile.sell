@@ -16,5 +16,7 @@ RUN corepack enable
 COPY package.json pnpm-lock.yaml ./
 RUN corepack pnpm install --frozen-lockfile
 COPY . .
-RUN test -n "${SOURCE_SHA}" && chown -R pwuser:pwuser /workspace/sell
+RUN test -n "${SOURCE_SHA}" \
+    && test "$(id -u pwuser):$(id -g pwuser)" = "1001:1001" \
+    && chown -R pwuser:pwuser /workspace/sell
 USER pwuser

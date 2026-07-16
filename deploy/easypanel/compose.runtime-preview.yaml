@@ -100,7 +100,7 @@ services:
       APPSELL_IDENTITY_DEMO_ENABLED: "false"
       APPSELL_DEMO_SUPERADMIN_ENABLED: "true"
       APPSELL_REDIS_URL: redis://:${APPSELL_REDIS_PASSWORD:?APPSELL_REDIS_PASSWORD is required}@sell-autonomia_redis:6379/0
-      APPSELL_REDIS_PREFIX: appsell:runtime-preview:77
+      APPSELL_REDIS_PREFIX: appsell:runtime-preview:issue77
       APPSELL_SESSION_HMAC_KEY_B64: ${APPSELL_SESSION_HMAC_KEY_B64:?APPSELL_SESSION_HMAC_KEY_B64 is required}
       APPSELL_CSRF_HMAC_KEY_B64: ${APPSELL_CSRF_HMAC_KEY_B64:?APPSELL_CSRF_HMAC_KEY_B64 is required}
       APPSELL_VAULT_PROVIDER: local
@@ -138,7 +138,23 @@ services:
     pull_policy: never
     network_mode: none
     user: "0:0"
-    command: ["sh", "-ec", "chown 1000:1000 /evidence && chmod 0700 /evidence"]
+    command:
+      - sh
+      - -ec
+      - |
+        state="$(stat -c '%a:%u:%g' /evidence)"
+        case "$state" in
+          700:1001:1001) ;;
+          755:0:0|700:0:0)
+            chmod 0700 /evidence
+            chown 1001:1001 /evidence
+            ;;
+          *)
+            echo "unexpected evidence volume state" >&2
+            exit 1
+            ;;
+        esac
+        test "$(stat -c '%a:%u:%g' /evidence)" = "700:1001:1001"
     volumes: ["runtime_evidence:/evidence"]
     labels: *runtime-labels
     restart: "no"

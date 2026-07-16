@@ -84,7 +84,7 @@ if [[ "${RUN_RUNTIME_PREVIEW_E2E:-0}" == "1" ]]; then
   compose=(docker compose --project-name "$RUNTIME_PREVIEW_COMPOSE_PROJECT" --env-file "$RUNTIME_PREVIEW_ENV_FILE" -f "$compose_file")
   "${compose[@]}" --profile e2e run --pull never --rm evidence-init >/dev/null
   "${compose[@]}" --profile e2e run --pull never --rm e2e
-  "${compose[@]}" --profile e2e run --pull never --rm --no-deps --entrypoint sh evidence-init -ec \
+  "${compose[@]}" --profile e2e run --pull never --rm --no-deps --entrypoint sh e2e -ec \
     'test -s /evidence/current/admin-dashboard.png && test -s /evidence/current/buyer-player.png && test -s /evidence/current/superadmin-inspection.png'
 fi
 echo "runtime-preview health, image SHA, loopback port, exclusive network and protected-service invariants passed"
