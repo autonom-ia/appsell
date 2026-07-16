@@ -18,6 +18,10 @@ from appsell_api.checkout_routes import router
 IDENTITY = UUID("91000000-0000-4000-8000-000000000001")
 
 
+class InvalidCouponDatabaseError(Exception):
+    sqlstate = "28000"
+
+
 class FakeSession:
     def __init__(self, result: Any) -> None:
         self.result = result
@@ -129,7 +133,7 @@ async def test_invalid_coupon_body_is_consumed_without_database_call() -> None:
 
 @pytest.mark.asyncio
 async def test_wrong_well_formed_coupon_has_checkout_specific_contract() -> None:
-    original = SimpleNamespace(sqlstate="28000")
+    original = InvalidCouponDatabaseError()
     auth = FakeAuth(DBAPIError("checkout", {}, original, False))
     async with client_for(auth) as client:
         response = await client.post(

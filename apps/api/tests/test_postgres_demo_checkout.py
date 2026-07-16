@@ -5,6 +5,7 @@ import hmac
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
+from typing import cast
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import psycopg
@@ -144,7 +145,7 @@ def _worker_once(fixture: dict[str, UUID | str]) -> dict[str, object]:
         ).fetchone()
         connection.commit()
     assert applied is not None
-    return applied[0]
+    return cast(dict[str, object], applied[0])
 
 
 def test_invalid_coupon_fails_without_order(fixture: dict[str, UUID | str]) -> None:
