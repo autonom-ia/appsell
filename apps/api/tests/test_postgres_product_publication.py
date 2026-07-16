@@ -305,7 +305,7 @@ def test_schema_rls_and_runtime_privileges_are_minimal() -> None:
         ("publication", "appsell_owner", True, True),
     ]
     assert privileges == (
-        "0014_multi_asset_player",
+        "0015_demo_zero_checkout",
         True,
         False,
         True,
@@ -912,7 +912,7 @@ def test_upgrade_from_0003_preserves_existing_draft() -> None:
                 """,
                 (seller_id, product_id),
             ).fetchone() == (
-                "0014_multi_asset_player",
+                "0015_demo_zero_checkout",
                 "draft",
                 None,
                 True,

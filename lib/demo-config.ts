@@ -16,7 +16,7 @@ export interface DemoProfile {
   subject: string;
   email: string;
   label: string;
-  home: "/dashboard" | "/library" | "/platform/demo-inspection";
+  home: "/dashboard" | "/checkout" | "/library" | "/platform/demo-inspection";
 }
 
 const profiles: Record<DemoPersona, DemoProfile> = {

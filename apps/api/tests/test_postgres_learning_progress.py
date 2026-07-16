@@ -43,12 +43,33 @@ def apply_context(connection: psycopg.Connection[Any], actor: UUID, capability: 
     )
 
 
+def seed_learning_entitlement(
+    connection: psycopg.Connection[Any], manifest: dict[str, Any]
+) -> None:
+    connection.execute(
+        """
+        insert into buyer_entitlement(
+          seller_organization_id,id,buyer_identity_user_id,catalog_product_id,
+          publication_id,reference_key,source,status,progress_percent
+        ) values(%s,%s,%s,%s,%s,'pytest-progress-fixture','demo_seed','active',0)
+        """,
+        (
+            UUID(manifest["seller"]["id"]),
+            UUID(manifest["entitlement"]["id"]),
+            identity_id(manifest["personas"]["buyer"]["subject"]),
+            UUID(manifest["product"]["id"]),
+            UUID(manifest["publication"]["id"]),
+        ),
+    )
+
+
 @pytest.fixture(autouse=True)
 def pristine_demo() -> None:
     assert ADMIN_URL
     manifest, manifest_sha = load_manifest()
     with psycopg.connect(ADMIN_URL) as connection:
         reset_demo(connection, manifest, manifest_sha, ISSUER)
+        seed_learning_entitlement(connection, manifest)
         connection.commit()
 
 
@@ -83,7 +104,7 @@ def test_projection_pin_rls_and_player_are_bound_to_the_buyer() -> None:
             (entitlement, publication, publication),
         ).fetchone()
     assert state == (
-        "0014_multi_asset_player",
+        "0015_demo_zero_checkout",
         publication,
         1,
         5,

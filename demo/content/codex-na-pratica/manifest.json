@@ -1,6 +1,6 @@
 {
   "seed_key": "autonomia-demo-v1",
-  "version": 1,
+  "version": 2,
   "personas": {
     "admin": {
       "subject": "demo-admin-v1",
@@ -35,6 +35,12 @@
     "id": "655555a7-1111-54d5-adfa-120b488951e5",
     "title": "Acesso demonstrativo",
     "summary": "Acesso gratuito e não comercial à tenant de demonstração."
+  },
+  "checkout": {
+    "coupon_id": "eb36c13c-93a1-5bcc-a50f-310572690d5f",
+    "coupon_code": "AUTONOMIA100",
+    "unit_amount_minor": 9900,
+    "currency": "BRL"
   },
   "publication": {
     "id": "61831a73-f4ce-5b05-be58-f61890d3cc8a"

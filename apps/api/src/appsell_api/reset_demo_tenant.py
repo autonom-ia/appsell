@@ -17,9 +17,11 @@ DEMO_KEY = "autonomia-demo-v1"
 DEMO_DATABASE_MARKER = "appsell-demo-reset-target-v1"
 ASSET_WORKER_SUBJECT = "asset-worker-v1"
 ASSET_WORKER_EMAIL = "asset.worker@autonomia.site"
+CHECKOUT_WORKER_SUBJECT = "demo-checkout-worker-v1"
+CHECKOUT_WORKER_EMAIL = "checkout.worker@autonomia.site"
 DEMO_SUPERADMIN_SUBJECT = "demo-superadmin"
 DEMO_SUPERADMIN_EMAIL = "comercial@autonomia.site"
-EXPECTED_MIGRATION = "0014_multi_asset_player"
+EXPECTED_MIGRATION = "0015_demo_zero_checkout"
 REMOTE_RESET_SCOPE = "appsell-runtime-preview-77"
 REMOTE_RESET_TARGET = {
     "user": "appsell_preview_77_migrator",
@@ -53,7 +55,7 @@ def parse_args() -> argparse.Namespace:
 def load_manifest() -> tuple[dict[str, Any], str]:
     raw = MANIFEST_PATH.read_bytes()
     manifest = json.loads(raw)
-    if manifest.get("seed_key") != DEMO_KEY or manifest.get("version") != 1:
+    if manifest.get("seed_key") != DEMO_KEY or manifest.get("version") != 2:
         raise RuntimeError("unsupported demo manifest")
     personas = manifest.get("personas", {})
     expected = {
@@ -66,6 +68,16 @@ def load_manifest() -> tuple[dict[str, Any], str]:
             raise RuntimeError(f"invalid {role} demo persona")
     if personas["admin"]["subject"] == personas["buyer"]["subject"]:
         raise RuntimeError("demo personas must be distinct")
+    checkout = manifest.get("checkout")
+    if (
+        not isinstance(checkout, dict)
+        or checkout.get("coupon_code") != "AUTONOMIA100"
+        or checkout.get("unit_amount_minor") != 9900
+        or checkout.get("currency") != "BRL"
+        or not isinstance(checkout.get("coupon_id"), str)
+    ):
+        raise RuntimeError("invalid demo checkout manifest")
+    UUID(checkout["coupon_id"])
     lessons = manifest.get("lessons")
     if not isinstance(lessons, list) or len(lessons) != 5:
         raise RuntimeError("demo course must contain exactly five lessons")
@@ -372,6 +384,7 @@ def reset_demo(
     course = manifest["course"]
     module = manifest["module"]
     offer = manifest["offer"]
+    checkout = manifest["checkout"]
     publication = manifest["publication"]
     entitlement = manifest["entitlement"]
     lessons = manifest["lessons"]
@@ -381,6 +394,7 @@ def reset_demo(
     buyer_id = identity_id(issuer, buyer["subject"])
     superadmin_id = identity_id(issuer, DEMO_SUPERADMIN_SUBJECT)
     asset_worker_id = identity_id(issuer, ASSET_WORKER_SUBJECT)
+    checkout_worker_id = identity_id(issuer, CHECKOUT_WORKER_SUBJECT)
     seller_id = UUID(seller["id"])
     product_id = UUID(product["id"])
     course_id = UUID(course["id"])
@@ -388,6 +402,7 @@ def reset_demo(
     offer_id = UUID(offer["id"])
     publication_id = UUID(publication["id"])
     entitlement_id = UUID(entitlement["id"])
+    coupon_id = UUID(checkout["coupon_id"])
     lesson_ids = [UUID(lesson["lesson_id"]) for lesson in lessons]
 
     connection.execute("select pg_advisory_xact_lock(hashtextextended(%s,0))", (DEMO_KEY,))
@@ -552,6 +567,25 @@ def reset_demo(
         """,
         (asset_worker_id,),
     )
+    connection.execute(
+        """
+        insert into identity_user(
+          id,identity_issuer,identity_sub,email_normalized,email_verified
+        ) values(%s,%s,%s,%s,true)
+        on conflict(identity_issuer,identity_sub) do update set
+          email_normalized=excluded.email_normalized,email_verified=true,
+          updated_at=clock_timestamp()
+        where identity_user.id=excluded.id
+        """,
+        (checkout_worker_id, issuer, CHECKOUT_WORKER_SUBJECT, CHECKOUT_WORKER_EMAIL),
+    )
+    connection.execute(
+        """
+        insert into app_private.demo_checkout_worker_identity(identity_user_id,status)
+        values(%s,'active') on conflict(identity_user_id) do update set status='active'
+        """,
+        (checkout_worker_id,),
+    )
 
     connection.execute(
         """
@@ -586,6 +620,14 @@ def reset_demo(
 
     # The demo tenant is disposable. Clear its complete mutable graph so a
     # previous presentation cannot leak extra products, courses or buyers.
+    connection.execute(
+        "delete from app_private.demo_checkout_request where seller_organization_id=%s",
+        (seller_id,),
+    )
+    connection.execute(
+        "delete from app_private.demo_checkout_outbox where seller_organization_id=%s",
+        (seller_id,),
+    )
     connection.execute(
         "delete from app_private.demo_tenant_registry where seller_organization_id=%s",
         (seller_id,),
@@ -630,6 +672,18 @@ def reset_demo(
         "delete from learning_enrollment where seller_organization_id=%s", (seller_id,)
     )
     connection.execute(
+        "delete from buyer_entitlement where seller_organization_id=%s", (seller_id,)
+    )
+    connection.execute("delete from demo_purchase where seller_organization_id=%s", (seller_id,))
+    connection.execute(
+        "delete from demo_purchase_event where seller_organization_id=%s", (seller_id,)
+    )
+    connection.execute("delete from demo_order where seller_organization_id=%s", (seller_id,))
+    connection.execute("delete from demo_coupon where seller_organization_id=%s", (seller_id,))
+    connection.execute(
+        "delete from demo_checkout_offer where seller_organization_id=%s", (seller_id,)
+    )
+    connection.execute(
         "delete from publication_asset where seller_organization_id=%s", (seller_id,)
     )
     connection.execute(
@@ -639,9 +693,6 @@ def reset_demo(
     connection.execute("delete from asset_blob where seller_organization_id=%s", (seller_id,))
     connection.execute("delete from asset_record where seller_organization_id=%s", (seller_id,))
     connection.execute("delete from learning_asset where seller_organization_id=%s", (seller_id,))
-    connection.execute(
-        "delete from buyer_entitlement where seller_organization_id=%s", (seller_id,)
-    )
     connection.execute(
         "delete from publication_lesson where seller_organization_id=%s", (seller_id,)
     )
@@ -925,24 +976,11 @@ def reset_demo(
     )
     connection.execute(
         """
-        insert into buyer_entitlement(
-          seller_organization_id,id,buyer_identity_user_id,catalog_product_id,
-          publication_id,reference_key,source,status,progress_percent
-        ) values(%s,%s,%s,%s,%s,'demo-user-codex-v1','demo_seed','active',0)
-        on conflict(seller_organization_id,buyer_identity_user_id,catalog_product_id)
-        do update set publication_id=excluded.publication_id,status='active',
-          progress_percent=0,starts_at=clock_timestamp(),expires_at=null,
-          updated_at=clock_timestamp()
-        """,
-        (seller_id, entitlement_id, buyer_id, product_id, publication_id),
-    )
-    connection.execute(
-        """
         insert into app_private.demo_tenant_registry(
           seed_key,seed_version,manifest_sha256,identity_issuer,
           admin_identity_user_id,buyer_identity_user_id,seller_organization_id,
           catalog_product_id,course_id,offer_id,baseline_publication_id
-        ) values(%s,1,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ) values(%s,2,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         on conflict(seed_key) do update set
           seed_version=excluded.seed_version,manifest_sha256=excluded.manifest_sha256,
           identity_issuer=excluded.identity_issuer,
@@ -965,6 +1003,35 @@ def reset_demo(
             course_id,
             offer_id,
             publication_id,
+        ),
+    )
+    connection.execute(
+        """
+        insert into demo_checkout_offer(
+          seller_organization_id,offer_id,catalog_product_id,publication_id,
+          entitlement_id,unit_amount_minor,currency,status
+        ) values(%s,%s,%s,%s,%s,%s,%s,'active')
+        """,
+        (
+            seller_id,
+            offer_id,
+            product_id,
+            publication_id,
+            entitlement_id,
+            checkout["unit_amount_minor"],
+            checkout["currency"],
+        ),
+    )
+    connection.execute(
+        """
+        insert into demo_coupon(
+          seller_organization_id,id,code_sha256,discount_bps,status
+        ) values(%s,%s,%s,10000,'active')
+        """,
+        (
+            seller_id,
+            coupon_id,
+            hashlib.sha256(checkout["coupon_code"].encode("utf-8")).hexdigest(),
         ),
     )
     connection.execute(

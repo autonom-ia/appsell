@@ -30,6 +30,7 @@ OUTPUT = ROOT / "output" / "pdf" / "codex"
 MANIFEST = ROOT / "lib" / "demo-codex-assets.json"
 SEED_MANIFEST = ROOT / "demo" / "content" / "codex-na-pratica" / "manifest.json"
 DEMO_NAMESPACE = UUID("97c8c89a-f0d2-4d1c-8cbb-5f0e9e5de330")
+DEMO_COUPON_ID = "eb36c13c-93a1-5bcc-a50f-310572690d5f"
 
 
 def stable_id(name: str) -> str:
@@ -387,7 +388,7 @@ def main() -> None:
     SEED_MANIFEST.parent.mkdir(parents=True, exist_ok=True)
     seed = {
         "seed_key": "autonomia-demo-v1",
-        "version": 1,
+        "version": 2,
         "personas": {
             "admin": {"subject": "demo-admin-v1", "email": "admin.demo@autonomia.site"},
             "buyer": {"subject": "demo-user-v1", "email": "user.demo@autonomia.site"},
@@ -413,6 +414,12 @@ def main() -> None:
             "id": stable_id("offer:codex-na-pratica"),
             "title": "Acesso demonstrativo",
             "summary": "Acesso gratuito e não comercial à tenant de demonstração.",
+        },
+        "checkout": {
+            "coupon_id": DEMO_COUPON_ID,
+            "coupon_code": "AUTONOMIA100",
+            "unit_amount_minor": 9900,
+            "currency": "BRL",
         },
         "publication": {"id": stable_id("publication:codex-na-pratica:v1")},
         "entitlement": {"id": stable_id("entitlement:demo-user:codex-na-pratica")},

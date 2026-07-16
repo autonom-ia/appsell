@@ -42,6 +42,7 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     NEXT_TELEMETRY_DISABLED: "1"
   });
   let browser: Browser | undefined;
+  let redisStopped = false;
 
   try {
     await waitForBff(server, port);
@@ -88,7 +89,92 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     expect(await forbiddenOnboarding.json()).toEqual({ error: "demo_buyer_capability_forbidden" });
     const library = await fetch(`${origin}/api/library`, { headers: { cookie: buyer.session } });
     expect(library.status, await library.clone().text()).toBe(200);
-    const libraryPayload = await library.json() as {
+    expect(await library.json()).toEqual({ items: [] });
+
+    const checkoutQuote = await fetch(`${origin}/api/demo-checkout`, {
+      headers: { cookie: buyer.session }
+    });
+    expect(checkoutQuote.status, await checkoutQuote.clone().text()).toBe(200);
+    const checkoutPayload = await checkoutQuote.json() as {
+      checkout: { already_owned: boolean; offer: { unit_amount_minor: number; currency: string } };
+      coupon_hint: string;
+      csrf: { complete: string };
+    };
+    expect(checkoutPayload).toMatchObject({
+      checkout: { already_owned: false, offer: { unit_amount_minor: 9900, currency: "BRL" } },
+      coupon_hint: "AUTONOMIA100"
+    });
+    const invalidOrigin = await fetch(`${origin}/api/demo-checkout`, {
+      method: "POST",
+      headers: { cookie: buyer.session, origin: "https://attacker.example" },
+      body: formData({
+        _csrf: checkoutPayload.csrf.complete,
+        idempotency_key: randomUUID(),
+        coupon_code: "AUTONOMIA100"
+      })
+    });
+    expect(invalidOrigin.status).toBe(403);
+    expect(await invalidOrigin.json()).toEqual({ error: "invalid_csrf" });
+
+    const declaredTooLarge = await fetch(`${origin}/api/demo-checkout`, {
+      method: "POST",
+      headers: { cookie: buyer.session, origin },
+      body: new URLSearchParams({
+        _csrf: checkoutPayload.csrf.complete,
+        idempotency_key: randomUUID(),
+        coupon_code: "AUTONOMIA100",
+        padding: "x".repeat(17_000)
+      })
+    });
+    expect(declaredTooLarge.status).toBe(413);
+    expect(await declaredTooLarge.json()).toEqual({ error: "payload_too_large" });
+
+    const streamedPayload = new TextEncoder().encode(new URLSearchParams({
+      _csrf: checkoutPayload.csrf.complete,
+      idempotency_key: randomUUID(),
+      coupon_code: "AUTONOMIA100",
+      padding: "x".repeat(17_000)
+    }).toString());
+    const streamedBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(streamedPayload.subarray(0, 8_000));
+        controller.enqueue(streamedPayload.subarray(8_000));
+        controller.close();
+      }
+    });
+    const streamedTooLarge = await fetch(`${origin}/api/demo-checkout`, {
+      method: "POST",
+      headers: {
+        cookie: buyer.session,
+        origin,
+        "content-type": "application/x-www-form-urlencoded"
+      },
+      body: streamedBody,
+      duplex: "half"
+    } as RequestInit & { duplex: "half" });
+    expect(streamedTooLarge.status).toBe(413);
+    expect(await streamedTooLarge.json()).toEqual({ error: "payload_too_large" });
+
+    const completedCheckout = await fetch(`${origin}/api/demo-checkout`, {
+      method: "POST",
+      headers: { cookie: buyer.session, origin },
+      body: formData({
+        _csrf: checkoutPayload.csrf.complete,
+        idempotency_key: randomUUID(),
+        coupon_code: "AUTONOMIA100"
+      })
+    });
+    expect(completedCheckout.status, await completedCheckout.clone().text()).toBe(202);
+    expect(await completedCheckout.json()).toMatchObject({
+      checkout: { total_amount_minor: 0, provider_called: false }
+    });
+    await waitForCheckoutAccess(origin, buyer.session);
+
+    const ownedLibrary = await fetch(`${origin}/api/library`, {
+      headers: { cookie: buyer.session }
+    });
+    expect(ownedLibrary.status, await ownedLibrary.clone().text()).toBe(200);
+    const libraryPayload = await ownedLibrary.json() as {
       items: Array<{
         entitlement_id: string;
         product: { title: string };
@@ -244,7 +330,7 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     await pwExpect(buyerPage.getByRole("link", { name: "Autonom.ia Sell — início" })).toContainText("Autonom.ia Sell");
     await pwExpect(buyerPage.getByRole("heading", { level: 1, name: "Autonom.ia Demo" })).toBeVisible();
     await pwExpect(buyerPage.getByRole("heading", { level: 3, name: "Codex na prática" })).toBeVisible();
-    const storefrontCta = buyerPage.getByRole("link", { name: "Entrar para acessar" });
+    const storefrontCta = buyerPage.getByRole("link", { name: "Comprar com cupom demo" });
     await pwExpect(storefrontCta).toBeVisible();
     expect((await storefrontCta.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
     await expectNoHorizontalOverflow(buyerPage);
@@ -255,6 +341,10 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     await buyerPage.goto(origin);
     await buyerPage.getByRole("link", { name: "Entrar como aluno demo" }).click();
     await buyerPage.waitForURL(`${origin}/library`);
+    await pwExpect(buyerPage.getByRole("note")).toContainText(
+      "DEMO · Aluno · user.demo@autonomia.site"
+    );
+    await pwExpect(buyerPage.getByText("Não foi possível validar seu acesso.")).toHaveCount(0);
     await pwExpect(buyerPage.getByRole("heading", { name: "Minha biblioteca" })).toBeVisible();
     await pwExpect(buyerPage.getByRole("heading", { level: 2, name: "Codex na prática", exact: true })).toBeVisible();
     await buyerPage.getByRole("link", { name: "Começar curso" }).click();
@@ -322,10 +412,24 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     await pwExpect(adminPage.getByText("Nenhum produto ativo está disponível para esta conta.")).toBeVisible();
     expect((await adminPage.request.get(`${origin}${assetHref}`)).status()).not.toBe(200);
     await adminContext.close();
+
+    await redis.stop();
+    redisStopped = true;
+    const unavailableSession = await fetch(`${origin}/api/demo-checkout`, {
+      method: "POST",
+      headers: { cookie: buyer.session, origin },
+      body: formData({
+        _csrf: checkoutPayload.csrf.complete,
+        idempotency_key: randomUUID(),
+        coupon_code: "AUTONOMIA100"
+      })
+    });
+    expect(unavailableSession.status).toBe(503);
+    expect(await unavailableSession.json()).toEqual({ error: "oauth_store_unavailable" });
   } finally {
     await browser?.close();
     await stopBff(server);
-    await redis.stop();
+    if (!redisStopped) await redis.stop();
     await rm(join(process.cwd(), distDir), { recursive: true, force: true });
     await Promise.all(generatedFiles.map((file, index) => writeFile(join(process.cwd(), file), originals[index] ?? "")));
   }
@@ -345,6 +449,27 @@ async function login(origin: string, persona: "admin" | "buyer") {
     session: cookiePair(callback.headers.get("set-cookie"), "appsell_session"),
     setCookies: callback.headers.getSetCookie()
   };
+}
+
+function formData(values: Record<string, string>) {
+  const form = new FormData();
+  for (const [key, value] of Object.entries(values)) form.set(key, value);
+  return form;
+}
+
+async function waitForCheckoutAccess(origin: string, session: string) {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const response = await fetch(`${origin}/api/demo-checkout`, {
+      headers: { cookie: session }
+    });
+    if (response.ok) {
+      const payload = await response.json() as { checkout?: { already_owned?: boolean } };
+      if (payload.checkout?.already_owned) return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("Demo checkout entitlement was not applied before the deadline.");
 }
 
 function startBff(port: number, distDir: string, shared: Record<string, string>) {

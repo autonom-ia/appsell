@@ -42,7 +42,8 @@ interface ApiRequest {
     "catalog.curriculum.reorder" | "catalog.asset.read" | "catalog.asset.create" |
     "catalog.asset.upload.confirm" | "catalog.asset.upload.cancel" |
     "catalog.asset.archive" | "library.read" | "library.asset.read" |
-    "learning.player.read" | "learning.progress.write";
+    "learning.player.read" | "learning.progress.write" |
+    "commerce.demo.checkout.read" | "commerce.demo.checkout.complete";
   sellerOrganizationId?: string;
   inspectionToken?: string;
   body?: Record<string, unknown>;
@@ -633,6 +634,30 @@ export async function readDomainBuyerProducts(sessionId: string, session: Server
   });
 }
 
+export async function readDomainDemoCheckout(sessionId: string, session: ServerSession) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: "/v1/me/demo-checkout",
+    capability: "commerce.demo.checkout.read"
+  });
+}
+
+export async function completeDomainDemoCheckout(
+  sessionId: string,
+  session: ServerSession,
+  input: { idempotencyKey: string; couponCode: string }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: "/v1/me/demo-checkout",
+    capability: "commerce.demo.checkout.complete",
+    body: {
+      idempotency_key: input.idempotencyKey,
+      coupon_code: input.couponCode
+    }
+  });
+}
+
 export async function readDomainBuyerSellerProducts(
   sessionId: string,
   session: ServerSession,
@@ -819,7 +844,9 @@ function requireDemoCapability(subject: string, request: ApiRequest) {
         "library.read",
         "library.asset.read",
         "learning.player.read",
-        "learning.progress.write"
+        "learning.progress.write",
+        "commerce.demo.checkout.read",
+        "commerce.demo.checkout.complete"
       ].includes(request.capability)) {
     return;
   }
