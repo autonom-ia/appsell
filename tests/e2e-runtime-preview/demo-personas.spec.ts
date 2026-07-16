@@ -44,7 +44,9 @@ test("buyer demo abre PDF e vídeo protegidos", async ({ context, page }) => {
   await expect(page.getByRole("heading", { name: "Minha biblioteca" })).toBeVisible();
   await page.getByRole("link", { name: "Começar curso" }).click();
   await expect(page.getByText("Aula 1 de 5", { exact: true })).toBeVisible();
-  await page.locator(".player-outline-mobile").getByRole("link", {
+  const mobileOutline = page.locator(".player-outline-mobile");
+  await mobileOutline.locator("summary").click();
+  await mobileOutline.getByRole("link", {
     name: "Como operar deploy e rollback"
   }).click();
   await expect(page.getByText("Aula 5 de 5", { exact: true })).toBeVisible();
