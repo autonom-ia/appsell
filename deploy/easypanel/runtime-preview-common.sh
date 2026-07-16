@@ -4,6 +4,10 @@ RUNTIME_PREVIEW_PROJECT="sell-autonomia"
 RUNTIME_PREVIEW_SERVICE="runtime-preview"
 RUNTIME_PREVIEW_COMPOSE_PROJECT="sell-autonomia_runtime-preview"
 RUNTIME_PREVIEW_NETWORK="easypanel-sell-autonomia"
+RUNTIME_PREVIEW_INGRESS_NETWORK="sell-autonomia-runtime-preview-ingress-77"
+RUNTIME_PREVIEW_EASYPANEL_NETWORK="easypanel"
+RUNTIME_PREVIEW_INGRESS_ALIAS="sell-autonomia_runtime-preview_sell-web"
+RUNTIME_PREVIEW_TRANSITION_LOCK="/root/.sell-runtime-preview-77-transition.lock"
 RUNTIME_PREVIEW_E2E_NETWORK="${RUNTIME_PREVIEW_COMPOSE_PROJECT}_sell-public-e2e"
 RUNTIME_PREVIEW_EVIDENCE_VOLUME="${RUNTIME_PREVIEW_COMPOSE_PROJECT}_runtime_evidence"
 RUNTIME_PREVIEW_E2E_TRANSPORT_VOLUME="${RUNTIME_PREVIEW_COMPOSE_PROJECT}_runtime_e2e_transport"
@@ -32,6 +36,44 @@ runtime_preview_require_commands() {
   done
 }
 
+runtime_preview_acquire_transition_lock() {
+  [[ $# -eq 1 ]] || return 2
+  local lock_file="$1" lock_identity
+  [[ -f "$lock_file" && ! -L "$lock_file" && "$(stat -c '%a:%u:%g:%h' "$lock_file")" == "600:0:0:1" ]] || {
+    runtime_preview_fail "runtime-preview transition lock ownership drifted"
+    return 1
+  }
+  lock_identity="$(stat -c '%d:%i:%a:%u:%g:%h' "$lock_file")" || return 1
+  exec 8<>"$lock_file" || return 1
+  [[ "$(stat -Lc '%d:%i:%a:%u:%g:%h' "/proc/$BASHPID/fd/8")" == "$lock_identity" ]] || return 1
+  flock -n 8 || {
+    runtime_preview_fail "runtime-preview transition is already running"
+    return 1
+  }
+}
+
+runtime_preview_verify_easypanel_ingress_network_json() {
+  [[ $# -eq 2 ]] || return 2
+  local network_json="$1" expected_ingress_id="$2"
+  [[ -z "$expected_ingress_id" || "$expected_ingress_id" =~ ^[0-9a-f]{64}$ ]] || return 2
+  jq -e --arg network "$RUNTIME_PREVIEW_EASYPANEL_NETWORK" --arg expected "$expected_ingress_id" '
+    type == "array" and length == 1 and .[0].Name == $network and
+    .[0].Driver == "overlay" and .[0].Scope == "swarm" and
+    .[0].Attachable == true and .[0].Internal == false and
+    (.[0].Containers | type == "object") and
+    ((.[0].Containers | has("lb-easypanel") | not) or
+      .[0].Containers["lb-easypanel"].Name == "easypanel-endpoint") and
+    ([.[0].Containers | keys[] | select((test("^[0-9a-f]{64}$") or . == "lb-easypanel") | not)] | length) == 0 and
+    ([.[0].Containers[]?.Name | select(test("^easypanel-traefik\\.1\\."))] | length) == 1 and
+    ($expected == "" or (.[0].Containers | has($expected)))
+  ' <<<"$network_json" >/dev/null
+}
+
+runtime_preview_easypanel_ingress_container_ids() {
+  [[ $# -eq 1 ]] || return 2
+  jq -r '.[0].Containers | keys[]? | select(test("^[0-9a-f]{64}$"))' <<<"$1"
+}
+
 runtime_preview_inspect_has_exact_network() {
   [[ $# -eq 2 ]] || return 2
   local inspect_json="$1" expected_network="$2"
@@ -48,7 +90,7 @@ runtime_preview_lifecycle_fingerprint_from_inspect() {
     if type == "array" and length == 1 then
       .[0] as $container |
       $container.Config.Labels["com.docker.compose.service"] as $service |
-      if $service == "domain-bootstrap" or $service == "domain-api" or $service == "sell-web" then
+      if $service == "domain-bootstrap" or $service == "domain-api" or $service == "sell-web" or $service == "ingress-proxy" then
         [
           $service,
           $container.Id,
@@ -741,11 +783,12 @@ runtime_preview_verify_live_record() {
 }
 
 runtime_preview_compose_down() {
-  local compose_file source_sha id service runtime_output remaining_output
+  local compose_file source_sha id full_id service runtime_output remaining_output ingress_json network_names owned_ingress_json
   compose_file="$RUNTIME_PREVIEW_RUN_ROOT/config/easypanel/compose.runtime-preview.yaml"
   runtime_preview_assert_protected_file "$compose_file" || return 1
   source_sha="$(runtime_preview_env_value APPSELL_SOURCE_SHA)" || return 1
   declare -A seen_services=()
+  declare -A owned_ingress_ids=()
   runtime_output="$(docker ps -aq --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT")" || {
     runtime_preview_fail "could not inventory runtime-preview containers before teardown"
     return 1
@@ -760,10 +803,39 @@ runtime_preview_compose_down() {
     [[ "$(docker inspect --format '{{index .Config.Labels "com.autonomia.issue"}}' "$id")" == "77" ]] || return 1
     [[ "$(docker inspect --format '{{index .Config.Labels "com.autonomia.source-sha"}}' "$id")" == "$source_sha" ]] || return 1
     service="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$id")"
-    case "$service" in domain-bootstrap|domain-api|sell-web) ;; *) runtime_preview_fail "unexpected service in runtime-preview teardown"; return 1 ;; esac
+    case "$service" in domain-bootstrap|domain-api|sell-web|ingress-proxy) ;; *) runtime_preview_fail "unexpected service in runtime-preview teardown"; return 1 ;; esac
     [[ -z "${seen_services[$service]:-}" ]] || { runtime_preview_fail "duplicate service in runtime-preview teardown"; return 1; }
     seen_services[$service]=1
+    if [[ "$service" == "sell-web" || "$service" == "ingress-proxy" ]]; then
+      full_id="$(docker inspect --format '{{.Id}}' "$id")" || return 1
+      [[ "$full_id" =~ ^[0-9a-f]{64}$ ]] || return 1
+      owned_ingress_ids[$full_id]=1
+    fi
   done
+  owned_ingress_json="$(printf '%s\n' "${!owned_ingress_ids[@]}" | sed '/^$/d' | jq -Rsc 'split("\n") | map(select(length > 0))')" || return 1
+  if ingress_json="$(docker network inspect "$RUNTIME_PREVIEW_INGRESS_NETWORK" 2>/dev/null)"; then
+    jq -e \
+      --arg network "$RUNTIME_PREVIEW_INGRESS_NETWORK" --arg compose_project "$RUNTIME_PREVIEW_COMPOSE_PROJECT" \
+      --arg source_sha "$source_sha" --argjson owned_ids "$owned_ingress_json" '
+        type == "array" and length == 1 and .[0].Name == $network and .[0].Internal == true and
+        .[0].Labels["com.docker.compose.project"] == $compose_project and
+        .[0].Labels["com.docker.compose.network"] == "sell-ingress" and
+        .[0].Labels["com.autonomia.project"] == "sell-autonomia" and
+        .[0].Labels["com.autonomia.issue"] == "77" and
+        .[0].Labels["com.autonomia.purpose"] == "ingress-proxy" and
+        .[0].Labels["com.autonomia.source-sha"] == $source_sha and
+        ((.[0].Containers | keys) - $owned_ids | length) == 0
+      ' <<<"$ingress_json" >/dev/null || {
+      runtime_preview_fail "refusing teardown with an untrusted ingress network"
+      return 1
+    }
+  else
+    network_names="$(docker network ls --format '{{.Name}}')" || return 1
+    ! grep -Fxq "$RUNTIME_PREVIEW_INGRESS_NETWORK" <<<"$network_names" || {
+      runtime_preview_fail "ingress network exists but could not be inspected"
+      return 1
+    }
+  fi
   unset COMPOSE_PROJECT_NAME COMPOSE_FILE COMPOSE_PROFILES COMPOSE_ENV_FILES
   docker compose --project-name "$RUNTIME_PREVIEW_COMPOSE_PROJECT" \
     --env-file "$RUNTIME_PREVIEW_ENV_FILE" -f "$compose_file" \
@@ -774,6 +846,11 @@ runtime_preview_compose_down() {
   }
   [[ -z "$remaining_output" ]] || {
     runtime_preview_fail "runtime-preview containers remain after exact Compose down"
+    return 1
+  }
+  network_names="$(docker network ls --format '{{.Name}}')" || return 1
+  ! grep -Fxq "$RUNTIME_PREVIEW_INGRESS_NETWORK" <<<"$network_names" || {
+    runtime_preview_fail "runtime-preview ingress network remained after Compose down"
     return 1
   }
 }

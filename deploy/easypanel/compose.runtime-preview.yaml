@@ -48,6 +48,61 @@ services:
     <<: *runtime-security
     logging: *runtime-logging
 
+  ingress-proxy:
+    image: ${APPSELL_DOMAIN_IMAGE:?APPSELL_DOMAIN_IMAGE is required}
+    pull_policy: never
+    user: "10001:10001"
+    command:
+      - python
+      - -c
+      - |
+        import asyncio
+
+        async def pump(reader, writer):
+            try:
+                while data := await reader.read(65536):
+                    writer.write(data)
+                    await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        async def handle(client_reader, client_writer):
+            server_reader, server_writer = await asyncio.open_connection("sell-web-ingress-77", 13200)
+            await asyncio.gather(
+                pump(client_reader, server_writer),
+                pump(server_reader, client_writer),
+            )
+
+        async def main():
+            server = await asyncio.start_server(handle, "0.0.0.0", 13200)
+            async with server:
+                await server.serve_forever()
+
+        asyncio.run(main())
+    networks:
+      sell-ingress:
+      easypanel-ingress:
+        aliases: [sell-autonomia_runtime-preview_sell-web]
+    labels:
+      <<: *runtime-labels
+      com.autonomia.purpose: ingress-proxy
+    depends_on:
+      sell-web: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('sell-web-ingress-77', 13200), 2).close()"]
+      interval: 3s
+      timeout: 2s
+      retries: 40
+      start_period: 5s
+    restart: unless-stopped
+    mem_limit: 64m
+    cpus: 0.10
+    pids_limit: 64
+    read_only: true
+    <<: *runtime-security
+    logging: *runtime-logging
+
   domain-api:
     image: ${APPSELL_DOMAIN_IMAGE:?APPSELL_DOMAIN_IMAGE is required}
     pull_policy: never
@@ -116,7 +171,10 @@ services:
       APPSELL_PRIVATE_LEARNING_ASSET_ROOT: /workspace/sell/output/pdf/codex
     ports:
       - "127.0.0.1:13200:13200"
-    networks: [sell-private]
+    networks:
+      sell-private:
+      sell-ingress:
+        aliases: [sell-web-ingress-77]
     labels: *runtime-labels
     depends_on:
       domain-api: { condition: service_healthy }
@@ -269,6 +327,18 @@ networks:
   sell-private:
     external: true
     name: easypanel-sell-autonomia
+  sell-ingress:
+    name: sell-autonomia-runtime-preview-ingress-77
+    internal: true
+    labels:
+      com.autonomia.project: sell-autonomia
+      com.autonomia.issue: "77"
+      com.autonomia.environment: local-ci-easypanel-preview
+      com.autonomia.purpose: ingress-proxy
+      com.autonomia.source-sha: ${APPSELL_SOURCE_SHA:?APPSELL_SOURCE_SHA is required}
+  easypanel-ingress:
+    external: true
+    name: easypanel
   sell-public-e2e:
     labels: *runtime-labels
 

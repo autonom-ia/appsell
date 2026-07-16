@@ -8,8 +8,13 @@ source "$here/runtime-preview-common.sh"
 source_sha=ffffffffffffffffffffffffffffffffffffffff
 run_root="/opt/autonomia-sell-preview/issue-77/${source_sha:0:12}"
 env_root="$(mktemp -d)"
+lock_holder_pid=""
 [[ ! -e "$run_root" && ! -L "$run_root" ]] || { echo "lifecycle fixture path collision" >&2; exit 2; }
 cleanup() {
+  if [[ -n "$lock_holder_pid" ]]; then
+    kill "$lock_holder_pid" >/dev/null 2>&1 || true
+    wait "$lock_holder_pid" >/dev/null 2>&1 || true
+  fi
   rm -rf --one-file-system -- "$run_root" "$env_root"
 }
 trap cleanup EXIT
@@ -21,6 +26,31 @@ env_file="$env_root/runtime-preview.env"
 printf 'APPSELL_SOURCE_SHA=%s\n' "$source_sha" >"$env_file"
 chown root:root "$env_file"
 chmod 0600 "$env_file"
+
+fixture_lock="$env_root/transition.lock"
+fixture_marker="$env_root/transition-held"
+install -o root -g root -m 0600 /dev/null "$fixture_lock"
+bash -c 'exec 9<>"$1"; flock -n 9; touch "$2"; exec sleep 30' \
+  bash "$fixture_lock" "$fixture_marker" &
+lock_holder_pid=$!
+for _lock_wait in $(seq 1 100); do
+  [[ -f "$fixture_marker" ]] && break
+  sleep 0.02
+done
+[[ -f "$fixture_marker" ]] || { echo "lock fixture did not acquire contention lock" >&2; exit 1; }
+if (runtime_preview_acquire_transition_lock "$fixture_lock") >/dev/null 2>&1; then
+  echo "transition lock accepted a concurrent lifecycle operation" >&2
+  exit 1
+fi
+kill "$lock_holder_pid"
+wait "$lock_holder_pid" >/dev/null 2>&1 || true
+lock_holder_pid=""
+(runtime_preview_acquire_transition_lock "$fixture_lock")
+ln -s "$fixture_lock" "$env_root/transition-link"
+if (runtime_preview_acquire_transition_lock "$env_root/transition-link") >/dev/null 2>&1; then
+  echo "transition lock accepted a symlink" >&2
+  exit 1
+fi
 
 runtime_preview_assert_run_root "$run_root" "$source_sha"
 runtime_preview_assert_env_file "$env_file"
@@ -104,15 +134,22 @@ unset -f jq
   exit 1
 }
 
+compose_was_called=0
 docker() {
   if [[ "$1" == "ps" ]]; then return 0; fi
-  if [[ "$1" == "compose" ]]; then return 42; fi
+  if [[ "$1 $2" == "network inspect" ]]; then return 1; fi
+  if [[ "$1 $2" == "network ls" ]]; then return 0; fi
+  if [[ "$1" == "compose" ]]; then compose_was_called=1; return 42; fi
   return 2
 }
 if runtime_preview_compose_down >/dev/null 2>&1; then
   echo "Compose-down helper ignored docker compose failure" >&2
   exit 1
 fi
+[[ "$compose_was_called" == "1" ]] || {
+  echo "Compose-down failure fixture did not reach docker compose" >&2
+  exit 1
+}
 unset -f docker
 
 compose_was_called=0

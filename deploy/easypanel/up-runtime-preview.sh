@@ -11,10 +11,11 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=runtime-preview-common.sh
 source "$here/runtime-preview-common.sh"
 runtime_preview_require_root
-runtime_preview_require_commands curl docker jq realpath stat
+runtime_preview_require_commands curl docker flock jq realpath sed stat
 runtime_preview_assert_run_root "$1" "$3"
 runtime_preview_assert_env_file "$2"
 source_sha="$3"
+runtime_preview_acquire_transition_lock "$RUNTIME_PREVIEW_TRANSITION_LOCK"
 "$here/preflight-runtime-preview.sh" "$RUNTIME_PREVIEW_RUN_ROOT" "$RUNTIME_PREVIEW_ENV_FILE" "$source_sha"
 runtime_preview_api_login
 

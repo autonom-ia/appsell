@@ -11,10 +11,11 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=runtime-preview-common.sh
 source "$here/runtime-preview-common.sh"
 runtime_preview_require_root
-runtime_preview_require_commands curl dig docker jq openssl realpath sha256sum stat timeout
+runtime_preview_require_commands curl dig docker flock jq openssl realpath sha256sum stat timeout
 runtime_preview_assert_run_root "$1" "$3"
 runtime_preview_assert_env_file "$2"
 source_sha="$3"
+runtime_preview_acquire_transition_lock "$RUNTIME_PREVIEW_TRANSITION_LOCK"
 [[ "$(runtime_preview_env_value APPSELL_PUBLIC_ORIGIN)" == "$RUNTIME_PREVIEW_PUBLIC_ORIGIN" ]] || {
   echo "runtime-preview env is not pinned to the public HTTPS origin" >&2
   exit 1
@@ -176,7 +177,7 @@ if [[ "$domain_status" == "3" ]]; then
       --arg host "$RUNTIME_PREVIEW_PUBLIC_HOST" \
       --arg projectName "$RUNTIME_PREVIEW_PROJECT" \
       --arg serviceName "$RUNTIME_PREVIEW_SERVICE" \
-      '{json:{certificateResolver:"",host:$host,https:true,middlewares:[],path:"/",wildcard:false,
+      '{json:{id:"",certificateResolver:"",host:$host,https:true,middlewares:[],path:"/",wildcard:false,
         destinationType:"service",serviceDestination:{composeService:"sell-web",path:"/",port:13200,
         projectName:$projectName,protocol:"http",serviceName:$serviceName}}}')"
     create_result_uncertain=1

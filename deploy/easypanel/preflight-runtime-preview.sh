@@ -7,7 +7,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=runtime-preview-common.sh
 source "$here/runtime-preview-common.sh"
 runtime_preview_require_root
-runtime_preview_require_commands curl docker jq sha256sum realpath ss stat cmp
+runtime_preview_require_commands cmp curl docker grep jq realpath sha256sum ss stat
 runtime_preview_assert_run_root "$1" "$3"
 runtime_preview_assert_env_file "$2"
 source_sha="$3"
@@ -37,6 +37,28 @@ done
 
 [[ "$(docker info --format '{{.Swarm.LocalNodeState}}')" == "active" ]] || { echo "expected active VPS Swarm" >&2; exit 2; }
 docker network inspect "$RUNTIME_PREVIEW_NETWORK" >/dev/null
+global_network_json="$(docker network inspect "$RUNTIME_PREVIEW_EASYPANEL_NETWORK")"
+runtime_preview_verify_easypanel_ingress_network_json "$global_network_json" "" || {
+  echo "EasyPanel ingress network or Traefik membership drifted" >&2
+  exit 2
+}
+mapfile -t global_container_ids < <(runtime_preview_easypanel_ingress_container_ids "$global_network_json")
+alias_count=0
+for global_id in "${global_container_ids[@]}"; do
+  global_container_json="$(docker inspect "$global_id")" || {
+    echo "could not inspect an EasyPanel ingress endpoint" >&2
+    exit 2
+  }
+  if jq -e --arg network "$RUNTIME_PREVIEW_EASYPANEL_NETWORK" --arg alias "$RUNTIME_PREVIEW_INGRESS_ALIAS" '
+    ((.[0].NetworkSettings.Networks[$network].Aliases // []) | index($alias)) != null
+  ' <<<"$global_container_json" >/dev/null; then
+    alias_count=$((alias_count + 1))
+  fi
+done
+[[ "$alias_count" == "0" ]] || {
+  echo "runtime-preview ingress alias is already occupied" >&2
+  exit 2
+}
 "$config_dir/easypanel/verify-sell-isolation.sh" >/dev/null
 listeners="$(ss -ltnH)" || { echo "could not inventory listening ports" >&2; exit 2; }
 if awk '{print $4}' <<<"$listeners" | grep -Eq '(^|:)13200$'; then

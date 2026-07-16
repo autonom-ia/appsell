@@ -10,7 +10,8 @@ env -u COMPOSE_PROJECT_NAME -u COMPOSE_FILE -u COMPOSE_PROFILES -u COMPOSE_ENV_F
   --profile e2e --env-file "$here/runtime-preview.env.example" \
   -f "$here/compose.runtime-preview.yaml" config --format json >"$tmp/config.json"
 
-python3 - "$tmp/config.json" <<'PY'
+python3 - "$tmp/config.json" "$here/verify-runtime-preview.sh" \
+  "$here/runtime-preview-common.sh" "$here/up-runtime-preview.sh" <<'PY'
 import json
 import pathlib
 import sys
@@ -21,6 +22,7 @@ expected = {
     "domain-bootstrap",
     "domain-api",
     "sell-web",
+    "ingress-proxy",
     "evidence-init",
     "e2e-transport-init",
     "e2e-bridge",
@@ -35,6 +37,26 @@ if network is None or network.get("external") is not True:
     raise SystemExit("sell-private must be external")
 if network.get("name") != "easypanel-sell-autonomia":
     raise SystemExit("runtime-preview escaped the exclusive sell network")
+ingress_network = networks.get("sell-ingress")
+if ingress_network is None or ingress_network.get("internal") is not True:
+    raise SystemExit("sell-ingress must be an internal project-owned network")
+if ingress_network.get("external") is True:
+    raise SystemExit("sell-ingress must be removed with the Compose project")
+if ingress_network.get("name") != "sell-autonomia-runtime-preview-ingress-77":
+    raise SystemExit("sell-ingress escaped the exact runtime-preview name")
+if ingress_network.get("labels") != {
+    "com.autonomia.environment": "local-ci-easypanel-preview",
+    "com.autonomia.issue": "77",
+    "com.autonomia.project": "sell-autonomia",
+    "com.autonomia.purpose": "ingress-proxy",
+    "com.autonomia.source-sha": "0123456789abcdef0123456789abcdef01234567",
+}:
+    raise SystemExit("sell-ingress ownership labels drifted")
+easypanel_ingress = networks.get("easypanel-ingress")
+if easypanel_ingress is None or easypanel_ingress.get("external") is not True:
+    raise SystemExit("easypanel-ingress must reuse the existing EasyPanel ingress network")
+if easypanel_ingress.get("name") != "easypanel":
+    raise SystemExit("easypanel-ingress drifted from the Traefik network")
 e2e_network = networks.get("sell-public-e2e")
 if e2e_network is None or e2e_network.get("internal") is True:
     raise SystemExit("sell-public-e2e must permit only the bridge to reach the public endpoint")
@@ -61,8 +83,78 @@ if ports[0].get("published") != "13200" or ports[0].get("target") != 13200:
 for service_name in ("domain-bootstrap", "domain-api"):
     if services[service_name].get("networks") != {"sell-private": None}:
         raise SystemExit(f"{service_name} must use only the exclusive sell network")
-if services["sell-web"].get("networks") != {"sell-private": None}:
-    raise SystemExit("sell-web must use only the private network")
+if services["sell-web"].get("networks") != {
+    "sell-ingress": {"aliases": ["sell-web-ingress-77"]},
+    "sell-private": None,
+}:
+    raise SystemExit("sell-web must use only the private and dedicated ingress networks")
+if services["ingress-proxy"].get("networks") != {
+    "easypanel-ingress": {"aliases": ["sell-autonomia_runtime-preview_sell-web"]},
+    "sell-ingress": None,
+}:
+    raise SystemExit("ingress proxy networks or Traefik alias drifted")
+if services["ingress-proxy"].get("environment"):
+    raise SystemExit("ingress proxy must not receive application environment variables")
+if services["ingress-proxy"].get("user") != "10001:10001":
+    raise SystemExit("ingress proxy user drifted from the rootless domain image")
+proxy_command = services["ingress-proxy"].get("command", [])
+expected_proxy_script = """import asyncio
+
+async def pump(reader, writer):
+    try:
+        while data := await reader.read(65536):
+            writer.write(data)
+            await writer.drain()
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+async def handle(client_reader, client_writer):
+    server_reader, server_writer = await asyncio.open_connection("sell-web-ingress-77", 13200)
+    await asyncio.gather(
+        pump(client_reader, server_writer),
+        pump(server_reader, client_writer),
+    )
+
+async def main():
+    server = await asyncio.start_server(handle, "0.0.0.0", 13200)
+    async with server:
+        await server.serve_forever()
+
+asyncio.run(main())
+"""
+if proxy_command != ["python", "-c", expected_proxy_script]:
+    raise SystemExit("ingress proxy command drifted")
+proxy = services["ingress-proxy"]
+if proxy.get("image") != "autonomia-sell-preview-domain:0123456789abcdef0123456789abcdef01234567":
+    raise SystemExit("ingress proxy image drifted from the attested domain runtime")
+if proxy.get("image") != services["domain-api"].get("image"):
+    raise SystemExit("ingress proxy must share the exact domain-api image reference")
+if proxy.get("labels") != {
+    "com.autonomia.environment": "local-ci-easypanel-preview",
+    "com.autonomia.issue": "77",
+    "com.autonomia.project": "sell-autonomia",
+    "com.autonomia.purpose": "ingress-proxy",
+    "com.autonomia.source-sha": "0123456789abcdef0123456789abcdef01234567",
+}:
+    raise SystemExit("ingress proxy ownership labels drifted")
+if proxy.get("read_only") is not True or proxy.get("cap_drop") != ["ALL"]:
+    raise SystemExit("ingress proxy root filesystem or capabilities drifted")
+if proxy.get("security_opt") != ["no-new-privileges:true"]:
+    raise SystemExit("ingress proxy no-new-privileges guard drifted")
+if proxy.get("restart") != "unless-stopped" or proxy.get("pids_limit") != 64:
+    raise SystemExit("ingress proxy lifecycle limits drifted")
+if proxy.get("mem_limit") != "67108864" or proxy.get("cpus") != 0.1:
+    raise SystemExit("ingress proxy resource limits drifted")
+if proxy.get("logging") != {
+    "driver": "json-file",
+    "options": {"max-file": "3", "max-size": "10m"},
+}:
+    raise SystemExit("ingress proxy logging limits drifted")
+if proxy.get("ports") or proxy.get("volumes"):
+    raise SystemExit("ingress proxy must not publish ports or mount storage")
+if proxy.get("depends_on") != {"sell-web": {"condition": "service_healthy", "required": True}}:
+    raise SystemExit("ingress proxy dependency drifted")
 if services["sell-web"].get("command") != [
     "./node_modules/.bin/next", "start", "--hostname", "0.0.0.0", "-p", "13200"
 ]:
@@ -99,6 +191,16 @@ private_members = {
 }
 if private_members != {"domain-bootstrap", "domain-api", "sell-web"}:
     raise SystemExit(f"unexpected services on sell-private: {sorted(private_members)}")
+ingress_members = {
+    name for name, service in services.items() if "sell-ingress" in service.get("networks", {})
+}
+if ingress_members != {"sell-web", "ingress-proxy"}:
+    raise SystemExit(f"unexpected services on sell-ingress: {sorted(ingress_members)}")
+easypanel_members = {
+    name for name, service in services.items() if "easypanel-ingress" in service.get("networks", {})
+}
+if easypanel_members != {"ingress-proxy"}:
+    raise SystemExit(f"unexpected services on easypanel ingress: {sorted(easypanel_members)}")
 volumes = config["volumes"]
 for volume_name, purpose in {
     "runtime_evidence": "runtime-e2e-evidence",
@@ -177,6 +279,7 @@ for key, expected_value in {
 for service_name in (
     "domain-api",
     "sell-web",
+    "ingress-proxy",
     "evidence-init",
     "e2e-transport-init",
     "e2e-bridge",
@@ -191,6 +294,46 @@ for forbidden in ("dados", "flow", "identity-postgres", "domain-postgres"):
         raise SystemExit(f"runtime-preview references forbidden scope: {forbidden}")
 if "appsell_preview_77" not in rendered:
     raise SystemExit("runtime-preview does not pin its additive database")
+
+verifier = pathlib.Path(sys.argv[2]).read_text()
+for required_verifier_guard in (
+    '.[0].Config.Labels["org.opencontainers.image.revision"] == $source_sha',
+    '.[0].Image == $domain_image_id',
+    '.[0].Config.Cmd == $expected_cmd',
+    '.[0].Config.Entrypoint == null',
+    '.[0].Config.User == "10001:10001"',
+    '.[0].Config.Labels["com.autonomia.purpose"] == "ingress-proxy"',
+    '.[0].HostConfig.RestartPolicy == {"Name":"unless-stopped","MaximumRetryCount":0}',
+    '.[0].HostConfig.Memory == 67108864',
+    '.[0].HostConfig.NanoCpus == 100000000',
+    '.[0].HostConfig.PidsLimit == 64',
+    '.[0].HostConfig.LogConfig == {"Type":"json-file","Config":{"max-file":"3","max-size":"10m"}}',
+    'runtime_preview_verify_easypanel_ingress_network_json "$global_network_json" "$ingress_id"',
+    'EasyPanel runtime-preview ingress alias must appear exactly once',
+):
+    if required_verifier_guard not in verifier:
+        raise SystemExit(f"runtime verifier guard drifted: {required_verifier_guard}")
+
+common = pathlib.Path(sys.argv[3]).read_text()
+for required_common_guard in (
+    'runtime_preview_acquire_transition_lock()',
+    'runtime_preview_verify_easypanel_ingress_network_json()',
+    '.[0].Driver == "overlay"',
+    '.[0].Scope == "swarm"',
+    '.[0].Attachable == true',
+    '.[0].Internal == false',
+    'test("^easypanel-traefik\\\\.1\\\\.")',
+    '. == "lb-easypanel"',
+    'test("^[0-9a-f]{64}$")',
+):
+    if required_common_guard not in common:
+        raise SystemExit(f"runtime common guard drifted: {required_common_guard}")
+
+up_script = pathlib.Path(sys.argv[4]).read_text()
+if up_script.index("runtime_preview_acquire_transition_lock") > up_script.index(
+    '"$here/preflight-runtime-preview.sh"'
+):
+    raise SystemExit("runtime-preview up must acquire the transition lock before preflight")
 PY
 
 grep -Fq 'APPSELL_DATABASE_NAME: appsell_preview_77' "$here/compose.runtime-preview.yaml"
@@ -267,6 +410,18 @@ grep -Fq 'runtime_preview_ensure_owned_volume' "$here/verify-runtime-preview.sh"
 grep -Fq 'runtime_preview_delete_exact_public_domain' "$here/activate-public-runtime-preview.sh"
 grep -Fq 'CONFIRM_RUNTIME_PREVIEW_PUBLIC_RETRY=sell-autonomia-public-retry-77' \
   "$here/activate-public-runtime-preview.sh"
+grep -Fq '{json:{id:"",certificateResolver:""' \
+  "$here/activate-public-runtime-preview.sh"
+grep -Fq 'runtime_preview_acquire_transition_lock "$RUNTIME_PREVIEW_TRANSITION_LOCK"' \
+  "$here/activate-public-runtime-preview.sh"
+grep -Fq 'runtime_preview_acquire_transition_lock "$RUNTIME_PREVIEW_TRANSITION_LOCK"' \
+  "$here/up-runtime-preview.sh"
+grep -Fq 'runtime_preview_acquire_transition_lock "$RUNTIME_PREVIEW_TRANSITION_LOCK"' \
+  "$here/deactivate-public-runtime-preview.sh"
+grep -Fq 'runtime_preview_acquire_transition_lock "$RUNTIME_PREVIEW_TRANSITION_LOCK"' \
+  "$here/teardown-runtime-preview.sh"
+grep -Fq 'runtime-preview ingress alias is already occupied' "$here/preflight-runtime-preview.sh"
+grep -Fq 'owned_ingress_ids' "$here/runtime-preview-common.sh"
 grep -Fq '/api/rpc/domains/deleteDomain' "$here/runtime-preview-common.sh"
 grep -Fq 'strict-transport-security:' "$here/activate-public-runtime-preview.sh"
 grep -Fq 'http://127.0.0.1:3000' "$here/runtime-preview-common.sh"

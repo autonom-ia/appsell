@@ -22,6 +22,43 @@ for rejected_network_fixture in \
   fi
 done
 
+traefik_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+ingress_id=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+easypanel_network_fixture="$(jq -cn --arg traefik "$traefik_id" --arg ingress "$ingress_id" '
+  [{Name:"easypanel",Driver:"overlay",Scope:"swarm",Attachable:true,Internal:false,Containers:{
+    "lb-easypanel":{Name:"easypanel-endpoint"},
+    ($traefik):{Name:"easypanel-traefik.1.fixture"},
+    ($ingress):{Name:"sell-autonomia-runtime-preview-ingress-77"}
+  }}]
+')"
+runtime_preview_verify_easypanel_ingress_network_json "$easypanel_network_fixture" ""
+runtime_preview_verify_easypanel_ingress_network_json "$easypanel_network_fixture" "$ingress_id"
+easypanel_fixture_ids=()
+while IFS= read -r fixture_id; do
+  easypanel_fixture_ids+=("$fixture_id")
+done < <(runtime_preview_easypanel_ingress_container_ids "$easypanel_network_fixture")
+[[ "${#easypanel_fixture_ids[@]}" == "2" ]]
+[[ " ${easypanel_fixture_ids[*]} " == *" $traefik_id "* ]]
+[[ " ${easypanel_fixture_ids[*]} " == *" $ingress_id "* ]]
+for mutation in \
+  '.[0].Containers.mystery={"Name":"unexpected-endpoint"}' \
+  '.[0].Containers["lb-easypanel"].Name="unexpected-lb"' \
+  'del(.[0].Containers["lb-easypanel"].Name)' \
+  '.[0].Containers["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"].Name="not-traefik"' \
+  '.[0].Driver="bridge"' \
+  '.[0].Attachable=false'; do
+  invalid_ingress_fixture="$(jq -c "$mutation" <<<"$easypanel_network_fixture")"
+  if runtime_preview_verify_easypanel_ingress_network_json "$invalid_ingress_fixture" ""; then
+    echo "invalid EasyPanel ingress fixture was accepted: $mutation" >&2
+    exit 1
+  fi
+done
+if runtime_preview_verify_easypanel_ingress_network_json \
+  "$easypanel_network_fixture" cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc; then
+  echo "missing expected ingress endpoint was accepted" >&2
+  exit 1
+fi
+
 lifecycle_fixture='[{"Id":"container-a","Config":{"Labels":{"com.docker.compose.service":"sell-web"}},"State":{"StartedAt":"2026-07-16T12:00:00Z","FinishedAt":"0001-01-01T00:00:00Z","ExitCode":0},"RestartCount":0}]'
 baseline_fingerprint="$(runtime_preview_lifecycle_fingerprint_from_inspect "$lifecycle_fixture")"
 [[ "$baseline_fingerprint" == 'sell-web|container-a|2026-07-16T12:00:00Z|0001-01-01T00:00:00Z|0|0' ]]

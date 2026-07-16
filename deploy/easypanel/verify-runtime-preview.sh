@@ -11,6 +11,12 @@ runtime_preview_require_commands curl dig docker jq openssl realpath sha256sum s
 runtime_preview_assert_run_root "$1" "$3"
 runtime_preview_assert_env_file "$2"
 source_sha="$3"
+compose_file="$RUNTIME_PREVIEW_RUN_ROOT/config/easypanel/compose.runtime-preview.yaml"
+expected_ingress_command_json="$(env \
+  -u COMPOSE_PROJECT_NAME -u COMPOSE_FILE -u COMPOSE_PROFILES -u COMPOSE_ENV_FILES \
+  docker compose --project-name "$RUNTIME_PREVIEW_COMPOSE_PROJECT" \
+  --env-file "$RUNTIME_PREVIEW_ENV_FILE" -f "$compose_file" config --format json \
+  | jq -ce '.services["ingress-proxy"].command')"
 runtime_preview_api_login
 [[ "$(runtime_preview_service_state)" == "present" ]] || { echo "EasyPanel runtime-preview is absent" >&2; exit 1; }
 runtime_preview_verify_attestation 'configured|active'
@@ -19,14 +25,17 @@ runtime_preview_verify_live_record yes
 ready=0
 for _attempt in $(seq 1 60); do
   mapfile -t ids < <(docker ps -aq --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT")
-  if [[ ${#ids[@]} -eq 3 ]]; then
+  if [[ ${#ids[@]} -eq 4 ]]; then
     domain_state="$(docker inspect --format '{{.State.Status}}:{{if .State.Health}}{{.State.Health.Status}}{{end}}:{{.RestartCount}}' \
       "$(docker ps -aq --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT" --filter 'label=com.docker.compose.service=domain-api')" 2>/dev/null || true)"
     web_state="$(docker inspect --format '{{.State.Status}}:{{if .State.Health}}{{.State.Health.Status}}{{end}}:{{.RestartCount}}' \
       "$(docker ps -aq --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT" --filter 'label=com.docker.compose.service=sell-web')" 2>/dev/null || true)"
     bootstrap_state="$(docker inspect --format '{{.State.Status}}:{{.State.ExitCode}}' \
       "$(docker ps -aq --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT" --filter 'label=com.docker.compose.service=domain-bootstrap')" 2>/dev/null || true)"
-    if [[ "$domain_state" == "running:healthy:0" && "$web_state" == "running:healthy:0" && "$bootstrap_state" == "exited:0" ]]; then
+    ingress_state="$(docker inspect --format '{{.State.Status}}:{{if .State.Health}}{{.State.Health.Status}}{{end}}:{{.RestartCount}}' \
+      "$(docker ps -aq --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT" --filter 'label=com.docker.compose.service=ingress-proxy')" 2>/dev/null || true)"
+    if [[ "$domain_state" == "running:healthy:0" && "$web_state" == "running:healthy:0" && \
+      "$ingress_state" == "running:healthy:0" && "$bootstrap_state" == "exited:0" ]]; then
       ready=1
       break
     fi
@@ -43,13 +52,13 @@ for id in "${ids[@]}"; do
   [[ "$(docker inspect --format '{{index .Config.Labels "com.autonomia.issue"}}' "$id")" == "77" ]] || exit 1
   [[ "$(docker inspect --format '{{index .Config.Labels "com.autonomia.source-sha"}}' "$id")" == "$source_sha" ]] || exit 1
   service="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$id")"
-  case "$service" in domain-bootstrap|domain-api|sell-web) ;; *) echo "unexpected runtime service: $service" >&2; exit 1 ;; esac
+  case "$service" in domain-bootstrap|domain-api|sell-web|ingress-proxy) ;; *) echo "unexpected runtime service: $service" >&2; exit 1 ;; esac
   [[ -z "${seen[$service]:-}" ]] || exit 1
   seen[$service]=1
   baseline_lifecycle[$service]="$(runtime_preview_lifecycle_fingerprint_from_inspect "$(docker inspect "$id")")"
   image="$(docker inspect --format '{{.Config.Image}}' "$id")"
   case "$service" in
-    domain-bootstrap|domain-api) [[ "$image" == "autonomia-sell-preview-domain:$source_sha" ]] ;;
+    domain-bootstrap|domain-api|ingress-proxy) [[ "$image" == "autonomia-sell-preview-domain:$source_sha" ]] ;;
     sell-web) [[ "$image" == "autonomia-sell-preview-sell:$source_sha" ]] ;;
   esac || { echo "unexpected image for $service" >&2; exit 1; }
   if [[ "$service" == "domain-bootstrap" ]]; then
@@ -58,9 +67,22 @@ for id in "${ids[@]}"; do
     [[ "$(docker inspect --format '{{.State.Status}}:{{.State.Health.Status}}:{{.RestartCount}}' "$id")" == "running:healthy:0" ]] || exit 1
   fi
 done
-[[ ${#seen[@]} -eq 3 ]] || exit 1
+[[ ${#seen[@]} -eq 4 ]] || exit 1
+domain_api_id="$(docker ps -q --no-trunc \
+  --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT" \
+  --filter 'label=com.docker.compose.service=domain-api')"
+[[ -n "$domain_api_id" ]] || { echo "domain-api container identity is missing" >&2; exit 1; }
+domain_image_id="$(docker inspect --format '{{.Image}}' "$domain_api_id")"
+domain_image_json="$(docker image inspect "$domain_image_id")"
+jq -e --arg image_id "$domain_image_id" --arg source_sha "$source_sha" '
+  type == "array" and length == 1 and .[0].Id == $image_id and
+  .[0].Config.Labels["org.opencontainers.image.revision"] == $source_sha
+' <<<"$domain_image_json" >/dev/null || {
+  echo "domain runtime image identity or OCI revision drifted" >&2
+  exit 1
+}
 
-for service in domain-bootstrap domain-api sell-web; do
+for service in domain-bootstrap domain-api sell-web ingress-proxy; do
   mapfile -t service_ids < <(docker ps -aq \
     --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT" \
     --filter "label=com.docker.compose.service=$service")
@@ -69,12 +91,104 @@ for service in domain-bootstrap domain-api sell-web; do
     exit 1
   }
   inspect_json="$(docker inspect "${service_ids[0]}")"
-  runtime_preview_inspect_has_exact_network "$inspect_json" "$RUNTIME_PREVIEW_NETWORK" || {
-    echo "$service escaped the exclusive sell network" >&2
+  case "$service" in
+    domain-bootstrap|domain-api)
+      runtime_preview_inspect_has_exact_network "$inspect_json" "$RUNTIME_PREVIEW_NETWORK" || {
+        echo "$service escaped the exclusive sell network" >&2
+        exit 1
+      }
+      ;;
+    sell-web)
+      jq -e --arg private "$RUNTIME_PREVIEW_NETWORK" --arg ingress "$RUNTIME_PREVIEW_INGRESS_NETWORK" '
+        (.[0].NetworkSettings.Networks | keys | sort) == ([$private,$ingress] | sort) and
+        ((.[0].NetworkSettings.Networks[$ingress].Aliases // []) | index("sell-web-ingress-77")) != null
+      ' <<<"$inspect_json" >/dev/null || {
+        echo "sell-web escaped its private plus dedicated ingress networks" >&2
+        exit 1
+      }
+      ;;
+    ingress-proxy)
+      jq -e --arg ingress "$RUNTIME_PREVIEW_INGRESS_NETWORK" \
+        --arg public "$RUNTIME_PREVIEW_EASYPANEL_NETWORK" --arg alias "$RUNTIME_PREVIEW_INGRESS_ALIAS" \
+        --arg domain_image_id "$domain_image_id" --arg source_sha "$source_sha" \
+        --argjson expected_cmd "$expected_ingress_command_json" '
+        (.[0].NetworkSettings.Networks | keys | sort) == ([$ingress,$public] | sort) and
+        ((.[0].NetworkSettings.Networks[$public].Aliases // []) | index($alias)) != null and
+        ([.[0].Config.Env[] | split("=")[0] | select(test("APPSELL|PASSWORD|SECRET|TOKEN|KEY|REDIS|DATABASE"))] | length) == 0 and
+        .[0].Image == $domain_image_id and
+        .[0].Config.Image == ("autonomia-sell-preview-domain:" + $source_sha) and
+        .[0].Config.Cmd == $expected_cmd and .[0].Config.Entrypoint == null and
+        .[0].Config.User == "10001:10001" and
+        .[0].Config.Labels["com.autonomia.purpose"] == "ingress-proxy" and
+        .[0].HostConfig.ReadonlyRootfs == true and .[0].HostConfig.Privileged == false and
+        .[0].HostConfig.SecurityOpt == ["no-new-privileges:true"] and .[0].HostConfig.CapDrop == ["ALL"] and
+        .[0].HostConfig.RestartPolicy == {"Name":"unless-stopped","MaximumRetryCount":0} and
+        .[0].HostConfig.Memory == 67108864 and .[0].HostConfig.NanoCpus == 100000000 and
+        .[0].HostConfig.PidsLimit == 64 and
+        .[0].HostConfig.LogConfig == {"Type":"json-file","Config":{"max-file":"3","max-size":"10m"}} and
+        .[0].Mounts == [] and .[0].HostConfig.PortBindings == {}
+      ' <<<"$inspect_json" >/dev/null || {
+        echo "ingress-proxy runtime identity or secretless topology drifted" >&2
+        exit 1
+      }
+      ;;
+  esac
+done
+sell_id="$(docker ps -q --no-trunc --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT" --filter 'label=com.docker.compose.service=sell-web')"
+ingress_id="$(docker ps -q --no-trunc --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT" --filter 'label=com.docker.compose.service=ingress-proxy')"
+ingress_network_json="$(docker network inspect "$RUNTIME_PREVIEW_INGRESS_NETWORK")"
+jq -e \
+  --arg network "$RUNTIME_PREVIEW_INGRESS_NETWORK" --arg project "$RUNTIME_PREVIEW_PROJECT" \
+  --arg compose_project "$RUNTIME_PREVIEW_COMPOSE_PROJECT" --arg source_sha "$source_sha" \
+  --arg sell_id "$sell_id" --arg ingress_id "$ingress_id" '
+    type == "array" and length == 1 and .[0].Name == $network and
+    .[0].Internal == true and
+    .[0].Labels["com.docker.compose.project"] == $compose_project and
+    .[0].Labels["com.docker.compose.network"] == "sell-ingress" and
+    .[0].Labels["com.autonomia.project"] == $project and
+    .[0].Labels["com.autonomia.issue"] == "77" and
+    .[0].Labels["com.autonomia.purpose"] == "ingress-proxy" and
+    .[0].Labels["com.autonomia.source-sha"] == $source_sha and
+    (.[0].Containers | keys | sort) == ([$sell_id,$ingress_id] | sort)
+  ' <<<"$ingress_network_json" >/dev/null || {
+  echo "dedicated ingress network ownership or membership drifted" >&2
+  exit 1
+}
+global_network_json="$(docker network inspect "$RUNTIME_PREVIEW_EASYPANEL_NETWORK")"
+runtime_preview_verify_easypanel_ingress_network_json "$global_network_json" "$ingress_id" || {
+  echo "EasyPanel ingress network, Traefik membership or proxy endpoint drifted" >&2
+  exit 1
+}
+mapfile -t global_container_ids < <(runtime_preview_easypanel_ingress_container_ids "$global_network_json")
+global_alias_count=0
+for global_id in "${global_container_ids[@]}"; do
+  global_container_json="$(docker inspect "$global_id")" || {
+    echo "could not inspect an EasyPanel ingress endpoint" >&2
     exit 1
   }
+  alias_occurrences="$(jq -er \
+    --arg network "$RUNTIME_PREVIEW_EASYPANEL_NETWORK" --arg alias "$RUNTIME_PREVIEW_INGRESS_ALIAS" '
+      [.[0].NetworkSettings.Networks[$network].Aliases[]? | select(. == $alias)] | length
+    ' <<<"$global_container_json")"
+  if (( alias_occurrences > 0 )); then
+    jq -e --arg id "$ingress_id" --arg network "$RUNTIME_PREVIEW_EASYPANEL_NETWORK" \
+      --arg alias "$RUNTIME_PREVIEW_INGRESS_ALIAS" --arg project "$RUNTIME_PREVIEW_COMPOSE_PROJECT" '
+        type == "array" and length == 1 and .[0].Id == $id and
+        .[0].Config.Labels["com.docker.compose.project"] == $project and
+        .[0].Config.Labels["com.docker.compose.service"] == "ingress-proxy" and
+        .[0].Config.Labels["com.autonomia.purpose"] == "ingress-proxy" and
+        ([.[0].NetworkSettings.Networks[$network].Aliases[]? | select(. == $alias)] | length) > 0
+      ' <<<"$global_container_json" >/dev/null || {
+      echo "EasyPanel runtime-preview ingress alias belongs to an unexpected endpoint" >&2
+      exit 1
+    }
+    global_alias_count=$((global_alias_count + alias_occurrences))
+  fi
 done
-sell_id="$(docker ps -q --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT" --filter 'label=com.docker.compose.service=sell-web')"
+[[ "$global_alias_count" == "1" ]] || {
+  echo "EasyPanel runtime-preview ingress alias must appear exactly once" >&2
+  exit 1
+}
 runtime_preview_verify_e2e_network() {
   [[ $# -eq 1 ]] || return 2
   local bridge_full_id="$1" network_json
@@ -103,7 +217,6 @@ curl -fsS --connect-timeout 3 --max-time 15 http://127.0.0.1:13200/ >/dev/null
 runtime_preview_verify_service_snapshot "$RUNTIME_PREVIEW_RUN_ROOT/protected-services.before.tsv"
 
 if [[ "${RUN_RUNTIME_PREVIEW_E2E:-0}" == "1" ]]; then
-  compose_file="$RUNTIME_PREVIEW_RUN_ROOT/config/easypanel/compose.runtime-preview.yaml"
   unset COMPOSE_PROJECT_NAME COMPOSE_FILE COMPOSE_PROFILES COMPOSE_ENV_FILES
   compose=(docker compose --project-name "$RUNTIME_PREVIEW_COMPOSE_PROJECT" --env-file "$RUNTIME_PREVIEW_ENV_FILE" -f "$compose_file")
   runtime_preview_verify_public_attestation
@@ -287,11 +400,11 @@ if [[ "${RUN_RUNTIME_PREVIEW_E2E:-0}" == "1" ]]; then
     if [[ "$stability_attempt" -gt 1 ]]; then sleep 5; fi
     mapfile -t stable_ids < <(docker ps -aq --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT")
     stable_container_ids="$(printf '%s\n' "${stable_ids[@]}" | LC_ALL=C sort)"
-    [[ ${#stable_ids[@]} -eq 3 && "$stable_container_ids" == "$baseline_container_ids" ]] || {
+    [[ ${#stable_ids[@]} -eq 4 && "$stable_container_ids" == "$baseline_container_ids" ]] || {
       echo "runtime-preview container identity changed during or after E2E" >&2
       exit 1
     }
-    for service in domain-bootstrap domain-api sell-web; do
+    for service in domain-bootstrap domain-api sell-web ingress-proxy; do
       mapfile -t lifecycle_ids < <(docker ps -aq \
         --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT" \
         --filter "label=com.docker.compose.service=$service")
@@ -311,6 +424,10 @@ if [[ "${RUN_RUNTIME_PREVIEW_E2E:-0}" == "1" ]]; then
     }
     [[ "$(docker inspect --format '{{.State.Status}}:{{.State.Health.Status}}:{{.RestartCount}}' "$sell_id")" == "running:healthy:0" ]] || {
       echo "sell-web lost zero-restart health during or after E2E" >&2
+      exit 1
+    }
+    [[ "$(docker inspect --format '{{.State.Status}}:{{.State.Health.Status}}:{{.RestartCount}}' "$ingress_id")" == "running:healthy:0" ]] || {
+      echo "ingress-proxy lost zero-restart health during or after E2E" >&2
       exit 1
     }
     [[ "$(docker inspect --format '{{.State.Status}}:{{.State.ExitCode}}' "$bootstrap_id")" == "exited:0" ]] || {
