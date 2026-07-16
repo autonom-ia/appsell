@@ -6,6 +6,19 @@ import { expect, test, type Page } from "@playwright/test";
 const evidenceDirectory = path.resolve(
   process.env.E2E_RUNTIME_EVIDENCE_DIR ?? "output/playwright/runtime-preview-evidence"
 );
+const runtimeOrigin = new URL(process.env.E2E_RUNTIME_ORIGIN ?? "http://localhost:13200");
+const loopbackHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
+const secureRuntime = runtimeOrigin.protocol === "https:";
+
+if (!secureRuntime && !(runtimeOrigin.protocol === "http:" && loopbackHosts.has(runtimeOrigin.hostname))) {
+  throw new Error(
+    `E2E_RUNTIME_ORIGIN must use HTTPS unless it is an HTTP loopback URL; received ${runtimeOrigin.origin}`
+  );
+}
+const sessionCookieName = secureRuntime ? "__Host-appsell_session" : "appsell_session";
+const inspectionCookieName = secureRuntime
+  ? "__Host-appsell_demo_inspection"
+  : "appsell_demo_inspection";
 const expectedPdf = {
   bytes: 3067,
   sha256: "59cabda6e11e2b1a1ee2af480e4f242dd1ac941ae62ab20e06f12104f691b270"
@@ -40,7 +53,19 @@ test("admin demo entra no tenant correto", async ({ context, page }) => {
 });
 
 test("buyer demo abre PDF e vídeo protegidos", async ({ context, page }) => {
-  await login(page, "buyer", "/library");
+  await login(page, "buyer", "/checkout");
+  await expect(page.getByRole("note")).toContainText(
+    "DEMO · Aluno · user.demo@autonomia.site"
+  );
+  await expect(page.getByText("Não foi possível validar seu acesso.")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Codex na prática" })).toBeVisible();
+  await page.getByLabel("Cupom de demonstração").fill("AUTONOMIA100");
+  await page.getByRole("button", { name: "Concluir compra por R$ 0,00" }).click();
+  await expect(page.getByRole("heading", { name: "Compra demo aprovada" })).toBeVisible({
+    timeout: 15_000
+  });
+  await page.getByRole("link", { name: "Abrir minha biblioteca" }).click();
+  await expect(page).toHaveURL((url) => url.pathname === "/library");
   await expect(page.getByRole("heading", { name: "Minha biblioteca" })).toBeVisible();
   await page.getByRole("link", { name: "Começar curso" }).click();
   await expect(page.getByText("Aula 1 de 5", { exact: true })).toBeVisible();
@@ -100,19 +125,24 @@ test("superadmin demo inspeciona e revoga sem impersonar", async ({ context, pag
   await expect(page.getByRole("heading", { level: 2, name: "Autonom.ia Demo" })).toBeVisible();
   await expect(page.getByText("Codex na prática", { exact: true })).toBeVisible();
   const activeCookies = await context.cookies();
-  const sessionCookie = activeCookies.find((cookie) => cookie.name === "__Host-appsell_session");
+  const sessionCookie = activeCookies.find((cookie) => cookie.name === sessionCookieName);
   const inspectionCookie = activeCookies.find(
-    (cookie) => cookie.name === "__Host-appsell_demo_inspection"
+    (cookie) => cookie.name === inspectionCookieName
   );
   expect(sessionCookie?.value).toMatch(/^[A-Za-z0-9_-]{43}$/);
   expect(inspectionCookie?.value).toMatch(/^[0-9a-f-]{36}\.[A-Za-z0-9_-]{43}$/);
-  expect(sessionCookie).toMatchObject({ secure: true, httpOnly: true, path: "/" });
-  expect(inspectionCookie).toMatchObject({ secure: true, httpOnly: true, path: "/" });
+  expect(sessionCookie).toMatchObject({ secure: secureRuntime, httpOnly: true, path: "/" });
+  expect(inspectionCookie).toMatchObject({
+    secure: secureRuntime,
+    httpOnly: true,
+    sameSite: "Strict",
+    path: "/"
+  });
   await page.getByRole("button", { name: "Encerrar e revogar acesso" }).click();
   await expect(page.getByText("Inspeção encerrada e token revogado.")).toBeVisible();
   const replay = await page.request.get("/api/platform/demo-inspections", {
     headers: {
-      cookie: `__Host-appsell_session=${sessionCookie!.value}; __Host-appsell_demo_inspection=${inspectionCookie!.value}`
+      cookie: `${sessionCookieName}=${sessionCookie!.value}; ${inspectionCookieName}=${inspectionCookie!.value}`
     }
   });
   expect(replay.status()).toBe(200);
@@ -140,11 +170,16 @@ async function assertOpaqueSession(
   persona: "admin" | "buyer" | "superadmin"
 ) {
   const session = (await context.cookies()).find(
-    (cookie) => cookie.name === "__Host-appsell_session"
+    (cookie) => cookie.name === sessionCookieName
   );
-  expect(session).toMatchObject({ httpOnly: true, secure: true, sameSite: "Lax", path: "/" });
+  expect(session).toMatchObject({
+    httpOnly: true,
+    secure: secureRuntime,
+    sameSite: "Lax",
+    path: "/"
+  });
   expect(session?.value).toMatch(/^[A-Za-z0-9_-]{43}$/);
-  expect(await page.evaluate(() => document.cookie)).not.toContain("__Host-appsell_session");
+  expect(await page.evaluate(() => document.cookie)).not.toContain(sessionCookieName);
   const response = await page.request.get("/api/session");
   expect(response.status()).toBe(200);
   expect(await response.json()).toMatchObject({

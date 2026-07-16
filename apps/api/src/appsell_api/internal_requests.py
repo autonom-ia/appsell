@@ -206,11 +206,14 @@ class InternalRequestAuthenticator:
     async def trusted_domain_session(
         self, envelope: ServiceEnvelope
     ) -> AsyncIterator[AsyncSession]:
-        if not _is_asset_worker_envelope(
-            envelope,
-            internal_issuer=self._internal_issuer,
-            internal_audience=self._internal_audience,
-            identity_issuer=self._identity_issuer,
+        worker_context = {
+            "internal_issuer": self._internal_issuer,
+            "internal_audience": self._internal_audience,
+            "identity_issuer": self._identity_issuer,
+        }
+        if not (
+            _is_asset_worker_envelope(envelope, **worker_context)
+            or _is_demo_checkout_worker_envelope(envelope, **worker_context)
         ):
             raise _unauthorized()
         async with self._session_factory() as session, session.begin():
@@ -392,6 +395,36 @@ def _is_asset_worker_envelope(
         and envelope.seller_organization_id is None
         and envelope.method == "POST"
         and envelope.path == "/v1/internal/asset-worker"
+        and envelope.query_sha256 == hashlib.sha256(b"").hexdigest()
+        and envelope.body_sha256 == hashlib.sha256(b"").hexdigest()
+        and 1 <= envelope.iat <= now + 5
+        and envelope.iat < envelope.exp <= envelope.iat + 60
+        and envelope.exp >= now - 5
+    )
+
+
+def _is_demo_checkout_worker_envelope(
+    envelope: ServiceEnvelope,
+    *,
+    internal_issuer: str,
+    internal_audience: str,
+    identity_issuer: str,
+) -> bool:
+    now = int(time.time())
+    return (
+        envelope.version == 1
+        and envelope.kid == "api-internal"
+        and envelope.issuer == internal_issuer
+        and envelope.audience == internal_audience
+        and envelope.session_ref == "demo-checkout-worker"
+        and envelope.session_epoch == 1
+        and envelope.identity.issuer == identity_issuer
+        and envelope.identity.sub == "demo-checkout-worker-v1"
+        and envelope.identity.user_id
+        == uuid5(NAMESPACE_URL, f"{identity_issuer}\0demo-checkout-worker-v1")
+        and envelope.capability == "commerce.demo.checkout.worker"
+        and envelope.method == "POST"
+        and envelope.path == "/v1/internal/demo-checkout-worker"
         and envelope.query_sha256 == hashlib.sha256(b"").hexdigest()
         and envelope.body_sha256 == hashlib.sha256(b"").hexdigest()
         and 1 <= envelope.iat <= now + 5

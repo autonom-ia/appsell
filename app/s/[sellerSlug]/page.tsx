@@ -17,7 +17,8 @@ export default async function SellerStorefront({
 }) {
   const { sellerSlug } = await params;
   const storefront = await loadStorefront(sellerSlug);
-  const loginHref = demoModeEnabled() ? "/auth/login?persona=buyer" : "/auth/login";
+  const demoCheckoutEnabled = demoModeEnabled() && storefront.seller.slug === "autonomia-demo";
+  const loginHref = demoCheckoutEnabled ? "/auth/login?persona=buyer" : "/auth/login";
 
   return <div className="storefront-page">
     <a className="skip-link" href="#storefront-content">Pular para os produtos</a>
@@ -67,8 +68,8 @@ export default async function SellerStorefront({
               {product.description.trim() ? <p>{product.description}</p> : null}
             </div>
             <div className="storefront-product-action">
-              <Link className="primary-button" href={loginHref}>Entrar para acessar</Link>
-              <small>Checkout ainda não está ativado nesta prévia.</small>
+              <Link className="primary-button" href={loginHref}>{demoCheckoutEnabled ? "Comprar com cupom demo" : "Entrar para acessar"}</Link>
+              {demoCheckoutEnabled ? <small>Compra demonstrativa de valor zero, sem cobrança financeira.</small> : null}
             </div>
           </article>)}
         </div> : <div className="storefront-empty">

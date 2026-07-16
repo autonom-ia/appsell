@@ -338,7 +338,7 @@ function parseProfileState(payload: unknown): ProfileState {
   const admin = record.persona === "admin" && record.email === DEMO_ADMIN_EMAIL &&
     record.label === "Administrador" && record.home === "/dashboard";
   const buyer = record.persona === "buyer" && record.email === DEMO_BUYER_EMAIL &&
-    record.label === "Aluno" && record.home === "/library";
+    record.label === "Aluno" && record.home === "/checkout";
   const superadmin = record.persona === "superadmin" && record.email === DEMO_SUPERADMIN_EMAIL &&
     record.label === "Superadmin simulado" && record.home === "/platform/demo-inspection";
   return admin || buyer || superadmin

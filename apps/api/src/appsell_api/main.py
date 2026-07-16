@@ -11,8 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from .asset_routes import router as asset_router
 from .asset_worker_runner import run_asset_worker_loop
 from .catalog_routes import router as catalog_router
+from .checkout_routes import router as checkout_router
 from .config import Settings, get_settings
 from .db import create_engine, create_session_factory, database_ready
+from .demo_checkout_worker import run_demo_checkout_worker_loop
 from .internal_requests import InternalRequestAuthenticator
 from .learning_routes import router as learning_router
 from .platform_routes import router as platform_router
@@ -94,6 +96,12 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     worker_task: asyncio.Task[None] | None = None
     if app.state.inline_asset_worker_enabled and app.state.internal_auth is not None:
         worker_task = asyncio.create_task(run_asset_worker_loop(app, worker_stop))
+    checkout_worker_stop = asyncio.Event()
+    checkout_worker_task: asyncio.Task[None] | None = None
+    if settings.environment in {"local", "ci"} and app.state.internal_auth is not None:
+        checkout_worker_task = asyncio.create_task(
+            run_demo_checkout_worker_loop(app, checkout_worker_stop)
+        )
     try:
         yield
     finally:
@@ -109,6 +117,12 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
                 await asyncio.wait_for(worker_task, timeout=5)
             except TimeoutError:
                 worker_task.cancel()
+        checkout_worker_stop.set()
+        if checkout_worker_task is not None:
+            try:
+                await asyncio.wait_for(checkout_worker_task, timeout=5)
+            except TimeoutError:
+                checkout_worker_task.cancel()
         await engine.dispose()
 
 
@@ -122,6 +136,7 @@ app = FastAPI(
 )
 app.include_router(router)
 app.include_router(catalog_router)
+app.include_router(checkout_router)
 app.include_router(learning_router)
 app.include_router(asset_router)
 app.include_router(platform_router)

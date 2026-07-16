@@ -16,7 +16,7 @@ export interface DemoProfile {
   subject: string;
   email: string;
   label: string;
-  home: "/dashboard" | "/library" | "/platform/demo-inspection";
+  home: "/dashboard" | "/checkout" | "/library" | "/platform/demo-inspection";
 }
 
 const profiles: Record<DemoPersona, DemoProfile> = {
@@ -32,7 +32,7 @@ const profiles: Record<DemoPersona, DemoProfile> = {
     subject: DEMO_BUYER_SUBJECT,
     email: DEMO_BUYER_EMAIL,
     label: "Aluno",
-    home: "/library"
+    home: "/checkout"
   },
   superadmin: {
     persona: "superadmin",

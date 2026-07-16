@@ -167,6 +167,7 @@ uv run --project apps/api pytest \
   apps/api/tests/test_postgres_private_assets.py \
   apps/api/tests/test_postgres_superadmin_inspection.py \
   apps/api/tests/test_postgres_public_storefront.py \
+  apps/api/tests/test_postgres_demo_checkout.py \
   apps/api/tests/test_postgres_webhook_ingress.py \
   apps/api/tests/test_internal_request_body_limit.py \
   apps/api/tests/test_demo_codex_pdfs.py \
@@ -177,6 +178,7 @@ uv run --project apps/api pytest \
   apps/api/tests/test_api_learning.py \
   apps/api/tests/test_api_assets.py \
   apps/api/tests/test_api_superadmin_inspection.py
+uv run --project apps/api pytest apps/api/tests/test_api_demo_checkout.py
 uv run --project apps/api pytest \
   apps/api/tests/test_internal_requests.py \
   apps/api/tests/test_asset_worker_runner.py
