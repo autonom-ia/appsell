@@ -42,6 +42,7 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     NEXT_TELEMETRY_DISABLED: "1"
   });
   let browser: Browser | undefined;
+  let redisStopped = false;
 
   try {
     await waitForBff(server, port);
@@ -103,6 +104,57 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
       checkout: { already_owned: false, offer: { unit_amount_minor: 9900, currency: "BRL" } },
       coupon_hint: "AUTONOMIA100"
     });
+    const invalidOrigin = await fetch(`${origin}/api/demo-checkout`, {
+      method: "POST",
+      headers: { cookie: buyer.session, origin: "https://attacker.example" },
+      body: formData({
+        _csrf: checkoutPayload.csrf.complete,
+        idempotency_key: randomUUID(),
+        coupon_code: "AUTONOMIA100"
+      })
+    });
+    expect(invalidOrigin.status).toBe(403);
+    expect(await invalidOrigin.json()).toEqual({ error: "invalid_csrf" });
+
+    const declaredTooLarge = await fetch(`${origin}/api/demo-checkout`, {
+      method: "POST",
+      headers: { cookie: buyer.session, origin },
+      body: new URLSearchParams({
+        _csrf: checkoutPayload.csrf.complete,
+        idempotency_key: randomUUID(),
+        coupon_code: "AUTONOMIA100",
+        padding: "x".repeat(17_000)
+      })
+    });
+    expect(declaredTooLarge.status).toBe(413);
+    expect(await declaredTooLarge.json()).toEqual({ error: "payload_too_large" });
+
+    const streamedPayload = new TextEncoder().encode(new URLSearchParams({
+      _csrf: checkoutPayload.csrf.complete,
+      idempotency_key: randomUUID(),
+      coupon_code: "AUTONOMIA100",
+      padding: "x".repeat(17_000)
+    }).toString());
+    const streamedBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(streamedPayload.subarray(0, 8_000));
+        controller.enqueue(streamedPayload.subarray(8_000));
+        controller.close();
+      }
+    });
+    const streamedTooLarge = await fetch(`${origin}/api/demo-checkout`, {
+      method: "POST",
+      headers: {
+        cookie: buyer.session,
+        origin,
+        "content-type": "application/x-www-form-urlencoded"
+      },
+      body: streamedBody,
+      duplex: "half"
+    } as RequestInit & { duplex: "half" });
+    expect(streamedTooLarge.status).toBe(413);
+    expect(await streamedTooLarge.json()).toEqual({ error: "payload_too_large" });
+
     const completedCheckout = await fetch(`${origin}/api/demo-checkout`, {
       method: "POST",
       headers: { cookie: buyer.session, origin },
@@ -363,10 +415,24 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     await pwExpect(adminPage.getByText("Nenhum produto ativo está disponível para esta conta.")).toBeVisible();
     expect((await adminPage.request.get(`${origin}${assetHref}`)).status()).not.toBe(200);
     await adminContext.close();
+
+    await redis.stop();
+    redisStopped = true;
+    const unavailableSession = await fetch(`${origin}/api/demo-checkout`, {
+      method: "POST",
+      headers: { cookie: buyer.session, origin },
+      body: formData({
+        _csrf: checkoutPayload.csrf.complete,
+        idempotency_key: randomUUID(),
+        coupon_code: "AUTONOMIA100"
+      })
+    });
+    expect(unavailableSession.status).toBe(503);
+    expect(await unavailableSession.json()).toEqual({ error: "oauth_store_unavailable" });
   } finally {
     await browser?.close();
     await stopBff(server);
-    await redis.stop();
+    if (!redisStopped) await redis.stop();
     await rm(join(process.cwd(), distDir), { recursive: true, force: true });
     await Promise.all(generatedFiles.map((file, index) => writeFile(join(process.cwd(), file), originals[index] ?? "")));
   }
