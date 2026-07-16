@@ -32,7 +32,7 @@ const profiles: Record<DemoPersona, DemoProfile> = {
     subject: DEMO_BUYER_SUBJECT,
     email: DEMO_BUYER_EMAIL,
     label: "Aluno",
-    home: "/checkout"
+    home: "/library"
   },
   superadmin: {
     persona: "superadmin",

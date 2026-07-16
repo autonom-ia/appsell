@@ -50,7 +50,7 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     expect(invalid.status).toBe(400);
 
     const buyer = await login(origin, "buyer");
-    expect(buyer.redirect).toBe(`${origin}/checkout`);
+    expect(buyer.redirect).toBe(`${origin}/library`);
     for (const cookieName of [
       "appsell_seller_csrf",
       "appsell_product_csrf",

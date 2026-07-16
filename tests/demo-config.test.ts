@@ -30,7 +30,7 @@ describe("demo personas", () => {
     expect(demoProfileForPersona("buyer", localDemo)).toMatchObject({
       subject: DEMO_BUYER_SUBJECT,
       email: DEMO_BUYER_EMAIL,
-      home: "/checkout"
+      home: "/library"
     });
     expect(DEMO_ADMIN_EMAIL.endsWith("@autonomia.site")).toBe(true);
     expect(DEMO_BUYER_EMAIL.endsWith("@autonomia.site")).toBe(true);
