@@ -71,10 +71,38 @@ def seed_demo() -> None:
     reset_once(manifest, manifest_sha)
 
 
-def reset_once(manifest: dict[str, Any], manifest_sha: str) -> None:
+def _seed_learning_entitlement(
+    connection: psycopg.Connection[Any], manifest: dict[str, Any]
+) -> None:
+    connection.execute(
+        """
+        insert into buyer_entitlement(
+          seller_organization_id,id,buyer_identity_user_id,catalog_product_id,
+          publication_id,reference_key,source,status,progress_percent
+        ) values(%s,%s,%s,%s,%s,'pytest-learning-fixture','demo_seed','active',0)
+        on conflict(seller_organization_id,buyer_identity_user_id,catalog_product_id)
+        do update set publication_id=excluded.publication_id,status='active',
+          progress_percent=0,starts_at=clock_timestamp(),expires_at=null,
+          updated_at=clock_timestamp()
+        """,
+        (
+            UUID(manifest["seller"]["id"]),
+            UUID(manifest["entitlement"]["id"]),
+            identity_id(manifest["personas"]["buyer"]["subject"]),
+            UUID(manifest["product"]["id"]),
+            UUID(manifest["publication"]["id"]),
+        ),
+    )
+
+
+def reset_once(
+    manifest: dict[str, Any], manifest_sha: str, *, grant_entitlement: bool = True
+) -> None:
     assert ADMIN_URL
     with psycopg.connect(ADMIN_URL) as connection:
         reset_demo(connection, manifest, manifest_sha, ISSUER)
+        if grant_entitlement:
+            _seed_learning_entitlement(connection, manifest)
         connection.commit()
 
 
@@ -148,7 +176,12 @@ def test_reset_is_repeatable_concurrent_and_does_not_duplicate_graph() -> None:
         )
         connection.commit()
     with ThreadPoolExecutor(max_workers=8) as executor:
-        list(executor.map(lambda _: reset_once(manifest, manifest_sha), range(8)))
+        list(
+            executor.map(
+                lambda _: reset_once(manifest, manifest_sha, grant_entitlement=False),
+                range(8),
+            )
+        )
     product = UUID(manifest["product"]["id"])
     with psycopg.connect(ADMIN_URL) as connection:
         counts = connection.execute(
@@ -211,12 +244,15 @@ def test_reset_is_repeatable_concurrent_and_does_not_duplicate_graph() -> None:
             "select count(*) from platform_grant where identity_user_id in (%s,%s)",
             (admin, buyer),
         ).fetchone()
-    assert counts == (1, 1, 1, 1, 1, 1, 1, 5, 6, 1, 1, 1)
+    assert counts == (1, 1, 1, 1, 1, 1, 1, 5, 6, 0, 1, 1)
     assert invalid_memberships == (0,)
     assert demo_persona_memberships == [(seller, admin, "seller_owner", "active")]
     assert demo_persona_grants == (0,)
     assert (OTHER_USER, "seller_admin", "active") not in memberships
     assert (ACTIVE_SUPERADMIN, "seller_admin", "active") not in memberships
+    with psycopg.connect(ADMIN_URL) as connection:
+        _seed_learning_entitlement(connection, manifest)
+        connection.commit()
 
 
 def test_buyer_reads_only_active_entitlement_and_published_snapshot() -> None:

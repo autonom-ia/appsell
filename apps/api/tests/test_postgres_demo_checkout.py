@@ -336,6 +336,40 @@ def test_records_are_immutable_and_runtime_has_no_table_access(
             connection.execute("select count(*) from demo_order")
 
 
+@pytest.mark.parametrize(
+    "table",
+    [
+        "demo_checkout_offer",
+        "demo_coupon",
+        "demo_order",
+        "demo_purchase_event",
+        "demo_purchase",
+    ],
+)
+def test_readiness_requires_demo_checkout_forced_rls(table: str) -> None:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(f"alter table {table} no force row level security")
+        assert connection.execute("select app_private.schema_ready()").fetchone() == (False,)
+        connection.rollback()
+
+
+@pytest.mark.parametrize(
+    ("table", "trigger"),
+    [
+        ("demo_order", "demo_order_immutable"),
+        ("demo_purchase_event", "demo_purchase_event_immutable"),
+        ("demo_purchase", "demo_purchase_immutable"),
+    ],
+)
+def test_readiness_requires_demo_checkout_immutable_triggers(table: str, trigger: str) -> None:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(f"alter table {table} disable trigger {trigger}")
+        assert connection.execute("select app_private.schema_ready()").fetchone() == (False,)
+        connection.rollback()
+
+
 def test_outbox_rejects_an_event_from_another_order(
     fixture: dict[str, UUID | str],
 ) -> None:

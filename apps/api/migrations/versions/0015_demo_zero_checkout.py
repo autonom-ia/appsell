@@ -108,6 +108,15 @@ def _schema_ready_sql(expected_revision: str, *, include_checkout: bool) -> str:
             and to_regclass('app_private.demo_inspection_ticket') is not null
             and to_regprocedure('app_private.read_buyer_products(uuid)') is not null
             and to_regprocedure('app_private.read_buyer_seller_storefront(uuid,uuid)') is not null
+            and to_regprocedure(
+              'app_private.start_demo_inspection(uuid,text,text,integer,text,uuid)'
+            ) is not null
+            and to_regprocedure(
+              'app_private.read_demo_inspection(uuid,text,uuid,text,uuid)'
+            ) is not null
+            and to_regprocedure(
+              'app_private.revoke_demo_inspection(uuid,text,uuid,text,text,uuid)'
+            ) is not null
             and to_regprocedure('app_private.read_public_storefront(text)') is not null
             and to_regprocedure('app_private.resolve_webhook_endpoint(text)') is not null
             and to_regprocedure(
@@ -115,6 +124,24 @@ def _schema_ready_sql(expected_revision: str, *, include_checkout: bool) -> str:
               'text,integer,text,text,smallint,text,smallint,timestamptz,bigint,uuid)'
             ) is not null
             and to_regprocedure('app_private.read_learning_player_v2(uuid,uuid,uuid)') is not null
+            and exists(select 1 from pg_catalog.pg_trigger
+              where tgrelid='public.publication_asset'::regclass
+                and tgname='publication_lesson_asset_limit' and not tgisinternal
+                and tgenabled='O')
+            and exists(select 1 from pg_catalog.pg_trigger
+              where tgrelid='public.webhook_event'::regclass
+                and tgname='webhook_event_immutable' and not tgisinternal
+                and tgenabled='O')
+            and not exists(
+              select 1 from unnest(array[
+                'public.checkout_integration'::regclass,
+                'public.webhook_endpoint'::regclass,
+                'public.external_product_mapping'::regclass,
+                'public.webhook_event'::regclass
+              ]) relation(oid)
+              join pg_catalog.pg_class class on class.oid=relation.oid
+              where not class.relrowsecurity or not class.relforcerowsecurity
+            )
             {checkout_contract}
             and exists(select 1 from public.alembic_version
               where version_num='{expected_revision}')
