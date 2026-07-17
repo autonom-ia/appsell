@@ -6,13 +6,15 @@ Refs #93 · Parte do P0 Bloco 1 (login real: Identity + vault prod + bootstrap s
 > exige aprovação explícita do Rodrigo antes de rodar. Nenhuma escrita em VPS,
 > EasyPanel, DNS, banco ou secret foi ou será feita por este slice de docs.
 
-## Rev 3 — resolução do security-review (PR #100)
+## Rev 4 — resolução do security-review (PR #100)
 
 O review externo (codex, read-only sobre `git diff origin/main...HEAD`) **REPROVOU**
-a Rev 1 com 7 HIGH. A Rev 2 fechou 6; o re-review apontou que o HIGH 3 seguia sem
-rotador executável e introduziu 4 blockers novos. Esta **Rev 3** fecha os 7
-originais **e** os 4 do re-review, aplicando decisões já tomadas pelo Rodrigo
-(régua qualidade + escalabilidade + segurança). Mapa dos 7 originais:
+a Rev 1 com 7 HIGH. Rev 2 fechou 6; Rev 3 fechou o 7º + 4 blockers do re-review;
+o re-review da Rev 3 confirmou os 7 originais resolvidos mas achou 6 novos blockers
+operacionais (detalhe de OpenBao 2.5.4) introduzidos pelos comandos que adicionei.
+Esta **Rev 4** fecha esses 6, aplicando decisões já tomadas pelo Rodrigo (régua
+qualidade + escalabilidade + segurança). Mapa dos 7 HIGH originais (confirmados
+resolvidos pelo re-review):
 
 | # | HIGH original | Decisão aplicada | Seção |
 |---|---|---|---|
@@ -24,14 +26,26 @@ originais **e** os 4 do re-review, aplicando decisões já tomadas pelo Rodrigo
 | 6 | TLS interno sem CA confiável no runtime | **CA privada explícita:** cert do listener emitido por CA privada da VPS, com SAN = DNS interno do serviço; CA bundle montado no container `web` e exposto ao Node via `NODE_EXTRA_CA_CERTS`. Verificação TLS **nunca** desabilitada | §1.1, §3.1, §5.1 |
 | 7 | "Rollback" não é rollback depois do 1º ciphertext | **Rollback honesto:** distinção pré-1º-write (seguro) vs pós-persistência (fail-closed, **não** recupera envelopes). Recuperação real = restaurar snapshot + unseal. Provider local só em não-produção | §6 |
 
-Blockers do re-review (Rev 2 → Rev 3) fechados:
-- **Rotador de SecretID executável** (identidade + policy + canal concretos): §1.2, §3.5.
-- **Identidades operacionais antes de revogar root** (`appsell-secretid-rotator`,
-  `appsell-ops`) + break-glass por `operator generate-root` com quórum de unseal: §3.5, §3.6.
-- **Critério de aceite corrigido:** secret no corpo de request cifrado é inerente;
-  o requisito é não-vazamento por log/persistência/erro, transporte só TLS: §5.2.
-- **Entrega das PGP públicas** por mount de bootstrap (públicas, não-secretas) ou
-  `keybase:`; `operator init` pode rodar de host admin: §3.1, §3.2.
+Blockers do re-review Rev 3 → Rev 4 fechados:
+- **Ciclo do rotador fechado:** rotador e ops usam **token periódico renovável**
+  (`period=24h`, `renew-self` na policy), semente em custódia — não credencial que
+  expira sem retorno: §1.2, §3.5.
+- **`appsell-ops`/rotador sem SecretID estático ilimitado:** trocados por tokens
+  periódicos (não AppRole com `secret_id_num_uses=0`): §3.5.
+- **Break-glass honesto na versão fixada:** `operator generate-root` pode estar
+  desabilitado no 2.5.4 — vira **gate de verificação** contra a doc/config, não
+  pressuposto; caminho admin do dia a dia usa os tokens periódicos: §3.6.
+- **TLS do bootstrap executável:** `BAO_ADDR`/`BAO_CACERT` no CLI e `--cacert` no
+  `curl`, SAN cobrindo os nomes do bootstrap: §3.2, §3.4.
+- **Audit habilitável:** `file_path` obrigatório + volume dedicado
+  `/openbao/audit`; gate para o default de 2.5.4 (API de audit possivelmente off): §3.8.
+- **Teste de DR executável:** fluxo autenticado completo com ordem correta
+  (init temp → restore `-force` → unseal com shares originais → validar decrypt): §4.3.
+- Formato das PGP: base64 (não ASCII-armored) ou `keybase:` — §3.2.
+
+Blockers anteriores (Rev 2 → Rev 3) já fechados: rotador concreto; identidades
+operacionais antes de revogar root; critério de aceite (secret no corpo cifrado é
+inerente, requisito é não-vazamento); entrega das PGP públicas por mount/keybase.
 
 MEDIUM tratados: observabilidade/hardening (audit device, limites CPU/RAM, alertas
 de sealed/TLS/AppRole) em §3.8; **RPO operacional** (frequência/retenção/destino/teste
@@ -160,24 +174,26 @@ Objetivo: nenhum bearer token permanente; token de runtime curto e órfão; sem
     folga, ex.: `200` — **nunca `0`/ilimitado**). Bounded nos dois eixos (tempo e
     usos) + rotação ⇒ não é bearer permanente (é isso que fecha o HIGH original 3).
   - **entrega por response-wrapping** (`wrap_ttl`) para o `web`, de modo que o SecretID em claro nunca fique parado em env/log.
-- **Rotação de SecretID — mecanismo concreto (não fica "sob decisão"):**
-  - Existe uma **identidade de rotador dedicada** (`appsell-secretid-rotator`),
-    autenticada por AppRole própria ou token periódico em custódia segura, com a
-    policy **`appsell-secretid-rotator`** que permite **apenas**
-    `create`/`update` em `auth/approle/role/appsell-transit-runtime/secret-id`
-    (com `-wrap-ttl`) — e nada mais.
-  - Antes de o SecretID corrente vencer (dentro do `secret_id_ttl`), o rotador
-    **gera um novo SecretID wrapped** e o entrega ao `web` por um **canal de
-    entrega definido**: path de secret compartilhado do App Service (refrescado)
-    ou file-mount de secret rotacionado pelo EasyPanel. O `web` faz unwrap e passa
-    a usá-lo no próximo login.
-  - Como a rotação renova o SecretID **antes** do vencimento e o `num_uses` é
-    dimensionado à janela, o serviço **sempre** consegue re-logar; se a rotação
-    falhar, o acesso expira → **fail-closed** (login indisponível), nunca acesso
-    permanente. Alertas de falha de rotação em §3.8.
+- **Rotação de SecretID — ciclo operacional fechado (quem observa o observador):**
+  - Existe uma **identidade de rotador dedicada** (`appsell-secretid-rotator`) que
+    autentica com um **token periódico** (`period=24h`, `token_no_default_policy=true`)
+    — **renovável indefinidamente** enquanto renovar dentro do período, que é o
+    padrão OpenBao para agentes long-running. Isso resolve a auto-renovação do
+    próprio rotador: ele **não** depende de uma credencial que expira sem retorno.
+    O token periódico inicial é emitido no bootstrap (root ainda presente) e sua
+    semente fica **em custódia** junto ao unseal material (§4.1), não em claro no host.
+  - Policy **`appsell-secretid-rotator`**: permite `create`/`update` em
+    `auth/approle/role/appsell-transit-runtime/secret-id` (com `-wrap-ttl`) **e**
+    `update` em `auth/token/renew-self` (para renovar o próprio token periódico) —
+    e nada mais.
+  - Antes de o SecretID runtime vencer, o rotador **gera um novo SecretID wrapped**
+    e o entrega ao `web` por um **canal definido**: file-mount de secret rotacionado
+    pelo EasyPanel no pod do `web` (o `web` faz unwrap e usa no próximo login).
+  - Se a rotação falhar, o acesso runtime expira → **fail-closed** (login
+    indisponível), nunca acesso permanente. Alertas de falha de rotação em §3.8.
   - **Decisão 🔴 restante = só a forma de execução do rotador** (sidecar no pod do
-    `web` vs job agendado) e os valores exatos de `secret_id_ttl`/`num_uses`. A
-    identidade, a policy e o canal já estão especificados — o caminho é executável.
+    `web` vs job agendado) e os valores exatos de `period`/`secret_id_ttl`/`num_uses`.
+    Identidade, policy, mecanismo de auto-renovação e canal já estão especificados.
 - **Token de runtime** (resultado do login AppRole): **órfão**, **TTL 15min**,
   `token_max_ttl=15m` (não se estende além de 15 min → efetivamente não-renovável
   em duração), `token_no_default_policy=true`, **policy única
@@ -267,12 +283,26 @@ Inventário read-only antes da 1ª escrita (mesma disciplina do README #90, gate
 - 1 réplica; **não** usar rolling/`zeroDowntime` (unseal é stateful — não fazer rolling cego).
 
 ### 3.2 Init + unseal (Shamir) 🔴 — material irrecuperável, **sem plaintext no host** (resolve HIGH 2)
+**Confiança TLS do bootstrap (vale para TODO comando 3.2–3.7):** o listener é TLS
+com CA privada (§1.1), então o CLI/`curl` do bootstrap precisam confiar nessa CA
+explicitamente — `api_addr` configura o servidor, **não** o cliente. Em toda sessão
+de bootstrap (no container ou no host admin), exportar antes:
+```sh
+export BAO_ADDR=https://openbao-90:8200
+export BAO_CACERT=/etc/openbao/bootstrap/openbao-ca.pem   # CA privada montada
+```
+e todo `curl` usa `--cacert /etc/openbao/bootstrap/openbao-ca.pem`. O SAN do cert
+deve cobrir **todos** os nomes usados no bootstrap (ex.: `openbao-90` e, se o init
+rodar de host admin por túnel, o nome/host alcançado). Nunca `-tls-skip-verify`.
+
 **Entrega das chaves PGP públicas:** os `*.asc` referenciados abaixo são as chaves
 **públicas** dos custodiantes (não são segredo) e chegam ao container pelo **mount
-de bootstrap** de §3.1 (paths reais, ex.: `/etc/openbao/bootstrap/*.asc`). Como
-alternativa sem arquivo local, usar identificadores **`keybase:<usuário>`** (o
-`operator init` busca a pública no Keybase). Cifrando shares e root token a essas
-públicas, o output **nunca** contém segredo em claro:
+de bootstrap** de §3.1 (paths reais, ex.: `/etc/openbao/bootstrap/*.asc`).
+**Formato:** `operator init -pgp-keys` espera a chave pública **base64 (DER binário
+em base64), não ASCII-armored genérico** — converter as públicas antes (ex.:
+`gpg --export <id> | base64`). Como alternativa sem arquivo, usar
+**`keybase:<usuário>`** (o `operator init` busca a pública no Keybase). Cifrando
+shares e root token a essas públicas, o output **nunca** contém segredo em claro:
 ```sh
 bao operator init \
   -key-shares=5 -key-threshold=3 \
@@ -320,6 +350,7 @@ Portanto **não** usar `bao policy write NAME <path-do-repo>`. Duas formas váli
 **(a) Via API HTTP — idêntico ao CI (`test-openbao-transit.sh:57-58`), fonte de verdade:**
 ```sh
 curl --fail-with-body --silent --show-error \
+  --cacert /etc/openbao/bootstrap/openbao-ca.pem \
   --header "content-type: application/json" \
   --header "x-vault-token: ${BAO_TOKEN}" \
   --request PUT \
@@ -369,43 +400,54 @@ bao write -wrap-ttl=120s -f auth/approle/role/appsell-transit-runtime/secret-id
 **Identidades operacionais criadas ANTES de revogar o root (resolve novo HIGH — o
 runtime encrypt/decrypt não administra o vault):**
 ```sh
-# Policy do rotador: só gerar SecretID da role runtime, nada mais.
+# Policy do rotador: gerar SecretID da role runtime + renovar o próprio token. Nada mais.
 bao policy write appsell-secretid-rotator - <<'HCL'
 path "auth/approle/role/appsell-transit-runtime/secret-id" {
   capabilities = ["create", "update"]
 }
+path "auth/token/renew-self" {
+  capabilities = ["update"]
+}
 HCL
 # Policy de operações de DR/observabilidade (mínimo necessário):
 bao policy write appsell-ops - <<'HCL'
-path "sys/storage/raft/snapshot" { capabilities = ["read"] }
-path "sys/audit/*"               { capabilities = ["create", "read", "update", "delete", "sudo"] }
-path "sys/health"                { capabilities = ["read"] }
+path "sys/storage/raft/snapshot"         { capabilities = ["read"] }
+path "sys/storage/raft/snapshot-force"   { capabilities = ["update"] }
+path "sys/audit/*"                       { capabilities = ["create", "read", "update", "delete", "sudo"] }
+path "sys/health"                        { capabilities = ["read"] }
+path "auth/token/renew-self"             { capabilities = ["update"] }
 HCL
-# Identidades dedicadas (AppRole própria ou token periódico em custódia segura):
-bao write auth/approle/role/appsell-secretid-rotator token_policies=appsell-secretid-rotator \
-  token_ttl=15m token_max_ttl=1h secret_id_ttl=24h secret_id_num_uses=0
-bao write auth/approle/role/appsell-ops token_policies=appsell-ops \
-  token_ttl=15m token_max_ttl=1h
+# Rotador: TOKEN PERIÓDICO renovável (não AppRole com SecretID) — auto-renovável
+# dentro do período, semente em custódia (§4.1), nunca em claro no host:
+bao token create -period=24h -policy=appsell-secretid-rotator \
+  -no-default-policy -orphan -field=token   # guardar cifrado em custódia
+# Ops (DR/audit): também token periódico em custódia, NÃO SecretID estático:
+bao token create -period=24h -policy=appsell-ops \
+  -no-default-policy -orphan -field=token   # guardar cifrado em custódia
 ```
-- O **rotador** usa `appsell-secretid-rotator` (só cria SecretID). O **`api` nunca
-  recebe nenhuma dessas credenciais.**
-- `secret_id_num_uses=0` **aqui é aceitável e intencional** para a role do rotador
-  (credencial de infra em custódia, não exposta ao runtime), com `secret_id_ttl`
-  finito; ainda assim rotacionável. Não confundir com o runtime (que é finito nos
-  dois eixos).
+- Rotador e ops usam **tokens periódicos renováveis** (padrão OpenBao para infra
+  long-running), **não** SecretIDs estáticos — evita a credencial ilimitada que o
+  review flagou. As sementes ficam em custódia junto ao unseal material (§4.1),
+  rotacionáveis via break-glass (§3.6). O **`api` nunca recebe nenhuma delas.**
 
 > 🔴 **Decisão do Rodrigo:** forma de execução do rotador (sidecar vs job) e valores
-> de `secret_id_ttl`/`num_uses` (§1.2). Identidade/policy/canal já especificados.
+> de `period`/`secret_id_ttl`/`num_uses` (§1.2). Identidade/policy/canal já especificados.
 
 ### 3.6 Revogar root / confirmar estado
-- **Só depois** de criadas as identidades operacionais (§3.5: rotador + ops) e
-  emitida a 1ª credencial de cada, **revogar** o root do bootstrap
-  (`bao token revoke -self`). O dia a dia passa a usar as identidades de menor
-  privilégio; **nenhuma** delas retém root.
-- **Break-glass (raro, aprovação 🔴):** um root temporário pode ser **regerado sob
-  demanda** via `bao operator generate-root` com quórum de unseal keys (3 de 5),
-  usado para uma operação administrativa pontual e revogado em seguida. Isso torna a
-  revogação do root segura sem deixar o vault sem caminho administrativo.
+- **Só depois** de criadas as identidades operacionais (§3.5: rotador + ops), emitidos
+  e guardados em custódia os tokens periódicos, **revogar** o root do bootstrap
+  (`bao token revoke -self`). O dia a dia usa as identidades de menor privilégio;
+  **nenhuma** retém root. Os tokens periódicos de ops/rotador cobrem rotação de
+  SecretID, snapshot e audit **sem** precisar de root.
+- **Break-glass (raro, aprovação 🔴) — verificar mecanismo na versão fixada:** em
+  OpenBao 2.5.4 o endpoint legado não-autenticado de `generate-root` pode estar
+  **desabilitado por default** (mudou entre 2.5.x/2.6). Portanto o plano **não
+  pressupõe** `operator generate-root` funcionando as-is: o gate de execução deve
+  **confirmar contra a doc/config do 2.5.4** qual é o fluxo de regeneração de root
+  (endpoint autenticado novo, ou habilitar temporariamente o legado no listener) com
+  quórum de unseal (3 de 5), documentar o comando exato validado, e só então executar.
+  Como os tokens periódicos de ops/rotador já dão o caminho administrativo do dia a
+  dia, a regeneração de root é **último recurso**, não dependência operacional.
 - Confirmar `bao status` = unsealed, `sealed=false`.
 
 ### 3.7 Fumaça (sem persistir dados reais)
@@ -417,8 +459,17 @@ bao write auth/approle/role/appsell-ops token_policies=appsell-ops \
 - **Limites de recurso** do App Service `openbao-90`: CPU/RAM definidos
   explicitamente (referência do CI: `mem_limit: 256m`, `cpus: 0.5` em
   `compose.yaml:176-177`; dimensionar para prod).
-- **Audit device** habilitado (`bao audit enable file`) gravando em volume
-  dedicado, com sanitização — **nunca** logar plaintext de DEK/token.
+- **Audit device** habilitado gravando em **volume dedicado** (`openbao-90-audit` →
+  `/openbao/audit`), com `file_path` obrigatório e sanitização — **nunca** logar
+  plaintext de DEK/token:
+  ```sh
+  bao audit enable -path=file file file_path=/openbao/audit/audit.log
+  ```
+  **Verificar na versão fixada (2.5.4):** a criação de audit device via API pode
+  estar **desabilitada por default**; se for o caso, habilitar por **config
+  declarativa** no `config.hcl` ou setar temporariamente a flag documentada do
+  listener no gate de execução. Confirmar contra a doc do 2.5.4 antes de rodar — não
+  pressupor que `audit enable` via API funciona as-is. 🔴
 - **Alertas:** estado `sealed=true` inesperado, expiração próxima do cert TLS,
   falha de login AppRole, falha de rotação de SecretID, uso anômalo (taxa de
   decrypt), disco do volume Raft.
@@ -463,10 +514,21 @@ bao operator raft snapshot save /openbao/data/snapshots/openbao-<timestamp>.snap
 - Backup **versionado em git** (já é o caso): policy HCL e comandos de bootstrap. A **chave em si nunca** entra em backup plaintext (por design).
 - Como não há backup de VPS hoje (fato informado, appsell#88): **exigir** ao menos snapshot Raft + custódia do unseal antes do primeiro uso, **e** o backup mínimo da VPS resolvido no gate §3.0. 🔴
 
-### 4.3 Teste de desastre (obrigatório antes de produção real)
-- Em ambiente descartável: subir OpenBao limpo, restaurar snapshot, unseal com as
-  shares, e provar que um ciphertext `vault:vN:*` **anterior** ainda descriptografa.
-  Só então o DR está comprovado.
+### 4.3 Teste de desastre (obrigatório antes de produção real) — **fluxo autenticado completo**
+`snapshot restore` é operação **autenticada** e o restore com material de unseal
+**diferente** exige `-force`. Um servidor "limpo" está não-inicializado e selado, sem
+token — não dá para restaurar direto. Ordem correta, em ambiente descartável:
+1. Subir OpenBao limpo (mesma imagem 2.5.4, mesmo `config.hcl`/TLS).
+2. `operator init` **temporário** + unseal com as **shares temporárias** → obter um token temporário.
+3. Autenticado com o token temporário, restaurar o snapshot **forçando** a troca de
+   keyring de unseal:
+   ```sh
+   bao operator raft snapshot restore -force /caminho/openbao-<timestamp>.snap
+   ```
+4. Após o restore, o cluster passa a esperar o **unseal material ORIGINAL**: selar/reiniciar e **unseal com as shares originais** (3 de 5).
+5. Autenticar com uma credencial do cluster original (token periódico de ops em custódia, §3.5) e provar que um ciphertext `vault:vN:*` **anterior** ainda **decifra**.
+- Só com o passo 5 verde o DR está comprovado. DR não testado não conta — e é o que
+  torna a **recuperação pós-ciphertext** (§6.2) real, não teórica.
 
 ### 4.4 Quais bloqueios de `openbao-transit-local-ci.md:74-85` este plano fecha (escopo honesto — resolve MEDIUM)
 - **Fecha:** storage durável + unseal real (§3.1-3.2); DR do unseal + snapshot + teste de desastre (§4); auth de workload durável (§1.2/§3.5).
@@ -586,7 +648,7 @@ Nenhum item acima roda sem 🟢 explícito. Este documento é só o plano.
 
 ## Project update pendente
 - Projeto: Autonom.ia Dev
-- Status: In review (Rev 2 — 7 HIGH endereçados; aguardando re-review)
+- Status: In review (Rev 3 — 7 HIGH originais + 4 blockers do re-review endereçados; aguardando re-review)
 - Tipo: Docs / Infra-plan
 - Prioridade: P0 (bloqueia login real)
 - Risco: Alto (secrets, auth, prod multi-tenant, DR de material irrecuperável)
