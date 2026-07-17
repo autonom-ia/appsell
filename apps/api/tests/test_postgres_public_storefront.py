@@ -70,11 +70,8 @@ def test_runtime_can_read_only_published_public_projection() -> None:
                 "description": manifest["product"]["description"],
                 "publication_id": manifest["publication"]["id"],
                 "publication_version": 1,
-                "price": {
-                    "unit_amount_minor": 0,
-                    "currency": "BRL",
-                    "billing_period": "one_time",
-                },
+                # Unpriced offer (unit_amount_minor 0) is exposed as pending, not R$ 0,00.
+                "price": None,
             }
         ],
     }

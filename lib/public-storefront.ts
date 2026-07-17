@@ -12,10 +12,10 @@ export interface PublicStorefrontProduct {
   publication_id: string;
   publication_version: number;
   // Live offer price exposed by app_private.read_public_storefront (migration 0018).
-  // Billing is not connected yet, so unpriced/legacy offers carry unit_amount_minor 0,
-  // which means "price pending", not "free". The storefront intentionally does not
-  // render a price until billing is connected, so no product advertises R$ 0,00.
-  price: StorefrontPrice;
+  // Billing is not connected yet, so unpriced/legacy offers surface `price: null`
+  // ("price pending", not "free"); only a real, positive price yields an object. The
+  // storefront page does not render price yet, so no product advertises R$ 0,00.
+  price: StorefrontPrice | null;
 }
 
 // Mirrors the offer table CHECK and API ceiling (999,999,999.99 in centavos).
@@ -59,7 +59,7 @@ function isProduct(value: unknown) {
     typeof value.description === "string" && value.description.length <= 2_000 &&
     isUuid(value.publication_id) && typeof value.publication_version === "number" &&
     Number.isInteger(value.publication_version) && value.publication_version > 0 &&
-    isPrice(value.price);
+    (value.price === null || isPrice(value.price));
 }
 
 function isPrice(value: unknown): value is StorefrontPrice {

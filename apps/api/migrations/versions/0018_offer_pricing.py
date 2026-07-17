@@ -11,12 +11,17 @@ follow-up: this migration keeps the snapshot bytes untouched so the migration
 immutability guarantee (0004 -> head) holds, and exposes the live offer price on
 the public storefront only for published products.
 
-Because billing is not connected yet, the seller editor does not collect a price,
-so newly-saved and pre-existing (legacy) offers carry ``unit_amount_minor = 0``.
-That zero means "price pending", not "free": the public storefront projection
-carries the price as forward plumbing, but the storefront page intentionally does
-not render it, so no published product advertises R$ 0,00. Rendering a real price
-is a follow-up gated on connecting billing and the ``draft -> active`` transition.
+Price is optional when saving a draft: the atomic ``update_product_course_offer_draft``
+function DEFAULTS an omitted price on create (0 / BRL / one_time) and PRESERVES the
+stored value on update, so an editorial PATCH that carries no price can never wipe an
+already-priced offer.
+
+Because billing is not connected yet, the seller editor does not collect a price, so
+newly-saved and pre-existing (legacy) offers carry ``unit_amount_minor = 0``. That
+zero means "price pending", not "free": ``read_public_storefront`` emits ``price:
+null`` for unpriced offers (only ``unit_amount_minor > 0`` produces a price object),
+so no published product ever advertises R$ 0,00. Rendering a real price is a follow-up
+gated on connecting billing and the ``draft -> active`` transition.
 """
 
 from collections.abc import Sequence
@@ -92,6 +97,9 @@ def upgrade() -> None:
           next_product_version bigint;
           next_course_version bigint;
           next_offer_version bigint;
+          eff_unit_amount_minor bigint;
+          eff_currency text;
+          eff_billing_period text;
           response jsonb;
         begin
           if app_private.context_text('capability') <> 'catalog.draft.update'
@@ -123,12 +131,12 @@ def upgrade() -> None:
              or p_offer_title ~ '[[:cntrl:]]'
              or p_offer_summary is null or octet_length(p_offer_summary) > 500
              or p_offer_summary ~ '[[:cntrl:]]'
-             or p_offer_unit_amount_minor is null
-             or p_offer_unit_amount_minor < 0
-             or p_offer_unit_amount_minor > 99999999999
-             or p_offer_currency is null or p_offer_currency !~ '^[A-Z]{3}$'
-             or p_offer_billing_period is null
-             or p_offer_billing_period not in ('one_time', 'monthly', 'yearly')
+             or (p_offer_unit_amount_minor is not null
+                 and (p_offer_unit_amount_minor < 0
+                      or p_offer_unit_amount_minor > 99999999999))
+             or (p_offer_currency is not null and p_offer_currency !~ '^[A-Z]{3}$')
+             or (p_offer_billing_period is not null
+                 and p_offer_billing_period not in ('one_time', 'monthly', 'yearly'))
              or p_expected_product_version is null or p_expected_product_version < 1
              or p_expected_course_version is null or p_expected_course_version < 1
              or p_expected_offer_version is null or p_expected_offer_version < 0
@@ -222,13 +230,17 @@ def upgrade() -> None:
             if found then
               raise exception 'catalog offer already exists' using errcode = '23505';
             end if;
+            -- Create: an omitted price falls back to the column defaults.
+            eff_unit_amount_minor := coalesce(p_offer_unit_amount_minor, 0);
+            eff_currency := coalesce(p_offer_currency, 'BRL');
+            eff_billing_period := coalesce(p_offer_billing_period, 'one_time');
             insert into public.offer (
               seller_organization_id, id, catalog_product_id, title, summary, status,
               unit_amount_minor, currency, billing_period
             ) values (
               p_seller_organization_id, p_offer_id, p_catalog_product_id,
               p_offer_title, p_offer_summary, 'draft',
-              p_offer_unit_amount_minor, p_offer_currency, p_offer_billing_period
+              eff_unit_amount_minor, eff_currency, eff_billing_period
             );
             next_offer_version := 1;
           else
@@ -241,12 +253,19 @@ def upgrade() -> None:
             if locked_offer.version <> p_expected_offer_version then
               raise exception 'catalog offer version conflict' using errcode = '40001';
             end if;
+            -- Update: an omitted price PRESERVES the stored value, so an editorial
+            -- PATCH that carries no price can never wipe an already-priced offer.
+            eff_unit_amount_minor := coalesce(p_offer_unit_amount_minor,
+                                              locked_offer.unit_amount_minor);
+            eff_currency := coalesce(p_offer_currency, locked_offer.currency);
+            eff_billing_period := coalesce(p_offer_billing_period,
+                                           locked_offer.billing_period);
             update public.offer
             set title = p_offer_title,
                 summary = p_offer_summary,
-                unit_amount_minor = p_offer_unit_amount_minor,
-                currency = p_offer_currency,
-                billing_period = p_offer_billing_period,
+                unit_amount_minor = eff_unit_amount_minor,
+                currency = eff_currency,
+                billing_period = eff_billing_period,
                 version = version + 1,
                 updated_at = clock_timestamp()
             where seller_organization_id = p_seller_organization_id
@@ -297,9 +316,9 @@ def upgrade() -> None:
               'product_version', next_product_version,
               'course_version', next_course_version,
               'offer_version', next_offer_version,
-              'offer_unit_amount_minor', p_offer_unit_amount_minor,
-              'offer_currency', p_offer_currency,
-              'offer_billing_period', p_offer_billing_period
+              'offer_unit_amount_minor', eff_unit_amount_minor,
+              'offer_currency', eff_currency,
+              'offer_billing_period', eff_billing_period
             )
           );
           return query select p_offer_id, next_product_version,
@@ -342,11 +361,13 @@ def upgrade() -> None:
             'description',coalesce(publication.snapshot->'product'->>'description',''),
             'publication_id',publication.id,
             'publication_version',publication.version,
-            'price',jsonb_build_object(
-              'unit_amount_minor',offer.unit_amount_minor,
-              'currency',rtrim(offer.currency),
-              'billing_period',offer.billing_period
-            )
+            'price',case when offer.unit_amount_minor > 0
+              then jsonb_build_object(
+                'unit_amount_minor',offer.unit_amount_minor,
+                'currency',rtrim(offer.currency),
+                'billing_period',offer.billing_period
+              )
+              else null end
           ) order by product.created_at,product.id),'[]'::jsonb)
           into products
           from catalog_product product

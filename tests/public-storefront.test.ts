@@ -15,7 +15,7 @@ function fixture() {
       description: "Curso demonstrativo.",
       publication_id: randomUUID(),
       publication_version: 1,
-      price: { unit_amount_minor: 0, currency: "BRL", billing_period: "one_time" }
+      price: null
     }]
   };
 }
@@ -48,7 +48,7 @@ describe("public storefront payload", () => {
     })).toBeNull();
   });
 
-  it("accepts a live-priced product and rejects malformed price", () => {
+  it("accepts a live-priced product, a pending (null) price, and rejects malformed price", () => {
     const value = fixture();
     const priced = {
       ...value,
@@ -58,6 +58,9 @@ describe("public storefront payload", () => {
       }]
     };
     expect(parsePublicStorefront(priced)).toEqual(priced);
+
+    // Unpriced offers surface `price: null` (pending), which is accepted.
+    expect(parsePublicStorefront(value)).toEqual(value);
 
     const missingPrice = { ...value.products[0] } as Record<string, unknown>;
     delete missingPrice.price;

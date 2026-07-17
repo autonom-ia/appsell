@@ -84,12 +84,14 @@ class ProductCourseOfferUpdateBody(ProductCourseDraftBody):
     # Billing is not connected yet: the seller editor intentionally does not collect
     # price ("Cobrança não conectada / não informe preço nesta fase") and migration
     # 0018 defers the offer's ``draft -> active`` transition, where price becomes
-    # mandatory. Saving a draft therefore keeps price OPTIONAL, defaulting to the same
-    # values as the ``offer`` table columns (0 / BRL / one_time). When a value IS sent
-    # it is still fully validated below.
-    offer_unit_amount_minor: int = Field(default=0, ge=0, le=_MAX_UNIT_AMOUNT_MINOR)
-    offer_currency: str = "BRL"
-    offer_billing_period: Literal["one_time", "monthly", "yearly"] = "one_time"
+    # mandatory. Saving a draft therefore keeps price OPTIONAL: an absent field is sent
+    # to the atomic function as NULL, which DEFAULTS on create (0 / BRL / one_time) and
+    # PRESERVES the stored value on update -- so an editorial PATCH that omits price can
+    # never silently wipe an already-priced offer. When a value IS sent it is still
+    # fully validated below.
+    offer_unit_amount_minor: int | None = Field(default=None, ge=0, le=_MAX_UNIT_AMOUNT_MINOR)
+    offer_currency: str | None = None
+    offer_billing_period: Literal["one_time", "monthly", "yearly"] | None = None
 
     @field_validator("course_id", "offer_id")
     @classmethod
@@ -116,7 +118,9 @@ class ProductCourseOfferUpdateBody(ProductCourseDraftBody):
 
     @field_validator("offer_currency")
     @classmethod
-    def validate_offer_currency(cls, value: str) -> str:
+    def validate_offer_currency(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         if _CURRENCY.fullmatch(value) is None:
             raise ValueError("invalid offer currency")
         return value

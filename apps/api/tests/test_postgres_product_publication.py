@@ -174,9 +174,9 @@ def update_draft(
     key: UUID | None = None,
     body_sha256: str | None = None,
     product_title: str = "Produto Editado",
-    offer_unit_amount_minor: int = 19900,
-    offer_currency: str = "BRL",
-    offer_billing_period: str = "one_time",
+    offer_unit_amount_minor: int | None = 19900,
+    offer_currency: str | None = "BRL",
+    offer_billing_period: str | None = "one_time",
 ) -> tuple[UUID, int, int, int, bool]:
     assert RUNTIME_URL
     request_key = key or uuid4()
@@ -311,6 +311,58 @@ def test_offer_pricing_is_persisted_on_create_and_update() -> None:
     )
     assert updated_offer_version == 2
     assert read_offer(seller_id, offer_id) == (250000, "USD", "monthly", 2)
+
+
+def test_offer_pricing_is_preserved_when_omitted_on_update() -> None:
+    seller_id, product_id, course_id = create_graph()
+    offer_id = uuid4()
+    _, product_version, course_version, offer_version, _ = update_draft(
+        USER_A,
+        seller_id,
+        product_id,
+        course_id,
+        offer_id,
+        offer_unit_amount_minor=39900,
+        offer_currency="USD",
+        offer_billing_period="monthly",
+    )
+    assert read_offer(seller_id, offer_id) == (39900, "USD", "monthly", 1)
+
+    # An editorial update that omits price (NULL) must preserve the stored price
+    # instead of silently resetting it to the create-time defaults.
+    _, _, _, preserved_version, _ = update_draft(
+        USER_A,
+        seller_id,
+        product_id,
+        course_id,
+        offer_id,
+        expected_product_version=product_version,
+        expected_course_version=course_version,
+        expected_offer_version=offer_version,
+        offer_unit_amount_minor=None,
+        offer_currency=None,
+        offer_billing_period=None,
+    )
+    assert preserved_version == 2
+    assert read_offer(seller_id, offer_id) == (39900, "USD", "monthly", 2)
+
+
+def test_offer_pricing_defaults_when_omitted_on_create() -> None:
+    seller_id, product_id, course_id = create_graph()
+    offer_id = uuid4()
+    _, _, _, offer_version, created = update_draft(
+        USER_A,
+        seller_id,
+        product_id,
+        course_id,
+        offer_id,
+        offer_unit_amount_minor=None,
+        offer_currency=None,
+        offer_billing_period=None,
+    )
+    assert created is True
+    assert offer_version == 1
+    assert read_offer(seller_id, offer_id) == (0, "BRL", "one_time", 1)
 
 
 @pytest.mark.parametrize(

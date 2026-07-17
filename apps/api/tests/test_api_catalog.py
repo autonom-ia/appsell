@@ -527,6 +527,49 @@ async def test_patch_binds_versions_ids_hash_and_actor_to_atomic_function() -> N
 
 
 @pytest.mark.asyncio
+async def test_patch_without_pricing_forwards_null_to_atomic_function() -> None:
+    product_id, course_id, offer_id = uuid4(), uuid4(), uuid4()
+    auth = FakeAuth(
+        seller_id=SELLER_ID,
+        result=FakeResult(
+            one={
+                "offer_id": offer_id,
+                "product_version": 2,
+                "course_version": 2,
+                "offer_version": 2,
+                "created": False,
+            }
+        ),
+    )
+    value = {
+        "idempotency_key": str(uuid4()),
+        "course_id": str(course_id),
+        "offer_id": str(offer_id),
+        "slug": "produto-editado",
+        "title": "Produto Editado",
+        "description": "Rascunho persistido",
+        "course_title": "Curso Editado",
+        "offer_title": "Oferta Principal",
+        "offer_summary": "Condições informativas sem billing",
+        "expected_product_version": 1,
+        "expected_course_version": 1,
+        "expected_offer_version": 1,
+    }
+    body = json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode()
+    async with client_for(auth) as client:
+        response = await client.patch(
+            f"/v1/me/sellers/{SELLER_ID}/products/{product_id}", content=body
+        )
+    assert response.status_code == 200
+    # Omitted price is forwarded as NULL so the atomic function preserves the stored
+    # value on update (and defaults on create) instead of overwriting it with 0.
+    _, parameters = auth.session.calls[0]
+    assert parameters["offer_unit_amount_minor"] is None
+    assert parameters["offer_currency"] is None
+    assert parameters["offer_billing_period"] is None
+
+
+@pytest.mark.asyncio
 async def test_patch_response_echoes_server_validated_pricing() -> None:
     product_id, course_id, offer_id = uuid4(), uuid4(), uuid4()
     auth = FakeAuth(
