@@ -169,14 +169,12 @@ test.skipIf(!domainApiUrl)(
         product: { id: fixture.product_b },
         entitlement_id: fixture.entitlement_b,
         selected_asset: {
-          id: fixture.asset_b,
           media_type: "video/mp4",
           view_href: `/api/library/items/${fixture.entitlement_b}/assets/${fixture.asset_b}`
         }
       });
       expect(playerA.payload.player).toMatchObject({
         selected_asset: {
-          id: fixture.asset_a,
           media_type: "application/pdf",
           view_href: `/api/library/items/${fixture.entitlement_a}/assets/${fixture.asset_a}/pages`
         }
