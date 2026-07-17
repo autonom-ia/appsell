@@ -13,6 +13,7 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import psycopg
 import pytest
+from psycopg.types.json import Jsonb
 
 from appsell_api.reset_demo_tenant import (
     ASSET_WORKER_EMAIL,
@@ -75,6 +76,25 @@ def pristine_demo() -> Generator[None, None, None]:
             (seller,),
         )
         connection.execute(
+            "delete from asset_pdf_page page where page.seller_organization_id=%s "
+            "and exists(select 1 from asset_pdf_raster raster "
+            "join asset_blob blob "
+            "on blob.seller_organization_id=raster.seller_organization_id "
+            "and blob.id=raster.blob_id "
+            "where raster.seller_organization_id=page.seller_organization_id "
+            "and raster.asset_id=page.asset_id "
+            "and raster.asset_version=page.asset_version "
+            "and blob.storage_driver='s3')",
+            (seller,),
+        )
+        connection.execute(
+            "delete from asset_pdf_raster raster where raster.seller_organization_id=%s "
+            "and exists(select 1 from asset_blob blob "
+            "where blob.seller_organization_id=raster.seller_organization_id "
+            "and blob.id=raster.blob_id and blob.storage_driver='s3')",
+            (seller,),
+        )
+        connection.execute(
             "delete from asset_version version where version.seller_organization_id=%s "
             "and exists(select 1 from asset_blob blob "
             "where blob.seller_organization_id=version.seller_organization_id "
@@ -94,6 +114,14 @@ def pristine_demo() -> Generator[None, None, None]:
             (seller,),
         )
         connection.execute(
+            "delete from app_private.asset_pdf_page_candidate where seller_organization_id=%s",
+            (seller,),
+        )
+        connection.execute(
+            "delete from app_private.asset_pdf_raster_candidate where seller_organization_id=%s",
+            (seller,),
+        )
+        connection.execute(
             "delete from app_private.asset_upload where seller_organization_id=%s",
             (seller,),
         )
@@ -109,6 +137,28 @@ def pristine_demo() -> Generator[None, None, None]:
 
 def digest(label: str) -> str:
     return hashlib.sha256(label.encode()).hexdigest()
+
+
+def pdf_page_manifest(
+    *, seller: UUID, created: dict[str, Any], byte_size: int = 1024
+) -> list[dict[str, object]]:
+    return [
+        {
+            "page_number": 1,
+            "storage_driver": "s3",
+            "storage_bucket": "appsell-ready",
+            "object_key": (
+                f"tenants/{seller}/assets/{created['asset_id']}"
+                f"/v{created['reserved_version']}/pages/1.png"
+            ),
+            "storage_version_id": "page-version-1",
+            "storage_etag": "page-etag-1",
+            "byte_size": byte_size,
+            "sha256": digest(f"pdf-page-{created['upload_id']}"),
+            "pixel_width": 1200,
+            "pixel_height": 1600,
+        }
+    ]
 
 
 def ensure_worker(subject: str = ASSET_WORKER_SUBJECT, email: str = ASSET_WORKER_EMAIL) -> UUID:
@@ -279,26 +329,62 @@ def upload_ready_asset(
         assert lease["ready_bucket"] == "appsell-ready"
 
         apply_context(connection, worker, None, "catalog.asset.verify")
-        connection.execute(
-            """
-            select app_private.register_asset_ready_candidate(
-              %s,%s,%s,'scanner-test','ready-version-1','ready-etag',%s,%s,
-              %s,%s,'clean')
-            """,
-            (worker, seller, created["upload_id"], ready_size, ready_hash, media_type, media_type),
-        )
+        pdf_manifest_sha: str | None = None
+        if media_type == "application/pdf":
+            registered_row = connection.execute(
+                """
+                select app_private.register_asset_ready_candidate_v2(
+                  %s,%s,%s,'scanner-test','ready-version-1','ready-etag',%s,%s,
+                  %s,%s,'clean',%s)
+                """,
+                (
+                    worker,
+                    seller,
+                    created["upload_id"],
+                    ready_size,
+                    ready_hash,
+                    media_type,
+                    media_type,
+                    Jsonb(pdf_page_manifest(seller=seller, created=created)),
+                ),
+            ).fetchone()
+            assert registered_row is not None
+            pdf_manifest_sha = registered_row[0]["pdf_manifest_sha256"]
+        else:
+            connection.execute(
+                """
+                select app_private.register_asset_ready_candidate(
+                  %s,%s,%s,'scanner-test','ready-version-1','ready-etag',%s,%s,
+                  %s,%s,'clean')
+                """,
+                (
+                    worker,
+                    seller,
+                    created["upload_id"],
+                    ready_size,
+                    ready_hash,
+                    media_type,
+                    media_type,
+                ),
+            )
         connection.commit()
 
         finalize_key = uuid4()
         finalize_body = digest("finalize" + payload_hash)
         apply_context(connection, worker, None, "catalog.asset.verify")
+        finalize_function = (
+            "app_private.finalize_asset_verification_v2"
+            if media_type == "application/pdf"
+            else "app_private.finalize_asset_verification"
+        )
+        pdf_manifest_placeholder = ",%s" if pdf_manifest_sha else ""
         finalized_row = connection.execute(
-            """
-            select app_private.finalize_asset_verification(
+            f"""
+            select {finalize_function}(
               %s,%s,%s,'scanner-test',%s,%s,%s,%s,%s,%s,
-              'clean','ready-version-1','ready-etag','ready',%s,%s,%s
+              'clean','ready-version-1','ready-etag','ready',%s,%s,%s{pdf_manifest_placeholder}
             )
-            """,
+            """,  # noqa: S608 - function name and optional placeholder are fixed above
             (
                 worker,
                 seller,
@@ -312,6 +398,7 @@ def upload_ready_asset(
                 finalize_key,
                 finalize_body,
                 uuid4(),
+                *((pdf_manifest_sha,) if pdf_manifest_sha else ()),
             ),
         ).fetchone()
         assert finalized_row is not None
@@ -319,12 +406,12 @@ def upload_ready_asset(
         connection.commit()
         apply_context(connection, worker, None, "catalog.asset.verify")
         replay_row = connection.execute(
-            """
-            select app_private.finalize_asset_verification(
+            f"""
+            select {finalize_function}(
               %s,%s,%s,'scanner-test',%s,%s,%s,%s,%s,%s,
-              'clean','ready-version-1','ready-etag','ready',%s,%s,%s
+              'clean','ready-version-1','ready-etag','ready',%s,%s,%s{pdf_manifest_placeholder}
             )
-            """,
+            """,  # noqa: S608 - function name and optional placeholder are fixed above
             (
                 worker,
                 seller,
@@ -338,6 +425,7 @@ def upload_ready_asset(
                 finalize_key,
                 finalize_body,
                 uuid4(),
+                *((pdf_manifest_sha,) if pdf_manifest_sha else ()),
             ),
         ).fetchone()
         assert replay_row is not None
@@ -715,14 +803,22 @@ def test_rejected_verification_never_creates_blob_version_or_draft() -> None:
         )
         connection.commit()
         apply_context(connection, worker, None, "catalog.asset.verify")
-        connection.execute(
+        registered_row = connection.execute(
             """
-            select app_private.register_asset_ready_candidate(
+            select app_private.register_asset_ready_candidate_v2(
               %s,%s,%s,'scanner-test','ready-v','ready-etag',200,%s,
-              'application/pdf','application/pdf','clean')
+              'application/pdf','application/pdf','clean',%s)
             """,
-            (worker, seller, created["upload_id"], normalized_rejected_sha),
-        )
+            (
+                worker,
+                seller,
+                created["upload_id"],
+                normalized_rejected_sha,
+                Jsonb(pdf_page_manifest(seller=seller, created=created)),
+            ),
+        ).fetchone()
+        assert registered_row is not None
+        pdf_manifest_sha = registered_row[0]["pdf_manifest_sha256"]
         connection.commit()
     with psycopg.connect(ADMIN_URL) as connection:
         connection.execute(
@@ -735,9 +831,9 @@ def test_rejected_verification_never_creates_blob_version_or_draft() -> None:
         with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
             connection.execute(
                 """
-                select app_private.finalize_asset_verification(
+                select app_private.finalize_asset_verification_v2(
                   %s,%s,%s,'scanner-test',256,%s,200,%s,'application/pdf',
-                  'application/pdf','clean','ready-v','ready-etag','ready',%s,%s,%s)
+                  'application/pdf','clean','ready-v','ready-etag','ready',%s,%s,%s,%s)
                 """,
                 (
                     worker,
@@ -748,6 +844,7 @@ def test_rejected_verification_never_creates_blob_version_or_draft() -> None:
                     uuid4(),
                     digest("archived-finalize"),
                     uuid4(),
+                    pdf_manifest_sha,
                 ),
             )
         connection.rollback()
@@ -761,9 +858,9 @@ def test_rejected_verification_never_creates_blob_version_or_draft() -> None:
         apply_context(connection, worker, None, "catalog.asset.verify")
         rejected_row = connection.execute(
             """
-            select app_private.finalize_asset_verification(
+            select app_private.finalize_asset_verification_v2(
               %s,%s,%s,'scanner-test',255,%s,200,%s,'application/pdf','application/pdf',
-              'clean','ready-v','ready-etag','ready',%s,%s,%s)
+              'clean','ready-v','ready-etag','ready',%s,%s,%s,%s)
             """,
             (
                 worker,
@@ -774,6 +871,7 @@ def test_rejected_verification_never_creates_blob_version_or_draft() -> None:
                 uuid4(),
                 digest("e"),
                 uuid4(),
+                pdf_manifest_sha,
             ),
         ).fetchone()
         assert rejected_row is not None
@@ -788,10 +886,18 @@ def test_rejected_verification_never_creates_blob_version_or_draft() -> None:
               (select count(*) from asset_version where seller_organization_id=%s and asset_id=%s),
               (select count(*) from lesson_asset_draft
                 where seller_organization_id=%s and asset_id=%s),
+              (select count(*) from asset_pdf_raster
+                where seller_organization_id=%s and asset_id=%s),
+              (select count(*) from asset_pdf_page
+                where seller_organization_id=%s and asset_id=%s),
               (select draft_version from course where seller_organization_id=%s and id=%s),
               (select count(*) from app_private.asset_storage_cleanup_job
                 where seller_organization_id=%s and upload_id=%s
-                  and kind='ready_orphan' and storage_version_id='ready-v' and status='queued')
+                  and kind='ready_orphan' and storage_version_id='ready-v' and status='queued'),
+              (select count(*) from app_private.asset_storage_cleanup_job
+                where seller_organization_id=%s and upload_id=%s
+                  and kind='pdf_page_orphan' and storage_version_id='page-version-1'
+                  and status='queued')
             """,
             (
                 seller,
@@ -801,12 +907,18 @@ def test_rejected_verification_never_creates_blob_version_or_draft() -> None:
                 seller,
                 UUID(created["asset_id"]),
                 seller,
+                UUID(created["asset_id"]),
+                seller,
+                UUID(created["asset_id"]),
+                seller,
                 course,
+                seller,
+                UUID(created["upload_id"]),
                 seller,
                 UUID(created["upload_id"]),
             ),
         ).fetchone()
-    assert state == (0, 0, 0, 1, 1)
+    assert state == (0, 0, 0, 0, 0, 1, 1, 1)
 
 
 def test_open_upload_quota_is_atomic_under_concurrency() -> None:
@@ -1047,14 +1159,22 @@ def test_cancel_and_finalize_are_linearizable_and_never_leave_partial_rows() -> 
         )
         connection.commit()
         apply_context(connection, worker, None, "catalog.asset.verify")
-        connection.execute(
+        registered_row = connection.execute(
             """
-            select app_private.register_asset_ready_candidate(
+            select app_private.register_asset_ready_candidate_v2(
               %s,%s,%s,'scanner-race','ready-v','ready-etag',480,%s,
-              'application/pdf','application/pdf','clean')
+              'application/pdf','application/pdf','clean',%s)
             """,
-            (worker, seller, created["upload_id"], ready_hash),
-        )
+            (
+                worker,
+                seller,
+                created["upload_id"],
+                ready_hash,
+                Jsonb(pdf_page_manifest(seller=seller, created=created)),
+            ),
+        ).fetchone()
+        assert registered_row is not None
+        pdf_manifest_sha = registered_row[0]["pdf_manifest_sha256"]
         connection.commit()
 
     barrier = Barrier(2)
@@ -1091,9 +1211,9 @@ def test_cancel_and_finalize_are_linearizable_and_never_leave_partial_rows() -> 
                 barrier.wait(timeout=5)
                 connection.execute(
                     """
-                    select app_private.finalize_asset_verification(
+                    select app_private.finalize_asset_verification_v2(
                       %s,%s,%s,'scanner-race',512,%s,480,%s,'application/pdf',
-                      'application/pdf','clean','ready-v','ready-etag','ready',%s,%s,%s)
+                      'application/pdf','clean','ready-v','ready-etag','ready',%s,%s,%s,%s)
                     """,
                     (
                         worker,
@@ -1104,6 +1224,7 @@ def test_cancel_and_finalize_are_linearizable_and_never_leave_partial_rows() -> 
                         uuid4(),
                         digest("finalize"),
                         uuid4(),
+                        pdf_manifest_sha,
                     ),
                 )
                 connection.commit()
@@ -1125,18 +1246,26 @@ def test_cancel_and_finalize_are_linearizable_and_never_leave_partial_rows() -> 
                 and asset_id=upload.asset_id),
               (select count(*) from lesson_asset_draft where seller_organization_id=%s
                 and asset_id=upload.asset_id),
+              (select count(*) from asset_pdf_raster where seller_organization_id=%s
+                and asset_id=upload.asset_id),
+              (select count(*) from asset_pdf_page where seller_organization_id=%s
+                and asset_id=upload.asset_id),
               (select status from app_private.asset_storage_cleanup_job cleanup
                 where cleanup.seller_organization_id=upload.seller_organization_id
                   and cleanup.upload_id=upload.id and cleanup.kind='ready_orphan'
-                  and cleanup.storage_version_id='ready-v')
+                  and cleanup.storage_version_id='ready-v'),
+              (select status from app_private.asset_storage_cleanup_job cleanup
+                where cleanup.seller_organization_id=upload.seller_organization_id
+                  and cleanup.upload_id=upload.id and cleanup.kind='pdf_page_orphan'
+                  and cleanup.storage_version_id='page-version-1')
             from app_private.asset_upload upload
             where upload.seller_organization_id=%s and upload.id=%s
             """,
-            (seller, seller, seller, seller, UUID(created["upload_id"])),
+            (seller, seller, seller, seller, seller, seller, UUID(created["upload_id"])),
         ).fetchone()
     assert state in (
-        ("cancelled", 0, 0, 0, "queued"),
-        ("ready", 1, 1, 1, "protected"),
+        ("cancelled", 0, 0, 0, 0, 0, "queued", "queued"),
+        ("ready", 1, 1, 1, 1, 1, "protected", "protected"),
     )
 
 
@@ -1263,29 +1392,24 @@ def test_claim_and_cancel_follow_upload_then_job_lock_order_without_deadlock() -
     ready_hash = digest("claim-cancel-ready")
     with psycopg.connect(RUNTIME_URL) as connection:
         apply_context(connection, worker, None, "catalog.asset.verify")
-        registered_row = connection.execute(
-            """
-            select app_private.register_asset_ready_candidate(
-              %s,%s,%s,'claim-cancel-worker','late-ready-v','late-ready-etag',480,%s,
-              'application/pdf','application/pdf','clean')
-            """,
-            (worker, seller, created["upload_id"], ready_hash),
-        ).fetchone()
-        assert registered_row is not None
-        registered = registered_row[0]
-        connection.commit()
-    assert registered["registered"] is True
-    assert registered["reconciling"] is True
+        with pytest.raises(psycopg.DatabaseError) as stale_lease:
+            connection.execute(
+                """
+                select app_private.register_asset_ready_candidate_v2(
+                  %s,%s,%s,'claim-cancel-worker','late-ready-v','late-ready-etag',480,%s,
+                  'application/pdf','application/pdf','clean',%s)
+                """,
+                (
+                    worker,
+                    seller,
+                    created["upload_id"],
+                    ready_hash,
+                    Jsonb(pdf_page_manifest(seller=seller, created=created)),
+                ),
+            )
+        assert stale_lease.value.sqlstate == "P4091"
+        connection.rollback()
     with psycopg.connect(ADMIN_URL) as connection:
-        cleanup = connection.execute(
-            """
-            select status,available_at<=clock_timestamp()
-            from app_private.asset_storage_cleanup_job
-            where seller_organization_id=%s and upload_id=%s
-              and kind='ready_orphan' and storage_version_id='late-ready-v'
-            """,
-            (seller, UUID(created["upload_id"])),
-        ).fetchone()
         ready_reconcile = connection.execute(
             """
             select cleanup.status,cleanup.storage_version_id,cleanup.bucket,
@@ -1299,7 +1423,6 @@ def test_claim_and_cancel_follow_upload_then_job_lock_order_without_deadlock() -
             """,
             (seller, UUID(created["upload_id"])),
         ).fetchone()
-    assert cleanup == ("queued", True)
     assert ready_reconcile == (
         "queued",
         None,
