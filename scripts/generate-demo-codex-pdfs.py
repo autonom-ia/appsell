@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import tempfile
+import zlib
 from pathlib import Path
 from uuid import UUID, uuid5
 
@@ -374,6 +375,43 @@ def _previous_lessons() -> dict[str, dict[str, object]]:
     return lessons
 
 
+def _has_canonical_committed_png_structure(payload: bytes) -> bool:
+    if not payload.startswith(b"\x89PNG\r\n\x1a\n"):
+        return False
+    offset = 8
+    chunks: list[bytes] = []
+    while offset < len(payload):
+        if offset + 12 > len(payload):
+            return False
+        length = int.from_bytes(payload[offset : offset + 4], "big")
+        chunk_type = payload[offset + 4 : offset + 8]
+        data_start = offset + 8
+        data_end = data_start + length
+        crc_end = data_end + 4
+        if crc_end > len(payload):
+            return False
+        chunk_data = payload[data_start:data_end]
+        expected_crc = int.from_bytes(payload[data_end:crc_end], "big")
+        actual_crc = zlib.crc32(chunk_data, zlib.crc32(chunk_type)) & 0xFFFFFFFF
+        if expected_crc != actual_crc:
+            return False
+        if (chunk_type == b"IHDR" and length != 13) or (
+            chunk_type == b"IEND" and length != 0
+        ):
+            return False
+        chunks.append(chunk_type)
+        offset = crc_end
+        if chunk_type == b"IEND":
+            break
+    return (
+        offset == len(payload)
+        and len(chunks) >= 3
+        and chunks[0] == b"IHDR"
+        and chunks[-1] == b"IEND"
+        and all(chunk == b"IDAT" for chunk in chunks[1:-1])
+    )
+
+
 def _committed_pages(
     *, slug: str, source_sha256: str, previous: dict[str, object] | None
 ) -> list[dict[str, object]]:
@@ -405,12 +443,12 @@ def _committed_pages(
         path = OUTPUT / relative_key
         try:
             payload = path.read_bytes()
-            canonical, width, height = _canonical_png_bytes(payload)
+            _, width, height = _canonical_png_bytes(payload)
         except (OSError, PdfDerivativeRejected) as error:
             raise RuntimeError(
                 f"committed demo raster page {relative_key} is invalid"
             ) from error
-        if canonical != payload:
+        if not _has_canonical_committed_png_structure(payload):
             raise RuntimeError(
                 f"committed demo raster page {relative_key} is not canonical"
             )

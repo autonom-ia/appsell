@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import zlib
 from collections.abc import Callable
 from pathlib import Path
 from runpy import run_path
@@ -46,6 +47,19 @@ def page_entry(payload: bytes, *, slug: str = "lesson") -> dict[str, object]:
         "pixel_width": 4,
         "pixel_height": 3,
     }
+
+
+def png_chunk(chunk_type: bytes, data: bytes) -> bytes:
+    crc = zlib.crc32(data, zlib.crc32(chunk_type)) & 0xFFFFFFFF
+    return len(data).to_bytes(4, "big") + chunk_type + data + crc.to_bytes(4, "big")
+
+
+def replace_png_chunk(payload: bytes, chunk_type: bytes, replacement: bytes) -> bytes:
+    type_offset = payload.index(chunk_type)
+    length = int.from_bytes(payload[type_offset - 4 : type_offset], "big")
+    chunk_start = type_offset - 4
+    chunk_end = type_offset + 4 + length + 4
+    return payload[:chunk_start] + replacement + payload[chunk_end:]
 
 
 def load_generator(tmp_path: Path) -> dict[str, Any]:
@@ -247,6 +261,44 @@ def test_committed_demo_pages_reject_noncanonical_png(tmp_path: Path) -> None:
                 "raster": {"pages": [page_entry(page)]},
             },
         )
+
+
+def test_committed_png_structure_checks_crc_lengths_bounds_and_multiple_idat(
+    tmp_path: Path,
+) -> None:
+    namespace = load_generator(tmp_path)
+    validate = namespace["_has_canonical_committed_png_structure"]
+    page = canonical_test_png()
+    assert validate(page) is True
+
+    idat_offset = page.index(b"IDAT")
+    idat_length = int.from_bytes(page[idat_offset - 4 : idat_offset], "big")
+    idat_crc = idat_offset + 4 + idat_length
+    corrupt_idat_crc = bytearray(page)
+    corrupt_idat_crc[idat_crc] ^= 1
+    assert validate(bytes(corrupt_idat_crc)) is False
+
+    iend_offset = page.index(b"IEND")
+    corrupt_iend_crc = bytearray(page)
+    corrupt_iend_crc[iend_offset + 4] ^= 1
+    assert validate(bytes(corrupt_iend_crc)) is False
+    assert validate(replace_png_chunk(page, b"IEND", png_chunk(b"IEND", b"x"))) is False
+
+    invalid_ihdr = bytearray(page)
+    invalid_ihdr[4:8] = (12).to_bytes(4, "big")
+    assert validate(bytes(invalid_ihdr)) is False
+    assert validate(page[:-1]) is False
+    assert validate(page + b"trailing") is False
+
+    data_start = idat_offset + 4
+    data = page[data_start : data_start + idat_length]
+    midpoint = max(1, len(data) // 2)
+    multiple_idat = replace_png_chunk(
+        page,
+        b"IDAT",
+        png_chunk(b"IDAT", data[:midpoint]) + png_chunk(b"IDAT", data[midpoint:]),
+    )
+    assert validate(multiple_idat) is True
 
 
 def test_pdf_page_chrome_paints_an_opaque_white_background_first() -> None:
