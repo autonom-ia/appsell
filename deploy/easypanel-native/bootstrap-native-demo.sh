@@ -168,9 +168,14 @@ select case
   -- schema_ready() itself dereferences app_private.context_signing_key and
   -- app_private.bootstrap_trust_policy directly (not via to_regclass), so it
   -- is only safe to call once the two branches above confirm those tables
-  -- and their singleton rows exist.
+  -- and their singleton rows exist. schema_ready() also guards
+  -- to_regclass('public.identity_user'), so a false result already covers a
+  -- dropped demo-seed table. The presence of seed *rows* is checked in a
+  -- separate statement below: a static "from identity_user" reference here
+  -- would fail parse analysis (PostgreSQL resolves every relation before any
+  -- CASE branch short-circuits) whenever the drifted table is absent, turning
+  -- the intended clean refuse into a raw parse error.
   when not app_private.schema_ready() then 'schema-not-ready'
-  when not exists(select 1 from identity_user) then 'seed-missing'
   when (select encode(secret,'hex') from app_private.context_signing_key where singleton)
     <> :'expected_context_key' then 'context-key-drift'
   when (select encode(attestation_secret,'hex') from app_private.bootstrap_trust_policy
@@ -187,6 +192,18 @@ end;
 SQL
 )"
   [[ "$configured_state" == "ready" ]] || {
+    echo "refusing native bootstrap configuration drift" >&2
+    exit 1
+  }
+  # schema_ready() has now confirmed public.identity_user exists, so referencing
+  # the table directly is finally parse-safe. This probe verifies the demo seed
+  # rows survived: schema_ready() only proves the table's structure, not that the
+  # reset_demo_tenant seed rows are still present.
+  seed_state="$(psql -XAt --set=ON_ERROR_STOP=1 --dbname="$database_name" <<'SQL'
+select case when exists(select 1 from identity_user) then 'ready' else 'seed-missing' end;
+SQL
+)"
+  [[ "$seed_state" == "ready" ]] || {
     echo "refusing native bootstrap configuration drift" >&2
     exit 1
   }
