@@ -282,15 +282,60 @@ async def test_first_consume_grants_superadmin(
 
 @pytest.mark.asyncio
 async def test_second_consume_is_rejected(client: httpx.AsyncClient, bootstrap_ready: None) -> None:
+    """A successful consume disables the trust policy, so the natural second
+    attempt is rejected fail-closed by the disabled-policy gate (403). The
+    conflict path (409) requires an operator to re-enable the policy and is
+    covered by test_reenabled_policy_after_consumption_conflicts."""
     first_body, first_headers = _bootstrap_request(subject=f"bootstrap-first-{uuid4()}")
     first = await client.post(PATH, content=first_body, headers=first_headers)
     assert first.status_code == 201
 
-    second_body, second_headers = _bootstrap_request(subject=f"bootstrap-second-{uuid4()}")
+    second_subject = f"bootstrap-second-{uuid4()}"
+    second_body, second_headers = _bootstrap_request(subject=second_subject)
     second = await client.post(PATH, content=second_body, headers=second_headers)
 
-    assert second.status_code == 409
-    assert second.json() == {"detail": "resource_conflict"}
+    assert second.status_code == 403
+    assert second.json() == {"detail": "forbidden"}
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        assert connection.execute(
+            "select count(*) from platform_grant "
+            "where role = 'platform_superadmin' and status = 'active'"
+        ).fetchone() == (1,)
+        assert connection.execute(
+            "select count(*) from superadmin_bootstrap where identity_user_id = %s",
+            (_derived_user_id(second_subject),),
+        ).fetchone() == (0,)
+
+
+@pytest.mark.asyncio
+async def test_reenabled_policy_after_consumption_conflicts(
+    client: httpx.AsyncClient, bootstrap_ready: None
+) -> None:
+    """If an operator re-enables the trust policy while a superadmin grant is
+    active, the single-consumption invariant still holds and surfaces as 409."""
+    first_body, first_headers = _bootstrap_request(subject=f"bootstrap-consumed-{uuid4()}")
+    first = await client.post(PATH, content=first_body, headers=first_headers)
+    assert first.status_code == 201
+
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL, autocommit=True) as connection:
+        connection.execute("set role appsell_owner")
+        connection.execute(
+            "update app_private.bootstrap_trust_policy set enabled = true where singleton"
+        )
+
+    retry_subject = f"bootstrap-retry-{uuid4()}"
+    retry_body, retry_headers = _bootstrap_request(subject=retry_subject)
+    retry = await client.post(PATH, content=retry_body, headers=retry_headers)
+
+    assert retry.status_code == 409
+    assert retry.json() == {"detail": "resource_conflict"}
+    with psycopg.connect(ADMIN_URL) as connection:
+        assert connection.execute(
+            "select count(*) from superadmin_bootstrap where identity_user_id = %s",
+            (_derived_user_id(retry_subject),),
+        ).fetchone() == (0,)
 
 
 @pytest.mark.asyncio

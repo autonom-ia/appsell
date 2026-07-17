@@ -12,7 +12,6 @@ from .routes import _authenticate, _domain_error, _model_from_body, _require_no_
 
 router = APIRouter(prefix="/v1/platform")
 
-_ASSURANCE_LEVELS = frozenset({"mfa", "passkey"})
 _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 # 2^63 - 1: guard the epoch-second attestation window against bigint overflow.
 _MAX_EPOCH_SECONDS = 9_223_372_036_854_775_807
@@ -51,14 +50,7 @@ class BootstrapSuperadminBody(BaseModel):
             raise ValueError("invalid normalized email")
         return value
 
-    @field_validator("assurance")
-    @classmethod
-    def validate_assurance(cls, value: str) -> str:
-        if value not in _ASSURANCE_LEVELS:
-            raise ValueError("invalid assurance level")
-        return value
-
-    @field_validator("issuer", "audience", "client_id")
+    @field_validator("assurance", "issuer", "audience", "client_id")
     @classmethod
     def validate_trust_field(cls, value: str) -> str:
         if (
