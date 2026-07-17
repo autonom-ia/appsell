@@ -345,7 +345,7 @@ def seed_entitlement(graph: Graph, publication: UUID) -> UUID:
 
 
 def seed_legacy_publication(
-    connection: psycopg.Connection[Any], graph: Graph, asset: Asset
+    connection: psycopg.Connection[Any], graph: Graph, asset: Asset, *, version: int = 1
 ) -> UUID:
     publication = uuid4()
     snapshot = {
@@ -381,12 +381,13 @@ def seed_legacy_publication(
         insert into publication(
           seller_organization_id,id,catalog_product_id,version,schema_version,
           source_sha256,snapshot,actor_identity_user_id
-        ) values(%s,%s,%s,1,2,%s,%s,%s)
+        ) values(%s,%s,%s,%s,2,%s,%s,%s)
         """,
         (
             graph.seller,
             publication,
             graph.product,
+            version,
             digest(str(snapshot)),
             Jsonb(snapshot),
             graph.owner,
@@ -474,7 +475,26 @@ def test_0016_upgrade_backfills_existing_assets_fail_closed() -> None:
             seed_identities(connection)
             graph = create_graph(connection)
             asset = add_asset(connection, graph, media_type="application/pdf", position=0)
-            publication = seed_legacy_publication(connection, graph, asset)
+            stale_publication = seed_legacy_publication(connection, graph, asset)
+            publication = seed_legacy_publication(connection, graph, asset, version=2)
+            demo_entitlement = uuid4()
+            connection.execute(
+                "update catalog_product set status='published',published_snapshot_id=%s "
+                "where seller_organization_id=%s and id=%s",
+                (publication, graph.seller, graph.product),
+            )
+            connection.execute(
+                "insert into demo_checkout_offer(seller_organization_id,offer_id,"
+                "catalog_product_id,publication_id,entitlement_id,unit_amount_minor,"
+                "currency,status) values(%s,%s,%s,%s,%s,9900,'BRL','disabled')",
+                (
+                    graph.seller,
+                    graph.offer,
+                    graph.product,
+                    stale_publication,
+                    demo_entitlement,
+                ),
+            )
             connection.commit()
         subprocess.run(
             [
@@ -504,12 +524,21 @@ def test_0016_upgrade_backfills_existing_assets_fail_closed() -> None:
                 (graph.seller, publication, asset.asset),
             ).fetchone() == ("course_content", False)
             assert connection.execute(
+                "select publication_id,status from demo_checkout_offer "
+                "where seller_organization_id=%s and offer_id=%s",
+                (graph.seller, graph.offer),
+            ).fetchone() == (publication, "disabled")
+            assert connection.execute(
                 "select (select version_num from alembic_version),"
                 "to_regprocedure('app_private.read_learning_player_v3(uuid,uuid,uuid)') "
                 "is not null,exists(select 1 from pg_trigger "
                 "where tgrelid='public.lesson_asset_draft'::regclass "
-                "and tgname='lesson_asset_draft_policy_valid' and tgenabled='O')"
-            ).fetchone() == ("0016_pdf_access_policy", True, True)
+                "and tgname='lesson_asset_draft_policy_valid' and tgenabled='O'),"
+                "position('update public.demo_checkout_offer configured set '"
+                " in regexp_replace(pg_get_functiondef("
+                "'app_private.publish_product(uuid,uuid,uuid,uuid,bigint,bigint,jsonb,uuid,text,uuid)'"
+                "::regprocedure),'\\s+',' ','g'))>0"
+            ).fetchone() == ("0016_pdf_access_policy", True, True, True)
     finally:
         with psycopg.connect(maintenance_url, autocommit=True) as connection:
             connection.execute(
@@ -698,6 +727,25 @@ def test_publication_pins_policy_players_and_download_authorization() -> None:
         graph = create_graph(connection)
         pdf = add_asset(connection, graph, media_type="application/pdf", position=0)
         video = add_asset(connection, graph, media_type="video/mp4", position=1)
+        prior_publication = seed_legacy_publication(connection, graph, pdf)
+        demo_entitlement = uuid4()
+        connection.execute(
+            "update catalog_product set status='published',published_snapshot_id=%s "
+            "where seller_organization_id=%s and id=%s",
+            (prior_publication, graph.seller, graph.product),
+        )
+        connection.execute(
+            "insert into demo_checkout_offer(seller_organization_id,offer_id,"
+            "catalog_product_id,publication_id,entitlement_id,unit_amount_minor,"
+            "currency,status) values(%s,%s,%s,%s,%s,9900,'BRL','disabled')",
+            (
+                graph.seller,
+                graph.offer,
+                graph.product,
+                prior_publication,
+                demo_entitlement,
+            ),
+        )
         connection.commit()
     set_policy(
         OWNER,
@@ -725,6 +773,11 @@ def test_publication_pins_policy_players_and_download_authorization() -> None:
             "where seller_organization_id=%s and publication_id=%s and asset_id=%s",
             (graph.seller, publication, pdf.asset),
         ).fetchone() == ("support_material", True)
+        assert connection.execute(
+            "select publication_id from demo_checkout_offer "
+            "where seller_organization_id=%s and offer_id=%s",
+            (graph.seller, graph.offer),
+        ).fetchone() == (publication,)
     set_policy(
         OWNER,
         graph,

@@ -132,6 +132,20 @@ def _schema_ready_sql() -> str:
             and exists(select 1 from pg_catalog.pg_trigger
               where tgrelid='public.demo_purchase'::regclass
                 and tgname='demo_purchase_immutable' and not tgisinternal and tgenabled='O')
+            and position(
+              'for update; select * into locked_product'
+              in regexp_replace(pg_get_functiondef(
+                'app_private.publish_product(uuid,uuid,uuid,uuid,bigint,bigint,jsonb,uuid,text,uuid)'
+                  ::regprocedure
+              ),'\\s+',' ','g')
+            )>0
+            and position(
+              'update public.demo_checkout_offer configured set publication_id=next_publication_id'
+              in regexp_replace(pg_get_functiondef(
+                'app_private.publish_product(uuid,uuid,uuid,uuid,bigint,bigint,jsonb,uuid,text,uuid)'
+                  ::regprocedure
+              ),'\\s+',' ','g')
+            )>0
             and not exists(
               select 1 from unnest(array[
                 'public.checkout_integration'::regclass,
@@ -513,7 +527,7 @@ def upgrade() -> None:
         "revoke all on function app_private.project_publication(uuid,uuid,uuid,jsonb) from public,appsell_runtime",
         r"""
         do $migration$
-        declare definition text; changed text;
+        declare definition text; changed text; before_demo_patch text;
         begin
           definition:=pg_get_functiondef(
             'app_private.publish_product(uuid,uuid,uuid,uuid,bigint,bigint,jsonb,uuid,text,uuid)'
@@ -528,6 +542,33 @@ def upgrade() -> None:
           changed:=regexp_replace(changed,
             $pattern$'schema_version'[[:space:]]*,[[:space:]]*3([[:space:]]*\)[[:space:]]*\)[[:space:]]*;)$pattern$,
             $replacement$'schema_version', 4\1$replacement$);
+          before_demo_patch:=changed;
+          changed:=replace(changed,
+            'select * into locked_product from catalog_product product',
+            'perform 1 from public.demo_checkout_offer configured
+            where configured.seller_organization_id=p_seller_organization_id
+              and configured.catalog_product_id=p_catalog_product_id
+              and configured.offer_id=p_offer_id
+            for update;
+          select * into locked_product from catalog_product product');
+          if changed=before_demo_patch then
+            raise exception 'cannot safely add demo checkout publication lock'
+              using errcode='55000';
+          end if;
+          before_demo_patch:=changed;
+          changed:=replace(changed,
+            'returning version into next_product_version;',
+            'returning version into next_product_version;
+          update public.demo_checkout_offer configured
+          set publication_id=next_publication_id
+          where configured.seller_organization_id=p_seller_organization_id
+            and configured.catalog_product_id=p_catalog_product_id
+            and configured.offer_id=p_offer_id
+            and configured.publication_id is distinct from next_publication_id;');
+          if changed=before_demo_patch then
+            raise exception 'cannot safely add demo checkout publication rebind'
+              using errcode='55000';
+          end if;
           if changed=definition
              or changed~$pattern$'schema_version'[[:space:]]*,[[:space:]]*3$pattern$
              or changed~$pattern$next_publication_version[[:space:]]*,[[:space:]]*3[[:space:]]*,$pattern$
@@ -538,6 +579,19 @@ def upgrade() -> None:
           end if;
           execute changed;
         end $migration$
+        """,
+        """
+        update demo_checkout_offer configured
+        set publication_id=product.published_snapshot_id
+        from catalog_product product,publication snapshot
+        where product.seller_organization_id=configured.seller_organization_id
+          and product.id=configured.catalog_product_id
+          and product.published_snapshot_id is not null
+          and snapshot.seller_organization_id=product.seller_organization_id
+          and snapshot.catalog_product_id=product.id
+          and snapshot.id=product.published_snapshot_id
+          and snapshot.snapshot->'offer'->>'id'=configured.offer_id::text
+          and configured.publication_id is distinct from product.published_snapshot_id
         """,
         """
         create function app_private.read_learning_player_v3(

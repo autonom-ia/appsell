@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { ChangeEvent, MouseEvent as ReactMouseEvent, useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { sha256File } from "../../lib/file-sha256.client";
 import { AccessibleDialog } from "./accessible-dialog";
 
@@ -151,7 +151,8 @@ export function LessonAssetPanel({
   const summaryRef = useRef<HTMLElement>(null);
 
   const base = `/api/sellers/${sellerId}/products/${productId}/courses/${courseId}/modules/${moduleId}/lessons/${lessonId}/assets`;
-  const busy = policySavingId !== null || ["hashing", "creating", "uploading", "confirming", "verifying"].includes(state.phase);
+  const uploadBusy = ["hashing", "creating", "uploading", "confirming", "verifying"].includes(state.phase);
+  const busy = policySavingId !== null || uploadBusy;
   const dirty = busy || state.phase === "failed";
 
   const boundedFetch = useCallback(async (input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = 15_000, abortOnStop = true) => {
@@ -258,6 +259,14 @@ export function LessonAssetPanel({
     return () => window.clearTimeout(start);
   }, [load, loaded, opened]);
 
+  useEffect(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    const resetReplacement = () => { replacementTargetRef.current = null; };
+    input.addEventListener("cancel", resetReplacement);
+    return () => input.removeEventListener("cancel", resetReplacement);
+  }, [loaded]);
+
   const pollStatus = useCallback((uploadId: string) => {
     if (pollingUploadRef.current === uploadId) return;
     pollingUploadRef.current = uploadId;
@@ -323,7 +332,10 @@ export function LessonAssetPanel({
 
   async function selectFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
-    if (!file || busy || archived) return;
+    if (!file || busy || archived) {
+      replacementTargetRef.current = null;
+      return;
+    }
     stopTransientWork();
     const generation = generationRef.current;
     const mediaType = selectedMediaType(file);
@@ -351,6 +363,15 @@ export function LessonAssetPanel({
     } finally {
       if (hashControllerRef.current === hashController) hashControllerRef.current = null;
     }
+  }
+
+  function openReplacementPicker(assetId: string) {
+    replacementTargetRef.current = assetId;
+    inputRef.current?.click();
+  }
+
+  function resetReplacementOnDirectPickerClick(event: ReactMouseEvent<HTMLInputElement>) {
+    if (event.nativeEvent.isTrusted) replacementTargetRef.current = null;
   }
 
   async function createIntentAndUpload(file: File, mediaType: "application/pdf" | "video/mp4", sha256: string, generation: number) {
@@ -567,13 +588,13 @@ export function LessonAssetPanel({
                 </label>
               : <small>Este material fica disponível apenas dentro da área do aluno.</small>}
           </div> : null}
-          {!archived ? <div className="asset-actions"><button className="secondary-button" type="button" disabled={busy} onClick={() => { replacementTargetRef.current = asset.id; inputRef.current?.click(); }}>Substituir {mediaLabel(asset.media_type)}</button><button className="danger-button" type="button" disabled={busy} onClick={() => setArchiveTarget(asset)}>Arquivar {mediaLabel(asset.media_type)}</button></div> : null}
+          {!archived ? <div className="asset-actions"><button className="secondary-button" type="button" disabled={busy} onClick={() => openReplacementPicker(asset.id)}>Substituir {mediaLabel(asset.media_type)}</button><button className="danger-button" type="button" disabled={busy} onClick={() => setArchiveTarget(asset)}>Arquivar {mediaLabel(asset.media_type)}</button></div> : null}
         </article>)}
         {policyError ? <p className="form-error" role="alert">{policyError}</p> : null}
 
         {!archived && loaded ? <div className="asset-uploader">
           <label className="asset-file-label" htmlFor={`asset-file-${lessonId}`} onClick={() => { replacementTargetRef.current = null; }}>{readyAssets.length > 0 ? "Adicionar outro material" : "Adicione um PDF ou vídeo MP4"}</label>
-          <input ref={inputRef} id={`asset-file-${lessonId}`} type="file" accept="application/pdf,.pdf,video/mp4,.mp4" onChange={(event) => void selectFile(event)} disabled={busy}/>
+          <input ref={inputRef} id={`asset-file-${lessonId}`} type="file" accept="application/pdf,.pdf,video/mp4,.mp4" onClick={resetReplacementOnDirectPickerClick} onChange={(event) => void selectFile(event)} disabled={busy}/>
           <p className="asset-help">PDF até 10 MiB ou MP4 até 100 MiB. O arquivo só entra em uma nova publicação depois da verificação.</p>
         </div> : null}
 
@@ -581,7 +602,7 @@ export function LessonAssetPanel({
           <span>{state.message}</span>
           {state.fileName ? <small dir="auto">{state.fileName}</small> : null}
           {state.phase === "uploading" ? <><label className="sr-only" htmlFor={`asset-progress-${lessonId}`}>Progresso do envio</label><progress id={`asset-progress-${lessonId}`} aria-label="Progresso do envio" max="100" value={state.progress}>{state.progress}%</progress></> : null}
-          {busy ? <button className="secondary-button" type="button" onClick={() => void cancelUpload()}>Cancelar envio</button> : null}
+          {uploadBusy ? <button className="secondary-button" type="button" onClick={() => void cancelUpload()}>Cancelar envio</button> : null}
           {state.phase === "failed" && !loaded ? <button className="secondary-button" type="button" onClick={() => void load()}>Recarregar materiais</button> : null}
           {(state.phase === "failed" && loaded) || state.phase === "cancelled" ? <button className="secondary-button" type="button" onClick={() => inputRef.current?.click()}>Tentar novamente</button> : null}
         </div>

@@ -453,6 +453,7 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     await pwExpect(buyerPage.getByRole("heading", { level: 1, name: "Como preparar contexto, repo e objetivo" })).toBeVisible();
     await pwExpect(buyerPage.getByRole("link", { name: /Baixar PDF/ })).toHaveCount(0);
     await pwExpect(buyerPage.getByText("Download desativado pelo administrador.")).toBeVisible();
+    await buyerPage.setViewportSize({ width: 320, height: 720 });
     await buyerPage.evaluate(() => { document.documentElement.style.fontSize = "200%"; });
     await expectNoHorizontalOverflow(buyerPage);
     await buyerPage.evaluate(() => { document.documentElement.style.fontSize = "100%"; });
