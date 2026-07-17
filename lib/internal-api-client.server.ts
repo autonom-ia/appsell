@@ -960,7 +960,7 @@ async function domainBinaryRequest(
     if (response.headers.get("content-type") !== "image/png" ||
       !Number.isSafeInteger(contentLength) || contentLength < 1 ||
       contentLength > MAX_DOMAIN_BINARY_BYTES ||
-      !Number.isSafeInteger(pageCount) || pageCount < 1 || pageCount > 5_000 ||
+      !Number.isSafeInteger(pageCount) || pageCount < 1 || pageCount > 100 ||
       !/^[0-9a-f]{64}$/.test(sha256)) {
       throw new DomainApiError(503, "invalid_pdf_page_response");
     }

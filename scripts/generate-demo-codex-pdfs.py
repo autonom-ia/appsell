@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
+import tempfile
 from pathlib import Path
 from uuid import UUID, uuid5
 
@@ -24,6 +26,8 @@ from reportlab.platypus import (
     Table,
     TableStyle,
 )
+
+from appsell_api.pdf_derivatives import build_pdf_page_archive
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "output" / "pdf" / "codex"
@@ -351,6 +355,38 @@ def main() -> None:
         build_lesson(index, lesson, output)
         payload = output.read_bytes()
         asset_id = stable_id(f"asset:{lesson['slug']}")
+        raster_root = OUTPUT / str(lesson["slug"]) / "pages"
+        shutil.rmtree(raster_root.parent, ignore_errors=True)
+        raster_root.mkdir(parents=True, mode=0o700)
+        with tempfile.TemporaryDirectory(prefix="appsell-demo-raster-") as temporary:
+            prepared = build_pdf_page_archive(
+                output,
+                expected_size=len(payload),
+                expected_sha256_hex=hashlib.sha256(payload).hexdigest(),
+                job_directory=Path(temporary),
+            )
+            pages = []
+            for page in prepared.pages:
+                relative_key = f"{lesson['slug']}/pages/{page.page_number}.png"
+                destination = OUTPUT / relative_key
+                shutil.copyfile(page.path, destination)
+                pages.append(
+                    {
+                        "page_number": page.page_number,
+                        "storage_driver": "legacy_bundle",
+                        "storage_bucket": "codex-demo",
+                        "object_key": relative_key,
+                        "storage_version_id": None,
+                        "storage_etag": None,
+                        "byte_size": page.byte_size,
+                        "sha256": page.sha256_hex,
+                        "pixel_width": page.width,
+                        "pixel_height": page.height,
+                    }
+                )
+        page_manifest = json.dumps(
+            pages, sort_keys=True, separators=(",", ":")
+        ).encode()
         manifest.append(
             {
                 "seller_id": stable_id("seller"),
@@ -366,6 +402,13 @@ def main() -> None:
                 "sha256": hashlib.sha256(payload).hexdigest(),
                 "lesson_id": stable_id(f"lesson:{lesson['slug']}"),
                 "asset_id": asset_id,
+                "raster": {
+                    "profile": "png-1600-v1",
+                    "page_count": len(pages),
+                    "total_bytes": sum(page["byte_size"] for page in pages),
+                    "manifest_sha256": hashlib.sha256(page_manifest).hexdigest(),
+                    "pages": pages,
+                },
             }
         )
     MANIFEST.write_text(

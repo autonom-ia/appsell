@@ -14,7 +14,7 @@ from appsell_api import asset_worker_runner
 from appsell_api.internal_requests import InternalRequestAuthenticator
 from appsell_api.pdf_verifier import PdfSandboxUnavailable
 from appsell_api.storage_s3 import StoredObject
-from appsell_api.storage_worker import VerifiedAssetResult
+from appsell_api.storage_worker import VerifiedAssetResult, VerifiedStoredPdfPage
 from appsell_api.video_verifier import VideoSandboxUnavailable
 
 
@@ -23,9 +23,11 @@ class FakeSession:
         self.events = events
         self.fail_finalize = fail_finalize
         self.fail_register = fail_register
+        self.calls: list[tuple[str, dict[str, Any]]] = []
 
-    async def scalar(self, statement: Any, _parameters: dict[str, Any]) -> Any:
+    async def scalar(self, statement: Any, parameters: dict[str, Any]) -> Any:
         sql = str(statement)
+        self.calls.append((sql, parameters))
         if "claim_asset_verification_jobs" in sql:
             self.events.append("claim")
             return []
@@ -62,7 +64,14 @@ class FakeSession:
             if self.fail_register:
                 self.fail_register -= 1
                 raise DBAPIError("register", {}, RuntimeError("injected commit uncertainty"))
-            return {"registered": True}
+            return {
+                "registered": True,
+                **(
+                    {"pdf_manifest_sha256": "12" * 32}
+                    if "register_asset_ready_candidate_v2" in sql
+                    else {}
+                ),
+            }
         raise AssertionError(sql)
 
 
@@ -121,6 +130,10 @@ class FakeStorage:
         self.events.append("delete-all-versions")
         return 1
 
+    def delete_all_versions_under_prefix(self, **_kwargs: Any) -> int:
+        self.events.append("delete-all-versions-under-prefix")
+        return 2
+
 
 SELLER = UUID("52000000-0000-4000-8000-000000000001")
 UPLOAD = UUID("59000000-0000-4000-8000-000000000001")
@@ -168,6 +181,62 @@ def build_app(
     app.state.storage = FakeStorage(events)
     app.state.asset_scanner = object()
     return app, auth
+
+
+@pytest.mark.asyncio
+async def test_pdf_ready_uses_v2_manifest_contract() -> None:
+    events: list[str] = []
+    app, auth = build_app(events, fail_finalize=0)
+    page_object = StoredObject(
+        bucket="appsell-ready",
+        key=f"tenants/{SELLER}/assets/a/v1/pages/1.png",
+        version_id="p1",
+        size=64,
+        content_type="image/png",
+        checksum_sha256_b64="checksum",
+        etag="page-etag",
+        appsell_upload_id=str(UPLOAD),
+    )
+    result = VerifiedAssetResult(
+        **{
+            **FakeWorker.result.__dict__,
+            "pdf_pages": (
+                VerifiedStoredPdfPage(
+                    page_number=1,
+                    stored=page_object,
+                    byte_size=64,
+                    sha256_hex="ef" * 32,
+                    width=800,
+                    height=1200,
+                ),
+            ),
+        }
+    )
+
+    manifest_sha = await asset_worker_runner._register_ready_candidate(  # noqa: SLF001
+        auth,
+        app.state.settings,
+        WORKER_ID,
+        SELLER,
+        UPLOAD,
+        result,
+    )
+    await asset_worker_runner._finalize_ready(  # noqa: SLF001
+        auth,
+        app.state.settings,
+        WORKER_ID,
+        SELLER,
+        UPLOAD,
+        result,
+        manifest_sha,
+    )
+
+    register_sql, register_parameters = auth.session.calls[-2]
+    finalize_sql, finalize_parameters = auth.session.calls[-1]
+    assert "register_asset_ready_candidate_v2" in register_sql
+    assert '"object_key":"tenants/' in register_parameters["pdf_pages"]
+    assert "finalize_asset_verification_v2" in finalize_sql
+    assert finalize_parameters["pdf_manifest_sha256"] == "12" * 32
 
 
 @pytest.mark.asyncio
@@ -237,6 +306,8 @@ async def test_durable_claim_uses_null_tenant_worker_context() -> None:
     assert claimed == []
     assert events == ["claim"]
     assert auth.contexts == [("catalog.asset.verify", None)]
+    assert auth.session.calls[-1][1]["job_limit"] == 1
+    assert auth.session.calls[-1][1]["lease_seconds"] == 600
 
 
 @pytest.mark.asyncio
@@ -309,6 +380,58 @@ async def test_cleanup_reconcile_deletes_all_versions_for_unique_quarantine_key(
     )
 
     assert events == ["delete-all-versions", "complete-cleanup"]
+
+
+@pytest.mark.asyncio
+async def test_ready_reconcile_deletes_entire_reserved_asset_version_prefix() -> None:
+    events: list[str] = []
+    app, auth = build_app(events, fail_finalize=0)
+    asset_id = uuid4()
+    blob_id = uuid4()
+
+    await asset_worker_runner._process_cleanup_job(  # noqa: SLF001
+        app,
+        cast(InternalRequestAuthenticator, auth),
+        app.state.settings,
+        WORKER_ID,
+        {
+            "id": uuid4(),
+            "seller_organization_id": SELLER,
+            "storage_driver": "s3",
+            "kind": "ready_reconcile",
+            "delete_mode": "delete_all_versions",
+            "bucket": "appsell-ready",
+            "object_key": f"tenants/{SELLER}/assets/{asset_id}/v1/{blob_id}",
+            "storage_version_id": None,
+        },
+    )
+
+    assert events == ["delete-all-versions-under-prefix", "complete-cleanup"]
+
+
+@pytest.mark.asyncio
+async def test_ready_reconcile_never_deletes_a_different_tenant_prefix() -> None:
+    events: list[str] = []
+    app, auth = build_app(events, fail_finalize=0)
+
+    await asset_worker_runner._process_cleanup_job(  # noqa: SLF001
+        app,
+        cast(InternalRequestAuthenticator, auth),
+        app.state.settings,
+        WORKER_ID,
+        {
+            "id": uuid4(),
+            "seller_organization_id": SELLER,
+            "storage_driver": "s3",
+            "kind": "ready_reconcile",
+            "delete_mode": "delete_all_versions",
+            "bucket": "appsell-ready",
+            "object_key": f"tenants/{uuid4()}/assets/{uuid4()}/v1/{uuid4()}",
+            "storage_version_id": None,
+        },
+    )
+
+    assert events == ["retry-cleanup"]
 
 
 @pytest.mark.asyncio

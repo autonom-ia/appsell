@@ -155,7 +155,7 @@ def _render_verified_page(
             raise PdfRasterRejected("PDF page rasterization returned no image")
         if raster_path.stat().st_size > MAX_RASTER_BYTES:
             raise PdfRasterRejected("rasterized PDF page exceeds the output limit")
-        payload, width, height = _apply_repeated_watermark(raster_path, watermark)
+        payload, width, height = watermark_png_file(raster_path, watermark)
         if len(payload) > MAX_RASTER_BYTES:
             raise PdfRasterRejected("watermarked PDF page exceeds the output limit")
         return RenderedPdfPage(
@@ -175,7 +175,7 @@ def _render_verified_page(
             render_directory.rmdir()
 
 
-def _apply_repeated_watermark(source_path: Path, watermark: str) -> tuple[bytes, int, int]:
+def watermark_png_file(source_path: Path, watermark: str) -> tuple[bytes, int, int]:
     try:
         with Image.open(source_path) as source:
             if source.format != "PNG":

@@ -83,7 +83,7 @@ export async function learningAssetPageIds(context: LearningAssetPageRouteContex
   const { entitlementId, assetId, page } = await context.params;
   const canonicalEntitlement = canonicalUuid(entitlementId);
   const canonicalAsset = canonicalUuid(assetId);
-  const canonicalPage = safeInteger(page, 1, 5_000);
+  const canonicalPage = safeInteger(page, 1, 100);
   return canonicalEntitlement && canonicalAsset && canonicalPage !== null
     ? { entitlementId: canonicalEntitlement, assetId: canonicalAsset, page: canonicalPage }
     : null;
