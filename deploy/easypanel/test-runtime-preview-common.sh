@@ -62,6 +62,15 @@ fi
 lifecycle_fixture='[{"Id":"container-a","Config":{"Labels":{"com.docker.compose.service":"sell-web"}},"State":{"StartedAt":"2026-07-16T12:00:00Z","FinishedAt":"0001-01-01T00:00:00Z","ExitCode":0},"RestartCount":0}]'
 baseline_fingerprint="$(runtime_preview_lifecycle_fingerprint_from_inspect "$lifecycle_fixture")"
 [[ "$baseline_fingerprint" == 'sell-web|container-a|2026-07-16T12:00:00Z|0001-01-01T00:00:00Z|0|0' ]]
+for accepted_service in domain-bootstrap domain-api pdf-sandbox-init pdf-sandbox sell-web ingress-proxy; do
+  accepted_fixture="$(jq -c --arg service "$accepted_service" \
+    '.[0].Config.Labels["com.docker.compose.service"]=$service' <<<"$lifecycle_fixture")"
+  accepted_fingerprint="$(runtime_preview_lifecycle_fingerprint_from_inspect "$accepted_fixture")"
+  [[ "$accepted_fingerprint" == "$accepted_service|container-a|2026-07-16T12:00:00Z|0001-01-01T00:00:00Z|0|0" ]] || {
+    echo "valid runtime-preview lifecycle service was rejected: $accepted_service" >&2
+    exit 1
+  }
+done
 for mutation in \
   '.[0].Config.Labels["com.docker.compose.service"]="domain-api"' \
   '.[0].Id="container-b"' \
@@ -85,6 +94,29 @@ for rejected_lifecycle_fixture in \
     exit 1
   fi
 done
+
+runtime_preview_verify_pdf_recycle_evidence 4 6 9 11 $'77\n77'
+for rejected_recycle_evidence in \
+  '4|4|9|9|' \
+  '4|6|9|10|77,77' \
+  '4|6|9|11|77' \
+  '4|6|9|11|77,1'; do
+  IFS='|' read -r restart_before restart_after markers_before markers_after exit_codes \
+    <<<"$rejected_recycle_evidence"
+  exit_codes="${exit_codes//,/$'\n'}"
+  if runtime_preview_verify_pdf_recycle_evidence \
+    "$restart_before" "$restart_after" "$markers_before" "$markers_after" "$exit_codes" \
+    >/dev/null 2>&1; then
+    echo "invalid pdf-sandbox recycle evidence was accepted" >&2
+    exit 1
+  fi
+done
+docker() { return 42; }
+if runtime_preview_docker_die_exit_codes container before after >/dev/null 2>&1; then
+  echo "docker events failure was accepted" >&2
+  exit 1
+fi
+unset -f docker
 
 runtime_preview_docker_config_path_is_safe "$digest.json"
 runtime_preview_docker_config_path_is_safe "blobs/sha256/$digest"

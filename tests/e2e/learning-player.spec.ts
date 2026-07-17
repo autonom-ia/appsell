@@ -14,6 +14,10 @@ const moduleId = "b67e8100-c7d0-5ed4-a91c-469846eb2091";
 const secondCourseId = "fb740e5c-2d01-5cc2-8397-bb09188d416a";
 const secondModuleId = "ebf42728-a9d9-53da-b68f-4146539f9295";
 const foreignEnrollmentId = "36a59404-d3f3-5309-95d9-258f4303e687";
+const protectedPng = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64"
+);
 
 async function login(page: Page) {
   await page.goto("/");
@@ -26,7 +30,7 @@ async function login(page: Page) {
 function playerEnvelope(selectedLessonId: string, version = 1, firstCompleted = false, resumeLessonId = selectedLessonId) {
   const selectedAsset = selectedLessonId === lessonOne
     ? {
-        view_href: `/api/library/items/${entitlementId}/assets/${assetId}`,
+        view_href: `/api/library/items/${entitlementId}/assets/${assetId}/pages`,
         download_href: null,
         title: "Guia da aula",
         media_type: "application/pdf",
@@ -107,6 +111,16 @@ async function mockLearningApi(
   const handleLearningRoute = async (route: Route) => {
     const request = route.request();
     const url = new URL(request.url());
+    if (request.method() === "GET" && url.pathname.endsWith(`/assets/${assetId}/pages`)) {
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ asset_id: assetId, page_count: 2 })
+      });
+    }
+    if (request.method() === "GET" && /\/pages\/[12]$/.test(url.pathname)) {
+      return route.fulfill({ status: 200, contentType: "image/png", body: protectedPng });
+    }
     if (["/api/library", "/api/me/products"].includes(url.pathname) && request.method() === "GET") {
       return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [{
         entitlement_id: entitlementId,
@@ -181,15 +195,29 @@ test("opens the mobile shelf, protects the PDF and completes into the next lesso
   const title = page.getByRole("heading", { level: 1, name: "O que é Codex" });
   await expect(title).toBeVisible();
   await expect(title).toBeFocused();
-  const pdf = page.locator(".protected-pdf iframe");
+  const pdf = page.locator(".protected-pdf-page img");
   await expect(pdf).toHaveAttribute(
     "src",
-    `/api/library/items/${entitlementId}/assets/${assetId}#toolbar=0&navpanes=0`
+    `/api/library/items/${entitlementId}/assets/${assetId}/pages/1`
   );
+  await expect(page.getByText("Página 1 de 2", { exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: /Baixar PDF/ })).toHaveCount(0);
   await expect(page.getByText("Download desativado pelo administrador.")).toBeVisible();
-  await expect(page.locator(".protected-pdf-frame > span")).toHaveText(
+  await expect(page.locator(".protected-pdf-page > span")).toHaveText(
     "user.demo@autonomia.site · tenant 4df98a2e · abcdef123456"
+  );
+  await page.keyboard.press("Control+p");
+  await expect(page.getByText("A impressão deste conteúdo está desativada.")).toBeVisible();
+  await page.keyboard.press("Control+s");
+  await expect(page.getByText("O arquivo original não está disponível para salvar.")).toBeVisible();
+  expect(await page.locator(".protected-pdf-page").evaluate((element) => {
+    const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    return !element.dispatchEvent(event) && event.defaultPrevented;
+  })).toBe(true);
+  await page.getByRole("button", { name: "Próxima →" }).click();
+  await expect(pdf).toHaveAttribute(
+    "src",
+    `/api/library/items/${entitlementId}/assets/${assetId}/pages/2`
   );
   await expect(page.getByRole("button", { name: "Concluir e avançar" })).toBeEnabled();
   await page.getByRole("button", { name: "Concluir e avançar" }).click();
@@ -217,8 +245,8 @@ test("streams protected video on mobile and persists stepped and ended progress"
 
   const video = page.locator('video[aria-label="Codex em 3 passos"]');
   await expect(video).toHaveAttribute("src", `/api/library/items/${entitlementId}/assets/${videoAssetId}`);
-  await expect(page.locator(".protected-pdf iframe"))
-    .toHaveAttribute("src", `/api/library/items/${entitlementId}/assets/${assetId}#toolbar=0&navpanes=0`);
+  await expect(page.locator(".protected-pdf-page img"))
+    .toHaveAttribute("src", `/api/library/items/${entitlementId}/assets/${assetId}/pages/1`);
   await expect(video).toHaveAttribute("controls", "");
   await expect(video).toHaveAttribute("preload", "metadata");
   await expect(video).toHaveAttribute("playsinline", "");

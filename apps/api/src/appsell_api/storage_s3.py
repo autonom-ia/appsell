@@ -201,12 +201,15 @@ class S3Storage:
 
     @contextmanager
     def open_download(self, *, bucket: str, key: str, version_id: str) -> Iterator[BinaryIO]:
-        response = self._control.get_object(Bucket=bucket, Key=key, VersionId=version_id)
-        body: BinaryIO = response["Body"]
         try:
-            yield body
-        finally:
-            body.close()
+            response = self._control.get_object(Bucket=bucket, Key=key, VersionId=version_id)
+            body: BinaryIO = response["Body"]
+            try:
+                yield body
+            finally:
+                body.close()
+        except (BotoCoreError, ClientError, KeyError) as error:
+            raise StorageError("S3 object download failed") from error
 
     def copy_verified(
         self, *, source: StoredObject, destination_bucket: str, destination_key: str

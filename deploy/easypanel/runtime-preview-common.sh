@@ -9,6 +9,7 @@ RUNTIME_PREVIEW_EASYPANEL_NETWORK="easypanel"
 RUNTIME_PREVIEW_INGRESS_ALIAS="sell-autonomia_runtime-preview_sell-web"
 RUNTIME_PREVIEW_TRANSITION_LOCK="/root/.sell-runtime-preview-77-transition.lock"
 RUNTIME_PREVIEW_E2E_NETWORK="${RUNTIME_PREVIEW_COMPOSE_PROJECT}_sell-public-e2e"
+RUNTIME_PREVIEW_PDF_SOCKET_VOLUME="${RUNTIME_PREVIEW_COMPOSE_PROJECT}_runtime_pdf_socket"
 RUNTIME_PREVIEW_EVIDENCE_VOLUME="${RUNTIME_PREVIEW_COMPOSE_PROJECT}_runtime_evidence"
 RUNTIME_PREVIEW_E2E_TRANSPORT_VOLUME="${RUNTIME_PREVIEW_COMPOSE_PROJECT}_runtime_e2e_transport"
 RUNTIME_PREVIEW_API_BASE="${EASYPANEL_API_BASE:-http://127.0.0.1:3000}"
@@ -90,7 +91,9 @@ runtime_preview_lifecycle_fingerprint_from_inspect() {
     if type == "array" and length == 1 then
       .[0] as $container |
       $container.Config.Labels["com.docker.compose.service"] as $service |
-      if $service == "domain-bootstrap" or $service == "domain-api" or $service == "sell-web" or $service == "ingress-proxy" then
+      if $service == "domain-bootstrap" or $service == "domain-api" or
+        $service == "pdf-sandbox-init" or $service == "pdf-sandbox" or
+        $service == "sell-web" or $service == "ingress-proxy" then
         [
           $service,
           $container.Id,
@@ -102,6 +105,48 @@ runtime_preview_lifecycle_fingerprint_from_inspect() {
       else error("unexpected runtime-preview lifecycle service") end
     else error("invalid runtime-preview lifecycle inspection") end
   ' <<<"$1"
+}
+
+runtime_preview_docker_die_exit_codes() {
+  [[ $# -eq 3 ]] || return 2
+  local container_id="$1" since="$2" until="$3"
+  docker events \
+    --since "$since" --until "$until" \
+    --filter "container=$container_id" --filter event=die \
+    --format '{{index .Actor.Attributes "exitCode"}}'
+}
+
+runtime_preview_verify_pdf_recycle_evidence() {
+  [[ $# -eq 5 ]] || return 2
+  local restart_before="$1" restart_after="$2"
+  local markers_before="$3" markers_after="$4" die_events="$5"
+  local restart_delta marker_delta exit_code die_event_count=0
+  for count in "$restart_before" "$restart_after" "$markers_before" "$markers_after"; do
+    [[ "$count" =~ ^[0-9]+$ ]] || return 2
+  done
+  restart_delta=$((restart_after - restart_before))
+  marker_delta=$((markers_after - markers_before))
+  (( restart_delta > 0 )) || {
+    runtime_preview_fail "PDF E2E did not recycle the sandbox container"
+    return 1
+  }
+  (( restart_delta == marker_delta )) || {
+    runtime_preview_fail "pdf-sandbox restart count contains an unplanned crash"
+    return 1
+  }
+  if [[ -n "$die_events" ]]; then
+    while IFS= read -r exit_code; do
+      ((die_event_count += 1))
+      [[ "$exit_code" == "77" ]] || {
+        runtime_preview_fail "pdf-sandbox recorded an unplanned exit code"
+        return 1
+      }
+    done <<<"$die_events"
+  fi
+  [[ "$die_event_count" -eq "$restart_delta" ]] || {
+    runtime_preview_fail "pdf-sandbox die events do not match the planned restart delta"
+    return 1
+  }
 }
 
 runtime_preview_verify_public_dns() {
@@ -803,7 +848,7 @@ runtime_preview_compose_down() {
     [[ "$(docker inspect --format '{{index .Config.Labels "com.autonomia.issue"}}' "$id")" == "77" ]] || return 1
     [[ "$(docker inspect --format '{{index .Config.Labels "com.autonomia.source-sha"}}' "$id")" == "$source_sha" ]] || return 1
     service="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$id")"
-    case "$service" in domain-bootstrap|domain-api|sell-web|ingress-proxy) ;; *) runtime_preview_fail "unexpected service in runtime-preview teardown"; return 1 ;; esac
+    case "$service" in domain-bootstrap|domain-api|pdf-sandbox-init|pdf-sandbox|sell-web|ingress-proxy) ;; *) runtime_preview_fail "unexpected service in runtime-preview teardown"; return 1 ;; esac
     [[ -z "${seen_services[$service]:-}" ]] || { runtime_preview_fail "duplicate service in runtime-preview teardown"; return 1; }
     seen_services[$service]=1
     if [[ "$service" == "sell-web" || "$service" == "ingress-proxy" ]]; then

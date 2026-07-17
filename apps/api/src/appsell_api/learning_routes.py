@@ -1,23 +1,33 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 from uuid import UUID
 
 from anyio import to_thread
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 from .catalog_routes import _domain_error
+from .config import Settings
 from .internal_requests import AuthenticatedInternalRequest, InternalRequestAuthenticator
+from .learning_pdf import (
+    LearningPdfRejected,
+    LearningPdfUnavailable,
+    authorized_pdf_source,
+    inspect_pdf,
+    render_pdf_page,
+)
 from .storage_s3 import S3Storage, StorageError
 
 router = APIRouter(prefix="/v1")
 _MAX_LEARNING_BODY_BYTES = 4_096
 _MAX_SAFE_INTEGER = (1 << 53) - 1
 _LEARNING_ASSETS_CONTRACT_HEADER = "x-appsell-learning-assets-contract"
+_PROTECTED_PDF_SLOTS = asyncio.Semaphore(2)
 
 
 class LessonProgressBody(BaseModel):
@@ -182,6 +192,154 @@ async def authorize_asset(request: Request, entitlement_id: UUID, asset_id: UUID
             "sha256": row["sha256"],
         }
     }
+
+
+@router.get("/me/learning/items/{entitlement_id}/assets/{asset_id}/pages")
+async def inspect_asset_pages(
+    request: Request, entitlement_id: UUID, asset_id: UUID
+) -> dict[str, Any]:
+    internal, row = await _authorized_asset_row(request, entitlement_id, asset_id)
+    settings: Settings | None = getattr(request.app.state, "settings", None)
+    if settings is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="pdf_viewer_unavailable",
+        )
+    storage: S3Storage | None = getattr(request.app.state, "storage", None)
+
+    def inspect() -> int:
+        with authorized_pdf_source(row, settings, storage) as source:
+            return inspect_pdf(source, settings)
+
+    try:
+        if _PROTECTED_PDF_SLOTS.locked():
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="pdf_viewer_busy",
+                headers={"retry-after": "2"},
+            )
+        async with _PROTECTED_PDF_SLOTS:
+            page_count = await to_thread.run_sync(inspect)
+    except LearningPdfRejected as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="protected_pdf_unavailable",
+        ) from error
+    except LearningPdfUnavailable as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="pdf_viewer_unavailable",
+        ) from error
+    return {"asset": {"id": str(row["asset_id"]), "page_count": page_count}}
+
+
+@router.get("/me/learning/items/{entitlement_id}/assets/{asset_id}/pages/{page_number}")
+async def render_asset_page(
+    request: Request,
+    entitlement_id: UUID,
+    asset_id: UUID,
+    page_number: int,
+) -> Response:
+    internal, row = await _authorized_asset_row(request, entitlement_id, asset_id)
+    if not 1 <= page_number <= 5_000:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="protected_pdf_unavailable",
+        )
+    settings: Settings | None = getattr(request.app.state, "settings", None)
+    if settings is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="pdf_viewer_unavailable",
+        )
+    storage: S3Storage | None = getattr(request.app.state, "storage", None)
+    watermark = (
+        f"user {internal.envelope.identity.user_id.hex[:12]} "
+        f"access {entitlement_id.hex[:12]}"
+    )
+
+    def render() -> Any:
+        with authorized_pdf_source(row, settings, storage) as source:
+            return render_pdf_page(
+                source,
+                settings,
+                page_number=page_number,
+                watermark=watermark,
+            )
+
+    try:
+        if _PROTECTED_PDF_SLOTS.locked():
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="pdf_viewer_busy",
+                headers={"retry-after": "2"},
+            )
+        async with _PROTECTED_PDF_SLOTS:
+            rendered = await to_thread.run_sync(render)
+    except LearningPdfRejected as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="protected_pdf_unavailable",
+        ) from error
+    except LearningPdfUnavailable as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="pdf_viewer_unavailable",
+        ) from error
+    return Response(
+        rendered.payload,
+        media_type="image/png",
+        headers={
+            "cache-control": "private, no-store, max-age=0",
+            "content-disposition": f'inline; filename="page-{page_number}.png"',
+            "content-security-policy": "sandbox",
+            "cross-origin-resource-policy": "same-origin",
+            "pragma": "no-cache",
+            "referrer-policy": "no-referrer",
+            "surrogate-control": "no-store",
+            "vary": "x-appsell-internal-envelope",
+            "x-appsell-page-count": str(rendered.page_count),
+            "x-appsell-page-number": str(rendered.page_number),
+            "x-appsell-sha256": rendered.sha256_hex,
+            "x-content-type-options": "nosniff",
+        },
+    )
+
+
+async def _authorized_asset_row(
+    request: Request, entitlement_id: UUID, asset_id: UUID
+) -> tuple[AuthenticatedInternalRequest, Any]:
+    auth, internal = await _authenticate(request, "library.asset.read")
+    await _require_buyer_scope(internal)
+    try:
+        async with auth.domain_session(internal.envelope) as session:
+            row = (
+                (
+                    await session.execute(
+                        text(
+                            "select asset_id,asset_version,file_name,title,media_type,byte_size,"
+                            "sha256,storage_driver,storage_bucket,object_key,storage_version_id,"
+                            "storage_etag from app_private.authorize_publication_asset("
+                            ":identity_user_id,:entitlement_id,:asset_id)"
+                        ),
+                        {
+                            "identity_user_id": internal.envelope.identity.user_id,
+                            "entitlement_id": entitlement_id,
+                            "asset_id": asset_id,
+                        },
+                    )
+                )
+                .mappings()
+                .one()
+            )
+    except DBAPIError as error:
+        raise _learning_domain_error(error) from error
+    if row["media_type"] != "application/pdf":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="protected_pdf_unavailable",
+        )
+    return internal, row
 
 
 @router.get("/me/learning/items/{entitlement_id}/assets/{asset_id}/download")

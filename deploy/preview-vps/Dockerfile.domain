@@ -10,7 +10,8 @@ LABEL org.opencontainers.image.source="https://github.com/autonom-ia/appsell" \
 
 COPY --from=uv /uv /usr/local/bin/uv
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends postgresql-client ca-certificates \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates ffmpeg fonts-dejavu-core poppler-utils postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /workspace/sell
 COPY apps/api/pyproject.toml apps/api/uv.lock apps/api/

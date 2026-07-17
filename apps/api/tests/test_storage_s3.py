@@ -4,16 +4,47 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from botocore.exceptions import ClientError  # type: ignore[import-untyped]
+from botocore.exceptions import (  # type: ignore[import-untyped]
+    ClientError,
+    EndpointConnectionError,
+)
 
 import appsell_api.storage_s3 as storage_s3_module
 from appsell_api.config import Settings
 from appsell_api.storage_s3 import (
     S3Storage,
     StorageCapabilityError,
+    StorageError,
     StoredObject,
     object_sha256_matches,
 )
+
+
+@pytest.mark.parametrize(
+    "sdk_error",
+    [
+        ClientError(
+            {
+                "Error": {"Code": "AccessDenied", "Message": "denied"},
+                "ResponseMetadata": {"HTTPStatusCode": 403},
+            },
+            "GetObject",
+        ),
+        EndpointConnectionError(endpoint_url="https://storage.example.test"),
+    ],
+)
+def test_open_download_converts_sdk_failures_to_storage_error(
+    sdk_error: Exception,
+) -> None:
+    def fail_get_object(**_kwargs: Any) -> None:
+        raise sdk_error
+
+    storage = object.__new__(S3Storage)
+    storage._control = SimpleNamespace(get_object=fail_get_object)
+
+    with pytest.raises(StorageError, match="download failed"):
+        with storage.open_download(bucket="ready", key="asset", version_id="v1"):
+            pass
 
 
 def test_anonymous_security_probes_use_internal_container_endpoint(

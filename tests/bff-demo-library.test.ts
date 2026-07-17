@@ -6,7 +6,6 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { chromium, expect as pwExpect, type Browser, type Page } from "@playwright/test";
 
-import manifest from "../lib/demo-codex-assets.json";
 import seedManifest from "../demo/content/codex-na-pratica/manifest.json";
 import { deriveCsrfToken } from "../lib/csrf";
 import { startIsolatedRedis, unusedNonDefaultPort } from "./helpers/isolated-redis";
@@ -260,7 +259,6 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     expect(libraryPayload.items[0]).not.toHaveProperty("snapshot");
     expect(libraryPayload.items[0]).not.toHaveProperty("assets");
 
-    const firstAsset = manifest[0]!;
     const entitlementId = libraryPayload.items[0]!.entitlement_id;
     const player = await fetch(`${origin}/api/library/items/${entitlementId}`, {
       headers: { cookie: buyer.session }
@@ -282,18 +280,26 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     expect(playerPayload.player.selected_asset).toMatchObject({
       content_role: "support_material",
       download_allowed: true,
-      download_href: `${assetHref}/download`
+      download_href: assetHref.replace(/\/pages$/, "/download")
     });
     expect(assetHref).toMatch(new RegExp(
-      `^/api/library/items/${entitlementId}/assets/[0-9a-f-]{36}$`
+      `^/api/library/items/${entitlementId}/assets/[0-9a-f-]{36}/pages$`
     ));
-    const pdf = await fetch(`${origin}${assetHref}`, { headers: { cookie: buyer.session } });
-    expect(pdf.status, await pdf.clone().text()).toBe(200);
-    expect(pdf.headers.get("content-type")).toBe("application/pdf");
-    expect(pdf.headers.get("cache-control")).toBe("private, no-store, max-age=0");
-    expect(pdf.headers.get("referrer-policy")).toBe("no-referrer");
-    expect(pdf.headers.get("x-content-type-options")).toBe("nosniff");
-    expect((await pdf.arrayBuffer()).byteLength).toBe(firstAsset.bytes);
+    const pdfManifest = await fetch(`${origin}${assetHref}`, { headers: { cookie: buyer.session } });
+    expect(pdfManifest.status, await pdfManifest.clone().text()).toBe(200);
+    expect(pdfManifest.headers.get("content-type")).toContain("application/json");
+    expect(pdfManifest.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    expect(await pdfManifest.json()).toMatchObject({ page_count: expect.any(Number) });
+    const pdfPage = await fetch(`${origin}${assetHref}/1`, { headers: { cookie: buyer.session } });
+    expect(pdfPage.status, await pdfPage.clone().text()).toBe(200);
+    expect(pdfPage.headers.get("content-type")).toBe("image/png");
+    expect(pdfPage.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    expect(pdfPage.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(pdfPage.headers.get("x-content-type-options")).toBe("nosniff");
+    const rawPdf = await fetch(`${origin}${assetHref.replace(/\/pages$/, "")}`, {
+      headers: { cookie: buyer.session }
+    });
+    expect(rawPdf.status).toBe(404);
     const supportDownload = await fetch(
       `${origin}${playerPayload.player.selected_asset.download_href}`,
       { headers: { cookie: buyer.session } }
@@ -324,11 +330,16 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     expect(videoAsset).toBeDefined();
     expect(finalPdfAsset).toBeDefined();
     const videoHref = videoAsset!.view_href;
-    const finalPdf = await fetch(`${origin}${finalPdfAsset!.view_href}`, {
+    const finalPdfManifest = await fetch(`${origin}${finalPdfAsset!.view_href}`, {
       headers: { cookie: buyer.session }
     });
-    expect(finalPdf.status, await finalPdf.clone().text()).toBe(200);
-    expect(finalPdf.headers.get("content-type")).toBe("application/pdf");
+    expect(finalPdfManifest.status, await finalPdfManifest.clone().text()).toBe(200);
+    expect(finalPdfManifest.headers.get("content-type")).toContain("application/json");
+    const finalPdfPage = await fetch(`${origin}${finalPdfAsset!.view_href}/1`, {
+      headers: { cookie: buyer.session }
+    });
+    expect(finalPdfPage.status, await finalPdfPage.clone().text()).toBe(200);
+    expect(finalPdfPage.headers.get("content-type")).toBe("image/png");
     const videoRange = await fetch(`${origin}${videoHref}`, {
       headers: { cookie: buyer.session, range: "bytes=0-1023" }
     });
@@ -444,9 +455,9 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     await buyerPage.getByRole("link", { name: "Começar curso" }).click();
     await buyerPage.waitForURL(/\/library\/items\/[0-9a-f-]+\/lessons\/[0-9a-f-]+$/);
     await pwExpect(buyerPage.getByRole("heading", { level: 1, name: "O que é Codex e quando usar" })).toBeVisible();
-    await pwExpect(buyerPage.locator(".protected-pdf iframe")).toHaveCount(1);
+    await pwExpect(buyerPage.locator(".protected-pdf-page img")).toHaveCount(1);
     await pwExpect(buyerPage.getByRole("link", { name: "Baixar PDF de apoio" })).toHaveCount(1);
-    await pwExpect(buyerPage.locator(".protected-pdf-frame > span")).toContainText(
+    await pwExpect(buyerPage.locator(".protected-pdf-page > span")).toContainText(
       "user.demo@autonomia.site"
     );
     await buyerPage.getByRole("button", { name: "Concluir e avançar" }).click();
@@ -474,9 +485,13 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     await buyerPage.waitForURL(`${origin}/library`);
     await pwExpect(buyerPage.getByRole("heading", { name: "Minha biblioteca" })).toBeVisible();
     await pwExpect(buyerPage.getByText("Crie seu espaço de vendas")).toHaveCount(0);
-    const browserPdf = await buyerPage.request.get(`${origin}${assetHref}`);
-    expect(browserPdf.status()).toBe(200);
-    expect(browserPdf.headers()["content-type"]).toBe("application/pdf");
+    const browserPage = await buyerPage.request.get(`${origin}${assetHref}/1`);
+    expect(browserPage.status()).toBe(200);
+    expect(browserPage.headers()["content-type"]).toBe("image/png");
+    const browserOriginal = await buyerPage.request.get(
+      `${origin}${assetHref.replace(/\/pages$/, "")}`
+    );
+    expect(browserOriginal.status()).toBe(404);
     await buyerContext.close();
 
     const adminContext = await browser.newContext({ viewport: { width: 390, height: 844 } });

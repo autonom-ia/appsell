@@ -55,6 +55,7 @@ export async function GET(request: NextRequest, context: LearningAssetRouteConte
     const authorized = await authorizeAssetRequest(request, context);
     if (!authorized.ok) return authorized.response;
     const metadata = authorized.metadata;
+    if (metadata.media_type === "application/pdf") return pdfOriginalUnavailable();
     if (metadata.delivery === "redirect") {
       return redirectAsset(metadata);
     }
@@ -93,6 +94,7 @@ export async function HEAD(request: NextRequest, context: LearningAssetRouteCont
     const authorized = await authorizeAssetRequest(request, context);
     if (!authorized.ok) return authorized.response;
     const metadata = authorized.metadata;
+    if (metadata.media_type === "application/pdf") return pdfOriginalUnavailable();
     return new NextResponse(null, {
       status: 200,
       headers: secureAssetHeaders(metadata, metadata.byte_size)
@@ -239,6 +241,19 @@ function validDownloadUrl(value: unknown, expires: unknown) {
 function assetUnavailable(error: string) {
   return NextResponse.json({ error }, {
     status: 503,
+    headers: {
+      "cache-control": "private, no-store, max-age=0",
+      pragma: "no-cache",
+      "surrogate-control": "no-store",
+      vary: "Cookie",
+      "x-content-type-options": "nosniff"
+    }
+  });
+}
+
+function pdfOriginalUnavailable() {
+  return NextResponse.json({ error: "pdf_original_requires_download_permission" }, {
+    status: 404,
     headers: {
       "cache-control": "private, no-store, max-age=0",
       pragma: "no-cache",

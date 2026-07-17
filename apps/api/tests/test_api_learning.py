@@ -3,7 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
@@ -12,6 +13,9 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from appsell_api import learning_routes
+from appsell_api.config import Settings
+from appsell_api.learning_pdf import RenderedLearningPdfPage
 from appsell_api.learning_routes import _learning_domain_error, router
 from appsell_api.storage_s3 import PresignedRequest
 
@@ -80,11 +84,14 @@ class FakeAuth:
 
 
 @asynccontextmanager
-async def client_for(auth: FakeAuth, storage: Any = None) -> AsyncIterator[httpx.AsyncClient]:
+async def client_for(
+    auth: FakeAuth, storage: Any = None, settings: Settings | None = None
+) -> AsyncIterator[httpx.AsyncClient]:
     app = FastAPI()
     app.include_router(router)
     app.state.internal_auth = auth
     app.state.storage = storage
+    app.state.settings = settings
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://api.test"
     ) as client:
@@ -229,6 +236,107 @@ async def test_download_requires_separate_capability_and_presigns_attachment() -
     assert auth.capabilities == ["library.asset.download"]
     assert "authorize_publication_asset_download" in auth.session.calls[0][0]
     assert calls[0]["disposition"] == "attachment"
+
+
+@pytest.mark.asyncio
+async def test_pdf_manifest_is_entitlement_scoped_and_never_returns_original(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    auth = FakeAuth(asset_row())
+
+    @contextmanager
+    def source(*_args: Any, **_kwargs: Any):  # type: ignore[no-untyped-def]
+        yield Path("/verified/material.pdf")
+
+    monkeypatch.setattr(learning_routes, "authorized_pdf_source", source)
+    monkeypatch.setattr(learning_routes, "inspect_pdf", lambda *_args: 7)
+    async with client_for(auth, settings=Settings()) as client:
+        response = await client.get(
+            f"/v1/me/learning/items/{ENTITLEMENT_ID}/assets/{ASSET_ID}/pages"
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"asset": {"id": str(ASSET_ID), "page_count": 7}}
+    assert response.headers["content-type"] == "application/json"
+    assert auth.capabilities == ["library.asset.read"]
+    assert "authorize_publication_asset" in auth.session.calls[0][0]
+
+
+@pytest.mark.asyncio
+async def test_pdf_page_returns_only_watermarked_png(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    auth = FakeAuth(asset_row())
+    png = b"\x89PNG\r\n\x1a\nprotected-page"
+    observed: dict[str, Any] = {}
+
+    @contextmanager
+    def source(*_args: Any, **_kwargs: Any):  # type: ignore[no-untyped-def]
+        yield Path("/verified/material.pdf")
+
+    def render(*_args: Any, **kwargs: Any) -> RenderedLearningPdfPage:
+        observed.update(kwargs)
+        return RenderedLearningPdfPage(
+            payload=png,
+            page_count=3,
+            page_number=2,
+            sha256_hex=hashlib.sha256(png).hexdigest(),
+        )
+
+    monkeypatch.setattr(learning_routes, "authorized_pdf_source", source)
+    monkeypatch.setattr(learning_routes, "render_pdf_page", render)
+    async with client_for(auth, settings=Settings()) as client:
+        response = await client.get(
+            f"/v1/me/learning/items/{ENTITLEMENT_ID}/assets/{ASSET_ID}/pages/2"
+        )
+
+    assert response.status_code == 200
+    assert response.content == png
+    assert response.headers["content-type"] == "image/png"
+    assert response.headers["content-disposition"] == 'inline; filename="page-2.png"'
+    assert response.headers["cache-control"] == "private, no-store, max-age=0"
+    assert response.headers["x-appsell-page-count"] == "3"
+    assert observed["page_number"] == 2
+    assert observed["watermark"] == (
+        f"user {IDENTITY_ID.hex[:12]} access {ENTITLEMENT_ID.hex[:12]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_pdf_viewer_rejects_excess_parallel_work_before_spooling() -> None:
+    auth = FakeAuth(asset_row())
+    first = await learning_routes._PROTECTED_PDF_SLOTS.acquire()
+    second = await learning_routes._PROTECTED_PDF_SLOTS.acquire()
+    assert first is True and second is True
+    try:
+        async with client_for(auth, settings=Settings()) as client:
+            response = await client.get(
+                f"/v1/me/learning/items/{ENTITLEMENT_ID}/assets/{ASSET_ID}/pages"
+            )
+    finally:
+        learning_routes._PROTECTED_PDF_SLOTS.release()
+        learning_routes._PROTECTED_PDF_SLOTS.release()
+
+    assert response.status_code == 429
+    assert response.json() == {"detail": "pdf_viewer_busy"}
+    assert response.headers["retry-after"] == "2"
+
+
+def asset_row(media_type: str = "application/pdf") -> dict[str, Any]:
+    return {
+        "asset_id": ASSET_ID,
+        "asset_version": 2,
+        "file_name": "material.pdf" if media_type == "application/pdf" else "aula.mp4",
+        "title": "Material seguro",
+        "media_type": media_type,
+        "byte_size": 120,
+        "sha256": "cd" * 32,
+        "storage_driver": "legacy_bundle",
+        "storage_bucket": "codex-demo",
+        "object_key": "material",
+        "storage_version_id": None,
+        "storage_etag": None,
+    }
 
 
 @pytest.mark.asyncio

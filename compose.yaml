@@ -30,6 +30,7 @@ services:
       APPSELL_API_VIDEO_UPLOAD_ENABLED: ${APPSELL_API_VIDEO_UPLOAD_ENABLED:-false}
       APPSELL_API_PDF_SANDBOX_URL: ""
       APPSELL_API_PDF_SANDBOX_SOCKET: /run/appsell-pdf/pdf.sock
+      APPSELL_API_PRIVATE_LEARNING_ASSET_ROOT: /opt/app/output/pdf/codex
     ports:
       - "127.0.0.1:${APPSELL_API_PORT:-58000}:8000"
     depends_on:
@@ -49,13 +50,46 @@ services:
     restart: unless-stopped
     volumes:
       - appsell_pdf_socket:/run/appsell-pdf:ro
+      - ./output/pdf/codex:/opt/app/output/pdf/codex:ro
+
+  pdf-sandbox-init:
+    build:
+      context: ./apps/api
+    user: "0:0"
+    command:
+      - sh
+      - -ec
+      - |
+        state="$$(stat -c '%a:%u:%g' /run/appsell-pdf)"
+        case "$$state" in
+          700:10001:10001) ;;
+          770:10001:10001)
+            chmod 0700 /run/appsell-pdf
+            ;;
+          755:0:0|700:0:0)
+            chmod 0700 /run/appsell-pdf
+            chown 10001:10001 /run/appsell-pdf
+            ;;
+          *) echo "unexpected PDF socket volume state: $$state" >&2; exit 1 ;;
+        esac
+        test "$$(stat -c '%a:%u:%g' /run/appsell-pdf)" = "700:10001:10001"
+    read_only: true
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN"]
+    security_opt: ["no-new-privileges:true"]
+    network_mode: none
+    restart: "no"
+    volumes:
+      - appsell_pdf_socket:/run/appsell-pdf
 
   pdf-sandbox:
     build:
       context: ./apps/api
+    user: "10001:10001"
     command: ["python", "-m", "appsell_api.pdf_sandbox_runner"]
     environment:
       PYTHONUNBUFFERED: "1"
+      APPSELL_PDF_SANDBOX_RECYCLE_AFTER_JOB: "true"
     read_only: true
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
@@ -71,6 +105,9 @@ services:
       retries: 30
     restart: unless-stopped
     network_mode: none
+    depends_on:
+      pdf-sandbox-init:
+        condition: service_completed_successfully
     volumes:
       - appsell_pdf_socket:/run/appsell-pdf
 

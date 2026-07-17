@@ -123,10 +123,13 @@ services:
       APPSELL_API_VIDEO_UPLOAD_ENABLED: "false"
       APPSELL_API_STORAGE_PROVIDER: disabled
       APPSELL_API_PDF_SANDBOX_URL: ""
+      APPSELL_API_PDF_SANDBOX_SOCKET: /run/appsell-pdf/pdf.sock
+      APPSELL_API_PRIVATE_LEARNING_ASSET_ROOT: /workspace/sell/output/pdf/codex
     networks: [sell-private]
     labels: *runtime-labels
     depends_on:
       domain-bootstrap: { condition: service_completed_successfully }
+      pdf-sandbox: { condition: service_healthy }
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:15800/health/ready')"]
       interval: 3s
@@ -139,6 +142,70 @@ services:
     pids_limit: 192
     read_only: true
     tmpfs: ["/tmp:size=134217728,mode=1777,noexec,nosuid"]
+    volumes: ["runtime_pdf_socket:/run/appsell-pdf:ro"]
+    <<: *runtime-security
+    logging: *runtime-logging
+
+  pdf-sandbox-init:
+    image: ${APPSELL_DOMAIN_IMAGE:?APPSELL_DOMAIN_IMAGE is required}
+    pull_policy: never
+    user: "0:0"
+    command:
+      - sh
+      - -ec
+      - |
+        state="$$(stat -c '%a:%u:%g' /run/appsell-pdf)"
+        case "$$state" in
+          700:10001:10001) ;;
+          755:0:0|700:0:0)
+            chmod 0700 /run/appsell-pdf
+            chown 10001:10001 /run/appsell-pdf
+            ;;
+          *) echo "unexpected PDF socket volume state: $$state" >&2; exit 1 ;;
+        esac
+        test "$$(stat -c '%a:%u:%g' /run/appsell-pdf)" = "700:10001:10001"
+    network_mode: none
+    volumes: ["runtime_pdf_socket:/run/appsell-pdf"]
+    labels:
+      <<: *runtime-labels
+      com.autonomia.purpose: pdf-raster-socket-init
+    restart: "no"
+    mem_limit: 32m
+    cpus: 0.05
+    pids_limit: 32
+    read_only: true
+    <<: *runtime-security
+    cap_add: ["CHOWN"]
+    logging: *runtime-logging
+
+  pdf-sandbox:
+    image: ${APPSELL_DOMAIN_IMAGE:?APPSELL_DOMAIN_IMAGE is required}
+    pull_policy: never
+    user: "10001:10001"
+    command: ["python", "-m", "appsell_api.pdf_sandbox_runner"]
+    environment:
+      APPSELL_PDF_SANDBOX_RECYCLE_AFTER_JOB: "true"
+    network_mode: none
+    volumes: ["runtime_pdf_socket:/run/appsell-pdf"]
+    labels:
+      <<: *runtime-labels
+      com.autonomia.purpose: pdf-raster-sandbox
+    depends_on:
+      pdf-sandbox-init: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; t=httpx.HTTPTransport(uds='/run/appsell-pdf/pdf.sock'); r=httpx.Client(transport=t,trust_env=False,timeout=1).get('http://pdf-sandbox/health'); assert r.status_code==200 and r.json()=={'status':'ok'}"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 3s
+    restart: unless-stopped
+    mem_limit: 768m
+    cpus: 1.0
+    pids_limit: 96
+    read_only: true
+    tmpfs:
+      - "/tmp:size=268435456,mode=1777,noexec,nosuid"
+      - "/workspace/sell/output/pdf:size=1048576,mode=000,noexec,nosuid"
     <<: *runtime-security
     logging: *runtime-logging
 
@@ -343,6 +410,12 @@ networks:
     labels: *runtime-labels
 
 volumes:
+  runtime_pdf_socket:
+    labels:
+      com.autonomia.project: sell-autonomia
+      com.autonomia.issue: "77"
+      com.autonomia.environment: local-ci-easypanel-preview
+      com.autonomia.purpose: pdf-raster-socket
   runtime_evidence:
     labels:
       com.autonomia.project: sell-autonomia
