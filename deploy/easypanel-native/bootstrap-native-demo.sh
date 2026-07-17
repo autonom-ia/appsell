@@ -6,8 +6,16 @@ readonly database_name="appsell_native_90"
 readonly migrator_role="appsell_native_90_migrator"
 readonly runtime_role="appsell_native_90_runtime"
 readonly role_marker="appsell-native-90-v1"
+# In-progress marker. reset_demo_tenant.py and the append-only triggers from
+# migrations 0006/0008 only allow the demo reset while the database comment is
+# exactly this value, so it must be in place before the reset runs.
 readonly database_marker="appsell-demo-reset-target-v1"
+# Legacy in-progress marker written by earlier bootstrap attempts that failed
+# before the demo reset. Treated as resumable, never as complete.
 readonly bootstrap_database_marker="appsell-native-90-bootstrap-v1"
+# Completion marker, deliberately distinct from the reset-target marker so a
+# finished database keeps its append-only triggers fully enforced.
+readonly complete_database_marker="appsell-native-90-complete-v1"
 
 lock_directory="/tmp/appsell-native-90-bootstrap.lock"
 mkdir "$lock_directory" 2>/dev/null || {
@@ -133,12 +141,13 @@ SQL
 )"
 [[ "$database_state" == "absent" \
   || "$database_state" == "$bootstrap_database_marker" \
-  || "$database_state" == "$database_marker" ]] || {
+  || "$database_state" == "$database_marker" \
+  || "$database_state" == "$complete_database_marker" ]] || {
   echo "refusing an unmarked native demo database" >&2
   exit 1
 }
 
-if [[ "$database_state" == "$database_marker" ]]; then
+if [[ "$database_state" == "$complete_database_marker" ]]; then
   configured_state="$(psql -XAt --set=ON_ERROR_STOP=1 --dbname="$database_name" <<'SQL'
 \getenv expected_context_key APPSELL_CONTEXT_SIGNING_KEY_HEX
 \getenv expected_bootstrap_key APPSELL_BOOTSTRAP_ATTESTATION_KEY_HEX
@@ -148,6 +157,9 @@ if [[ "$database_state" == "$database_marker" ]]; then
 select case
   when to_regclass('app_private.context_signing_key') is null
     or to_regclass('app_private.bootstrap_trust_policy') is null then 'missing'
+  when not exists(select 1 from app_private.context_signing_key where singleton)
+    or not exists(select 1 from app_private.bootstrap_trust_policy where singleton)
+    then 'missing'
   when (select encode(secret,'hex') from app_private.context_signing_key where singleton)
     <> :'expected_context_key' then 'context-key-drift'
   when (select encode(attestation_secret,'hex') from app_private.bootstrap_trust_policy
@@ -176,7 +188,7 @@ psql -X --set=ON_ERROR_STOP=1 \
   --set=migrator_role="$migrator_role" \
   --set=runtime_role="$runtime_role" \
   --set=role_marker="$role_marker" \
-  --set=bootstrap_database_marker="$bootstrap_database_marker" <<'SQL' >/dev/null
+  --set=database_marker="$database_marker" <<'SQL' >/dev/null
 \getenv migrator_secret APPSELL_NATIVE_MIGRATOR_PASSWORD
 \getenv runtime_secret APPSELL_NATIVE_RUNTIME_PASSWORD
 select 'create role appsell_owner nologin nosuperuser nocreatedb nocreaterole noinherit nobypassrls'
@@ -209,7 +221,7 @@ select format(
   'grant connect on database %I to %I, %I',
   :'database_name', :'migrator_role', :'runtime_role'
 )\gexec
-select format('comment on database %I is %L', :'database_name', :'bootstrap_database_marker')\gexec
+select format('comment on database %I is %L', :'database_name', :'database_marker')\gexec
 SQL
 
 readarray -t database_urls < <(python - <<'PY'
@@ -245,12 +257,15 @@ psql --dbname="$database_name" -XAt --set=ON_ERROR_STOP=1 \
   --command="select case when app_private.schema_ready() then 'ready' else 'not-ready' end" \
   | grep -qx ready
 
-# The final marker is deliberately the last mutation. A failed migration,
-# configuration or seed remains resumable and can never be mistaken for a
-# completed bootstrap by a restarted EasyPanel task.
+# The completion marker is deliberately the last mutation. A failed migration,
+# configuration or seed leaves the reset-target marker in place, so the run
+# stays resumable and can never be mistaken for a completed bootstrap by a
+# restarted EasyPanel task. It also re-arms the append-only triggers from
+# migrations 0006/0008, which only allow demo deletes on a reset-target database.
 psql --dbname=postgres -X --set=ON_ERROR_STOP=1 \
-  --set=database_name="$database_name" --set=database_marker="$database_marker" <<'SQL' >/dev/null
-select format('comment on database %I is %L', :'database_name', :'database_marker')\gexec
+  --set=database_name="$database_name" \
+  --set=complete_database_marker="$complete_database_marker" <<'SQL' >/dev/null
+select format('comment on database %I is %L', :'database_name', :'complete_database_marker')\gexec
 SQL
 
 echo "native bootstrap=ready database=appsell_native_90"

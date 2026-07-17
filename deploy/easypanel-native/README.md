@@ -63,7 +63,11 @@ laboratório #71 permanecem intocados. Nenhum serviço novo pode entrar nas rede
 6. Criar `api` com `deploy/easypanel-native/Dockerfile.api`, ambiente baseado em
    `api.staging.env.example` e sem domínio. A chave
    `APPSELL_API_CONTEXT_HMAC_KEY_B64` deve ser o base64 dos mesmos 32 bytes usados
-   em `APPSELL_CONTEXT_SIGNING_KEY_HEX` pelo bootstrap.
+   em `APPSELL_CONTEXT_SIGNING_KEY_HEX` pelo bootstrap. Conversão sem erro manual:
+
+   ```sh
+   python3 -c "import base64,binascii,os;print(base64.b64encode(binascii.unhexlify(os.environ['APPSELL_CONTEXT_SIGNING_KEY_HEX'])).decode())"
+   ```
 7. Criar `web` com `deploy/easypanel-native/Dockerfile.web`, ambiente baseado em
    `web.staging.env.example` e Basic Auth obrigatório com credencial exclusiva de
    homologação.
