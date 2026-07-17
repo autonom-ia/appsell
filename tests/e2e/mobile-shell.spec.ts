@@ -388,7 +388,7 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   await expect(page.getByRole("dialog", { name: "Sair desta edição?" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Continuar editando" })).toBeFocused();
   await page.keyboard.press("Shift+Tab");
-  await expect(page.getByRole("button", { name: "Descartar e sair" })).toBeFocused();
+  await expect(page.getByRole("button", { name: "Confirmar saída" })).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(page.getByRole("button", { name: "Continuar editando" })).toBeFocused();
   await page.getByRole("button", { name: "Continuar editando" }).click();
@@ -686,9 +686,14 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
   let markCancelCalled!: () => void;
   let markPolicyStarted!: () => void;
   let releasePolicy!: () => void;
+  let markRejectedPolicyStarted!: () => void;
+  let releaseRejectedPolicy!: () => void;
+  let rejectNextPolicy = false;
+  let rejectedPolicyWrite = false;
   const uploadStarted = new Promise<void>((resolve) => { markUploadStarted = resolve; });
   const cancelCalled = new Promise<void>((resolve) => { markCancelCalled = resolve; });
   const policyStarted = new Promise<void>((resolve) => { markPolicyStarted = resolve; });
+  const rejectedPolicyStarted = new Promise<void>((resolve) => { markRejectedPolicyStarted = resolve; });
 
   await page.setViewportSize({ width: 360, height: 844 });
   await login(page);
@@ -793,6 +798,16 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
         body: posted ? new Uint8Array(posted) : undefined
       }).formData();
       expect(form.get("_csrf")).toBe("asset-policy-token");
+      if (rejectNextPolicy) {
+        rejectNextPolicy = false;
+        expect(form.get("content_role")).toBe("support_material");
+        expect(form.get("download_allowed")).toBe("true");
+        markRejectedPolicyStarted();
+        await new Promise<void>((resolve) => { releaseRejectedPolicy = resolve; });
+        rejectedPolicyWrite = true;
+        await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "policy_unavailable" }) });
+        return;
+      }
       policyWrites.push({
         contentRole: String(form.get("content_role")),
         downloadAllowed: String(form.get("download_allowed"))
@@ -852,8 +867,8 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
   await page.getByRole("navigation", { name: "Navegação móvel" })
     .getByRole("link", { name: "Minha biblioteca" }).click();
   await expect(page.getByRole("dialog", { name: "Sair desta edição?" })).toBeVisible();
-  await page.getByRole("button", { name: "Descartar e sair" }).click();
-  await expect(page.getByRole("button", { name: "Concluindo operação segura…" })).toBeVisible();
+  await page.getByRole("button", { name: "Confirmar saída" }).click();
+  await expect(page.getByRole("button", { name: "Preparando saída segura…" })).toBeVisible();
   await expect(page).toHaveURL(pendingPolicyUrl);
   releasePolicy();
   await expect(page).toHaveURL("/library");
@@ -867,6 +882,20 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
     await summary.click();
   }
   const downloadToggle = lesson.getByLabel("Permitir que o aluno baixe este PDF");
+  await expect(downloadToggle).toBeVisible();
+  rejectNextPolicy = true;
+  await downloadToggle.click({ noWaitAfter: true });
+  await rejectedPolicyStarted;
+  await page.getByRole("navigation", { name: "Navegação móvel" })
+    .getByRole("link", { name: "Minha biblioteca" }).click();
+  await page.getByRole("button", { name: "Confirmar saída" }).click();
+  await expect(page.getByRole("button", { name: "Preparando saída segura…" })).toBeVisible();
+  releaseRejectedPolicy();
+  await expect(page).toHaveURL(pendingPolicyUrl);
+  await expect(page.getByRole("dialog", { name: "Sair desta edição?" }).getByRole("alert"))
+    .toContainText("Não foi possível concluir a operação com segurança");
+  expect(rejectedPolicyWrite).toBe(true);
+  await page.getByRole("button", { name: "Continuar editando" }).click();
   await expect(downloadToggle).toBeVisible();
   await downloadToggle.click({ noWaitAfter: true });
   await expect.poll(() => policyWrites).toEqual([
