@@ -167,7 +167,19 @@ test.skipIf(!domainApiUrl)(
       expect(playerB.payload.player).toMatchObject({
         seller: { id: fixture.seller_b },
         product: { id: fixture.product_b },
-        entitlement_id: fixture.entitlement_b
+        entitlement_id: fixture.entitlement_b,
+        selected_asset: {
+          id: fixture.asset_b,
+          media_type: "video/mp4",
+          view_href: `/api/library/items/${fixture.entitlement_b}/assets/${fixture.asset_b}`
+        }
+      });
+      expect(playerA.payload.player).toMatchObject({
+        selected_asset: {
+          id: fixture.asset_a,
+          media_type: "application/pdf",
+          view_href: `/api/library/items/${fixture.entitlement_a}/assets/${fixture.asset_a}/pages`
+        }
       });
 
       await expectNotFound(
@@ -214,23 +226,23 @@ test.skipIf(!domainApiUrl)(
         expect.objectContaining({ lesson_id: fixture.lesson_b, progress_percent: 50 })
       ]));
 
-      await expectAsset(
+      await expectPdfAsset(
         `${origin}/api/library/items/${fixture.entitlement_a}/assets/${fixture.asset_a}`,
         buyer.session,
         200
       );
-      await expectAsset(
+      await expectVideoAsset(
         `${origin}/api/library/items/${fixture.entitlement_b}/assets/${fixture.asset_b}`,
         buyer.session,
         200
       );
-      await expectAsset(
+      await expectVideoAsset(
         `${origin}/api/library/items/${fixture.entitlement_a}/assets/${fixture.asset_b}`,
         buyer.session,
         404
       );
       crossScopeDenials += 1;
-      await expectAsset(
+      await expectPdfAsset(
         `${origin}/api/library/items/${fixture.entitlement_b}/assets/${fixture.asset_a}`,
         buyer.session,
         404
@@ -290,13 +302,13 @@ test.skipIf(!domainApiUrl)(
         buyer.session
       );
       crossScopeDenials += 1;
-      await expectAsset(
+      await expectPdfAsset(
         `${origin}/api/library/items/${fixture.entitlement_a}/assets/${fixture.asset_a}`,
         buyer.session,
         404
       );
       crossScopeDenials += 1;
-      await expectAsset(
+      await expectVideoAsset(
         `${origin}/api/library/items/${fixture.entitlement_b}/assets/${fixture.asset_b}`,
         buyer.session,
         200
@@ -476,19 +488,54 @@ async function expectNotFound(url: string, session: string) {
   expect(await response.json()).toEqual({ error: "learning_item_unavailable" });
 }
 
-async function expectAsset(url: string, session: string, status: 200 | 404) {
+async function expectPdfAsset(url: string, session: string, status: 200 | 404) {
   const response = await fetch(`${url}/pages`, { headers: { cookie: session } });
   expect(response.status).toBe(status);
   if (status === 200) {
     expect(response.headers.get("content-type")).toContain("application/json");
-    expect(await response.json()).toMatchObject({ page_count: expect.any(Number) });
+    expect(response.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    expect(await response.json()).toMatchObject({
+      asset_id: url.slice(url.lastIndexOf("/") + 1),
+      page_count: expect.any(Number)
+    });
     const page = await fetch(`${url}/pages/1`, { headers: { cookie: session } });
     expect(page.status).toBe(200);
     expect(page.headers.get("content-type")).toBe("image/png");
+    expect(page.headers.get("cache-control")).toBe("private, no-store, max-age=0");
     expect((await page.arrayBuffer()).byteLength).toBeGreaterThan(8);
+    const original = await fetch(url, { headers: { cookie: session } });
+    expect(original.status).toBe(404);
+    expect(await original.json()).toEqual({
+      error: "pdf_original_requires_download_permission"
+    });
   } else {
     expect(await response.json()).toEqual({ error: "learning_item_unavailable" });
   }
+}
+
+async function expectVideoAsset(url: string, session: string, status: 200 | 404) {
+  if (status === 404) {
+    const response = await fetch(url, {
+      headers: { cookie: session, range: "bytes=0-7" }
+    });
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "learning_item_unavailable" });
+    return;
+  }
+  const head = await fetch(url, { method: "HEAD", headers: { cookie: session } });
+  expect(head.status).toBe(200);
+  expect(head.headers.get("content-type")).toBe("video/mp4");
+  expect(head.headers.get("accept-ranges")).toBe("bytes");
+  const total = Number(head.headers.get("content-length"));
+  expect(Number.isSafeInteger(total)).toBe(true);
+  expect(total).toBeGreaterThan(8);
+  const range = await fetch(url, {
+    headers: { cookie: session, range: "bytes=0-7" }
+  });
+  expect(range.status).toBe(206);
+  expect(range.headers.get("content-type")).toBe("video/mp4");
+  expect(range.headers.get("content-range")).toBe(`bytes 0-7/${total}`);
+  expect((await range.arrayBuffer()).byteLength).toBe(8);
 }
 
 async function revokeSellerA(fixturePath: string) {
