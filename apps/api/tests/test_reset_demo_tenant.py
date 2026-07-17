@@ -81,7 +81,7 @@ def test_reset_rejects_a_non_loopback_database(monkeypatch: pytest.MonkeyPatch) 
         "APPSELL_DEMO_DATABASE_URL",
         "postgresql://postgres:secret@database.example.com/appsell",
     )
-    with pytest.raises(RuntimeError, match="loopback-only or the exact runtime-preview-77 target"):
+    with pytest.raises(RuntimeError, match="loopback-only or an exact approved remote target"):
         require_environment(Namespace(confirm_demo_key=DEMO_KEY))
 
 
@@ -99,6 +99,20 @@ def exact_remote_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+def exact_native_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    base_environment(monkeypatch)
+    monkeypatch.setenv("NODE_ENV", "test")
+    monkeypatch.setenv("APP_ENV", "ci")
+    monkeypatch.setenv("APPSELL_API_ENVIRONMENT", "ci")
+    monkeypatch.setenv("APPSELL_API_IDENTITY_ISSUER", "https://identity.native.local")
+    monkeypatch.setenv("APPSELL_DEMO_REMOTE_RESET_SCOPE", "appsell-native-90")
+    monkeypatch.setenv(
+        "APPSELL_DEMO_DATABASE_URL",
+        "postgresql://appsell_native_90_migrator:secret@"
+        "sell-autonomia_postgres-native-90:5432/appsell_native_90",
+    )
+
+
 def test_reset_accepts_only_the_exact_remote_runtime_preview_target(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -107,6 +121,53 @@ def test_reset_accepts_only_the_exact_remote_runtime_preview_target(
         Namespace(confirm_demo_key=DEMO_KEY)
     )
     assert "sell-autonomia_postgres:5432/appsell_preview_77" in database_url
+
+
+def test_reset_accepts_only_the_exact_native_90_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exact_native_environment(monkeypatch)
+    _issuer, database_url, _provision_superadmin = require_environment(
+        Namespace(confirm_demo_key=DEMO_KEY)
+    )
+    assert "sell-autonomia_postgres-native-90:5432/appsell_native_90" in database_url
+
+
+@pytest.mark.parametrize(
+    ("scope", "issuer", "database_url"),
+    [
+        (
+            "appsell-native-90",
+            "https://identity.runtime-preview.local",
+            "postgresql://appsell_native_90_migrator:secret@"
+            "sell-autonomia_postgres-native-90:5432/appsell_native_90",
+        ),
+        (
+            "appsell-runtime-preview-77",
+            "https://identity.native.local",
+            "postgresql://appsell_preview_77_migrator:secret@"
+            "sell-autonomia_postgres:5432/appsell_preview_77",
+        ),
+        (
+            "appsell-native-90",
+            "https://identity.native.local",
+            "postgresql://appsell_preview_77_migrator:secret@"
+            "sell-autonomia_postgres:5432/appsell_preview_77",
+        ),
+    ],
+)
+def test_remote_reset_rejects_hybrid_profiles(
+    monkeypatch: pytest.MonkeyPatch,
+    scope: str,
+    issuer: str,
+    database_url: str,
+) -> None:
+    exact_native_environment(monkeypatch)
+    monkeypatch.setenv("APPSELL_DEMO_REMOTE_RESET_SCOPE", scope)
+    monkeypatch.setenv("APPSELL_API_IDENTITY_ISSUER", issuer)
+    monkeypatch.setenv("APPSELL_DEMO_DATABASE_URL", database_url)
+    with pytest.raises(RuntimeError, match="exact approved remote target"):
+        require_environment(Namespace(confirm_demo_key=DEMO_KEY))
 
 
 @pytest.mark.parametrize(
@@ -150,7 +211,7 @@ def test_remote_reset_rejects_any_database_target_drift(
 ) -> None:
     exact_remote_environment(monkeypatch)
     monkeypatch.setenv("APPSELL_DEMO_DATABASE_URL", database_url)
-    with pytest.raises(RuntimeError, match="exact runtime-preview-77 target"):
+    with pytest.raises(RuntimeError, match="exact approved remote target"):
         require_environment(Namespace(confirm_demo_key=DEMO_KEY))
 
 

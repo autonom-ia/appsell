@@ -982,7 +982,10 @@ async function domainBinaryRequest(
 
 function requireDemoCapability(subject: string, request: ApiRequest) {
   const profile = demoProfileForSubject(subject);
-  if (!profile) return;
+  if (!profile) {
+    if (publicDemoRuntimeEnabled()) throw new DomainApiError(403, "demo_subject_required");
+    return;
+  }
   if (request.capability === "identity.sync") return;
   if (profile.persona === "buyer" &&
       [

@@ -484,6 +484,10 @@ export class RedisOAuthService {
     });
   }
 
+  async health() {
+    return this.withRedis(async () => await this.redis.ping() === "PONG");
+  }
+
   async beginLogin(clientKey = "local") {
     return this.withRedis(async () => {
       await this.assertAllowed("login", clientKey);

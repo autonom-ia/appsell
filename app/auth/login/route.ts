@@ -10,6 +10,7 @@ import {
 import { transactionCookieName, transactionCookieOptions } from "@/lib/cookies";
 import { isOAuthStoreUnavailable } from "@/lib/redis-oauth-service";
 import { configuredPublicOrigin } from "@/lib/public-origin";
+import { signDemoPersonaBinding } from "@/lib/demo-persona-binding.server";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +18,12 @@ export async function GET(request: NextRequest) {
   try {
     const mode = oauthRuntimeMode();
     const requestedPersona = request.nextUrl.searchParams.get("persona");
+    if (mode === "local" && demoModeEnabled() && !requestedPersona) {
+      return NextResponse.json({ error: "demo_persona_required" }, {
+        status: 400,
+        headers: { "cache-control": "no-store" }
+      });
+    }
     if (mode === "identity" && requestedPersona) {
       return NextResponse.json({ error: "invalid_demo_persona" }, {
         status: 400,
@@ -39,7 +46,13 @@ export async function GET(request: NextRequest) {
       authorize.searchParams.set("nonce", login.nonce);
       authorize.searchParams.set("code_challenge", login.codeChallenge);
       authorize.searchParams.set("code_challenge_method", "S256");
-      if (demoProfile) authorize.searchParams.set("persona", demoProfile.persona);
+      if (demoProfile) {
+        authorize.searchParams.set("persona", demoProfile.persona);
+        authorize.searchParams.set(
+          "persona_sig",
+          signDemoPersonaBinding(login.state, demoProfile.persona)
+        );
+      }
     }
     const response = NextResponse.redirect(authorize);
     response.cookies.set(transactionCookieName(), login.transactionId, transactionCookieOptions());

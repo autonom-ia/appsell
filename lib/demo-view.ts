@@ -8,6 +8,8 @@ export function canAccessDemoPreview(
   environment: string | undefined,
   variables: Partial<Record<string, string | undefined>> = process.env
 ) {
-  return (environment !== "production" || publicDemoRuntimeEnabled(variables)) &&
-    (subject === "dev-user-001" || Boolean(demoProfileForSubject(subject, variables)));
+  if (environment === "production") {
+    return publicDemoRuntimeEnabled(variables) && Boolean(demoProfileForSubject(subject, variables));
+  }
+  return subject === "dev-user-001" || Boolean(demoProfileForSubject(subject, variables));
 }

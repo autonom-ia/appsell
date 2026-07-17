@@ -41,6 +41,9 @@ test("fails a demo superadmin callback closed without the Domain API", async () 
 
   try {
     await waitForBff(server, port);
+    const missingPersona = await fetch(`${origin}/auth/login`, { redirect: "manual" });
+    expect(missingPersona.status).toBe(400);
+    expect(await missingPersona.json()).toEqual({ error: "demo_persona_required" });
     const start = await fetch(`${origin}/auth/login?persona=superadmin`, { redirect: "manual" });
     const transaction = cookiePair(start.headers.get("set-cookie"), "appsell_oauth_tx");
     const authorize = await fetch(requiredHeader(start, "location"), { redirect: "manual" });

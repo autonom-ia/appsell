@@ -1,0 +1,61 @@
+name: EasyPanel native images
+
+on:
+  pull_request:
+    paths:
+      - "app/**"
+      - "apps/api/**"
+      - "demo/**"
+      - "deploy/easypanel-native/**"
+      - "lib/**"
+      - "output/pdf/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "next.config.ts"
+      - ".dockerignore"
+      - ".github/workflows/easypanel-native-images.yml"
+  push:
+    branches: ["infra/90-easypanel-native-apps"]
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: web
+            dockerfile: deploy/easypanel-native/Dockerfile.web
+          - name: api
+            dockerfile: deploy/easypanel-native/Dockerfile.api
+          - name: bootstrap
+            dockerfile: deploy/easypanel-native/Dockerfile.bootstrap
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+      - name: Validate exact source and scripts
+        run: |
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          bash -n deploy/easypanel-native/bootstrap-native-demo.sh
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: false
+          tags: autonomia-sell-native-${{ matrix.name }}:${{ env.SOURCE_SHA }}
+          build-args: |
+            GIT_SHA=${{ env.SOURCE_SHA }}
+          cache-from: type=gha,scope=easypanel-native-${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=easypanel-native-${{ matrix.name }}

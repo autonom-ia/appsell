@@ -6,7 +6,7 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import psycopg
@@ -22,14 +22,40 @@ CHECKOUT_WORKER_EMAIL = "checkout.worker@autonomia.site"
 DEMO_SUPERADMIN_SUBJECT = "demo-superadmin"
 DEMO_SUPERADMIN_EMAIL = "comercial@autonomia.site"
 EXPECTED_MIGRATION = "0017_pdf_preraster"
-REMOTE_RESET_SCOPE = "appsell-runtime-preview-77"
-REMOTE_RESET_TARGET = {
-    "user": "appsell_preview_77_migrator",
-    "host": "sell-autonomia_postgres",
-    "port": "5432",
-    "dbname": "appsell_preview_77",
+
+
+class RemoteResetTarget(TypedDict):
+    user: str
+    host: str
+    port: str
+    dbname: str
+
+
+class RemoteResetProfile(TypedDict):
+    issuer: str
+    target: RemoteResetTarget
+
+
+REMOTE_RESET_PROFILES: dict[str, RemoteResetProfile] = {
+    "appsell-runtime-preview-77": {
+        "issuer": "https://identity.runtime-preview.local",
+        "target": {
+            "user": "appsell_preview_77_migrator",
+            "host": "sell-autonomia_postgres",
+            "port": "5432",
+            "dbname": "appsell_preview_77",
+        },
+    },
+    "appsell-native-90": {
+        "issuer": "https://identity.native.local",
+        "target": {
+            "user": "appsell_native_90_migrator",
+            "host": "sell-autonomia_postgres-native-90",
+            "port": "5432",
+            "dbname": "appsell_native_90",
+        },
+    },
 }
-REMOTE_RESET_ISSUER = "https://identity.runtime-preview.local"
 LIBPQ_REDIRECT_ENVIRONMENT = (
     "PGHOST",
     "PGHOSTADDR",
@@ -183,6 +209,7 @@ def require_environment(args: argparse.Namespace) -> tuple[str, str, bool]:
         raise RuntimeError("libpq network and service environment overrides are forbidden")
     connection_info = conninfo_to_dict(database_url)
     remote_scope = os.environ.get("APPSELL_DEMO_REMOTE_RESET_SCOPE", "").strip()
+    remote_profile = REMOTE_RESET_PROFILES.get(remote_scope)
     is_loopback = connection_info.get("host") in {"127.0.0.1", "localhost", "::1"}
     if is_loopback and not connection_info.get("hostaddr"):
         if remote_scope:
@@ -190,17 +217,20 @@ def require_environment(args: argparse.Namespace) -> tuple[str, str, bool]:
     else:
         allowed_connection_fields = {"user", "password", "host", "port", "dbname"}
         if (
-            remote_scope != REMOTE_RESET_SCOPE
+            remote_profile is None
             or node_environment != "test"
             or app_environment != "ci"
             or environment != "ci"
-            or issuer != REMOTE_RESET_ISSUER
-            or any(connection_info.get(key) != value for key, value in REMOTE_RESET_TARGET.items())
+            or issuer != remote_profile["issuer"]
+            or any(
+                connection_info.get(key) != value
+                for key, value in remote_profile["target"].items()
+            )
             or set(connection_info) != allowed_connection_fields
             or not connection_info.get("password")
         ):
             raise RuntimeError(
-                "demo reset database must be loopback-only or the exact runtime-preview-77 target"
+                "demo reset database must be loopback-only or an exact approved remote target"
             )
     superadmin_value = os.environ.get("APPSELL_DEMO_SUPERADMIN_ENABLED", "").strip().lower()
     if superadmin_value not in {"", "false", "true"}:
@@ -213,9 +243,11 @@ def validate_demo_database(connection: psycopg.Connection[Any]) -> None:
         "select current_database(),shobj_description(oid,'pg_database') from pg_database "
         "where datname=current_database()"
     ).fetchone()
+    remote_scope = os.environ.get("APPSELL_DEMO_REMOTE_RESET_SCOPE", "").strip()
+    remote_profile = REMOTE_RESET_PROFILES.get(remote_scope)
     expected_database = (
-        REMOTE_RESET_TARGET["dbname"]
-        if os.environ.get("APPSELL_DEMO_REMOTE_RESET_SCOPE", "").strip() == REMOTE_RESET_SCOPE
+        remote_profile["target"]["dbname"]
+        if remote_profile is not None
         else marker[0]
         if marker
         else None
