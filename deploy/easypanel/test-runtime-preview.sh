@@ -403,7 +403,9 @@ grep -Fq 'test "$(id -u pwuser):$(id -g pwuser)" = "1001:1001"' \
 grep -Fq 'USER pwuser' "$here/../preview-vps/Dockerfile.sell"
 grep -Fq 'corepack pnpm build' "$here/../preview-vps/Dockerfile.sell"
 grep -Fq '__Host-appsell_session' "$here/../../tests/e2e-runtime-preview/demo-personas.spec.ts"
-grep -Fq 'secure: true' "$here/../../tests/e2e-runtime-preview/demo-personas.spec.ts"
+grep -Fq 'const secureRuntime = runtimeOrigin.protocol === "https:"' \
+  "$here/../../tests/e2e-runtime-preview/demo-personas.spec.ts"
+grep -Fq 'secure: secureRuntime' "$here/../../tests/e2e-runtime-preview/demo-personas.spec.ts"
 grep -Fq -- '--entrypoint sh e2e -ec' "$here/verify-runtime-preview.sh"
 grep -Fq -- '--rm --no-deps e2e' "$here/verify-runtime-preview.sh"
 grep -Fq 'runtime-preview remained healthy with stable IDs and zero restarts for 30 seconds after E2E' \
