@@ -145,22 +145,25 @@ decrypt_file() {
 # ---------------------------------------------------------------------------
 # rotate_local DIR GLOB KEEP — keep the KEEP newest files matching DIR/GLOB,
 # delete the rest. Newest is decided by filename (timestamps sort lexically).
+# NOTE: the retention count is held in `keep_count`, not `keep`, because callers
+# (backup-native.sh) expose the retention limit as a `readonly keep` global and a
+# `local keep` here would collide with it ("local: keep: readonly variable").
 rotate_local() {
-  local dir="$1" glob="$2" keep="$3"
+  local dir="$1" glob="$2" keep_count="$3"
   local -a files=()
   while IFS= read -r f; do files+=("$f"); done \
     < <(find "$dir" -maxdepth 1 -type f -name "$glob" | sort -r)
   local total="${#files[@]}"
-  if (( total <= keep )); then
-    log "rotation: ${total} local backups, keeping all (limit ${keep})"
+  if (( total <= keep_count )); then
+    log "rotation: ${total} local backups, keeping all (limit ${keep_count})"
     return 0
   fi
   local i
-  for (( i = keep; i < total; i++ )); do
+  for (( i = keep_count; i < total; i++ )); do
     rm -f -- "${files[$i]}"
     log "rotation: pruned ${files[$i]##*/}"
   done
-  log "rotation: kept ${keep} newest of ${total} local backups"
+  log "rotation: kept ${keep_count} newest of ${total} local backups"
 }
 
 # ---------------------------------------------------------------------------
