@@ -137,6 +137,34 @@ def test_presigned_download_and_delete_require_exact_version() -> None:
         storage.delete_version(bucket="ready", key="asset", version_id="")
 
 
+def test_prefix_reconcile_repeats_until_every_version_and_marker_is_deleted() -> None:
+    prefix = "tenants/seller/assets/asset/v1/"
+    listed = [
+        {
+            "Versions": [{"Key": f"{prefix}blob", "VersionId": "v1"}],
+            "DeleteMarkers": [{"Key": f"{prefix}pages/1.png", "VersionId": "m1"}],
+        },
+        {},
+    ]
+    deleted: list[dict[str, Any]] = []
+
+    def delete_objects(**kwargs: Any) -> dict[str, Any]:
+        deleted.append(kwargs)
+        return {}
+
+    storage = object.__new__(S3Storage)
+    storage._control = SimpleNamespace(
+        list_object_versions=lambda **_kwargs: listed.pop(0),
+        delete_objects=delete_objects,
+    )
+
+    assert storage.delete_all_versions_under_prefix(bucket="ready", prefix=prefix) == 2
+    assert deleted[0]["Delete"]["Objects"] == [
+        {"Key": f"{prefix}blob", "VersionId": "v1"},
+        {"Key": f"{prefix}pages/1.png", "VersionId": "m1"},
+    ]
+
+
 def test_presigned_download_pins_safe_pdf_name_and_disables_caching() -> None:
     observed: dict[str, Any] = {}
 
@@ -170,6 +198,26 @@ def test_presigned_download_pins_safe_pdf_name_and_disables_caching() -> None:
     assert observed["Params"]["ResponseContentDisposition"] == (
         "attachment; filename*=UTF-8''material%20seguro.pdf"
     )
+
+    storage.presign_get(
+        bucket="ready",
+        key="page-key",
+        version_id="page-v1",
+        file_name="page-1.png",
+        media_type="image/png",
+    )
+    assert observed["Params"]["ResponseContentDisposition"] == (
+        "inline; filename*=UTF-8''page-1.png"
+    )
+
+    with pytest.raises(ValueError, match="invalid"):
+        storage.presign_get(
+            bucket="ready",
+            key="page-key",
+            version_id="page-v1",
+            file_name="page-1.pdf",
+            media_type="image/png",
+        )
 
 
 def test_head_fails_when_provider_omits_version_or_checksum() -> None:

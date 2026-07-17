@@ -40,6 +40,10 @@ def test_worker_normalizes_to_distinct_db_key_and_preserves_source_until_commit(
     assert result.source_sha256_hex == hashlib.sha256(payload).hexdigest()
     assert result.ready_sha256_hex == hashlib.sha256(storage.ready_payload).hexdigest()
     assert result.ready_sha256_hex != result.source_sha256_hex
+    assert result.pdf_page_count == 1
+    assert len(result.pdf_pages) == 1
+    assert result.pdf_pages[0].stored.key.endswith("/v1/pages/1.png")
+    assert storage.reconciled_prefixes == [("ready", result.ready.key.rsplit("/", 1)[0] + "/")]
     assert storage.deleted == []
     worker = local_worker(storage, DeterministicLocalScanner())
     worker.cleanup_source_after_commit(result)
@@ -83,7 +87,10 @@ def test_finalize_failure_compensates_ready_and_preserves_source() -> None:
     worker = local_worker(storage, DeterministicLocalScanner())
     result = worker.process(job)
     worker.compensate_ready_after_finalize_failure(result)
-    assert storage.deleted == [("ready", job.ready_key, "ready-v1")]
+    assert storage.deleted == [
+        ("ready", result.pdf_pages[0].stored.key, "page-v1"),
+        ("ready", job.ready_key, "ready-v1"),
+    ]
 
 
 def test_source_cleanup_failure_is_retryable_and_never_removes_ready() -> None:
@@ -167,8 +174,10 @@ class FakeStorage:
         self.source = source
         self.payload = payload
         self.ready_payload = b""
+        self.page_payloads: dict[str, bytes] = {}
         self.put_key: str | None = None
         self.deleted: list[tuple[str, str, str]] = []
+        self.reconciled_prefixes: list[tuple[str, str]] = []
         self.fail_source_delete = False
 
     def head(self, **_kwargs: Any) -> StoredObject:
@@ -189,19 +198,26 @@ class FakeStorage:
         upload_id: str,
         file_name: str,
     ) -> StoredObject:
-        assert (
-            file_name.endswith(".pdf")
-            if content_type == "application/pdf"
-            else file_name.endswith(".mp4")
-        )
-        self.put_key = destination_key
-        self.ready_payload = source_path.read_bytes()
-        assert len(self.ready_payload) == byte_size
-        assert hashlib.sha256(self.ready_payload).hexdigest() == sha256_hex
+        suffixes = {
+            "application/pdf": ".pdf",
+            "video/mp4": ".mp4",
+            "image/png": ".png",
+        }
+        assert file_name.endswith(suffixes[content_type])
+        payload = source_path.read_bytes()
+        assert len(payload) == byte_size
+        assert hashlib.sha256(payload).hexdigest() == sha256_hex
+        if content_type == "image/png":
+            self.page_payloads[destination_key] = payload
+            version_id = "page-v1"
+        else:
+            self.put_key = destination_key
+            self.ready_payload = payload
+            version_id = "ready-v1"
         return StoredObject(
             bucket=destination_bucket,
             key=destination_key,
-            version_id="ready-v1",
+            version_id=version_id,
             size=byte_size,
             content_type=content_type,
             checksum_sha256_b64=base64.b64encode(bytes.fromhex(sha256_hex)).decode(),
@@ -213,6 +229,10 @@ class FakeStorage:
         if bucket == self.quarantine_bucket and self.fail_source_delete:
             raise RuntimeError("injected source delete failure")
         self.deleted.append((bucket, key, version_id))
+
+    def delete_all_versions_under_prefix(self, *, bucket: str, prefix: str) -> int:
+        self.reconciled_prefixes.append((bucket, prefix))
+        return 0
 
 
 class RecordingScanner:

@@ -41,7 +41,7 @@ function validManifest(value: unknown, expectedAssetId: string): value is {
   return Object.keys(asset).sort().join(",") === "id,page_count" &&
     asset.id === expectedAssetId && typeof asset.id === "string" && UUID.test(asset.id) &&
     Number.isSafeInteger(asset.page_count) && Number(asset.page_count) >= 1 &&
-    Number(asset.page_count) <= 5_000;
+    Number(asset.page_count) <= 100;
 }
 
 function manifestUnavailable() {

@@ -204,7 +204,7 @@ def seed(connection: psycopg.Connection[Any], issuer: str) -> dict[str, Any]:
     offer_b = fixture_id("offer-b")
     publication_b = fixture_id("publication-b")
     entitlement_b = fixture_id("entitlement-b")
-    lesson_source = manifest["lessons"][0]
+    video_source = manifest["video"]
     connection.execute(
         "insert into seller_organization(id,slug,display_name,status) "
         "values(%s,'buyer-multi-seller-b','Seller B','active')",
@@ -247,7 +247,7 @@ def seed(connection: psycopg.Connection[Any], issuer: str) -> dict[str, Any]:
     )
     connection.execute(
         "insert into asset_record(seller_organization_id,id,catalog_product_id,title,status) "
-        "values(%s,%s,%s,'Material B','active')",
+        "values(%s,%s,%s,'Vídeo B','active')",
         (seller_b, asset_b, product_b),
     )
     connection.execute(
@@ -256,15 +256,15 @@ def seed(connection: psycopg.Connection[Any], issuer: str) -> dict[str, Any]:
           seller_organization_id,id,storage_driver,storage_bucket,object_key,file_name,
           media_type,byte_size,sha256,magic_type,scanner_result,verified_at
         ) values(%s,app_private.legacy_asset_blob_id(%s),'legacy_bundle','codex-demo',
-          %s,%s,'application/pdf',%s,%s,'application/pdf','legacy_trusted',clock_timestamp())
+          %s,%s,'video/mp4',%s,%s,'video/mp4','legacy_trusted',clock_timestamp())
         """,
         (
             seller_b,
             asset_b,
-            f"{lesson_source['slug']}.pdf",
-            f"{lesson_source['slug']}.pdf",
-            lesson_source["bytes"],
-            lesson_source["sha256"],
+            video_source["file_name"],
+            video_source["file_name"],
+            video_source["bytes"],
+            video_source["sha256"],
         ),
     )
     connection.execute(
@@ -286,7 +286,7 @@ def seed(connection: psycopg.Connection[Any], issuer: str) -> dict[str, Any]:
         insert into learning_asset(
           seller_organization_id,id,catalog_product_id,course_id,module_id,lesson_id,
           seed_key,file_name,title,media_type,byte_size,sha256,position,status
-        ) values(%s,%s,%s,%s,%s,%s,%s,%s,'Material B','application/pdf',%s,%s,0,'active')
+        ) values(%s,%s,%s,%s,%s,%s,%s,%s,'Vídeo B','video/mp4',%s,%s,0,'active')
         """,
         (
             seller_b,
@@ -295,10 +295,10 @@ def seed(connection: psycopg.Connection[Any], issuer: str) -> dict[str, Any]:
             course_b,
             module_b,
             lesson_b,
-            lesson_source["slug"],
-            f"{lesson_source['slug']}.pdf",
-            lesson_source["bytes"],
-            lesson_source["sha256"],
+            video_source["slug"],
+            video_source["file_name"],
+            video_source["bytes"],
+            video_source["sha256"],
         ),
     )
     snapshot_b = {
@@ -340,11 +340,11 @@ def seed(connection: psycopg.Connection[Any], issuer: str) -> dict[str, Any]:
                                     {
                                         "id": str(asset_b),
                                         "version": 1,
-                                        "title": "Material B",
-                                        "file_name": f"{lesson_source['slug']}.pdf",
-                                        "media_type": "application/pdf",
-                                        "byte_size": lesson_source["bytes"],
-                                        "sha256": lesson_source["sha256"],
+                                        "title": "Vídeo B",
+                                        "file_name": video_source["file_name"],
+                                        "media_type": "video/mp4",
+                                        "byte_size": video_source["bytes"],
+                                        "sha256": video_source["sha256"],
                                         "position": 0,
                                     }
                                 ],

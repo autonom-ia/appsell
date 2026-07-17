@@ -27,8 +27,9 @@ ASSET_ID = UUID("85000000-0000-4000-8000-000000000001")
 
 
 class FakeSession:
-    def __init__(self, result: Any) -> None:
+    def __init__(self, result: Any, execute_results: list[Any] | None = None) -> None:
         self.result = result
+        self.execute_results = list(execute_results or [])
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
     async def scalar(self, statement: Any, parameters: dict[str, Any]) -> Any:
@@ -37,7 +38,9 @@ class FakeSession:
 
     async def execute(self, statement: Any, parameters: dict[str, Any]) -> Any:
         self.calls.append((str(statement), parameters))
-        return FakeMappingResult(self.result)
+        return FakeMappingResult(
+            self.execute_results.pop(0) if self.execute_results else self.result
+        )
 
 
 class FakeMappingResult:
@@ -52,8 +55,14 @@ class FakeMappingResult:
 
 
 class FakeAuth:
-    def __init__(self, result: Any, *, seller_id: UUID | None = None) -> None:
-        self.session = FakeSession(result)
+    def __init__(
+        self,
+        result: Any,
+        *,
+        seller_id: UUID | None = None,
+        execute_results: list[Any] | None = None,
+    ) -> None:
+        self.session = FakeSession(result, execute_results)
         self.seller_id = seller_id
         self.capabilities: list[str] = []
         self.domain_sessions = 0
@@ -129,7 +138,7 @@ def completion_body(**overrides: Any) -> bytes:
 
 
 @pytest.mark.asyncio
-async def test_legacy_asset_authorization_preserves_local_bundle_contract() -> None:
+async def test_pdf_asset_authorization_never_returns_original_locator() -> None:
     auth = FakeAuth(
         {
             "asset_id": ASSET_ID,
@@ -151,8 +160,7 @@ async def test_legacy_asset_authorization_preserves_local_bundle_contract() -> N
     assert response.status_code == 200
     assert response.json()["asset"] == {
         "id": str(ASSET_ID),
-        "delivery": "legacy_bundle",
-        "seed_key": "codex-lesson-1",
+        "delivery": "protected_pages",
         "file_name": "codex-lesson-1.pdf",
         "title": "Aula Codex",
         "media_type": "application/pdf",
@@ -163,7 +171,7 @@ async def test_legacy_asset_authorization_preserves_local_bundle_contract() -> N
 
 
 @pytest.mark.asyncio
-async def test_s3_asset_returns_only_short_version_pinned_download_url() -> None:
+async def test_s3_pdf_asset_does_not_create_a_signed_original_url() -> None:
     auth = FakeAuth(
         {
             "asset_id": ASSET_ID,
@@ -195,19 +203,10 @@ async def test_s3_asset_returns_only_short_version_pinned_download_url() -> None
         response = await client.get(f"/v1/me/learning/items/{ENTITLEMENT_ID}/assets/{ASSET_ID}")
     assert response.status_code == 200
     asset = response.json()["asset"]
-    assert asset["delivery"] == "redirect"
-    assert asset["download_url"].endswith("X-Amz-Signature=signed")
+    assert asset["delivery"] == "protected_pages"
+    assert "download_url" not in asset
     assert "storage_bucket" not in asset and "object_key" not in asset
-    assert calls == [
-        {
-            "bucket": "appsell-ready",
-            "key": "tenants/seller/assets/asset/v2/blob",
-            "version_id": "ready-v2",
-            "file_name": "material seguro.pdf",
-            "media_type": "application/pdf",
-            "disposition": "inline",
-        }
-    ]
+    assert calls == []
 
 
 @pytest.mark.asyncio
@@ -250,17 +249,8 @@ async def test_download_requires_separate_capability_and_presigns_attachment() -
 
 
 @pytest.mark.asyncio
-async def test_pdf_manifest_is_entitlement_scoped_and_never_returns_original(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    auth = FakeAuth(asset_row())
-
-    @contextmanager
-    def source(*_args: Any, **_kwargs: Any):  # type: ignore[no-untyped-def]
-        yield Path("/verified/material.pdf")
-
-    monkeypatch.setattr(learning_routes, "authorized_pdf_source", source)
-    monkeypatch.setattr(learning_routes, "inspect_pdf", lambda *_args: 7)
+async def test_pdf_manifest_is_entitlement_scoped_and_never_returns_original() -> None:
+    auth = FakeAuth(pdf_manifest_row(page_count=7))
     async with client_for(auth, settings=isolated_viewer_settings()) as client:
         response = await client.get(
             f"/v1/me/learning/items/{ENTITLEMENT_ID}/assets/{ASSET_ID}/pages"
@@ -270,20 +260,24 @@ async def test_pdf_manifest_is_entitlement_scoped_and_never_returns_original(
     assert response.json() == {"asset": {"id": str(ASSET_ID), "page_count": 7}}
     assert response.headers["content-type"] == "application/json"
     assert auth.capabilities == ["library.asset.read"]
-    assert "authorize_publication_asset" in auth.session.calls[0][0]
+    assert "authorize_entitled_pdf_manifest" in auth.session.calls[0][0]
+    assert "object_key" not in response.text and "storage_bucket" not in response.text
 
 
 @pytest.mark.asyncio
 async def test_pdf_page_returns_only_watermarked_png(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    auth = FakeAuth(asset_row())
+    auth = FakeAuth(
+        pdf_manifest_row(page_count=3),
+        execute_results=[pdf_manifest_row(page_count=3), pdf_page_row(page_number=2)],
+    )
     png = b"\x89PNG\r\n\x1a\nprotected-page"
     observed: dict[str, Any] = {}
 
     @contextmanager
     def source(*_args: Any, **_kwargs: Any):  # type: ignore[no-untyped-def]
-        yield Path("/verified/material.pdf")
+        yield Path("/verified/page-2.png")
 
     def render(*_args: Any, **kwargs: Any) -> RenderedLearningPdfPage:
         observed.update(kwargs)
@@ -294,8 +288,8 @@ async def test_pdf_page_returns_only_watermarked_png(
             sha256_hex=hashlib.sha256(png).hexdigest(),
         )
 
-    monkeypatch.setattr(learning_routes, "authorized_pdf_source", source)
-    monkeypatch.setattr(learning_routes, "render_pdf_page", render)
+    monkeypatch.setattr(learning_routes, "authorized_pdf_page", source)
+    monkeypatch.setattr(learning_routes, "render_prepared_pdf_page", render)
     async with client_for(auth, settings=isolated_viewer_settings()) as client:
         response = await client.get(
             f"/v1/me/learning/items/{ENTITLEMENT_ID}/assets/{ASSET_ID}/pages/2"
@@ -307,7 +301,7 @@ async def test_pdf_page_returns_only_watermarked_png(
     assert response.headers["content-disposition"] == 'inline; filename="page-2.png"'
     assert response.headers["cache-control"] == "private, no-store, max-age=0"
     assert response.headers["x-appsell-page-count"] == "3"
-    assert observed["page_number"] == 2
+    assert observed["page_count"] == 3
     assert observed["watermark"] == (
         f"user {IDENTITY_ID.hex[:12]} access {ENTITLEMENT_ID.hex[:12]}"
     )
@@ -315,14 +309,17 @@ async def test_pdf_page_returns_only_watermarked_png(
 
 @pytest.mark.asyncio
 async def test_pdf_viewer_rejects_excess_parallel_work_before_spooling() -> None:
-    auth = FakeAuth(asset_row())
+    auth = FakeAuth(
+        pdf_manifest_row(),
+        execute_results=[pdf_manifest_row(), pdf_page_row()],
+    )
     first = await learning_routes._PROTECTED_PDF_SLOTS.acquire()
     second = await learning_routes._PROTECTED_PDF_SLOTS.acquire()
     assert first is True and second is True
     try:
         async with client_for(auth, settings=isolated_viewer_settings()) as client:
             response = await client.get(
-                f"/v1/me/learning/items/{ENTITLEMENT_ID}/assets/{ASSET_ID}/pages"
+                f"/v1/me/learning/items/{ENTITLEMENT_ID}/assets/{ASSET_ID}/pages/1"
             )
     finally:
         learning_routes._PROTECTED_PDF_SLOTS.release()
@@ -347,6 +344,40 @@ def asset_row(media_type: str = "application/pdf") -> dict[str, Any]:
         "object_key": "material",
         "storage_version_id": None,
         "storage_etag": None,
+    }
+
+
+def pdf_manifest_row(*, page_count: int = 1) -> dict[str, Any]:
+    return {
+        "seller_organization_id": SELLER_ID,
+        "asset_id": ASSET_ID,
+        "asset_version": 2,
+        "blob_id": UUID("86000000-0000-4000-8000-000000000001"),
+        "raster_profile": "png-1600-v1",
+        "page_count": page_count,
+        "total_byte_size": page_count * 120,
+        "manifest_sha256": "ab" * 32,
+        "pages": [],
+    }
+
+
+def pdf_page_row(*, page_number: int = 1) -> dict[str, Any]:
+    return {
+        "seller_organization_id": SELLER_ID,
+        "asset_id": ASSET_ID,
+        "asset_version": 2,
+        "blob_id": UUID("86000000-0000-4000-8000-000000000001"),
+        "raster_profile": "png-1600-v1",
+        "page_number": page_number,
+        "storage_driver": "s3",
+        "storage_bucket": "appsell-ready",
+        "object_key": f"tenants/{SELLER_ID}/assets/{ASSET_ID}/v2/pages/{page_number}.png",
+        "storage_version_id": f"page-v{page_number}",
+        "storage_etag": f"page-etag-{page_number}",
+        "byte_size": 120,
+        "sha256": "cd" * 32,
+        "pixel_width": 800,
+        "pixel_height": 1200,
     }
 
 
