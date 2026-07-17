@@ -223,8 +223,7 @@ def require_environment(args: argparse.Namespace) -> tuple[str, str, bool]:
             or environment != "ci"
             or issuer != remote_profile["issuer"]
             or any(
-                connection_info.get(key) != value
-                for key, value in remote_profile["target"].items()
+                connection_info.get(key) != value for key, value in remote_profile["target"].items()
             )
             or set(connection_info) != allowed_connection_fields
             or not connection_info.get("password")
