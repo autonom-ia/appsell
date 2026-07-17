@@ -50,11 +50,22 @@ interface RedirectAssetMetadata {
   sha256: string;
 }
 
+interface ProtectedPdfMetadata {
+  id: string;
+  delivery: "protected_pages";
+  file_name: string;
+  title: string;
+  media_type: "application/pdf";
+  byte_size: number;
+  sha256: string;
+}
+
 export async function GET(request: NextRequest, context: LearningAssetRouteContext) {
   try {
     const authorized = await authorizeAssetRequest(request, context);
     if (!authorized.ok) return authorized.response;
     const metadata = authorized.metadata;
+    if (metadata.media_type === "application/pdf") return pdfOriginalUnavailable();
     if (metadata.delivery === "redirect") {
       return redirectAsset(metadata);
     }
@@ -93,6 +104,7 @@ export async function HEAD(request: NextRequest, context: LearningAssetRouteCont
     const authorized = await authorizeAssetRequest(request, context);
     if (!authorized.ok) return authorized.response;
     const metadata = authorized.metadata;
+    if (metadata.media_type === "application/pdf") return pdfOriginalUnavailable();
     return new NextResponse(null, {
       status: 200,
       headers: secureAssetHeaders(metadata, metadata.byte_size)
@@ -106,7 +118,7 @@ async function authorizeAssetRequest(
   request: NextRequest,
   context: LearningAssetRouteContext
 ): Promise<
-  | { ok: true; metadata: AssetMetadata | RedirectAssetMetadata }
+  | { ok: true; metadata: AssetMetadata | RedirectAssetMetadata | ProtectedPdfMetadata }
   | { ok: false; response: NextResponse }
 > {
   const authenticated = await authenticatedLearningSession(request);
@@ -135,7 +147,7 @@ function redirectAsset(metadata: RedirectAssetMetadata) {
   return response;
 }
 
-function authorizedMetadata(value: unknown, expectedAssetId: string): AssetMetadata | RedirectAssetMetadata | null {
+function authorizedMetadata(value: unknown, expectedAssetId: string): AssetMetadata | RedirectAssetMetadata | ProtectedPdfMetadata | null {
   if (!isRecord(value) || !hasExactKeys(value, ["asset"]) || !isRecord(value.asset)) {
     return null;
   }
@@ -174,10 +186,21 @@ function authorizedMetadata(value: unknown, expectedAssetId: string): AssetMetad
   ]) && validDownloadUrl(asset.download_url, asset.expires_in_seconds)) {
     return asset as unknown as RedirectAssetMetadata;
   }
+  if (asset.delivery === "protected_pages" && asset.media_type === "application/pdf" && hasExactKeys(asset, [
+    "byte_size",
+    "delivery",
+    "file_name",
+    "id",
+    "media_type",
+    "sha256",
+    "title"
+  ])) {
+    return asset as unknown as ProtectedPdfMetadata;
+  }
   return null;
 }
 
-function secureAssetHeaders(metadata: AssetMetadata | RedirectAssetMetadata, contentLength: number, additional?: Record<string, string>) {
+function secureAssetHeaders(metadata: AssetMetadata | RedirectAssetMetadata | ProtectedPdfMetadata, contentLength: number, additional?: Record<string, string>) {
   return {
     "accept-ranges": metadata.media_type === "video/mp4" ? "bytes" : "none",
     "cache-control": "private, no-store, max-age=0",
@@ -239,6 +262,19 @@ function validDownloadUrl(value: unknown, expires: unknown) {
 function assetUnavailable(error: string) {
   return NextResponse.json({ error }, {
     status: 503,
+    headers: {
+      "cache-control": "private, no-store, max-age=0",
+      pragma: "no-cache",
+      "surrogate-control": "no-store",
+      vary: "Cookie",
+      "x-content-type-options": "nosniff"
+    }
+  });
+}
+
+function pdfOriginalUnavailable() {
+  return NextResponse.json({ error: "pdf_original_requires_download_permission" }, {
+    status: 404,
     headers: {
       "cache-control": "private, no-store, max-age=0",
       pragma: "no-cache",

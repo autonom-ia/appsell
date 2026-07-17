@@ -52,6 +52,10 @@ export interface LearningAssetRouteContext {
   params: Promise<{ entitlementId: string; assetId: string }>;
 }
 
+export interface LearningAssetPageRouteContext {
+  params: Promise<{ entitlementId: string; assetId: string; page: string }>;
+}
+
 export async function learningItemId(context: LearningItemRouteContext) {
   const { entitlementId } = await context.params;
   return canonicalUuid(entitlementId);
@@ -72,6 +76,16 @@ export async function learningAssetIds(context: LearningAssetRouteContext) {
   const canonicalAsset = canonicalUuid(assetId);
   return canonicalEntitlement && canonicalAsset
     ? { entitlementId: canonicalEntitlement, assetId: canonicalAsset }
+    : null;
+}
+
+export async function learningAssetPageIds(context: LearningAssetPageRouteContext) {
+  const { entitlementId, assetId, page } = await context.params;
+  const canonicalEntitlement = canonicalUuid(entitlementId);
+  const canonicalAsset = canonicalUuid(assetId);
+  const canonicalPage = safeInteger(page, 1, 100);
+  return canonicalEntitlement && canonicalAsset && canonicalPage !== null
+    ? { entitlementId: canonicalEntitlement, assetId: canonicalAsset, page: canonicalPage }
     : null;
 }
 
@@ -377,13 +391,14 @@ function selectedAssetsEqual(left: DomainSelectedAsset, right: DomainSelectedAss
 }
 
 function learningAssetLinks(entitlementId: string, asset: DomainSelectedAsset) {
-  const href = `/api/library/items/${encodeURIComponent(entitlementId)}` +
+  const assetHref = `/api/library/items/${encodeURIComponent(entitlementId)}` +
     `/assets/${encodeURIComponent(asset.id)}`;
+  const viewHref = asset.media_type === "application/pdf" ? `${assetHref}/pages` : assetHref;
   return {
-    view_href: href,
+    view_href: viewHref,
     download_href: asset.content_role === "support_material" &&
       asset.download_allowed === true && asset.media_type === "application/pdf"
-      ? `${href}/download`
+      ? `${assetHref}/download`
       : null
   };
 }

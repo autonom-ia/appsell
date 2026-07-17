@@ -33,7 +33,7 @@ function libraryItem(overrides: Record<string, unknown> = {}) {
 
 function playerResponse() {
   const selectedAsset = {
-    view_href: `/api/library/items/${entitlementId}/assets/${assetId}`,
+    view_href: `/api/library/items/${entitlementId}/assets/${assetId}/pages`,
     download_href: null,
     title: "Material",
     media_type: "application/pdf",

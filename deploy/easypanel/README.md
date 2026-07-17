@@ -22,8 +22,15 @@ o artifact do Identity Auth. Ele contém somente:
 - `domain-bootstrap`, que cria de forma aditiva o database marcado
   `appsell_preview_77`, aplica migrations e refaz exclusivamente a tenant demo;
 - `domain-api`, privado na rede `easypanel-sell-autonomia`;
+- `pdf-sandbox-init`, one-shot sem rede que aceita somente o volume UDS novo ou
+  já pertencente ao UID/GID `10001:10001`;
+- `pdf-sandbox`, sem rede IP, non-root e sem acesso aos PDFs incorporados na
+  imagem; ele entrega apenas manifesto e PNG rasterizado por página e recicla
+  o container inteiro depois de cada job, eliminando processos residuais;
 - `sell-web`, executado com `next start`, cookies `Secure`/`__Host-`, OAuth local
   explicitamente limitado ao contrato imutável desta homologação e três personas demo;
+- `ingress-proxy`, sem secrets e ligado somente à rede interna dedicada e ao
+  ingress existente do EasyPanel;
 - `evidence-init`, `e2e-transport-init`, `e2e-bridge` e `e2e`, habilitados
   apenas pelo profile `e2e`. O navegador de teste não recebe rede IP: um proxy
   loopback encaminha TLS bruto por Unix socket para a bridge efêmera, que é o
@@ -32,8 +39,10 @@ o artifact do Identity Auth. Ele contém somente:
 O Compose reutiliza `sell-autonomia_postgres` e `sell-autonomia_redis`; não cria
 outra infraestrutura e não referencia `dados` ou `flow`. Na primeira ativação,
 somente o web publica `127.0.0.1:13200`. O database não é apagado no rollback.
-Identity/GitHub OAuth real, Financial, Neuro.ai, uploads e storage público ficam
-explicitamente fora desta preview.
+Identity/GitHub OAuth real, Financial, Neuro.ai, novos uploads e storage público
+ficam explicitamente fora desta preview. Os PDFs demo já incorporados são
+visualizados apenas como páginas rasterizadas; o original continua disponível
+somente na rota de download de material de apoio autorizada pelo admin.
 
 Antes de qualquer carga na VPS, verifique os quatro artifacts do mesmo run/SHA:
 

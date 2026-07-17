@@ -1,6 +1,6 @@
 import "server-only";
 
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import demoCodexAssets from "./demo-codex-assets.json";
 import { capacityLocalCiRuntimeEnabled } from "./capacity-local-ci-runtime";
 import { publicDemoRuntimeEnabled } from "./public-demo-runtime";
@@ -722,6 +722,40 @@ export async function authorizeDomainLearningAssetDownload(
   });
 }
 
+export async function readDomainLearningPdfManifest(
+  sessionId: string,
+  session: ServerSession,
+  entitlementId: string,
+  assetId: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/learning/items/${entitlementId}/assets/${assetId}/pages`,
+    capability: "library.asset.read"
+  });
+}
+
+export interface DomainLearningPdfPage {
+  bytes: Uint8Array;
+  contentLength: number;
+  pageCount: number;
+  sha256: string;
+}
+
+export async function renderDomainLearningPdfPage(
+  sessionId: string,
+  session: ServerSession,
+  entitlementId: string,
+  assetId: string,
+  page: number
+): Promise<DomainLearningPdfPage> {
+  return domainBinaryRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/learning/items/${entitlementId}/assets/${assetId}/pages/${page}`,
+    capability: "library.asset.read"
+  });
+}
+
 export async function readDomainLearningResume(
   sessionId: string,
   session: ServerSession,
@@ -866,6 +900,78 @@ async function domainRequest(
       throw new DomainApiError(response.status, code);
     }
     return payload;
+  } catch (error) {
+    if (error instanceof DomainApiError) throw error;
+    throw new DomainApiError(503, "domain_api_unavailable");
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+const MAX_DOMAIN_BINARY_BYTES = 8 * 1024 * 1024;
+
+async function domainBinaryRequest(
+  sessionId: string,
+  session: ServerSession,
+  request: ApiRequest
+): Promise<DomainLearningPdfPage> {
+  requireDemoCapability(session.subject, request);
+  const config = internalServiceConfig();
+  const query = Buffer.from(request.query ?? "", "ascii");
+  const body = Buffer.alloc(0);
+  const { token } = signInternalEnvelope({
+    sessionId,
+    sessionEpoch: session.tokenRevision,
+    identity: {
+      issuer: requiredEnvironment("APPSELL_IDENTITY_ISSUER"),
+      sub: session.subject
+    },
+    capability: request.capability,
+    sellerOrganizationId: request.sellerOrganizationId ?? null,
+    method: request.method,
+    path: request.path,
+    query,
+    body
+  }, config.signing);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20_000);
+  try {
+    const requestUrl = new URL(request.path, config.apiOrigin);
+    requestUrl.search = request.query ?? "";
+    const response = await fetch(requestUrl, {
+      method: request.method,
+      headers: {
+        "x-appsell-internal-envelope": token,
+        "x-appsell-service-credential": config.serviceCredentialEncoded
+      },
+      cache: "no-store",
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null) as unknown;
+      const code = isRecord(payload) && typeof payload.detail === "string"
+        ? payload.detail
+        : "domain_api_error";
+      throw new DomainApiError(response.status, code);
+    }
+    const contentLength = Number(response.headers.get("content-length"));
+    const pageCount = Number(response.headers.get("x-appsell-page-count"));
+    const sha256 = response.headers.get("x-appsell-sha256") ?? "";
+    if (response.headers.get("content-type") !== "image/png" ||
+      !Number.isSafeInteger(contentLength) || contentLength < 1 ||
+      contentLength > MAX_DOMAIN_BINARY_BYTES ||
+      !Number.isSafeInteger(pageCount) || pageCount < 1 || pageCount > 100 ||
+      !/^[0-9a-f]{64}$/.test(sha256)) {
+      throw new DomainApiError(503, "invalid_pdf_page_response");
+    }
+    const buffer = await response.arrayBuffer();
+    if (buffer.byteLength !== contentLength || buffer.byteLength > MAX_DOMAIN_BINARY_BYTES) {
+      throw new DomainApiError(503, "invalid_pdf_page_response");
+    }
+    if (createHash("sha256").update(new Uint8Array(buffer)).digest("hex") !== sha256) {
+      throw new DomainApiError(503, "invalid_pdf_page_response");
+    }
+    return { bytes: new Uint8Array(buffer), contentLength, pageCount, sha256 };
   } catch (error) {
     if (error instanceof DomainApiError) throw error;
     throw new DomainApiError(503, "domain_api_unavailable");

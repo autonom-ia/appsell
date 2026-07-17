@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     malware_scanner_socket: str = ""
     pdf_sandbox_url: str = ""
     pdf_sandbox_socket: str = ""
+    private_learning_asset_root: str = ""
     capacity_product_create_telemetry: bool = False
     video_upload_enabled: bool = False
     webhook_local_keyring_b64_json: str = ""
@@ -58,8 +59,45 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         return self.environment == "production"
 
+    @property
+    def pdf_sandbox_required(self) -> bool:
+        return self.storage_configured or bool(self.private_learning_asset_root)
+
     @model_validator(mode="after")
     def validate_fail_closed_environment(self) -> Self:
+        if self.private_learning_asset_root:
+            asset_root = Path(self.private_learning_asset_root)
+            if (
+                "\0" in self.private_learning_asset_root
+                or not asset_root.is_absolute()
+                or ".." in asset_root.parts
+            ):
+                raise ValueError("private learning asset root must be an absolute safe path")
+            if bool(self.pdf_sandbox_url) == bool(self.pdf_sandbox_socket):
+                raise ValueError("protected PDF viewing requires exactly one sandbox transport")
+            if self.pdf_sandbox_socket:
+                socket_path = Path(self.pdf_sandbox_socket)
+                socket_root = Path("/run/appsell-pdf")
+                if (
+                    "\0" in self.pdf_sandbox_socket
+                    or not socket_path.is_absolute()
+                    or ".." in socket_path.parts
+                    or socket_path.name != "pdf.sock"
+                    or socket_path.parent.resolve(strict=False) != socket_root.resolve(strict=False)
+                ):
+                    raise ValueError("PDF parser socket path is invalid")
+            else:
+                sandbox = urlparse(self.pdf_sandbox_url)
+                if (
+                    sandbox.scheme not in {"http", "https"}
+                    or not sandbox.hostname
+                    or sandbox.username
+                    or sandbox.password
+                    or sandbox.path != "/normalize"
+                    or sandbox.query
+                    or sandbox.fragment
+                ):
+                    raise ValueError("protected PDF sandbox URL is invalid")
         if self.webhook_local_keyring_b64_json and self.environment not in {"local", "ci"}:
             raise ValueError("local webhook secrets are forbidden outside local/CI")
         if self.capacity_product_create_telemetry and self.environment not in {"local", "ci"}:

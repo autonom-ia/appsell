@@ -170,6 +170,7 @@ uv run --project apps/api pytest \
   apps/api/tests/test_postgres_demo_checkout.py \
   apps/api/tests/test_postgres_webhook_ingress.py \
   apps/api/tests/test_postgres_pdf_access_policy.py \
+  apps/api/tests/test_postgres_pdf_preraster.py \
   apps/api/tests/test_internal_request_body_limit.py \
   apps/api/tests/test_demo_codex_pdfs.py \
   apps/api/tests/test_reset_demo_tenant.py \

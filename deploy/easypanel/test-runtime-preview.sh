@@ -23,6 +23,8 @@ services = config["services"]
 expected = {
     "domain-bootstrap",
     "domain-api",
+    "pdf-sandbox-init",
+    "pdf-sandbox",
     "sell-web",
     "ingress-proxy",
     "evidence-init",
@@ -85,6 +87,56 @@ if ports[0].get("published") != "13200" or ports[0].get("target") != 13200:
 for service_name in ("domain-bootstrap", "domain-api"):
     if services[service_name].get("networks") != {"sell-private": None}:
         raise SystemExit(f"{service_name} must use only the exclusive sell network")
+for service_name in ("pdf-sandbox-init", "pdf-sandbox"):
+    if services[service_name].get("network_mode") != "none" or services[service_name].get("networks"):
+        raise SystemExit(f"{service_name} must have no IP network")
+pdf_volume = {
+    "type": "volume",
+    "source": "runtime_pdf_socket",
+    "target": "/run/appsell-pdf",
+}
+init_mounts = services["pdf-sandbox-init"].get("volumes", [])
+sandbox_mounts = services["pdf-sandbox"].get("volumes", [])
+if init_mounts != [pdf_volume] or sandbox_mounts != [pdf_volume]:
+    raise SystemExit("PDF sandbox services must share only the dedicated socket volume")
+if services["pdf-sandbox-init"].get("user") != "0:0":
+    raise SystemExit("PDF sandbox init must use its narrowly-scoped root setup user")
+if services["pdf-sandbox-init"].get("cap_add") != ["CHOWN"]:
+    raise SystemExit("PDF sandbox init must receive only CHOWN")
+if services["pdf-sandbox"].get("image") != services["domain-api"].get("image"):
+    raise SystemExit("PDF sandbox must use the attested domain image")
+if services["pdf-sandbox"].get("user") != "10001:10001":
+    raise SystemExit("PDF sandbox must run as the dedicated numeric user")
+if services["pdf-sandbox"].get("environment") != {
+    "APPSELL_PDF_SANDBOX_RECYCLE_AFTER_JOB": "true"
+}:
+    raise SystemExit("PDF sandbox must recycle its whole container after every media job")
+if services["pdf-sandbox"].get("cap_add"):
+    raise SystemExit("PDF sandbox must not add capabilities")
+if services["pdf-sandbox"].get("ports"):
+    raise SystemExit("PDF sandbox must not publish ports")
+if "/workspace/sell/output/pdf:size=1048576,mode=000,noexec,nosuid" not in services[
+    "pdf-sandbox"
+].get("tmpfs", []):
+    raise SystemExit("PDF sandbox must not see PDFs embedded in the domain image")
+if services["pdf-sandbox"].get("depends_on") != {
+    "pdf-sandbox-init": {"condition": "service_completed_successfully", "required": True}
+}:
+    raise SystemExit("PDF sandbox socket ownership init dependency drifted")
+domain_mounts = services["domain-api"].get("volumes", [])
+if domain_mounts != [{**pdf_volume, "read_only": True}]:
+    raise SystemExit("Domain API must mount the dedicated PDF socket read-only")
+init_command = services["pdf-sandbox-init"].get("command", [])
+init_script = init_command[2] if len(init_command) == 3 else ""
+for guard in (
+    "755:0:0|700:0:0)",
+    "700:10001:10001)",
+    "chmod 0700 /run/appsell-pdf",
+    "chown 10001:10001 /run/appsell-pdf",
+    'test "$$(stat -c \'%a:%u:%g\' /run/appsell-pdf)" = "700:10001:10001"',
+):
+    if guard not in init_script:
+        raise SystemExit(f"PDF socket init state guard drifted: {guard}")
 if services["sell-web"].get("networks") != {
     "sell-ingress": {"aliases": ["sell-web-ingress-77"]},
     "sell-private": None,
@@ -205,6 +257,7 @@ if easypanel_members != {"ingress-proxy"}:
     raise SystemExit(f"unexpected services on easypanel ingress: {sorted(easypanel_members)}")
 volumes = config["volumes"]
 for volume_name, purpose in {
+    "runtime_pdf_socket": "pdf-raster-socket",
     "runtime_evidence": "runtime-e2e-evidence",
     "runtime_e2e_transport": "runtime-e2e-transport",
 }.items():
@@ -280,6 +333,8 @@ for key, expected_value in {
         raise SystemExit(f"domain-bootstrap {key} escaped the exact preview target")
 for service_name in (
     "domain-api",
+    "pdf-sandbox-init",
+    "pdf-sandbox",
     "sell-web",
     "ingress-proxy",
     "evidence-init",
@@ -451,6 +506,8 @@ grep -Fq 'RUNTIME_PREVIEW_PROJECT="sell-autonomia"' "$here/runtime-preview-commo
 grep -Fq 'RUNTIME_PREVIEW_SERVICE="runtime-preview"' "$here/runtime-preview-common.sh"
 grep -Fq 'RUNTIME_PREVIEW_E2E_NETWORK="${RUNTIME_PREVIEW_COMPOSE_PROJECT}_sell-public-e2e"' \
   "$here/runtime-preview-common.sh"
+grep -Fq 'RUNTIME_PREVIEW_PDF_SOCKET_VOLUME="${RUNTIME_PREVIEW_COMPOSE_PROJECT}_runtime_pdf_socket"' \
+  "$here/runtime-preview-common.sh"
 grep -Fq 'RUNTIME_PREVIEW_EVIDENCE_VOLUME="${RUNTIME_PREVIEW_COMPOSE_PROJECT}_runtime_evidence"' \
   "$here/runtime-preview-common.sh"
 grep -Fq 'RUNTIME_PREVIEW_E2E_TRANSPORT_VOLUME="${RUNTIME_PREVIEW_COMPOSE_PROJECT}_runtime_e2e_transport"' \
@@ -459,6 +516,9 @@ grep -Fq 'runtime_preview_lifecycle_fingerprint_from_inspect' \
   "$here/verify-runtime-preview.sh"
 grep -Fq 'runtime_preview_verify_public_attestation' "$here/verify-runtime-preview.sh"
 grep -Fq 'runtime_preview_ensure_owned_volume' "$here/verify-runtime-preview.sh"
+grep -Fq 'runtime_pdf_socket pdf-raster-socket' "$here/up-runtime-preview.sh"
+grep -Fq 'appsell_pdf_worker_planned_recycle' "$here/verify-runtime-preview.sh"
+grep -Fq 'os._exit(77)' "$here/../../apps/api/src/appsell_api/pdf_sandbox_service.py"
 grep -Fq 'runtime_preview_delete_exact_public_domain' "$here/activate-public-runtime-preview.sh"
 grep -Fq 'CONFIRM_RUNTIME_PREVIEW_PUBLIC_RETRY=sell-autonomia-public-retry-77' \
   "$here/activate-public-runtime-preview.sh"
