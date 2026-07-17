@@ -72,6 +72,47 @@ def bootstrap_ready() -> Iterator[None]:
     _reset_bootstrap_state(enabled=True)
 
 
+@pytest.fixture(scope="module", autouse=True)
+def restore_consumed_lock() -> Iterator[None]:
+    """Leave the shared bootstrap in the consumed, locked state on teardown.
+
+    The postgres-foundation CI script asserts, after this suite, that a consumed
+    bootstrap can never be re-enabled (``configure_context_key`` must refuse).
+    The earlier ``test_postgres_foundation`` suite establishes that consumed,
+    disabled state; because this suite toggles the same global singleton per test
+    (clearing the grant and re-enabling the policy for isolation), it must restore
+    the invariant afterwards instead of leaving the bootstrap re-openable.
+    """
+    yield
+    assert ADMIN_URL
+    subject = f"bootstrap-lock-{uuid4()}"
+    locked_user_id = _derived_user_id(subject)
+    with psycopg.connect(ADMIN_URL, autocommit=True) as connection:
+        connection.execute("set role appsell_owner")
+        connection.execute("delete from superadmin_bootstrap")
+        connection.execute("delete from platform_grant where role = 'platform_superadmin'")
+        connection.execute(
+            "insert into identity_user "
+            "(id, identity_issuer, identity_sub, email_normalized, email_verified) "
+            "values (%s, %s, %s, %s, true) on conflict (id) do nothing",
+            (locked_user_id, BOOTSTRAP_ISSUER, subject, f"{subject}@example.test"),
+        )
+        connection.execute(
+            "insert into platform_grant (identity_user_id, role, status) "
+            "values (%s, 'platform_superadmin', 'active')",
+            (locked_user_id,),
+        )
+        connection.execute(
+            "insert into superadmin_bootstrap "
+            "(identity_user_id, identity_sub, assurance, request_id) "
+            "values (%s, %s, 'mfa', gen_random_uuid())",
+            (locked_user_id, subject),
+        )
+        connection.execute(
+            "update app_private.bootstrap_trust_policy set enabled = false where singleton"
+        )
+
+
 @pytest.fixture
 async def client() -> AsyncIterator[httpx.AsyncClient]:
     assert RUNTIME_URL and CONTEXT_KEY_HEX
