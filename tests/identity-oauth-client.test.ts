@@ -23,6 +23,7 @@ const VERIFIER = "v".repeat(43);
 const SUBJECT = "identity-demo-user";
 const EMAIL = "user.demo@autonomia.site";
 const KEY_ID = "identity-test-key";
+const PROVIDER_LONG_REFRESH = `${"A".repeat(600)}._-`;
 const refreshScenarios = new Map<string, string>();
 
 let server: Server;
@@ -110,7 +111,13 @@ beforeAll(async () => {
       if (scenario === "slow" || scenario === "slow-refresh") await new Promise((resolve) => setTimeout(resolve, 250));
       const tokens = await tokenResponse(scenario, grantType !== "refresh_token");
       if (grantType === "refresh_token") {
-        tokens.refresh_token = scenario === "same-refresh" ? refreshHandle : rotatedRefreshHandle(scenario);
+        if (scenario === "provider-omit-refresh") {
+          delete tokens.refresh_token;
+        } else if (scenario === "provider-long-refresh") {
+          tokens.refresh_token = PROVIDER_LONG_REFRESH;
+        } else {
+          tokens.refresh_token = scenario === "same-refresh" ? refreshHandle : rotatedRefreshHandle(scenario);
+        }
       }
       response.writeHead(200, { "content-type": "application/json; charset=UTF-8" });
       response.end(JSON.stringify(tokens));
@@ -141,9 +148,12 @@ describe("Identity OAuth server adapter", () => {
   });
 
   test.each([
-    ["wrong logical client", { APPSELL_IDENTITY_LOGICAL_OAUTH_CLIENT_ID: "attacker-web" }],
+    ["malformed logical client", { APPSELL_IDENTITY_LOGICAL_OAUTH_CLIENT_ID: "Attacker Web" }],
+    ["missing logical client", { APPSELL_IDENTITY_LOGICAL_OAUTH_CLIENT_ID: undefined }],
     ["missing token audience", { APPSELL_IDENTITY_EXPECTED_AUDIENCE: undefined }],
-    ["wrong token audience", { APPSELL_IDENTITY_EXPECTED_AUDIENCE: "other-client" }],
+    ["malformed token audience", { APPSELL_IDENTITY_EXPECTED_AUDIENCE: "other client" }],
+    ["unknown refresh mode", { APPSELL_IDENTITY_REFRESH_MODE: "rotate" }],
+    ["unknown nonce mode", { APPSELL_IDENTITY_NONCE_MODE: "optional" }],
     ["foreign token origin", { APPSELL_IDENTITY_TOKEN_URL: "https://attacker.example/token" }],
     ["callback path", { APPSELL_IDENTITY_REDIRECT_URI: "http://localhost:3000/other" }],
     ["duplicate allowlist", { APPSELL_IDENTITY_ALLOWED_ORIGINS: `${origin},${origin}` }],
@@ -342,6 +352,120 @@ describe("Identity OAuth server adapter", () => {
   test("treats a timed-out refresh as ambiguous and never retries internally", async () => {
     await expect(refresh("slow-refresh", { APPSELL_IDENTITY_HTTP_TIMEOUT_MS: "100" }))
       .resolves.toEqual({ kind: "ambiguous" });
+  });
+
+  // --- Compatibility modes (Option B) ---------------------------------------
+
+  test("defaults the compatibility modes and preserves the appsell-web contract", () => {
+    const config = parseIdentityOAuthConfig(environment());
+    expect(config.logicalOAuthClientId).toBe(LOGICAL_CLIENT_ID);
+    expect(config.expectedAudience).toBe(EXPECTED_AUDIENCE);
+    expect(config.refreshMode).toBe("logical-handle");
+    expect(config.nonceMode).toBe("required");
+  });
+
+  test("accepts a configurable logical client id and audience within the conservative pattern", () => {
+    const config = parseIdentityOAuthConfig(environment({
+      APPSELL_IDENTITY_LOGICAL_OAUTH_CLIENT_ID: "appsell-cognito.web",
+      APPSELL_IDENTITY_EXPECTED_AUDIENCE: "2h5b0c9d1e2f3g4h5i6j7k8l9m"
+    }));
+    expect(config.logicalOAuthClientId).toBe("appsell-cognito.web");
+    expect(config.expectedAudience).toBe("2h5b0c9d1e2f3g4h5i6j7k8l9m");
+  });
+
+  test.each([
+    ["uppercase", "Appsell-Web"],
+    ["leading dot", ".appsell"],
+    ["space", "appsell web"],
+    ["slash", "appsell/web"],
+    ["too long", "a".repeat(65)],
+    ["empty", ""]
+  ])("rejects a malformed configurable client id or audience: %s", (_label, value) => {
+    expect(() => parseIdentityOAuthConfig(environment({ APPSELL_IDENTITY_LOGICAL_OAUTH_CLIENT_ID: value })))
+      .toThrow(IdentityOAuthConfigurationError);
+    expect(() => parseIdentityOAuthConfig(environment({ APPSELL_IDENTITY_EXPECTED_AUDIENCE: value })))
+      .toThrow(IdentityOAuthConfigurationError);
+  });
+
+  test.each(["logical-handle", "provider-refresh"])("accepts a known refresh mode: %s", (mode) => {
+    expect(parseIdentityOAuthConfig(environment({ APPSELL_IDENTITY_REFRESH_MODE: mode })).refreshMode).toBe(mode);
+  });
+
+  test.each(["required", "disabled"])("accepts a known nonce mode: %s", (mode) => {
+    expect(parseIdentityOAuthConfig(environment({ APPSELL_IDENTITY_NONCE_MODE: mode })).nonceMode).toBe(mode);
+  });
+
+  test.each([
+    ["APPSELL_IDENTITY_REFRESH_MODE", "rotate"],
+    ["APPSELL_IDENTITY_NONCE_MODE", "optional"]
+  ])("rejects an unknown mode value: %s=%s", (key, value) => {
+    expect(() => parseIdentityOAuthConfig(environment({ [key]: value })))
+      .toThrow(IdentityOAuthConfigurationError);
+  });
+
+  test("provider-refresh accepts a rotated opaque handle without the logical 43-char shape", async () => {
+    const result = await refresh("provider-long-refresh", { APPSELL_IDENTITY_REFRESH_MODE: "provider-refresh" });
+    expect(result.kind).toBe("success");
+    if (result.kind !== "success") throw new Error("Expected refresh success.");
+    expect(result.refreshToken).toBe(PROVIDER_LONG_REFRESH);
+    expect(result.accessTokenExpiresAt).toBeGreaterThan(Date.now());
+    expect(result.refreshTokenExpiresAt).toBeGreaterThan(result.accessTokenExpiresAt);
+  });
+
+  test("provider-refresh reuses the input handle when the provider omits rotation", async () => {
+    const result = await refresh("provider-omit-refresh", { APPSELL_IDENTITY_REFRESH_MODE: "provider-refresh" });
+    expect(result).toMatchObject({ kind: "success", refreshToken: refreshHandle("provider-omit-refresh") });
+  });
+
+  test("provider-refresh accepts an unrotated (same) handle instead of failing closed", async () => {
+    await expect(refresh("same-refresh", { APPSELL_IDENTITY_REFRESH_MODE: "provider-refresh" }))
+      .resolves.toMatchObject({ kind: "success" });
+  });
+
+  test.each([
+    ["invalid-grant", "invalid_grant"],
+    ["in-progress", "transient"],
+    ["provider-502", "ambiguous"],
+    ["subject-mismatch", "ambiguous"],
+    ["wrong-access-audience", "ambiguous"],
+    ["refresh-with-nonce", "ambiguous"]
+  ] as const)("provider-refresh still hard-verifies the result: %s -> %s", async (scenario, kind) => {
+    await expect(refresh(scenario, { APPSELL_IDENTITY_REFRESH_MODE: "provider-refresh" }))
+      .resolves.toMatchObject({ kind });
+  });
+
+  test("logical-handle (default) rejects an omitted rotation as ambiguous", async () => {
+    await expect(refresh("provider-omit-refresh")).resolves.toEqual({ kind: "ambiguous" });
+  });
+
+  test("nonce-disabled omits the nonce from the authorization request", () => {
+    const client = new IdentityOAuthClient(parseIdentityOAuthConfig(environment({
+      APPSELL_IDENTITY_NONCE_MODE: "disabled"
+    })));
+    const url = client.authorizationUrl({ state: STATE, codeChallenge: CHALLENGE });
+    expect(url.searchParams.has("nonce")).toBe(false);
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      client_id: LOGICAL_CLIENT_ID,
+      redirect_uri: "http://localhost:3000/auth/callback",
+      response_type: "code",
+      scope: "openid email profile",
+      state: STATE,
+      code_challenge: CHALLENGE,
+      code_challenge_method: "S256"
+    });
+  });
+
+  test("nonce-disabled exchanges an ID token that omits the nonce", async () => {
+    const bundle = await exchange("missing-nonce", { APPSELL_IDENTITY_NONCE_MODE: "disabled" });
+    expect(bundle).toMatchObject({
+      tokenType: "Bearer",
+      identity: { sub: SUBJECT, email: EMAIL, emailVerified: true }
+    });
+  });
+
+  test("nonce-disabled rejects an ID token that carries an unexpected nonce", async () => {
+    await expect(exchange("valid", { APPSELL_IDENTITY_NONCE_MODE: "disabled" }))
+      .rejects.toThrow("nonce");
   });
 });
 

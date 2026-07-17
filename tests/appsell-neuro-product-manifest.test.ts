@@ -40,7 +40,7 @@ describe("inactive Neuro.ai product manifest", () => {
       allowEmailPasswordLogin: true,
       allowGoogleLogin: false,
       allowGithubLogin: false,
-      allowPasskeyLogin: false,
+      allowPasskeyLogin: true,
       allowBackgroundAuth: false,
       status: "inactive"
     });
