@@ -15,8 +15,11 @@ comandos. Esta **Rev 5** aplica a **decisão do Rodrigo sobre HA (HIGH 1)** de f
 completa e assinada: single-node não-HA como MVP explícito, com SPOF conhecido, RTO
 alvo realista, RPO, **risco aceito por Rodrigo 2026-07-17 sob régua qualidade +
 escalabilidade + segurança**, e **gate bloqueante de evolução para 3 nós/KMS antes
-de tráfego real de clientes pagantes** (§1.1). Mapa dos 7 HIGH originais (todos
-endereçados):
+de tráfego real de clientes pagantes** (§1.1). O re-review codex da Rev 5 (SHA
+d89cefa) deu **VEREDITO: APROVADO, HIGH remanescentes: nenhum**; esta revisão
+incorpora a única ressalva não-bloqueante dele — precisão de wording: **auto-unseal
+por KMS não é HA** (resiliência de seal, não quorum), contado à parte do cluster
+3+ nós (§1.1, §4.4). Mapa dos 7 HIGH originais (todos endereçados):
 
 | # | HIGH original | Decisão aplicada | Seção |
 |---|---|---|---|
@@ -163,15 +166,18 @@ aprovação de risco" — este bloco é a segunda opção, assinada.
 - **Gate de evolução obrigatório (não é "nice to have"):** operar single-node é
   aceitável **apenas** enquanto o AppSell não tiver **tráfego real de clientes
   pagantes** no login. **Antes** de habilitar login real para clientes pagantes, a
-  evolução para **3 nós Raft (quorum)** ou **auto-unseal por KMS + réplica** passa a
-  ser **pré-requisito bloqueante**, registrado como Issue-filha de #93. O MVP
-  single-node cobre a fase pré-tráfego-pagante (dev/staging/piloto interno), não a
-  operação comercial.
+  evolução para **HA de verdade = cluster Raft de 3+ nós (quorum + failover)** passa a
+  ser **pré-requisito bloqueante**, registrada como Issue-filha de #93. Nota de
+  precisão: **auto-unseal por KMS não é HA** — ele remove o unseal manual e reduz o
+  risco/tempo de *seal*, mas **não** dá quorum nem failover; é mitigação complementar
+  (pode entrar junto), não substituto do cluster multi-nó. O MVP single-node cobre a
+  fase pré-tráfego-pagante (dev/staging/piloto interno), não a operação comercial.
 - **Risco aceito por escrito — assinatura:** a indisponibilidade temporária do vault
   (dentro do RTO acima) é **risco aceito por Rodrigo em 2026-07-17, sob a régua
-  qualidade + escalabilidade + segurança**, para o MVP pré-tráfego-pagante. HA (3+ nós
-  ou auto-unseal por KMS) é **evolução pós-MVP registrada** com gate bloqueante acima —
-  não pré-requisito deste slice, mas pré-requisito do tráfego pagante.
+  qualidade + escalabilidade + segurança**, para o MVP pré-tráfego-pagante. HA real
+  (cluster Raft 3+ nós) é **evolução pós-MVP registrada** com gate bloqueante acima —
+  não pré-requisito deste slice, mas pré-requisito do tráfego pagante. Auto-unseal por
+  KMS é melhoria de resiliência de *seal*, contada à parte de HA.
 - **Contradição da Rev 1 removida:** este plano **não** afirma resolver "cluster
   HA/Raft"; fecha explicitamente esse item de `openbao-transit-local-ci.md` como
   *decisão consciente de operar não-HA no MVP com risco assinado e gate de evolução*
@@ -559,7 +565,7 @@ token — não dá para restaurar direto. Ordem correta, em ambiente descartáve
 
 ### 4.4 Quais bloqueios de `openbao-transit-local-ci.md:74-85` este plano fecha (escopo honesto — resolve MEDIUM)
 - **Fecha:** storage durável + unseal real (§3.1-3.2); DR do unseal + snapshot + teste de desastre (§4); auth de workload durável (§1.2/§3.5).
-- **Fecha por decisão explícita (não por entrega de HA):** operação **não-HA** no MVP (§1.1) — o item "cluster HA/Raft" é resolvido como *risco assinado por Rodrigo 2026-07-17* **com gate bloqueante**: HA (3+ nós ou KMS) vira pré-requisito **antes de tráfego real de clientes pagantes**, não cluster 3+ nós entregue neste slice.
+- **Fecha por decisão explícita (não por entrega de HA):** operação **não-HA** no MVP (§1.1) — o item "cluster HA/Raft" é resolvido como *risco assinado por Rodrigo 2026-07-17* **com gate bloqueante**: HA de verdade (**cluster Raft 3+ nós, quorum + failover**) vira pré-requisito **antes de tráfego real de clientes pagantes**, não cluster 3+ nós entregue neste slice. Auto-unseal por KMS é resiliência de *seal*, **não** HA — contado à parte (§1.1).
 - **NÃO fecha (registrado como aberto):** inventário/read-repair de versões de envelope (`:80`); staging isolado com observabilidade + SLO (`:81`). O item `:79` (reconciliação durável do callback Identity após consumo do code) **não** é DR e **não** é coberto aqui — pertence ao slice de login (#93), não a este.
 
 ---
