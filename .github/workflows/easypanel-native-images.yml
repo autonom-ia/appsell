@@ -90,3 +90,28 @@ jobs:
         run: |
           BOOTSTRAP_IMAGE=autonomia-sell-native-bootstrap:rehearsal \
             bash deploy/easypanel-native/test-bootstrap-native.sh
+
+  backup-restore-rehearsal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+      - name: Validate exact source and scripts
+        run: |
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          bash -n deploy/easypanel-native/backup/lib-backup.sh
+          bash -n deploy/easypanel-native/backup/backup-native.sh
+          bash -n deploy/easypanel-native/backup/restore-native.sh
+          bash -n deploy/easypanel-native/backup/test-backup-native.sh
+          bash -n deploy/easypanel-native/backup/test-entrypoints-native.sh
+      - name: Rehearse backup, encrypt, off-host, restore and compare (library)
+        run: |
+          gpg --version | head -1
+          bash deploy/easypanel-native/backup/test-backup-native.sh
+      - name: Rehearse the backup and restore entrypoints as real processes
+        run: |
+          bash deploy/easypanel-native/backup/test-entrypoints-native.sh
