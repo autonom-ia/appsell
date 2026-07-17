@@ -148,6 +148,11 @@ SQL
 }
 
 if [[ "$database_state" == "$complete_database_marker" ]]; then
+  # The completion marker only proves the final "comment on database" mutation
+  # ran. It does not prove the schema or seed underneath are still intact: a
+  # rogue migration, a manual DDL change or a partially restored snapshot can
+  # leave the marker in place while app_private.schema_ready() or the demo
+  # seed (identity_user) are gone. Re-validate both before trusting the marker.
   configured_state="$(psql -XAt --set=ON_ERROR_STOP=1 --dbname="$database_name" <<'SQL'
 \getenv expected_context_key APPSELL_CONTEXT_SIGNING_KEY_HEX
 \getenv expected_bootstrap_key APPSELL_BOOTSTRAP_ATTESTATION_KEY_HEX
@@ -160,6 +165,12 @@ select case
   when not exists(select 1 from app_private.context_signing_key where singleton)
     or not exists(select 1 from app_private.bootstrap_trust_policy where singleton)
     then 'missing'
+  -- schema_ready() itself dereferences app_private.context_signing_key and
+  -- app_private.bootstrap_trust_policy directly (not via to_regclass), so it
+  -- is only safe to call once the two branches above confirm those tables
+  -- and their singleton rows exist.
+  when not app_private.schema_ready() then 'schema-not-ready'
+  when not exists(select 1 from identity_user) then 'seed-missing'
   when (select encode(secret,'hex') from app_private.context_signing_key where singleton)
     <> :'expected_context_key' then 'context-key-drift'
   when (select encode(attestation_secret,'hex') from app_private.bootstrap_trust_policy
