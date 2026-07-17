@@ -94,6 +94,7 @@ pdf_volume = {
     "type": "volume",
     "source": "runtime_pdf_socket",
     "target": "/run/appsell-pdf",
+    "volume": {},
 }
 init_mounts = services["pdf-sandbox-init"].get("volumes", [])
 sandbox_mounts = services["pdf-sandbox"].get("volumes", [])
