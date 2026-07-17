@@ -245,7 +245,7 @@ export function AppShell({ children }: AppShellProps) {
       });
     } catch {
       setDiscarding(false);
-      setDiscardError("Não foi possível cancelar o envio com segurança. Tente novamente antes de sair.");
+      setDiscardError("Não foi possível concluir a operação com segurança. Tente novamente antes de sair.");
       return;
     }
     setDiscarding(false);
@@ -296,13 +296,13 @@ export function AppShell({ children }: AppShellProps) {
       </div>
       {pendingAction ? (
         <AccessibleDialog titleId="dirty-dialog-title" descriptionId="dirty-dialog-description" initialFocusRef={cancelDialogButton} returnFocusRef={dirtyDialogTrigger} onClose={closeDirtyDialog}>
-            <p className="eyebrow">Alterações não salvas</p>
+            <p className="eyebrow">Operação pendente</p>
             <h2 id="dirty-dialog-title">Sair desta edição?</h2>
-            <p id="dirty-dialog-description">Os campos alterados neste dispositivo serão descartados.</p>
+            <p id="dirty-dialog-description">Alterações locais não salvas serão descartadas. Operações já enviadas serão concluídas ou canceladas com segurança antes da saída.</p>
             {discardError ? <p className="form-error" role="alert">{discardError}</p> : null}
             <div className="dialog-actions">
               <button ref={cancelDialogButton} type="button" className="secondary-button" onClick={closeDirtyDialog} disabled={discarding}>Continuar editando</button>
-              <button type="button" className="danger-button" onClick={() => void discardAndContinue()} disabled={discarding}>{discarding ? "Cancelando envio…" : "Descartar e sair"}</button>
+              <button type="button" className="danger-button" onClick={() => void discardAndContinue()} disabled={discarding}>{discarding ? "Preparando saída segura…" : "Confirmar saída"}</button>
             </div>
         </AccessibleDialog>
       ) : null}

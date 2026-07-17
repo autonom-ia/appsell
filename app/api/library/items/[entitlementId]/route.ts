@@ -22,7 +22,7 @@ export async function GET(request: NextRequest, context: LearningItemRouteContex
       authenticated.session,
       entitlementId
     );
-    return learningPlayerResponse(payload, authenticated.sessionId);
+    return learningPlayerResponse(payload, authenticated.sessionId, authenticated.session);
   } catch (error) {
     return learningError(error);
   }

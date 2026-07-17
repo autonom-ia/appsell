@@ -104,6 +104,40 @@ def test_local_accepts_pdf_sandbox_unix_socket() -> None:
     assert settings.pdf_sandbox_socket == "/run/appsell-pdf/pdf.sock"
 
 
+def test_protected_pdf_viewer_requires_one_isolated_sandbox_transport() -> None:
+    with pytest.raises(ValidationError, match="exactly one sandbox"):
+        Settings(
+            environment="ci",
+            private_learning_asset_root="/workspace/sell/output/pdf/codex",
+        )
+    with pytest.raises(ValidationError, match="exactly one sandbox"):
+        Settings(
+            environment="ci",
+            private_learning_asset_root="/workspace/sell/output/pdf/codex",
+            pdf_sandbox_socket="/run/appsell-pdf/pdf.sock",
+            pdf_sandbox_url="http://pdf-sandbox/normalize",
+        )
+    settings = Settings(
+        environment="ci",
+        private_learning_asset_root="/workspace/sell/output/pdf/codex",
+        pdf_sandbox_socket="/run/appsell-pdf/pdf.sock",
+    )
+    assert settings.pdf_sandbox_required is True
+
+
+@pytest.mark.parametrize(
+    "root",
+    ["relative/output/pdf", "/workspace/sell/../other", "/workspace/sell/output\0/pdf"],
+)
+def test_protected_pdf_viewer_rejects_unsafe_private_root(root: str) -> None:
+    with pytest.raises(ValidationError, match="absolute safe path"):
+        Settings(
+            environment="ci",
+            private_learning_asset_root=root,
+            pdf_sandbox_socket="/run/appsell-pdf/pdf.sock",
+        )
+
+
 def test_video_upload_requires_s3_and_a_local_unix_socket_sandbox() -> None:
     with pytest.raises(ValidationError, match="video upload requires"):
         Settings(environment="local", video_upload_enabled=True)

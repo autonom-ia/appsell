@@ -72,6 +72,29 @@ test("buyer demo abre PDF e vídeo protegidos", async ({ context, page }) => {
   await expect(page.getByRole("heading", { name: "Minha biblioteca" })).toBeVisible();
   await page.getByRole("link", { name: "Começar curso" }).click();
   await expect(page.getByText("Aula 1 de 5", { exact: true })).toBeVisible();
+  const protectedPdf = page.locator(".protected-pdf-page img");
+  await expect(protectedPdf).toBeVisible();
+  const protectedPageHref = await protectedPdf.getAttribute("src");
+  expect(protectedPageHref).toMatch(/^\/api\/library\/items\/[0-9a-f-]+\/assets\/[0-9a-f-]+\/pages\/1$/);
+  const protectedAssetHref = protectedPageHref!.replace(/\/pages\/1$/, "");
+  const protectedPageResponse = await page.request.get(protectedPageHref!);
+  expect(protectedPageResponse.status()).toBe(200);
+  expect(protectedPageResponse.headers()["content-type"]).toBe("image/png");
+  expect((await protectedPageResponse.body()).subarray(1, 4).toString("ascii")).toBe("PNG");
+  const forbiddenOriginal = await page.request.get(protectedAssetHref);
+  expect(forbiddenOriginal.status()).toBe(404);
+  const forbiddenDownload = await page.request.get(`${protectedAssetHref}/download`);
+  expect(forbiddenDownload.status()).toBe(404);
+  await page.keyboard.press("Control+p");
+  await expect(page.getByText("A impressão deste conteúdo está desativada.")).toBeVisible();
+  await page.keyboard.press("Control+s");
+  await expect(page.getByText("O arquivo original não está disponível para salvar.")).toBeVisible();
+  const contextMenuBlocked = await page.locator(".protected-pdf-page").evaluate((element) => {
+    const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    const dispatched = element.dispatchEvent(event);
+    return !dispatched && event.defaultPrevented;
+  });
+  expect(contextMenuBlocked).toBe(true);
   const mobileOutline = page.locator(".player-outline-mobile");
   await mobileOutline.locator("summary").click();
   await mobileOutline.getByRole("link", {
@@ -79,17 +102,27 @@ test("buyer demo abre PDF e vídeo protegidos", async ({ context, page }) => {
   }).click();
   await expect(page.getByText("Aula 5 de 5", { exact: true })).toBeVisible();
 
-  const pdf = page.getByRole("link", { name: /Abrir PDF/ });
+  const pdf = page.locator(".protected-pdf-page img");
   await expect(pdf).toHaveCount(1);
-  const pdfHref = await pdf.getAttribute("href");
-  expect(pdfHref).toMatch(/^\/api\/library\/items\/[0-9a-f-]+\/assets\/[0-9a-f-]+$/);
-  const pdfResponse = await page.request.get(pdfHref!);
+  const pdfPageHref = await pdf.getAttribute("src");
+  expect(pdfPageHref).toMatch(/^\/api\/library\/items\/[0-9a-f-]+\/assets\/[0-9a-f-]+\/pages\/1$/);
+  const pdfAssetHref = pdfPageHref!.replace(/\/pages\/1$/, "");
+  const download = page.getByRole("link", { name: "Baixar PDF de apoio" });
+  await expect(download).toHaveCount(1);
+  const downloadHref = await download.getAttribute("href");
+  expect(downloadHref).toBe(`${pdfAssetHref}/download`);
+  const downloadResponse = await page.request.get(downloadHref!);
+  expect(downloadResponse.status()).toBe(200);
+  expect(downloadResponse.headers()["content-disposition"]).toMatch(/^attachment;/);
+  const pdfResponse = await page.request.get(pdfPageHref!);
   expect(pdfResponse.status()).toBe(200);
-  expect(pdfResponse.headers()["content-type"]).toBe("application/pdf");
+  expect(pdfResponse.headers()["content-type"]).toBe("image/png");
   const pdfBody = await pdfResponse.body();
-  expect(pdfBody.byteLength).toBe(expectedPdf.bytes);
-  expect(pdfBody.subarray(0, 5).toString("ascii")).toBe("%PDF-");
-  expect(createHash("sha256").update(pdfBody).digest("hex")).toBe(expectedPdf.sha256);
+  expect(pdfBody.subarray(1, 4).toString("ascii")).toBe("PNG");
+  const blockedOriginal = await page.request.get(pdfAssetHref);
+  expect(blockedOriginal.status()).toBe(404);
+  expect(createHash("sha256").update(await downloadResponse.body()).digest("hex"))
+    .toBe(expectedPdf.sha256);
 
   const video = page.locator('video[aria-label="Codex em 3 passos"]');
   await expect(video).toHaveCount(1);

@@ -71,23 +71,28 @@ test.skipIf(!domainApiUrl)("persists fail-closed learning progress across two re
       player: {
         state_version: number;
         selected_lesson_id: string;
-        selected_asset: { href: string };
+        selected_asset: { view_href: string };
       };
       csrf: { progress: string; complete: string };
     };
     expect(JSON.stringify(playerEnvelope)).not.toContain(cookieValue(buyer.session));
-    const assetPath = playerEnvelope.player.selected_asset.href;
+    const assetPath = playerEnvelope.player.selected_asset.view_href;
     expect(assetPath).toMatch(
-      new RegExp(`^/api/library/items/${item.entitlement_id}/assets/[0-9a-f-]{36}$`)
+      new RegExp(`^/api/library/items/${item.entitlement_id}/assets/[0-9a-f-]{36}/pages$`)
     );
     for (const bffOrigin of [firstOrigin, secondOrigin]) {
-      const assetResponse = await fetch(`${bffOrigin}${assetPath}`, {
+      const manifestResponse = await fetch(`${bffOrigin}${assetPath}`, {
         headers: { cookie: buyer.session }
       });
-      expect(assetResponse.status, await assetResponse.clone().text()).toBe(200);
-      expect(assetResponse.headers.get("content-type")).toBe("application/pdf");
-      expect(assetResponse.headers.get("cache-control")).toBe("private, no-store, max-age=0");
-      expect(Buffer.from(await assetResponse.arrayBuffer()).subarray(0, 5).toString()).toBe("%PDF-");
+      expect(manifestResponse.status, await manifestResponse.clone().text()).toBe(200);
+      expect(manifestResponse.headers.get("content-type")).toContain("application/json");
+      expect(manifestResponse.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+      expect(await manifestResponse.json()).toMatchObject({ page_count: expect.any(Number) });
+      const pageResponse = await fetch(`${bffOrigin}${assetPath}/1`, {
+        headers: { cookie: buyer.session }
+      });
+      expect(pageResponse.status, await pageResponse.clone().text()).toBe(200);
+      expect(pageResponse.headers.get("content-type")).toBe("image/png");
     }
     const adminAsset = await fetch(`${firstOrigin}${assetPath}`, {
       headers: { cookie: admin.session }

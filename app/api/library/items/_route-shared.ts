@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 
 import { sessionCookieName } from "@/lib/cookies";
+import { demoProfileForSubject } from "@/lib/demo-config";
 import { DomainApiError } from "@/lib/internal-api-client.server";
 import { PayloadTooLargeError, readLimitedForm } from "@/lib/limited-form.server";
 import {
@@ -27,6 +29,8 @@ type DomainSelectedAsset = {
   id: string;
   title: string;
   media_type: "application/pdf" | "video/mp4";
+  content_role?: "course_content" | "support_material";
+  download_allowed?: boolean;
 };
 
 interface LearningPlayerEnvelope {
@@ -46,6 +50,10 @@ export interface LearningLessonRouteContext {
 
 export interface LearningAssetRouteContext {
   params: Promise<{ entitlementId: string; assetId: string }>;
+}
+
+export interface LearningAssetPageRouteContext {
+  params: Promise<{ entitlementId: string; assetId: string; page: string }>;
 }
 
 export async function learningItemId(context: LearningItemRouteContext) {
@@ -68,6 +76,16 @@ export async function learningAssetIds(context: LearningAssetRouteContext) {
   const canonicalAsset = canonicalUuid(assetId);
   return canonicalEntitlement && canonicalAsset
     ? { entitlementId: canonicalEntitlement, assetId: canonicalAsset }
+    : null;
+}
+
+export async function learningAssetPageIds(context: LearningAssetPageRouteContext) {
+  const { entitlementId, assetId, page } = await context.params;
+  const canonicalEntitlement = canonicalUuid(entitlementId);
+  const canonicalAsset = canonicalUuid(assetId);
+  const canonicalPage = safeInteger(page, 1, 5_000);
+  return canonicalEntitlement && canonicalAsset && canonicalPage !== null
+    ? { entitlementId: canonicalEntitlement, assetId: canonicalAsset, page: canonicalPage }
     : null;
 }
 
@@ -152,26 +170,54 @@ export function validExpectedVersion(value: string | undefined) {
   return safeInteger(value, 0, Number.MAX_SAFE_INTEGER);
 }
 
-export function learningPlayerResponse(payload: unknown, sessionId: string) {
+export function learningPlayerResponse(
+  payload: unknown,
+  sessionId: string,
+  viewer: {
+    subject: string;
+    identity?: { email: string; emailVerified: true } | null;
+  }
+) {
   if (!isLearningPlayerEnvelope(payload)) {
     return learningJsonError("invalid_learning_response", 503);
   }
   const domainAssets = payload.player.selected_assets ??
     (payload.player.selected_asset === null ? [] : [payload.player.selected_asset]);
   const selectedAssets = domainAssets.map((asset) => ({
-    href: `/api/library/items/${encodeURIComponent(String(payload.player.entitlement_id))}` +
-      `/assets/${encodeURIComponent(asset.id)}`,
+    ...learningAssetLinks(String(payload.player.entitlement_id), asset),
     title: asset.title,
-    media_type: asset.media_type
+    media_type: asset.media_type,
+    content_role: asset.content_role ?? "course_content",
+    download_allowed: asset.download_allowed === true
   }));
   const player = {
     ...payload.player,
     selected_asset: selectedAssets[0] ?? null,
-    selected_assets: selectedAssets
+    selected_assets: selectedAssets,
+    watermark: learningWatermark(payload.player, viewer)
   };
   return NextResponse.json({ player, csrf: learningCsrf(sessionId) }, {
     headers: NO_STORE_HEADERS
   });
+}
+
+function learningWatermark(
+  player: LearningPlayerEnvelope["player"],
+  viewer: { subject: string; identity?: { email: string; emailVerified: true } | null }
+) {
+  const sellerId = String(player.seller && isRecord(player.seller) ? player.seller.id : "");
+  const entitlementId = String(player.entitlement_id);
+  const trace = createHash("sha256")
+    .update(`${viewer.subject}:${sellerId}:${entitlementId}`, "utf8")
+    .digest("hex")
+    .slice(0, 12);
+  const demoProfile = demoProfileForSubject(viewer.subject);
+  const viewerLabel = viewer.identity?.emailVerified === true
+    ? viewer.identity.email
+    : demoProfile?.email ?? `acesso-${trace.slice(0, 8)}`;
+  return {
+    label: `${viewerLabel} · tenant ${sellerId.slice(0, 8)} · ${trace}`
+  };
 }
 
 export function learningProgressResponse(payload: unknown) {
@@ -251,9 +297,11 @@ function isLearningPlayerEnvelope(value: unknown): value is LearningPlayerEnvelo
     "state_version"
   ];
   const hasMultiAssetContract = Object.hasOwn(player, "selected_assets");
+  const hasPolicyContract = Object.hasOwn(player, "schema_version");
   if (!hasExactKeys(player, hasMultiAssetContract
-    ? [...playerKeys, "selected_assets"]
+    ? [...playerKeys, "selected_assets", ...(hasPolicyContract ? ["schema_version"] : [])]
     : playerKeys)) return false;
+  if (hasPolicyContract && player.schema_version !== 3) return false;
   if (!isSelectedAsset(player.selected_asset)) return false;
   if (hasMultiAssetContract && !isSelectedAssets(player.selected_assets, player.selected_asset)) {
     return false;
@@ -300,11 +348,23 @@ function isPublication(value: unknown) {
 }
 
 function isSelectedAsset(value: unknown): value is DomainSelectedAsset | null {
-  return value === null || (
-    hasExactKeys(value, ["id", "media_type", "title"]) &&
+  if (value === null) return true;
+  if (!isRecord(value)) return false;
+  const policy = Object.hasOwn(value, "content_role") || Object.hasOwn(value, "download_allowed");
+  return (
+    hasExactKeys(value, policy
+      ? ["content_role", "download_allowed", "id", "media_type", "title"]
+      : ["id", "media_type", "title"]) &&
     typeof value.id === "string" && UUID.test(value.id) &&
     typeof value.title === "string" && value.title.length > 0 &&
-    (value.media_type === "application/pdf" || value.media_type === "video/mp4")
+    (value.media_type === "application/pdf" || value.media_type === "video/mp4") &&
+    (!policy || (
+      (value.content_role === "course_content" || value.content_role === "support_material") &&
+      typeof value.download_allowed === "boolean" &&
+      (!value.download_allowed || (
+        value.content_role === "support_material" && value.media_type === "application/pdf"
+      ))
+    ))
   );
 }
 
@@ -328,6 +388,19 @@ function isSelectedAssetRecord(value: unknown): value is DomainSelectedAsset {
 
 function selectedAssetsEqual(left: DomainSelectedAsset, right: DomainSelectedAsset) {
   return left.id === right.id && left.title === right.title && left.media_type === right.media_type;
+}
+
+function learningAssetLinks(entitlementId: string, asset: DomainSelectedAsset) {
+  const assetHref = `/api/library/items/${encodeURIComponent(entitlementId)}` +
+    `/assets/${encodeURIComponent(asset.id)}`;
+  const viewHref = asset.media_type === "application/pdf" ? `${assetHref}/pages` : assetHref;
+  return {
+    view_href: viewHref,
+    download_href: asset.content_role === "support_material" &&
+      asset.download_allowed === true && asset.media_type === "application/pdf"
+      ? `${assetHref}/download`
+      : null
+  };
 }
 
 function isCourse(value: unknown) {

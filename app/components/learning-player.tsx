@@ -30,9 +30,12 @@ interface LessonProgress {
 }
 
 interface LearningAsset {
-  href: string;
+  view_href: string;
+  download_href: string | null;
   title: string;
   media_type: "application/pdf" | "video/mp4";
+  content_role: "course_content" | "support_material";
+  download_allowed: boolean;
 }
 
 interface LearningPlayerPayload {
@@ -49,6 +52,7 @@ interface LearningPlayerPayload {
   lesson_progress: LessonProgress[];
   selected_asset: LearningAsset | null;
   selected_assets: LearningAsset[];
+  watermark: { label: string };
   csrf: { progress: string; complete: string };
 }
 
@@ -77,7 +81,9 @@ const playerMessages: Record<Exclude<PlayerStatus, "loading" | "ready">, { title
   unavailable: { title: "Não foi possível carregar a aula", body: "Verifique sua conexão e tente novamente." },
   invalid: { title: "Resposta inválida", body: "Os dados da aula não puderam ser validados com segurança." }
 };
-const TENANT_ASSET_HREF = /^\/api\/library\/items\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/assets\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/;
+const TENANT_VIDEO_HREF = /^\/api\/library\/items\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/assets\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/;
+const TENANT_PDF_VIEW_HREF = /^\/api\/library\/items\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/assets\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/pages$/;
+const TENANT_ASSET_DOWNLOAD_HREF = /^\/api\/library\/items\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/assets\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/download$/;
 
 export function LearningPlayer({ entitlementId, lessonId }: { entitlementId: string; lessonId?: string }) {
   const router = useRouter();
@@ -369,11 +375,12 @@ export function LearningPlayer({ entitlementId, lessonId }: { entitlementId: str
         </section>
         {payload.selected_assets.length > 0
           ? payload.selected_assets.map((asset, index) => <LessonMaterial
-              key={asset.href}
+              key={asset.view_href}
               asset={asset}
               index={index}
               initialProgress={selectedProgress?.progress_percent ?? 0}
               busy={mutationState !== "idle"}
+              watermark={payload.watermark.label}
               onVideoProgress={saveVideoProgress}
             />)
           : <p className="asset-unavailable" role="status">Material complementar indisponível para esta aula.</p>}
@@ -482,9 +489,10 @@ export function isLearningPlayerPayload(value: unknown): value is LearningPlayer
     !isPercent(value.course_progress_percent) || !isNonNegativeInteger(value.state_version) ||
     !Array.isArray(value.lesson_progress) || !value.lesson_progress.every(isLessonProgress) ||
     !Array.isArray(value.selected_assets) || value.selected_assets.length > 100 ||
+    !isStringRecord(value.watermark, ["label"]) || String(value.watermark.label).length > 200 ||
     !isStringRecord(value.csrf, ["progress", "complete"])) return false;
   if (!value.selected_assets.every((asset) => isLearningAsset(asset, value.entitlement_id))) return false;
-  const assetHrefs = value.selected_assets.map((asset) => asset.href);
+  const assetHrefs = value.selected_assets.map((asset) => asset.view_href);
   if (new Set(assetHrefs).size !== assetHrefs.length) return false;
   const firstAsset = value.selected_assets[0] ?? null;
   if (value.selected_asset === undefined || !selectedAssetMatches(value.selected_asset, firstAsset)) return false;
@@ -496,44 +504,175 @@ export function isLearningPlayerPayload(value: unknown): value is LearningPlayer
 }
 
 function isLearningAsset(value: unknown, entitlementId: unknown): value is LearningAsset {
-  if (!isStringRecord(value, ["href", "title"]) ||
-    !["application/pdf", "video/mp4"].includes(String(value.media_type))) return false;
-  const assetHref = (value.href as string).match(TENANT_ASSET_HREF);
-  return assetHref !== null && assetHref[1] === entitlementId;
+  if (!isStringRecord(value, ["view_href", "title"]) ||
+    !["application/pdf", "video/mp4"].includes(String(value.media_type)) ||
+    !["course_content", "support_material"].includes(String(value.content_role)) ||
+    typeof value.download_allowed !== "boolean" ||
+    (value.download_href !== null && typeof value.download_href !== "string")) return false;
+  const assetHref = String(value.view_href).match(value.media_type === "application/pdf"
+    ? TENANT_PDF_VIEW_HREF
+    : TENANT_VIDEO_HREF);
+  if (assetHref === null || assetHref[1] !== entitlementId) return false;
+  const downloadable = value.media_type === "application/pdf" &&
+    value.content_role === "support_material" && value.download_allowed;
+  if (!downloadable) return value.download_href === null;
+  const downloadHref = String(value.download_href).match(TENANT_ASSET_DOWNLOAD_HREF);
+  return downloadHref !== null && downloadHref[1] === entitlementId &&
+    downloadHref[2] === assetHref[2];
 }
 
 function selectedAssetMatches(value: unknown, firstAsset: LearningAsset | null) {
   if (firstAsset === null) return value === null;
-  return isLearningAsset(value, firstAsset.href.match(TENANT_ASSET_HREF)?.[1]) &&
-    value.href === firstAsset.href && value.title === firstAsset.title &&
-    value.media_type === firstAsset.media_type;
+  return isLearningAsset(value, assetEntitlementId(firstAsset)) &&
+    value.view_href === firstAsset.view_href && value.title === firstAsset.title &&
+    value.media_type === firstAsset.media_type &&
+    value.content_role === firstAsset.content_role &&
+    value.download_allowed === firstAsset.download_allowed &&
+    value.download_href === firstAsset.download_href;
 }
 
-function LessonMaterial({ asset, index, initialProgress, busy, onVideoProgress }: {
+function assetEntitlementId(asset: LearningAsset) {
+  return asset.view_href.match(asset.media_type === "application/pdf"
+    ? TENANT_PDF_VIEW_HREF
+    : TENANT_VIDEO_HREF)?.[1];
+}
+
+function LessonMaterial({ asset, index, initialProgress, busy, watermark, onVideoProgress }: {
   asset: LearningAsset;
   index: number;
   initialProgress: number;
   busy: boolean;
+  watermark: string;
   onVideoProgress: (percent: number) => Promise<boolean>;
 }) {
   const video = asset.media_type === "video/mp4";
+  const support = asset.content_role === "support_material";
   const titleId = `lesson-material-title-${index}`;
   return <aside className={`lesson-material ${video ? "lesson-video" : ""}`} aria-labelledby={titleId}>
     <div>
-      <p className="eyebrow">{video ? "Vídeo da aula" : "Material complementar"}</p>
+      <p className="eyebrow">{video ? "Vídeo da aula" : support ? "Material de apoio" : "Conteúdo do curso"}</p>
       <h2 id={titleId}>{asset.title}</h2>
       {video
         ? <p>Vídeo privado. O progresso é salvo em etapas enquanto você assiste.</p>
-        : <p>PDF protegido, aberto em uma nova aba. O texto principal da aula permanece disponível nesta página.</p>}
+        : asset.download_allowed
+          ? <p>O administrador permitiu o download deste PDF de apoio.</p>
+          : <p>PDF protegido para consulta dentro da área do aluno. Download oficial e impressão não são disponibilizados.</p>}
     </div>
     {video
       ? <ProtectedVideo asset={asset} initialProgress={initialProgress} busy={busy} onProgress={onVideoProgress}/>
-      : <a className="secondary-button" href={asset.href} target="_blank" rel="noopener">Abrir PDF<span className="sr-only"> em nova aba</span></a>}
+      : <ProtectedPdf asset={asset} watermark={watermark}/>}
   </aside>;
 }
 
+function ProtectedPdf({ asset, watermark }: { asset: LearningAsset; watermark: string }) {
+  const [manifest, setManifest] = useState<{ pageCount: number } | "loading" | "error">("loading");
+  const [pageNumber, setPageNumber] = useState(1);
+  const [imageError, setImageError] = useState(false);
+  const [policyFeedback, setPolicyFeedback] = useState("");
+
+  const loadManifest = useCallback(async () => {
+    setManifest("loading");
+    setPolicyFeedback("");
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 8_000);
+    try {
+      const response = await fetch(asset.view_href, {
+        cache: "no-store",
+        credentials: "same-origin",
+        signal: controller.signal
+      });
+      const payload: unknown = response.ok ? await response.json() : null;
+      const expectedAssetId = asset.view_href.match(TENANT_PDF_VIEW_HREF)?.[2];
+      if (!validPdfManifest(payload, expectedAssetId)) throw new Error("invalid_pdf_manifest");
+      setManifest({ pageCount: payload.page_count });
+      setPageNumber(1);
+      setImageError(false);
+    } catch {
+      if (!controller.signal.aborted) setManifest("error");
+      else setManifest("error");
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }, [asset.view_href]);
+
+  useEffect(() => {
+    const start = window.setTimeout(() => void loadManifest(), 0);
+    return () => window.clearTimeout(start);
+  }, [loadManifest]);
+
+  useEffect(() => {
+    const blockProtectedDocumentShortcut = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || !["p", "s"].includes(event.key.toLowerCase())) return;
+      event.preventDefault();
+      setPolicyFeedback(event.key.toLowerCase() === "p"
+        ? "A impressão deste conteúdo está desativada."
+        : "O arquivo original não está disponível para salvar.");
+    };
+    window.addEventListener("keydown", blockProtectedDocumentShortcut, { capture: true });
+    return () => window.removeEventListener("keydown", blockProtectedDocumentShortcut, { capture: true });
+  }, []);
+
+  const pageCount = typeof manifest === "object" ? manifest.pageCount : 0;
+  const selectPage = (nextPage: number) => {
+    if (nextPage < 1 || nextPage > pageCount) return;
+    setImageError(false);
+    setPageNumber(nextPage);
+    setPolicyFeedback("");
+  };
+
+  return <div className="protected-pdf">
+    {manifest === "loading"
+      ? <p className="protected-pdf-state" role="status">Preparando visualização protegida…</p>
+      : manifest === "error"
+        ? <div className="protected-pdf-state" role="alert"><p>Não foi possível preparar este PDF.</p><button type="button" className="secondary-button" onClick={() => void loadManifest()}>Tentar novamente</button></div>
+        : <>
+            <div
+              className="protected-pdf-page"
+              onContextMenu={(event) => event.preventDefault()}
+              aria-label={`${asset.title}, página ${pageNumber} de ${pageCount}`}
+            >
+              {imageError
+                ? <div className="protected-pdf-state" role="alert"><p>Não foi possível carregar esta página.</p><button type="button" className="secondary-button" onClick={() => setImageError(false)}>Tentar novamente</button></div>
+                // Private, authenticated, no-store raster pages cannot use the optimizing image proxy.
+                // eslint-disable-next-line @next/next/no-img-element
+                : <img
+                    src={`${asset.view_href}/${pageNumber}`}
+                    alt={`${asset.title} — página ${pageNumber} de ${pageCount}`}
+                    draggable={false}
+                    loading="eager"
+                    referrerPolicy="no-referrer"
+                    onDragStart={(event) => event.preventDefault()}
+                    onError={() => setImageError(true)}
+                  />}
+              <span aria-hidden="true">{watermark}</span>
+            </div>
+            <nav className="protected-pdf-pagination" aria-label="Páginas do PDF">
+              <button type="button" className="secondary-button" disabled={pageNumber === 1} onClick={() => selectPage(pageNumber - 1)}>← Anterior</button>
+              <span aria-live="polite">Página {pageNumber} de {pageCount}</span>
+              <button type="button" className="secondary-button" disabled={pageNumber === pageCount} onClick={() => selectPage(pageNumber + 1)}>Próxima →</button>
+            </nav>
+          </>}
+    {asset.download_href
+      ? <a className="secondary-button" href={asset.download_href}>Baixar PDF de apoio</a>
+      : <p className="asset-policy-note" role="note">Download desativado pelo administrador.</p>}
+    <p className="asset-policy-feedback" aria-live="polite">{policyFeedback}</p>
+  </div>;
+}
+
+function validPdfManifest(
+  value: unknown,
+  expectedAssetId: string | undefined
+): value is { asset_id: string; page_count: number } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return Object.keys(record).sort().join(",") === "asset_id,page_count" &&
+    typeof expectedAssetId === "string" && record.asset_id === expectedAssetId &&
+    Number.isSafeInteger(record.page_count) && Number(record.page_count) >= 1 &&
+    Number(record.page_count) <= 5_000;
+}
+
 function ProtectedVideo({ asset, initialProgress, busy, onProgress }: {
-  asset: { href: string; title: string };
+  asset: { view_href: string; title: string };
   initialProgress: number;
   busy: boolean;
   onProgress: (percent: number) => Promise<boolean>;
@@ -563,7 +702,7 @@ function ProtectedVideo({ asset, initialProgress, busy, onProgress }: {
     retriesExhausted.current = false;
     if (retryTimer.current !== null) window.clearTimeout(retryTimer.current);
     retryTimer.current = null;
-  }, [asset.href]);
+  }, [asset.view_href]);
 
   useEffect(() => {
     lastAcknowledged.current = Math.max(lastAcknowledged.current, initialProgress);
@@ -652,7 +791,7 @@ function ProtectedVideo({ asset, initialProgress, busy, onProgress }: {
     controlsList="nodownload"
     playsInline
     preload="metadata"
-    src={asset.href}
+    src={asset.view_href}
     aria-label={asset.title}
     onTimeUpdate={(event) => report(event.currentTarget, false)}
     onPause={(event) => report(event.currentTarget, true)}

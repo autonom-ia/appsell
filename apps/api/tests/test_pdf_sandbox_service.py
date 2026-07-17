@@ -3,15 +3,18 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import io
+import shutil
 import struct
 from pathlib import Path
 
 import httpx
 import pytest
 from fastapi import Response
+from PIL import Image
 from reportlab.pdfgen.canvas import Canvas  # type: ignore[import-untyped]
 
 from appsell_api import pdf_sandbox_service
+from appsell_api.pdf_raster import PdfRasterRejected, normalize_watermark
 from appsell_api.pdf_sandbox_service import app
 from appsell_api.video_verifier import VideoProbeUnavailable
 
@@ -60,18 +63,40 @@ async def test_isolated_parser_rejects_size_mismatch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_isolated_parser_rejects_overload_without_starting_third_parser(
+async def test_isolated_inspector_returns_only_validated_page_count() -> None:
+    payload = valid_pdf(page_count=3)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://parser.test"
+    ) as client:
+        response = await client.post(
+            "/inspect",
+            content=payload,
+            headers={
+                "content-type": "application/pdf",
+                "x-appsell-byte-size": str(len(payload)),
+                "x-appsell-sha256": hashlib.sha256(payload).hexdigest(),
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"page_count": 3}
+    assert response.headers["content-type"] == "application/json"
+    assert response.headers["cache-control"] == "no-store, private, max-age=0"
+    assert not response.content.startswith(b"%PDF-")
+
+
+@pytest.mark.asyncio
+async def test_isolated_parser_and_inspector_share_one_serial_media_slot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    two_started = asyncio.Event()
+    started = asyncio.Event()
     release = asyncio.Event()
     starts = 0
 
     async def slow_normalize(_request: object) -> Response:
         nonlocal starts
         starts += 1
-        if starts == 2:
-            two_started.set()
+        started.set()
         await release.wait()
         return Response(b"ok", status_code=200)
 
@@ -80,15 +105,233 @@ async def test_isolated_parser_rejects_overload_without_starting_third_parser(
         transport=httpx.ASGITransport(app=app), base_url="http://parser.test"
     ) as client:
         first = asyncio.create_task(client.post("/normalize"))
-        second = asyncio.create_task(client.post("/normalize"))
-        await asyncio.wait_for(two_started.wait(), timeout=1)
-        overloaded = await client.post("/normalize")
+        await asyncio.wait_for(started.wait(), timeout=1)
+        overloaded = await client.post("/inspect")
         release.set()
-        await asyncio.gather(first, second)
+        await first
 
-    assert starts == 2
+    assert starts == 1
     assert overloaded.status_code == 429
     assert overloaded.headers["retry-after"] == "2"
+
+
+@pytest.mark.asyncio
+async def test_isolated_renderer_returns_bounded_watermarked_png() -> None:
+    payload = valid_pdf(page_count=2)
+    source_sha256 = hashlib.sha256(payload).hexdigest()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://parser.test"
+    ) as client:
+        response = await client.post(
+            "/render-page/2",
+            content=payload,
+            headers={
+                "content-type": "application/pdf",
+                "x-appsell-byte-size": str(len(payload)),
+                "x-appsell-sha256": source_sha256,
+                "x-appsell-watermark": "user.demo@autonomia.site - tenant 4df98a2e",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    assert response.headers["cache-control"] == "no-store, private, max-age=0"
+    assert response.headers["x-appsell-page-count"] == "2"
+    assert response.headers["x-appsell-page-number"] == "2"
+    assert response.headers["x-appsell-source-sha256"] == source_sha256
+    assert response.headers["x-appsell-sha256"] == hashlib.sha256(response.content).hexdigest()
+    assert len(response.content) <= 8 * 1024 * 1024
+    with Image.open(io.BytesIO(response.content)) as image:
+        assert image.format == "PNG"
+        assert max(image.size) <= 1_600
+        assert image.mode == "RGB"
+
+
+@pytest.mark.asyncio
+async def test_isolated_renderer_changes_png_for_each_watermark() -> None:
+    payload = valid_pdf()
+    headers = {
+        "content-type": "application/pdf",
+        "x-appsell-byte-size": str(len(payload)),
+        "x-appsell-sha256": hashlib.sha256(payload).hexdigest(),
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://parser.test"
+    ) as client:
+        first = await client.post(
+            "/render-page/1",
+            content=payload,
+            headers={**headers, "x-appsell-watermark": "buyer-one@example.test"},
+        )
+        second = await client.post(
+            "/render-page/1",
+            content=payload,
+            headers={**headers, "x-appsell-watermark": "buyer-two@example.test"},
+        )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.content != second.content
+    assert first.headers["x-appsell-sha256"] != second.headers["x-appsell-sha256"]
+
+
+@pytest.mark.asyncio
+async def test_isolated_renderer_rejects_page_past_document_end() -> None:
+    payload = valid_pdf()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://parser.test"
+    ) as client:
+        response = await client.post(
+            "/render-page/2",
+            content=payload,
+            headers={
+                "content-type": "application/pdf",
+                "x-appsell-byte-size": str(len(payload)),
+                "x-appsell-sha256": hashlib.sha256(payload).hexdigest(),
+                "x-appsell-watermark": "buyer@example.test",
+            },
+        )
+
+    assert response.status_code == 422
+
+
+def test_watermark_normalizer_rejects_invisible_formatting() -> None:
+    assert normalize_watermark("  buyer@example.test   tenant-1 ") == (
+        "buyer@example.test tenant-1"
+    )
+    with pytest.raises(PdfRasterRejected, match="unsafe"):
+        normalize_watermark("buyer@example.test\u202etenant-1")
+
+
+@pytest.mark.asyncio
+async def test_isolated_renderer_rejects_overload_without_starting_another_render(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    starts = 0
+
+    async def slow_render(_request: object, _page_number: int) -> Response:
+        nonlocal starts
+        starts += 1
+        started.set()
+        await release.wait()
+        return Response(b"ok", status_code=200)
+
+    monkeypatch.setattr(pdf_sandbox_service, "_render_page_request", slow_render)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://parser.test"
+    ) as client:
+        first = asyncio.create_task(client.post("/render-page/1"))
+        await asyncio.wait_for(started.wait(), timeout=1)
+        overloaded = await client.post("/render-page/1")
+        release.set()
+        await first
+
+    assert starts == 1
+    assert overloaded.status_code == 429
+    assert overloaded.headers["retry-after"] == "2"
+
+
+@pytest.mark.asyncio
+async def test_media_response_recycles_the_entire_sandbox_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recycled = 0
+
+    def recycle() -> None:
+        nonlocal recycled
+        recycled += 1
+
+    monkeypatch.setenv("APPSELL_PDF_SANDBOX_RECYCLE_AFTER_JOB", "true")
+    monkeypatch.setattr(pdf_sandbox_service, "_terminate_sandbox_process", recycle)
+    pdf_sandbox_service._DRAINING.clear()
+    payload = valid_pdf()
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://parser.test"
+        ) as client:
+            response = await client.post(
+                "/inspect",
+                content=payload,
+                headers={
+                    "content-type": "application/pdf",
+                    "x-appsell-byte-size": str(len(payload)),
+                    "x-appsell-sha256": hashlib.sha256(payload).hexdigest(),
+                },
+            )
+            draining = await client.post(
+                "/inspect",
+                content=payload,
+                headers={
+                    "content-type": "application/pdf",
+                    "x-appsell-byte-size": str(len(payload)),
+                    "x-appsell-sha256": hashlib.sha256(payload).hexdigest(),
+                },
+            )
+    finally:
+        pdf_sandbox_service._DRAINING.clear()
+
+    assert response.status_code == 200
+    assert response.headers["x-appsell-worker-recycle"] == "1"
+    assert draining.status_code == 503
+    assert draining.headers["retry-after"] == "1"
+    assert "x-appsell-worker-recycle" not in draining.headers
+    assert recycled == 1
+
+
+@pytest.mark.asyncio
+async def test_queued_request_rechecks_draining_after_acquiring_media_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def slow_inspect(_request: object) -> Response:
+        nonlocal calls
+        calls += 1
+        started.set()
+        await release.wait()
+        return Response(b"ok", status_code=200)
+
+    monkeypatch.setenv("APPSELL_PDF_SANDBOX_RECYCLE_AFTER_JOB", "true")
+    monkeypatch.setattr(pdf_sandbox_service, "_terminate_sandbox_process", lambda: None)
+    monkeypatch.setattr(pdf_sandbox_service, "_inspect_request", slow_inspect)
+    # Force the scheduling race where two requests pass the optimistic pre-check.
+    monkeypatch.setattr(pdf_sandbox_service, "_reject_busy_or_draining", lambda: None)
+    pdf_sandbox_service._DRAINING.clear()
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://parser.test"
+        ) as client:
+            first = asyncio.create_task(client.post("/inspect"))
+            await asyncio.wait_for(started.wait(), timeout=1)
+            queued = asyncio.create_task(client.post("/inspect"))
+            await asyncio.sleep(0)
+            release.set()
+            first_response, queued_response = await asyncio.gather(first, queued)
+    finally:
+        pdf_sandbox_service._DRAINING.clear()
+
+    assert first_response.status_code == 200
+    assert queued_response.status_code == 503
+    assert "x-appsell-worker-recycle" not in queued_response.headers
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_health_requires_pdftoppm(monkeypatch: pytest.MonkeyPatch) -> None:
+    def missing_pdftoppm(binary: str) -> str | None:
+        return None if binary == "pdftoppm" else f"/usr/bin/{binary}"
+
+    monkeypatch.setattr(shutil, "which", missing_pdftoppm)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://parser.test"
+    ) as client:
+        response = await client.get("/health")
+
+    assert response.status_code == 503
 
 
 @pytest.mark.asyncio
@@ -202,11 +445,12 @@ async def test_video_probe_allows_only_one_maximum_sized_tempfile_slot(
     assert overloaded.headers["retry-after"] == "2"
 
 
-def valid_pdf() -> bytes:
+def valid_pdf(*, page_count: int = 1) -> bytes:
     output = io.BytesIO()
     canvas = Canvas(output, pagesize=(320, 480), invariant=1)
-    canvas.drawString(32, 430, "Isolated parser contract")
-    canvas.showPage()
+    for page_number in range(1, page_count + 1):
+        canvas.drawString(32, 430, f"Isolated parser contract page {page_number}")
+        canvas.showPage()
     canvas.save()
     return output.getvalue()
 

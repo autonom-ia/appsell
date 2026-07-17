@@ -17,6 +17,8 @@ runtime_preview_assert_env_file "$2"
 source_sha="$3"
 runtime_preview_acquire_transition_lock "$RUNTIME_PREVIEW_TRANSITION_LOCK"
 "$here/preflight-runtime-preview.sh" "$RUNTIME_PREVIEW_RUN_ROOT" "$RUNTIME_PREVIEW_ENV_FILE" "$source_sha"
+runtime_preview_ensure_owned_volume \
+  "$RUNTIME_PREVIEW_PDF_SOCKET_VOLUME" runtime_pdf_socket pdf-raster-socket
 runtime_preview_api_login
 
 record_state="$(runtime_preview_service_state)"

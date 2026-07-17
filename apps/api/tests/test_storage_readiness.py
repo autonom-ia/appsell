@@ -44,6 +44,7 @@ async def test_periodic_control_drift_causes_503_and_next_tick_recovers(
         storage_health_probe_interval_seconds=10,
         storage_readiness_stale_after_seconds=30,
         environment="production",
+        pdf_sandbox_required=True,
     )
     state = main_module.app.state
     monkeypatch.setattr(state, "settings", settings, raising=False)
@@ -92,3 +93,47 @@ async def test_periodic_control_drift_causes_503_and_next_tick_recovers(
     await main_module.ready(Response())
     await main_module.ready(Response())
     assert storage.audit_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_protected_pdf_sandbox_drift_causes_503_without_s3(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 200.0
+    settings = SimpleNamespace(
+        storage_configured=False,
+        storage_readiness_stale_after_seconds=30,
+        storage_health_probe_interval_seconds=10,
+        environment="ci",
+        pdf_sandbox_required=True,
+    )
+    state = main_module.app.state
+    monkeypatch.setattr(state, "settings", settings, raising=False)
+    monkeypatch.setattr(state, "storage", None, raising=False)
+    monkeypatch.setattr(state, "asset_scanner", None, raising=False)
+    monkeypatch.setattr(state, "pdf_sandbox_runtime_ready", True, raising=False)
+    monkeypatch.setattr(state, "pdf_sandbox_checked_at", now, raising=False)
+    monkeypatch.setattr(state, "db_engine", object(), raising=False)
+    monkeypatch.setattr(time, "monotonic", lambda: now)
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+
+    async def database_is_ready(_engine: object) -> bool:
+        return True
+
+    async def parser_is_not_ready(_settings: object) -> bool:
+        return False
+
+    monkeypatch.setattr(main_module, "database_ready", database_is_ready)
+    monkeypatch.setattr(main_module, "_pdf_sandbox_ready", parser_is_not_ready)
+
+    await main_module._refresh_storage_dependencies(main_module.app)
+    response = Response()
+    payload = await main_module.ready(response)
+
+    assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    assert payload == {
+        "status": "unavailable",
+        "database": True,
+        "storage": True,
+        "pdf_sandbox": False,
+    }

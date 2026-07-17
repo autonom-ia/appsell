@@ -7,7 +7,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=runtime-preview-common.sh
 source "$here/runtime-preview-common.sh"
 runtime_preview_require_root
-runtime_preview_require_commands curl dig docker jq openssl realpath sha256sum stat timeout
+runtime_preview_require_commands curl date dig docker jq openssl realpath sha256sum stat timeout
 runtime_preview_assert_run_root "$1" "$3"
 runtime_preview_assert_env_file "$2"
 source_sha="$3"
@@ -25,7 +25,7 @@ runtime_preview_verify_live_record yes
 ready=0
 for _attempt in $(seq 1 60); do
   mapfile -t ids < <(docker ps -aq --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT")
-  if [[ ${#ids[@]} -eq 4 ]]; then
+  if [[ ${#ids[@]} -eq 6 ]]; then
     domain_state="$(docker inspect --format '{{.State.Status}}:{{if .State.Health}}{{.State.Health.Status}}{{end}}:{{.RestartCount}}' \
       "$(docker ps -aq --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT" --filter 'label=com.docker.compose.service=domain-api')" 2>/dev/null || true)"
     web_state="$(docker inspect --format '{{.State.Status}}:{{if .State.Health}}{{.State.Health.Status}}{{end}}:{{.RestartCount}}' \
@@ -34,8 +34,13 @@ for _attempt in $(seq 1 60); do
       "$(docker ps -aq --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT" --filter 'label=com.docker.compose.service=domain-bootstrap')" 2>/dev/null || true)"
     ingress_state="$(docker inspect --format '{{.State.Status}}:{{if .State.Health}}{{.State.Health.Status}}{{end}}:{{.RestartCount}}' \
       "$(docker ps -aq --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT" --filter 'label=com.docker.compose.service=ingress-proxy')" 2>/dev/null || true)"
+    pdf_init_state="$(docker inspect --format '{{.State.Status}}:{{.State.ExitCode}}' \
+      "$(docker ps -aq --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT" --filter 'label=com.docker.compose.service=pdf-sandbox-init')" 2>/dev/null || true)"
+    pdf_state="$(docker inspect --format '{{.State.Status}}:{{if .State.Health}}{{.State.Health.Status}}{{end}}:{{.RestartCount}}' \
+      "$(docker ps -aq --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT" --filter 'label=com.docker.compose.service=pdf-sandbox')" 2>/dev/null || true)"
     if [[ "$domain_state" == "running:healthy:0" && "$web_state" == "running:healthy:0" && \
-      "$ingress_state" == "running:healthy:0" && "$bootstrap_state" == "exited:0" ]]; then
+      "$ingress_state" == "running:healthy:0" && "$pdf_state" =~ ^running:healthy:[0-9]+$ && \
+      "$bootstrap_state" == "exited:0" && "$pdf_init_state" == "exited:0" ]]; then
       ready=1
       break
     fi
@@ -52,22 +57,24 @@ for id in "${ids[@]}"; do
   [[ "$(docker inspect --format '{{index .Config.Labels "com.autonomia.issue"}}' "$id")" == "77" ]] || exit 1
   [[ "$(docker inspect --format '{{index .Config.Labels "com.autonomia.source-sha"}}' "$id")" == "$source_sha" ]] || exit 1
   service="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$id")"
-  case "$service" in domain-bootstrap|domain-api|sell-web|ingress-proxy) ;; *) echo "unexpected runtime service: $service" >&2; exit 1 ;; esac
+  case "$service" in domain-bootstrap|domain-api|pdf-sandbox-init|pdf-sandbox|sell-web|ingress-proxy) ;; *) echo "unexpected runtime service: $service" >&2; exit 1 ;; esac
   [[ -z "${seen[$service]:-}" ]] || exit 1
   seen[$service]=1
   baseline_lifecycle[$service]="$(runtime_preview_lifecycle_fingerprint_from_inspect "$(docker inspect "$id")")"
   image="$(docker inspect --format '{{.Config.Image}}' "$id")"
   case "$service" in
-    domain-bootstrap|domain-api|ingress-proxy) [[ "$image" == "autonomia-sell-preview-domain:$source_sha" ]] ;;
+    domain-bootstrap|domain-api|pdf-sandbox-init|pdf-sandbox|ingress-proxy) [[ "$image" == "autonomia-sell-preview-domain:$source_sha" ]] ;;
     sell-web) [[ "$image" == "autonomia-sell-preview-sell:$source_sha" ]] ;;
   esac || { echo "unexpected image for $service" >&2; exit 1; }
-  if [[ "$service" == "domain-bootstrap" ]]; then
+  if [[ "$service" == "domain-bootstrap" || "$service" == "pdf-sandbox-init" ]]; then
     [[ "$(docker inspect --format '{{.State.Status}}:{{.State.ExitCode}}' "$id")" == "exited:0" ]] || exit 1
+  elif [[ "$service" == "pdf-sandbox" ]]; then
+    [[ "$(docker inspect --format '{{.State.Status}}:{{.State.Health.Status}}' "$id")" == "running:healthy" ]] || exit 1
   else
     [[ "$(docker inspect --format '{{.State.Status}}:{{.State.Health.Status}}:{{.RestartCount}}' "$id")" == "running:healthy:0" ]] || exit 1
   fi
 done
-[[ ${#seen[@]} -eq 4 ]] || exit 1
+[[ ${#seen[@]} -eq 6 ]] || exit 1
 domain_api_id="$(docker ps -q --no-trunc \
   --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT" \
   --filter 'label=com.docker.compose.service=domain-api')"
@@ -89,7 +96,7 @@ domain_image_env_json="$(jq -ce '
   end
 ' <<<"$domain_image_json")"
 
-for service in domain-bootstrap domain-api sell-web ingress-proxy; do
+for service in domain-bootstrap domain-api pdf-sandbox-init pdf-sandbox sell-web ingress-proxy; do
   mapfile -t service_ids < <(docker ps -aq \
     --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT" \
     --filter "label=com.docker.compose.service=$service")
@@ -104,6 +111,67 @@ for service in domain-bootstrap domain-api sell-web ingress-proxy; do
         echo "$service escaped the exclusive sell network" >&2
         exit 1
       }
+      if [[ "$service" == "domain-api" ]]; then
+        jq -e --arg volume "$RUNTIME_PREVIEW_PDF_SOCKET_VOLUME" '
+          (.[0].Mounts | length == 1 and .[0].Type == "volume" and
+            .[0].Name == $volume and .[0].Destination == "/run/appsell-pdf" and
+            .[0].RW == false) and
+          (.[0].Config.Env | index("APPSELL_API_STORAGE_PROVIDER=disabled")) != null and
+          (.[0].Config.Env | index("APPSELL_API_PDF_SANDBOX_SOCKET=/run/appsell-pdf/pdf.sock")) != null and
+          (.[0].Config.Env | index("APPSELL_API_PRIVATE_LEARNING_ASSET_ROOT=/workspace/sell/output/pdf/codex")) != null
+        ' <<<"$inspect_json" >/dev/null || {
+          echo "domain-api protected PDF mount or configuration drifted" >&2
+          exit 1
+        }
+      fi
+      ;;
+    pdf-sandbox-init|pdf-sandbox)
+      jq -e --arg domain_image_id "$domain_image_id" \
+        --arg volume "$RUNTIME_PREVIEW_PDF_SOCKET_VOLUME" \
+        --argjson domain_image_env "$domain_image_env_json" '
+        .[0].HostConfig.NetworkMode == "none" and
+        (.[0].NetworkSettings.Networks == null or .[0].NetworkSettings.Networks == {}) and
+        .[0].Image == $domain_image_id and
+        .[0].HostConfig.Privileged == false and
+        .[0].HostConfig.ReadonlyRootfs == true and
+        .[0].HostConfig.SecurityOpt == ["no-new-privileges:true"] and
+        .[0].HostConfig.CapDrop == ["ALL"] and
+        .[0].HostConfig.PortBindings == {} and
+        (.[0].Mounts | length == 1 and .[0].Type == "volume" and
+          .[0].Name == $volume and .[0].Destination == "/run/appsell-pdf" and .[0].RW == true)
+      ' <<<"$inspect_json" >/dev/null || {
+        echo "$service escaped the networkless PDF sandbox boundary" >&2
+        exit 1
+      }
+      if [[ "$service" == "pdf-sandbox-init" ]]; then
+        jq -e --argjson domain_image_env "$domain_image_env_json" '
+          .[0].Config.Env == $domain_image_env and
+          .[0].Config.User == "0:0" and .[0].HostConfig.CapAdd == ["CHOWN"] and
+          .[0].HostConfig.RestartPolicy == {"Name":"no","MaximumRetryCount":0} and
+          .[0].HostConfig.Memory == 33554432 and .[0].HostConfig.NanoCpus == 50000000 and
+          .[0].HostConfig.PidsLimit == 32
+        ' <<<"$inspect_json" >/dev/null || {
+          echo "pdf-sandbox-init privilege or resource boundary drifted" >&2
+          exit 1
+        }
+      else
+        jq -e --argjson domain_image_env "$domain_image_env_json" '
+          ([.[0].Config.Env[] | select(startswith("APPSELL_"))] ==
+            ["APPSELL_PDF_SANDBOX_RECYCLE_AFTER_JOB=true"]) and
+          ((.[0].Config.Env - ["APPSELL_PDF_SANDBOX_RECYCLE_AFTER_JOB=true"]) ==
+            $domain_image_env) and
+          .[0].Config.User == "10001:10001" and .[0].HostConfig.CapAdd == null and
+          .[0].Config.Cmd == ["python","-m","appsell_api.pdf_sandbox_runner"] and
+          .[0].HostConfig.RestartPolicy == {"Name":"unless-stopped","MaximumRetryCount":0} and
+          .[0].HostConfig.Memory == 805306368 and .[0].HostConfig.NanoCpus == 1000000000 and
+          .[0].HostConfig.PidsLimit == 96 and
+          (.[0].HostConfig.Tmpfs | keys | sort) == ["/tmp","/workspace/sell/output/pdf"] and
+          (.[0].HostConfig.Tmpfs["/workspace/sell/output/pdf"] | contains("mode=000"))
+        ' <<<"$inspect_json" >/dev/null || {
+          echo "pdf-sandbox identity, command, resource or content mask drifted" >&2
+          exit 1
+        }
+      fi
       ;;
     sell-web)
       jq -e --arg private "$RUNTIME_PREVIEW_NETWORK" --arg ingress "$RUNTIME_PREVIEW_INGRESS_NETWORK" '
@@ -144,6 +212,11 @@ for service in domain-bootstrap domain-api sell-web ingress-proxy; do
 done
 sell_id="$(docker ps -q --no-trunc --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT" --filter 'label=com.docker.compose.service=sell-web')"
 ingress_id="$(docker ps -q --no-trunc --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT" --filter 'label=com.docker.compose.service=ingress-proxy')"
+pdf_id="$(docker ps -q --no-trunc --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT" --filter 'label=com.docker.compose.service=pdf-sandbox')"
+pdf_restart_count_before_e2e="$(docker inspect --format '{{.RestartCount}}' "$pdf_id")"
+pdf_planned_recycles_before_e2e="$(docker logs "$pdf_id" 2>&1 | \
+  awk '/^\{"event":"appsell_pdf_worker_planned_recycle"\}$/{count++} END{print count+0}')"
+pdf_events_since="$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
 ingress_network_json="$(docker network inspect "$RUNTIME_PREVIEW_INGRESS_NETWORK")"
 jq -e \
   --arg network "$RUNTIME_PREVIEW_INGRESS_NETWORK" --arg project "$RUNTIME_PREVIEW_PROJECT" \
@@ -223,6 +296,20 @@ jq -e '.["13200/tcp"] | length == 1 and .[0].HostIp == "127.0.0.1" and .[0].Host
 curl -fsS --connect-timeout 3 --max-time 15 http://127.0.0.1:13200/ >/dev/null
 "$RUNTIME_PREVIEW_RUN_ROOT/config/easypanel/verify-sell-isolation.sh" >/dev/null
 runtime_preview_verify_service_snapshot "$RUNTIME_PREVIEW_RUN_ROOT/protected-services.before.tsv"
+runtime_preview_verify_owned_volume \
+  "$RUNTIME_PREVIEW_PDF_SOCKET_VOLUME" runtime_pdf_socket pdf-raster-socket no
+mapfile -t pdf_volume_consumers < <(docker ps -aq --filter "volume=$RUNTIME_PREVIEW_PDF_SOCKET_VOLUME")
+[[ ${#pdf_volume_consumers[@]} -eq 3 ]] || {
+  echo "PDF socket volume must have exactly three owned consumers" >&2
+  exit 1
+}
+pdf_volume_services="$(for id in "${pdf_volume_consumers[@]}"; do
+  docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$id"
+done | LC_ALL=C sort)"
+[[ "$pdf_volume_services" == $'domain-api\npdf-sandbox\npdf-sandbox-init' ]] || {
+  echo "PDF socket volume consumer scope drifted" >&2
+  exit 1
+}
 
 if [[ "${RUN_RUNTIME_PREVIEW_E2E:-0}" == "1" ]]; then
   unset COMPOSE_PROJECT_NAME COMPOSE_FILE COMPOSE_PROFILES COMPOSE_ENV_FILES
@@ -404,15 +491,18 @@ if [[ "${RUN_RUNTIME_PREVIEW_E2E:-0}" == "1" ]]; then
 
   domain_id="$(docker ps -aq --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT" --filter 'label=com.docker.compose.service=domain-api')"
   bootstrap_id="$(docker ps -aq --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT" --filter 'label=com.docker.compose.service=domain-bootstrap')"
+  pdf_init_id="$(docker ps -aq --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT" --filter 'label=com.docker.compose.service=pdf-sandbox-init')"
+  sleep 3
+  pdf_restart_count_after_e2e=""
   for stability_attempt in $(seq 1 7); do
     if [[ "$stability_attempt" -gt 1 ]]; then sleep 5; fi
     mapfile -t stable_ids < <(docker ps -aq --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT")
     stable_container_ids="$(printf '%s\n' "${stable_ids[@]}" | LC_ALL=C sort)"
-    [[ ${#stable_ids[@]} -eq 4 && "$stable_container_ids" == "$baseline_container_ids" ]] || {
+    [[ ${#stable_ids[@]} -eq 6 && "$stable_container_ids" == "$baseline_container_ids" ]] || {
       echo "runtime-preview container identity changed during or after E2E" >&2
       exit 1
     }
-    for service in domain-bootstrap domain-api sell-web ingress-proxy; do
+    for service in domain-bootstrap domain-api pdf-sandbox-init pdf-sandbox sell-web ingress-proxy; do
       mapfile -t lifecycle_ids < <(docker ps -aq \
         --filter "label=com.docker.compose.project=$RUNTIME_PREVIEW_COMPOSE_PROJECT" \
         --filter "label=com.docker.compose.service=$service")
@@ -421,6 +511,9 @@ if [[ "${RUN_RUNTIME_PREVIEW_E2E:-0}" == "1" ]]; then
         exit 1
       }
       current_lifecycle="$(runtime_preview_lifecycle_fingerprint_from_inspect "$(docker inspect "${lifecycle_ids[0]}")")"
+      if [[ "$service" == "pdf-sandbox" ]]; then
+        continue
+      fi
       [[ "$current_lifecycle" == "${baseline_lifecycle[$service]}" ]] || {
         echo "$service lifecycle changed during or after E2E" >&2
         exit 1
@@ -440,6 +533,40 @@ if [[ "${RUN_RUNTIME_PREVIEW_E2E:-0}" == "1" ]]; then
     }
     [[ "$(docker inspect --format '{{.State.Status}}:{{.State.ExitCode}}' "$bootstrap_id")" == "exited:0" ]] || {
       echo "domain-bootstrap changed during or after E2E" >&2
+      exit 1
+    }
+    pdf_state_after_e2e="$(docker inspect --format '{{.State.Status}}:{{.State.Health.Status}}:{{.RestartCount}}' "$pdf_id")"
+    [[ "$pdf_state_after_e2e" =~ ^running:healthy:([0-9]+)$ ]] || {
+      echo "pdf-sandbox lost healthy state during or after E2E" >&2
+      exit 1
+    }
+    pdf_current_restart_count="${BASH_REMATCH[1]}"
+    pdf_current_planned_recycles="$(docker logs "$pdf_id" 2>&1 | \
+      awk '/^\{"event":"appsell_pdf_worker_planned_recycle"\}$/{count++} END{print count+0}')"
+    if [[ -z "$pdf_restart_count_after_e2e" ]]; then
+      pdf_restart_count_after_e2e="$pdf_current_restart_count"
+      pdf_planned_recycles_after_e2e="$pdf_current_planned_recycles"
+      pdf_events_until="$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
+      if ! pdf_die_events="$(runtime_preview_docker_die_exit_codes \
+        "$pdf_id" "$pdf_events_since" "$pdf_events_until")"; then
+        echo "failed to read pdf-sandbox die events" >&2
+        exit 1
+      fi
+      runtime_preview_verify_pdf_recycle_evidence \
+        "$pdf_restart_count_before_e2e" "$pdf_restart_count_after_e2e" \
+        "$pdf_planned_recycles_before_e2e" "$pdf_planned_recycles_after_e2e" \
+        "$pdf_die_events"
+    fi
+    [[ "$pdf_current_restart_count" == "$pdf_restart_count_after_e2e" ]] || {
+      echo "pdf-sandbox recycled unexpectedly after the media E2E completed" >&2
+      exit 1
+    }
+    [[ "$pdf_current_planned_recycles" == "$pdf_planned_recycles_after_e2e" ]] || {
+      echo "pdf-sandbox emitted an unexpected recycle marker after E2E" >&2
+      exit 1
+    }
+    [[ "$(docker inspect --format '{{.State.Status}}:{{.State.ExitCode}}' "$pdf_init_id")" == "exited:0" ]] || {
+      echo "pdf-sandbox-init changed during or after E2E" >&2
       exit 1
     }
     stable_ports="$(docker inspect --format '{{json .NetworkSettings.Ports}}' "$sell_id")"

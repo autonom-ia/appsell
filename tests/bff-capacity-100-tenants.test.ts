@@ -400,8 +400,13 @@ test.skipIf(!domainApiUrl)(
       { headers: { cookie: warmBuyer.sessionCookie } },
       30_000
     );
-    if (warmAsset.status !== 200 || (await warmAsset.arrayBuffer()).byteLength === 0) {
-      throw new Error(`warm own asset expected non-empty 200, got ${warmAsset.status}`);
+    const warmAssetPayload = await warmAsset.json().catch(() => null) as unknown;
+    if (
+      warmAsset.status !== 404 ||
+      !isRecord(warmAssetPayload) ||
+      warmAssetPayload.error !== "pdf_original_requires_download_permission"
+    ) {
+      throw new Error(`warm own PDF original denial expected 404, got ${warmAsset.status}`);
     }
     failurePhase = "warmup_cross_tenant_asset";
     await requireStatus(
@@ -864,11 +869,10 @@ test.skipIf(!domainApiUrl)(
           }
         }
       );
-      const payload = response.status === 200 ? await response.arrayBuffer() : new ArrayBuffer(0);
-      const valid = response.headers.get("content-type") === "application/pdf" &&
-        payload.byteLength > 0 &&
-        createHash("sha256").update(new Uint8Array(payload)).digest("hex") === tenant.asset_sha256;
-      return { status: response.status, expected: 200, valid };
+      const payload = await response.json().catch(() => null) as unknown;
+      const valid = response.headers.get("content-type")?.startsWith("application/json") === true &&
+        isRecord(payload) && payload.error === "pdf_original_requires_download_permission";
+      return { status: response.status, expected: 404, valid };
     });
     recordThreshold(
       thresholdFailures,
@@ -2840,4 +2844,8 @@ async function stopBff(process: ChildProcess) {
 
 function delay(milliseconds: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

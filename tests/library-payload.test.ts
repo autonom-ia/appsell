@@ -33,9 +33,12 @@ function libraryItem(overrides: Record<string, unknown> = {}) {
 
 function playerResponse() {
   const selectedAsset = {
-    href: `/api/library/items/${entitlementId}/assets/${assetId}`,
+    view_href: `/api/library/items/${entitlementId}/assets/${assetId}/pages`,
+    download_href: null,
     title: "Material",
-    media_type: "application/pdf"
+    media_type: "application/pdf",
+    content_role: "course_content",
+    download_allowed: false
   };
   return {
     player: {
@@ -57,7 +60,8 @@ function playerResponse() {
       state_version: 0,
       lesson_progress: [] as Array<{ lesson_id: string; progress_percent: number; completed: boolean; updated_at: string }>,
       selected_asset: selectedAsset,
-      selected_assets: [selectedAsset]
+      selected_assets: [selectedAsset],
+      watermark: { label: "user.demo@autonomia.site · tenant 90718777 · abcdef123456" }
     },
     csrf: { progress: "progress-token", complete: "complete-token" }
   };
@@ -137,7 +141,7 @@ describe("learning player payload validation", () => {
     ];
     expect(isLearningPlayerResponse(duplicate)).toBe(false);
     const external = playerResponse();
-    external.player.selected_asset.href = "https://attacker.example/material.pdf";
+    external.player.selected_asset.view_href = "https://attacker.example/material.pdf";
     expect(isLearningPlayerResponse(external)).toBe(false);
 
     const duplicateAssets = playerResponse();

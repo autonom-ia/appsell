@@ -50,13 +50,16 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     app.state.inline_asset_worker_enabled = False
     app.state.storage_runtime_ready = settings.environment in {"local", "ci"}
     app.state.storage_controls_ready = settings.environment in {"local", "ci"}
-    app.state.pdf_sandbox_runtime_ready = settings.environment in {"local", "ci"}
+    app.state.pdf_sandbox_runtime_ready = not settings.pdf_sandbox_required
     app.state.storage_checked_at = time.monotonic()
     app.state.storage_controls_checked_at = 0.0
     app.state.pdf_sandbox_checked_at = time.monotonic()
-    if settings.storage_configured:
+    if settings.pdf_sandbox_required:
         if not await _pdf_sandbox_ready(settings):
             raise RuntimeError("isolated PDF parser service is unavailable")
+        app.state.pdf_sandbox_runtime_ready = True
+        app.state.pdf_sandbox_checked_at = time.monotonic()
+    if settings.storage_configured:
         storage = S3Storage(settings)
         scanner: MalwareScanner
         if settings.malware_scanner_provider == "deterministic":
@@ -90,7 +93,7 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         app.state.inline_asset_worker_enabled = settings.environment in {"local", "ci"}
     dependency_stop = asyncio.Event()
     dependency_task: asyncio.Task[None] | None = None
-    if settings.storage_configured:
+    if settings.storage_configured or settings.pdf_sandbox_required:
         dependency_task = asyncio.create_task(_monitor_storage_dependencies(app, dependency_stop))
     worker_stop = asyncio.Event()
     worker_task: asyncio.Task[None] | None = None
@@ -156,7 +159,10 @@ async def ready(response: Response) -> dict[str, Any]:
     storage = await _storage_ready()
     settings = get_settings()
     pdf_sandbox = _cached_dependency_ready(
-        "pdf_sandbox_runtime_ready", "pdf_sandbox_checked_at", settings
+        "pdf_sandbox_runtime_ready",
+        "pdf_sandbox_checked_at",
+        settings,
+        required=settings.pdf_sandbox_required,
     )
     ready_now = database and storage and pdf_sandbox
     if not ready_now:
@@ -178,9 +184,15 @@ async def _storage_ready() -> bool:
     ) and bool(getattr(app.state, "storage_controls_ready", False))
 
 
-def _cached_dependency_ready(attribute: str, checked_at_attribute: str, settings: Settings) -> bool:
-    if not settings.storage_configured:
-        return settings.environment in {"local", "ci"}
+def _cached_dependency_ready(
+    attribute: str,
+    checked_at_attribute: str,
+    settings: Settings,
+    *,
+    required: bool = True,
+) -> bool:
+    if not required:
+        return True
     checked_at = float(getattr(app.state, checked_at_attribute, 0.0))
     return time.monotonic() - checked_at <= settings.storage_readiness_stale_after_seconds and bool(
         getattr(app.state, attribute, False)
@@ -211,50 +223,52 @@ async def _refresh_storage_dependencies(
     storage: S3Storage | None = app_instance.state.storage
     scanner = app_instance.state.asset_scanner
     now = time.monotonic()
-    operational = False
-    try:
-        if storage is None or scanner is None:
-            raise RuntimeError("storage dependencies are unavailable")
-        await to_thread.run_sync(storage.probe_availability)
-        operational = await to_thread.run_sync(scanner.healthy)
-    except Exception:
+    if settings.storage_configured:
         operational = False
-
-    controls_ready = bool(getattr(app_instance.state, "storage_controls_ready", False))
-    last_control_audit = float(getattr(app_instance.state, "storage_controls_checked_at", 0.0))
-    audit_due = (
-        force_control_audit
-        or not controls_ready
-        or now - last_control_audit >= settings.storage_control_audit_interval_seconds
-    )
-    if storage is not None and audit_due:
         try:
-            await to_thread.run_sync(
-                lambda: storage.assert_runtime_controls(
-                    allowed_origin=settings.storage_allowed_origin,
-                    require_tls=settings.environment in {"staging", "production"},
-                )
-            )
-            controls_ready = True
+            if storage is None or scanner is None:
+                raise RuntimeError("storage dependencies are unavailable")
+            await to_thread.run_sync(storage.probe_availability)
+            operational = await to_thread.run_sync(scanner.healthy)
         except Exception:
-            controls_ready = False
-        app_instance.state.storage_controls_checked_at = now
+            operational = False
 
-    app_instance.state.storage_controls_ready = controls_ready
-    app_instance.state.storage_runtime_ready = operational and controls_ready
-    app_instance.state.storage_checked_at = now
+        controls_ready = bool(getattr(app_instance.state, "storage_controls_ready", False))
+        last_control_audit = float(getattr(app_instance.state, "storage_controls_checked_at", 0.0))
+        audit_due = (
+            force_control_audit
+            or not controls_ready
+            or now - last_control_audit >= settings.storage_control_audit_interval_seconds
+        )
+        if storage is not None and audit_due:
+            try:
+                await to_thread.run_sync(
+                    lambda: storage.assert_runtime_controls(
+                        allowed_origin=settings.storage_allowed_origin,
+                        require_tls=settings.environment in {"staging", "production"},
+                    )
+                )
+                controls_ready = True
+            except Exception:
+                controls_ready = False
+            app_instance.state.storage_controls_checked_at = now
 
-    try:
-        parser_ready = await _pdf_sandbox_ready(settings)
-    except Exception:
-        parser_ready = False
-    app_instance.state.pdf_sandbox_runtime_ready = parser_ready
-    app_instance.state.pdf_sandbox_checked_at = now
+        app_instance.state.storage_controls_ready = controls_ready
+        app_instance.state.storage_runtime_ready = operational and controls_ready
+        app_instance.state.storage_checked_at = now
+
+    if settings.pdf_sandbox_required:
+        try:
+            parser_ready = await _pdf_sandbox_ready(settings)
+        except Exception:
+            parser_ready = False
+        app_instance.state.pdf_sandbox_runtime_ready = parser_ready
+        app_instance.state.pdf_sandbox_checked_at = now
 
 
 async def _pdf_sandbox_ready(settings: Settings) -> bool:
-    if not settings.storage_configured:
-        return settings.environment in {"local", "ci"}
+    if not settings.pdf_sandbox_required:
+        return True
     health_url = (
         "http://pdf-sandbox/health"
         if settings.pdf_sandbox_socket

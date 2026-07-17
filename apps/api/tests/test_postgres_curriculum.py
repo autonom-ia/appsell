@@ -198,7 +198,7 @@ def test_schema_rls_privileges_and_composite_fks() -> None:
                 ") values(%s,%s,'Cross tenant',0)",
                 (SELLER_A, COURSE_B),
             )
-    assert state == ("0015_demo_zero_checkout", True, False, False, False, True)
+    assert state == ("0016_pdf_access_policy", True, False, False, False, True)
     assert tables == [("course_module", True, True), ("lesson", True, True)]
     with psycopg.connect(RUNTIME_URL) as connection:
         assert connection.execute("select count(*) from course_module").fetchone() == (0,)
@@ -993,7 +993,7 @@ def test_publication_v1_is_preserved_and_v2_is_deterministic() -> None:
         ).fetchone()
     assert v2 is not None
     assert v1 == (1, v1_snapshot)
-    assert v2[0] == 3 and v2[1]["schema_version"] == 3
+    assert v2[0] == 4 and v2[1]["schema_version"] == 4
     assert v2[2] == v2[3]
     published_module = next(
         module for module in v2[1]["courses"][0]["modules"] if module["lessons"]

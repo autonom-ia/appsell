@@ -6,7 +6,6 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { chromium, expect as pwExpect, type Browser, type Page } from "@playwright/test";
 
-import manifest from "../lib/demo-codex-assets.json";
 import seedManifest from "../demo/content/codex-na-pratica/manifest.json";
 import { deriveCsrfToken } from "../lib/csrf";
 import { startIsolatedRedis, unusedNonDefaultPort } from "./helpers/isolated-redis";
@@ -49,6 +48,82 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     const invalid = await fetch(`${origin}/auth/login?persona=attacker`, { redirect: "manual" });
     expect(invalid.status).toBe(400);
 
+    const sellerId = seedManifest.seller.id;
+    const productId = seedManifest.product.id;
+    const courseId = seedManifest.course.id;
+    const moduleId = seedManifest.module.id;
+    const firstLesson = seedManifest.lessons[0]!;
+    const policyAdmin = await login(origin, "admin");
+    const initialProduct = await readProductDetail(
+      origin,
+      policyAdmin.session,
+      sellerId,
+      productId
+    );
+    const assetsPath = `/api/sellers/${sellerId}/products/${productId}` +
+      `/courses/${courseId}/modules/${moduleId}/lessons/${firstLesson.lesson_id}/assets`;
+    const assetsResponse = await fetch(`${origin}${assetsPath}`, {
+      headers: { cookie: policyAdmin.session }
+    });
+    expect(assetsResponse.status, await assetsResponse.clone().text()).toBe(200);
+    const assetsPayload = await assetsResponse.json() as {
+      assets: Array<{ id: string; content_role: string; download_allowed: boolean }>;
+      csrf: { policy: string };
+    };
+    expect(assetsPayload.assets.find((asset) => asset.id === firstLesson.asset_id)).toMatchObject({
+      content_role: "course_content",
+      download_allowed: false
+    });
+    const policyResponse = await fetch(`${origin}${assetsPath}/${firstLesson.asset_id}/policy`, {
+      method: "PATCH",
+      headers: { cookie: policyAdmin.session, origin },
+      body: formData({
+        _csrf: assetsPayload.csrf.policy,
+        idempotency_key: randomUUID(),
+        expected_course_version: String(initialProduct.product.courses[0]!.draft_version),
+        content_role: "support_material",
+        download_allowed: "true"
+      })
+    });
+    expect(policyResponse.status, await policyResponse.clone().text()).toBe(200);
+    expect(await policyResponse.json()).toMatchObject({
+      asset_id: firstLesson.asset_id,
+      content_role: "support_material",
+      download_allowed: true,
+      course_version: initialProduct.product.courses[0]!.draft_version + 1
+    });
+    const publishable = await readProductDetail(
+      origin,
+      policyAdmin.session,
+      sellerId,
+      productId
+    );
+    expect(publishable.product.readiness.can_publish).toBe(true);
+    const publicationResponse = await fetch(
+      `${origin}/api/sellers/${sellerId}/products/${productId}/publications`,
+      {
+        method: "POST",
+        headers: { cookie: policyAdmin.session, origin },
+        body: formData({
+          _csrf: publishable.csrf.publish,
+          idempotency_key: randomUUID(),
+          offer_id: publishable.product.offer.id,
+          expected_product_version: String(publishable.product.draft_version),
+          expected_offer_version: String(publishable.product.offer.draft_version),
+          course_versions: JSON.stringify(publishable.product.courses.map((course) => ({
+            id: course.id,
+            version: course.draft_version
+          })))
+        })
+      }
+    );
+    expect(publicationResponse.status, await publicationResponse.clone().text()).toBe(201);
+    expect(await publicationResponse.json()).toMatchObject({
+      product_id: productId,
+      publication_version: initialProduct.product.publication.version + 1,
+      created: true
+    });
+
     const buyer = await login(origin, "buyer");
     expect(buyer.redirect).toBe(`${origin}/library`);
     for (const cookieName of [
@@ -63,7 +138,6 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     const sellers = await fetch(`${origin}/api/sellers`, { headers: { cookie: buyer.session } });
     expect(sellers.status).toBe(403);
     expect(await sellers.json()).toEqual({ error: "demo_buyer_capability_forbidden" });
-    const sellerId = manifest[0]!.seller_id;
     const products = await fetch(`${origin}/api/sellers/${sellerId}/products`, {
       headers: { cookie: buyer.session }
     });
@@ -185,27 +259,53 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     expect(libraryPayload.items[0]).not.toHaveProperty("snapshot");
     expect(libraryPayload.items[0]).not.toHaveProperty("assets");
 
-    const firstAsset = manifest[0]!;
     const entitlementId = libraryPayload.items[0]!.entitlement_id;
     const player = await fetch(`${origin}/api/library/items/${entitlementId}`, {
       headers: { cookie: buyer.session }
     });
     expect(player.status, await player.clone().text()).toBe(200);
     const playerPayload = await player.json() as {
-      player: { selected_asset: { href: string }; selected_assets: Array<{ href: string }> };
+      player: {
+        selected_asset: {
+          view_href: string;
+          download_href: string | null;
+          content_role: string;
+          download_allowed: boolean;
+        };
+        selected_assets: Array<{ view_href: string }>;
+      };
     };
-    const assetHref = playerPayload.player.selected_asset.href;
+    const assetHref = playerPayload.player.selected_asset.view_href;
     expect(playerPayload.player.selected_assets).toEqual([playerPayload.player.selected_asset]);
+    expect(playerPayload.player.selected_asset).toMatchObject({
+      content_role: "support_material",
+      download_allowed: true,
+      download_href: assetHref.replace(/\/pages$/, "/download")
+    });
     expect(assetHref).toMatch(new RegExp(
-      `^/api/library/items/${entitlementId}/assets/[0-9a-f-]{36}$`
+      `^/api/library/items/${entitlementId}/assets/[0-9a-f-]{36}/pages$`
     ));
-    const pdf = await fetch(`${origin}${assetHref}`, { headers: { cookie: buyer.session } });
-    expect(pdf.status, await pdf.clone().text()).toBe(200);
-    expect(pdf.headers.get("content-type")).toBe("application/pdf");
-    expect(pdf.headers.get("cache-control")).toBe("private, no-store, max-age=0");
-    expect(pdf.headers.get("referrer-policy")).toBe("no-referrer");
-    expect(pdf.headers.get("x-content-type-options")).toBe("nosniff");
-    expect((await pdf.arrayBuffer()).byteLength).toBe(firstAsset.bytes);
+    const pdfManifest = await fetch(`${origin}${assetHref}`, { headers: { cookie: buyer.session } });
+    expect(pdfManifest.status, await pdfManifest.clone().text()).toBe(200);
+    expect(pdfManifest.headers.get("content-type")).toContain("application/json");
+    expect(pdfManifest.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    expect(await pdfManifest.json()).toMatchObject({ page_count: expect.any(Number) });
+    const pdfPage = await fetch(`${origin}${assetHref}/1`, { headers: { cookie: buyer.session } });
+    expect(pdfPage.status, await pdfPage.clone().text()).toBe(200);
+    expect(pdfPage.headers.get("content-type")).toBe("image/png");
+    expect(pdfPage.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    expect(pdfPage.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(pdfPage.headers.get("x-content-type-options")).toBe("nosniff");
+    const rawPdf = await fetch(`${origin}${assetHref.replace(/\/pages$/, "")}`, {
+      headers: { cookie: buyer.session }
+    });
+    expect(rawPdf.status).toBe(404);
+    const supportDownload = await fetch(
+      `${origin}${playerPayload.player.selected_asset.download_href}`,
+      { headers: { cookie: buyer.session } }
+    );
+    expect(supportDownload.status, await supportDownload.clone().text()).toBe(200);
+    expect(supportDownload.headers.get("content-disposition")).toMatch(/^attachment;/);
 
     const videoPlayer = await fetch(
       `${origin}/api/library/items/${entitlementId}/lessons/${seedManifest.video.lesson_id}`,
@@ -214,8 +314,8 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     expect(videoPlayer.status, await videoPlayer.clone().text()).toBe(200);
     const videoPlayerPayload = await videoPlayer.json() as {
       player: {
-        selected_asset: { href: string; media_type: string };
-        selected_assets: Array<{ href: string; media_type: string }>;
+        selected_asset: { view_href: string; media_type: string };
+        selected_assets: Array<{ view_href: string; media_type: string }>;
       };
     };
     expect(videoPlayerPayload.player.selected_asset.media_type).toBe("video/mp4");
@@ -229,12 +329,17 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     );
     expect(videoAsset).toBeDefined();
     expect(finalPdfAsset).toBeDefined();
-    const videoHref = videoAsset!.href;
-    const finalPdf = await fetch(`${origin}${finalPdfAsset!.href}`, {
+    const videoHref = videoAsset!.view_href;
+    const finalPdfManifest = await fetch(`${origin}${finalPdfAsset!.view_href}`, {
       headers: { cookie: buyer.session }
     });
-    expect(finalPdf.status, await finalPdf.clone().text()).toBe(200);
-    expect(finalPdf.headers.get("content-type")).toBe("application/pdf");
+    expect(finalPdfManifest.status, await finalPdfManifest.clone().text()).toBe(200);
+    expect(finalPdfManifest.headers.get("content-type")).toContain("application/json");
+    const finalPdfPage = await fetch(`${origin}${finalPdfAsset!.view_href}/1`, {
+      headers: { cookie: buyer.session }
+    });
+    expect(finalPdfPage.status, await finalPdfPage.clone().text()).toBe(200);
+    expect(finalPdfPage.headers.get("content-type")).toBe("image/png");
     const videoRange = await fetch(`${origin}${videoHref}`, {
       headers: { cookie: buyer.session, range: "bytes=0-1023" }
     });
@@ -350,9 +455,19 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     await buyerPage.getByRole("link", { name: "Começar curso" }).click();
     await buyerPage.waitForURL(/\/library\/items\/[0-9a-f-]+\/lessons\/[0-9a-f-]+$/);
     await pwExpect(buyerPage.getByRole("heading", { level: 1, name: "O que é Codex e quando usar" })).toBeVisible();
-    await pwExpect(buyerPage.getByRole("link", { name: /Abrir PDF/ })).toHaveCount(1);
+    await pwExpect(buyerPage.locator(".protected-pdf-page img")).toHaveCount(1);
+    await pwExpect(buyerPage.getByRole("link", { name: "Baixar PDF de apoio" })).toHaveCount(1);
+    await pwExpect(buyerPage.locator(".protected-pdf-page > span")).toContainText(
+      "user.demo@autonomia.site"
+    );
     await buyerPage.getByRole("button", { name: "Concluir e avançar" }).click();
     await pwExpect(buyerPage.getByRole("heading", { level: 1, name: "Como preparar contexto, repo e objetivo" })).toBeVisible();
+    await pwExpect(buyerPage.getByRole("link", { name: /Baixar PDF/ })).toHaveCount(0);
+    await pwExpect(buyerPage.getByText("Download desativado pelo administrador.")).toBeVisible();
+    await buyerPage.setViewportSize({ width: 320, height: 720 });
+    await buyerPage.evaluate(() => { document.documentElement.style.fontSize = "200%"; });
+    await expectNoHorizontalOverflow(buyerPage);
+    await buyerPage.evaluate(() => { document.documentElement.style.fontSize = "100%"; });
     await buyerPage.goto(`${origin}/library/items/${entitlementId}/lessons/${seedManifest.video.lesson_id}`);
     await pwExpect(buyerPage.getByRole("heading", { level: 1, name: "Como operar deploy e rollback" })).toBeVisible();
     await pwExpect(buyerPage.locator('video[aria-label="Codex em 3 passos"]')).toBeVisible();
@@ -370,9 +485,13 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     await buyerPage.waitForURL(`${origin}/library`);
     await pwExpect(buyerPage.getByRole("heading", { name: "Minha biblioteca" })).toBeVisible();
     await pwExpect(buyerPage.getByText("Crie seu espaço de vendas")).toHaveCount(0);
-    const browserPdf = await buyerPage.request.get(`${origin}${assetHref}`);
-    expect(browserPdf.status()).toBe(200);
-    expect(browserPdf.headers()["content-type"]).toBe("application/pdf");
+    const browserPage = await buyerPage.request.get(`${origin}${assetHref}/1`);
+    expect(browserPage.status()).toBe(200);
+    expect(browserPage.headers()["content-type"]).toBe("image/png");
+    const browserOriginal = await buyerPage.request.get(
+      `${origin}${assetHref.replace(/\/pages$/, "")}`
+    );
+    expect(browserOriginal.status()).toBe(404);
     await buyerContext.close();
 
     const adminContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
@@ -448,6 +567,29 @@ async function login(origin: string, persona: "admin" | "buyer") {
     redirect: requiredHeader(callback, "location"),
     session: cookiePair(callback.headers.get("set-cookie"), "appsell_session"),
     setCookies: callback.headers.getSetCookie()
+  };
+}
+
+async function readProductDetail(
+  origin: string,
+  session: string,
+  sellerId: string,
+  productId: string
+) {
+  const response = await fetch(
+    `${origin}/api/sellers/${sellerId}/products/${productId}`,
+    { headers: { cookie: session } }
+  );
+  expect(response.status, await response.clone().text()).toBe(200);
+  return await response.json() as {
+    product: {
+      draft_version: number;
+      courses: Array<{ id: string; draft_version: number }>;
+      offer: { id: string; draft_version: number };
+      publication: { id: string; version: number };
+      readiness: { can_publish: boolean };
+    };
+    csrf: { publish: string };
   };
 }
 
