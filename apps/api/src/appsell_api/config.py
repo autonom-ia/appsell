@@ -83,8 +83,7 @@ class Settings(BaseSettings):
                     or not socket_path.is_absolute()
                     or ".." in socket_path.parts
                     or socket_path.name != "pdf.sock"
-                    or socket_path.parent.resolve(strict=False)
-                    != socket_root.resolve(strict=False)
+                    or socket_path.parent.resolve(strict=False) != socket_root.resolve(strict=False)
                 ):
                     raise ValueError("PDF parser socket path is invalid")
             else:

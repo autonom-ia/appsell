@@ -254,8 +254,7 @@ async def render_asset_page(
         )
     storage: S3Storage | None = getattr(request.app.state, "storage", None)
     watermark = (
-        f"user {internal.envelope.identity.user_id.hex[:12]} "
-        f"access {entitlement_id.hex[:12]}"
+        f"user {internal.envelope.identity.user_id.hex[:12]} access {entitlement_id.hex[:12]}"
     )
 
     def render() -> Any:

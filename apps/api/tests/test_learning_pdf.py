@@ -63,9 +63,7 @@ def test_authorized_legacy_source_rejects_traversal_and_hash_mismatch(tmp_path: 
         ):
             pass
     with pytest.raises(LearningPdfRejected, match="integrity"):
-        with authorized_pdf_source(
-            asset_row(payload, sha256="0" * 64), settings(tmp_path), None
-        ):
+        with authorized_pdf_source(asset_row(payload, sha256="0" * 64), settings(tmp_path), None):
             pass
 
 
@@ -111,9 +109,7 @@ def test_manifest_rejects_extra_or_invalid_sandbox_metadata(
     monkeypatch.setattr(
         learning_pdf,
         "_sandbox_request",
-        lambda *_args, **_kwargs: httpx.Response(
-            200, json={"page_count": 2, "unexpected": True}
-        ),
+        lambda *_args, **_kwargs: httpx.Response(200, json={"page_count": 2, "unexpected": True}),
     )
 
     with pytest.raises(LearningPdfUnavailable, match="invalid metadata"):
@@ -198,9 +194,7 @@ def test_render_reencodes_png_and_strips_appended_original_pdf(
         ),
     )
 
-    rendered = render_pdf_page(
-        source, settings(tmp_path), page_number=1, watermark="user 12345678"
-    )
+    rendered = render_pdf_page(source, settings(tmp_path), page_number=1, watermark="user 12345678")
 
     assert rendered.payload.startswith(b"\x89PNG\r\n\x1a\n")
     assert b"%PDF" not in rendered.payload

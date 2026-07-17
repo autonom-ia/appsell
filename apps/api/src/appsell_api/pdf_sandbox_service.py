@@ -64,11 +64,7 @@ def _terminate_sandbox_process() -> None:
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    if (
-        _DRAINING.is_set()
-        or shutil.which("ffprobe") is None
-        or shutil.which("pdftoppm") is None
-    ):
+    if _DRAINING.is_set() or shutil.which("ffprobe") is None or shutil.which("pdftoppm") is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
     return {"status": "ok"}
 
@@ -175,9 +171,7 @@ async def _normalize_request(request: Request) -> Response:
         if received != expected_size or digest.hexdigest() != expected_sha256:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT)
         normalized, page_count, ready_sha256 = await to_thread.run_sync(
-            lambda: _normalize_file(
-                source_path, expected_size, expected_sha256, job_directory
-            )
+            lambda: _normalize_file(source_path, expected_size, expected_sha256, job_directory)
         )
         return Response(
             normalized,

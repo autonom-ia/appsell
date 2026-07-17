@@ -234,9 +234,7 @@ async def _refresh_storage_dependencies(
             operational = False
 
         controls_ready = bool(getattr(app_instance.state, "storage_controls_ready", False))
-        last_control_audit = float(
-            getattr(app_instance.state, "storage_controls_checked_at", 0.0)
-        )
+        last_control_audit = float(getattr(app_instance.state, "storage_controls_checked_at", 0.0))
         audit_due = (
             force_control_audit
             or not controls_ready
