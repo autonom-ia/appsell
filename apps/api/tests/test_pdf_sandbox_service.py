@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import io
+import shutil
 import struct
 from pathlib import Path
 
@@ -324,7 +325,7 @@ async def test_health_requires_pdftoppm(monkeypatch: pytest.MonkeyPatch) -> None
     def missing_pdftoppm(binary: str) -> str | None:
         return None if binary == "pdftoppm" else f"/usr/bin/{binary}"
 
-    monkeypatch.setattr(pdf_sandbox_service.shutil, "which", missing_pdftoppm)
+    monkeypatch.setattr(shutil, "which", missing_pdftoppm)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://parser.test"
     ) as client:
