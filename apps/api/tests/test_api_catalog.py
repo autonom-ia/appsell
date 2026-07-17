@@ -138,6 +138,9 @@ def update_body(course_id: UUID, offer_id: UUID, **overrides: Any) -> bytes:
         "course_title": "Curso Editado",
         "offer_title": "Oferta Principal",
         "offer_summary": "Condições informativas sem billing",
+        "offer_unit_amount_minor": 19900,
+        "offer_currency": "BRL",
+        "offer_billing_period": "one_time",
         "expected_product_version": 1,
         "expected_course_version": 1,
         "expected_offer_version": 0,
@@ -455,6 +458,9 @@ async def test_detail_and_preview_are_private_server_projections() -> None:
         "offer_summary": "Sem billing",
         "offer_status": "draft",
         "offer_version": 1,
+        "offer_unit_amount_minor": 19900,
+        "offer_currency": "BRL",
+        "offer_billing_period": "one_time",
         "publication_version": None,
         "publication_source_sha256": None,
         "published_at": None,
@@ -514,7 +520,109 @@ async def test_patch_binds_versions_ids_hash_and_actor_to_atomic_function() -> N
     assert parameters["product_id"] == product_id
     assert parameters["course_id"] == course_id
     assert parameters["offer_id"] == offer_id
+    assert parameters["offer_unit_amount_minor"] == 19900
+    assert parameters["offer_currency"] == "BRL"
+    assert parameters["offer_billing_period"] == "one_time"
     assert parameters["body_sha256"] == hashlib.sha256(body).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_patch_response_echoes_server_validated_pricing() -> None:
+    product_id, course_id, offer_id = uuid4(), uuid4(), uuid4()
+    auth = FakeAuth(
+        seller_id=SELLER_ID,
+        result=FakeResult(
+            one={
+                "offer_id": offer_id,
+                "product_version": 2,
+                "course_version": 2,
+                "offer_version": 1,
+                "created": True,
+            }
+        ),
+    )
+    body = update_body(
+        course_id,
+        offer_id,
+        offer_unit_amount_minor=39900,
+        offer_currency="USD",
+        offer_billing_period="monthly",
+    )
+    async with client_for(auth) as client:
+        response = await client.patch(
+            f"/v1/me/sellers/{SELLER_ID}/products/{product_id}", content=body
+        )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["offer_unit_amount_minor"] == 39900
+    assert payload["offer_currency"] == "USD"
+    assert payload["offer_billing_period"] == "monthly"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        update_body(uuid4(), uuid4(), offer_unit_amount_minor=-1),
+        update_body(uuid4(), uuid4(), offer_unit_amount_minor=100_000_000_000),
+        update_body(uuid4(), uuid4(), offer_unit_amount_minor="19900"),
+        update_body(uuid4(), uuid4(), offer_currency="brl"),
+        update_body(uuid4(), uuid4(), offer_currency="BRLL"),
+        update_body(uuid4(), uuid4(), offer_currency="BR"),
+        update_body(uuid4(), uuid4(), offer_currency=990),
+        update_body(uuid4(), uuid4(), offer_billing_period="weekly"),
+        update_body(uuid4(), uuid4(), offer_billing_period="one-time"),
+    ],
+)
+async def test_invalid_offer_pricing_body_is_rejected(body: bytes) -> None:
+    auth = FakeAuth(seller_id=SELLER_ID, result=FakeResult())
+    async with client_for(auth) as client:
+        response = await client.patch(
+            f"/v1/me/sellers/{SELLER_ID}/products/{uuid4()}", content=body
+        )
+    assert response.status_code == 422
+    assert response.json() == {"detail": "invalid_request_body"}
+    assert auth.session.calls == []
+
+
+def test_detail_offer_projection_includes_public_pricing() -> None:
+    now = datetime(2026, 7, 11, 12, 0, tzinfo=UTC)
+    product_id, course_id, offer_id = uuid4(), uuid4(), uuid4()
+    row = {
+        "seller_organization_id": SELLER_ID,
+        "id": product_id,
+        "slug": "produto",
+        "title": "Produto",
+        "description": "Privado",
+        "status": "draft",
+        "version": 2,
+        "created_at": now,
+        "updated_at": now,
+        "published_snapshot_id": None,
+        "course_id": course_id,
+        "course_title": "Curso",
+        "course_description": "",
+        "course_status": "draft",
+        "course_draft_version": 2,
+        "course_position": 0,
+        "curriculum_modules": [],
+        "offer_id": offer_id,
+        "offer_title": "Oferta",
+        "offer_summary": "Informativa",
+        "offer_status": "draft",
+        "offer_version": 1,
+        "offer_unit_amount_minor": 49900,
+        "offer_currency": "BRL",
+        "offer_billing_period": "yearly",
+        "publication_version": None,
+        "publication_source_sha256": None,
+        "published_at": None,
+        "publication_snapshot": None,
+    }
+    offer = _product_detail_response([row])["product"]["offer"]
+    assert offer["unit_amount_minor"] == 49900
+    assert offer["currency"] == "BRL"
+    assert offer["billing_period"] == "yearly"
 
 
 def test_readiness_blocks_a_semantically_identical_publication() -> None:
@@ -548,6 +656,9 @@ def test_readiness_blocks_a_semantically_identical_publication() -> None:
         "offer_summary": "Informativa",
         "offer_status": "draft",
         "offer_version": 1,
+        "offer_unit_amount_minor": 19900,
+        "offer_currency": "BRL",
+        "offer_billing_period": "one_time",
         "publication_version": 1,
         "publication_source_sha256": "a" * 64,
         "published_at": now,

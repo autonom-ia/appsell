@@ -20,7 +20,11 @@ from .internal_requests import AuthenticatedInternalRequest, InternalRequestAuth
 
 router = APIRouter(prefix="/v1")
 _SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+_CURRENCY = re.compile(r"^[A-Z]{3}$")
 _MAX_SAFE_INTEGER = (1 << 53) - 1
+# R$ 999,999,999.99 in minor units (centavos); mirrors the offer table CHECK.
+_MAX_UNIT_AMOUNT_MINOR = 99_999_999_999
+_BILLING_PERIODS = ("one_time", "monthly", "yearly")
 
 
 class ProductCourseDraftBody(BaseModel):
@@ -77,6 +81,9 @@ class ProductCourseOfferUpdateBody(ProductCourseDraftBody):
     expected_offer_version: int = Field(ge=0, le=_MAX_SAFE_INTEGER)
     offer_title: str
     offer_summary: str
+    offer_unit_amount_minor: int = Field(ge=0, le=_MAX_UNIT_AMOUNT_MINOR)
+    offer_currency: str
+    offer_billing_period: Literal["one_time", "monthly", "yearly"]
 
     @field_validator("course_id", "offer_id")
     @classmethod
@@ -99,6 +106,13 @@ class ProductCourseOfferUpdateBody(ProductCourseDraftBody):
     def validate_offer_summary(cls, value: str) -> str:
         if len(value.encode("utf-8")) > 500 or _contains_control(value):
             raise ValueError("invalid offer summary")
+        return value
+
+    @field_validator("offer_currency")
+    @classmethod
+    def validate_offer_currency(cls, value: str) -> str:
+        if _CURRENCY.fullmatch(value) is None:
+            raise ValueError("invalid offer currency")
         return value
 
 
@@ -701,7 +715,9 @@ async def update_product_draft(
                             "from app_private.update_product_course_offer_draft("
                             ":identity_user_id, :seller_id, :product_id, :slug, "
                             ":course_id, :offer_id, :title, :description, :course_title, "
-                            ":offer_title, :offer_summary, :expected_product_version, "
+                            ":offer_title, :offer_summary, :offer_unit_amount_minor, "
+                            ":offer_currency, :offer_billing_period, "
+                            ":expected_product_version, "
                             ":expected_course_version, :expected_offer_version, "
                             ":idempotency_key, :body_sha256, :request_id)"
                         ),
@@ -717,6 +733,9 @@ async def update_product_draft(
                             "course_title": body.course_title,
                             "offer_title": body.offer_title,
                             "offer_summary": body.offer_summary,
+                            "offer_unit_amount_minor": body.offer_unit_amount_minor,
+                            "offer_currency": body.offer_currency,
+                            "offer_billing_period": body.offer_billing_period,
                             "expected_product_version": body.expected_product_version,
                             "expected_course_version": body.expected_course_version,
                             "expected_offer_version": body.expected_offer_version,
@@ -738,6 +757,9 @@ async def update_product_draft(
         "product_version": row["product_version"],
         "course_version": row["course_version"],
         "offer_version": row["offer_version"],
+        "offer_unit_amount_minor": body.offer_unit_amount_minor,
+        "offer_currency": body.offer_currency,
+        "offer_billing_period": body.offer_billing_period,
         "created": bool(row["created"]),
     }
 
@@ -946,6 +968,9 @@ async def _read_product_draft(
                             "offer.id as offer_id, offer.title as offer_title, "
                             "offer.summary as offer_summary, offer.status as offer_status, "
                             "offer.version as offer_version, "
+                            "offer.unit_amount_minor as offer_unit_amount_minor, "
+                            "rtrim(offer.currency) as offer_currency, "
+                            "offer.billing_period as offer_billing_period, "
                             "publication.version as publication_version, "
                             "publication.source_sha256 as publication_source_sha256, "
                             "publication.snapshot as publication_snapshot, "
@@ -1018,6 +1043,9 @@ def _product_detail_response(rows: list[Any]) -> dict[str, Any]:
             "status": row["offer_status"],
             "version": row["offer_version"],
             "draft_version": row["offer_version"],
+            "unit_amount_minor": row["offer_unit_amount_minor"],
+            "currency": row["offer_currency"],
+            "billing_period": row["offer_billing_period"],
         }
         if row["offer_id"] is not None
         else None
