@@ -29,19 +29,21 @@ export APPSELL_BACKUP_ENCRYPTION_SECRET="$(openssl rand -hex 32)"
 export BACKUP_DOCKER_NETWORK="$network_name"
 export BACKUP_PG_IMAGE="$postgres_image"
 
+cleanup() {
+  docker rm -f "$source_container" "$target_container" >/dev/null 2>&1 || true
+  docker network rm "$network_name" >/dev/null 2>&1 || true
+  [[ -n "${workdir:-}" ]] && rm -rf -- "$workdir" 2>/dev/null || true
+}
+trap cleanup EXIT
+# Clear stale docker state from a previous run BEFORE creating this run's workdir
+# (the initial cleanup must not delete the fresh temp dir we are about to make).
+cleanup
+
 workdir="$(mktemp -d)"
 offhost_dir="${workdir}/offhost"
 dump_file="${workdir}/source.dump"
 enc_file="${dump_file}.gpg"
 restored_plain="${workdir}/restored-from-offhost.dump"
-
-cleanup() {
-  docker rm -f "$source_container" "$target_container" >/dev/null 2>&1 || true
-  docker network rm "$network_name" >/dev/null 2>&1 || true
-  rm -rf -- "$workdir" 2>/dev/null || true
-}
-trap cleanup EXIT
-cleanup
 
 docker network create "$network_name" >/dev/null
 
