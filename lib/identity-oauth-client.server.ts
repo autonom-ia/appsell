@@ -13,7 +13,6 @@ import type {
   OAuthTokenRefresher
 } from "./oauth-refresh";
 
-const APPSELL_LOGICAL_OAUTH_CLIENT_ID = "appsell-web";
 const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 32 * 1_024;
 const MAX_RESPONSE_BYTES = 64 * 1_024;
@@ -24,6 +23,18 @@ const OIDC_NONCE = /^[A-Za-z0-9._~-]{32,256}$/;
 const PKCE_VERIFIER = /^[A-Za-z0-9._~-]{43,128}$/;
 const PKCE_CHALLENGE = /^[A-Za-z0-9_-]{43}$/;
 const KEY_ID = /^[A-Za-z0-9._~+/=-]{1,256}$/;
+// Conservative shape for the configurable logical OAuth client id / expected
+// audience: lowercase, digits and a short safe punctuation set. Accepts the
+// legacy `appsell-web` default and Cognito app-client ids while rejecting
+// spaces, uppercase, empty values and unbounded input (fail-closed).
+const OAUTH_IDENTIFIER = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+// Opaque provider refresh token (e.g. Cognito) accepted in provider-refresh
+// mode. Broader charset/length than the 43-char logical rotation handle, still
+// bounded to keep the value safe to log-shape and store.
+const PROVIDER_REFRESH_TOKEN = /^[A-Za-z0-9._~+/=-]{20,4096}$/;
+
+export type IdentityRefreshMode = "logical-handle" | "provider-refresh";
+export type IdentityNonceMode = "required" | "disabled";
 
 type Environment = Partial<Record<string, string | undefined>>;
 
@@ -32,12 +43,14 @@ export interface IdentityOAuthConfig {
   readonly authorizationEndpoint: URL;
   readonly tokenEndpoint: URL;
   readonly jwksEndpoint: URL;
-  readonly logicalOAuthClientId: typeof APPSELL_LOGICAL_OAUTH_CLIENT_ID;
-  readonly expectedAudience: typeof APPSELL_LOGICAL_OAUTH_CLIENT_ID;
+  readonly logicalOAuthClientId: string;
+  readonly expectedAudience: string;
   readonly redirectUri: string;
   readonly timeoutMs: number;
   readonly maxResponseBytes: number;
   readonly refreshHandleTtlSeconds: number;
+  readonly refreshMode: IdentityRefreshMode;
+  readonly nonceMode: IdentityNonceMode;
 }
 
 export interface VerifiedIdentityTokenBundle {
@@ -91,20 +104,16 @@ export function parseIdentityOAuthConfig(environment: Environment = process.env)
     required(environment.APPSELL_IDENTITY_JWKS_URL, "APPSELL_IDENTITY_JWKS_URL"),
     "APPSELL_IDENTITY_JWKS_URL"
   );
-  const logicalOAuthClientId = required(
-    environment.APPSELL_IDENTITY_LOGICAL_OAUTH_CLIENT_ID,
+  const logicalOAuthClientId = trustedOAuthIdentifier(
+    required(environment.APPSELL_IDENTITY_LOGICAL_OAUTH_CLIENT_ID, "APPSELL_IDENTITY_LOGICAL_OAUTH_CLIENT_ID"),
     "APPSELL_IDENTITY_LOGICAL_OAUTH_CLIENT_ID"
   );
-  if (logicalOAuthClientId !== APPSELL_LOGICAL_OAUTH_CLIENT_ID) {
-    throw new IdentityOAuthConfigurationError("APPSELL_IDENTITY_LOGICAL_OAUTH_CLIENT_ID must be appsell-web.");
-  }
-  const expectedAudience = trustedAudience(
+  const expectedAudience = trustedOAuthIdentifier(
     required(environment.APPSELL_IDENTITY_EXPECTED_AUDIENCE, "APPSELL_IDENTITY_EXPECTED_AUDIENCE"),
     "APPSELL_IDENTITY_EXPECTED_AUDIENCE"
   );
-  if (expectedAudience !== APPSELL_LOGICAL_OAUTH_CLIENT_ID) {
-    throw new IdentityOAuthConfigurationError("APPSELL_IDENTITY_EXPECTED_AUDIENCE must be appsell-web.");
-  }
+  const refreshMode = parseRefreshMode(environment.APPSELL_IDENTITY_REFRESH_MODE);
+  const nonceMode = parseNonceMode(environment.APPSELL_IDENTITY_NONCE_MODE);
 
   const allowedOrigins = parseAllowedOrigins(
     required(environment.APPSELL_IDENTITY_ALLOWED_ORIGINS, "APPSELL_IDENTITY_ALLOWED_ORIGINS")
@@ -132,8 +141,8 @@ export function parseIdentityOAuthConfig(environment: Environment = process.env)
     authorizationEndpoint,
     tokenEndpoint,
     jwksEndpoint,
-    logicalOAuthClientId: APPSELL_LOGICAL_OAUTH_CLIENT_ID,
-    expectedAudience: APPSELL_LOGICAL_OAUTH_CLIENT_ID,
+    logicalOAuthClientId,
+    expectedAudience,
     redirectUri,
     timeoutMs: boundedInteger(environment.APPSELL_IDENTITY_HTTP_TIMEOUT_MS, DEFAULT_TIMEOUT_MS, 100, 10_000),
     maxResponseBytes: boundedInteger(
@@ -147,7 +156,9 @@ export function parseIdentityOAuthConfig(environment: Environment = process.env)
       24 * 60 * 60,
       2 * 60 * 60,
       30 * 24 * 60 * 60
-    )
+    ),
+    refreshMode,
+    nonceMode
   };
 }
 
@@ -199,33 +210,42 @@ export class IdentityOAuthClient implements OAuthTokenRefresher {
     });
   }
 
-  authorizationUrl(input: { state: string; nonce: string; codeChallenge: string }) {
+  authorizationUrl(input: { state: string; nonce?: string; codeChallenge: string }) {
     requireOpaque(input.state, "state");
-    requireNonce(input.nonce);
     if (!PKCE_CHALLENGE.test(input.codeChallenge)) {
       throw new IdentityOAuthProtocolError("OAuth PKCE challenge is invalid.");
     }
-    const url = new URL(this.config.authorizationEndpoint);
-    url.search = new URLSearchParams({
+    const parameters: Record<string, string> = {
       client_id: this.config.logicalOAuthClientId,
       redirect_uri: this.config.redirectUri,
       response_type: "code",
       scope: "openid email profile",
       state: input.state,
-      nonce: input.nonce,
       code_challenge: input.codeChallenge,
       code_challenge_method: "S256"
-    }).toString();
+    };
+    // nonceMode === "disabled": the adapter does not send a nonce; the token
+    // verification path rejects any ID token that echoes one back.
+    if (this.config.nonceMode === "required") {
+      requireNonce(input.nonce);
+      parameters.nonce = input.nonce as string;
+    }
+    const url = new URL(this.config.authorizationEndpoint);
+    url.search = new URLSearchParams(parameters).toString();
     return url;
   }
 
   async exchangeAuthorizationCode(input: {
     code: string;
     codeVerifier: string;
-    expectedNonce: string;
+    expectedNonce?: string;
   }): Promise<VerifiedIdentityTokenBundle> {
     requireOpaque(input.code, "authorization code");
-    requireNonce(input.expectedNonce);
+    // nonceMode === "disabled": ignore any supplied nonce and verify with an
+    // undefined expectation, which rejects an ID token that carries a nonce.
+    const expectedNonce = this.config.nonceMode === "disabled"
+      ? undefined
+      : requireNonce(input.expectedNonce);
     if (!PKCE_VERIFIER.test(input.codeVerifier)) {
       throw new IdentityOAuthProtocolError("OAuth PKCE verifier is invalid.");
     }
@@ -271,14 +291,14 @@ export class IdentityOAuthClient implements OAuthTokenRefresher {
     }
     const payload = parseTokenResponse(raw);
 
-    return this.verifyTokenResponse(payload, input.expectedNonce);
+    return this.verifyTokenResponse(payload, expectedNonce);
   }
 
   async refresh(input: OAuthTokenRefreshInput): Promise<OAuthTokenRefreshResult> {
     let subject: string;
     try {
       subject = canonicalSubject(input.subject);
-      requireLogicalRefreshHandle(input.refreshToken);
+      requireRefreshTokenInput(input.refreshToken, this.config.refreshMode);
       if (!Array.isArray(input.scopes) || input.scopes.length === 0) return { kind: "ambiguous" };
     } catch {
       return { kind: "ambiguous" };
@@ -313,14 +333,18 @@ export class IdentityOAuthClient implements OAuthTokenRefresher {
     try {
       const raw = await readBoundedBody(response, this.config.maxResponseBytes);
       const payload = parseTokenResponse(raw);
-      if (!payload.refreshToken || payload.refreshToken === input.refreshToken) return { kind: "ambiguous" };
-      requireLogicalRefreshHandle(payload.refreshToken);
+      const rotatedRefreshToken = resolveRefreshRotation(
+        payload.refreshToken,
+        input.refreshToken,
+        this.config.refreshMode
+      );
+      if (rotatedRefreshToken === undefined) return { kind: "ambiguous" };
       const verified = await this.verifyTokenResponse(payload);
       if (verified.identity.sub !== subject) return { kind: "ambiguous" };
       return {
         kind: "success",
         accessToken: verified.accessToken,
-        refreshToken: payload.refreshToken,
+        refreshToken: rotatedRefreshToken,
         accessTokenExpiresAt: verified.expiresAt,
         refreshTokenExpiresAt: Date.now() + this.config.refreshHandleTtlSeconds * 1_000,
         scopes: [...input.scopes]
@@ -604,19 +628,72 @@ function boundedInteger(raw: string | undefined, fallback: number, minimum: numb
   return value;
 }
 
-function trustedAudience(value: string, label: string) {
-  if (value.length < 1 || value.length > 512 || value !== value.trim() || /[\p{Cc}\p{Cs}]/u.test(value)) {
+function trustedOAuthIdentifier(value: string, label: string) {
+  if (!OAUTH_IDENTIFIER.test(value)) {
     throw new IdentityOAuthConfigurationError(`${label} is invalid.`);
   }
   return value;
+}
+
+function parseRefreshMode(raw: string | undefined): IdentityRefreshMode {
+  if (raw === undefined || raw === "logical-handle") return "logical-handle";
+  if (raw === "provider-refresh") return "provider-refresh";
+  throw new IdentityOAuthConfigurationError(
+    "APPSELL_IDENTITY_REFRESH_MODE must be logical-handle or provider-refresh."
+  );
+}
+
+function parseNonceMode(raw: string | undefined): IdentityNonceMode {
+  if (raw === undefined || raw === "required") return "required";
+  if (raw === "disabled") return "disabled";
+  throw new IdentityOAuthConfigurationError(
+    "APPSELL_IDENTITY_NONCE_MODE must be required or disabled."
+  );
+}
+
+function requireProviderRefreshToken(value: string) {
+  if (!PROVIDER_REFRESH_TOKEN.test(value)) {
+    throw new IdentityOAuthProtocolError("Identity provider refresh token is invalid.");
+  }
+}
+
+function requireRefreshTokenInput(value: string, mode: IdentityRefreshMode) {
+  if (mode === "provider-refresh") {
+    requireProviderRefreshToken(value);
+    return;
+  }
+  requireLogicalRefreshHandle(value);
+}
+
+// Returns the refresh token to persist, or undefined to fail closed (ambiguous).
+// logical-handle: rotation is mandatory — a missing or unchanged handle is
+// ambiguous, and the new handle must match the strict 43-char shape.
+// provider-refresh: rotation is optional — reuse the input token when the
+// provider omits one, otherwise accept the rotated opaque token.
+function resolveRefreshRotation(
+  next: string | undefined,
+  current: string,
+  mode: IdentityRefreshMode
+): string | undefined {
+  if (mode === "provider-refresh") {
+    if (next === undefined) return current;
+    requireProviderRefreshToken(next);
+    return next;
+  }
+  if (!next || next === current) return undefined;
+  requireLogicalRefreshHandle(next);
+  return next;
 }
 
 function requireOpaque(value: string, label: string) {
   if (!OPAQUE_VALUE.test(value)) throw new IdentityOAuthProtocolError(`OAuth ${label} is invalid.`);
 }
 
-function requireNonce(value: string) {
-  if (!OIDC_NONCE.test(value)) throw new IdentityOAuthProtocolError("OAuth nonce is invalid.");
+function requireNonce(value: string | undefined): string {
+  if (value === undefined || !OIDC_NONCE.test(value)) {
+    throw new IdentityOAuthProtocolError("OAuth nonce is invalid.");
+  }
+  return value;
 }
 
 function boundedJwksCacheTtl(headers: Headers) {

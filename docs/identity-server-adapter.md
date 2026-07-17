@@ -6,12 +6,45 @@ contas e ainda não prova integração com staging.
 
 ## Clientes e claims esperados
 
-- `APPSELL_IDENTITY_LOGICAL_OAUTH_CLIENT_ID` deve ser exatamente `appsell-web` e
-  é enviado em `authorize` e `token` para identificar o produto lógico.
-- `APPSELL_IDENTITY_EXPECTED_AUDIENCE` deve ser exatamente `appsell-web`. Tanto
-  o ID token quanto o access token lógico emitidos pela Foundation precisam ter
-  `aud` string exatamente igual. O adapter não aceita fallback por `client_id`
-  Cognito nem token sem audience.
+- `APPSELL_IDENTITY_LOGICAL_OAUTH_CLIENT_ID` é configurável e enviado em
+  `authorize` e `token` para identificar o produto lógico. O default é
+  `appsell-web`. Aceita apenas valores no padrão conservador
+  `^[a-z0-9][a-z0-9._-]{0,63}$` (minúsculas, dígitos e `. _ -`, primeiro
+  caractere alfanumérico, até 64 chars). Vazio, ausente, maiúsculas, espaços ou
+  qualquer valor fora do padrão falham fechado (`IdentityOAuthConfigurationError`).
+- `APPSELL_IDENTITY_EXPECTED_AUDIENCE` é configurável com o mesmo padrão e default
+  `appsell-web`. Tanto o ID token quanto o access token emitidos pela Foundation
+  precisam ter `aud` string exatamente igual ao valor configurado. O adapter não
+  aceita fallback por `client_id` Cognito nem token sem audience. Tornar a
+  audience configurável é o que permite apontar o adapter para o app-client id do
+  provedor atual (Opção B) sem afrouxar a verificação de `aud`.
+
+## Modos de compatibilidade (Opção B)
+
+Para integrar com a Foundation atual (tokens Cognito) sem reescrever o núcleo, o
+adapter expõe dois modos, ambos com default = comportamento legado intacto.
+
+| Var | Valores | Default | Efeito |
+|-----|---------|---------|--------|
+| `APPSELL_IDENTITY_REFRESH_MODE` | `logical-handle` \| `provider-refresh` | `logical-handle` | `logical-handle`: refresh exige handle lógico opaco de 43 chars (`^[A-Za-z0-9_-]{43}$`) e **rotação obrigatória** (novo handle ≠ anterior, também 43 chars); handle ausente ou repetido = ambíguo. `provider-refresh`: aceita refresh token opaco do provedor (`^[A-Za-z0-9._~+/=-]{20,4096}$`), **rotação opcional** (se o provedor não devolver novo token, reusa o de entrada); em ambos os casos revalida assinatura RS256/`kid`/`iss`/`aud`/`sub`/`exp`/`token_use`/`email_verified` e ausência de `nonce` no resultado. |
+| `APPSELL_IDENTITY_NONCE_MODE` | `required` \| `disabled` | `required` | `required`: envia `nonce` no `authorize` e exige `nonce` exato no ID token do code. `disabled`: **não envia** `nonce` e **rejeita** qualquer ID token que traga `nonce` inesperado (fail-closed). Para provedores que não ecoam `nonce`. |
+
+Qualquer valor desconhecido em qualquer das duas vars falha fechado na
+inicialização (`IdentityOAuthConfigurationError`).
+
+Trade-offs:
+
+- `provider-refresh` abre mão da garantia de rotação por transação — a defesa
+  contra replay passa a depender da sessão Redis absoluta e da revalidação
+  criptográfica do bundle, não da troca de handle. Só habilitar contra provedor
+  cujo refresh token seja realmente opaco e de vida controlada.
+- `nonce-disabled` remove a ligação `nonce`↔`authorization code`. A proteção
+  anti-replay do code passa a depender só de PKCE (`S256`) + `state`. O adapter
+  compensa parcialmente rejeitando ID token que traga `nonce` quando não pediu um.
+
+O leg de `refresh` sempre exige `nonce` ausente no ID token renovado,
+independente do `APPSELL_IDENTITY_NONCE_MODE` (o `nonce` só participa do leg de
+`authorize`/code).
 
 O adapter também exige assinatura `RS256` por JWKS allowlisted, `kid` explícito
 e canônico, issuer e expiração válidos, `token_use`, subjects iguais,

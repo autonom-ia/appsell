@@ -2,7 +2,8 @@
 # Rehearses deploy/easypanel-native/bootstrap-native-demo.sh against a
 # disposable PostgreSQL container, covering the marker lifecycle end to end:
 # fresh database, idempotent re-run, resume from the legacy in-progress marker,
-# resume from a mid-reset crash, configuration drift and an unmarked database.
+# resume from a mid-reset crash, configuration drift, an unmarked database and
+# schema drift under an already-complete marker.
 # Requires Docker and the pre-built bootstrap image (BOOTSTRAP_IMAGE).
 set -euo pipefail
 
@@ -122,5 +123,18 @@ fi
 grep -q "refusing an unmarked native demo database" <<<"$output"
 expect_marker "rogue-marker"
 admin_psql postgres "comment on database appsell_native_90 is '$complete_marker'" >/dev/null
+
+echo "--- scenario 7: schema drift on a complete database is refused, not already-complete"
+admin_psql appsell_native_90 "drop table identity_user cascade" >/dev/null
+if output="$(run_bootstrap 2>&1)"; then
+  echo "a broken schema must not be reported as already-complete" >&2
+  exit 1
+fi
+grep -q "refusing native bootstrap configuration drift" <<<"$output"
+! grep -q "already-complete" <<<"$output" || {
+  echo "a broken schema must not be reported as already-complete" >&2
+  exit 1
+}
+expect_marker "$complete_marker"
 
 echo "native bootstrap rehearsal passed"
