@@ -5,18 +5,38 @@ services:
     build:
       context: ./apps/api
     environment:
-      APPSELL_API_ENVIRONMENT: local
+      APPSELL_API_ENVIRONMENT: ${APPSELL_API_ENVIRONMENT:-local}
+      APPSELL_API_CAPACITY_PRODUCT_CREATE_TELEMETRY: ${APPSELL_API_CAPACITY_PRODUCT_CREATE_TELEMETRY:-false}
       APPSELL_API_DATABASE_URL: postgresql+asyncpg://appsell_runtime:${APPSELL_RUNTIME_PASSWORD:?set in local env}@postgres:5432/appsell
+      APPSELL_API_DATABASE_APPLICATION_NAME: ${APPSELL_API_DATABASE_APPLICATION_NAME:-appsell_api}
       APPSELL_API_INTERNAL_ISSUER: ${APPSELL_INTERNAL_ISSUER:-}
       APPSELL_API_INTERNAL_AUDIENCE: ${APPSELL_INTERNAL_AUDIENCE:-}
       APPSELL_API_IDENTITY_ISSUER: ${APPSELL_IDENTITY_ISSUER:-}
       APPSELL_API_INTERNAL_HMAC_KEYRING_B64_JSON: ${APPSELL_INTERNAL_HMAC_KEYRING_B64_JSON:-}
       APPSELL_API_CONTEXT_HMAC_KEY_B64: ${APPSELL_API_CONTEXT_HMAC_KEY_B64:-}
       APPSELL_API_SERVICE_CREDENTIAL_B64: ${APPSELL_SERVICE_CREDENTIAL_B64:-}
+      APPSELL_API_WEBHOOK_LOCAL_KEYRING_B64_JSON: ${APPSELL_API_WEBHOOK_LOCAL_KEYRING_B64_JSON:-}
+      APPSELL_API_WEBHOOK_FORBIDDEN_KEY_SHA256_JSON: ${APPSELL_API_WEBHOOK_FORBIDDEN_KEY_SHA256_JSON:-[]}
+      APPSELL_API_STORAGE_PROVIDER: ${APPSELL_API_STORAGE_PROVIDER:-disabled}
+      APPSELL_API_STORAGE_INTERNAL_ENDPOINT: ${APPSELL_API_STORAGE_INTERNAL_ENDPOINT:-}
+      APPSELL_API_STORAGE_PUBLIC_ENDPOINT: ${APPSELL_API_STORAGE_PUBLIC_ENDPOINT:-}
+      APPSELL_API_STORAGE_REGION: ${APPSELL_API_STORAGE_REGION:-us-east-1}
+      APPSELL_API_STORAGE_QUARANTINE_BUCKET: ${APPSELL_API_STORAGE_QUARANTINE_BUCKET:-}
+      APPSELL_API_STORAGE_READY_BUCKET: ${APPSELL_API_STORAGE_READY_BUCKET:-}
+      APPSELL_API_STORAGE_CONTROL_ACCESS_KEY: ${APPSELL_STORAGE_CONTROL_ACCESS_KEY:-}
+      APPSELL_API_STORAGE_CONTROL_SECRET_KEY: ${APPSELL_STORAGE_CONTROL_SECRET_KEY:-}
+      APPSELL_API_STORAGE_ALLOWED_ORIGIN: ${APPSELL_STORAGE_ALLOWED_ORIGIN:-}
+      APPSELL_API_MALWARE_SCANNER_PROVIDER: ${APPSELL_API_MALWARE_SCANNER_PROVIDER:-disabled}
+      APPSELL_API_VIDEO_UPLOAD_ENABLED: ${APPSELL_API_VIDEO_UPLOAD_ENABLED:-false}
+      APPSELL_API_PDF_SANDBOX_URL: ""
+      APPSELL_API_PDF_SANDBOX_SOCKET: /run/appsell-pdf/pdf.sock
+      APPSELL_API_PRIVATE_LEARNING_ASSET_ROOT: /opt/app/output/pdf/codex
     ports:
       - "127.0.0.1:${APPSELL_API_PORT:-58000}:8000"
     depends_on:
       postgres:
+        condition: service_healthy
+      pdf-sandbox:
         condition: service_healthy
     healthcheck:
       test:
@@ -28,9 +48,72 @@ services:
       timeout: 3s
       retries: 20
     restart: unless-stopped
+    volumes:
+      - appsell_pdf_socket:/run/appsell-pdf:ro
+      - ./output/pdf/codex:/opt/app/output/pdf/codex:ro
+
+  pdf-sandbox-init:
+    build:
+      context: ./apps/api
+    user: "0:0"
+    command:
+      - sh
+      - -ec
+      - |
+        state="$$(stat -c '%a:%u:%g' /run/appsell-pdf)"
+        case "$$state" in
+          700:10001:10001) ;;
+          770:10001:10001)
+            chmod 0700 /run/appsell-pdf
+            ;;
+          755:0:0|700:0:0)
+            chmod 0700 /run/appsell-pdf
+            chown 10001:10001 /run/appsell-pdf
+            ;;
+          *) echo "unexpected PDF socket volume state: $$state" >&2; exit 1 ;;
+        esac
+        test "$$(stat -c '%a:%u:%g' /run/appsell-pdf)" = "700:10001:10001"
+    read_only: true
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN"]
+    security_opt: ["no-new-privileges:true"]
+    network_mode: none
+    restart: "no"
+    volumes:
+      - appsell_pdf_socket:/run/appsell-pdf
+
+  pdf-sandbox:
+    build:
+      context: ./apps/api
+    user: "10001:10001"
+    command: ["python", "-m", "appsell_api.pdf_sandbox_runner"]
+    environment:
+      PYTHONUNBUFFERED: "1"
+      APPSELL_PDF_SANDBOX_RECYCLE_AFTER_JOB: "true"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 64
+    mem_limit: 1g
+    cpus: 1.0
+    tmpfs:
+      - /tmp:size=402653184,mode=1777,noexec,nosuid
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; t=httpx.HTTPTransport(uds='/run/appsell-pdf/pdf.sock'); r=httpx.Client(transport=t,trust_env=False,timeout=1).get('http://pdf-sandbox/health'); assert r.status_code==200 and r.json()=={'status':'ok'}"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    restart: unless-stopped
+    network_mode: none
+    depends_on:
+      pdf-sandbox-init:
+        condition: service_completed_successfully
+    volumes:
+      - appsell_pdf_socket:/run/appsell-pdf
 
   postgres:
     image: postgres:16.9-alpine@sha256:7c688148e5e156d0e86df7ba8ae5a05a2386aaec1e2ad8e6d11bdf10504b1fb7
+    command: ["postgres", "-c", "max_connections=24"]
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${APPSELL_POSTGRES_SUPERUSER_PASSWORD:?set in local env}
@@ -49,5 +132,59 @@ services:
       retries: 30
     restart: unless-stopped
 
+  seaweedfs:
+    profiles: ["storage"]
+    image: chrislusf/seaweedfs:4.39@sha256:c7d6c721b30ae711db766bbbfd40192776e263d4e51e22f57baef7bef93c12c6
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        test -n "$${AWS_ACCESS_KEY_ID}" && test -n "$${AWS_SECRET_ACCESS_KEY}";
+        exec weed mini -dir=/data -s3.allowedOrigins="$${APPSELL_STORAGE_ALLOWED_ORIGIN}"
+    environment:
+      AWS_ACCESS_KEY_ID: ${APPSELL_STORAGE_CONTROL_ACCESS_KEY:-}
+      AWS_SECRET_ACCESS_KEY: ${APPSELL_STORAGE_CONTROL_SECRET_KEY:-}
+      S3_BUCKET: ${APPSELL_STORAGE_BUCKETS:-appsell-quarantine,appsell-ready}
+      APPSELL_STORAGE_ALLOWED_ORIGIN: ${APPSELL_STORAGE_ALLOWED_ORIGIN:-http://localhost:3000}
+    ports:
+      - "127.0.0.1:${APPSELL_STORAGE_S3_PORT:-58333}:8333"
+    tmpfs:
+      - /data:size=536870912,mode=0700
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9333/cluster/status"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+    restart: unless-stopped
+
+  openbao:
+    profiles: ["transit"]
+    image: quay.io/openbao/openbao:2.5.4@sha256:436eaf9778cad75507ff70ea26ace30dcbe15606e619ac3823495663d7f7c115
+    user: "100:1000"
+    command: ["server", "-dev", "-dev-listen-address=0.0.0.0:8200"]
+    environment:
+      BAO_ADDR: http://127.0.0.1:8200
+      BAO_DEV_ROOT_TOKEN_ID: ${APPSELL_OPENBAO_DEV_ROOT_TOKEN:-local-only-invalid}
+      HOME: /tmp
+      SKIP_CHOWN: "true"
+    ports:
+      - "127.0.0.1:${APPSELL_OPENBAO_PORT:-58200}:8200"
+    read_only: true
+    cap_drop: ["ALL"]
+    cap_add: ["IPC_LOCK"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: 0.5
+    tmpfs:
+      - /tmp:size=16777216,mode=1777,noexec,nosuid
+      - /openbao/file:size=33554432,mode=0700
+    healthcheck:
+      test: ["CMD", "bao", "status", "-address=http://127.0.0.1:8200"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+    restart: "no"
+
 volumes:
   appsell_postgres_data:
+  appsell_pdf_socket:

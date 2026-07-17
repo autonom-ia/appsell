@@ -15,7 +15,7 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from appsell_api.catalog_routes import _domain_error, _product_detail_response, router
 from appsell_api.config import get_settings
@@ -65,13 +65,18 @@ class FakeAuth:
         *,
         seller_id: UUID | None,
         result: FakeResult,
+        auth_error: HTTPException | None = None,
     ) -> None:
         self.seller_id = seller_id
         self.session = FakeSession(result)
         self.capabilities: list[str] = []
         self.domain_sessions = 0
+        self.rejected_requests = 0
+        self.auth_error = auth_error
 
     async def authenticate(self, request: Any, capability: str) -> Any:
+        if self.auth_error is not None:
+            raise self.auth_error
         body = await request.body()
         self.capabilities.append(capability)
         return SimpleNamespace(
@@ -82,7 +87,11 @@ class FakeAuth:
                 request_id=uuid4(),
             ),
             body=body,
+            consume_rejected_request=self.consume_rejected_request,
         )
+
+    async def consume_rejected_request(self) -> None:
+        self.rejected_requests += 1
 
     @asynccontextmanager
     async def domain_session(self, _envelope: Any) -> AsyncIterator[FakeSession]:
@@ -91,10 +100,15 @@ class FakeAuth:
 
 
 @asynccontextmanager
-async def client_for(auth: FakeAuth) -> AsyncIterator[httpx.AsyncClient]:
+async def client_for(
+    auth: FakeAuth, *, capacity_product_create_telemetry: bool = False
+) -> AsyncIterator[httpx.AsyncClient]:
     app = FastAPI()
     app.include_router(router)
     app.state.internal_auth = auth
+    app.state.settings = SimpleNamespace(
+        capacity_product_create_telemetry=capacity_product_create_telemetry
+    )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://api.test"
     ) as client:
@@ -142,6 +156,15 @@ def publication_body(course_id: UUID, offer_id: UUID, **overrides: Any) -> bytes
         **overrides,
     }
     return json.dumps(value, separators=(",", ":")).encode()
+
+
+def curriculum_body(**overrides: Any) -> bytes:
+    value = {
+        "idempotency_key": str(uuid4()),
+        "expected_course_version": 1,
+        **overrides,
+    }
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode()
 
 
 @pytest.mark.asyncio
@@ -203,6 +226,71 @@ async def test_create_idempotent_replay_returns_200() -> None:
         )
     assert response.status_code == 200
     assert response.json()["created"] is False
+
+
+@pytest.mark.asyncio
+async def test_create_capacity_trace_emits_allowlisted_completion(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    auth = FakeAuth(
+        seller_id=SELLER_ID,
+        result=FakeResult(
+            one={
+                "catalog_product_id": uuid4(),
+                "course_id": uuid4(),
+                "created": True,
+            }
+        ),
+    )
+    async with client_for(auth, capacity_product_create_telemetry=True) as client:
+        response = await client.post(
+            f"/v1/me/sellers/{SELLER_ID}/products",
+            content=draft_body(),
+            headers={
+                "content-type": "application/json",
+                "x-appsell-capacity-trace": "pc-007",
+            },
+        )
+    assert response.status_code == 201
+    event = json.loads(capsys.readouterr().out)
+    assert event["layer"] == "api"
+    assert event["trace"] == "pc-007"
+    assert event["status"] == 201
+    assert event["outcome"] == "success"
+    assert set(event["durations_ms"]) == {
+        "internal_auth_verification",
+        "pool_checkout_replay_apply_context",
+        "sql",
+        "commit_response",
+    }
+    assert abs(event["total_ms"] - sum(event["durations_ms"].values())) <= 1
+
+
+@pytest.mark.asyncio
+async def test_capacity_trace_preserves_internal_auth_failure_completion(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    auth = FakeAuth(
+        seller_id=SELLER_ID,
+        result=FakeResult(),
+        auth_error=HTTPException(status_code=401, detail="invalid_internal_request"),
+    )
+    async with client_for(auth, capacity_product_create_telemetry=True) as client:
+        response = await client.post(
+            f"/v1/me/sellers/{SELLER_ID}/products",
+            content=draft_body(),
+            headers={
+                "content-type": "application/json",
+                "x-appsell-capacity-trace": "pc-008",
+            },
+        )
+    assert response.status_code == 401
+    event = json.loads(capsys.readouterr().out)
+    assert event["status"] == 401
+    assert event["outcome"] == "http_error"
+    assert event["durations_ms"]["internal_auth_verification"] >= 0
+    assert event["durations_ms"]["pool_checkout_replay_apply_context"] == 0
+    assert abs(event["total_ms"] - sum(event["durations_ms"].values())) <= 1
 
 
 @pytest.mark.asyncio
@@ -321,6 +409,7 @@ def test_domain_errors_are_stable_and_do_not_leak_driver_details() -> None:
         ("23505", 409, "resource_conflict"),
         ("40001", 409, "draft_version_conflict"),
         ("P4091", 409, "no_unpublished_changes"),
+        ("P4221", 422, "snapshot_too_large"),
         ("22023", 422, "invalid_domain_request"),
         ("55000", 422, "publication_not_ready"),
         ("28000", 403, "forbidden"),
@@ -481,14 +570,14 @@ def test_readiness_blocks_a_semantically_identical_publication() -> None:
         "courses": [{"id": str(course_id), "title": "Curso", "description": "", "position": 0}],
     }
     product = _product_detail_response([row])["product"]
-    assert product["has_unpublished_changes"] is False
+    assert product["has_unpublished_changes"] is True
     assert product["readiness"] == {
-        "can_publish": False,
+        "can_publish": True,
         "items": [
             {
-                "key": "no_unpublished_changes",
-                "label": "Não há alterações novas para publicar.",
-                "ready": False,
+                "key": "server_validation_complete",
+                "label": "Validação do servidor concluída.",
+                "ready": True,
             }
         ],
     }
@@ -551,6 +640,84 @@ async def test_publish_rejects_duplicate_or_incomplete_course_version_sets_befor
     assert duplicate_response.status_code == 422
     assert incomplete_response.status_code == 422
     assert auth.session.calls == []
+
+
+@pytest.mark.asyncio
+async def test_curriculum_read_and_create_bind_the_full_tenant_path() -> None:
+    product_id, course_id, module_id = uuid4(), uuid4(), uuid4()
+    read_auth = FakeAuth(
+        seller_id=SELLER_ID,
+        result=FakeResult(
+            one={
+                "course_version": 3,
+                "curriculum": [],
+                "module_total": 0,
+                "lesson_total": 0,
+                "lesson_totals_by_module": {},
+            }
+        ),
+    )
+    async with client_for(read_auth) as client:
+        response = await client.get(
+            f"/v1/me/sellers/{SELLER_ID}/products/{product_id}/courses/{course_id}/curriculum"
+        )
+    assert response.status_code == 200
+    assert response.json()["course"] == {"id": str(course_id), "draft_version": 3}
+    assert read_auth.capabilities == ["catalog.curriculum.read"]
+    statement, parameters = read_auth.session.calls[0]
+    assert "app_private.read_course_curriculum" in statement
+    assert parameters["seller_id"] == SELLER_ID
+    assert parameters["product_id"] == product_id
+    assert parameters["course_id"] == course_id
+
+    create_auth = FakeAuth(
+        seller_id=SELLER_ID,
+        result=FakeResult(one={"module_id": module_id, "course_version": 4, "created": True}),
+    )
+    body = curriculum_body(title="Módulo inicial", expected_course_version=3)
+    async with client_for(create_auth) as client:
+        response = await client.post(
+            f"/v1/me/sellers/{SELLER_ID}/products/{product_id}/courses/{course_id}/modules",
+            content=body,
+        )
+    assert response.status_code == 201
+    assert response.json() == {
+        "module_id": str(module_id),
+        "course_version": 4,
+        "created": True,
+    }
+    assert create_auth.capabilities == ["catalog.curriculum.create"]
+    statement, parameters = create_auth.session.calls[0]
+    assert "app_private.create_course_module" in statement
+    assert parameters["body_sha256"] == hashlib.sha256(body).hexdigest()
+    assert parameters["expected_course_version"] == 3
+
+
+@pytest.mark.asyncio
+async def test_curriculum_rejects_cross_tenant_invalid_content_and_ambiguous_order() -> None:
+    product_id, course_id, module_id = uuid4(), uuid4(), uuid4()
+    cross_tenant = FakeAuth(seller_id=OTHER_SELLER_ID, result=FakeResult())
+    async with client_for(cross_tenant) as client:
+        response = await client.post(
+            f"/v1/me/sellers/{SELLER_ID}/products/{product_id}/courses/{course_id}/modules",
+            content=curriculum_body(title="Módulo"),
+        )
+    assert response.status_code == 401
+    assert cross_tenant.session.calls == []
+
+    invalid = FakeAuth(seller_id=SELLER_ID, result=FakeResult())
+    async with client_for(invalid) as client:
+        content = await client.post(
+            f"/v1/me/sellers/{SELLER_ID}/products/{product_id}/courses/{course_id}/modules/{module_id}/lessons",
+            content=curriculum_body(title="Aula", kind="html", content="<script>x</script>"),
+        )
+        duplicate = await client.put(
+            f"/v1/me/sellers/{SELLER_ID}/products/{product_id}/courses/{course_id}/modules/order",
+            content=curriculum_body(ordered_ids=[str(module_id), str(module_id)]),
+        )
+    assert content.status_code == 422
+    assert duplicate.status_code == 422
+    assert invalid.session.calls == []
 
 
 @pytest.mark.asyncio

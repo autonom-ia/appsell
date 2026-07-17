@@ -26,6 +26,10 @@ export function productPublishCsrfCookieName(production = process.env.NODE_ENV =
   return production ? "__Host-appsell_product_publish_csrf" : "appsell_product_publish_csrf";
 }
 
+export function demoInspectionCookieName(production = process.env.NODE_ENV === "production") {
+  return production ? "__Host-appsell_demo_inspection" : "appsell_demo_inspection";
+}
+
 export function sessionCookieOptions(production = process.env.NODE_ENV === "production") {
   return {
     httpOnly: true as const,
@@ -48,5 +52,13 @@ export function csrfCookieOptions(production = process.env.NODE_ENV === "product
     secure: production,
     sameSite: "strict" as const,
     path: "/" as const
+  };
+}
+
+export function demoInspectionCookieOptions(production = process.env.NODE_ENV === "production") {
+  return {
+    ...sessionCookieOptions(production),
+    sameSite: "strict" as const,
+    maxAge: 15 * 60
   };
 }

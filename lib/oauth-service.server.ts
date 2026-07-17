@@ -1,12 +1,27 @@
 import "server-only";
 
+import { IdentityOAuthClient, parseIdentityOAuthConfig } from "./identity-oauth-client.server";
+export {
+  isOAuthRuntimeConfigurationError,
+  oauthRuntimeMode
+} from "./oauth-runtime-mode";
 import { RedisOAuthService } from "./redis-oauth-service";
+import { createTokenVaultFromEnvironment } from "./token-vault-provider.server";
 
 declare global {
   var __appsellRedisOAuth: RedisOAuthService | undefined;
+  var __appsellIdentityOAuth: IdentityOAuthClient | undefined;
 }
 
 export function oauthService() {
-  globalThis.__appsellRedisOAuth ??= RedisOAuthService.fromEnvironment();
+  globalThis.__appsellRedisOAuth ??= RedisOAuthService.fromEnvironment(
+    process.env,
+    createTokenVaultFromEnvironment
+  );
   return globalThis.__appsellRedisOAuth;
+}
+
+export function identityOAuthClient() {
+  globalThis.__appsellIdentityOAuth ??= new IdentityOAuthClient(parseIdentityOAuthConfig());
+  return globalThis.__appsellIdentityOAuth;
 }

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Annotated, Any
+import time
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
@@ -11,6 +12,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
+from .capacity_telemetry import (
+    capacity_product_create_trace,
+    emit_capacity_product_create_trace,
+)
 from .internal_requests import AuthenticatedInternalRequest, InternalRequestAuthenticator
 
 router = APIRouter(prefix="/v1")
@@ -131,6 +136,71 @@ class ProductPublicationBody(BaseModel):
         return value
 
 
+class CurriculumMutationBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    idempotency_key: str
+    expected_course_version: int = Field(ge=1, le=_MAX_SAFE_INTEGER)
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def validate_idempotency_key(cls, value: str) -> str:
+        return _canonical_uuid(value, "invalid idempotency key")
+
+
+class ModuleMutationBody(CurriculumMutationBody):
+    title: str
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, value: str) -> str:
+        if (
+            value != value.strip()
+            or not 2 <= len(value.encode("utf-8")) <= 160
+            or _contains_control(value)
+        ):
+            raise ValueError("invalid module title")
+        return value
+
+
+class LessonMutationBody(ModuleMutationBody):
+    kind: Literal["text"]
+    content: str
+
+    @field_validator("content")
+    @classmethod
+    def validate_content(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > 8_192 or _contains_control(
+            value, allow_text_whitespace=True
+        ):
+            raise ValueError("invalid lesson content")
+        return value
+
+
+class ModuleOrderBody(CurriculumMutationBody):
+    ordered_ids: list[str] = Field(max_length=50)
+
+    @field_validator("ordered_ids")
+    @classmethod
+    def validate_order(cls, value: list[str]) -> list[str]:
+        canonical = [_canonical_uuid(entry, "invalid module id") for entry in value]
+        if len(set(canonical)) != len(canonical):
+            raise ValueError("duplicate module id")
+        return canonical
+
+
+class LessonOrderBody(CurriculumMutationBody):
+    ordered_ids: list[str] = Field(max_length=100)
+
+    @field_validator("ordered_ids")
+    @classmethod
+    def validate_order(cls, value: list[str]) -> list[str]:
+        canonical = [_canonical_uuid(entry, "invalid lesson id") for entry in value]
+        if len(set(canonical)) != len(canonical):
+            raise ValueError("duplicate lesson id")
+        return canonical
+
+
 @router.get("/me/sellers/{seller_id}/products")
 async def list_product_drafts(
     request: Request,
@@ -139,7 +209,7 @@ async def list_product_drafts(
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "catalog.draft.read")
-    _require_seller(internal, seller_id)
+    await _require_seller(internal, seller_id)
     try:
         async with auth.domain_session(internal.envelope) as session:
             rows = (
@@ -195,60 +265,120 @@ async def list_product_drafts(
 
 @router.post("/me/sellers/{seller_id}/products", response_model=None)
 async def create_product_draft(request: Request, seller_id: UUID) -> JSONResponse:
-    auth, internal = await _authenticate(request, "catalog.draft.create")
-    _require_seller(internal, seller_id)
-    body = _model_from_body(ProductCourseDraftBody, internal.body)
-    envelope = internal.envelope
+    route_started = time.perf_counter()
+    settings = getattr(request.app.state, "settings", None)
+    trace = capacity_product_create_trace(
+        request.headers.get("x-appsell-capacity-trace"),
+        enabled=bool(getattr(settings, "capacity_product_create_telemetry", False)),
+    )
+    durations = {
+        "internal_auth_verification": 0.0,
+        "pool_checkout_replay_apply_context": 0.0,
+        "sql": 0.0,
+        "commit_response": 0.0,
+    }
+    trace_status = 500
+    trace_outcome: Literal["success", "http_error", "exception"] = "exception"
+    pre_domain_completed = False
+    session_started: float | None = None
+    sql_started: float | None = None
+    sql_finished: float | None = None
     try:
+        auth, internal = await _authenticate(request, "catalog.draft.create")
+        await _require_seller(internal, seller_id)
+        body = await _model_from_body(ProductCourseDraftBody, internal)
+        envelope = internal.envelope
+        session_started = time.perf_counter()
+        durations["internal_auth_verification"] = (session_started - route_started) * 1_000
+        pre_domain_completed = True
         async with auth.domain_session(envelope) as session:
-            row = (
-                (
-                    await session.execute(
-                        text(
-                            "select catalog_product_id, course_id, created "
-                            "from app_private.create_product_course_draft("
-                            ":identity_user_id, :seller_id, :slug, :title, :description, "
-                            ":course_title, :idempotency_key, :body_sha256, :request_id)"
-                        ),
-                        {
-                            "identity_user_id": envelope.identity.user_id,
-                            "seller_id": seller_id,
-                            "slug": body.slug,
-                            "title": body.title,
-                            "description": body.description,
-                            "course_title": body.course_title,
-                            "idempotency_key": UUID(body.idempotency_key),
-                            "body_sha256": envelope.body_sha256,
-                            "request_id": envelope.request_id,
-                        },
+            sql_started = time.perf_counter()
+            durations["pool_checkout_replay_apply_context"] = (
+                sql_started - session_started
+            ) * 1_000
+            try:
+                row = (
+                    (
+                        await session.execute(
+                            text(
+                                "select catalog_product_id, course_id, created "
+                                "from app_private.create_product_course_draft("
+                                ":identity_user_id, :seller_id, :slug, :title, :description, "
+                                ":course_title, :idempotency_key, :body_sha256, :request_id)"
+                            ),
+                            {
+                                "identity_user_id": envelope.identity.user_id,
+                                "seller_id": seller_id,
+                                "slug": body.slug,
+                                "title": body.title,
+                                "description": body.description,
+                                "course_title": body.course_title,
+                                "idempotency_key": UUID(body.idempotency_key),
+                                "body_sha256": envelope.body_sha256,
+                                "request_id": envelope.request_id,
+                            },
+                        )
                     )
+                    .mappings()
+                    .one()
                 )
-                .mappings()
-                .one()
-            )
+            finally:
+                sql_finished = time.perf_counter()
+                durations["sql"] = (sql_finished - sql_started) * 1_000
+        created = bool(row["created"])
+        response = JSONResponse(
+            status_code=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+            content={
+                "product_id": str(row["catalog_product_id"]),
+                "course_id": str(row["course_id"]),
+                "status": "draft",
+                "created": created,
+            },
+        )
+        trace_status = response.status_code
+        trace_outcome = "success"
+        return response
     except IntegrityError as error:
+        trace_status = status.HTTP_409_CONFLICT
+        trace_outcome = "http_error"
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="product_draft_conflict"
         ) from error
     except DBAPIError as error:
-        raise _domain_error(error) from error
-
-    created = bool(row["created"])
-    return JSONResponse(
-        status_code=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
-        content={
-            "product_id": str(row["catalog_product_id"]),
-            "course_id": str(row["course_id"]),
-            "status": "draft",
-            "created": created,
-        },
-    )
+        mapped = _domain_error(error)
+        trace_status = mapped.status_code
+        trace_outcome = "http_error"
+        raise mapped from error
+    except HTTPException as error:
+        trace_status = error.status_code
+        trace_outcome = "http_error"
+        raise
+    except Exception:
+        raise
+    finally:
+        concluded_at = time.perf_counter()
+        if not pre_domain_completed:
+            durations["internal_auth_verification"] = (concluded_at - route_started) * 1_000
+        elif sql_started is None and session_started is not None:
+            durations["pool_checkout_replay_apply_context"] = (
+                concluded_at - session_started
+            ) * 1_000
+        elif sql_finished is not None:
+            durations["commit_response"] = (concluded_at - sql_finished) * 1_000
+        if trace is not None:
+            emit_capacity_product_create_trace(
+                trace=trace,
+                status_code=trace_status,
+                outcome=trace_outcome,
+                total_ms=(concluded_at - route_started) * 1_000,
+                durations_ms=durations,
+            )
 
 
 @router.get("/me/sellers/{seller_id}/products/{product_id}")
 async def get_product_draft(request: Request, seller_id: UUID, product_id: UUID) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "catalog.draft.read")
-    _require_seller(internal, seller_id)
+    await _require_seller(internal, seller_id)
     rows = await _read_product_draft(auth, internal, seller_id, product_id)
     return _product_detail_response(rows)
 
@@ -258,7 +388,7 @@ async def preview_product_draft(
     request: Request, seller_id: UUID, product_id: UUID
 ) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "catalog.draft.preview")
-    _require_seller(internal, seller_id)
+    await _require_seller(internal, seller_id)
     rows = await _read_product_draft(auth, internal, seller_id, product_id)
     row = rows[0]
     detail = _product_detail_response(rows)
@@ -276,36 +406,280 @@ async def preview_product_draft(
         "has_unpublished_changes": detail["product"]["has_unpublished_changes"],
         "readiness": readiness,
         "readiness_violations": readiness["items"],
-        "snapshot": {
-            "schema_version": 1,
-            "seller_organization_id": str(seller_id),
-            "product": {
-                "id": str(row["id"]),
-                "slug": row["slug"],
-                "title": row["title"],
-                "description": row["description"],
-            },
-            "offer": (
-                {
-                    "id": str(row["offer_id"]),
-                    "title": row["offer_title"],
-                    "summary": row["offer_summary"],
-                    "billing_authority": "external_unconfigured",
-                }
-                if row["offer_id"] is not None
-                else None
-            ),
-            "courses": [
-                {
-                    "id": str(course["course_id"]),
-                    "title": course["course_title"],
-                    "description": course["course_description"],
-                    "position": course["course_position"],
-                }
-                for course in rows
-            ],
+        "snapshot": _draft_snapshot(rows),
+    }
+
+
+@router.get("/me/sellers/{seller_id}/products/{product_id}/courses/{course_id}/curriculum")
+async def read_course_curriculum(
+    request: Request, seller_id: UUID, product_id: UUID, course_id: UUID
+) -> dict[str, Any]:
+    auth, internal = await _authenticate(request, "catalog.curriculum.read")
+    await _require_seller(internal, seller_id)
+    row = await _execute_curriculum(
+        auth,
+        internal,
+        "select course_version, curriculum, module_total, lesson_total, "
+        "lesson_totals_by_module from app_private.read_course_curriculum("
+        ":identity_user_id, :seller_id, :product_id, :course_id)",
+        {
+            "identity_user_id": internal.envelope.identity.user_id,
+            "seller_id": seller_id,
+            "product_id": product_id,
+            "course_id": course_id,
+        },
+    )
+    return {
+        "course": {"id": str(course_id), "draft_version": row["course_version"]},
+        "modules": row["curriculum"],
+        "limits": {
+            "modules_per_course": 50,
+            "lessons_per_module": 100,
+            "lessons_per_course": 500,
+            "title_bytes": 160,
+            "lesson_content_bytes": 8_192,
+        },
+        "usage": {
+            "modules_total": row["module_total"],
+            "lessons_total": row["lesson_total"],
+            "lessons_by_module": row["lesson_totals_by_module"],
         },
     }
+
+
+@router.post(
+    "/me/sellers/{seller_id}/products/{product_id}/courses/{course_id}/modules",
+    response_model=None,
+)
+async def create_course_module(
+    request: Request, seller_id: UUID, product_id: UUID, course_id: UUID
+) -> JSONResponse:
+    auth, internal = await _authenticate(request, "catalog.curriculum.create")
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(ModuleMutationBody, internal)
+    row = await _execute_curriculum(
+        auth,
+        internal,
+        "select module_id, course_version, created from app_private.create_course_module("
+        ":identity_user_id, :seller_id, :product_id, :course_id, :title, "
+        ":expected_course_version, :idempotency_key, :body_sha256, :request_id)",
+        _curriculum_parameters(internal, seller_id, product_id, course_id, body)
+        | {"title": body.title},
+    )
+    created = bool(row["created"])
+    return JSONResponse(
+        status_code=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        content={
+            "module_id": str(row["module_id"]),
+            "course_version": row["course_version"],
+            "created": created,
+        },
+    )
+
+
+@router.patch(
+    "/me/sellers/{seller_id}/products/{product_id}/courses/{course_id}/modules/{module_id}"
+)
+async def update_course_module(
+    request: Request,
+    seller_id: UUID,
+    product_id: UUID,
+    course_id: UUID,
+    module_id: UUID,
+) -> dict[str, Any]:
+    auth, internal = await _authenticate(request, "catalog.curriculum.update")
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(ModuleMutationBody, internal)
+    row = await _execute_curriculum(
+        auth,
+        internal,
+        "select course_version, updated from app_private.update_course_module("
+        ":identity_user_id, :seller_id, :product_id, :course_id, :module_id, :title, "
+        ":expected_course_version, :idempotency_key, :body_sha256, :request_id)",
+        _curriculum_parameters(internal, seller_id, product_id, course_id, body)
+        | {"module_id": module_id, "title": body.title},
+    )
+    return {
+        "module_id": str(module_id),
+        "course_version": row["course_version"],
+        "updated": bool(row["updated"]),
+    }
+
+
+@router.post(
+    "/me/sellers/{seller_id}/products/{product_id}/courses/{course_id}/modules/{module_id}/archive"
+)
+async def archive_course_module(
+    request: Request,
+    seller_id: UUID,
+    product_id: UUID,
+    course_id: UUID,
+    module_id: UUID,
+) -> dict[str, Any]:
+    auth, internal = await _authenticate(request, "catalog.curriculum.archive")
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(CurriculumMutationBody, internal)
+    row = await _execute_curriculum(
+        auth,
+        internal,
+        "select course_version, archived from app_private.archive_course_module("
+        ":identity_user_id, :seller_id, :product_id, :course_id, :module_id, "
+        ":expected_course_version, :idempotency_key, :body_sha256, :request_id)",
+        _curriculum_parameters(internal, seller_id, product_id, course_id, body)
+        | {"module_id": module_id},
+    )
+    return {
+        "module_id": str(module_id),
+        "course_version": row["course_version"],
+        "archived": bool(row["archived"]),
+    }
+
+
+@router.put("/me/sellers/{seller_id}/products/{product_id}/courses/{course_id}/modules/order")
+async def reorder_course_modules(
+    request: Request, seller_id: UUID, product_id: UUID, course_id: UUID
+) -> dict[str, Any]:
+    auth, internal = await _authenticate(request, "catalog.curriculum.reorder")
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(ModuleOrderBody, internal)
+    row = await _execute_curriculum(
+        auth,
+        internal,
+        "select course_version, reordered from app_private.reorder_course_modules("
+        ":identity_user_id, :seller_id, :product_id, :course_id, :ordered_ids, "
+        ":expected_course_version, :idempotency_key, :body_sha256, :request_id)",
+        _curriculum_parameters(internal, seller_id, product_id, course_id, body)
+        | {"ordered_ids": [UUID(entry) for entry in body.ordered_ids]},
+    )
+    return {"course_version": row["course_version"], "reordered": bool(row["reordered"])}
+
+
+@router.post(
+    "/me/sellers/{seller_id}/products/{product_id}/courses/{course_id}/modules/{module_id}/lessons",
+    response_model=None,
+)
+async def create_course_lesson(
+    request: Request,
+    seller_id: UUID,
+    product_id: UUID,
+    course_id: UUID,
+    module_id: UUID,
+) -> JSONResponse:
+    auth, internal = await _authenticate(request, "catalog.curriculum.create")
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(LessonMutationBody, internal)
+    row = await _execute_curriculum(
+        auth,
+        internal,
+        "select lesson_id, course_version, created from app_private.create_course_lesson("
+        ":identity_user_id, :seller_id, :product_id, :course_id, :module_id, :title, "
+        ":content, :expected_course_version, :idempotency_key, :body_sha256, :request_id)",
+        _curriculum_parameters(internal, seller_id, product_id, course_id, body)
+        | {"module_id": module_id, "title": body.title, "content": body.content},
+    )
+    created = bool(row["created"])
+    return JSONResponse(
+        status_code=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        content={
+            "lesson_id": str(row["lesson_id"]),
+            "course_version": row["course_version"],
+            "created": created,
+        },
+    )
+
+
+@router.patch(
+    "/me/sellers/{seller_id}/products/{product_id}/courses/{course_id}/modules/{module_id}/lessons/{lesson_id}"
+)
+async def update_course_lesson(
+    request: Request,
+    seller_id: UUID,
+    product_id: UUID,
+    course_id: UUID,
+    module_id: UUID,
+    lesson_id: UUID,
+) -> dict[str, Any]:
+    auth, internal = await _authenticate(request, "catalog.curriculum.update")
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(LessonMutationBody, internal)
+    row = await _execute_curriculum(
+        auth,
+        internal,
+        "select course_version, updated from app_private.update_course_lesson("
+        ":identity_user_id, :seller_id, :product_id, :course_id, :module_id, :lesson_id, "
+        ":title, :content, :expected_course_version, :idempotency_key, :body_sha256, "
+        ":request_id)",
+        _curriculum_parameters(internal, seller_id, product_id, course_id, body)
+        | {
+            "module_id": module_id,
+            "lesson_id": lesson_id,
+            "title": body.title,
+            "content": body.content,
+        },
+    )
+    return {
+        "lesson_id": str(lesson_id),
+        "course_version": row["course_version"],
+        "updated": bool(row["updated"]),
+    }
+
+
+@router.post(
+    "/me/sellers/{seller_id}/products/{product_id}/courses/{course_id}/modules/{module_id}/lessons/{lesson_id}/archive"
+)
+async def archive_course_lesson(
+    request: Request,
+    seller_id: UUID,
+    product_id: UUID,
+    course_id: UUID,
+    module_id: UUID,
+    lesson_id: UUID,
+) -> dict[str, Any]:
+    auth, internal = await _authenticate(request, "catalog.curriculum.archive")
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(CurriculumMutationBody, internal)
+    row = await _execute_curriculum(
+        auth,
+        internal,
+        "select course_version, archived from app_private.archive_course_lesson("
+        ":identity_user_id, :seller_id, :product_id, :course_id, :module_id, :lesson_id, "
+        ":expected_course_version, :idempotency_key, :body_sha256, :request_id)",
+        _curriculum_parameters(internal, seller_id, product_id, course_id, body)
+        | {"module_id": module_id, "lesson_id": lesson_id},
+    )
+    return {
+        "lesson_id": str(lesson_id),
+        "course_version": row["course_version"],
+        "archived": bool(row["archived"]),
+    }
+
+
+@router.put(
+    "/me/sellers/{seller_id}/products/{product_id}/courses/{course_id}/modules/{module_id}/lessons/order"
+)
+async def reorder_course_lessons(
+    request: Request,
+    seller_id: UUID,
+    product_id: UUID,
+    course_id: UUID,
+    module_id: UUID,
+) -> dict[str, Any]:
+    auth, internal = await _authenticate(request, "catalog.curriculum.reorder")
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(LessonOrderBody, internal)
+    row = await _execute_curriculum(
+        auth,
+        internal,
+        "select course_version, reordered from app_private.reorder_module_lessons("
+        ":identity_user_id, :seller_id, :product_id, :course_id, :module_id, :ordered_ids, "
+        ":expected_course_version, :idempotency_key, :body_sha256, :request_id)",
+        _curriculum_parameters(internal, seller_id, product_id, course_id, body)
+        | {
+            "module_id": module_id,
+            "ordered_ids": [UUID(entry) for entry in body.ordered_ids],
+        },
+    )
+    return {"course_version": row["course_version"], "reordered": bool(row["reordered"])}
 
 
 @router.patch("/me/sellers/{seller_id}/products/{product_id}")
@@ -313,8 +687,8 @@ async def update_product_draft(
     request: Request, seller_id: UUID, product_id: UUID
 ) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "catalog.draft.update")
-    _require_seller(internal, seller_id)
-    body = _model_from_body(ProductCourseOfferUpdateBody, internal.body)
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(ProductCourseOfferUpdateBody, internal)
     envelope = internal.envelope
     try:
         async with auth.domain_session(envelope) as session:
@@ -371,8 +745,8 @@ async def update_product_draft(
 @router.post("/me/sellers/{seller_id}/products/{product_id}/publications", response_model=None)
 async def publish_product(request: Request, seller_id: UUID, product_id: UUID) -> JSONResponse:
     auth, internal = await _authenticate(request, "catalog.publication.create")
-    _require_seller(internal, seller_id)
-    body = _model_from_body(ProductPublicationBody, internal.body)
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(ProductPublicationBody, internal)
     envelope = internal.envelope
     expected_courses = json.dumps(
         {course.id: course.version for course in body.course_versions}, sort_keys=True
@@ -423,6 +797,39 @@ async def publish_product(request: Request, seller_id: UUID, product_id: UUID) -
     )
 
 
+async def _execute_curriculum(
+    auth: InternalRequestAuthenticator,
+    internal: AuthenticatedInternalRequest,
+    statement: str,
+    parameters: dict[str, Any],
+) -> Any:
+    try:
+        async with auth.domain_session(internal.envelope) as session:
+            return (await session.execute(text(statement), parameters)).mappings().one()
+    except DBAPIError as error:
+        raise _domain_error(error) from error
+
+
+def _curriculum_parameters(
+    internal: AuthenticatedInternalRequest,
+    seller_id: UUID,
+    product_id: UUID,
+    course_id: UUID,
+    body: CurriculumMutationBody,
+) -> dict[str, Any]:
+    envelope = internal.envelope
+    return {
+        "identity_user_id": envelope.identity.user_id,
+        "seller_id": seller_id,
+        "product_id": product_id,
+        "course_id": course_id,
+        "expected_course_version": body.expected_course_version,
+        "idempotency_key": UUID(body.idempotency_key),
+        "body_sha256": envelope.body_sha256,
+        "request_id": envelope.request_id,
+    }
+
+
 async def _authenticate(
     request: Request, capability: str
 ) -> tuple[InternalRequestAuthenticator, AuthenticatedInternalRequest]:
@@ -435,16 +842,18 @@ async def _authenticate(
     return auth, await auth.authenticate(request, capability)
 
 
-def _require_seller(internal: AuthenticatedInternalRequest, seller_id: UUID) -> None:
+async def _require_seller(internal: AuthenticatedInternalRequest, seller_id: UUID) -> None:
     if internal.envelope.seller_organization_id != seller_id:
+        await internal.consume_rejected_request()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
 
-def _model_from_body(model: type[BaseModel], raw: bytes) -> Any:
+async def _model_from_body(model: type[BaseModel], internal: AuthenticatedInternalRequest) -> Any:
     try:
-        value = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+        value = json.loads(internal.body, object_pairs_hook=_reject_duplicate_keys)
         return model.model_validate(value)
     except (UnicodeDecodeError, json.JSONDecodeError, ValidationError, ValueError) as error:
+        await internal.consume_rejected_request()
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="invalid_request_body",
@@ -460,8 +869,12 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def _contains_control(value: str) -> bool:
-    return any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
+def _contains_control(value: str, *, allow_text_whitespace: bool = False) -> bool:
+    allowed = {"\n", "\r", "\t"} if allow_text_whitespace else set()
+    return any(
+        character not in allowed and (ord(character) < 0x20 or ord(character) == 0x7F)
+        for character in value
+    )
 
 
 def _canonical_uuid(value: str, message: str) -> str:
@@ -515,6 +928,21 @@ async def _read_product_draft(
                             "course.status as course_status, "
                             "course.draft_version as course_draft_version, "
                             "linked.position as course_position, "
+                            "coalesce((select jsonb_agg(jsonb_build_object("
+                            "'id', module.id, 'title', module.title, "
+                            "'status', module.status, 'position', module.position, "
+                            "'lessons', coalesce((select jsonb_agg(jsonb_build_object("
+                            "'id', lesson.id, 'title', lesson.title, 'kind', 'text', "
+                            "'content', lesson.body_text, 'status', lesson.status, "
+                            "'position', lesson.position) order by lesson.position, lesson.id) "
+                            "from lesson where lesson.seller_organization_id = "
+                            "module.seller_organization_id and lesson.course_id = module.course_id "
+                            "and lesson.module_id = module.id "
+                            "and lesson.status = 'active'), '[]'::jsonb)) "
+                            "order by module.position, module.id) from course_module module "
+                            "where module.seller_organization_id = course.seller_organization_id "
+                            "and module.course_id = course.id and module.status = 'active'), "
+                            "'[]'::jsonb) as curriculum_modules, "
                             "offer.id as offer_id, offer.title as offer_title, "
                             "offer.summary as offer_summary, offer.status as offer_status, "
                             "offer.version as offer_version, "
@@ -631,7 +1059,7 @@ def _product_detail_response(rows: list[Any]) -> dict[str, Any]:
 
 def _draft_snapshot(rows: list[Any]) -> dict[str, Any]:
     row = rows[0]
-    return {
+    base = {
         "schema_version": 1,
         "seller_organization_id": str(row["seller_organization_id"]),
         "product": {
@@ -656,6 +1084,20 @@ def _draft_snapshot(rows: list[Any]) -> dict[str, Any]:
                 "title": course["course_title"],
                 "description": course["course_description"],
                 "position": course["course_position"],
+            }
+            for course in rows
+        ],
+    }
+    return {
+        **base,
+        "schema_version": 2,
+        "courses": [
+            {
+                "id": str(course["course_id"]),
+                "title": course["course_title"],
+                "description": course["course_description"],
+                "position": course["course_position"],
+                "modules": course.get("curriculum_modules", []),
             }
             for course in rows
         ],
@@ -686,6 +1128,11 @@ def _domain_error(error: DBAPIError) -> HTTPException:
         return HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="no_unpublished_changes",
+        )
+    if sqlstate == "P4221":
+        return HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="snapshot_too_large",
         )
     if sqlstate == "22023":
         return HTTPException(

@@ -58,6 +58,27 @@ describe("token vault envelope encryption", () => {
     expect(await tokenVault.open(second, context)).toEqual(bundle);
   });
 
+  it("encrypts and validates verified identity metadata with the token bundle", async () => {
+    const tokenVault = vault([{ id: "local-v1", key: firstKey, active: true }]);
+    const identityBundle: TokenBundle = {
+      ...bundle,
+      identity: {
+        issuer: "http://127.0.0.1:4010/identity",
+        email: "buyer.demo@autonomia.site",
+        emailVerified: true
+      }
+    };
+    const serialized = await tokenVault.seal(identityBundle, context);
+    expect(serialized).not.toContain(identityBundle.identity!.issuer);
+    expect(serialized).not.toContain(identityBundle.identity!.email);
+    expect(await tokenVault.open(serialized, context)).toEqual(identityBundle);
+
+    await expect(tokenVault.seal({
+      ...identityBundle,
+      identity: { ...identityBundle.identity!, email: "Buyer.Demo@autonomia.site" }
+    }, context)).rejects.toBeInstanceOf(TokenVaultMalformedError);
+  });
+
   it("fails authentication for payload/key tamper and every authenticated context dimension", async () => {
     const tokenVault = vault([{ id: "local-v1", key: firstKey, active: true }]);
     const serialized = await tokenVault.seal(bundle, context);

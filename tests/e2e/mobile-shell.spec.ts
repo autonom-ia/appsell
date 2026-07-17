@@ -2,44 +2,58 @@ import { expect, test } from "@playwright/test";
 
 async function login(page: import("@playwright/test").Page) {
   await page.goto("/");
+  await expect(page.getByRole("link", { name: "Autonom.ia Sell — início" })).toBeVisible();
+  const sessionReady = page.waitForResponse((response) =>
+    response.url().endsWith("/api/session") && response.status() === 200);
   await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
   await expect(page).toHaveURL("/dashboard");
-  await expect(page.getByRole("heading", { name: "Bom dia, creator." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Seu negócio em um só lugar." })).toBeVisible();
+  await sessionReady;
 }
 
 test("keeps the core journey usable without horizontal overflow", async ({ page }) => {
   await login(page);
+  await expect(page.getByRole("link", { name: "Autonom.ia Sell — início" }))
+    .toContainText("Autonom.ia Sell");
   for (const target of [
-    { path: "/dashboard", heading: "Bom dia, creator." },
+    { path: "/dashboard", heading: "Seu negócio em um só lugar." },
     { path: "/products", heading: "Produtos" },
     { path: "/library", heading: "Minha biblioteca" },
   ]) {
     if (page.url() !== `http://localhost:3000${target.path}`) {
       await page.locator(`a[href="${target.path}"]:visible`).first().click();
-      await expect(page).toHaveURL(target.path);
+      await expect(page).toHaveURL(target.path, { timeout: 20_000 });
       await expect(page.getByRole("heading", { name: target.heading, exact: true })).toBeVisible();
     }
     const dimensions = await page.evaluate(() => ({ client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }));
     expect(dimensions.scroll).toBeLessThanOrEqual(dimensions.client);
   }
   await expect(page.getByRole("heading", { name: "Minha biblioteca" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Outros produtos de Autonom.ia Lab" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Launch Lab" })).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "Growth Systems" })).toHaveCount(1);
+  await expect(page.getByText("A biblioteca não respondeu. Tente novamente.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Tentar novamente" })).toBeVisible();
 });
 
 test("does not render protected preview content for an anonymous request", async ({ request }) => {
-  const response = await request.get("/dashboard", { maxRedirects: 0 });
+  const response = await request.get("/dashboard", {
+    maxRedirects: 0,
+    headers: { "x-appsell-demo-persona": "buyer" }
+  });
   expect(response.status()).toBe(307);
   expect(response.headers().location).toBe("/");
   const body = await response.text();
-  expect(body).not.toContain("Bom dia, creator.");
+  expect(body).not.toContain("Seu negócio em um só lugar.");
   expect(body).not.toContain("Creator OS");
 });
 
 test("exposes touch-sized mobile navigation and preserves deep links", async ({ page }) => {
-  await page.setViewportSize({ width: 360, height: 800 });
+  await page.setViewportSize({ width: 320, height: 800 });
   await login(page);
+  const mobileBrand = page.locator(".mobile-topbar")
+    .getByRole("link", { name: "Autonom.ia Sell — início" });
+  await expect(mobileBrand).toContainText("Autonom.ia Sell");
+  const brandBox = await mobileBrand.boundingBox();
+  expect(brandBox?.x ?? 321).toBeGreaterThanOrEqual(0);
+  expect((brandBox?.x ?? 321) + (brandBox?.width ?? 321)).toBeLessThanOrEqual(320);
   const libraryLink = page.getByRole("navigation", { name: "Navegação móvel" }).getByRole("link", { name: "Minha biblioteca" });
   const box = await libraryLink.boundingBox();
   expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
@@ -48,13 +62,26 @@ test("exposes touch-sized mobile navigation and preserves deep links", async ({ 
   expect((await page.request.get("/api/session")).status()).toBe(200);
   await page.reload();
   await expect(page.getByRole("heading", { name: "Minha biblioteca" })).toBeVisible();
+  await page.evaluate(() => { document.documentElement.style.fontSize = "200%"; });
+  const zoomedTopbar = await page.locator(".mobile-topbar").evaluate((element) => ({
+    client: document.documentElement.clientWidth,
+    scroll: document.documentElement.scrollWidth,
+    children: [...element.children].map((child) => {
+      const rect = child.getBoundingClientRect();
+      return { left: rect.left, right: rect.right, width: rect.width, height: rect.height };
+    })
+  }));
+  expect(zoomedTopbar.scroll).toBeLessThanOrEqual(zoomedTopbar.client);
+  expect(zoomedTopbar.children.every((rect) =>
+    rect.left >= -1 && rect.right <= zoomedTopbar.client + 1 && rect.height >= 44
+  )).toBe(true);
 });
 
 test("supports keyboard skip navigation and reduced motion", async ({ page }) => {
   await login(page);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Bom dia, creator." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Seu negócio em um só lugar." })).toBeVisible();
   const skipLink = page.getByRole("link", { name: "Pular para o conteúdo" });
   await skipLink.focus();
   await expect(skipLink).toBeFocused();
@@ -64,7 +91,7 @@ test("supports keyboard skip navigation and reduced motion", async ({ page }) =>
   expect(Number.parseFloat(transitionDuration)).toBeLessThanOrEqual(0.001);
 });
 
-test("keeps the protected shell mounted without a client-side session waterfall", async ({ page }) => {
+test("reuses the resolved shell profile across client-side navigation", async ({ page }) => {
   await login(page);
   let sessionRequests = 0;
   page.on("response", (response) => {
@@ -74,6 +101,40 @@ test("keeps the protected shell mounted without a client-side session waterfall"
   await expect(page.getByRole("heading", { name: "Produtos", exact: true })).toBeVisible();
   expect(sessionRequests).toBe(0);
   await expect(page.locator(".session-loading")).toHaveCount(0);
+});
+
+test("keeps seller navigation hidden until the shell profile resolves", async ({ page }) => {
+  let releaseSession: (() => void) | undefined;
+  const sessionReleased = new Promise<void>((resolve) => { releaseSession = resolve; });
+  await page.route("**/api/session", async (route) => {
+    await sessionReleased;
+    await route.continue();
+  });
+
+  await page.goto("/");
+  await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
+  await expect(page).toHaveURL("/dashboard");
+  await expect(page.getByRole("heading", { name: "Seu negócio em um só lugar." })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Produtos" })).toHaveCount(0);
+  await expect(page.locator(".nav-eyebrow")).toHaveText("Carregando acesso");
+  await expect(page.getByRole("navigation", { name: "Navegação móvel" }).getByRole("link")).toHaveCount(0);
+
+  releaseSession?.();
+  await expect(page.getByRole("link", { name: "Produtos" }).first()).toBeVisible();
+});
+
+test("keeps seller navigation hidden when the shell profile is unavailable", async ({ page }) => {
+  await page.route("**/api/session", async (route) => {
+    await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ authenticated: false }) });
+  });
+
+  await page.goto("/");
+  await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
+  await expect(page).toHaveURL("/dashboard");
+  await expect(page.locator(".nav-eyebrow")).toHaveText("Acesso indisponível");
+  await expect(page.getByRole("link", { name: "Produtos" })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: /Voltar para a entrada|Entrada/ }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Tentar novamente" })).toBeVisible();
 });
 
 test("keeps seller onboarding recoverable when the domain API is unavailable", async ({ page }) => {
@@ -218,6 +279,42 @@ test("creates a tenant-scoped product draft in the mobile UI", async ({ page }, 
   expect(scaled.scroll, JSON.stringify(scaled.offenders)).toBeLessThanOrEqual(scaled.client);
 });
 
+test("preserves loaded products when the next catalog page fails", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium", "catalog pagination behavior runs once in Chromium");
+  const sellerId = "52000000-0000-4000-8000-000000000001";
+  const cursor = "53000000-0000-4000-8000-000000000001";
+  await page.route("**/api/sellers", async (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ sellers: [{ id: sellerId, slug: "studio-mobile", display_name: "Studio Mobile", role: "seller_owner" }] })
+  }));
+  await page.route(`**/api/sellers/${sellerId}/products*`, async (route) => {
+    const requestUrl = new URL(route.request().url());
+    if (requestUrl.searchParams.has("cursor")) {
+      expect(requestUrl.searchParams.get("cursor")).toBe(cursor);
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "unavailable" }) });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        products: [{ id: cursor, slug: "pagina-um", title: "Produto da primeira página", description: "Preservado.", status: "draft", created_at: "2026-07-11T11:00:00Z", course: { id: "54000000-0000-4000-8000-000000000001", title: "Curso preservado", status: "draft" } }],
+        next_cursor: cursor
+      })
+    });
+  });
+
+  await login(page);
+  await page.goto("/products");
+  await page.getByLabel("Espaço de vendas").selectOption(sellerId);
+  await expect(page.getByRole("heading", { name: "Produto da primeira página" })).toBeVisible();
+  await page.getByRole("button", { name: "Carregar mais produtos" }).click();
+  await expect(page.getByText("Os produtos já carregados foram preservados.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Produto da primeira página" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Tentar carregar novamente" })).toBeVisible();
+});
+
 test("edits, previews and publishes a tenant-scoped product at 320px", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "authoring flow runs once in Chromium");
   const sellerId = "62000000-0000-4000-8000-000000000001";
@@ -291,7 +388,7 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   await expect(page.getByRole("dialog", { name: "Sair desta edição?" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Continuar editando" })).toBeFocused();
   await page.keyboard.press("Shift+Tab");
-  await expect(page.getByRole("button", { name: "Descartar e sair" })).toBeFocused();
+  await expect(page.getByRole("button", { name: "Confirmar saída" })).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(page.getByRole("button", { name: "Continuar editando" })).toBeFocused();
   await page.getByRole("button", { name: "Continuar editando" }).click();
@@ -334,18 +431,18 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   await expect(page.getByText("Compra indisponível nesta prévia")).toBeVisible();
   await page.getByRole("link", { name: /^Publicar/ }).click();
   await page.getByRole("button", { name: "Publicar primeira versão" }).click();
-  await expect(page.getByRole("dialog", { name: "Publicar este snapshot?" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Publicar esta versão?" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Revisar novamente" })).toBeFocused();
   await page.keyboard.press("Shift+Tab");
-  await expect(page.getByRole("button", { name: "Publicar snapshot" })).toBeFocused();
+  await expect(page.getByRole("button", { name: "Publicar versão" })).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(page.getByRole("button", { name: "Revisar novamente" })).toBeFocused();
-  await page.getByRole("button", { name: "Publicar snapshot" }).click();
+  await page.getByRole("button", { name: "Publicar versão" }).click();
   await expect(page.getByText("A API não respondeu.", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "Publicar primeira versão" }).click();
-  await page.getByRole("button", { name: "Publicar snapshot" }).click();
+  await page.getByRole("button", { name: "Publicar versão" }).click();
   await expect(page.getByText("Versão publicada com sucesso.", { exact: false })).toBeVisible();
-  await expect(page.getByText("Nenhuma mudança desde o snapshot publicado.", { exact: false })).toBeVisible();
+  await expect(page.getByText("Nenhuma mudança desde a versão publicada.", { exact: false })).toBeVisible();
   await expect(page.getByRole("button", { name: /Publicar nova versão/ })).toBeDisabled();
   await page.getByRole("link", { name: /^Produto Identidade/ }).click();
   await page.getByLabel("Descrição curta").fill("Novo draft depois do snapshot.");
@@ -354,10 +451,10 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   await page.getByRole("link", { name: /^Publicar/ }).click();
   await expect(page.getByRole("button", { name: "Publicar nova versão após v1" })).toBeEnabled();
   await page.getByRole("button", { name: "Publicar nova versão após v1" }).click();
-  await page.getByRole("button", { name: "Publicar snapshot" }).click();
+  await page.getByRole("button", { name: "Publicar versão" }).click();
   await expect(page.getByText("O produto mudou ou não está pronto.", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "Publicar nova versão após v1" }).click();
-  await page.getByRole("button", { name: "Publicar snapshot" }).click();
+  await page.getByRole("button", { name: "Publicar versão" }).click();
   await expect(page.getByText("Versão publicada com sucesso.", { exact: false })).toBeVisible();
   expect(publishKeys).toHaveLength(4);
 
@@ -386,6 +483,502 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   await page.setViewportSize({ width: 568, height: 320 });
   const landscape = await page.evaluate(() => ({ client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }));
   expect(landscape.scroll).toBeLessThanOrEqual(landscape.client);
+});
+
+test("authors and reorders a tenant curriculum at 320px without drag", async ({ page }) => {
+  const sellerId = "82000000-0000-4000-8000-000000000001";
+  const productId = "83000000-0000-4000-8000-000000000001";
+  const courseId = "84000000-0000-4000-8000-000000000001";
+  const baseModuleId = "85000000-0000-4000-8000-000000000001";
+  let version = 3;
+  let productArchived = false;
+  const moduleAttemptKeys: string[] = [];
+  const modules = [{
+    id: baseModuleId,
+    title: "Base",
+    status: "active",
+    position: 0,
+    lessons: [{
+      id: "86000000-0000-4000-8000-000000000001",
+      title: "Boas-vindas",
+      kind: "text",
+      content: "Comece por aqui.",
+      status: "active",
+      position: 0
+    }]
+  }];
+
+  await page.setViewportSize({ width: 320, height: 800 });
+  await login(page);
+  await page.route("**/api/sellers/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const productPath = `/api/sellers/${sellerId}/products/${productId}`;
+    const curriculumPath = `${productPath}/courses/${courseId}`;
+    if (path === productPath && request.method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        product: {
+          id: productId,
+          seller_organization_id: sellerId,
+          slug: "curso-mobile",
+          title: "Curso Mobile",
+          description: "Editor de currículo.",
+          status: productArchived ? "archived" : "draft",
+          draft_version: 1,
+          course: { id: courseId, title: "Jornada Mobile", status: "draft", draft_version: version },
+          courses: [{ id: courseId, title: "Jornada Mobile", status: "draft", draft_version: version }],
+          offer: { id: null, title: "", summary: "", status: "draft", draft_version: 0 },
+          publication: null,
+          has_unpublished_changes: true,
+          readiness: { can_publish: false, items: [{ key: "offer_required", label: "Crie a oferta.", ready: false }] }
+        },
+        csrf: { update: "update-token", publish: "publish-token" }
+      }) });
+      return;
+    }
+    if (path === `${curriculumPath}/curriculum` && request.method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        course: { id: courseId, draft_version: version },
+        modules,
+        csrf: { create: "create-token", update: "update-token", reorder: "reorder-token", archive: "archive-token" },
+        limits: { modules_per_course: 50, lessons_per_module: 100, lessons_per_course: 500, title_bytes: 160, lesson_content_bytes: 8192 }
+      }) });
+      return;
+    }
+    const posted = request.postDataBuffer();
+    const form = await new Request(request.url(), {
+      method: request.method(),
+      headers: request.headers(),
+      body: posted ? new Uint8Array(posted) : undefined
+    }).formData();
+    expect(form.get("idempotency_key")).toMatch(/^[0-9a-f-]{36}$/);
+    expect(Number(form.get("expected_course_version"))).toBe(version);
+    if (path === `${curriculumPath}/modules` && request.method() === "POST") {
+      expect(form.get("_csrf")).toBe("create-token");
+      moduleAttemptKeys.push(String(form.get("idempotency_key")));
+      if (moduleAttemptKeys.length === 1) {
+        await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "temporarily_unavailable" }) });
+        return;
+      }
+      version += 1;
+      const id = "85000000-0000-4000-8000-000000000002";
+      modules.push({ id, title: String(form.get("title")), status: "active", position: 1, lessons: [] });
+      await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ module_id: id, course_version: version, created: true }) });
+      return;
+    }
+    if (path === `${curriculumPath}/modules/${baseModuleId}/lessons` && request.method() === "POST") {
+      expect(form.get("kind")).toBe("text");
+      version += 1;
+      const id = "86000000-0000-4000-8000-000000000002";
+      modules[0].lessons.push({ id, title: String(form.get("title")), kind: "text", content: String(form.get("content")), status: "active", position: 1 });
+      await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ lesson_id: id, course_version: version, created: true }) });
+      return;
+    }
+    if (path === `${curriculumPath}/modules/${baseModuleId}/lessons/order` && request.method() === "PUT") {
+      const order = JSON.parse(String(form.get("ordered_ids"))) as string[];
+      expect(order).toEqual(["86000000-0000-4000-8000-000000000002", "86000000-0000-4000-8000-000000000001"]);
+      modules[0].lessons.sort((left, right) => order.indexOf(left.id) - order.indexOf(right.id));
+      version += 1;
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ course_version: version, reordered: true }) });
+      return;
+    }
+    if (path === `${curriculumPath}/modules/${baseModuleId}/lessons/86000000-0000-4000-8000-000000000002/archive` && request.method() === "POST") {
+      expect(form.get("_csrf")).toBe("archive-token");
+      modules[0].lessons = modules[0].lessons.filter((lesson) => lesson.id !== "86000000-0000-4000-8000-000000000002");
+      version += 1;
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ course_version: version, archived: true }) });
+      return;
+    }
+    await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "unexpected_test_route" }) });
+  });
+
+  await page.goto(`/products/${sellerId}/${productId}?section=curriculo`);
+  await expect(page.getByRole("heading", { name: "Módulos e aulas" })).toBeVisible();
+  await page.getByLabel("Novo módulo").fill("Avançado");
+  await page.getByRole("button", { name: "Adicionar módulo" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "A API não respondeu" })).toBeVisible();
+  await expect(page.getByLabel("Novo módulo")).toHaveValue("Avançado");
+  await page.getByRole("button", { name: "Adicionar módulo" }).click();
+  await expect(page.getByRole("heading", { name: "Avançado" })).toBeVisible();
+  expect(moduleAttemptKeys).toHaveLength(2);
+  expect(moduleAttemptKeys[1]).toBe(moduleAttemptKeys[0]);
+
+  const baseModule = page.getByRole("article").filter({ has: page.getByRole("heading", { name: "Base" }) });
+  const lessonCreate = baseModule.getByTestId(`lesson-create-form-${baseModuleId}`);
+  await lessonCreate.getByLabel("Nome da aula").fill("Prática guiada");
+  await lessonCreate.getByLabel("Conteúdo textual").fill("Faça o exercício com calma e registre o resultado.");
+  await lessonCreate.getByRole("button", { name: "Adicionar aula" }).click();
+  await expect(page.getByRole("heading", { name: "Prática guiada" })).toBeVisible();
+  const moveUp = page.getByRole("button", { name: "Mover aula Prática guiada para cima" });
+  await moveUp.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("button", { name: "Mover aula Prática guiada para baixo" })).toBeFocused();
+  await expect(page.getByRole("status").filter({ hasText: "Prática guiada movida para a posição 1 de 2" })).toBeVisible();
+  const practice = page.getByTestId("lesson-86000000-0000-4000-8000-000000000002");
+  await practice.getByText("Editar aula").click();
+  await practice.getByLabel("Nome da aula").fill("Rascunho que será descartado");
+  page.once("dialog", (dialog) => dialog.accept());
+  await practice.getByRole("button", { name: "Arquivar aula" }).click();
+  await expect(page.getByRole("heading", { name: "Prática guiada" })).toHaveCount(0);
+
+  const touchAndWidth = await page.evaluate(() => ({
+    client: document.documentElement.clientWidth,
+    scroll: document.documentElement.scrollWidth,
+    shortTargets: [...document.querySelectorAll("button,input,textarea,summary")]
+      .filter((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 && rect.height < 44;
+      }).length
+  }));
+  expect(touchAndWidth.scroll).toBeLessThanOrEqual(touchAndWidth.client);
+  expect(touchAndWidth.shortTargets).toBe(0);
+  await page.evaluate(() => { document.documentElement.style.fontSize = "200%"; });
+  const scaled = await page.evaluate(() => ({
+    client: document.documentElement.clientWidth,
+    scroll: document.documentElement.scrollWidth,
+    moduleIntrinsicInlineSize: getComputedStyle(document.querySelector(".curriculum-module")!).containIntrinsicInlineSize,
+    clipped: [...document.querySelectorAll("a,button,input,textarea,summary")].flatMap((element) => {
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 && (rect.left < -1 || rect.right > document.documentElement.clientWidth + 1)
+        ? [{ text: element.textContent?.trim() || element.getAttribute("name"), left: rect.left, right: rect.right }]
+        : [];
+    })
+  }));
+  expect(scaled.scroll).toBeLessThanOrEqual(scaled.client);
+  expect(scaled.moduleIntrinsicInlineSize).not.toContain("520px");
+  expect(scaled.clipped, JSON.stringify(scaled)).toEqual([]);
+  await page.evaluate(() => { document.documentElement.style.fontSize = "100%"; });
+  await page.setViewportSize({ width: 568, height: 320 });
+  const landscape = await page.evaluate(() => ({ client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }));
+  expect(landscape.scroll).toBeLessThanOrEqual(landscape.client);
+
+  productArchived = true;
+  await page.reload();
+  await expect(page.getByText("Produto arquivado: currículo disponível somente para leitura.")).toBeVisible();
+  await expect(page.getByTestId("module-create-form")).toHaveCount(0);
+  const archivedOrderButtons = page.getByRole("button", { name: /Mover módulo/ });
+  await expect(archivedOrderButtons).toHaveCount(4);
+  expect(await archivedOrderButtons.evaluateAll((buttons) => buttons.every((button) => (button as HTMLButtonElement).disabled))).toBe(true);
+  await expect(page.getByText("Editar aula")).toHaveCount(0);
+});
+
+test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium", "asset upload interaction runs once in Chromium");
+  const sellerId = "92000000-0000-4000-8000-000000000001";
+  const productId = "93000000-0000-4000-8000-000000000001";
+  const courseId = "94000000-0000-4000-8000-000000000001";
+  const moduleId = "95000000-0000-4000-8000-000000000001";
+  const lessonId = "96000000-0000-4000-8000-000000000001";
+  const assetId = "97000000-0000-4000-8000-000000000001";
+  const secondAssetId = "97000000-0000-4000-8000-000000000002";
+  const uploadId = "98000000-0000-4000-8000-000000000001";
+  const productPath = `/api/sellers/${sellerId}/products/${productId}`;
+  const curriculumPath = `${productPath}/courses/${courseId}`;
+  const assetsPath = `${curriculumPath}/modules/${moduleId}/lessons/${lessonId}/assets`;
+  let intentAttempts = 0;
+  const intentReplacementTargets: Array<string | null> = [];
+  const policyWrites: Array<{ contentRole: string; downloadAllowed: string }> = [];
+  let assetContentRole: "course_content" | "support_material" = "course_content";
+  let assetDownloadAllowed = false;
+  let courseVersion = 4;
+  let releaseUpload!: () => void;
+  let markUploadStarted!: () => void;
+  let markCancelCalled!: () => void;
+  let markPolicyStarted!: () => void;
+  let releasePolicy!: () => void;
+  let markRejectedPolicyStarted!: () => void;
+  let releaseRejectedPolicy!: () => void;
+  let rejectNextPolicy = false;
+  let rejectedPolicyWrite = false;
+  const uploadStarted = new Promise<void>((resolve) => { markUploadStarted = resolve; });
+  const cancelCalled = new Promise<void>((resolve) => { markCancelCalled = resolve; });
+  const policyStarted = new Promise<void>((resolve) => { markPolicyStarted = resolve; });
+  const rejectedPolicyStarted = new Promise<void>((resolve) => { markRejectedPolicyStarted = resolve; });
+
+  await page.setViewportSize({ width: 360, height: 844 });
+  await login(page);
+  await page.route("http://127.0.0.1:8333/**", async (route) => {
+    if (route.request().method() === "OPTIONS") {
+      await route.fulfill({
+        status: 204,
+        headers: {
+          "access-control-allow-origin": "http://localhost:3000",
+          "access-control-allow-methods": "PUT,OPTIONS",
+          "access-control-allow-headers": "content-type,x-amz-checksum-sha256,x-amz-meta-appsell-upload-id"
+        }
+      });
+      return;
+    }
+    markUploadStarted();
+    await new Promise<void>((resolve) => { releaseUpload = resolve; });
+    await route.fulfill({ status: 200, headers: { "access-control-allow-origin": "http://localhost:3000" }, body: "" });
+  });
+  await page.route("**/api/sellers/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === productPath && request.method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        product: {
+          id: productId,
+          seller_organization_id: sellerId,
+          slug: "pdf-mobile",
+          title: "PDF Mobile",
+          description: "Editor de material privado.",
+          status: "draft",
+          draft_version: 2,
+          course: { id: courseId, title: "Curso PDF", status: "draft", draft_version: courseVersion },
+          courses: [{ id: courseId, title: "Curso PDF", status: "draft", draft_version: courseVersion }],
+          offer: { id: null, title: "", summary: "", status: "draft", draft_version: 0 },
+          publication: null,
+          has_unpublished_changes: true,
+          readiness: { can_publish: false, items: [{ key: "offer_required", label: "Crie a oferta.", ready: false }] }
+        },
+        csrf: { update: "update-token", publish: "publish-token" }
+      }) });
+      return;
+    }
+    if (path === `${curriculumPath}/curriculum` && request.method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        course: { id: courseId, draft_version: courseVersion },
+        modules: [{
+          id: moduleId,
+          title: "Base PDF",
+          status: "active",
+          position: 0,
+          lessons: [{ id: lessonId, title: "Aula PDF", kind: "text", content: "Material complementar.", status: "active", position: 0 }]
+        }],
+        csrf: { create: "create-token", update: "update-token", reorder: "reorder-token", archive: "archive-token" },
+        limits: { modules_per_course: 50, lessons_per_module: 100, lessons_per_course: 500, title_bytes: 160, lesson_content_bytes: 8192 }
+      }) });
+      return;
+    }
+    if (path === assetsPath && request.method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        assets: [
+          { id: assetId, title: "Guia atual", file_name: "guia-atual.pdf", media_type: "application/pdf", byte_size: 3181, status: "ready", content_role: assetContentRole, download_allowed: assetDownloadAllowed, safe_reason: null },
+          { id: secondAssetId, title: "Exercícios", file_name: "exercicios.pdf", media_type: "application/pdf", byte_size: 4096, status: "ready", content_role: "course_content", download_allowed: false, safe_reason: null }
+        ],
+        uploads: [],
+        csrf: { intent: "intent-token", confirm: "confirm-token", cancel: "cancel-token", archive: "asset-archive-token", policy: "asset-policy-token" }
+      }) });
+      return;
+    }
+    if (path === `${assetsPath}/upload-intents` && request.method() === "POST") {
+      const posted = request.postDataBuffer();
+      const form = await new Request(request.url(), {
+        method: "POST",
+        headers: request.headers(),
+        body: posted ? new Uint8Array(posted) : undefined
+      }).formData();
+      intentReplacementTargets.push(form.get("existing_asset_id")?.toString() ?? null);
+      intentAttempts += 1;
+      if (intentAttempts === 1 || intentAttempts === 3 || intentAttempts === 4) {
+        await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "temporarily_unavailable" }) });
+        return;
+      }
+      await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({
+        upload_id: uploadId,
+        asset_id: "99000000-0000-4000-8000-000000000001",
+        upload_url: `http://127.0.0.1:8333/appsell-quarantine/${uploadId}?X-Amz-Signature=test`,
+        upload_origin: "http://127.0.0.1:8333",
+        expires_at: new Date(Date.now() + 300_000).toISOString(),
+        required_headers: {
+          "Content-Type": "application/pdf",
+          "x-amz-checksum-sha256": "test-checksum",
+          "x-amz-meta-appsell-upload-id": uploadId
+        }
+      }) });
+      return;
+    }
+    if (path === `${assetsPath}/${assetId}/policy` && request.method() === "PATCH") {
+      const posted = request.postDataBuffer();
+      const form = await new Request(request.url(), {
+        method: "PATCH",
+        headers: request.headers(),
+        body: posted ? new Uint8Array(posted) : undefined
+      }).formData();
+      expect(form.get("_csrf")).toBe("asset-policy-token");
+      if (rejectNextPolicy) {
+        rejectNextPolicy = false;
+        expect(form.get("content_role")).toBe("support_material");
+        expect(form.get("download_allowed")).toBe("true");
+        markRejectedPolicyStarted();
+        await new Promise<void>((resolve) => { releaseRejectedPolicy = resolve; });
+        rejectedPolicyWrite = true;
+        await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "policy_unavailable" }) });
+        return;
+      }
+      policyWrites.push({
+        contentRole: String(form.get("content_role")),
+        downloadAllowed: String(form.get("download_allowed"))
+      });
+      if (policyWrites.length === 1) {
+        markPolicyStarted();
+        await new Promise<void>((resolve) => { releasePolicy = resolve; });
+      }
+      assetContentRole = String(form.get("content_role")) as typeof assetContentRole;
+      assetDownloadAllowed = form.get("download_allowed") === "true";
+      courseVersion += 1;
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        asset_id: assetId,
+        content_role: assetContentRole,
+        download_allowed: assetDownloadAllowed,
+        course_version: courseVersion,
+        applied: true,
+        replayed: false
+      }) });
+      return;
+    }
+    if (path === `${assetsPath}/uploads/${uploadId}/cancel` && request.method() === "POST") {
+      const posted = request.postDataBuffer();
+      const form = await new Request(request.url(), {
+        method: "POST",
+        headers: request.headers(),
+        body: posted ? new Uint8Array(posted) : undefined
+      }).formData();
+      expect(form.get("_csrf")).toBe("cancel-token");
+      markCancelCalled();
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ upload_id: uploadId, status: "cancelled" }) });
+      return;
+    }
+    if (path === `${assetsPath}/${assetId}/archive` && request.method() === "POST") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ asset_id: assetId, archived: true, course_version: 5 }) });
+      return;
+    }
+    await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "unexpected_test_route" }) });
+  });
+
+  await page.goto(`/products/${sellerId}/${productId}?section=curriculo`);
+  const lesson = page.getByTestId(`lesson-${lessonId}`);
+  const summary = lesson.locator(".lesson-assets summary");
+  await expect(summary).toContainText("Materiais da aula");
+  await summary.click();
+  await expect(lesson.getByText("2 materiais prontos", { exact: true })).toBeVisible();
+  const input = lesson.getByLabel("Adicionar outro material");
+  const feedback = lesson.locator(".asset-feedback");
+  await expect(feedback).toHaveAttribute("role", "status");
+  await expect(feedback).toHaveAttribute("aria-live", "polite");
+  await expect(feedback).toHaveAttribute("aria-atomic", "true");
+
+  await lesson.getByLabel("Uso deste material").first().selectOption("support_material");
+  await policyStarted;
+  await expect(lesson.getByRole("button", { name: "Cancelar envio" })).toHaveCount(0);
+  const pendingPolicyUrl = page.url();
+  await page.getByRole("navigation", { name: "Navegação móvel" })
+    .getByRole("link", { name: "Minha biblioteca" }).click();
+  await expect(page.getByRole("dialog", { name: "Sair desta edição?" })).toBeVisible();
+  await page.getByRole("button", { name: "Confirmar saída" }).click();
+  await expect(page.getByRole("button", { name: "Preparando saída segura…" })).toBeVisible();
+  await expect(page).toHaveURL(pendingPolicyUrl);
+  releasePolicy();
+  await expect(page).toHaveURL("/library");
+  await page.goto(`/products/${sellerId}/${productId}?section=curriculo`);
+  await summary.click();
+  await expect.poll(() => policyWrites).toEqual([
+    { contentRole: "support_material", downloadAllowed: "false" }
+  ]);
+  await expect(page.getByRole("region", { name: "Módulos e aulas" })).toContainText("versão 5");
+  if ((await lesson.locator(".lesson-assets details").getAttribute("open")) === null) {
+    await summary.click();
+  }
+  const downloadToggle = lesson.getByLabel("Permitir que o aluno baixe este PDF");
+  await expect(downloadToggle).toBeVisible();
+  rejectNextPolicy = true;
+  await downloadToggle.click({ noWaitAfter: true });
+  await rejectedPolicyStarted;
+  await page.getByRole("navigation", { name: "Navegação móvel" })
+    .getByRole("link", { name: "Minha biblioteca" }).click();
+  await page.getByRole("button", { name: "Confirmar saída" }).click();
+  await expect(page.getByRole("button", { name: "Preparando saída segura…" })).toBeVisible();
+  releaseRejectedPolicy();
+  await expect(page).toHaveURL(pendingPolicyUrl);
+  await expect(page.getByRole("dialog", { name: "Sair desta edição?" }).getByRole("alert"))
+    .toContainText("Não foi possível concluir a operação com segurança");
+  expect(rejectedPolicyWrite).toBe(true);
+  await page.getByRole("button", { name: "Continuar editando" }).click();
+  await expect(downloadToggle).toBeVisible();
+  await downloadToggle.click({ noWaitAfter: true });
+  await expect.poll(() => policyWrites).toEqual([
+    { contentRole: "support_material", downloadAllowed: "false" },
+    { contentRole: "support_material", downloadAllowed: "true" }
+  ]);
+  await expect(page.getByRole("region", { name: "Módulos e aulas" })).toContainText("versão 6");
+  if ((await lesson.locator(".lesson-assets details").getAttribute("open")) === null) {
+    await summary.click();
+  }
+
+  const pdf = { name: "guia-novo.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF") };
+  await input.setInputFiles(pdf);
+  await expect(feedback).toContainText("Não foi possível preparar o arquivo");
+  const retry = lesson.getByRole("button", { name: "Tentar novamente" });
+  await expect(retry).toBeVisible();
+  await retry.focus();
+  await expect(retry).toBeFocused();
+  await input.setInputFiles(pdf);
+  await uploadStarted;
+  await expect(feedback).toContainText("Enviando PDF");
+  await expect(lesson.getByRole("progressbar", { name: "Progresso do envio" })).toBeVisible();
+  await lesson.getByRole("button", { name: "Cancelar envio" }).click();
+  await cancelCalled;
+  releaseUpload();
+  await expect(feedback).toContainText("Selecione um PDF ou vídeo MP4 para iniciar.");
+  await expect(lesson.getByRole("button", { name: "Cancelar envio" })).toHaveCount(0);
+
+  for (const width of [320, 360, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    const layout = await lesson.evaluate((element) => ({
+      client: document.documentElement.clientWidth,
+      scroll: document.documentElement.scrollWidth,
+      shortTargets: [...element.querySelectorAll("button,input,select,summary")].flatMap((target) => {
+        const rect = target.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 && (rect.width < 44 || rect.height < 44)
+          ? [{ name: target.textContent?.trim() || target.getAttribute("aria-label") || target.getAttribute("id"), width: rect.width, height: rect.height }]
+          : [];
+      })
+    }));
+    expect(layout.scroll, `overflow at ${width}px`).toBeLessThanOrEqual(layout.client);
+    expect(layout.shortTargets, `short targets at ${width}px`).toEqual([]);
+  }
+
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.evaluate(() => { document.documentElement.style.fontSize = "200%"; });
+  const zoomed = await lesson.evaluate((element) => ({
+    client: document.documentElement.clientWidth,
+    scroll: document.documentElement.scrollWidth,
+    clipped: [...element.querySelectorAll("button,input,select,summary,.asset-feedback")].flatMap((target) => {
+      const rect = target.getBoundingClientRect();
+      return rect.width > 0 && (rect.left < -1 || rect.right > document.documentElement.clientWidth + 1)
+        ? [{ name: target.textContent?.trim() || target.getAttribute("id"), left: rect.left, right: rect.right }]
+        : [];
+    })
+  }));
+  expect(zoomed.scroll).toBeLessThanOrEqual(zoomed.client);
+  expect(zoomed.clipped).toEqual([]);
+  await page.evaluate(() => { document.documentElement.style.fontSize = "100%"; });
+
+  const currentDetails = lesson.locator(".lesson-assets details");
+  if ((await currentDetails.getAttribute("open")) === null) await summary.click();
+  const archive = lesson.getByRole("button", { name: "Arquivar PDF" }).first();
+  await archive.click();
+  const archiveDialog = page.getByRole("dialog", { name: "Arquivar este PDF?" });
+  await expect(archiveDialog).toBeVisible();
+  await expect(archiveDialog.getByRole("button", { name: "Manter material" })).toBeFocused();
+  await archiveDialog.getByRole("button", { name: "Manter material" }).click();
+  await expect(archiveDialog).toHaveCount(0);
+  await expect(summary).toBeFocused();
+
+  const cancelledChooser = page.waitForEvent("filechooser");
+  await lesson.getByRole("button", { name: "Substituir PDF" }).first().click();
+  await (await cancelledChooser).setFiles([]);
+  const directChooser = page.waitForEvent("filechooser");
+  await input.click();
+  await (await directChooser).setFiles(pdf);
+  await expect(feedback).toContainText("Não foi possível preparar o arquivo");
+  const replacementChooser = page.waitForEvent("filechooser");
+  await lesson.getByRole("button", { name: "Substituir PDF" }).nth(1).click();
+  await (await replacementChooser).setFiles(pdf);
+  await expect(feedback).toContainText("Não foi possível preparar o arquivo");
+  expect(intentReplacementTargets).toEqual([null, null, null, secondAssetId]);
 });
 
 test("fails publication closed for string readiness and a missing offer", async ({ page }, testInfo) => {

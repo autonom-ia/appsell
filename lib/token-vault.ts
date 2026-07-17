@@ -4,6 +4,8 @@ import {
   randomBytes,
   timingSafeEqual
 } from "node:crypto";
+import { capacityLocalCiRuntimeEnabled } from "./capacity-local-ci-runtime";
+import { publicDemoRuntimeEnabled } from "./public-demo-runtime";
 
 const AES_KEY_BYTES = 32;
 const GCM_IV_BYTES = 12;
@@ -12,6 +14,8 @@ const MAX_ENVELOPE_BYTES = 64 * 1024;
 const MAX_CIPHERTEXT_BYTES = 32 * 1024;
 const MAX_TOKEN_BYTES = 16 * 1024;
 const MAX_SUBJECT_BYTES = 512;
+const MAX_ISSUER_BYTES = 2 * 1024;
+const MAX_EMAIL_BYTES = 320;
 const MAX_SCOPE_BYTES = 256;
 const MAX_SCOPES = 64;
 const KEY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -19,7 +23,10 @@ const PROVIDER_ID_PATTERN = /^[a-z][a-z0-9._-]{0,63}$/;
 const SESSION_HASH_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const NAMESPACE_PATTERN = /^appsell:[a-z0-9][a-z0-9_-]{1,31}:[a-z0-9][a-z0-9_-]{5,63}$/;
 const LOCAL_PROVIDER_ID = "local-aes-gcm-v1";
+export const OPENBAO_TRANSIT_PROVIDER_ID = "openbao-transit-v1";
 const TOKEN_VAULT_VERSION = 2;
+const OPENBAO_CIPHERTEXT_PATTERN = /^vault:v([1-9]\d*):([A-Za-z0-9+/]+={0,2})$/;
+const MIN_OPENBAO_CIPHERTEXT_BYTES = 16;
 
 export interface TokenBundle {
   subject: string;
@@ -30,6 +37,11 @@ export interface TokenBundle {
   refreshTokenExpiresAt: number;
   scopes: string[];
   revision: number;
+  identity?: {
+    issuer: string;
+    email: string;
+    emailVerified: true;
+  };
 }
 
 export interface TokenVaultContext {
@@ -45,11 +57,21 @@ interface AeadRecord {
   tag: string;
 }
 
-export interface KeyEnvelope extends AeadRecord {
+export interface LocalKeyEnvelope extends AeadRecord {
   provider: string;
   kid: string;
   alg: "A256GCM";
 }
+
+export interface OpenBaoTransitKeyEnvelope {
+  provider: typeof OPENBAO_TRANSIT_PROVIDER_ID;
+  kid: string;
+  alg: "OPENBAO_TRANSIT";
+  ciphertext: string;
+  keyVersion: number;
+}
+
+export type KeyEnvelope = LocalKeyEnvelope | OpenBaoTransitKeyEnvelope;
 
 interface TokenVaultEnvelope {
   v: 2;
@@ -154,7 +176,10 @@ export class LocalAesKeyEnvelopeProvider implements KeyEnvelopeProvider {
     entries: LocalKeyEntry[],
     options: { nodeEnvironment?: string; forbiddenKeys?: Buffer[] } = {}
   ) {
-    if (process.env.NODE_ENV === "production" || options.nodeEnvironment === "production") {
+    if (
+      (process.env.NODE_ENV === "production" || options.nodeEnvironment === "production") &&
+      !capacityLocalCiRuntimeEnabled() && !publicDemoRuntimeEnabled()
+    ) {
       throw new TokenVaultConfigurationError("Local vault key provider is forbidden in production.");
     }
     if (!Array.isArray(entries) || entries.length === 0 || entries.length > 16) {
@@ -190,7 +215,10 @@ export class LocalAesKeyEnvelopeProvider implements KeyEnvelopeProvider {
     environment: Partial<Record<string, string | undefined>> = process.env,
     forbiddenKeys: Buffer[] = []
   ) {
-    if (process.env.NODE_ENV === "production" || environment.NODE_ENV === "production") {
+    if (
+      (process.env.NODE_ENV === "production" || environment.NODE_ENV === "production") &&
+      !capacityLocalCiRuntimeEnabled(environment) && !publicDemoRuntimeEnabled(environment)
+    ) {
       throw new TokenVaultConfigurationError("Local vault key provider is forbidden in production.");
     }
     const raw = environment.APPSELL_VAULT_LOCAL_KEYRING_B64_JSON ?? "";
@@ -292,6 +320,14 @@ function parseEnvelope(serialized: string): TokenVaultEnvelope {
 }
 
 function parseKeyEnvelope(value: unknown): KeyEnvelope {
+  if (
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    (value as Record<string, unknown>).alg === "OPENBAO_TRANSIT"
+  ) {
+    return parseOpenBaoTransitKeyEnvelope(value);
+  }
   const record = exactObject(
     value,
     ["provider", "kid", "alg", "iv", "ct", "tag"],
@@ -318,6 +354,55 @@ function parseKeyEnvelope(value: unknown): KeyEnvelope {
     alg: "A256GCM",
     ...aead
   };
+}
+
+function parseOpenBaoTransitKeyEnvelope(value: unknown): OpenBaoTransitKeyEnvelope {
+  const record = exactObject(
+    value,
+    ["provider", "kid", "alg", "ciphertext", "keyVersion"],
+    "Token vault key envelope is invalid."
+  );
+  if (
+    record.provider !== OPENBAO_TRANSIT_PROVIDER_ID ||
+    typeof record.kid !== "string" ||
+    !KEY_ID_PATTERN.test(record.kid) ||
+    record.alg !== "OPENBAO_TRANSIT" ||
+    typeof record.ciphertext !== "string" ||
+    !positiveSafeInteger(record.keyVersion)
+  ) {
+    throw new TokenVaultMalformedError("Token vault key envelope is invalid.");
+  }
+  const parsedVersion = parseOpenBaoTransitCiphertextVersion(record.ciphertext);
+  if (parsedVersion !== record.keyVersion) {
+    throw new TokenVaultMalformedError("Token vault key envelope is invalid.");
+  }
+  return {
+    provider: OPENBAO_TRANSIT_PROVIDER_ID,
+    kid: record.kid,
+    alg: "OPENBAO_TRANSIT",
+    ciphertext: record.ciphertext,
+    keyVersion: record.keyVersion
+  };
+}
+
+export function parseOpenBaoTransitCiphertextVersion(ciphertext: string) {
+  if (typeof ciphertext !== "string" || Buffer.byteLength(ciphertext, "utf8") > MAX_CIPHERTEXT_BYTES) {
+    throw new TokenVaultMalformedError("Token vault key envelope is invalid.");
+  }
+  const match = OPENBAO_CIPHERTEXT_PATTERN.exec(ciphertext);
+  const version = match ? Number(match[1]) : 0;
+  const encoded = match?.[2] ?? "";
+  const decoded = Buffer.from(encoded, "base64");
+  if (
+    !match ||
+    !Number.isSafeInteger(version) ||
+    version <= 0 ||
+    decoded.length < MIN_OPENBAO_CIPHERTEXT_BYTES ||
+    decoded.toString("base64") !== encoded
+  ) {
+    throw new TokenVaultMalformedError("Token vault key envelope is invalid.");
+  }
+  return version;
 }
 
 function parseAeadRecord(
@@ -357,7 +442,7 @@ function validateContext(context: TokenVaultContext): TokenVaultContext {
 }
 
 function validateTokenBundle(value: unknown, expectedSubject: string, expectedRevision: number): TokenBundle {
-  const record = exactObject(value, [
+  const baseKeys = [
     "subject",
     "tokenType",
     "accessToken",
@@ -366,7 +451,18 @@ function validateTokenBundle(value: unknown, expectedSubject: string, expectedRe
     "refreshTokenExpiresAt",
     "scopes",
     "revision"
-  ], "Token vault bundle is invalid.");
+  ];
+  const hasIdentity = Boolean(
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.prototype.hasOwnProperty.call(value, "identity")
+  );
+  const record = exactObject(
+    value,
+    hasIdentity ? [...baseKeys, "identity"] : baseKeys,
+    "Token vault bundle is invalid."
+  );
   if (
     typeof record.subject !== "string" ||
     record.subject !== expectedSubject ||
@@ -392,6 +488,7 @@ function validateTokenBundle(value: unknown, expectedSubject: string, expectedRe
   if (normalizedScopes.length !== scopes.length || normalizedScopes.some((scope, index) => scope !== scopes[index])) {
     throw new TokenVaultMalformedError("Token vault scopes must be unique and sorted.");
   }
+  const identity = hasIdentity ? validateTokenIdentity(record.identity) : undefined;
   return {
     subject: record.subject,
     tokenType: "Bearer",
@@ -400,7 +497,48 @@ function validateTokenBundle(value: unknown, expectedSubject: string, expectedRe
     accessTokenExpiresAt: record.accessTokenExpiresAt,
     refreshTokenExpiresAt: record.refreshTokenExpiresAt,
     scopes: normalizedScopes,
-    revision: record.revision
+    revision: record.revision,
+    ...(identity ? { identity } : {})
+  };
+}
+
+function validateTokenIdentity(value: unknown): NonNullable<TokenBundle["identity"]> {
+  const record = exactObject(
+    value,
+    ["issuer", "email", "emailVerified"],
+    "Token vault identity is invalid."
+  );
+  if (
+    typeof record.issuer !== "string" ||
+    Buffer.byteLength(record.issuer, "utf8") > MAX_ISSUER_BYTES ||
+    typeof record.email !== "string" ||
+    Buffer.byteLength(record.email, "utf8") > MAX_EMAIL_BYTES ||
+    record.email !== record.email.trim().toLowerCase() ||
+    !/^[^\s@]+@[^\s@]+$/.test(record.email) ||
+    record.emailVerified !== true
+  ) {
+    throw new TokenVaultMalformedError("Token vault identity is invalid.");
+  }
+  let issuer: URL;
+  try {
+    issuer = new URL(record.issuer);
+  } catch {
+    throw new TokenVaultMalformedError("Token vault identity is invalid.");
+  }
+  if (
+    !["http:", "https:"].includes(issuer.protocol) ||
+    issuer.username ||
+    issuer.password ||
+    issuer.search ||
+    issuer.hash ||
+    record.issuer !== issuer.toString().replace(/\/$/, "")
+  ) {
+    throw new TokenVaultMalformedError("Token vault identity is invalid.");
+  }
+  return {
+    issuer: record.issuer,
+    email: record.email,
+    emailVerified: true
   };
 }
 

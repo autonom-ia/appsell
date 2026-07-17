@@ -36,6 +36,22 @@ describe("mutation protection", () => {
     expect(verifyCsrfToken(update, "opaque-session-a", publishAction, key)).toBe(false);
   });
 
+  it("keeps curriculum mutation classes on distinct stable actions", () => {
+    const key = randomBytes(32);
+    const actions = [
+      "POST:/api/curriculum",
+      "PATCH:/api/curriculum",
+      "PUT:/api/curriculum/order",
+      "POST:/api/curriculum/archive"
+    ];
+    const tokens = actions.map((action) => deriveCsrfToken("opaque-session-a", action, key));
+    expect(new Set(tokens).size).toBe(actions.length);
+    for (let index = 0; index < actions.length; index += 1) {
+      expect(verifyCsrfToken(tokens[index], "opaque-session-a", actions[index], key)).toBe(true);
+      expect(verifyCsrfToken(tokens[index], "opaque-session-a", actions[(index + 1) % actions.length], key)).toBe(false);
+    }
+  });
+
   it("requires a canonical independent 32-byte key", () => {
     const encoded = randomBytes(32).toString("base64");
     const key = parseCsrfKey(encoded, []);

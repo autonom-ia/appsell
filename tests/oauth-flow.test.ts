@@ -24,6 +24,18 @@ describe("OAuth BFF development spike", () => {
     expect(service.assertNoRawSessionKey(sessionId)).toBe(true);
   });
 
+  it("binds a fixed demo subject to the resulting session", () => {
+    const service = new DevOAuthService(() => 1_000);
+    const login = service.beginLogin();
+    const code = service.authorize(
+      { state: login.state, nonce: login.nonce, codeChallenge: login.codeChallenge },
+      "local",
+      "demo-user-v1"
+    );
+    const sessionId = service.callback({ transactionId: login.transactionId, code, state: login.state });
+    expect(service.getSession(sessionId)).toMatchObject({ subject: "demo-user-v1" });
+  });
+
   it("rejects a wrong state without consuming a legitimate transaction", () => {
     const service = new DevOAuthService();
     const login = service.beginLogin();

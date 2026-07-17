@@ -34,22 +34,22 @@ Project status:
 
 <!-- Substituir abaixo a cada nova sessão. Sessões anteriores vão para PROGRESS.md. -->
 
-## Sessão: 2026-07-11 11:55 — edição e publicação imutável de produto
-Issue: #30
-Branch: feat/30-product-publication
-PR: #31
+## Sessão: 2026-07-15 16:40 — publicar runtime preview isolado no EasyPanel
+Issue: #77 (parent #66)
+Branch: infra/77-easypanel-runtime-preview
+PR: não aberta
 Estado: em_progresso
 Modelo: strong + human
-Arquivos alterados: migration 0004, FastAPI/BFF detail-update-preview-publish, editor mobile, CSRF por ação, history/focus guards, testes PG/API/BFF/E2E e docs
-Comandos executados: lint; typecheck; Vitest; Ruff; mypy; pytest; audits; build; Playwright; production fail-closed; test-postgres-foundation; reviews críticos
-Validação: local verde — 68 web, 84 PostgreSQL/API, BFF vertical real, 24 browser + 4 skips deliberados; três reviews P0-P2=0
-Bloqueios: CI remoto; Identity real #13, KMS #19, Financial/Neuro e produção continuam bloqueados
-Próxima ação: acompanhar CI e reviews da PR #31; não fazer deploy
+Arquivos alterados: Compose/env/bootstrap/E2E EasyPanel; loader/preflight/up/verify/teardown com rollback; verifier de artifact em modo Appsell-only; workflow; Playwright runtime; docs
+Comandos executados: Bash syntax; fixtures do env/verifier; Compose real na VPS sem criação de recurso; ESLint; TypeScript; Vitest; Next build; Harness Doctor 2.1.2; inspeção de CI e artifacts da PR #76
+Validação: PR #76 12/12 checks e review crítico GREEN; slice #77 com Compose/artefatos/ESLint/typecheck/build e 295 Vitest verdes; Harness 0 erros/0 warnings; reviews crítico e isolamento GREEN com P0/P1/P2=0; lifecycle mockado passou no Docker real da VPS sem criar runtime
+Bloqueios: obter autorização explícita para commit/push/Draft PR e fechar CI antes de qualquer deploy; Identity/GitHub OAuth, Financial, Neuro.ai e mídia de produção são slices posteriores
+Próxima ação: após autorização, commitar, fazer push e abrir Draft PR #77 sem merge/deploy; aguardar CI completo
 Project status:
-  - Projeto: sem opção AppSell no campo do Project
-  - Status: PR aberta
-  - Tipo: Feature
+  - Projeto: Autonom.ia Dev
+  - Status: Em desenvolvimento
+  - Tipo: Infra
   - Prioridade: P0
   - Risco: Alto
-  - Ambiente: Dev
-  - Próxima ação: acompanhar App CI e Harness da PR #31
+  - Ambiente: Staging
+  - Próxima ação: autorização para commit/push/Draft PR; depois CI, sem merge/deploy

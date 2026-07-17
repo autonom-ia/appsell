@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { hmacSha256, sha256 } from "../lib/crypto";
 import {
+  OAuthIdentityCallbackUnavailableError,
   OAuthStoreConfigurationError,
   OAuthStoreUnavailableError,
   OAuthVaultConfigurationError,
@@ -51,11 +52,192 @@ async function loginAndCode(store: RedisOAuthService) {
 }
 
 describe("Redis OAuth store", () => {
-  it("creates one session and returns the same id for 20 concurrent callback retries", async () => {
+  it("exchanges a real PKCE transaction into an encrypted Identity session and preserves identity on refresh", async () => {
+    const suffix = `identity-${++sequence}`;
+    const store = service(suffix);
+    const login = await store.beginLogin("identity-client");
+    const now = Date.now();
+    const accessToken = "identity-access-token";
+    const refreshToken = "r".repeat(43);
+    const calls: Array<{ code: string; codeVerifier: string; expectedNonce: string }> = [];
+    const exchanger = {
+      async exchangeAuthorizationCode(input: { code: string; codeVerifier: string; expectedNonce: string }) {
+        calls.push(input);
+        return {
+          accessToken,
+          refreshToken,
+          tokenType: "Bearer" as const,
+          expiresAt: now + 60_000,
+          refreshTokenExpiresAt: now + 5 * 60_000,
+          identity: {
+            issuer: "http://127.0.0.1:4010/identity",
+            sub: "identity-user-001",
+            email: "buyer.demo@autonomia.site",
+            emailVerified: true as const
+          }
+        };
+      }
+    };
+    const code = "c".repeat(43);
+    const sessionId = await store.callbackIdentity({
+      transactionId: login.transactionId,
+      code,
+      state: login.state
+    }, exchanger);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ code, expectedNonce: login.nonce });
+    expect(sha256(calls[0]!.codeVerifier)).toBe(login.codeChallenge);
+    expect(await store.getSession(sessionId)).toMatchObject({
+      subject: "identity-user-001",
+      tokenRevision: 1,
+      identity: {
+        issuer: "http://127.0.0.1:4010/identity",
+        email: "buyer.demo@autonomia.site",
+        emailVerified: true
+      }
+    });
+    expect(await store.callbackIdentity({
+      transactionId: login.transactionId,
+      code,
+      state: login.state
+    }, exchanger)).toBe(sessionId);
+    expect(calls).toHaveLength(1);
+
+    const keys = await isolated.client.keys(`appsell:test:${suffix}:{appsell:test:${suffix}}:*`);
+    const values = await Promise.all(keys.map((key) => isolated.client.get(key)));
+    const persisted = values.filter((value): value is string => value !== null).join("\n");
+    expect(persisted).not.toContain(accessToken);
+    expect(persisted).not.toContain(refreshToken);
+    expect(persisted).not.toContain("buyer.demo@autonomia.site");
+
+    const refreshed = await store.refreshSession(sessionId, 1, {
+      async refresh() {
+        return {
+          kind: "success" as const,
+          accessToken: "identity-access-token-rotated",
+          refreshToken: "s".repeat(43),
+          accessTokenExpiresAt: Date.now() + 60_000,
+          refreshTokenExpiresAt: Date.now() + 5 * 60_000,
+          scopes: ["email", "openid", "profile"]
+        };
+      }
+    });
+    expect(refreshed.revision).toBe(2);
+    expect(refreshed.identity).toEqual({
+      issuer: "http://127.0.0.1:4010/identity",
+      email: "buyer.demo@autonomia.site",
+      emailVerified: true
+    });
+    await store.close();
+  });
+
+  it("rejects Identity state before calling the token endpoint", async () => {
     const store = service();
+    const login = await store.beginLogin("identity-client");
+    let called = false;
+    await expect(store.callbackIdentity({
+      transactionId: login.transactionId,
+      code: "c".repeat(43),
+      state: "x".repeat(43)
+    }, {
+      async exchangeAuthorizationCode() {
+        called = true;
+        throw new Error("must not be called");
+      }
+    })).rejects.toThrow("Invalid OAuth state");
+    expect(called).toBe(false);
+    await store.close();
+  });
+
+  it("serializes 20 cross-instance Identity callbacks into one external exchange", async () => {
+    const suffix = `identity-concurrent-${++sequence}`;
+    const first = service(suffix);
+    const second = new RedisOAuthService({
+      redisUrl: isolated.url,
+      prefix: `appsell:test:${suffix}`,
+      sessionHmacKey,
+      tokenVault: testTokenVault()
+    });
+    const login = await first.beginLogin("identity-client");
+    let exchangeCalls = 0;
+    const exchanger = {
+      async exchangeAuthorizationCode() {
+        exchangeCalls += 1;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const now = Date.now();
+        return {
+          accessToken: "identity-concurrent-access",
+          refreshToken: "t".repeat(43),
+          tokenType: "Bearer" as const,
+          expiresAt: now + 60_000,
+          refreshTokenExpiresAt: now + 5 * 60_000,
+          identity: {
+            issuer: "http://127.0.0.1:4010/identity",
+            sub: "identity-concurrent-user",
+            email: "concurrent@autonomia.site",
+            emailVerified: true as const
+          }
+        };
+      }
+    };
+    const callback = {
+      transactionId: login.transactionId,
+      code: "d".repeat(43),
+      state: login.state
+    };
+    const attempts = await Promise.allSettled(Array.from({ length: 20 }, (_, index) =>
+      (index % 2 ? first : second).callbackIdentity(callback, exchanger)
+    ));
+    expect(attempts.filter((attempt) => attempt.status === "fulfilled")).toHaveLength(20);
+    const sessionIds = attempts.flatMap((attempt) => attempt.status === "fulfilled" ? [attempt.value] : []);
+    expect(new Set(sessionIds)).toHaveLength(1);
+    expect(exchangeCalls).toBe(1);
+    expect(await first.getSession(sessionIds[0])).toMatchObject({
+      subject: "identity-concurrent-user",
+      identity: { email: "concurrent@autonomia.site", emailVerified: true }
+    });
+    const sessionKeys = await isolated.client.keys(`appsell:test:${suffix}:{appsell:test:${suffix}}:session:*`);
+    const vaultKeys = await isolated.client.keys(`appsell:test:${suffix}:{appsell:test:${suffix}}:vault:*`);
+    expect(sessionKeys).toHaveLength(1);
+    expect(vaultKeys).toHaveLength(1);
+    await first.close();
+    await second.close();
+  });
+
+  it("marks an ambiguous Identity exchange and blocks blind code retry", async () => {
+    const store = service();
+    const login = await store.beginLogin("identity-client");
+    let calls = 0;
+    const callback = {
+      transactionId: login.transactionId,
+      code: "e".repeat(43),
+      state: login.state
+    };
+    await expect(store.callbackIdentity(callback, {
+      async exchangeAuthorizationCode() {
+        calls += 1;
+        const error = new Error("ambiguous");
+        error.name = "IdentityOAuthAmbiguousError";
+        throw error;
+      }
+    })).rejects.toMatchObject({ name: "IdentityOAuthAmbiguousError" });
+    await expect(store.callbackIdentity(callback, {
+      async exchangeAuthorizationCode() {
+        calls += 1;
+        throw new Error("must not retry");
+      }
+    })).rejects.toBeInstanceOf(OAuthIdentityCallbackUnavailableError);
+    expect(calls).toBe(1);
+    await store.close();
+  });
+
+  it("creates one session and returns the same id for 20 concurrent callback retries", async () => {
+    const suffix = `concurrent-${++sequence}`;
+    const store = service(suffix);
     const peer = new RedisOAuthService({
       redisUrl: isolated.url,
-      prefix: "appsell:test:case-1",
+      prefix: `appsell:test:${suffix}`,
       sessionHmacKey,
       tokenVault: testTokenVault()
     });
@@ -68,9 +250,9 @@ describe("Redis OAuth store", () => {
     expect(attempts.filter((attempt) => attempt.status === "fulfilled")).toHaveLength(20);
     const sessionIds = attempts.flatMap((attempt) => attempt.status === "fulfilled" ? [attempt.value] : []);
     expect(new Set(sessionIds)).toHaveLength(1);
-    const sessionKeys = await isolated.client.keys(`appsell:test:case-1:{appsell:test:case-1}:session:*`);
+    const sessionKeys = await isolated.client.keys(`appsell:test:${suffix}:{appsell:test:${suffix}}:session:*`);
     expect(sessionKeys).toHaveLength(1);
-    const vaultKeys = await isolated.client.keys(`appsell:test:case-1:{appsell:test:case-1}:vault:*`);
+    const vaultKeys = await isolated.client.keys(`appsell:test:${suffix}:{appsell:test:${suffix}}:vault:*`);
     expect(vaultKeys).toHaveLength(1);
     await store.close();
     await peer.close();
@@ -279,7 +461,7 @@ describe("Redis OAuth store", () => {
     await store.close();
   });
 
-  it("binds the session subject to the authorization code inside the atomic callback", async () => {
+  it("rejects a tampered authorization-code subject before creating a session", async () => {
     const suffix = `subject-${++sequence}`;
     const prefix = `appsell:test:${suffix}`;
     const store = service(suffix);
@@ -290,7 +472,7 @@ describe("Redis OAuth store", () => {
     codeRecord.subject = "attacker-subject";
     await isolated.client.set(codeKey, JSON.stringify(codeRecord), "PX", 1_000);
     await expect(store.callback({ transactionId: login.transactionId, code, state: login.state }))
-      .rejects.toThrow("Authorization subject mismatch");
+      .rejects.toThrow("OAuth authorization code integrity failure");
     const sessionId = hmacSha256(sessionHmacKey, login.transactionId);
     expect(await isolated.client.get(`${scope}:session:${sha256(sessionId)}`)).toBeNull();
     expect(await isolated.client.get(`${scope}:vault:${sha256(sessionId)}`)).toBeNull();

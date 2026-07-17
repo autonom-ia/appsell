@@ -1,0 +1,31 @@
+FROM ghcr.io/astral-sh/uv:0.11.13@sha256:841c8e6fe30a8b07b4478d12d0c608cba6de66102d29d65d1cc423af86051563 AS uv
+FROM python:3.12.11-slim@sha256:47ae396f09c1303b8653019811a8498470603d7ffefc29cb07c88f1f8cb3d19f
+
+ARG SOURCE_SHA
+ARG ISSUE_NUMBER=66
+LABEL org.opencontainers.image.source="https://github.com/autonom-ia/appsell" \
+      org.opencontainers.image.revision="${SOURCE_SHA}" \
+      com.autonomia.preview="true" \
+      com.autonomia.issue="${ISSUE_NUMBER}"
+
+COPY --from=uv /uv /usr/local/bin/uv
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates ffmpeg fonts-dejavu-core poppler-utils postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /workspace/sell
+COPY apps/api/pyproject.toml apps/api/uv.lock apps/api/
+RUN cd apps/api && uv sync --frozen --no-dev --no-install-project
+COPY apps/api apps/api
+COPY demo demo
+COPY output/pdf output/pdf
+COPY deploy/preview-vps deploy/preview-vps
+COPY deploy/easypanel deploy/easypanel
+ENV PATH=/workspace/sell/apps/api/.venv/bin:${PATH} \
+    PYTHONPATH=/workspace/sell/apps/api/src \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+RUN test -n "${SOURCE_SHA}" \
+    && useradd --system --uid 10001 --home /workspace/sell appsell \
+    && chown -R appsell:appsell /workspace/sell
+USER appsell

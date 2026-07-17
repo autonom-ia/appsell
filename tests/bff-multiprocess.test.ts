@@ -29,13 +29,12 @@ test("two real Next BFF processes share an opaque Redis session", async () => {
     NEXT_TELEMETRY_DISABLED: "1"
   };
   const first = startBff(firstPort, firstDist, shared);
-  const second = startBff(secondPort, secondDist, shared);
+  let second: ChildProcess | undefined;
 
   try {
-    await Promise.all([
-      waitForBff(first, firstPort),
-      waitForBff(second, secondPort)
-    ]);
+    await waitForBff(first, firstPort);
+    second = startBff(secondPort, secondDist, shared);
+    await waitForBff(second, secondPort);
     expect(first.pid).toBeTypeOf("number");
     expect(second.pid).toBeTypeOf("number");
     expect(first.pid).not.toBe(second.pid);
@@ -82,7 +81,7 @@ test("two real Next BFF processes share an opaque Redis session", async () => {
     expect(unavailableLogout.status).toBe(503);
     expect(unavailableLogout.headers.get("set-cookie")).toBeNull();
   } finally {
-    await Promise.all([stopBff(first), stopBff(second)]);
+    await Promise.all([stopBff(first), ...(second ? [stopBff(second)] : [])]);
     await redis.stop();
     await Promise.all([
       rm(join(process.cwd(), firstDist), { recursive: true, force: true }),

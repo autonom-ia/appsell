@@ -4,7 +4,7 @@ export class PayloadTooLargeError extends Error {}
 
 export async function readLimitedForm(
   request: Request,
-  maxBytes = DEFAULT_MAX_BYTES
+  maxBytes: number | undefined = DEFAULT_MAX_BYTES
 ): Promise<FormData | null> {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
     throw new TypeError("Form body limit must be a positive safe integer.");

@@ -1,5 +1,8 @@
 .git
 .github
+.env
+.env.*
+credential.env
 .next
 .playwright-cli
 .ruff_cache
@@ -9,3 +12,7 @@ test-results
 apps/api/.venv
 apps/api/tests
 docs
+output
+!output/
+!output/pdf/
+!output/pdf/**

@@ -1,0 +1,426 @@
+from __future__ import annotations
+
+import socket
+import struct
+from collections.abc import Iterable
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Protocol
+from uuid import UUID
+
+from .pdf_derivatives import prepared_pdf_file
+from .pdf_verifier import PDF_MIME, spooled_pdf_file
+from .storage_s3 import S3Storage, StorageCapabilityError, StoredObject, object_sha256_matches
+from .video_verifier import VIDEO_MP4_MIME, probe_video_safely, spooled_video_file
+
+_EICAR = b"EICAR-STANDARD-ANTIVIRUS-TEST-FILE"
+
+
+class ScanRejected(RuntimeError):
+    pass
+
+
+class CleanupRetryableError(RuntimeError):
+    pass
+
+
+class ScannerUnavailable(RuntimeError):
+    pass
+
+
+class MalwareScanner(Protocol):
+    provider_name: str
+    production_capable: bool
+
+    def healthy(self) -> bool: ...
+
+    def scan(self, path: Path) -> bool: ...
+
+
+class DeterministicLocalScanner:
+    """Local/CI structural gate; explicitly not a commercial malware scanner."""
+
+    provider_name = "deterministic-local"
+    production_capable = False
+
+    def healthy(self) -> bool:
+        return True
+
+    def scan(self, path: Path) -> bool:
+        with path.open("rb") as source:
+            overlap = b""
+            while chunk := source.read(64 * 1024):
+                candidate = overlap + chunk
+                if _EICAR in candidate:
+                    return False
+                overlap = candidate[-len(_EICAR) :]
+        return True
+
+
+class ClamAvScanner:
+    """Bounded clamd INSTREAM adapter over a local Unix socket."""
+
+    provider_name = "clamav-clamd"
+    production_capable = True
+
+    def __init__(self, socket_path: str, *, timeout_seconds: float = 3.0) -> None:
+        self.socket_path = socket_path
+        self.timeout_seconds = timeout_seconds
+
+    def healthy(self) -> bool:
+        try:
+            if self._request(b"zPING\0", stream=None) != b"PONG":
+                return False
+            version = self._request(b"zVERSION\0", stream=None).decode("ascii")
+            signature_date = datetime.strptime(
+                version.rsplit("/", 1)[1], "%a %b %d %H:%M:%S %Y"
+            ).replace(tzinfo=UTC)
+            age = datetime.now(UTC) - signature_date
+            return -timedelta(hours=1) <= age <= timedelta(hours=48)
+        except (IndexError, UnicodeDecodeError, ValueError, ScannerUnavailable):
+            return False
+
+    def scan(self, path: Path) -> bool:
+        response = self._request(b"zINSTREAM\0", stream=path)
+        if response.endswith(b" OK"):
+            return True
+        if response.endswith(b" FOUND"):
+            return False
+        raise ScannerUnavailable("malware scanner returned an invalid response")
+
+    def _request(self, command: bytes, *, stream: Path | None) -> bytes:
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(self.timeout_seconds)
+                client.connect(self.socket_path)
+                client.sendall(command)
+                if stream is not None:
+                    with stream.open("rb") as source:
+                        while chunk := source.read(64 * 1024):
+                            client.sendall(struct.pack("!I", len(chunk)))
+                            client.sendall(chunk)
+                    client.sendall(struct.pack("!I", 0))
+                response = bytearray()
+                while len(response) <= 4_096:
+                    chunk = client.recv(4_096 - len(response))
+                    if not chunk:
+                        break
+                    response.extend(chunk)
+                    if b"\0" in chunk:
+                        break
+        except (OSError, ValueError) as error:
+            raise ScannerUnavailable("malware scanner is unavailable") from error
+        if not response or len(response) > 4_096 or b"\0" not in response:
+            raise ScannerUnavailable("malware scanner returned an invalid response")
+        return bytes(response).split(b"\0", 1)[0]
+
+
+@dataclass(frozen=True)
+class VerifyPdfJob:
+    seller_id: UUID
+    upload_id: UUID
+    source_bucket: str
+    ready_bucket: str
+    source_key: str
+    ready_key: str
+    source_version_id: str
+    expected_size: int
+    expected_sha256_hex: str
+    declared_content_type: str = PDF_MIME
+    file_name: str = "material.pdf"
+
+
+@dataclass(frozen=True)
+class VerifiedStoredPdfPage:
+    page_number: int
+    stored: StoredObject
+    byte_size: int
+    sha256_hex: str
+    width: int
+    height: int
+
+    def manifest_entry(self) -> dict[str, object]:
+        return {
+            "page_number": self.page_number,
+            "storage_driver": "s3",
+            "storage_bucket": self.stored.bucket,
+            "object_key": self.stored.key,
+            "storage_version_id": self.stored.version_id,
+            "storage_etag": self.stored.etag,
+            "byte_size": self.byte_size,
+            "sha256": self.sha256_hex,
+            "pixel_width": self.width,
+            "pixel_height": self.height,
+        }
+
+
+@dataclass(frozen=True)
+class VerifiedAssetResult:
+    source: StoredObject
+    ready: StoredObject
+    source_byte_size: int
+    source_sha256_hex: str
+    ready_byte_size: int
+    ready_sha256_hex: str
+    pdf_page_count: int
+    scanner_provider: str
+    pdf_pages: tuple[VerifiedStoredPdfPage, ...] = ()
+
+
+class PdfStorageWorker:
+    def __init__(
+        self,
+        storage: S3Storage,
+        scanner: MalwareScanner,
+        *,
+        isolated_service_boundary: bool = False,
+    ) -> None:
+        self.storage = storage
+        self.scanner = scanner
+        self.isolated_service_boundary = isolated_service_boundary
+
+    def process(self, job: VerifyPdfJob) -> VerifiedAssetResult:
+        _validate_storage_key(job.source_key)
+        _validate_storage_key(job.ready_key)
+        if (
+            job.source_bucket != self.storage.quarantine_bucket
+            or job.ready_bucket != self.storage.ready_bucket
+        ):
+            raise ScanRejected("job buckets do not match configured storage boundaries")
+        if job.source_key == job.ready_key:
+            raise ScanRejected("quarantine and ready keys must be distinct")
+        expected_source_key = f"tenants/{job.seller_id}/quarantine/{job.upload_id}"
+        expected_ready_prefix = f"tenants/{job.seller_id}/assets/"
+        if job.source_key != expected_source_key or not job.ready_key.startswith(
+            expected_ready_prefix
+        ):
+            raise ScanRejected("storage keys are outside the job tenant scope")
+        if not self.scanner.healthy():
+            raise ScannerUnavailable("malware scanner health check failed")
+        source = self.storage.head(
+            bucket=job.source_bucket,
+            key=job.source_key,
+            version_id=job.source_version_id,
+        )
+        if source.size != job.expected_size:
+            raise ScanRejected("quarantine object size differs from upload intent")
+        if source.content_type != job.declared_content_type:
+            raise ScanRejected("quarantine object MIME differs from upload intent")
+        if not object_sha256_matches(source, job.expected_sha256_hex):
+            raise ScanRejected("quarantine object checksum differs from upload intent")
+        if source.appsell_upload_id != str(job.upload_id):
+            raise ScanRejected("quarantine upload metadata differs from upload intent")
+
+        if job.declared_content_type == VIDEO_MP4_MIME:
+            return self._process_video(job, source)
+        if job.declared_content_type != PDF_MIME:
+            raise ScanRejected("job MIME is unsupported")
+
+        uploaded: list[StoredObject] = []
+        try:
+            with self.storage.open_download(
+                bucket=source.bucket, key=source.key, version_id=source.version_id
+            ) as stream:
+                with spooled_pdf_file(
+                    stream,
+                    expected_size=job.expected_size,
+                    expected_sha256_hex=job.expected_sha256_hex,
+                    declared_content_type=job.declared_content_type,
+                ) as source_pdf:
+                    if not self.scanner.scan(source_pdf.path):
+                        raise ScanRejected("scanner rejected the original quarantined object")
+                    with prepared_pdf_file(
+                        source_pdf.path,
+                        isolated_service_boundary=self.isolated_service_boundary,
+                    ) as prepared:
+                        if not self.scanner.scan(prepared.ready_pdf_path):
+                            raise ScanRejected("scanner rejected the normalized ready object")
+                        # The asset version prefix is reserved exclusively for this upload.
+                        # Reconcile any versions left by an abruptly terminated prior lease
+                        # before writing a fresh, internally consistent derivative set.
+                        self.storage.delete_all_versions_under_prefix(
+                            bucket=job.ready_bucket,
+                            prefix=ready_asset_version_prefix(job.ready_key, job.seller_id),
+                        )
+                        ready = self.storage.put_verified(
+                            destination_bucket=job.ready_bucket,
+                            destination_key=job.ready_key,
+                            source_path=prepared.ready_pdf_path,
+                            byte_size=prepared.ready_pdf_byte_size,
+                            sha256_hex=prepared.ready_pdf_sha256_hex,
+                            content_type=PDF_MIME,
+                            upload_id=str(job.upload_id),
+                            file_name=job.file_name,
+                        )
+                        uploaded.append(ready)
+                        stored_pages: list[VerifiedStoredPdfPage] = []
+                        for page in prepared.pages:
+                            stored_page = self.storage.put_verified(
+                                destination_bucket=job.ready_bucket,
+                                destination_key=_pdf_page_key(job.ready_key, page.page_number),
+                                source_path=page.path,
+                                byte_size=page.byte_size,
+                                sha256_hex=page.sha256_hex,
+                                content_type="image/png",
+                                upload_id=str(job.upload_id),
+                                file_name=f"page-{page.page_number}.png",
+                            )
+                            uploaded.append(stored_page)
+                            stored_pages.append(
+                                VerifiedStoredPdfPage(
+                                    page_number=page.page_number,
+                                    stored=stored_page,
+                                    byte_size=page.byte_size,
+                                    sha256_hex=page.sha256_hex,
+                                    width=page.width,
+                                    height=page.height,
+                                )
+                            )
+                        return VerifiedAssetResult(
+                            source=source,
+                            ready=ready,
+                            source_byte_size=source_pdf.byte_size,
+                            source_sha256_hex=source_pdf.sha256_hex,
+                            ready_byte_size=prepared.ready_pdf_byte_size,
+                            ready_sha256_hex=prepared.ready_pdf_sha256_hex,
+                            pdf_page_count=prepared.page_count,
+                            pdf_pages=tuple(stored_pages),
+                            scanner_provider=self.scanner.provider_name,
+                        )
+        except Exception as processing_error:
+            if not uploaded:
+                raise
+            cleanup_errors = _delete_versions(self.storage, reversed(uploaded))
+            if cleanup_errors:
+                raise ExceptionGroup(
+                    "processing and PDF derivative compensation failed",
+                    [processing_error, *cleanup_errors],
+                ) from processing_error
+            raise
+
+    def _process_video(self, job: VerifyPdfJob, source: StoredObject) -> VerifiedAssetResult:
+        ready: StoredObject | None = None
+        try:
+            with self.storage.open_download(
+                bucket=source.bucket, key=source.key, version_id=source.version_id
+            ) as stream:
+                with spooled_video_file(
+                    stream,
+                    expected_size=job.expected_size,
+                    expected_sha256_hex=job.expected_sha256_hex,
+                    declared_content_type=job.declared_content_type,
+                ) as source_video:
+                    if not self.scanner.scan(source_video.path):
+                        raise ScanRejected("scanner rejected the quarantined video")
+                    probe_video_safely(source_video.path)
+                    ready = self.storage.put_verified(
+                        destination_bucket=job.ready_bucket,
+                        destination_key=job.ready_key,
+                        source_path=source_video.path,
+                        byte_size=source_video.byte_size,
+                        sha256_hex=source_video.sha256_hex,
+                        content_type=VIDEO_MP4_MIME,
+                        upload_id=str(job.upload_id),
+                        file_name=job.file_name,
+                    )
+                    return VerifiedAssetResult(
+                        source=source,
+                        ready=ready,
+                        source_byte_size=source_video.byte_size,
+                        source_sha256_hex=source_video.sha256_hex,
+                        ready_byte_size=source_video.byte_size,
+                        ready_sha256_hex=source_video.sha256_hex,
+                        pdf_page_count=0,
+                        pdf_pages=(),
+                        scanner_provider=self.scanner.provider_name,
+                    )
+        except Exception as processing_error:
+            if ready is None:
+                raise
+            try:
+                self.storage.delete_version(
+                    bucket=ready.bucket, key=ready.key, version_id=ready.version_id
+                )
+            except Exception as ready_cleanup_error:
+                raise ExceptionGroup(
+                    "video processing and ready compensation both failed",
+                    [processing_error, ready_cleanup_error],
+                ) from processing_error
+            raise
+
+    def compensate_ready_after_finalize_failure(self, result: VerifiedAssetResult) -> None:
+        errors = _delete_versions(
+            self.storage,
+            [page.stored for page in reversed(result.pdf_pages)] + [result.ready],
+        )
+        if errors:
+            raise CleanupRetryableError(
+                "ready derivative cleanup must be retried"
+            ) from ExceptionGroup("ready derivative cleanup failed", errors)
+
+    def cleanup_source_after_commit(self, result: VerifiedAssetResult) -> None:
+        try:
+            self.storage.delete_version(
+                bucket=result.source.bucket,
+                key=result.source.key,
+                version_id=result.source.version_id,
+            )
+        except Exception as error:
+            raise CleanupRetryableError("quarantine cleanup must be retried") from error
+
+
+def assert_storage_worker_ready(
+    *, environment: str, storage: S3Storage, scanner: MalwareScanner, allowed_origin: str
+) -> None:
+    storage.assert_runtime_controls(
+        allowed_origin=allowed_origin,
+        require_tls=environment in {"staging", "production"},
+    )
+    if not scanner.healthy():
+        raise StorageCapabilityError("malware scanner is unhealthy")
+    if environment in {"staging", "production"} and not scanner.production_capable:
+        raise StorageCapabilityError(
+            "production-capable malware scanner is required outside local/CI"
+        )
+
+
+def _validate_storage_key(key: str) -> None:
+    invalid_part = any(part in {"", ".", ".."} for part in key.split("/"))
+    if not key or key.startswith("/") or "\0" in key or invalid_part:
+        raise ScanRejected("storage key is invalid")
+
+
+def _pdf_page_key(ready_key: str, page_number: int) -> str:
+    parts = ready_key.split("/")
+    try:
+        UUID(parts[1])
+        UUID(parts[3])
+        UUID(parts[5])
+        version = int(parts[4][1:])
+    except (IndexError, ValueError) as error:
+        raise ScanRejected("ready PDF key does not identify an asset version") from error
+    if len(parts) != 6 or parts[0] != "tenants" or parts[2] != "assets" or version < 1:
+        raise ScanRejected("ready PDF key does not identify an asset version")
+    return "/".join([*parts[:5], "pages", f"{page_number}.png"])
+
+
+def ready_asset_version_prefix(ready_key: str, seller_id: UUID) -> str:
+    # Reuse the strict tenant/asset/version/blob validation before deriving a
+    # prefix that can be passed to a destructive storage reconciliation call.
+    page_key = _pdf_page_key(ready_key, 1)
+    if UUID(ready_key.split("/")[1]) != seller_id:
+        raise ScanRejected("ready PDF key is outside the cleanup tenant scope")
+    return page_key.rsplit("pages/1.png", 1)[0]
+
+
+def _delete_versions(storage: S3Storage, objects: Iterable[StoredObject]) -> list[Exception]:
+    errors: list[Exception] = []
+    for stored in objects:
+        try:
+            storage.delete_version(
+                bucket=stored.bucket, key=stored.key, version_id=stored.version_id
+            )
+        except Exception as error:
+            errors.append(error)
+    return errors

@@ -10,15 +10,22 @@ from sqlalchemy.ext.asyncio import (
 
 from .config import Settings
 
+API_POOL_SIZE = 5
+API_POOL_MAX_OVERFLOW = 0
+
 
 def create_engine(settings: Settings) -> AsyncEngine:
     return create_async_engine(
         settings.database_url,
         pool_pre_ping=True,
-        pool_size=5,
-        max_overflow=5,
+        pool_size=API_POOL_SIZE,
+        max_overflow=API_POOL_MAX_OVERFLOW,
         pool_timeout=3,
-        connect_args={"timeout": 3, "command_timeout": 3},
+        connect_args={
+            "timeout": 3,
+            "command_timeout": 3,
+            "server_settings": {"application_name": settings.database_application_name},
+        },
     )
 
 

@@ -1,6 +1,14 @@
 import "server-only";
 
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
+import demoCodexAssets from "./demo-codex-assets.json";
+import { capacityLocalCiRuntimeEnabled } from "./capacity-local-ci-runtime";
+import { publicDemoRuntimeEnabled } from "./public-demo-runtime";
+import { demoProfileForSubject } from "./demo-config";
+import {
+  capacityProductCreateTelemetryEnabled,
+  validCapacityProductCreateTrace
+} from "./capacity-product-create-telemetry";
 
 import {
   parseInternalSigningConfig,
@@ -13,16 +21,48 @@ interface ServerSession {
   createdAt: number;
   expiresAt: number;
   tokenRevision: number;
+  identity?: {
+    issuer: string;
+    email: string;
+    emailVerified: true;
+  } | null;
 }
 
 interface ApiRequest {
   method: "GET" | "POST" | "PUT" | "PATCH";
   path: string;
+  query?: string;
   capability: "identity.sync" | "platform.grants.read" | "seller.list" | "seller.onboard" |
+    "platform.demo.inspect.start" | "platform.demo.inspect.read" |
+    "platform.demo.inspect.revoke" |
     "catalog.draft.read" | "catalog.draft.create" | "catalog.draft.update" |
-    "catalog.draft.preview" | "catalog.publication.read" | "catalog.publication.create";
+    "catalog.draft.preview" | "catalog.publication.read" | "catalog.publication.create" |
+    "catalog.curriculum.read" | "catalog.curriculum.create" |
+    "catalog.curriculum.update" | "catalog.curriculum.archive" |
+    "catalog.curriculum.reorder" | "catalog.asset.read" | "catalog.asset.create" |
+    "catalog.asset.upload.confirm" | "catalog.asset.upload.cancel" |
+    "catalog.asset.archive" | "catalog.asset.policy.update" |
+    "library.read" | "library.asset.read" | "library.asset.download" |
+    "learning.player.read" | "learning.progress.write" |
+    "commerce.demo.checkout.read" | "commerce.demo.checkout.complete";
   sellerOrganizationId?: string;
+  inspectionToken?: string;
   body?: Record<string, unknown>;
+  capacityTrace?: string | null;
+  learningAssetsContract?: "v2" | "v3";
+}
+
+export interface DemoInspectionProjection {
+  inspection: { id: string; started_at: string; expires_at: string };
+  seller: { id: string; slug: string; display_name: string; status: string };
+  product: { id: string; slug: string; title: string; status: string };
+  publication: {
+    id: string;
+    version: number;
+    schema_version: number;
+    published_at: string;
+  };
+  courses: Array<{ id: string; title: string; position: number }>;
 }
 
 export class DomainApiError extends Error {
@@ -35,13 +75,42 @@ export function isDomainApiConfigured() {
   return Boolean(process.env.APPSELL_DOMAIN_API_URL);
 }
 
+export async function readPublicStorefront(sellerSlug: string) {
+  const config = internalServiceConfig();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3_000);
+  try {
+    const response = await fetch(
+      new URL(`/v1/public/sellers/${encodeURIComponent(sellerSlug)}`, config.apiOrigin),
+      {
+        headers: { "x-appsell-service-credential": config.serviceCredentialEncoded },
+        cache: "no-store",
+        signal: controller.signal
+      }
+    );
+    const payload = await response.json().catch(() => null) as unknown;
+    if (!response.ok) {
+      const code = isRecord(payload) && typeof payload.detail === "string"
+        ? payload.detail
+        : "domain_api_error";
+      throw new DomainApiError(response.status, code);
+    }
+    return payload;
+  } catch (error) {
+    if (error instanceof DomainApiError) throw error;
+    throw new DomainApiError(503, "domain_api_unavailable");
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export async function syncDomainIdentity(sessionId: string, session: ServerSession) {
   return domainRequest(sessionId, session, {
     method: "PUT",
     path: "/v1/me",
     capability: "identity.sync",
     body: {
-      email: localIdentityEmail(),
+      email: identityEmail(session),
       email_verified: true
     }
   });
@@ -80,14 +149,64 @@ export async function onboardDomainSeller(
   });
 }
 
+export async function startDomainDemoInspection(
+  sessionId: string,
+  session: ServerSession,
+  input: { reason: string; ttlSeconds: number }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: "/v1/platform/demo-inspections",
+    capability: "platform.demo.inspect.start",
+    body: { reason: input.reason, ttl_seconds: input.ttlSeconds }
+  }) as Promise<{
+    inspection_id: string;
+    inspection_token: string;
+    expires_at: string;
+    seller: { id: string; slug: string; display_name: string };
+  }>;
+}
+
+export async function readDomainDemoInspection(
+  sessionId: string,
+  session: ServerSession,
+  inspectionId: string,
+  inspectionToken: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/platform/demo-inspections/${inspectionId}`,
+    capability: "platform.demo.inspect.read",
+    inspectionToken
+  }) as Promise<DemoInspectionProjection>;
+}
+
+export async function revokeDomainDemoInspection(
+  sessionId: string,
+  session: ServerSession,
+  inspectionId: string,
+  inspectionToken: string,
+  reason: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `/v1/platform/demo-inspections/${inspectionId}/revoke`,
+    capability: "platform.demo.inspect.revoke",
+    inspectionToken,
+    body: { reason }
+  }) as Promise<{ inspection_id: string; status: "revoked"; revoked_at: string }>;
+}
+
 export async function listDomainProductDrafts(
   sessionId: string,
   session: ServerSession,
-  sellerOrganizationId: string
+  sellerOrganizationId: string,
+  cursor: string | null = null
 ) {
   return domainRequest(sessionId, session, {
     method: "GET",
     path: `/v1/me/sellers/${sellerOrganizationId}/products`,
+    query: cursor ? `cursor=${encodeURIComponent(cursor)}` : undefined,
     capability: "catalog.draft.read",
     sellerOrganizationId
   });
@@ -103,6 +222,7 @@ export async function createDomainProductDraft(
     productTitle: string;
     productDescription: string;
     courseTitle: string;
+    capacityTrace?: string | null;
   }
 ) {
   return domainRequest(sessionId, session, {
@@ -110,6 +230,7 @@ export async function createDomainProductDraft(
     path: `/v1/me/sellers/${sellerOrganizationId}/products`,
     capability: "catalog.draft.create",
     sellerOrganizationId,
+    capacityTrace: input.capacityTrace,
     body: {
       idempotency_key: input.idempotencyKey,
       slug: input.slug,
@@ -218,13 +339,516 @@ export async function publishDomainProductDraft(
   });
 }
 
+export async function readDomainCurriculum(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  courseId: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}/courses/${courseId}/curriculum`,
+    capability: "catalog.curriculum.read",
+    sellerOrganizationId
+  });
+}
+
+interface CurriculumMutationInput {
+  idempotencyKey: string;
+  expectedCourseVersion: number;
+}
+
+export async function createDomainCourseModule(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  courseId: string,
+  input: CurriculumMutationInput & { title: string }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}/courses/${courseId}/modules`,
+    capability: "catalog.curriculum.create",
+    sellerOrganizationId,
+    body: curriculumBody(input, { title: input.title })
+  });
+}
+
+export async function updateDomainCourseModule(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  courseId: string,
+  moduleId: string,
+  input: CurriculumMutationInput & { title: string }
+) {
+  return domainRequest(sessionId, session, {
+    method: "PATCH",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}/courses/${courseId}/modules/${moduleId}`,
+    capability: "catalog.curriculum.update",
+    sellerOrganizationId,
+    body: curriculumBody(input, { title: input.title })
+  });
+}
+
+export async function archiveDomainCourseModule(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  courseId: string,
+  moduleId: string,
+  input: CurriculumMutationInput
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}/courses/${courseId}/modules/${moduleId}/archive`,
+    capability: "catalog.curriculum.archive",
+    sellerOrganizationId,
+    body: curriculumBody(input)
+  });
+}
+
+export async function reorderDomainCourseModules(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  courseId: string,
+  input: CurriculumMutationInput & { orderedIds: string[] }
+) {
+  return domainRequest(sessionId, session, {
+    method: "PUT",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}/courses/${courseId}/modules/order`,
+    capability: "catalog.curriculum.reorder",
+    sellerOrganizationId,
+    body: curriculumBody(input, { ordered_ids: input.orderedIds })
+  });
+}
+
+export async function createDomainCourseLesson(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  courseId: string,
+  moduleId: string,
+  input: CurriculumMutationInput & { title: string; content: string }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}/courses/${courseId}/modules/${moduleId}/lessons`,
+    capability: "catalog.curriculum.create",
+    sellerOrganizationId,
+    body: curriculumBody(input, { title: input.title, kind: "text", content: input.content })
+  });
+}
+
+export async function updateDomainCourseLesson(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  courseId: string,
+  moduleId: string,
+  lessonId: string,
+  input: CurriculumMutationInput & { title: string; content: string }
+) {
+  return domainRequest(sessionId, session, {
+    method: "PATCH",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}/courses/${courseId}/modules/${moduleId}/lessons/${lessonId}`,
+    capability: "catalog.curriculum.update",
+    sellerOrganizationId,
+    body: curriculumBody(input, { title: input.title, kind: "text", content: input.content })
+  });
+}
+
+export async function archiveDomainCourseLesson(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  courseId: string,
+  moduleId: string,
+  lessonId: string,
+  input: CurriculumMutationInput
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}/courses/${courseId}/modules/${moduleId}/lessons/${lessonId}/archive`,
+    capability: "catalog.curriculum.archive",
+    sellerOrganizationId,
+    body: curriculumBody(input)
+  });
+}
+
+export async function reorderDomainCourseLessons(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  courseId: string,
+  moduleId: string,
+  input: CurriculumMutationInput & { orderedIds: string[] }
+) {
+  return domainRequest(sessionId, session, {
+    method: "PUT",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}/courses/${courseId}/modules/${moduleId}/lessons/order`,
+    capability: "catalog.curriculum.reorder",
+    sellerOrganizationId,
+    body: curriculumBody(input, { ordered_ids: input.orderedIds })
+  });
+}
+
+interface LessonAssetPath {
+  sellerOrganizationId: string;
+  productId: string;
+  courseId: string;
+  moduleId: string;
+  lessonId: string;
+}
+
+function lessonAssetPath(input: LessonAssetPath) {
+  return `/v1/me/sellers/${input.sellerOrganizationId}/products/${input.productId}`
+    + `/courses/${input.courseId}/modules/${input.moduleId}/lessons/${input.lessonId}/assets`;
+}
+
+export async function readDomainLessonAssets(
+  sessionId: string,
+  session: ServerSession,
+  input: LessonAssetPath
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: lessonAssetPath(input),
+    capability: "catalog.asset.read",
+    sellerOrganizationId: input.sellerOrganizationId
+  });
+}
+
+export async function createDomainAssetUploadIntent(
+  sessionId: string,
+  session: ServerSession,
+  input: LessonAssetPath & {
+    idempotencyKey: string;
+    expectedCourseVersion: number;
+    existingAssetId?: string;
+    title: string;
+    fileName: string;
+    mediaType: "application/pdf" | "video/mp4";
+    byteSize: number;
+    sha256: string;
+  }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `${lessonAssetPath(input)}/upload-intents`,
+    capability: "catalog.asset.create",
+    sellerOrganizationId: input.sellerOrganizationId,
+    body: {
+      idempotency_key: input.idempotencyKey,
+      expected_course_version: input.expectedCourseVersion,
+      ...(input.existingAssetId ? { existing_asset_id: input.existingAssetId } : {}),
+      title: input.title,
+      file_name: input.fileName,
+      media_type: input.mediaType,
+      byte_size: input.byteSize,
+      sha256: input.sha256
+    }
+  });
+}
+
+export async function readDomainAssetUploadStatus(
+  sessionId: string,
+  session: ServerSession,
+  input: LessonAssetPath & { uploadId: string }
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `${lessonAssetPath(input)}/uploads/${input.uploadId}`,
+    capability: "catalog.asset.read",
+    sellerOrganizationId: input.sellerOrganizationId
+  });
+}
+
+export async function confirmDomainAssetUpload(
+  sessionId: string,
+  session: ServerSession,
+  input: LessonAssetPath & { uploadId: string; idempotencyKey: string }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `${lessonAssetPath(input)}/uploads/${input.uploadId}/confirm`,
+    capability: "catalog.asset.upload.confirm",
+    sellerOrganizationId: input.sellerOrganizationId,
+    body: { idempotency_key: input.idempotencyKey }
+  });
+}
+
+export async function cancelDomainAssetUpload(
+  sessionId: string,
+  session: ServerSession,
+  input: LessonAssetPath & { uploadId: string; idempotencyKey: string }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `${lessonAssetPath(input)}/uploads/${input.uploadId}/cancel`,
+    capability: "catalog.asset.upload.cancel",
+    sellerOrganizationId: input.sellerOrganizationId,
+    body: { idempotency_key: input.idempotencyKey }
+  });
+}
+
+export async function archiveDomainLessonAsset(
+  sessionId: string,
+  session: ServerSession,
+  input: LessonAssetPath & {
+    assetId: string;
+    idempotencyKey: string;
+    expectedCourseVersion: number;
+  }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `${lessonAssetPath(input)}/${input.assetId}/archive`,
+    capability: "catalog.asset.archive",
+    sellerOrganizationId: input.sellerOrganizationId,
+    body: {
+      idempotency_key: input.idempotencyKey,
+      expected_course_version: input.expectedCourseVersion
+    }
+  });
+}
+
+export async function updateDomainLessonAssetPolicy(
+  sessionId: string,
+  session: ServerSession,
+  input: LessonAssetPath & {
+    assetId: string;
+    idempotencyKey: string;
+    expectedCourseVersion: number;
+    contentRole: "course_content" | "support_material";
+    downloadAllowed: boolean;
+  }
+) {
+  return domainRequest(sessionId, session, {
+    method: "PATCH",
+    path: `${lessonAssetPath(input)}/${input.assetId}/policy`,
+    capability: "catalog.asset.policy.update",
+    sellerOrganizationId: input.sellerOrganizationId,
+    body: {
+      idempotency_key: input.idempotencyKey,
+      expected_course_version: input.expectedCourseVersion,
+      content_role: input.contentRole,
+      download_allowed: input.downloadAllowed
+    }
+  });
+}
+
+export async function readDomainLibrary(sessionId: string, session: ServerSession) {
+  return readDomainBuyerProducts(sessionId, session);
+}
+
+export async function readDomainBuyerProducts(sessionId: string, session: ServerSession) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: "/v1/me/products",
+    capability: "library.read"
+  });
+}
+
+export async function readDomainDemoCheckout(sessionId: string, session: ServerSession) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: "/v1/me/demo-checkout",
+    capability: "commerce.demo.checkout.read"
+  });
+}
+
+export async function completeDomainDemoCheckout(
+  sessionId: string,
+  session: ServerSession,
+  input: { idempotencyKey: string; couponCode: string }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: "/v1/me/demo-checkout",
+    capability: "commerce.demo.checkout.complete",
+    body: {
+      idempotency_key: input.idempotencyKey,
+      coupon_code: input.couponCode
+    }
+  });
+}
+
+export async function readDomainBuyerSellerProducts(
+  sessionId: string,
+  session: ServerSession,
+  entitlementId: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/products/${entitlementId}/seller-products`,
+    capability: "library.read"
+  });
+}
+
+export async function authorizeDomainLearningAsset(
+  sessionId: string,
+  session: ServerSession,
+  entitlementId: string,
+  assetId: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/learning/items/${entitlementId}/assets/${assetId}`,
+    capability: "library.asset.read"
+  });
+}
+
+export async function authorizeDomainLearningAssetDownload(
+  sessionId: string,
+  session: ServerSession,
+  entitlementId: string,
+  assetId: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/learning/items/${entitlementId}/assets/${assetId}/download`,
+    capability: "library.asset.download"
+  });
+}
+
+export async function readDomainLearningPdfManifest(
+  sessionId: string,
+  session: ServerSession,
+  entitlementId: string,
+  assetId: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/learning/items/${entitlementId}/assets/${assetId}/pages`,
+    capability: "library.asset.read"
+  });
+}
+
+export interface DomainLearningPdfPage {
+  bytes: Uint8Array;
+  contentLength: number;
+  pageCount: number;
+  sha256: string;
+}
+
+export async function renderDomainLearningPdfPage(
+  sessionId: string,
+  session: ServerSession,
+  entitlementId: string,
+  assetId: string,
+  page: number
+): Promise<DomainLearningPdfPage> {
+  return domainBinaryRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/learning/items/${entitlementId}/assets/${assetId}/pages/${page}`,
+    capability: "library.asset.read"
+  });
+}
+
+export async function readDomainLearningResume(
+  sessionId: string,
+  session: ServerSession,
+  entitlementId: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/learning/items/${entitlementId}/resume`,
+    capability: "learning.player.read",
+    learningAssetsContract: "v3"
+  });
+}
+
+export async function readDomainLearningLesson(
+  sessionId: string,
+  session: ServerSession,
+  entitlementId: string,
+  lessonId: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/learning/items/${entitlementId}/lessons/${lessonId}`,
+    capability: "learning.player.read",
+    learningAssetsContract: "v3"
+  });
+}
+
+interface LearningProgressInput {
+  idempotencyKey: string;
+  expectedVersion: number;
+  progressPercent?: number;
+}
+
+export async function updateDomainLessonProgress(
+  sessionId: string,
+  session: ServerSession,
+  entitlementId: string,
+  lessonId: string,
+  input: LearningProgressInput & { progressPercent: number }
+) {
+  return domainRequest(sessionId, session, {
+    method: "PUT",
+    path: `/v1/me/learning/items/${entitlementId}/lessons/${lessonId}/progress`,
+    capability: "learning.progress.write",
+    body: learningProgressBody(input)
+  });
+}
+
+export async function completeDomainLesson(
+  sessionId: string,
+  session: ServerSession,
+  entitlementId: string,
+  lessonId: string,
+  input: LearningProgressInput
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `/v1/me/learning/items/${entitlementId}/lessons/${lessonId}/complete`,
+    capability: "learning.progress.write",
+    body: learningProgressBody(input)
+  });
+}
+
+function learningProgressBody(input: LearningProgressInput) {
+  return {
+    idempotency_key: input.idempotencyKey,
+    expected_version: input.expectedVersion,
+    ...(input.progressPercent === undefined
+      ? {}
+      : { progress_percent: input.progressPercent })
+  };
+}
+
+function curriculumBody(
+  input: CurriculumMutationInput,
+  extra: Record<string, unknown> = {}
+) {
+  return {
+    idempotency_key: input.idempotencyKey,
+    expected_course_version: input.expectedCourseVersion,
+    ...extra
+  };
+}
+
 async function domainRequest(
   sessionId: string,
   session: ServerSession,
   request: ApiRequest
 ) {
-  const config = internalConfig();
+  requireDemoCapability(session.subject, request);
+  const config = internalServiceConfig();
   const body = request.body ? Buffer.from(JSON.stringify(request.body), "utf8") : Buffer.alloc(0);
+  const query = Buffer.from(request.query ?? "", "ascii");
   const envelopeInput: SignInternalEnvelopeInput = {
     sessionId,
     sessionEpoch: session.tokenRevision,
@@ -236,20 +860,35 @@ async function domainRequest(
     sellerOrganizationId: request.sellerOrganizationId ?? null,
     method: request.method,
     path: request.path,
+    query,
     body
   };
   const { token } = signInternalEnvelope(envelopeInput, config.signing);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 3_000);
   try {
-    const response = await fetch(new URL(request.path, config.apiOrigin), {
+    const requestUrl = new URL(request.path, config.apiOrigin);
+    requestUrl.search = request.query ?? "";
+    const capacityTrace = capacityProductCreateTelemetryEnabled() &&
+      request.capability === "catalog.draft.create" &&
+      validCapacityProductCreateTrace(request.capacityTrace)
+      ? request.capacityTrace
+      : null;
+    const response = await fetch(requestUrl, {
       method: request.method,
       body: request.method === "GET" ? undefined : body,
       headers: {
-        "content-type": "application/json",
-        "x-appsell-internal-envelope": token,
-        "x-appsell-service-credential": config.serviceCredentialEncoded
-      },
+          "content-type": "application/json",
+          "x-appsell-internal-envelope": token,
+          "x-appsell-service-credential": config.serviceCredentialEncoded,
+          ...(request.inspectionToken
+            ? { "x-appsell-inspection-token": request.inspectionToken }
+            : {}),
+          ...(capacityTrace ? { "x-appsell-capacity-trace": capacityTrace } : {}),
+          ...(request.learningAssetsContract
+            ? { "x-appsell-learning-assets-contract": request.learningAssetsContract }
+            : {})
+        },
       cache: "no-store",
       signal: controller.signal
     });
@@ -269,7 +908,114 @@ async function domainRequest(
   }
 }
 
-function internalConfig() {
+const MAX_DOMAIN_BINARY_BYTES = 8 * 1024 * 1024;
+
+async function domainBinaryRequest(
+  sessionId: string,
+  session: ServerSession,
+  request: ApiRequest
+): Promise<DomainLearningPdfPage> {
+  requireDemoCapability(session.subject, request);
+  const config = internalServiceConfig();
+  const query = Buffer.from(request.query ?? "", "ascii");
+  const body = Buffer.alloc(0);
+  const { token } = signInternalEnvelope({
+    sessionId,
+    sessionEpoch: session.tokenRevision,
+    identity: {
+      issuer: requiredEnvironment("APPSELL_IDENTITY_ISSUER"),
+      sub: session.subject
+    },
+    capability: request.capability,
+    sellerOrganizationId: request.sellerOrganizationId ?? null,
+    method: request.method,
+    path: request.path,
+    query,
+    body
+  }, config.signing);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20_000);
+  try {
+    const requestUrl = new URL(request.path, config.apiOrigin);
+    requestUrl.search = request.query ?? "";
+    const response = await fetch(requestUrl, {
+      method: request.method,
+      headers: {
+        "x-appsell-internal-envelope": token,
+        "x-appsell-service-credential": config.serviceCredentialEncoded
+      },
+      cache: "no-store",
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null) as unknown;
+      const code = isRecord(payload) && typeof payload.detail === "string"
+        ? payload.detail
+        : "domain_api_error";
+      throw new DomainApiError(response.status, code);
+    }
+    const contentLength = Number(response.headers.get("content-length"));
+    const pageCount = Number(response.headers.get("x-appsell-page-count"));
+    const sha256 = response.headers.get("x-appsell-sha256") ?? "";
+    if (response.headers.get("content-type") !== "image/png" ||
+      !Number.isSafeInteger(contentLength) || contentLength < 1 ||
+      contentLength > MAX_DOMAIN_BINARY_BYTES ||
+      !Number.isSafeInteger(pageCount) || pageCount < 1 || pageCount > 100 ||
+      !/^[0-9a-f]{64}$/.test(sha256)) {
+      throw new DomainApiError(503, "invalid_pdf_page_response");
+    }
+    const buffer = await response.arrayBuffer();
+    if (buffer.byteLength !== contentLength || buffer.byteLength > MAX_DOMAIN_BINARY_BYTES) {
+      throw new DomainApiError(503, "invalid_pdf_page_response");
+    }
+    if (createHash("sha256").update(new Uint8Array(buffer)).digest("hex") !== sha256) {
+      throw new DomainApiError(503, "invalid_pdf_page_response");
+    }
+    return { bytes: new Uint8Array(buffer), contentLength, pageCount, sha256 };
+  } catch (error) {
+    if (error instanceof DomainApiError) throw error;
+    throw new DomainApiError(503, "domain_api_unavailable");
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function requireDemoCapability(subject: string, request: ApiRequest) {
+  const profile = demoProfileForSubject(subject);
+  if (!profile) {
+    if (publicDemoRuntimeEnabled()) throw new DomainApiError(403, "demo_subject_required");
+    return;
+  }
+  if (request.capability === "identity.sync") return;
+  if (profile.persona === "buyer" &&
+      [
+        "library.read",
+        "library.asset.read",
+        "library.asset.download",
+        "learning.player.read",
+        "learning.progress.write",
+        "commerce.demo.checkout.read",
+        "commerce.demo.checkout.complete"
+      ].includes(request.capability)) {
+    return;
+  }
+  if (profile.persona === "admin") {
+    if (request.capability === "seller.list") return;
+    if (["library.read", "library.asset.read"].includes(request.capability)) return;
+    const demoSellerId = demoCodexAssets[0]?.seller_id;
+    if (request.capability.startsWith("catalog.") && request.sellerOrganizationId === demoSellerId) {
+      return;
+    }
+  }
+  if (profile.persona === "superadmin" &&
+      (request.capability === "platform.grants.read" ||
+       request.capability.startsWith("platform.demo.inspect."))) {
+    return;
+  }
+  throw new DomainApiError(403, `demo_${profile.persona}_capability_forbidden`);
+}
+
+export function internalServiceConfig() {
   const forbidden = configuredNonInternalKeys();
   const signing = parseInternalSigningConfig(process.env, forbidden);
   const serviceCredentialEncoded = requiredEnvironment("APPSELL_SERVICE_CREDENTIAL_B64");
@@ -319,14 +1065,23 @@ function configuredApiOrigin() {
   if (raw !== parsed.origin || parsed.username || parsed.password || parsed.pathname !== "/") {
     throw new DomainApiError(503, "invalid_domain_api_url");
   }
-  if (process.env.NODE_ENV === "production" && parsed.protocol !== "https:") {
+  if (
+    process.env.NODE_ENV === "production" &&
+    parsed.protocol !== "https:" &&
+    !capacityLocalCiRuntimeEnabled() &&
+    !publicDemoRuntimeEnabled()
+  ) {
     throw new DomainApiError(503, "insecure_domain_api_url");
   }
   return parsed.origin;
 }
 
-function localIdentityEmail() {
-  if (process.env.NODE_ENV === "production") {
+function identityEmail(session: ServerSession) {
+  if (session.identity?.emailVerified === true) return session.identity.email;
+  const demo = demoProfileForSubject(session.subject);
+  if (demo) return demo.email;
+  if (process.env.NODE_ENV === "production" && !capacityLocalCiRuntimeEnabled() &&
+      !publicDemoRuntimeEnabled()) {
     throw new DomainApiError(503, "real_identity_claims_required");
   }
   const email = requiredEnvironment("APPSELL_LOCAL_IDENTITY_EMAIL");

@@ -1,4 +1,4 @@
-# appsell
+# Autonom.ia Sell
 
 Plataforma SaaS white-label mobile-first para produtos digitais e áreas de membros da Autonom.ia
 
@@ -8,6 +8,7 @@ Plataforma SaaS white-label mobile-first para produtos digitais e áreas de memb
 - [Plano Técnico](docs/plans/TECHNICAL_PLAN.md)
 - [Relatório de Verificação](docs/research/VERIFICATION_REPORT.md)
 - [Arquitetura, ADRs e threat model](docs/architecture/README.md)
+- [OpenBao Transit Local/CI](docs/openbao-transit-local-ci.md)
 
 ## Spike OAuth/BFF local
 
@@ -52,14 +53,15 @@ de testar e aguarda seu encerramento antes de remover o diretório temporário.
 
 Limites deliberados do spike:
 
-- não há Identity externo, refresh real, HA/failover ou integração KMS real;
-- o provider de keyring por env é exclusivo de Local/CI e falha fechado em
-  `NODE_ENV=production`; ele prova o contrato de envelope encryption, não KMS;
+- o adapter Identity e o OpenBao Transit são reais em Local/CI, mas ainda não
+  existe certificação de staging, HA/failover ou workload identity;
+- ambos os providers de vault falham fechados em `NODE_ENV=production` neste
+  slice; o keyring por env continua sendo somente uma compatibilidade Local/CI;
 - a sessão Redis contém somente identidade e metadados sanitizados; access e
   refresh tokens sintéticos aparecem apenas no vault cifrado server-side;
 - o mock `/dev/identity/*` não é uma implementação de produção;
-- a autorização seller/RBAC já existe no domínio Local/CI, mas produto, buyer e
-  entitlement persistentes ainda não estão implementados.
+- a autorização seller/RBAC, buyer entitlement e assets privados existem no
+  domínio Local/CI; checkout, cobrança e Identity externo continuam ausentes.
 
 ### Rotação do keyring local
 
@@ -121,6 +123,80 @@ Esta fundação ainda não concede o superadmin nem integra o Identity externo. 
 bootstrap one-shot exige claims reais verificadas e MFA/passkey; não deve ser
 simulado em produção.
 
+### Tenant e contas demo Local/CI
+
+O modo demo cria uma tenant dedicada e resetável com duas personas fixas, sem
+senha hardcoded: `admin.demo@autonomia.site` e `user.demo@autonomia.site`. O
+comprador recebe somente o produto publicado **Codex na prática**, com cinco
+PDFs protegidos pelo BFF; o admin não herda o entitlement do comprador. O BFF
+nega ao comprador demo todas as capabilities de seller/catálogo antes da chamada
+server-to-server, expira os cookies CSRF de produtor sem entregar tokens úteis e
+redireciona acesso direto a `/products` para `/library`. O admin demo pode listar
+somente seu contexto e usar capabilities de catálogo apenas no UUID fixo da
+tenant demo; onboarding de outra tenant e seller IDs diferentes falham em 403.
+
+Depois de configurar o PostgreSQL/API local conforme a seção anterior, habilite
+o modo somente no ambiente Local/CI, marque explicitamente esse banco local
+descartável e execute o reset:
+
+```bash
+docker compose exec -T postgres psql -U postgres -d appsell \
+  -c "comment on database appsell is 'appsell-demo-reset-target-v1'"
+
+APPSELL_DEMO_ENABLED=true \
+NODE_ENV=development \
+APP_ENV=local \
+APPSELL_API_ENVIRONMENT=local \
+APPSELL_API_IDENTITY_ISSUER="$APPSELL_IDENTITY_ISSUER" \
+APPSELL_DEMO_DATABASE_URL="postgresql://postgres:${APPSELL_POSTGRES_SUPERUSER_PASSWORD}@127.0.0.1:${APPSELL_POSTGRES_PORT:-55432}/appsell" \
+uv run --project apps/api python -m appsell_api.reset_demo_tenant \
+  --confirm-demo-key autonomia-demo-v1
+
+NODE_ENV=development APP_ENV=local APPSELL_DEMO_ENABLED=true corepack pnpm dev
+```
+
+Abra `http://localhost:3000` e escolha **Entrar como admin demo** ou **Entrar
+como aluno demo**. O reset usa advisory lock, IDs determinísticos e valida hash
+e tamanho dos cinco PDFs antes de alterar a tenant. O comando recusa ambiente
+fora de Local/CI, DSN fora de loopback ou banco sem o marcador explícito; o
+modo demo também recusa redirectors libpq de rede/serviço (`PGHOST*`, `PGPORT`,
+`PGDATABASE`, `PGSERVICE*`, `PGSYSCONFDIR`) e `NODE_ENV=production`.
+
+#### Inspeção superadmin da demo
+
+O fluxo `/platform/demo-inspection` é uma projeção temporária, read-only e
+auditada da tenant demo. Ele não impersona o seller, não cria membership e não
+expõe PII de compradores, conteúdo privado, billing, assets ou secrets. O
+seller inspecionado é fixado no servidor; formulário, query string e cookie não
+podem selecionar outra tenant. Cada ticket tem TTL máximo de 15 minutos, guarda
+somente o SHA-256 do token no PostgreSQL e exige revogação explícita ou expiração.
+
+A conta sintética `comercial@autonomia.site` permanece oculta da landing e só
+existe quando `NODE_ENV` está em `development|test`, `APP_ENV` está em
+`local|ci`, o modo demo correspondente está ativo e
+`APPSELL_DEMO_SUPERADMIN_ENABLED=true`. Essas flags **não concedem** o papel: o
+callback ainda exige um `platform_superadmin` ativo vinculado ao issuer + `sub`.
+Auth, Foundation e Sell usam allowlists positivas Local/CI; valores ausentes,
+`preview`, `staging` ou `production` falham fechado. O e-mail nunca é usado como
+autorização permanente e a identidade demo não existe no provider AWS real.
+
+Os PDFs ficam fora do web root e são autorizados novamente por
+`entitlement_id + asset_id` antes de cada stream. Em Local/CI, a raiz privada
+padrão é `output/pdf/codex`; em produção, configure obrigatoriamente um diretório
+absoluto em `APPSELL_PRIVATE_LEARNING_ASSET_ROOT`. O processo falha fechado se a
+raiz, o arquivo regular, o tamanho ou o SHA-256 não coincidirem com os metadados
+autorizados pelo domínio.
+
+Para ver a jornada completa em infraestrutura local descartável:
+
+```bash
+./scripts/start-local-demo-preview.sh 3200
+```
+
+Abra `http://localhost:3200` e use os botões de admin ou aluno demo. O script
+cria PostgreSQL, API e Redis isolados; `Ctrl+C` remove containers, volume,
+segredos efêmeros e arquivos gerados. Ele não acessa VPS, DNS ou produção.
+
 ### Ponte BFF→API e onboarding seller Local/CI
 
 O BFF sincroniza a identidade local na API e assina cada chamada interna com um
@@ -178,5 +254,5 @@ A versão 2 do envelope inclui `revision` na AAD e `tokenRevision` na sessão,
 tornando envelopes
 anteriores incompatíveis de propósito. Como este slice é apenas Local/CI,
 upgrade ou rollback exige apagar somente o namespace Redis descartável do
-AppSell usado no teste. Não migrar nem limpar Redis compartilhado, staging ou
+Autonom.ia Sell usado no teste. Não migrar nem limpar Redis compartilhado, staging ou
 produção.

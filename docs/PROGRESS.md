@@ -2,7 +2,7 @@
 
 ## Fase atual
 
-Fase 4B — edição, preview e publicação por snapshot em Local/CI.
+Fase 6A — ingresso genérico de webhook assinado e outbox durável em Local/CI.
 
 ## Concluído
 
@@ -66,32 +66,131 @@ Fase 4B — edição, preview e publicação por snapshot em Local/CI.
 - Issues #24 e #26 encerradas com evidência, sem deploy.
 - PR #29 mergeada em `a2695c7`; produto e curso draft persistentes, App CI
   pós-merge verde e Issue #28 encerrada sem deploy.
+- PR #31 mergeada em `b4f366a`; edição, oferta, preview e publicação imutável
+  verdes em CI e pós-merge, Issue #30 encerrada sem deploy.
 
 ## Em andamento
 
-- Issue #30 implementada localmente na branch `feat/30-product-publication`;
-- migration 0004 cria offer, publication append-only, receipt privado, RLS e
-  publicação multi-course transacional com SQLSTATE estável;
-- edição usa optimistic locking, idempotência e locks que preservam revogação
-  sem serializar produtos distintos do mesmo tenant;
-- BFF/API usam CSRF separado, parser 16 KiB exato, preview privado e retry de
-  publicação que retorna o mesmo receipt;
-- UI exige tenant na URL, protege dirty state/Back, contém foco nos diálogos,
-  rebasa 409 sem perder campos e não simula billing;
-- gates locais: 68 web, 84 PG/API, BFF vertical, 24 Playwright + 4 skips,
-  build, production fail-closed e dependency audits verdes;
-- reviews finais tenancy, API/BFF e UI/UX verdes com P0-P2=0;
-- PR #31 aberta e CI remoto em execução; nenhum deploy;
+- Issue #63 na branch `feat/63-generic-webhook-ingress`: endpoint público BFF,
+  autenticação HMAC na API privada, migration `0012`, evento imutável e outbox
+  atômico; raw preservado somente em trânsito e banco sem PII/raw plaintext;
+- testes cobrem bytes exatos, limite de 64 KiB, timestamp, assinatura, replay
+  concorrente, conflito de payload, RLS/grants, rollback transacional, duas
+  BFFs, Redis indisponível e replay após restart da API;
+- gate isolado verde: 193 PG/API, 6 BFF, multi-seller 1/1, 272 Vitest,
+  build/audits e Harness 2.1.2; reviews AppSec, PostgreSQL e contrato sem P0-P3;
+- provider real, worker, entitlement, Financial, Neuro, staging, VPS e produção
+  continuam fora do escopo; Draft PR e reviews independentes ainda pendentes;
+
+- Issue #46 na branch `feat/46-capacity-1000-buyers`: vertical Local/CI ampliada
+  para 100 admins/tenants e 1.000 buyers, com dez buyers e dez entitlements
+  distintos por tenant; 1.100 sessões OAuth foram observadas de fato;
+- a cobertura ampliada concluiu 1.000 library/player/progress/asset e negações
+  cross-tenant de produto, player/progresso e asset, sem 5xx, timeout, payload
+  inválido ou acesso cruzado; o certificado final faz 9.500 requests, 4.100 negações
+  esperadas, BFF abaixo de 2 GiB, headroom PostgreSQL acima de 40% e teardown
+  limpo; as métricas exatas de cada execução ficam no artifact JSON;
+- thresholds continuam provisórios até três runs verdes em CI sobre source
+  limpo; esta evidência não certifica Identity real, staging, HA ou produção;
+- a evidência é de cardinalidade sintética Local/CI, não simultaneidade de 1.100
+  usuários, Identity real, staging ou produção; publicação permanece
+  condicionada ao gate crítico final e ao CI remoto;
+
+- Issue #40 na branch `feat/40-private-asset-upload`: migration 0008, quotas e
+  RLS forçados, upload direto S3-compatible em quarentena, worker separado,
+  PDF sandbox sem rede e publicação pinada à versão imutável do objeto;
+- download exige sessão opaca, entitlement ativo, publicação exata e URL
+  assinada com origem de storage validada; acesso público anônimo é auditado;
+- uploader mobile tem progresso, retry idempotente, cancelamento, archive e
+  bloqueio seguro de navegação/logout enquanto cancela transferências;
+- demo mantém `admin.demo@autonomia.site`, `user.demo@autonomia.site` e o curso
+  Codex na prática com cinco PDFs; `comercial@autonomia.site` continua apenas
+  como bootstrap local, sem alegação de acesso no Identity real;
+- gates locais atuais: 116 Vitest, suíte Python, Ruff/mypy, 148 PG/API, 3 BFF,
+  3 storage, 31 Playwright focados + 5 skips deliberados, build e audit Node;
+- PR #41 aberta, review crítico P0/P1/P2/P3 zerado e três checks remotos verdes
+  no SHA `0b416e4`; aguardando decisão e merges empilhados, sem deploy;
+
+- Issue #38 na branch `feat/38-learning-progress`: migration 0007, player
+  mobile-first, progresso monotônico/idempotente e retomada multi-course;
+- assets protegidos por entitlement+asset, stream privado e validação de
+  tamanho/SHA-256 sem carregar o PDF inteiro em memória;
+- isolamento adversarial cobre cross-buyer/tenant/lesson, revogação, snapshot
+  pinado, append-only, concorrência e 100 buyers;
+- gates locais: 84 web, 137 PG/API, 3 BFF verticais reais, 42 E2E + 4 skips,
+  production fail-closed, build e audits verdes;
+- Issue #32 em implementação na branch `feat/32-curriculum`;
+- migration 0005 cria módulos/aulas text-only, FKs compostas, RLS forçado,
+  receipt privado, CAS/locks por curso, archive e reorder exact-set;
+- publicação gera snapshot schema v2 determinístico e preserva v1; limite de
+  1 MiB retorna P4221/422 antes de hash, receipt ou insert parcial;
+- API/BFF seller-scoped usam envelope de path até 512 caracteres, CSRF separado
+  por create/update/reorder/archive e parser limitado;
+- UI adiciona etapa Currículo, formulários independentes, botões Subir/Descer,
+  foco preservado, dirty guard, 320 px e 200% de texto;
+- receipts curriculares retidos por até 30 dias e no máximo 5.000 por curso;
+- gates locais: 69 web, 94 PG/API, BFF vertical com duas instâncias, 26
+  Playwright + 4 skips, build, production fail-closed e audits verdes;
+- PR #35 aberta; aguardando App CI e review do SHA remoto; nenhum deploy;
+- slice parcial da Issue #33 implementado localmente em branch empilhada: tenant demo resetável,
+  admin/comprador `@autonomia.site`, entitlement buyer, biblioteca persistente e
+  curso Codex com cinco PDFs protegidos e verificados; comprador demo fica
+  restrito server-side a `identity.sync`, `library.read` e `library.asset.read`,
+  com cookies CSRF de produtor expirados e sem acesso direto ao workspace
+  `/products`;
+- admin demo confinado ao seller UUID da tenant demo; onboarding e catálogo
+  cross-tenant falham em 403, e o reset remove memberships/grants legados das
+  duas personas;
+- gates do delta #33: 113 testes Python/PG/API, 74 web, 2 verticais BFF/API/PG,
+  30 Playwright + 4 skips deliberados e 1 production fail-closed;
+- PR #36 da Issue #33 aberta em Draft, App CI 2/2 verde e review crítico
+  P0=P1=P2=P3=0; nenhum merge ou deploy;
+- Issue #56 em branch empilhada local adiciona inspeção superadmin temporária e
+  read-only da demo: migration 0007, token com hash-only no banco, TTL máximo de
+  15 minutos, seller fixo server-side, auditoria append-only e revogação;
+- callbacks exigem grant `platform_superadmin` ativo por issuer+sub; a persona
+  sintética `comercial@autonomia.site` é oculta e Local/CI, não recebe papel por
+  e-mail e não equivale a uma conta Identity real;
+- gates locais da Issue #56: 126 Python/PG/API, 83 web, 4 verticais BFF/API/PG,
+  30 Playwright + 4 skips deliberados, 1 production fail-closed, build, Ruff,
+  mypy strict, lint, typecheck e audits verdes; navegador real 390 px sem
+  overflow e sem controles seller;
+- primeiro review crítico retornou RED: rotas FastAPI não estavam restritas a
+  Local/CI e faltavam provas BFF de POST de catálogo/PATCH de currículo; ambos
+  foram corrigidos antes de qualquer commit/push e exigem novo ciclo completo;
+- teste adversarial adicional detectou token HttpOnly serializado pelo RSC; a
+  página deixou de ler cookies e passou a consumir apenas um GET BFF sanitizado.
+  O gate full-path agora prova ausência tanto do token quanto da sessão no HTML;
+- segundo review crítico retornou RED porque o callback superadmin ainda emitia
+  sessão sem Domain API e as rotas eram enumeráveis no OpenAPI; o fluxo agora
+  revoga a sessão/expira cookies/falha em 503 e o OpenAPI foi desabilitado, com
+  testes regressivos verdes antes de qualquer commit/push;
+- review crítico independente, commit/push, Draft PR e CI remoto da Issue #56
+  ainda pendentes; nenhum merge, deploy, VPS, DNS ou produção;
 - épica #8 permanece em desenvolvimento;
 - Identity real #13 permanece bloqueado por ausência de dev/hml e P0 upstream.
+- Issue #65 implementada na branch `test/65-real-identity-cross-repo`: Auth,
+  Identity Foundation, Domain API, dois PostgreSQL e Redis são exercitados com
+  recursos descartáveis; as contas `admin.demo@autonomia.site` e
+  `user.demo@autonomia.site` atravessam o OAuth real até dashboard e biblioteca;
+- gate cross-repo cobre replay rejeitado, refresh lógico, membership admin,
+  tenant alheio, cinco aulas/PDFs protegidos, progresso, cookies HttpOnly e
+  ausência de bearer do provider em browser/respostas/Redis;
+- gates locais do SHA da Issue #65: 268 testes web verdes, typecheck, lint,
+  build, E2E 2/2, Harness 2.1.2 e reviews P0=P1=P2=0;
+- Draft PR #67 aberta, empilhada na Draft PR #62; Draft PR Foundation #36
+  aberta e empilhada na #34; nenhum merge ou deploy;
+- Issue #66 criada para repetir o gate em preview VPS aditiva e isolada, sem
+  alterar a stack Easypanel/Swarm existente. Progresso total estimado para
+  lançamento: 79%.
 
 ## Pendente
 
 - spike com Autonom.ia Identity real (#13);
 - refresh real contra Identity (#18), bloqueado pelo contrato/ambiente da #13;
 - KMS real, vault durável/HA e restore (#19), bloqueado;
-- módulos/aulas, editor de blocos e assets privados após a publicação base;
-- RLS buyer/entitlements, checkout e biblioteca persistente;
+- storage/ClamAV externos de staging, backup/restore e editor de blocos ricos;
+- checkout/billing e storage privado externo para conteúdo de clientes;
 - integrações Neuro.ai e financeiro após contratos/repos reais.
 
 ## Falhas encontradas e corrigidas
@@ -120,6 +219,13 @@ Fase 4B — edição, preview e publicação por snapshot em Local/CI.
 
 ## Próximo passo recomendado
 
-Acompanhar a PR #31, atualizar Project e executar CI remoto. Não declarar acesso real
-de `comercial@autonomia.site`: isso depende do Identity #13 e de ambiente
-isolado com token/JWKS/MFA reais.
+A Draft PR #76 consolidou a release candidate da Issue #66 e fechou 12/12 checks
+no SHA `a901e1f`, incluindo PostgreSQL real, capacidade 100/1.000, E2E e cinco
+artifacts de aplicação. O próximo slice é a Issue #77: publicar um único Compose
+`runtime-preview` no projeto EasyPanel isolado, com OAuth demo Local/CI e database
+aditivo `appsell_preview_77`, primeiro por túnel e depois em
+`sell.autonomia.site`. Loader, preflight, attestation, rollback, teardown e E2E
+foram implementados e receberam dois reviews independentes GREEN; faltam
+commit/push/Draft PR, CI do SHA publicado e autorização de deploy. Não declarar acesso Identity real de
+`comercial@autonomia.site`: isso depende do Identity #13 e de ambiente isolado
+com token/JWKS/MFA reais.

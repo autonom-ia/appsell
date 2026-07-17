@@ -1,11 +1,11 @@
 {
   "name": "Autonom.ia Agent Harness",
-  "version": "2.0.2",
+  "version": "2.1.2",
   "layers": {
-    "core": "2.0.2",
-    "capabilities": "2.0.2",
-    "infra": "2.0.2",
-    "observatory": "2.0.2"
+    "core": "2.1.2",
+    "capabilities": "2.1.2",
+    "infra": "2.1.2",
+    "observatory": "2.1.2"
   },
   "platforms_installed": ["claude-code", "codex", "cursor"],
   "enforcement_mode": "warn",
@@ -17,7 +17,7 @@
   },
   "source": "https://github.com/autonom-ia/agent-harness",
   "project_url": "https://github.com/users/autonom-ia/projects/3",
-  "installed_at": "2026-07-10T11:45:18Z",
-  "last_assessment_at": "2026-07-10T11:45:18Z",
-  "drift_check_due": "2026-08-09T11:45:18Z"
+  "installed_at": "2026-07-11T13:18:16Z",
+  "last_assessment_at": "2026-07-11T13:18:16Z",
+  "drift_check_due": "2026-08-10T13:18:16Z"
 }

@@ -1,17 +1,18 @@
-import { ProductCard } from "../../components/product-card";
-import { DEMO_BUYER_SUB, demoEntitlements, demoProducts } from "../../../lib/demo-catalog";
-import { listBuyerProducts, listOtherPublishedProductsFromSeller } from "../../../lib/catalog-projection";
+import { cookies } from "next/headers";
 
-export default function LibraryPage() {
-  const library = listBuyerProducts(demoProducts, demoEntitlements, DEMO_BUYER_SUB);
-  const selected = library[0];
-  const otherProducts = selected ? listOtherPublishedProductsFromSeller(demoProducts, selected) : [];
+import { LibraryWorkspace } from "../../components/library-workspace";
+import { sessionCookieName } from "@/lib/cookies";
+import { demoProfileForSubject } from "@/lib/demo-config";
+import { oauthService } from "@/lib/oauth-service.server";
 
+export default async function LibraryPage() {
+  const sessionId = (await cookies()).get(sessionCookieName())?.value;
+  const session = await oauthService().getSession(sessionId);
+  const demoCheckoutEnabled = demoProfileForSubject(session?.subject)?.persona === "buyer";
   return (
     <>
-      <header className="page-header"><div><p className="eyebrow">Prévia do comprador</p><h1>Minha biblioteca</h1><p>Exemplo de produtos ativos de diferentes produtores, sem grants reais.</p></div></header>
-      {library.length ? <div className="product-grid">{library.map((product) => <ProductCard key={`${product.sellerOrganizationId}:${product.id}`} product={product} progressPercent={product.progressPercent}/>)}</div> : <p className="empty-state">Nenhum produto demonstrativo nesta biblioteca.</p>}
-      {selected ? <section className="recommendations"><div className="section-heading"><div><p className="eyebrow">Mesmo produtor</p><h2>Outros produtos de {selected.sellerName}</h2></div></div>{otherProducts.length ? <div className="product-grid">{otherProducts.map((product) => <ProductCard key={product.id} product={product} compact/>)}</div> : <p className="empty-state">Nenhum outro produto publicado por este produtor.</p>}</section> : null}
+      <header className="page-header"><div><p className="eyebrow">Área do aluno</p><h1>Minha biblioteca</h1><p>Somente produtos publicados com acesso ativo para esta conta.</p></div></header>
+      <LibraryWorkspace demoCheckoutEnabled={demoCheckoutEnabled}/>
     </>
   );
 }
