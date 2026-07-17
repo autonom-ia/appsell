@@ -6,26 +6,38 @@ Refs #93 · Parte do P0 Bloco 1 (login real: Identity + vault prod + bootstrap s
 > exige aprovação explícita do Rodrigo antes de rodar. Nenhuma escrita em VPS,
 > EasyPanel, DNS, banco ou secret foi ou será feita por este slice de docs.
 
-## Rev 2 — resolução do security-review (PR #100)
+## Rev 3 — resolução do security-review (PR #100)
 
-O review externo (codex `gpt-5.6-sol`, read-only sobre `git diff origin/main...HEAD`)
-**REPROVOU** a Rev 1 com 7 HIGH. Esta revisão fecha os 7, aplicando decisões já
-tomadas pelo Rodrigo (régua qualidade + escalabilidade + segurança). Mapa:
+O review externo (codex, read-only sobre `git diff origin/main...HEAD`) **REPROVOU**
+a Rev 1 com 7 HIGH. A Rev 2 fechou 6; o re-review apontou que o HIGH 3 seguia sem
+rotador executável e introduziu 4 blockers novos. Esta **Rev 3** fecha os 7
+originais **e** os 4 do re-review, aplicando decisões já tomadas pelo Rodrigo
+(régua qualidade + escalabilidade + segurança). Mapa dos 7 originais:
 
 | # | HIGH original | Decisão aplicada | Seção |
 |---|---|---|---|
 | 1 | Topologia single-node contradiz requisito de HA | **NÃO alegar HA.** Single-node Raft é MVP explícito, não-HA, com RTO/RPO declarados e risco aceito por escrito; DR (snapshot + unseal) é pré-condição do 1º uso | §1, §1.1, §4 |
 | 2 | Bootstrap grava unseal keys + root token em plaintext no host | **Sem plaintext no host.** `init` com `-pgp-keys`/`-root-token-pgp-key` (shares/root cifrados aos donos) **ou** auto-unseal por KMS; root token revogado após setup; unseal keys guardadas fora da VPS (cofre do Rodrigo). Zero `/tmp/*.json` em claro | §3.2, §4.1 |
-| 3 | AppRole é credencial estática de uso ilimitado | **SecretID com TTL curto + `num_uses` limitado + rotação** (response-wrapping). Token de runtime órfão, não-renovável-além-do-TTL, TTL 15min, policy única `appsell-transit-runtime` (só encrypt/decrypt da chave exata). Sem `secret_id_ttl=0` / usos ilimitados | §1.2, §3.5 |
+| 3 | AppRole é credencial estática de uso ilimitado | **SecretID finito nos dois eixos** (`secret_id_ttl` + `secret_id_num_uses`, nunca `0`) + **rotador concreto** (identidade `appsell-secretid-rotator`, policy só `create`/`update` do secret-id, entrega wrapped por canal definido). Token runtime órfão, TTL 15min, policy única `appsell-transit-runtime` | §1.2, §3.5 |
 | 4 | Credencial de vault iria para `api` **e** `web` | **Credencial Transit só no `web`/BFF** (único consumidor de `createTokenVaultFromEnvironment`). `api` não recebe nada de vault | §2, §3.5, §5 |
 | 5 | Bootstrap de policy não é executável (path do `.hcl` não existe no container) | **Policy via API `sys/policies/acl/...`** com HCL inline (idêntico ao CI) ou `bao policy write NAME -` via stdin. Config do server + TLS cert/key entregues por mount dedicado, não pelo repo | §3.1, §3.4 |
 | 6 | TLS interno sem CA confiável no runtime | **CA privada explícita:** cert do listener emitido por CA privada da VPS, com SAN = DNS interno do serviço; CA bundle montado no container `web` e exposto ao Node via `NODE_EXTRA_CA_CERTS`. Verificação TLS **nunca** desabilitada | §1.1, §3.1, §5.1 |
 | 7 | "Rollback" não é rollback depois do 1º ciphertext | **Rollback honesto:** distinção pré-1º-write (seguro) vs pós-persistência (fail-closed, **não** recupera envelopes). Recuperação real = restaurar snapshot + unseal. Provider local só em não-produção | §6 |
 
+Blockers do re-review (Rev 2 → Rev 3) fechados:
+- **Rotador de SecretID executável** (identidade + policy + canal concretos): §1.2, §3.5.
+- **Identidades operacionais antes de revogar root** (`appsell-secretid-rotator`,
+  `appsell-ops`) + break-glass por `operator generate-root` com quórum de unseal: §3.5, §3.6.
+- **Critério de aceite corrigido:** secret no corpo de request cifrado é inerente;
+  o requisito é não-vazamento por log/persistência/erro, transporte só TLS: §5.2.
+- **Entrega das PGP públicas** por mount de bootstrap (públicas, não-secretas) ou
+  `keybase:`; `operator init` pode rodar de host admin: §3.1, §3.2.
+
 MEDIUM tratados: observabilidade/hardening (audit device, limites CPU/RAM, alertas
-de sealed/TLS/AppRole) em §3.8; escopo honesto de quais itens de
-`openbao-transit-local-ci.md:74-85` este plano fecha vs deixa aberto em §4.4.
-LOW corrigido: `compose.yaml:163` (era citado `:164`).
+de sealed/TLS/AppRole) em §3.8; **RPO operacional** (frequência/retenção/destino/teste
+recorrente) em §4.2; `cluster_addr` na `:8201` (distinto da API `:8200`) em §3.1;
+escopo honesto de quais itens de `openbao-transit-local-ci.md:74-85` este plano fecha
+vs deixa aberto em §4.4. LOW corrigido: `compose.yaml:163` (era citado `:164`).
 
 ---
 
@@ -142,13 +154,30 @@ Objetivo: nenhum bearer token permanente; token de runtime curto e órfão; sem
 `secret_id_ttl=0`/usos ilimitados.
 
 - **AppRole** é o método de login durável. O **SecretID** tem:
-  - **`secret_id_ttl` curto e finito** (janela de rotação, ex.: horas — **nunca `0`**);
-  - **`secret_id_num_uses` limitado** (não ilimitado);
+  - **`secret_id_ttl` finito** (janela de rotação, ex.: 24h — **nunca `0`**);
+  - **`secret_id_num_uses` finito e dimensionado à janela** (ex.: ≥ número de
+    re-logins por janela; para 15 min de TTL de token em 24h ≈ 96 logins, usar
+    folga, ex.: `200` — **nunca `0`/ilimitado**). Bounded nos dois eixos (tempo e
+    usos) + rotação ⇒ não é bearer permanente (é isso que fecha o HIGH original 3).
   - **entrega por response-wrapping** (`wrap_ttl`) para o `web`, de modo que o SecretID em claro nunca fique parado em env/log.
-- **Rotação de SecretID** é requisito, não opcional: um mecanismo confiável reemite
-  SecretID (wrapped) dentro da janela de TTL. O desenho exato do rotador
-  (sidecar/agent vs job) é **decisão 🔴** de execução — mas *não existe caminho em
-  que o SecretID vire credencial permanente*.
+- **Rotação de SecretID — mecanismo concreto (não fica "sob decisão"):**
+  - Existe uma **identidade de rotador dedicada** (`appsell-secretid-rotator`),
+    autenticada por AppRole própria ou token periódico em custódia segura, com a
+    policy **`appsell-secretid-rotator`** que permite **apenas**
+    `create`/`update` em `auth/approle/role/appsell-transit-runtime/secret-id`
+    (com `-wrap-ttl`) — e nada mais.
+  - Antes de o SecretID corrente vencer (dentro do `secret_id_ttl`), o rotador
+    **gera um novo SecretID wrapped** e o entrega ao `web` por um **canal de
+    entrega definido**: path de secret compartilhado do App Service (refrescado)
+    ou file-mount de secret rotacionado pelo EasyPanel. O `web` faz unwrap e passa
+    a usá-lo no próximo login.
+  - Como a rotação renova o SecretID **antes** do vencimento e o `num_uses` é
+    dimensionado à janela, o serviço **sempre** consegue re-logar; se a rotação
+    falhar, o acesso expira → **fail-closed** (login indisponível), nunca acesso
+    permanente. Alertas de falha de rotação em §3.8.
+  - **Decisão 🔴 restante = só a forma de execução do rotador** (sidecar no pod do
+    `web` vs job agendado) e os valores exatos de `secret_id_ttl`/`num_uses`. A
+    identidade, a policy e o canal já estão especificados — o caminho é executável.
 - **Token de runtime** (resultado do login AppRole): **órfão**, **TTL 15min**,
   `token_max_ttl=15m` (não se estende além de 15 min → efetivamente não-renovável
   em duração), `token_no_default_policy=true`, **policy única
@@ -223,27 +252,40 @@ Inventário read-only antes da 1ª escrita (mesma disciplina do README #90, gate
 - Volume `openbao-90-data` → `/openbao/data`.
 - **Config de servidor de produção** entregue por **mount dedicado** (config/secret
   do App Service), não pelo repo: arquivo `config.hcl` com `storage "raft"` em
-  `/openbao/data`, `listener "tcp"` com **TLS habilitado**
+  `/openbao/data`, `listener "tcp"` na `:8200` com **TLS habilitado**
   (`tls_cert_file`/`tls_key_file`/`tls_client_ca_file` apontando para os arquivos
-  montados em §1.1), `api_addr`/`cluster_addr` internos (`https://openbao-90:8200`),
-  `ui=false`. Comando do container: `server -config=/etc/openbao/config.hcl` (NÃO `-dev`).
+  montados em §1.1), **`api_addr=https://openbao-90:8200`** (endereço da API) e
+  **`cluster_addr=https://openbao-90:8201`** (endereço de cluster/Raft — porta
+  própria, distinta da API), `ui=false`. Comando do container:
+  `server -config=/etc/openbao/config.hcl` (NÃO `-dev`).
+- **Mount de bootstrap (efêmero):** as **chaves PGP públicas** dos custodiantes
+  (`*.asc`) usadas no `operator init` (§3.2) são entregues pelo **mesmo mount de
+  config** — são **públicas, não são segredo** — em paths reais no container
+  (ex.: `/etc/openbao/bootstrap/rodrigo.asc`). Removidas após o init.
 - **`disable_mlock`**: ausente por padrão (mlock ativo via cap `IPC_LOCK`);
   só setar `true` se a cap não for concedida (§2, decisão 🔴).
 - 1 réplica; **não** usar rolling/`zeroDowntime` (unseal é stateful — não fazer rolling cego).
 
 ### 3.2 Init + unseal (Shamir) 🔴 — material irrecuperável, **sem plaintext no host** (resolve HIGH 2)
-No container, **cifrando shares e root token a chaves PGP dos custodiantes** — o
-output nunca contém segredo em claro:
+**Entrega das chaves PGP públicas:** os `*.asc` referenciados abaixo são as chaves
+**públicas** dos custodiantes (não são segredo) e chegam ao container pelo **mount
+de bootstrap** de §3.1 (paths reais, ex.: `/etc/openbao/bootstrap/*.asc`). Como
+alternativa sem arquivo local, usar identificadores **`keybase:<usuário>`** (o
+`operator init` busca a pública no Keybase). Cifrando shares e root token a essas
+públicas, o output **nunca** contém segredo em claro:
 ```sh
 bao operator init \
   -key-shares=5 -key-threshold=3 \
-  -pgp-keys="rodrigo.asc,custodiante2.asc,custodiante3.asc,custodiante4.asc,custodiante5.asc" \
-  -root-token-pgp-key="rodrigo.asc" \
+  -pgp-keys="/etc/openbao/bootstrap/rodrigo.asc,/etc/openbao/bootstrap/custodiante2.asc,/etc/openbao/bootstrap/custodiante3.asc,/etc/openbao/bootstrap/custodiante4.asc,/etc/openbao/bootstrap/custodiante5.asc" \
+  -root-token-pgp-key="/etc/openbao/bootstrap/rodrigo.asc" \
   -format=json
 ```
 - Cada unseal key sai **cifrada** à PGP pública do respectivo custodiante; o root
   token sai cifrado à PGP do Rodrigo. Só o dono da chave privada decifra. **Não há
   arquivo `/tmp/*.json` em claro** e nada é ecoado em chat/log/git/env.
+- O `operator init` também pode ser rodado de um **host administrativo** (com os
+  `*.asc` locais) apontando `BAO_ADDR=https://openbao-90:8200` por túnel seguro,
+  evitando montar as públicas no container. Decisão operacional 🔴.
 - Distribuição/custódia das públicas e dos shares cifrados = §4.1.
 - **Alternativa (recomendada para eliminar unseal manual): auto-unseal** por KMS
   externo ou por um segundo OpenBao (transit). Nesse caso não há Shamir shares para
@@ -300,15 +342,16 @@ Verificar (deve **falhar** com 403) que a policy não lê metadados da chave:
 # com token runtime: bao read appsell-transit/keys/appsell-oauth-vault  -> 403 esperado
 ```
 
-### 3.5 Auth de workload — **AppRole com SecretID curto + rotação** (resolve HIGH 3 e 4)
-Habilitar AppRole e criar a role com token curto/órfão e SecretID **finito**:
+### 3.5 Auth de workload — **AppRole com SecretID finito + rotação** (resolve HIGH 3 e 4)
+Habilitar AppRole e criar a role runtime com token curto/órfão e SecretID **finito
+nos dois eixos** (tempo e usos):
 ```sh
 bao auth enable approle
 bao write auth/approle/role/appsell-transit-runtime \
   token_policies=appsell-transit-runtime \
   token_ttl=15m token_max_ttl=15m \
   token_no_default_policy=true \
-  secret_id_ttl=2h secret_id_num_uses=1 \
+  secret_id_ttl=24h secret_id_num_uses=200 \
   secret_id_bound_cidrs="<CIDR interno do web>"
 bao read auth/approle/role/appsell-transit-runtime/role-id
 # SecretID sempre entregue wrapped (nunca em claro em env/log):
@@ -316,17 +359,53 @@ bao write -wrap-ttl=120s -f auth/approle/role/appsell-transit-runtime/secret-id
 ```
 - **Só o `web`/BFF** recebe RoleID + o token wrapped do SecretID; faz unwrap, login
   AppRole, e re-loga antes de expirar. **`api` não recebe nada.**
-- `secret_id_ttl=2h` + `secret_id_num_uses=1` são valores iniciais — **nunca `0`**;
-  ajuste fino na decisão 🔴 do rotador (§1.2). Um rotador reemite SecretID wrapped
-  dentro da janela.
+- `secret_id_ttl=24h` + `secret_id_num_uses=200` são valores iniciais — **nunca `0`**;
+  bounded nos dois eixos, cobrem uma janela de 24h de re-logins de 15 min com folga,
+  e são **rotacionados antes do vencimento** pelo rotador (§1.2). Ajuste fino é
+  decisão 🔴, mas nunca vira credencial permanente.
 - Token de runtime resultante: órfão, `ttl=15m`, `max_ttl=15m` (não estende além de
   15 min), sem default policy, só `appsell-transit-runtime`.
 
-> 🔴 **Decisão do Rodrigo:** desenho e janela do rotador de SecretID (§1.2). Muda o escopo da PR de código (§5).
+**Identidades operacionais criadas ANTES de revogar o root (resolve novo HIGH — o
+runtime encrypt/decrypt não administra o vault):**
+```sh
+# Policy do rotador: só gerar SecretID da role runtime, nada mais.
+bao policy write appsell-secretid-rotator - <<'HCL'
+path "auth/approle/role/appsell-transit-runtime/secret-id" {
+  capabilities = ["create", "update"]
+}
+HCL
+# Policy de operações de DR/observabilidade (mínimo necessário):
+bao policy write appsell-ops - <<'HCL'
+path "sys/storage/raft/snapshot" { capabilities = ["read"] }
+path "sys/audit/*"               { capabilities = ["create", "read", "update", "delete", "sudo"] }
+path "sys/health"                { capabilities = ["read"] }
+HCL
+# Identidades dedicadas (AppRole própria ou token periódico em custódia segura):
+bao write auth/approle/role/appsell-secretid-rotator token_policies=appsell-secretid-rotator \
+  token_ttl=15m token_max_ttl=1h secret_id_ttl=24h secret_id_num_uses=0
+bao write auth/approle/role/appsell-ops token_policies=appsell-ops \
+  token_ttl=15m token_max_ttl=1h
+```
+- O **rotador** usa `appsell-secretid-rotator` (só cria SecretID). O **`api` nunca
+  recebe nenhuma dessas credenciais.**
+- `secret_id_num_uses=0` **aqui é aceitável e intencional** para a role do rotador
+  (credencial de infra em custódia, não exposta ao runtime), com `secret_id_ttl`
+  finito; ainda assim rotacionável. Não confundir com o runtime (que é finito nos
+  dois eixos).
+
+> 🔴 **Decisão do Rodrigo:** forma de execução do rotador (sidecar vs job) e valores
+> de `secret_id_ttl`/`num_uses` (§1.2). Identidade/policy/canal já especificados.
 
 ### 3.6 Revogar root / confirmar estado
-- **Revogar** o root token do bootstrap após configurar (`bao token revoke -self`),
-  operando só via AppRole daí em diante. Root token não sobrevive ao setup.
+- **Só depois** de criadas as identidades operacionais (§3.5: rotador + ops) e
+  emitida a 1ª credencial de cada, **revogar** o root do bootstrap
+  (`bao token revoke -self`). O dia a dia passa a usar as identidades de menor
+  privilégio; **nenhuma** delas retém root.
+- **Break-glass (raro, aprovação 🔴):** um root temporário pode ser **regerado sob
+  demanda** via `bao operator generate-root` com quórum de unseal keys (3 de 5),
+  usado para uma operação administrativa pontual e revogado em seguida. Isso torna a
+  revogação do root segura sem deixar o vault sem caminho administrativo.
 - Confirmar `bao status` = unsealed, `sealed=false`.
 
 ### 3.7 Fumaça (sem persistir dados reais)
@@ -372,6 +451,15 @@ de o DR abaixo estar feito e testado**.
 bao operator raft snapshot save /openbao/data/snapshots/openbao-<timestamp>.snap
 ```
   Copiar o snapshot para **fora do volume/host** (destino sob decisão do Rodrigo). Sem snapshot restaurável, o volume é ponto único de falha.
+- **RPO operacional (não só snapshot inicial):**
+  - **Frequência:** snapshot Raft recorrente pelo job/identidade `appsell-ops`
+    (§3.5), cadência inicial proposta a cada 6h (define o RPO ≈ 6h; ajuste 🔴).
+  - **Retenção:** manter N snapshots (ex.: 28 = 7 dias a 6h) com expurgo dos antigos.
+  - **Destino fechado:** cópia para armazenamento **fora do host** (bucket/volume de
+    backup definido — decisão 🔴), não só no volume Raft local.
+  - **Teste recorrente:** restore automatizado periódico em ambiente descartável
+    (§4.3) validando que um ciphertext `vault:vN:*` anterior ainda decifra — DR não
+    testado não conta.
 - Backup **versionado em git** (já é o caso): policy HCL e comandos de bootstrap. A **chave em si nunca** entra em backup plaintext (por design).
 - Como não há backup de VPS hoje (fato informado, appsell#88): **exigir** ao menos snapshot Raft + custódia do unseal antes do primeiro uso, **e** o backup mínimo da VPS resolvido no gate §3.0. 🔴
 
@@ -422,7 +510,7 @@ env/credencial recai **no serviço `web`** (BFF); `api` não é tocado.
 ### 5.2 Critérios de aceite do security-review (hard-assert, zero soft pass)
 - [ ] Prod **fechado por default**: sem `APPSELL_OPENBAO_PROD_CERTIFIED`, o provider lança (teste prova).
 - [ ] Prod exige `https:` **com CA confiável** (`NODE_EXTRA_CA_CERTS`); verificação TLS nunca desabilitada; `http` não-loopback recusado.
-- [ ] DEK, SecretID, token de workload, unseal key, root token: **nunca** em log, erro ou corpo de request (estender `openbao-transit-provider.test.ts:92-97`).
+- [ ] DEK, SecretID, token de workload, unseal key, root token: **nunca** logados, persistidos em disco, nem refletidos em mensagens de erro (estender `openbao-transit-provider.test.ts:92-97`). Nota: a DEK vai no corpo do `encrypt` do Transit e o SecretID no corpo do `login` AppRole — isso é **inerente e correto**; o transporte é **só TLS** (§1.1) e o critério é não-vazamento por log/persistência/erro, não a ausência do secret no request cifrado.
 - [ ] Policy do workload = só `encrypt`+`decrypt` da chave exata; leitura de metadados dá 403 (prova de integração).
 - [ ] Token de workload é **curto (15m) + re-obtido via AppRole**; SecretID tem TTL/num_uses finitos (**nunca `0`/ilimitado**) e é entregue wrapped; rotação documentada.
 - [ ] Credencial de vault **só no `web`**; nenhum path do `api` recebe RoleID/SecretID.
