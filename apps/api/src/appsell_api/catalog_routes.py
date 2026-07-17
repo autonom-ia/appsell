@@ -81,9 +81,15 @@ class ProductCourseOfferUpdateBody(ProductCourseDraftBody):
     expected_offer_version: int = Field(ge=0, le=_MAX_SAFE_INTEGER)
     offer_title: str
     offer_summary: str
-    offer_unit_amount_minor: int = Field(ge=0, le=_MAX_UNIT_AMOUNT_MINOR)
-    offer_currency: str
-    offer_billing_period: Literal["one_time", "monthly", "yearly"]
+    # Billing is not connected yet: the seller editor intentionally does not collect
+    # price ("Cobrança não conectada / não informe preço nesta fase") and migration
+    # 0018 defers the offer's ``draft -> active`` transition, where price becomes
+    # mandatory. Saving a draft therefore keeps price OPTIONAL, defaulting to the same
+    # values as the ``offer`` table columns (0 / BRL / one_time). When a value IS sent
+    # it is still fully validated below.
+    offer_unit_amount_minor: int = Field(default=0, ge=0, le=_MAX_UNIT_AMOUNT_MINOR)
+    offer_currency: str = "BRL"
+    offer_billing_period: Literal["one_time", "monthly", "yearly"] = "one_time"
 
     @field_validator("course_id", "offer_id")
     @classmethod

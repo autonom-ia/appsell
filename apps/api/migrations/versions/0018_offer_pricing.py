@@ -10,6 +10,13 @@ into the immutable publication snapshot. Freezing price into that snapshot is a
 follow-up: this migration keeps the snapshot bytes untouched so the migration
 immutability guarantee (0004 -> head) holds, and exposes the live offer price on
 the public storefront only for published products.
+
+Because billing is not connected yet, the seller editor does not collect a price,
+so newly-saved and pre-existing (legacy) offers carry ``unit_amount_minor = 0``.
+That zero means "price pending", not "free": the public storefront projection
+carries the price as forward plumbing, but the storefront page intentionally does
+not render it, so no published product advertises R$ 0,00. Rendering a real price
+is a follow-up gated on connecting billing and the ``draft -> active`` transition.
 """
 
 from collections.abc import Sequence
