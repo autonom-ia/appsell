@@ -6,14 +6,20 @@ import os
 import re
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 from anyio import to_thread
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi import Path as PathParameter
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.background import BackgroundTasks
 
+from .pdf_derivatives import (
+    PDF_PAGE_ARCHIVE_MIME,
+    PdfDerivativeRejected,
+    build_pdf_page_archive,
+)
 from .pdf_raster import (
     PdfRasterRejected,
     PdfRasterUnavailable,
@@ -58,6 +64,10 @@ def _recycle_enabled() -> bool:
 
 
 def _terminate_sandbox_process() -> None:
+    # Starlette invokes background tasks after handing the final body chunk to
+    # the ASGI server, but the kernel socket may still contain buffered bytes.
+    # Give Uvicorn a bounded drain window before the deliberate hard recycle.
+    time.sleep(0.5)
     os.write(1, b'{"event":"appsell_pdf_worker_planned_recycle"}\n')
     os._exit(77)
 
@@ -128,6 +138,17 @@ async def render_page(
             _begin_draining_after_job(request)
 
 
+@app.post("/rasterize")
+async def rasterize(request: Request) -> Response:
+    _reject_busy_or_draining()
+    async with _MEDIA_SLOT:
+        _reject_if_draining()
+        try:
+            return await _rasterize_request(request)
+        finally:
+            _begin_draining_after_job(request)
+
+
 @app.post("/probe-video", status_code=status.HTTP_204_NO_CONTENT)
 async def probe_video(request: Request) -> Response:
     _reject_busy_or_draining()
@@ -191,6 +212,71 @@ async def _normalize_request(request: Request) -> Response:
         if source_path is not None:
             source_path.unlink(missing_ok=True)
         shutil.rmtree(job_directory)
+
+
+async def _rasterize_request(request: Request) -> Response:
+    if request.headers.get("content-type") != PDF_MIME:
+        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE)
+    try:
+        expected_size = int(request.headers["x-appsell-byte-size"])
+        expected_sha256 = request.headers["x-appsell-sha256"]
+    except (KeyError, ValueError) as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT) from error
+    if not 1 <= expected_size <= MAX_PDF_BYTES or not re.fullmatch(
+        r"[0-9a-f]{64}", expected_sha256
+    ):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT)
+
+    job_directory = _private_job_directory("appsell-raster-archive-job-")
+    source_path = job_directory / "source.pdf"
+    handed_off = False
+    try:
+        digest = hashlib.sha256()
+        received = 0
+        with source_path.open("xb") as source:
+            os.chmod(source_path, 0o600)
+            async for chunk in request.stream():
+                received += len(chunk)
+                if received > expected_size or received > MAX_PDF_BYTES:
+                    raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE)
+                digest.update(chunk)
+                source.write(chunk)
+            source.flush()
+            os.fsync(source.fileno())
+        if received != expected_size or digest.hexdigest() != expected_sha256:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT)
+        archive = await to_thread.run_sync(
+            lambda: build_pdf_page_archive(
+                source_path,
+                expected_size=expected_size,
+                expected_sha256_hex=expected_sha256,
+                job_directory=job_directory,
+            )
+        )
+        source_path.unlink(missing_ok=True)
+        tasks = BackgroundTasks()
+        tasks.add_task(shutil.rmtree, job_directory)
+        handed_off = True
+        return FileResponse(
+            archive.path,
+            media_type=PDF_PAGE_ARCHIVE_MIME,
+            background=tasks,
+            headers={
+                "cache-control": "no-store",
+                "x-appsell-page-count": str(archive.page_count),
+                "x-appsell-total-page-bytes": str(archive.total_page_bytes),
+                "x-appsell-sha256": archive.sha256_hex,
+                "x-appsell-source-sha256": archive.source_sha256_hex,
+                "x-content-type-options": "nosniff",
+            },
+        )
+    except HTTPException:
+        raise
+    except (PdfDerivativeRejected, PdfRejected) as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT) from error
+    finally:
+        if not handed_off:
+            shutil.rmtree(job_directory, ignore_errors=True)
 
 
 def _normalize_file(

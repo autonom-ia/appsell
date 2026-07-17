@@ -47,7 +47,7 @@ somente na rota de download de material de apoio autorizada pelo admin.
 Antes de qualquer carga na VPS, verifique os quatro artifacts do mesmo run/SHA:
 
 ```bash
-APPSELL_ARTIFACT_BRANCH=infra/77-easypanel-runtime-preview \
+APPSELL_ARTIFACT_BRANCH=infra/77-easypanel-runtime-preview-rc \
   deploy/preview-vps/verify-downloads-local.sh ROOT APPSELL_SHA APPSELL_RUN_ID
 ```
 

@@ -21,7 +21,7 @@ CHECKOUT_WORKER_SUBJECT = "demo-checkout-worker-v1"
 CHECKOUT_WORKER_EMAIL = "checkout.worker@autonomia.site"
 DEMO_SUPERADMIN_SUBJECT = "demo-superadmin"
 DEMO_SUPERADMIN_EMAIL = "comercial@autonomia.site"
-EXPECTED_MIGRATION = "0016_pdf_access_policy"
+EXPECTED_MIGRATION = "0017_pdf_preraster"
 REMOTE_RESET_SCOPE = "appsell-runtime-preview-77"
 REMOTE_RESET_TARGET = {
     "user": "appsell_preview_77_migrator",
@@ -91,6 +91,48 @@ def load_manifest() -> tuple[dict[str, Any], str]:
             raise RuntimeError(f"demo PDF size mismatch: {file_name}")
         if hashlib.sha256(payload).hexdigest() != lesson.get("sha256"):
             raise RuntimeError(f"demo PDF hash mismatch: {file_name}")
+        raster = lesson.get("raster")
+        pages = raster.get("pages") if isinstance(raster, dict) else None
+        if (
+            not isinstance(raster, dict)
+            or raster.get("profile") != "png-1600-v1"
+            or not isinstance(pages, list)
+            or not 1 <= len(pages) <= 100
+            or raster.get("page_count") != len(pages)
+            or not isinstance(raster.get("manifest_sha256"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", raster["manifest_sha256"])
+        ):
+            raise RuntimeError(f"invalid demo PDF raster manifest: {file_name}")
+        total_page_bytes = 0
+        for page_number, page in enumerate(pages, start=1):
+            expected_key = f"{lesson['slug']}/pages/{page_number}.png"
+            if (
+                not isinstance(page, dict)
+                or page.get("page_number") != page_number
+                or page.get("storage_driver") != "legacy_bundle"
+                or page.get("storage_bucket") != "codex-demo"
+                or page.get("object_key") != expected_key
+                or page.get("storage_version_id") is not None
+                or page.get("storage_etag") is not None
+                or not isinstance(page.get("byte_size"), int)
+                or not 1 <= page["byte_size"] <= 8 * 1024 * 1024
+                or not isinstance(page.get("sha256"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", page["sha256"])
+                or not isinstance(page.get("pixel_width"), int)
+                or not isinstance(page.get("pixel_height"), int)
+                or not 1 <= page["pixel_width"] <= 1_600
+                or not 1 <= page["pixel_height"] <= 1_600
+                or page["pixel_width"] * page["pixel_height"] > 1_600**2
+            ):
+                raise RuntimeError(f"invalid demo PDF raster page: {expected_key}")
+            page_payload = (PDF_ROOT / expected_key).read_bytes()
+            if len(page_payload) != page["byte_size"]:
+                raise RuntimeError(f"demo PDF raster size mismatch: {expected_key}")
+            if hashlib.sha256(page_payload).hexdigest() != page["sha256"]:
+                raise RuntimeError(f"demo PDF raster hash mismatch: {expected_key}")
+            total_page_bytes += page["byte_size"]
+        if total_page_bytes != raster.get("total_bytes") or total_page_bytes > 128 * 1024 * 1024:
+            raise RuntimeError(f"demo PDF raster total mismatch: {file_name}")
     video = manifest.get("video")
     expected_video_name = f"{video.get('slug')}.mp4" if isinstance(video, dict) else ""
     if (
@@ -666,6 +708,14 @@ def reset_demo(
         (seller_id,),
     )
     connection.execute(
+        "delete from app_private.asset_pdf_page_candidate where seller_organization_id=%s",
+        (seller_id,),
+    )
+    connection.execute(
+        "delete from app_private.asset_pdf_raster_candidate where seller_organization_id=%s",
+        (seller_id,),
+    )
+    connection.execute(
         "delete from app_private.asset_upload where seller_organization_id=%s",
         (seller_id,),
     )
@@ -694,6 +744,8 @@ def reset_demo(
     connection.execute(
         "delete from lesson_asset_draft where seller_organization_id=%s", (seller_id,)
     )
+    connection.execute("delete from asset_pdf_page where seller_organization_id=%s", (seller_id,))
+    connection.execute("delete from asset_pdf_raster where seller_organization_id=%s", (seller_id,))
     connection.execute("delete from asset_version where seller_organization_id=%s", (seller_id,))
     connection.execute("delete from asset_blob where seller_organization_id=%s", (seller_id,))
     connection.execute("delete from asset_record where seller_organization_id=%s", (seller_id,))
@@ -820,6 +872,44 @@ def reset_demo(
             """,
             (seller_id, UUID(lesson["asset_id"]), UUID(lesson["asset_id"]), admin_id),
         )
+        raster = lesson["raster"]
+        connection.execute(
+            """
+            insert into asset_pdf_raster(
+              seller_organization_id,asset_id,asset_version,blob_id,raster_profile,
+              page_count,total_byte_size,manifest_sha256
+            ) values(%s,%s,1,app_private.legacy_asset_blob_id(%s),%s,%s,%s,%s)
+            """,
+            (
+                seller_id,
+                UUID(lesson["asset_id"]),
+                UUID(lesson["asset_id"]),
+                raster["profile"],
+                raster["page_count"],
+                raster["total_bytes"],
+                raster["manifest_sha256"],
+            ),
+        )
+        for page in raster["pages"]:
+            connection.execute(
+                """
+                insert into asset_pdf_page(
+                  seller_organization_id,asset_id,asset_version,page_number,storage_driver,
+                  storage_bucket,object_key,storage_version_id,storage_etag,byte_size,sha256,
+                  pixel_width,pixel_height
+                ) values(%s,%s,1,%s,'legacy_bundle','codex-demo',%s,null,null,%s,%s,%s,%s)
+                """,
+                (
+                    seller_id,
+                    UUID(lesson["asset_id"]),
+                    page["page_number"],
+                    page["object_key"],
+                    page["byte_size"],
+                    page["sha256"],
+                    page["pixel_width"],
+                    page["pixel_height"],
+                ),
+            )
         connection.execute(
             """
             insert into lesson_asset_draft(

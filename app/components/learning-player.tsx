@@ -668,7 +668,7 @@ function validPdfManifest(
   return Object.keys(record).sort().join(",") === "asset_id,page_count" &&
     typeof expectedAssetId === "string" && record.asset_id === expectedAssetId &&
     Number.isSafeInteger(record.page_count) && Number(record.page_count) >= 1 &&
-    Number(record.page_count) <= 5_000;
+    Number(record.page_count) <= 100;
 }
 
 function ProtectedVideo({ asset, initialProgress, busy, onProgress }: {

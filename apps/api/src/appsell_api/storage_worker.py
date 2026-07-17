@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import socket
 import struct
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 from uuid import UUID
 
-from .pdf_verifier import PDF_MIME, normalized_pdf_file, spooled_pdf_file
+from .pdf_derivatives import prepared_pdf_file
+from .pdf_verifier import PDF_MIME, spooled_pdf_file
 from .storage_s3 import S3Storage, StorageCapabilityError, StoredObject, object_sha256_matches
 from .video_verifier import VIDEO_MP4_MIME, probe_video_safely, spooled_video_file
 
@@ -130,6 +132,30 @@ class VerifyPdfJob:
 
 
 @dataclass(frozen=True)
+class VerifiedStoredPdfPage:
+    page_number: int
+    stored: StoredObject
+    byte_size: int
+    sha256_hex: str
+    width: int
+    height: int
+
+    def manifest_entry(self) -> dict[str, object]:
+        return {
+            "page_number": self.page_number,
+            "storage_driver": "s3",
+            "storage_bucket": self.stored.bucket,
+            "object_key": self.stored.key,
+            "storage_version_id": self.stored.version_id,
+            "storage_etag": self.stored.etag,
+            "byte_size": self.byte_size,
+            "sha256": self.sha256_hex,
+            "pixel_width": self.width,
+            "pixel_height": self.height,
+        }
+
+
+@dataclass(frozen=True)
 class VerifiedAssetResult:
     source: StoredObject
     ready: StoredObject
@@ -139,6 +165,7 @@ class VerifiedAssetResult:
     ready_sha256_hex: str
     pdf_page_count: int
     scanner_provider: str
+    pdf_pages: tuple[VerifiedStoredPdfPage, ...] = ()
 
 
 class PdfStorageWorker:
@@ -190,7 +217,7 @@ class PdfStorageWorker:
         if job.declared_content_type != PDF_MIME:
             raise ScanRejected("job MIME is unsupported")
 
-        ready: StoredObject | None = None
+        uploaded: list[StoredObject] = []
         try:
             with self.storage.open_download(
                 bucket=source.bucket, key=source.key, version_id=source.version_id
@@ -203,43 +230,72 @@ class PdfStorageWorker:
                 ) as source_pdf:
                     if not self.scanner.scan(source_pdf.path):
                         raise ScanRejected("scanner rejected the original quarantined object")
-                    with normalized_pdf_file(
+                    with prepared_pdf_file(
                         source_pdf.path,
                         isolated_service_boundary=self.isolated_service_boundary,
-                    ) as ready_pdf:
-                        if not self.scanner.scan(ready_pdf.path):
+                    ) as prepared:
+                        if not self.scanner.scan(prepared.ready_pdf_path):
                             raise ScanRejected("scanner rejected the normalized ready object")
+                        # The asset version prefix is reserved exclusively for this upload.
+                        # Reconcile any versions left by an abruptly terminated prior lease
+                        # before writing a fresh, internally consistent derivative set.
+                        self.storage.delete_all_versions_under_prefix(
+                            bucket=job.ready_bucket,
+                            prefix=ready_asset_version_prefix(job.ready_key, job.seller_id),
+                        )
                         ready = self.storage.put_verified(
                             destination_bucket=job.ready_bucket,
                             destination_key=job.ready_key,
-                            source_path=ready_pdf.path,
-                            byte_size=ready_pdf.byte_size,
-                            sha256_hex=ready_pdf.sha256_hex,
+                            source_path=prepared.ready_pdf_path,
+                            byte_size=prepared.ready_pdf_byte_size,
+                            sha256_hex=prepared.ready_pdf_sha256_hex,
                             content_type=PDF_MIME,
                             upload_id=str(job.upload_id),
                             file_name=job.file_name,
                         )
+                        uploaded.append(ready)
+                        stored_pages: list[VerifiedStoredPdfPage] = []
+                        for page in prepared.pages:
+                            stored_page = self.storage.put_verified(
+                                destination_bucket=job.ready_bucket,
+                                destination_key=_pdf_page_key(job.ready_key, page.page_number),
+                                source_path=page.path,
+                                byte_size=page.byte_size,
+                                sha256_hex=page.sha256_hex,
+                                content_type="image/png",
+                                upload_id=str(job.upload_id),
+                                file_name=f"page-{page.page_number}.png",
+                            )
+                            uploaded.append(stored_page)
+                            stored_pages.append(
+                                VerifiedStoredPdfPage(
+                                    page_number=page.page_number,
+                                    stored=stored_page,
+                                    byte_size=page.byte_size,
+                                    sha256_hex=page.sha256_hex,
+                                    width=page.width,
+                                    height=page.height,
+                                )
+                            )
                         return VerifiedAssetResult(
                             source=source,
                             ready=ready,
                             source_byte_size=source_pdf.byte_size,
                             source_sha256_hex=source_pdf.sha256_hex,
-                            ready_byte_size=ready_pdf.byte_size,
-                            ready_sha256_hex=ready_pdf.sha256_hex,
-                            pdf_page_count=ready_pdf.page_count,
+                            ready_byte_size=prepared.ready_pdf_byte_size,
+                            ready_sha256_hex=prepared.ready_pdf_sha256_hex,
+                            pdf_page_count=prepared.page_count,
+                            pdf_pages=tuple(stored_pages),
                             scanner_provider=self.scanner.provider_name,
                         )
         except Exception as processing_error:
-            if ready is None:
+            if not uploaded:
                 raise
-            try:
-                self.storage.delete_version(
-                    bucket=ready.bucket, key=ready.key, version_id=ready.version_id
-                )
-            except Exception as ready_cleanup_error:
+            cleanup_errors = _delete_versions(self.storage, reversed(uploaded))
+            if cleanup_errors:
                 raise ExceptionGroup(
-                    "processing and ready compensation both failed",
-                    [processing_error, ready_cleanup_error],
+                    "processing and PDF derivative compensation failed",
+                    [processing_error, *cleanup_errors],
                 ) from processing_error
             raise
 
@@ -276,6 +332,7 @@ class PdfStorageWorker:
                         ready_byte_size=source_video.byte_size,
                         ready_sha256_hex=source_video.sha256_hex,
                         pdf_page_count=0,
+                        pdf_pages=(),
                         scanner_provider=self.scanner.provider_name,
                     )
         except Exception as processing_error:
@@ -293,11 +350,14 @@ class PdfStorageWorker:
             raise
 
     def compensate_ready_after_finalize_failure(self, result: VerifiedAssetResult) -> None:
-        self.storage.delete_version(
-            bucket=result.ready.bucket,
-            key=result.ready.key,
-            version_id=result.ready.version_id,
+        errors = _delete_versions(
+            self.storage,
+            [page.stored for page in reversed(result.pdf_pages)] + [result.ready],
         )
+        if errors:
+            raise CleanupRetryableError(
+                "ready derivative cleanup must be retried"
+            ) from ExceptionGroup("ready derivative cleanup failed", errors)
 
     def cleanup_source_after_commit(self, result: VerifiedAssetResult) -> None:
         try:
@@ -329,3 +389,38 @@ def _validate_storage_key(key: str) -> None:
     invalid_part = any(part in {"", ".", ".."} for part in key.split("/"))
     if not key or key.startswith("/") or "\0" in key or invalid_part:
         raise ScanRejected("storage key is invalid")
+
+
+def _pdf_page_key(ready_key: str, page_number: int) -> str:
+    parts = ready_key.split("/")
+    try:
+        UUID(parts[1])
+        UUID(parts[3])
+        UUID(parts[5])
+        version = int(parts[4][1:])
+    except (IndexError, ValueError) as error:
+        raise ScanRejected("ready PDF key does not identify an asset version") from error
+    if len(parts) != 6 or parts[0] != "tenants" or parts[2] != "assets" or version < 1:
+        raise ScanRejected("ready PDF key does not identify an asset version")
+    return "/".join([*parts[:5], "pages", f"{page_number}.png"])
+
+
+def ready_asset_version_prefix(ready_key: str, seller_id: UUID) -> str:
+    # Reuse the strict tenant/asset/version/blob validation before deriving a
+    # prefix that can be passed to a destructive storage reconciliation call.
+    page_key = _pdf_page_key(ready_key, 1)
+    if UUID(ready_key.split("/")[1]) != seller_id:
+        raise ScanRejected("ready PDF key is outside the cleanup tenant scope")
+    return page_key.rsplit("pages/1.png", 1)[0]
+
+
+def _delete_versions(storage: S3Storage, objects: Iterable[StoredObject]) -> list[Exception]:
+    errors: list[Exception] = []
+    for stored in objects:
+        try:
+            storage.delete_version(
+                bucket=stored.bucket, key=stored.key, version_id=stored.version_id
+            )
+        except Exception as error:
+            errors.append(error)
+    return errors

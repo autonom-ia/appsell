@@ -9,7 +9,27 @@
     "bytes": 3197,
     "sha256": "1a182ac49637d0b6ae9bf105fd8eccdfd651d75e920aaa2d65869b826878f887",
     "lesson_id": "a39181dd-c70c-57b3-935d-d97fd834d709",
-    "asset_id": "a6f01626-8b83-55e5-becc-fbab785f1493"
+    "asset_id": "a6f01626-8b83-55e5-becc-fbab785f1493",
+    "raster": {
+      "profile": "png-1600-v1",
+      "page_count": 1,
+      "total_bytes": 174644,
+      "manifest_sha256": "00ac6d107b24345ccb526078be03ecbdee17bbac9b9b6bee111058043f10718a",
+      "pages": [
+        {
+          "page_number": 1,
+          "storage_driver": "legacy_bundle",
+          "storage_bucket": "codex-demo",
+          "object_key": "01-o-que-e-codex/pages/1.png",
+          "storage_version_id": null,
+          "storage_etag": null,
+          "byte_size": 174644,
+          "sha256": "a9c297f77c5a04e60eee03a14360f644ee2a11b132c06dfe09085ede802f0f4a",
+          "pixel_width": 1132,
+          "pixel_height": 1600
+        }
+      ]
+    }
   },
   {
     "seller_id": "90718777-93de-5e7a-aaa4-45b25051582c",
@@ -21,7 +41,27 @@
     "bytes": 3148,
     "sha256": "e0b4fa62f5cc6ee0d0457b639db12fba42603220bc0c34fd539cd3ba8c0eba16",
     "lesson_id": "c27222bd-9a83-5317-a870-f7076bdc8fc5",
-    "asset_id": "53c0e256-4b88-568b-ac98-4e8455ebc659"
+    "asset_id": "53c0e256-4b88-568b-ac98-4e8455ebc659",
+    "raster": {
+      "profile": "png-1600-v1",
+      "page_count": 1,
+      "total_bytes": 160384,
+      "manifest_sha256": "e6cdad8fb031a109a3c022e72a68a188b63125308d1d6c1660ae0a050fdcdd00",
+      "pages": [
+        {
+          "page_number": 1,
+          "storage_driver": "legacy_bundle",
+          "storage_bucket": "codex-demo",
+          "object_key": "02-contexto-repo-objetivo/pages/1.png",
+          "storage_version_id": null,
+          "storage_etag": null,
+          "byte_size": 160384,
+          "sha256": "89214b0bb504c4a4eada93dcc41e709daadff42d844ef1f88b884f49e7a2655c",
+          "pixel_width": 1132,
+          "pixel_height": 1600
+        }
+      ]
+    }
   },
   {
     "seller_id": "90718777-93de-5e7a-aaa4-45b25051582c",
@@ -33,7 +73,27 @@
     "bytes": 3181,
     "sha256": "8982fcb9dcea64f8eddd939e3f9eafe474fd9e9b0fa23b17f25f9fafe0c94a98",
     "lesson_id": "52a6eb00-d861-551e-a009-688e5a08bf4f",
-    "asset_id": "a8b3d580-3da0-543d-9cbc-d4471f5f6745"
+    "asset_id": "a8b3d580-3da0-543d-9cbc-d4471f5f6745",
+    "raster": {
+      "profile": "png-1600-v1",
+      "page_count": 1,
+      "total_bytes": 166168,
+      "manifest_sha256": "652744fb96c2ce1f34b0c2f52de667e9de266cf33226cb96dbec63d18ba964d6",
+      "pages": [
+        {
+          "page_number": 1,
+          "storage_driver": "legacy_bundle",
+          "storage_bucket": "codex-demo",
+          "object_key": "03-implementar-com-seguranca/pages/1.png",
+          "storage_version_id": null,
+          "storage_etag": null,
+          "byte_size": 166168,
+          "sha256": "ccedfcea42800c7a5274d4d11f0fad94806941e109ac828d4f87045a1816d5b3",
+          "pixel_width": 1132,
+          "pixel_height": 1600
+        }
+      ]
+    }
   },
   {
     "seller_id": "90718777-93de-5e7a-aaa4-45b25051582c",
@@ -45,7 +105,27 @@
     "bytes": 3107,
     "sha256": "235019ac6df0194a8c5bd4aea0a5037b7534dac906ab58dc4c310dfedf385513",
     "lesson_id": "5ecf3b9a-6a5e-5734-8038-2620946f4ce0",
-    "asset_id": "1c63d96f-cc32-5932-9a2c-51a6ba2d5a29"
+    "asset_id": "1c63d96f-cc32-5932-9a2c-51a6ba2d5a29",
+    "raster": {
+      "profile": "png-1600-v1",
+      "page_count": 1,
+      "total_bytes": 157048,
+      "manifest_sha256": "cbb2c041cc3bd3ab6a8524e2641bc84fc9f1933f4254ed710fe83bbdaede889b",
+      "pages": [
+        {
+          "page_number": 1,
+          "storage_driver": "legacy_bundle",
+          "storage_bucket": "codex-demo",
+          "object_key": "04-revisar-testes-pr/pages/1.png",
+          "storage_version_id": null,
+          "storage_etag": null,
+          "byte_size": 157048,
+          "sha256": "036629eac8de4b3b53cfc43644f3b8c74a35026a4e8a5ca07433e9fa7a549a85",
+          "pixel_width": 1132,
+          "pixel_height": 1600
+        }
+      ]
+    }
   },
   {
     "seller_id": "90718777-93de-5e7a-aaa4-45b25051582c",
@@ -57,6 +137,26 @@
     "bytes": 3067,
     "sha256": "59cabda6e11e2b1a1ee2af480e4f242dd1ac941ae62ab20e06f12104f691b270",
     "lesson_id": "56b743f6-398b-515d-b1e0-2a5beb93f449",
-    "asset_id": "fd2be673-d5bc-56c3-88a1-6966fc069d35"
+    "asset_id": "fd2be673-d5bc-56c3-88a1-6966fc069d35",
+    "raster": {
+      "profile": "png-1600-v1",
+      "page_count": 1,
+      "total_bytes": 155636,
+      "manifest_sha256": "432aa639db0f8bd625aa6f2e11356fbc42007de104cba25cd9fdfc3a634d24db",
+      "pages": [
+        {
+          "page_number": 1,
+          "storage_driver": "legacy_bundle",
+          "storage_bucket": "codex-demo",
+          "object_key": "05-deploy-e-rollback/pages/1.png",
+          "storage_version_id": null,
+          "storage_etag": null,
+          "byte_size": 155636,
+          "sha256": "182a754d3d33c27b56488dbdc5ec6445ac9b4596daf6a2093842c49a355026d7",
+          "pixel_width": 1132,
+          "pixel_height": 1600
+        }
+      ]
+    }
   }
 ]

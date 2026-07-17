@@ -37,7 +37,7 @@ fi
 appsell_branch="${APPSELL_ARTIFACT_BRANCH:-infra/66-vps-preview}"
 
 case "$appsell_branch" in
-  infra/66-vps-preview|infra/66-easypanel-rc|infra/77-easypanel-runtime-preview) ;;
+  infra/66-vps-preview|infra/66-easypanel-rc|infra/77-easypanel-runtime-preview|infra/77-easypanel-runtime-preview-rc) ;;
   *) echo "Unsupported AppSell artifact branch" >&2; exit 2 ;;
 esac
 

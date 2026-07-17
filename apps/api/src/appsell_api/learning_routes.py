@@ -17,9 +17,8 @@ from .internal_requests import AuthenticatedInternalRequest, InternalRequestAuth
 from .learning_pdf import (
     LearningPdfRejected,
     LearningPdfUnavailable,
-    authorized_pdf_source,
-    inspect_pdf,
-    render_pdf_page,
+    authorized_pdf_page,
+    render_prepared_pdf_page,
 )
 from .storage_s3 import S3Storage, StorageError
 
@@ -139,6 +138,18 @@ async def authorize_asset(request: Request, entitlement_id: UUID, asset_id: UUID
             )
     except DBAPIError as error:
         raise _domain_error(error) from error
+    if row["media_type"] == "application/pdf":
+        return {
+            "asset": {
+                "id": str(row["asset_id"]),
+                "delivery": "protected_pages",
+                "file_name": row["file_name"],
+                "title": row["title"],
+                "media_type": row["media_type"],
+                "byte_size": row["byte_size"],
+                "sha256": row["sha256"],
+            }
+        }
     if row["storage_driver"] == "s3":
         storage: S3Storage | None = getattr(request.app.state, "storage", None)
         if storage is None:
@@ -198,39 +209,16 @@ async def authorize_asset(request: Request, entitlement_id: UUID, asset_id: UUID
 async def inspect_asset_pages(
     request: Request, entitlement_id: UUID, asset_id: UUID
 ) -> dict[str, Any]:
-    internal, row = await _authorized_asset_row(request, entitlement_id, asset_id)
-    settings: Settings | None = getattr(request.app.state, "settings", None)
-    if settings is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="pdf_viewer_unavailable",
-        )
-    storage: S3Storage | None = getattr(request.app.state, "storage", None)
-
-    def inspect() -> int:
-        with authorized_pdf_source(row, settings, storage) as source:
-            return inspect_pdf(source, settings)
-
     try:
-        if _PROTECTED_PDF_SLOTS.locked():
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="pdf_viewer_busy",
-                headers={"retry-after": "2"},
-            )
-        async with _PROTECTED_PDF_SLOTS:
-            page_count = await to_thread.run_sync(inspect)
-    except LearningPdfRejected as error:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="protected_pdf_unavailable",
-        ) from error
-    except LearningPdfUnavailable as error:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="pdf_viewer_unavailable",
-        ) from error
-    return {"asset": {"id": str(row["asset_id"]), "page_count": page_count}}
+        _, manifest = await _authorized_pdf_manifest(request, entitlement_id, asset_id)
+    except DBAPIError as error:
+        raise _learning_domain_error(error) from error
+    return {
+        "asset": {
+            "id": str(manifest["asset_id"]),
+            "page_count": int(manifest["page_count"]),
+        }
+    }
 
 
 @router.get("/me/learning/items/{entitlement_id}/assets/{asset_id}/pages/{page_number}")
@@ -240,12 +228,17 @@ async def render_asset_page(
     asset_id: UUID,
     page_number: int,
 ) -> Response:
-    internal, row = await _authorized_asset_row(request, entitlement_id, asset_id)
-    if not 1 <= page_number <= 5_000:
+    if not 1 <= page_number <= 100:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="protected_pdf_unavailable",
         )
+    try:
+        internal, manifest, row = await _authorized_pdf_page_row(
+            request, entitlement_id, asset_id, page_number
+        )
+    except DBAPIError as error:
+        raise _learning_domain_error(error) from error
     settings: Settings | None = getattr(request.app.state, "settings", None)
     if settings is None:
         raise HTTPException(
@@ -258,11 +251,11 @@ async def render_asset_page(
     )
 
     def render() -> Any:
-        with authorized_pdf_source(row, settings, storage) as source:
-            return render_pdf_page(
+        with authorized_pdf_page(row, settings, storage) as source:
+            return render_prepared_pdf_page(
                 source,
-                settings,
-                page_number=page_number,
+                row,
+                page_count=int(manifest["page_count"]),
                 watermark=watermark,
             )
 
@@ -305,7 +298,7 @@ async def render_asset_page(
     )
 
 
-async def _authorized_asset_row(
+async def _authorized_pdf_manifest(
     request: Request, entitlement_id: UUID, asset_id: UUID
 ) -> tuple[AuthenticatedInternalRequest, Any]:
     auth, internal = await _authenticate(request, "library.asset.read")
@@ -316,9 +309,9 @@ async def _authorized_asset_row(
                 (
                     await session.execute(
                         text(
-                            "select asset_id,asset_version,file_name,title,media_type,byte_size,"
-                            "sha256,storage_driver,storage_bucket,object_key,storage_version_id,"
-                            "storage_etag from app_private.authorize_publication_asset("
+                            "select seller_organization_id,asset_id,asset_version,blob_id,"
+                            "raster_profile,page_count,total_byte_size,manifest_sha256,pages "
+                            "from app_private.authorize_entitled_pdf_manifest("
                             ":identity_user_id,:entitlement_id,:asset_id)"
                         ),
                         {
@@ -332,13 +325,70 @@ async def _authorized_asset_row(
                 .one()
             )
     except DBAPIError as error:
-        raise _learning_domain_error(error) from error
-    if row["media_type"] != "application/pdf":
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="protected_pdf_unavailable",
-        )
+        raise error
     return internal, row
+
+
+async def _authorized_pdf_page_row(
+    request: Request,
+    entitlement_id: UUID,
+    asset_id: UUID,
+    page_number: int,
+) -> tuple[AuthenticatedInternalRequest, Any, Any]:
+    auth, internal = await _authenticate(request, "library.asset.read")
+    await _require_buyer_scope(internal)
+    async with auth.domain_session(internal.envelope) as session:
+        manifest = (
+            (
+                await session.execute(
+                    text(
+                        "select seller_organization_id,asset_id,asset_version,blob_id,"
+                        "raster_profile,page_count,total_byte_size,manifest_sha256,pages "
+                        "from app_private.authorize_entitled_pdf_manifest("
+                        ":identity_user_id,:entitlement_id,:asset_id)"
+                    ),
+                    {
+                        "identity_user_id": internal.envelope.identity.user_id,
+                        "entitlement_id": entitlement_id,
+                        "asset_id": asset_id,
+                    },
+                )
+            )
+            .mappings()
+            .one()
+        )
+        row = (
+            (
+                await session.execute(
+                    text(
+                        "select seller_organization_id,asset_id,asset_version,blob_id,"
+                        "raster_profile,page_number,storage_driver,storage_bucket,object_key,"
+                        "storage_version_id,storage_etag,byte_size,sha256,pixel_width,"
+                        "pixel_height from app_private.authorize_entitled_pdf_page("
+                        ":identity_user_id,:entitlement_id,:asset_id,:page_number)"
+                    ),
+                    {
+                        "identity_user_id": internal.envelope.identity.user_id,
+                        "entitlement_id": entitlement_id,
+                        "asset_id": asset_id,
+                        "page_number": page_number,
+                    },
+                )
+            )
+            .mappings()
+            .one()
+        )
+    if (
+        row["asset_id"] != manifest["asset_id"]
+        or row["asset_version"] != manifest["asset_version"]
+        or row["blob_id"] != manifest["blob_id"]
+        or int(row["page_number"]) != page_number
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="pdf_viewer_unavailable",
+        )
+    return internal, manifest, row
 
 
 @router.get("/me/learning/items/{entitlement_id}/assets/{asset_id}/download")

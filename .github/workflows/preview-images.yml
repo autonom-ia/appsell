@@ -2,7 +2,7 @@ name: VPS preview artifacts
 
 on:
   push:
-    branches: ["infra/66-vps-preview", "infra/66-easypanel-rc", "infra/77-easypanel-runtime-preview"]
+    branches: ["infra/66-vps-preview", "infra/66-easypanel-rc", "infra/77-easypanel-runtime-preview", "infra/77-easypanel-runtime-preview-rc"]
     paths:
       - "app/**"
       - "apps/api/**"
@@ -24,6 +24,7 @@ permissions:
 
 env:
   SOURCE_SHA: ${{ github.sha }}
+  RUNTIME_PREVIEW_ISSUE: ${{ startsWith(github.ref_name, 'infra/77-') && '77' || '66' }}
 
 jobs:
   validate:
@@ -51,7 +52,7 @@ jobs:
             config --quiet
           bash deploy/preview-vps/test-compose-project-pin.sh
           bash deploy/preview-vps/test-directory-invariants.sh
-          bash deploy/preview-vps/test-verify-downloads-local.sh
+          APPSELL_ARTIFACT_BRANCH="$GITHUB_REF_NAME" bash deploy/preview-vps/test-verify-downloads-local.sh
           bash deploy/easypanel/test-runtime-preview-common.sh
           bash deploy/easypanel/test-runtime-preview-domain.sh
           bash deploy/easypanel/test-runtime-preview-env.sh
@@ -161,14 +162,14 @@ jobs:
           tags: autonomia-sell-preview-${{ matrix.name }}:${{ env.SOURCE_SHA }}
           build-args: |
             SOURCE_SHA=${{ env.SOURCE_SHA }}
-            ISSUE_NUMBER=${{ github.ref_name == 'infra/77-easypanel-runtime-preview' && '77' || '66' }}
+            ISSUE_NUMBER=${{ env.RUNTIME_PREVIEW_ISSUE }}
           outputs: type=docker,dest=/tmp/${{ matrix.name }}-${{ env.SOURCE_SHA }}.tar
           cache-from: type=gha,scope=preview-${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=preview-${{ matrix.name }}
       - name: Validate Docker archive metadata
         env:
           IMAGE_NAME: ${{ matrix.name }}
-          EXPECTED_ISSUE: ${{ github.ref_name == 'infra/77-easypanel-runtime-preview' && '77' || '66' }}
+          EXPECTED_ISSUE: ${{ env.RUNTIME_PREVIEW_ISSUE }}
         run: |
           source deploy/easypanel/runtime-preview-common.sh
           archive="/tmp/${IMAGE_NAME}-${SOURCE_SHA}.tar"

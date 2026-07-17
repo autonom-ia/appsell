@@ -318,6 +318,32 @@ class S3Storage:
                 deleted += len(objects)
         return deleted
 
+    def delete_all_versions_under_prefix(self, *, bucket: str, prefix: str) -> int:
+        if not prefix or not prefix.endswith("/"):
+            raise StorageCapabilityError("prefix delete requires a directory prefix")
+        deleted = 0
+        while True:
+            page = self._control.list_object_versions(
+                Bucket=bucket,
+                Prefix=prefix,
+                MaxKeys=1_000,
+            )
+            objects = [
+                {"Key": entry["Key"], "VersionId": entry["VersionId"]}
+                for collection in (page.get("Versions", []), page.get("DeleteMarkers", []))
+                for entry in collection
+                if str(entry.get("Key") or "").startswith(prefix) and entry.get("VersionId")
+            ]
+            if not objects:
+                return deleted
+            response = self._control.delete_objects(
+                Bucket=bucket,
+                Delete={"Objects": objects, "Quiet": True},
+            )
+            if response.get("Errors"):
+                raise StorageError("storage prefix version cleanup was incomplete")
+            deleted += len(objects)
+
     def ensure_local_ci_controls(self, *, allowed_origin: str) -> None:
         for bucket in (self.quarantine_bucket, self.ready_bucket):
             try:
@@ -493,7 +519,8 @@ def _asset_content_disposition(
         or any(ord(character) < 32 or ord(character) == 127 for character in file_name)
         or (media_type == "application/pdf" and not file_name.lower().endswith(".pdf"))
         or (media_type == "video/mp4" and not file_name.lower().endswith(".mp4"))
-        or media_type not in {"application/pdf", "video/mp4"}
+        or (media_type == "image/png" and not file_name.lower().endswith(".png"))
+        or media_type not in {"application/pdf", "video/mp4", "image/png"}
         or disposition not in {"inline", "attachment"}
     ):
         raise ValueError("asset file_name or media_type is invalid")

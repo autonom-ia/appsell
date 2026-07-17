@@ -13,6 +13,7 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 import httpx
 import psycopg
 import pytest
+from psycopg.types.json import Jsonb
 from reportlab.pdfgen.canvas import Canvas  # type: ignore[import-untyped]
 
 from appsell_api import main as main_module
@@ -318,14 +319,16 @@ async def test_new_pdf_upload_worker_publication_and_entitled_download(
             file_name=lease["file_name"],
         )
     )
+    assert processed.pdf_page_count == len(processed.pdf_pages) > 0
+    page_manifest = [page.manifest_entry() for page in processed.pdf_pages]
 
     with psycopg.connect(str(RUNTIME_URL)) as connection:
         apply_context(connection, worker, None, "catalog.asset.verify")
-        connection.execute(
+        registered_row = connection.execute(
             """
-            select app_private.register_asset_ready_candidate(
+            select app_private.register_asset_ready_candidate_v2(
               %s,%s,%s,'storage-vertical',%s,%s,%s,%s,
-              'application/pdf','application/pdf','clean')
+              'application/pdf','application/pdf','clean',%s)
             """,
             (
                 worker,
@@ -335,16 +338,24 @@ async def test_new_pdf_upload_worker_publication_and_entitled_download(
                 processed.ready.etag,
                 processed.ready_byte_size,
                 processed.ready_sha256_hex,
+                Jsonb(page_manifest),
             ),
+        ).fetchone()
+        assert registered_row is not None
+        registered = registered_row[0]
+        assert registered["pdf_page_count"] == processed.pdf_page_count
+        assert registered["pdf_total_byte_size"] == sum(
+            page.byte_size for page in processed.pdf_pages
         )
+        manifest_sha256 = registered["pdf_manifest_sha256"]
         connection.commit()
 
         apply_context(connection, worker, None, "catalog.asset.verify")
         finalized_row = connection.execute(
             """
-            select app_private.finalize_asset_verification(
+            select app_private.finalize_asset_verification_v2(
               %s,%s,%s,'storage-vertical',%s,%s,%s,%s,
-              'application/pdf','application/pdf','clean',%s,%s,'ready',%s,%s,%s
+              'application/pdf','application/pdf','clean',%s,%s,'ready',%s,%s,%s,%s
             )
             """,
             (
@@ -360,12 +371,15 @@ async def test_new_pdf_upload_worker_publication_and_entitled_download(
                 uuid4(),
                 hashlib.sha256(b"finalize vertical").hexdigest(),
                 uuid4(),
+                manifest_sha256,
             ),
         ).fetchone()
         assert finalized_row is not None
         finalized = finalized_row[0]
         connection.commit()
         assert finalized["status"] == "ready" and finalized["course_version"] == 2
+        assert finalized["pdf_page_count"] == processed.pdf_page_count
+        assert finalized["pdf_manifest_sha256"] == manifest_sha256
         asset_id = UUID(finalized["asset_id"])
 
         apply_context(connection, admin, seller, "catalog.publication.create")
@@ -401,43 +415,103 @@ async def test_new_pdf_upload_worker_publication_and_entitled_download(
             "select count(*) from publication_asset where publication_id=%s and asset_id=%s",
             (publication_id, asset_id),
         ).fetchone() == (1,)
+        raster = connection.execute(
+            """
+            select page_count,total_byte_size,manifest_sha256 from asset_pdf_raster
+            where seller_organization_id=%s and asset_id=%s and asset_version=%s
+            """,
+            (seller, asset_id, finalized["asset_version"]),
+        ).fetchone()
+        assert raster == (
+            processed.pdf_page_count,
+            sum(page.byte_size for page in processed.pdf_pages),
+            manifest_sha256,
+        )
+        stored_pages = connection.execute(
+            """
+            select page_number,storage_bucket,object_key,storage_version_id,
+              storage_etag,byte_size,sha256,pixel_width,pixel_height
+            from asset_pdf_page where seller_organization_id=%s and asset_id=%s
+              and asset_version=%s order by page_number
+            """,
+            (seller, asset_id, finalized["asset_version"]),
+        ).fetchall()
+        assert stored_pages == [
+            (
+                page.page_number,
+                page.stored.bucket,
+                page.stored.key,
+                page.stored.version_id,
+                page.stored.etag,
+                page.byte_size,
+                page.sha256_hex,
+                page.width,
+                page.height,
+            )
+            for page in processed.pdf_pages
+        ]
         connection.commit()
 
     with psycopg.connect(str(RUNTIME_URL)) as connection:
         apply_context(connection, buyer, None, "library.asset.read")
-        authorized = connection.execute(
-            "select * from app_private.authorize_publication_asset(%s,%s,%s)",
+        manifest_cursor = connection.execute(
+            "select * from app_private.authorize_entitled_pdf_manifest(%s,%s,%s)",
             (buyer, entitlement, asset_id),
-        ).fetchone()
+        )
+        authorized_manifest = manifest_cursor.fetchone()
+        assert authorized_manifest is not None
+        assert manifest_cursor.description is not None
+        manifest_result = dict(
+            zip(
+                [column.name for column in manifest_cursor.description],
+                authorized_manifest,
+                strict=True,
+            )
+        )
+        assert manifest_result["manifest_sha256"] == manifest_sha256
+        assert manifest_result["page_count"] == processed.pdf_page_count
+        assert len(manifest_result["pages"]) == processed.pdf_page_count
+
+        apply_context(connection, buyer, None, "library.asset.read")
+        page_cursor = connection.execute(
+            "select * from app_private.authorize_entitled_pdf_page(%s,%s,%s,1)",
+            (buyer, entitlement, asset_id),
+        )
+        authorized_page = page_cursor.fetchone()
+        assert authorized_page is not None
+        assert page_cursor.description is not None
+        page_result = dict(
+            zip(
+                [column.name for column in page_cursor.description],
+                authorized_page,
+                strict=True,
+            )
+        )
         connection.commit()
-        assert authorized is not None
 
         apply_context(connection, outsider, None, "library.asset.read")
         with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
             connection.execute(
-                "select * from app_private.authorize_publication_asset(%s,%s,%s)",
+                "select * from app_private.authorize_entitled_pdf_page(%s,%s,%s,1)",
                 (outsider, entitlement, asset_id),
             ).fetchone()
         connection.rollback()
 
-    assert authorized[7] == "s3"
-    assert authorized[8] == "appsell-ready"
-    assert authorized[9].startswith(f"tenants/{seller}/assets/")
-    assert authorized[5] == processed.ready_byte_size
-    assert authorized[6] == processed.ready_sha256_hex
-    signed = storage.presign_get(
-        bucket=authorized[8],
-        key=authorized[9],
-        version_id=authorized[10],
-        file_name=authorized[2],
-    )
-    async with httpx.AsyncClient() as storage_http:
-        downloaded = await storage_http.get(signed.url, timeout=10)
-    assert downloaded.status_code == 200
-    assert len(downloaded.content) == authorized[5]
-    assert hashlib.sha256(downloaded.content).hexdigest() == authorized[6]
-    assert downloaded.headers["cache-control"] == "private, no-store, max-age=0"
-    assert downloaded.headers["content-disposition"] == ("inline; filename*=UTF-8''route-real.pdf")
+    expected_page = processed.pdf_pages[0]
+    assert page_result["storage_driver"] == "s3"
+    assert page_result["storage_bucket"] == "appsell-ready"
+    assert page_result["object_key"] == expected_page.stored.key
+    assert page_result["byte_size"] == expected_page.byte_size
+    assert page_result["sha256"] == expected_page.sha256_hex
+    with storage.open_download(
+        bucket=page_result["storage_bucket"],
+        key=page_result["object_key"],
+        version_id=page_result["storage_version_id"],
+    ) as downloaded:
+        downloaded_payload = downloaded.read()
+    assert downloaded_payload.startswith(b"\x89PNG\r\n\x1a\n")
+    assert len(downloaded_payload) == page_result["byte_size"]
+    assert hashlib.sha256(downloaded_payload).hexdigest() == page_result["sha256"]
 
 
 def identity_id(subject: str) -> UUID:

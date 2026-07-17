@@ -118,7 +118,9 @@ for service in domain-bootstrap domain-api pdf-sandbox-init pdf-sandbox sell-web
             .[0].RW == false) and
           (.[0].Config.Env | index("APPSELL_API_STORAGE_PROVIDER=disabled")) != null and
           (.[0].Config.Env | index("APPSELL_API_PDF_SANDBOX_SOCKET=/run/appsell-pdf/pdf.sock")) != null and
-          (.[0].Config.Env | index("APPSELL_API_PRIVATE_LEARNING_ASSET_ROOT=/workspace/sell/output/pdf/codex")) != null
+          (.[0].Config.Env | index("APPSELL_API_PRIVATE_LEARNING_ASSET_ROOT=/workspace/sell/output/pdf/codex")) != null and
+          .[0].HostConfig.Memory == 1073741824 and
+          (.[0].HostConfig.Tmpfs["/tmp"] | contains("size=402653184"))
         ' <<<"$inspect_json" >/dev/null || {
           echo "domain-api protected PDF mount or configuration drifted" >&2
           exit 1
@@ -163,9 +165,10 @@ for service in domain-bootstrap domain-api pdf-sandbox-init pdf-sandbox sell-web
           .[0].Config.User == "10001:10001" and .[0].HostConfig.CapAdd == null and
           .[0].Config.Cmd == ["python","-m","appsell_api.pdf_sandbox_runner"] and
           .[0].HostConfig.RestartPolicy == {"Name":"unless-stopped","MaximumRetryCount":0} and
-          .[0].HostConfig.Memory == 805306368 and .[0].HostConfig.NanoCpus == 1000000000 and
+          .[0].HostConfig.Memory == 1073741824 and .[0].HostConfig.NanoCpus == 1000000000 and
           .[0].HostConfig.PidsLimit == 96 and
           (.[0].HostConfig.Tmpfs | keys | sort) == ["/tmp","/workspace/sell/output/pdf"] and
+          (.[0].HostConfig.Tmpfs["/tmp"] | contains("size=402653184")) and
           (.[0].HostConfig.Tmpfs["/workspace/sell/output/pdf"] | contains("mode=000"))
         ' <<<"$inspect_json" >/dev/null || {
           echo "pdf-sandbox identity, command, resource or content mask drifted" >&2
@@ -217,6 +220,9 @@ pdf_restart_count_before_e2e="$(docker inspect --format '{{.RestartCount}}' "$pd
 pdf_planned_recycles_before_e2e="$(docker logs "$pdf_id" 2>&1 | \
   awk '/^\{"event":"appsell_pdf_worker_planned_recycle"\}$/{count++} END{print count+0}')"
 pdf_events_since="$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
+# The buyer demo consumes committed pre-rasterized pages, so exercise the real
+# UDS/TAR/recycle boundary explicitly instead of inferring it from browser E2E.
+docker exec "$domain_api_id" python -m appsell_api.pdf_runtime_probe >/dev/null
 ingress_network_json="$(docker network inspect "$RUNTIME_PREVIEW_INGRESS_NETWORK")"
 jq -e \
   --arg network "$RUNTIME_PREVIEW_INGRESS_NETWORK" --arg project "$RUNTIME_PREVIEW_PROJECT" \

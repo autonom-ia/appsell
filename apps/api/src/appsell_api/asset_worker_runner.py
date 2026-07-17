@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import time
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
@@ -15,6 +16,7 @@ from sqlalchemy.exc import DBAPIError
 
 from .config import Settings
 from .internal_requests import InternalRequestAuthenticator
+from .pdf_derivatives import PdfDerivativeRejected, PdfDerivativeUnavailable
 from .pdf_verifier import PdfRejected, PdfSandboxUnavailable
 from .service_auth import ServiceEnvelope, ServiceIdentity
 from .storage_s3 import S3Storage, StorageError
@@ -26,11 +28,13 @@ from .storage_worker import (
     ScanRejected,
     VerifiedAssetResult,
     VerifyPdfJob,
+    ready_asset_version_prefix,
 )
 from .video_verifier import VideoRejected, VideoSandboxUnavailable
 
 _WORKER_SUBJECT = "asset-worker-v1"
 _WORKER_LABEL = f"api-inline-{os.getpid()}"
+_ASSET_LEASE_SECONDS = 600
 logger = structlog.get_logger(__name__)
 
 
@@ -109,8 +113,8 @@ async def _claim_jobs(
             {
                 "actor": worker_id,
                 "worker": _WORKER_LABEL,
-                "job_limit": 4,
-                "lease_seconds": 300,
+                "job_limit": 1,
+                "lease_seconds": _ASSET_LEASE_SECONDS,
             },
         )
     if not isinstance(value, list) or any(not isinstance(job, dict) for job in value):
@@ -157,7 +161,15 @@ async def _process_cleanup_job(
         )
         return
     try:
-        if job.get("delete_mode") == "delete_all_versions":
+        if job.get("delete_mode") == "delete_all_versions" and job.get("kind") == "ready_reconcile":
+            prefix = ready_asset_version_prefix(str(job["object_key"]), seller_id)
+            await _run_blocking(
+                lambda cleanup: storage.delete_all_versions_under_prefix(
+                    bucket=str(cleanup["bucket"]), prefix=prefix
+                ),
+                job,
+            )
+        elif job.get("delete_mode") == "delete_all_versions":
             await _run_blocking(
                 lambda cleanup: storage.delete_all_versions(
                     bucket=str(cleanup["bucket"]), key=str(cleanup["object_key"])
@@ -262,11 +274,12 @@ async def _process_claimed_job(
     )
     try:
         result = await _run_blocking(worker.process, job)
-    except (PdfRejected, VideoRejected, ScanRejected) as error:
+    except (PdfDerivativeRejected, PdfRejected, VideoRejected, ScanRejected) as error:
         await _reject_job(auth, settings, worker_id, seller_id, upload_id, job, error)
         return
     except (
         StorageError,
+        PdfDerivativeUnavailable,
         PdfSandboxUnavailable,
         VideoSandboxUnavailable,
         ScannerUnavailable,
@@ -282,10 +295,14 @@ async def _process_claimed_job(
         return
 
     try:
-        await _register_ready_candidate(auth, settings, worker_id, seller_id, upload_id, result)
+        registered_manifest = await _register_ready_candidate(
+            auth, settings, worker_id, seller_id, upload_id, result
+        )
     except DBAPIError:
         try:
-            await _register_ready_candidate(auth, settings, worker_id, seller_id, upload_id, result)
+            registered_manifest = await _register_ready_candidate(
+                auth, settings, worker_id, seller_id, upload_id, result
+            )
         except DBAPIError:
             # No durable locator could be proven. The object is not referenced by
             # a publication yet, so exact-version compensation is safe.
@@ -299,12 +316,28 @@ async def _process_claimed_job(
             return
 
     try:
-        await _finalize_ready(auth, settings, worker_id, seller_id, upload_id, result)
+        await _finalize_ready(
+            auth,
+            settings,
+            worker_id,
+            seller_id,
+            upload_id,
+            result,
+            registered_manifest,
+        )
     except DBAPIError:
         # A connection error during COMMIT is ambiguous. Replay the same receipt once;
         # never delete ready bytes unless the database proves they are unreferenced.
         try:
-            await _finalize_ready(auth, settings, worker_id, seller_id, upload_id, result)
+            await _finalize_ready(
+                auth,
+                settings,
+                worker_id,
+                seller_id,
+                upload_id,
+                result,
+                registered_manifest,
+            )
         except DBAPIError:
             logger.warning("asset_worker_finalize_reconcile", upload_id=str(upload_id))
             return
@@ -335,7 +368,7 @@ async def _begin_job(
                 "seller": seller_id,
                 "upload": upload_id,
                 "worker": _WORKER_LABEL,
-                "lease_seconds": 300,
+                "lease_seconds": _ASSET_LEASE_SECONDS,
             },
         )
     return _json_object(value)
@@ -348,6 +381,7 @@ async def _finalize_ready(
     seller_id: UUID,
     upload_id: UUID,
     result: VerifiedAssetResult,
+    registered_manifest_sha256: str | None = None,
 ) -> None:
     values = {
         "source_size": result.source_byte_size,
@@ -360,6 +394,7 @@ async def _finalize_ready(
         "ready_version_id": result.ready.version_id,
         "ready_etag": result.ready.etag,
         "verdict": "ready",
+        "pdf_manifest_sha256": registered_manifest_sha256,
     }
     await _finalize(auth, settings, worker_id, seller_id, upload_id, values)
 
@@ -371,14 +406,25 @@ async def _register_ready_candidate(
     seller_id: UUID,
     upload_id: UUID,
     result: VerifiedAssetResult,
-) -> None:
+) -> str | None:
+    if result.pdf_pages:
+        pages = [page.manifest_entry() for page in result.pdf_pages]
+        statement = text(
+            "select app_private.register_asset_ready_candidate_v2("
+            ":actor,:seller,:upload,:worker,:ready_version_id,:ready_etag,"
+            ":ready_size,:ready_sha,:ready_media,:magic,:scanner_result,"
+            "cast(:pdf_pages as jsonb))"
+        )
+    else:
+        pages = None
+        statement = text(
+            "select app_private.register_asset_ready_candidate("
+            ":actor,:seller,:upload,:worker,:ready_version_id,:ready_etag,"
+            ":ready_size,:ready_sha,:ready_media,:magic,:scanner_result)"
+        )
     async with auth.trusted_domain_session(_worker_envelope(settings, worker_id)) as session:
-        await session.scalar(
-            text(
-                "select app_private.register_asset_ready_candidate("
-                ":actor,:seller,:upload,:worker,:ready_version_id,:ready_etag,"
-                ":ready_size,:ready_sha,:ready_media,:magic,:scanner_result)"
-            ),
+        registered = await session.scalar(
+            statement,
             {
                 "actor": worker_id,
                 "seller": seller_id,
@@ -391,8 +437,22 @@ async def _register_ready_candidate(
                 "ready_media": result.ready.content_type,
                 "magic": result.ready.content_type,
                 "scanner_result": "clean",
+                "pdf_pages": (
+                    json.dumps(pages, sort_keys=True, separators=(",", ":"))
+                    if pages is not None
+                    else None
+                ),
             },
         )
+    if not result.pdf_pages:
+        return None
+    if (
+        not isinstance(registered, dict)
+        or not isinstance(registered.get("pdf_manifest_sha256"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", registered["pdf_manifest_sha256"]) is None
+    ):
+        raise RuntimeError("database returned an invalid PDF raster receipt")
+    return str(registered["pdf_manifest_sha256"])
 
 
 async def _reject_job(
@@ -435,15 +495,25 @@ async def _finalize(
         NAMESPACE_URL,
         f"appsell.asset.finalize\0{upload_id}\0{values['verdict']}",
     )
+    if values.get("pdf_manifest_sha256") is not None:
+        statement = text(
+            "select app_private.finalize_asset_verification_v2("
+            ":actor,:seller,:upload,:worker,:source_size,:source_sha,"
+            ":ready_size,:ready_sha,:ready_media,:magic,:scanner_result,"
+            ":ready_version_id,:ready_etag,:verdict,:idempotency_key,"
+            ":body_sha256,:request_id,:pdf_manifest_sha256)"
+        )
+    else:
+        statement = text(
+            "select app_private.finalize_asset_verification("
+            ":actor,:seller,:upload,:worker,:source_size,:source_sha,"
+            ":ready_size,:ready_sha,:ready_media,:magic,:scanner_result,"
+            ":ready_version_id,:ready_etag,:verdict,:idempotency_key,"
+            ":body_sha256,:request_id)"
+        )
     async with auth.trusted_domain_session(_worker_envelope(settings, worker_id)) as session:
         await session.scalar(
-            text(
-                "select app_private.finalize_asset_verification("
-                ":actor,:seller,:upload,:worker,:source_size,:source_sha,"
-                ":ready_size,:ready_sha,:ready_media,:magic,:scanner_result,"
-                ":ready_version_id,:ready_etag,:verdict,:idempotency_key,"
-                ":body_sha256,:request_id)"
-            ),
+            statement,
             {
                 "actor": worker_id,
                 "seller": seller_id,
