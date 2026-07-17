@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -27,7 +29,12 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-from appsell_api.pdf_derivatives import build_pdf_page_archive
+from appsell_api.pdf_derivatives import (
+    MAX_PDF_PAGES,
+    PdfDerivativeRejected,
+    _canonical_png_bytes,
+    build_pdf_page_archive,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "output" / "pdf" / "codex"
@@ -345,134 +352,291 @@ def build_lesson(index: int, lesson: dict[str, object], target: Path) -> None:
     document.build(story, onFirstPage=page_chrome, onLaterPages=page_chrome)
 
 
-def main() -> None:
+def _previous_lessons() -> dict[str, dict[str, object]]:
+    if not MANIFEST.is_file():
+        return {}
+    try:
+        parsed = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError("committed demo raster manifest is invalid") from error
+    if not isinstance(parsed, list):
+        raise RuntimeError("committed demo raster manifest is invalid")
+    lessons: dict[str, dict[str, object]] = {}
+    for entry in parsed:
+        if not isinstance(entry, dict) or not isinstance(entry.get("slug"), str):
+            raise RuntimeError("committed demo raster manifest is invalid")
+        slug = str(entry["slug"])
+        if slug in lessons:
+            raise RuntimeError(
+                "committed demo raster manifest contains duplicate lessons"
+            )
+        lessons[slug] = entry
+    return lessons
+
+
+def _committed_pages(
+    *, slug: str, source_sha256: str, previous: dict[str, object] | None
+) -> list[dict[str, object]]:
+    if previous is None or previous.get("sha256") != source_sha256:
+        raise RuntimeError(
+            f"demo PDF {slug} changed; run this generator with --refresh-pages"
+        )
+    raster = previous.get("raster")
+    prior_pages = raster.get("pages") if isinstance(raster, dict) else None
+    if not isinstance(prior_pages, list) or not 1 <= len(prior_pages) <= MAX_PDF_PAGES:
+        raise RuntimeError(f"committed demo raster pages for {slug} are invalid")
+
+    root = OUTPUT / slug / "pages"
+    expected_names = {f"{number}.png" for number in range(1, len(prior_pages) + 1)}
+    try:
+        entries = list(root.iterdir())
+    except OSError as error:
+        raise RuntimeError(
+            f"committed demo raster pages for {slug} are unavailable"
+        ) from error
+    if {path.name for path in entries} != expected_names or any(
+        not path.is_file() or path.is_symlink() for path in entries
+    ):
+        raise RuntimeError(f"committed demo raster pages for {slug} are incomplete")
+
+    pages: list[dict[str, object]] = []
+    for page_number in range(1, len(prior_pages) + 1):
+        relative_key = f"{slug}/pages/{page_number}.png"
+        path = OUTPUT / relative_key
+        try:
+            payload = path.read_bytes()
+            canonical, width, height = _canonical_png_bytes(payload)
+        except (OSError, PdfDerivativeRejected) as error:
+            raise RuntimeError(
+                f"committed demo raster page {relative_key} is invalid"
+            ) from error
+        if canonical != payload:
+            raise RuntimeError(
+                f"committed demo raster page {relative_key} is not canonical"
+            )
+        current = {
+            "page_number": page_number,
+            "storage_driver": "legacy_bundle",
+            "storage_bucket": "codex-demo",
+            "object_key": relative_key,
+            "storage_version_id": None,
+            "storage_etag": None,
+            "byte_size": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "pixel_width": width,
+            "pixel_height": height,
+        }
+        if prior_pages[page_number - 1] != current:
+            raise RuntimeError(
+                f"committed demo raster page {relative_key} changed; "
+                "run this generator with --refresh-pages"
+            )
+        pages.append(current)
+    return pages
+
+
+def _replace_directory(staged: Path, target: Path) -> None:
+    if not staged.is_dir() or staged.is_symlink():
+        raise RuntimeError("staged demo raster directory is invalid")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_symlink() or (target.exists() and not target.is_dir()):
+        raise RuntimeError("committed demo raster directory is invalid")
+    if not target.exists():
+        staged.rename(target)
+        return
+
+    backup = Path(tempfile.mkdtemp(prefix=f".{target.name}-backup-", dir=target.parent))
+    backup.rmdir()
+    target.rename(backup)
+    try:
+        staged.rename(target)
+    except OSError:
+        backup.rename(target)
+        raise
+    else:
+        shutil.rmtree(backup)
+
+
+def _atomic_write_text(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}-", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as destination:
+            destination.write(value)
+            destination.flush()
+            os.fsync(destination.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def main(*, refresh_pages: bool = False) -> None:
     rl_config.invariant = 1
     OUTPUT.mkdir(parents=True, exist_ok=True)
-    manifest = []
-    for index, lesson in enumerate(LESSONS, start=1):
-        filename = f"{lesson['slug']}.pdf"
-        output = OUTPUT / filename
-        build_lesson(index, lesson, output)
-        payload = output.read_bytes()
-        asset_id = stable_id(f"asset:{lesson['slug']}")
-        raster_root = OUTPUT / str(lesson["slug"]) / "pages"
-        shutil.rmtree(raster_root.parent, ignore_errors=True)
-        raster_root.mkdir(parents=True, mode=0o700)
-        with tempfile.TemporaryDirectory(prefix="appsell-demo-raster-") as temporary:
-            prepared = build_pdf_page_archive(
-                output,
-                expected_size=len(payload),
-                expected_sha256_hex=hashlib.sha256(payload).hexdigest(),
-                job_directory=Path(temporary),
-            )
-            pages = []
-            for page in prepared.pages:
-                relative_key = f"{lesson['slug']}/pages/{page.page_number}.png"
-                destination = OUTPUT / relative_key
-                shutil.copyfile(page.path, destination)
-                pages.append(
-                    {
-                        "page_number": page.page_number,
-                        "storage_driver": "legacy_bundle",
-                        "storage_bucket": "codex-demo",
-                        "object_key": relative_key,
-                        "storage_version_id": None,
-                        "storage_etag": None,
-                        "byte_size": page.byte_size,
-                        "sha256": page.sha256_hex,
-                        "pixel_width": page.width,
-                        "pixel_height": page.height,
-                    }
+    previous_lessons = _previous_lessons()
+    with tempfile.TemporaryDirectory(prefix=".demo-codex-", dir=OUTPUT) as staging:
+        staging_root = Path(staging)
+        staged_pdfs: list[tuple[Path, Path]] = []
+        staged_page_trees: list[tuple[Path, Path]] = []
+        manifest = []
+        for index, lesson in enumerate(LESSONS, start=1):
+            filename = f"{lesson['slug']}.pdf"
+            output = OUTPUT / filename
+            staged_pdf = staging_root / filename
+            build_lesson(index, lesson, staged_pdf)
+            payload = staged_pdf.read_bytes()
+            staged_pdfs.append((staged_pdf, output))
+            asset_id = stable_id(f"asset:{lesson['slug']}")
+            source_sha256 = hashlib.sha256(payload).hexdigest()
+            slug = str(lesson["slug"])
+            if refresh_pages:
+                staged_lesson = staging_root / slug
+                raster_root = staged_lesson / "pages"
+                raster_root.mkdir(parents=True, mode=0o700)
+                with tempfile.TemporaryDirectory(
+                    prefix="appsell-demo-raster-"
+                ) as temporary:
+                    prepared = build_pdf_page_archive(
+                        staged_pdf,
+                        expected_size=len(payload),
+                        expected_sha256_hex=source_sha256,
+                        job_directory=Path(temporary),
+                    )
+                    pages = []
+                    for page in prepared.pages:
+                        relative_key = f"{slug}/pages/{page.page_number}.png"
+                        destination = raster_root / f"{page.page_number}.png"
+                        shutil.copyfile(page.path, destination)
+                        pages.append(
+                            {
+                                "page_number": page.page_number,
+                                "storage_driver": "legacy_bundle",
+                                "storage_bucket": "codex-demo",
+                                "object_key": relative_key,
+                                "storage_version_id": None,
+                                "storage_etag": None,
+                                "byte_size": page.byte_size,
+                                "sha256": page.sha256_hex,
+                                "pixel_width": page.width,
+                                "pixel_height": page.height,
+                            }
+                        )
+                staged_page_trees.append((staged_lesson, OUTPUT / slug))
+            else:
+                pages = _committed_pages(
+                    slug=slug,
+                    source_sha256=source_sha256,
+                    previous=previous_lessons.get(slug),
                 )
-        page_manifest = json.dumps(
-            pages, sort_keys=True, separators=(",", ":")
-        ).encode()
-        manifest.append(
-            {
-                "seller_id": stable_id("seller"),
-                "position": index - 1,
-                "slug": lesson["slug"],
-                "title": lesson["title"],
-                "summary": lesson["summary"],
-                "href": (
-                    f"/api/library/items/{stable_id('entitlement:demo-user:codex-na-pratica')}"
-                    f"/assets/{asset_id}"
-                ),
-                "bytes": len(payload),
-                "sha256": hashlib.sha256(payload).hexdigest(),
-                "lesson_id": stable_id(f"lesson:{lesson['slug']}"),
-                "asset_id": asset_id,
-                "raster": {
-                    "profile": "png-1600-v1",
-                    "page_count": len(pages),
-                    "total_bytes": sum(page["byte_size"] for page in pages),
-                    "manifest_sha256": hashlib.sha256(page_manifest).hexdigest(),
-                    "pages": pages,
+            page_manifest = json.dumps(
+                pages, sort_keys=True, separators=(",", ":")
+            ).encode()
+            manifest.append(
+                {
+                    "seller_id": stable_id("seller"),
+                    "position": index - 1,
+                    "slug": lesson["slug"],
+                    "title": lesson["title"],
+                    "summary": lesson["summary"],
+                    "href": (
+                        f"/api/library/items/{stable_id('entitlement:demo-user:codex-na-pratica')}"
+                        f"/assets/{asset_id}"
+                    ),
+                    "bytes": len(payload),
+                    "sha256": source_sha256,
+                    "lesson_id": stable_id(f"lesson:{lesson['slug']}"),
+                    "asset_id": asset_id,
+                    "raster": {
+                        "profile": "png-1600-v1",
+                        "page_count": len(pages),
+                        "total_bytes": sum(page["byte_size"] for page in pages),
+                        "manifest_sha256": hashlib.sha256(page_manifest).hexdigest(),
+                        "pages": pages,
+                    },
+                }
+            )
+
+        video_path = OUTPUT / "codex-em-3-passos.mp4"
+        if not video_path.is_file() or video_path.is_symlink():
+            raise RuntimeError("committed demo video is missing")
+        video_payload = video_path.read_bytes()
+        video = {
+            "lesson_id": manifest[-1]["lesson_id"],
+            "asset_id": stable_id("asset:codex-em-3-passos-video"),
+            "slug": "codex-em-3-passos",
+            "file_name": video_path.name,
+            "title": "Codex em 3 passos",
+            "bytes": len(video_payload),
+            "sha256": hashlib.sha256(video_payload).hexdigest(),
+            "position": 0,
+        }
+        seed = {
+            "seed_key": "autonomia-demo-v1",
+            "version": 2,
+            "personas": {
+                "admin": {
+                    "subject": "demo-admin-v1",
+                    "email": "admin.demo@autonomia.site",
                 },
-            }
+                "buyer": {
+                    "subject": "demo-user-v1",
+                    "email": "user.demo@autonomia.site",
+                },
+            },
+            "seller": {
+                "id": stable_id("seller"),
+                "slug": "autonomia-demo",
+                "display_name": "Autonom.ia Demo",
+            },
+            "product": {
+                "id": stable_id("product:codex-na-pratica"),
+                "slug": "codex-na-pratica",
+                "title": "Codex na prática",
+                "description": "Um curso direto para trabalhar com Codex com contexto, segurança e evidência.",
+            },
+            "course": {
+                "id": stable_id("course:codex-na-pratica"),
+                "title": "Codex na prática",
+                "description": "Cinco aulas para operar Codex como parceiro de engenharia.",
+            },
+            "module": {"id": stable_id("module:fundamentos"), "title": "Fundamentos"},
+            "offer": {
+                "id": stable_id("offer:codex-na-pratica"),
+                "title": "Acesso demonstrativo",
+                "summary": "Acesso gratuito e não comercial à tenant de demonstração.",
+            },
+            "checkout": {
+                "coupon_id": DEMO_COUPON_ID,
+                "coupon_code": "AUTONOMIA100",
+                "unit_amount_minor": 9900,
+                "currency": "BRL",
+            },
+            "publication": {"id": stable_id("publication:codex-na-pratica:v1")},
+            "entitlement": {"id": stable_id("entitlement:demo-user:codex-na-pratica")},
+            "video": video,
+            "lessons": manifest,
+        }
+
+        for staged_pdf, output in staged_pdfs:
+            os.replace(staged_pdf, output)
+        for staged_tree, output in staged_page_trees:
+            _replace_directory(staged_tree, output)
+        _atomic_write_text(
+            MANIFEST, json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
         )
-    MANIFEST.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
-    video_path = OUTPUT / "codex-em-3-passos.mp4"
-    if not video_path.is_file():
-        raise RuntimeError("committed demo video is missing")
-    video_payload = video_path.read_bytes()
-    video = {
-        "lesson_id": manifest[-1]["lesson_id"],
-        "asset_id": stable_id("asset:codex-em-3-passos-video"),
-        "slug": "codex-em-3-passos",
-        "file_name": video_path.name,
-        "title": "Codex em 3 passos",
-        "bytes": len(video_payload),
-        "sha256": hashlib.sha256(video_payload).hexdigest(),
-        "position": 0,
-    }
-    SEED_MANIFEST.parent.mkdir(parents=True, exist_ok=True)
-    seed = {
-        "seed_key": "autonomia-demo-v1",
-        "version": 2,
-        "personas": {
-            "admin": {"subject": "demo-admin-v1", "email": "admin.demo@autonomia.site"},
-            "buyer": {"subject": "demo-user-v1", "email": "user.demo@autonomia.site"},
-        },
-        "seller": {
-            "id": stable_id("seller"),
-            "slug": "autonomia-demo",
-            "display_name": "Autonom.ia Demo",
-        },
-        "product": {
-            "id": stable_id("product:codex-na-pratica"),
-            "slug": "codex-na-pratica",
-            "title": "Codex na prática",
-            "description": "Um curso direto para trabalhar com Codex com contexto, segurança e evidência.",
-        },
-        "course": {
-            "id": stable_id("course:codex-na-pratica"),
-            "title": "Codex na prática",
-            "description": "Cinco aulas para operar Codex como parceiro de engenharia.",
-        },
-        "module": {"id": stable_id("module:fundamentos"), "title": "Fundamentos"},
-        "offer": {
-            "id": stable_id("offer:codex-na-pratica"),
-            "title": "Acesso demonstrativo",
-            "summary": "Acesso gratuito e não comercial à tenant de demonstração.",
-        },
-        "checkout": {
-            "coupon_id": DEMO_COUPON_ID,
-            "coupon_code": "AUTONOMIA100",
-            "unit_amount_minor": 9900,
-            "currency": "BRL",
-        },
-        "publication": {"id": stable_id("publication:codex-na-pratica:v1")},
-        "entitlement": {"id": stable_id("entitlement:demo-user:codex-na-pratica")},
-        "video": video,
-        "lessons": manifest,
-    }
-    SEED_MANIFEST.write_text(
-        json.dumps(seed, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+        _atomic_write_text(
+            SEED_MANIFEST, json.dumps(seed, ensure_ascii=False, indent=2) + "\n"
+        )
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--refresh-pages",
+        action="store_true",
+        help="re-rasterize committed demo pages with the current Poppler build",
+    )
+    main(refresh_pages=parser.parse_args().refresh_pages)
