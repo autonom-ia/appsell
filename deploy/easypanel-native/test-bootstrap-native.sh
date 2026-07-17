@@ -15,9 +15,9 @@ readonly complete_marker="appsell-native-90-complete-v1"
 readonly legacy_marker="appsell-native-90-bootstrap-v1"
 readonly reset_target_marker="appsell-demo-reset-target-v1"
 
-admin_password="$(openssl rand -hex 24)"
-migrator_password="$(openssl rand -hex 24)"
-runtime_password="$(openssl rand -hex 24)"
+admin_secret="$(openssl rand -hex 24)"
+migrator_secret="$(openssl rand -hex 24)"
+runtime_secret="$(openssl rand -hex 24)"
 context_key="$(openssl rand -hex 32)"
 attestation_key="$(openssl rand -hex 32)"
 
@@ -32,12 +32,12 @@ docker network create "$network_name" >/dev/null
 docker run -d --name "$postgres_container" \
   --network "$network_name" --network-alias "$postgres_alias" \
   -e POSTGRES_USER=appsell_native_admin \
-  -e POSTGRES_PASSWORD="$admin_password" \
+  -e POSTGRES_PASSWORD="$admin_secret" \
   -e POSTGRES_DB=appsell_native_admin \
   "$postgres_image" >/dev/null
 
 admin_psql() {
-  docker exec -e PGPASSWORD="$admin_password" "$postgres_container" \
+  docker exec -e PGPASSWORD="$admin_secret" "$postgres_container" \
     psql -XAt --set=ON_ERROR_STOP=1 -U appsell_native_admin -d "$1" -c "$2"
 }
 
@@ -53,10 +53,10 @@ run_bootstrap() {
     -e APPSELL_POSTGRES_HOST="$postgres_alias" \
     -e APPSELL_POSTGRES_PORT=5432 \
     -e APPSELL_POSTGRES_ADMIN_USER=appsell_native_admin \
-    -e APPSELL_POSTGRES_ADMIN_PASSWORD="$admin_password" \
+    -e APPSELL_POSTGRES_ADMIN_PASSWORD="$admin_secret" \
     -e APPSELL_POSTGRES_DEFAULT_DATABASE=appsell_native_admin \
-    -e APPSELL_NATIVE_MIGRATOR_PASSWORD="$migrator_password" \
-    -e APPSELL_NATIVE_RUNTIME_PASSWORD="$runtime_password" \
+    -e APPSELL_NATIVE_MIGRATOR_PASSWORD="$migrator_secret" \
+    -e APPSELL_NATIVE_RUNTIME_PASSWORD="$runtime_secret" \
     -e APPSELL_CONTEXT_SIGNING_KEY_HEX="${1:-$context_key}" \
     -e APPSELL_BOOTSTRAP_ATTESTATION_KEY_HEX="$attestation_key" \
     -e APPSELL_BOOTSTRAP_EXPECTED_ISSUER=https://identity.native.local \
