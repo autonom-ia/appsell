@@ -98,6 +98,17 @@ async def client_for(
         yield client
 
 
+def isolated_viewer_settings() -> Settings:
+    return Settings(
+        internal_issuer="",
+        internal_audience="",
+        identity_issuer="",
+        internal_hmac_keyring_b64_json="",
+        context_hmac_key_b64="",
+        service_credential_b64="",
+    )
+
+
 def progress_body(**overrides: Any) -> bytes:
     value = {
         "idempotency_key": str(uuid4()),
@@ -250,7 +261,7 @@ async def test_pdf_manifest_is_entitlement_scoped_and_never_returns_original(
 
     monkeypatch.setattr(learning_routes, "authorized_pdf_source", source)
     monkeypatch.setattr(learning_routes, "inspect_pdf", lambda *_args: 7)
-    async with client_for(auth, settings=Settings()) as client:
+    async with client_for(auth, settings=isolated_viewer_settings()) as client:
         response = await client.get(
             f"/v1/me/learning/items/{ENTITLEMENT_ID}/assets/{ASSET_ID}/pages"
         )
@@ -285,7 +296,7 @@ async def test_pdf_page_returns_only_watermarked_png(
 
     monkeypatch.setattr(learning_routes, "authorized_pdf_source", source)
     monkeypatch.setattr(learning_routes, "render_pdf_page", render)
-    async with client_for(auth, settings=Settings()) as client:
+    async with client_for(auth, settings=isolated_viewer_settings()) as client:
         response = await client.get(
             f"/v1/me/learning/items/{ENTITLEMENT_ID}/assets/{ASSET_ID}/pages/2"
         )
@@ -309,7 +320,7 @@ async def test_pdf_viewer_rejects_excess_parallel_work_before_spooling() -> None
     second = await learning_routes._PROTECTED_PDF_SLOTS.acquire()
     assert first is True and second is True
     try:
-        async with client_for(auth, settings=Settings()) as client:
+        async with client_for(auth, settings=isolated_viewer_settings()) as client:
             response = await client.get(
                 f"/v1/me/learning/items/{ENTITLEMENT_ID}/assets/{ASSET_ID}/pages"
             )
