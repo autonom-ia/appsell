@@ -70,6 +70,8 @@ def test_runtime_can_read_only_published_public_projection() -> None:
                 "description": manifest["product"]["description"],
                 "publication_id": manifest["publication"]["id"],
                 "publication_version": 1,
+                # Unpriced offer (unit_amount_minor 0) is exposed as pending, not R$ 0,00.
+                "price": None,
             }
         ],
     }
@@ -77,6 +79,30 @@ def test_runtime_can_read_only_published_public_projection() -> None:
     assert direct_rows == (0, 0)
     serialized = json.dumps(payload)
     assert "email" not in serialized and "offer" not in serialized and "buyer" not in serialized
+
+
+def test_storefront_exposes_live_offer_price_for_published_products() -> None:
+    assert ADMIN_URL
+    manifest, _ = load_manifest()
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            """
+            update offer set unit_amount_minor = 49900, currency = 'BRL',
+              billing_period = 'monthly'
+            where seller_organization_id = %s and catalog_product_id = %s
+            """,
+            (manifest["seller"]["id"], manifest["product"]["id"]),
+        )
+        projection = connection.execute(
+            "select app_private.read_public_storefront(%s)",
+            (manifest["seller"]["slug"],),
+        ).fetchone()
+        connection.rollback()
+    assert projection is not None
+    products = projection[0]["products"]
+    assert [product["price"] for product in products] == [
+        {"unit_amount_minor": 49900, "currency": "BRL", "billing_period": "monthly"}
+    ]
 
 
 def test_storefront_hides_drafts_and_unknown_or_invalid_sellers() -> None:

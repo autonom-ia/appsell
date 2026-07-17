@@ -1,3 +1,9 @@
+export interface StorefrontPrice {
+  unit_amount_minor: number;
+  currency: string;
+  billing_period: "one_time" | "monthly" | "yearly";
+}
+
 export interface PublicStorefrontProduct {
   id: string;
   slug: string;
@@ -5,7 +11,16 @@ export interface PublicStorefrontProduct {
   description: string;
   publication_id: string;
   publication_version: number;
+  // Live offer price exposed by app_private.read_public_storefront (migration 0018).
+  // Billing is not connected yet, so unpriced/legacy offers surface `price: null`
+  // ("price pending", not "free"); only a real, positive price yields an object. The
+  // storefront page does not render price yet, so no product advertises R$ 0,00.
+  price: StorefrontPrice | null;
 }
+
+// Mirrors the offer table CHECK and API ceiling (999,999,999.99 in centavos).
+const MAX_UNIT_AMOUNT_MINOR = 99_999_999_999;
+const BILLING_PERIODS: ReadonlySet<string> = new Set(["one_time", "monthly", "yearly"]);
 
 export interface PublicStorefront {
   schema_version: 1;
@@ -38,11 +53,22 @@ function isProduct(value: unknown) {
     "title",
     "description",
     "publication_id",
-    "publication_version"
+    "publication_version",
+    "price"
   ]) && isUuid(value.id) && isSlug(value.slug) && isTrimmedText(value.title, 2, 160) &&
     typeof value.description === "string" && value.description.length <= 2_000 &&
     isUuid(value.publication_id) && typeof value.publication_version === "number" &&
-    Number.isInteger(value.publication_version) && value.publication_version > 0;
+    Number.isInteger(value.publication_version) && value.publication_version > 0 &&
+    (value.price === null || isPrice(value.price));
+}
+
+function isPrice(value: unknown): value is StorefrontPrice {
+  return hasExactKeys(value, ["unit_amount_minor", "currency", "billing_period"]) &&
+    typeof value.unit_amount_minor === "number" &&
+    Number.isInteger(value.unit_amount_minor) &&
+    value.unit_amount_minor >= 0 && value.unit_amount_minor <= MAX_UNIT_AMOUNT_MINOR &&
+    typeof value.currency === "string" && /^[A-Z]{3}$/.test(value.currency) &&
+    typeof value.billing_period === "string" && BILLING_PERIODS.has(value.billing_period);
 }
 
 function hasExactKeys<T extends string>(

@@ -174,6 +174,9 @@ def update_draft(
     key: UUID | None = None,
     body_sha256: str | None = None,
     product_title: str = "Produto Editado",
+    offer_unit_amount_minor: int | None = 19900,
+    offer_currency: str | None = "BRL",
+    offer_billing_period: str | None = "one_time",
 ) -> tuple[UUID, int, int, int, bool]:
     assert RUNTIME_URL
     request_key = key or uuid4()
@@ -187,7 +190,7 @@ def update_draft(
             select offer_id, product_version, course_version, offer_version, created
             from app_private.update_product_course_offer_draft(
               %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-              %s, %s, %s, %s, %s, %s
+              %s, %s, %s, %s, %s, %s, %s, %s, %s
             )
             """,
             (
@@ -202,6 +205,9 @@ def update_draft(
                 "Curso Editado",
                 "Oferta Informativa",
                 "Checkout externo ainda não configurado",
+                offer_unit_amount_minor,
+                offer_currency,
+                offer_billing_period,
                 expected_product_version,
                 expected_course_version,
                 expected_offer_version,
@@ -263,6 +269,155 @@ def publish(
     return row[0], int(row[1]), int(row[2]), str(row[3]), bool(row[4])
 
 
+def read_offer(seller_id: UUID, offer_id: UUID) -> tuple[object, ...] | None:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        return connection.execute(
+            "select unit_amount_minor, rtrim(currency), billing_period, version "
+            "from offer where seller_organization_id = %s and id = %s",
+            (seller_id, offer_id),
+        ).fetchone()
+
+
+def test_offer_pricing_is_persisted_on_create_and_update() -> None:
+    seller_id, product_id, course_id = create_graph()
+    offer_id = uuid4()
+    _, product_version, course_version, offer_version, created = update_draft(
+        USER_A,
+        seller_id,
+        product_id,
+        course_id,
+        offer_id,
+        offer_unit_amount_minor=19900,
+        offer_currency="BRL",
+        offer_billing_period="one_time",
+    )
+    assert created is True
+    assert offer_version == 1
+    assert read_offer(seller_id, offer_id) == (19900, "BRL", "one_time", 1)
+
+    _, _, _, updated_offer_version, _ = update_draft(
+        USER_A,
+        seller_id,
+        product_id,
+        course_id,
+        offer_id,
+        expected_product_version=product_version,
+        expected_course_version=course_version,
+        expected_offer_version=offer_version,
+        offer_unit_amount_minor=250000,
+        offer_currency="USD",
+        offer_billing_period="monthly",
+    )
+    assert updated_offer_version == 2
+    assert read_offer(seller_id, offer_id) == (250000, "USD", "monthly", 2)
+
+
+def test_offer_pricing_is_preserved_when_omitted_on_update() -> None:
+    seller_id, product_id, course_id = create_graph()
+    offer_id = uuid4()
+    _, product_version, course_version, offer_version, _ = update_draft(
+        USER_A,
+        seller_id,
+        product_id,
+        course_id,
+        offer_id,
+        offer_unit_amount_minor=39900,
+        offer_currency="USD",
+        offer_billing_period="monthly",
+    )
+    assert read_offer(seller_id, offer_id) == (39900, "USD", "monthly", 1)
+
+    # An editorial update that omits price (NULL) must preserve the stored price
+    # instead of silently resetting it to the create-time defaults.
+    _, _, _, preserved_version, _ = update_draft(
+        USER_A,
+        seller_id,
+        product_id,
+        course_id,
+        offer_id,
+        expected_product_version=product_version,
+        expected_course_version=course_version,
+        expected_offer_version=offer_version,
+        offer_unit_amount_minor=None,
+        offer_currency=None,
+        offer_billing_period=None,
+    )
+    assert preserved_version == 2
+    assert read_offer(seller_id, offer_id) == (39900, "USD", "monthly", 2)
+
+
+def test_offer_pricing_defaults_when_omitted_on_create() -> None:
+    seller_id, product_id, course_id = create_graph()
+    offer_id = uuid4()
+    _, _, _, offer_version, created = update_draft(
+        USER_A,
+        seller_id,
+        product_id,
+        course_id,
+        offer_id,
+        offer_unit_amount_minor=None,
+        offer_currency=None,
+        offer_billing_period=None,
+    )
+    assert created is True
+    assert offer_version == 1
+    assert read_offer(seller_id, offer_id) == (0, "BRL", "one_time", 1)
+
+
+@pytest.mark.parametrize(
+    ("amount", "currency", "period"),
+    [
+        (-1, "BRL", "one_time"),
+        (100_000_000_000, "BRL", "one_time"),
+        (1000, "brl", "one_time"),
+        (1000, "BRLL", "one_time"),
+        (1000, "BR", "one_time"),
+        (1000, "BRL", "weekly"),
+    ],
+)
+def test_offer_pricing_rejects_invalid_values(amount: int, currency: str, period: str) -> None:
+    seller_id, product_id, course_id = create_graph()
+    offer_id = uuid4()
+    with pytest.raises(psycopg.Error) as error:
+        update_draft(
+            USER_A,
+            seller_id,
+            product_id,
+            course_id,
+            offer_id,
+            offer_unit_amount_minor=amount,
+            offer_currency=currency,
+            offer_billing_period=period,
+        )
+    assert error.value.sqlstate == "22023"
+    assert read_offer(seller_id, offer_id) is None
+
+
+def test_offer_pricing_is_isolated_across_tenants() -> None:
+    seller_a, product_a, course_a = create_graph()
+    seller_b, _, _ = create_graph(USER_B)
+    offer_a = uuid4()
+    update_draft(
+        USER_A,
+        seller_a,
+        product_a,
+        course_a,
+        offer_a,
+        offer_unit_amount_minor=77700,
+        offer_currency="BRL",
+        offer_billing_period="yearly",
+    )
+    assert read_offer(seller_a, offer_a) == (77700, "BRL", "yearly", 1)
+    assert RUNTIME_URL
+    with psycopg.connect(RUNTIME_URL) as connection:
+        apply_context(connection, USER_B, seller_b, "catalog.draft.preview")
+        leaked = connection.execute(
+            "select count(*) from offer where id = %s", (offer_a,)
+        ).fetchone()
+    assert leaked == (0,)
+
+
 def test_schema_rls_and_runtime_privileges_are_minimal() -> None:
     assert ADMIN_URL and RUNTIME_URL
     with psycopg.connect(RUNTIME_URL) as connection:
@@ -305,7 +460,7 @@ def test_schema_rls_and_runtime_privileges_are_minimal() -> None:
         ("publication", "appsell_owner", True, True),
     ]
     assert privileges == (
-        "0017_pdf_preraster",
+        "0018_offer_pricing",
         True,
         False,
         True,
@@ -418,7 +573,7 @@ def test_distinct_products_of_same_seller_update_concurrently() -> None:
             select offer_id, product_version, course_version, offer_version, created
             from app_private.update_product_course_offer_draft(
               %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-              1, 1, 0, %s, %s, %s
+              %s, %s, %s, 1, 1, 0, %s, %s, %s
             )
             """,
             (
@@ -433,6 +588,9 @@ def test_distinct_products_of_same_seller_update_concurrently() -> None:
                 f"Curso {label}",
                 f"Oferta {label}",
                 f"Resumo {label}",
+                19900,
+                "BRL",
+                "one_time",
                 uuid4(),
                 digest(f"parallel-{label}"),
                 uuid4(),
@@ -912,7 +1070,7 @@ def test_upgrade_from_0003_preserves_existing_draft() -> None:
                 """,
                 (seller_id, product_id),
             ).fetchone() == (
-                "0017_pdf_preraster",
+                "0018_offer_pricing",
                 "draft",
                 None,
                 True,

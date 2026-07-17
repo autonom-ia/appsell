@@ -14,7 +14,8 @@ function fixture() {
       title: "Codex na prática",
       description: "Curso demonstrativo.",
       publication_id: randomUUID(),
-      publication_version: 1
+      publication_version: 1,
+      price: null
     }]
   };
 }
@@ -45,5 +46,39 @@ describe("public storefront payload", () => {
       ...value,
       products: [{ ...value.products[0], publication_version: 0 }]
     })).toBeNull();
+  });
+
+  it("accepts a live-priced product, a pending (null) price, and rejects malformed price", () => {
+    const value = fixture();
+    const priced = {
+      ...value,
+      products: [{
+        ...value.products[0],
+        price: { unit_amount_minor: 49900, currency: "BRL", billing_period: "monthly" as const }
+      }]
+    };
+    expect(parsePublicStorefront(priced)).toEqual(priced);
+
+    // Unpriced offers surface `price: null` (pending), which is accepted.
+    expect(parsePublicStorefront(value)).toEqual(value);
+
+    const missingPrice = { ...value.products[0] } as Record<string, unknown>;
+    delete missingPrice.price;
+    expect(parsePublicStorefront({ ...value, products: [missingPrice] })).toBeNull();
+
+    for (const price of [
+      { unit_amount_minor: -1, currency: "BRL", billing_period: "one_time" },
+      { unit_amount_minor: 100_000_000_000, currency: "BRL", billing_period: "one_time" },
+      { unit_amount_minor: 1.5, currency: "BRL", billing_period: "one_time" },
+      { unit_amount_minor: 1000, currency: "brl", billing_period: "one_time" },
+      { unit_amount_minor: 1000, currency: "BRLL", billing_period: "one_time" },
+      { unit_amount_minor: 1000, currency: "BRL", billing_period: "weekly" },
+      { unit_amount_minor: 1000, currency: "BRL", billing_period: "one_time", extra: 1 }
+    ]) {
+      expect(parsePublicStorefront({
+        ...value,
+        products: [{ ...value.products[0], price }]
+      })).toBeNull();
+    }
   });
 });
