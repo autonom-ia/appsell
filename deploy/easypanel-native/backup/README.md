@@ -17,13 +17,21 @@ do Postgres nativo (decisão de infra).
 | `lib-backup.sh` | Helpers compartilhados: validação de env, wrappers do client Postgres (dump/restore/verify), cifra/decifra gpg, rotação local, envio off-host. Só define funções. |
 | `backup-native.sh` | Backup diário: `pg_dump -Fc` → integridade (`pg_restore --list`) → cifra AES256 → off-host → rotação (7 diários). |
 | `restore-native.sh` | Restore **ensaiável** de um dump cifrado em Postgres descartável. Nunca toca produção. |
-| `test-backup-native.sh` | Rehearsal de CI: sobe 2 Postgres descartáveis, semeia dados, dump, cifra, envia off-host, decifra a cópia off-host, restaura no segundo banco e compara por fingerprint. |
+| `test-backup-native.sh` | Rehearsal de CI (nível biblioteca): sobe 2 Postgres descartáveis, semeia dados, dump, cifra, envia off-host, decifra a cópia off-host, restaura no segundo banco e compara por fingerprint. |
+| `test-entrypoints-native.sh` | Rehearsal de CI (nível processo): executa `backup-native.sh` e `restore-native.sh` **como subprocessos reais** — valida o contrato de env vars, a limpeza do dump em claro via `trap` e o resumo de verificação do restore. |
 
 ## Princípios de segurança
 
 - **Zero credencial hardcoded.** Todo segredo chega por variável de ambiente.
-- A passphrase gpg é passada por **file descriptor** (`--passphrase-fd 3`), nunca
-  em argv (invisível no `ps`) e nunca em arquivo.
+- **Nenhum segredo em argv.** O `argv` dos processos `docker`/`gpg` do host é
+  legível por qualquer usuário via `/proc/<pid>/cmdline` (e `ps`). Por isso:
+  - a passphrase gpg vai por **file descriptor** (`--passphrase-fd 3`), nunca em
+    argv e nunca em arquivo;
+  - segredos de container (`PGPASSWORD`, credenciais S3 em `MC_HOST_offhost`) são
+    repassados ao container **por nome** (`docker run -e VAR`, sem `=valor`), com
+    o valor exportado só naquela invocação. O Docker lê o valor do próprio
+    ambiente (`/proc/<pid>/environ`, modo `0400` — só dono e root), nunca do argv.
+    Usar `-e VAR=valor` é proibido nestes scripts (vazaria no argv).
 - O client Postgres roda em **container fixado** (`postgres:16-alpine`); o host só
   precisa de Docker + gpg. Versão de servidor casada pela tag da imagem.
 - O dump em claro é apagado assim que o artefato cifrado existe (ou em qualquer
@@ -91,9 +99,11 @@ Sobe um Postgres descartável, decifra, restaura e imprime resumo de verificaç�
 
 ```sh
 # Requer Docker + gpg
-bash deploy/easypanel-native/backup/test-backup-native.sh
+bash deploy/easypanel-native/backup/test-backup-native.sh       # nível biblioteca
+bash deploy/easypanel-native/backup/test-entrypoints-native.sh  # entrypoints reais
 ```
 
-Roda automaticamente no workflow `EasyPanel native images`
+Ambos rodam automaticamente no workflow `EasyPanel native images`
 (job `backup-restore-rehearsal`) em qualquer PR que toque
-`deploy/easypanel-native/**`.
+`deploy/easypanel-native/**`. O primeiro exercita as funções da biblioteca; o
+segundo executa `backup-native.sh` e `restore-native.sh` como processos reais.

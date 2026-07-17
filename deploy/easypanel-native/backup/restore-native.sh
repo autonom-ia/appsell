@@ -64,10 +64,12 @@ pg_verify_dump "$plain_file"
 
 log "step 3/5: launch disposable PostgreSQL (${restore_pg_image})"
 docker network create "$network_name" >/dev/null
-docker run -d --name "$target_container" \
+# POSTGRES_PASSWORD is forwarded by name only (no `=value`) so the value never
+# reaches the world-readable argv; POSTGRES_USER/DB are not secrets.
+POSTGRES_PASSWORD="$admin_secret" docker run -d --name "$target_container" \
   --network "$network_name" --network-alias "$target_alias" \
   -e POSTGRES_USER="$target_user" \
-  -e POSTGRES_PASSWORD="$admin_secret" \
+  -e POSTGRES_PASSWORD \
   -e POSTGRES_DB="$target_db" \
   "$restore_pg_image" >/dev/null
 

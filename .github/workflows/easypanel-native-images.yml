@@ -107,7 +107,11 @@ jobs:
           bash -n deploy/easypanel-native/backup/backup-native.sh
           bash -n deploy/easypanel-native/backup/restore-native.sh
           bash -n deploy/easypanel-native/backup/test-backup-native.sh
-      - name: Rehearse backup, encrypt, off-host, restore and compare
+          bash -n deploy/easypanel-native/backup/test-entrypoints-native.sh
+      - name: Rehearse backup, encrypt, off-host, restore and compare (library)
         run: |
           gpg --version | head -1
           bash deploy/easypanel-native/backup/test-backup-native.sh
+      - name: Rehearse the backup and restore entrypoints as real processes
+        run: |
+          bash deploy/easypanel-native/backup/test-entrypoints-native.sh

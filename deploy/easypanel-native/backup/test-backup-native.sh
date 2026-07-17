@@ -49,10 +49,11 @@ docker network create "$network_name" >/dev/null
 
 launch_postgres() {
   local container="$1" alias="$2" secret="$3"
-  docker run -d --name "$container" \
+  # POSTGRES_PASSWORD by name only (no `=value`) — keep secrets off the argv.
+  POSTGRES_PASSWORD="$secret" docker run -d --name "$container" \
     --network "$network_name" --network-alias "$alias" \
     -e POSTGRES_USER="$test_user" \
-    -e POSTGRES_PASSWORD="$secret" \
+    -e POSTGRES_PASSWORD \
     -e POSTGRES_DB="$test_db" \
     "$postgres_image" >/dev/null
 }
@@ -74,7 +75,7 @@ wait_ready "$source_container"
 wait_ready "$target_container"
 
 echo "--- step 1: seed representative data into the source database"
-docker exec -e PGPASSWORD="$source_secret" "$source_container" \
+PGPASSWORD="$source_secret" docker exec -e PGPASSWORD "$source_container" \
   psql -XAt --set=ON_ERROR_STOP=1 -U "$test_user" -d "$test_db" -c "
     create table identity_user (
       id bigint generated always as identity primary key,

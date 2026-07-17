@@ -3,8 +3,17 @@
 # demo (database appsell_native_90 on the EasyPanel service postgres-native-90).
 #
 # Design constraints:
-# - No hardcoded credentials. Every secret arrives via environment variables and
-#   is passed to gpg through a file descriptor, never on argv (invisible to `ps`).
+# - No hardcoded credentials. Every secret arrives via environment variables.
+# - No secret is ever placed on a command line (argv). The host `docker`/`gpg`
+#   process argv is world-readable through `/proc/<pid>/cmdline` and `ps`, so:
+#     * the gpg passphrase is fed on a file descriptor (`--passphrase-fd 3`);
+#     * container secrets (PGPASSWORD, S3 credentials) are forwarded to the
+#       container by env-var NAME only (`docker run -e VAR`, no `=value`), with
+#       the value exported solely for that one invocation. Docker then reads the
+#       value from its own environment (`/proc/<pid>/environ`, mode 0400 —
+#       readable only by the owner and root) instead of from argv.
+#   Passing `-e VAR=value` would leak the value into the world-readable argv and
+#   is therefore forbidden in this file.
 # - PostgreSQL client tooling runs inside a pinned client container so the host
 #   only needs Docker plus gpg; the server version is matched by the image tag.
 # - Encryption is gpg symmetric AES256 (portable, present on CI and the host).
@@ -38,7 +47,9 @@ require_env() {
 # ---------------------------------------------------------------------------
 # The client image and Docker network are taken from globals so callers stay
 # terse. The connection secret is injected via PGPASSWORD in the container's
-# environment (uppercase env name; never a lowercase conninfo string).
+# environment (uppercase env name; never a lowercase conninfo string). It is
+# forwarded by NAME only (`-e PGPASSWORD`, no `=value`) with the value exported
+# just for that invocation, so it never appears on the world-readable argv.
 : "${BACKUP_PG_IMAGE:=postgres:16-alpine}"
 
 # pg_dump_to_file HOST PORT USER DB SECRET OUTFILE
@@ -48,8 +59,8 @@ require_env() {
 pg_dump_to_file() {
   local host="$1" port="$2" user="$3" db="$4" secret="$5" outfile="$6"
   require_env BACKUP_DOCKER_NETWORK
-  docker run --rm --network "$BACKUP_DOCKER_NETWORK" \
-    -e PGPASSWORD="$secret" \
+  PGPASSWORD="$secret" docker run --rm --network "$BACKUP_DOCKER_NETWORK" \
+    -e PGPASSWORD \
     "$BACKUP_PG_IMAGE" \
     pg_dump --format=custom --compress=6 --no-owner --no-privileges \
       --host="$host" --port="$port" --username="$user" --dbname="$db" \
@@ -76,8 +87,8 @@ pg_verify_dump() {
 pg_restore_from_file() {
   local host="$1" port="$2" user="$3" db="$4" secret="$5" dumpfile="$6"
   require_env BACKUP_DOCKER_NETWORK
-  docker run --rm -i --network "$BACKUP_DOCKER_NETWORK" \
-    -e PGPASSWORD="$secret" \
+  PGPASSWORD="$secret" docker run --rm -i --network "$BACKUP_DOCKER_NETWORK" \
+    -e PGPASSWORD \
     "$BACKUP_PG_IMAGE" \
     pg_restore --clean --if-exists --no-owner --no-privileges \
       --exit-on-error \
@@ -90,8 +101,8 @@ pg_restore_from_file() {
 pg_scalar() {
   local host="$1" port="$2" user="$3" db="$4" secret="$5" sql="$6"
   require_env BACKUP_DOCKER_NETWORK
-  docker run --rm --network "$BACKUP_DOCKER_NETWORK" \
-    -e PGPASSWORD="$secret" \
+  PGPASSWORD="$secret" docker run --rm --network "$BACKUP_DOCKER_NETWORK" \
+    -e PGPASSWORD \
     "$BACKUP_PG_IMAGE" \
     psql -XAt --set=ON_ERROR_STOP=1 \
       --host="$host" --port="$port" --username="$user" --dbname="$db" \
@@ -188,7 +199,10 @@ ship_offhost() {
 
 # S3-compatible (MinIO) upload via the mc container. Credentials arrive via env
 # and are wired into a throwaway alias inside the container; nothing is written
-# to a config file on the host.
+# to a config file on the host. The MC_HOST_offhost URL embeds the access/secret
+# keys, so it is forwarded to the container by NAME only (`-e MC_HOST_offhost`,
+# no `=value`) — the value is exported just for this invocation and never lands
+# on the world-readable argv.
 ship_offhost_s3() {
   local encfile="$1"
   require_env APPSELL_BACKUP_S3_ENDPOINT APPSELL_BACKUP_S3_BUCKET \
@@ -196,8 +210,9 @@ ship_offhost_s3() {
   local prefix="${APPSELL_BACKUP_S3_PREFIX:-sell/native-90}"
   local image="${BACKUP_MC_IMAGE:-minio/mc:latest}"
   local dir="${encfile%/*}" base="${encfile##*/}"
-  docker run --rm \
-    -e MC_HOST_offhost="https://${APPSELL_BACKUP_S3_ACCESS_KEY}:${APPSELL_BACKUP_S3_SECRET_KEY}@${APPSELL_BACKUP_S3_ENDPOINT#https://}" \
+  local mc_host="https://${APPSELL_BACKUP_S3_ACCESS_KEY}:${APPSELL_BACKUP_S3_SECRET_KEY}@${APPSELL_BACKUP_S3_ENDPOINT#https://}"
+  MC_HOST_offhost="$mc_host" docker run --rm \
+    -e MC_HOST_offhost \
     -v "$dir:/data:ro" \
     "$image" \
     cp "/data/${base}" "offhost/${APPSELL_BACKUP_S3_BUCKET}/${prefix}/${base}" \
