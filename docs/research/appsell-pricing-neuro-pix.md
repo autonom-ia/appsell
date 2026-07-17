@@ -20,7 +20,12 @@ Cursos, ofertas e produtos criados pelos sellers continuam source-of-truth no
 AppSell e não são copiados para o catálogo corporativo do Neuro.ai.
 
 Manifest canônico futuro, alinhado ao plano técnico, versionado também em
-`docs/research/appsell-neuro-product.inactive.json` e ainda não aplicado:
+`docs/research/appsell-neuro-product.inactive.json` e ainda não aplicado.
+
+`allowPasskeyLogin: true` (decisão #105): passkey é o fator forte do superadmin do
+AppSell; o client habilita e-mail/senha e passkey e mantém Google/GitHub desligados.
+Segue com host único de produção `https://sell.autonomia.site` — sem `localhost`,
+sem `http:` e sem host de homologação. Cross-ref: foundation#41 (migration 022).
 
 ```json
 {
@@ -33,7 +38,7 @@ Manifest canônico futuro, alinhado ao plano técnico, versionado também em
   "allowEmailPasswordLogin": true,
   "allowGoogleLogin": false,
   "allowGithubLogin": false,
-  "allowPasskeyLogin": false,
+  "allowPasskeyLogin": true,
   "allowBackgroundAuth": false,
   "status": "inactive"
 }
