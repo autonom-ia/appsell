@@ -58,9 +58,7 @@ def _reset_bootstrap_state(*, enabled: bool) -> None:
     with psycopg.connect(ADMIN_URL, autocommit=True) as connection:
         connection.execute("set role appsell_owner")
         connection.execute("delete from superadmin_bootstrap")
-        connection.execute(
-            "delete from platform_grant where role = 'platform_superadmin'"
-        )
+        connection.execute("delete from platform_grant where role = 'platform_superadmin'")
         connection.execute(
             "update app_private.bootstrap_trust_policy set enabled = %s where singleton",
             (enabled,),
@@ -145,9 +143,7 @@ def _sign_attestation(
         )
     )
     assert BOOTSTRAP_KEY_HEX
-    return hmac.new(
-        bytes.fromhex(BOOTSTRAP_KEY_HEX), payload.encode(), hashlib.sha256
-    ).hexdigest()
+    return hmac.new(bytes.fromhex(BOOTSTRAP_KEY_HEX), payload.encode(), hashlib.sha256).hexdigest()
 
 
 def _signed_headers(
@@ -185,9 +181,9 @@ def _signed_headers(
         "iat": now,
         "exp": now + 30,
     }
-    encoded = base64.urlsafe_b64encode(
-        json.dumps(payload, separators=(",", ":")).encode()
-    ).rstrip(b"=")
+    encoded = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).rstrip(
+        b"="
+    )
     signature = base64.urlsafe_b64encode(
         hmac.digest(INTERNAL_KEY, b"appsell.internal.v1." + encoded, "sha256")
     ).rstrip(b"=")
@@ -285,9 +281,7 @@ async def test_first_consume_grants_superadmin(
 
 
 @pytest.mark.asyncio
-async def test_second_consume_is_rejected(
-    client: httpx.AsyncClient, bootstrap_ready: None
-) -> None:
+async def test_second_consume_is_rejected(client: httpx.AsyncClient, bootstrap_ready: None) -> None:
     first_body, first_headers = _bootstrap_request(subject=f"bootstrap-first-{uuid4()}")
     first = await client.post(PATH, content=first_body, headers=first_headers)
     assert first.status_code == 201
@@ -333,17 +327,15 @@ async def test_disabled_bootstrap_config_is_rejected(
         assert response.json() == {"detail": "forbidden"}
         assert ADMIN_URL
         with psycopg.connect(ADMIN_URL) as connection:
-            assert connection.execute(
-                "select count(*) from superadmin_bootstrap"
-            ).fetchone() == (0,)
+            assert connection.execute("select count(*) from superadmin_bootstrap").fetchone() == (
+                0,
+            )
     finally:
         _reset_bootstrap_state(enabled=True)
 
 
 @pytest.mark.asyncio
-async def test_invalid_body_is_rejected(
-    client: httpx.AsyncClient, bootstrap_ready: None
-) -> None:
+async def test_invalid_body_is_rejected(client: httpx.AsyncClient, bootstrap_ready: None) -> None:
     invalid = json.dumps({"email": BOOTSTRAP_EMAIL}, separators=(",", ":")).encode()
     subject = f"bootstrap-invalid-{uuid4()}"
     headers = _signed_headers(
