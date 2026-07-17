@@ -6,19 +6,21 @@ Refs #93 · Parte do P0 Bloco 1 (login real: Identity + vault prod + bootstrap s
 > exige aprovação explícita do Rodrigo antes de rodar. Nenhuma escrita em VPS,
 > EasyPanel, DNS, banco ou secret foi ou será feita por este slice de docs.
 
-## Rev 4 — resolução do security-review (PR #100)
+## Rev 5 — resolução do security-review (PR #100)
 
 O review externo (codex, read-only sobre `git diff origin/main...HEAD`) **REPROVOU**
 a Rev 1 com 7 HIGH. Rev 2 fechou 6; Rev 3 fechou o 7º + 4 blockers do re-review;
-o re-review da Rev 3 confirmou os 7 originais resolvidos mas achou 6 novos blockers
-operacionais (detalhe de OpenBao 2.5.4) introduzidos pelos comandos que adicionei.
-Esta **Rev 4** fecha esses 6, aplicando decisões já tomadas pelo Rodrigo (régua
-qualidade + escalabilidade + segurança). Mapa dos 7 HIGH originais (confirmados
-resolvidos pelo re-review):
+Rev 4 fechou 6 blockers operacionais (detalhe de OpenBao 2.5.4) introduzidos pelos
+comandos. Esta **Rev 5** aplica a **decisão do Rodrigo sobre HA (HIGH 1)** de forma
+completa e assinada: single-node não-HA como MVP explícito, com SPOF conhecido, RTO
+alvo realista, RPO, **risco aceito por Rodrigo 2026-07-17 sob régua qualidade +
+escalabilidade + segurança**, e **gate bloqueante de evolução para 3 nós/KMS antes
+de tráfego real de clientes pagantes** (§1.1). Mapa dos 7 HIGH originais (todos
+endereçados):
 
 | # | HIGH original | Decisão aplicada | Seção |
 |---|---|---|---|
-| 1 | Topologia single-node contradiz requisito de HA | **NÃO alegar HA.** Single-node Raft é MVP explícito, não-HA, com RTO/RPO declarados e risco aceito por escrito; DR (snapshot + unseal) é pré-condição do 1º uso | §1, §1.1, §4 |
+| 1 | Topologia single-node contradiz requisito de HA | **NÃO alegar HA.** Single-node Raft é MVP explícito, não-HA, com SPOF conhecido, RTO alvo realista (≤5min unseal / ≤15min restore de snapshot), RPO ≈ 6h, **risco aceito por Rodrigo 2026-07-17 sob régua qualidade/escalabilidade/segurança**, e **gate bloqueante de evolução para 3 nós/KMS antes de tráfego real de clientes pagantes**; DR (snapshot + unseal) é pré-condição do 1º uso | §1, §1.1, §4 |
 | 2 | Bootstrap grava unseal keys + root token em plaintext no host | **Sem plaintext no host.** `init` com `-pgp-keys`/`-root-token-pgp-key` (shares/root cifrados aos donos) **ou** auto-unseal por KMS; root token revogado após setup; unseal keys guardadas fora da VPS (cofre do Rodrigo). Zero `/tmp/*.json` em claro | §3.2, §4.1 |
 | 3 | AppRole é credencial estática de uso ilimitado | **SecretID finito nos dois eixos** (`secret_id_ttl` + `secret_id_num_uses`, nunca `0`) + **rotador concreto** (identidade `appsell-secretid-rotator`, policy só `create`/`update` do secret-id, entrega wrapped por canal definido). Token runtime órfão, TTL 15min, policy única `appsell-transit-runtime` | §1.2, §3.5 |
 | 4 | Credencial de vault iria para `api` **e** `web` | **Credencial Transit só no `web`/BFF** (único consumidor de `createTokenVaultFromEnvironment`). `api` não recebe nada de vault | §2, §3.5, §5 |
@@ -138,17 +140,42 @@ libere o provider em prod sob condições estritas.
 - **Auth de workload = AppRole** com SecretID de vida curta + rotação (§1.2), policy única `appsell-transit-runtime`.
 - Honra o contrato #19: chave `aes256-gcm96` não exportável, `disable_upsert`, policy só encrypt/decrypt.
 
-### 1.1 Topologia A é **single-node, não-HA** — declaração explícita (resolve HIGH 1)
+### 1.1 Topologia A é **single-node, não-HA** — decisão de risco assinada (resolve HIGH 1)
 
-Este MVP **não é HA** e não será apresentado como tal. Decisão consciente do
-Rodrigo para desbloquear o login real (P0) sem introduzir a complexidade de um
-cluster Raft 3+ nós agora.
+Este MVP **não é HA** e **não será apresentado como tal**. Não é omissão nem
+tentativa de fingir HA: é decisão consciente do Rodrigo para desbloquear o login
+real (P0) sem introduzir a complexidade de um cluster Raft 3+ nós agora. O review
+pediu "HA real (3+ nós) **ou** declaração explícita de operação não-HA com RTO e
+aprovação de risco" — este bloco é a segunda opção, assinada.
 
-- **Modelo:** 1 nó OpenBao, integrated storage (Raft) local, 1 réplica. Não há quorum, não há failover automático.
-- **SPOF assumido:** se o nó/volume cair, o login/OAuth que depende do decrypt fica indisponível até restaurar (unseal manual assistido ou restore de snapshot).
-- **RTO alvo (indisponibilidade):** restart + unseal assistido em minutos; restore de snapshot em ambiente novo dentro da janela de manutenção. **RPO:** limitado ao último snapshot Raft (§4).
-- **Risco aceito por escrito:** a indisponibilidade temporária do vault é tolerada porque o AppSell ainda não tem tráfego de produção de login real; HA (3+ nós ou auto-unseal por KMS) entra como **evolução pós-MVP registrada**, não como pré-requisito deste slice.
-- **Contradição da Rev 1 removida:** este plano **não** afirma resolver "cluster HA/Raft"; ele fecha explicitamente esse item de `openbao-transit-local-ci.md` como *decisão de operar não-HA no MVP* (ver §4.4), não como HA entregue.
+- **Modelo:** 1 nó OpenBao, integrated storage (Raft) local, 1 réplica. Sem quorum, sem failover automático.
+- **SPOF conhecido e assumido:** o nó/volume `openbao-90` é ponto único de falha.
+  Se cair, o decrypt de tokens OAuth fica indisponível e o login/refresh que
+  depende dele para naquele instante — não há segundo nó para assumir.
+- **RTO alvo (realista, medido em teste antes do cutover):**
+  - *Nó vivo, apenas selado* (restart do container): **≤ 5 min** — unseal
+    assistido (3 de 5 shares) ou auto-unseal por KMS se adotado (§4.1).
+  - *Perda de volume/host* (restore de snapshot em ambiente novo): **alvo ≤ 15 min**
+    a partir do snapshot mais recente (§4.2), condicionado a snapshot restaurável +
+    unseal material em custódia já validados pelo teste de DR (§4.3). Sem DR testado,
+    o RTO é indefinido — por isso §4 é pré-condição do 1º uso.
+  - **RPO:** limitado ao último snapshot Raft (cadência inicial 6h ⇒ RPO ≈ 6h, §4.2).
+- **Gate de evolução obrigatório (não é "nice to have"):** operar single-node é
+  aceitável **apenas** enquanto o AppSell não tiver **tráfego real de clientes
+  pagantes** no login. **Antes** de habilitar login real para clientes pagantes, a
+  evolução para **3 nós Raft (quorum)** ou **auto-unseal por KMS + réplica** passa a
+  ser **pré-requisito bloqueante**, registrado como Issue-filha de #93. O MVP
+  single-node cobre a fase pré-tráfego-pagante (dev/staging/piloto interno), não a
+  operação comercial.
+- **Risco aceito por escrito — assinatura:** a indisponibilidade temporária do vault
+  (dentro do RTO acima) é **risco aceito por Rodrigo em 2026-07-17, sob a régua
+  qualidade + escalabilidade + segurança**, para o MVP pré-tráfego-pagante. HA (3+ nós
+  ou auto-unseal por KMS) é **evolução pós-MVP registrada** com gate bloqueante acima —
+  não pré-requisito deste slice, mas pré-requisito do tráfego pagante.
+- **Contradição da Rev 1 removida:** este plano **não** afirma resolver "cluster
+  HA/Raft"; fecha explicitamente esse item de `openbao-transit-local-ci.md` como
+  *decisão consciente de operar não-HA no MVP com risco assinado e gate de evolução*
+  (§4.4), **não** como HA entregue.
 
 **TLS interno com CA confiável (resolve HIGH 6):**
 - O listener TLS do OpenBao usa um **cert emitido por uma CA privada da VPS**
@@ -532,7 +559,7 @@ token — não dá para restaurar direto. Ordem correta, em ambiente descartáve
 
 ### 4.4 Quais bloqueios de `openbao-transit-local-ci.md:74-85` este plano fecha (escopo honesto — resolve MEDIUM)
 - **Fecha:** storage durável + unseal real (§3.1-3.2); DR do unseal + snapshot + teste de desastre (§4); auth de workload durável (§1.2/§3.5).
-- **Fecha por decisão explícita (não por entrega de HA):** operação **não-HA** no MVP (§1.1) — o item "cluster HA/Raft" é resolvido como *risco aceito*, não como cluster 3+ nós entregue.
+- **Fecha por decisão explícita (não por entrega de HA):** operação **não-HA** no MVP (§1.1) — o item "cluster HA/Raft" é resolvido como *risco assinado por Rodrigo 2026-07-17* **com gate bloqueante**: HA (3+ nós ou KMS) vira pré-requisito **antes de tráfego real de clientes pagantes**, não cluster 3+ nós entregue neste slice.
 - **NÃO fecha (registrado como aberto):** inventário/read-repair de versões de envelope (`:80`); staging isolado com observabilidade + SLO (`:81`). O item `:79` (reconciliação durável do callback Identity após consumo do code) **não** é DR e **não** é coberto aqui — pertence ao slice de login (#93), não a este.
 
 ---
@@ -648,9 +675,9 @@ Nenhum item acima roda sem 🟢 explícito. Este documento é só o plano.
 
 ## Project update pendente
 - Projeto: Autonom.ia Dev
-- Status: In review (Rev 3 — 7 HIGH originais + 4 blockers do re-review endereçados; aguardando re-review)
+- Status: In review (Rev 5 — 7 HIGH + MEDIUM endereçados; HA como risco assinado + gate de evolução; re-review codex no diff final)
 - Tipo: Docs / Infra-plan
 - Prioridade: P0 (bloqueia login real)
 - Risco: Alto (secrets, auth, prod multi-tenant, DR de material irrecuperável)
-- Próxima ação: re-review codex + decisão do Rodrigo em §1/§1.2 e gate de disco (appsell#88)
+- Próxima ação: aprovação do Rodrigo para merge do plano + decisão de execução §1/§1.2 e gate de disco (appsell#88)
 - Ambiente: production (planejamento; nada executado)
