@@ -245,7 +245,7 @@ export function AppShell({ children }: AppShellProps) {
       });
     } catch {
       setDiscarding(false);
-      setDiscardError("Não foi possível cancelar o envio com segurança. Tente novamente antes de sair.");
+      setDiscardError("Não foi possível concluir a operação com segurança. Tente novamente antes de sair.");
       return;
     }
     setDiscarding(false);
@@ -302,7 +302,7 @@ export function AppShell({ children }: AppShellProps) {
             {discardError ? <p className="form-error" role="alert">{discardError}</p> : null}
             <div className="dialog-actions">
               <button ref={cancelDialogButton} type="button" className="secondary-button" onClick={closeDirtyDialog} disabled={discarding}>Continuar editando</button>
-              <button type="button" className="danger-button" onClick={() => void discardAndContinue()} disabled={discarding}>{discarding ? "Cancelando envio…" : "Descartar e sair"}</button>
+              <button type="button" className="danger-button" onClick={() => void discardAndContinue()} disabled={discarding}>{discarding ? "Concluindo operação segura…" : "Descartar e sair"}</button>
             </div>
         </AccessibleDialog>
       ) : null}

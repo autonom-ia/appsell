@@ -143,6 +143,7 @@ export function LessonAssetPanel({
   const discardTaskRef = useRef<Promise<void> | null>(null);
   const cancelRequestsRef = useRef(new Map<string, Promise<void>>());
   const policyKeysRef = useRef(new Map<string, string>());
+  const policyTaskRef = useRef<Promise<void> | null>(null);
   const replacementTargetRef = useRef<string | null>(null);
   const fetchControllersRef = useRef(new Set<AbortController>());
   const progressFrameRef = useRef<number | null>(null);
@@ -225,6 +226,7 @@ export function LessonAssetPanel({
       const active = intentRequestRef.current !== null || activeUploadIdRef.current !== null ||
         ["hashing", "creating", "uploading", "confirming", "verifying"].includes(state.phase);
       if (active) detail.register(discardCurrentUpload());
+      if (policyTaskRef.current) detail.register(policyTaskRef.current);
     };
     window.addEventListener(ASSET_DISCARD_REQUEST_EVENT, requestDiscard);
     return () => window.removeEventListener(ASSET_DISCARD_REQUEST_EVENT, requestDiscard);
@@ -517,28 +519,36 @@ export function LessonAssetPanel({
     body.set("download_allowed", String(safeDownload));
     setPolicySavingId(asset.id);
     setPolicyError("");
+    const task = (async () => {
+      try {
+        const response = await boundedFetch(`${base}/${asset.id}/policy`, {
+          method: "PATCH",
+          body
+        }, 8_000);
+        if (!response.ok) throw new Error(`policy_${response.status}`);
+        setAssets((current) => current.map((entry) => entry.id === asset.id
+          ? { ...entry, content_role: contentRole, download_allowed: safeDownload }
+          : entry));
+        policyKeysRef.current.delete(operation);
+        dispatch({
+          type: "phase",
+          phase: "idle",
+          message: safeDownload
+            ? "Material de apoio liberado para download na próxima publicação."
+            : "Política do material atualizada para a próxima publicação."
+        });
+        onCommitted();
+      } finally {
+        setPolicySavingId(null);
+      }
+    })();
+    policyTaskRef.current = task;
     try {
-      const response = await boundedFetch(`${base}/${asset.id}/policy`, {
-        method: "PATCH",
-        body
-      }, 8_000);
-      if (!response.ok) throw new Error(`policy_${response.status}`);
-      setAssets((current) => current.map((entry) => entry.id === asset.id
-        ? { ...entry, content_role: contentRole, download_allowed: safeDownload }
-        : entry));
-      policyKeysRef.current.delete(operation);
-      dispatch({
-        type: "phase",
-        phase: "idle",
-        message: safeDownload
-          ? "Material de apoio liberado para download na próxima publicação."
-          : "Política do material atualizada para a próxima publicação."
-      });
-      onCommitted();
+      await task;
     } catch {
       setPolicyError("Não foi possível salvar a permissão. Recarregue e tente novamente.");
     } finally {
-      setPolicySavingId(null);
+      if (policyTaskRef.current === task) policyTaskRef.current = null;
     }
   }
 

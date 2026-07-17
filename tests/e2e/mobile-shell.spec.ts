@@ -848,7 +848,17 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
   await lesson.getByLabel("Uso deste material").first().selectOption("support_material");
   await policyStarted;
   await expect(lesson.getByRole("button", { name: "Cancelar envio" })).toHaveCount(0);
+  const pendingPolicyUrl = page.url();
+  await page.getByRole("navigation", { name: "Navegação móvel" })
+    .getByRole("link", { name: "Minha biblioteca" }).click();
+  await expect(page.getByRole("dialog", { name: "Sair desta edição?" })).toBeVisible();
+  await page.getByRole("button", { name: "Descartar e sair" }).click();
+  await expect(page.getByRole("button", { name: "Concluindo operação segura…" })).toBeVisible();
+  await expect(page).toHaveURL(pendingPolicyUrl);
   releasePolicy();
+  await expect(page).toHaveURL("/library");
+  await page.goto(`/products/${sellerId}/${productId}?section=curriculo`);
+  await summary.click();
   await expect.poll(() => policyWrites).toEqual([
     { contentRole: "support_material", downloadAllowed: "false" }
   ]);

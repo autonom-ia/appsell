@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 
 import { sessionCookieName } from "@/lib/cookies";
+import { demoProfileForSubject } from "@/lib/demo-config";
 import { DomainApiError } from "@/lib/internal-api-client.server";
 import { PayloadTooLargeError, readLimitedForm } from "@/lib/limited-form.server";
 import {
@@ -196,9 +197,10 @@ function learningWatermark(
     .update(`${viewer.subject}:${sellerId}:${entitlementId}`, "utf8")
     .digest("hex")
     .slice(0, 12);
+  const demoProfile = demoProfileForSubject(viewer.subject);
   const viewerLabel = viewer.identity?.emailVerified === true
     ? viewer.identity.email
-    : `acesso-${trace.slice(0, 8)}`;
+    : demoProfile?.email ?? `acesso-${trace.slice(0, 8)}`;
   return {
     label: `${viewerLabel} · tenant ${sellerId.slice(0, 8)} · ${trace}`
   };
