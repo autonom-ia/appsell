@@ -254,36 +254,52 @@ revoke all on table app_private.invitation_create_request from public, appsell_r
 
 Regra de retry seguro (detalhada em §2 e §4.1):
 
-1. O BFF gera o token bruto **uma única vez por `idempotency_key`** e o mantém em
-   memória durante toda a operação de criação, **inclusive nos retries de
-   transporte** dessa mesma `idempotency_key`.
-2. O BFF envia à API apenas `token_sha256` (o hash), nunca o token bruto, no corpo
-   junto com `idempotency_key`, `target_role`, `invited_email_hint`, `ttl_seconds`.
-   `body_sha256` (calculado pelo authenticator sobre o corpo) **inclui**
-   `token_sha256`.
+O ponto crítico é que o token precisa ser **reproduzível entre processos** — não
+pode depender de estado só em memória de uma instância do BFF. Se a API commitar e
+a resposta se perder (timeout, restart do BFF), um retry de **outra instância** com
+a **mesma `idempotency_key`** tem de regenerar exatamente o mesmo token e remontar
+o mesmo `invite_url`.
+
+1. **Token derivado, não aleatório-efêmero.** O token bruto é uma KDF determinística
+   de um segredo do servidor com a `idempotency_key`:
+   `token = base64url(HMAC-SHA256(INVITE_TOKEN_KEY, idempotency_key))` (256 bits de
+   saída). `INVITE_TOKEN_KEY` é um secret dedicado (gerido como os demais secrets;
+   nunca em log/commit). Propriedades:
+   - **Reprodutível:** qualquer instância do BFF, a qualquer momento, recomputa o
+     **mesmo** token para a mesma `idempotency_key` — sobrevive a restart/perda de
+     resposta. Resolve o achado #4 (retry após "commit + resposta perdida").
+   - **Imprevisível ao atacante:** como HMAC com chave secreta é um PRF, a saída é
+     indistinguível de aleatória para quem não tem `INVITE_TOKEN_KEY`. A
+     `idempotency_key` é um UUID gerado server-side pelo BFF (não vem do browser),
+     nunca logada ao lado do token.
+2. O BFF calcula `token` (passo 1) e envia à API apenas `token_sha256` (o hash),
+   nunca o token bruto, no corpo junto com `idempotency_key`, `target_role`,
+   `invited_email_hint`, `ttl_seconds`. `body_sha256` (calculado pelo authenticator
+   sobre o corpo) **inclui** `token_sha256`.
 3. A função `create_seller_invitation`:
    - `pg_advisory_xact_lock(idempotency_key)`;
    - se já existe request com **mesma** `idempotency_key` e **mesmo** `body_sha256`
-     → devolve o `invitation_id` original (cujo `token_sha256` é idêntico ao que o
-     BFF re-enviou) → o BFF devolve o **mesmo** token que ainda tem em mãos:
-     replay seguro, link válido;
+     → devolve o `invitation_id` original (cujo `token_sha256` é idêntico ao token
+     que o BFF acabou de **recomputar** deterministicamente) → o BFF remonta o
+     **mesmo** `invite_url`: replay seguro, link válido, mesmo após restart;
    - mesma `idempotency_key` com `body_sha256` diferente → `23505` → `409`;
    - caso novo → insere `invitation` (com o `token_sha256`) + `invitation_create_request`
      + `audit_event`.
-4. Se o BFF morrer **após** a persistência e **antes** de devolver o token ao
-   operador, o token bruto se perde (só o hash ficou). Um retry com **nova**
-   `idempotency_key` para o mesmo (tenant, papel, e-mail) esbarra no índice único
-   de dedup pendente → `409`. Esse convite fica inutilizável (link perdido, não
-   vazado) e o operador deve **revogar** e recriar. É falha fechada por design
-   (um link morto, nunca um link exposto), documentada no runbook.
+4. **Edge de rotação de `INVITE_TOKEN_KEY`.** Convites já entregues continuam válidos
+   (o consumo compara o token do link contra o `token_sha256` persistido, sem
+   depender da chave). Só um retry-em-voo cuja `idempotency_key` foi criada **antes**
+   da rotação recomputaria um token divergente → `409`; nesse caso raro, o operador
+   revoga e recria. Falha fechada (link morto, nunca exposto).
 
 ## 2. Fluxo end-to-end
 
 ```text
 1. Emissor autorizado (SO/SA no tenant, ou PSA na plataforma) chama a rota de criação
    com uma idempotency_key.
-2. BFF gera token bruto opaco de alta entropia (>=32 bytes, base64url) SERVER-SIDE,
-   UMA VEZ por idempotency_key (reusa o mesmo token em qualquer retry dessa chave).
+2. BFF DERIVA o token deterministicamente da idempotency_key + secret do servidor:
+   token = base64url(HMAC-SHA256(INVITE_TOKEN_KEY, idempotency_key)) (256 bits).
+   Qualquer instância recomputa o MESMO token para a mesma idempotency_key (sobrevive
+   a restart/perda de resposta).
    - calcula sha256(token) e envia à API SOMENTE o hash (token bruto nunca cruza
      a fronteira BFF->API na emissão);
    - a API persiste o token_sha256 via app_private.create_seller_invitation;
@@ -315,8 +331,10 @@ criação (passo 2) usa o mesmo molde via `invitation_create_request` (§1.3).
 
 ### 2.1 Geração e transporte do token (invariante de segurança)
 
-- Token bruto = `base64url(os.urandom(32))` (256 bits), gerado no BFF **uma vez por
-  `idempotency_key`** e reusado em retries dessa mesma chave.
+- Token bruto = `base64url(HMAC-SHA256(INVITE_TOKEN_KEY, idempotency_key))` (256 bits),
+  **derivado** no BFF a partir de um secret dedicado e da `idempotency_key`. É
+  determinístico e reproduzível por qualquer instância (não depende de estado em
+  memória), o que torna o retry seguro mesmo após restart/perda de resposta (§1.3).
 - Persistência: `sha256(token)` em hex minúsculo. Na **criação**, o BFF envia à API
   apenas o hash; na **consulta/consumo**, o token bruto (que está no browser do
   convidado) é enviado no corpo e a API calcula o hash para comparar.
@@ -397,9 +415,9 @@ Response `201`:
   "expires_at": "2026-07-24T12:00:00Z"
 }
 ```
-O `invite_url` (com token) é montado pelo **BFF** (que tem o token em memória) e
-retornado **uma única vez**, na criação. Nunca é recuperável depois (só o hash
-fica em repouso).
+O `invite_url` (com token) é montado pelo **BFF**, que **recomputa o token
+deterministicamente** da `idempotency_key` (§2.1) — inclusive em replays. Nunca é
+persistido em claro (só o hash fica em repouso).
 
 Erros: `403` sem membership/role suficiente ou tentativa de escalar papel; `409`
 `invitation_conflict` (replay de `idempotency_key` com corpo divergente, ou dedup
@@ -541,6 +559,12 @@ em banco vazio + fluxo). Zero soft pass; timeout = FAIL.
 - AC-C6: `ttl_seconds` fora de `[3600,1209600]` → `422`; `token_sha256` fora do
   formato hex-64 → `422`.
 - AC-C7: emissor de outro tenant (envelope.seller = outro) → `403`/RLS nega.
+- AC-C8: **retry após "commit + resposta perdida" em nova instância** — a API commita
+  a criação e a resposta é descartada; uma **nova instância do BFF** (sem estado em
+  memória) refaz a chamada com a **mesma `idempotency_key`** → recomputa o mesmo
+  token (KDF, §2.1), recebe o **mesmo `invitation_id`**, remonta o **mesmo
+  `invite_url`**; **assert** que o `token_sha256` no banco é idêntico ao da primeira
+  chamada e que **não** houve segundo insert.
 
 ### `GET /v1/sellers/{sellerId}/invitations`
 - AC-L1: SO/SA listam só convites do próprio tenant; **assert** ausência de
