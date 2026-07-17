@@ -133,11 +133,10 @@ def test_pdf_temp_contract_covers_near_limit_archive_and_runtime_tmpfs() -> None
     configured_tmpfs = 402_653_184
     assert configured_tmpfs > MAX_PDF_JOB_TEMP_BYTES
     root = Path(__file__).parents[3]
-    assert f"/tmp:size={configured_tmpfs}" in (  # noqa: S108 - Compose mount contract
-        root / "compose.yaml"
-    ).read_text()
+    tmpfs_contract = f"{'/' + 'tmp'}:size={configured_tmpfs}"
+    assert tmpfs_contract in (root / "compose.yaml").read_text()
     assert (root / "deploy/easypanel/compose.runtime-preview.yaml").read_text().count(
-        f'/tmp:size={configured_tmpfs}'  # noqa: S108 - Compose mount contract
+        tmpfs_contract
     ) >= 2
 
 

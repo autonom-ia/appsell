@@ -43,12 +43,13 @@ jobs:
           node-version: 22
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
-      - name: Install isolated-test Redis binary
+      - name: Install isolated-test Redis and PDF rasterizer binaries
         run: |
           sudo apt-get update
-          sudo apt-get install -y redis-server
+          sudo apt-get install -y --no-install-recommends redis-server poppler-utils
           sudo systemctl stop redis-server || true
           redis-server --version
+          pdftoppm -v
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           version: "0.11.13"
@@ -104,6 +105,11 @@ jobs:
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           version: "0.11.13"
+      - name: Install PDF rasterizer
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends poppler-utils
+          pdftoppm -v
       - run: uv sync --project apps/api --frozen
       - name: Real S3 upload, worker, publication, and authorized read
         run: ./scripts/test-storage-vertical.sh

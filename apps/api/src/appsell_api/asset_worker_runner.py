@@ -161,10 +161,7 @@ async def _process_cleanup_job(
         )
         return
     try:
-        if (
-            job.get("delete_mode") == "delete_all_versions"
-            and job.get("kind") == "ready_reconcile"
-        ):
+        if job.get("delete_mode") == "delete_all_versions" and job.get("kind") == "ready_reconcile":
             prefix = ready_asset_version_prefix(str(job["object_key"]), seller_id)
             await _run_blocking(
                 lambda cleanup: storage.delete_all_versions_under_prefix(
