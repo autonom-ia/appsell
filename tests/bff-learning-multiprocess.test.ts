@@ -71,12 +71,12 @@ test.skipIf(!domainApiUrl)("persists fail-closed learning progress across two re
       player: {
         state_version: number;
         selected_lesson_id: string;
-        selected_asset: { href: string };
+        selected_asset: { view_href: string };
       };
       csrf: { progress: string; complete: string };
     };
     expect(JSON.stringify(playerEnvelope)).not.toContain(cookieValue(buyer.session));
-    const assetPath = playerEnvelope.player.selected_asset.href;
+    const assetPath = playerEnvelope.player.selected_asset.view_href;
     expect(assetPath).toMatch(
       new RegExp(`^/api/library/items/${item.entitlement_id}/assets/[0-9a-f-]{36}$`)
     );

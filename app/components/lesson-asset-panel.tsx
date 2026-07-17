@@ -28,6 +28,8 @@ interface AssetView {
   byte_size: number;
   media_type: "application/pdf" | "video/mp4";
   status: AssetStatus;
+  content_role: "course_content" | "support_material";
+  download_allowed: boolean;
   safe_reason?: string | null;
 }
 
@@ -42,7 +44,7 @@ interface UploadView {
 interface AssetListPayload {
   assets: AssetView[];
   uploads: UploadView[];
-  csrf: { intent: string; confirm: string; cancel: string; archive: string };
+  csrf: { intent: string; confirm: string; cancel: string; archive: string; policy: string };
 }
 
 export interface UploadIntentPayload {
@@ -128,6 +130,8 @@ export function LessonAssetPanel({
   const [archiveTarget, setArchiveTarget] = useState<AssetView | null>(null);
   const [archiveError, setArchiveError] = useState("");
   const [archiving, setArchiving] = useState(false);
+  const [policySavingId, setPolicySavingId] = useState<string | null>(null);
+  const [policyError, setPolicyError] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const xhrRef = useRef<XMLHttpRequest | null>(null);
   const hashControllerRef = useRef<AbortController | null>(null);
@@ -138,6 +142,8 @@ export function LessonAssetPanel({
   const activeUploadIdRef = useRef<string | null>(null);
   const discardTaskRef = useRef<Promise<void> | null>(null);
   const cancelRequestsRef = useRef(new Map<string, Promise<void>>());
+  const policyKeysRef = useRef(new Map<string, string>());
+  const replacementTargetRef = useRef<string | null>(null);
   const fetchControllersRef = useRef(new Set<AbortController>());
   const progressFrameRef = useRef<number | null>(null);
   const pendingProgressRef = useRef(0);
@@ -145,7 +151,7 @@ export function LessonAssetPanel({
   const summaryRef = useRef<HTMLElement>(null);
 
   const base = `/api/sellers/${sellerId}/products/${productId}/courses/${courseId}/modules/${moduleId}/lessons/${lessonId}/assets`;
-  const busy = ["hashing", "creating", "uploading", "confirming", "verifying"].includes(state.phase);
+  const busy = policySavingId !== null || ["hashing", "creating", "uploading", "confirming", "verifying"].includes(state.phase);
   const dirty = busy || state.phase === "failed";
 
   const boundedFetch = useCallback(async (input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = 15_000, abortOnStop = true) => {
@@ -270,6 +276,7 @@ export function LessonAssetPanel({
         if (payload.upload_id !== uploadId) throw new Error("status_invalid");
         if (payload.status === "ready" && payload.asset) {
           activeUploadIdRef.current = null;
+          replacementTargetRef.current = null;
           setAssets((current) => [payload.asset!, ...current.filter((asset) => asset.id !== payload.asset!.id)]);
           setUploads((current) => current.filter((upload) => upload.id !== uploadId));
           dispatch({ type: "phase", phase: "ready", message: `${mediaLabel(payload.asset.media_type)} pronto para publicar.`, uploadId });
@@ -358,8 +365,9 @@ export function LessonAssetPanel({
     body.set("media_type", mediaType);
     body.set("byte_size", String(file.size));
     body.set("sha256", sha256);
-    const currentAsset = assets.find((asset) => asset.status === "ready");
-    if (currentAsset) body.set("existing_asset_id", currentAsset.id);
+    if (replacementTargetRef.current) {
+      body.set("existing_asset_id", replacementTargetRef.current);
+    }
     const intentRequest = (async () => {
       // Do not abort an ambiguous intent request during UI cancellation: wait for its
       // bounded response, recover the upload id, then issue the durable cancel call.
@@ -459,7 +467,7 @@ export function LessonAssetPanel({
       if (!response.ok) throw new Error("archive_failed");
       setAssets((current) => current.filter((asset) => asset.id !== archiveTarget.id));
       setArchiveTarget(null);
-      dispatch({ type: "phase", phase: "idle", message: "PDF arquivado. Publicações anteriores continuam inalteradas." });
+      dispatch({ type: "phase", phase: "idle", message: "Material arquivado. Publicações anteriores continuam inalteradas." });
       onCommitted();
       queueMicrotask(() => summaryRef.current?.focus());
     } catch {
@@ -469,12 +477,55 @@ export function LessonAssetPanel({
     }
   }
 
-  const readyAsset = assets.find((asset) => asset.status === "ready");
-  const readyLabel = readyAsset ? mediaLabel(readyAsset.media_type) : "material";
+  async function updatePolicy(
+    asset: AssetView,
+    contentRole: AssetView["content_role"],
+    downloadAllowed: boolean
+  ) {
+    if (!csrf || policySavingId || archived) return;
+    const safeDownload = asset.media_type === "application/pdf" &&
+      contentRole === "support_material" && downloadAllowed;
+    const operation = `${asset.id}:${contentRole}:${safeDownload}`;
+    const idempotencyKey = policyKeysRef.current.get(operation) ?? crypto.randomUUID();
+    policyKeysRef.current.set(operation, idempotencyKey);
+    const body = new FormData();
+    body.set("_csrf", csrf.policy);
+    body.set("idempotency_key", idempotencyKey);
+    body.set("expected_course_version", String(courseVersion));
+    body.set("content_role", contentRole);
+    body.set("download_allowed", String(safeDownload));
+    setPolicySavingId(asset.id);
+    setPolicyError("");
+    try {
+      const response = await boundedFetch(`${base}/${asset.id}/policy`, {
+        method: "PATCH",
+        body
+      }, 8_000);
+      if (!response.ok) throw new Error(`policy_${response.status}`);
+      setAssets((current) => current.map((entry) => entry.id === asset.id
+        ? { ...entry, content_role: contentRole, download_allowed: safeDownload }
+        : entry));
+      policyKeysRef.current.delete(operation);
+      dispatch({
+        type: "phase",
+        phase: "idle",
+        message: safeDownload
+          ? "Material de apoio liberado para download na próxima publicação."
+          : "Política do material atualizada para a próxima publicação."
+      });
+      onCommitted();
+    } catch {
+      setPolicyError("Não foi possível salvar a permissão. Recarregue e tente novamente.");
+    } finally {
+      setPolicySavingId(null);
+    }
+  }
+
+  const readyAssets = assets.filter((asset) => asset.status === "ready");
   const summary = !loaded
     ? "Abrir para carregar"
-    : readyAsset
-      ? `1 ${readyLabel} pronto`
+    : readyAssets.length > 0
+      ? `${readyAssets.length} ${readyAssets.length === 1 ? "material pronto" : "materiais prontos"}`
       : uploads.some((upload) => ["pending", "uploaded", "verifying"].includes(upload.status))
         ? "Verificação em andamento"
         : "Nenhum material";
@@ -483,13 +534,45 @@ export function LessonAssetPanel({
     <details onToggle={(event) => setOpened(event.currentTarget.open)}>
       <summary ref={summaryRef}><span>Materiais da aula</span><small>{summary}</small></summary>
       <div className="lesson-assets-body" aria-busy={busy}>
-        {readyAsset ? <article className="asset-status-card state-ready">
-          <div><span className="asset-state">{readyLabel} pronto para publicar</span><strong dir="auto">{readyAsset.title}</strong><small dir="auto">{readyAsset.file_name} · {formatBytes(readyAsset.byte_size)}</small></div>
-          {!archived ? <div className="asset-actions"><button className="secondary-button" type="button" disabled={busy} onClick={() => inputRef.current?.click()}>Substituir {readyLabel}</button><button className="danger-button" type="button" disabled={busy} onClick={() => setArchiveTarget(readyAsset)}>Arquivar {readyLabel}</button></div> : null}
-        </article> : null}
+        {readyAssets.map((asset) => <article className="asset-status-card state-ready" key={asset.id}>
+          <div><span className="asset-state">{mediaLabel(asset.media_type)} pronto para publicar</span><strong dir="auto">{asset.title}</strong><small dir="auto">{asset.file_name} · {formatBytes(asset.byte_size)}</small></div>
+          {!archived ? <div className="asset-policy-controls">
+            <label htmlFor={`asset-role-${asset.id}`}>Uso deste material</label>
+            <select
+              id={`asset-role-${asset.id}`}
+              value={asset.content_role}
+              disabled={busy}
+              onChange={(event) => void updatePolicy(
+                asset,
+                event.target.value as AssetView["content_role"],
+                event.target.value === "support_material" ? asset.download_allowed : false
+              )}
+            >
+              <option value="course_content">Conteúdo do curso — protegido</option>
+              <option value="support_material">Material de apoio</option>
+            </select>
+            {asset.media_type === "application/pdf" && asset.content_role === "support_material"
+              ? <label className="asset-download-toggle">
+                  <input
+                    type="checkbox"
+                    checked={asset.download_allowed}
+                    disabled={busy}
+                    onChange={(event) => void updatePolicy(
+                      asset,
+                      "support_material",
+                      event.target.checked
+                    )}
+                  />
+                  Permitir que o aluno baixe este PDF
+                </label>
+              : <small>Este material fica disponível apenas dentro da área do aluno.</small>}
+          </div> : null}
+          {!archived ? <div className="asset-actions"><button className="secondary-button" type="button" disabled={busy} onClick={() => { replacementTargetRef.current = asset.id; inputRef.current?.click(); }}>Substituir {mediaLabel(asset.media_type)}</button><button className="danger-button" type="button" disabled={busy} onClick={() => setArchiveTarget(asset)}>Arquivar {mediaLabel(asset.media_type)}</button></div> : null}
+        </article>)}
+        {policyError ? <p className="form-error" role="alert">{policyError}</p> : null}
 
         {!archived && loaded ? <div className="asset-uploader">
-          <label className="asset-file-label" htmlFor={`asset-file-${lessonId}`}>{readyAsset ? "Escolher arquivo substituto" : "Adicione um PDF ou vídeo MP4"}</label>
+          <label className="asset-file-label" htmlFor={`asset-file-${lessonId}`} onClick={() => { replacementTargetRef.current = null; }}>{readyAssets.length > 0 ? "Adicionar outro material" : "Adicione um PDF ou vídeo MP4"}</label>
           <input ref={inputRef} id={`asset-file-${lessonId}`} type="file" accept="application/pdf,.pdf,video/mp4,.mp4" onChange={(event) => void selectFile(event)} disabled={busy}/>
           <p className="asset-help">PDF até 10 MiB ou MP4 até 100 MiB. O arquivo só entra em uma nova publicação depois da verificação.</p>
         </div> : null}
@@ -517,8 +600,13 @@ export function LessonAssetPanel({
 
 function validListPayload(value: AssetListPayload): boolean {
   return Array.isArray(value.assets) && Array.isArray(value.uploads) && Boolean(value.csrf)
-    && value.assets.every((asset) => asset.media_type === "application/pdf" || asset.media_type === "video/mp4")
-    && ["intent", "confirm", "cancel", "archive"].every((key) => typeof value.csrf[key as keyof AssetListPayload["csrf"]] === "string");
+    && value.assets.every((asset) => (asset.media_type === "application/pdf" || asset.media_type === "video/mp4")
+      && (asset.content_role === "course_content" || asset.content_role === "support_material")
+      && typeof asset.download_allowed === "boolean"
+      && (!asset.download_allowed || (
+        asset.content_role === "support_material" && asset.media_type === "application/pdf"
+      )))
+    && ["intent", "confirm", "cancel", "archive", "policy"].every((key) => typeof value.csrf[key as keyof AssetListPayload["csrf"]] === "string");
 }
 
 function selectedMediaType(file: File): "application/pdf" | "video/mp4" | null {

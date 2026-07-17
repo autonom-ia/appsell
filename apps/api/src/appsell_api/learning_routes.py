@@ -144,6 +144,91 @@ async def authorize_asset(request: Request, entitlement_id: UUID, asset_id: UUID
                     version_id=str(row["storage_version_id"]),
                     file_name=str(row["file_name"]),
                     media_type=str(row["media_type"]),
+                    disposition="inline",
+                )
+            )
+        except (StorageError, ValueError) as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="asset_storage_unavailable",
+            ) from error
+        return {
+            "asset": {
+                "id": str(row["asset_id"]),
+                "delivery": "redirect",
+                "download_url": signed.url,
+                "expires_in_seconds": signed.expires_in_seconds,
+                "file_name": row["file_name"],
+                "title": row["title"],
+                "media_type": row["media_type"],
+                "byte_size": row["byte_size"],
+                "sha256": row["sha256"],
+            }
+        }
+    if row["storage_driver"] != "legacy_bundle":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="asset_storage_driver_unavailable",
+        )
+    return {
+        "asset": {
+            "id": str(row["asset_id"]),
+            "delivery": "legacy_bundle",
+            "seed_key": str(row["file_name"]).rsplit(".", 1)[0],
+            "file_name": row["file_name"],
+            "title": row["title"],
+            "media_type": row["media_type"],
+            "byte_size": row["byte_size"],
+            "sha256": row["sha256"],
+        }
+    }
+
+
+@router.get("/me/learning/items/{entitlement_id}/assets/{asset_id}/download")
+async def authorize_asset_download(
+    request: Request, entitlement_id: UUID, asset_id: UUID
+) -> dict[str, Any]:
+    auth, internal = await _authenticate(request, "library.asset.download")
+    await _require_buyer_scope(internal)
+    try:
+        async with auth.domain_session(internal.envelope) as session:
+            row = (
+                (
+                    await session.execute(
+                        text(
+                            "select asset_id,asset_version,file_name,title,media_type,byte_size,"
+                            "sha256,storage_driver,storage_bucket,object_key,storage_version_id,"
+                            "storage_etag from app_private.authorize_publication_asset_download("
+                            ":identity_user_id,:entitlement_id,:asset_id)"
+                        ),
+                        {
+                            "identity_user_id": internal.envelope.identity.user_id,
+                            "entitlement_id": entitlement_id,
+                            "asset_id": asset_id,
+                        },
+                    )
+                )
+                .mappings()
+                .one()
+            )
+    except DBAPIError as error:
+        raise _learning_domain_error(error) from error
+    if row["storage_driver"] == "s3":
+        storage: S3Storage | None = getattr(request.app.state, "storage", None)
+        if storage is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="asset_storage_unavailable",
+            )
+        try:
+            signed = await to_thread.run_sync(
+                lambda: storage.presign_get(
+                    bucket=str(row["storage_bucket"]),
+                    key=str(row["object_key"]),
+                    version_id=str(row["storage_version_id"]),
+                    file_name=str(row["file_name"]),
+                    media_type=str(row["media_type"]),
+                    disposition="attachment",
                 )
             )
         except (StorageError, ValueError) as error:
@@ -192,7 +277,7 @@ async def read_learning_resume(request: Request, entitlement_id: UUID) -> dict[s
         internal,
         entitlement_id,
         None,
-        include_all_assets=request.headers.get(_LEARNING_ASSETS_CONTRACT_HEADER) == "v2",
+        assets_contract=request.headers.get(_LEARNING_ASSETS_CONTRACT_HEADER),
     )
     return {"player": player}
 
@@ -208,7 +293,7 @@ async def read_learning_lesson(
         internal,
         entitlement_id,
         lesson_id,
-        include_all_assets=request.headers.get(_LEARNING_ASSETS_CONTRACT_HEADER) == "v2",
+        assets_contract=request.headers.get(_LEARNING_ASSETS_CONTRACT_HEADER),
     )
     return {"player": player}
 
@@ -257,13 +342,22 @@ async def _read_player(
     entitlement_id: UUID,
     lesson_id: UUID | None,
     *,
-    include_all_assets: bool = False,
+    assets_contract: str | None = None,
 ) -> Any:
-    query = text(
-        "select app_private.read_learning_player_v2(:identity_user_id,:entitlement_id,:lesson_id)"
-        if include_all_assets
-        else "select app_private.read_learning_player(:identity_user_id,:entitlement_id,:lesson_id)"
-    )
+    if assets_contract == "v3":
+        query = text(
+            "select app_private.read_learning_player_v3("
+            ":identity_user_id,:entitlement_id,:lesson_id)"
+        )
+    elif assets_contract == "v2":
+        query = text(
+            "select app_private.read_learning_player_v2("
+            ":identity_user_id,:entitlement_id,:lesson_id)"
+        )
+    else:
+        query = text(
+            "select app_private.read_learning_player(:identity_user_id,:entitlement_id,:lesson_id)"
+        )
     try:
         async with auth.domain_session(internal.envelope) as session:
             player = await session.scalar(

@@ -675,6 +675,11 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
   const curriculumPath = `${productPath}/courses/${courseId}`;
   const assetsPath = `${curriculumPath}/modules/${moduleId}/lessons/${lessonId}/assets`;
   let intentAttempts = 0;
+  const intentReplacementTargets: Array<string | null> = [];
+  const policyWrites: Array<{ contentRole: string; downloadAllowed: string }> = [];
+  let assetContentRole: "course_content" | "support_material" = "course_content";
+  let assetDownloadAllowed = false;
+  let courseVersion = 4;
   let releaseUpload!: () => void;
   let markUploadStarted!: () => void;
   let markCancelCalled!: () => void;
@@ -712,8 +717,8 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
           description: "Editor de material privado.",
           status: "draft",
           draft_version: 2,
-          course: { id: courseId, title: "Curso PDF", status: "draft", draft_version: 4 },
-          courses: [{ id: courseId, title: "Curso PDF", status: "draft", draft_version: 4 }],
+          course: { id: courseId, title: "Curso PDF", status: "draft", draft_version: courseVersion },
+          courses: [{ id: courseId, title: "Curso PDF", status: "draft", draft_version: courseVersion }],
           offer: { id: null, title: "", summary: "", status: "draft", draft_version: 0 },
           publication: null,
           has_unpublished_changes: true,
@@ -725,7 +730,7 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
     }
     if (path === `${curriculumPath}/curriculum` && request.method() === "GET") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
-        course: { id: courseId, draft_version: 4 },
+        course: { id: courseId, draft_version: courseVersion },
         modules: [{
           id: moduleId,
           title: "Base PDF",
@@ -740,15 +745,22 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
     }
     if (path === assetsPath && request.method() === "GET") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
-        assets: [{ id: assetId, title: "Guia atual", file_name: "guia-atual.pdf", media_type: "application/pdf", byte_size: 3181, status: "ready", safe_reason: null }],
+        assets: [{ id: assetId, title: "Guia atual", file_name: "guia-atual.pdf", media_type: "application/pdf", byte_size: 3181, status: "ready", content_role: assetContentRole, download_allowed: assetDownloadAllowed, safe_reason: null }],
         uploads: [],
-        csrf: { intent: "intent-token", confirm: "confirm-token", cancel: "cancel-token", archive: "asset-archive-token" }
+        csrf: { intent: "intent-token", confirm: "confirm-token", cancel: "cancel-token", archive: "asset-archive-token", policy: "asset-policy-token" }
       }) });
       return;
     }
     if (path === `${assetsPath}/upload-intents` && request.method() === "POST") {
+      const posted = request.postDataBuffer();
+      const form = await new Request(request.url(), {
+        method: "POST",
+        headers: request.headers(),
+        body: posted ? new Uint8Array(posted) : undefined
+      }).formData();
+      intentReplacementTargets.push(form.get("existing_asset_id")?.toString() ?? null);
       intentAttempts += 1;
-      if (intentAttempts === 1) {
+      if (intentAttempts === 1 || intentAttempts === 3) {
         await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "temporarily_unavailable" }) });
         return;
       }
@@ -763,6 +775,31 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
           "x-amz-checksum-sha256": "test-checksum",
           "x-amz-meta-appsell-upload-id": uploadId
         }
+      }) });
+      return;
+    }
+    if (path === `${assetsPath}/${assetId}/policy` && request.method() === "PATCH") {
+      const posted = request.postDataBuffer();
+      const form = await new Request(request.url(), {
+        method: "PATCH",
+        headers: request.headers(),
+        body: posted ? new Uint8Array(posted) : undefined
+      }).formData();
+      expect(form.get("_csrf")).toBe("asset-policy-token");
+      policyWrites.push({
+        contentRole: String(form.get("content_role")),
+        downloadAllowed: String(form.get("download_allowed"))
+      });
+      assetContentRole = String(form.get("content_role")) as typeof assetContentRole;
+      assetDownloadAllowed = form.get("download_allowed") === "true";
+      courseVersion += 1;
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        asset_id: assetId,
+        content_role: assetContentRole,
+        download_allowed: assetDownloadAllowed,
+        course_version: courseVersion,
+        applied: true,
+        replayed: false
       }) });
       return;
     }
@@ -790,12 +827,32 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
   const summary = lesson.locator(".lesson-assets summary");
   await expect(summary).toContainText("Materiais da aula");
   await summary.click();
-  await expect(lesson.getByText("1 PDF pronto", { exact: true })).toBeVisible();
-  const input = lesson.getByLabel("Escolher arquivo substituto");
+  await expect(lesson.getByText("1 material pronto", { exact: true })).toBeVisible();
+  const input = lesson.getByLabel("Adicionar outro material");
   const feedback = lesson.locator(".asset-feedback");
   await expect(feedback).toHaveAttribute("role", "status");
   await expect(feedback).toHaveAttribute("aria-live", "polite");
   await expect(feedback).toHaveAttribute("aria-atomic", "true");
+
+  await lesson.getByLabel("Uso deste material").selectOption("support_material");
+  await expect.poll(() => policyWrites).toEqual([
+    { contentRole: "support_material", downloadAllowed: "false" }
+  ]);
+  await expect(page.getByRole("region", { name: "Módulos e aulas" })).toContainText("versão 5");
+  if ((await lesson.locator(".lesson-assets details").getAttribute("open")) === null) {
+    await summary.click();
+  }
+  const downloadToggle = lesson.getByLabel("Permitir que o aluno baixe este PDF");
+  await expect(downloadToggle).toBeVisible();
+  await downloadToggle.click({ noWaitAfter: true });
+  await expect.poll(() => policyWrites).toEqual([
+    { contentRole: "support_material", downloadAllowed: "false" },
+    { contentRole: "support_material", downloadAllowed: "true" }
+  ]);
+  await expect(page.getByRole("region", { name: "Módulos e aulas" })).toContainText("versão 6");
+  if ((await lesson.locator(".lesson-assets details").getAttribute("open")) === null) {
+    await summary.click();
+  }
 
   const pdf = { name: "guia-novo.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF") };
   await input.setInputFiles(pdf);
@@ -819,7 +876,7 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
     const layout = await lesson.evaluate((element) => ({
       client: document.documentElement.clientWidth,
       scroll: document.documentElement.scrollWidth,
-      shortTargets: [...element.querySelectorAll("button,input,summary")].flatMap((target) => {
+      shortTargets: [...element.querySelectorAll("button,input,select,summary")].flatMap((target) => {
         const rect = target.getBoundingClientRect();
         return rect.width > 0 && rect.height > 0 && (rect.width < 44 || rect.height < 44)
           ? [{ name: target.textContent?.trim() || target.getAttribute("aria-label") || target.getAttribute("id"), width: rect.width, height: rect.height }]
@@ -835,7 +892,7 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
   const zoomed = await lesson.evaluate((element) => ({
     client: document.documentElement.clientWidth,
     scroll: document.documentElement.scrollWidth,
-    clipped: [...element.querySelectorAll("button,input,summary,.asset-feedback")].flatMap((target) => {
+    clipped: [...element.querySelectorAll("button,input,select,summary,.asset-feedback")].flatMap((target) => {
       const rect = target.getBoundingClientRect();
       return rect.width > 0 && (rect.left < -1 || rect.right > document.documentElement.clientWidth + 1)
         ? [{ name: target.textContent?.trim() || target.getAttribute("id"), left: rect.left, right: rect.right }]
@@ -856,6 +913,11 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
   await archiveDialog.getByRole("button", { name: "Manter material" }).click();
   await expect(archiveDialog).toHaveCount(0);
   await expect(summary).toBeFocused();
+
+  await lesson.getByRole("button", { name: "Substituir PDF" }).click();
+  await input.setInputFiles(pdf);
+  await expect(feedback).toContainText("Não foi possível preparar o arquivo");
+  expect(intentReplacementTargets).toEqual([null, null, assetId]);
 });
 
 test("fails publication closed for string readiness and a missing offer", async ({ page }, testInfo) => {

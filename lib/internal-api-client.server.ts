@@ -41,14 +41,15 @@ interface ApiRequest {
     "catalog.curriculum.update" | "catalog.curriculum.archive" |
     "catalog.curriculum.reorder" | "catalog.asset.read" | "catalog.asset.create" |
     "catalog.asset.upload.confirm" | "catalog.asset.upload.cancel" |
-    "catalog.asset.archive" | "library.read" | "library.asset.read" |
+    "catalog.asset.archive" | "catalog.asset.policy.update" |
+    "library.read" | "library.asset.read" | "library.asset.download" |
     "learning.player.read" | "learning.progress.write" |
     "commerce.demo.checkout.read" | "commerce.demo.checkout.complete";
   sellerOrganizationId?: string;
   inspectionToken?: string;
   body?: Record<string, unknown>;
   capacityTrace?: string | null;
-  learningAssetsContract?: "v2";
+  learningAssetsContract?: "v2" | "v3";
 }
 
 export interface DemoInspectionProjection {
@@ -622,6 +623,31 @@ export async function archiveDomainLessonAsset(
   });
 }
 
+export async function updateDomainLessonAssetPolicy(
+  sessionId: string,
+  session: ServerSession,
+  input: LessonAssetPath & {
+    assetId: string;
+    idempotencyKey: string;
+    expectedCourseVersion: number;
+    contentRole: "course_content" | "support_material";
+    downloadAllowed: boolean;
+  }
+) {
+  return domainRequest(sessionId, session, {
+    method: "PATCH",
+    path: `${lessonAssetPath(input)}/${input.assetId}/policy`,
+    capability: "catalog.asset.policy.update",
+    sellerOrganizationId: input.sellerOrganizationId,
+    body: {
+      idempotency_key: input.idempotencyKey,
+      expected_course_version: input.expectedCourseVersion,
+      content_role: input.contentRole,
+      download_allowed: input.downloadAllowed
+    }
+  });
+}
+
 export async function readDomainLibrary(sessionId: string, session: ServerSession) {
   return readDomainBuyerProducts(sessionId, session);
 }
@@ -683,6 +709,19 @@ export async function authorizeDomainLearningAsset(
   });
 }
 
+export async function authorizeDomainLearningAssetDownload(
+  sessionId: string,
+  session: ServerSession,
+  entitlementId: string,
+  assetId: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/learning/items/${entitlementId}/assets/${assetId}/download`,
+    capability: "library.asset.download"
+  });
+}
+
 export async function readDomainLearningResume(
   sessionId: string,
   session: ServerSession,
@@ -692,7 +731,7 @@ export async function readDomainLearningResume(
     method: "GET",
     path: `/v1/me/learning/items/${entitlementId}/resume`,
     capability: "learning.player.read",
-    learningAssetsContract: "v2"
+    learningAssetsContract: "v3"
   });
 }
 
@@ -706,7 +745,7 @@ export async function readDomainLearningLesson(
     method: "GET",
     path: `/v1/me/learning/items/${entitlementId}/lessons/${lessonId}`,
     capability: "learning.player.read",
-    learningAssetsContract: "v2"
+    learningAssetsContract: "v3"
   });
 }
 
@@ -843,6 +882,7 @@ function requireDemoCapability(subject: string, request: ApiRequest) {
       [
         "library.read",
         "library.asset.read",
+        "library.asset.download",
         "learning.player.read",
         "learning.progress.write",
         "commerce.demo.checkout.read",

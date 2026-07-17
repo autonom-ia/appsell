@@ -129,6 +129,17 @@ def test_presigned_download_pins_safe_pdf_name_and_disables_caching() -> None:
     )
     assert observed["Params"]["ResponseCacheControl"] == "private, no-store, max-age=0"
 
+    storage.presign_get(
+        bucket="ready",
+        key="opaque-key",
+        version_id="v1",
+        file_name="material seguro.pdf",
+        disposition="attachment",
+    )
+    assert observed["Params"]["ResponseContentDisposition"] == (
+        "attachment; filename*=UTF-8''material%20seguro.pdf"
+    )
+
 
 def test_head_fails_when_provider_omits_version_or_checksum() -> None:
     storage = object.__new__(S3Storage)

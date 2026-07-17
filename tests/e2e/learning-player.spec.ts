@@ -25,7 +25,14 @@ async function login(page: Page) {
 
 function playerEnvelope(selectedLessonId: string, version = 1, firstCompleted = false, resumeLessonId = selectedLessonId) {
   const selectedAsset = selectedLessonId === lessonOne
-    ? { href: `/api/library/items/${entitlementId}/assets/${assetId}`, title: "Guia da aula", media_type: "application/pdf" }
+    ? {
+        view_href: `/api/library/items/${entitlementId}/assets/${assetId}`,
+        download_href: null,
+        title: "Guia da aula",
+        media_type: "application/pdf",
+        content_role: "course_content",
+        download_allowed: false
+      }
     : null;
   return {
     player: {
@@ -47,7 +54,8 @@ function playerEnvelope(selectedLessonId: string, version = 1, firstCompleted = 
       state_version: version,
       lesson_progress: firstCompleted ? [{ lesson_id: lessonOne, progress_percent: 100, completed: true, updated_at: "2026-07-11T12:00:00Z" }] : [],
       selected_asset: selectedAsset,
-      selected_assets: selectedAsset === null ? [] : [selectedAsset]
+      selected_assets: selectedAsset === null ? [] : [selectedAsset],
+      watermark: { label: "user.demo@autonomia.site · tenant 4df98a2e · abcdef123456" }
     },
     csrf: { progress: "progress-token", complete: "complete-token" }
   };
@@ -68,9 +76,12 @@ function secondCourseEnvelope() {
 function videoPlayerEnvelope() {
   const response = playerEnvelope(lessonOne);
   const videoAsset = {
-    href: `/api/library/items/${entitlementId}/assets/${videoAssetId}`,
+    view_href: `/api/library/items/${entitlementId}/assets/${videoAssetId}`,
+    download_href: null,
     title: "Codex em 3 passos",
-    media_type: "video/mp4"
+    media_type: "video/mp4",
+    content_role: "course_content",
+    download_allowed: false
   };
   response.player.selected_assets = [videoAsset, response.player.selected_asset!];
   response.player.selected_asset = videoAsset;
@@ -170,9 +181,16 @@ test("opens the mobile shelf, protects the PDF and completes into the next lesso
   const title = page.getByRole("heading", { level: 1, name: "O que é Codex" });
   await expect(title).toBeVisible();
   await expect(title).toBeFocused();
-  const pdf = page.getByRole("link", { name: /Abrir PDF/ });
-  await expect(pdf).toHaveAttribute("href", `/api/library/items/${entitlementId}/assets/${assetId}`);
-  await expect(pdf).toHaveAttribute("target", "_blank");
+  const pdf = page.locator(".protected-pdf iframe");
+  await expect(pdf).toHaveAttribute(
+    "src",
+    `/api/library/items/${entitlementId}/assets/${assetId}#toolbar=0&navpanes=0`
+  );
+  await expect(page.getByRole("link", { name: /Baixar PDF/ })).toHaveCount(0);
+  await expect(page.getByText("Download desativado pelo administrador.")).toBeVisible();
+  await expect(page.locator(".protected-pdf-frame > span")).toHaveText(
+    "user.demo@autonomia.site · tenant 4df98a2e · abcdef123456"
+  );
   await expect(page.getByRole("button", { name: "Concluir e avançar" })).toBeEnabled();
   await page.getByRole("button", { name: "Concluir e avançar" }).click();
   await expect(page).toHaveURL(new RegExp(`/lessons/${lessonTwo}$`));
@@ -199,8 +217,8 @@ test("streams protected video on mobile and persists stepped and ended progress"
 
   const video = page.locator('video[aria-label="Codex em 3 passos"]');
   await expect(video).toHaveAttribute("src", `/api/library/items/${entitlementId}/assets/${videoAssetId}`);
-  await expect(page.getByRole("link", { name: /Abrir PDF/ }))
-    .toHaveAttribute("href", `/api/library/items/${entitlementId}/assets/${assetId}`);
+  await expect(page.locator(".protected-pdf iframe"))
+    .toHaveAttribute("src", `/api/library/items/${entitlementId}/assets/${assetId}#toolbar=0&navpanes=0`);
   await expect(video).toHaveAttribute("controls", "");
   await expect(video).toHaveAttribute("preload", "metadata");
   await expect(video).toHaveAttribute("playsinline", "");

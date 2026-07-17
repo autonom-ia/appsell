@@ -21,7 +21,7 @@ CHECKOUT_WORKER_SUBJECT = "demo-checkout-worker-v1"
 CHECKOUT_WORKER_EMAIL = "checkout.worker@autonomia.site"
 DEMO_SUPERADMIN_SUBJECT = "demo-superadmin"
 DEMO_SUPERADMIN_EMAIL = "comercial@autonomia.site"
-EXPECTED_MIGRATION = "0015_demo_zero_checkout"
+EXPECTED_MIGRATION = "0016_pdf_access_policy"
 REMOTE_RESET_SCOPE = "appsell-runtime-preview-77"
 REMOTE_RESET_TARGET = {
     "user": "appsell_preview_77_migrator",
@@ -183,6 +183,7 @@ def validate_demo_database(connection: psycopg.Connection[Any]) -> None:
 
 
 def snapshot_assets(manifest: dict[str, Any], lesson: dict[str, Any]) -> list[dict[str, Any]]:
+    downloadable_support = lesson["lesson_id"] == manifest["lessons"][-1]["lesson_id"]
     assets = [
         {
             "id": lesson["asset_id"],
@@ -193,6 +194,8 @@ def snapshot_assets(manifest: dict[str, Any], lesson: dict[str, Any]) -> list[di
             "byte_size": lesson["bytes"],
             "sha256": lesson["sha256"],
             "position": lesson["position"],
+            "content_role": "support_material" if downloadable_support else "course_content",
+            "download_allowed": downloadable_support,
         }
     ]
     video = manifest.get("video")
@@ -208,6 +211,8 @@ def snapshot_assets(manifest: dict[str, Any], lesson: dict[str, Any]) -> list[di
                 "byte_size": video["bytes"],
                 "sha256": video["sha256"],
                 "position": video["position"],
+                "content_role": "course_content",
+                "download_allowed": False,
             },
         )
     return assets
@@ -221,7 +226,7 @@ def snapshot_for(manifest: dict[str, Any]) -> dict[str, Any]:
     offer = manifest["offer"]
     lessons = manifest["lessons"]
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "seller_organization_id": seller["id"],
         "product": {
             "id": product["id"],
@@ -819,8 +824,9 @@ def reset_demo(
             """
             insert into lesson_asset_draft(
               seller_organization_id,catalog_product_id,course_id,module_id,lesson_id,
-              asset_id,asset_version,blob_id,position,status
-            ) values(%s,%s,%s,%s,%s,%s,1,app_private.legacy_asset_blob_id(%s),%s,'active')
+              asset_id,asset_version,blob_id,position,status,content_role,download_allowed
+            ) values(%s,%s,%s,%s,%s,%s,1,app_private.legacy_asset_blob_id(%s),%s,
+              'active',%s,%s)
             """,
             (
                 seller_id,
@@ -831,6 +837,10 @@ def reset_demo(
                 UUID(lesson["asset_id"]),
                 UUID(lesson["asset_id"]),
                 lesson["position"],
+                "support_material"
+                if lesson["lesson_id"] == manifest["lessons"][-1]["lesson_id"]
+                else "course_content",
+                lesson["lesson_id"] == manifest["lessons"][-1]["lesson_id"],
             ),
         )
         connection.execute(
@@ -941,7 +951,7 @@ def reset_demo(
         insert into publication(
           seller_organization_id,id,catalog_product_id,version,schema_version,
           source_sha256,snapshot,actor_identity_user_id
-        ) select %s,%s,%s,1,3,
+        ) select %s,%s,%s,1,4,
           encode(digest(convert_to(snapshot::text,'UTF8'),'sha256'),'hex'),
           snapshot,%s from payload
         on conflict(seller_organization_id,id) do nothing

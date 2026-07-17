@@ -16,6 +16,7 @@ export const CREATE_ASSET_UPLOAD_CSRF_ACTION = "POST:/api/assets/upload-intents"
 export const CONFIRM_ASSET_UPLOAD_CSRF_ACTION = "POST:/api/assets/uploads/confirm";
 export const CANCEL_ASSET_UPLOAD_CSRF_ACTION = "POST:/api/assets/uploads/cancel";
 export const ARCHIVE_ASSET_CSRF_ACTION = "POST:/api/assets/archive";
+export const UPDATE_ASSET_POLICY_CSRF_ACTION = "PATCH:/api/assets/policy";
 export const UPDATE_LEARNING_PROGRESS_CSRF_ACTION = "PUT:/api/library/progress";
 export const COMPLETE_LEARNING_LESSON_CSRF_ACTION = "POST:/api/library/complete";
 export const START_DEMO_INSPECTION_CSRF_ACTION = "POST:/api/platform/demo-inspections";

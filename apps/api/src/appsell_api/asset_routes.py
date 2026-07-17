@@ -120,6 +120,18 @@ class AssetArchiveBody(AssetMutationBody):
     expected_course_version: int = Field(ge=1, le=_MAX_SAFE_INTEGER)
 
 
+class AssetPolicyBody(AssetArchiveBody):
+    content_role: Literal["course_content", "support_material"]
+    download_allowed: bool
+
+    @field_validator("download_allowed")
+    @classmethod
+    def validate_download_policy(cls, value: bool, info: Any) -> bool:
+        if value and info.data.get("content_role") != "support_material":
+            raise ValueError("download requires support material")
+        return value
+
+
 @router.get(
     "/me/sellers/{seller_id}/products/{product_id}/courses/{course_id}"
     "/modules/{module_id}/lessons/{lesson_id}/assets"
@@ -141,7 +153,7 @@ async def list_lesson_assets(
                     await session.execute(
                         text(
                             "select "
-                            "app_private.list_lesson_asset_drafts("
+                            "app_private.list_lesson_asset_drafts_v2("
                             ":actor,:seller,:product,:course,:module,:lesson) assets, "
                             "app_private.read_lesson_asset_uploads("
                             ":actor,:seller,:product,:course,:module,:lesson) uploads"
@@ -526,6 +538,58 @@ async def archive_lesson_asset(
     return _json_object(value)
 
 
+@router.patch(
+    "/me/sellers/{seller_id}/products/{product_id}/courses/{course_id}"
+    "/modules/{module_id}/lessons/{lesson_id}/assets/{asset_id}/policy"
+)
+async def update_lesson_asset_policy(
+    request: Request,
+    seller_id: UUID,
+    product_id: UUID,
+    course_id: UUID,
+    module_id: UUID,
+    lesson_id: UUID,
+    asset_id: UUID,
+) -> dict[str, Any]:
+    auth, internal = await _authenticate(request, "catalog.asset.policy.update")
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(AssetPolicyBody, internal)
+    try:
+        async with auth.domain_session(internal.envelope) as session:
+            value = await session.scalar(
+                text(
+                    "select app_private.set_lesson_asset_policy("
+                    ":actor,:seller,:product,:course,:module,:lesson,:asset,"
+                    ":content_role,:download_allowed,:expected_course_version,"
+                    ":idempotency_key,:body_sha256,:request_id)"
+                ),
+                {
+                    **_route_parameters(
+                        internal.envelope.identity.user_id,
+                        seller_id,
+                        product_id,
+                        course_id,
+                        module_id,
+                        lesson_id,
+                    ),
+                    "asset": asset_id,
+                    "content_role": body.content_role,
+                    "download_allowed": body.download_allowed,
+                    "expected_course_version": body.expected_course_version,
+                    "idempotency_key": UUID(body.idempotency_key),
+                    "body_sha256": internal.envelope.body_sha256,
+                    "request_id": internal.envelope.request_id,
+                },
+            )
+    except IntegrityError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="asset_conflict"
+        ) from error
+    except DBAPIError as error:
+        raise _domain_error(error) from error
+    return _json_object(value)
+
+
 async def _read_upload_for_signing(
     *,
     auth: Any,
@@ -615,6 +679,8 @@ def _asset_view(value: dict[str, Any]) -> dict[str, Any]:
         "byte_size": int(value["byte_size"]),
         "media_type": str(value["media_type"]),
         "status": "ready" if draft_status == "active" else draft_status,
+        "content_role": str(value.get("content_role", "course_content")),
+        "download_allowed": bool(value.get("download_allowed", False)),
     }
 
 

@@ -89,10 +89,12 @@ test("user demo crosses Auth and Foundation into the Autonom.ia Sell library", a
     await page.goto(lessonHref!);
     await expect(page.getByRole("heading", { level: 1, name: expectedLessonTitles[index] })).toBeVisible();
     await expect(page.getByText(`Aula ${index + 1} de ${expectedLessonTitles.length}`, { exact: true })).toBeVisible();
-    const pdf = page.getByRole("link", { name: /Abrir PDF/ });
+    const pdf = page.locator(".protected-pdf iframe");
     await expect(pdf).toHaveCount(1);
-    const pdfHref = await pdf.getAttribute("href");
+    const pdfHref = (await pdf.getAttribute("src"))?.split("#", 1)[0];
     expect(pdfHref).toMatch(/^\/api\/library\/items\/[0-9a-f-]+\/assets\/[0-9a-f-]+$/);
+    await expect(page.getByRole("link", { name: /Baixar PDF/ }))
+      .toHaveCount(index === expectedLessonTitles.length - 1 ? 1 : 0);
     const pdfResponse = await page.request.get(pdfHref!);
     expect(pdfResponse.status()).toBe(200);
     expect(pdfResponse.headers()["content-type"]).toBe("application/pdf");

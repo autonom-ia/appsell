@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Literal
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -147,17 +147,18 @@ class S3Storage:
         version_id: str,
         file_name: str,
         media_type: str = "application/pdf",
+        disposition: Literal["inline", "attachment"] = "inline",
     ) -> PresignedRequest:
         if not version_id:
             raise StorageCapabilityError("download requires an immutable VersionId")
-        disposition = _asset_content_disposition(file_name, media_type)
+        content_disposition = _asset_content_disposition(file_name, media_type, disposition)
         url = self._public.generate_presigned_url(
             "get_object",
             Params={
                 "Bucket": bucket,
                 "Key": key,
                 "VersionId": version_id,
-                "ResponseContentDisposition": disposition,
+                "ResponseContentDisposition": content_disposition,
                 "ResponseCacheControl": "private, no-store, max-age=0",
                 "ResponseContentType": media_type,
             },
@@ -257,7 +258,7 @@ class S3Storage:
         file_name: str,
     ) -> StoredObject:
         checksum = _checksum_b64(sha256_hex)
-        disposition = _asset_content_disposition(file_name, content_type)
+        disposition = _asset_content_disposition(file_name, content_type, "inline")
         version_id = ""
         try:
             with source_path.open("rb") as source:
@@ -476,7 +477,11 @@ def object_sha256_matches(stored: StoredObject, expected_hex: str) -> bool:
     return stored.checksum_sha256_b64 == _checksum_b64(expected_hex)
 
 
-def _asset_content_disposition(file_name: str, media_type: str) -> str:
+def _asset_content_disposition(
+    file_name: str,
+    media_type: str,
+    disposition: Literal["inline", "attachment"],
+) -> str:
     if (
         not file_name
         or len(file_name.encode("utf-8")) > 160
@@ -486,9 +491,10 @@ def _asset_content_disposition(file_name: str, media_type: str) -> str:
         or (media_type == "application/pdf" and not file_name.lower().endswith(".pdf"))
         or (media_type == "video/mp4" and not file_name.lower().endswith(".mp4"))
         or media_type not in {"application/pdf", "video/mp4"}
+        or disposition not in {"inline", "attachment"}
     ):
         raise ValueError("asset file_name or media_type is invalid")
-    return f"inline; filename*=UTF-8''{quote(file_name, safe='')}"
+    return f"{disposition}; filename*=UTF-8''{quote(file_name, safe='')}"
 
 
 def _checksum_b64(sha256_hex: str) -> str:

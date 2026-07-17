@@ -187,8 +187,48 @@ async def test_s3_asset_returns_only_short_version_pinned_download_url() -> None
             "version_id": "ready-v2",
             "file_name": "material seguro.pdf",
             "media_type": "application/pdf",
+            "disposition": "inline",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_download_requires_separate_capability_and_presigns_attachment() -> None:
+    auth = FakeAuth(
+        {
+            "asset_id": ASSET_ID,
+            "asset_version": 2,
+            "file_name": "apoio.pdf",
+            "title": "Material de apoio",
+            "media_type": "application/pdf",
+            "byte_size": 120,
+            "sha256": "cd" * 32,
+            "storage_driver": "s3",
+            "storage_bucket": "appsell-ready",
+            "object_key": "tenants/seller/assets/asset/v2/blob",
+            "storage_version_id": "ready-v2",
+            "storage_etag": "etag-v2",
+        }
+    )
+    calls: list[dict[str, Any]] = []
+
+    class Storage:
+        def presign_get(self, **kwargs: Any) -> PresignedRequest:
+            calls.append(kwargs)
+            return PresignedRequest(
+                url="http://127.0.0.1:8333/ready/key?X-Amz-Signature=signed",
+                headers={},
+                expires_in_seconds=60,
+            )
+
+    async with client_for(auth, Storage()) as client:
+        response = await client.get(
+            f"/v1/me/learning/items/{ENTITLEMENT_ID}/assets/{ASSET_ID}/download"
+        )
+    assert response.status_code == 200
+    assert auth.capabilities == ["library.asset.download"]
+    assert "authorize_publication_asset_download" in auth.session.calls[0][0]
+    assert calls[0]["disposition"] == "attachment"
 
 
 @pytest.mark.asyncio
@@ -232,12 +272,27 @@ async def test_resume_negotiates_additive_multi_asset_contract_explicitly() -> N
 
 
 @pytest.mark.asyncio
+async def test_resume_negotiates_pdf_policy_contract_explicitly() -> None:
+    player = {"schema_version": 3, "selected_assets": []}
+    auth = FakeAuth(player)
+    async with client_for(auth) as client:
+        response = await client.get(
+            f"/v1/me/learning/items/{ENTITLEMENT_ID}/resume",
+            headers={"x-appsell-learning-assets-contract": "v3"},
+        )
+
+    assert response.status_code == 200
+    statement, _ = auth.session.calls[0]
+    assert "app_private.read_learning_player_v3" in statement
+
+
+@pytest.mark.asyncio
 async def test_unknown_learning_asset_contract_remains_on_legacy_projection() -> None:
     auth = FakeAuth({"selected_lesson_id": str(LESSON_ID)})
     async with client_for(auth) as client:
         response = await client.get(
             f"/v1/me/learning/items/{ENTITLEMENT_ID}/resume",
-            headers={"x-appsell-learning-assets-contract": "v3"},
+            headers={"x-appsell-learning-assets-contract": "v99"},
         )
 
     assert response.status_code == 200

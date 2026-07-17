@@ -203,6 +203,8 @@ async def test_list_assets_maps_internal_active_draft_to_public_ready_status() -
                         "byte_size": 128,
                         "media_type": "application/pdf",
                         "status": "active",
+                        "content_role": "course_content",
+                        "download_allowed": False,
                     }
                 ],
                 "uploads": [],
@@ -223,8 +225,75 @@ async def test_list_assets_maps_internal_active_draft_to_public_ready_status() -
             "byte_size": 128,
             "media_type": "application/pdf",
             "status": "ready",
+            "content_role": "course_content",
+            "download_allowed": False,
         }
     ]
+    assert "list_lesson_asset_drafts_v2" in auth.session.calls[0][0]
+
+
+@pytest.mark.asyncio
+async def test_owner_updates_pdf_policy_with_version_and_idempotency_binding() -> None:
+    asset_id = uuid4()
+    idempotency_key = uuid4()
+    result = {
+        "asset_id": str(asset_id),
+        "content_role": "support_material",
+        "download_allowed": True,
+        "course_version": 2,
+        "applied": True,
+    }
+    auth = FakeAuth(seller=SELLER, scalar_values=[result])
+    body = json.dumps(
+        {
+            "idempotency_key": str(idempotency_key),
+            "expected_course_version": 1,
+            "content_role": "support_material",
+            "download_allowed": True,
+        },
+        separators=(",", ":"),
+    ).encode()
+    async with client_for(auth, FakeStorage(uuid4())) as client:
+        response = await client.patch(
+            asset_path(f"/{asset_id}/policy"),
+            content=body,
+            headers={"content-type": "application/json"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == result
+    assert auth.authenticated_capabilities == ["catalog.asset.policy.update"]
+    statement, parameters = auth.session.calls[0]
+    assert "set_lesson_asset_policy" in statement
+    assert parameters["asset"] == asset_id
+    assert parameters["content_role"] == "support_material"
+    assert parameters["download_allowed"] is True
+    assert parameters["expected_course_version"] == 1
+    assert parameters["idempotency_key"] == idempotency_key
+    assert parameters["body_sha256"] == hashlib.sha256(body).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_policy_rejects_download_for_course_content_before_database() -> None:
+    asset_id = uuid4()
+    auth = FakeAuth(seller=SELLER, scalar_values=[])
+    body = json.dumps(
+        {
+            "idempotency_key": str(uuid4()),
+            "expected_course_version": 1,
+            "content_role": "course_content",
+            "download_allowed": True,
+        }
+    ).encode()
+    async with client_for(auth, FakeStorage(uuid4())) as client:
+        response = await client.patch(
+            asset_path(f"/{asset_id}/policy"),
+            content=body,
+            headers={"content-type": "application/json"},
+        )
+
+    assert response.status_code == 422
+    assert auth.session.calls == []
 
 
 @pytest.mark.asyncio

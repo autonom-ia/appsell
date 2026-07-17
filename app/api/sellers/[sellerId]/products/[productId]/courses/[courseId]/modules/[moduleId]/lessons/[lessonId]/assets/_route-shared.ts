@@ -7,6 +7,7 @@ import {
   CANCEL_ASSET_UPLOAD_CSRF_ACTION,
   CONFIRM_ASSET_UPLOAD_CSRF_ACTION,
   CREATE_ASSET_UPLOAD_CSRF_ACTION,
+  UPDATE_ASSET_POLICY_CSRF_ACTION,
   csrfTokenForSession,
   verifyMutation
 } from "@/lib/mutation-protection.server";
@@ -106,7 +107,8 @@ export function assetCsrf(sessionId: string) {
     intent: csrfTokenForSession(sessionId, CREATE_ASSET_UPLOAD_CSRF_ACTION),
     confirm: csrfTokenForSession(sessionId, CONFIRM_ASSET_UPLOAD_CSRF_ACTION),
     cancel: csrfTokenForSession(sessionId, CANCEL_ASSET_UPLOAD_CSRF_ACTION),
-    archive: csrfTokenForSession(sessionId, ARCHIVE_ASSET_CSRF_ACTION)
+    archive: csrfTokenForSession(sessionId, ARCHIVE_ASSET_CSRF_ACTION),
+    policy: csrfTokenForSession(sessionId, UPDATE_ASSET_POLICY_CSRF_ACTION)
   };
 }
 
@@ -147,6 +149,25 @@ export function parseArchive(fields: Record<string, string>) {
     : null;
 }
 
+export function parseAssetPolicy(fields: Record<string, string>) {
+  const base = parseArchive(fields);
+  const contentRole = fields.content_role;
+  const downloadAllowed = fields.download_allowed === "true"
+    ? true
+    : fields.download_allowed === "false"
+      ? false
+      : null;
+  if (!base || !["course_content", "support_material"].includes(contentRole)
+    || downloadAllowed === null || (downloadAllowed && contentRole !== "support_material")) {
+    return null;
+  }
+  return {
+    ...base,
+    contentRole: contentRole as "course_content" | "support_material",
+    downloadAllowed
+  };
+}
+
 export function assetInvalidInput(field: string) {
   return NextResponse.json({ error: "invalid_asset_input", field }, {
     status: 422,
@@ -158,7 +179,8 @@ export const assetActions = {
   intent: CREATE_ASSET_UPLOAD_CSRF_ACTION,
   confirm: CONFIRM_ASSET_UPLOAD_CSRF_ACTION,
   cancel: CANCEL_ASSET_UPLOAD_CSRF_ACTION,
-  archive: ARCHIVE_ASSET_CSRF_ACTION
+  archive: ARCHIVE_ASSET_CSRF_ACTION,
+  policy: UPDATE_ASSET_POLICY_CSRF_ACTION
 } as const;
 
 function validText(value: string | undefined, minimum: number, maximum: number): value is string {
