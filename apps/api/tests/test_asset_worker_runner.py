@@ -214,7 +214,7 @@ async def test_pdf_ready_uses_v2_manifest_contract() -> None:
     )
 
     manifest_sha = await asset_worker_runner._register_ready_candidate(  # noqa: SLF001
-        auth,
+        cast(InternalRequestAuthenticator, auth),
         app.state.settings,
         WORKER_ID,
         SELLER,
@@ -222,7 +222,7 @@ async def test_pdf_ready_uses_v2_manifest_contract() -> None:
         result,
     )
     await asset_worker_runner._finalize_ready(  # noqa: SLF001
-        auth,
+        cast(InternalRequestAuthenticator, auth),
         app.state.settings,
         WORKER_ID,
         SELLER,

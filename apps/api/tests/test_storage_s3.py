@@ -147,10 +147,15 @@ def test_prefix_reconcile_repeats_until_every_version_and_marker_is_deleted() ->
         {},
     ]
     deleted: list[dict[str, Any]] = []
+
+    def delete_objects(**kwargs: Any) -> dict[str, Any]:
+        deleted.append(kwargs)
+        return {}
+
     storage = object.__new__(S3Storage)
     storage._control = SimpleNamespace(
         list_object_versions=lambda **_kwargs: listed.pop(0),
-        delete_objects=lambda **kwargs: deleted.append(kwargs) or {},
+        delete_objects=delete_objects,
     )
 
     assert storage.delete_all_versions_under_prefix(bucket="ready", prefix=prefix) == 2
