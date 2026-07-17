@@ -477,12 +477,12 @@ async function expectNotFound(url: string, session: string) {
 }
 
 async function expectAsset(url: string, session: string, status: 200 | 404) {
-  const response = await fetch(url, { headers: { cookie: session } });
+  const response = await fetch(`${url}/pages`, { headers: { cookie: session } });
   expect(response.status).toBe(status);
   if (status === 200) {
     expect(response.headers.get("content-type")).toContain("application/json");
     expect(await response.json()).toMatchObject({ page_count: expect.any(Number) });
-    const page = await fetch(`${url}/1`, { headers: { cookie: session } });
+    const page = await fetch(`${url}/pages/1`, { headers: { cookie: session } });
     expect(page.status).toBe(200);
     expect(page.headers.get("content-type")).toBe("image/png");
     expect((await page.arrayBuffer()).byteLength).toBeGreaterThan(8);

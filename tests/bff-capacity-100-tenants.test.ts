@@ -400,8 +400,13 @@ test.skipIf(!domainApiUrl)(
       { headers: { cookie: warmBuyer.sessionCookie } },
       30_000
     );
-    if (warmAsset.status !== 200 || (await warmAsset.arrayBuffer()).byteLength === 0) {
-      throw new Error(`warm own asset expected non-empty 200, got ${warmAsset.status}`);
+    const warmAssetPayload = await warmAsset.json().catch(() => null) as unknown;
+    if (
+      warmAsset.status !== 404 ||
+      !isRecord(warmAssetPayload) ||
+      warmAssetPayload.error !== "pdf_original_requires_download_permission"
+    ) {
+      throw new Error(`warm own PDF original denial expected 404, got ${warmAsset.status}`);
     }
     failurePhase = "warmup_cross_tenant_asset";
     await requireStatus(
