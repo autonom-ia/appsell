@@ -25,7 +25,7 @@ service_credential_b64="$(openssl rand -base64 32)"
 session_key_b64="$(openssl rand -base64 32)"
 csrf_key_b64="$(openssl rand -base64 32)"
 vault_key_b64="$(openssl rand -base64 32)"
-redis_password="$(openssl rand -hex 32)"
+redis_secret="$(openssl rand -hex 32)"
 storage_access_key="preview-$(openssl rand -hex 12)"
 storage_secret_key="$(openssl rand -hex 32)"
 next_pid=""
@@ -123,11 +123,11 @@ fi
 APPSELL_API_PDF_SANDBOX_SOCKET="/run/appsell-pdf/pdf.sock" \
   uv run --project apps/api --frozen python -m appsell_api.storage_public_audit
 redis-server --bind 127.0.0.1 --port "$redis_port" --dir "$redis_dir" \
-  --save '' --appendonly no --protected-mode yes --requirepass "$redis_password" \
+  --save '' --appendonly no --protected-mode yes --requirepass "$redis_secret" \
   >"$redis_dir/redis.log" 2>&1 &
 redis_pid="$!"
 
-export APPSELL_REDIS_URL="redis://:${redis_password}@127.0.0.1:${redis_port}/0"
+export APPSELL_REDIS_URL="redis://:${redis_secret}@127.0.0.1:${redis_port}/0"
 export APPSELL_REDIS_PREFIX="appsell:preview:${project}"
 export APPSELL_SESSION_HMAC_KEY_B64="$session_key_b64"
 export APPSELL_CSRF_HMAC_KEY_B64="$csrf_key_b64"

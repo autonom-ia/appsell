@@ -36,16 +36,16 @@ service_env() {
 }
 
 postgres_user="$(service_env sell-autonomia_postgres POSTGRES_USER)"
-postgres_password="$(service_env sell-autonomia_postgres POSTGRES_PASSWORD)"
+postgres_secret="$(service_env sell-autonomia_postgres POSTGRES_PASSWORD)"
 postgres_database="$(service_env sell-autonomia_postgres POSTGRES_DB)"
-redis_password="$(service_env sell-autonomia_redis REDIS_PASSWORD)"
+redis_secret="$(service_env sell-autonomia_redis REDIS_PASSWORD)"
 
 hex_24() { openssl rand -hex 24; }
 hex_32() { openssl rand -hex 32; }
 b64_32() { openssl rand -base64 32 | tr -d '\n'; }
 
-migrator_password="$(hex_24)"
-runtime_password="$(hex_24)"
+migrator_secret="$(hex_24)"
+runtime_secret="$(hex_24)"
 context_hex="$(hex_32)"
 bootstrap_hex="$(hex_32)"
 context_b64="$(printf '%s' "$context_hex" | xxd -r -p | base64 | tr -d '\n')"
@@ -56,7 +56,7 @@ csrf_key="$(b64_32)"
 vault_key="$(b64_32)"
 
 unique_values=(
-  "$migrator_password" "$runtime_password" "$context_hex" "$bootstrap_hex"
+  "$migrator_secret" "$runtime_secret" "$context_hex" "$bootstrap_hex"
   "$internal_key" "$service_credential" "$session_key" "$csrf_key" "$vault_key"
 )
 for ((left=0; left<${#unique_values[@]}; left++)); do
@@ -84,11 +84,11 @@ trap 'rm -f -- "$output_file"' ERR INT TERM
   printf 'APPSELL_ALPINE_IMAGE=autonomia-sell-preview-base-alpine:%s\n' "$source_sha"
   printf 'APPSELL_PUBLIC_ORIGIN=https://sell.autonomia.site\n'
   printf 'APPSELL_POSTGRES_ADMIN_USER=%s\n' "$postgres_user"
-  printf 'APPSELL_POSTGRES_ADMIN_PASSWORD=%s\n' "$postgres_password"
+  printf 'APPSELL_POSTGRES_ADMIN_PASSWORD=%s\n' "$postgres_secret"
   printf 'APPSELL_POSTGRES_DEFAULT_DATABASE=%s\n' "$postgres_database"
-  printf 'APPSELL_REDIS_PASSWORD=%s\n' "$redis_password"
-  printf 'APPSELL_MIGRATOR_PASSWORD=%s\n' "$migrator_password"
-  printf 'APPSELL_RUNTIME_PASSWORD=%s\n' "$runtime_password"
+  printf 'APPSELL_REDIS_PASSWORD=%s\n' "$redis_secret"
+  printf 'APPSELL_MIGRATOR_PASSWORD=%s\n' "$migrator_secret"
+  printf 'APPSELL_RUNTIME_PASSWORD=%s\n' "$runtime_secret"
   printf 'APPSELL_CONTEXT_SIGNING_KEY_HEX=%s\n' "$context_hex"
   printf 'APPSELL_BOOTSTRAP_ATTESTATION_KEY_HEX=%s\n' "$bootstrap_hex"
   printf 'APPSELL_INTERNAL_HMAC_KEYRING_B64_JSON=%s\n' "$internal_keyring"
