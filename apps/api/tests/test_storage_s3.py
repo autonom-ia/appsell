@@ -194,6 +194,26 @@ def test_presigned_download_pins_safe_pdf_name_and_disables_caching() -> None:
         "attachment; filename*=UTF-8''material%20seguro.pdf"
     )
 
+    storage.presign_get(
+        bucket="ready",
+        key="page-key",
+        version_id="page-v1",
+        file_name="page-1.png",
+        media_type="image/png",
+    )
+    assert observed["Params"]["ResponseContentDisposition"] == (
+        "inline; filename*=UTF-8''page-1.png"
+    )
+
+    with pytest.raises(ValueError, match="invalid"):
+        storage.presign_get(
+            bucket="ready",
+            key="page-key",
+            version_id="page-v1",
+            file_name="page-1.pdf",
+            media_type="image/png",
+        )
+
 
 def test_head_fails_when_provider_omits_version_or_checksum() -> None:
     storage = object.__new__(S3Storage)

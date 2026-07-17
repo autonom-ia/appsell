@@ -519,7 +519,8 @@ def _asset_content_disposition(
         or any(ord(character) < 32 or ord(character) == 127 for character in file_name)
         or (media_type == "application/pdf" and not file_name.lower().endswith(".pdf"))
         or (media_type == "video/mp4" and not file_name.lower().endswith(".mp4"))
-        or media_type not in {"application/pdf", "video/mp4"}
+        or (media_type == "image/png" and not file_name.lower().endswith(".png"))
+        or media_type not in {"application/pdf", "video/mp4", "image/png"}
         or disposition not in {"inline", "attachment"}
     ):
         raise ValueError("asset file_name or media_type is invalid")
