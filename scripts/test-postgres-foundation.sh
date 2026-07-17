@@ -179,7 +179,8 @@ uv run --project apps/api pytest \
   apps/api/tests/test_api_onboarding.py \
   apps/api/tests/test_api_learning.py \
   apps/api/tests/test_api_assets.py \
-  apps/api/tests/test_api_superadmin_inspection.py
+  apps/api/tests/test_api_superadmin_inspection.py \
+  apps/api/tests/test_api_superadmin_bootstrap.py
 uv run --project apps/api pytest apps/api/tests/test_api_demo_checkout.py
 uv run --project apps/api pytest \
   apps/api/tests/test_internal_requests.py \

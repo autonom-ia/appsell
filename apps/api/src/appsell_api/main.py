@@ -17,6 +17,7 @@ from .db import create_engine, create_session_factory, database_ready
 from .demo_checkout_worker import run_demo_checkout_worker_loop
 from .internal_requests import InternalRequestAuthenticator
 from .learning_routes import router as learning_router
+from .platform_bootstrap_routes import router as platform_bootstrap_router
 from .platform_routes import router as platform_router
 from .public_routes import router as public_router
 from .routes import router
@@ -142,6 +143,7 @@ app.include_router(catalog_router)
 app.include_router(checkout_router)
 app.include_router(learning_router)
 app.include_router(asset_router)
+app.include_router(platform_bootstrap_router)
 app.include_router(platform_router)
 app.include_router(public_router)
 app.include_router(webhook_router)
