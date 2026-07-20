@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 
 const financialApiUrl = process.env.FINANCIAL_API_URL ?? "https://financial.api-autonomia.com";
+const FETCH_TIMEOUT_MS = 15000;
 
 export const dynamic = "force-dynamic";
 
@@ -18,7 +19,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
 
 async function proxyRegistrationCheckout(request: NextRequest, context: RouteContext) {
   const internalApiKey = getInternalApiKey();
-  if (!internalApiKey) {
+  if (!internalApiKey || !financialApiUrl) {
     return json({ error: { code: "SERVER_CONFIG_ERROR", message: "Checkout de registro não configurado." } }, 500);
   }
 
@@ -41,13 +42,19 @@ async function proxyRegistrationCheckout(request: NextRequest, context: RouteCon
     headers.set("content-type", request.headers.get("content-type") ?? "application/json");
   }
 
-  const response = await fetch(targetUrl, {
-    method: request.method,
-    headers,
-    body: request.method === "GET" || request.method === "HEAD" ? undefined : await request.arrayBuffer(),
-    cache: "no-store",
-    redirect: "manual"
-  });
+  let response: Response;
+  try {
+    response = await fetch(targetUrl, {
+      method: request.method,
+      headers,
+      body: request.method === "GET" || request.method === "HEAD" ? undefined : await request.arrayBuffer(),
+      cache: "no-store",
+      redirect: "manual",
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
+    });
+  } catch {
+    return json({ error: { code: "BACKEND_UNAVAILABLE", message: "Backend indisponível." } }, 502);
+  }
 
   return new Response(response.body, {
     status: response.status,
@@ -63,14 +70,19 @@ function mapRegistrationCheckoutPath(path: string) {
   if (path === "/financial/me/registration-checkout/intent") return "/financial/internal/registration-checkout/intent";
 
   const checkoutMatch = path.match(/^\/financial\/me\/checkout\/([^/]+)$/);
-  if (checkoutMatch?.[1]) return `/financial/internal/registration-checkout/${encodeURIComponent(checkoutMatch[1])}`;
+  if (checkoutMatch?.[1]) {
+    const checkoutId = checkoutMatch[1];
+    // Reject dot-segments: new URL() would normalize them and escape the internal prefix.
+    if (checkoutId === "." || checkoutId === "..") return null;
+    return `/financial/internal/registration-checkout/${encodeURIComponent(checkoutId)}`;
+  }
 
   return null;
 }
 
 function responseHeaders(input: Headers) {
   const headers = new Headers(input);
-  for (const name of ["content-encoding", "content-length", "transfer-encoding"]) {
+  for (const name of ["content-encoding", "content-length", "transfer-encoding", "set-cookie"]) {
     headers.delete(name);
   }
   headers.set("cache-control", "private, no-cache, no-store, max-age=0, must-revalidate");
@@ -78,7 +90,7 @@ function responseHeaders(input: Headers) {
 }
 
 function getInternalApiKey() {
-  return process.env.FINANCIAL_INTERNAL_API_KEY ?? process.env.INTERNAL_SERVICE_API_KEY ?? "";
+  return process.env.FINANCIAL_INTERNAL_API_KEY ?? "";
 }
 
 function json(body: unknown, status: number) {

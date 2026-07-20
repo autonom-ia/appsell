@@ -9,6 +9,8 @@ export type BffRouteContext = {
   params: Promise<{ path?: string[] }>;
 };
 
+const FETCH_TIMEOUT_MS = 15000;
+
 export function createBffProxy(config: BffProxyConfig) {
   const handler = async (request: Request, context: BffRouteContext) => {
     if (!config.targetBaseUrl) {
@@ -22,27 +24,46 @@ export function createBffProxy(config: BffProxyConfig) {
     }
 
     const params = await context.params;
-    const path = (params.path ?? []).map(encodeURIComponent).join("/");
+    const segments = params.path ?? [];
+    // Reject dot-segments/empty: encodeURIComponent leaves "." and ".." intact and
+    // new URL() would normalize them, letting a path escape the configured prefix.
+    if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+      return json({ error: { code: "BAD_REQUEST", message: "Caminho inválido." } }, 400);
+    }
+    const prefix = normalizePrefix(config.pathPrefix);
+    const path = segments.map(encodeURIComponent).join("/");
     const requestUrl = new URL(request.url);
-    const targetUrl = new URL(`${trimSlash(config.targetBaseUrl)}${normalizePrefix(config.pathPrefix)}${path ? `/${path}` : ""}`);
+    const targetUrl = new URL(`${trimSlash(config.targetBaseUrl)}${prefix}${path ? `/${path}` : ""}`);
+    // Defense in depth: the resolved path must stay within the configured prefix.
+    if (targetUrl.pathname !== prefix && !targetUrl.pathname.startsWith(`${prefix}/`)) {
+      return json({ error: { code: "BAD_REQUEST", message: "Caminho inválido." } }, 400);
+    }
     targetUrl.search = requestUrl.search;
 
     const headers = forwardHeaders(request.headers);
     headers.set("authorization", `Bearer ${accessToken}`);
 
+    // BFF owns x-identity-token: drop any client-supplied value, set only from cookie.
+    headers.delete("x-identity-token");
     const identityToken = readCookie(cookieHeader, config.identityTokenCookieName ?? "autonomia_id_token");
     if (identityToken) headers.set("x-identity-token", identityToken);
 
     const init: RequestInit = {
       method: request.method,
       headers,
-      redirect: "manual"
+      redirect: "manual",
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
     };
     if (request.method !== "GET" && request.method !== "HEAD") {
       init.body = await request.arrayBuffer();
     }
 
-    const response = await fetch(targetUrl, init);
+    let response: Response;
+    try {
+      response = await fetch(targetUrl, init);
+    } catch {
+      return json({ error: { code: "BACKEND_UNAVAILABLE", message: "Backend indisponível." } }, 502);
+    }
 
     return new Response(response.body, {
       status: response.status,
@@ -71,8 +92,12 @@ function forwardHeaders(input: Headers) {
 
 function responseHeaders(input: Headers) {
   const headers = new Headers(input);
-  for (const name of ["content-encoding", "content-length", "transfer-encoding"]) {
+  for (const name of ["content-encoding", "content-length", "transfer-encoding", "set-cookie"]) {
     headers.delete(name);
+  }
+  // Authenticated proxy fronts account/payment data: never cache unless backend opts in.
+  if (!headers.has("cache-control")) {
+    headers.set("cache-control", "private, no-store");
   }
   return headers;
 }
