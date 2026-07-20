@@ -1,3 +1,5 @@
+import { configuredPublicOrigin, hasConfiguredOrigin } from "./public-origin";
+
 export interface BffProxyConfig {
   targetBaseUrl: string;
   pathPrefix: string;
@@ -10,6 +12,7 @@ export type BffRouteContext = {
 };
 
 const FETCH_TIMEOUT_MS = 15000;
+const MAX_BODY_BYTES = 2_000_000;
 
 export function createBffProxy(config: BffProxyConfig) {
   const handler = async (request: Request, context: BffRouteContext) => {
@@ -21,6 +24,13 @@ export function createBffProxy(config: BffProxyConfig) {
     const accessToken = readCookie(cookieHeader, config.accessTokenCookieName ?? "autonomia_access_token");
     if (!accessToken) {
       return json({ error: { code: "UNAUTHORIZED", message: "Sessão inválida ou expirada." } }, 401);
+    }
+
+    // CSRF: state-changing methods carry ambient cookie auth, so require a same-origin request.
+    const method = request.method.toUpperCase();
+    const isStateChanging = method !== "GET" && method !== "HEAD" && method !== "OPTIONS";
+    if (isStateChanging && !isSameOrigin(request)) {
+      return json({ error: { code: "FORBIDDEN", message: "Origem inválida." } }, 403);
     }
 
     const params = await context.params;
@@ -54,8 +64,15 @@ export function createBffProxy(config: BffProxyConfig) {
       redirect: "manual",
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
     };
-    if (request.method !== "GET" && request.method !== "HEAD") {
-      init.body = await request.arrayBuffer();
+    if (method !== "GET" && method !== "HEAD") {
+      if (exceedsDeclaredBodyLimit(request)) {
+        return json({ error: { code: "PAYLOAD_TOO_LARGE", message: "Corpo muito grande." } }, 413);
+      }
+      const body = await request.arrayBuffer();
+      if (body.byteLength > MAX_BODY_BYTES) {
+        return json({ error: { code: "PAYLOAD_TOO_LARGE", message: "Corpo muito grande." } }, 413);
+      }
+      init.body = body;
     }
 
     let response: Response;
@@ -80,6 +97,20 @@ export function createBffProxy(config: BffProxyConfig) {
     DELETE: handler,
     OPTIONS: handler
   };
+}
+
+function isSameOrigin(request: Request) {
+  try {
+    return hasConfiguredOrigin(request, configuredPublicOrigin());
+  } catch {
+    // Fail closed: if the public origin is not configured, reject state-changing requests.
+    return false;
+  }
+}
+
+function exceedsDeclaredBodyLimit(request: Request) {
+  const declared = Number(request.headers.get("content-length") ?? "");
+  return Number.isFinite(declared) && declared > MAX_BODY_BYTES;
 }
 
 function forwardHeaders(input: Headers) {

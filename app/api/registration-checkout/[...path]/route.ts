@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 
 const financialApiUrl = process.env.FINANCIAL_API_URL ?? "https://financial.api-autonomia.com";
 const FETCH_TIMEOUT_MS = 15000;
+const MAX_BODY_BYTES = 65_536;
 
 export const dynamic = "force-dynamic";
 
@@ -42,12 +43,24 @@ async function proxyRegistrationCheckout(request: NextRequest, context: RouteCon
     headers.set("content-type", request.headers.get("content-type") ?? "application/json");
   }
 
+  let body: ArrayBuffer | undefined;
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    const declared = Number(request.headers.get("content-length") ?? "");
+    if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+      return json({ error: { code: "PAYLOAD_TOO_LARGE", message: "Corpo muito grande." } }, 413);
+    }
+    body = await request.arrayBuffer();
+    if (body.byteLength > MAX_BODY_BYTES) {
+      return json({ error: { code: "PAYLOAD_TOO_LARGE", message: "Corpo muito grande." } }, 413);
+    }
+  }
+
   let response: Response;
   try {
     response = await fetch(targetUrl, {
       method: request.method,
       headers,
-      body: request.method === "GET" || request.method === "HEAD" ? undefined : await request.arrayBuffer(),
+      body,
       cache: "no-store",
       redirect: "manual",
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
