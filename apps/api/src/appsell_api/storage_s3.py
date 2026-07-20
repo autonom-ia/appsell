@@ -389,7 +389,7 @@ class S3Storage:
                 "MaxAgeSeconds": 300,
             }
             if allowed_headers:
-                rule["AllowedHeaders"] = allowed_headers
+                rule["AllowedHeaders"] = sorted(allowed_headers)
             self._control.put_bucket_cors(
                 Bucket=bucket,
                 CORSConfiguration={"CORSRules": [rule]},
