@@ -175,6 +175,12 @@ async def reactivate_tenant(tenant_id: UUID, request: Request) -> dict[str, Any]
 async def _set_tenant_status(
     tenant_id: UUID, request: Request, target_status: str
 ) -> dict[str, Any]:
+    # TODO(#105): tenant suspend/reactivate is gated to local/CI until a verifiable
+    # MFA step-up (Lambda PreTokenGeneration claim) proves the superadmin assurance.
+    # The DB/RLS enforcement (set_tenant_status, fail-closed suspended isolation)
+    # already lands here; only the HTTP surface stays disabled outside local/CI.
+    # The AUTHORIZATION_MATRIX contract also requires step-up + a grace period.
+    _require_local_ci()
     capability = (
         "platform.tenant.suspend" if target_status == "suspended" else "platform.tenant.reactivate"
     )

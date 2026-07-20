@@ -133,3 +133,28 @@ async def test_platform_tenant_status_hides_unknown_tenant() -> None:
         response = await client.post(path, json={"reason": "Tenant inexistente no cadastro"})
     assert response.status_code == 404
     assert response.json() == {"detail": "tenant_not_found"}
+
+
+@pytest.fixture(autouse=True)
+def _local_ci_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Tenant suspend/reactivate is gated to local/CI until #105 lands verifiable
+    # MFA step-up; the happy-path tests run as if inside that allowed environment.
+    monkeypatch.setenv("APPSELL_API_ENVIRONMENT", "local")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("environment", ["staging", "production", "", "elsewhere"])
+@pytest.mark.parametrize("operation", ["suspend", "reactivate"])
+async def test_platform_tenant_status_is_hidden_outside_local_ci(
+    monkeypatch: pytest.MonkeyPatch, environment: str, operation: str
+) -> None:
+    monkeypatch.setenv("APPSELL_API_ENVIRONMENT", environment)
+    auth = FakeAuth({"id": str(TENANT_ID), "status": "suspended", "applied": True})
+    path = f"/v1/platform/tenants/{TENANT_ID}/{operation}"
+    async with client_for(auth) as client:
+        response = await client.post(path, json={"reason": "Decisao operacional auditada"})
+    assert response.status_code == 404
+    assert response.json() == {"detail": "not_found"}
+    # The gate must fire before authentication and before any database call.
+    assert auth.capabilities == []
+    assert auth.session.calls == []
