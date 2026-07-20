@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 from types import SimpleNamespace
 from typing import Any
 
@@ -76,6 +77,111 @@ def test_anonymous_security_probes_use_internal_container_endpoint(
         "http://127.0.0.1:48333",
         "http://seaweedfs:8333",
         "http://127.0.0.1:48333",
+    ]
+
+
+def test_native_aws_client_uses_sdk_endpoint_credentials_and_virtual_addressing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clients: list[dict[str, Any]] = []
+
+    def fake_client(**kwargs: Any) -> SimpleNamespace:
+        clients.append(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(storage_s3_module.boto3, "client", fake_client)  # type: ignore[attr-defined]
+    settings = Settings(
+        storage_provider="s3",
+        storage_quarantine_bucket="appsell-quarantine-test",
+        storage_ready_bucket="appsell-ready-test",
+        storage_prefix="appsell/ci",
+        storage_region="sa-east-1",
+        storage_allowed_origin="http://localhost:3000",
+        pdf_sandbox_socket="/run/appsell-pdf/pdf.sock",
+    )
+
+    storage = S3Storage(settings)
+
+    assert len(clients) == 4
+    assert storage.quarantine_bucket == "appsell-quarantine-test"
+    assert storage.ready_bucket == "appsell-ready-test"
+    assert storage.public_endpoint == "https://s3.sa-east-1.amazonaws.com"
+    for client in clients:
+        assert "endpoint_url" not in client
+        assert "aws_access_key_id" not in client
+        assert "aws_secret_access_key" not in client
+        assert client["config"].s3["addressing_style"] == "virtual"
+
+
+def test_native_aws_prefix_is_applied_to_presigned_upload_and_download() -> None:
+    presigned: list[tuple[str, dict[str, Any]]] = []
+    downloaded: list[dict[str, Any]] = []
+
+    def generate_presigned_url(operation: str, **kwargs: Any) -> str:
+        presigned.append((operation, kwargs))
+        return "https://appsell-private-test.s3.amazonaws.com/signed"
+
+    body = io.BytesIO(b"pdf")
+    storage = object.__new__(S3Storage)
+    storage._prefix = "appsell/production"
+    storage.put_ttl = 300
+    storage.get_ttl = 60
+    storage._public = SimpleNamespace(generate_presigned_url=generate_presigned_url)
+    storage._control = SimpleNamespace(
+        get_object=lambda **kwargs: downloaded.append(kwargs) or {"Body": body}
+    )
+
+    storage.presign_put(
+        bucket="appsell-private-test",
+        key="tenants/seller/quarantine/upload",
+        content_type="application/pdf",
+        sha256_hex="0" * 64,
+        byte_size=3,
+        upload_request_id="upload-id",
+    )
+    storage.presign_get(
+        bucket="appsell-private-test",
+        key="tenants/seller/assets/file",
+        version_id="version-1",
+        file_name="material.pdf",
+    )
+    with storage.open_download(
+        bucket="appsell-private-test",
+        key="tenants/seller/assets/file",
+        version_id="version-1",
+    ) as source:
+        assert source.read() == b"pdf"
+
+    assert presigned[0][1]["Params"]["Key"] == (
+        "appsell/production/tenants/seller/quarantine/upload"
+    )
+    assert presigned[1][1]["Params"]["Key"] == ("appsell/production/tenants/seller/assets/file")
+    assert downloaded == [
+        {
+            "Bucket": "appsell-private-test",
+            "Key": "appsell/production/tenants/seller/assets/file",
+            "VersionId": "version-1",
+        }
+    ]
+    assert body.closed
+
+
+def test_distinct_aws_buckets_keep_quarantine_and_ready_cors_separate() -> None:
+    storage = object.__new__(S3Storage)
+    storage.quarantine_bucket = "appsell-quarantine-test"
+    storage.ready_bucket = "appsell-ready-test"
+
+    assert storage._bucket_controls() == [  # noqa: SLF001
+        (
+            "appsell-quarantine-test",
+            {"HEAD", "PUT"},
+            {
+                "content-type",
+                "x-amz-checksum-sha256",
+                "x-amz-meta-appsell-upload-id",
+            },
+        ),
+        ("appsell-ready-test", {"GET", "HEAD"}, set()),
     ]
 
 

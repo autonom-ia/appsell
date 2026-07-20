@@ -33,10 +33,15 @@ class Settings(BaseSettings):
     storage_public_endpoint: str = ""
     storage_region: str = "us-east-1"
     storage_path_style: bool = True
+    # Deprecated compatibility input: fail with a clear startup error instead of
+    # silently mapping two SQL isolation domains onto one physical bucket.
+    storage_bucket: str = ""
+    storage_prefix: str = Field(default="", max_length=512)
     storage_quarantine_bucket: str = ""
     storage_ready_bucket: str = ""
     storage_control_access_key: str = ""
     storage_control_secret_key: str = ""
+    storage_control_session_token: str = ""
     storage_allowed_origin: str = ""
     storage_presign_put_ttl_seconds: int = Field(default=300, ge=30, le=300)
     storage_presign_get_ttl_seconds: int = Field(default=60, ge=15, le=60)
@@ -92,21 +97,39 @@ class Settings(BaseSettings):
         if self.environment in {"staging", "production"} and not all(internal_values):
             raise ValueError("internal request authentication is required outside local/CI")
         if self.storage_provider == "s3":
-            storage_values = (
-                self.storage_internal_endpoint,
-                self.storage_public_endpoint,
-                self.storage_region,
-                self.storage_quarantine_bucket,
-                self.storage_ready_bucket,
-                self.storage_control_access_key,
-                self.storage_control_secret_key,
-                self.storage_allowed_origin,
-            )
-            if not all(storage_values):
+            if self.storage_bucket:
+                raise ValueError(
+                    "single-bucket S3 storage is unsupported; configure distinct "
+                    "storage_quarantine_bucket and storage_ready_bucket"
+                )
+            if not all((self.storage_quarantine_bucket, self.storage_ready_bucket)):
                 raise ValueError("S3 storage must be configured completely")
             if self.storage_quarantine_bucket == self.storage_ready_bucket:
-                raise ValueError("S3 quarantine and ready buckets must be distinct")
+                raise ValueError(
+                    "S3 quarantine and ready buckets must be distinct physical buckets"
+                )
+            for bucket in (self.storage_quarantine_bucket, self.storage_ready_bucket):
+                if not _valid_s3_bucket_name(bucket):
+                    raise ValueError("S3 bucket name is invalid")
+            if not _valid_storage_prefix(self.storage_prefix):
+                raise ValueError("S3 storage prefix is invalid")
+            if not self.storage_region or not self.storage_allowed_origin:
+                raise ValueError("S3 storage must be configured completely")
+            if bool(self.storage_internal_endpoint) != bool(self.storage_public_endpoint):
+                raise ValueError("configure both S3 endpoints or neither for AWS S3")
+            credentials = (
+                self.storage_control_access_key,
+                self.storage_control_secret_key,
+            )
+            if any(credentials) and not all(credentials):
+                raise ValueError("S3 explicit credentials must be configured completely")
+            if self.storage_control_session_token and not all(credentials):
+                raise ValueError("S3 session token requires explicit access credentials")
+            if self.storage_internal_endpoint and not all(credentials):
+                raise ValueError("S3-compatible endpoints require explicit control credentials")
             for endpoint in (self.storage_internal_endpoint, self.storage_public_endpoint):
+                if not endpoint:
+                    continue
                 parsed = urlparse(endpoint)
                 if parsed.scheme not in {"http", "https"} or not parsed.hostname:
                     raise ValueError("S3 endpoints must be absolute HTTP URLs")
@@ -153,10 +176,13 @@ class Settings(BaseSettings):
             (
                 self.storage_internal_endpoint,
                 self.storage_public_endpoint,
+                self.storage_bucket,
+                self.storage_prefix,
                 self.storage_quarantine_bucket,
                 self.storage_ready_bucket,
                 self.storage_control_access_key,
                 self.storage_control_secret_key,
+                self.storage_control_session_token,
                 self.storage_allowed_origin,
             )
         ):
@@ -190,6 +216,8 @@ class Settings(BaseSettings):
             if self.pdf_sandbox_url and sandbox.scheme != "https":
                 raise ValueError("HTTPS PDF parser transport is required outside local/CI")
             for endpoint in (self.storage_internal_endpoint, self.storage_public_endpoint):
+                if not endpoint:
+                    continue
                 parsed = urlparse(endpoint)
                 if parsed.scheme != "https" or _is_local_host(parsed.hostname or ""):
                     raise ValueError("remote HTTPS S3 endpoints are required outside local/CI")
@@ -219,6 +247,39 @@ class Settings(BaseSettings):
     @property
     def storage_configured(self) -> bool:
         return self.storage_provider == "s3"
+
+    @property
+    def storage_uses_custom_endpoint(self) -> bool:
+        return bool(self.storage_internal_endpoint)
+
+
+def _valid_s3_bucket_name(bucket: str) -> bool:
+    if not 3 <= len(bucket) <= 63 or bucket != bucket.lower():
+        return False
+    if bucket[0] in ".-" or bucket[-1] in ".-" or ".." in bucket:
+        return False
+    if not all(
+        "a" <= character <= "z" or "0" <= character <= "9" or character in ".-"
+        for character in bucket
+    ):
+        return False
+    try:
+        ipaddress.ip_address(bucket)
+    except ValueError:
+        return True
+    return False
+
+
+def _valid_storage_prefix(prefix: str) -> bool:
+    if not prefix:
+        return True
+    return (
+        prefix == prefix.strip("/")
+        and "//" not in prefix
+        and "\0" not in prefix
+        and not any(ord(character) < 32 or ord(character) == 127 for character in prefix)
+        and all(part not in {"", ".", ".."} for part in prefix.split("/"))
+    )
 
 
 def _is_local_host(host: str) -> bool:

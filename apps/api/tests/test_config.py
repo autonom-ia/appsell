@@ -39,6 +39,17 @@ REMOTE_STORAGE: dict[str, Any] = {
     "pdf_sandbox_url": "https://pdf-sandbox.internal/normalize",
 }
 
+AWS_STORAGE: dict[str, Any] = {
+    "storage_provider": "s3",
+    "storage_quarantine_bucket": "appsell-quarantine-test",
+    "storage_ready_bucket": "appsell-ready-test",
+    "storage_prefix": "appsell/ci",
+    "storage_region": "sa-east-1",
+    "storage_allowed_origin": "http://localhost:3000",
+    "malware_scanner_provider": "deterministic",
+    "pdf_sandbox_socket": "/run/appsell-pdf/pdf.sock",
+}
+
 
 def test_production_rejects_local_database() -> None:
     with pytest.raises(ValidationError):
@@ -102,6 +113,60 @@ def test_local_accepts_pdf_sandbox_unix_socket() -> None:
     }
     settings = Settings(environment="local", **storage)
     assert settings.pdf_sandbox_socket == "/run/appsell-pdf/pdf.sock"
+
+
+def test_local_accepts_native_aws_s3_with_default_credential_chain() -> None:
+    settings = Settings(environment="local", **AWS_STORAGE)
+
+    assert settings.storage_configured
+    assert settings.storage_quarantine_bucket == "appsell-quarantine-test"
+    assert settings.storage_ready_bucket == "appsell-ready-test"
+    assert settings.storage_prefix == "appsell/ci"
+    assert settings.storage_uses_custom_endpoint is False
+    assert settings.storage_control_access_key == ""
+    assert settings.storage_control_secret_key == ""
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"storage_prefix": "/appsell/ci"},
+        {"storage_prefix": "appsell/../ci"},
+        {"storage_prefix": "appsell/ci\ninvalid"},
+        {"storage_quarantine_bucket": "Invalid_Bucket"},
+        {"storage_quarantine_bucket": "192.168.0.1"},
+        {"storage_ready_bucket": "appsell-quarantine-test"},
+        {"storage_control_access_key": "access-without-secret"},
+        {"storage_control_session_token": "token-without-access-keys"},
+        {"storage_internal_endpoint": "https://s3.internal.example.test"},
+    ],
+)
+def test_native_aws_s3_rejects_unsafe_or_ambiguous_configuration(
+    overrides: dict[str, str],
+) -> None:
+    with pytest.raises(ValidationError):
+        Settings(environment="local", **{**AWS_STORAGE, **overrides})
+
+
+def test_native_aws_s3_rejects_single_bucket_before_startup() -> None:
+    with pytest.raises(ValidationError, match="single-bucket S3 storage is unsupported"):
+        Settings(
+            environment="local",
+            **{
+                **AWS_STORAGE,
+                "storage_bucket": "appsell-private-test",
+                "storage_quarantine_bucket": "",
+                "storage_ready_bucket": "",
+            },
+        )
+
+
+def test_native_aws_s3_rejects_equal_physical_buckets_before_startup() -> None:
+    with pytest.raises(ValidationError, match="distinct physical buckets"):
+        Settings(
+            environment="local",
+            **{**AWS_STORAGE, "storage_ready_bucket": "appsell-quarantine-test"},
+        )
 
 
 def test_prerastered_legacy_viewer_does_not_require_pdf_parser() -> None:
