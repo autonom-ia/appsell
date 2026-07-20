@@ -545,6 +545,7 @@ async def test_patch_binds_versions_ids_hash_and_actor_to_atomic_function() -> N
     [
         ("draft", "active", 1, 2),
         ("active", "archived", 2, 3),
+        ("active", "draft", 2, 3),
     ],
 )
 async def test_offer_status_transition_binds_valid_transition_version_and_actor(
@@ -598,9 +599,9 @@ async def test_offer_status_transition_binds_valid_transition_version_and_actor(
     [
         ("draft", "draft"),
         ("draft", "archived"),
-        ("active", "draft"),
         ("active", "active"),
         ("archived", "active"),
+        ("archived", "draft"),
         ("archived", "archived"),
         ("draft", "paused"),
     ],

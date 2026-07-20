@@ -454,13 +454,34 @@ def test_offer_status_valid_transitions_are_versioned_and_idempotent() -> None:
     assert read_offer_status(seller_id, offer_id) == ("archived", 3)
 
 
+def test_offer_status_allows_active_to_draft_round_trip() -> None:
+    # A seller can revert an active offer to draft (to edit and re-publish),
+    # then re-activate it. Each transition bumps the version.
+    seller_id, product_id, course_id = create_graph()
+    offer_id = uuid4()
+    update_draft(USER_A, seller_id, product_id, course_id, offer_id)
+
+    assert transition_offer_status(
+        USER_A, seller_id, product_id, offer_id, "draft", "active", 1
+    ) == ("active", 2, True)
+    assert transition_offer_status(
+        USER_A, seller_id, product_id, offer_id, "active", "draft", 2
+    ) == ("draft", 3, True)
+    assert read_offer_status(seller_id, offer_id) == ("draft", 3)
+    # Re-activation from the reverted draft still works and requires the price.
+    assert transition_offer_status(
+        USER_A, seller_id, product_id, offer_id, "draft", "active", 3
+    ) == ("active", 4, True)
+    assert read_offer_status(seller_id, offer_id) == ("active", 4)
+
+
 @pytest.mark.parametrize(
     ("initial_status", "target_status"),
     [
         ("draft", "archived"),
         ("active", "active"),
-        ("active", "draft"),
         ("archived", "active"),
+        ("archived", "draft"),
         ("archived", "archived"),
     ],
 )

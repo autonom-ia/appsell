@@ -3,10 +3,15 @@
 Revision ID: 0019_offer_status
 Revises: 0018_offer_pricing
 
-Offers remain ``draft`` by default. The only forward transitions are
-``draft -> active -> archived``; archived is terminal. Activation requires a
-positive price. Downgrade restores the original draft-only constraint only when
-there is no status or transition history that would need to be discarded.
+Offers remain ``draft`` by default. Allowed transitions are ``draft -> active``
+(put on sale), ``active -> draft`` (revert to edit / re-publish), and
+``active -> archived`` (retire); archived is terminal. Activation requires a
+positive price. Product publication is unchanged and still operates on a
+``draft`` offer; the status layer sits on top of it. ``archived`` offers are
+hidden from the public storefront (retiring an offer removes it), while draft
+and active offers of a published product stay visible. Downgrade restores the
+original draft-only constraint and the unfiltered storefront projection only
+when there is no status or transition history that would need to be discarded.
 """
 
 from collections.abc import Sequence
@@ -76,6 +81,7 @@ def upgrade() -> None:
              or not (
                (p_expected_offer_status = 'draft' and p_offer_status = 'active')
                or (p_expected_offer_status = 'active' and p_offer_status = 'archived')
+               or (p_expected_offer_status = 'active' and p_offer_status = 'draft')
              )
              or p_expected_offer_version is null or p_expected_offer_version < 1
              or p_idempotency_key is null or p_request_id is null
@@ -188,6 +194,59 @@ def upgrade() -> None:
         grant execute on function app_private.transition_offer_status(
           uuid, uuid, uuid, uuid, text, text, bigint, uuid, text, uuid
         ) to appsell_runtime
+        """,
+        """
+        create or replace function app_private.read_public_storefront(p_seller_slug text)
+        returns jsonb language plpgsql stable security definer
+        set search_path=pg_catalog,app_private,public as $$
+        declare seller record; products jsonb;
+        begin
+          if p_seller_slug is null or p_seller_slug !~ '^[a-z0-9]+(?:-[a-z0-9]+)*$'
+             or octet_length(p_seller_slug) not between 3 and 63 then
+            return null;
+          end if;
+          select organization.id,organization.slug,organization.display_name
+          into seller
+          from seller_organization organization
+          where organization.slug=p_seller_slug and organization.status='active';
+          if not found then return null; end if;
+
+          select coalesce(jsonb_agg(jsonb_build_object(
+            'id',product.id,
+            'slug',publication.snapshot->'product'->>'slug',
+            'title',publication.snapshot->'product'->>'title',
+            'description',coalesce(publication.snapshot->'product'->>'description',''),
+            'publication_id',publication.id,
+            'publication_version',publication.version,
+            'price',case when offer.unit_amount_minor > 0
+              then jsonb_build_object(
+                'unit_amount_minor',offer.unit_amount_minor,
+                'currency',rtrim(offer.currency),
+                'billing_period',offer.billing_period
+              )
+              else null end
+          ) order by product.created_at,product.id),'[]'::jsonb)
+          into products
+          from catalog_product product
+          join publication
+            on publication.seller_organization_id=product.seller_organization_id
+           and publication.catalog_product_id=product.id
+           and publication.id=product.published_snapshot_id
+          join offer
+            on offer.seller_organization_id=product.seller_organization_id
+           and offer.catalog_product_id=product.id
+          where product.seller_organization_id=seller.id
+            and product.status='published'
+            and offer.status <> 'archived';
+
+          return jsonb_build_object(
+            'schema_version',1,
+            'seller',jsonb_build_object(
+              'id',seller.id,'slug',seller.slug,'name',seller.display_name
+            ),
+            'products',products
+          );
+        end $$
         """,
         r"""
         do $migration$
@@ -320,6 +379,58 @@ def downgrade() -> None:
         drop function app_private.transition_offer_status(
           uuid, uuid, uuid, uuid, text, text, bigint, uuid, text, uuid
         )
+        """,
+        """
+        create or replace function app_private.read_public_storefront(p_seller_slug text)
+        returns jsonb language plpgsql stable security definer
+        set search_path=pg_catalog,app_private,public as $$
+        declare seller record; products jsonb;
+        begin
+          if p_seller_slug is null or p_seller_slug !~ '^[a-z0-9]+(?:-[a-z0-9]+)*$'
+             or octet_length(p_seller_slug) not between 3 and 63 then
+            return null;
+          end if;
+          select organization.id,organization.slug,organization.display_name
+          into seller
+          from seller_organization organization
+          where organization.slug=p_seller_slug and organization.status='active';
+          if not found then return null; end if;
+
+          select coalesce(jsonb_agg(jsonb_build_object(
+            'id',product.id,
+            'slug',publication.snapshot->'product'->>'slug',
+            'title',publication.snapshot->'product'->>'title',
+            'description',coalesce(publication.snapshot->'product'->>'description',''),
+            'publication_id',publication.id,
+            'publication_version',publication.version,
+            'price',case when offer.unit_amount_minor > 0
+              then jsonb_build_object(
+                'unit_amount_minor',offer.unit_amount_minor,
+                'currency',rtrim(offer.currency),
+                'billing_period',offer.billing_period
+              )
+              else null end
+          ) order by product.created_at,product.id),'[]'::jsonb)
+          into products
+          from catalog_product product
+          join publication
+            on publication.seller_organization_id=product.seller_organization_id
+           and publication.catalog_product_id=product.id
+           and publication.id=product.published_snapshot_id
+          join offer
+            on offer.seller_organization_id=product.seller_organization_id
+           and offer.catalog_product_id=product.id
+          where product.seller_organization_id=seller.id
+            and product.status='published';
+
+          return jsonb_build_object(
+            'schema_version',1,
+            'seller',jsonb_build_object(
+              'id',seller.id,'slug',seller.slug,'name',seller.display_name
+            ),
+            'products',products
+          );
+        end $$
         """,
         """
         alter table app_private.catalog_mutation_request

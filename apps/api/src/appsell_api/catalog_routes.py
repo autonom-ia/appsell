@@ -144,6 +144,7 @@ class OfferStatusTransitionBody(BaseModel):
         if (self.expected_status, self.status) not in {
             ("draft", "active"),
             ("active", "archived"),
+            ("active", "draft"),
         }:
             raise ValueError("invalid offer status transition")
         return self
