@@ -14,6 +14,7 @@ class Settings(BaseSettings):
         env_prefix="APPSELL_API_",
         env_file=".env",
         extra="ignore",
+        hide_input_in_errors=True,
     )
 
     environment: Literal["local", "ci", "staging", "production"] = "local"

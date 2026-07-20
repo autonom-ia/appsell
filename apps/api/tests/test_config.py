@@ -4,6 +4,7 @@ from typing import Any
 
 import pytest
 from pydantic import ValidationError
+from pydantic_settings import SettingsConfigDict
 
 from appsell_api.config import Settings
 
@@ -301,3 +302,37 @@ def test_capacity_product_create_telemetry_is_default_off_and_local_ci_only() ->
             **INTERNAL_AUTH,
             **REMOTE_STORAGE,
         )
+
+
+def _partial_auth_error(settings_cls: type[Settings], secret: str) -> str:
+    with pytest.raises(ValidationError) as exc_info:
+        settings_cls(environment="local", service_credential_b64=secret)
+    rendered = str(exc_info.value)
+    # The partial-internal-auth branch must be the one that fired.
+    assert "internal request authentication must be configured completely" in rendered
+    return rendered
+
+
+def test_config_hides_secret_input_values_in_validation_errors() -> None:
+    # A model-level (mode="after") validation error records the whole input,
+    # which includes secret env values. hide_input_in_errors must redact it so
+    # startup ValidationErrors never echo credentials into logs/tracebacks.
+    # This test is load-bearing: a flag-off variant of the SAME model must leak
+    # the sentinel, and the shipped model must not — so removing the flag fails.
+    # The sentinel is kept short and is the last kwarg so it survives pydantic's
+    # input-repr truncation; otherwise `not in` would pass trivially (false green).
+    secret_sentinel = "LEAKCANARY42"  # noqa: S105
+
+    class LeakySettings(Settings):
+        model_config = SettingsConfigDict(
+            env_prefix="APPSELL_API_",
+            env_file=".env",
+            extra="ignore",
+            hide_input_in_errors=False,
+        )
+
+    leaked = _partial_auth_error(LeakySettings, secret_sentinel)
+    assert secret_sentinel in leaked  # guard proves the sentinel is observable when unredacted
+
+    shipped = _partial_auth_error(Settings, secret_sentinel)
+    assert secret_sentinel not in shipped  # shipped config must redact it

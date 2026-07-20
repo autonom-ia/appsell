@@ -335,10 +335,12 @@ class S3Storage:
                 if entry.get("Key") == object_key and entry.get("VersionId")
             ]
             if objects:
-                self._control.delete_objects(
+                response = self._control.delete_objects(
                     Bucket=bucket,
                     Delete={"Objects": objects, "Quiet": True},
                 )
+                if response.get("Errors"):
+                    raise StorageError("storage version cleanup was incomplete")
                 deleted += len(objects)
         return deleted
 

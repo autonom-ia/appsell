@@ -389,3 +389,37 @@ def test_readiness_rejects_anonymous_put_and_cleans_exact_probe_version() -> Non
     assert deleted[0]["Bucket"] == "quarantine"
     assert deleted[0]["VersionId"] == "public-write-v1"
     assert deleted[0]["Key"].startswith("appsell-anonymous-probe/")
+
+
+def test_delete_all_versions_raises_when_batch_reports_errors() -> None:
+    page = {
+        "Versions": [{"Key": "asset", "VersionId": "v1"}],
+        "DeleteMarkers": [{"Key": "asset", "VersionId": "m1"}],
+    }
+
+    def delete_objects(**_kwargs: Any) -> dict[str, Any]:
+        return {"Errors": [{"Key": "asset", "VersionId": "m1", "Code": "AccessDenied"}]}
+
+    storage = object.__new__(S3Storage)
+    storage._control = SimpleNamespace(
+        get_paginator=lambda _name: SimpleNamespace(paginate=lambda **_kw: iter([page])),
+        delete_objects=delete_objects,
+    )
+
+    with pytest.raises(StorageError, match="version cleanup was incomplete"):
+        storage.delete_all_versions(bucket="ready", key="asset")
+
+
+def test_delete_all_versions_counts_only_fully_deleted_batches() -> None:
+    pages = [
+        {"Versions": [{"Key": "asset", "VersionId": "v1"}]},
+        {"DeleteMarkers": [{"Key": "asset", "VersionId": "m1"}]},
+    ]
+
+    storage = object.__new__(S3Storage)
+    storage._control = SimpleNamespace(
+        get_paginator=lambda _name: SimpleNamespace(paginate=lambda **_kw: iter(pages)),
+        delete_objects=lambda **_kwargs: {},
+    )
+
+    assert storage.delete_all_versions(bucket="ready", key="asset") == 2
