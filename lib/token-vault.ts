@@ -24,6 +24,7 @@ const SESSION_HASH_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const NAMESPACE_PATTERN = /^appsell:[a-z0-9][a-z0-9_-]{1,31}:[a-z0-9][a-z0-9_-]{5,63}$/;
 const LOCAL_PROVIDER_ID = "local-aes-gcm-v1";
 export const OPENBAO_TRANSIT_PROVIDER_ID = "openbao-transit-v1";
+export const AWS_KMS_PROVIDER_ID = "aws-kms-v1";
 const TOKEN_VAULT_VERSION = 2;
 const OPENBAO_CIPHERTEXT_PATTERN = /^vault:v([1-9]\d*):([A-Za-z0-9+/]+={0,2})$/;
 const MIN_OPENBAO_CIPHERTEXT_BYTES = 16;
@@ -71,7 +72,14 @@ export interface OpenBaoTransitKeyEnvelope {
   keyVersion: number;
 }
 
-export type KeyEnvelope = LocalKeyEnvelope | OpenBaoTransitKeyEnvelope;
+export interface AwsKmsKeyEnvelope {
+  provider: typeof AWS_KMS_PROVIDER_ID;
+  kid: string;
+  alg: "AWS_KMS";
+  ciphertext: string;
+}
+
+export type KeyEnvelope = LocalKeyEnvelope | OpenBaoTransitKeyEnvelope | AwsKmsKeyEnvelope;
 
 interface TokenVaultEnvelope {
   v: 2;
@@ -328,6 +336,14 @@ function parseKeyEnvelope(value: unknown): KeyEnvelope {
   ) {
     return parseOpenBaoTransitKeyEnvelope(value);
   }
+  if (
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    (value as Record<string, unknown>).alg === "AWS_KMS"
+  ) {
+    return parseAwsKmsKeyEnvelope(value);
+  }
   const record = exactObject(
     value,
     ["provider", "kid", "alg", "iv", "ct", "tag"],
@@ -383,6 +399,37 @@ function parseOpenBaoTransitKeyEnvelope(value: unknown): OpenBaoTransitKeyEnvelo
     ciphertext: record.ciphertext,
     keyVersion: record.keyVersion
   };
+}
+
+function parseAwsKmsKeyEnvelope(value: unknown): AwsKmsKeyEnvelope {
+  const record = exactObject(
+    value,
+    ["provider", "kid", "alg", "ciphertext"],
+    "Token vault key envelope is invalid."
+  );
+  if (
+    record.provider !== AWS_KMS_PROVIDER_ID ||
+    typeof record.kid !== "string" ||
+    !KEY_ID_PATTERN.test(record.kid) ||
+    record.alg !== "AWS_KMS" ||
+    typeof record.ciphertext !== "string" ||
+    Buffer.byteLength(record.ciphertext, "utf8") > MAX_CIPHERTEXT_BYTES ||
+    !isCanonicalBase64(record.ciphertext)
+  ) {
+    throw new TokenVaultMalformedError("Token vault key envelope is invalid.");
+  }
+  return {
+    provider: AWS_KMS_PROVIDER_ID,
+    kid: record.kid,
+    alg: "AWS_KMS",
+    ciphertext: record.ciphertext
+  };
+}
+
+function isCanonicalBase64(value: string) {
+  if (value.length === 0) return false;
+  const decoded = Buffer.from(value, "base64");
+  return decoded.length > 0 && decoded.toString("base64") === value;
 }
 
 export function parseOpenBaoTransitCiphertextVersion(ciphertext: string) {
