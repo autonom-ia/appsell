@@ -133,3 +133,26 @@ def test_storefront_hides_drafts_and_unknown_or_invalid_sellers() -> None:
     assert [product["id"] for product in visible["products"]] == [manifest["product"]["id"]]
     assert unknown == (None,)
     assert invalid == (None,)
+
+
+def test_storefront_hides_archived_offers() -> None:
+    # Retiring an offer (status='archived') must remove its product from the
+    # public storefront, even while the product itself stays published.
+    assert ADMIN_URL
+    manifest, _ = load_manifest()
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            """
+            update offer set status = 'archived'
+            where seller_organization_id = %s and catalog_product_id = %s
+            """,
+            (manifest["seller"]["id"], manifest["product"]["id"]),
+        )
+        projection = connection.execute(
+            "select app_private.read_public_storefront(%s)",
+            (manifest["seller"]["slug"],),
+        ).fetchone()
+        connection.rollback()
+    assert projection is not None
+    product_ids = [product["id"] for product in projection[0]["products"]]
+    assert manifest["product"]["id"] not in product_ids
