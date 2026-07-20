@@ -161,6 +161,17 @@ def publication_body(course_id: UUID, offer_id: UUID, **overrides: Any) -> bytes
     return json.dumps(value, separators=(",", ":")).encode()
 
 
+def offer_status_body(**overrides: Any) -> bytes:
+    value = {
+        "idempotency_key": str(uuid4()),
+        "expected_status": "draft",
+        "status": "active",
+        "expected_offer_version": 1,
+        **overrides,
+    }
+    return json.dumps(value, separators=(",", ":")).encode()
+
+
 def curriculum_body(**overrides: Any) -> bytes:
     value = {
         "idempotency_key": str(uuid4()),
@@ -412,7 +423,9 @@ def test_domain_errors_are_stable_and_do_not_leak_driver_details() -> None:
         ("23505", 409, "resource_conflict"),
         ("40001", 409, "draft_version_conflict"),
         ("P4091", 409, "no_unpublished_changes"),
+        ("P4092", 409, "offer_status_conflict"),
         ("P4221", 422, "snapshot_too_large"),
+        ("P4222", 422, "invalid_offer_status_transition"),
         ("22023", 422, "invalid_domain_request"),
         ("55000", 422, "publication_not_ready"),
         ("28000", 403, "forbidden"),
@@ -524,6 +537,89 @@ async def test_patch_binds_versions_ids_hash_and_actor_to_atomic_function() -> N
     assert parameters["offer_currency"] == "BRL"
     assert parameters["offer_billing_period"] == "one_time"
     assert parameters["body_sha256"] == hashlib.sha256(body).hexdigest()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("expected_status", "target_status", "expected_version", "result_version"),
+    [
+        ("draft", "active", 1, 2),
+        ("active", "archived", 2, 3),
+    ],
+)
+async def test_offer_status_transition_binds_valid_transition_version_and_actor(
+    expected_status: str,
+    target_status: str,
+    expected_version: int,
+    result_version: int,
+) -> None:
+    product_id, offer_id = uuid4(), uuid4()
+    auth = FakeAuth(
+        seller_id=SELLER_ID,
+        result=FakeResult(
+            one={
+                "offer_status": target_status,
+                "offer_version": result_version,
+                "changed": True,
+            }
+        ),
+    )
+    body = offer_status_body(
+        expected_status=expected_status,
+        status=target_status,
+        expected_offer_version=expected_version,
+    )
+    async with client_for(auth) as client:
+        response = await client.patch(
+            f"/v1/me/sellers/{SELLER_ID}/products/{product_id}/offers/{offer_id}/status",
+            content=body,
+        )
+    assert response.status_code == 200
+    assert response.json() == {
+        "offer_id": str(offer_id),
+        "status": target_status,
+        "offer_version": result_version,
+        "changed": True,
+    }
+    assert auth.capabilities == ["catalog.offer.status.update"]
+    statement, parameters = auth.session.calls[0]
+    assert "app_private.transition_offer_status" in statement
+    assert parameters["product_id"] == product_id
+    assert parameters["offer_id"] == offer_id
+    assert parameters["expected_offer_status"] == expected_status
+    assert parameters["offer_status"] == target_status
+    assert parameters["expected_offer_version"] == expected_version
+    assert parameters["body_sha256"] == hashlib.sha256(body).hexdigest()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("expected_status", "target_status"),
+    [
+        ("draft", "draft"),
+        ("draft", "archived"),
+        ("active", "draft"),
+        ("active", "active"),
+        ("archived", "active"),
+        ("archived", "archived"),
+        ("draft", "paused"),
+    ],
+)
+async def test_offer_status_transition_rejects_invalid_transition(
+    expected_status: str, target_status: str
+) -> None:
+    auth = FakeAuth(seller_id=SELLER_ID, result=FakeResult())
+    async with client_for(auth) as client:
+        response = await client.patch(
+            f"/v1/me/sellers/{SELLER_ID}/products/{uuid4()}/offers/{uuid4()}/status",
+            content=offer_status_body(
+                expected_status=expected_status,
+                status=target_status,
+            ),
+        )
+    assert response.status_code == 422
+    assert response.json() == {"detail": "invalid_request_body"}
+    assert auth.session.calls == []
 
 
 @pytest.mark.asyncio
