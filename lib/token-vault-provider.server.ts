@@ -1,5 +1,6 @@
 import "server-only";
 
+import { AwsKmsKeyEnvelopeProvider } from "./aws-kms-key-envelope-provider.server";
 import { OpenBaoTransitKeyEnvelopeProvider } from "./openbao-transit-key-envelope-provider.server";
 import {
   EnvelopeTokenVault,
@@ -20,6 +21,11 @@ export function createTokenVaultFromEnvironment(
     const transit = OpenBaoTransitKeyEnvelopeProvider.fromEnvironment(environment);
     transit.assertKeySeparation(forbiddenKeys);
     return new EnvelopeTokenVault(transit);
+  }
+  if (provider === "aws-kms") {
+    const kms = AwsKmsKeyEnvelopeProvider.fromEnvironment(environment);
+    kms.assertKeySeparation(forbiddenKeys);
+    return new EnvelopeTokenVault(kms);
   }
   throw new TokenVaultConfigurationError("APPSELL_VAULT_PROVIDER is invalid.");
 }
