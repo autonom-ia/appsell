@@ -173,6 +173,9 @@ export class AwsKmsKeyEnvelopeProvider implements KeyEnvelopeProvider {
   }
 }
 
+// The endpoint override is loopback-only (LocalStack/test emulators). Production must resolve
+// the real regional KMS endpoint from `region` via the SDK: a non-loopback override would let a
+// tampered env ship the plaintext DEK to an attacker-controlled host, so it fails closed here.
 function parseEndpoint(raw: string | undefined) {
   if (raw === undefined || raw === "") return undefined;
   let endpoint: URL;
@@ -184,7 +187,8 @@ function parseEndpoint(raw: string | undefined) {
   const isLoopback =
     endpoint.hostname === "127.0.0.1" || endpoint.hostname === "localhost" || endpoint.hostname === "[::1]";
   if (
-    (endpoint.protocol !== "https:" && !(endpoint.protocol === "http:" && isLoopback)) ||
+    !isLoopback ||
+    (endpoint.protocol !== "http:" && endpoint.protocol !== "https:") ||
     endpoint.username ||
     endpoint.password ||
     endpoint.search ||

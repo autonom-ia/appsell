@@ -10,7 +10,9 @@ import { createTokenVaultFromEnvironment } from "../lib/token-vault-provider.ser
 import {
   AWS_KMS_PROVIDER_ID,
   TokenVaultAuthenticationError,
-  TokenVaultConfigurationError
+  TokenVaultConfigurationError,
+  TokenVaultMalformedError,
+  type KeyEnvelope
 } from "../lib/token-vault";
 
 const kms = mockClient(KMSClient);
@@ -111,5 +113,40 @@ describe("AwsKmsKeyEnvelopeProvider", () => {
     });
     expect(vault).toBeTruthy();
     expect(() => vault.assertKeySeparation([])).not.toThrow();
+  });
+
+  it("fails closed when KMS returns an empty ciphertext blob on wrap", async () => {
+    kms.on(EncryptCommand).resolves({ CiphertextBlob: new Uint8Array(0) });
+    const provider = new AwsKmsKeyEnvelopeProvider(config);
+    await expect(provider.wrapKey(dataKey, context)).rejects.toBeInstanceOf(TokenVaultAuthenticationError);
+  });
+
+  it("fails closed when KMS returns a non-32-byte plaintext on unwrap", async () => {
+    const provider = new AwsKmsKeyEnvelopeProvider(config);
+    const envelope = await provider.wrapKey(dataKey, context);
+    kms.on(DecryptCommand).resolves({ Plaintext: new Uint8Array(16) });
+    await expect(provider.unwrapKey(envelope, context)).rejects.toBeInstanceOf(TokenVaultAuthenticationError);
+  });
+
+  it("rejects a cross-provider (openbao-shaped) envelope", async () => {
+    const provider = new AwsKmsKeyEnvelopeProvider(config);
+    const foreign = {
+      provider: "openbao-transit-v1",
+      kid: "appsell-token-vault-test",
+      alg: "OPENBAO_TRANSIT",
+      ciphertext: "vault:v1:abc",
+      keyVersion: 1
+    } as unknown as KeyEnvelope;
+    await expect(provider.unwrapKey(foreign, context)).rejects.toBeInstanceOf(TokenVaultMalformedError);
+  });
+
+  it("rejects a non-loopback or credential-bearing KMS endpoint override", () => {
+    expect(() => new AwsKmsKeyEnvelopeProvider({ ...config, endpoint: "https://evil.example.com" })).toThrow(
+      TokenVaultConfigurationError
+    );
+    expect(
+      () => new AwsKmsKeyEnvelopeProvider({ ...config, endpoint: "http://user:pass@127.0.0.1:4566" })
+    ).toThrow(TokenVaultConfigurationError);
+    expect(() => new AwsKmsKeyEnvelopeProvider({ ...config, endpoint: "http://127.0.0.1:4566" })).not.toThrow();
   });
 });
