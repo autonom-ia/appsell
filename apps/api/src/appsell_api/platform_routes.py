@@ -14,7 +14,7 @@ from sqlalchemy.exc import DBAPIError
 
 from .routes import _authenticate, _domain_error, _model_from_body, _require_no_seller
 
-router = APIRouter(prefix="/v1/platform/demo-inspections")
+router = APIRouter(prefix="/v1/platform")
 _OPAQUE_TOKEN = re.compile(r"^[A-Za-z0-9_-]{43}$")
 
 
@@ -41,7 +41,18 @@ class InspectionRevokeBody(BaseModel):
         return _validated_reason(value)
 
 
-@router.post("", status_code=status.HTTP_201_CREATED)
+class TenantStatusBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    reason: str
+
+    @field_validator("reason")
+    @classmethod
+    def validate_reason(cls, value: str) -> str:
+        return _validated_reason(value)
+
+
+@router.post("/demo-inspections", status_code=status.HTTP_201_CREATED)
 async def start_demo_inspection(request: Request) -> dict[str, Any]:
     _require_local_ci()
     auth, internal = await _authenticate(request, "platform.demo.inspect.start")
@@ -89,7 +100,7 @@ async def start_demo_inspection(request: Request) -> dict[str, Any]:
     }
 
 
-@router.get("/{inspection_id}")
+@router.get("/demo-inspections/{inspection_id}")
 async def read_demo_inspection(inspection_id: UUID, request: Request) -> dict[str, Any]:
     _require_local_ci()
     auth, internal = await _authenticate(request, "platform.demo.inspect.read")
@@ -119,7 +130,7 @@ async def read_demo_inspection(inspection_id: UUID, request: Request) -> dict[st
     return _json_object(projection)
 
 
-@router.post("/{inspection_id}/revoke")
+@router.post("/demo-inspections/{inspection_id}/revoke")
 async def revoke_demo_inspection(inspection_id: UUID, request: Request) -> dict[str, Any]:
     _require_local_ci()
     auth, internal = await _authenticate(request, "platform.demo.inspect.revoke")
@@ -151,13 +162,62 @@ async def revoke_demo_inspection(inspection_id: UUID, request: Request) -> dict[
     return _json_object(result)
 
 
+@router.post("/tenants/{tenant_id}/suspend")
+async def suspend_tenant(tenant_id: UUID, request: Request) -> dict[str, Any]:
+    return await _set_tenant_status(tenant_id, request, "suspended")
+
+
+@router.post("/tenants/{tenant_id}/reactivate")
+async def reactivate_tenant(tenant_id: UUID, request: Request) -> dict[str, Any]:
+    return await _set_tenant_status(tenant_id, request, "active")
+
+
+async def _set_tenant_status(
+    tenant_id: UUID, request: Request, target_status: str
+) -> dict[str, Any]:
+    capability = (
+        "platform.tenant.suspend" if target_status == "suspended" else "platform.tenant.reactivate"
+    )
+    auth, internal = await _authenticate(request, capability)
+    await _require_no_seller(internal)
+    body = await _model_from_body(TenantStatusBody, internal)
+    envelope = internal.envelope
+    try:
+        async with auth.domain_session(envelope) as session:
+            result = await session.scalar(
+                text(
+                    "select app_private.set_tenant_status("
+                    ":identity_user_id,:identity_sub,:tenant_id,:target_status,"
+                    ":reason,:request_id)"
+                ),
+                {
+                    "identity_user_id": envelope.identity.user_id,
+                    "identity_sub": envelope.identity.sub,
+                    "tenant_id": tenant_id,
+                    "target_status": target_status,
+                    "reason": body.reason,
+                    "request_id": envelope.request_id,
+                },
+            )
+    except DBAPIError as error:
+        raise _domain_error(error) from error
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tenant_not_found")
+    if not isinstance(result, dict):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="invalid_tenant_status_result",
+        )
+    return cast(dict[str, Any], result)
+
+
 def _validated_reason(value: str) -> str:
     if (
         value != value.strip()
         or not 8 <= len(value.encode("utf-8")) <= 500
         or any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
     ):
-        raise ValueError("invalid inspection reason")
+        raise ValueError("invalid platform reason")
     return value
 
 
