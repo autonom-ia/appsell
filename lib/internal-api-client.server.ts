@@ -3,6 +3,7 @@ import "server-only";
 import { createHash, timingSafeEqual } from "node:crypto";
 import demoCodexAssets from "./demo-codex-assets.json";
 import { capacityLocalCiRuntimeEnabled } from "./capacity-local-ci-runtime";
+import { trustedInternalApiHost } from "./domain-api-trusted-hosts";
 import { publicDemoRuntimeEnabled } from "./public-demo-runtime";
 import { demoProfileForSubject } from "./demo-config";
 import {
@@ -1068,12 +1069,26 @@ function configuredApiOrigin() {
   if (
     process.env.NODE_ENV === "production" &&
     parsed.protocol !== "https:" &&
+    !trustedInternalHttpApiOrigin(parsed) &&
     !capacityLocalCiRuntimeEnabled() &&
     !publicDemoRuntimeEnabled()
   ) {
     throw new DomainApiError(503, "insecure_domain_api_url");
   }
   return parsed.origin;
+}
+
+// Real production with the API as an in-cluster Docker service (private network,
+// no TLS) is legitimate; the operator must name that host explicitly via
+// APPSELL_DOMAIN_API_TRUSTED_INTERNAL_HOSTS. Absent the flag, behavior is
+// unchanged (fail closed).
+function trustedInternalHttpApiOrigin(parsed: URL) {
+  if (parsed.protocol !== "http:") return false;
+  try {
+    return trustedInternalApiHost(parsed.hostname);
+  } catch {
+    throw new DomainApiError(503, "invalid_domain_api_trusted_internal_hosts");
+  }
 }
 
 function identityEmail(session: ServerSession) {
