@@ -151,6 +151,20 @@ export APPSELL_BOOTSTRAP_ENABLED="true"
 uv run --project apps/api python -m appsell_api.configure_context_key
 uv run --project apps/api python -m appsell_api.configure_context_key
 
+# 0019 is intentionally reversible: exercise its downgrade in the isolated DB,
+# assert that the control function disappears, then restore head before tests.
+uv run --project apps/api alembic -c apps/api/alembic.ini downgrade 0018_offer_pricing
+rollback_state="$(docker compose -p "$project" exec -T postgres psql -U postgres -d appsell -Atc "
+  select (select version_num from alembic_version)||'|'||
+    (to_regprocedure('app_private.set_tenant_status(uuid,text,uuid,text,text,uuid)') is null)::text||'|'||
+    app_private.schema_ready()::text
+")"
+if [[ "$rollback_state" != "0018_offer_pricing|true|true" ]]; then
+  echo "0019 tenant suspension downgrade did not restore the prior schema" >&2
+  exit 1
+fi
+uv run --project apps/api alembic -c apps/api/alembic.ini upgrade head
+
 export APPSELL_TEST_POSTGRES_ADMIN_URL="postgresql://postgres:${superuser_secret}@127.0.0.1:${port}/appsell"
 export APPSELL_TEST_POSTGRES_RUNTIME_URL="postgresql://appsell_runtime:${runtime_secret}@127.0.0.1:${port}/appsell"
 export APPSELL_TEST_CONTEXT_KEY_HEX="$context_key"
@@ -180,7 +194,9 @@ uv run --project apps/api pytest \
   apps/api/tests/test_api_learning.py \
   apps/api/tests/test_api_assets.py \
   apps/api/tests/test_api_superadmin_inspection.py \
-  apps/api/tests/test_api_superadmin_bootstrap.py
+  apps/api/tests/test_api_superadmin_bootstrap.py \
+  apps/api/tests/test_api_tenant_status.py \
+  apps/api/tests/test_postgres_tenant_suspension.py
 uv run --project apps/api pytest apps/api/tests/test_api_demo_checkout.py
 uv run --project apps/api pytest \
   apps/api/tests/test_internal_requests.py \
