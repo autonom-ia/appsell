@@ -12,6 +12,7 @@ import {
   UPDATE_PRODUCT_DRAFT_CSRF_ACTION,
   verifyMutation
 } from "@/lib/mutation-protection.server";
+import { isOfferBillingPeriod, MAX_UNIT_AMOUNT_MINOR } from "@/lib/offer-price";
 import { configuredPublicOrigin, hasConfiguredOrigin } from "@/lib/public-origin";
 
 import {
@@ -32,10 +33,7 @@ import {
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const CONTROL = /[\p{Cc}\p{Cs}]/u;
-// Espelha o teto da API (_MAX_UNIT_AMOUNT_MINOR) e o CHECK da coluna offer.unit_amount_minor.
-const MAX_UNIT_AMOUNT_MINOR = 99_999_999_999;
 const UNIT_AMOUNT = /^(?:0|[1-9][0-9]{0,10})$/;
-const BILLING_PERIODS = new Set(["one_time", "monthly", "yearly"]);
 const UPDATE_FIELDS = [
   "_csrf",
   "idempotency_key",
@@ -137,7 +135,7 @@ export async function PATCH(request: NextRequest, context: ProductRouteContext) 
       return invalidInput("offer_unit_amount_minor");
     }
     if (fields.offer_currency !== "BRL") return invalidInput("offer_currency");
-    if (!BILLING_PERIODS.has(fields.offer_billing_period ?? "")) {
+    if (!isOfferBillingPeriod(fields.offer_billing_period)) {
       return invalidInput("offer_billing_period");
     }
   }

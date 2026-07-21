@@ -134,6 +134,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   const [assetNavigationWarning, setAssetNavigationWarning] = useState(false);
   const updateIdempotencyKey = useRef<string | null>(null);
   const publishIdempotencyKey = useRef<string | null>(null);
+  const offerStatusIdempotencyKey = useRef<{ transition: string; key: string } | null>(null);
   const offerId = useRef<string | null>(null);
   const formElement = useRef<HTMLFormElement>(null);
   const publishCancelButton = useRef<HTMLButtonElement>(null);
@@ -393,9 +394,16 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
     const expectedStatus = currentOffer.status;
     if (expectedStatus === nextStatus) return;
     setOfferStatusState("transitioning");
+    // Reusa a chave enquanto for a MESMA transição (status+versão): retry após
+    // resposta perdida vira replay idempotente em vez de novo comando.
+    const transition = `${expectedStatus}->${nextStatus}@${currentOffer.draft_version}`;
+    const key = offerStatusIdempotencyKey.current?.transition === transition
+      ? offerStatusIdempotencyKey.current.key
+      : crypto.randomUUID();
+    offerStatusIdempotencyKey.current = { transition, key };
     const data = new FormData();
     data.set("_csrf", csrf.offerStatus);
-    data.set("idempotency_key", crypto.randomUUID());
+    data.set("idempotency_key", key);
     data.set("expected_status", expectedStatus);
     data.set("status", nextStatus);
     data.set("expected_offer_version", String(currentOffer.draft_version));
@@ -414,6 +422,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
         else setOfferStatusState("error");
         return;
       }
+      offerStatusIdempotencyKey.current = null;
       const refreshed = await loadDetail();
       setOfferStatusState(refreshed ? "done" : "unavailable");
     } catch {
