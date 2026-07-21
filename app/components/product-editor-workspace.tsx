@@ -7,7 +7,7 @@ import { AccessibleDialog } from "./accessible-dialog";
 import { CurriculumWorkspace } from "./curriculum-workspace";
 import { allowUnsavedNavigation, useUnsavedChanges } from "./use-unsaved-changes";
 import {
-  formatOfferPriceBRL,
+  formatOfferPrice,
   isOfferBillingPeriod,
   OFFER_BILLING_PERIODS,
   parsePriceInputToMinor,
@@ -268,7 +268,9 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
     data.set("offer_title", submitted.offer_title);
     data.set("offer_summary", submitted.offer_summary);
     data.set("offer_unit_amount_minor", String(submittedUnitAmountMinor));
-    data.set("offer_currency", "BRL");
+    // Preserva a moeda armazenada da oferta (não há troca de moeda na UI);
+    // hardcodar BRL converteria silenciosamente uma oferta em outra moeda.
+    data.set("offer_currency", /^[A-Z]{3}$/.test(detail.offer.currency ?? "") ? detail.offer.currency! : "BRL");
     data.set("offer_billing_period", isOfferBillingPeriod(submitted.offer_billing_period) ? submitted.offer_billing_period : "one_time");
     setSaveState("saving");
     setInvalidField("");
@@ -555,8 +557,8 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
             <section className="offer-status-panel" aria-labelledby="offer-status-title">
               <p className="eyebrow">Disponibilidade na vitrine</p>
               <h2 id="offer-status-title">Status da oferta: {offerStatusLabel(detail.offer.status)}</h2>
-              {detail.offer.status === "draft" ? <p>Ativar torna a oferta vendável com o preço salvo{detail.offer.unit_amount_minor ? ` (${formatOfferPriceBRL(detail.offer.unit_amount_minor)})` : ""}. É preciso salvar um preço maior que zero antes.</p> : null}
-              {detail.offer.status === "active" ? <p>Oferta ativa por {detail.offer.unit_amount_minor ? formatOfferPriceBRL(detail.offer.unit_amount_minor) : "preço não informado"}. Despublicar volta a rascunho para editar; arquivar remove da vitrine em definitivo.</p> : null}
+              {detail.offer.status === "draft" ? <p>Ativar torna a oferta vendável com o preço salvo{detail.offer.unit_amount_minor ? ` (${formatOfferPrice(detail.offer.unit_amount_minor, detail.offer.currency)})` : ""}. É preciso salvar um preço maior que zero antes.</p> : null}
+              {detail.offer.status === "active" ? <p>Oferta ativa por {detail.offer.unit_amount_minor ? formatOfferPrice(detail.offer.unit_amount_minor, detail.offer.currency) : "preço não informado"}. Despublicar volta a rascunho para editar; arquivar remove da vitrine em definitivo.</p> : null}
               {detail.offer.status === "archived" ? <p>Oferta arquivada. Crie um novo produto para vender novamente.</p> : null}
               {dirty ? <p className="form-note" role="status">Salve as alterações antes de mudar o status da oferta.</p> : null}
               <div className="offer-status-actions">

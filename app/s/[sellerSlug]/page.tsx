@@ -6,7 +6,7 @@ import {
   DomainApiError,
   readPublicStorefront
 } from "@/lib/internal-api-client.server";
-import { billingPeriodLabel, formatOfferPriceBRL } from "@/lib/offer-price";
+import { billingPeriodLabel, formatOfferPrice } from "@/lib/offer-price";
 import { parsePublicStorefront } from "@/lib/public-storefront";
 
 export const dynamic = "force-dynamic";
@@ -68,7 +68,7 @@ export default async function SellerStorefront({
               <h3 id={`storefront-product-${product.id}`}>{product.title}</h3>
               {product.description.trim() ? <p>{product.description}</p> : null}
               {product.price ? <p className="storefront-product-price">
-                <strong>{formatOfferPriceBRL(product.price.unit_amount_minor)}</strong>
+                <strong>{formatOfferPrice(product.price.unit_amount_minor, product.price.currency)}</strong>
                 {product.price.billing_period === "one_time" ? null : <span> · {billingPeriodLabel(product.price.billing_period)}</span>}
               </p> : null}
             </div>

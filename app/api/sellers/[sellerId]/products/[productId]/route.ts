@@ -134,7 +134,7 @@ export async function PATCH(request: NextRequest, context: ProductRouteContext) 
     if (!validUnitAmount(fields.offer_unit_amount_minor)) {
       return invalidInput("offer_unit_amount_minor");
     }
-    if (fields.offer_currency !== "BRL") return invalidInput("offer_currency");
+    if (!/^[A-Z]{3}$/.test(fields.offer_currency ?? "")) return invalidInput("offer_currency");
     if (!isOfferBillingPeriod(fields.offer_billing_period)) {
       return invalidInput("offer_billing_period");
     }

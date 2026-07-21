@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   billingPeriodLabel,
+  formatOfferPrice,
   formatOfferPriceBRL,
   isOfferBillingPeriod,
   MAX_UNIT_AMOUNT_MINOR,
@@ -66,6 +67,18 @@ describe("formatOfferPriceBRL", () => {
   it("formats centavos as pt-BR currency", () => {
     expect(formatOfferPriceBRL(100).replace(/ /g, " ")).toBe("R$ 1,00");
     expect(formatOfferPriceBRL(4_990).replace(/ /g, " ")).toBe("R$ 49,90");
+  });
+});
+
+describe("formatOfferPrice (currency-aware)", () => {
+  it("uses the given currency symbol", () => {
+    expect(formatOfferPrice(4_990, "USD").replace(/\u00a0/g, " ")).toMatch(/US\$|\$/);
+    expect(formatOfferPrice(4_990, "BRL").replace(/\u00a0/g, " ")).toBe("R$ 49,90");
+  });
+
+  it("falls back to BRL for an invalid currency instead of a wrong symbol", () => {
+    expect(formatOfferPrice(100, "xxx").replace(/\u00a0/g, " ")).toBe("R$ 1,00");
+    expect(formatOfferPrice(100, null).replace(/\u00a0/g, " ")).toBe("R$ 1,00");
   });
 });
 

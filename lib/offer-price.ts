@@ -36,9 +36,16 @@ export function priceInputFromMinor(unitAmountMinor: number | null | undefined):
   return cents === 0 ? String(reais) : `${reais},${String(cents).padStart(2, "0")}`;
 }
 
-export function formatOfferPriceBRL(unitAmountMinor: number): string {
-  return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" })
+// Formata na moeda armazenada da oferta (pt-BR locale). Moeda inválida cai em
+// BRL — nunca exibe um símbolo errado para um valor em outra moeda.
+export function formatOfferPrice(unitAmountMinor: number, currency: string | null | undefined): string {
+  const code = typeof currency === "string" && /^[A-Z]{3}$/.test(currency) ? currency : "BRL";
+  return new Intl.NumberFormat("pt-BR", { style: "currency", currency: code })
     .format(unitAmountMinor / 100);
+}
+
+export function formatOfferPriceBRL(unitAmountMinor: number): string {
+  return formatOfferPrice(unitAmountMinor, "BRL");
 }
 
 export function billingPeriodLabel(period: string | null | undefined): string {
