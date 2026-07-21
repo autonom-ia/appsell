@@ -362,9 +362,10 @@ export class IdentityOAuthClient implements OAuthTokenRefresher {
     let identity: JWTPayload;
     try {
       const [accessResult, identityResult] = await Promise.all([
+        // Cognito access tokens carry the client in `client_id`, not `aud` (id tokens
+        // keep `aud`). Audience is enforced for both shapes in requireAccessTokenClaims.
         jwtVerify(payload.accessToken, this.jwks, {
           issuer: this.config.issuer,
-          audience: this.config.expectedAudience,
           algorithms: ["RS256"]
         }),
         jwtVerify(payload.idToken, this.jwks, {
@@ -492,10 +493,15 @@ async function readBoundedBody(response: Response, limit: number) {
 }
 
 function requireAccessTokenClaims(payload: JWTPayload, config: IdentityOAuthConfig) {
+  // Cognito-shaped access tokens omit `aud` and carry the app client in `client_id`;
+  // generic OIDC providers keep `aud`. Exactly one of the two must match the audience.
+  const audienceMatches = payload.aud === undefined
+    ? payload.client_id === config.expectedAudience
+    : payload.aud === config.expectedAudience;
   if (
     payload.token_use !== "access" ||
     payload.iss !== config.issuer ||
-    payload.aud !== config.expectedAudience ||
+    !audienceMatches ||
     !Number.isSafeInteger(payload.exp) ||
     (payload.exp as number) * 1_000 <= Date.now()
   ) {
