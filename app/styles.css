@@ -105,7 +105,7 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .storefront-product-art i { position: absolute; width: 190px; aspect-ratio: 1; border: 1px solid rgba(255,255,255,.28); border-radius: 38% 62% 64% 36%; transform: rotate(26deg); }
 .storefront-product-copy { min-width: 0; padding: 24px 22px 0; }
 .storefront-product-copy h3 { margin: 0 0 12px; font-size: clamp(1.65rem,7vw,2.25rem); overflow-wrap: anywhere; }
-.storefront-product-copy > p:last-child { margin: 0; color: var(--text); font-size: 1rem; line-height: 1.65; overflow-wrap: anywhere; }
+.storefront-product-copy > p:not(.eyebrow):not(.storefront-product-price) { margin: 0; color: var(--text); font-size: 1rem; line-height: 1.65; overflow-wrap: anywhere; }
 .storefront-product-price { margin: 12px 0 0; display: flex; align-items: baseline; gap: 6px; }
 .storefront-product-price strong { color: var(--ink); font-size: 1.4rem; font-weight: 850; letter-spacing: -.03em; }
 .storefront-product-price span { color: var(--soft); font-size: .78rem; }

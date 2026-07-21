@@ -1055,7 +1055,8 @@ test("locks the product editor and confirms archival when the offer is active", 
   await expect(page.getByRole("heading", { name: "Curso Vivo", exact: true })).toBeVisible();
 
   // Product fields are locked while the offer is active, with guidance.
-  await expect(page.getByText("Oferta ativa — edição bloqueada")).toBeVisible();
+  await expect(page.getByText("Edição bloqueada", { exact: true })).toBeVisible();
+  await expect(page.getByText("Todo salvamento inclui a oferta", { exact: false })).toBeVisible();
   await expect(page.getByLabel("Nome do produto")).toBeDisabled();
   await expect(page.getByRole("button", { name: "Salvar rascunho" })).toBeDisabled();
 
@@ -1073,4 +1074,67 @@ test("locks the product editor and confirms archival when the offer is active", 
   await page.getByRole("button", { name: "Arquivar definitivamente" }).click();
   await expect(page.getByText("Status da oferta atualizado.")).toBeVisible();
   expect(state.transitions).toEqual([{ expected: "active", next: "archived", csrf: "csrf-offer-status" }]);
+});
+
+test("keeps the product editor locked while an offer transition is in flight", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium", "offer transition lock runs once in Chromium");
+  const sellerId = "62000000-0000-4000-8000-000000000003";
+  const productId = "63000000-0000-4000-8000-000000000003";
+  const courseId = "64000000-0000-4000-8000-000000000003";
+  const offerId = "65000000-0000-4000-8000-000000000003";
+  const state = { offerStatus: "draft", offerVersion: 2 };
+  let releaseStatus: () => void = () => {};
+  let releaseReload: () => void = () => {};
+  const detail = () => ({
+    product: {
+      id: productId, seller_organization_id: sellerId, slug: "curso-tr", title: "Curso TR", description: "Rascunho.", status: "draft",
+      version: 3, draft_version: 3,
+      course: { id: courseId, title: "Fundamentos", description: "", status: "draft", draft_version: 2, position: 1 },
+      courses: [{ id: courseId, title: "Fundamentos", description: "", status: "draft", draft_version: 2, position: 1 }],
+      offer: { id: offerId, title: "Oferta TR", summary: "Termos.", status: state.offerStatus, version: state.offerVersion, draft_version: state.offerVersion, unit_amount_minor: 100, currency: "BRL", billing_period: "one_time" },
+      publication: null,
+      has_unpublished_changes: true,
+      readiness: { can_publish: true, items: [{ key: "server", label: "Pronto", ready: true }] }
+    },
+    csrf: { update: "csrf-update", publish: "csrf-publish", offer_status: "csrf-offer-status" }
+  });
+
+  let getCount = 0;
+  await page.route(`**/api/sellers/${sellerId}/products/${productId}`, async (route) => {
+    if (route.request().method() !== "GET") return route.fulfill({ status: 422, contentType: "application/json", body: "{}" });
+    getCount += 1;
+    // First GET (initial load) resolves immediately; the reconciliation GET after
+    // the transition is held so the "transitioning" window stays observable.
+    if (getCount >= 2 && state.offerStatus === "active") {
+      await new Promise<void>((resolve) => { releaseReload = resolve; });
+    }
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(detail()) });
+  });
+  await page.route(`**/api/sellers/${sellerId}/products/${productId}/offers/${offerId}/status`, async (route) => {
+    await new Promise<void>((resolve) => { releaseStatus = resolve; });
+    state.offerStatus = "active"; state.offerVersion += 1;
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ offer_id: offerId, status: "active", offer_version: state.offerVersion, changed: true }) });
+  });
+
+  await page.setViewportSize({ width: 320, height: 568 });
+  await login(page);
+  await page.goto(`/products/${sellerId}/${productId}?section=oferta`);
+  await expect(page.getByRole("heading", { name: /Status da oferta/ })).toBeVisible();
+  await page.getByRole("button", { name: "Ativar oferta" }).click();
+  await expect(page.getByRole("button", { name: "Ativando…" })).toBeVisible();
+
+  // While the PATCH is in flight, the product editor must already be locked.
+  await page.getByRole("link", { name: "Produto Identidade e curso" }).click();
+  await expect(page.getByLabel("Nome do produto")).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Salvar rascunho" })).toBeDisabled();
+
+  // Release PATCH; the reconciliation GET is still held → still locked.
+  releaseStatus();
+  await expect.poll(() => getCount).toBeGreaterThanOrEqual(2);
+  await expect(page.getByLabel("Nome do produto")).toBeDisabled();
+
+  // Release the reconciliation GET; offer is now active → stays locked with the active message.
+  releaseReload();
+  await expect(page.getByText("Todo salvamento inclui a oferta", { exact: false })).toBeVisible();
+  await expect(page.getByLabel("Nome do produto")).toBeDisabled();
 });

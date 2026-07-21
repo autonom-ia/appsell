@@ -147,9 +147,12 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   const listLink = useRef<HTMLAnchorElement>(null);
   const dirty = !sameFields(fields, savedFields);
   const editorDirty = dirty || curriculumDirty;
-  // O SQL de update do agregado (0018) exige oferta em draft; com oferta ativa
-  // qualquer save falharia — bloqueia o form inteiro com orientação.
-  const offerLocked = detail !== null && detail.offer.status !== "draft";
+  // O SQL de update do agregado (0018) exige oferta em draft; com oferta não-draft
+  // qualquer save falharia. Também bloqueia durante a transição de status, senão
+  // uma edição concorrente seria descartada silenciosamente pelo loadDetail().
+  const offerNotDraft = detail !== null && detail.offer.status !== "draft";
+  const offerArchived = detail !== null && detail.offer.status === "archived";
+  const offerLocked = offerNotDraft || offerStatusState === "transitioning";
 
   useUnsavedChanges(editorDirty);
   useEffect(() => {
@@ -235,6 +238,9 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   async function saveDraft(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!detail || saveState === "saving") return;
+    // Guarda de defesa: o form já é desabilitado por offerLocked, mas o submit
+    // pode chegar por Enter durante uma transição em voo — não salvar nesse caso.
+    if (detail.offer.status !== "draft" || offerStatusState === "transitioning") return;
     const submitted = fields;
     const submittedUnitAmountMinor = parsePriceInputToMinor(submitted.offer_price);
     if (submittedUnitAmountMinor === null) {
@@ -521,7 +527,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
         {section === "produto" ? (
           <fieldset disabled={detail.status === "archived" || offerLocked}>
             <legend>Identidade do produto</legend>
-            {offerLocked ? <div className="billing-boundary" role="note"><strong>Oferta ativa — edição bloqueada</strong><p>Todo salvamento inclui a oferta, e uma oferta ativa é imutável. Despublique a oferta na aba Oferta para editar e salvar.</p></div> : null}
+            {offerLocked ? <div className="billing-boundary" role="note"><strong>Edição bloqueada</strong><p>{offerArchived ? "A oferta está arquivada (definitivo). Crie um novo produto para vender de novo." : offerNotDraft ? "Todo salvamento inclui a oferta, e uma oferta ativa é imutável. Despublique a oferta na aba Oferta para editar e salvar." : "Aguarde a mudança de status da oferta concluir antes de editar."}</p></div> : null}
             <p className="section-intro">Edite o rascunho deste espaço. Uma publicação existente permanece estável até você publicar outra versão.</p>
             <EditorField label="Nome do produto" name="product_title" value={fields.product_title} onChange={(value) => updateField("product_title", value)} minLength={2} maxLength={160} required invalid={invalidField === "product_title"}/>
             <EditorField label="Endereço do produto" name="slug" value={fields.slug} onChange={(value) => updateField("slug", value)} minLength={3} maxLength={63} required invalid={invalidField === "slug"} pattern="[a-z0-9]+(?:-[a-z0-9]+)*" help="Somente letras minúsculas, números e hífens."/>
