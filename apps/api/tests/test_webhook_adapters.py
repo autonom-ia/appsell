@@ -110,6 +110,65 @@ def test_rejects_expired_timestamp_and_unknown_payload_fields() -> None:
         parse_generic_hmac_v1(duplicate)
 
 
+def _body_v2(**overrides: Any) -> bytes:
+    payload: dict[str, Any] = {
+        "event_type": "purchase.approved",
+        "external_product_id": "course-codex",
+        "external_purchase_id": "purchase-001",
+        "occurred_at": "2026-07-14T07:00:00Z",
+        "buyer_email": "buyer@example.test",
+        "buyer_identity_sub": None,
+    }
+    payload.update(overrides)
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+
+
+def test_parses_v2_payload_with_buyer_identity() -> None:
+    event = parse_generic_hmac_v1(_body_v2())
+    assert event.buyer_email == "buyer@example.test"
+    assert event.buyer_identity_sub is None
+    with_sub = parse_generic_hmac_v1(
+        _body_v2(buyer_identity_sub="04787418-5001-7006-d984-3a8937060228")
+    )
+    assert with_sub.buyer_identity_sub == "04787418-5001-7006-d984-3a8937060228"
+    legacy = parse_generic_hmac_v1(_body())
+    assert legacy.buyer_email is None
+    assert legacy.buyer_identity_sub is None
+
+
+@pytest.mark.parametrize(
+    "email",
+    [
+        None,
+        "",
+        "Buyer@Example.test",
+        " buyer@example.test",
+        "buyer example@test.com",
+        "no-at-sign.example.test",
+        "@example.test",
+        "a@b",
+        "b" * 240 + "@example.test",
+        "buyer@example.test\x00",
+    ],
+)
+def test_rejects_invalid_v2_buyer_email(email: str | None) -> None:
+    with pytest.raises(WebhookRejectedError, match="webhook_payload_invalid"):
+        parse_generic_hmac_v1(_body_v2(buyer_email=email))
+
+
+@pytest.mark.parametrize("sub", ["", "ab", " padded ", "x" * 256, "linha\nquebrada", 42])
+def test_rejects_invalid_v2_buyer_identity_sub(sub: Any) -> None:
+    with pytest.raises(WebhookRejectedError, match="webhook_payload_invalid"):
+        parse_generic_hmac_v1(_body_v2(buyer_identity_sub=sub))
+
+
+def test_rejects_partial_v2_key_sets() -> None:
+    payload = json.loads(_body_v2())
+    del payload["buyer_identity_sub"]
+    with pytest.raises(WebhookRejectedError, match="webhook_payload_invalid"):
+        parse_generic_hmac_v1(json.dumps(payload).encode())
+
+
 def test_local_resolver_rejects_secret_reuse_and_non_local_configuration() -> None:
     internal = _key(1)
     base: dict[str, Any] = dict(
