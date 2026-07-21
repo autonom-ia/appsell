@@ -167,6 +167,7 @@ def _accept(
     purchase_reference: str = "purchase-001",
     buyer_email: str | None = None,
     buyer_identity_sub: str | None = None,
+    occurred_at: str = "2026-07-14T07:00:00Z",
 ) -> tuple[UUID, bool]:
     assert RUNTIME_URL
     with psycopg.connect(RUNTIME_URL) as connection:
@@ -175,7 +176,7 @@ def _accept(
             "select webhook_event_id,created from app_private.accept_checkout_webhook("
             "%s::uuid,%s::uuid,%s::text,%s::text,1::bigint,%s::text,7::smallint,"
             "%s::text,20::integer,%s::text,%s::text,11::smallint,%s::text,12::smallint,"
-            "'2026-07-14T07:00:00Z'::timestamptz,%s::bigint,%s::uuid,%s::text,%s::text)",
+            "%s::timestamptz,%s::bigint,%s::uuid,%s::text,%s::text)",
             (
                 fixture["seller"],
                 ENDPOINT,
@@ -186,6 +187,7 @@ def _accept(
                 event_type,
                 product_hash,
                 hashlib.sha256(purchase_reference.encode()).hexdigest(),
+                occurred_at,
                 int(time.time()),
                 uuid4(),
                 buyer_email,
@@ -251,7 +253,10 @@ def _entitlement(
     fixture: dict[str, UUID | str], purchase_reference: str
 ) -> tuple[UUID, str, UUID] | None:
     assert ADMIN_URL
-    reference = "billing:" + hashlib.sha256(purchase_reference.encode()).hexdigest()
+    reference = (
+        "billing:" + str(INTEGRATION) + ":"
+        + hashlib.sha256(purchase_reference.encode()).hexdigest()
+    )
     with psycopg.connect(ADMIN_URL) as connection:
         row = connection.execute(
             "select id,status,buyer_identity_user_id from buyer_entitlement "
@@ -454,6 +459,57 @@ def test_refund_of_superseded_purchase_does_not_revoke(
     assert any(result.get("revoked") is True for result in refund_b_results)
     revoked = _entitlement(fixture, f"{RUN}-purchase-sup-b")
     assert revoked is not None and revoked[1] == "revoked"
+
+
+def test_late_replay_of_older_purchase_does_not_steal_ownership(
+    fixture: dict[str, UUID | str],
+) -> None:
+    # A (mais antiga) concede; B (mais nova) assume a posse. Um replay tardio de
+    # A (novo event id, occurred_at antigo) NAO pode roubar a posse de B; e o
+    # refund de A depois disso nao revoga o acesso pago por B.
+    assert ADMIN_URL
+    _register_worker(fixture)
+    _accept(
+        fixture,
+        event_reference=f"{RUN}-evt-old-a",
+        purchase_reference=f"{RUN}-purchase-old-a",
+        buyer_email=f"buyer.mono.{RUN}@example.test",
+        occurred_at="2026-07-14T07:00:00Z",
+    )
+    _drain(fixture)
+    _accept(
+        fixture,
+        event_reference=f"{RUN}-evt-new-b",
+        purchase_reference=f"{RUN}-purchase-new-b",
+        buyer_email=f"buyer.mono.{RUN}@example.test",
+        occurred_at="2026-07-15T07:00:00Z",
+    )
+    _drain(fixture)
+    # Replay semântico de A com event id novo, mas occurred_at antigo.
+    _accept(
+        fixture,
+        event_reference=f"{RUN}-evt-old-a-replay",
+        purchase_reference=f"{RUN}-purchase-old-a",
+        buyer_email=f"buyer.mono.{RUN}@example.test",
+        occurred_at="2026-07-14T07:00:00Z",
+    )
+    _drain(fixture)
+    # Ownership continua com B.
+    owned_by_b = _entitlement(fixture, f"{RUN}-purchase-new-b")
+    assert owned_by_b is not None and owned_by_b[1] == "active"
+
+    _accept(
+        fixture,
+        event_reference=f"{RUN}-evt-old-a-refund",
+        event_type="purchase.refunded",
+        purchase_reference=f"{RUN}-purchase-old-a",
+        buyer_email=f"buyer.mono.{RUN}@example.test",
+        occurred_at="2026-07-16T07:00:00Z",
+    )
+    refund_results = _drain(fixture)
+    assert any(result.get("reason") == "nothing_to_revoke" for result in refund_results)
+    still_active = _entitlement(fixture, f"{RUN}-purchase-new-b")
+    assert still_active is not None and still_active[1] == "active"
 
 
 def test_explicit_identity_sub_binds_to_that_user(fixture: dict[str, UUID | str]) -> None:

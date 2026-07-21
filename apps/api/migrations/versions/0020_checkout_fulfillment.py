@@ -43,6 +43,16 @@ and rejected in explicit subs. Flood protection for ``fulfillment_job`` is
 delegated to the emitter's own rate limiting; replay cannot duplicate jobs
 (unique per webhook event) but job creation rate is otherwise unbounded here.
 
+Ownership model: an entitlement is owned by the approved purchase with the
+greatest ``occurred_at`` (``reference_key`` scoped by integration id); a refund
+revokes only when it owns. Known limitation: with a single ``reference_key`` per
+entitlement, two concurrently-unrefunded purchases collapse to the newest owner,
+so refunding the newest revokes even if an older approved purchase still
+justifies access. The root-cause fix is a per-purchase grant ledger (TODO,
+tracked in #96); it is not reachable through the current BFF self-emit path,
+whose event id is a deterministic function of the order id (one purchase, no
+new-event-id replays).
+
 Downgrade is refused while fulfillment jobs exist (queue data must be
 preserved); otherwise it restores the 0012 ``accept_checkout_webhook`` and the
 0019 ``schema_ready`` verbatim and drops the fulfillment objects.
@@ -407,7 +417,7 @@ def upgrade() -> None:
         declare
           job record; event record; mapped_product_id uuid; product record;
           buyer_id uuid; buyer_sub text; entitlement record; v_entitlement_id uuid;
-          refund_seen boolean; reference text;
+          refund_seen boolean; reference text; owner_occurred_at timestamptz;
         begin
           if app_private.context_text('capability')
                is distinct from 'commerce.fulfillment.worker'
@@ -429,7 +439,12 @@ def upgrade() -> None:
           end if;
           select * into strict event from public.webhook_event stored
           where stored.seller_organization_id=p_seller and stored.id=job.webhook_event_id;
-          reference:='billing:'||job.external_purchase_id_sha256;
+          -- Escopa a referência pela integração: purchase ids sao unicos por
+          -- integracao, e buyer_entitlement exige unicidade global de
+          -- (seller,reference_key). Duas integracoes com o mesmo id textual de
+          -- compra nao podem colidir nem uma revogar a compra da outra.
+          reference:='billing:'||event.checkout_integration_id::text||':'
+            ||job.external_purchase_id_sha256;
 
           select mapping.catalog_product_id into mapped_product_id
           from public.external_product_mapping mapping
@@ -530,14 +545,28 @@ def upgrade() -> None:
               and existing.catalog_product_id=mapped_product_id
             for update;
             if found then
-              -- Reaponta a reference_key para a compra mais nova (ela passa a
-              -- ser a dona): um refund de compra anterior ja superada nao revoga.
-              update public.buyer_entitlement set status='active',
-                reference_key=reference,publication_id=product.published_snapshot_id,
-                starts_at=case when entitlement.status='active'
-                  then entitlement.starts_at else clock_timestamp() end,
-                expires_at=null,updated_at=clock_timestamp()
-              where seller_organization_id=p_seller and id=entitlement.id;
+              -- Ownership monotonico por occurred_at: so reaponta a
+              -- reference_key se ESTA compra for tao nova quanto a dona atual.
+              -- Assim um replay/entrega atrasada de uma compra ANTIGA (depois de
+              -- uma mais nova ja ter assumido) nao rouba a posse, e um refund
+              -- dessa compra antiga nao revoga o acesso da compra mais nova.
+              select max(other.occurred_at) into owner_occurred_at
+              from public.webhook_event other
+              where other.seller_organization_id=p_seller
+                and other.checkout_integration_id=event.checkout_integration_id
+                and other.event_type='purchase.approved'
+                and 'billing:'||event.checkout_integration_id::text||':'
+                  ||other.external_purchase_id_sha256=entitlement.reference_key;
+              if entitlement.status<>'active'
+                or owner_occurred_at is null
+                or event.occurred_at>=owner_occurred_at then
+                update public.buyer_entitlement set status='active',
+                  reference_key=reference,publication_id=product.published_snapshot_id,
+                  starts_at=case when entitlement.status='active'
+                    then entitlement.starts_at else clock_timestamp() end,
+                  expires_at=null,updated_at=clock_timestamp()
+                where seller_organization_id=p_seller and id=entitlement.id;
+              end if;
               v_entitlement_id:=entitlement.id;
             else
               v_entitlement_id:=gen_random_uuid();
