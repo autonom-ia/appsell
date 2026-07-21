@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 
-const financialApiUrl = process.env.FINANCIAL_API_URL ?? "https://financial.api-autonomia.com";
+import { FinancialInternalConfigError, financialInternalConfig, trimTrailingSlash } from "@/lib/financial-internal-config.server";
+
 const FETCH_TIMEOUT_MS = 15000;
 const MAX_BODY_BYTES = 65_536;
 
@@ -19,9 +20,14 @@ export async function POST(request: NextRequest, context: RouteContext) {
 }
 
 async function proxyRegistrationCheckout(request: NextRequest, context: RouteContext) {
-  const internalApiKey = getInternalApiKey();
-  if (!internalApiKey || !financialApiUrl) {
-    return json({ error: { code: "SERVER_CONFIG_ERROR", message: "Checkout de registro não configurado." } }, 500);
+  let config: { apiUrl: string; apiKey: string };
+  try {
+    config = financialInternalConfig();
+  } catch (error) {
+    if (error instanceof FinancialInternalConfigError) {
+      return json({ error: { code: "SERVER_CONFIG_ERROR", message: "Checkout de registro não configurado." } }, 500);
+    }
+    throw error;
   }
 
   const params = await context.params;
@@ -32,12 +38,12 @@ async function proxyRegistrationCheckout(request: NextRequest, context: RouteCon
   }
 
   const requestUrl = new URL(request.url);
-  const targetUrl = new URL(`${trimSlash(financialApiUrl)}${targetPath}`);
+  const targetUrl = new URL(`${trimTrailingSlash(config.apiUrl)}${targetPath}`);
   targetUrl.search = requestUrl.search;
 
   const headers = new Headers({
     accept: "application/json",
-    "x-api-key": internalApiKey
+    "x-api-key": config.apiKey
   });
   if (request.method !== "GET" && request.method !== "HEAD") {
     headers.set("content-type", request.headers.get("content-type") ?? "application/json");
@@ -102,10 +108,6 @@ function responseHeaders(input: Headers) {
   return headers;
 }
 
-function getInternalApiKey() {
-  return process.env.FINANCIAL_INTERNAL_API_KEY ?? "";
-}
-
 function json(body: unknown, status: number) {
   return new Response(JSON.stringify(body), {
     status,
@@ -114,8 +116,4 @@ function json(body: unknown, status: number) {
       "cache-control": "private, no-cache, no-store, max-age=0, must-revalidate"
     }
   });
-}
-
-function trimSlash(value: string) {
-  return value.replace(/\/+$/g, "");
 }
