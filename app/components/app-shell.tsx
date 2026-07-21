@@ -9,15 +9,14 @@ import { allowUnsavedNavigation, DIRTY_HISTORY_BLOCKED_EVENT, DIRTY_HISTORY_CONT
 import {
   DEMO_ADMIN_EMAIL,
   DEMO_BUYER_EMAIL,
-  DEMO_SUPERADMIN_EMAIL,
-  type DemoProfile
+  DEMO_SUPERADMIN_EMAIL
 } from "../../lib/demo-config";
-
-type DemoShellProfile = Pick<DemoProfile, "persona" | "email" | "label" | "home">;
-type ProfileState =
-  | { status: "loading" }
-  | { status: "ready"; profile: DemoShellProfile | null }
-  | { status: "failed" };
+import {
+  ShellProfileContext,
+  type DemoShellProfile,
+  type ProfileState,
+  type SessionRuntime
+} from "./shell-profile-context";
 
 const ASSET_DISCARD_REQUEST_EVENT = "appsell:asset-discard-request";
 
@@ -122,6 +121,8 @@ export function AppShell({ children }: AppShellProps) {
   const dirtyDialogTrigger = useRef<HTMLElement | null>(null);
   const allowNextLogout = useRef(false);
   const demoProfile = profileState.status === "ready" ? profileState.profile : undefined;
+  const realIdentity = profileState.status === "ready" && !profileState.profile &&
+    profileState.runtime === "identity";
   const platformMode = pathname.startsWith("/platform/");
   const visibleNavigation = profileState.status === "failed"
     ? recoveryNavigation
@@ -254,6 +255,7 @@ export function AppShell({ children }: AppShellProps) {
   }
 
   return (
+    <ShellProfileContext.Provider value={profileState}>
     <div className="app-shell">
       <a className="skip-link" href="#conteudo">Pular para o conteúdo</a>
       <aside className="app-sidebar" aria-label="Navegação principal">
@@ -271,7 +273,7 @@ export function AppShell({ children }: AppShellProps) {
         </nav>
         <div className="sidebar-footer">
           <span className="avatar" aria-hidden="true">AU</span>
-          <span><strong>{demoProfile ? `${demoProfile.label} demo` : profileState.status === "failed" ? "Perfil indisponível" : "Ambiente demo"}</strong><small>{demoProfile?.email ?? "Sessão protegida"}</small></span>
+          <span><strong>{demoProfile ? `${demoProfile.label} demo` : profileState.status === "failed" ? "Perfil indisponível" : realIdentity ? "Sua conta" : "Ambiente demo"}</strong><small>{demoProfile?.email ?? "Sessão protegida"}</small></span>
         </div>
         <LogoutForm onAttempt={guardLogout}/>
       </aside>
@@ -280,7 +282,9 @@ export function AppShell({ children }: AppShellProps) {
           <Link className="mobile-brand" href={home} aria-label="Autonom.ia Sell — início" onClick={(event) => guardLink(event, home)}><span className="brand-mark" aria-hidden="true">a</span><strong>Autonom.ia <span>Sell</span></strong></Link>
           <LogoutForm mobile onAttempt={guardLogout}/>
         </header>
-        <div className="environment-banner" role="note"><strong>{platformMode ? "INSPEÇÃO SUPERADMIN · LOCAL/CI · READ-ONLY" : demoProfile ? `DEMO · ${demoProfile.label} · ${demoProfile.email} · Autonom.ia Demo` : "Ambiente local, não é grant."}</strong> {platformMode ? "Sem impersonação, membership ou acesso a PII/secret." : "Cobrança, checkout e Identity real continuam desativados."}</div>
+        {platformMode || (profileState.status === "ready" && !realIdentity) ? (
+          <div className="environment-banner" role="note"><strong>{platformMode ? "INSPEÇÃO SUPERADMIN · LOCAL/CI · READ-ONLY" : demoProfile ? `DEMO · ${demoProfile.label} · ${demoProfile.email} · Autonom.ia Demo` : "Ambiente local, não é grant."}</strong> {platformMode ? "Sem impersonação, membership ou acesso a PII/secret." : "Cobrança, checkout e Identity real continuam desativados."}</div>
+        ) : null}
         {profileState.status === "failed" ? <div className="mobile-session-recovery" role="alert"><p>Não foi possível validar seu acesso.</p><button type="button" className="secondary-button" onClick={retryProfile}>Tentar novamente</button><Link href="/">Voltar para a entrada</Link></div> : null}
         <main id="conteudo" className="app-main" tabIndex={-1}>{children}</main>
         <nav
@@ -307,6 +311,7 @@ export function AppShell({ children }: AppShellProps) {
         </AccessibleDialog>
       ) : null}
     </div>
+    </ShellProfileContext.Provider>
   );
 }
 
@@ -330,9 +335,13 @@ export async function continueConfirmedExit(
 
 function parseProfileState(payload: unknown): ProfileState {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return { status: "failed" };
-  if ((payload as Record<string, unknown>).authenticated !== true) return { status: "failed" };
-  const profile = (payload as Record<string, unknown>).demoProfile;
-  if (profile === null) return { status: "ready", profile: null };
+  const session = payload as Record<string, unknown>;
+  if (session.authenticated !== true) return { status: "failed" };
+  // Unknown runtimes fall back to "local" so the conservative environment
+  // banner keeps rendering instead of silently claiming real production.
+  const runtime: SessionRuntime = session.runtime === "identity" ? "identity" : "local";
+  const profile = session.demoProfile;
+  if (profile === null) return { status: "ready", profile: null, runtime };
   if (!profile || typeof profile !== "object" || Array.isArray(profile)) return { status: "failed" };
   const record = profile as Record<string, unknown>;
   const admin = record.persona === "admin" && record.email === DEMO_ADMIN_EMAIL &&
@@ -342,6 +351,6 @@ function parseProfileState(payload: unknown): ProfileState {
   const superadmin = record.persona === "superadmin" && record.email === DEMO_SUPERADMIN_EMAIL &&
     record.label === "Superadmin simulado" && record.home === "/platform/demo-inspection";
   return admin || buyer || superadmin
-    ? { status: "ready", profile: record as unknown as DemoShellProfile }
+    ? { status: "ready", profile: record as unknown as DemoShellProfile, runtime }
     : { status: "failed" };
 }

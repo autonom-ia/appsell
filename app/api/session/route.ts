@@ -22,6 +22,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(session ? {
       authenticated: true,
       expiresAt: session.expiresAt,
+      runtime: process.env.APPSELL_OAUTH_MODE === "identity" ? "identity" : "local",
       demoProfile: demoProfile ? {
         persona: demoProfile.persona,
         email: demoProfile.email,
