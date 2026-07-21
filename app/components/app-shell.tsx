@@ -9,16 +9,14 @@ import { allowUnsavedNavigation, DIRTY_HISTORY_BLOCKED_EVENT, DIRTY_HISTORY_CONT
 import {
   DEMO_ADMIN_EMAIL,
   DEMO_BUYER_EMAIL,
-  DEMO_SUPERADMIN_EMAIL,
-  type DemoProfile
+  DEMO_SUPERADMIN_EMAIL
 } from "../../lib/demo-config";
-
-type DemoShellProfile = Pick<DemoProfile, "persona" | "email" | "label" | "home">;
-type SessionRuntime = "identity" | "local";
-type ProfileState =
-  | { status: "loading" }
-  | { status: "ready"; profile: DemoShellProfile | null; runtime: SessionRuntime }
-  | { status: "failed" };
+import {
+  ShellProfileContext,
+  type DemoShellProfile,
+  type ProfileState,
+  type SessionRuntime
+} from "./shell-profile-context";
 
 const ASSET_DISCARD_REQUEST_EVENT = "appsell:asset-discard-request";
 
@@ -257,6 +255,7 @@ export function AppShell({ children }: AppShellProps) {
   }
 
   return (
+    <ShellProfileContext.Provider value={profileState}>
     <div className="app-shell">
       <a className="skip-link" href="#conteudo">Pular para o conteúdo</a>
       <aside className="app-sidebar" aria-label="Navegação principal">
@@ -312,6 +311,7 @@ export function AppShell({ children }: AppShellProps) {
         </AccessibleDialog>
       ) : null}
     </div>
+    </ShellProfileContext.Provider>
   );
 }
 

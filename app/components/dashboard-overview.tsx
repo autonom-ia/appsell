@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { ProductCard } from "./product-card";
 import { SellerOnboardingCard } from "./seller-onboarding-card";
+import { useShellProfile } from "./shell-profile-context";
 import { DEMO_SELLER_ID, demoProducts } from "../../lib/demo-catalog";
 import { listSellerProducts } from "../../lib/catalog-projection";
 import {
@@ -29,12 +30,6 @@ interface ProductDraft {
   course_title?: string;
 }
 
-type SessionView =
-  | { status: "loading" }
-  | { status: "demo" }
-  | { status: "real" }
-  | { status: "failed" };
-
 type CatalogState =
   | { status: "loading" }
   | { status: "unauthorized" }
@@ -47,27 +42,15 @@ type CatalogState =
 const MAX_DRAFT_PAGES = 20;
 const FETCH_TIMEOUT_MS = 8_000;
 
-export function DashboardOverview() {
-  const [view, setView] = useState<SessionView>({ status: "loading" });
-  const [catalog, setCatalog] = useState<CatalogState>({ status: "loading" });
+type SessionView = "loading" | "failed" | "demo" | "real";
 
-  useEffect(() => {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-    void fetch("/api/session", { cache: "no-store", signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) return setView({ status: "failed" });
-        const payload = await response.json() as { authenticated?: boolean; demoProfile?: unknown };
-        if (payload.authenticated !== true) return setView({ status: "failed" });
-        setView({ status: payload.demoProfile ? "demo" : "real" });
-      })
-      .catch(() => setView({ status: "failed" }))
-      .finally(() => clearTimeout(timeout));
-    return () => {
-      clearTimeout(timeout);
-      controller.abort();
-    };
-  }, []);
+export function DashboardOverview() {
+  // The shell already resolved /api/session; reuse it instead of refetching.
+  const profile = useShellProfile();
+  const view: SessionView = profile.status === "ready"
+    ? (profile.profile ? "demo" : "real")
+    : profile.status;
+  const [catalog, setCatalog] = useState<CatalogState>({ status: "loading" });
 
   // Initial state is already "loading"; reloads keep the previous snapshot on
   // screen until the fresh response lands (and stay lint-safe inside effects).
@@ -118,7 +101,7 @@ export function DashboardOverview() {
   }, []);
 
   useEffect(() => {
-    if (view.status !== "real") return;
+    if (view !== "real") return;
     const controller = new AbortController();
     const start = window.setTimeout(() => void loadCatalog(controller.signal), 0);
     const reload = () => {
@@ -130,10 +113,12 @@ export function DashboardOverview() {
       window.removeEventListener("appsell:sellers-changed", reload);
       controller.abort();
     };
-  }, [view.status, loadCatalog]);
+  }, [view, loadCatalog]);
 
-  const showCta = view.status === "demo" ||
-    (view.status === "real" && catalog.status === "ready" && catalog.sellers.length > 0);
+  // The CTA is plain navigation to /products (which owns onboarding), so it
+  // renders whenever the session view is resolved — including while the
+  // catalog request is still in flight or unavailable.
+  const showCta = view === "demo" || view === "real";
 
   return (
     <>
@@ -141,10 +126,10 @@ export function DashboardOverview() {
         <div><p className="eyebrow">Visão geral</p><h1>Seu negócio em um só lugar.</h1><p>Acompanhe o catálogo e continue de onde parou.</p></div>
         {showCta ? <Link className="primary-button" href="/products">Criar produto</Link> : null}
       </header>
-      {view.status === "loading" ? <p className="empty-state" role="status">Carregando sua visão geral…</p> : null}
-      {view.status === "failed" ? <p className="empty-state" role="alert">Não foi possível validar sua sessão. <a href="/auth/login">Entre novamente</a>.</p> : null}
-      {view.status === "demo" ? <DemoDashboard/> : null}
-      {view.status === "real" ? <RealDashboard catalog={catalog}/> : null}
+      {view === "loading" ? <p className="empty-state" role="status">Carregando sua visão geral…</p> : null}
+      {view === "failed" ? <p className="empty-state" role="alert">Não foi possível validar sua sessão. <a href="/auth/login">Entre novamente</a>.</p> : null}
+      {view === "demo" ? <DemoDashboard/> : null}
+      {view === "real" ? <RealDashboard catalog={catalog}/> : null}
     </>
   );
 }
