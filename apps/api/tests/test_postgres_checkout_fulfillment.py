@@ -19,11 +19,17 @@ pytestmark = pytest.mark.skipif(
     reason="isolated PostgreSQL environment is required",
 )
 
+SELLER = UUID("ee000000-0000-4000-8000-000000000010")
+OWNER = UUID("ee000000-0000-4000-8000-000000000011")
+PRODUCT = UUID("ee000000-0000-4000-8000-000000000012")
+COURSE = UUID("ee000000-0000-4000-8000-000000000013")
+OFFER = UUID("ee000000-0000-4000-8000-000000000014")
+PUBLICATION = UUID("ee000000-0000-4000-8000-000000000015")
 INTEGRATION = UUID("ee000000-0000-4000-8000-000000000001")
 ENDPOINT = UUID("ee000000-0000-4000-8000-000000000002")
 ENDPOINT_KEY = "fulfill_0123456789abcdefghijklmnopqrstuv"
 ENDPOINT_HASH = hashlib.sha256(ENDPOINT_KEY.encode()).hexdigest()
-KEY_REFERENCE = "checkout-demo-v1"
+KEY_REFERENCE = "checkout-fulfillment-v1"
 PRODUCT_REFERENCE = b"fulfillment-product-001"
 PRODUCT_HASH = hashlib.sha256(PRODUCT_REFERENCE).hexdigest()
 UNMAPPED_PRODUCT_HASH = hashlib.sha256(b"fulfillment-product-unmapped").hexdigest()
@@ -32,47 +38,108 @@ WORKER_LABEL = "pytest-fulfillment-worker"
 WORKER_CAPABILITY = "commerce.fulfillment.worker"
 INGEST_CAPABILITY = "commerce.webhook.ingest"
 INGEST_IDENTITY = UUID("ee000000-0000-4000-8000-000000000003")
+# Referências únicas por execução: webhook_event é imutável, então reruns na
+# mesma base não podem colidir com eventos de execuções anteriores.
+RUN = uuid4().hex[:8]
 
 
 @pytest.fixture(scope="module")
 def fixture() -> dict[str, UUID | str]:
+    # Self-contained tenant: nothing here touches the demo tenant, so demo
+    # reset/checkout suites stay unaffected (an external_product_mapping row on
+    # the demo product would block reset_demo deletes via FK).
     assert ADMIN_URL
+    issuer = "https://identity.test.autonomia.site"
+    worker = uuid5(NAMESPACE_URL, f"{issuer}\0{WORKER_SUBJECT}")
     with psycopg.connect(ADMIN_URL) as connection:
-        row = connection.execute(
-            "select registry.identity_issuer,registry.seller_organization_id,"
-            "registry.catalog_product_id from app_private.demo_tenant_registry registry "
-            "where registry.seed_key='autonomia-demo-v1'"
-        ).fetchone()
-        assert row is not None
-        issuer, seller, product = row
-        worker = uuid5(NAMESPACE_URL, f"{issuer}\0{WORKER_SUBJECT}")
         connection.execute(
             "delete from app_private.fulfillment_job where seller_organization_id=%s",
-            (seller,),
+            (SELLER,),
+        )
+        connection.execute(
+            "insert into identity_user(id,identity_issuer,identity_sub,"
+            "email_normalized,email_verified) "
+            "values(%s,%s,'fulfillment-owner','fulfillment.owner@example.test',true) "
+            "on conflict do nothing",
+            (OWNER, issuer),
+        )
+        connection.execute(
+            "insert into seller_organization(id,slug,display_name,status) "
+            "values(%s,'fulfillment-seller','Fulfillment Seller','active') "
+            "on conflict do nothing",
+            (SELLER,),
+        )
+        connection.execute(
+            "insert into seller_membership(seller_organization_id,identity_user_id,"
+            "role,status) values(%s,%s,'seller_owner','active') on conflict do nothing",
+            (SELLER, OWNER),
+        )
+        connection.execute(
+            "insert into catalog_product(seller_organization_id,id,slug,title,"
+            "description,status) values(%s,%s,'fulfillment-product',"
+            "'Fulfillment product','Produto de teste','draft') on conflict do nothing",
+            (SELLER, PRODUCT),
+        )
+        connection.execute(
+            "insert into course(seller_organization_id,id,title,description,status,"
+            "draft_version) values(%s,%s,'Fulfillment course','Curso','draft',1) "
+            "on conflict do nothing",
+            (SELLER, COURSE),
+        )
+        connection.execute(
+            "insert into product_course(seller_organization_id,catalog_product_id,"
+            "course_id,position) values(%s,%s,%s,0) on conflict do nothing",
+            (SELLER, PRODUCT, COURSE),
+        )
+        connection.execute(
+            "insert into offer(seller_organization_id,id,catalog_product_id,title,"
+            "summary,status,version) values(%s,%s,%s,'Fulfillment offer','Oferta',"
+            "'draft',1) on conflict do nothing",
+            (SELLER, OFFER, PRODUCT),
+        )
+        connection.execute(
+            "with payload as (select %s::jsonb snapshot) "
+            "insert into publication(seller_organization_id,id,catalog_product_id,"
+            "version,schema_version,source_sha256,snapshot,actor_identity_user_id) "
+            "select %s,%s,%s,1,1,"
+            "encode(digest(convert_to(snapshot::text,'UTF8'),'sha256'),'hex'),"
+            "snapshot,%s from payload on conflict do nothing",
+            (
+                '{"schema_version":1,"product":{"title":"Fulfillment product"}}',
+                SELLER,
+                PUBLICATION,
+                PRODUCT,
+                OWNER,
+            ),
+        )
+        connection.execute(
+            "update catalog_product set status='published',published_snapshot_id=%s "
+            "where seller_organization_id=%s and id=%s",
+            (PUBLICATION, SELLER, PRODUCT),
         )
         connection.execute(
             "insert into checkout_integration("
             "seller_organization_id,id,adapter,display_name,status) "
             "values(%s,%s,'generic_hmac_v1','Fulfillment checkout','active') "
             "on conflict do nothing",
-            (seller, INTEGRATION),
+            (SELLER, INTEGRATION),
         )
         connection.execute(
             "insert into webhook_endpoint("
             "seller_organization_id,id,checkout_integration_id,endpoint_key_sha256,"
             "secret_reference,status) values(%s,%s,%s,%s,%s,'active') "
             "on conflict do nothing",
-            (seller, ENDPOINT, INTEGRATION, ENDPOINT_HASH, KEY_REFERENCE),
+            (SELLER, ENDPOINT, INTEGRATION, ENDPOINT_HASH, KEY_REFERENCE),
         )
         connection.execute(
             "insert into external_product_mapping("
             "seller_organization_id,checkout_integration_id,external_product_id_sha256,"
             "external_product_id_octets,catalog_product_id) values(%s,%s,%s,%s,%s) "
             "on conflict do nothing",
-            (seller, INTEGRATION, PRODUCT_HASH, len(PRODUCT_REFERENCE), product),
+            (SELLER, INTEGRATION, PRODUCT_HASH, len(PRODUCT_REFERENCE), PRODUCT),
         )
         connection.commit()
-    return {"issuer": issuer, "seller": seller, "product": product, "worker": worker}
+    return {"issuer": issuer, "seller": SELLER, "product": PRODUCT, "worker": worker}
 
 
 def _context(
@@ -198,29 +265,31 @@ def test_v1_payload_creates_no_job_and_v2_creates_one(
     fixture: dict[str, UUID | str],
 ) -> None:
     assert ADMIN_URL
-    _accept(fixture, event_reference="evt-v1", purchase_reference="purchase-v1")
+    v1_event_id, _ = _accept(
+        fixture, event_reference=f"{RUN}-evt-v1", purchase_reference=f"{RUN}-purchase-v1"
+    )
     event_id, created = _accept(
         fixture,
-        event_reference="evt-v2",
-        purchase_reference="purchase-v2",
-        buyer_email="buyer.v2@example.test",
+        event_reference=f"{RUN}-evt-v2",
+        purchase_reference=f"{RUN}-purchase-v2",
+        buyer_email=f"buyer.v2.{RUN}@example.test",
     )
     assert created
     replay_id, replay_created = _accept(
         fixture,
-        event_reference="evt-v2",
-        purchase_reference="purchase-v2",
-        buyer_email="buyer.v2@example.test",
+        event_reference=f"{RUN}-evt-v2",
+        purchase_reference=f"{RUN}-purchase-v2",
+        buyer_email=f"buyer.v2.{RUN}@example.test",
     )
     assert replay_id == event_id and not replay_created
     with psycopg.connect(ADMIN_URL) as connection:
         rows = connection.execute(
             "select webhook_event_id,buyer_email_normalized,status "
             "from app_private.fulfillment_job where seller_organization_id=%s "
-            "order by created_at",
-            (fixture["seller"],),
+            "and webhook_event_id in (%s,%s) order by created_at",
+            (fixture["seller"], event_id, v1_event_id),
         ).fetchall()
-    assert rows == [(event_id, "buyer.v2@example.test", "pending")]
+    assert rows == [(event_id, f"buyer.v2.{RUN}@example.test", "pending")]
 
 
 def test_worker_grants_revokes_and_respects_ordering(
@@ -230,61 +299,61 @@ def test_worker_grants_revokes_and_respects_ordering(
     _register_worker(fixture)
     results = _drain(fixture)
     assert any(result.get("applied") is True for result in results)
-    granted = _entitlement(fixture, "purchase-v2")
+    granted = _entitlement(fixture, f"{RUN}-purchase-v2")
     assert granted is not None and granted[1] == "active"
     with psycopg.connect(ADMIN_URL) as connection:
         buyer = connection.execute(
             "select identity_sub,email_normalized from identity_user where id=%s",
             (granted[2],),
         ).fetchone()
-    assert buyer == ("registration:buyer.v2@example.test", "buyer.v2@example.test")
+    assert buyer == (f"registration:buyer.v2.{RUN}@example.test", f"buyer.v2.{RUN}@example.test")
 
     # Replayed approval for the same purchase is idempotent.
     _accept(
         fixture,
-        event_reference="evt-v2-replay",
-        purchase_reference="purchase-v2",
-        buyer_email="buyer.v2@example.test",
+        event_reference=f"{RUN}-evt-v2-replay",
+        purchase_reference=f"{RUN}-purchase-v2",
+        buyer_email=f"buyer.v2.{RUN}@example.test",
     )
     for result in _drain(fixture):
         assert result.get("status") == "completed"
-    assert _entitlement(fixture, "purchase-v2") == granted
+    assert _entitlement(fixture, f"{RUN}-purchase-v2") == granted
 
     # Refund revokes by purchase reference.
     _accept(
         fixture,
-        event_reference="evt-v2-refund",
+        event_reference=f"{RUN}-evt-v2-refund",
         event_type="purchase.refunded",
-        purchase_reference="purchase-v2",
-        buyer_email="buyer.v2@example.test",
+        purchase_reference=f"{RUN}-purchase-v2",
+        buyer_email=f"buyer.v2.{RUN}@example.test",
     )
     refund_results = _drain(fixture)
     assert any(result.get("revoked") is True for result in refund_results)
-    revoked = _entitlement(fixture, "purchase-v2")
+    revoked = _entitlement(fixture, f"{RUN}-purchase-v2")
     assert revoked is not None and revoked[1] == "revoked"
 
     # A late approval for an already-refunded purchase must not regrant.
     _accept(
         fixture,
-        event_reference="evt-v2-late",
-        purchase_reference="purchase-v2",
-        buyer_email="buyer.v2@example.test",
+        event_reference=f"{RUN}-evt-v2-late",
+        purchase_reference=f"{RUN}-purchase-v2",
+        buyer_email=f"buyer.v2.{RUN}@example.test",
     )
     late_results = _drain(fixture)
     assert any(result.get("reason") == "purchase_refunded" for result in late_results)
-    still_revoked = _entitlement(fixture, "purchase-v2")
+    still_revoked = _entitlement(fixture, f"{RUN}-purchase-v2")
     assert still_revoked is not None and still_revoked[1] == "revoked"
 
     # A brand-new purchase reactivates and repoints the reference key.
     _accept(
         fixture,
-        event_reference="evt-v2-repurchase",
-        purchase_reference="purchase-v3",
-        buyer_email="buyer.v2@example.test",
+        event_reference=f"{RUN}-evt-v2-repurchase",
+        purchase_reference=f"{RUN}-purchase-v3",
+        buyer_email=f"buyer.v2.{RUN}@example.test",
     )
     repurchase_results = _drain(fixture)
     assert any(result.get("applied") is True for result in repurchase_results)
-    reactivated = _entitlement(fixture, "purchase-v3")
+    reactivated = _entitlement(fixture, f"{RUN}-purchase-v3")
     assert reactivated is not None
     assert reactivated[0] == granted[0]
     assert reactivated[1] == "active"
@@ -295,20 +364,20 @@ def test_explicit_identity_sub_binds_to_that_user(fixture: dict[str, UUID | str]
     _register_worker(fixture)
     _accept(
         fixture,
-        event_reference="evt-sub",
-        purchase_reference="purchase-sub",
-        buyer_email="buyer.sub@example.test",
-        buyer_identity_sub="cognito-sub-fulfillment-001",
+        event_reference=f"{RUN}-evt-sub",
+        purchase_reference=f"{RUN}-purchase-sub",
+        buyer_email=f"buyer.sub.{RUN}@example.test",
+        buyer_identity_sub=f"cognito-sub-{RUN}",
     )
     results = _drain(fixture)
     assert any(result.get("applied") is True for result in results)
-    granted = _entitlement(fixture, "purchase-sub")
+    granted = _entitlement(fixture, f"{RUN}-purchase-sub")
     assert granted is not None
     with psycopg.connect(ADMIN_URL) as connection:
         buyer = connection.execute(
             "select identity_sub from identity_user where id=%s", (granted[2],)
         ).fetchone()
-    assert buyer == ("cognito-sub-fulfillment-001",)
+    assert buyer == (f"cognito-sub-{RUN}",)
 
 
 def test_unmapped_product_dead_letters(fixture: dict[str, UUID | str]) -> None:
@@ -316,21 +385,21 @@ def test_unmapped_product_dead_letters(fixture: dict[str, UUID | str]) -> None:
     _register_worker(fixture)
     _accept(
         fixture,
-        event_reference="evt-unmapped",
+        event_reference=f"{RUN}-evt-unmapped",
         product_hash=UNMAPPED_PRODUCT_HASH,
-        purchase_reference="purchase-unmapped",
-        buyer_email="buyer.unmapped@example.test",
+        purchase_reference=f"{RUN}-purchase-unmapped",
+        buyer_email=f"buyer.unmapped.{RUN}@example.test",
     )
     results = _drain(fixture)
     assert any(result.get("error_code") == "product_mapping_missing" for result in results)
-    assert _entitlement(fixture, "purchase-unmapped") is None
+    assert _entitlement(fixture, f"{RUN}-purchase-unmapped") is None
     with psycopg.connect(ADMIN_URL) as connection:
-        status = connection.execute(
+        statuses = connection.execute(
             "select status from app_private.fulfillment_job "
             "where seller_organization_id=%s and error_code='product_mapping_missing'",
             (fixture["seller"],),
-        ).fetchone()
-    assert status == ("dead_letter",)
+        ).fetchall()
+    assert ("dead_letter",) in statuses
 
 
 def test_worker_requires_active_allowlist_and_runtime_has_no_table_access(

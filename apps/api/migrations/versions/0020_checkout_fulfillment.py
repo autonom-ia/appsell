@@ -112,7 +112,7 @@ def upgrade() -> None:
           created_at timestamptz not null default clock_timestamp(),
           updated_at timestamptz not null default clock_timestamp(),
           primary key (seller_organization_id,id),
-          unique (seller_organization_id,webhook_event_id),
+          constraint fulfillment_job_event_key unique (seller_organization_id,webhook_event_id),
           foreign key (seller_organization_id,webhook_event_id)
             references public.webhook_event(seller_organization_id,id)
         )
@@ -275,7 +275,7 @@ def upgrade() -> None:
                 previous.external_product_id_sha256,
                 previous.external_purchase_id_sha256,
                 p_buyer_email,p_buyer_identity_sub
-              ) on conflict (seller_organization_id,webhook_event_id) do nothing;
+              ) on conflict on constraint fulfillment_job_event_key do nothing;
             end if;
             return query select previous.id,created_outbox_id,false;
             return;
@@ -603,7 +603,30 @@ def upgrade() -> None:
           end if;
         end $$
         """,
+        """
+        create function app_private.accept_checkout_webhook(
+          p_seller_organization_id uuid,p_endpoint_id uuid,
+          p_endpoint_key_sha256 text,p_secret_reference text,p_endpoint_revision bigint,
+          p_external_event_id_sha256 text,p_external_event_id_octets smallint,
+          p_payload_sha256 text,p_payload_octets integer,p_event_type text,
+          p_external_product_id_sha256 text,p_external_product_id_octets smallint,
+          p_external_purchase_id_sha256 text,p_external_purchase_id_octets smallint,
+          p_occurred_at timestamptz,p_signed_at_epoch bigint,p_request_id uuid
+        ) returns table(webhook_event_id uuid,outbox_event_id uuid,created boolean)
+        language sql security definer
+        set search_path=pg_catalog,app_private,public as $$
+          -- Payload-v1 compatibility wrapper: same contract as before 0020
+          -- (event + outbox, no fulfillment job). Keeps schema_ready_base_0016
+          -- and any legacy caller intact.
+          select * from app_private.accept_checkout_webhook(
+            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
+            null::text,null::text
+          )
+        $$
+        """,
         "revoke all on table app_private.fulfillment_job,app_private.fulfillment_worker_identity from public,appsell_runtime",
+        f"revoke all on function {_ACCEPT_V1_SIGNATURE} from public",
+        f"grant execute on function {_ACCEPT_V1_SIGNATURE} to appsell_runtime",
         "revoke all on function app_private.ensure_fulfillment_worker(uuid,text,text,text,text) from public",
         f"revoke all on function {_ACCEPT_V2_SIGNATURE} from public",
         "revoke all on function app_private.claim_fulfillment_jobs(uuid,text,integer,integer) from public",
@@ -614,6 +637,39 @@ def upgrade() -> None:
         "grant execute on function app_private.claim_fulfillment_jobs(uuid,text,integer,integer) to appsell_runtime",
         "grant execute on function app_private.apply_checkout_fulfillment(uuid,text,uuid,uuid,bigint,uuid,text) to appsell_runtime",
         "grant execute on function app_private.fail_fulfillment_job(uuid,text,uuid,uuid,bigint,text,integer) to appsell_runtime",
+        r"""
+        do $migration$
+        declare definition text; changed text;
+        begin
+          definition := pg_get_functiondef(
+            'app_private.schema_ready_base_0016()'::regprocedure
+          );
+          changed := replace(
+            definition,
+            $needle$version_num in ('0016_pdf_access_policy','0017_pdf_preraster','0018_offer_pricing','0019_offer_status')$needle$,
+            $replacement$version_num in ('0016_pdf_access_policy','0017_pdf_preraster','0018_offer_pricing','0019_offer_status','0020_checkout_fulfillment')$replacement$
+          );
+          if changed = definition then
+            raise exception 'cannot extend 0016 schema readiness revision'
+              using errcode = '55000';
+          end if;
+          execute changed;
+
+          definition := pg_get_functiondef(
+            'app_private.schema_ready_base_0017()'::regprocedure
+          );
+          changed := replace(
+            definition,
+            $needle$version_num in ('0017_pdf_preraster','0018_offer_pricing','0019_offer_status')$needle$,
+            $replacement$version_num in ('0017_pdf_preraster','0018_offer_pricing','0019_offer_status','0020_checkout_fulfillment')$replacement$
+          );
+          if changed = definition then
+            raise exception 'cannot extend 0017 schema readiness revision'
+              using errcode = '55000';
+          end if;
+          execute changed;
+        end $migration$
+        """,
         """
         create or replace function app_private.schema_ready() returns boolean
         language sql stable security definer set search_path=pg_catalog,app_private as $$
@@ -666,6 +722,7 @@ def downgrade() -> None:
         "drop function app_private.fail_fulfillment_job(uuid,text,uuid,uuid,bigint,text,integer)",
         "drop function app_private.apply_checkout_fulfillment(uuid,text,uuid,uuid,bigint,uuid,text)",
         "drop function app_private.claim_fulfillment_jobs(uuid,text,integer,integer)",
+        f"drop function if exists {_ACCEPT_V1_SIGNATURE}",
         f"drop function {_ACCEPT_V2_SIGNATURE}",
         "drop function app_private.ensure_fulfillment_worker(uuid,text,text,text,text)",
         "drop table app_private.fulfillment_job",
@@ -808,6 +865,39 @@ def downgrade() -> None:
         """,
         f"revoke all on function {_ACCEPT_V1_SIGNATURE} from public",
         f"grant execute on function {_ACCEPT_V1_SIGNATURE} to appsell_runtime",
+        r"""
+        do $migration$
+        declare definition text; changed text;
+        begin
+          definition := pg_get_functiondef(
+            'app_private.schema_ready_base_0016()'::regprocedure
+          );
+          changed := replace(
+            definition,
+            $needle$version_num in ('0016_pdf_access_policy','0017_pdf_preraster','0018_offer_pricing','0019_offer_status','0020_checkout_fulfillment')$needle$,
+            $replacement$version_num in ('0016_pdf_access_policy','0017_pdf_preraster','0018_offer_pricing','0019_offer_status')$replacement$
+          );
+          if changed = definition then
+            raise exception 'cannot restore 0016 schema readiness revision'
+              using errcode = '55000';
+          end if;
+          execute changed;
+
+          definition := pg_get_functiondef(
+            'app_private.schema_ready_base_0017()'::regprocedure
+          );
+          changed := replace(
+            definition,
+            $needle$version_num in ('0017_pdf_preraster','0018_offer_pricing','0019_offer_status','0020_checkout_fulfillment')$needle$,
+            $replacement$version_num in ('0017_pdf_preraster','0018_offer_pricing','0019_offer_status')$replacement$
+          );
+          if changed = definition then
+            raise exception 'cannot restore 0017 schema readiness revision'
+              using errcode = '55000';
+          end if;
+          execute changed;
+        end $migration$
+        """,
         """
         create or replace function app_private.schema_ready() returns boolean
         language sql stable security definer set search_path=pg_catalog,app_private as $$
