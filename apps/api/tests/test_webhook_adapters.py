@@ -156,7 +156,10 @@ def test_rejects_invalid_v2_buyer_email(email: str | None) -> None:
         parse_generic_hmac_v1(_body_v2(buyer_email=email))
 
 
-@pytest.mark.parametrize("sub", ["", "ab", " padded ", "x" * 256, "linha\nquebrada", 42])
+@pytest.mark.parametrize(
+    "sub",
+    ["", "ab", " padded ", "x" * 256, "linha\nquebrada", 42, "registration:victim@example.test"],
+)
 def test_rejects_invalid_v2_buyer_identity_sub(sub: Any) -> None:
     with pytest.raises(WebhookRejectedError, match="webhook_payload_invalid"):
         parse_generic_hmac_v1(_body_v2(buyer_identity_sub=sub))

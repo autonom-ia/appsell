@@ -31,6 +31,15 @@ migration adds the missing fulfillment substrate:
   - ``purchase.refunded``/``subscription.cancelled`` revoke by
     ``reference_key`` and complete idempotently when there is nothing to do.
 
+Emitter responsibilities (trust boundary — this schema does NOT re-verify):
+``buyer_identity_sub`` may only be populated from a value the emitter itself
+validated against the authenticated buyer at the moment of the verified payment
+call — never echoed from client-supplied checkout parameters. The
+``registration:`` namespace is reserved for the worker-derived e-mail identity
+and rejected in explicit subs. Flood protection for ``fulfillment_job`` is
+delegated to the emitter's own rate limiting; replay cannot duplicate jobs
+(unique per webhook event) but job creation rate is otherwise unbounded here.
+
 Downgrade is refused while fulfillment jobs exist (queue data must be
 preserved); otherwise it restores the 0012 ``accept_checkout_webhook`` and the
 0019 ``schema_ready`` verbatim and drops the fulfillment objects.
@@ -96,6 +105,7 @@ def upgrade() -> None:
               buyer_identity_sub = btrim(buyer_identity_sub)
               and length(buyer_identity_sub) between 3 and 255
               and buyer_identity_sub !~ '[[:cntrl:]]'
+              and buyer_identity_sub not like 'registration:%'
             )
           ),
           status text not null default 'pending' check (
@@ -222,6 +232,10 @@ def upgrade() -> None:
               or p_buyer_identity_sub <> btrim(p_buyer_identity_sub)
               or length(p_buyer_identity_sub) not between 3 and 255
               or p_buyer_identity_sub ~ '[[:cntrl:]]'
+              -- 'registration:' e namespace derivado do e-mail: reservado ao
+              -- worker; um emissor nao pode se ligar a identidade derivada de
+              -- OUTRO e-mail.
+              or p_buyer_identity_sub like 'registration:%'
             )) then
             raise exception 'invalid webhook event' using errcode='22023';
           end if;

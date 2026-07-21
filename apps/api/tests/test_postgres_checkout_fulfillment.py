@@ -380,6 +380,17 @@ def test_explicit_identity_sub_binds_to_that_user(fixture: dict[str, UUID | str]
     assert buyer == (f"cognito-sub-{RUN}",)
 
 
+def test_registration_namespace_is_reserved(fixture: dict[str, UUID | str]) -> None:
+    with pytest.raises(psycopg.errors.InvalidParameterValue):
+        _accept(
+            fixture,
+            event_reference=f"{RUN}-evt-reserved",
+            purchase_reference=f"{RUN}-purchase-reserved",
+            buyer_email=f"attacker.{RUN}@example.test",
+            buyer_identity_sub="registration:victim@example.test",
+        )
+
+
 def test_unmapped_product_dead_letters(fixture: dict[str, UUID | str]) -> None:
     assert ADMIN_URL
     _register_worker(fixture)

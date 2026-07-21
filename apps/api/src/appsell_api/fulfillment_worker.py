@@ -17,7 +17,7 @@ from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import structlog
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
@@ -49,8 +49,10 @@ async def run_fulfillment_worker_loop(app: FastAPI, stop: asyncio.Event) -> None
                 await _apply(auth, settings, worker_id, job)
             if jobs:
                 continue
-        except (DBAPIError, RuntimeError, ValueError, KeyError):
-            logger.warning("fulfillment_worker_retry")
+        except (DBAPIError, RuntimeError, ValueError, KeyError, HTTPException) as error:
+            # HTTPException aqui = envelope recusado (misconfig de allowlist);
+            # logar e continuar tentando em vez de matar a task em silêncio.
+            logger.warning("fulfillment_worker_retry", error_type=type(error).__name__)
         try:
             await asyncio.wait_for(stop.wait(), timeout=_IDLE_POLL_SECONDS)
         except TimeoutError:

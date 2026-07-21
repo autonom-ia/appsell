@@ -132,11 +132,15 @@ def _valid_buyer_email(value: object) -> bool:
 def _valid_buyer_sub(value: object) -> bool:
     if value is None:
         return True
+    # "registration:" is the worker-derived namespace (registration:<email>);
+    # an emitter must never claim it explicitly, or it could bind a purchase to
+    # the identity derived from a DIFFERENT buyer's e-mail.
     return (
         isinstance(value, str)
         and value == value.strip()
         and 3 <= len(value) <= 255
         and _SUB_FORBIDDEN.search(value) is None
+        and not value.startswith("registration:")
     )
 
 
