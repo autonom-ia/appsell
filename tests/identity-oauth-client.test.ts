@@ -237,6 +237,18 @@ describe("Identity OAuth server adapter", () => {
     await expect(exchange("missing-access-audience")).rejects.toThrow(IdentityOAuthProtocolError);
   });
 
+  test("accepts a Cognito-shaped access token carrying the audience in client_id", async () => {
+    const bundle = await exchange("cognito-access-client-id");
+    expect(bundle).toMatchObject({
+      tokenType: "Bearer",
+      identity: { issuer: `${origin}/issuer`, sub: SUBJECT, email: EMAIL, emailVerified: true }
+    });
+  });
+
+  test("rejects a Cognito-shaped access token whose client_id is not the audience", async () => {
+    await expect(exchange("cognito-wrong-client-id")).rejects.toThrow(IdentityOAuthProtocolError);
+  });
+
   test("fails closed against the current upstream shape when the ID token omits nonce", async () => {
     await expect(exchange("missing-nonce")).rejects.toThrow("nonce");
   });
@@ -512,13 +524,16 @@ async function tokenResponse(scenario: string, includeNonce = true) {
     ? { alg: "RS256" as const, typ: "JWT" }
     : { alg: "RS256" as const, kid: scenario === "invalid-kid" ? "bad kid" : KEY_ID, typ: "JWT" };
   const access = new SignJWT({
-    token_use: scenario === "wrong-token-use" ? "id" : "access"
+    token_use: scenario === "wrong-token-use" ? "id" : "access",
+    // Cognito-shaped access tokens omit `aud` and carry the client in `client_id`.
+    ...(scenario === "cognito-access-client-id" ? { client_id: EXPECTED_AUDIENCE } : {}),
+    ...(scenario === "cognito-wrong-client-id" ? { client_id: "other-client" } : {})
   })
     .setProtectedHeader(protectedHeader)
     .setIssuer(issuer)
     .setSubject(accessSubject)
     .setIssuedAt(now);
-  if (scenario !== "missing-access-audience") {
+  if (scenario !== "missing-access-audience" && !scenario.startsWith("cognito-")) {
     access.setAudience(scenario === "wrong-access-audience" ? "other-client" : EXPECTED_AUDIENCE);
   }
   const idClaims: Record<string, unknown> = {
