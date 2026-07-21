@@ -29,6 +29,9 @@ describe("parsePriceInputToMinor", () => {
 
   it("rejects malformed input", () => {
     expect(parsePriceInputToMinor("R$ 10")).toBeNull();
+    expect(parsePriceInputToMinor("1 2,3 4")).toBeNull();
+    expect(parsePriceInputToMinor("12\u00a030")).toBeNull();
+    expect(parsePriceInputToMinor("12\t30")).toBeNull();
     expect(parsePriceInputToMinor("10,999")).toBeNull();
     expect(parsePriceInputToMinor("-5")).toBeNull();
     expect(parsePriceInputToMinor("1.234,56")).toBeNull();

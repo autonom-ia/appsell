@@ -15,10 +15,12 @@ export const OFFER_BILLING_PERIODS: ReadonlyArray<{ value: OfferBillingPeriod; l
 const PRICE_INPUT = /^(\d{1,9})(?:[.,](\d{1,2}))?$/;
 
 // "" -> 0 (oferta sem preço, permitido em rascunho). "12", "12,5", "12,50" e
-// "12.50" -> centavos. Qualquer outro formato -> null (inválido).
+// "12.50" -> centavos. Whitespace interno (inclusive NBSP/tab) é inválido —
+// nunca normalizado silenciosamente: em dinheiro, "1 2,30" não pode virar 12,30.
 export function parsePriceInputToMinor(input: string): number | null {
-  const normalized = input.trim().replace(/\s/g, "");
+  const normalized = input.trim();
   if (normalized === "") return 0;
+  if (/\s/.test(normalized)) return null;
   const match = PRICE_INPUT.exec(normalized);
   if (!match) return null;
   const cents = (match[2] ?? "").padEnd(2, "0");

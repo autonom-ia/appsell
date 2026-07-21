@@ -129,6 +129,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   const [offerStatusState, setOfferStatusState] = useState<OfferStatusState>("idle");
   const [publishDialogOpen, setPublishDialogOpen] = useState(false);
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
+  const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
   const [curriculumDirty, setCurriculumDirty] = useState(false);
   const [curriculumBusy, setCurriculumBusy] = useState(false);
   const [assetNavigationWarning, setAssetNavigationWarning] = useState(false);
@@ -140,10 +141,15 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   const publishCancelButton = useRef<HTMLButtonElement>(null);
   const leaveCancelButton = useRef<HTMLButtonElement>(null);
   const publishTriggerButton = useRef<HTMLButtonElement>(null);
+  const archiveTriggerButton = useRef<HTMLButtonElement>(null);
+  const archiveCancelButton = useRef<HTMLButtonElement>(null);
   const publishStatus = useRef<HTMLDivElement>(null);
   const listLink = useRef<HTMLAnchorElement>(null);
   const dirty = !sameFields(fields, savedFields);
   const editorDirty = dirty || curriculumDirty;
+  // O SQL de update do agregado (0018) exige oferta em draft; com oferta ativa
+  // qualquer save falharia — bloqueia o form inteiro com orientação.
+  const offerLocked = detail !== null && detail.offer.status !== "draft";
 
   useUnsavedChanges(editorDirty);
   useEffect(() => {
@@ -422,9 +428,16 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
         else setOfferStatusState("error");
         return;
       }
-      offerStatusIdempotencyKey.current = null;
+      // Só descarta a chave APÓS reconciliar: se o PATCH aplicou mas o GET
+      // falhar, preservar a chave faz o retry virar replay idempotente em vez
+      // de um novo comando (que bateria em 409 na versão já mudada).
       const refreshed = await loadDetail();
-      setOfferStatusState(refreshed ? "done" : "unavailable");
+      if (refreshed) {
+        offerStatusIdempotencyKey.current = null;
+        setOfferStatusState("done");
+      } else {
+        setOfferStatusState("unavailable");
+      }
     } catch {
       setOfferStatusState("unavailable");
     } finally {
@@ -506,8 +519,9 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       {section === "curriculo" ? <CurriculumWorkspace sellerId={sellerId} productId={productId} courseId={detail.course.id} courseTitle={detail.course.title} archived={detail.status === "archived"} onDirtyChange={handleCurriculumDirty} onBusyChange={handleCurriculumBusy} onCommitted={handleCurriculumCommitted}/> : (
       <form ref={formElement} className="editor-form" onSubmit={saveDraft}>
         {section === "produto" ? (
-          <fieldset disabled={detail.status === "archived"}>
+          <fieldset disabled={detail.status === "archived" || offerLocked}>
             <legend>Identidade do produto</legend>
+            {offerLocked ? <div className="billing-boundary" role="note"><strong>Oferta ativa — edição bloqueada</strong><p>Todo salvamento inclui a oferta, e uma oferta ativa é imutável. Despublique a oferta na aba Oferta para editar e salvar.</p></div> : null}
             <p className="section-intro">Edite o rascunho deste espaço. Uma publicação existente permanece estável até você publicar outra versão.</p>
             <EditorField label="Nome do produto" name="product_title" value={fields.product_title} onChange={(value) => updateField("product_title", value)} minLength={2} maxLength={160} required invalid={invalidField === "product_title"}/>
             <EditorField label="Endereço do produto" name="slug" value={fields.slug} onChange={(value) => updateField("slug", value)} minLength={3} maxLength={63} required invalid={invalidField === "slug"} pattern="[a-z0-9]+(?:-[a-z0-9]+)*" help="Somente letras minúsculas, números e hífens."/>
@@ -543,7 +557,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
                 {detail.offer.status === "draft" ? <button className="primary-button" type="button" disabled={dirty || offerStatusState === "transitioning" || !detail.offer.unit_amount_minor} onClick={() => void transitionOffer("active")}>{offerStatusState === "transitioning" ? "Ativando…" : "Ativar oferta"}</button> : null}
                 {detail.offer.status === "active" ? <>
                   <button className="secondary-button" type="button" disabled={dirty || offerStatusState === "transitioning"} onClick={() => void transitionOffer("draft")}>{offerStatusState === "transitioning" ? "Aplicando…" : "Despublicar para editar"}</button>
-                  <button className="secondary-button" type="button" disabled={dirty || offerStatusState === "transitioning"} onClick={() => void transitionOffer("archived")}>Arquivar oferta</button>
+                  <button ref={archiveTriggerButton} className="secondary-button" type="button" disabled={dirty || offerStatusState === "transitioning"} onClick={() => setArchiveDialogOpen(true)}>Arquivar oferta</button>
                 </> : null}
               </div>
               <div className="form-feedback" aria-live="polite" aria-atomic="true">
@@ -584,7 +598,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
         {(section === "produto" || section === "oferta") ? (
           <div className="editor-save-bar">
             <span aria-live="polite">{dirty ? "Alterações não salvas" : "Rascunho salvo"}</span>
-            <button className="primary-button" type="submit" disabled={!dirty || saveState === "saving" || detail.status === "archived"}>{saveState === "saving" ? "Salvando…" : "Salvar rascunho"}</button>
+            <button className="primary-button" type="submit" disabled={!dirty || saveState === "saving" || detail.status === "archived" || offerLocked}>{saveState === "saving" ? "Salvando…" : "Salvar rascunho"}</button>
           </div>
         ) : null}
       </form>
@@ -595,6 +609,14 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
             <p className="eyebrow">Confirmação de publicação</p><h2 id="publish-dialog-title">Publicar esta versão?</h2>
             <p id="publish-dialog-description">Produto, oferta, módulos, aulas e PDFs verificados ficarão fixos nesta versão publicada. Nenhuma cobrança, checkout ou acesso pago será criado.</p>
             <div className="dialog-actions"><button ref={publishCancelButton} className="secondary-button" type="button" onClick={closePublishDialog}>Revisar novamente</button><button className="primary-button" type="button" onClick={() => void publish()}>Publicar versão</button></div>
+        </AccessibleDialog>
+      ) : null}
+
+      {archiveDialogOpen ? (
+        <AccessibleDialog titleId="archive-dialog-title" descriptionId="archive-dialog-description" initialFocusRef={archiveCancelButton} returnFocusRef={archiveTriggerButton} onClose={() => setArchiveDialogOpen(false)}>
+            <p className="eyebrow">Ação irreversível</p><h2 id="archive-dialog-title">Arquivar esta oferta?</h2>
+            <p id="archive-dialog-description">Arquivar é definitivo: a oferta sai da vitrine e não pode voltar a rascunho nem ser ativada de novo. Para apenas editar, use &quot;Despublicar para editar&quot;.</p>
+            <div className="dialog-actions"><button ref={archiveCancelButton} className="secondary-button" type="button" onClick={() => setArchiveDialogOpen(false)}>Cancelar</button><button className="danger-button" type="button" onClick={() => { setArchiveDialogOpen(false); void transitionOffer("archived"); }}>Arquivar definitivamente</button></div>
         </AccessibleDialog>
       ) : null}
 
