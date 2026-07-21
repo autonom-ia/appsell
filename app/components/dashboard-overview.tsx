@@ -71,7 +71,14 @@ export function DashboardOverview() {
 
   // Initial state is already "loading"; reloads keep the previous snapshot on
   // screen until the fresh response lands (and stay lint-safe inside effects).
-  const loadCatalog = useCallback(async (signal: AbortSignal) => {
+  // Each load gets its own timeout-bound controller so a stalled endpoint
+  // cannot hang the overview, while the parent signal still cancels on unmount.
+  const loadCatalog = useCallback(async (parentSignal: AbortSignal) => {
+    const controller = new AbortController();
+    const abortFromParent = () => controller.abort();
+    parentSignal.addEventListener("abort", abortFromParent, { once: true });
+    const timeout = window.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    const signal = controller.signal;
     try {
       const sellersResponse = await fetch("/api/sellers", { cache: "no-store", signal });
       if (sellersResponse.status === 401) return setCatalog({ status: "unauthorized" });
@@ -102,7 +109,11 @@ export function DashboardOverview() {
       }
       setCatalog({ status: "ready", sellers, drafts, truncated });
     } catch {
-      if (!signal.aborted) setCatalog({ status: "error" });
+      // A timeout abort must surface as an error; only unmount stays silent.
+      if (!parentSignal.aborted) setCatalog({ status: "error" });
+    } finally {
+      window.clearTimeout(timeout);
+      parentSignal.removeEventListener("abort", abortFromParent);
     }
   }, []);
 
