@@ -342,10 +342,12 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
     if (route.request().method() === "GET") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(detail()) });
     const posted = route.request().postDataBuffer();
     const form = await new Request(route.request().url(), { method: "PATCH", headers: route.request().headers(), body: posted ? new Uint8Array(posted) : undefined }).formData();
-    expect([...form.keys()].sort()).toEqual(["_csrf", "course_id", "course_title", "expected_course_version", "expected_offer_version", "expected_product_version", "idempotency_key", "offer_id", "offer_summary", "offer_title", "product_description", "product_title", "slug"]);
+    expect([...form.keys()].sort()).toEqual(["_csrf", "course_id", "course_title", "expected_course_version", "expected_offer_version", "expected_product_version", "idempotency_key", "offer_billing_period", "offer_currency", "offer_id", "offer_summary", "offer_title", "offer_unit_amount_minor", "product_description", "product_title", "slug"]);
     expect(form.get("_csrf")).toBe("csrf-update");
     expect(form.get("course_id")).toBe(courseId);
     expect(form.get("offer_id")).toBe(offerId);
+    expect(form.get("offer_currency")).toBe("BRL");
+    expect(form.get("offer_billing_period")).toBe("one_time");
     if (conflictOnce) {
       conflictOnce = false;
       state.title = "Título concorrente do servidor";
