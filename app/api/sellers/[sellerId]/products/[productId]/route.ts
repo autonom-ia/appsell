@@ -8,6 +8,7 @@ import {
 import {
   csrfTokenForSession,
   PUBLISH_PRODUCT_DRAFT_CSRF_ACTION,
+  TRANSITION_OFFER_STATUS_CSRF_ACTION,
   UPDATE_PRODUCT_DRAFT_CSRF_ACTION,
   verifyMutation
 } from "@/lib/mutation-protection.server";
@@ -31,6 +32,10 @@ import {
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const CONTROL = /[\p{Cc}\p{Cs}]/u;
+// Espelha o teto da API (_MAX_UNIT_AMOUNT_MINOR) e o CHECK da coluna offer.unit_amount_minor.
+const MAX_UNIT_AMOUNT_MINOR = 99_999_999_999;
+const UNIT_AMOUNT = /^(?:0|[1-9][0-9]{0,10})$/;
+const BILLING_PERIODS = new Set(["one_time", "monthly", "yearly"]);
 const UPDATE_FIELDS = [
   "_csrf",
   "idempotency_key",
@@ -45,6 +50,12 @@ const UPDATE_FIELDS = [
   "course_title",
   "offer_title",
   "offer_summary"
+] as const;
+const UPDATE_FIELDS_WITH_PRICE = [
+  ...UPDATE_FIELDS,
+  "offer_unit_amount_minor",
+  "offer_currency",
+  "offer_billing_period"
 ] as const;
 
 export async function GET(request: NextRequest, context: ProductRouteContext) {
@@ -64,7 +75,11 @@ export async function GET(request: NextRequest, context: ProductRouteContext) {
       ...payload,
       csrf: {
         update: csrfTokenForSession(authenticated.sessionId, UPDATE_PRODUCT_DRAFT_CSRF_ACTION),
-        publish: csrfTokenForSession(authenticated.sessionId, PUBLISH_PRODUCT_DRAFT_CSRF_ACTION)
+        publish: csrfTokenForSession(authenticated.sessionId, PUBLISH_PRODUCT_DRAFT_CSRF_ACTION),
+        offer_status: csrfTokenForSession(
+          authenticated.sessionId,
+          TRANSITION_OFFER_STATUS_CSRF_ACTION
+        )
       }
     }, { headers: { "cache-control": "no-store" } });
   } catch (error) {
@@ -87,7 +102,7 @@ export async function PATCH(request: NextRequest, context: ProductRouteContext) 
   }
   if (!authenticated) return unauthorized();
 
-  const parsed = await readExactLimitedFields(request, UPDATE_FIELDS);
+  const parsed = await readExactLimitedFields(request, [UPDATE_FIELDS, UPDATE_FIELDS_WITH_PRICE]);
   if (parsed.kind === "too_large") return payloadTooLarge();
   if (parsed.kind === "invalid") return invalidInput("form");
   const fields = parsed.fields;
@@ -116,6 +131,16 @@ export async function PATCH(request: NextRequest, context: ProductRouteContext) 
   if (!validTrimmedText(fields.course_title, 2, 160)) return invalidInput("course_title");
   if (!validTrimmedText(fields.offer_title, 2, 120)) return invalidInput("offer_title");
   if (!validText(fields.offer_summary, 500)) return invalidInput("offer_summary");
+  const hasPriceFields = fields.offer_unit_amount_minor !== undefined;
+  if (hasPriceFields) {
+    if (!validUnitAmount(fields.offer_unit_amount_minor)) {
+      return invalidInput("offer_unit_amount_minor");
+    }
+    if (fields.offer_currency !== "BRL") return invalidInput("offer_currency");
+    if (!BILLING_PERIODS.has(fields.offer_billing_period ?? "")) {
+      return invalidInput("offer_billing_period");
+    }
+  }
 
   try {
     const payload = await updateDomainProductDraft(
@@ -135,7 +160,14 @@ export async function PATCH(request: NextRequest, context: ProductRouteContext) 
         productDescription: fields.product_description!,
         courseTitle: fields.course_title!,
         offerTitle: fields.offer_title!,
-        offerSummary: fields.offer_summary!
+        offerSummary: fields.offer_summary!,
+        ...(hasPriceFields
+          ? {
+            offerUnitAmountMinor: Number(fields.offer_unit_amount_minor),
+            offerCurrency: fields.offer_currency!,
+            offerBillingPeriod: fields.offer_billing_period as "one_time" | "monthly" | "yearly"
+          }
+          : {})
       }
     );
     return NextResponse.json(payload, { headers: { "cache-control": "no-store" } });
@@ -162,4 +194,8 @@ function validTrimmedText(
 
 function validText(value: string | undefined, maximum: number): value is string {
   return value !== undefined && Buffer.byteLength(value) <= maximum && !CONTROL.test(value);
+}
+
+function validUnitAmount(value: string | undefined): value is string {
+  return value !== undefined && UNIT_AMOUNT.test(value) && Number(value) <= MAX_UNIT_AMOUNT_MINOR;
 }

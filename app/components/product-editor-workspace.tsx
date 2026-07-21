@@ -6,12 +6,20 @@ import { FormEvent, MouseEvent, useCallback, useEffect, useRef, useState } from 
 import { AccessibleDialog } from "./accessible-dialog";
 import { CurriculumWorkspace } from "./curriculum-workspace";
 import { allowUnsavedNavigation, useUnsavedChanges } from "./use-unsaved-changes";
+import {
+  formatOfferPriceBRL,
+  isOfferBillingPeriod,
+  OFFER_BILLING_PERIODS,
+  parsePriceInputToMinor,
+  priceInputFromMinor
+} from "@/lib/offer-price";
 
 type EditorSection = "produto" | "curriculo" | "oferta" | "preview" | "publicar";
 type LoadState = "loading" | "ready" | "unauthorized" | "forbidden" | "not_found" | "unavailable" | "error";
 type SaveState = "idle" | "saving" | "saved" | "saved_with_changes" | "conflict" | "rebasing" | "rebased" | "invalid" | "forbidden" | "unavailable" | "error";
 type PreviewState = "idle" | "loading" | "ready" | "unavailable" | "error";
 type PublishState = "idle" | "publishing" | "published" | "conflict" | "forbidden" | "unavailable" | "error";
+type OfferStatusState = "idle" | "transitioning" | "done" | "conflict" | "blocked" | "forbidden" | "unavailable" | "error";
 
 interface CourseDetail {
   id: string;
@@ -26,6 +34,9 @@ interface OfferDetail {
   summary: string;
   status: string;
   draft_version: number;
+  unit_amount_minor?: number;
+  currency?: string;
+  billing_period?: string;
 }
 
 interface ReadinessItem {
@@ -58,7 +69,7 @@ interface EditorPayload {
   offer?: OfferDetail | null;
   publication?: ProductDetail["publication"];
   latest_publication?: ProductDetail["publication"];
-  csrf?: { update?: string; publish?: string };
+  csrf?: { update?: string; publish?: string; offer_status?: string };
   readiness?: { can_publish: boolean; has_unpublished_changes?: boolean; items: Array<ReadinessItem | string> };
   can_publish?: boolean;
   readiness_violations?: Array<string | { key?: string; label?: string; detail?: string }>;
@@ -71,6 +82,8 @@ interface EditorFields {
   course_title: string;
   offer_title: string;
   offer_summary: string;
+  offer_price: string;
+  offer_billing_period: string;
 }
 
 interface PrivatePreview {
@@ -91,7 +104,7 @@ interface PrivatePreviewPayload extends PrivatePreview {
 const editorSections: Array<{ id: EditorSection; label: string; hint: string }> = [
   { id: "produto", label: "Produto", hint: "Identidade e curso" },
   { id: "curriculo", label: "Currículo", hint: "Módulos e aulas" },
-  { id: "oferta", label: "Oferta", hint: "Termos informativos" },
+  { id: "oferta", label: "Oferta", hint: "Preço e disponibilidade" },
   { id: "preview", label: "Preview", hint: "Revisão privada" },
   { id: "publicar", label: "Publicar", hint: "Snapshot versionado" }
 ];
@@ -103,7 +116,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   const section: EditorSection = editorSections.some((item) => item.id === requestedSection) ? requestedSection as EditorSection : "produto";
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [detail, setDetail] = useState<ProductDetail | null>(null);
-  const [csrf, setCsrf] = useState<{ update: string; publish: string }>({ update: "", publish: "" });
+  const [csrf, setCsrf] = useState<{ update: string; publish: string; offerStatus: string }>({ update: "", publish: "", offerStatus: "" });
   const [fields, setFields] = useState<EditorFields>(emptyFields);
   const fieldsRef = useRef(fields);
   const [savedFields, setSavedFields] = useState<EditorFields>(emptyFields);
@@ -113,6 +126,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   const [preview, setPreview] = useState<PrivatePreview | null>(null);
   const [previewRetry, setPreviewRetry] = useState(0);
   const [publishState, setPublishState] = useState<PublishState>("idle");
+  const [offerStatusState, setOfferStatusState] = useState<OfferStatusState>("idle");
   const [publishDialogOpen, setPublishDialogOpen] = useState(false);
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
   const [curriculumDirty, setCurriculumDirty] = useState(false);
@@ -157,7 +171,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       const nextFields = fieldsFromDetail(nextDetail);
       offerId.current = nextDetail.offer.id ?? crypto.randomUUID();
       setDetail({ ...nextDetail, readiness: payload.readiness ?? nextDetail.readiness });
-      setCsrf({ update: payload.csrf?.update ?? readActionCsrf("update"), publish: payload.csrf?.publish ?? readActionCsrf("publish") });
+      setCsrf({ update: payload.csrf?.update ?? readActionCsrf("update"), publish: payload.csrf?.publish ?? readActionCsrf("publish"), offerStatus: payload.csrf?.offer_status ?? "" });
       setFields(nextFields);
       setSavedFields(nextFields);
       setLoadState("ready");
@@ -215,6 +229,14 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
     event.preventDefault();
     if (!detail || saveState === "saving") return;
     const submitted = fields;
+    const submittedUnitAmountMinor = parsePriceInputToMinor(submitted.offer_price);
+    if (submittedUnitAmountMinor === null) {
+      setInvalidField("offer_price");
+      setSaveState("invalid");
+      const input = formElement.current?.elements.namedItem("offer_price");
+      if (input instanceof HTMLElement) input.focus();
+      return;
+    }
     const submittedVersions = versionsFromDetail(detail);
     const key = updateIdempotencyKey.current ?? crypto.randomUUID();
     updateIdempotencyKey.current = key;
@@ -226,7 +248,15 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
     data.set("expected_offer_version", String(submittedVersions.offer));
     data.set("course_id", detail.course.id);
     data.set("offer_id", offerId.current ?? crypto.randomUUID());
-    for (const [name, value] of Object.entries(submitted)) data.set(name, value);
+    data.set("slug", submitted.slug);
+    data.set("product_title", submitted.product_title);
+    data.set("product_description", submitted.product_description);
+    data.set("course_title", submitted.course_title);
+    data.set("offer_title", submitted.offer_title);
+    data.set("offer_summary", submitted.offer_summary);
+    data.set("offer_unit_amount_minor", String(submittedUnitAmountMinor));
+    data.set("offer_currency", "BRL");
+    data.set("offer_billing_period", isOfferBillingPeriod(submitted.offer_billing_period) ? submitted.offer_billing_period : "one_time");
     setSaveState("saving");
     setInvalidField("");
     const controller = new AbortController();
@@ -254,7 +284,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       if (!updated) return setSaveState("error");
       updateIdempotencyKey.current = null;
       setDetail({ ...updated, readiness: payload.readiness ?? updated.readiness });
-      setCsrf((current) => ({ update: payload.csrf?.update ?? current.update, publish: payload.csrf?.publish ?? current.publish }));
+      setCsrf((current) => ({ update: payload.csrf?.update ?? current.update, publish: payload.csrf?.publish ?? current.publish, offerStatus: payload.csrf?.offer_status ?? current.offerStatus }));
       setSavedFields(fieldsFromDetail(updated));
       if (sameFields(fieldsRef.current, submitted)) {
         const serverFields = fieldsFromDetail(updated);
@@ -292,7 +322,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       }
       setDetail(latest);
       setSavedFields(fieldsFromDetail(latest));
-      setCsrf((current) => ({ update: payload.csrf?.update ?? current.update, publish: payload.csrf?.publish ?? current.publish }));
+      setCsrf((current) => ({ update: payload.csrf?.update ?? current.update, publish: payload.csrf?.publish ?? current.publish, offerStatus: payload.csrf?.offer_status ?? current.offerStatus }));
       offerId.current = latest.offer.id ?? offerId.current ?? crypto.randomUUID();
       updateIdempotencyKey.current = null;
       setInvalidField("");
@@ -352,6 +382,42 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       setPublishState("published");
     } catch {
       setPublishState("unavailable");
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async function transitionOffer(nextStatus: "draft" | "active" | "archived") {
+    const currentOffer = detail?.offer;
+    if (!currentOffer?.id || offerStatusState === "transitioning" || dirty) return;
+    const expectedStatus = currentOffer.status;
+    if (expectedStatus === nextStatus) return;
+    setOfferStatusState("transitioning");
+    const data = new FormData();
+    data.set("_csrf", csrf.offerStatus);
+    data.set("idempotency_key", crypto.randomUUID());
+    data.set("expected_status", expectedStatus);
+    data.set("status", nextStatus);
+    data.set("expected_offer_version", String(currentOffer.draft_version));
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+    try {
+      const response = await fetch(
+        `/api/sellers/${sellerId}/products/${productId}/offers/${currentOffer.id}/status`,
+        { method: "PATCH", body: data, signal: controller.signal }
+      );
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) setOfferStatusState("forbidden");
+        else if (response.status === 409) setOfferStatusState("conflict");
+        else if (response.status === 422) setOfferStatusState("blocked");
+        else if (response.status === 503) setOfferStatusState("unavailable");
+        else setOfferStatusState("error");
+        return;
+      }
+      const refreshed = await loadDetail();
+      setOfferStatusState(refreshed ? "done" : "unavailable");
+    } catch {
+      setOfferStatusState("unavailable");
     } finally {
       clearTimeout(timeout);
     }
@@ -442,12 +508,45 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
         ) : null}
 
         {section === "oferta" ? (
-          <fieldset disabled={detail.status === "archived"}>
-            <legend>Oferta informativa</legend>
-            <div className="billing-boundary" role="note"><strong>Cobrança não conectada</strong><p>Estes termos ajudam a apresentar o produto. Publicar não cria checkout, preço cobrado ou acesso pago.</p></div>
-            <EditorField label="Nome da oferta" name="offer_title" value={fields.offer_title} onChange={(value) => updateField("offer_title", value)} minLength={2} maxLength={120} required invalid={invalidField === "offer_title"}/>
-            <EditorField label="Resumo da oferta" name="offer_summary" value={fields.offer_summary} onChange={(value) => updateField("offer_summary", value)} maxLength={500} multiline invalid={invalidField === "offer_summary"} help="Não informe preço ou promessa de cobrança nesta fase."/>
-          </fieldset>
+          <>
+            <fieldset disabled={detail.status === "archived" || detail.offer.status !== "draft"}>
+              <legend>Oferta e preço</legend>
+              {detail.offer.status === "draft"
+                ? <div className="billing-boundary" role="note"><strong>Defina o preço antes de ativar</strong><p>O valor em reais é o que será cobrado no checkout quando a oferta estiver ativa. Sem preço, a oferta permanece em rascunho.</p></div>
+                : <div className="billing-boundary" role="note"><strong>{detail.offer.status === "active" ? "Oferta ativa" : "Oferta arquivada"}</strong><p>{detail.offer.status === "active" ? "Para editar termos ou preço, despublique a oferta primeiro." : "Uma oferta arquivada é definitiva e não aparece na vitrine."}</p></div>}
+              <EditorField label="Nome da oferta" name="offer_title" value={fields.offer_title} onChange={(value) => updateField("offer_title", value)} minLength={2} maxLength={120} required invalid={invalidField === "offer_title"}/>
+              <EditorField label="Resumo da oferta" name="offer_summary" value={fields.offer_summary} onChange={(value) => updateField("offer_summary", value)} maxLength={500} multiline invalid={invalidField === "offer_summary"}/>
+              <EditorField label="Preço (R$)" name="offer_price" value={fields.offer_price} onChange={(value) => updateField("offer_price", value)} maxLength={12} invalid={invalidField === "offer_price" || invalidField === "offer_unit_amount_minor"} help="Use vírgula para centavos, ex.: 49,90. Deixe vazio para manter sem preço."/>
+              <label className="editor-field">Cobrança
+                <select name="offer_billing_period" value={fields.offer_billing_period} onChange={(event) => updateField("offer_billing_period", event.target.value)} aria-invalid={invalidField === "offer_billing_period"}>
+                  {OFFER_BILLING_PERIODS.map((entry) => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
+                </select>
+              </label>
+            </fieldset>
+            <section className="offer-status-panel" aria-labelledby="offer-status-title">
+              <p className="eyebrow">Disponibilidade na vitrine</p>
+              <h2 id="offer-status-title">Status da oferta: {offerStatusLabel(detail.offer.status)}</h2>
+              {detail.offer.status === "draft" ? <p>Ativar torna a oferta vendável com o preço salvo{detail.offer.unit_amount_minor ? ` (${formatOfferPriceBRL(detail.offer.unit_amount_minor)})` : ""}. É preciso salvar um preço maior que zero antes.</p> : null}
+              {detail.offer.status === "active" ? <p>Oferta ativa por {detail.offer.unit_amount_minor ? formatOfferPriceBRL(detail.offer.unit_amount_minor) : "preço não informado"}. Despublicar volta a rascunho para editar; arquivar remove da vitrine em definitivo.</p> : null}
+              {detail.offer.status === "archived" ? <p>Oferta arquivada. Crie um novo produto para vender novamente.</p> : null}
+              {dirty ? <p className="form-note" role="status">Salve as alterações antes de mudar o status da oferta.</p> : null}
+              <div className="offer-status-actions">
+                {detail.offer.status === "draft" ? <button className="primary-button" type="button" disabled={dirty || offerStatusState === "transitioning" || !detail.offer.unit_amount_minor} onClick={() => void transitionOffer("active")}>{offerStatusState === "transitioning" ? "Ativando…" : "Ativar oferta"}</button> : null}
+                {detail.offer.status === "active" ? <>
+                  <button className="secondary-button" type="button" disabled={dirty || offerStatusState === "transitioning"} onClick={() => void transitionOffer("draft")}>{offerStatusState === "transitioning" ? "Aplicando…" : "Despublicar para editar"}</button>
+                  <button className="secondary-button" type="button" disabled={dirty || offerStatusState === "transitioning"} onClick={() => void transitionOffer("archived")}>Arquivar oferta</button>
+                </> : null}
+              </div>
+              <div className="form-feedback" aria-live="polite" aria-atomic="true">
+                {offerStatusState === "done" ? <p className="form-success">Status da oferta atualizado.</p> : null}
+                {offerStatusState === "conflict" ? <p className="form-error">A oferta mudou em outra sessão. Recarregue antes de tentar novamente.</p> : null}
+                {offerStatusState === "blocked" ? <p className="form-error">Transição bloqueada. Confira se há preço salvo maior que zero e se o status atual permite a mudança.</p> : null}
+                {offerStatusState === "forbidden" ? <p className="form-error">Sua sessão ou permissão mudou. Entre novamente.</p> : null}
+                {offerStatusState === "unavailable" ? <p className="form-note">A API não respondeu. Nenhuma mudança foi confirmada; tente novamente.</p> : null}
+                {offerStatusState === "error" ? <p className="form-error">Não foi possível mudar o status da oferta.</p> : null}
+              </div>
+            </section>
+          </>
         ) : null}
 
         {section === "preview" ? <PrivatePreviewPanel state={previewState} preview={preview} detail={detail} dirty={dirty} onReload={() => { setPreviewState("idle"); setPreview(null); setPreviewRetry((value) => value + 1); }}/> : null}
@@ -594,7 +693,7 @@ function normalizeDetail(value: Partial<ProductDetail> | null | undefined): Prod
     draft_version: productVersion,
     course: { id: course.id, title: course.title ?? "", status: course.status ?? "draft", draft_version: courseVersion },
     courses: courses.map((item) => ({ id: item.id, title: item.title ?? "", status: item.status ?? "draft", draft_version: item.draft_version ?? 1 })),
-    offer: { id: offer.id, title: offer.title ?? "", summary: offer.summary ?? "", status: offer.status ?? "draft", draft_version: offerVersion },
+    offer: { id: offer.id, title: offer.title ?? "", summary: offer.summary ?? "", status: offer.status ?? "draft", draft_version: offerVersion, unit_amount_minor: offer.unit_amount_minor, currency: offer.currency, billing_period: offer.billing_period },
     publication: value.publication ?? null,
     has_unpublished_changes: value.has_unpublished_changes ?? value.readiness?.has_unpublished_changes,
     readiness: normalizeReadinessValue(value.readiness)
@@ -602,7 +701,16 @@ function normalizeDetail(value: Partial<ProductDetail> | null | undefined): Prod
 }
 
 function fieldsFromDetail(detail: ProductDetail): EditorFields {
-  return { slug: detail.slug, product_title: detail.title, product_description: detail.description, course_title: detail.course.title, offer_title: detail.offer.title, offer_summary: detail.offer.summary };
+  return {
+    slug: detail.slug,
+    product_title: detail.title,
+    product_description: detail.description,
+    course_title: detail.course.title,
+    offer_title: detail.offer.title,
+    offer_summary: detail.offer.summary,
+    offer_price: priceInputFromMinor(detail.offer.unit_amount_minor),
+    offer_billing_period: isOfferBillingPeriod(detail.offer.billing_period) ? detail.offer.billing_period : "one_time"
+  };
 }
 
 function versionsFromDetail(detail: ProductDetail) {
@@ -610,7 +718,7 @@ function versionsFromDetail(detail: ProductDetail) {
 }
 
 function sameFields(left: EditorFields, right: EditorFields) {
-  return left.slug === right.slug && left.product_title === right.product_title && left.product_description === right.product_description && left.course_title === right.course_title && left.offer_title === right.offer_title && left.offer_summary === right.offer_summary;
+  return left.slug === right.slug && left.product_title === right.product_title && left.product_description === right.product_description && left.course_title === right.course_title && left.offer_title === right.offer_title && left.offer_summary === right.offer_summary && left.offer_price === right.offer_price && left.offer_billing_period === right.offer_billing_period;
 }
 
 function saveMessage(state: SaveState, dirty: boolean) {
@@ -631,10 +739,16 @@ function shortId(value: string) {
   return value ? `${value.slice(0, 8)}…` : "não informado";
 }
 
+function offerStatusLabel(status: string) {
+  if (status === "active") return "ativa";
+  if (status === "archived") return "arquivada";
+  return "rascunho";
+}
+
 function readActionCsrf(action: "update" | "publish") {
   const prefix = `${process.env.NODE_ENV === "production" ? `__Host-appsell_product_${action}_csrf` : `appsell_product_${action}_csrf` }=`;
   const value = document.cookie.split("; ").find((part) => part.startsWith(prefix));
   return value ? decodeURIComponent(value.slice(prefix.length)) : "";
 }
 
-const emptyFields: EditorFields = { slug: "", product_title: "", product_description: "", course_title: "", offer_title: "", offer_summary: "" };
+const emptyFields: EditorFields = { slug: "", product_title: "", product_description: "", course_title: "", offer_title: "", offer_summary: "", offer_price: "", offer_billing_period: "one_time" };
