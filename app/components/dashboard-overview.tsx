@@ -1,0 +1,214 @@
+"use client";
+
+import Link from "next/link";
+import { useCallback, useEffect, useState } from "react";
+import { ProductCard } from "./product-card";
+import { SellerOnboardingCard } from "./seller-onboarding-card";
+import { DEMO_SELLER_ID, demoProducts } from "../../lib/demo-catalog";
+import { listSellerProducts } from "../../lib/catalog-projection";
+import {
+  dashboardCatalogMetrics,
+  formatProductCount,
+  type DashboardDraftStatus
+} from "../../lib/dashboard-projection";
+
+interface Seller {
+  id: string;
+  slug: string;
+  display_name: string;
+  role: string;
+}
+
+interface ProductDraft {
+  id: string;
+  slug: string;
+  title: string;
+  description: string;
+  status: DashboardDraftStatus;
+  course?: { id: string; title: string } | null;
+  course_title?: string;
+}
+
+type SessionView =
+  | { status: "loading" }
+  | { status: "demo" }
+  | { status: "real" }
+  | { status: "failed" };
+
+type CatalogState =
+  | { status: "loading" }
+  | { status: "unauthorized" }
+  | { status: "unavailable" }
+  | { status: "error" }
+  | { status: "ready"; sellers: Seller[]; drafts: ProductDraft[]; truncated: boolean };
+
+// The drafts endpoint is cursor-paginated; the overview walks a bounded number
+// of pages so the metric stays honest without unbounded fan-out.
+const MAX_DRAFT_PAGES = 20;
+const FETCH_TIMEOUT_MS = 8_000;
+
+export function DashboardOverview() {
+  const [view, setView] = useState<SessionView>({ status: "loading" });
+  const [catalog, setCatalog] = useState<CatalogState>({ status: "loading" });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    void fetch("/api/session", { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) return setView({ status: "failed" });
+        const payload = await response.json() as { authenticated?: boolean; demoProfile?: unknown };
+        if (payload.authenticated !== true) return setView({ status: "failed" });
+        setView({ status: payload.demoProfile ? "demo" : "real" });
+      })
+      .catch(() => setView({ status: "failed" }))
+      .finally(() => clearTimeout(timeout));
+    return () => {
+      clearTimeout(timeout);
+      controller.abort();
+    };
+  }, []);
+
+  // Initial state is already "loading"; reloads keep the previous snapshot on
+  // screen until the fresh response lands (and stay lint-safe inside effects).
+  const loadCatalog = useCallback(async (signal: AbortSignal) => {
+    try {
+      const sellersResponse = await fetch("/api/sellers", { cache: "no-store", signal });
+      if (sellersResponse.status === 401) return setCatalog({ status: "unauthorized" });
+      if (sellersResponse.status === 503) return setCatalog({ status: "unavailable" });
+      if (!sellersResponse.ok) return setCatalog({ status: "error" });
+      const sellersPayload = await sellersResponse.json() as { sellers?: Seller[] };
+      const sellers = Array.isArray(sellersPayload.sellers) ? sellersPayload.sellers : [];
+      if (sellers.length === 0) {
+        return setCatalog({ status: "ready", sellers, drafts: [], truncated: false });
+      }
+      const drafts: ProductDraft[] = [];
+      let cursor: string | null = null;
+      let truncated = false;
+      for (let page = 0; page < MAX_DRAFT_PAGES; page += 1) {
+        const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+        const response: Response = await fetch(`/api/sellers/${sellers[0].id}/products${query}`, {
+          cache: "no-store",
+          signal
+        });
+        if (response.status === 401) return setCatalog({ status: "unauthorized" });
+        if (response.status === 503) return setCatalog({ status: "unavailable" });
+        if (!response.ok) return setCatalog({ status: "error" });
+        const payload = await response.json() as { products?: ProductDraft[]; next_cursor?: unknown };
+        drafts.push(...(Array.isArray(payload.products) ? payload.products : []));
+        cursor = typeof payload.next_cursor === "string" && payload.next_cursor ? payload.next_cursor : null;
+        if (!cursor) break;
+        if (page === MAX_DRAFT_PAGES - 1) truncated = true;
+      }
+      setCatalog({ status: "ready", sellers, drafts, truncated });
+    } catch {
+      if (!signal.aborted) setCatalog({ status: "error" });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (view.status !== "real") return;
+    const controller = new AbortController();
+    const start = window.setTimeout(() => void loadCatalog(controller.signal), 0);
+    const reload = () => {
+      void loadCatalog(controller.signal);
+    };
+    window.addEventListener("appsell:sellers-changed", reload);
+    return () => {
+      window.clearTimeout(start);
+      window.removeEventListener("appsell:sellers-changed", reload);
+      controller.abort();
+    };
+  }, [view.status, loadCatalog]);
+
+  const showCta = view.status === "demo" ||
+    (view.status === "real" && catalog.status === "ready" && catalog.sellers.length > 0);
+
+  return (
+    <>
+      <header className="page-header">
+        <div><p className="eyebrow">Visão geral</p><h1>Seu negócio em um só lugar.</h1><p>Acompanhe o catálogo e continue de onde parou.</p></div>
+        {showCta ? <Link className="primary-button" href="/products">Criar produto</Link> : null}
+      </header>
+      {view.status === "loading" ? <p className="empty-state" role="status">Carregando sua visão geral…</p> : null}
+      {view.status === "failed" ? <p className="empty-state" role="alert">Não foi possível validar sua sessão. <a href="/auth/login">Entre novamente</a>.</p> : null}
+      {view.status === "demo" ? <DemoDashboard/> : null}
+      {view.status === "real" ? <RealDashboard catalog={catalog}/> : null}
+    </>
+  );
+}
+
+function RealDashboard({ catalog }: { catalog: CatalogState }) {
+  const ready = catalog.status === "ready" ? catalog : null;
+  const hasSeller = (ready?.sellers.length ?? 0) > 0;
+  const metrics = dashboardCatalogMetrics(ready?.drafts ?? [], ready?.truncated ?? false);
+  const visibleDrafts = (ready?.drafts ?? []).filter((draft) => draft.status !== "archived").slice(0, 4);
+
+  return (
+    <>
+      {catalog.status === "loading" ? <p className="empty-state" role="status">Carregando seu catálogo…</p> : null}
+      {catalog.status === "unauthorized" ? <p className="empty-state" role="alert">Sua sessão expirou. <a href="/auth/login">Entre novamente</a>.</p> : null}
+      {catalog.status === "unavailable" ? <p className="empty-state" role="alert">A API está indisponível no momento. Tente novamente em instantes.</p> : null}
+      {catalog.status === "error" ? <p className="empty-state" role="alert">Não foi possível carregar seu catálogo. Recarregue a página.</p> : null}
+      {ready && !hasSeller ? <SellerOnboardingCard/> : null}
+      {ready ? (
+        <section className="metric-grid" aria-label="Resumo do negócio">
+          <article><span>Produtos</span><strong>{formatProductCount(metrics)}</strong><small>{metrics.published} publicados</small></article>
+          <article><span>Alunos</span><strong>—</strong><small>Sem matrículas registradas ainda</small></article>
+          <article><span>Receita</span><strong>—</strong><small>Financeiro ainda não conectado</small></article>
+        </section>
+      ) : null}
+      {ready && hasSeller ? (
+        <>
+          <section className="section-heading">
+            <div><p className="eyebrow">{ready.sellers[0].display_name}</p><h2>Seus produtos</h2></div>
+            <Link href="/products">Ver todos <span aria-hidden="true">→</span></Link>
+          </section>
+          {ready.sellers.length > 1 ? <p className="form-note">Mostrando {ready.sellers[0].display_name}. Gerencie os outros espaços em Produtos.</p> : null}
+          {visibleDrafts.length ? (
+            <div className="draft-list">
+              {visibleDrafts.map((draft) => (
+                <article className="draft-card" key={draft.id}>
+                  <div><span className={`status status-${draft.status}`}>{draftStatusLabel(draft.status)}</span><span>@{draft.slug}</span></div>
+                  <h3>{draft.title}</h3>
+                  <p>{draft.description || "Descrição ainda não informada."}</p>
+                  <footer><span>Curso inicial</span><strong>{draft.course?.title ?? draft.course_title ?? "Curso em rascunho"}</strong></footer>
+                  <Link className="draft-card-action" href={`/products/${encodeURIComponent(ready.sellers[0].id)}/${encodeURIComponent(draft.id)}`}>
+                    {draft.status === "published" ? "Editar nova versão" : "Continuar edição"} <span aria-hidden="true">→</span>
+                  </Link>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <p className="empty-state">Nenhum produto ainda. <Link href="/products">Crie o primeiro como rascunho privado</Link>.</p>
+          )}
+        </>
+      ) : null}
+    </>
+  );
+}
+
+function DemoDashboard() {
+  const products = listSellerProducts(demoProducts, DEMO_SELLER_ID);
+  const published = products.filter((product) => product.status === "published").length;
+
+  return (
+    <>
+      <section className="metric-grid" aria-label="Resumo demonstrativo do negócio">
+        <article><span>Produtos</span><strong>{String(products.length).padStart(2, "0")}</strong><small>{published} publicados</small></article>
+        <article><span>Alunos</span><strong>128</strong><small>Dados demonstrativos</small></article>
+        <article><span>Receita</span><strong>—</strong><small>Financeiro ainda não conectado</small></article>
+      </section>
+      <section className="section-heading"><div><p className="eyebrow">Catálogo demonstrativo</p><h2>Seus produtos</h2></div><Link href="/products">Ver todos <span aria-hidden="true">→</span></Link></section>
+      {products.length ? <div className="product-grid">{products.slice(0, 2).map((product) => <ProductCard key={product.id} product={product}/>)}</div> : <p className="empty-state">Nenhum produto demonstrativo disponível.</p>}
+      <section className="blocked-card"><span className="blocked-icon" aria-hidden="true">i</span><div><strong>Ambiente de demonstração</strong><p>Pagamentos e login comercial ainda estão desativados. Criação, edição, currículo e publicação local já podem ser demonstrados com isolamento entre espaços.</p></div></section>
+    </>
+  );
+}
+
+function draftStatusLabel(status: DashboardDraftStatus) {
+  if (status === "published") return "Publicado";
+  if (status === "unpublished") return "Despublicado";
+  if (status === "archived") return "Arquivado";
+  return "Rascunho";
+}
