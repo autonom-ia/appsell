@@ -359,6 +359,103 @@ def test_worker_grants_revokes_and_respects_ordering(
     assert reactivated[1] == "active"
 
 
+def test_granted_buyer_identity_uses_canonical_uuid(fixture: dict[str, UUID | str]) -> None:
+    # A identidade criada pelo fulfillment precisa ter o MESMO id que o login
+    # Cognito produz (uuid5(NAMESPACE_URL, issuer\\0sub)), senão o comprador
+    # não alcança o próprio entitlement depois de logar.
+    assert ADMIN_URL
+    _register_worker(fixture)
+    _accept(
+        fixture,
+        event_reference=f"{RUN}-evt-canon",
+        purchase_reference=f"{RUN}-purchase-canon",
+        buyer_email=f"buyer.canon.{RUN}@example.test",
+    )
+    for result in _drain(fixture):
+        assert result.get("status") == "completed"
+    granted = _entitlement(fixture, f"{RUN}-purchase-canon")
+    assert granted is not None
+    issuer = cast(str, fixture["issuer"])
+    expected = uuid5(NAMESPACE_URL, f"{issuer}\0registration:buyer.canon.{RUN}@example.test")
+    assert granted[2] == expected
+
+
+def test_refund_before_approval_of_same_purchase_grants_no_access(
+    fixture: dict[str, UUID | str],
+) -> None:
+    # Ordem inversa: o refund chega e é processado ANTES do approval da mesma
+    # compra. O approval não pode conceder acesso.
+    assert ADMIN_URL
+    _register_worker(fixture)
+    _accept(
+        fixture,
+        event_reference=f"{RUN}-evt-rev-refund",
+        event_type="purchase.refunded",
+        purchase_reference=f"{RUN}-purchase-rev",
+        buyer_email=f"buyer.rev.{RUN}@example.test",
+    )
+    for result in _drain(fixture):
+        assert result.get("status") == "completed"
+    _accept(
+        fixture,
+        event_reference=f"{RUN}-evt-rev-approve",
+        purchase_reference=f"{RUN}-purchase-rev",
+        buyer_email=f"buyer.rev.{RUN}@example.test",
+    )
+    approve_results = _drain(fixture)
+    assert any(result.get("reason") == "purchase_refunded" for result in approve_results)
+    assert _entitlement(fixture, f"{RUN}-purchase-rev") is None
+
+
+def test_refund_of_superseded_purchase_does_not_revoke(
+    fixture: dict[str, UUID | str],
+) -> None:
+    # Compra A concede; compra B (re-compra) assume a mesma entitlement e a
+    # reference_key. Refund de A (superada) NÃO revoga; refund de B revoga.
+    assert ADMIN_URL
+    _register_worker(fixture)
+    _accept(
+        fixture,
+        event_reference=f"{RUN}-evt-sup-a",
+        purchase_reference=f"{RUN}-purchase-sup-a",
+        buyer_email=f"buyer.sup.{RUN}@example.test",
+    )
+    _drain(fixture)
+    _accept(
+        fixture,
+        event_reference=f"{RUN}-evt-sup-b",
+        purchase_reference=f"{RUN}-purchase-sup-b",
+        buyer_email=f"buyer.sup.{RUN}@example.test",
+    )
+    _drain(fixture)
+    entitlement_b = _entitlement(fixture, f"{RUN}-purchase-sup-b")
+    assert entitlement_b is not None and entitlement_b[1] == "active"
+
+    _accept(
+        fixture,
+        event_reference=f"{RUN}-evt-sup-a-refund",
+        event_type="purchase.refunded",
+        purchase_reference=f"{RUN}-purchase-sup-a",
+        buyer_email=f"buyer.sup.{RUN}@example.test",
+    )
+    refund_a_results = _drain(fixture)
+    assert any(result.get("reason") == "nothing_to_revoke" for result in refund_a_results)
+    still_active = _entitlement(fixture, f"{RUN}-purchase-sup-b")
+    assert still_active is not None and still_active[1] == "active"
+
+    _accept(
+        fixture,
+        event_reference=f"{RUN}-evt-sup-b-refund",
+        event_type="purchase.refunded",
+        purchase_reference=f"{RUN}-purchase-sup-b",
+        buyer_email=f"buyer.sup.{RUN}@example.test",
+    )
+    refund_b_results = _drain(fixture)
+    assert any(result.get("revoked") is True for result in refund_b_results)
+    revoked = _entitlement(fixture, f"{RUN}-purchase-sup-b")
+    assert revoked is not None and revoked[1] == "revoked"
+
+
 def test_explicit_identity_sub_binds_to_that_user(fixture: dict[str, UUID | str]) -> None:
     assert ADMIN_URL
     _register_worker(fixture)

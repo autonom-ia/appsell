@@ -5,10 +5,13 @@ buyer identity, so nothing consuming ``webhook_event`` can grant access. This
 migration adds the missing fulfillment substrate:
 
 * ``app_private.fulfillment_job`` — durable queue row created when a signed
-  webhook carries the buyer (payload v2). Stores the buyer e-mail (private
-  schema, revoked from the runtime role) plus the digests already recorded on
-  the event; product resolution reuses ``external_product_mapping`` by digest,
-  so no plaintext external reference is ever persisted.
+  webhook carries the buyer (payload v2). Stores the buyer e-mail in the
+  private schema (revoked from the runtime role) plus the digests already
+  recorded on the event; product resolution reuses ``external_product_mapping``
+  by digest, so no plaintext external reference is ever persisted. On grant the
+  e-mail also lands in ``public.identity_user.email_normalized`` — the same
+  place every buyer's e-mail lives (pre-existing), protected by FORCE RLS and
+  self-read only; it is not confined to ``app_private`` beyond that.
 * ``app_private.fulfillment_worker_identity`` — allowlist for the production
   fulfillment worker (asset/demo worker pattern), self-registered via
   ``ensure_fulfillment_worker`` under the worker capability; revoking the row
@@ -448,7 +451,25 @@ def upgrade() -> None:
               'error_code','product_mapping_missing');
           end if;
 
+          -- Identidade canônica do comprador: mesmo uuid5 que o login Cognito
+          -- produz (app_private.identity_user_id), senão o entitlement ficaria
+          -- ligado a uma identidade inalcançavel. Determinístico: serve de chave
+          -- de serialização mesmo antes de a linha existir.
+          buyer_sub:=coalesce(job.buyer_identity_sub,
+            'registration:'||job.buyer_email_normalized);
+          buyer_id:=app_private.identity_user_id(p_issuer,buyer_sub);
+
+          -- Serializa approval e refund do MESMO (seller,buyer,produto) em uma
+          -- única secao critica: a maquina de estados da compra nao pode
+          -- interlear (a fence protege so a posse do job).
+          perform pg_advisory_xact_lock(hashtextextended(
+            'appsell.fulfillment:'||p_seller::text||':'||buyer_id::text||':'||
+              mapped_product_id::text,0));
+
           if job.event_type='purchase.approved' then
+            -- Out-of-order: se um refund/cancel DESTA compra ja chegou (evento
+            -- gravado no ingress), nao conceder. Sob o lock, linearizado com o
+            -- ramo de revogacao.
             refund_seen:=exists(
               select 1 from public.webhook_event other
               where other.seller_organization_id=p_seller
@@ -492,37 +513,32 @@ def upgrade() -> None:
                 'error_code','product_not_published');
             end if;
 
-            buyer_sub:=coalesce(job.buyer_identity_sub,
-              'registration:'||job.buyer_email_normalized);
-            select existing.id into buyer_id from public.identity_user existing
-            where existing.identity_issuer=p_issuer and existing.identity_sub=buyer_sub;
+            insert into public.identity_user(
+              id,identity_issuer,identity_sub,email_normalized,email_verified
+            ) values (buyer_id,p_issuer,buyer_sub,job.buyer_email_normalized,false)
+            on conflict on constraint identity_user_issuer_sub_key do update set
+              updated_at=clock_timestamp()
+            where public.identity_user.id=excluded.id
+            returning id into buyer_id;
             if buyer_id is null then
-              insert into public.identity_user(
-                identity_issuer,identity_sub,email_normalized,email_verified
-              ) values (p_issuer,buyer_sub,job.buyer_email_normalized,false)
-              on conflict (identity_issuer,identity_sub) do update set
-                updated_at=clock_timestamp()
-              returning id into buyer_id;
+              raise exception 'buyer identity binding conflict' using errcode='40001';
             end if;
 
-            perform pg_advisory_xact_lock(hashtextextended(
-              'appsell.fulfillment:'||p_seller::text||':'||buyer_id::text||':'||
-                mapped_product_id::text,0));
             select * into entitlement from public.buyer_entitlement existing
             where existing.seller_organization_id=p_seller
               and existing.buyer_identity_user_id=buyer_id
               and existing.catalog_product_id=mapped_product_id
             for update;
             if found then
-              if entitlement.status='active' then
-                v_entitlement_id:=entitlement.id;
-              else
-                update public.buyer_entitlement set status='active',
-                  reference_key=reference,publication_id=product.published_snapshot_id,
-                  starts_at=clock_timestamp(),expires_at=null,updated_at=clock_timestamp()
-                where seller_organization_id=p_seller and id=entitlement.id;
-                v_entitlement_id:=entitlement.id;
-              end if;
+              -- Reaponta a reference_key para a compra mais nova (ela passa a
+              -- ser a dona): um refund de compra anterior ja superada nao revoga.
+              update public.buyer_entitlement set status='active',
+                reference_key=reference,publication_id=product.published_snapshot_id,
+                starts_at=case when entitlement.status='active'
+                  then entitlement.starts_at else clock_timestamp() end,
+                expires_at=null,updated_at=clock_timestamp()
+              where seller_organization_id=p_seller and id=entitlement.id;
+              v_entitlement_id:=entitlement.id;
             else
               v_entitlement_id:=gen_random_uuid();
               insert into public.buyer_entitlement(
@@ -549,12 +565,15 @@ def upgrade() -> None:
               'entitlement_id',v_entitlement_id,'buyer_identity_user_id',buyer_id);
           end if;
 
-          -- purchase.refunded / subscription.cancelled
+          -- purchase.refunded / subscription.cancelled: revoga o entitlement
+          -- de (seller,buyer,produto) SOMENTE se esta compra e a dona atual
+          -- (reference_key), sob o mesmo lock. Compra superada -> no-op.
           select * into entitlement from public.buyer_entitlement existing
           where existing.seller_organization_id=p_seller
-            and existing.reference_key=reference
+            and existing.buyer_identity_user_id=buyer_id
+            and existing.catalog_product_id=mapped_product_id
           for update;
-          if found and entitlement.status='active' then
+          if found and entitlement.status='active' and entitlement.reference_key=reference then
             update public.buyer_entitlement set status='revoked',
               updated_at=clock_timestamp()
             where seller_organization_id=p_seller and id=entitlement.id;
@@ -729,6 +748,17 @@ def downgrade() -> None:
           if exists (select 1 from app_private.fulfillment_job) then
             raise exception
               'cannot downgrade 0020_checkout_fulfillment: fulfillment jobs exist; queue data must be preserved'
+              using errcode = '55000';
+          end if;
+          -- Uma revogacao de worker e sinal de seguranca: derrubar a tabela e
+          -- deixar o auto-registro recriar o worker como ativo apagaria a
+          -- revogacao. Recusa o downgrade enquanto houver worker revogado.
+          if exists (
+            select 1 from app_private.fulfillment_worker_identity
+            where status = 'revoked'
+          ) then
+            raise exception
+              'cannot downgrade 0020_checkout_fulfillment: a revoked fulfillment worker exists; revocation must be preserved'
               using errcode = '55000';
           end if;
         end $migration$
