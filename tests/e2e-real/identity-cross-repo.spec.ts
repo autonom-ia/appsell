@@ -128,7 +128,7 @@ test("superadmin demo crosses Auth and Foundation into a temporary read-only ins
 
 async function login(page: Page, email: string, expectedPath: string) {
   await page.goto("/");
-  await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
+  await page.getByRole("link", { name: "Entrar na sua conta" }).click();
   await expect(page).toHaveURL((url) => url.origin === authOrigin && url.pathname === "/login/");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Senha").fill(password!);
