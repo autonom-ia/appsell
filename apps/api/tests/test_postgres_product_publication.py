@@ -279,6 +279,59 @@ def read_offer(seller_id: UUID, offer_id: UUID) -> tuple[object, ...] | None:
         ).fetchone()
 
 
+def read_offer_status(seller_id: UUID, offer_id: UUID) -> tuple[object, ...] | None:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        return connection.execute(
+            "select status, version from offer where seller_organization_id = %s and id = %s",
+            (seller_id, offer_id),
+        ).fetchone()
+
+
+def transition_offer_status(
+    actor: UUID,
+    seller_id: UUID,
+    product_id: UUID,
+    offer_id: UUID,
+    expected_status: str,
+    target_status: str,
+    expected_offer_version: int,
+    *,
+    key: UUID | None = None,
+    body_sha256: str | None = None,
+) -> tuple[str, int, bool]:
+    assert RUNTIME_URL
+    request_key = key or uuid4()
+    request_digest = body_sha256 or digest(
+        f"{product_id}:{offer_id}:{target_status}:{expected_offer_version}"
+    )
+    with psycopg.connect(RUNTIME_URL) as connection:
+        apply_context(connection, actor, seller_id, "catalog.offer.status.update")
+        row = connection.execute(
+            """
+            select offer_status, offer_version, changed
+            from app_private.transition_offer_status(
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
+            """,
+            (
+                actor,
+                seller_id,
+                product_id,
+                offer_id,
+                expected_status,
+                target_status,
+                expected_offer_version,
+                request_key,
+                request_digest,
+                uuid4(),
+            ),
+        ).fetchone()
+        assert row is not None
+        connection.commit()
+    return str(row[0]), int(row[1]), bool(row[2])
+
+
 def test_offer_pricing_is_persisted_on_create_and_update() -> None:
     seller_id, product_id, course_id = create_graph()
     offer_id = uuid4()
@@ -363,6 +416,132 @@ def test_offer_pricing_defaults_when_omitted_on_create() -> None:
     assert created is True
     assert offer_version == 1
     assert read_offer(seller_id, offer_id) == (0, "BRL", "one_time", 1)
+
+
+def test_offer_status_valid_transitions_are_versioned_and_idempotent() -> None:
+    seller_id, product_id, course_id = create_graph()
+    offer_id = uuid4()
+    update_draft(USER_A, seller_id, product_id, course_id, offer_id)
+    assert read_offer_status(seller_id, offer_id) == ("draft", 1)
+
+    activation_key = uuid4()
+    activation_hash = digest(f"activate:{offer_id}")
+    assert transition_offer_status(
+        USER_A,
+        seller_id,
+        product_id,
+        offer_id,
+        "draft",
+        "active",
+        1,
+        key=activation_key,
+        body_sha256=activation_hash,
+    ) == ("active", 2, True)
+    assert transition_offer_status(
+        USER_A,
+        seller_id,
+        product_id,
+        offer_id,
+        "draft",
+        "active",
+        1,
+        key=activation_key,
+        body_sha256=activation_hash,
+    ) == ("active", 2, False)
+    assert transition_offer_status(
+        USER_A, seller_id, product_id, offer_id, "active", "archived", 2
+    ) == ("archived", 3, True)
+    assert read_offer_status(seller_id, offer_id) == ("archived", 3)
+
+
+def test_offer_status_allows_active_to_draft_round_trip() -> None:
+    # A seller can revert an active offer to draft (to edit and re-publish),
+    # then re-activate it. Each transition bumps the version.
+    seller_id, product_id, course_id = create_graph()
+    offer_id = uuid4()
+    update_draft(USER_A, seller_id, product_id, course_id, offer_id)
+
+    assert transition_offer_status(
+        USER_A, seller_id, product_id, offer_id, "draft", "active", 1
+    ) == ("active", 2, True)
+    assert transition_offer_status(
+        USER_A, seller_id, product_id, offer_id, "active", "draft", 2
+    ) == ("draft", 3, True)
+    assert read_offer_status(seller_id, offer_id) == ("draft", 3)
+    # Re-activation from the reverted draft still works and requires the price.
+    assert transition_offer_status(
+        USER_A, seller_id, product_id, offer_id, "draft", "active", 3
+    ) == ("active", 4, True)
+    assert read_offer_status(seller_id, offer_id) == ("active", 4)
+
+
+@pytest.mark.parametrize(
+    ("initial_status", "target_status"),
+    [
+        ("draft", "archived"),
+        ("active", "active"),
+        ("archived", "active"),
+        ("archived", "draft"),
+        ("archived", "archived"),
+    ],
+)
+def test_offer_status_rejects_invalid_transitions(initial_status: str, target_status: str) -> None:
+    seller_id, product_id, course_id = create_graph()
+    offer_id = uuid4()
+    update_draft(USER_A, seller_id, product_id, course_id, offer_id)
+    version = 1
+    if initial_status in {"active", "archived"}:
+        transition_offer_status(USER_A, seller_id, product_id, offer_id, "draft", "active", version)
+        version = 2
+    if initial_status == "archived":
+        transition_offer_status(
+            USER_A, seller_id, product_id, offer_id, "active", "archived", version
+        )
+        version = 3
+
+    with pytest.raises(psycopg.Error) as error:
+        transition_offer_status(
+            USER_A,
+            seller_id,
+            product_id,
+            offer_id,
+            initial_status,
+            target_status,
+            version,
+        )
+    assert error.value.sqlstate in {"22023", "P4222"}
+    assert read_offer_status(seller_id, offer_id) == (initial_status, version)
+
+
+def test_offer_status_activation_requires_positive_price() -> None:
+    seller_id, product_id, course_id = create_graph()
+    offer_id = uuid4()
+    update_draft(
+        USER_A,
+        seller_id,
+        product_id,
+        course_id,
+        offer_id,
+        offer_unit_amount_minor=0,
+    )
+    with pytest.raises(psycopg.Error) as error:
+        transition_offer_status(USER_A, seller_id, product_id, offer_id, "draft", "active", 1)
+    assert error.value.sqlstate == "P4222"
+    assert read_offer_status(seller_id, offer_id) == ("draft", 1)
+
+
+def test_offer_status_check_rejects_unknown_values() -> None:
+    seller_id, product_id, course_id = create_graph()
+    offer_id = uuid4()
+    update_draft(USER_A, seller_id, product_id, course_id, offer_id)
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection, pytest.raises(psycopg.Error) as error:
+        connection.execute(
+            "update offer set status = 'paused' where seller_organization_id = %s and id = %s",
+            (seller_id, offer_id),
+        )
+    assert error.value.sqlstate == "23514"
+    assert read_offer_status(seller_id, offer_id) == ("draft", 1)
 
 
 @pytest.mark.parametrize(
@@ -460,7 +639,7 @@ def test_schema_rls_and_runtime_privileges_are_minimal() -> None:
         ("publication", "appsell_owner", True, True),
     ]
     assert privileges == (
-        "0018_offer_pricing",
+        "0019_offer_status",
         True,
         False,
         True,
@@ -1070,7 +1249,7 @@ def test_upgrade_from_0003_preserves_existing_draft() -> None:
                 """,
                 (seller_id, product_id),
             ).fetchone() == (
-                "0018_offer_pricing",
+                "0019_offer_status",
                 "draft",
                 None,
                 True,
@@ -1082,3 +1261,200 @@ def test_upgrade_from_0003_preserves_existing_draft() -> None:
                     sql.Identifier(database_name)
                 )
             )
+
+
+@pytest.mark.skipif(not MIGRATOR_URL, reason="migrator URL is required for downgrade test")
+def test_offer_status_migration_preserves_history_and_allows_clean_downgrade() -> None:
+    assert ADMIN_URL and RUNTIME_URL and MIGRATOR_URL and CONTEXT_KEY_HEX
+    transitioned_database = f"appsell_offer_status_{uuid4().hex}"
+    clean_database = f"appsell_offer_status_clean_{uuid4().hex}"
+    maintenance_url = make_conninfo(ADMIN_URL, dbname="postgres")
+    repository_root = Path(__file__).resolve().parents[3]
+
+    def database_url(base_url: str, database_name: str) -> str:
+        return make_conninfo(base_url, dbname=database_name)
+
+    def migrator_url(database_name: str) -> str:
+        return (
+            make_url(MIGRATOR_URL).set(database=database_name).render_as_string(hide_password=False)
+        )
+
+    def create_database(database_name: str) -> None:
+        with psycopg.connect(maintenance_url, autocommit=True) as connection:
+            connection.execute(sql.SQL("create database {}").format(sql.Identifier(database_name)))
+            connection.execute(
+                sql.SQL("alter database {} owner to appsell_owner").format(
+                    sql.Identifier(database_name)
+                )
+            )
+            connection.execute(
+                sql.SQL("revoke connect on database {} from public").format(
+                    sql.Identifier(database_name)
+                )
+            )
+            connection.execute(
+                sql.SQL("grant connect on database {} to appsell_migrator, appsell_runtime").format(
+                    sql.Identifier(database_name)
+                )
+            )
+
+    def run_migration(
+        database_name: str, *arguments: str, check: bool = True
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(  # noqa: S603 -- arguments are fixed by this test
+            [sys.executable, "-m", "alembic", "-c", "apps/api/alembic.ini", *arguments],
+            cwd=repository_root,
+            env={**os.environ, "APPSELL_MIGRATOR_DATABASE_URL": migrator_url(database_name)},
+            check=check,
+            capture_output=True,
+            text=True,
+        )
+
+    create_database(transitioned_database)
+    create_database(clean_database)
+    try:
+        run_migration(transitioned_database, "upgrade", "0018_offer_pricing")
+        target_admin_url = database_url(ADMIN_URL, transitioned_database)
+        target_runtime_url = database_url(RUNTIME_URL, transitioned_database)
+        actor, seller_id, product_id, offer_id = uuid4(), uuid4(), uuid4(), uuid4()
+        with psycopg.connect(target_admin_url) as connection:
+            connection.execute(
+                "insert into app_private.context_signing_key (secret) values (%s)",
+                (bytes.fromhex(CONTEXT_KEY_HEX),),
+            )
+            connection.execute(
+                """
+                insert into identity_user (
+                  id, identity_issuer, identity_sub, email_normalized, email_verified
+                ) values (%s, 'https://identity.offer-status.test', %s, %s, true)
+                """,
+                (actor, f"offer-status-{actor.hex}", f"{actor.hex}@example.test"),
+            )
+            connection.execute(
+                """
+                insert into seller_organization (id, slug, display_name, status)
+                values (%s, %s, 'Offer status migration', 'active')
+                """,
+                (seller_id, f"offer-status-{seller_id.hex[:12]}"),
+            )
+            connection.execute(
+                """
+                insert into seller_membership (
+                  seller_organization_id, identity_user_id, role, status
+                ) values (%s, %s, 'seller_owner', 'active')
+                """,
+                (seller_id, actor),
+            )
+            connection.execute(
+                """
+                insert into catalog_product (
+                  seller_organization_id, id, slug, title, description
+                ) values (%s, %s, %s, 'Offer status product', '')
+                """,
+                (seller_id, product_id, f"offer-status-{product_id.hex[:12]}"),
+            )
+            connection.execute(
+                """
+                insert into offer (
+                  seller_organization_id, id, catalog_product_id, title, summary,
+                  unit_amount_minor, currency, billing_period
+                ) values (%s, %s, %s, 'Offer status', '', 100, 'BRL', 'one_time')
+                """,
+                (seller_id, offer_id, product_id),
+            )
+            connection.commit()
+
+        run_migration(transitioned_database, "upgrade", "head")
+        with psycopg.connect(target_admin_url) as connection:
+            assert connection.execute(
+                "select status, version from offer where id = %s", (offer_id,)
+            ).fetchone() == ("draft", 1)
+
+        with psycopg.connect(target_runtime_url) as connection:
+            apply_context(connection, actor, seller_id, "catalog.offer.status.update")
+            assert connection.execute(
+                """
+                select offer_status, offer_version, changed
+                from app_private.transition_offer_status(
+                  %s, %s, %s, %s, 'draft', 'active', 1, %s, %s, %s
+                )
+                """,
+                (actor, seller_id, product_id, offer_id, uuid4(), digest("activate"), uuid4()),
+            ).fetchone() == ("active", 2, True)
+            connection.commit()
+        with psycopg.connect(target_runtime_url) as connection:
+            apply_context(connection, actor, seller_id, "catalog.offer.status.update")
+            assert connection.execute(
+                """
+                select offer_status, offer_version, changed
+                from app_private.transition_offer_status(
+                  %s, %s, %s, %s, 'active', 'archived', 2, %s, %s, %s
+                )
+                """,
+                (actor, seller_id, product_id, offer_id, uuid4(), digest("archive"), uuid4()),
+            ).fetchone() == ("archived", 3, True)
+            connection.commit()
+
+        failed_downgrade = run_migration(
+            transitioned_database, "downgrade", "0018_offer_pricing", check=False
+        )
+        assert failed_downgrade.returncode != 0
+        assert "active or archived offers exist; status data must be preserved" in (
+            failed_downgrade.stdout + failed_downgrade.stderr
+        )
+        with psycopg.connect(target_admin_url) as connection:
+            assert connection.execute(
+                """
+                select (select version_num from alembic_version), status, version,
+                       (select count(*) from app_private.catalog_mutation_request
+                        where operation = 'offer.status.update'),
+                       to_regprocedure(
+                         'app_private.transition_offer_status(uuid,uuid,uuid,uuid,text,text,bigint,uuid,text,uuid)'
+                       ) is not null
+                from offer where id = %s
+                """,
+                (offer_id,),
+            ).fetchone() == ("0019_offer_status", "archived", 3, 2, True)
+            connection.execute("update offer set status = 'draft' where id = %s", (offer_id,))
+            connection.commit()
+
+        history_downgrade = run_migration(
+            transitioned_database, "downgrade", "0018_offer_pricing", check=False
+        )
+        assert history_downgrade.returncode != 0
+        assert "offer status transition history exists; idempotency data must be preserved" in (
+            history_downgrade.stdout + history_downgrade.stderr
+        )
+        with psycopg.connect(target_admin_url) as connection:
+            assert connection.execute(
+                """
+                select (select version_num from alembic_version), status, version,
+                       (select count(*) from app_private.catalog_mutation_request
+                        where operation = 'offer.status.update'),
+                       to_regprocedure(
+                         'app_private.transition_offer_status(uuid,uuid,uuid,uuid,text,text,bigint,uuid,text,uuid)'
+                       ) is not null
+                from offer where id = %s
+                """,
+                (offer_id,),
+            ).fetchone() == ("0019_offer_status", "draft", 3, 2, True)
+
+        run_migration(clean_database, "upgrade", "head")
+        run_migration(clean_database, "downgrade", "0018_offer_pricing")
+        with psycopg.connect(database_url(ADMIN_URL, clean_database)) as connection:
+            assert connection.execute(
+                """
+                select (select version_num from alembic_version),
+                       to_regprocedure(
+                         'app_private.transition_offer_status(uuid,uuid,uuid,uuid,text,text,bigint,uuid,text,uuid)'
+                       ) is null
+                """
+            ).fetchone() == ("0018_offer_pricing", True)
+    finally:
+        with psycopg.connect(maintenance_url, autocommit=True) as connection:
+            for database_name in (transitioned_database, clean_database):
+                connection.execute(
+                    sql.SQL("drop database if exists {} with (force)").format(
+                        sql.Identifier(database_name)
+                    )
+                )

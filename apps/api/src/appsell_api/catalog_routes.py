@@ -3,12 +3,12 @@ from __future__ import annotations
 import json
 import re
 import time
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
@@ -124,6 +124,30 @@ class ProductCourseOfferUpdateBody(ProductCourseDraftBody):
         if _CURRENCY.fullmatch(value) is None:
             raise ValueError("invalid offer currency")
         return value
+
+
+class OfferStatusTransitionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    idempotency_key: str
+    expected_status: Literal["draft", "active", "archived"]
+    status: Literal["draft", "active", "archived"]
+    expected_offer_version: int = Field(ge=1, le=_MAX_SAFE_INTEGER)
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def validate_idempotency_key(cls, value: str) -> str:
+        return _canonical_uuid(value, "invalid idempotency key")
+
+    @model_validator(mode="after")
+    def validate_transition(self) -> Self:
+        if (self.expected_status, self.status) not in {
+            ("draft", "active"),
+            ("active", "archived"),
+            ("active", "draft"),
+        }:
+            raise ValueError("invalid offer status transition")
+        return self
 
 
 class CourseVersionBody(BaseModel):
@@ -774,6 +798,57 @@ async def update_product_draft(
     }
 
 
+@router.patch("/me/sellers/{seller_id}/products/{product_id}/offers/{offer_id}/status")
+async def transition_offer_status(
+    request: Request,
+    seller_id: UUID,
+    product_id: UUID,
+    offer_id: UUID,
+) -> dict[str, Any]:
+    auth, internal = await _authenticate(request, "catalog.offer.status.update")
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(OfferStatusTransitionBody, internal)
+    envelope = internal.envelope
+    try:
+        async with auth.domain_session(envelope) as session:
+            row = (
+                (
+                    await session.execute(
+                        text(
+                            "select offer_status, offer_version, changed "
+                            "from app_private.transition_offer_status("
+                            ":identity_user_id, :seller_id, :product_id, :offer_id, "
+                            ":expected_offer_status, :offer_status, "
+                            ":expected_offer_version, :idempotency_key, :body_sha256, "
+                            ":request_id)"
+                        ),
+                        {
+                            "identity_user_id": envelope.identity.user_id,
+                            "seller_id": seller_id,
+                            "product_id": product_id,
+                            "offer_id": offer_id,
+                            "expected_offer_status": body.expected_status,
+                            "offer_status": body.status,
+                            "expected_offer_version": body.expected_offer_version,
+                            "idempotency_key": UUID(body.idempotency_key),
+                            "body_sha256": envelope.body_sha256,
+                            "request_id": envelope.request_id,
+                        },
+                    )
+                )
+                .mappings()
+                .one()
+            )
+    except DBAPIError as error:
+        raise _domain_error(error) from error
+    return {
+        "offer_id": str(offer_id),
+        "status": row["offer_status"],
+        "offer_version": row["offer_version"],
+        "changed": bool(row["changed"]),
+    }
+
+
 @router.post("/me/sellers/{seller_id}/products/{product_id}/publications", response_model=None)
 async def publish_product(request: Request, seller_id: UUID, product_id: UUID) -> JSONResponse:
     auth, internal = await _authenticate(request, "catalog.publication.create")
@@ -1167,10 +1242,20 @@ def _domain_error(error: DBAPIError) -> HTTPException:
             status_code=status.HTTP_409_CONFLICT,
             detail="no_unpublished_changes",
         )
+    if sqlstate == "P4092":
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="offer_status_conflict",
+        )
     if sqlstate == "P4221":
         return HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="snapshot_too_large",
+        )
+    if sqlstate == "P4222":
+        return HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="invalid_offer_status_transition",
         )
     if sqlstate == "22023":
         return HTTPException(
