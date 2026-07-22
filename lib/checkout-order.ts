@@ -65,7 +65,13 @@ function normalizedIsoUtc(value: string): string | null {
 }
 
 function isValidEmail(value: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim()) && value.trim().length <= 254;
+  // Cap 242 bytes: o ingress (webhook_adapters.py) rejeita e-mail acima disso;
+  // validar aqui evita emitir um webhook que seria recusado num pedido já pago.
+  const trimmed = value.trim();
+  return (
+    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)
+    && Buffer.byteLength(trimmed, "utf8") <= 242
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -24,12 +24,19 @@ export async function fetchRegistrationCheckoutOrder(orderId: string): Promise<u
   const targetUrl = new URL(
     `${trimTrailingSlash(config.apiUrl)}/financial/internal/registration-checkout/${encodeURIComponent(orderId)}`
   );
+  // Chamada carrega x-api-key: exige HTTPS e nunca segue redirect (um 3xx
+  // poderia desviar o segredo para outra origem). FINANCIAL_API_URL é env de
+  // confiança, mas o hardening é barato e fail-closed.
+  if (targetUrl.protocol !== "https:") {
+    throw new FinancialOrderFetchError(503, "financial_order_insecure_endpoint");
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
     const response = await fetch(targetUrl, {
       headers: { accept: "application/json", "x-api-key": config.apiKey },
       cache: "no-store",
+      redirect: "manual",
       signal: controller.signal
     });
     const payload = await response.json().catch(() => null) as unknown;

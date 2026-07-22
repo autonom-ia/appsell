@@ -43,6 +43,8 @@ test("rejects a non-paid status", () => {
 test("rejects a missing or unsafe financial_product_key, malformed e-mail, or unparsable paid_at", () => {
   expect(parsePaidRegistrationCheckoutOrder("order-123", { ...paidOrder(), financial_product_key: "has space" })).toBeNull();
   expect(parsePaidRegistrationCheckoutOrder("order-123", { ...paidOrder(), buyer_email: "not-an-email" })).toBeNull();
+  const longLocal = "a".repeat(240) + "@x.co"; // 245 bytes > 242 do ingress
+  expect(parsePaidRegistrationCheckoutOrder("order-123", { ...paidOrder(), buyer_email: longLocal })).toBeNull();
   expect(parsePaidRegistrationCheckoutOrder("order-123", { ...paidOrder(), paid_at: "not-a-date" })).toBeNull();
   const missingPaidAt = paidOrder() as Record<string, unknown>;
   delete missingPaidAt.paid_at;
