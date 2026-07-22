@@ -136,7 +136,7 @@ async def test_failing_claim_backs_off_and_logs_the_reason(
     first = logged[0]
     assert first["event"] == "demo_checkout_worker_retry"
     assert first["error_type"] == "RuntimeError"
-    assert "claim_demo_checkout_jobs does not exist" in first["error"]
+    assert first["error"] == demo_checkout_worker._OPAQUE_REASON
     assert first["backoff_seconds"] == pytest.approx(waits[0])
     assert first["consecutive_failures"] == 1
     assert logged[1]["consecutive_failures"] == 2
@@ -212,13 +212,27 @@ async def test_apply_failure_backs_off_instead_of_spinning(
         "lease_fence": 1,
     }
 
-    async def claim_one(statement: Any, parameters: dict[str, Any]) -> Any:
-        return [job]
+    class Disconnected(Exception):
+        sqlstate = "08006"
+
+    claims = SimpleNamespace(count=0)
+
+    async def claim_then_fail_apply(statement: Any, parameters: dict[str, Any]) -> Any:
+        # O claim entrega um job; o apply e o registro da falha erram no banco,
+        # exercitando o `_apply` real e o `except DBAPIError` dele.
+        if "claim_demo_checkout_jobs" in str(statement):
+            claims.count += 1
+            # Guarda de terminação independente do sleep: se o loop voltar a dar
+            # `continue` seco, `fake_wait_for` nunca roda e o teste travaria.
+            if claims.count > 8:
+                raise asyncio.CancelledError
+            return [job]
+        raise DBAPIError("select ...", {}, Disconnected("connection lost"))
 
     class ClaimingSession:
         @asynccontextmanager
         async def trusted_domain_session(self, envelope: Any) -> AsyncIterator[Any]:
-            yield SimpleNamespace(scalar=claim_one)
+            yield SimpleNamespace(scalar=claim_then_fail_apply)
 
     async def fake_wait_for(awaitable: Any, **kwargs: Any) -> None:
         waits.append(kwargs["timeout"])
@@ -227,13 +241,11 @@ async def test_apply_failure_backs_off_instead_of_spinning(
             raise asyncio.CancelledError
         raise TimeoutError
 
-    async def failing_apply(*args: Any, **kwargs: Any) -> bool:
-        return False
-
     monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
-    monkeypatch.setattr(demo_checkout_worker, "_apply", failing_apply)
     monkeypatch.setattr(
-        demo_checkout_worker.logger, "warning", lambda event, **f: logged.append({**f})
+        demo_checkout_worker.logger,
+        "warning",
+        lambda event, **f: logged.append({"event": event, **f}),
     )
 
     app = _app(_settings(), ClaimingSession())
@@ -244,8 +256,12 @@ async def test_apply_failure_backs_off_instead_of_spinning(
     # Com jobs presentes e apply falhando, o loop não pode dar `continue` seco.
     assert len(waits) >= 2, "apply failure must not skip the sleep"
     assert waits[1] > waits[0], "apply failure must feed the backoff"
-    assert logged[0]["consecutive_failures"] == 1
-    assert logged[1]["consecutive_failures"] == 2
+
+    # O `_apply` real reportou a falha do job e devolveu False ao loop.
+    assert [entry["event"] for entry in logged].count("demo_checkout_worker_apply_failed") >= 1
+    retries = [entry for entry in logged if entry["event"] == "demo_checkout_worker_retry"]
+    assert retries[0]["consecutive_failures"] == 1
+    assert retries[1]["consecutive_failures"] == 2
 
 
 async def test_retry_delay_survives_a_permanent_failure() -> None:
@@ -281,19 +297,40 @@ def test_database_errors_never_log_statement_or_parameters() -> None:
 @pytest.mark.parametrize(
     "secret",
     [
-        base64.b64encode(bytes(range(48))).decode(),  # base64 com + / =
+        # base64 com a pontuação `+` e `/` — uma regex sem esse alfabeto
+        # fragmentaria o valor e deixaria os pedaços escaparem.
+        base64.b64encode(bytes([255, 239, 190, 251, 239, 190] * 8)).decode(),
         "postgresql+asyncpg://appsell:pa55w0rd@db.internal:5432/appsell",
+        "token=AAAAAAAAAAAAAAAAAAAAAAAA",  # 24 chars: curto demais para regex
+        "senha123",  # curto e sem formato reconhecível
     ],
 )
-def test_punctuated_secrets_are_redacted(secret: str) -> None:
+def test_unknown_messages_never_reach_the_log(secret: str) -> None:
+    """Allowlist: mensagem de origem arbitrária é suprimida por inteiro."""
     reason = demo_checkout_worker._sanitized_reason(RuntimeError(f"failed using {secret}"))
 
-    assert "<REDACTED>" in reason
-    assert "pa55w0rd" not in reason
+    assert reason == demo_checkout_worker._OPAQUE_REASON
     assert secret not in reason
 
 
-async def test_logged_error_redacts_long_opaque_values(
+def test_known_messages_survive_for_diagnosis() -> None:
+    # Mensagens produzidas por este módulo são seguras e precisam ser legíveis.
+    error = RuntimeError("invalid demo checkout claim response")
+
+    assert demo_checkout_worker._sanitized_reason(error) == "invalid demo checkout claim response"
+
+
+def test_missing_job_field_is_named_only_when_it_is_a_known_field() -> None:
+    assert demo_checkout_worker._sanitized_reason(KeyError("lease_fence")) == (
+        "missing job field lease_fence"
+    )
+    assert (
+        demo_checkout_worker._sanitized_reason(KeyError("api_token_value"))
+        == demo_checkout_worker._OPAQUE_REASON
+    )
+
+
+async def test_arbitrary_error_message_is_suppressed_in_the_log(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     logged: list[dict[str, Any]] = []
@@ -314,5 +351,7 @@ async def test_logged_error_redacts_long_opaque_values(
     with pytest.raises(asyncio.CancelledError):
         await demo_checkout_worker.run_demo_checkout_worker_loop(app, asyncio.Event())
 
+    # O tipo do erro continua no log; a mensagem, não.
     assert secret not in logged[0]["error"]
-    assert "<REDACTED>" in logged[0]["error"]
+    assert logged[0]["error"] == demo_checkout_worker._OPAQUE_REASON
+    assert logged[0]["error_type"] == "RuntimeError"

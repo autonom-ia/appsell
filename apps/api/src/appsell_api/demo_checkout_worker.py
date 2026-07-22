@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
-import re
 import time
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
@@ -23,17 +22,23 @@ _IDLE_INTERVAL_SECONDS = 0.25
 _MAX_BACKOFF_SECONDS = 30.0
 _BACKOFF_FACTOR = 2.0
 _MAX_BACKOFF_EXPONENT = 16
-_MAX_LOGGED_ERROR_CHARS = 300
-# Sequências opacas longas (tokens, chaves, credenciais). Inclui o alfabeto
-# base64 completo: `+`, `/` e `=` fragmentariam a sequência e deixariam pedaços
-# curtos escaparem da redação.
-_OPAQUE_VALUE = re.compile(r"[A-Za-z0-9_\-+/]{32,}={0,2}")
-# Credenciais embutidas em URL (`postgresql+asyncpg://user:senha@host/db`).
-_CREDENTIAL_URL = re.compile(r"[a-z][a-z0-9+.\-]*://[^\s/@]+:[^\s/@]+@", re.IGNORECASE)
+# Mensagens que este módulo produz e portanto sabe não conterem segredo.
+# Allowlist em vez de redação por regex: nenhum padrão reconhece todo formato de
+# segredo possível, e `str(error)` de uma camada arbitrária pode carregar token,
+# senha curta ou dado de cliente.
+_KNOWN_REASONS = frozenset(
+    {
+        "invalid demo checkout claim response",
+        "invalid demo checkout apply response",
+    }
+)
+_JOB_FIELDS = frozenset({"id", "seller_organization_id", "lease_fence"})
+_OPAQUE_REASON = "suppressed; message may contain sensitive data"
 logger = structlog.get_logger(__name__)
 
 
 def _sanitized_reason(error: BaseException) -> str:
+    """Motivo seguro para log. Nunca repassa `str(error)` de origem arbitrária."""
     if isinstance(error, DBAPIError):
         # str(DBAPIError) inclui o statement e os parâmetros vinculados, que
         # podem carregar dado de cliente ou credencial. Registrar apenas a
@@ -41,8 +46,12 @@ def _sanitized_reason(error: BaseException) -> str:
         # função ausente (42883), RLS negando (42501) ou auth (28000).
         sqlstate = getattr(error.orig, "sqlstate", None) or "unknown"
         return f"{type(error.orig).__name__} sqlstate={sqlstate}"
-    redacted = _CREDENTIAL_URL.sub("<REDACTED>@", str(error))
-    return _OPAQUE_VALUE.sub("<REDACTED>", redacted)[:_MAX_LOGGED_ERROR_CHARS]
+    if isinstance(error, KeyError):
+        # A chave só é segura quando é um campo conhecido do job.
+        key = error.args[0] if error.args else None
+        return f"missing job field {key}" if key in _JOB_FIELDS else _OPAQUE_REASON
+    message = str(error)
+    return message if message in _KNOWN_REASONS else _OPAQUE_REASON
 
 
 async def run_demo_checkout_worker_loop(app: FastAPI, stop: asyncio.Event) -> None:

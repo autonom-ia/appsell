@@ -27,14 +27,18 @@ Leia `error_type`/`error` antes de agir — o backoff só reduz a frequência, n
 corrige a causa. Causas prováveis: função SQL ausente no banco alvo, RLS negando
 o envelope do worker, ou credencial interna divergente.
 
-Erros de banco (`DBAPIError`) são registrados apenas como classe do driver +
-SQLSTATE — o statement e os parâmetros vinculados nunca vão para o log, porque
-podem carregar dado de cliente. Nos demais erros, sequências opacas de 32+ chars
-e credenciais embutidas em URL saem como `<REDACTED>`.
+O campo `error` é **allowlist**, não redação por regex — nenhum padrão reconhece
+todo formato de segredo possível:
 
-Isso não é uma garantia absoluta: um segredo curto (<32 chars) ou em formato
-inesperado pode escapar. Trate o log como potencialmente sensível e nunca cole o
-valor bruto de uma env em issue ou PR.
+- `DBAPIError` → apenas classe do driver + SQLSTATE. O statement e os parâmetros
+  vinculados nunca vão para o log, porque podem carregar dado de cliente.
+- `KeyError` → o nome do campo, e só quando é um campo conhecido do job.
+- Mensagens produzidas pelo próprio worker → registradas na íntegra.
+- Qualquer outra mensagem → suprimida (`suppressed; message may contain
+  sensitive data`). O `error_type` continua no log.
+
+Se o `error` vier suprimido e você precisar do detalhe, reproduza em `local`/CI
+— não afrouxe a allowlist para diagnosticar produção.
 
 ## Desligar o worker sem promover o environment
 
