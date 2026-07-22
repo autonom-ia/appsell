@@ -49,6 +49,8 @@ results_file="$state_dir/results.tsv"
 changed_file="$state_dir/changed-files.txt"
 plan_file="$state_dir/plan.json"
 started_file="$state_dir/started-at"
+shellcheck_files="$state_dir/shellcheck-files.txt"
+shellcheck_scope="changed"
 mkdir -p "$state_dir"
 
 manifest="$repo/platform-manifest.json"
@@ -218,8 +220,28 @@ shell_syntax_check() {
   git -C "$repo" ls-files -z -- '*.sh' | (cd "$repo" && xargs -0 -n1 bash -n)
 }
 
+prepare_shellcheck_files() {
+  local changed
+  ensure_plan
+  : > "$shellcheck_files"
+  shellcheck_scope="changed"
+  if [[ "$(jq -r '.weekly' "$plan_file")" == "true" ]] && \
+    [[ "$(manifest_value '.ci.weekly_full_scan' 'true')" == "true" ]]; then
+    shellcheck_scope="full"
+    git -C "$repo" ls-files -z -- '*.sh' > "$shellcheck_files"
+    return 0
+  fi
+
+  while IFS= read -r changed; do
+    [[ "$changed" == *.sh ]] || continue
+    [[ -f "$repo/$changed" ]] || continue
+    git -C "$repo" ls-files --error-unmatch -- "$changed" >/dev/null 2>&1 || continue
+    printf '%s\0' "$changed" >> "$shellcheck_files"
+  done < "$changed_file"
+}
+
 shellcheck_check() {
-  git -C "$repo" ls-files -z -- '*.sh' | (cd "$repo" && xargs -0 shellcheck)
+  (cd "$repo" && xargs -0 shellcheck -- < "$shellcheck_files")
 }
 
 bats_check() {
@@ -290,7 +312,12 @@ phase_core() {
   elif ! command -v shellcheck >/dev/null 2>&1; then
     missing_tool "shellcheck" "shellcheck" || failed=1
   else
-    run_check "shellcheck" "tracked_shell_files" shellcheck_check || failed=1
+    prepare_shellcheck_files
+    if [[ ! -s "$shellcheck_files" ]]; then
+      record_skip "shellcheck" "no_changed_shell_files"
+    else
+      run_check "shellcheck" "${shellcheck_scope}_shell_files" shellcheck_check || failed=1
+    fi
   fi
 
   if [[ "$(manifest_value '.ci.bats' 'true')" != "true" ]]; then
