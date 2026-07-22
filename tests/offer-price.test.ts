@@ -72,7 +72,9 @@ describe("formatOfferPriceBRL", () => {
 
 describe("formatOfferPrice (currency-aware)", () => {
   it("uses the given currency symbol", () => {
-    expect(formatOfferPrice(4_990, "USD").replace(/\u00a0/g, " ")).toMatch(/US\$|\$/);
+    const usd = formatOfferPrice(4_990, "USD").replace(/\u00a0/g, " ");
+    expect(usd).toContain("US$");
+    expect(usd).not.toContain("R$");
     expect(formatOfferPrice(4_990, "BRL").replace(/\u00a0/g, " ")).toBe("R$ 49,90");
   });
 

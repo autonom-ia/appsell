@@ -1138,3 +1138,42 @@ test("keeps the product editor locked while an offer transition is in flight", a
   await expect(page.getByText("Todo salvamento inclui a oferta", { exact: false })).toBeVisible();
   await expect(page.getByLabel("Nome do produto")).toBeDisabled();
 });
+
+test("preserves a non-BRL offer currency on save and labels the price in that currency", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium", "currency preservation runs once in Chromium");
+  const sellerId = "62000000-0000-4000-8000-000000000004";
+  const productId = "63000000-0000-4000-8000-000000000004";
+  const courseId = "64000000-0000-4000-8000-000000000004";
+  const offerId = "65000000-0000-4000-8000-000000000004";
+  let savedCurrency = "";
+  const detail = () => ({
+    product: {
+      id: productId, seller_organization_id: sellerId, slug: "curso-usd", title: "Curso USD", description: "Rascunho.", status: "draft",
+      version: 3, draft_version: 3,
+      course: { id: courseId, title: "Fundamentos", description: "", status: "draft", draft_version: 2, position: 1 },
+      courses: [{ id: courseId, title: "Fundamentos", description: "", status: "draft", draft_version: 2, position: 1 }],
+      offer: { id: offerId, title: "Oferta USD", summary: "Termos.", status: "draft", version: 2, draft_version: 2, unit_amount_minor: 4990, currency: "USD", billing_period: "one_time" },
+      publication: null, has_unpublished_changes: true,
+      readiness: { can_publish: true, items: [{ key: "server", label: "Pronto", ready: true }] }
+    },
+    csrf: { update: "csrf-update", publish: "csrf-publish", offer_status: "csrf-offer-status" }
+  });
+  await page.route(`**/api/sellers/${sellerId}/products/${productId}`, async (route) => {
+    if (route.request().method() === "GET") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(detail()) });
+    const posted = route.request().postDataBuffer();
+    const form = await new Request(route.request().url(), { method: "PATCH", headers: route.request().headers(), body: posted ? new Uint8Array(posted) : undefined }).formData();
+    savedCurrency = String(form.get("offer_currency"));
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ product_id: productId, course_id: courseId, offer_id: offerId, product_version: 4, course_version: 3, offer_version: 3 }) });
+  });
+
+  await page.setViewportSize({ width: 320, height: 568 });
+  await login(page);
+  await page.goto(`/products/${sellerId}/${productId}?section=oferta`);
+  // Price label is in the stored currency, not R$.
+  await expect(page.getByText("Preço (USD)")).toBeVisible();
+  await expect(page.getByLabel("Preço (USD)")).toHaveValue("49,90");
+  await page.getByLabel("Nome da oferta").fill("Oferta USD 2");
+  await page.getByRole("button", { name: "Salvar rascunho" }).click();
+  await expect(page.getByText("Rascunho salvo com segurança.")).toBeVisible();
+  expect(savedCurrency).toBe("USD");
+});

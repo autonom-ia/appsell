@@ -153,6 +153,11 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   const offerNotDraft = detail !== null && detail.offer.status !== "draft";
   const offerArchived = detail !== null && detail.offer.status === "archived";
   const offerLocked = offerNotDraft || offerStatusState === "transitioning";
+  // Rótulo do preço na moeda armazenada da oferta: "R$" para BRL, o código ISO
+  // (ex.: USD) caso contrário — o operador nunca edita um valor USD achando ser BRL.
+  const offerCurrencyLabel = /^[A-Z]{3}$/.test(detail?.offer.currency ?? "")
+    ? (detail!.offer.currency === "BRL" ? "R$" : detail!.offer.currency!)
+    : "R$";
 
   useUnsavedChanges(editorDirty);
   useEffect(() => {
@@ -540,14 +545,14 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
 
         {section === "oferta" ? (
           <>
-            <fieldset disabled={detail.status === "archived" || detail.offer.status !== "draft"}>
+            <fieldset disabled={detail.status === "archived" || offerLocked}>
               <legend>Oferta e preço</legend>
               {detail.offer.status === "draft"
-                ? <div className="billing-boundary" role="note"><strong>Defina o preço antes de ativar</strong><p>O valor em reais é o que será cobrado no checkout quando a oferta estiver ativa. Sem preço, a oferta permanece em rascunho.</p></div>
+                ? <div className="billing-boundary" role="note"><strong>Defina o preço antes de ativar</strong><p>O valor em {offerCurrencyLabel} é o que será cobrado no checkout quando a oferta estiver ativa. Sem preço, a oferta permanece em rascunho.</p></div>
                 : <div className="billing-boundary" role="note"><strong>{detail.offer.status === "active" ? "Oferta ativa" : "Oferta arquivada"}</strong><p>{detail.offer.status === "active" ? "Para editar termos ou preço, despublique a oferta primeiro." : "Uma oferta arquivada é definitiva e não aparece na vitrine."}</p></div>}
               <EditorField label="Nome da oferta" name="offer_title" value={fields.offer_title} onChange={(value) => updateField("offer_title", value)} minLength={2} maxLength={120} required invalid={invalidField === "offer_title"}/>
               <EditorField label="Resumo da oferta" name="offer_summary" value={fields.offer_summary} onChange={(value) => updateField("offer_summary", value)} maxLength={500} multiline invalid={invalidField === "offer_summary"}/>
-              <EditorField label="Preço (R$)" name="offer_price" value={fields.offer_price} onChange={(value) => updateField("offer_price", value)} maxLength={12} invalid={invalidField === "offer_price" || invalidField === "offer_unit_amount_minor"} help="Use vírgula para centavos, ex.: 49,90. Deixe vazio para manter sem preço."/>
+              <EditorField label={`Preço (${offerCurrencyLabel})`} name="offer_price" value={fields.offer_price} onChange={(value) => updateField("offer_price", value)} maxLength={12} invalid={invalidField === "offer_price" || invalidField === "offer_unit_amount_minor"} help="Use vírgula para centavos, ex.: 49,90. Deixe vazio para manter sem preço."/>
               <label className="editor-field">Cobrança
                 <select name="offer_billing_period" value={fields.offer_billing_period} onChange={(event) => updateField("offer_billing_period", event.target.value)} aria-invalid={invalidField === "offer_billing_period"}>
                   {OFFER_BILLING_PERIODS.map((entry) => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
