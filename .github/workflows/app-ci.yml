@@ -2,70 +2,283 @@ name: App CI
 
 on:
   pull_request:
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: appsell-ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  openbao-transit:
+  ci-gate:
+    name: ci-gate
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 120
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - name: Keep push certification fail-safe until merge queue is explicitly active
+        id: policy
+        shell: bash
+        env:
+          MERGE_QUEUE_ACTIVE: ${{ vars.APPSELL_MERGE_QUEUE_ACTIVE }}
+        run: |
+          set -euo pipefail
+          product_checks=true
+          if [[ "$GITHUB_EVENT_NAME" == push && "$MERGE_QUEUE_ACTIVE" == true ]]; then
+            product_checks=false
+          fi
+          echo "product_checks=$product_checks" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact event source with complete history
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Route changed files locally and fail safe
+        id: route
+        shell: bash
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          MERGE_GROUP_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          PUSH_BASE_SHA: ${{ github.event.before }}
+          PUSH_HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          base=""
+          head=""
+          case "$GITHUB_EVENT_NAME" in
+            pull_request)
+              base="$PR_BASE_SHA"
+              head="$PR_HEAD_SHA"
+              ;;
+            merge_group)
+              base="$MERGE_GROUP_BASE_SHA"
+              head="$MERGE_GROUP_HEAD_SHA"
+              ;;
+            push)
+              base="$PUSH_BASE_SHA"
+              head="$PUSH_HEAD_SHA"
+              ;;
+          esac
+          python3 scripts/ci/route_changes.py \
+            --event "$GITHUB_EVENT_NAME" \
+            --repository "$GITHUB_WORKSPACE" \
+            --base "$base" \
+            --head "$head" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Validate workflow schema with checksum-pinned actionlint
+        if: ${{ !cancelled() && steps.route.outputs.workflow == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          workflows=()
+          while IFS= read -r -d '' candidate; do
+            if [[ "$candidate" != .github/workflows/agent-harness-check.yml ]]; then
+              workflows+=("$candidate")
+            fi
+          done < <(find .github/workflows -maxdepth 1 -type f \
+            \( -name '*.yml' -o -name '*.yaml' \) -print0)
+          test "${#workflows[@]}" -gt 0
+          bash scripts/ci/run_actionlint.sh "${workflows[@]}"
+          # The installed Harness 2.1.2 has two legacy ShellCheck style notices.
+          # Its YAML, expressions and action schema remain fail-closed here;
+          # full ShellCheck becomes clean with the reviewed upstream 2.1.3 update.
+          bash scripts/ci/run_actionlint.sh -shellcheck= .github/workflows/agent-harness-check.yml
+
+      - name: Set up pinned pnpm only when selected
+        if: ${{ !cancelled() && steps.policy.outputs.product_checks == 'true' && (steps.route.outputs.web == 'true' || steps.route.outputs.postgres == 'true' || steps.route.outputs.openbao == 'true' || steps.route.outputs.capacity == 'true') }}
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.20.0
+          run_install: false
+
+      - name: Set up Node only when selected
+        if: ${{ !cancelled() && steps.policy.outputs.product_checks == 'true' && (steps.route.outputs.web == 'true' || steps.route.outputs.postgres == 'true' || steps.route.outputs.openbao == 'true' || steps.route.outputs.capacity == 'true') }}
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-      - run: corepack enable
-      - run: pnpm install --frozen-lockfile
-      - name: Install isolated-test Redis binary
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y redis-server
-          sudo systemctl stop redis-server || true
-          redis-server --version
-      - name: Certify disposable OpenBao Transit wrap, rotation, and fail-closed BFF
-        run: ./scripts/test-openbao-transit.sh
+          cache: pnpm
 
-  capacity-100-tenants:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+      - name: Install Node dependencies once
+        if: ${{ !cancelled() && steps.policy.outputs.product_checks == 'true' && (steps.route.outputs.web == 'true' || steps.route.outputs.postgres == 'true' || steps.route.outputs.openbao == 'true' || steps.route.outputs.capacity == 'true') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          pnpm install --frozen-lockfile
+
+      - name: Set up Python only when selected
+        if: ${{ !cancelled() && steps.policy.outputs.product_checks == 'true' && (steps.route.outputs.api == 'true' || steps.route.outputs.postgres == 'true' || steps.route.outputs.storage == 'true' || steps.route.outputs.capacity == 'true') }}
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12.11"
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
-      - run: corepack enable
-      - run: pnpm install --frozen-lockfile
-      - name: Install isolated-test Redis and PDF rasterizer binaries
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends redis-server poppler-utils
-          sudo systemctl stop redis-server || true
-          redis-server --version
-          pdftoppm -v
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+
+      - name: Set up uv only when selected
+        if: ${{ !cancelled() && steps.policy.outputs.product_checks == 'true' && (steps.route.outputs.api == 'true' || steps.route.outputs.postgres == 'true' || steps.route.outputs.storage == 'true' || steps.route.outputs.capacity == 'true') }}
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           version: "0.11.13"
-      - run: uv sync --project apps/api --frozen
-      - name: Prove capacity scanner redacts console output
-        run: ./scripts/test-capacity-artifact-scan.sh
-      - name: Fault-inject PostgreSQL restart after Compose health
-        run: ./scripts/test-capacity-postgres-startup.sh
-      - name: Certify 100 admins and 1,000 buyers on disposable Local/CI infrastructure
-        run: ./scripts/test-capacity-100-tenants.sh
+          enable-cache: true
+          cache-dependency-glob: apps/api/uv.lock
+
+      - name: Install Python dependencies once
+        if: ${{ !cancelled() && steps.policy.outputs.product_checks == 'true' && (steps.route.outputs.api == 'true' || steps.route.outputs.postgres == 'true' || steps.route.outputs.storage == 'true' || steps.route.outputs.capacity == 'true') }}
+        run: uv sync --project apps/api --frozen
+
+      - name: Install shared system test dependencies once
+        if: ${{ !cancelled() && steps.policy.outputs.product_checks == 'true' && (steps.route.outputs.web == 'true' || steps.route.outputs.postgres == 'true' || steps.route.outputs.openbao == 'true' || steps.route.outputs.storage == 'true' || steps.route.outputs.capacity == 'true') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          packages=(redis-server)
+          if [[ "${{ steps.route.outputs.storage }}" == true || "${{ steps.route.outputs.capacity }}" == true ]]; then
+            packages+=(poppler-utils)
+          fi
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends "${packages[@]}"
+          sudo systemctl stop redis-server || true
+          redis-server --version
+
+      - name: Fast web checks for pull requests
+        id: fast-web
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && steps.route.outputs.web == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm lint
+          pnpm typecheck
+          pnpm test:fast
+          corepack pnpm@11.13.0 --pm-on-fail=ignore audit --prod
+          pnpm build
+
+      - name: Fast API checks for pull requests
+        id: fast-api
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && steps.route.outputs.api == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --project apps/api ruff format --check apps/api
+          uv run --project apps/api ruff check apps/api
+          uv run --project apps/api mypy --config-file apps/api/pyproject.toml apps/api/src apps/api/tests
+          uv run --project apps/api pip-audit --local
+          uv run --project apps/api pytest \
+            apps/api/tests/test_config.py \
+            apps/api/tests/test_health.py \
+            apps/api/tests/test_capacity_telemetry.py \
+            apps/api/tests/test_db_pool_budget.py
+
+      - name: Fast backup contract checks for pull requests
+        id: fast-backup
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && steps.route.outputs.backup == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for script in deploy/easypanel-native/backup/*.sh; do bash -n "$script"; done
+
+      - name: Fast preview contract checks for pull requests
+        id: fast-preview
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && steps.route.outputs.preview == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for script in deploy/preview-vps/*.sh deploy/easypanel/*.sh; do bash -n "$script"; done
+          node --check deploy/preview-vps/verify-redis.mjs
+          node --check deploy/easypanel/runtime-preview-loopback-proxy.mjs
+          node --check deploy/easypanel/test-runtime-preview-loopback-proxy.mjs
+          node --check deploy/easypanel/runtime-preview-unix-bridge.mjs
+          node --check deploy/easypanel/test-runtime-preview-unix-bridge.mjs
+          env -u COMPOSE_PROJECT_NAME -u COMPOSE_FILE -u COMPOSE_PROFILES -u COMPOSE_ENV_FILES docker compose \
+            --project-name autonomia_sell_preview_66_0123456789ab \
+            --env-file deploy/preview-vps/preview.env.example \
+            -f deploy/preview-vps/compose.preview.yaml \
+            config --quiet
+          bash deploy/preview-vps/test-compose-project-pin.sh
+          bash deploy/preview-vps/test-directory-invariants.sh
+          bash deploy/preview-vps/test-verify-downloads-local.sh
+          APPSELL_ARTIFACT_EVENT=workflow_dispatch bash deploy/preview-vps/test-verify-downloads-local.sh
+
+      - name: Certify web on the integrated merge-group SHA
+        id: cert-web
+        if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && steps.policy.outputs.product_checks == 'true') || github.event_name == 'workflow_dispatch') && steps.route.outputs.web == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm lint
+          pnpm typecheck
+          pnpm test
+          corepack pnpm@11.13.0 --pm-on-fail=ignore audit --prod
+          pnpm build
+          pnpm exec playwright install --with-deps chromium webkit
+          pnpm test:e2e
+          pnpm test:e2e:production
+
+      - name: Certify PostgreSQL foundation on the integrated SHA
+        id: cert-postgres
+        if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && steps.policy.outputs.product_checks == 'true') || github.event_name == 'workflow_dispatch') && steps.route.outputs.postgres == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --project apps/api ruff format --check apps/api
+          uv run --project apps/api ruff check apps/api
+          uv run --project apps/api mypy --config-file apps/api/pyproject.toml apps/api/src apps/api/tests
+          uv run --project apps/api pip-audit --local
+          uv run --project apps/api pytest \
+            apps/api/tests/test_config.py \
+            apps/api/tests/test_health.py \
+            apps/api/tests/test_capacity_telemetry.py \
+            apps/api/tests/test_db_pool_budget.py
+          pnpm exec playwright install --with-deps chromium
+          ./scripts/test-postgres-foundation.sh
+
+      - name: Scan PostgreSQL evidence
+        id: postgres-evidence-scan
+        if: ${{ !cancelled() && steps.cert-postgres.outcome != 'skipped' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/assert_capacity_artifact_safe.py --self-test
+          test -f tmp/buyer-multi-seller.json
+          python3 scripts/assert_capacity_artifact_safe.py tmp/buyer-multi-seller.json
+
+      - name: Certify storage when capacity is not selected
+        id: cert-storage
+        if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && steps.policy.outputs.product_checks == 'true') || github.event_name == 'workflow_dispatch') && steps.route.outputs.storage == 'true' && steps.route.outputs.capacity != 'true' }}
+        run: ./scripts/test-storage-vertical.sh
+
+      - name: Certify OpenBao Transit on the integrated SHA
+        id: cert-openbao
+        if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && steps.policy.outputs.product_checks == 'true') || github.event_name == 'workflow_dispatch') && steps.route.outputs.openbao == 'true' }}
+        run: ./scripts/test-openbao-transit.sh
+
+      - name: Certify capacity only when selected or scheduled
+        id: cert-capacity
+        if: ${{ !cancelled() && ((github.event_name == 'merge_group' || (github.event_name == 'push' && steps.policy.outputs.product_checks == 'true') || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && steps.route.outputs.capacity == 'true') }}
         env:
-          APPSELL_CAPACITY_CALIBRATION_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          APPSELL_CAPACITY_CALIBRATION_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/test-capacity-artifact-scan.sh
+          ./scripts/test-capacity-postgres-startup.sh
+          ./scripts/test-capacity-100-tenants.sh
+
       - name: Scan capacity evidence before upload
         id: capacity-evidence-scan
-        if: always()
+        if: ${{ !cancelled() && steps.cert-capacity.outcome != 'skipped' }}
+        shell: bash
         run: |
+          set -euo pipefail
           python3 scripts/assert_capacity_artifact_safe.py --self-test
           python3 scripts/report_capacity_calibration.py --self-test
           files=()
@@ -76,116 +289,156 @@ jobs:
             tmp/capacity-postgres-fault.json; do
             if [[ -f "$candidate" ]]; then files+=("$candidate"); fi
           done
-          if [[ "${#files[@]}" -eq 0 ]]; then
-            echo "No capacity evidence was produced" >&2
-            exit 1
-          fi
+          test "${#files[@]}" -gt 0
           python3 scripts/assert_capacity_artifact_safe.py "${files[@]}"
-      - name: Upload capacity evidence
-        if: always() && steps.capacity-evidence-scan.outcome == 'success'
+
+      - name: Certify backup and restore on the integrated SHA
+        id: cert-backup
+        if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && steps.policy.outputs.product_checks == 'true') || github.event_name == 'workflow_dispatch') && steps.route.outputs.backup == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for script in deploy/easypanel-native/backup/*.sh; do bash -n "$script"; done
+          gpg --version | head -1
+          bash deploy/easypanel-native/backup/test-backup-native.sh
+          bash deploy/easypanel-native/backup/test-entrypoints-native.sh
+
+      - name: Certify preview contracts on the integrated SHA
+        id: cert-preview
+        if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && steps.policy.outputs.product_checks == 'true') || github.event_name == 'workflow_dispatch') && steps.route.outputs.preview == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for script in deploy/preview-vps/*.sh deploy/easypanel/*.sh; do bash -n "$script"; done
+          node --check deploy/preview-vps/verify-redis.mjs
+          node --check deploy/easypanel/runtime-preview-loopback-proxy.mjs
+          node --check deploy/easypanel/test-runtime-preview-loopback-proxy.mjs
+          node --check deploy/easypanel/runtime-preview-unix-bridge.mjs
+          node --check deploy/easypanel/test-runtime-preview-unix-bridge.mjs
+          env -u COMPOSE_PROJECT_NAME -u COMPOSE_FILE -u COMPOSE_PROFILES -u COMPOSE_ENV_FILES docker compose \
+            --project-name autonomia_sell_preview_66_0123456789ab \
+            --env-file deploy/preview-vps/preview.env.example \
+            -f deploy/preview-vps/compose.preview.yaml \
+            config --quiet
+          bash deploy/preview-vps/test-compose-project-pin.sh
+          bash deploy/preview-vps/test-directory-invariants.sh
+          bash deploy/preview-vps/test-verify-downloads-local.sh
+          APPSELL_ARTIFACT_EVENT=workflow_dispatch bash deploy/preview-vps/test-verify-downloads-local.sh
+          bash deploy/easypanel/test-runtime-preview-common.sh
+          bash deploy/easypanel/test-runtime-preview-domain.sh
+          bash deploy/easypanel/test-runtime-preview-env.sh
+          bash deploy/easypanel/test-runtime-preview.sh
+          sudo bash deploy/easypanel/test-runtime-preview-lifecycle.sh
+          sudo bash deploy/easypanel/test-runtime-preview-evidence-migration.sh
+
+      - name: Set up Buildx once for integrated component images
+        if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && steps.policy.outputs.product_checks == 'true') || github.event_name == 'workflow_dispatch') && (steps.route.outputs.image_web == 'true' || steps.route.outputs.image_api == 'true' || steps.route.outputs.image_bootstrap == 'true') }}
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build affected web image
+        id: image-web
+        if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && steps.policy.outputs.product_checks == 'true') || github.event_name == 'workflow_dispatch') && steps.route.outputs.image_web == 'true' }}
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: deploy/easypanel-native/Dockerfile.web
+          platforms: linux/amd64
+          push: false
+          tags: autonomia-sell-native-web:${{ github.sha }}
+          build-args: GIT_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=easypanel-native-web
+          cache-to: type=gha,mode=min,scope=easypanel-native-web
+
+      - name: Build affected API image
+        id: image-api
+        if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && steps.policy.outputs.product_checks == 'true') || github.event_name == 'workflow_dispatch') && steps.route.outputs.image_api == 'true' }}
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: deploy/easypanel-native/Dockerfile.api
+          platforms: linux/amd64
+          push: false
+          tags: autonomia-sell-native-api:${{ github.sha }}
+          build-args: GIT_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=easypanel-native-api
+          cache-to: type=gha,mode=min,scope=easypanel-native-api
+
+      - name: Build affected bootstrap image
+        id: image-bootstrap
+        if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && steps.policy.outputs.product_checks == 'true') || github.event_name == 'workflow_dispatch') && steps.route.outputs.image_bootstrap == 'true' }}
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: deploy/easypanel-native/Dockerfile.bootstrap
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: autonomia-sell-native-bootstrap:rehearsal
+          build-args: GIT_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=easypanel-native-bootstrap
+          cache-to: type=gha,mode=min,scope=easypanel-native-bootstrap
+
+      - name: Rehearse affected bootstrap image
+        if: ${{ !cancelled() && steps.image-bootstrap.outcome == 'success' }}
+        env:
+          BOOTSTRAP_IMAGE: autonomia-sell-native-bootstrap:rehearsal
+        run: bash deploy/easypanel-native/test-bootstrap-native.sh
+
+      - name: Smoke merged main without repeating certification
+        id: smoke
+        if: ${{ !cancelled() && github.event_name == 'push' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = main
+          python3 -m unittest discover -s scripts/ci/tests -v
+          git diff --check "$PUSH_BASE_SHA..$PUSH_HEAD_SHA"
+        env:
+          PUSH_BASE_SHA: ${{ github.event.before }}
+          PUSH_HEAD_SHA: ${{ github.sha }}
+
+      - name: Enforce stable fail-closed CI gate
+        if: ${{ !cancelled() }}
+        env:
+          CI_EVENT: ${{ github.event_name }}
+          CI_MERGE_QUEUE_ACTIVE: ${{ vars.APPSELL_MERGE_QUEUE_ACTIVE }}
+          CI_ROUTE_JSON: ${{ steps.route.outputs.route_json }}
+          CI_OUTCOME_ROUTE: ${{ steps.route.outcome }}
+          CI_OUTCOME_FAST_WEB: ${{ steps.fast-web.outcome }}
+          CI_OUTCOME_FAST_API: ${{ steps.fast-api.outcome }}
+          CI_OUTCOME_FAST_BACKUP: ${{ steps.fast-backup.outcome }}
+          CI_OUTCOME_FAST_PREVIEW: ${{ steps.fast-preview.outcome }}
+          CI_OUTCOME_CERT_WEB: ${{ steps.cert-web.outcome }}
+          CI_OUTCOME_CERT_POSTGRES: ${{ steps.cert-postgres.outcome }}
+          CI_OUTCOME_CERT_STORAGE: ${{ steps.cert-storage.outcome }}
+          CI_OUTCOME_CERT_OPENBAO: ${{ steps.cert-openbao.outcome }}
+          CI_OUTCOME_CERT_CAPACITY: ${{ steps.cert-capacity.outcome }}
+          CI_OUTCOME_CERT_BACKUP: ${{ steps.cert-backup.outcome }}
+          CI_OUTCOME_CERT_PREVIEW: ${{ steps.cert-preview.outcome }}
+          CI_OUTCOME_IMAGE_WEB: ${{ steps.image-web.outcome }}
+          CI_OUTCOME_IMAGE_API: ${{ steps.image-api.outcome }}
+          CI_OUTCOME_IMAGE_BOOTSTRAP: ${{ steps.image-bootstrap.outcome }}
+          CI_OUTCOME_SMOKE: ${{ steps.smoke.outcome }}
+        run: python3 scripts/ci/enforce_gate.py
+
+      - name: Upload redacted capacity evidence briefly
+        if: ${{ !cancelled() && steps.capacity-evidence-scan.outcome == 'success' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: capacity-100-admins-1000-buyers-${{ github.run_id }}-${{ github.run_attempt }}
+          name: capacity-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             tmp/capacity-100.json
             tmp/capacity-100.md
             tmp/capacity-100-postgres-startup.json
             tmp/capacity-postgres-fault.json
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
 
-  storage-vertical:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.12.11"
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
-        with:
-          version: "0.11.13"
-      - name: Install PDF rasterizer
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends poppler-utils
-          pdftoppm -v
-      - run: uv sync --project apps/api --frozen
-      - name: Real S3 upload, worker, publication, and authorized read
-        run: ./scripts/test-storage-vertical.sh
-
-  postgres-foundation:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.12.11"
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
-      - run: corepack enable
-      - run: pnpm install --frozen-lockfile
-      - name: Install isolated-test Redis binary
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y redis-server
-          sudo systemctl stop redis-server || true
-          redis-server --version
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
-        with:
-          version: "0.11.13"
-      - run: uv sync --project apps/api --frozen
-      - run: uv run --project apps/api ruff format --check apps/api
-      - run: uv run --project apps/api ruff check apps/api
-      - run: uv run --project apps/api mypy --config-file apps/api/pyproject.toml apps/api/src apps/api/tests
-      - run: uv run --project apps/api pip-audit --local
-      - run: >-
-          uv run --project apps/api pytest
-          apps/api/tests/test_config.py
-          apps/api/tests/test_health.py
-          apps/api/tests/test_capacity_telemetry.py
-          apps/api/tests/test_db_pool_budget.py
-      - run: pnpm exec playwright install --with-deps chromium
-      - run: ./scripts/test-postgres-foundation.sh
-      - name: Scan buyer multi-seller evidence
-        id: buyer-multi-seller-evidence
-        if: always()
-        run: |
-          python3 scripts/assert_capacity_artifact_safe.py --self-test
-          test -f tmp/buyer-multi-seller.json
-          python3 scripts/assert_capacity_artifact_safe.py tmp/buyer-multi-seller.json
-      - name: Upload buyer multi-seller evidence
-        if: always() && steps.buyer-multi-seller-evidence.outcome == 'success'
+      - name: Upload redacted PostgreSQL evidence briefly
+        if: ${{ !cancelled() && steps.postgres-evidence-scan.outcome == 'success' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: buyer-multi-seller-${{ github.run_id }}-${{ github.run_attempt }}
+          name: postgres-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: tmp/buyer-multi-seller.json
           if-no-files-found: error
-          retention-days: 30
-
-  verify:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
-      - run: corepack enable
-      - run: pnpm install --frozen-lockfile
-      - name: Install isolated-test Redis binary
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y redis-server
-          sudo systemctl stop redis-server || true
-          redis-server --version
-      - run: pnpm lint
-      - run: pnpm typecheck
-      - run: pnpm test
-      - run: corepack pnpm@11.13.0 --pm-on-fail=ignore audit --prod
-      - run: pnpm build
-      - run: pnpm exec playwright install --with-deps chromium webkit
-      - run: pnpm test:e2e
-      - run: pnpm test:e2e:production
+          retention-days: 7

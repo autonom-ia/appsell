@@ -35,10 +35,15 @@ else
   auth_workflow_sha="$9"
 fi
 appsell_branch="${APPSELL_ARTIFACT_BRANCH:-infra/66-vps-preview}"
+appsell_event="${APPSELL_ARTIFACT_EVENT:-push}"
 
 case "$appsell_branch" in
   infra/66-vps-preview|infra/66-easypanel-rc|infra/77-easypanel-runtime-preview|infra/77-easypanel-runtime-preview-rc) ;;
   *) echo "Unsupported AppSell artifact branch" >&2; exit 2 ;;
+esac
+case "$appsell_event" in
+  push|workflow_dispatch) ;;
+  *) echo "Unsupported AppSell artifact event" >&2; exit 2 ;;
 esac
 
 for command_name in gh jq unzip python3; do
@@ -318,7 +323,7 @@ PY
 
 verify_run \
   autonom-ia/appsell "$appsell_run_id" "VPS preview artifacts" \
-  .github/workflows/preview-images.yml push "$appsell_branch" "$appsell_sha" yes
+  .github/workflows/preview-images.yml "$appsell_event" "$appsell_branch" "$appsell_sha" yes
 if [[ "$mode" == "integrated" ]]; then
   verify_run \
     autonom-ia/autonomia-identity-foundation "$foundation_run_id" \
@@ -333,28 +338,28 @@ fi
 
 download_and_verify_artifact \
   autonom-ia/appsell "$appsell_run_id" .github/workflows/preview-images.yml \
-  "$appsell_branch" "$appsell_sha" push \
+  "$appsell_branch" "$appsell_sha" "$appsell_event" \
   "appsell-vps-preview-config-$appsell_sha" "config-$appsell_sha.tar.gz" ""
 download_and_verify_artifact \
   autonom-ia/appsell "$appsell_run_id" .github/workflows/preview-images.yml \
-  "$appsell_branch" "$appsell_sha" push \
+  "$appsell_branch" "$appsell_sha" "$appsell_event" \
   "appsell-vps-preview-sell-$appsell_sha" "sell-$appsell_sha.tar" ""
 download_and_verify_artifact \
   autonom-ia/appsell "$appsell_run_id" .github/workflows/preview-images.yml \
-  "$appsell_branch" "$appsell_sha" push \
+  "$appsell_branch" "$appsell_sha" "$appsell_event" \
   "appsell-vps-preview-domain-$appsell_sha" "domain-$appsell_sha.tar" ""
 download_and_verify_artifact \
   autonom-ia/appsell "$appsell_run_id" .github/workflows/preview-images.yml \
-  "$appsell_branch" "$appsell_sha" push \
+  "$appsell_branch" "$appsell_sha" "$appsell_event" \
   "appsell-vps-preview-base-alpine-$appsell_sha" "base-alpine-$appsell_sha.tar" ""
 if [[ "$mode" == "integrated" ]]; then
   download_and_verify_artifact \
     autonom-ia/appsell "$appsell_run_id" .github/workflows/preview-images.yml \
-    "$appsell_branch" "$appsell_sha" push \
+    "$appsell_branch" "$appsell_sha" "$appsell_event" \
     "appsell-vps-preview-base-postgres-$appsell_sha" "base-postgres-$appsell_sha.tar" ""
   download_and_verify_artifact \
     autonom-ia/appsell "$appsell_run_id" .github/workflows/preview-images.yml \
-    "$appsell_branch" "$appsell_sha" push \
+    "$appsell_branch" "$appsell_sha" "$appsell_event" \
     "appsell-vps-preview-base-redis-$appsell_sha" "base-redis-$appsell_sha.tar" ""
   download_and_verify_artifact \
     autonom-ia/autonomia-identity-foundation "$foundation_run_id" \

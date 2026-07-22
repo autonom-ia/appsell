@@ -13,6 +13,7 @@ const bootstrap = readFileSync(
 );
 const readme = readFileSync("deploy/easypanel-native/README.md", "utf8");
 const workflow = readFileSync(".github/workflows/easypanel-native-images.yml", "utf8");
+const appCi = readFileSync(".github/workflows/app-ci.yml", "utf8");
 
 describe("EasyPanel native runtime contract", () => {
   it("uses EasyPanel GIT_SHA and standalone runtimes without Playwright", () => {
@@ -31,13 +32,18 @@ describe("EasyPanel native runtime contract", () => {
     expect(webDockerfile).not.toContain("/api/health/live').then");
   });
 
-  it("builds every native Dockerfile on the exact pull request SHA", () => {
-    expect(workflow).toContain("github.event.pull_request.head.sha || github.sha");
+  it("builds affected images on the integrated SHA and keeps full manual rehearsal", () => {
+    expect(appCi).toContain("merge_group:");
+    expect(appCi).toContain("GIT_SHA=${{ github.sha }}");
+    expect(workflow).toContain("workflow_dispatch:");
+    expect(workflow).not.toContain("pull_request:");
     for (const file of ["Dockerfile.web", "Dockerfile.api", "Dockerfile.bootstrap"]) {
       expect(workflow).toContain(`deploy/easypanel-native/${file}`);
+      expect(appCi).toContain(`deploy/easypanel-native/${file}`);
     }
     expect(workflow).toContain("GIT_SHA=${{ env.SOURCE_SHA }}");
     expect(workflow).toContain("push: false");
+    expect(appCi).toContain("push: false");
   });
 
   it("keeps protected PDF originals out of both public runtime images", () => {
