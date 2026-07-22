@@ -22,14 +22,27 @@ _WORKER_LABEL = f"api-demo-checkout-{os.getpid()}"
 _IDLE_INTERVAL_SECONDS = 0.25
 _MAX_BACKOFF_SECONDS = 30.0
 _BACKOFF_FACTOR = 2.0
+_MAX_BACKOFF_EXPONENT = 16
 _MAX_LOGGED_ERROR_CHARS = 300
-# Sequências opacas longas (tokens, chaves, credenciais base64) nunca vão para o log.
-_OPAQUE_VALUE = re.compile(r"[A-Za-z0-9_\-]{32,}")
+# Sequências opacas longas (tokens, chaves, credenciais). Inclui o alfabeto
+# base64 completo: `+`, `/` e `=` fragmentariam a sequência e deixariam pedaços
+# curtos escaparem da redação.
+_OPAQUE_VALUE = re.compile(r"[A-Za-z0-9_\-+/]{32,}={0,2}")
+# Credenciais embutidas em URL (`postgresql+asyncpg://user:senha@host/db`).
+_CREDENTIAL_URL = re.compile(r"[a-z][a-z0-9+.\-]*://[^\s/@]+:[^\s/@]+@", re.IGNORECASE)
 logger = structlog.get_logger(__name__)
 
 
 def _sanitized_reason(error: BaseException) -> str:
-    return _OPAQUE_VALUE.sub("<REDACTED>", str(error))[:_MAX_LOGGED_ERROR_CHARS]
+    if isinstance(error, DBAPIError):
+        # str(DBAPIError) inclui o statement e os parâmetros vinculados, que
+        # podem carregar dado de cliente ou credencial. Registrar apenas a
+        # classe do erro do driver e o SQLSTATE — suficiente para diagnosticar
+        # função ausente (42883), RLS negando (42501) ou auth (28000).
+        sqlstate = getattr(error.orig, "sqlstate", None) or "unknown"
+        return f"{type(error.orig).__name__} sqlstate={sqlstate}"
+    redacted = _CREDENTIAL_URL.sub("<REDACTED>@", str(error))
+    return _OPAQUE_VALUE.sub("<REDACTED>", redacted)[:_MAX_LOGGED_ERROR_CHARS]
 
 
 async def run_demo_checkout_worker_loop(app: FastAPI, stop: asyncio.Event) -> None:
@@ -45,11 +58,26 @@ async def run_demo_checkout_worker_loop(app: FastAPI, stop: asyncio.Event) -> No
         delay = _IDLE_INTERVAL_SECONDS
         try:
             jobs = await _claim(auth, settings, worker_id)
-            for job in jobs:
-                await _apply(auth, settings, worker_id, job)
-            consecutive_failures = 0
-            if jobs:
-                continue
+            applied = [await _apply(auth, settings, worker_id, job) for job in jobs]
+            failed = applied.count(False)
+            if failed:
+                # `_apply` trata o DBAPIError internamente para registrar a
+                # falha do job. Sem contar isso aqui, o batch parecia sucesso,
+                # zerava o backoff e caía no `continue` sem dormir — o loop
+                # quente sobreviveria à correção.
+                consecutive_failures += 1
+                delay = _retry_delay(consecutive_failures)
+                logger.warning(
+                    "demo_checkout_worker_retry",
+                    error_type="DemoCheckoutApplyFailed",
+                    error=f"{failed} of {len(jobs)} claimed jobs failed to apply",
+                    backoff_seconds=delay,
+                    consecutive_failures=consecutive_failures,
+                )
+            else:
+                consecutive_failures = 0
+                if jobs:
+                    continue
         except (DBAPIError, RuntimeError, ValueError, KeyError) as error:
             consecutive_failures += 1
             delay = _retry_delay(consecutive_failures)
@@ -69,8 +97,11 @@ async def run_demo_checkout_worker_loop(app: FastAPI, stop: asyncio.Event) -> No
 
 
 def _retry_delay(consecutive_failures: int) -> float:
-    growth = _BACKOFF_FACTOR ** (consecutive_failures - 1)
-    return min(_IDLE_INTERVAL_SECONDS * growth, _MAX_BACKOFF_SECONDS)
+    # Limitar o expoente antes de elevar: uma falha permanente acumula milhares
+    # de tentativas e `2.0 ** 1024` levantaria OverflowError dentro do handler,
+    # matando a task do worker.
+    exponent = min(consecutive_failures - 1, _MAX_BACKOFF_EXPONENT)
+    return min(_IDLE_INTERVAL_SECONDS * _BACKOFF_FACTOR**exponent, _MAX_BACKOFF_SECONDS)
 
 
 async def _claim(
@@ -91,7 +122,8 @@ async def _apply(
     settings: Settings,
     worker_id: UUID,
     job: dict[str, Any],
-) -> None:
+) -> bool:
+    """Aplica um job. Retorna False quando a falha foi tratada internamente."""
     seller_id = UUID(str(job["seller_organization_id"]))
     job_id = UUID(str(job["id"]))
     fence = int(job["lease_fence"])
@@ -115,8 +147,16 @@ async def _apply(
             )
         if not isinstance(result, dict):
             raise RuntimeError("invalid demo checkout apply response")
-    except DBAPIError:
+    except DBAPIError as error:
+        logger.warning(
+            "demo_checkout_worker_apply_failed",
+            job_id=str(job_id),
+            error_type=type(error).__name__,
+            error=_sanitized_reason(error),
+        )
         await _record_failure(auth, settings, worker_id, seller_id, job_id, fence)
+        return False
+    return True
 
 
 async def _record_failure(

@@ -168,6 +168,7 @@ uv run --project apps/api pytest \
   apps/api/tests/test_postgres_superadmin_inspection.py \
   apps/api/tests/test_postgres_public_storefront.py \
   apps/api/tests/test_postgres_demo_checkout.py \
+  apps/api/tests/test_demo_checkout_worker.py \
   apps/api/tests/test_postgres_webhook_ingress.py \
   apps/api/tests/test_postgres_pdf_access_policy.py \
   apps/api/tests/test_postgres_pdf_preraster.py \

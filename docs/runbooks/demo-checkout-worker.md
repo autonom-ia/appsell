@@ -27,7 +27,13 @@ Leia `error_type`/`error` antes de agir — o backoff só reduz a frequência, n
 corrige a causa. Causas prováveis: função SQL ausente no banco alvo, RLS negando
 o envelope do worker, ou credencial interna divergente.
 
-Valores opacos longos (≥32 chars) saem do log como `<REDACTED>`; nunca cole o
+Erros de banco (`DBAPIError`) são registrados apenas como classe do driver +
+SQLSTATE — o statement e os parâmetros vinculados nunca vão para o log, porque
+podem carregar dado de cliente. Nos demais erros, sequências opacas de 32+ chars
+e credenciais embutidas em URL saem como `<REDACTED>`.
+
+Isso não é uma garantia absoluta: um segredo curto (<32 chars) ou em formato
+inesperado pode escapar. Trate o log como potencialmente sensível e nunca cole o
 valor bruto de uma env em issue ou PR.
 
 ## Desligar o worker sem promover o environment

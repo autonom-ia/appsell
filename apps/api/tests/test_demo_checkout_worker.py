@@ -10,10 +10,13 @@ from typing import Any, cast
 
 import pytest
 from fastapi import FastAPI
+from sqlalchemy.exc import DBAPIError
 
 from appsell_api import demo_checkout_worker
 from appsell_api.config import Settings
 from appsell_api.internal_requests import InternalRequestAuthenticator
+
+_IDLE = 0.25
 
 INTERNAL_AUTH: dict[str, Any] = {
     "internal_issuer": "appsell-bff",
@@ -195,6 +198,99 @@ async def test_backoff_resets_after_a_successful_claim(monkeypatch: pytest.Monke
     # Após a recuperação o intervalo volta ao ocioso original.
     assert waits[2] > demo_checkout_worker._IDLE_INTERVAL_SECONDS
     assert waits[3] == demo_checkout_worker._IDLE_INTERVAL_SECONDS
+
+
+async def test_apply_failure_backs_off_instead_of_spinning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_apply` trata DBAPIError internamente; o loop ainda precisa desacelerar."""
+    waits: list[float] = []
+    logged: list[dict[str, Any]] = []
+    job = {
+        "id": "6f1d2a58-0000-4000-8000-000000000001",
+        "seller_organization_id": "6f1d2a58-0000-4000-8000-000000000002",
+        "lease_fence": 1,
+    }
+
+    async def claim_one(statement: Any, parameters: dict[str, Any]) -> Any:
+        return [job]
+
+    class ClaimingSession:
+        @asynccontextmanager
+        async def trusted_domain_session(self, envelope: Any) -> AsyncIterator[Any]:
+            yield SimpleNamespace(scalar=claim_one)
+
+    async def fake_wait_for(awaitable: Any, **kwargs: Any) -> None:
+        waits.append(kwargs["timeout"])
+        awaitable.close()
+        if len(waits) >= 3:
+            raise asyncio.CancelledError
+        raise TimeoutError
+
+    async def failing_apply(*args: Any, **kwargs: Any) -> bool:
+        return False
+
+    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+    monkeypatch.setattr(demo_checkout_worker, "_apply", failing_apply)
+    monkeypatch.setattr(
+        demo_checkout_worker.logger, "warning", lambda event, **f: logged.append({**f})
+    )
+
+    app = _app(_settings(), ClaimingSession())
+
+    with pytest.raises(asyncio.CancelledError):
+        await demo_checkout_worker.run_demo_checkout_worker_loop(app, asyncio.Event())
+
+    # Com jobs presentes e apply falhando, o loop não pode dar `continue` seco.
+    assert len(waits) >= 2, "apply failure must not skip the sleep"
+    assert waits[1] > waits[0], "apply failure must feed the backoff"
+    assert logged[0]["consecutive_failures"] == 1
+    assert logged[1]["consecutive_failures"] == 2
+
+
+async def test_retry_delay_survives_a_permanent_failure() -> None:
+    # 2.0 ** 1024 levantaria OverflowError e mataria a task do worker.
+    assert demo_checkout_worker._retry_delay(5000) == demo_checkout_worker._MAX_BACKOFF_SECONDS
+
+
+def test_retry_delay_doubles_until_the_cap() -> None:
+    assert demo_checkout_worker._retry_delay(1) == _IDLE
+    assert demo_checkout_worker._retry_delay(2) == _IDLE * 2
+    assert demo_checkout_worker._retry_delay(3) == _IDLE * 4
+    assert demo_checkout_worker._retry_delay(99) == demo_checkout_worker._MAX_BACKOFF_SECONDS
+
+
+def test_database_errors_never_log_statement_or_parameters() -> None:
+    # str(DBAPIError) carrega o SQL e os parâmetros vinculados.
+    class UndefinedFunction(Exception):
+        sqlstate = "42883"
+
+    error = DBAPIError(
+        "select app_private.claim_demo_checkout_jobs(:worker)",
+        {"worker": "s3cr3t-value-in-parameters"},
+        UndefinedFunction("function does not exist"),
+    )
+
+    reason = demo_checkout_worker._sanitized_reason(error)
+
+    assert "claim_demo_checkout_jobs" not in reason
+    assert "s3cr3t-value-in-parameters" not in reason
+    assert "42883" in reason
+
+
+@pytest.mark.parametrize(
+    "secret",
+    [
+        base64.b64encode(bytes(range(48))).decode(),  # base64 com + / =
+        "postgresql+asyncpg://appsell:pa55w0rd@db.internal:5432/appsell",
+    ],
+)
+def test_punctuated_secrets_are_redacted(secret: str) -> None:
+    reason = demo_checkout_worker._sanitized_reason(RuntimeError(f"failed using {secret}"))
+
+    assert "<REDACTED>" in reason
+    assert "pa55w0rd" not in reason
+    assert secret not in reason
 
 
 async def test_logged_error_redacts_long_opaque_values(
