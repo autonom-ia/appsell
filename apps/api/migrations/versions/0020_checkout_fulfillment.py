@@ -445,6 +445,7 @@ def upgrade() -> None:
           job record; event record; mapped_product_id uuid; product record;
           buyer_id uuid; buyer_sub text; v_entitlement_id uuid;
           reference text; has_active_grant boolean;
+          existing_grant_buyer uuid; existing_grant_product uuid;
         begin
           if app_private.context_text('capability')
                is distinct from 'commerce.fulfillment.worker'
@@ -501,6 +502,36 @@ def upgrade() -> None:
           perform pg_advisory_xact_lock(hashtextextended(
             'appsell.fulfillment:'||p_seller::text||':'||buyer_id::text||':'||
               mapped_product_id::text,0));
+
+          -- Imutabilidade compra -> (buyer,produto): o grant e keyed por
+          -- (seller,integracao,compra), mas guarda o buyer/produto do 1o evento.
+          -- Um evento posterior da MESMA compra com buyer/produto divergente
+          -- (emissor malicioso/bugado, ou remap do external_product_mapping)
+          -- marcaria o grant original mas operaria no par errado, deixando o
+          -- entitlement original indevidamente ativo. Rejeita como dead_letter.
+          select ledger.buyer_identity_user_id,ledger.catalog_product_id
+            into existing_grant_buyer,existing_grant_product
+          from app_private.entitlement_grant ledger
+          where ledger.seller_organization_id=p_seller
+            and ledger.checkout_integration_id=event.checkout_integration_id
+            and ledger.external_purchase_id_sha256=job.external_purchase_id_sha256
+          for update;
+          if found and (existing_grant_buyer<>buyer_id
+            or existing_grant_product<>mapped_product_id) then
+            update app_private.fulfillment_job set status='dead_letter',
+              lease_owner=null,lease_expires_at=null,
+              error_code='purchase_identity_conflict',updated_at=clock_timestamp()
+            where seller_organization_id=p_seller and id=p_job;
+            insert into public.audit_event(seller_organization_id,actor_identity_user_id,
+              action,target_type,target_id,result,request_id,metadata)
+            values(p_seller,p_worker,'commerce.fulfillment_dead_letter','fulfillment_job',
+              p_job,'failed',p_request,jsonb_build_object(
+                'error_code','purchase_identity_conflict',
+                'webhook_event_id',job.webhook_event_id,
+                'external_purchase_id_sha256',job.external_purchase_id_sha256));
+            return jsonb_build_object('status','dead_letter',
+              'error_code','purchase_identity_conflict');
+          end if;
 
           -- Ambos os ramos precisam da identidade (FK do grant). O grant so vira
           -- 'active' se ainda nao estiver 'refunded' (refund vence approval).

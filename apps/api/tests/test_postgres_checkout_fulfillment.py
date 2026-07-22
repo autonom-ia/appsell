@@ -567,6 +567,39 @@ def test_two_active_purchases_refund_newer_keeps_access(
     assert revoked is not None and revoked[1] == "revoked"
 
 
+def test_same_purchase_with_divergent_buyer_dead_letters_and_keeps_access(
+    fixture: dict[str, UUID | str],
+) -> None:
+    # Um evento posterior da MESMA compra com comprador divergente não pode
+    # revogar/roubar: vira dead_letter e o entitlement original fica intacto.
+    assert ADMIN_URL
+    _register_worker(fixture)
+    _accept(
+        fixture,
+        event_reference=f"{RUN}-evt-div-approve",
+        purchase_reference=f"{RUN}-purchase-div",
+        buyer_email=f"buyer.div.a.{RUN}@example.test",
+    )
+    _drain(fixture)
+    granted = _entitlement(fixture, f"{RUN}-purchase-div")
+    assert granted is not None and granted[1] == "active"
+
+    # "Refund" da MESMA compra, mas com outro comprador (payload adulterado).
+    _accept(
+        fixture,
+        event_reference=f"{RUN}-evt-div-refund",
+        event_type="purchase.refunded",
+        purchase_reference=f"{RUN}-purchase-div",
+        buyer_email=f"buyer.div.b.{RUN}@example.test",
+    )
+    results = _drain(fixture)
+    assert any(result.get("error_code") == "purchase_identity_conflict" for result in results)
+    # Entitlement do comprador original permanece ativo.
+    still_active = _entitlement(fixture, f"{RUN}-purchase-div")
+    assert still_active is not None and still_active[0] == granted[0]
+    assert still_active[1] == "active"
+
+
 def test_explicit_identity_sub_binds_to_that_user(fixture: dict[str, UUID | str]) -> None:
     assert ADMIN_URL
     _register_worker(fixture)
