@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import re
 import time
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
@@ -18,30 +19,58 @@ from .service_auth import ServiceEnvelope, ServiceIdentity
 
 _WORKER_SUBJECT = "demo-checkout-worker-v1"
 _WORKER_LABEL = f"api-demo-checkout-{os.getpid()}"
+_IDLE_INTERVAL_SECONDS = 0.25
+_MAX_BACKOFF_SECONDS = 30.0
+_BACKOFF_FACTOR = 2.0
+_MAX_LOGGED_ERROR_CHARS = 300
+# Sequências opacas longas (tokens, chaves, credenciais base64) nunca vão para o log.
+_OPAQUE_VALUE = re.compile(r"[A-Za-z0-9_\-]{32,}")
 logger = structlog.get_logger(__name__)
+
+
+def _sanitized_reason(error: BaseException) -> str:
+    return _OPAQUE_VALUE.sub("<REDACTED>", str(error))[:_MAX_LOGGED_ERROR_CHARS]
 
 
 async def run_demo_checkout_worker_loop(app: FastAPI, stop: asyncio.Event) -> None:
     settings: Settings = app.state.settings
-    if settings.environment not in {"local", "ci"}:
+    if not settings.demo_checkout_worker_active:
         return
     auth: InternalRequestAuthenticator | None = app.state.internal_auth
     if auth is None:
         return
     worker_id = _worker_id(settings)
+    consecutive_failures = 0
     while not stop.is_set():
+        delay = _IDLE_INTERVAL_SECONDS
         try:
             jobs = await _claim(auth, settings, worker_id)
             for job in jobs:
                 await _apply(auth, settings, worker_id, job)
+            consecutive_failures = 0
             if jobs:
                 continue
-        except (DBAPIError, RuntimeError, ValueError, KeyError):
-            logger.warning("demo_checkout_worker_retry")
+        except (DBAPIError, RuntimeError, ValueError, KeyError) as error:
+            consecutive_failures += 1
+            delay = _retry_delay(consecutive_failures)
+            # Sem o motivo, uma falha permanente (função ausente, RLS negando)
+            # vira ruído indistinguível de uma indisponibilidade passageira.
+            logger.warning(
+                "demo_checkout_worker_retry",
+                error_type=type(error).__name__,
+                error=_sanitized_reason(error),
+                backoff_seconds=delay,
+                consecutive_failures=consecutive_failures,
+            )
         try:
-            await asyncio.wait_for(stop.wait(), timeout=0.25)
+            await asyncio.wait_for(stop.wait(), timeout=delay)
         except TimeoutError:
             pass
+
+
+def _retry_delay(consecutive_failures: int) -> float:
+    growth = _BACKOFF_FACTOR ** (consecutive_failures - 1)
+    return min(_IDLE_INTERVAL_SECONDS * growth, _MAX_BACKOFF_SECONDS)
 
 
 async def _claim(

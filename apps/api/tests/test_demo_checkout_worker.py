@@ -1,0 +1,222 @@
+from __future__ import annotations
+
+import asyncio
+import base64
+import json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+from typing import Any, cast
+
+import pytest
+from fastapi import FastAPI
+
+from appsell_api import demo_checkout_worker
+from appsell_api.config import Settings
+from appsell_api.internal_requests import InternalRequestAuthenticator
+
+INTERNAL_AUTH: dict[str, Any] = {
+    "internal_issuer": "appsell-bff",
+    "internal_audience": "appsell-api",
+    "identity_issuer": "https://identity.test",
+    "internal_hmac_keyring_b64_json": json.dumps(
+        [{"id": "test-v1", "key": base64.b64encode(bytes(range(32))).decode(), "active": True}]
+    ),
+    "context_hmac_key_b64": base64.b64encode(bytes(range(32, 64))).decode(),
+    "service_credential_b64": base64.b64encode(bytes(range(64, 96))).decode(),
+}
+
+
+class FailingSession:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    async def scalar(self, statement: Any, parameters: dict[str, Any]) -> Any:
+        raise self.error
+
+
+class FakeAuthenticator:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+        self.claims = 0
+
+    @asynccontextmanager
+    async def trusted_domain_session(self, envelope: Any) -> AsyncIterator[FailingSession]:
+        self.claims += 1
+        yield FailingSession(self.error)
+
+
+def _settings(**overrides: Any) -> Settings:
+    values: dict[str, Any] = {"environment": "ci", **INTERNAL_AUTH}
+    values.update(overrides)
+    return Settings(**values)
+
+
+def _app(settings: Settings, auth: Any) -> FastAPI:
+    app = FastAPI()
+    app.state.settings = settings
+    app.state.internal_auth = cast(InternalRequestAuthenticator | None, auth)
+    return app
+
+
+# --- gate: a flag só desliga, nunca habilita fora de local/ci -----------------
+
+
+@pytest.mark.parametrize("environment", ["local", "ci"])
+def test_worker_active_by_default_in_local_and_ci(environment: str) -> None:
+    assert _settings(environment=environment).demo_checkout_worker_active is True
+
+
+@pytest.mark.parametrize("environment", ["local", "ci"])
+def test_flag_disables_worker_in_local_and_ci(environment: str) -> None:
+    settings = _settings(environment=environment, demo_checkout_worker_enabled=False)
+    assert settings.demo_checkout_worker_active is False
+
+
+@pytest.mark.parametrize("environment", ["staging", "production"])
+def test_flag_true_does_not_enable_worker_outside_local_ci(environment: str) -> None:
+    # Fail-closed: mesmo com a flag ligada explicitamente o worker segue desligado.
+    settings = Settings.model_construct(
+        environment=environment,
+        demo_checkout_worker_enabled=True,
+    )
+    assert settings.demo_checkout_worker_active is False
+
+
+async def test_loop_returns_immediately_when_disabled() -> None:
+    auth = FakeAuthenticator(RuntimeError("must not be called"))
+    settings = _settings(demo_checkout_worker_enabled=False)
+    app = _app(settings, auth)
+    stop = asyncio.Event()
+
+    await asyncio.wait_for(demo_checkout_worker.run_demo_checkout_worker_loop(app, stop), 1)
+
+    assert auth.claims == 0
+
+
+# --- backoff + log com motivo ------------------------------------------------
+
+
+async def test_failing_claim_backs_off_and_logs_the_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    waits: list[float] = []
+    logged: list[dict[str, Any]] = []
+
+    async def fake_wait_for(awaitable: Any, **kwargs: Any) -> None:
+        waits.append(kwargs["timeout"])
+        awaitable.close()
+        if len(waits) >= 4:
+            raise asyncio.CancelledError
+        raise TimeoutError
+
+    def fake_warning(event: str, **fields: Any) -> None:
+        logged.append({"event": event, **fields})
+
+    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+    monkeypatch.setattr(demo_checkout_worker.logger, "warning", fake_warning)
+
+    auth = FakeAuthenticator(RuntimeError("claim_demo_checkout_jobs does not exist"))
+    app = _app(_settings(), auth)
+    stop = asyncio.Event()
+
+    with pytest.raises(asyncio.CancelledError):
+        await demo_checkout_worker.run_demo_checkout_worker_loop(app, stop)
+
+    # Backoff cresce a cada falha consecutiva, partindo do intervalo ocioso.
+    assert waits == sorted(waits)
+    assert waits[0] < waits[-1]
+    assert waits[-1] <= demo_checkout_worker._MAX_BACKOFF_SECONDS
+
+    # Cada retry carrega o motivo real, não só o nome do evento.
+    assert logged, "worker must log why it is retrying"
+    first = logged[0]
+    assert first["event"] == "demo_checkout_worker_retry"
+    assert first["error_type"] == "RuntimeError"
+    assert "claim_demo_checkout_jobs does not exist" in first["error"]
+    assert first["backoff_seconds"] == pytest.approx(waits[0])
+    assert first["consecutive_failures"] == 1
+    assert logged[1]["consecutive_failures"] == 2
+
+
+async def test_backoff_is_capped(monkeypatch: pytest.MonkeyPatch) -> None:
+    waits: list[float] = []
+
+    async def fake_wait_for(awaitable: Any, **kwargs: Any) -> None:
+        waits.append(kwargs["timeout"])
+        awaitable.close()
+        if len(waits) >= 40:
+            raise asyncio.CancelledError
+        raise TimeoutError
+
+    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+    monkeypatch.setattr(demo_checkout_worker.logger, "warning", lambda *a, **k: None)
+
+    auth = FakeAuthenticator(RuntimeError("boom"))
+    app = _app(_settings(), auth)
+
+    with pytest.raises(asyncio.CancelledError):
+        await demo_checkout_worker.run_demo_checkout_worker_loop(app, asyncio.Event())
+
+    assert max(waits) == demo_checkout_worker._MAX_BACKOFF_SECONDS
+
+
+async def test_backoff_resets_after_a_successful_claim(monkeypatch: pytest.MonkeyPatch) -> None:
+    waits: list[float] = []
+    state = SimpleNamespace(calls=0)
+
+    async def _empty_claim(statement: Any, parameters: dict[str, Any]) -> Any:
+        return []
+
+    class Recovering:
+        @asynccontextmanager
+        async def trusted_domain_session(self, envelope: Any) -> AsyncIterator[Any]:
+            state.calls += 1
+            if state.calls <= 3:
+                yield FailingSession(RuntimeError("boom"))
+            else:
+                yield SimpleNamespace(scalar=_empty_claim)
+
+    async def fake_wait_for(awaitable: Any, **kwargs: Any) -> None:
+        waits.append(kwargs["timeout"])
+        awaitable.close()
+        if len(waits) >= 5:
+            raise asyncio.CancelledError
+        raise TimeoutError
+
+    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+    monkeypatch.setattr(demo_checkout_worker.logger, "warning", lambda *a, **k: None)
+
+    app = _app(_settings(), Recovering())
+
+    with pytest.raises(asyncio.CancelledError):
+        await demo_checkout_worker.run_demo_checkout_worker_loop(app, asyncio.Event())
+
+    # Após a recuperação o intervalo volta ao ocioso original.
+    assert waits[2] > demo_checkout_worker._IDLE_INTERVAL_SECONDS
+    assert waits[3] == demo_checkout_worker._IDLE_INTERVAL_SECONDS
+
+
+async def test_logged_error_redacts_long_opaque_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logged: list[dict[str, Any]] = []
+
+    async def fake_wait_for(awaitable: Any, **kwargs: Any) -> None:
+        awaitable.close()
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+    monkeypatch.setattr(
+        demo_checkout_worker.logger, "warning", lambda event, **f: logged.append({**f})
+    )
+
+    secret = "A" * 48
+    auth = FakeAuthenticator(RuntimeError(f"auth failed for token {secret}"))
+    app = _app(_settings(), auth)
+
+    with pytest.raises(asyncio.CancelledError):
+        await demo_checkout_worker.run_demo_checkout_worker_loop(app, asyncio.Event())
+
+    assert secret not in logged[0]["error"]
+    assert "<REDACTED>" in logged[0]["error"]
