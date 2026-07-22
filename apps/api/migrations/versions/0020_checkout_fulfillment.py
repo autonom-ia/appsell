@@ -468,6 +468,16 @@ def upgrade() -> None:
           select * into strict event from public.webhook_event stored
           where stored.seller_organization_id=p_seller and stored.id=job.webhook_event_id;
 
+          -- Lock 1: serializa TODOS os eventos da MESMA compra
+          -- (seller,integracao,purchase), independentemente de buyer/produto.
+          -- Sem isso, eventos concorrentes divergentes pegariam locks (buyer,
+          -- produto) distintos e ambos veriam o grant ausente -> a checagem de
+          -- imutabilidade abaixo falharia. Tomado antes de resolver buyer.
+          perform pg_advisory_xact_lock(hashtextextended(
+            'appsell.fulfillment.purchase:'||p_seller::text||':'||
+              event.checkout_integration_id::text||':'
+              ||job.external_purchase_id_sha256,0));
+
           select mapping.catalog_product_id into mapped_product_id
           from public.external_product_mapping mapping
           where mapping.seller_organization_id=p_seller
@@ -496,26 +506,18 @@ def upgrade() -> None:
             'registration:'||job.buyer_email_normalized);
           buyer_id:=app_private.identity_user_id(p_issuer,buyer_sub);
 
-          -- Serializa approval e refund do MESMO (seller,buyer,produto) em uma
-          -- unica secao critica: a maquina de estados nao pode interlear (a
-          -- fence protege so a posse do job).
-          perform pg_advisory_xact_lock(hashtextextended(
-            'appsell.fulfillment:'||p_seller::text||':'||buyer_id::text||':'||
-              mapped_product_id::text,0));
-
           -- Imutabilidade compra -> (buyer,produto): o grant e keyed por
           -- (seller,integracao,compra), mas guarda o buyer/produto do 1o evento.
-          -- Um evento posterior da MESMA compra com buyer/produto divergente
-          -- (emissor malicioso/bugado, ou remap do external_product_mapping)
-          -- marcaria o grant original mas operaria no par errado, deixando o
-          -- entitlement original indevidamente ativo. Rejeita como dead_letter.
+          -- Sob o lock 1 (compra), a leitura abaixo e confiavel mesmo com o
+          -- grant ainda ausente: nenhum evento concorrente da mesma compra pode
+          -- cria-lo em paralelo. Divergencia -> dead_letter (uma compra nao
+          -- troca de comprador/produto).
           select ledger.buyer_identity_user_id,ledger.catalog_product_id
             into existing_grant_buyer,existing_grant_product
           from app_private.entitlement_grant ledger
           where ledger.seller_organization_id=p_seller
             and ledger.checkout_integration_id=event.checkout_integration_id
-            and ledger.external_purchase_id_sha256=job.external_purchase_id_sha256
-          for update;
+            and ledger.external_purchase_id_sha256=job.external_purchase_id_sha256;
           if found and (existing_grant_buyer<>buyer_id
             or existing_grant_product<>mapped_product_id) then
             update app_private.fulfillment_job set status='dead_letter',
@@ -532,6 +534,15 @@ def upgrade() -> None:
             return jsonb_build_object('status','dead_letter',
               'error_code','purchase_identity_conflict');
           end if;
+
+          -- Lock 2: serializa o recompute da entitlement por (seller,buyer,
+          -- produto) — compras DIFERENTES do mesmo par nao podem interlear no
+          -- has_active_grant/upsert. Ordem canonica (compra -> buyer,produto) em
+          -- todos os caminhos, entao dois apply nunca deadlockam. Aqui buyer/
+          -- produto ja sao os autoritativos (divergencia virou dead_letter).
+          perform pg_advisory_xact_lock(hashtextextended(
+            'appsell.fulfillment:'||p_seller::text||':'||buyer_id::text||':'||
+              mapped_product_id::text,0));
 
           -- Ambos os ramos precisam da identidade (FK do grant). O grant so vira
           -- 'active' se ainda nao estiver 'refunded' (refund vence approval).
