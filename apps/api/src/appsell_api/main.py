@@ -70,7 +70,7 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
             scanner = ClamAvScanner(settings.malware_scanner_socket)
         else:
             raise RuntimeError("malware scanner adapter is not configured")
-        if settings.environment in {"local", "ci"}:
+        if settings.environment in {"local", "ci"} and settings.storage_uses_custom_endpoint:
             await to_thread.run_sync(
                 lambda: storage.ensure_local_ci_controls(
                     allowed_origin=settings.storage_allowed_origin

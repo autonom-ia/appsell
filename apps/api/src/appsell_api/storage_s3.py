@@ -50,50 +50,67 @@ class S3Storage:
     def __init__(self, settings: Settings) -> None:
         if not settings.storage_configured:
             raise StorageError("S3 storage is not configured")
+        addressing_style = (
+            "path"
+            if settings.storage_uses_custom_endpoint and settings.storage_path_style
+            else "virtual"
+        )
         common: dict[str, Any] = {
             "service_name": "s3",
             "region_name": settings.storage_region,
-            "aws_access_key_id": settings.storage_control_access_key,
-            "aws_secret_access_key": settings.storage_control_secret_key,
             "config": Config(
                 signature_version="s3v4",
-                s3={"addressing_style": "path" if settings.storage_path_style else "virtual"},
+                s3={"addressing_style": addressing_style},
                 connect_timeout=settings.storage_connect_timeout_seconds,
                 read_timeout=settings.storage_read_timeout_seconds,
                 retries={"max_attempts": 2, "mode": "standard"},
             ),
         }
-        self._control: Any = boto3.client(endpoint_url=settings.storage_internal_endpoint, **common)
-        self._public: Any = boto3.client(endpoint_url=settings.storage_public_endpoint, **common)
+        if settings.storage_control_access_key:
+            common.update(
+                {
+                    "aws_access_key_id": settings.storage_control_access_key,
+                    "aws_secret_access_key": settings.storage_control_secret_key,
+                }
+            )
+            if settings.storage_control_session_token:
+                common["aws_session_token"] = settings.storage_control_session_token
+        self._control = _s3_client(settings.storage_internal_endpoint, common)
+        self._public = _s3_client(settings.storage_public_endpoint, common)
         anonymous_config = Config(
             signature_version=UNSIGNED,
-            s3={"addressing_style": "path" if settings.storage_path_style else "virtual"},
+            s3={"addressing_style": addressing_style},
             connect_timeout=settings.storage_connect_timeout_seconds,
             read_timeout=settings.storage_read_timeout_seconds,
             retries={"max_attempts": 1, "mode": "standard"},
         )
-        self._anonymous: Any = boto3.client(
-            "s3",
+        anonymous_common: dict[str, Any] = {
+            "service_name": "s3",
             # Exercise the same buckets over the API-reachable path. The public
             # endpoint exists to mint browser-facing URLs and can legitimately be
             # a host/LB address without container hairpin routing.
-            endpoint_url=settings.storage_internal_endpoint,
-            region_name=settings.storage_region,
-            config=anonymous_config,
+            "region_name": settings.storage_region,
+            "config": anonymous_config,
+        }
+        self._anonymous = _s3_client(settings.storage_internal_endpoint, anonymous_common)
+        self._anonymous_public = _s3_client(
+            settings.storage_public_endpoint,
+            {
+                **anonymous_common,
+                # This client is intentionally not used by the API-container startup
+                # path: a host/LB endpoint may not support hairpin routing. The
+                # storage_public_audit entrypoint executes it from outside the app
+                # network and therefore proves the browser-facing edge itself.
+            },
         )
-        self._anonymous_public: Any = boto3.client(
-            "s3",
-            # This client is intentionally not used by the API-container startup
-            # path: a host/LB endpoint may not support hairpin routing. The
-            # storage_public_audit entrypoint executes it from outside the app
-            # network and therefore proves the browser-facing edge itself.
-            endpoint_url=settings.storage_public_endpoint,
-            region_name=settings.storage_region,
-            config=anonymous_config,
+        self.public_endpoint = (
+            settings.storage_public_endpoint.rstrip("/")
+            if settings.storage_public_endpoint
+            else f"https://s3.{settings.storage_region}.amazonaws.com"
         )
-        self.public_endpoint = settings.storage_public_endpoint.rstrip("/")
         self.quarantine_bucket = settings.storage_quarantine_bucket
         self.ready_bucket = settings.storage_ready_bucket
+        self._prefix = settings.storage_prefix
         self.put_ttl = settings.storage_presign_put_ttl_seconds
         self.get_ttl = settings.storage_presign_get_ttl_seconds
 
@@ -118,7 +135,7 @@ class S3Storage:
         checksum = _checksum_b64(sha256_hex)
         params = {
             "Bucket": bucket,
-            "Key": key,
+            "Key": self._object_key(key),
             "ContentType": content_type,
             "ChecksumSHA256": checksum,
             "ContentLength": byte_size,
@@ -156,7 +173,7 @@ class S3Storage:
             "get_object",
             Params={
                 "Bucket": bucket,
-                "Key": key,
+                "Key": self._object_key(key),
                 "VersionId": version_id,
                 "ResponseContentDisposition": content_disposition,
                 "ResponseCacheControl": "private, no-store, max-age=0",
@@ -168,7 +185,11 @@ class S3Storage:
         return PresignedRequest(url=str(url), headers={}, expires_in_seconds=self.get_ttl)
 
     def head(self, *, bucket: str, key: str, version_id: str | None = None) -> StoredObject:
-        params: dict[str, Any] = {"Bucket": bucket, "Key": key, "ChecksumMode": "ENABLED"}
+        params: dict[str, Any] = {
+            "Bucket": bucket,
+            "Key": self._object_key(key),
+            "ChecksumMode": "ENABLED",
+        }
         if version_id:
             params["VersionId"] = version_id
         response = self._control.head_object(**params)
@@ -191,7 +212,7 @@ class S3Storage:
 
     def object_exists(self, *, bucket: str, key: str) -> bool:
         try:
-            self._control.head_object(Bucket=bucket, Key=key)
+            self._control.head_object(Bucket=bucket, Key=self._object_key(key))
             return True
         except ClientError as error:
             status = error.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
@@ -202,7 +223,9 @@ class S3Storage:
     @contextmanager
     def open_download(self, *, bucket: str, key: str, version_id: str) -> Iterator[BinaryIO]:
         try:
-            response = self._control.get_object(Bucket=bucket, Key=key, VersionId=version_id)
+            response = self._control.get_object(
+                Bucket=bucket, Key=self._object_key(key), VersionId=version_id
+            )
             body: BinaryIO = response["Body"]
             try:
                 yield body
@@ -216,10 +239,10 @@ class S3Storage:
     ) -> StoredObject:
         response = self._control.copy_object(
             Bucket=destination_bucket,
-            Key=destination_key,
+            Key=self._object_key(destination_key),
             CopySource={
                 "Bucket": source.bucket,
-                "Key": source.key,
+                "Key": self._object_key(source.key),
                 "VersionId": source.version_id,
             },
             ContentType=source.content_type,
@@ -267,7 +290,7 @@ class S3Storage:
             with source_path.open("rb") as source:
                 response = self._control.put_object(
                     Bucket=destination_bucket,
-                    Key=destination_key,
+                    Key=self._object_key(destination_key),
                     Body=source,
                     ContentLength=byte_size,
                     ContentType=content_type,
@@ -298,41 +321,45 @@ class S3Storage:
     def delete_version(self, *, bucket: str, key: str, version_id: str) -> None:
         if not version_id:
             raise StorageCapabilityError("delete requires exact VersionId")
-        self._control.delete_object(Bucket=bucket, Key=key, VersionId=version_id)
+        self._control.delete_object(Bucket=bucket, Key=self._object_key(key), VersionId=version_id)
 
     def delete_all_versions(self, *, bucket: str, key: str) -> int:
         deleted = 0
         paginator = self._control.get_paginator("list_object_versions")
-        for page in paginator.paginate(Bucket=bucket, Prefix=key):
+        object_key = self._object_key(key)
+        for page in paginator.paginate(Bucket=bucket, Prefix=object_key):
             objects = [
                 {"Key": entry["Key"], "VersionId": entry["VersionId"]}
                 for collection in (page.get("Versions", []), page.get("DeleteMarkers", []))
                 for entry in collection
-                if entry.get("Key") == key and entry.get("VersionId")
+                if entry.get("Key") == object_key and entry.get("VersionId")
             ]
             if objects:
-                self._control.delete_objects(
+                response = self._control.delete_objects(
                     Bucket=bucket,
                     Delete={"Objects": objects, "Quiet": True},
                 )
+                if response.get("Errors"):
+                    raise StorageError("storage version cleanup was incomplete")
                 deleted += len(objects)
         return deleted
 
     def delete_all_versions_under_prefix(self, *, bucket: str, prefix: str) -> int:
         if not prefix or not prefix.endswith("/"):
             raise StorageCapabilityError("prefix delete requires a directory prefix")
+        object_prefix = self._object_key(prefix)
         deleted = 0
         while True:
             page = self._control.list_object_versions(
                 Bucket=bucket,
-                Prefix=prefix,
+                Prefix=object_prefix,
                 MaxKeys=1_000,
             )
             objects = [
                 {"Key": entry["Key"], "VersionId": entry["VersionId"]}
                 for collection in (page.get("Versions", []), page.get("DeleteMarkers", []))
                 for entry in collection
-                if str(entry.get("Key") or "").startswith(prefix) and entry.get("VersionId")
+                if str(entry.get("Key") or "").startswith(object_prefix) and entry.get("VersionId")
             ]
             if not objects:
                 return deleted
@@ -345,7 +372,7 @@ class S3Storage:
             deleted += len(objects)
 
     def ensure_local_ci_controls(self, *, allowed_origin: str) -> None:
-        for bucket in (self.quarantine_bucket, self.ready_bucket):
+        for bucket, methods, allowed_headers in self._bucket_controls():
             try:
                 self._control.head_bucket(Bucket=bucket)
             except ClientError as error:
@@ -355,45 +382,31 @@ class S3Storage:
             self._control.put_bucket_versioning(
                 Bucket=bucket, VersioningConfiguration={"Status": "Enabled"}
             )
-            methods = ["HEAD", "PUT"] if bucket == self.quarantine_bucket else ["GET", "HEAD"]
-            allowed_headers = (
-                ["content-type", "x-amz-checksum-sha256", "x-amz-meta-appsell-upload-id"]
-                if bucket == self.quarantine_bucket
-                else []
-            )
             rule: dict[str, Any] = {
                 "AllowedOrigins": [allowed_origin],
-                "AllowedMethods": methods,
+                "AllowedMethods": sorted(methods),
                 "ExposeHeaders": ["etag", "x-amz-version-id", "x-amz-checksum-sha256"],
                 "MaxAgeSeconds": 300,
             }
             if allowed_headers:
-                rule["AllowedHeaders"] = allowed_headers
+                rule["AllowedHeaders"] = sorted(allowed_headers)
             self._control.put_bucket_cors(
                 Bucket=bucket,
                 CORSConfiguration={"CORSRules": [rule]},
             )
 
     def probe_availability(self) -> None:
-        for bucket in (self.quarantine_bucket, self.ready_bucket):
+        for bucket in dict.fromkeys((self.quarantine_bucket, self.ready_bucket)):
             self._control.head_bucket(Bucket=bucket)
 
     def assert_runtime_controls(self, *, allowed_origin: str, require_tls: bool) -> None:
         if require_tls and not self.public_endpoint.startswith("https://"):
             raise StorageCapabilityError("public storage endpoint must use TLS")
-        for bucket in (self.quarantine_bucket, self.ready_bucket):
+        for bucket, expected_methods, expected_headers in self._bucket_controls():
             versioning = self._control.get_bucket_versioning(Bucket=bucket)
             if versioning.get("Status") != "Enabled":
                 raise StorageCapabilityError(f"versioning is not enabled for {bucket}")
             cors = self._control.get_bucket_cors(Bucket=bucket).get("CORSRules", [])
-            expected_methods = (
-                {"HEAD", "PUT"} if bucket == self.quarantine_bucket else {"GET", "HEAD"}
-            )
-            expected_headers = (
-                {"content-type", "x-amz-checksum-sha256", "x-amz-meta-appsell-upload-id"}
-                if bucket == self.quarantine_bucket
-                else set()
-            )
             if len(cors) != 1:
                 raise StorageCapabilityError(f"unexpected CORS rule count for {bucket}")
             rule = cors[0]
@@ -415,7 +428,7 @@ class S3Storage:
         """
         if require_tls and not self.public_endpoint.startswith("https://"):
             raise StorageCapabilityError("public storage endpoint must use TLS")
-        for bucket in (self.quarantine_bucket, self.ready_bucket):
+        for bucket in dict.fromkeys((self.quarantine_bucket, self.ready_bucket)):
             self._assert_anonymous_denied(
                 bucket,
                 anonymous_client=self._anonymous_public,
@@ -431,7 +444,7 @@ class S3Storage:
     ) -> None:
         anonymous = anonymous_client or self._anonymous
         cleanup = cleanup_client or self._control
-        key = f"appsell-anonymous-probe/{uuid4()}"
+        key = self._object_key(f"appsell-anonymous-probe/{uuid4()}")
         payload = b"appsell-anonymous-write-probe"
         checksum = base64.b64encode(hashlib.sha256(payload).digest()).decode("ascii")
         probes = (
@@ -485,6 +498,21 @@ class S3Storage:
                     ) from cleanup_error
                 raise StorageCapabilityError(f"anonymous {operation} is allowed for {bucket}")
 
+    def _object_key(self, key: str) -> str:
+        prefix = getattr(self, "_prefix", "")
+        return f"{prefix}/{key}" if prefix else key
+
+    def _bucket_controls(self) -> list[tuple[str, set[str], set[str]]]:
+        upload_headers = {
+            "content-type",
+            "x-amz-checksum-sha256",
+            "x-amz-meta-appsell-upload-id",
+        }
+        return [
+            (self.quarantine_bucket, {"HEAD", "PUT"}, upload_headers),
+            (self.ready_bucket, {"GET", "HEAD"}, set()),
+        ]
+
     @staticmethod
     def _delete_all_versions_with_client(client: Any, *, bucket: str, key: str) -> None:
         paginator = client.get_paginator("list_object_versions")
@@ -504,6 +532,12 @@ class S3Storage:
 
 def object_sha256_matches(stored: StoredObject, expected_hex: str) -> bool:
     return stored.checksum_sha256_b64 == _checksum_b64(expected_hex)
+
+
+def _s3_client(endpoint: str, options: dict[str, Any]) -> Any:
+    if endpoint:
+        return boto3.client(endpoint_url=endpoint, **options)
+    return boto3.client(**options)
 
 
 def _asset_content_disposition(
