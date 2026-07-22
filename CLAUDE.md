@@ -17,7 +17,7 @@ Project:
 Regras:
 - Preservar regras específicas deste projeto.
 - Em caso de conflito entre regra local e harness, pedir decisão ao Rodrigo.
-- Operar pelas faixas de `.claude/rules/prod-approval.md`, com a regra local mais restritiva prevalecendo: merge, deploy, rebase, reset hard, rotação de secrets, migration de produção e alteração de infraestrutura exigem aprovação explícita do Rodrigo.
+- Operar pelas faixas de `.claude/rules/prod-approval.md`, com a regra local mais restritiva prevalecendo: merge, produção, escrita em banco de produção, secrets, auth, billing, infraestrutura e deploy exigem aprovação explícita do Rodrigo.
 - Não fazer merge sem aprovação explícita do Rodrigo.
 <!-- AUTONOMIA_AGENT_HARNESS_END -->
 
