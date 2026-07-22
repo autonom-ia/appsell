@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     pdf_sandbox_socket: str = ""
     private_learning_asset_root: str = ""
     capacity_product_create_telemetry: bool = False
+    # Kill switch operacional do worker de demo checkout (Refs #128). Só DESLIGA:
+    # o worker segue restrito a local/CI mesmo com a flag ligada, para não
+    # reabrir por env um caminho que o fail-closed de `environment` fecha.
+    demo_checkout_worker_enabled: bool = True
     video_upload_enabled: bool = False
     webhook_local_keyring_b64_json: str = ""
     # Opt-in explícito para keyring de webhook por env fora de local/ci
@@ -63,6 +67,10 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
+
+    @property
+    def demo_checkout_worker_active(self) -> bool:
+        return self.demo_checkout_worker_enabled and self.environment in {"local", "ci"}
 
     @property
     def pdf_sandbox_required(self) -> bool:

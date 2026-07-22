@@ -147,6 +147,7 @@ jobs:
           apps/api/tests/test_health.py
           apps/api/tests/test_capacity_telemetry.py
           apps/api/tests/test_db_pool_budget.py
+          apps/api/tests/test_demo_checkout_worker.py
       - run: pnpm exec playwright install --with-deps chromium
       - run: ./scripts/test-postgres-foundation.sh
       - name: Scan buyer multi-seller evidence

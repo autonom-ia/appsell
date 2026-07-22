@@ -103,7 +103,7 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         worker_task = asyncio.create_task(run_asset_worker_loop(app, worker_stop))
     checkout_worker_stop = asyncio.Event()
     checkout_worker_task: asyncio.Task[None] | None = None
-    if settings.environment in {"local", "ci"} and app.state.internal_auth is not None:
+    if settings.demo_checkout_worker_active and app.state.internal_auth is not None:
         checkout_worker_task = asyncio.create_task(
             run_demo_checkout_worker_loop(app, checkout_worker_stop)
         )

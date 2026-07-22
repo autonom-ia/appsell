@@ -18,30 +18,99 @@ from .service_auth import ServiceEnvelope, ServiceIdentity
 
 _WORKER_SUBJECT = "demo-checkout-worker-v1"
 _WORKER_LABEL = f"api-demo-checkout-{os.getpid()}"
+_IDLE_INTERVAL_SECONDS = 0.25
+_MAX_BACKOFF_SECONDS = 30.0
+_BACKOFF_FACTOR = 2.0
+_MAX_BACKOFF_EXPONENT = 16
+# Mensagens que este módulo produz e portanto sabe não conterem segredo.
+# Allowlist em vez de redação por regex: nenhum padrão reconhece todo formato de
+# segredo possível, e `str(error)` de uma camada arbitrária pode carregar token,
+# senha curta ou dado de cliente.
+_KNOWN_REASONS = frozenset(
+    {
+        "invalid demo checkout claim response",
+        "invalid demo checkout apply response",
+    }
+)
+_JOB_FIELDS = frozenset({"id", "seller_organization_id", "lease_fence"})
+_OPAQUE_REASON = "suppressed; message may contain sensitive data"
 logger = structlog.get_logger(__name__)
+
+
+def _sanitized_reason(error: BaseException) -> str:
+    """Motivo seguro para log. Nunca repassa `str(error)` de origem arbitrária."""
+    if isinstance(error, DBAPIError):
+        # str(DBAPIError) inclui o statement e os parâmetros vinculados, que
+        # podem carregar dado de cliente ou credencial. Registrar apenas a
+        # classe do erro do driver e o SQLSTATE — suficiente para diagnosticar
+        # função ausente (42883), RLS negando (42501) ou auth (28000).
+        sqlstate = getattr(error.orig, "sqlstate", None) or "unknown"
+        return f"{type(error.orig).__name__} sqlstate={sqlstate}"
+    if isinstance(error, KeyError):
+        # A chave só é segura quando é um campo conhecido do job.
+        key = error.args[0] if error.args else None
+        return f"missing job field {key}" if key in _JOB_FIELDS else _OPAQUE_REASON
+    message = str(error)
+    return message if message in _KNOWN_REASONS else _OPAQUE_REASON
 
 
 async def run_demo_checkout_worker_loop(app: FastAPI, stop: asyncio.Event) -> None:
     settings: Settings = app.state.settings
-    if settings.environment not in {"local", "ci"}:
+    if not settings.demo_checkout_worker_active:
         return
     auth: InternalRequestAuthenticator | None = app.state.internal_auth
     if auth is None:
         return
     worker_id = _worker_id(settings)
+    consecutive_failures = 0
     while not stop.is_set():
+        delay = _IDLE_INTERVAL_SECONDS
         try:
             jobs = await _claim(auth, settings, worker_id)
-            for job in jobs:
-                await _apply(auth, settings, worker_id, job)
-            if jobs:
-                continue
-        except (DBAPIError, RuntimeError, ValueError, KeyError):
-            logger.warning("demo_checkout_worker_retry")
+            applied = [await _apply(auth, settings, worker_id, job) for job in jobs]
+            failed = applied.count(False)
+            if failed:
+                # `_apply` trata o DBAPIError internamente para registrar a
+                # falha do job. Sem contar isso aqui, o batch parecia sucesso,
+                # zerava o backoff e caía no `continue` sem dormir — o loop
+                # quente sobreviveria à correção.
+                consecutive_failures += 1
+                delay = _retry_delay(consecutive_failures)
+                logger.warning(
+                    "demo_checkout_worker_retry",
+                    error_type="DemoCheckoutApplyFailed",
+                    error=f"{failed} of {len(jobs)} claimed jobs failed to apply",
+                    backoff_seconds=delay,
+                    consecutive_failures=consecutive_failures,
+                )
+            else:
+                consecutive_failures = 0
+                if jobs:
+                    continue
+        except (DBAPIError, RuntimeError, ValueError, KeyError) as error:
+            consecutive_failures += 1
+            delay = _retry_delay(consecutive_failures)
+            # Sem o motivo, uma falha permanente (função ausente, RLS negando)
+            # vira ruído indistinguível de uma indisponibilidade passageira.
+            logger.warning(
+                "demo_checkout_worker_retry",
+                error_type=type(error).__name__,
+                error=_sanitized_reason(error),
+                backoff_seconds=delay,
+                consecutive_failures=consecutive_failures,
+            )
         try:
-            await asyncio.wait_for(stop.wait(), timeout=0.25)
+            await asyncio.wait_for(stop.wait(), timeout=delay)
         except TimeoutError:
             pass
+
+
+def _retry_delay(consecutive_failures: int) -> float:
+    # Limitar o expoente antes de elevar: uma falha permanente acumula milhares
+    # de tentativas e `2.0 ** 1024` levantaria OverflowError dentro do handler,
+    # matando a task do worker.
+    exponent = min(consecutive_failures - 1, _MAX_BACKOFF_EXPONENT)
+    return min(_IDLE_INTERVAL_SECONDS * _BACKOFF_FACTOR**exponent, _MAX_BACKOFF_SECONDS)
 
 
 async def _claim(
@@ -62,7 +131,8 @@ async def _apply(
     settings: Settings,
     worker_id: UUID,
     job: dict[str, Any],
-) -> None:
+) -> bool:
+    """Aplica um job. Retorna False quando a falha foi tratada internamente."""
     seller_id = UUID(str(job["seller_organization_id"]))
     job_id = UUID(str(job["id"]))
     fence = int(job["lease_fence"])
@@ -86,8 +156,16 @@ async def _apply(
             )
         if not isinstance(result, dict):
             raise RuntimeError("invalid demo checkout apply response")
-    except DBAPIError:
+    except DBAPIError as error:
+        logger.warning(
+            "demo_checkout_worker_apply_failed",
+            job_id=str(job_id),
+            error_type=type(error).__name__,
+            error=_sanitized_reason(error),
+        )
         await _record_failure(auth, settings, worker_id, seller_id, job_id, fence)
+        return False
+    return True
 
 
 async def _record_failure(
