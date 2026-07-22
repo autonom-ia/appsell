@@ -17,12 +17,19 @@ class WebhookRejectedError(ValueError):
     pass
 
 
+_EMAIL_FORBIDDEN = re.compile(r"[\x00-\x1f\x7f\s]")
+_SUB_FORBIDDEN = re.compile(r"[\x00-\x1f\x7f]")
+
+
 @dataclass(frozen=True, slots=True)
 class NormalizedCheckoutEvent:
     event_type: str
     external_product_reference: str
     external_purchase_reference: str
     occurred_at: datetime
+    # Payload v2 (fulfillment): buyer identity. Both stay None on payload v1.
+    buyer_email: str | None = None
+    buyer_identity_sub: str | None = None
 
 
 def verify_generic_hmac_v1(
@@ -70,14 +77,16 @@ def parse_generic_hmac_v1(body: bytes) -> NormalizedCheckoutEvent:
         )
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise WebhookRejectedError("webhook_payload_invalid") from error
-    expected = {
+    expected_v1 = {
         "event_type",
         "external_product_id",
         "external_purchase_id",
         "occurred_at",
     }
-    if not isinstance(payload, dict) or set(payload) != expected:
+    expected_v2 = expected_v1 | {"buyer_email", "buyer_identity_sub"}
+    if not isinstance(payload, dict) or set(payload) not in (expected_v1, expected_v2):
         raise WebhookRejectedError("webhook_payload_invalid")
+    is_v2 = set(payload) == expected_v2
     event_type = payload["event_type"]
     product = payload["external_product_id"]
     purchase = payload["external_purchase_id"]
@@ -90,13 +99,49 @@ def parse_generic_hmac_v1(body: bytes) -> NormalizedCheckoutEvent:
         or not isinstance(occurred, str)
     ):
         raise WebhookRejectedError("webhook_payload_invalid")
+    buyer_email: str | None = None
+    buyer_identity_sub: str | None = None
+    if is_v2:
+        buyer_email = payload["buyer_email"]
+        buyer_identity_sub = payload["buyer_identity_sub"]
+        if not _valid_buyer_email(buyer_email) or not _valid_buyer_sub(buyer_identity_sub):
+            raise WebhookRejectedError("webhook_payload_invalid")
     try:
         occurred_at = datetime.fromisoformat(occurred.replace("Z", "+00:00"))
     except ValueError as error:
         raise WebhookRejectedError("webhook_payload_invalid") from error
     if occurred_at.tzinfo is None or occurred_at.utcoffset() != UTC.utcoffset(occurred_at):
         raise WebhookRejectedError("webhook_payload_invalid")
-    return NormalizedCheckoutEvent(event_type, product, purchase, occurred_at)
+    return NormalizedCheckoutEvent(
+        event_type, product, purchase, occurred_at, buyer_email, buyer_identity_sub
+    )
+
+
+def _valid_buyer_email(value: object) -> bool:
+    # Mirrors the SQL checks on fulfillment_job.buyer_email_normalized; 242-octet
+    # cap keeps the derived "registration:<email>" identity_sub under 255 chars.
+    return (
+        isinstance(value, str)
+        and value == value.strip().lower()
+        and value.find("@") > 0
+        and 6 <= len(value.encode("utf-8")) <= 242
+        and _EMAIL_FORBIDDEN.search(value) is None
+    )
+
+
+def _valid_buyer_sub(value: object) -> bool:
+    if value is None:
+        return True
+    # "registration:" is the worker-derived namespace (registration:<email>);
+    # an emitter must never claim it explicitly, or it could bind a purchase to
+    # the identity derived from a DIFFERENT buyer's e-mail.
+    return (
+        isinstance(value, str)
+        and value == value.strip()
+        and 3 <= len(value) <= 255
+        and _SUB_FORBIDDEN.search(value) is None
+        and not value.startswith("registration:")
+    )
 
 
 def _valid_reference(value: object) -> bool:

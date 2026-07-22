@@ -15,6 +15,7 @@ from .checkout_routes import router as checkout_router
 from .config import Settings, get_settings
 from .db import create_engine, create_session_factory, database_ready
 from .demo_checkout_worker import run_demo_checkout_worker_loop
+from .fulfillment_worker import run_fulfillment_worker_loop
 from .internal_requests import InternalRequestAuthenticator
 from .learning_routes import router as learning_router
 from .platform_bootstrap_routes import router as platform_bootstrap_router
@@ -106,6 +107,12 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         checkout_worker_task = asyncio.create_task(
             run_demo_checkout_worker_loop(app, checkout_worker_stop)
         )
+    fulfillment_worker_stop = asyncio.Event()
+    fulfillment_worker_task: asyncio.Task[None] | None = None
+    if app.state.internal_auth is not None:
+        fulfillment_worker_task = asyncio.create_task(
+            run_fulfillment_worker_loop(app, fulfillment_worker_stop)
+        )
     try:
         yield
     finally:
@@ -127,6 +134,12 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
                 await asyncio.wait_for(checkout_worker_task, timeout=5)
             except TimeoutError:
                 checkout_worker_task.cancel()
+        fulfillment_worker_stop.set()
+        if fulfillment_worker_task is not None:
+            try:
+                await asyncio.wait_for(fulfillment_worker_task, timeout=5)
+            except TimeoutError:
+                fulfillment_worker_task.cancel()
         await engine.dispose()
 
 

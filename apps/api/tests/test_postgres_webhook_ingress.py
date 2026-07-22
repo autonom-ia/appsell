@@ -103,7 +103,7 @@ def _accept(
         "select * from app_private.accept_checkout_webhook("
         "%s::uuid,%s::uuid,%s::text,%s::text,%s::bigint,%s::text,7::smallint,%s::text,20::integer,"
         "'purchase.approved'::text,%s::text,11::smallint,%s::text,12::smallint,"
-        "'2026-07-14T07:00:00Z'::timestamptz,%s::bigint,%s::uuid)",
+        "'2026-07-14T07:00:00Z'::timestamptz,%s::bigint,%s::uuid,null::text,null::text)",
         (
             seller_id,
             ENDPOINT,

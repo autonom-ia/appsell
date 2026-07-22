@@ -84,7 +84,8 @@ async def accept_checkout_webhook(endpoint_key: str, request: Request) -> dict[s
                             "cast(:event_type as text),cast(:product_hash as text),"
                             "cast(:product_octets as smallint),cast(:purchase_hash as text),"
                             "cast(:purchase_octets as smallint),cast(:occurred_at as timestamptz),"
-                            "cast(:signed_at_epoch as bigint),cast(:request_id as uuid))"
+                            "cast(:signed_at_epoch as bigint),cast(:request_id as uuid),"
+                            "cast(:buyer_email as text),cast(:buyer_identity_sub as text))"
                         ),
                         {
                             "seller_id": resolution["seller_organization_id"],
@@ -104,6 +105,8 @@ async def accept_checkout_webhook(endpoint_key: str, request: Request) -> dict[s
                             "occurred_at": normalized.occurred_at,
                             "signed_at_epoch": int(timestamp_header),
                             "request_id": internal.envelope.request_id,
+                            "buyer_email": normalized.buyer_email,
+                            "buyer_identity_sub": normalized.buyer_identity_sub,
                         },
                     )
                 )

@@ -141,3 +141,62 @@ async def test_continuation_is_not_inherited_by_a_child_task() -> None:
         return error.value.status_code
 
     assert await asyncio.create_task(attempt()) == 401
+
+
+def _fulfillment_worker_envelope() -> ServiceEnvelope:
+    now = int(time.time())
+    identity_issuer = "https://identity.test.autonomia.site"
+    return ServiceEnvelope(
+        version=1,
+        kid="api-internal",
+        issuer="appsell-bff",
+        audience="appsell-api",
+        session_ref="fulfillment-worker",
+        session_epoch=1,
+        identity=ServiceIdentity(
+            issuer=identity_issuer,
+            sub="fulfillment-worker-v1",
+            user_id=uuid5(NAMESPACE_URL, f"{identity_issuer}\0fulfillment-worker-v1"),
+        ),
+        capability="commerce.fulfillment.worker",
+        seller_organization_id=None,
+        method="POST",
+        path="/v1/internal/fulfillment-worker",
+        query_sha256=hashlib.sha256(b"").hexdigest(),
+        body_sha256=hashlib.sha256(b"").hexdigest(),
+        request_id=uuid4(),
+        iat=now,
+        exp=now + 60,
+    )
+
+
+@pytest.mark.asyncio
+async def test_trusted_session_accepts_fulfillment_worker_envelope() -> None:
+    # Passing the allowlist means the fake session factory is invoked next; a
+    # TypeError (object not callable) proves the envelope was ACCEPTED, while a
+    # missing allowlist entry would raise HTTPException(401) and silently kill
+    # the production worker loop.
+    auth = _auth_without_database()
+    with pytest.raises(TypeError):
+        async with auth.trusted_domain_session(_fulfillment_worker_envelope()):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_trusted_session_rejects_tampered_fulfillment_worker_envelope() -> None:
+    auth = _auth_without_database()
+    base = _fulfillment_worker_envelope()
+    for tampered in (
+        replace(base, capability="commerce.demo.checkout.worker"),
+        replace(base, session_ref="demo-checkout-worker"),
+        replace(base, path="/v1/me/sellers"),
+        replace(base, issuer="forged-service"),
+        replace(
+            base,
+            identity=replace(base.identity, user_id=uuid4()),
+        ),
+    ):
+        with pytest.raises(HTTPException) as error:
+            async with auth.trusted_domain_session(tampered):
+                pass
+        assert error.value.status_code == 401
