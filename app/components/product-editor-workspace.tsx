@@ -6,12 +6,20 @@ import { FormEvent, MouseEvent, useCallback, useEffect, useRef, useState } from 
 import { AccessibleDialog } from "./accessible-dialog";
 import { CurriculumWorkspace } from "./curriculum-workspace";
 import { allowUnsavedNavigation, useUnsavedChanges } from "./use-unsaved-changes";
+import {
+  formatOfferPrice,
+  isOfferBillingPeriod,
+  OFFER_BILLING_PERIODS,
+  parsePriceInputToMinor,
+  priceInputFromMinor
+} from "@/lib/offer-price";
 
 type EditorSection = "produto" | "curriculo" | "oferta" | "preview" | "publicar";
 type LoadState = "loading" | "ready" | "unauthorized" | "forbidden" | "not_found" | "unavailable" | "error";
 type SaveState = "idle" | "saving" | "saved" | "saved_with_changes" | "conflict" | "rebasing" | "rebased" | "invalid" | "forbidden" | "unavailable" | "error";
 type PreviewState = "idle" | "loading" | "ready" | "unavailable" | "error";
 type PublishState = "idle" | "publishing" | "published" | "conflict" | "forbidden" | "unavailable" | "error";
+type OfferStatusState = "idle" | "transitioning" | "done" | "conflict" | "blocked" | "forbidden" | "unavailable" | "error";
 
 interface CourseDetail {
   id: string;
@@ -26,6 +34,9 @@ interface OfferDetail {
   summary: string;
   status: string;
   draft_version: number;
+  unit_amount_minor?: number;
+  currency?: string;
+  billing_period?: string;
 }
 
 interface ReadinessItem {
@@ -58,7 +69,7 @@ interface EditorPayload {
   offer?: OfferDetail | null;
   publication?: ProductDetail["publication"];
   latest_publication?: ProductDetail["publication"];
-  csrf?: { update?: string; publish?: string };
+  csrf?: { update?: string; publish?: string; offer_status?: string };
   readiness?: { can_publish: boolean; has_unpublished_changes?: boolean; items: Array<ReadinessItem | string> };
   can_publish?: boolean;
   readiness_violations?: Array<string | { key?: string; label?: string; detail?: string }>;
@@ -71,6 +82,8 @@ interface EditorFields {
   course_title: string;
   offer_title: string;
   offer_summary: string;
+  offer_price: string;
+  offer_billing_period: string;
 }
 
 interface PrivatePreview {
@@ -91,7 +104,7 @@ interface PrivatePreviewPayload extends PrivatePreview {
 const editorSections: Array<{ id: EditorSection; label: string; hint: string }> = [
   { id: "produto", label: "Produto", hint: "Identidade e curso" },
   { id: "curriculo", label: "Currículo", hint: "Módulos e aulas" },
-  { id: "oferta", label: "Oferta", hint: "Termos informativos" },
+  { id: "oferta", label: "Oferta", hint: "Preço e disponibilidade" },
   { id: "preview", label: "Preview", hint: "Revisão privada" },
   { id: "publicar", label: "Publicar", hint: "Snapshot versionado" }
 ];
@@ -103,7 +116,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   const section: EditorSection = editorSections.some((item) => item.id === requestedSection) ? requestedSection as EditorSection : "produto";
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [detail, setDetail] = useState<ProductDetail | null>(null);
-  const [csrf, setCsrf] = useState<{ update: string; publish: string }>({ update: "", publish: "" });
+  const [csrf, setCsrf] = useState<{ update: string; publish: string; offerStatus: string }>({ update: "", publish: "", offerStatus: "" });
   const [fields, setFields] = useState<EditorFields>(emptyFields);
   const fieldsRef = useRef(fields);
   const [savedFields, setSavedFields] = useState<EditorFields>(emptyFields);
@@ -113,22 +126,38 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   const [preview, setPreview] = useState<PrivatePreview | null>(null);
   const [previewRetry, setPreviewRetry] = useState(0);
   const [publishState, setPublishState] = useState<PublishState>("idle");
+  const [offerStatusState, setOfferStatusState] = useState<OfferStatusState>("idle");
   const [publishDialogOpen, setPublishDialogOpen] = useState(false);
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
+  const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
   const [curriculumDirty, setCurriculumDirty] = useState(false);
   const [curriculumBusy, setCurriculumBusy] = useState(false);
   const [assetNavigationWarning, setAssetNavigationWarning] = useState(false);
   const updateIdempotencyKey = useRef<string | null>(null);
   const publishIdempotencyKey = useRef<string | null>(null);
+  const offerStatusIdempotencyKey = useRef<{ transition: string; key: string } | null>(null);
   const offerId = useRef<string | null>(null);
   const formElement = useRef<HTMLFormElement>(null);
   const publishCancelButton = useRef<HTMLButtonElement>(null);
   const leaveCancelButton = useRef<HTMLButtonElement>(null);
   const publishTriggerButton = useRef<HTMLButtonElement>(null);
+  const archiveTriggerButton = useRef<HTMLButtonElement>(null);
+  const archiveCancelButton = useRef<HTMLButtonElement>(null);
   const publishStatus = useRef<HTMLDivElement>(null);
   const listLink = useRef<HTMLAnchorElement>(null);
   const dirty = !sameFields(fields, savedFields);
   const editorDirty = dirty || curriculumDirty;
+  // O SQL de update do agregado (0018) exige oferta em draft; com oferta não-draft
+  // qualquer save falharia. Também bloqueia durante a transição de status, senão
+  // uma edição concorrente seria descartada silenciosamente pelo loadDetail().
+  const offerNotDraft = detail !== null && detail.offer.status !== "draft";
+  const offerArchived = detail !== null && detail.offer.status === "archived";
+  const offerLocked = offerNotDraft || offerStatusState === "transitioning";
+  // Rótulo do preço na moeda armazenada da oferta: "R$" para BRL, o código ISO
+  // (ex.: USD) caso contrário — o operador nunca edita um valor USD achando ser BRL.
+  const offerCurrencyLabel = /^[A-Z]{3}$/.test(detail?.offer.currency ?? "")
+    ? (detail!.offer.currency === "BRL" ? "R$" : detail!.offer.currency!)
+    : "R$";
 
   useUnsavedChanges(editorDirty);
   useEffect(() => {
@@ -157,7 +186,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       const nextFields = fieldsFromDetail(nextDetail);
       offerId.current = nextDetail.offer.id ?? crypto.randomUUID();
       setDetail({ ...nextDetail, readiness: payload.readiness ?? nextDetail.readiness });
-      setCsrf({ update: payload.csrf?.update ?? readActionCsrf("update"), publish: payload.csrf?.publish ?? readActionCsrf("publish") });
+      setCsrf({ update: payload.csrf?.update ?? readActionCsrf("update"), publish: payload.csrf?.publish ?? readActionCsrf("publish"), offerStatus: payload.csrf?.offer_status ?? "" });
       setFields(nextFields);
       setSavedFields(nextFields);
       setLoadState("ready");
@@ -214,7 +243,18 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   async function saveDraft(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!detail || saveState === "saving") return;
+    // Guarda de defesa: o form já é desabilitado por offerLocked, mas o submit
+    // pode chegar por Enter durante uma transição em voo — não salvar nesse caso.
+    if (detail.offer.status !== "draft" || offerStatusState === "transitioning") return;
     const submitted = fields;
+    const submittedUnitAmountMinor = parsePriceInputToMinor(submitted.offer_price);
+    if (submittedUnitAmountMinor === null) {
+      setInvalidField("offer_price");
+      setSaveState("invalid");
+      const input = formElement.current?.elements.namedItem("offer_price");
+      if (input instanceof HTMLElement) input.focus();
+      return;
+    }
     const submittedVersions = versionsFromDetail(detail);
     const key = updateIdempotencyKey.current ?? crypto.randomUUID();
     updateIdempotencyKey.current = key;
@@ -226,7 +266,17 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
     data.set("expected_offer_version", String(submittedVersions.offer));
     data.set("course_id", detail.course.id);
     data.set("offer_id", offerId.current ?? crypto.randomUUID());
-    for (const [name, value] of Object.entries(submitted)) data.set(name, value);
+    data.set("slug", submitted.slug);
+    data.set("product_title", submitted.product_title);
+    data.set("product_description", submitted.product_description);
+    data.set("course_title", submitted.course_title);
+    data.set("offer_title", submitted.offer_title);
+    data.set("offer_summary", submitted.offer_summary);
+    data.set("offer_unit_amount_minor", String(submittedUnitAmountMinor));
+    // Preserva a moeda armazenada da oferta (não há troca de moeda na UI);
+    // hardcodar BRL converteria silenciosamente uma oferta em outra moeda.
+    data.set("offer_currency", /^[A-Z]{3}$/.test(detail.offer.currency ?? "") ? detail.offer.currency! : "BRL");
+    data.set("offer_billing_period", isOfferBillingPeriod(submitted.offer_billing_period) ? submitted.offer_billing_period : "one_time");
     setSaveState("saving");
     setInvalidField("");
     const controller = new AbortController();
@@ -254,7 +304,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       if (!updated) return setSaveState("error");
       updateIdempotencyKey.current = null;
       setDetail({ ...updated, readiness: payload.readiness ?? updated.readiness });
-      setCsrf((current) => ({ update: payload.csrf?.update ?? current.update, publish: payload.csrf?.publish ?? current.publish }));
+      setCsrf((current) => ({ update: payload.csrf?.update ?? current.update, publish: payload.csrf?.publish ?? current.publish, offerStatus: payload.csrf?.offer_status ?? current.offerStatus }));
       setSavedFields(fieldsFromDetail(updated));
       if (sameFields(fieldsRef.current, submitted)) {
         const serverFields = fieldsFromDetail(updated);
@@ -292,7 +342,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       }
       setDetail(latest);
       setSavedFields(fieldsFromDetail(latest));
-      setCsrf((current) => ({ update: payload.csrf?.update ?? current.update, publish: payload.csrf?.publish ?? current.publish }));
+      setCsrf((current) => ({ update: payload.csrf?.update ?? current.update, publish: payload.csrf?.publish ?? current.publish, offerStatus: payload.csrf?.offer_status ?? current.offerStatus }));
       offerId.current = latest.offer.id ?? offerId.current ?? crypto.randomUUID();
       updateIdempotencyKey.current = null;
       setInvalidField("");
@@ -352,6 +402,57 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       setPublishState("published");
     } catch {
       setPublishState("unavailable");
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async function transitionOffer(nextStatus: "draft" | "active" | "archived") {
+    const currentOffer = detail?.offer;
+    if (!currentOffer?.id || offerStatusState === "transitioning" || dirty) return;
+    const expectedStatus = currentOffer.status;
+    if (expectedStatus === nextStatus) return;
+    setOfferStatusState("transitioning");
+    // Reusa a chave enquanto for a MESMA transição (status+versão): retry após
+    // resposta perdida vira replay idempotente em vez de novo comando.
+    const transition = `${expectedStatus}->${nextStatus}@${currentOffer.draft_version}`;
+    const key = offerStatusIdempotencyKey.current?.transition === transition
+      ? offerStatusIdempotencyKey.current.key
+      : crypto.randomUUID();
+    offerStatusIdempotencyKey.current = { transition, key };
+    const data = new FormData();
+    data.set("_csrf", csrf.offerStatus);
+    data.set("idempotency_key", key);
+    data.set("expected_status", expectedStatus);
+    data.set("status", nextStatus);
+    data.set("expected_offer_version", String(currentOffer.draft_version));
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+    try {
+      const response = await fetch(
+        `/api/sellers/${sellerId}/products/${productId}/offers/${currentOffer.id}/status`,
+        { method: "PATCH", body: data, signal: controller.signal }
+      );
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) setOfferStatusState("forbidden");
+        else if (response.status === 409) setOfferStatusState("conflict");
+        else if (response.status === 422) setOfferStatusState("blocked");
+        else if (response.status === 503) setOfferStatusState("unavailable");
+        else setOfferStatusState("error");
+        return;
+      }
+      // Só descarta a chave APÓS reconciliar: se o PATCH aplicou mas o GET
+      // falhar, preservar a chave faz o retry virar replay idempotente em vez
+      // de um novo comando (que bateria em 409 na versão já mudada).
+      const refreshed = await loadDetail();
+      if (refreshed) {
+        offerStatusIdempotencyKey.current = null;
+        setOfferStatusState("done");
+      } else {
+        setOfferStatusState("unavailable");
+      }
+    } catch {
+      setOfferStatusState("unavailable");
     } finally {
       clearTimeout(timeout);
     }
@@ -431,8 +532,9 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       {section === "curriculo" ? <CurriculumWorkspace sellerId={sellerId} productId={productId} courseId={detail.course.id} courseTitle={detail.course.title} archived={detail.status === "archived"} onDirtyChange={handleCurriculumDirty} onBusyChange={handleCurriculumBusy} onCommitted={handleCurriculumCommitted}/> : (
       <form ref={formElement} className="editor-form" onSubmit={saveDraft}>
         {section === "produto" ? (
-          <fieldset disabled={detail.status === "archived"}>
+          <fieldset disabled={detail.status === "archived" || offerLocked}>
             <legend>Identidade do produto</legend>
+            {offerLocked ? <div className="billing-boundary" role="note"><strong>Edição bloqueada</strong><p>{offerArchived ? "A oferta está arquivada (definitivo). Crie um novo produto para vender de novo." : offerNotDraft ? "Todo salvamento inclui a oferta, e uma oferta ativa é imutável. Despublique a oferta na aba Oferta para editar e salvar." : "Aguarde a mudança de status da oferta concluir antes de editar."}</p></div> : null}
             <p className="section-intro">Edite o rascunho deste espaço. Uma publicação existente permanece estável até você publicar outra versão.</p>
             <EditorField label="Nome do produto" name="product_title" value={fields.product_title} onChange={(value) => updateField("product_title", value)} minLength={2} maxLength={160} required invalid={invalidField === "product_title"}/>
             <EditorField label="Endereço do produto" name="slug" value={fields.slug} onChange={(value) => updateField("slug", value)} minLength={3} maxLength={63} required invalid={invalidField === "slug"} pattern="[a-z0-9]+(?:-[a-z0-9]+)*" help="Somente letras minúsculas, números e hífens."/>
@@ -442,12 +544,45 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
         ) : null}
 
         {section === "oferta" ? (
-          <fieldset disabled={detail.status === "archived"}>
-            <legend>Oferta informativa</legend>
-            <div className="billing-boundary" role="note"><strong>Cobrança não conectada</strong><p>Estes termos ajudam a apresentar o produto. Publicar não cria checkout, preço cobrado ou acesso pago.</p></div>
-            <EditorField label="Nome da oferta" name="offer_title" value={fields.offer_title} onChange={(value) => updateField("offer_title", value)} minLength={2} maxLength={120} required invalid={invalidField === "offer_title"}/>
-            <EditorField label="Resumo da oferta" name="offer_summary" value={fields.offer_summary} onChange={(value) => updateField("offer_summary", value)} maxLength={500} multiline invalid={invalidField === "offer_summary"} help="Não informe preço ou promessa de cobrança nesta fase."/>
-          </fieldset>
+          <>
+            <fieldset disabled={detail.status === "archived" || offerLocked}>
+              <legend>Oferta e preço</legend>
+              {detail.offer.status === "draft"
+                ? <div className="billing-boundary" role="note"><strong>Defina o preço antes de ativar</strong><p>O valor em {offerCurrencyLabel} é o que será cobrado no checkout quando a oferta estiver ativa. Sem preço, a oferta permanece em rascunho.</p></div>
+                : <div className="billing-boundary" role="note"><strong>{detail.offer.status === "active" ? "Oferta ativa" : "Oferta arquivada"}</strong><p>{detail.offer.status === "active" ? "Para editar termos ou preço, despublique a oferta primeiro." : "Uma oferta arquivada é definitiva e não aparece na vitrine."}</p></div>}
+              <EditorField label="Nome da oferta" name="offer_title" value={fields.offer_title} onChange={(value) => updateField("offer_title", value)} minLength={2} maxLength={120} required invalid={invalidField === "offer_title"}/>
+              <EditorField label="Resumo da oferta" name="offer_summary" value={fields.offer_summary} onChange={(value) => updateField("offer_summary", value)} maxLength={500} multiline invalid={invalidField === "offer_summary"}/>
+              <EditorField label={`Preço (${offerCurrencyLabel})`} name="offer_price" value={fields.offer_price} onChange={(value) => updateField("offer_price", value)} maxLength={12} invalid={invalidField === "offer_price" || invalidField === "offer_unit_amount_minor"} help="Use vírgula para centavos, ex.: 49,90. Deixe vazio para manter sem preço."/>
+              <label className="editor-field">Cobrança
+                <select name="offer_billing_period" value={fields.offer_billing_period} onChange={(event) => updateField("offer_billing_period", event.target.value)} aria-invalid={invalidField === "offer_billing_period"}>
+                  {OFFER_BILLING_PERIODS.map((entry) => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
+                </select>
+              </label>
+            </fieldset>
+            <section className="offer-status-panel" aria-labelledby="offer-status-title">
+              <p className="eyebrow">Disponibilidade na vitrine</p>
+              <h2 id="offer-status-title">Status da oferta: {offerStatusLabel(detail.offer.status)}</h2>
+              {detail.offer.status === "draft" ? <p>Ativar torna a oferta vendável com o preço salvo{detail.offer.unit_amount_minor ? ` (${formatOfferPrice(detail.offer.unit_amount_minor, detail.offer.currency)})` : ""}. É preciso salvar um preço maior que zero antes.</p> : null}
+              {detail.offer.status === "active" ? <p>Oferta ativa por {detail.offer.unit_amount_minor ? formatOfferPrice(detail.offer.unit_amount_minor, detail.offer.currency) : "preço não informado"}. Despublicar volta a rascunho para editar; arquivar remove da vitrine em definitivo.</p> : null}
+              {detail.offer.status === "archived" ? <p>Oferta arquivada. Crie um novo produto para vender novamente.</p> : null}
+              {dirty ? <p className="form-note" role="status">Salve as alterações antes de mudar o status da oferta.</p> : null}
+              <div className="offer-status-actions">
+                {detail.offer.status === "draft" ? <button className="primary-button" type="button" disabled={dirty || offerStatusState === "transitioning" || !detail.offer.unit_amount_minor} onClick={() => void transitionOffer("active")}>{offerStatusState === "transitioning" ? "Ativando…" : "Ativar oferta"}</button> : null}
+                {detail.offer.status === "active" ? <>
+                  <button className="secondary-button" type="button" disabled={dirty || offerStatusState === "transitioning"} onClick={() => void transitionOffer("draft")}>{offerStatusState === "transitioning" ? "Aplicando…" : "Despublicar para editar"}</button>
+                  <button ref={archiveTriggerButton} className="secondary-button" type="button" disabled={dirty || offerStatusState === "transitioning"} onClick={() => setArchiveDialogOpen(true)}>Arquivar oferta</button>
+                </> : null}
+              </div>
+              <div className="form-feedback" aria-live="polite" aria-atomic="true">
+                {offerStatusState === "done" ? <p className="form-success">Status da oferta atualizado.</p> : null}
+                {offerStatusState === "conflict" ? <p className="form-error">A oferta mudou em outra sessão. Recarregue antes de tentar novamente.</p> : null}
+                {offerStatusState === "blocked" ? <p className="form-error">Transição bloqueada. Confira se há preço salvo maior que zero e se o status atual permite a mudança.</p> : null}
+                {offerStatusState === "forbidden" ? <p className="form-error">Sua sessão ou permissão mudou. Entre novamente.</p> : null}
+                {offerStatusState === "unavailable" ? <p className="form-note">A API não respondeu. Nenhuma mudança foi confirmada; tente novamente.</p> : null}
+                {offerStatusState === "error" ? <p className="form-error">Não foi possível mudar o status da oferta.</p> : null}
+              </div>
+            </section>
+          </>
         ) : null}
 
         {section === "preview" ? <PrivatePreviewPanel state={previewState} preview={preview} detail={detail} dirty={dirty} onReload={() => { setPreviewState("idle"); setPreview(null); setPreviewRetry((value) => value + 1); }}/> : null}
@@ -476,7 +611,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
         {(section === "produto" || section === "oferta") ? (
           <div className="editor-save-bar">
             <span aria-live="polite">{dirty ? "Alterações não salvas" : "Rascunho salvo"}</span>
-            <button className="primary-button" type="submit" disabled={!dirty || saveState === "saving" || detail.status === "archived"}>{saveState === "saving" ? "Salvando…" : "Salvar rascunho"}</button>
+            <button className="primary-button" type="submit" disabled={!dirty || saveState === "saving" || detail.status === "archived" || offerLocked}>{saveState === "saving" ? "Salvando…" : "Salvar rascunho"}</button>
           </div>
         ) : null}
       </form>
@@ -487,6 +622,14 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
             <p className="eyebrow">Confirmação de publicação</p><h2 id="publish-dialog-title">Publicar esta versão?</h2>
             <p id="publish-dialog-description">Produto, oferta, módulos, aulas e PDFs verificados ficarão fixos nesta versão publicada. Nenhuma cobrança, checkout ou acesso pago será criado.</p>
             <div className="dialog-actions"><button ref={publishCancelButton} className="secondary-button" type="button" onClick={closePublishDialog}>Revisar novamente</button><button className="primary-button" type="button" onClick={() => void publish()}>Publicar versão</button></div>
+        </AccessibleDialog>
+      ) : null}
+
+      {archiveDialogOpen ? (
+        <AccessibleDialog titleId="archive-dialog-title" descriptionId="archive-dialog-description" initialFocusRef={archiveCancelButton} returnFocusRef={archiveTriggerButton} onClose={() => setArchiveDialogOpen(false)}>
+            <p className="eyebrow">Ação irreversível</p><h2 id="archive-dialog-title">Arquivar esta oferta?</h2>
+            <p id="archive-dialog-description">Arquivar é definitivo: a oferta sai da vitrine e não pode voltar a rascunho nem ser ativada de novo. Para apenas editar, use &quot;Despublicar para editar&quot;.</p>
+            <div className="dialog-actions"><button ref={archiveCancelButton} className="secondary-button" type="button" onClick={() => setArchiveDialogOpen(false)}>Cancelar</button><button className="danger-button" type="button" onClick={() => { setArchiveDialogOpen(false); void transitionOffer("archived"); }}>Arquivar definitivamente</button></div>
         </AccessibleDialog>
       ) : null}
 
@@ -594,7 +737,7 @@ function normalizeDetail(value: Partial<ProductDetail> | null | undefined): Prod
     draft_version: productVersion,
     course: { id: course.id, title: course.title ?? "", status: course.status ?? "draft", draft_version: courseVersion },
     courses: courses.map((item) => ({ id: item.id, title: item.title ?? "", status: item.status ?? "draft", draft_version: item.draft_version ?? 1 })),
-    offer: { id: offer.id, title: offer.title ?? "", summary: offer.summary ?? "", status: offer.status ?? "draft", draft_version: offerVersion },
+    offer: { id: offer.id, title: offer.title ?? "", summary: offer.summary ?? "", status: offer.status ?? "draft", draft_version: offerVersion, unit_amount_minor: offer.unit_amount_minor, currency: offer.currency, billing_period: offer.billing_period },
     publication: value.publication ?? null,
     has_unpublished_changes: value.has_unpublished_changes ?? value.readiness?.has_unpublished_changes,
     readiness: normalizeReadinessValue(value.readiness)
@@ -602,7 +745,16 @@ function normalizeDetail(value: Partial<ProductDetail> | null | undefined): Prod
 }
 
 function fieldsFromDetail(detail: ProductDetail): EditorFields {
-  return { slug: detail.slug, product_title: detail.title, product_description: detail.description, course_title: detail.course.title, offer_title: detail.offer.title, offer_summary: detail.offer.summary };
+  return {
+    slug: detail.slug,
+    product_title: detail.title,
+    product_description: detail.description,
+    course_title: detail.course.title,
+    offer_title: detail.offer.title,
+    offer_summary: detail.offer.summary,
+    offer_price: priceInputFromMinor(detail.offer.unit_amount_minor),
+    offer_billing_period: isOfferBillingPeriod(detail.offer.billing_period) ? detail.offer.billing_period : "one_time"
+  };
 }
 
 function versionsFromDetail(detail: ProductDetail) {
@@ -610,7 +762,7 @@ function versionsFromDetail(detail: ProductDetail) {
 }
 
 function sameFields(left: EditorFields, right: EditorFields) {
-  return left.slug === right.slug && left.product_title === right.product_title && left.product_description === right.product_description && left.course_title === right.course_title && left.offer_title === right.offer_title && left.offer_summary === right.offer_summary;
+  return left.slug === right.slug && left.product_title === right.product_title && left.product_description === right.product_description && left.course_title === right.course_title && left.offer_title === right.offer_title && left.offer_summary === right.offer_summary && left.offer_price === right.offer_price && left.offer_billing_period === right.offer_billing_period;
 }
 
 function saveMessage(state: SaveState, dirty: boolean) {
@@ -631,10 +783,16 @@ function shortId(value: string) {
   return value ? `${value.slice(0, 8)}…` : "não informado";
 }
 
+function offerStatusLabel(status: string) {
+  if (status === "active") return "ativa";
+  if (status === "archived") return "arquivada";
+  return "rascunho";
+}
+
 function readActionCsrf(action: "update" | "publish") {
   const prefix = `${process.env.NODE_ENV === "production" ? `__Host-appsell_product_${action}_csrf` : `appsell_product_${action}_csrf` }=`;
   const value = document.cookie.split("; ").find((part) => part.startsWith(prefix));
   return value ? decodeURIComponent(value.slice(prefix.length)) : "";
 }
 
-const emptyFields: EditorFields = { slug: "", product_title: "", product_description: "", course_title: "", offer_title: "", offer_summary: "" };
+const emptyFields: EditorFields = { slug: "", product_title: "", product_description: "", course_title: "", offer_title: "", offer_summary: "", offer_price: "", offer_billing_period: "one_time" };

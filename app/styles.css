@@ -105,7 +105,10 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .storefront-product-art i { position: absolute; width: 190px; aspect-ratio: 1; border: 1px solid rgba(255,255,255,.28); border-radius: 38% 62% 64% 36%; transform: rotate(26deg); }
 .storefront-product-copy { min-width: 0; padding: 24px 22px 0; }
 .storefront-product-copy h3 { margin: 0 0 12px; font-size: clamp(1.65rem,7vw,2.25rem); overflow-wrap: anywhere; }
-.storefront-product-copy > p:last-child { margin: 0; color: var(--text); font-size: 1rem; line-height: 1.65; overflow-wrap: anywhere; }
+.storefront-product-copy > p:not(.eyebrow):not(.storefront-product-price) { margin: 0; color: var(--text); font-size: 1rem; line-height: 1.65; overflow-wrap: anywhere; }
+.storefront-product-price { margin: 12px 0 0; display: flex; align-items: baseline; gap: 6px; }
+.storefront-product-price strong { color: var(--ink); font-size: 1.4rem; font-weight: 850; letter-spacing: -.03em; }
+.storefront-product-price span { color: var(--soft); font-size: .78rem; }
 .storefront-product-action { padding: 24px 22px; display: grid; gap: 10px; align-content: end; }
 .storefront-product-action .primary-button { width: 100%; }
 .storefront-product-action small { color: var(--soft); font-size: .75rem; line-height: 1.5; text-align: center; }
@@ -292,12 +295,12 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .editor-section-nav a.active { border-color: rgba(30,58,138,.42); background: var(--blue); color: rgba(255,255,255,.74); box-shadow: 0 10px 24px rgba(30,58,138,.16); }
 .editor-section-nav a.active strong { color: #fff; }
 .editor-form { min-width: 0; padding-bottom: 88px; }
-.editor-form fieldset, .publish-panel { min-width: 0; margin: 0; padding: 20px; display: grid; grid-template-columns: minmax(0,1fr); gap: 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow-sm); }
+.editor-form fieldset, .publish-panel, .offer-status-panel { min-width: 0; margin: 0; padding: 20px; display: grid; grid-template-columns: minmax(0,1fr); gap: 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow-sm); }
 .editor-form fieldset:disabled { opacity: .68; }
 .editor-form legend { width: 100%; padding: 0 0 14px; color: var(--ink); font-size: clamp(1.45rem,6vw,2.1rem); font-weight: 800; letter-spacing: -.035em; }
 .section-intro, .publish-panel > p { margin: 0; color: var(--text); font-size: .84rem; line-height: 1.6; }
 .editor-field { min-width: 0; display: grid; gap: 7px; color: var(--ink); font-size: .76rem; font-weight: 800; }
-.editor-field input, .editor-field textarea { width: 100%; min-width: 0; max-width: 100%; min-height: 48px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: #fff; color: var(--ink); font-size: 1rem; line-height: 1.5; resize: vertical; }
+.editor-field input, .editor-field textarea, .editor-field select { width: 100%; min-width: 0; max-width: 100%; min-height: 48px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: #fff; color: var(--ink); font-size: 1rem; line-height: 1.5; resize: vertical; }
 .editor-field textarea { min-height: 124px; }
 .editor-field input:focus-visible, .editor-field textarea:focus-visible { outline: 3px solid var(--bright); outline-offset: 2px; border-color: var(--bright); }
 .editor-field > span { color: var(--soft); font-size: .7rem; font-weight: 600; line-height: 1.45; }
@@ -323,6 +326,11 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .preview-blocked p { color: var(--text); line-height: 1.6; }
 .preview-blocked .secondary-button { width: 100%; }
 .publish-panel h2 { margin: 0; font-size: clamp(1.7rem,7vw,2.5rem); }
+.offer-status-panel { margin-top: 14px; }
+.offer-status-panel h2 { margin: 0; font-size: clamp(1.4rem,6vw,2rem); }
+.offer-status-panel > p { margin: 0; color: var(--text); font-size: .84rem; line-height: 1.6; }
+.offer-status-actions { display: grid; gap: 10px; }
+.offer-status-actions .primary-button, .offer-status-actions .secondary-button { width: 100%; }
 .publish-action { width: 100%; min-width: 0; }
 .publish-action > .primary-button { width: 100%; }
 .publish-action > .primary-button > span { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }

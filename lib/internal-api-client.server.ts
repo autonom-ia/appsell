@@ -37,6 +37,7 @@ interface ApiRequest {
     "platform.demo.inspect.start" | "platform.demo.inspect.read" |
     "platform.demo.inspect.revoke" |
     "catalog.draft.read" | "catalog.draft.create" | "catalog.draft.update" |
+    "catalog.offer.status.update" |
     "catalog.draft.preview" | "catalog.publication.read" | "catalog.publication.create" |
     "catalog.curriculum.read" | "catalog.curriculum.create" |
     "catalog.curriculum.update" | "catalog.curriculum.archive" |
@@ -274,6 +275,9 @@ export async function updateDomainProductDraft(
     courseTitle: string;
     offerTitle: string;
     offerSummary: string;
+    offerUnitAmountMinor?: number;
+    offerCurrency?: string;
+    offerBillingPeriod?: "one_time" | "monthly" | "yearly";
   }
 ) {
   return domainRequest(sessionId, session, {
@@ -293,7 +297,42 @@ export async function updateDomainProductDraft(
       description: input.productDescription,
       course_title: input.courseTitle,
       offer_title: input.offerTitle,
-      offer_summary: input.offerSummary
+      offer_summary: input.offerSummary,
+      // Omitted price fields preserve the stored offer values (contract da 0018).
+      ...(input.offerUnitAmountMinor === undefined
+        ? {}
+        : { offer_unit_amount_minor: input.offerUnitAmountMinor }),
+      ...(input.offerCurrency === undefined ? {} : { offer_currency: input.offerCurrency }),
+      ...(input.offerBillingPeriod === undefined
+        ? {}
+        : { offer_billing_period: input.offerBillingPeriod })
+    }
+  });
+}
+
+export async function transitionDomainOfferStatus(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  offerId: string,
+  input: {
+    idempotencyKey: string;
+    expectedStatus: "draft" | "active" | "archived";
+    status: "draft" | "active" | "archived";
+    expectedOfferVersion: number;
+  }
+) {
+  return domainRequest(sessionId, session, {
+    method: "PATCH",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}/offers/${offerId}/status`,
+    capability: "catalog.offer.status.update",
+    sellerOrganizationId,
+    body: {
+      idempotency_key: input.idempotencyKey,
+      expected_status: input.expectedStatus,
+      status: input.status,
+      expected_offer_version: input.expectedOfferVersion
     }
   });
 }
