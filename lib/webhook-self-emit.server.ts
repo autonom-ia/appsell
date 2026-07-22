@@ -1,5 +1,6 @@
-import "server-only";
-
+// NB: sem `import "server-only"` — este módulo é crypto puro + leitor de env,
+// unit-testado (mesma convenção de lib/limited-*.server.ts). Só é importado por
+// rotas/handlers server-side (checkout/complete, checkout-webhook-proxy).
 import { createHash, createHmac } from "node:crypto";
 
 // Signs and shapes the checkout-completion webhook this BFF emits to itself

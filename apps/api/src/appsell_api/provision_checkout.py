@@ -82,8 +82,7 @@ def main() -> None:
             return
         seller_id = UUID(str(seller_row[0]))
         product_row = connection.execute(
-            "select id from catalog_product "
-            "where seller_organization_id=%s and slug=%s",
+            "select id from catalog_product where seller_organization_id=%s and slug=%s",
             (seller_id, arguments.product_slug),
         ).fetchone()
         if product_row is None:

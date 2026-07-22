@@ -230,4 +230,3 @@ def test_local_resolver_rejects_secret_reuse_and_non_local_configuration() -> No
                 [{"reference": "checkout-demo-v1", "key": _key(4)}]
             ),
         )
-
