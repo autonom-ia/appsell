@@ -30,9 +30,11 @@ artefatos antes de executar o verificador local:
 
 ```bash
 export APPSELL_ARTIFACT_BRANCH=infra/66-easypanel-rc
+export APPSELL_ARTIFACT_EVENT=workflow_dispatch
 ```
 
-Sem essa variável, o script mantém o padrão legado `infra/66-vps-preview`.
+Sem essas variáveis, o script mantém os padrões legados
+`infra/66-vps-preview` e `push`, destinados apenas a runs históricos.
 O bundle RC inclui também os guards EasyPanel versionados no mesmo SHA; ele não
 autoriza a ativação da preview Compose legada nem qualquer deploy por si só.
 

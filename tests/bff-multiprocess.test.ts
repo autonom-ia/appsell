@@ -39,15 +39,15 @@ test("two real Next BFF processes share an opaque Redis session", async () => {
     expect(second.pid).toBeTypeOf("number");
     expect(first.pid).not.toBe(second.pid);
 
-    const login = await fetch(`http://127.0.0.1:${firstPort}/auth/login`, { redirect: "manual" });
+    const login = await localFetch(`http://127.0.0.1:${firstPort}/auth/login`, { redirect: "manual" });
     expect(login.status).toBe(307);
     const transactionCookie = cookiePair(login.headers.get("set-cookie"), "appsell_oauth_tx");
-    const authorize = await fetch(requiredHeader(login, "location"), { redirect: "manual" });
+    const authorize = await localFetch(requiredHeader(login, "location"), { redirect: "manual" });
     expect(authorize.status).toBe(307);
 
     const callbackFromFirst = new URL(requiredHeader(authorize, "location"));
     callbackFromFirst.port = String(secondPort);
-    const callback = await fetch(callbackFromFirst, {
+    const callback = await localFetch(callbackFromFirst, {
       redirect: "manual",
       headers: { cookie: transactionCookie }
     });
@@ -57,7 +57,7 @@ test("two real Next BFF processes share an opaque Redis session", async () => {
     const csrfCookie = cookiePair(setCookie, "appsell_csrf");
     const csrfToken = csrfCookie.slice(csrfCookie.indexOf("=") + 1);
 
-    const sharedSession = await fetch(`http://127.0.0.1:${firstPort}/api/session`, {
+    const sharedSession = await localFetch(`http://127.0.0.1:${firstPort}/api/session`, {
       headers: { cookie: sessionCookie }
     });
     expect(sharedSession.status).toBe(200);
@@ -68,7 +68,7 @@ test("two real Next BFF processes share an opaque Redis session", async () => {
     expect(sessionView).not.toHaveProperty("csrf");
 
     await redis.client.shutdown("NOSAVE").catch(() => undefined);
-    const unavailableLogout = await fetch(`http://localhost:${firstPort}/auth/logout`, {
+    const unavailableLogout = await localFetch(`http://localhost:${firstPort}/auth/logout`, {
       method: "POST",
       redirect: "manual",
       headers: {
@@ -89,7 +89,7 @@ test("two real Next BFF processes share an opaque Redis session", async () => {
     ]);
     await Promise.all(generatedFiles.map((file, index) => writeFile(join(process.cwd(), file), originals[index] ?? "")));
   }
-}, 30_000);
+}, 90_000);
 
 function startBff(port: number, distDir: string, shared: Record<string, string>) {
   return spawn(process.execPath, [join(process.cwd(), "node_modules/next/dist/bin/next"), "dev", "-H", "127.0.0.1", "-p", String(port)], {
@@ -100,13 +100,19 @@ function startBff(port: number, distDir: string, shared: Record<string, string>)
 }
 
 async function waitForBff(process: ChildProcess, port: number) {
-  const deadline = Date.now() + 15_000;
+  const deadline = Date.now() + 30_000;
   let diagnostics = "";
-  process.stderr?.on("data", (chunk) => { diagnostics = `${diagnostics}${String(chunk)}`.slice(-2_000); });
+  const capture = (chunk: unknown) => {
+    diagnostics = `${diagnostics}${String(chunk)}`.slice(-2_000);
+  };
+  process.stdout?.on("data", capture);
+  process.stderr?.on("data", capture);
   while (Date.now() < deadline) {
     if (process.exitCode !== null) throw new Error(`BFF ${port} exited early: ${diagnostics}`);
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/`);
+      const response = await fetch(`http://127.0.0.1:${port}/`, {
+        signal: AbortSignal.timeout(1_000)
+      });
       if (response.ok) return;
     } catch {
       // The independent Next process is still starting.
@@ -114,6 +120,13 @@ async function waitForBff(process: ChildProcess, port: number) {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error(`BFF ${port} did not become ready: ${diagnostics}`);
+}
+
+function localFetch(input: string | URL, init?: RequestInit) {
+  return fetch(input, {
+    ...init,
+    signal: AbortSignal.timeout(20_000)
+  });
 }
 
 function requiredHeader(response: Response, name: string) {

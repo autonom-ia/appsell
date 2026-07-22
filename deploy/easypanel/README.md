@@ -48,6 +48,7 @@ Antes de qualquer carga na VPS, verifique os quatro artifacts do mesmo run/SHA:
 
 ```bash
 APPSELL_ARTIFACT_BRANCH=infra/77-easypanel-runtime-preview-rc \
+  APPSELL_ARTIFACT_EVENT=workflow_dispatch \
   deploy/preview-vps/verify-downloads-local.sh ROOT APPSELL_SHA APPSELL_RUN_ID
 ```
 
