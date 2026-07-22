@@ -46,7 +46,7 @@ repo="$(cd "$repo" && pwd)"
 state_key="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}"
 state_dir="${HARNESS_CI_STATE_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/autonomia-harness-ci-${state_key}}"
 results_file="$state_dir/results.tsv"
-changed_file="$state_dir/changed-files.txt"
+changed_file="$state_dir/changed-files.nul"
 plan_file="$state_dir/plan.json"
 started_file="$state_dir/started-at"
 shellcheck_files="$state_dir/shellcheck-files.txt"
@@ -140,21 +140,28 @@ find_prompt_config() {
 }
 
 resolve_changed_files() {
-  local base_sha head_sha
+  local base_sha head_sha changed
   : > "$changed_file"
   if [[ -n "${HARNESS_CI_CHANGED_FILES_FILE:-}" ]] && [[ -f "$HARNESS_CI_CHANGED_FILES_FILE" ]]; then
-    awk 'NF && $0 !~ /^\// && $0 !~ /\.\./ {print}' "$HARNESS_CI_CHANGED_FILES_FILE" | sort -u > "$changed_file"
+    # Backward-compatible test/local override. Git-derived paths below remain
+    # NUL-delimited end to end, including filenames containing newlines.
+    while IFS= read -r changed || [[ -n "$changed" ]]; do
+      [[ -n "$changed" ]] || continue
+      [[ "$changed" != /* ]] || continue
+      [[ "$changed" != ".." && "$changed" != ../* && "$changed" != */../* && "$changed" != */.. ]] || continue
+      printf '%s\0' "$changed" >> "$changed_file"
+    done < "$HARNESS_CI_CHANGED_FILES_FILE"
     return
   fi
 
   base_sha="${HARNESS_CI_BASE_SHA:-${GITHUB_BASE_SHA:-}}"
   head_sha="${HARNESS_CI_HEAD_SHA:-${GITHUB_SHA:-HEAD}}"
   if [[ -n "$base_sha" ]] && git -C "$repo" cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
-    git -C "$repo" diff --name-only --diff-filter=ACMRTUXB "$base_sha" "$head_sha" | sort -u > "$changed_file"
+    git -C "$repo" diff --name-only -z --diff-filter=ACMRTUXB "$base_sha" "$head_sha" > "$changed_file"
   elif git -C "$repo" rev-parse HEAD^ >/dev/null 2>&1; then
-    git -C "$repo" diff --name-only --diff-filter=ACMRTUXB HEAD^ HEAD | sort -u > "$changed_file"
+    git -C "$repo" diff --name-only -z --diff-filter=ACMRTUXB HEAD^ HEAD > "$changed_file"
   else
-    git -C "$repo" ls-files | sort -u > "$changed_file"
+    git -C "$repo" ls-files -z > "$changed_file"
   fi
 }
 
@@ -169,7 +176,7 @@ phase_plan() {
   if [[ "${GITHUB_EVENT_NAME:-}" == "schedule" ]] || is_true "${HARNESS_CI_WEEKLY:-false}"; then
     weekly="true"
   fi
-  while IFS= read -r changed; do
+  while IFS= read -r -d '' changed; do
     [[ -n "$changed" ]] || continue
     if is_lockfile "$changed"; then lock_changed="true"; fi
     if is_prompt_file "$changed"; then prompt_changed="true"; fi
@@ -232,7 +239,7 @@ prepare_shellcheck_files() {
     return 0
   fi
 
-  while IFS= read -r changed; do
+  while IFS= read -r -d '' changed; do
     [[ "$changed" == *.sh ]] || continue
     [[ -f "$repo/$changed" ]] || continue
     git -C "$repo" ls-files --error-unmatch -- "$changed" >/dev/null 2>&1 || continue
@@ -429,7 +436,7 @@ phase_osv() {
   if [[ "$(jq -r '.weekly' "$plan_file")" == "true" ]] || [[ "$(manifest_value '.ci.dependency_scan // "changed"' 'changed')" == "full" ]]; then
     (cd "$repo" && osv-scanner scan source --recursive .) > "$raw_output" 2>&1 || failed=1
   else
-    while IFS= read -r lockfile; do
+    while IFS= read -r -d '' lockfile; do
       is_lockfile "$lockfile" || continue
       [[ -f "$repo/$lockfile" ]] || continue
       (cd "$repo" && osv-scanner scan -L "$lockfile") > "$raw_output" 2>&1 || failed=1
