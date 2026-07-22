@@ -103,7 +103,8 @@ bash deploy/easypanel-native/backup/test-backup-native.sh       # nível bibliot
 bash deploy/easypanel-native/backup/test-entrypoints-native.sh  # entrypoints reais
 ```
 
-Ambos rodam automaticamente no workflow `EasyPanel native images`
-(job `backup-restore-rehearsal`) em qualquer PR que toque
-`deploy/easypanel-native/**`. O primeiro exercita as funções da biblioteca; o
-segundo executa `backup-native.sh` e `restore-native.sh` como processos reais.
+Em PR, mudanças de backup recebem validação sintática rápida no `App CI`. Os
+dois ensaios completos rodam no `ci-gate` sobre o SHA integrado do merge group
+quando esse escopo muda, e semanalmente no workflow `EasyPanel native images`
+(job `backup-restore-rehearsal`). O primeiro exercita as funções da biblioteca;
+o segundo executa `backup-native.sh` e `restore-native.sh` como processos reais.

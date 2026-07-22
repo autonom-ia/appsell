@@ -10,6 +10,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:fast": "vitest run --config vitest.fast.config.ts",
     "test:e2e": "node scripts/with-isolated-redis.mjs pnpm exec playwright test",
     "test:e2e:identity-real": "node scripts/with-isolated-redis.mjs node scripts/run-real-identity-cross-repo.mjs",
     "test:e2e:production": "playwright test --config=playwright.production.config.ts"

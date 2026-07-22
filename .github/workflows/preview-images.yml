@@ -1,30 +1,25 @@
 name: VPS preview artifacts
 
 on:
-  push:
-    branches: ["infra/66-vps-preview", "infra/66-easypanel-rc", "infra/77-easypanel-runtime-preview", "infra/77-easypanel-runtime-preview-rc"]
-    paths:
-      - "app/**"
-      - "apps/api/**"
-      - "components/**"
-      - "demo/**"
-      - "deploy/preview-vps/**"
-      - "deploy/easypanel/**"
-      - "lib/**"
-      - "output/pdf/**"
-      - "playwright.runtime-preview.config.ts"
-      - "tests/e2e-runtime-preview/**"
-      - "package.json"
-      - "pnpm-lock.yaml"
-      - ".dockerignore"
-      - ".github/workflows/preview-images.yml"
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: Legacy preview issue identity
+        required: true
+        default: "77"
+        type: choice
+        options: ["66", "77"]
 
 permissions:
   contents: read
 
 env:
   SOURCE_SHA: ${{ github.sha }}
-  RUNTIME_PREVIEW_ISSUE: ${{ startsWith(github.ref_name, 'infra/77-') && '77' || '66' }}
+  RUNTIME_PREVIEW_ISSUE: ${{ inputs.issue }}
+
+concurrency:
+  group: legacy-preview-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   validate:
@@ -39,6 +34,12 @@ jobs:
         run: |
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          case "$GITHUB_REF_NAME" in
+            infra/66-vps-preview|infra/66-easypanel-rc) expected_issue=66 ;;
+            infra/77-easypanel-runtime-preview|infra/77-easypanel-runtime-preview-rc) expected_issue=77 ;;
+            *) echo "Unsupported preview artifact branch" >&2; exit 2 ;;
+          esac
+          test "$RUNTIME_PREVIEW_ISSUE" = "$expected_issue"
           for script in deploy/preview-vps/*.sh deploy/easypanel/*.sh; do bash -n "$script"; done
           node --check deploy/preview-vps/verify-redis.mjs
           node --check deploy/easypanel/runtime-preview-loopback-proxy.mjs
@@ -52,7 +53,9 @@ jobs:
             config --quiet
           bash deploy/preview-vps/test-compose-project-pin.sh
           bash deploy/preview-vps/test-directory-invariants.sh
-          APPSELL_ARTIFACT_BRANCH="$GITHUB_REF_NAME" bash deploy/preview-vps/test-verify-downloads-local.sh
+          APPSELL_ARTIFACT_BRANCH="$GITHUB_REF_NAME" \
+            APPSELL_ARTIFACT_EVENT=workflow_dispatch \
+            bash deploy/preview-vps/test-verify-downloads-local.sh
           bash deploy/easypanel/test-runtime-preview-common.sh
           bash deploy/easypanel/test-runtime-preview-domain.sh
           bash deploy/easypanel/test-runtime-preview-env.sh

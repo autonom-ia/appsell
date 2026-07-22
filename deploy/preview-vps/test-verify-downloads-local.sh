@@ -19,6 +19,12 @@ foundation_run=102
 auth_run=103
 auth_pr=28
 appsell_branch="${APPSELL_ARTIFACT_BRANCH:-infra/66-vps-preview}"
+appsell_event="${APPSELL_ARTIFACT_EVENT:-push}"
+
+case "$appsell_event" in
+  push|workflow_dispatch) ;;
+  *) echo "Unsupported AppSell artifact event" >&2; exit 2 ;;
+esac
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -174,7 +180,7 @@ printf 'foundation image\n' >"$tmp/subjects/foundation-$foundation_sha.tar"
 printf 'auth image\n' >"$tmp/subjects/auth-$auth_sha.tar"
 
 make_run autonom-ia/appsell "$appsell_run" "VPS preview artifacts" \
-  .github/workflows/preview-images.yml push "$appsell_branch" "$appsell_sha"
+  .github/workflows/preview-images.yml "$appsell_event" "$appsell_branch" "$appsell_sha"
 make_run autonom-ia/autonomia-identity-foundation "$foundation_run" \
   "Foundation Local CI preview artifact" .github/workflows/preview-image.yml \
   push infra/37-preview-artifact "$foundation_sha"
@@ -198,22 +204,22 @@ jq -n \
   }]]' >"$tmp/api/auth-pr-$auth_pr.reviews.json"
 
 make_artifact autonom-ia/appsell .github/workflows/preview-images.yml \
-  "$appsell_branch" "$appsell_sha" "$appsell_run" push \
+  "$appsell_branch" "$appsell_sha" "$appsell_run" "$appsell_event" \
   "appsell-vps-preview-config-$appsell_sha" "$tmp/subjects/config-$appsell_sha.tar.gz" 1001 ""
 make_artifact autonom-ia/appsell .github/workflows/preview-images.yml \
-  "$appsell_branch" "$appsell_sha" "$appsell_run" push \
+  "$appsell_branch" "$appsell_sha" "$appsell_run" "$appsell_event" \
   "appsell-vps-preview-sell-$appsell_sha" "$tmp/subjects/sell-$appsell_sha.tar" 1002 ""
 make_artifact autonom-ia/appsell .github/workflows/preview-images.yml \
-  "$appsell_branch" "$appsell_sha" "$appsell_run" push \
+  "$appsell_branch" "$appsell_sha" "$appsell_run" "$appsell_event" \
   "appsell-vps-preview-domain-$appsell_sha" "$tmp/subjects/domain-$appsell_sha.tar" 1003 ""
 make_artifact autonom-ia/appsell .github/workflows/preview-images.yml \
-  "$appsell_branch" "$appsell_sha" "$appsell_run" push \
+  "$appsell_branch" "$appsell_sha" "$appsell_run" "$appsell_event" \
   "appsell-vps-preview-base-alpine-$appsell_sha" "$tmp/subjects/base-alpine-$appsell_sha.tar" 1006 ""
 make_artifact autonom-ia/appsell .github/workflows/preview-images.yml \
-  "$appsell_branch" "$appsell_sha" "$appsell_run" push \
+  "$appsell_branch" "$appsell_sha" "$appsell_run" "$appsell_event" \
   "appsell-vps-preview-base-postgres-$appsell_sha" "$tmp/subjects/base-postgres-$appsell_sha.tar" 1007 ""
 make_artifact autonom-ia/appsell .github/workflows/preview-images.yml \
-  "$appsell_branch" "$appsell_sha" "$appsell_run" push \
+  "$appsell_branch" "$appsell_sha" "$appsell_run" "$appsell_event" \
   "appsell-vps-preview-base-redis-$appsell_sha" "$tmp/subjects/base-redis-$appsell_sha.tar" 1008 ""
 make_artifact autonom-ia/autonomia-identity-foundation .github/workflows/preview-image.yml \
   infra/37-preview-artifact "$foundation_sha" "$foundation_run" push \
