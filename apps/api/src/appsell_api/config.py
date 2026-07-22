@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     capacity_product_create_telemetry: bool = False
     video_upload_enabled: bool = False
     webhook_local_keyring_b64_json: str = ""
+    # Opt-in explícito para keyring de webhook por env fora de local/ci
+    # (provisionamento prod do checkout, Refs #96). Mantém todos os checks de
+    # independência do WebhookSecretResolver; sem esta flag o comportamento
+    # fail-closed original permanece.
+    webhook_env_keyring_allowed: bool = False
     webhook_forbidden_key_sha256_json: str = "[]"
 
     @property
@@ -73,7 +78,11 @@ class Settings(BaseSettings):
                 or ".." in asset_root.parts
             ):
                 raise ValueError("private learning asset root must be an absolute safe path")
-        if self.webhook_local_keyring_b64_json and self.environment not in {"local", "ci"}:
+        if (
+            self.webhook_local_keyring_b64_json
+            and self.environment not in {"local", "ci"}
+            and not self.webhook_env_keyring_allowed
+        ):
             raise ValueError("local webhook secrets are forbidden outside local/CI")
         if self.capacity_product_create_telemetry and self.environment not in {"local", "ci"}:
             raise ValueError("capacity product-create telemetry is forbidden outside local/CI")

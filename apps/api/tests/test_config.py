@@ -236,3 +236,24 @@ def test_capacity_product_create_telemetry_is_default_off_and_local_ci_only() ->
             **INTERNAL_AUTH,
             **REMOTE_STORAGE,
         )
+
+
+def test_webhook_env_keyring_flag_unlocks_non_local_environments() -> None:
+    keyring = json.dumps(
+        [{"reference": "checkout-prod-v1", "key": base64.b64encode(bytes([9]) * 32).decode()}]
+    )
+    settings = Settings(
+        environment="staging",
+        webhook_local_keyring_b64_json=keyring,
+        webhook_env_keyring_allowed=True,
+        **INTERNAL_AUTH,
+        **REMOTE_STORAGE,
+    )
+    assert settings.webhook_env_keyring_allowed is True
+    with pytest.raises(ValidationError, match="forbidden outside local/CI"):
+        Settings(
+            environment="staging",
+            webhook_local_keyring_b64_json=keyring,
+            **INTERNAL_AUTH,
+            **REMOTE_STORAGE,
+        )

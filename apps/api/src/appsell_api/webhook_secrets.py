@@ -29,7 +29,7 @@ class WebhookSecretResolver:
         serialized = settings.webhook_local_keyring_b64_json
         if not serialized:
             return cls(MappingProxyType({}))
-        if settings.environment not in {"local", "ci"}:
+        if settings.environment not in {"local", "ci"} and not settings.webhook_env_keyring_allowed:
             raise WebhookSecretConfigurationError(
                 "local webhook secrets are forbidden outside local/CI"
             )
