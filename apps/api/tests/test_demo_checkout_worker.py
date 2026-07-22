@@ -134,12 +134,89 @@ async def test_failing_claim_backs_off_and_logs_the_reason(
     # Cada retry carrega o motivo real, não só o nome do evento.
     assert logged, "worker must log why it is retrying"
     first = logged[0]
-    assert first["event"] == "demo_checkout_worker_retry"
-    assert first["error_type"] == "RuntimeError"
-    assert first["error"] == demo_checkout_worker._OPAQUE_REASON
-    assert first["backoff_seconds"] == pytest.approx(waits[0])
-    assert first["consecutive_failures"] == 1
+    assert first == {
+        "event": "demo_checkout_worker_retry",
+        "error_type": "RuntimeError",
+        "error": demo_checkout_worker._OPAQUE_REASON,
+        "backoff_seconds": waits[0],
+        "consecutive_failures": 1,
+    }
     assert logged[1]["consecutive_failures"] == 2
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        DBAPIError("select ...", {}, Exception("driver")),
+        RuntimeError("boom"),
+        ValueError("boom"),
+        KeyError("lease_fence"),
+    ],
+    ids=["dbapi", "runtime", "value", "key"],
+)
+async def test_every_retryable_class_is_handled(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    """Remover uma classe do `except` mataria a task em vez de aplicar backoff."""
+    logged: list[dict[str, Any]] = []
+
+    async def fake_wait_for(awaitable: Any, **kwargs: Any) -> None:
+        awaitable.close()
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+    monkeypatch.setattr(
+        demo_checkout_worker.logger, "warning", lambda event, **f: logged.append({**f})
+    )
+
+    app = _app(_settings(), FakeAuthenticator(error))
+
+    # CancelledError vem do sleep — ou seja, o erro foi tratado, não propagado.
+    with pytest.raises(asyncio.CancelledError):
+        await demo_checkout_worker.run_demo_checkout_worker_loop(app, asyncio.Event())
+
+    assert logged[0]["consecutive_failures"] == 1
+
+
+async def test_a_new_failure_after_recovery_restarts_the_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sem o reset, a falha seguinte herdaria o backoff antigo já capado."""
+    waits: list[float] = []
+    state = SimpleNamespace(calls=0)
+
+    async def empty_claim(statement: Any, parameters: dict[str, Any]) -> Any:
+        return []
+
+    class Flapping:
+        @asynccontextmanager
+        async def trusted_domain_session(self, envelope: Any) -> AsyncIterator[Any]:
+            state.calls += 1
+            # falha, falha, falha, sucesso, falha
+            if state.calls == 4:
+                yield SimpleNamespace(scalar=empty_claim)
+            else:
+                yield FailingSession(RuntimeError("boom"))
+
+    async def fake_wait_for(awaitable: Any, **kwargs: Any) -> None:
+        waits.append(kwargs["timeout"])
+        awaitable.close()
+        if len(waits) >= 5:
+            raise asyncio.CancelledError
+        raise TimeoutError
+
+    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+    monkeypatch.setattr(demo_checkout_worker.logger, "warning", lambda *a, **k: None)
+
+    app = _app(_settings(), Flapping())
+
+    with pytest.raises(asyncio.CancelledError):
+        await demo_checkout_worker.run_demo_checkout_worker_loop(app, asyncio.Event())
+
+    # 3 falhas: 0.25, 0.5, 1.0 — depois sucesso (0.25) — depois falha NOVA em 0.25.
+    assert waits[2] == _IDLE * 4
+    assert waits[3] == _IDLE
+    assert waits[4] == _IDLE, "a failure after recovery must restart at the idle interval"
 
 
 async def test_backoff_is_capped(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -262,14 +339,23 @@ async def test_apply_failure_backs_off_instead_of_spinning(
     # bruta do driver sem quebrar aqui.
     failures = [entry for entry in logged if entry["event"] == "demo_checkout_worker_apply_failed"]
     assert failures, "the real _apply must report the failed job"
-    assert failures[0]["error"] == "Disconnected sqlstate=08006"
-    assert failures[0]["error_type"] == "DBAPIError"
-    assert failures[0]["job_id"] == job["id"]
+    assert failures[0] == {
+        "event": "demo_checkout_worker_apply_failed",
+        "job_id": job["id"],
+        "error_type": "DBAPIError",
+        "error": "Disconnected sqlstate=08006",
+    }
 
+    # Conjunto exato de chaves: nenhum campo novo pode carregar o statement, os
+    # parâmetros ou o job cru para o log sem quebrar aqui.
     retries = [entry for entry in logged if entry["event"] == "demo_checkout_worker_retry"]
-    assert retries[0]["error"] == "1 of 1 claimed jobs failed to apply"
-    assert retries[0]["error_type"] == "DemoCheckoutApplyFailed"
-    assert retries[0]["consecutive_failures"] == 1
+    assert retries[0] == {
+        "event": "demo_checkout_worker_retry",
+        "error_type": "DemoCheckoutApplyFailed",
+        "error": "1 of 1 claimed jobs failed to apply",
+        "backoff_seconds": waits[0],
+        "consecutive_failures": 1,
+    }
     assert retries[1]["consecutive_failures"] == 2
 
 
@@ -288,6 +374,11 @@ async def test_partial_batch_counts_only_the_failed_jobs(
         "seller_organization_id": "6f1d2a58-0000-4000-8000-000000000002",
         "lease_fence": 1,
     }
+    other_bad_job = {
+        "id": "6f1d2a58-0000-4000-8000-00000000000c",
+        "seller_organization_id": "6f1d2a58-0000-4000-8000-000000000002",
+        "lease_fence": 1,
+    }
 
     class Disconnected(Exception):
         sqlstate = "08006"
@@ -295,8 +386,8 @@ async def test_partial_batch_counts_only_the_failed_jobs(
     async def scalar(statement: Any, parameters: dict[str, Any]) -> Any:
         sql = str(statement)
         if "claim_demo_checkout_jobs" in sql:
-            return [ok_job, bad_job]
-        if str(parameters.get("job")) == bad_job["id"]:
+            return [ok_job, bad_job, other_bad_job]
+        if str(parameters.get("job")) in {bad_job["id"], other_bad_job["id"]}:
             raise DBAPIError("select ...", {}, Disconnected("connection lost"))
         return {"status": "applied"}
 
@@ -322,13 +413,13 @@ async def test_partial_batch_counts_only_the_failed_jobs(
         await demo_checkout_worker.run_demo_checkout_worker_loop(app, asyncio.Event())
 
     retries = [entry for entry in logged if entry["event"] == "demo_checkout_worker_retry"]
-    assert retries[0]["error"] == "1 of 2 claimed jobs failed to apply"
+    assert retries[0]["error"] == "2 of 3 claimed jobs failed to apply"
 
     # Só o job com erro é reportado — o outro aplicou de verdade.
     failed_ids = [
         entry["job_id"] for entry in logged if entry["event"] == "demo_checkout_worker_apply_failed"
     ]
-    assert failed_ids == [bad_job["id"]]
+    assert failed_ids == [bad_job["id"], other_bad_job["id"]]
 
 
 async def test_retry_delay_survives_a_permanent_failure() -> None:
