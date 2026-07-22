@@ -252,16 +252,21 @@ def _drain(fixture: dict[str, UUID | str]) -> list[dict[str, object]]:
 def _entitlement(
     fixture: dict[str, UUID | str], purchase_reference: str
 ) -> tuple[UUID, str, UUID] | None:
+    # A entitlement é keyed por (buyer,produto); a resolução aqui é via ledger:
+    # acha o grant desta compra e retorna a entitlement do seu (buyer,produto).
     assert ADMIN_URL
-    reference = (
-        "billing:" + str(INTEGRATION) + ":"
-        + hashlib.sha256(purchase_reference.encode()).hexdigest()
-    )
+    purchase_sha256 = hashlib.sha256(purchase_reference.encode()).hexdigest()
     with psycopg.connect(ADMIN_URL) as connection:
         row = connection.execute(
-            "select id,status,buyer_identity_user_id from buyer_entitlement "
-            "where seller_organization_id=%s and reference_key=%s",
-            (fixture["seller"], reference),
+            "select entitlement.id,entitlement.status,entitlement.buyer_identity_user_id "
+            "from buyer_entitlement entitlement "
+            "join app_private.entitlement_grant ledger "
+            "on ledger.seller_organization_id=entitlement.seller_organization_id "
+            "and ledger.buyer_identity_user_id=entitlement.buyer_identity_user_id "
+            "and ledger.catalog_product_id=entitlement.catalog_product_id "
+            "where entitlement.seller_organization_id=%s "
+            "and ledger.external_purchase_id_sha256=%s",
+            (fixture["seller"], purchase_sha256),
         ).fetchone()
     return cast("tuple[UUID, str, UUID] | None", row)
 
@@ -510,6 +515,56 @@ def test_late_replay_of_older_purchase_does_not_steal_ownership(
     assert any(result.get("reason") == "nothing_to_revoke" for result in refund_results)
     still_active = _entitlement(fixture, f"{RUN}-purchase-new-b")
     assert still_active is not None and still_active[1] == "active"
+
+
+def test_two_active_purchases_refund_newer_keeps_access(
+    fixture: dict[str, UUID | str],
+) -> None:
+    # Duas compras ativas (mesmo buyer/produto): reembolsar a MAIS NOVA não
+    # revoga, porque a antiga ainda justifica o acesso (só o ledger acerta isso).
+    assert ADMIN_URL
+    _register_worker(fixture)
+    _accept(
+        fixture,
+        event_reference=f"{RUN}-evt-conc-a",
+        purchase_reference=f"{RUN}-purchase-conc-a",
+        buyer_email=f"buyer.conc.{RUN}@example.test",
+        occurred_at="2026-07-14T07:00:00Z",
+    )
+    _drain(fixture)
+    _accept(
+        fixture,
+        event_reference=f"{RUN}-evt-conc-b",
+        purchase_reference=f"{RUN}-purchase-conc-b",
+        buyer_email=f"buyer.conc.{RUN}@example.test",
+        occurred_at="2026-07-15T07:00:00Z",
+    )
+    _drain(fixture)
+    _accept(
+        fixture,
+        event_reference=f"{RUN}-evt-conc-b-refund",
+        event_type="purchase.refunded",
+        purchase_reference=f"{RUN}-purchase-conc-b",
+        buyer_email=f"buyer.conc.{RUN}@example.test",
+        occurred_at="2026-07-16T07:00:00Z",
+    )
+    refund_results = _drain(fixture)
+    assert any(result.get("reason") == "nothing_to_revoke" for result in refund_results)
+    still_active = _entitlement(fixture, f"{RUN}-purchase-conc-a")
+    assert still_active is not None and still_active[1] == "active"
+    # Reembolsar também a antiga agora revoga (nenhum grant ativo resta).
+    _accept(
+        fixture,
+        event_reference=f"{RUN}-evt-conc-a-refund",
+        event_type="purchase.refunded",
+        purchase_reference=f"{RUN}-purchase-conc-a",
+        buyer_email=f"buyer.conc.{RUN}@example.test",
+        occurred_at="2026-07-17T07:00:00Z",
+    )
+    refund_a_results = _drain(fixture)
+    assert any(result.get("revoked") is True for result in refund_a_results)
+    revoked = _entitlement(fixture, f"{RUN}-purchase-conc-a")
+    assert revoked is not None and revoked[1] == "revoked"
 
 
 def test_explicit_identity_sub_binds_to_that_user(fixture: dict[str, UUID | str]) -> None:

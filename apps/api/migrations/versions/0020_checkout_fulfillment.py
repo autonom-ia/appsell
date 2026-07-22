@@ -19,20 +19,30 @@ migration adds the missing fulfillment substrate:
 * ``accept_checkout_webhook`` gains two trailing parameters
   (``p_buyer_email``, ``p_buyer_identity_sub``). Payload v1 (no buyer) keeps
   the exact previous behaviour: event + outbox only, no job.
+* ``app_private.entitlement_grant`` — the per-purchase grant ledger (root-cause
+  ownership model). One row per ``(seller, integration, purchase)`` with status
+  ``active``/``refunded``. A ``buyer_entitlement`` is active iff at least one
+  ``active`` grant exists for its ``(buyer, product)``. This removes every
+  ownership race a single ``reference_key`` had: concurrent unrefunded
+  purchases each hold an active grant, so refunding one keeps access while
+  another justifies it; a refund of a superseded/old purchase only flips that
+  purchase's grant.
 * ``claim_fulfillment_jobs`` / ``apply_checkout_fulfillment`` /
   ``fail_fulfillment_job`` — lease/fence worker protocol cloned from the demo
-  checkout outbox. ``apply`` resolves the product by digest mapping, resolves
-  or creates the buyer ``identity_user`` (explicit sub when the BFF knew the
-  authenticated buyer, else the deterministic ``registration:<email>`` sub),
-  and grants/reactivates/revokes the ``buyer_entitlement``:
+  checkout outbox. Under one advisory lock per ``(seller, buyer, product)``,
+  ``apply`` resolves the product by digest mapping, resolves or creates the
+  canonical buyer ``identity_user`` (``app_private.identity_user_id`` — the same
+  uuid5 the Cognito login yields), then drives the ledger:
 
-  - ``purchase.approved`` refuses to grant when a refund/cancel event for the
-    same purchase digest already exists (out-of-order delivery guard);
-  - re-purchase after refund reactivates the entitlement and repoints its
-    ``reference_key`` to the newest purchase digest so a later refund of that
-    purchase still revokes;
-  - ``purchase.refunded``/``subscription.cancelled`` revoke by
-    ``reference_key`` and complete idempotently when there is nothing to do.
+  - ``purchase.approved`` upserts an ``active`` grant (a grant already
+    ``refunded`` stays refunded — refund wins, even out-of-order), then the
+    ``buyer_entitlement`` is (re)activated iff an active grant remains;
+  - ``purchase.refunded``/``subscription.cancelled`` upsert a ``refunded``
+    grant (creating it if the refund arrives first) and revoke the entitlement
+    only when no active grant remains; idempotent when nothing changes.
+
+  ``buyer_entitlement.reference_key`` is a stable ``billing:<buyer>:<product>``
+  (one row per pair) — the ledger, not the reference, decides access.
 
 Emitter responsibilities (trust boundary — this schema does NOT re-verify):
 ``buyer_identity_sub`` may only be populated from a value the emitter itself
@@ -43,19 +53,10 @@ and rejected in explicit subs. Flood protection for ``fulfillment_job`` is
 delegated to the emitter's own rate limiting; replay cannot duplicate jobs
 (unique per webhook event) but job creation rate is otherwise unbounded here.
 
-Ownership model: an entitlement is owned by the approved purchase with the
-greatest ``occurred_at`` (``reference_key`` scoped by integration id); a refund
-revokes only when it owns. Known limitation: with a single ``reference_key`` per
-entitlement, two concurrently-unrefunded purchases collapse to the newest owner,
-so refunding the newest revokes even if an older approved purchase still
-justifies access. The root-cause fix is a per-purchase grant ledger (TODO,
-tracked in #96); it is not reachable through the current BFF self-emit path,
-whose event id is a deterministic function of the order id (one purchase, no
-new-event-id replays).
-
 Downgrade is refused while fulfillment jobs exist (queue data must be
-preserved); otherwise it restores the 0012 ``accept_checkout_webhook`` and the
-0019 ``schema_ready`` verbatim and drops the fulfillment objects.
+preserved) or a revoked worker exists (revocation must survive); otherwise it
+restores the 0012 ``accept_checkout_webhook`` and the 0019 ``schema_ready``
+verbatim and drops the fulfillment objects.
 """
 
 from alembic import op
@@ -150,6 +151,32 @@ def upgrade() -> None:
           on app_private.fulfillment_job(
             seller_organization_id,external_purchase_id_sha256
           )
+        """,
+        """
+        create table app_private.entitlement_grant (
+          seller_organization_id uuid not null,
+          checkout_integration_id uuid not null,
+          external_purchase_id_sha256 text not null check (
+            external_purchase_id_sha256 ~ '^[0-9a-f]{64}$'
+          ),
+          buyer_identity_user_id uuid not null references public.identity_user(id),
+          catalog_product_id uuid not null,
+          status text not null check (status in ('active','refunded')),
+          occurred_at timestamptz not null,
+          created_at timestamptz not null default clock_timestamp(),
+          updated_at timestamptz not null default clock_timestamp(),
+          primary key (
+            seller_organization_id,checkout_integration_id,external_purchase_id_sha256
+          ),
+          foreign key (seller_organization_id,catalog_product_id)
+            references public.catalog_product(seller_organization_id,id)
+        )
+        """,
+        """
+        create index entitlement_grant_active_idx
+          on app_private.entitlement_grant(
+            seller_organization_id,buyer_identity_user_id,catalog_product_id
+          ) where status='active'
         """,
         """
         create function app_private.ensure_fulfillment_worker(
@@ -416,8 +443,8 @@ def upgrade() -> None:
         set search_path=pg_catalog,app_private,public as $$
         declare
           job record; event record; mapped_product_id uuid; product record;
-          buyer_id uuid; buyer_sub text; entitlement record; v_entitlement_id uuid;
-          refund_seen boolean; reference text; owner_occurred_at timestamptz;
+          buyer_id uuid; buyer_sub text; v_entitlement_id uuid;
+          reference text; has_active_grant boolean;
         begin
           if app_private.context_text('capability')
                is distinct from 'commerce.fulfillment.worker'
@@ -439,12 +466,6 @@ def upgrade() -> None:
           end if;
           select * into strict event from public.webhook_event stored
           where stored.seller_organization_id=p_seller and stored.id=job.webhook_event_id;
-          -- Escopa a referência pela integração: purchase ids sao unicos por
-          -- integracao, e buyer_entitlement exige unicidade global de
-          -- (seller,reference_key). Duas integracoes com o mesmo id textual de
-          -- compra nao podem colidir nem uma revogar a compra da outra.
-          reference:='billing:'||event.checkout_integration_id::text||':'
-            ||job.external_purchase_id_sha256;
 
           select mapping.catalog_product_id into mapped_product_id
           from public.external_product_mapping mapping
@@ -475,38 +496,31 @@ def upgrade() -> None:
           buyer_id:=app_private.identity_user_id(p_issuer,buyer_sub);
 
           -- Serializa approval e refund do MESMO (seller,buyer,produto) em uma
-          -- única secao critica: a maquina de estados da compra nao pode
-          -- interlear (a fence protege so a posse do job).
+          -- unica secao critica: a maquina de estados nao pode interlear (a
+          -- fence protege so a posse do job).
           perform pg_advisory_xact_lock(hashtextextended(
             'appsell.fulfillment:'||p_seller::text||':'||buyer_id::text||':'||
               mapped_product_id::text,0));
 
-          if job.event_type='purchase.approved' then
-            -- Out-of-order: se um refund/cancel DESTA compra ja chegou (evento
-            -- gravado no ingress), nao conceder. Sob o lock, linearizado com o
-            -- ramo de revogacao.
-            refund_seen:=exists(
-              select 1 from public.webhook_event other
-              where other.seller_organization_id=p_seller
-                and other.checkout_integration_id=event.checkout_integration_id
-                and other.external_purchase_id_sha256=job.external_purchase_id_sha256
-                and other.event_type in ('purchase.refunded','subscription.cancelled')
-            );
-            if refund_seen then
-              update app_private.fulfillment_job set status='completed',
-                lease_owner=null,lease_expires_at=null,error_code=null,
-                updated_at=clock_timestamp()
-              where seller_organization_id=p_seller and id=p_job;
-              insert into public.audit_event(seller_organization_id,actor_identity_user_id,
-                action,target_type,target_id,result,request_id,metadata)
-              values(p_seller,p_worker,'commerce.fulfillment_skipped','fulfillment_job',
-                p_job,'succeeded',p_request,jsonb_build_object(
-                  'reason','purchase_refunded',
-                  'external_purchase_id_sha256',job.external_purchase_id_sha256));
-              return jsonb_build_object('status','completed','applied',false,
-                'reason','purchase_refunded');
-            end if;
+          -- Ambos os ramos precisam da identidade (FK do grant). O grant so vira
+          -- 'active' se ainda nao estiver 'refunded' (refund vence approval).
+          insert into public.identity_user(
+            id,identity_issuer,identity_sub,email_normalized,email_verified
+          ) values (buyer_id,p_issuer,buyer_sub,job.buyer_email_normalized,false)
+          on conflict on constraint identity_user_issuer_sub_key do update set
+            updated_at=clock_timestamp()
+          where public.identity_user.id=excluded.id
+          returning id into buyer_id;
+          if buyer_id is null then
+            raise exception 'buyer identity binding conflict' using errcode='40001';
+          end if;
 
+          -- reference_key ESTAVEL por (buyer,produto): a entitlement e uma linha
+          -- unica por par; quem determina acesso e o ledger de grants por compra,
+          -- nao a reference_key. Isso encerra as races de ownership entre compras.
+          reference:='billing:'||buyer_id::text||':'||mapped_product_id::text;
+
+          if job.event_type='purchase.approved' then
             select catalog.id,catalog.published_snapshot_id into product
             from public.catalog_product catalog
             where catalog.seller_organization_id=p_seller and catalog.id=mapped_product_id
@@ -528,56 +542,57 @@ def upgrade() -> None:
                 'error_code','product_not_published');
             end if;
 
-            insert into public.identity_user(
-              id,identity_issuer,identity_sub,email_normalized,email_verified
-            ) values (buyer_id,p_issuer,buyer_sub,job.buyer_email_normalized,false)
-            on conflict on constraint identity_user_issuer_sub_key do update set
-              updated_at=clock_timestamp()
-            where public.identity_user.id=excluded.id
-            returning id into buyer_id;
-            if buyer_id is null then
-              raise exception 'buyer identity binding conflict' using errcode='40001';
+            insert into app_private.entitlement_grant(
+              seller_organization_id,checkout_integration_id,external_purchase_id_sha256,
+              buyer_identity_user_id,catalog_product_id,status,occurred_at
+            ) values (
+              p_seller,event.checkout_integration_id,job.external_purchase_id_sha256,
+              buyer_id,mapped_product_id,'active',event.occurred_at
+            )
+            on conflict (seller_organization_id,checkout_integration_id,
+              external_purchase_id_sha256) do update set
+              status=case when app_private.entitlement_grant.status='refunded'
+                then 'refunded' else 'active' end,
+              occurred_at=greatest(app_private.entitlement_grant.occurred_at,
+                excluded.occurred_at),
+              updated_at=clock_timestamp();
+
+            has_active_grant:=exists(
+              select 1 from app_private.entitlement_grant ledger
+              where ledger.seller_organization_id=p_seller
+                and ledger.buyer_identity_user_id=buyer_id
+                and ledger.catalog_product_id=mapped_product_id
+                and ledger.status='active');
+            if not has_active_grant then
+              -- Esta compra ja fora reembolsada (out-of-order) e nenhuma outra
+              -- justifica acesso: nao conceder.
+              update app_private.fulfillment_job set status='completed',
+                lease_owner=null,lease_expires_at=null,error_code=null,
+                updated_at=clock_timestamp()
+              where seller_organization_id=p_seller and id=p_job;
+              insert into public.audit_event(seller_organization_id,actor_identity_user_id,
+                action,target_type,target_id,result,request_id,metadata)
+              values(p_seller,p_worker,'commerce.fulfillment_skipped','fulfillment_job',
+                p_job,'succeeded',p_request,jsonb_build_object(
+                  'reason','purchase_refunded',
+                  'external_purchase_id_sha256',job.external_purchase_id_sha256));
+              return jsonb_build_object('status','completed','applied',false,
+                'reason','purchase_refunded');
             end if;
 
-            select * into entitlement from public.buyer_entitlement existing
-            where existing.seller_organization_id=p_seller
-              and existing.buyer_identity_user_id=buyer_id
-              and existing.catalog_product_id=mapped_product_id
-            for update;
-            if found then
-              -- Ownership monotonico por occurred_at: so reaponta a
-              -- reference_key se ESTA compra for tao nova quanto a dona atual.
-              -- Assim um replay/entrega atrasada de uma compra ANTIGA (depois de
-              -- uma mais nova ja ter assumido) nao rouba a posse, e um refund
-              -- dessa compra antiga nao revoga o acesso da compra mais nova.
-              select max(other.occurred_at) into owner_occurred_at
-              from public.webhook_event other
-              where other.seller_organization_id=p_seller
-                and other.checkout_integration_id=event.checkout_integration_id
-                and other.event_type='purchase.approved'
-                and 'billing:'||event.checkout_integration_id::text||':'
-                  ||other.external_purchase_id_sha256=entitlement.reference_key;
-              if entitlement.status<>'active'
-                or owner_occurred_at is null
-                or event.occurred_at>=owner_occurred_at then
-                update public.buyer_entitlement set status='active',
-                  reference_key=reference,publication_id=product.published_snapshot_id,
-                  starts_at=case when entitlement.status='active'
-                    then entitlement.starts_at else clock_timestamp() end,
-                  expires_at=null,updated_at=clock_timestamp()
-                where seller_organization_id=p_seller and id=entitlement.id;
-              end if;
-              v_entitlement_id:=entitlement.id;
-            else
-              v_entitlement_id:=gen_random_uuid();
-              insert into public.buyer_entitlement(
-                seller_organization_id,id,buyer_identity_user_id,catalog_product_id,
-                publication_id,reference_key,source,status,progress_percent
-              ) values (
-                p_seller,v_entitlement_id,buyer_id,mapped_product_id,
-                product.published_snapshot_id,reference,'billing','active',0
-              );
-            end if;
+            insert into public.buyer_entitlement(
+              seller_organization_id,id,buyer_identity_user_id,catalog_product_id,
+              publication_id,reference_key,source,status,progress_percent
+            ) values (
+              p_seller,gen_random_uuid(),buyer_id,mapped_product_id,
+              product.published_snapshot_id,reference,'billing','active',0
+            )
+            on conflict on constraint buyer_entitlement_subject_product_key do update set
+              status='active',publication_id=excluded.publication_id,
+              starts_at=case when public.buyer_entitlement.status='active'
+                then public.buyer_entitlement.starts_at else clock_timestamp() end,
+              expires_at=null,updated_at=clock_timestamp()
+            returning id into v_entitlement_id;
             update app_private.fulfillment_job set status='completed',
               lease_owner=null,lease_expires_at=null,error_code=null,
               updated_at=clock_timestamp()
@@ -594,31 +609,49 @@ def upgrade() -> None:
               'entitlement_id',v_entitlement_id,'buyer_identity_user_id',buyer_id);
           end if;
 
-          -- purchase.refunded / subscription.cancelled: revoga o entitlement
-          -- de (seller,buyer,produto) SOMENTE se esta compra e a dona atual
-          -- (reference_key), sob o mesmo lock. Compra superada -> no-op.
-          select * into entitlement from public.buyer_entitlement existing
-          where existing.seller_organization_id=p_seller
-            and existing.buyer_identity_user_id=buyer_id
-            and existing.catalog_product_id=mapped_product_id
-          for update;
-          if found and entitlement.status='active' and entitlement.reference_key=reference then
+          -- purchase.refunded / subscription.cancelled: marca o grant desta
+          -- compra como reembolsado (refund vence, mesmo out-of-order). Revoga a
+          -- entitlement so quando NENHUM grant ativo restar para (buyer,produto).
+          insert into app_private.entitlement_grant(
+            seller_organization_id,checkout_integration_id,external_purchase_id_sha256,
+            buyer_identity_user_id,catalog_product_id,status,occurred_at
+          ) values (
+            p_seller,event.checkout_integration_id,job.external_purchase_id_sha256,
+            buyer_id,mapped_product_id,'refunded',event.occurred_at
+          )
+          on conflict (seller_organization_id,checkout_integration_id,
+            external_purchase_id_sha256) do update set
+            status='refunded',updated_at=clock_timestamp();
+
+          has_active_grant:=exists(
+            select 1 from app_private.entitlement_grant ledger
+            where ledger.seller_organization_id=p_seller
+              and ledger.buyer_identity_user_id=buyer_id
+              and ledger.catalog_product_id=mapped_product_id
+              and ledger.status='active');
+          if not has_active_grant then
             update public.buyer_entitlement set status='revoked',
               updated_at=clock_timestamp()
-            where seller_organization_id=p_seller and id=entitlement.id;
-            update app_private.fulfillment_job set status='completed',
-              lease_owner=null,lease_expires_at=null,error_code=null,
-              updated_at=clock_timestamp()
-            where seller_organization_id=p_seller and id=p_job;
-            insert into public.audit_event(seller_organization_id,actor_identity_user_id,
-              action,target_type,target_id,result,request_id,metadata)
-            values(p_seller,p_worker,'commerce.fulfillment_entitlement_revoked',
-              'buyer_entitlement',entitlement.id,'succeeded',p_request,
-              jsonb_build_object('webhook_event_id',job.webhook_event_id,
-                'event_type',job.event_type,
-                'external_purchase_id_sha256',job.external_purchase_id_sha256));
-            return jsonb_build_object('status','completed','applied',true,
-              'entitlement_id',entitlement.id,'revoked',true);
+            where seller_organization_id=p_seller
+              and buyer_identity_user_id=buyer_id
+              and catalog_product_id=mapped_product_id
+              and status='active'
+            returning id into v_entitlement_id;
+            if v_entitlement_id is not null then
+              update app_private.fulfillment_job set status='completed',
+                lease_owner=null,lease_expires_at=null,error_code=null,
+                updated_at=clock_timestamp()
+              where seller_organization_id=p_seller and id=p_job;
+              insert into public.audit_event(seller_organization_id,actor_identity_user_id,
+                action,target_type,target_id,result,request_id,metadata)
+              values(p_seller,p_worker,'commerce.fulfillment_entitlement_revoked',
+                'buyer_entitlement',v_entitlement_id,'succeeded',p_request,
+                jsonb_build_object('webhook_event_id',job.webhook_event_id,
+                  'event_type',job.event_type,
+                  'external_purchase_id_sha256',job.external_purchase_id_sha256));
+              return jsonb_build_object('status','completed','applied',true,
+                'entitlement_id',v_entitlement_id,'revoked',true);
+            end if;
           end if;
           update app_private.fulfillment_job set status='completed',
             lease_owner=null,lease_expires_at=null,error_code=null,
@@ -686,7 +719,7 @@ def upgrade() -> None:
           )
         $$
         """,
-        "revoke all on table app_private.fulfillment_job,app_private.fulfillment_worker_identity from public,appsell_runtime",
+        "revoke all on table app_private.fulfillment_job,app_private.fulfillment_worker_identity,app_private.entitlement_grant from public,appsell_runtime",
         f"revoke all on function {_ACCEPT_V1_SIGNATURE} from public",
         f"grant execute on function {_ACCEPT_V1_SIGNATURE} to appsell_runtime",
         "revoke all on function app_private.ensure_fulfillment_worker(uuid,text,text,text,text) from public",
@@ -753,6 +786,7 @@ def upgrade() -> None:
             ) is not null
             and to_regclass('app_private.fulfillment_job') is not null
             and to_regclass('app_private.fulfillment_worker_identity') is not null
+            and to_regclass('app_private.entitlement_grant') is not null
             and to_regprocedure(
               'app_private.accept_checkout_webhook(uuid,uuid,text,text,bigint,text,smallint,text,integer,text,text,smallint,text,smallint,timestamptz,bigint,uuid,text,text)'
             ) is not null
@@ -798,6 +832,7 @@ def downgrade() -> None:
         f"drop function if exists {_ACCEPT_V1_SIGNATURE}",
         f"drop function {_ACCEPT_V2_SIGNATURE}",
         "drop function app_private.ensure_fulfillment_worker(uuid,text,text,text,text)",
+        "drop table app_private.entitlement_grant",
         "drop table app_private.fulfillment_job",
         "drop table app_private.fulfillment_worker_identity",
         """
