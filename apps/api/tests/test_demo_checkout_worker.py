@@ -258,7 +258,14 @@ async def test_apply_failure_backs_off_instead_of_spinning(
     assert waits[1] > waits[0], "apply failure must feed the backoff"
 
     # O `_apply` real reportou a falha do job e devolveu False ao loop.
-    assert [entry["event"] for entry in logged].count("demo_checkout_worker_apply_failed") >= 1
+    # Campos conferidos por igualdade: o sink real não pode ganhar a mensagem
+    # bruta do driver sem quebrar aqui.
+    failures = [entry for entry in logged if entry["event"] == "demo_checkout_worker_apply_failed"]
+    assert failures, "the real _apply must report the failed job"
+    assert failures[0]["error"] == "Disconnected sqlstate=08006"
+    assert failures[0]["error_type"] == "DBAPIError"
+    assert failures[0]["job_id"] == job["id"]
+
     retries = [entry for entry in logged if entry["event"] == "demo_checkout_worker_retry"]
     assert retries[0]["consecutive_failures"] == 1
     assert retries[1]["consecutive_failures"] == 2
@@ -287,11 +294,15 @@ def test_database_errors_never_log_statement_or_parameters() -> None:
         UndefinedFunction("function does not exist"),
     )
 
-    reason = demo_checkout_worker._sanitized_reason(error)
+    # Igualdade exata: asserção de ausência deixaria passar qualquer campo extra
+    # do driver (detail, hint, a mensagem original) acrescentado ao motivo.
+    assert demo_checkout_worker._sanitized_reason(error) == "UndefinedFunction sqlstate=42883"
 
-    assert "claim_demo_checkout_jobs" not in reason
-    assert "s3cr3t-value-in-parameters" not in reason
-    assert "42883" in reason
+
+def test_database_error_without_sqlstate_is_still_bounded() -> None:
+    error = DBAPIError("select ...", {"worker": "secret"}, Exception("driver said something"))
+
+    assert demo_checkout_worker._sanitized_reason(error) == "Exception sqlstate=unknown"
 
 
 @pytest.mark.parametrize(
