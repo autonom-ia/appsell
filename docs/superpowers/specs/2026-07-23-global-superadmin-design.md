@@ -5,6 +5,26 @@ Issues relacionadas: AppSell #93 e #105
 Classe de modelo: strong + human
 Ambientes: Local/CI primeiro; produção somente após aprovação explícita do Rodrigo
 
+## Estado de implementação em 2026-07-23 14:25 BRT
+
+Este documento continua sendo o PRD arquitetural. O estado operacional e os
+comandos de retomada estão em
+`docs/handoffs/2026-07-23-claude-superadmin.md`.
+
+| Wave | Estado | PR |
+|---|---|---|
+| Desenho AppSell | draft, CI verde | AppSell #134 |
+| Identity Foundation | implementada, draft, `validate` verde | Foundation #49 |
+| Identity Auth UI | implementada, draft, dois checks verdes | Identity Auth #41 |
+| Admin bootstrap explícito | não implementado | depende da reconciliação #12/#13/#15 |
+| Admin → AppSell | não implementado | sem PR |
+| Projeção AppSell | não implementada | sem PR |
+| Projeção Financial | stack draft antiga | Financial #21/#23 |
+| Ativação em produção | não iniciada | requer novo 🟢 |
+
+`comercial@autonomia.site` ainda não é superadmin. Nenhum merge, deploy,
+secret, banco ou grant de produção foi executado pelas Waves novas.
+
 ## Objetivo
 
 Transformar `comercial@autonomia.site` no primeiro `platform_superadmin` real da
