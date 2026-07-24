@@ -31,10 +31,16 @@ confirmou que:
 1. **Seller commerce (buyer → produto de um seller) permanece fora do Financial**
    e é a **direção de v1**, não uma etapa transitória a ser migrada.
 2. **O provider do checkout externo do ADR 0005 é o Stripe (Connect).** O AppSell
-   é a plataforma; cada seller opera sob uma conta conectada. A comissão da
-   plataforma usa `application_fee`; payout, reembolso e chargeback são
-   primitivos do Connect, projetados no ledger/entitlement do AppSell conforme
-   ADR 0005 (webhook idempotente → outbox → `external_purchase` → entitlement).
+   é a plataforma; cada seller opera sob uma conta conectada e o pagamento do
+   curso assenta **direto na conta do seller** (onboard-first, sem custódia pelo
+   AppSell). O MVP deste trilho é a máquina do ADR 0005 — webhook idempotente →
+   outbox → `external_purchase` → entitlement — liberando o acesso do comprador.
+   `application_fee`, split, payout e comissão são primitivos **nativos** do
+   Connect, mas **permanecem FORA do MVP**: o ADR 0005 fixa que "nenhum split,
+   custódia, comissão ou repasse entra no MVP" e o PRD §7 os mantém fora. Esta
+   ADR **não** os reabre — entram em **slice posterior**, com Issue própria, sem
+   reabrir a fronteira do 0005. Escolher Stripe Connect agora é o que torna esse
+   slice barato depois (primitivos prontos), não uma antecipação de escopo.
 3. **O Financial corporativo continua cobrando apenas o SaaS do AppSell** — o
    seller paga para usar a plataforma. O produto `sell` no Financial representa
    **essa assinatura de SaaS**, não a venda de curso.
@@ -72,7 +78,8 @@ confirmou que:
 ## Validação obrigatória (além da do ADR 0005)
 
 - onboarding de conta conectada não concede acesso a dados/mapping de outro seller;
-- `application_fee`/split calculado no servidor, nunca a partir do browser;
+- quando o slice de comissão entrar (pós-MVP), `application_fee`/split é calculado
+  no servidor, nunca a partir do browser;
 - webhook do Stripe valida assinatura, janela temporal e idempotência antes de efeito;
 - refund/cancel/chargeback do Connect seguem a política de revogação do ADR 0005;
 - billing SaaS indisponível não revoga silenciosamente entitlement de buyer;
