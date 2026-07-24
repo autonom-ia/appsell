@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0",
+  "review_id": "issue-000-pr-000",
+  "orchestration_owner": "harness",
+  "risk_class": "standard",
+  "round": 1,
+  "base_sha": "0000000000000000000000000000000000000000",
+  "head_sha": "1111111111111111111111111111111111111111",
+  "diff_hash": "2222222222222222222222222222222222222222222222222222222222222222",
+  "reviewers": [
+    {
+      "role": "reviewer",
+      "status": "completed",
+      "model_class": "strong",
+      "turns": 0,
+      "duration_seconds": 0,
+      "usage": {
+        "input_tokens": null,
+        "output_tokens": null,
+        "cache_read_tokens": null,
+        "cache_write_tokens": null
+      }
+    }
+  ],
+  "join_status": "complete",
+  "repair_waves": [],
+  "findings": [],
+  "final_broad_reviews": 0,
+  "decision": "awaiting_join",
+  "telemetry": {
+    "turns": 0,
+    "duration_seconds": 0,
+    "input_tokens": null,
+    "output_tokens": null,
+    "cache_read_tokens": null,
+    "cache_write_tokens": null
+  }
+}

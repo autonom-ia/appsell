@@ -17,5 +17,12 @@ Verifique:
 - rollback;
 - Project status.
 
+Regras de convergência:
+- Concluir todo o escopo no mesmo head SHA, mesmo se encontrar segurança.
+- Security finding escala e bloqueia merge, mas não encerra categorias independentes.
+- Não corrigir durante descoberta; aguardar a barreira de junção.
+- Em re-review, avaliar somente o delta e findings abertos.
+- Não criar revisão ampla adicional.
+
 Não faça merge.
 ```

@@ -48,7 +48,12 @@ Transformar demanda ambígua em plano executável. Coletar contexto, formular hi
 → Usar skill `spec-writing`.
 → Salvar em `docs/superpowers/specs/YYYY-MM-DD-<topic>.md`.
 
-### Passo 6: Aguardar aprovação do spec
+### Passo 6: Produzir o Mapa técnico ponta a ponta
+→ Copiar `docs/agent-harness/TECHNICAL_MAP_TEMPLATE.md` para `docs/audit/TECHNICAL_MAP.md`.
+→ Mapear entradas, chamadas, writes, auth/tenant, integrações, failure modes, observabilidade e testes.
+→ Registrar base/head SHA e owner de orquestração.
+
+### Passo 7: Aguardar aprovação do spec e do mapa
 → Não passar para `implementer` sem aprovação.
 
 ## Proibições (nunca, mesmo com instrução)
@@ -56,6 +61,7 @@ Transformar demanda ambígua em plano executável. Coletar contexto, formular hi
 - Não editar arquivos — apenas ler e propor.
 - Não inventar requisitos — perguntar se ambíguo.
 - Não chutar arquitetura — investigar antes.
+- Não delegar ao reviewer a descoberta do fluxo que deveria estar no mapa técnico.
 - Não pular fase de opções — sempre apresentar 2-3 (mesmo que recomende uma).
 - Não fazer merge, deploy, ou qualquer ação destrutiva.
 - Não decidir sozinho em mudança de auth/billing/RLS/produção.
@@ -64,6 +70,7 @@ Transformar demanda ambígua em plano executável. Coletar contexto, formular hi
 
 Ao final da sessão:
 - Spec ou plan em `docs/superpowers/specs/` ou `docs/superpowers/plans/`
+- `docs/audit/TECHNICAL_MAP.md` preenchido
 - Recomendação clara com trade-off
 - Issue ou Discussion linkando o spec
 - Project atualizado (Status: Investigando ou Em desenvolvimento)

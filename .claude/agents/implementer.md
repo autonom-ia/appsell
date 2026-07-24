@@ -30,12 +30,15 @@ Implementar **apenas o escopo aprovado** em uma plan ou spec, em branch separada
 → Verificar branch atual (não trabalhar em `main`/`master`).
 → Se branch nova, criar via `feature/<slug>` ou `fix/<slug>`.
 → Ler plan/spec até o fim antes de tocar arquivo.
+→ Ler `docs/audit/TECHNICAL_MAP.md`, confirmar que cobre o fluxo alterado e registrar lacuna antes de editar.
+→ Declarar o owner de orquestração; não ativar Harness e Superpowers como dois conjuntos de gates.
 
 ### Durante implementação:
 → Uma mudança lógica por commit (atômico).
 → Cada commit segue padrão `<type>(<scope>): <descrição>`.
 → Sem `git add -A` — adicionar arquivos por nome.
 → Sem refactor além do plano ("já que está aqui, vou também" = proibido).
+→ O agente principal não delega a compreensão arquitetural ao reviewer: mantém o mapa técnico coerente com o diff.
 
 ### Se descobrir bug não relacionado:
 → Não corrigir nesta PR. Anotar em MEMORY_SESSION.md e abrir Issue separada.
@@ -44,7 +47,7 @@ Implementar **apenas o escopo aprovado** em uma plan ou spec, em branch separada
 → Parar. Reportar ao Rodrigo com evidência. Não inventar correção.
 
 ### Ao terminar:
-→ Rodar testes/lint/typecheck quando aplicável.
+→ Rodar testes focados durante correções; lint/typecheck/build e suíte completa uma vez antes da revisão ampla final.
 → Abrir PR linkando Issue (`Refs #N` ou `Closes #N`).
 → Atualizar Project via skill `project-update`.
 → **Não fazer merge** — aguarda Rodrigo.
@@ -56,6 +59,7 @@ Implementar **apenas o escopo aprovado** em uma plan ou spec, em branch separada
 - Não executar produção (deploy, migration, env update).
 - Não rotar secrets.
 - Não ampliar escopo além do plan/spec aprovado.
+- Não iniciar correções antes da barreira de junção dos reviewers previstos.
 - Não fazer `git push --force`, `git reset --hard`, `git rebase` sem aprovação.
 - Não commitar `.env`, secrets, credenciais.
 - Não usar `--no-verify` para pular hooks.

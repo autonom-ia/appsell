@@ -2,6 +2,8 @@
 
 O gate executável é `bash scripts/harness-ci.sh`. O mesmo entrypoint roda localmente e no job único `harness-ci`; checks extras são fases condicionais, nunca jobs adicionais.
 
+Checks próprios do projeto são declarados em `ci.project_checks.targeted` e `ci.project_checks.full` como `{name, cwd, command[]}`. O Harness executa argv diretamente, sem `eval`.
+
 ## Perfis de risco
 
 | Perfil | Uso | Regra de bloqueio |
@@ -21,6 +23,7 @@ O perfil não muda autorização: merge, deploy, produção, dados, secrets, aut
 | `gitleaks` | PR/push; full semanal | `bash scripts/harness-ci.sh --phase gitleaks` | Contagem redigida; nunca valor, linha, commit ou caminho do achado. |
 | `osv` | Lockfile alterado; full semanal | `bash scripts/harness-ci.sh --phase osv` | OSV em resultado agregado; relatório bruto não é retido. |
 | `promptfoo` | Arquivo de prompt/agente alterado, config presente e todos os gates de live eval autorizados | `bash scripts/harness-ci.sh --phase promptfoo` | Resultado agregado; prompt/resposta não entra no summary. |
+| `project` | Config do escopo contém checks | `bash scripts/harness-ci.sh --phase project --project-scope targeted|full` | Nome, duração e status; comando e output não entram no summary. |
 | `summary` | Sempre, inclusive após falha | `bash scripts/harness-ci.sh --phase summary` | Versão, perfil, checks run/skipped, duração e resultado. |
 
 ## Operação local e CI
@@ -30,6 +33,8 @@ Rodar tudo localmente:
 ```bash
 bash scripts/harness-ci.sh --phase all
 ```
+
+Durante uma onda de correção, usar `--phase project --project-scope targeted`. Depois da convergência, rodar `full` uma única vez antes da revisão ampla final. O CI usa `full`.
 
 O fallback local registra tools ausentes como `SKIPPED`. O workflow instala versões pinadas com checksum e define `HARNESS_CI_REQUIRE_TOOLS=true`; portanto, uma instalação quebrada não produz falso verde. Sucesso não cria artifact. Em falha, apenas `harness-ci-failure.txt` sanitizado pode ser retido por sete dias.
 

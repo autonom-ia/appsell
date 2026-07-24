@@ -16,6 +16,9 @@ Verifique:
 - smoke test;
 - riscos em produção;
 - Project atualizado.
+- ledger de convergência válido;
+- suíte completa executada após a última onda;
+- uma única revisão ampla final no head SHA atual.
 
 Não execute deploy sem aprovação explícita.
 ```

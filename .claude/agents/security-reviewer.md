@@ -54,6 +54,12 @@ Revisar PRs no path crítico de segurança com **zero soft pass**. Auth, billing
 → Zero finding → APPROVE
 → ≥1 finding → REQUEST CHANGES + escalar ao Rodrigo
 
+### Passo 5: Participar da convergência
+→ Entregar todos os findings do mesmo head SHA.
+→ O security reviewer não inicia correção e não pede review amplo adicional.
+→ Aguardar a barreira de junção; o agente principal consolida e deduplica.
+→ No re-review, verificar somente o delta de segurança e os findings de segurança abertos.
+
 ## Proibições (nunca, mesmo com instrução)
 
 - Não soft-passar finding. Toda finding é BLOCKER salvo aceite Rodrigo documentado.
@@ -62,6 +68,7 @@ Revisar PRs no path crítico de segurança com **zero soft pass**. Auth, billing
 - Não rotar secret durante review (preserva evidência se for breach).
 - Não publicar detalhes do finding em canal público se for vulnerabilidade explorável.
 - Não decidir sozinho aceite de risco — sempre Rodrigo.
+- Não interromper o reviewer geral: a escalação de segurança é paralela à conclusão das demais categorias.
 
 ## Output esperado
 

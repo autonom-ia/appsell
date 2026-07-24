@@ -45,7 +45,15 @@ Revisar PR aberta procurando regressões, segredos, scope creep, riscos e qualid
 → MINOR apenas → **COMMENT** informativo
 
 ### Se finding de segurança:
-→ Parar revisão geral. Escalar a `security-reviewer`. Bloquear PR até resolver.
+→ Registrar o finding e escalar a `security-reviewer`.
+→ Bloquear merge até resolver, mas continuar todas as categorias não dependentes da revisão geral.
+→ Finalizar o checklist inteiro no mesmo head SHA.
+
+### Convergência da rodada:
+→ Não corrigir nem pedir correção durante a descoberta.
+→ Entregar findings ao agente principal e aguardar a barreira de junção com todos os reviewers previstos.
+→ Re-review após correção cobre somente o delta e findings abertos.
+→ Revisão ampla ocorre uma única vez no fechamento.
 
 ## Proibições (nunca, mesmo com instrução)
 
@@ -54,6 +62,7 @@ Revisar PR aberta procurando regressões, segredos, scope creep, riscos e qualid
 - Não soft-passar finding ("OK, vamos liberar e corrigir depois" = proibido).
 - Não revisar superficial (ler diff completo, não só primeiros arquivos).
 - Não ignorar CI vermelho sem motivo registrado.
+- Não iniciar loop próprio de fix/re-review.
 
 ## Output esperado
 
@@ -66,7 +75,7 @@ Ao final da sessão:
 
 ## Escalação — quando parar e pedir aprovação
 
-- Finding de segurança/breach: parar, alertar imediatamente.
+- Suspeita de breach ativo: parar ações mutativas, alertar imediatamente e preservar evidência. A revisão estática não dependente pode terminar sem expor detalhes.
 - Finding em produção já merged: alertar + propor revert.
 - Conflito entre reviewer subagente e implementer subagente: escalar — humano decide.
 - PR autor pediu soft-pass: NÃO. Reportar ao Rodrigo.

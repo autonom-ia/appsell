@@ -3,10 +3,12 @@ set -euo pipefail
 
 repo="."
 phase="all"
+project_scope="full"
 
 usage() {
   cat <<'EOF'
-Uso: harness-ci.sh [--repo PATH] [--phase plan|core|gitleaks|osv|promptfoo|summary|all]
+Uso: harness-ci.sh [--repo PATH] [--phase plan|core|project|gitleaks|osv|promptfoo|summary|all]
+                     [--project-scope targeted|full]
 
 Entrypoint determinístico do job único do Autonom.ia Agent Harness.
 EOF
@@ -22,6 +24,10 @@ while [[ $# -gt 0 ]]; do
       phase="${2:-}"
       shift 2
       ;;
+    --project-scope)
+      project_scope="${2:-}"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -35,9 +41,16 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$phase" in
-  plan|core|gitleaks|osv|promptfoo|summary|all) ;;
+  plan|core|project|gitleaks|osv|promptfoo|summary|all) ;;
   *)
     echo "--phase inválida: $phase" >&2
+    exit 2
+    ;;
+esac
+case "$project_scope" in
+  targeted|full) ;;
+  *)
+    echo "--project-scope inválido: $project_scope" >&2
     exit 2
     ;;
 esac
@@ -377,6 +390,72 @@ phase_core() {
   return "$failed"
 }
 
+phase_project() {
+  local checks_json checks_count index check_json check_name check_key check_cwd
+  local arg_count arg_index arg started duration status failed=0
+  local -a command_args
+
+  if [[ ! -f "$manifest" ]] || ! jq empty "$manifest" >/dev/null 2>&1; then
+    record_result "project-config" "FAILED" "0" "manifest_unavailable"
+    return 1
+  fi
+
+  checks_json="$(jq -c --arg scope "$project_scope" '.ci.project_checks[$scope] // []' "$manifest")"
+  if ! jq -e '
+    type == "array"
+    and all(.[];
+      type == "object"
+      and (.name | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9 _.:-]{0,63}$"))
+      and (.cwd | type == "string" and length > 0 and startswith("/") | not)
+      and (.cwd | test("(^|/)\\.\\.(/|$)") | not)
+      and (.cwd | test("[\r\n]") | not)
+      and (.command | type == "array" and length > 0)
+      and all(.command[]; type == "string" and length > 0 and (test("[\r\n]") | not))
+    )
+  ' >/dev/null <<<"$checks_json"; then
+    record_result "project-config" "FAILED" "0" "invalid_${project_scope}_config"
+    return 1
+  fi
+
+  checks_count="$(jq -r 'length' <<<"$checks_json")"
+  if [[ "$checks_count" -eq 0 ]]; then
+    record_skip "project-checks" "no_${project_scope}_checks"
+    return 0
+  fi
+
+  for ((index = 0; index < checks_count; index++)); do
+    check_json="$(jq -c --argjson index "$index" '.[$index]' <<<"$checks_json")"
+    check_name="$(jq -r '.name' <<<"$check_json")"
+    check_key="$(printf '%s' "$check_name" | tr '[:upper:] ' '[:lower:]_' | tr -cd 'a-z0-9_.:-')"
+    check_cwd="$(jq -r '.cwd' <<<"$check_json")"
+    if [[ ! -d "$repo/$check_cwd" ]]; then
+      record_result "project:${check_key}" "FAILED" "0" "cwd_unavailable"
+      failed=1
+      continue
+    fi
+
+    command_args=()
+    arg_count="$(jq -r '.command | length' <<<"$check_json")"
+    for ((arg_index = 0; arg_index < arg_count; arg_index++)); do
+      arg="$(jq -r --argjson index "$arg_index" '.command[$index]' <<<"$check_json")"
+      command_args+=("$arg")
+    done
+
+    started="$(date +%s)"
+    status=0
+    (cd "$repo/$check_cwd" && "${command_args[@]}") || status=$?
+    duration=$(( $(date +%s) - started ))
+    if [[ "$status" -eq 0 ]]; then
+      record_result "project:${check_key}" "PASSED" "$duration" "${project_scope}_check"
+    else
+      record_result "project:${check_key}" "FAILED" "$duration" "${project_scope}_check"
+      failed=1
+    fi
+  done
+
+  return "$failed"
+}
+
 ensure_plan() {
   if [[ ! -f "$plan_file" ]]; then
     phase_plan >/dev/null
@@ -538,6 +617,7 @@ phase_summary() {
 case "$phase" in
   plan) phase_plan ;;
   core) phase_core ;;
+  project) phase_project ;;
   gitleaks) phase_gitleaks ;;
   osv) phase_osv ;;
   promptfoo) phase_promptfoo ;;
@@ -546,6 +626,8 @@ case "$phase" in
     overall=0
     phase_plan >/dev/null || overall=1
     phase_core || overall=1
+    project_scope="full"
+    phase_project || overall=1
     phase_gitleaks || overall=1
     phase_osv || overall=1
     phase_promptfoo || overall=1

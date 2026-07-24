@@ -31,6 +31,9 @@ Validar que mudança está **realmente** pronta para deploy/release. Checklist h
 - [ ] Testes passam (unit + integration aplicáveis)
 - [ ] Type check / lint passam
 - [ ] Cobertura de teste não regrediu
+- [ ] Suíte completa executada depois da última onda de correção
+- [ ] Uma única revisão ampla final concluída no head SHA atual
+- [ ] Ledger de review válido, sem P0/P1/P2 aberto
 
 #### Documentação
 - [ ] CHANGELOG atualizado com entrada da versão
@@ -68,6 +71,7 @@ Validar que mudança está **realmente** pronta para deploy/release. Checklist h
 - Não fazer merge mesmo se todos os itens passarem — release é decisão do Rodrigo.
 - Não executar deploy — release-checker valida; humano executa.
 - Não pular item — checklist é completo ou nada.
+- Não criar outra revisão ampla se o head SHA não mudou depois da revisão final.
 
 ## Output esperado
 

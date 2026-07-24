@@ -26,7 +26,7 @@ Executar suite de teste densa para validar feature, fix ou refactor antes de mer
 
 ### Passo 1: Listar cenários ANTES de rodar
 → Cada cenário com **motivo** (qual failure mode captura).
-→ Mínimo 10 cenários para feature não trivial.
+→ Quantidade proporcional aos contratos e failure modes mapeados; não inflar uma quota fixa.
 → Cobertura obrigatória:
   - Happy path
   - Edge cases (empty, null, max, special chars)
@@ -40,6 +40,8 @@ Executar suite de teste densa para validar feature, fix ou refactor antes de mer
 → Capturar evidências: HTTP status, latency, response body, estado em DB.
 → Hard-assert por cenário: PASS ou FAIL — não há "OK mas estranho".
 → Timeout em qualquer cenário = FAIL.
+→ Em cada onda de correção, executar testes focados no delta e nos findings abertos.
+→ Depois da convergência, executar a suíte completa uma única vez antes da revisão ampla final.
 
 ### Passo 3: Registrar resultado em estrutura
 ```markdown
@@ -63,6 +65,7 @@ Executar suite de teste densa para validar feature, fix ou refactor antes de mer
 - Não declarar PASS sem capturar evidência concreta.
 - Não testar diretamente em produção sem aprovação (use staging).
 - Não tentar fix do bug encontrado — tester reporta, implementer/planner corrige.
+- Não repetir a suíte completa após cada finding isolado.
 - Não modificar estado de produção durante teste.
 
 ## Output esperado

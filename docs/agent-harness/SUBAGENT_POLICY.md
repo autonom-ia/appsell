@@ -2,6 +2,10 @@
 
 Subagentes servem para subtarefas independentes e limitadas. O agente principal conserva responsabilidade pelo diff, verificação e decisão final.
 
+## Owner de orquestração
+
+Cada tarefa declara um único owner: Harness ou Superpowers. Usar uma skill do outro conjunto não autoriza duplicar planner, implementer, reviewer, tester ou revisão final. Se `orchestration.owner=harness`, o Harness controla os gates; se for `superpowers`, o Harness conserva somente as políticas de segurança e aprovação.
+
 ## Classificação antes da delegação
 
 Registrar no audit trail: objetivo, `risk_profile`, criticidade/adversarialidade, classe de modelo escolhida, arquivos permitidos e critérios de aceite.
@@ -20,5 +24,8 @@ Registrar no audit trail: objetivo, `risk_profile`, criticidade/adversarialidade
 3. Não aceitar a mensagem de sucesso do subagente como prova; revisar diff e executar os checks aplicáveis.
 4. Em tarefa `critical` ou `adversarial`, se a classe requerida estiver indisponível, parar com `BLOCKED_MODEL_TIER`; nunca rotear silenciosamente para tier inferior.
 5. Registrar resultado, verificação independente e decisão do agente principal no audit trail.
+6. Todos os reviewers previstos concluem antes de qualquer correção.
+7. Consolidar findings em uma onda por rodada e limitar o re-review ao delta.
+8. Fazer uma única revisão ampla final.
 
 O budget pode reduzir paralelismo ou adiar a tarefa. Ele não pode reduzir automaticamente a classe de modelo exigida por risco.

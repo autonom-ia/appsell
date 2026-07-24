@@ -52,6 +52,12 @@ jobs:
         shell: bash
         run: bash scripts/harness-ci.sh --phase core
 
+      - name: Run project checks
+        id: project
+        continue-on-error: true
+        shell: bash
+        run: bash scripts/harness-ci.sh --phase project --project-scope full
+
       - name: Install pinned security scanners
         id: install_security
         continue-on-error: true
@@ -93,7 +99,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          HARNESS_CI_EXTERNAL_FAILURE: ${{ steps.plan.outcome == 'failure' || steps.install_core.outcome == 'failure' || steps.core.outcome == 'failure' || steps.install_security.outcome == 'failure' || steps.gitleaks.outcome == 'failure' || steps.osv.outcome == 'failure' || steps.install_promptfoo.outcome == 'failure' || steps.promptfoo.outcome == 'failure' }}
+          HARNESS_CI_EXTERNAL_FAILURE: ${{ steps.plan.outcome == 'failure' || steps.install_core.outcome == 'failure' || steps.core.outcome == 'failure' || steps.project.outcome == 'failure' || steps.install_security.outcome == 'failure' || steps.gitleaks.outcome == 'failure' || steps.osv.outcome == 'failure' || steps.install_promptfoo.outcome == 'failure' || steps.promptfoo.outcome == 'failure' }}
         run: bash scripts/harness-ci.sh --phase summary
 
       - name: Upload sanitized failure evidence

@@ -1,11 +1,11 @@
 {
   "name": "Autonom.ia Agent Harness",
-  "version": "2.2.0",
+  "version": "2.2.2",
   "layers": {
-    "core": "2.2.0",
-    "capabilities": "2.2.0",
-    "infra": "2.2.0",
-    "observatory": "2.2.0"
+    "core": "2.2.2",
+    "capabilities": "2.2.2",
+    "infra": "2.2.2",
+    "observatory": "2.2.2"
   },
   "platforms_installed": [
     "claude-code",
@@ -14,6 +14,16 @@
   ],
   "risk_profile": "critical",
   "enforcement_mode": "warn",
+  "orchestration": {
+    "owner": "harness",
+    "review_convergence": {
+      "join_before_repair": true,
+      "max_repair_waves": 2,
+      "final_broad_reviews": 1,
+      "re_review_scope": "delta_and_open_findings",
+      "new_high_severity_after_limit": "STOP_REPLAN"
+    }
+  },
   "ci": {
     "shellcheck": true,
     "bats": true,
@@ -25,6 +35,10 @@
       "on_change": true,
       "live_providers": false,
       "budget_usd": 0
+    },
+    "project_checks": {
+      "targeted": [],
+      "full": []
     }
   },
   "on_degraded": {
@@ -36,6 +50,6 @@
   "source": "https://github.com/autonom-ia/agent-harness",
   "project_url": "https://github.com/users/autonom-ia/projects/3",
   "installed_at": "2026-07-11T13:18:16Z",
-  "last_assessment_at": "2026-07-22T13:57:57Z",
-  "drift_check_due": "2026-08-21T13:57:57Z"
+  "last_assessment_at": "2026-07-24T12:03:53Z",
+  "drift_check_due": "2026-08-23T12:03:53Z"
 }
