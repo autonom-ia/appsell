@@ -21,6 +21,7 @@ alterações em produção, VPS, DNS, secrets, billing real ou dados de clientes
 | [0003](adr/0003-multitenancy-and-buyer-multiseller.md) | Isolamento por seller e comprador multi-seller | Accepted with gates |
 | [0004](adr/0004-product-content-storage-publication.md) | Produto, conteúdo, storage e publicação | Accepted with gates |
 | [0005](adr/0005-jobs-webhooks-financial-boundary.md) | Jobs, webhooks e fronteira com Financial | Accepted with gates |
+| [0006](adr/0006-seller-commerce-stripe-connect.md) | Seller commerce no Stripe Connect (provider da fronteira do 0005) | Accepted with gates |
 
 ## Artefatos de segurança e operação
 
