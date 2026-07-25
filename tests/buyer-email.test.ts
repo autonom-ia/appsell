@@ -84,6 +84,15 @@ describe("isIngressBuyerEmail (post-charge: must not be stricter than the ingres
     expect(isIngressBuyerEmail(multibyte)).toBe(false);
   });
 
+  it("rejects a lone surrogate, which has no UTF-8 encoding", () => {
+    // TextEncoder substitutes U+FFFD, so the octet check alone would accept a
+    // value that Python's value.encode("utf-8") raises UnicodeEncodeError on.
+    expect(isIngressBuyerEmail("a@\ud800.co")).toBe(false);
+    expect(isIngressBuyerEmail("a@\udc00.co")).toBe(false);
+    // A well-formed pair is a real code point and must still be accepted.
+    expect(isIngressBuyerEmail("a@\u{1f600}.co")).toBe(true);
+  });
+
   it("requires an @ that is not the first character", () => {
     expect(isIngressBuyerEmail("@example.test")).toBe(false);
     expect(isIngressBuyerEmail("buyerexample.test")).toBe(false);

@@ -4,7 +4,13 @@ import type { NextRequest } from "next/server";
 vi.mock("server-only", () => ({}));
 
 // Hoisted so the (hoisted) vi.mock factories below can reference them.
-const { sessionsCreate, readPublicStorefront, FakeStripeConfigError, DomainApiError } = vi.hoisted(() => {
+const {
+  sessionsCreate,
+  readPublicStorefront,
+  FakeStripeConfigError,
+  DomainApiError,
+  resolveBuyerIdentitySubMock
+} = vi.hoisted(() => {
   class FakeStripeConfigError extends Error {}
   class DomainApiError extends Error {
     constructor(readonly status: number, readonly code: string) {
@@ -15,7 +21,8 @@ const { sessionsCreate, readPublicStorefront, FakeStripeConfigError, DomainApiEr
     sessionsCreate: vi.fn(async () => ({ url: "https://checkout.stripe.test/session/cs_test_123" })),
     readPublicStorefront: vi.fn(),
     FakeStripeConfigError,
-    DomainApiError
+    DomainApiError,
+    resolveBuyerIdentitySubMock: vi.fn(async () => null as string | null)
   };
 });
 
@@ -32,6 +39,12 @@ vi.mock("@/lib/stripe-config.server", () => ({
 vi.mock("@/lib/internal-api-client.server", () => ({
   readPublicStorefront,
   DomainApiError
+}));
+
+// Identity handoff: the resolved subject is what puts the entitlement on the
+// buyer's real login instead of the synthetic registration:<e-mail> one.
+vi.mock("@/lib/buyer-identity.server", () => ({
+  resolveBuyerIdentitySub: resolveBuyerIdentitySubMock
 }));
 
 import { POST } from "../app/api/checkout/stripe/create-session/route";
@@ -82,6 +95,8 @@ describe("POST /api/checkout/stripe/create-session", () => {
     });
     readPublicStorefront.mockReset();
     sessionsCreate.mockClear();
+    resolveBuyerIdentitySubMock.mockReset();
+    resolveBuyerIdentitySubMock.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -173,6 +188,29 @@ describe("POST /api/checkout/stripe/create-session", () => {
     expect(params.metadata.buyer_email).toBe("buyer@example.test");
     expect(params.metadata.order_id).toMatch(UUID);
     expect(readPublicStorefront).toHaveBeenCalledWith(SELLER);
+  });
+
+  it("carries the authenticated buyer subject into session metadata", async () => {
+    // Without this the worker derives registration:<e-mail>, a DIFFERENT
+    // identity row from the signed-in buyer — they pay and /library stays empty.
+    resolveBuyerIdentitySubMock.mockResolvedValue("cognito-sub-abc123");
+    readPublicStorefront.mockResolvedValue(storefrontWithPrice(100));
+    const response = await POST(request(validBody));
+    expect(response.status).toBe(200);
+    const params = (sessionsCreate.mock.calls[0] as unknown[])[0] as { metadata: Record<string, string> };
+    expect(params.metadata.buyer_identity_sub).toBe("cognito-sub-abc123");
+    // Resolved against the e-mail actually being charged, normalized.
+    expect(resolveBuyerIdentitySubMock).toHaveBeenCalledWith(expect.anything(), "buyer@example.test");
+  });
+
+  it("marks an anonymous checkout with an empty subject", async () => {
+    // Stripe metadata cannot hold null; "" is what the webhook maps back to
+    // null so the worker's registration:<e-mail> fallback applies.
+    resolveBuyerIdentitySubMock.mockResolvedValue(null);
+    readPublicStorefront.mockResolvedValue(storefrontWithPrice(100));
+    await POST(request(validBody));
+    const params = (sessionsCreate.mock.calls[0] as unknown[])[0] as { metadata: Record<string, string> };
+    expect(params.metadata.buyer_identity_sub).toBe("");
   });
 
   it("returns 409 when the offer has no chargeable one-time price", async () => {

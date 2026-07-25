@@ -127,8 +127,11 @@ export async function POST(request: NextRequest) {
       financialProductKey: metadata.financialProductKey,
       orderId: metadata.orderId,
       buyerEmail: metadata.buyerEmail,
-      // Slice 1 is platform-direct and anonymous-safe: no authenticated subject.
-      buyerIdentitySub: null,
+      // The subject create-session resolved from the buyer's own session, or
+      // null when they checked out anonymously. Forwarding it is what puts the
+      // entitlement on the buyer's real login instead of the synthetic
+      // registration:<e-mail> identity the worker would otherwise derive.
+      buyerIdentitySub: metadata.buyerIdentitySub,
       // Deterministic per event: the Stripe event creation time, so a replayed
       // event id maps to a byte-identical payload the ingress dedups.
       occurredAtIso: new Date(event.created * 1_000).toISOString()
@@ -210,6 +213,7 @@ interface CheckoutMetadata {
   financialProductKey: string;
   orderId: string;
   buyerEmail: string;
+  buyerIdentitySub: string | null;
 }
 
 // The three fields create-session wrote into session.metadata. Presence/type
@@ -223,7 +227,15 @@ function readCheckoutMetadata(metadata: Stripe.Metadata | null): CheckoutMetadat
   if (typeof financialProductKey !== "string" || financialProductKey.length === 0) return null;
   if (typeof orderId !== "string" || orderId.length === 0) return null;
   if (typeof buyerEmail !== "string" || buyerEmail.length === 0) return null;
-  return { financialProductKey, orderId, buyerEmail };
+  // Written by create-session as a string ("" = anonymous, since Stripe
+  // metadata cannot hold null). A session created BEFORE this field existed has
+  // it absent, which is also anonymous — never a reason to drop a paid event.
+  const rawIdentitySub = metadata.buyer_identity_sub;
+  if (rawIdentitySub !== undefined && typeof rawIdentitySub !== "string") return null;
+  const buyerIdentitySub = rawIdentitySub && rawIdentitySub.length > 0 ? rawIdentitySub : null;
+  // buildCheckoutApprovedPayload rejects the worker-reserved `registration:`
+  // namespace, and the domain re-validates charset and length independently.
+  return { financialProductKey, orderId, buyerEmail, buyerIdentitySub };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { isChargeableBuyerEmail, normalizeBuyerEmail } from "@/lib/buyer-email";
+import { resolveBuyerIdentitySub } from "@/lib/buyer-identity.server";
 import { resolveCheckoutProduct } from "@/lib/checkout-config";
 import { DomainApiError, readPublicStorefront } from "@/lib/internal-api-client.server";
 import { RawBodyTooLargeError, readLimitedRawBody } from "@/lib/limited-raw-body.server";
@@ -65,6 +66,17 @@ export async function POST(request: NextRequest) {
   const amount = purchasableOneTimeAmount(product);
   if (amount === null) return jsonError("product_not_purchasable", 409);
 
+  // Bind the purchase to the buyer's REAL login when there is one. Migration
+  // 0020's worker owns the entitlement as
+  // identity_user_id(issuer, coalesce(buyer_identity_sub,
+  // 'registration:' || buyer_email)), so shipping null here would grant the
+  // course to the synthetic registration:<e-mail> identity — a different row
+  // from the signed-in buyer, who would then pay and find /library empty.
+  // Resolves to null for an anonymous buyer (the registration fallback is then
+  // correct) and for a session whose verified e-mail does not match the one
+  // being charged.
+  const buyerIdentitySub = await resolveBuyerIdentitySub(request, input.buyerEmail);
+
   let sessionUrl: string | null;
   try {
     const origin = configuredPublicOrigin();
@@ -98,7 +110,11 @@ export async function POST(request: NextRequest) {
         // external_product_id for the self-emitted webhook.
         financial_product_key: mapping.financialProductKey,
         order_id: orderId,
-        buyer_email: input.buyerEmail
+        buyer_email: input.buyerEmail,
+        // Stripe metadata values must be strings; the empty string means
+        // "anonymous", which the webhook maps back to null. Written server-side
+        // only — the browser never supplies this.
+        buyer_identity_sub: buyerIdentitySub ?? ""
       }
     });
     sessionUrl = session.url;

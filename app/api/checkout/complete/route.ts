@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { resolveBuyerIdentitySub } from "@/lib/buyer-identity.server";
 import { isPendingRegistrationCheckoutOrder, parsePaidRegistrationCheckoutOrder } from "@/lib/checkout-order";
 import { proxyCheckoutWebhook } from "@/lib/checkout-webhook-proxy.server";
-import { sessionCookieName } from "@/lib/cookies";
 import { FinancialOrderFetchError, fetchRegistrationCheckoutOrder } from "@/lib/financial-order-client.server";
 import { RawBodyTooLargeError, readLimitedRawBody } from "@/lib/limited-raw-body.server";
-import { oauthService } from "@/lib/oauth-service.server";
 import { configuredPublicOrigin, hasConfiguredOrigin } from "@/lib/public-origin";
 import {
   SelfEmitPayloadError,
@@ -21,11 +20,6 @@ export const dynamic = "force-dynamic";
 const MAX_BODY_BYTES = 4_096;
 // event_id do ingress = 'selfemit:'(9) + order_id, cap 128 → order_id <= 119.
 const ORDER_ID = /^[A-Za-z0-9._:-]{1,119}$/;
-// Anonymous registration-checkout sessions mint subjects with this prefix
-// (see app/api/registration-checkout); the completed-order webhook must
-// never carry one as buyer_identity_sub — only a real authenticated
-// (non-registration) session subject, or null.
-const REGISTRATION_SUBJECT_PREFIX = "registration:";
 
 export async function POST(request: NextRequest) {
   if (!hasConfiguredOrigin(request, configuredPublicOrigin())) return jsonError("forbidden_origin", 403);
@@ -104,40 +98,6 @@ export async function POST(request: NextRequest) {
     return jsonError("checkout_webhook_rejected", 503);
   } catch {
     return jsonError("checkout_webhook_unavailable", 503);
-  }
-}
-
-// Só vincula o comprador à identidade autenticada quando o e-mail VERIFICADO
-// da sessão bate com o e-mail do PEDIDO (verificado no Financial). Sem essa
-// checagem, quem tivesse um order_id pago poderia amarrá-lo à própria sessão
-// (a migration 0020 prioriza o sub explícito). Se não bater (ou anônimo),
-// emite null → o worker deriva registration:<email do pedido>. Determinístico:
-// mesmo pedido + mesma sessão => mesmo sub.
-async function resolveBuyerIdentitySub(
-  request: NextRequest,
-  orderBuyerEmail: string
-): Promise<string | null> {
-  const sessionId = request.cookies.get(sessionCookieName())?.value;
-  if (!sessionId) return null;
-  try {
-    const session = await oauthService().getSession(sessionId);
-    const subject = session?.subject;
-    const identity = session?.identity;
-    if (typeof subject !== "string" || subject.length === 0) return null;
-    if (subject.startsWith(REGISTRATION_SUBJECT_PREFIX)) return null;
-    if (
-      !identity
-      || identity.emailVerified !== true
-      || typeof identity.email !== "string"
-      || identity.email.trim().toLowerCase() !== orderBuyerEmail.trim().toLowerCase()
-    ) {
-      return null;
-    }
-    return subject;
-  } catch {
-    // OAuth/session infra errors (e.g. Redis unavailable) must not block an
-    // otherwise-anonymous checkout completion — fall back to no identity.
-    return null;
   }
 }
 

@@ -48,7 +48,16 @@ export function normalizeBuyerEmail(value: string): string {
   return value.replace(PY_WHITESPACE_LEADING, "").replace(PY_WHITESPACE_TRAILING, "").toLowerCase();
 }
 
+// A lone surrogate has no UTF-8 encoding. TextEncoder silently substitutes
+// U+FFFD, so the octet count below would "succeed" on a value that Python's
+// value.encode("utf-8") raises UnicodeEncodeError on — the ingress would fail
+// hard on something we had accepted. Unreachable through the Stripe checkout
+// (the ASCII gate blocks it) but reachable post-charge via a registration order
+// coming from Financial, which is precisely where a rejection is unrecoverable.
+const LONE_SURROGATE = /[\uD800-\uDFFF]/u;
+
 export function isIngressBuyerEmail(value: string): boolean {
+  if (LONE_SURROGATE.test(value)) return false;
   if (CONTROL_OR_DEL.test(value)) return false;
   // The ingress searches its forbidden class over the WHOLE value, so any
   // whitespace anywhere is rejected — which also makes strip() a no-op below.

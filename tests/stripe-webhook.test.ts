@@ -52,6 +52,7 @@ function completedEvent(
     metadata?: Record<string, string> | null;
     type?: string;
     livemode?: boolean;
+    identitySub?: string;
   } = {}
 ) {
   return {
@@ -64,7 +65,12 @@ function completedEvent(
         object: "checkout.session",
         payment_status: overrides.paymentStatus ?? "paid",
         metadata: overrides.metadata === undefined
-          ? { financial_product_key: "prod_codex_v1", order_id: "order-123", buyer_email: "Buyer@Example.TEST" }
+          ? {
+              financial_product_key: "prod_codex_v1",
+              order_id: "order-123",
+              buyer_email: "Buyer@Example.TEST",
+              buyer_identity_sub: overrides.identitySub ?? ""
+            }
           : overrides.metadata
       }
     }
@@ -123,6 +129,50 @@ describe("POST /api/webhooks/stripe", () => {
       buyer_email: "buyer@example.test",
       buyer_identity_sub: null
     });
+  });
+
+  it("forwards the authenticated subject so the entitlement lands on the real login", async () => {
+    // Regression guard for paid-without-USABLE-access: with a null subject the
+    // worker owns the grant as registration:<e-mail>, a different identity row
+    // from the buyer's login, and /library shows nothing.
+    constructEvent.mockReturnValue(completedEvent({ identitySub: "cognito-sub-abc123" }));
+    proxyCheckoutWebhook.mockResolvedValue({ status: 202, payload: { status: "accepted" } });
+    await POST(request("{}"));
+    const [, payloadBuffer] = proxyCheckoutWebhook.mock.calls[0]!;
+    expect(JSON.parse((payloadBuffer as Buffer).toString("utf8")).buyer_identity_sub).toBe("cognito-sub-abc123");
+  });
+
+  it("treats an empty subject as anonymous (null), not as a literal value", async () => {
+    constructEvent.mockReturnValue(completedEvent({ identitySub: "" }));
+    proxyCheckoutWebhook.mockResolvedValue({ status: 202, payload: { status: "accepted" } });
+    await POST(request("{}"));
+    const [, payloadBuffer] = proxyCheckoutWebhook.mock.calls[0]!;
+    expect(JSON.parse((payloadBuffer as Buffer).toString("utf8")).buyer_identity_sub).toBeNull();
+  });
+
+  it("still fulfils a session created before buyer_identity_sub existed", async () => {
+    // Backward compatibility: an absent field is anonymous, never a reason to
+    // drop an event for a session the buyer already paid.
+    constructEvent.mockReturnValue(
+      completedEvent({
+        metadata: { financial_product_key: "prod_codex_v1", order_id: "order-123", buyer_email: "buyer@example.test" }
+      })
+    );
+    proxyCheckoutWebhook.mockResolvedValue({ status: 202, payload: { status: "accepted" } });
+    const response = await POST(request("{}"));
+    expect(response.status).toBe(200);
+    const [, payloadBuffer] = proxyCheckoutWebhook.mock.calls[0]!;
+    expect(JSON.parse((payloadBuffer as Buffer).toString("utf8")).buyer_identity_sub).toBeNull();
+  });
+
+  it("refuses a registration-namespaced subject smuggled through metadata", async () => {
+    // The worker reserves registration:<e-mail> for itself; the domain rejects
+    // it, so the outbound boundary must too.
+    constructEvent.mockReturnValue(completedEvent({ identitySub: "registration:buyer@example.test" }));
+    const response = await POST(request("{}"));
+    expect(response.status).toBe(200);
+    expect((await response.json()).ignored).toBe("payload_invalid");
+    expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
   });
 
   it("grants on checkout.session.async_payment_succeeded (boleto/Pix settle later)", async () => {
