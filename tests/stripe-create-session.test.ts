@@ -9,7 +9,7 @@ const {
   readPublicStorefront,
   FakeStripeConfigError,
   DomainApiError,
-  resolveBuyerIdentitySubMock
+  resolveBuyerIdentityMock
 } = vi.hoisted(() => {
   class FakeStripeConfigError extends Error {}
   class DomainApiError extends Error {
@@ -22,7 +22,7 @@ const {
     readPublicStorefront: vi.fn(),
     FakeStripeConfigError,
     DomainApiError,
-    resolveBuyerIdentitySubMock: vi.fn(async () => null as string | null)
+    resolveBuyerIdentityMock: vi.fn(async () => ({ status: "authenticated", subject: "cognito-sub-default" }) as { status: string; subject?: string })
   };
 });
 
@@ -44,7 +44,7 @@ vi.mock("@/lib/internal-api-client.server", () => ({
 // Identity handoff: the resolved subject is what puts the entitlement on the
 // buyer's real login instead of the synthetic registration:<e-mail> one.
 vi.mock("@/lib/buyer-identity.server", () => ({
-  resolveBuyerIdentitySub: resolveBuyerIdentitySubMock
+  resolveBuyerIdentity: resolveBuyerIdentityMock
 }));
 
 import { POST } from "../app/api/checkout/stripe/create-session/route";
@@ -95,8 +95,8 @@ describe("POST /api/checkout/stripe/create-session", () => {
     });
     readPublicStorefront.mockReset();
     sessionsCreate.mockClear();
-    resolveBuyerIdentitySubMock.mockReset();
-    resolveBuyerIdentitySubMock.mockResolvedValue(null);
+    resolveBuyerIdentityMock.mockReset();
+    resolveBuyerIdentityMock.mockResolvedValue({ status: "authenticated", subject: "cognito-sub-default" });
   });
 
   afterEach(() => {
@@ -193,24 +193,46 @@ describe("POST /api/checkout/stripe/create-session", () => {
   it("carries the authenticated buyer subject into session metadata", async () => {
     // Without this the worker derives registration:<e-mail>, a DIFFERENT
     // identity row from the signed-in buyer — they pay and /library stays empty.
-    resolveBuyerIdentitySubMock.mockResolvedValue("cognito-sub-abc123");
+    resolveBuyerIdentityMock.mockResolvedValue({ status: "authenticated", subject: "cognito-sub-abc123" });
     readPublicStorefront.mockResolvedValue(storefrontWithPrice(100));
     const response = await POST(request(validBody));
     expect(response.status).toBe(200);
     const params = (sessionsCreate.mock.calls[0] as unknown[])[0] as { metadata: Record<string, string> };
     expect(params.metadata.buyer_identity_sub).toBe("cognito-sub-abc123");
     // Resolved against the e-mail actually being charged, normalized.
-    expect(resolveBuyerIdentitySubMock).toHaveBeenCalledWith(expect.anything(), "buyer@example.test");
+    expect(resolveBuyerIdentityMock).toHaveBeenCalledWith(expect.anything(), "buyer@example.test");
   });
 
-  it("marks an anonymous checkout with an empty subject", async () => {
-    // Stripe metadata cannot hold null; "" is what the webhook maps back to
-    // null so the worker's registration:<e-mail> fallback applies.
-    resolveBuyerIdentitySubMock.mockResolvedValue(null);
+  it("refuses to charge an anonymous buyer (401) — no claim path exists", async () => {
+    // With no subject the worker binds the grant to registration:<e-mail>, and
+    // nothing in this repo lets a real login claim such a grant. Charging would
+    // take money for access nobody can reach, so it fails BEFORE Stripe.
+    resolveBuyerIdentityMock.mockResolvedValue({ status: "anonymous" });
     readPublicStorefront.mockResolvedValue(storefrontWithPrice(100));
-    await POST(request(validBody));
-    const params = (sessionsCreate.mock.calls[0] as unknown[])[0] as { metadata: Record<string, string> };
-    expect(params.metadata.buyer_identity_sub).toBe("");
+    const response = await POST(request(validBody));
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "authentication_required" });
+    expect(sessionsCreate).not.toHaveBeenCalled();
+  });
+
+  it("refuses to charge when the session belongs to someone else (409)", async () => {
+    resolveBuyerIdentityMock.mockResolvedValue({ status: "mismatch" });
+    readPublicStorefront.mockResolvedValue(storefrontWithPrice(100));
+    const response = await POST(request(validBody));
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "buyer_email_mismatch" });
+    expect(sessionsCreate).not.toHaveBeenCalled();
+  });
+
+  it("refuses to charge when the session store is unreachable (503), not silently anonymous", async () => {
+    // A Redis outage must never be downgraded to "anonymous": that would charge
+    // and bind the purchase to an unreachable identity.
+    resolveBuyerIdentityMock.mockResolvedValue({ status: "unavailable" });
+    readPublicStorefront.mockResolvedValue(storefrontWithPrice(100));
+    const response = await POST(request(validBody));
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "session_unavailable" });
+    expect(sessionsCreate).not.toHaveBeenCalled();
   });
 
   it("returns 409 when the offer has no chargeable one-time price", async () => {

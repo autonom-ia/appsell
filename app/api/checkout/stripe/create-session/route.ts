@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { isChargeableBuyerEmail, normalizeBuyerEmail } from "@/lib/buyer-email";
-import { resolveBuyerIdentitySub } from "@/lib/buyer-identity.server";
+import { resolveBuyerIdentity } from "@/lib/buyer-identity.server";
 import { resolveCheckoutProduct } from "@/lib/checkout-config";
 import { DomainApiError, readPublicStorefront } from "@/lib/internal-api-client.server";
 import { RawBodyTooLargeError, readLimitedRawBody } from "@/lib/limited-raw-body.server";
@@ -66,16 +66,24 @@ export async function POST(request: NextRequest) {
   const amount = purchasableOneTimeAmount(product);
   if (amount === null) return jsonError("product_not_purchasable", 409);
 
-  // Bind the purchase to the buyer's REAL login when there is one. Migration
-  // 0020's worker owns the entitlement as
+  // AUTHENTICATION IS REQUIRED TO CHARGE, and it is a money rule, not a UX one.
+  //
+  // Migration 0020's worker owns the entitlement as
   // identity_user_id(issuer, coalesce(buyer_identity_sub,
-  // 'registration:' || buyer_email)), so shipping null here would grant the
-  // course to the synthetic registration:<e-mail> identity — a different row
-  // from the signed-in buyer, who would then pay and find /library empty.
-  // Resolves to null for an anonymous buyer (the registration fallback is then
-  // correct) and for a session whose verified e-mail does not match the one
-  // being charged.
-  const buyerIdentitySub = await resolveBuyerIdentitySub(request, input.buyerEmail);
+  // 'registration:' || buyer_email)). With no subject, the grant lands on the
+  // synthetic registration:<e-mail> identity — and this repo has NO path that
+  // lets a real login claim such a grant. So an anonymous Stripe checkout would
+  // take the money and produce access nobody can reach.
+  //
+  // Every non-authenticated state therefore fails BEFORE the Stripe call, each
+  // with its own status so the cause is not guesswork: a session store outage
+  // must not be silently downgraded to "anonymous". Anonymous purchase is a
+  // later slice, and needs the claim flow first (Refs #146).
+  const identity = await resolveBuyerIdentity(request, input.buyerEmail);
+  if (identity.status === "unavailable") return jsonError("session_unavailable", 503);
+  if (identity.status === "anonymous") return jsonError("authentication_required", 401);
+  if (identity.status === "mismatch") return jsonError("buyer_email_mismatch", 409);
+  const buyerIdentitySub = identity.subject;
 
   let sessionUrl: string | null;
   try {
@@ -91,7 +99,7 @@ export async function POST(request: NextRequest) {
       // enabling one in the Dashboard while this list is absent would take the
       // buyer's money and never grant the course. Adding a method here is only
       // safe together with the async event handling in
-      // app/api/webhooks/stripe/route.ts (ASYNC_PAID_EVENT_TYPES).
+      // app/api/webhooks/stripe/route.ts (PAID_EVENT_TYPES).
       payment_method_types: ["card"],
       line_items: [
         {
@@ -111,10 +119,11 @@ export async function POST(request: NextRequest) {
         financial_product_key: mapping.financialProductKey,
         order_id: orderId,
         buyer_email: input.buyerEmail,
-        // Stripe metadata values must be strings; the empty string means
-        // "anonymous", which the webhook maps back to null. Written server-side
-        // only — the browser never supplies this.
-        buyer_identity_sub: buyerIdentitySub ?? ""
+        // The buyer's authenticated subject, resolved server-side — the browser
+        // never supplies it. Always non-empty here, since an unauthenticated
+        // request never reaches this point; the webhook still treats "" and an
+        // absent field as anonymous, for sessions created before this field.
+        buyer_identity_sub: buyerIdentitySub
       }
     });
     sessionUrl = session.url;

@@ -209,12 +209,16 @@ describe("POST /api/webhooks/stripe", () => {
     expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
   });
 
-  it("refuses a live-mode event on a test deployment and never emits", async () => {
+  it("keeps a LIVE event retriable on a test deployment instead of dropping the sale", async () => {
+    // Asymmetric on purpose: this direction means a buyer really paid while the
+    // process cannot fulfil (half-finished credential swap — sk_test_ in place,
+    // live whsec_ still registered, so the signature verifies). A 2xx would make
+    // Stripe stop redelivering and lose the sale for good.
     keyMode.value = "test";
     constructEvent.mockReturnValue(completedEvent({ livemode: true }));
     const response = await POST(request("{}"));
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ received: true, ignored: "livemode_mismatch" });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "livemode_mismatch_live_event" });
     expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
   });
 

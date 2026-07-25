@@ -24,8 +24,9 @@ import {
 // polling Financial for a paid order, a genuine, signature-verified Stripe
 // `checkout.session.completed` event drives the same
 // buildCheckoutApprovedPayload → signSelfEmitWebhook → proxyCheckoutWebhook path
-// that grants course access. Slice 1 is platform-direct, so buyer_identity_sub
-// is always null (the domain worker derives registration:<email>).
+// that grants course access. `buyer_identity_sub` carries the subject that
+// create-session resolved from the buyer's own session, so the entitlement lands
+// on their real login rather than on the worker-derived registration:<email>.
 export const dynamic = "force-dynamic";
 
 // Stripe events are small, but the domain ingress caps bodies at 64KB; keep the
@@ -49,6 +50,32 @@ const PAID_EVENT_TYPES: ReadonlySet<string> = new Set([
   "checkout.session.completed",
   "checkout.session.async_payment_succeeded"
 ]);
+
+// Deliberate exception to this repo's no-console rule, and the reason is
+// specific: the branches below answer 2xx, which makes Stripe stop redelivering
+// FOREVER. Without a line here a lost sale leaves no trace anywhere — Stripe
+// files a 2xx as success and this app has no logger. One stderr line is the
+// minimum that makes the Stripe ↔ buyer_entitlement reconciliation (#147) able
+// to find what it must repair.
+//
+// Never logs buyer_email or buyer_identity_sub: the point is correlation, not
+// personal data. Ids are Stripe's own and appear in the Dashboard anyway.
+function logIrreversibleDrop(input: {
+  reason: string;
+  event: Stripe.Event;
+  orderId: string | null;
+}) {
+  console.error(
+    JSON.stringify({
+      marker: "appsell.stripe_webhook.dropped",
+      reason: input.reason,
+      stripe_event_id: input.event.id,
+      stripe_event_type: input.event.type,
+      livemode: input.event.livemode,
+      order_id: input.orderId
+    })
+  );
+}
 
 export async function POST(request: NextRequest) {
   // Read the EXACT bytes: Stripe recomputes the HMAC over the raw payload, so a
@@ -86,7 +113,21 @@ export async function POST(request: NextRequest) {
     return jsonError("stripe_not_configured", 503);
   }
   if (event.livemode !== (keyMode === "live")) {
-    // Permanent by nature — retrying delivers the same mismatched event.
+    // ASYMMETRIC ON PURPOSE, because only one direction involves real money.
+    //
+    // A LIVE event on a test-mode deployment means a buyer really paid and this
+    // process cannot fulfil it — typically a half-finished credential swap
+    // (sk_test_ already in place, the live whsec_ still registered, so the
+    // signature verifies). Answering 2xx here would make Stripe stop retrying
+    // and the sale would be lost for good. 5xx keeps it redelivering for ~3
+    // days, so restoring the live key still grants access.
+    if (event.livemode) {
+      return jsonError("livemode_mismatch_live_event", 503);
+    }
+    // A TEST event on a live deployment moved no real money (a test endpoint
+    // pointed here, a Dashboard replay from the test view). Dropping it is
+    // correct and permanent, so 2xx to stop the retries.
+    logIrreversibleDrop({ reason: "livemode_mismatch_test_event", event, orderId: null });
     return NextResponse.json({ received: true, ignored: "livemode_mismatch" }, { status: 200, headers: noStore() });
   }
 
@@ -111,6 +152,7 @@ export async function POST(request: NextRequest) {
   // without buying a fix.
   const metadata = readCheckoutMetadata(session.metadata);
   if (!metadata) {
+    logIrreversibleDrop({ reason: "unrecognized_session", event, orderId: null });
     return NextResponse.json({ received: true, ignored: "unrecognized_session" }, { status: 200, headers: noStore() });
   }
 
@@ -151,6 +193,7 @@ export async function POST(request: NextRequest) {
     // Stripe event, and the Stripe ↔ buyer_entitlement reconciliation in #147 is
     // what turns this from silent into detected.
     if (error instanceof SelfEmitPayloadError) {
+      logIrreversibleDrop({ reason: "payload_invalid", event, orderId: metadata.orderId });
       return NextResponse.json(
         { received: true, ignored: "payload_invalid", order_id: metadata.orderId },
         { status: 200, headers: noStore() }
@@ -192,6 +235,7 @@ export async function POST(request: NextRequest) {
     // Surfaced under its own marker for the Stripe ↔ buyer_entitlement
     // reconciliation (Refs #147), which is what closes this properly.
     if (delivered.status === 409) {
+      logIrreversibleDrop({ reason: "event_id_payload_mismatch", event, orderId: metadata.orderId });
       return NextResponse.json(
         { received: true, conflict: "event_id_payload_mismatch", order_id: metadata.orderId },
         { status: 200, headers: noStore() }

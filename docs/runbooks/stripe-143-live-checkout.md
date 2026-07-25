@@ -114,9 +114,18 @@ pagar contra um 404. Redeploy é o **último** passo.
    `APPSELL_CHECKOUT_PRODUCT_MAP_JSON` (`{}`): todo produto passa a responder
    `product_not_configured` 409 e nenhuma Session nova é criada. O endpoint de
    webhook **continua ativo** e a rota continua existindo.
-2. **Confirmar o bloqueio em todas as réplicas** antes de seguir — um POST em
-   `create-session` deve devolver 409. Réplica que ainda não recarregou a env
-   continua cobrando.
+
+   **Atenção — dois efeitos:** (a) `updateEnv` **não** altera o `process.env` de
+   um processo que já está rodando; é obrigatório `deployService` da **imagem
+   atual** depois de gravar a env, senão o kill switch não vale nada. (b) o mesmo
+   mapa governa também o checkout Financial público
+   (`app/s/[sellerSlug]/p/[productSlug]`), então `{}` suspende **os dois canais**.
+   Se a intenção for parar só o Stripe, remover apenas as entradas dos produtos
+   vendidos por ele.
+2. **Confirmar o bloqueio, não presumir.** Aguardar `UpdateStatus=completed` e a
+   task saudável (`1/1`), e só então testar: um POST em `create-session` deve
+   devolver 409. Um POST isolado durante rolling update não prova nada — a task
+   antiga ainda pode estar servindo e cobrando.
 3. **Drenar as sessões abertas.** Dashboard → Payments → sessões `open` da
    janela. Para cada uma: expirar (`POST /v1/checkout/sessions/:id/expire`) ou
    aguardar o pagamento e confirmar que gerou `buyer_entitlement`.
@@ -153,8 +162,19 @@ emite** nesta fatia. Estornar no Dashboard devolve o dinheiro e deixa o
 Portanto, **todo** estorno é um procedimento de duas partes, nesta ordem:
 
 1. estornar no Dashboard do Stripe;
-2. revogar o acesso: localizar o `buyer_entitlement` do comprador (via
-   `order_id` → `external_purchase_id`) e marcar `status='revoked'`.
+2. revogar o acesso — no **grant da compra**, não direto na entitlement:
+   1. localizar o `entitlement_grant` por `external_purchase_id` (sha256 do
+      `order_id`) e marcá-lo como estornado;
+   2. contar os grants **ainda ativos** que apontam para a mesma
+      `buyer_entitlement`;
+   3. marcar `buyer_entitlement.status='revoked'` **somente se não sobrar
+      nenhum**.
+
+Por que essa ordem importa: duas Sessions pagas do mesmo produto geram **dois
+grants** e **uma** entitlement. Revogar a entitlement direto tira o acesso que a
+outra compra — ainda paga e não estornada — sustenta, e deixa um grant ativo
+apontando para uma entitlement revogada. Isso é ledger inconsistente, não
+rollback.
 
 Fazer só o passo 1 entrega curso de graça. Automação rastreada na Issue #151.
 

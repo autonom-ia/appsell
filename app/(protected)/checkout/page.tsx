@@ -21,6 +21,18 @@ export default async function DemoCheckoutPage({
   const seller = firstValue(params.seller);
   const product = firstValue(params.product);
   if (firstValue(params.real) === "1" && SLUG.test(seller) && SLUG.test(product)) {
+    // Login é obrigatório para COBRAR, não é preferência de UX: sem um subject
+    // autenticado o worker vincula o acesso a registration:<e-mail>, identidade
+    // que nenhuma conta real alcança (ver lib/buyer-identity.server.ts). A rota
+    // create-session já responde 401, mas descobrir isso só depois de clicar em
+    // pagar é experiência ruim — e este grupo se chama (protected) sem que o
+    // layout seja um gate de auth, então a checagem precisa ser explícita aqui.
+    // TODO: /auth/login ainda não honra um parâmetro de retorno, então o
+    // comprador perde o deep link. Suportar isso exige tratar open-redirect no
+    // callback e está fora do escopo desta fatia.
+    const realSessionId = (await cookies()).get(sessionCookieName())?.value;
+    const realSubject = realSessionId ? (await oauthService().getSession(realSessionId))?.subject : null;
+    if (typeof realSubject !== "string" || realSubject.length === 0) redirect("/auth/login");
     return <>
       <header className="page-header">
         <div><p className="eyebrow">Compra real</p><h1>Finalize seu acesso</h1><p>Pagamento único via Stripe.</p></div>
