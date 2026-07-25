@@ -316,23 +316,30 @@ def test_concurrent_first_bind_is_idempotent(sellers: dict[str, UUID]) -> None:
     # producer retry racing the account.updated webhook) both reach the insert
     # and one takes a 23505 on an operation that must be idempotent.
     #
-    # Deterministic by construction. The previous version just fired two threads
-    # and hoped they overlapped: if the second started after the first committed,
-    # even the unlocked implementation passed. Here connection 1 binds and HOLDS
-    # its transaction open, so connection 2 is provably still inside the critical
-    # section when the barrier is released. Without the advisory lock, 2 blocks on
-    # the UNIQUE index instead and surfaces 23505 once 1 commits.
+    # The barrier is an OBSERVED database lock, not a timer. Two earlier versions
+    # were not deterministic: firing two threads and hoping they overlap passes on
+    # the unlocked implementation whenever the second starts after the first
+    # commits, and signalling an Event before calling upsert has the same hole —
+    # the rival can set the flag, lose the CPU, and only reach the upsert after
+    # the commit. Here the main connection polls pg_blocking_pids through a THIRD
+    # (admin) connection until it sees itself blocking the rival, which proves the
+    # rival is parked inside the critical section right now. Only then does it
+    # commit. Remove the advisory lock and the rival blocks on the UNIQUE index
+    # instead — still observably blocked, and it surfaces 23505 after the commit,
+    # which is exactly the regression this asserts against.
     assert RUNTIME_URL
+    assert ADMIN_URL
     seller = sellers[SELLER_C_SLUG]
     account = "acct_test_payout_race"
-    second_reached_upsert = threading.Event()
     outcome: dict[str, object] = {}
 
     def contend() -> None:
         assert RUNTIME_URL
         with psycopg.connect(RUNTIME_URL) as rival:
             _context(rival, MANAGE, seller)
-            second_reached_upsert.set()
+            pid = rival.execute("select pg_backend_pid()").fetchone()
+            assert pid is not None
+            outcome["pid"] = int(pid[0])
             try:
                 outcome["id"] = _upsert(rival, seller, account, charges=True)
                 rival.commit()
@@ -341,13 +348,28 @@ def test_concurrent_first_bind_is_idempotent(sellers: dict[str, UUID]) -> None:
 
     with psycopg.connect(RUNTIME_URL) as connection:
         _context(connection, MANAGE, seller)
+        own_pid_row = connection.execute("select pg_backend_pid()").fetchone()
+        assert own_pid_row is not None
+        own_pid = int(own_pid_row[0])
         first = _upsert(connection, seller, account)
+
         thread = threading.Thread(target=contend)
         thread.start()
-        # O rival ja pediu o lock (ou vai pedir em instantes) e fica bloqueado
-        # enquanto esta transacao nao termina.
-        assert second_reached_upsert.wait(timeout=10)
-        time.sleep(0.5)
+        deadline = time.monotonic() + 30
+        blocked = False
+        with psycopg.connect(ADMIN_URL) as observer:
+            while time.monotonic() < deadline:
+                rival_pid = outcome.get("pid")
+                if isinstance(rival_pid, int):
+                    blockers = observer.execute(
+                        "select pg_blocking_pids(%s)", (rival_pid,)
+                    ).fetchone()
+                    observer.rollback()
+                    if blockers is not None and own_pid in list(blockers[0]):
+                        blocked = True
+                        break
+                time.sleep(0.05)
+        assert blocked, "o rival nunca ficou bloqueado por esta transacao"
         connection.commit()
         thread.join(timeout=30)
     assert not thread.is_alive(), "o rival nunca destravou"
@@ -355,7 +377,6 @@ def test_concurrent_first_bind_is_idempotent(sellers: dict[str, UUID]) -> None:
     assert "sqlstate" not in outcome, f"segundo bind falhou com {outcome.get('sqlstate')}"
     assert outcome["id"] == first, "o segundo bind criou um vinculo diferente"
 
-    assert ADMIN_URL
     with psycopg.connect(ADMIN_URL) as connection:
         count = connection.execute(
             "select count(*) from public.seller_payout_account where seller_organization_id=%s",
