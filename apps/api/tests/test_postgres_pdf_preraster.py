@@ -94,7 +94,7 @@ def test_schema_contract_is_forced_rls_append_only_and_tenant_keyed() -> None:
               ) is not null
             """
         ).fetchone()
-        assert schema == (True, "0020_checkout_fulfillment", True, True, True, True)
+        assert schema == (True, "0021_seller_payout_account", True, True, True, True)
         primary_keys = connection.execute(
             """
             select c.relname,pg_get_constraintdef(k.oid)

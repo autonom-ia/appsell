@@ -639,7 +639,7 @@ def test_schema_rls_and_runtime_privileges_are_minimal() -> None:
         ("publication", "appsell_owner", True, True),
     ]
     assert privileges == (
-        "0020_checkout_fulfillment",
+        "0021_seller_payout_account",
         True,
         False,
         True,
@@ -1249,7 +1249,7 @@ def test_upgrade_from_0003_preserves_existing_draft() -> None:
                 """,
                 (seller_id, product_id),
             ).fetchone() == (
-                "0020_checkout_fulfillment",
+                "0021_seller_payout_account",
                 "draft",
                 None,
                 True,
@@ -1414,7 +1414,7 @@ def test_offer_status_migration_preserves_history_and_allows_clean_downgrade() -
                 from offer where id = %s
                 """,
                 (offer_id,),
-            ).fetchone() == ("0020_checkout_fulfillment", "archived", 3, 2, True)
+            ).fetchone() == ("0021_seller_payout_account", "archived", 3, 2, True)
             connection.execute("update offer set status = 'draft' where id = %s", (offer_id,))
             connection.commit()
 
@@ -1437,7 +1437,7 @@ def test_offer_status_migration_preserves_history_and_allows_clean_downgrade() -
                 from offer where id = %s
                 """,
                 (offer_id,),
-            ).fetchone() == ("0020_checkout_fulfillment", "draft", 3, 2, True)
+            ).fetchone() == ("0021_seller_payout_account", "draft", 3, 2, True)
 
         run_migration(clean_database, "upgrade", "head")
         run_migration(clean_database, "downgrade", "0018_offer_pricing")
