@@ -1,0 +1,33 @@
+# Configuração do osv-scanner, lido por scripts/harness-ci.sh (fase `osv`) a
+# partir da raiz do repo.
+#
+# Regra da casa: ignorar vulnerabilidade é mitigação temporária, nunca solução
+# definitiva. Cada entrada aqui declara causa raiz, por que o fix está fora do
+# nosso alcance agora, a Issue com o plano definitivo e uma data de expiração —
+# passada a data, o scanner volta a reprovar e força revisita.
+
+[[IgnoredVulns]]
+id = "GHSA-mh99-v99m-4gvg"
+ignoreUntil = 2026-10-31
+reason = """
+brace-expansion 1.1.16 — DoS por expansão sem limite (CVSS 7.5).
+
+Causa raiz: `minimatch@3.1.5` declara `brace-expansion ^1.1.7`, e o upstream
+publicou o fix APENAS em 5.0.8 (o advisory tem faixa única
+`introduced=0 fixed=5.0.8`, sem patch dentro do major 1.x). O minimatch@3 entra
+como dependência transitiva de DESENVOLVIMENTO por quatro caminhos:
+`eslint>minimatch`, `@eslint/config-array>minimatch`, `@eslint/eslintrc>minimatch`
+e `eslint-config-next>eslint-plugin-import>@typescript-eslint/typescript-estree>minimatch`.
+
+Por que não forçamos 5.0.8: tentado via `pnpm.overrides` e o CI quebrou com
+`TypeError: expand is not a function` — o próprio pnpm 11.13.0 consome
+brace-expansion e depende da forma antiga do export. O override troca uma
+vulnerabilidade de tempo-de-lint por um pipeline inteiro parado.
+
+Exposição real: zero em produção. O pacote não entra no bundle (`pnpm audit --prod`
+reporta "No known vulnerabilities found"); só é carregado ao rodar eslint sobre
+globs do próprio repo, onde o input não é hostil.
+
+Fix definitivo: eliminar minimatch@3 da árvore subindo o toolchain do eslint.
+Issue: https://github.com/autonom-ia/appsell/issues/149
+"""
