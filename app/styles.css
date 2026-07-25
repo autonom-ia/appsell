@@ -514,14 +514,43 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .checkout-card h2,.checkout-card p { margin: 0; }
 .checkout-loading { min-height: 240px; place-content: center; }
 .checkout-summary { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-.checkout-summary > strong { color: var(--primary); font-size: clamp(1.25rem,5vw,1.75rem); white-space: nowrap; }
+.checkout-summary > strong { color: var(--blue); font-size: clamp(1.25rem,5vw,1.75rem); white-space: nowrap; }
 .checkout-trust { display: grid; grid-template-columns: 1fr; gap: 8px; padding: 16px; border-radius: 16px; background: var(--canvas); color: var(--text); font-size: .875rem; }
 .checkout-trust span::before { content: "✓"; margin-right: 8px; color: #067647; font-weight: 800; }
 .checkout-card form { display: grid; gap: 12px; }
-.checkout-card label { color: var(--text-strong); font-weight: 750; }
+.checkout-card label { color: var(--ink); font-weight: 750; }
+/* Conta cobrada: é dado de confirmação, não campo. Renderizado como texto (e não
+   input desabilitado) porque input disabled é pulado por parte dos leitores de
+   tela e some do foco — aqui a informação precisa ser lida. */
+.checkout-account { display: grid; gap: 6px; padding: 16px; border: 1px solid var(--border); border-radius: 16px; background: var(--canvas); }
+.checkout-account-label { color: var(--ink); font-size: .78rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.checkout-account-email { color: var(--blue-ink); font-size: 1.05rem; font-weight: 700; overflow-wrap: anywhere; }
+/* Reserva o espaço do erro para a mensagem não empurrar o botão de pagar debaixo
+   do cursor no instante do clique. */
+.checkout-error { display: grid; gap: 4px; min-height: 1.5rem; }
+.checkout-error:focus-visible { outline: 3px solid rgba(180,35,24,.35); outline-offset: 4px; border-radius: 8px; }
+.checkout-error.is-empty { min-height: 0; }
+.checkout-unavailable h2 { color: var(--ink); }
+/* Bloco de decisão: separado do resto por uma régua, como a linha de total fazia
+   antes de sair por duplicar o valor. */
+.checkout-cta { display: grid; gap: 12px; padding-top: 20px; border-top: 1px solid var(--border); }
+.checkout-cta-note { text-align: center; }
+/* Links dentro do card herdavam a cor do texto e ficavam indistinguíveis de
+   parágrafo. São justamente as saídas de recuperação ("entrar novamente",
+   "trocar de conta"): se não parecem clicáveis, o comprador fica preso. */
+.checkout-card .field-help a, .checkout-error a { color: var(--bright); font-weight: 700; text-decoration: underline; text-underline-offset: 2px; }
+.checkout-card .field-help a:hover, .checkout-error a:hover { color: var(--blue); }
+/* Título e preço lado a lado só quando há largura. Empilhados, o título deixa de
+   ser comprimido a duas linhas ao lado do valor. */
+.checkout-summary { flex-direction: column; }
+@media (min-width:560px) { .checkout-summary { flex-direction: row; align-items: baseline; } }
+/* O ✓ é um ::before dentro do span, então uma segunda linha corria por baixo
+   dele. Recuo pendente alinha o texto que quebra com a primeira linha. */
+.checkout-trust span { display: block; padding-left: 1.55em; text-indent: -1.55em; }
+.checkout-trust span::before { display: inline-block; width: 1.55em; margin-right: 0; text-indent: 0; }
 .checkout-coupon { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; border: 1px solid var(--border); border-radius: 14px; overflow: hidden; background: var(--surface); }
-.checkout-coupon:focus-within { outline: 3px solid rgba(59,130,246,.28); border-color: var(--primary-bright); }
-.checkout-coupon input { width: 100%; min-height: 48px; border: 0; outline: 0; padding: 0 14px; background: transparent; color: var(--text-strong); font: inherit; text-transform: uppercase; }
+.checkout-coupon:focus-within { outline: 3px solid rgba(59,130,246,.28); border-color: var(--bright-atmosphere); }
+.checkout-coupon input { width: 100%; min-height: 48px; border: 0; outline: 0; padding: 0 14px; background: transparent; color: var(--ink); font: inherit; text-transform: uppercase; }
 .checkout-coupon span { margin-right: 8px; padding: 7px 10px; border-radius: 999px; background: #e8f7ef; color: #067647; font-size: .75rem; font-weight: 850; }
 .field-help { color: var(--text); font-size: .875rem; line-height: 1.5; }
 .checkout-total { margin-top: 8px; padding-top: 18px; border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 16px; }
