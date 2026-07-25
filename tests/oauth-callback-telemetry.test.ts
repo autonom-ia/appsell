@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+
 import { describe, expect, test, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
@@ -46,5 +48,30 @@ describe("oauth callback telemetry", () => {
 
   test("handles a non-Error throw without inspecting it", () => {
     expect(describeCallbackFailure({ token: "eyJhbGciOi.SECRET" })).toBe("non-error thrown");
+  });
+
+  test("does not trust a forged error that merely claims an adapter name", () => {
+    const forged = new Error("attacker-controlled: eyJhbGciOi.SECRET");
+    forged.name = "IdentityOAuthProtocolError";
+    expect(describeCallbackFailure(forged)).toBe("Error");
+    expect(describeCallbackFailure(forged)).not.toContain("SECRET");
+  });
+});
+
+// Guards the integration point itself: without this, deleting the call from the
+// route would leave every unit test above green while production went back to
+// discarding the reason.
+describe("callback route wiring", () => {
+  test("the callback route reports the failure reason and gates it on a complete callback", async () => {
+    const source = await readFile(
+      new URL("../app/auth/callback/route.ts", import.meta.url),
+      "utf8"
+    );
+    expect(source).toContain("reportOAuthCallbackFailure(");
+    expect(source).toContain("describeCallbackFailure(error)");
+    expect(source).toMatch(/if \(isCompleteCallback\) \{\s*reportOAuthCallbackFailure/);
+    // The public body must stay the coarse outcome code, never the reason.
+    expect(source).toContain("NextResponse.json({ error: outcome }");
+    expect(source).not.toMatch(/NextResponse\.json\(\{[^}]*reason/);
   });
 });

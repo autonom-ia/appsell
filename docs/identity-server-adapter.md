@@ -26,7 +26,7 @@ adapter expõe dois modos, ambos com default = comportamento legado intacto.
 
 | Var | Valores | Default | Efeito |
 |-----|---------|---------|--------|
-| `APPSELL_IDENTITY_REFRESH_MODE` | `logical-handle` \| `provider-refresh` | `logical-handle` | `logical-handle`: refresh exige handle lógico opaco de 43 chars (`^[A-Za-z0-9_-]{43}$`) e **rotação obrigatória** (novo handle ≠ anterior, também 43 chars); handle ausente ou repetido = ambíguo. `provider-refresh`: aceita refresh token opaco do provedor (`^[A-Za-z0-9._~+/=-]{20,4096}$`), **rotação opcional** (se o provedor não devolver novo token, reusa o de entrada); em ambos os casos revalida assinatura RS256/`kid`/`iss`/`aud`/`sub`/`exp`/`token_use`/`email_verified` e ausência de `nonce` no resultado. |
+| `APPSELL_IDENTITY_REFRESH_MODE` | `logical-handle` \| `provider-refresh` | `logical-handle` | `logical-handle`: refresh exige handle lógico opaco de 43 chars (`^[A-Za-z0-9_-]{43}$`) e **rotação obrigatória** (novo handle ≠ anterior, também 43 chars); handle ausente ou repetido = ambíguo. `provider-refresh`: aceita refresh token opaco do provedor (`^[A-Za-z0-9._~+/=-]{20,4096}$`), **rotação opcional** (se o provedor não devolver novo token, reusa o de entrada); em ambos os casos revalida assinatura RS256/`kid`/`iss`/`aud`/`sub`/`exp`/`token_use`/`email_verified` no resultado. O `nonce` do resultado segue o `APPSELL_IDENTITY_NONCE_MODE`: exigido ausente em `required` e `disabled`, não verificado em `broker`. |
 | `APPSELL_IDENTITY_NONCE_MODE` | `required` \| `disabled` \| `broker` | `required` | `required`: envia `nonce` no `authorize` e exige `nonce` exato no ID token do code. `disabled`: **não envia** `nonce` e **rejeita** qualquer ID token que traga `nonce` inesperado (fail-closed). Para provedores que não ecoam `nonce`. `broker`: **não envia** `nonce` e **aceita** o ID token com ou sem `nonce`, sem comparar. Só para upstream que repassa ID token de terceiro (ex.: Cognito via Foundation) — o `nonce` presente é do fluxo do broker, não deste client. |
 
 Qualquer valor desconhecido em qualquer das duas vars falha fechado na
@@ -81,9 +81,10 @@ Consequência conhecida e **anterior** a este modo: `aud` é o client Cognito, q
 de `neuroai-web` ou do Studio; essa separação existe apenas no binding da
 Foundation. `broker` não cria esse fato, mas remove a última barreira residual
 que ainda existia no adapter (`required` rejeitaria um nonce diferente).
-Follow-up: teste de integração cross-repo provando que um code emitido para
-outro produto não pode ser trocado como `appsell-web` — rastreado em
-`autonom-ia/appsell#156`.
+Essa barreira está fixada por teste do lado da Foundation, incluindo o caso
+confused deputy (code do client A resgatado como client B com verifier válido):
+`autonom-ia/autonomia-identity-foundation#61`. Uma regressão lá quebra o teste
+de lá — aqui ela continuaria invisível.
 
 Todo o resto continua fail-closed — `iss`, `aud`, assinatura RS256 via JWKS
 allowlisted, `kid`, expiração, `token_use`, `email_verified` e igualdade de
@@ -112,8 +113,15 @@ proíbe de repetir automaticamente.
 ## Estado da integração
 
 Os contratos locais da Foundation #29/#32 vinculam o `nonce` ao authorization
-code e emitem tokens lógicos com `aud=appsell-web` e JWKS próprio. O code exige
-nonce exato; o refresh exige nonce ausente e handle novo.
+code e emitem tokens lógicos com `aud=appsell-web` e JWKS próprio. Sob esses
+contratos o code exige nonce exato e o refresh exige nonce ausente e handle
+novo — isto é, `APPSELL_IDENTITY_NONCE_MODE=required`.
+
+**A Foundation em produção ainda não implementa a #29.** Hoje ela repassa o ID
+token Cognito, com `iss` do Cognito, `aud` do client Cognito e `nonce` do fluxo
+interno dela, o que exige `broker` (ver seção acima). A pré-condição desse modo
+— o binding `code → client + redirect + PKCE`, com consumo único — está fixada
+por teste em `autonom-ia/autonomia-identity-foundation#61`.
 
 Enquanto a Foundation não retorna `refresh_expires_in`, o adapter exige
 `APPSELL_IDENTITY_REFRESH_HANDLE_TTL_SECONDS` entre duas horas e trinta dias. O
