@@ -479,6 +479,68 @@ describe("Identity OAuth server adapter", () => {
     await expect(exchange("valid", { APPSELL_IDENTITY_NONCE_MODE: "disabled" }))
       .rejects.toThrow("nonce");
   });
+
+  // Broker mode: the upstream relays an ID token minted by a third party for a
+  // different client, so it neither echoes our nonce nor omits one of its own.
+  // Both shapes must be accepted while every other check stays fail-closed.
+  test("broker omits the nonce from the authorization request", () => {
+    const client = new IdentityOAuthClient(parseIdentityOAuthConfig(environment({
+      APPSELL_IDENTITY_NONCE_MODE: "broker"
+    })));
+    const url = client.authorizationUrl({ state: STATE, codeChallenge: CHALLENGE });
+    expect(url.searchParams.has("nonce")).toBe(false);
+  });
+
+  test("broker accepts an ID token whose nonce was not the one we sent", async () => {
+    const bundle = await exchange("wrong-nonce", { APPSELL_IDENTITY_NONCE_MODE: "broker" });
+    expect(bundle).toMatchObject({
+      tokenType: "Bearer",
+      identity: { sub: SUBJECT, email: EMAIL, emailVerified: true }
+    });
+  });
+
+  test("broker accepts an ID token that omits the nonce entirely", async () => {
+    const bundle = await exchange("missing-nonce", { APPSELL_IDENTITY_NONCE_MODE: "broker" });
+    expect(bundle).toMatchObject({
+      tokenType: "Bearer",
+      identity: { sub: SUBJECT, email: EMAIL, emailVerified: true }
+    });
+  });
+
+  test.each([
+    "wrong-issuer",
+    "wrong-id-audience",
+    "wrong-access-audience",
+    "wrong-token-use",
+    "subject-mismatch",
+    "email-unverified",
+    "expired",
+    "wrong-signature"
+  ])("broker keeps every non-nonce check fail-closed: %s", async (scenario) => {
+    await expect(exchange(scenario, { APPSELL_IDENTITY_NONCE_MODE: "broker" }))
+      .rejects.toThrow(IdentityOAuthProtocolError);
+  });
+
+  test("accepts broker as a known nonce mode", () => {
+    expect(parseIdentityOAuthConfig(environment({
+      APPSELL_IDENTITY_NONCE_MODE: "broker"
+    })).nonceMode).toBe("broker");
+  });
+
+  test.each([
+    ["wrong-issuer", "claim iss"],
+    ["wrong-id-audience", "claim aud"]
+  ])("names the failed claim so a misconfigured %s is diagnosable", async (scenario, reason) => {
+    await expect(exchange(scenario)).rejects.toThrow(reason);
+  });
+
+  test("never leaks the token or the expected value in the failure message", async () => {
+    const error = await exchange("wrong-issuer").catch((caught: unknown) => caught);
+    const message = String((error as Error).message);
+    expect(message).not.toContain(SUBJECT);
+    expect(message).not.toContain(EMAIL);
+    expect(message).not.toContain(LOGICAL_CLIENT_ID);
+  });
 });
 
 async function exchange(scenario: string, override: Record<string, string | undefined> = {}) {

@@ -34,7 +34,22 @@ const OAUTH_IDENTIFIER = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const PROVIDER_REFRESH_TOKEN = /^[A-Za-z0-9._~+/=-]{20,4096}$/;
 
 export type IdentityRefreshMode = "logical-handle" | "provider-refresh";
-export type IdentityNonceMode = "required" | "disabled";
+// "broker": the upstream is not an OpenID Provider but a broker that relays a
+// third-party ID token (e.g. Cognito) it did not mint for this client. It
+// neither honours the nonce this adapter sends nor omits one of its own, so the
+// value carries no meaning here and is accepted without comparison. Replay of
+// the ID token is already barred by the single-use authorization code plus the
+// S256 code_verifier; `iss`, `aud`, the RS256 signature, `email_verified` and
+// the access/identity subject match stay fail-closed. Revert to "required"
+// once autonom-ia/autonomia-identity-foundation#29 mints logical ID tokens.
+export type IdentityNonceMode = "required" | "disabled" | "broker";
+
+// Explicit contract for how the ID token nonce must be treated, so the meaning
+// never has to be inferred from an absent argument at each call site.
+export type NonceExpectation =
+  | { readonly kind: "match"; readonly value: string }
+  | { readonly kind: "absent" }
+  | { readonly kind: "unverified" };
 
 type Environment = Partial<Record<string, string | undefined>>;
 
@@ -224,8 +239,9 @@ export class IdentityOAuthClient implements OAuthTokenRefresher {
       code_challenge: input.codeChallenge,
       code_challenge_method: "S256"
     };
-    // nonceMode === "disabled": the adapter does not send a nonce; the token
-    // verification path rejects any ID token that echoes one back.
+    // Only "required" sends a nonce. "disabled" omits it and rejects any ID
+    // token that echoes one back; "broker" omits it because the upstream
+    // discards it, and accepts whatever the relayed token happens to carry.
     if (this.config.nonceMode === "required") {
       requireNonce(input.nonce);
       parameters.nonce = input.nonce as string;
@@ -241,11 +257,7 @@ export class IdentityOAuthClient implements OAuthTokenRefresher {
     expectedNonce?: string;
   }): Promise<VerifiedIdentityTokenBundle> {
     requireOpaque(input.code, "authorization code");
-    // nonceMode === "disabled": ignore any supplied nonce and verify with an
-    // undefined expectation, which rejects an ID token that carries a nonce.
-    const expectedNonce = this.config.nonceMode === "disabled"
-      ? undefined
-      : requireNonce(input.expectedNonce);
+    const nonceExpectation = this.nonceExpectationFor(input.expectedNonce);
     if (!PKCE_VERIFIER.test(input.codeVerifier)) {
       throw new IdentityOAuthProtocolError("OAuth PKCE verifier is invalid.");
     }
@@ -291,7 +303,16 @@ export class IdentityOAuthClient implements OAuthTokenRefresher {
     }
     const payload = parseTokenResponse(raw);
 
-    return this.verifyTokenResponse(payload, expectedNonce);
+    return this.verifyTokenResponse(payload, nonceExpectation);
+  }
+
+  // Authorization-code exchange is the only path that can carry a nonce the
+  // adapter itself generated. Refresh never can, so it verifies with "absent"
+  // unless the upstream is a broker whose relayed token is not ours to police.
+  private nonceExpectationFor(candidate: string | undefined): NonceExpectation {
+    if (this.config.nonceMode === "broker") return { kind: "unverified" };
+    if (this.config.nonceMode === "disabled") return { kind: "absent" };
+    return { kind: "match", value: requireNonce(candidate) };
   }
 
   async refresh(input: OAuthTokenRefreshInput): Promise<OAuthTokenRefreshResult> {
@@ -339,7 +360,12 @@ export class IdentityOAuthClient implements OAuthTokenRefresher {
         this.config.refreshMode
       );
       if (rotatedRefreshToken === undefined) return { kind: "ambiguous" };
-      const verified = await this.verifyTokenResponse(payload);
+      const verified = await this.verifyTokenResponse(
+        payload,
+        this.config.nonceMode === "broker"
+          ? { kind: "unverified" }
+          : { kind: "absent" }
+      );
       if (verified.identity.sub !== subject) return { kind: "ambiguous" };
       return {
         kind: "success",
@@ -356,7 +382,7 @@ export class IdentityOAuthClient implements OAuthTokenRefresher {
 
   private async verifyTokenResponse(
     payload: ParsedTokenResponse,
-    expectedNonce?: string
+    nonce: NonceExpectation
   ): Promise<VerifiedIdentityTokenBundle> {
     let access: JWTPayload;
     let identity: JWTPayload;
@@ -378,15 +404,20 @@ export class IdentityOAuthClient implements OAuthTokenRefresher {
       requireProtectedHeader(identityResult.protectedHeader);
       access = accessResult.payload;
       identity = identityResult.payload;
-    } catch {
-      throw new IdentityOAuthProtocolError("Identity token verification failed.");
+    } catch (error) {
+      // Name the failed claim so a misconfigured issuer/audience is
+      // distinguishable from a bad signature. Only the claim name is surfaced,
+      // never a token value or the expected configuration.
+      throw new IdentityOAuthProtocolError(
+        `Identity token verification failed (${describeVerificationFailure(error)}).`
+      );
     }
     requireAccessTokenClaims(access, this.config);
     requireIdTokenClaims(identity, this.config);
-    if (expectedNonce !== undefined && identity.nonce !== expectedNonce) {
+    if (nonce.kind === "match" && identity.nonce !== nonce.value) {
       throw new IdentityOAuthProtocolError("Identity nonce is invalid.");
     }
-    if (expectedNonce === undefined && identity.nonce !== undefined) {
+    if (nonce.kind === "absent" && identity.nonce !== undefined) {
       throw new IdentityOAuthProtocolError("Identity refresh nonce is invalid.");
     }
     if (access.sub !== identity.sub) {
@@ -649,11 +680,42 @@ function parseRefreshMode(raw: string | undefined): IdentityRefreshMode {
   );
 }
 
+// Maps a jose verification failure to a short, allowlisted reason. Never
+// includes the token, the claim value or the configured expectation — only
+// which check failed, so a misconfigured issuer/audience is diagnosable from
+// logs without leaking configuration to the caller.
+function describeVerificationFailure(error: unknown): string {
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code: unknown }).code)
+    : "";
+  switch (code) {
+    case "ERR_JWT_CLAIM_VALIDATION_FAILED": {
+      const claim = typeof error === "object" && error !== null && "claim" in error
+        ? String((error as { claim: unknown }).claim)
+        : "unknown";
+      return CLAIM_NAMES.has(claim) ? `claim ${claim}` : "claim mismatch";
+    }
+    case "ERR_JWT_EXPIRED":
+      return "expired";
+    case "ERR_JWS_SIGNATURE_VERIFICATION_FAILED":
+      return "signature";
+    case "ERR_JWKS_NO_MATCHING_KEY":
+      return "no matching JWKS key";
+    case "ERR_JOSE_ALG_NOT_ALLOWED":
+      return "algorithm not allowed";
+    default:
+      return "malformed or unverifiable token";
+  }
+}
+
+const CLAIM_NAMES = new Set(["iss", "aud", "sub", "exp", "nbf", "iat", "jti", "typ"]);
+
 function parseNonceMode(raw: string | undefined): IdentityNonceMode {
   if (raw === undefined || raw === "required") return "required";
   if (raw === "disabled") return "disabled";
+  if (raw === "broker") return "broker";
   throw new IdentityOAuthConfigurationError(
-    "APPSELL_IDENTITY_NONCE_MODE must be required or disabled."
+    "APPSELL_IDENTITY_NONCE_MODE must be required, disabled or broker."
   );
 }
 

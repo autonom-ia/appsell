@@ -27,7 +27,7 @@ adapter expõe dois modos, ambos com default = comportamento legado intacto.
 | Var | Valores | Default | Efeito |
 |-----|---------|---------|--------|
 | `APPSELL_IDENTITY_REFRESH_MODE` | `logical-handle` \| `provider-refresh` | `logical-handle` | `logical-handle`: refresh exige handle lógico opaco de 43 chars (`^[A-Za-z0-9_-]{43}$`) e **rotação obrigatória** (novo handle ≠ anterior, também 43 chars); handle ausente ou repetido = ambíguo. `provider-refresh`: aceita refresh token opaco do provedor (`^[A-Za-z0-9._~+/=-]{20,4096}$`), **rotação opcional** (se o provedor não devolver novo token, reusa o de entrada); em ambos os casos revalida assinatura RS256/`kid`/`iss`/`aud`/`sub`/`exp`/`token_use`/`email_verified` e ausência de `nonce` no resultado. |
-| `APPSELL_IDENTITY_NONCE_MODE` | `required` \| `disabled` | `required` | `required`: envia `nonce` no `authorize` e exige `nonce` exato no ID token do code. `disabled`: **não envia** `nonce` e **rejeita** qualquer ID token que traga `nonce` inesperado (fail-closed). Para provedores que não ecoam `nonce`. |
+| `APPSELL_IDENTITY_NONCE_MODE` | `required` \| `disabled` \| `broker` | `required` | `required`: envia `nonce` no `authorize` e exige `nonce` exato no ID token do code. `disabled`: **não envia** `nonce` e **rejeita** qualquer ID token que traga `nonce` inesperado (fail-closed). Para provedores que não ecoam `nonce`. `broker`: **não envia** `nonce` e **aceita** o ID token com ou sem `nonce`, sem comparar. Só para upstream que repassa ID token de terceiro (ex.: Cognito via Foundation) — o `nonce` presente é do fluxo do broker, não deste client. |
 
 Qualquer valor desconhecido em qualquer das duas vars falha fechado na
 inicialização (`IdentityOAuthConfigurationError`).
@@ -42,9 +42,34 @@ Trade-offs:
   anti-replay do code passa a depender só de PKCE (`S256`) + `state`. O adapter
   compensa parcialmente rejeitando ID token que traga `nonce` quando não pediu um.
 
-O leg de `refresh` sempre exige `nonce` ausente no ID token renovado,
-independente do `APPSELL_IDENTITY_NONCE_MODE` (o `nonce` só participa do leg de
-`authorize`/code).
+O leg de `refresh` exige `nonce` ausente no ID token renovado em `required` e
+`disabled` (o `nonce` só participa do leg de `authorize`/code). Em `broker` o
+`nonce` também não é verificado no refresh, pela mesma razão do leg de code: o
+token renovado continua sendo emitido por terceiro.
+
+### Quando usar `broker`
+
+Use apenas quando o upstream **não é um OpenID Provider**, e sim um broker que
+repassa um ID token que ele não emitiu para este client. É o caso da Foundation
+(`auth.api-autonomia.com`): ela guarda os tokens Cognito atrelados ao
+authorization code e os devolve no `/oauth/token`, então o ID token chega com
+`iss` do Cognito, `aud` do client Cognito e um `nonce` do fluxo interno dela —
+nunca o `nonce` que este adapter enviou. Em `required` a comparação nunca bate e
+em `disabled` a presença do `nonce` é rejeitada: os dois falham fechado e o
+login não completa.
+
+Nesse desenho o `nonce` não é a defesa contra replay de ID token: o token só
+chega pelo backchannel, amarrado a um authorization code de uso único e ao
+`code_verifier` S256, com `state` cobrindo CSRF. Todo o resto continua
+fail-closed — `iss`, `aud`, assinatura RS256 via JWKS allowlisted, `kid`,
+expiração, `token_use`, `email_verified` e igualdade de `sub` entre access e ID
+token.
+
+`broker` é uma ponte, não o destino: quando
+`autonom-ia/autonomia-identity-foundation#29` emitir ID token lógico assinado
+pela Foundation (com `nonce`, `iss` e `aud` próprios), volte para `required` e
+aponte `APPSELL_IDENTITY_ISSUER`/`APPSELL_IDENTITY_EXPECTED_AUDIENCE` para os
+valores lógicos.
 
 O adapter também exige assinatura `RS256` por JWKS allowlisted, `kid` explícito
 e canônico, issuer e expiração válidos, `token_use`, subjects iguais,
