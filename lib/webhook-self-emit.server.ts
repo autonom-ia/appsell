@@ -3,6 +3,8 @@
 // rotas/handlers server-side (checkout/complete, checkout-webhook-proxy).
 import { createHash, createHmac } from "node:crypto";
 
+import { isIngressBuyerEmail, normalizeBuyerEmail } from "@/lib/buyer-email";
+
 // Signs and shapes the checkout-completion webhook this BFF emits to itself
 // (the buyer's browser never talks to the domain API's webhook route
 // directly). The signing contract (canonical string, HMAC-SHA256, header
@@ -10,13 +12,12 @@ import { createHash, createHmac } from "node:crypto";
 // same ingress path (lib/checkout-webhook-proxy.server.ts →
 // /v1/webhooks/checkouts/:endpointKey) accepts it.
 //
-// KNOWN GAP: webhook_adapters.py's `parse_generic_hmac_v1` (read-only
-// reference at authoring time) only accepts the 4-key v1 payload
-// (event_type/external_product_id/external_purchase_id/occurred_at). The
-// 6-key v2 payload below (adding buyer_email/buyer_identity_sub) will be
-// rejected as `webhook_payload_invalid` until the domain API is updated to
-// accept v2. Flagged for the reviewer/tester before this ships to real
-// traffic — do not treat this module as end-to-end verified.
+// The domain ingress accepts BOTH the 4-key v1 payload and the 6-key v2
+// payload below (adding buyer_email/buyer_identity_sub): webhook_adapters.py's
+// `parse_generic_hmac_v1` matches `expected_v1 | {buyer_email,
+// buyer_identity_sub}` and independently validates those fields. The v2 bridge
+// is verified end-to-end at the code level (an earlier "KNOWN GAP" note here
+// predated the domain API accepting v2 and was removed 2026-07-24).
 
 export type CheckoutApprovedPayload = {
   event_type: "purchase.approved";
@@ -80,8 +81,8 @@ export function buildCheckoutApprovedPayload(input: {
   if (!SAFE_REFERENCE.test(input.financialProductKey) || !SAFE_REFERENCE.test(input.orderId)) {
     throw new SelfEmitPayloadError("invalid_self_emit_reference");
   }
-  const buyerEmail = input.buyerEmail.trim().toLowerCase();
-  if (!isValidEmail(buyerEmail)) {
+  const buyerEmail = normalizeBuyerEmail(input.buyerEmail);
+  if (!isIngressBuyerEmail(buyerEmail)) {
     throw new SelfEmitPayloadError("invalid_self_emit_email");
   }
   if (input.buyerIdentitySub !== null && input.buyerIdentitySub.startsWith(REGISTRATION_SUBJECT_PREFIX)) {
@@ -130,6 +131,3 @@ export function signSelfEmitWebhook(input: {
   return { eventId: input.eventId, timestamp, signature: `v1=${signature}` };
 }
 
-function isValidEmail(value: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) && value.length <= 254;
-}

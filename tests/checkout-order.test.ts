@@ -51,6 +51,18 @@ test("rejects a missing or unsafe financial_product_key, malformed e-mail, or un
   expect(parsePaidRegistrationCheckoutOrder("order-123", missingPaidAt)).toBeNull();
 });
 
+test("accepts a non-ASCII e-mail on an order the buyer ALREADY paid", () => {
+  // REGRESSION GUARD. This parser runs after Financial confirms payment, so it
+  // must accept exactly what the domain ingress accepts — never less. When it
+  // briefly used the pre-charge (ASCII-only) predicate, an order with
+  // "josé@dominio.com.br" returned null here and /api/checkout/complete
+  // answered 503 forever: money taken, course never released.
+  const order = { ...paidOrder(), buyer_email: "José@Dominio.com.BR" };
+  const facts = parsePaidRegistrationCheckoutOrder("order-123", order);
+  expect(facts).not.toBeNull();
+  expect(facts?.buyerEmail).toBe("josé@dominio.com.br");
+});
+
 test("rejects a non-object value", () => {
   expect(parsePaidRegistrationCheckoutOrder("order-123", null)).toBeNull();
   expect(parsePaidRegistrationCheckoutOrder("order-123", "order-123")).toBeNull();
