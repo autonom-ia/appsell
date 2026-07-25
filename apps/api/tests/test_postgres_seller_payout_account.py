@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from uuid import UUID
 
 import psycopg
@@ -35,8 +36,12 @@ pytestmark = pytest.mark.skipif(
 ACTOR = UUID("20000000-0000-4000-8000-000000000001")
 SELLER_A_SLUG = "payout-test-a"
 SELLER_B_SLUG = "payout-test-b"
+SELLER_C_SLUG = "payout-test-c"
 ACCOUNT_A = "acct_test_payout_a"
 ACCOUNT_B = "acct_test_payout_b"
+INSUFFICIENT_PRIVILEGE = "42501"
+RAISE_EXCEPTION = "55000"
+
 READ = "commerce.payout.read"
 MANAGE = "commerce.payout.manage"
 
@@ -52,7 +57,7 @@ def sellers() -> dict[str, UUID]:
             (ACCOUNT_A, ACCOUNT_B),
         )
         created: dict[str, UUID] = {}
-        for slug in (SELLER_A_SLUG, SELLER_B_SLUG):
+        for slug in (SELLER_A_SLUG, SELLER_B_SLUG, SELLER_C_SLUG):
             row = connection.execute(
                 "insert into seller_organization(slug,display_name,status) "
                 "values(%s,%s,'active') on conflict (slug) do update "
@@ -126,8 +131,9 @@ def test_upsert_without_capability_is_denied(sellers: dict[str, UUID]) -> None:
     seller = sellers[SELLER_A_SLUG]
     with psycopg.connect(RUNTIME_URL) as connection:
         _context(connection, READ, seller)  # read capability, not manage
-        with pytest.raises(psycopg.Error):
+        with pytest.raises(psycopg.Error) as raised:
             _upsert(connection, seller, ACCOUNT_A)
+        assert raised.value.sqlstate == INSUFFICIENT_PRIVILEGE
 
 
 def test_upsert_for_another_seller_is_denied(sellers: dict[str, UUID]) -> None:
@@ -136,8 +142,9 @@ def test_upsert_for_another_seller_is_denied(sellers: dict[str, UUID]) -> None:
     assert RUNTIME_URL
     with psycopg.connect(RUNTIME_URL) as connection:
         _context(connection, MANAGE, sellers[SELLER_A_SLUG])
-        with pytest.raises(psycopg.Error):
+        with pytest.raises(psycopg.Error) as raised:
             _upsert(connection, sellers[SELLER_B_SLUG], ACCOUNT_B)
+        assert raised.value.sqlstate == INSUFFICIENT_PRIVILEGE
 
 
 def test_upsert_creates_then_refreshes_the_status_cache(sellers: dict[str, UUID]) -> None:
@@ -173,8 +180,9 @@ def test_upsert_refuses_repointing_to_a_different_account(sellers: dict[str, UUI
         _upsert(connection, seller, ACCOUNT_A)
         connection.commit()
         _context(connection, MANAGE, seller)
-        with pytest.raises(psycopg.Error):
+        with pytest.raises(psycopg.Error) as raised:
             _upsert(connection, seller, "acct_test_payout_hijack")
+        assert raised.value.sqlstate == RAISE_EXCEPTION
 
 
 def test_resolve_for_another_seller_is_denied(sellers: dict[str, UUID]) -> None:
@@ -183,11 +191,12 @@ def test_resolve_for_another_seller_is_denied(sellers: dict[str, UUID]) -> None:
     assert RUNTIME_URL
     with psycopg.connect(RUNTIME_URL) as connection:
         _context(connection, READ, sellers[SELLER_A_SLUG])
-        with pytest.raises(psycopg.Error):
+        with pytest.raises(psycopg.Error) as raised:
             connection.execute(
                 "select 1 from app_private.resolve_seller_payout_account(%s,'stripe')",
                 (sellers[SELLER_B_SLUG],),
             )
+        assert raised.value.sqlstate == INSUFFICIENT_PRIVILEGE
 
 
 def test_one_provider_account_cannot_serve_two_sellers(sellers: dict[str, UUID]) -> None:
@@ -204,3 +213,107 @@ def test_one_provider_account_cannot_serve_two_sellers(sellers: dict[str, UUID])
         _context(connection, MANAGE, seller_b)
         with pytest.raises(psycopg.errors.UniqueViolation):
             _upsert(connection, seller_b, ACCOUNT_A)
+
+
+def test_security_definer_functions_are_hardened(sellers: dict[str, UUID]) -> None:
+    # Catches the RLS/search_path posture silently regressing. The previous test
+    # only proves the runtime cannot SELECT, which stays true even with RLS off
+    # (the runtime has no grant), so it does not prove RLS at all.
+    #
+    # pg_temp explicitly LAST matters: when it is not listed, PostgreSQL searches
+    # the temporary schema FIRST for relations, so a temp table named like ours
+    # would shadow it inside a security definer body.
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        rls = connection.execute(
+            "select relrowsecurity, relforcerowsecurity from pg_catalog.pg_class "
+            "where oid = 'public.seller_payout_account'::regclass"
+        ).fetchone()
+        policies = connection.execute(
+            "select polname, polroles::regrole[]::text[] from pg_catalog.pg_policy "
+            "where polrelid = 'public.seller_payout_account'::regclass"
+        ).fetchall()
+        configs = connection.execute(
+            "select proname, proconfig, prosecdef from pg_catalog.pg_proc "
+            "where pronamespace = 'app_private'::regnamespace "
+            "and proname in ('resolve_seller_payout_account','upsert_seller_payout_account') "
+            "order by proname"
+        ).fetchall()
+    assert rls == (True, True)
+    assert [row[0] for row in policies] == ["seller_payout_account_owner_all"]
+    assert policies[0][1] == ["appsell_owner"]
+    assert len(configs) == 2
+    for name, proconfig, secdef in configs:
+        assert secdef is True, name
+        joined = " ".join(proconfig or [])
+        assert "pg_temp" in joined, name
+        assert joined.rstrip().endswith("pg_temp"), name
+
+
+def test_a_temp_table_cannot_shadow_the_payout_table(sellers: dict[str, UUID]) -> None:
+    # Direct proof for the pg_temp shadowing class: if the function body reached
+    # an unqualified name with the temp schema searched first, a forged temp row
+    # would come back and the next direct charge could be pointed elsewhere.
+    assert RUNTIME_URL
+    seller = sellers[SELLER_A_SLUG]
+    forged = "acct_test_payout_forged"
+    with psycopg.connect(RUNTIME_URL) as connection:
+        _context(connection, MANAGE, seller)
+        _upsert(connection, seller, ACCOUNT_A)
+        connection.commit()
+        try:
+            # If TEMPORARY is revoked this raises, and the attack is impossible
+            # for a different reason; the assertion below holds either way.
+            connection.execute(
+                "create temporary table seller_payout_account "
+                "(id uuid, seller_organization_id uuid, provider text, "
+                "provider_account_id text, charges_enabled boolean, "
+                "payouts_enabled boolean, details_submitted boolean, "
+                "disabled_reason text, status_synced_at timestamptz)"
+            )
+            connection.execute(
+                "insert into seller_payout_account values "
+                "(gen_random_uuid(),%s,'stripe',%s,true,true,true,null,now())",
+                (seller, forged),
+            )
+        except psycopg.Error:
+            connection.rollback()
+        _context(connection, READ, seller)
+        row = connection.execute(
+            "select provider_account_id from "
+            "app_private.resolve_seller_payout_account(%s,'stripe')",
+            (seller,),
+        ).fetchone()
+    assert row is not None
+    assert row[0] == ACCOUNT_A, "the security definer body read a shadowing temp table"
+
+
+def test_concurrent_first_bind_is_idempotent(sellers: dict[str, UUID]) -> None:
+    # Catches the first-write race that `for update` alone does not cover: with no
+    # row yet there is nothing to lock, so two simultaneous onboardings of the same
+    # seller (a producer retry racing the account.updated webhook) would both reach
+    # the insert and one would take a 23505 on what must be idempotent.
+    assert RUNTIME_URL
+    seller = sellers[SELLER_C_SLUG]
+    account = "acct_test_payout_race"
+
+    def bind() -> UUID:
+        assert RUNTIME_URL
+        with psycopg.connect(RUNTIME_URL) as connection:
+            _context(connection, MANAGE, seller)
+            bound = _upsert(connection, seller, account, charges=True)
+            connection.commit()
+            return bound
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = [future.result() for future in [pool.submit(bind), pool.submit(bind)]]
+
+    assert results[0] == results[1]
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        count = connection.execute(
+            "select count(*) from public.seller_payout_account where seller_organization_id=%s",
+            (seller,),
+        ).fetchone()
+    assert count is not None
+    assert count[0] == 1

@@ -11,12 +11,21 @@ Autonom.ia"), and swapping or adding a provider must not require a table
 rewrite. Today the check constraint admits only ``'stripe'``; widening it is a
 one-line migration.
 
-Two uniqueness guarantees, both tenant-isolation properties:
+Two uniqueness guarantees:
 ``(seller_organization_id, provider)`` — one payout account per seller per
 provider, so a sale can never be ambiguous about its destination.
-``(provider, provider_account_id)`` — the same provider account can never be
-attached to two sellers, so seller A cannot route seller B's money to itself by
-claiming B's account id.
+``(provider, provider_account_id)`` — one provider account is never attached to
+two sellers.
+
+Being precise about what that second one does and does not buy, because the first
+draft of this comment overstated it: what actually stops seller A from routing
+seller B's money is the TENANT GATE in the functions below — A cannot write a row
+for B at all. The constraint is defence in depth against a duplicate binding, and
+it does NOT prove that the account belongs to the seller claiming it. It also
+cuts the other way: A claiming a leaked, not-yet-persisted account id of B would
+deny B's onboarding. The real control for that lives in the next slice: the
+account id must be taken ONLY from the authenticated ``accounts.create``
+response, never from client input.
 
 Access follows the 0012 shape: RLS enabled AND forced, an owner-only policy, and
 NO runtime-facing policy. The runtime reaches the table exclusively through
@@ -101,7 +110,7 @@ def upgrade() -> None:
         end $migration$
         """,
         """
-        create table seller_payout_account (
+        create table public.seller_payout_account (
           id uuid primary key default gen_random_uuid(),
           seller_organization_id uuid not null references seller_organization(id),
           provider text not null check (provider in ('stripe')),
@@ -127,10 +136,10 @@ def upgrade() -> None:
           unique (provider, provider_account_id)
         )
         """,
-        "alter table seller_payout_account enable row level security",
-        "alter table seller_payout_account force row level security",
+        "alter table public.seller_payout_account enable row level security",
+        "alter table public.seller_payout_account force row level security",
         """
-        create policy seller_payout_account_owner_all on seller_payout_account
+        create policy seller_payout_account_owner_all on public.seller_payout_account
           to appsell_owner using (true) with check (true)
         """,
         # Read path. Returns the cached provider status for ONE seller, and only
@@ -145,7 +154,7 @@ def upgrade() -> None:
           details_submitted boolean, disabled_reason text,
           status_synced_at timestamptz
         ) language plpgsql stable security definer
-        set search_path=pg_catalog,app_private,public as $$
+        set search_path=pg_catalog,app_private,public,pg_temp as $$
         begin
           if app_private.context_text('capability') is distinct from 'commerce.payout.read'
             or p_seller_organization_id is null
@@ -159,7 +168,7 @@ def upgrade() -> None:
                    account.charges_enabled, account.payouts_enabled,
                    account.details_submitted, account.disabled_reason,
                    account.status_synced_at
-            from seller_payout_account account
+            from public.seller_payout_account account
             where account.seller_organization_id = p_seller_organization_id
               and account.provider = p_provider;
         end $$
@@ -175,7 +184,7 @@ def upgrade() -> None:
           p_details_submitted boolean, p_disabled_reason text
         )
         returns uuid language plpgsql volatile security definer
-        set search_path=pg_catalog,app_private,public as $$
+        set search_path=pg_catalog,app_private,public,pg_temp as $$
         declare existing_account_id uuid; existing_provider_account_id text;
         begin
           if app_private.context_text('capability') is distinct from 'commerce.payout.manage'
@@ -185,14 +194,23 @@ def upgrade() -> None:
           then
             raise exception 'payout account write denied' using errcode = '42501';
           end if;
+          -- Serializa por seller ANTES de olhar a tabela. `for update` sozinho nao
+          -- resolve a corrida de PRIMEIRA gravacao: sem linha nao ha o que travar,
+          -- e dois onboardings simultaneos do mesmo seller (retry do produtor
+          -- concorrendo com o webhook account.updated) chegariam os dois ao insert,
+          -- e um levaria 23505 num caso que deveria ser idempotente.
+          perform pg_advisory_xact_lock(
+            hashtextextended('seller_payout_account', 0),
+            hashtextextended(p_seller_organization_id::text || '/' || p_provider, 0)
+          );
           select account.id, account.provider_account_id
             into existing_account_id, existing_provider_account_id
-            from seller_payout_account account
+            from public.seller_payout_account account
             where account.seller_organization_id = p_seller_organization_id
               and account.provider = p_provider
             for update;
           if existing_account_id is null then
-            insert into seller_payout_account(
+            insert into public.seller_payout_account(
               seller_organization_id, provider, provider_account_id,
               charges_enabled, payouts_enabled, details_submitted, disabled_reason
             ) values (
@@ -207,7 +225,7 @@ def upgrade() -> None:
               'payout account already bound to a different provider account'
               using errcode = '55000';
           end if;
-          update seller_payout_account
+          update public.seller_payout_account
             set charges_enabled = coalesce(p_charges_enabled, charges_enabled),
                 payouts_enabled = coalesce(p_payouts_enabled, payouts_enabled),
                 details_submitted = coalesce(p_details_submitted, details_submitted),
@@ -255,7 +273,7 @@ def downgrade() -> None:
           -- verificacao de identidade contra aquela conta no provedor. Derrubar
           -- o vinculo aqui deixaria a conta orfa la, e a proxima venda desse
           -- seller nao saberia para onde mandar o dinheiro.
-          if exists (select 1 from seller_payout_account) then
+          if exists (select 1 from public.seller_payout_account) then
             raise exception
               'cannot downgrade 0021_seller_payout_account: payout accounts exist; the provider binding must be preserved'
               using errcode = '55000';
@@ -281,7 +299,7 @@ def downgrade() -> None:
         """,
         f"drop function {_UPSERT_SIGNATURE}",
         f"drop function {_RESOLVE_SIGNATURE}",
-        "drop table seller_payout_account",
+        "drop table public.seller_payout_account",
         """
         do $migration$
         declare definition text; changed text;
