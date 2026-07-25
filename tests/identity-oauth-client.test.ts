@@ -15,7 +15,11 @@ import {
 } from "../lib/identity-oauth-client.server";
 
 const LOGICAL_CLIENT_ID = "appsell-web";
-const EXPECTED_AUDIENCE = LOGICAL_CLIENT_ID;
+// In production the audience is the *Cognito* app client, shared across
+// products, and is NOT the logical client id sent to the token endpoint. Keeping
+// them equal here would let a regression that validated against the logical
+// client id pass unnoticed.
+const EXPECTED_AUDIENCE = "shared-cognito-client";
 const NONCE = "n".repeat(43);
 const STATE = "s".repeat(43);
 const CHALLENGE = "c".repeat(43);
@@ -546,6 +550,16 @@ describe("Identity OAuth server adapter", () => {
         .resolves.toEqual({ kind: "ambiguous" });
     }
   );
+
+  test("the audience is the shared Cognito client, never the logical client id", () => {
+    const config = parseIdentityOAuthConfig(environment());
+    expect(config.expectedAudience).toBe(EXPECTED_AUDIENCE);
+    expect(config.logicalOAuthClientId).toBe(LOGICAL_CLIENT_ID);
+    // The two identifiers must not be conflated: tokens are validated against
+    // the shared Cognito audience while the token request carries the logical
+    // client id (the mock endpoint 400s if that ever swaps).
+    expect(config.expectedAudience).not.toBe(config.logicalOAuthClientId);
+  });
 
   test("broker accepts the exact production shape: Cognito access token plus a foreign nonce", async () => {
     const bundle = await exchange("cognito-broker-shape", {

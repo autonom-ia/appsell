@@ -45,7 +45,9 @@ const ADAPTER_ERROR_TYPES = [
 export function describeCallbackFailure(error: unknown): string {
   if (!(error instanceof Error)) return "non-error thrown";
   const isAdapterError = ADAPTER_ERROR_TYPES.some((type) => error instanceof type);
-  return isAdapterError ? error.message : error.constructor?.name ?? "Error";
+  // Constant fallback: `constructor` and `name` are both writable, so anything
+  // read off an unknown error is attacker-shaped. Unknown means unknown.
+  return isAdapterError ? error.message : "unclassified error";
 }
 
 export function reportOAuthCallbackFailure(

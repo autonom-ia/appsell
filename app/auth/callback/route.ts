@@ -55,11 +55,15 @@ export async function GET(request: NextRequest) {
     code: request.nextUrl.searchParams.get("code") ?? undefined,
     state: request.nextUrl.searchParams.get("state") ?? undefined
   };
-  // A request without the three callback inputs is a bare hit on the endpoint
-  // (scanner, refresh of a stale tab), not a failing login. Recording those
-  // would let any anonymous caller amplify the log at will.
-  const isCompleteCallback = Boolean(
-    callbackInput.transactionId && callbackInput.code && callbackInput.state
+  // A bare hit on the endpoint (scanner, stale tab) carries none of the
+  // identity-provider parameters and is not a failing login; recording those
+  // would let any anonymous caller amplify the log at will. A real return does
+  // carry them — including the failure shapes worth seeing, such as an expired
+  // transaction cookie (code+state, no cookie) or `error=access_denied`. This
+  // reduces noise without hiding genuine failures; it is not a rate limit, and
+  // a caller willing to forge parameters can still reach the log.
+  const looksLikeProviderReturn = Boolean(
+    callbackInput.code || callbackInput.state || request.nextUrl.searchParams.get("error")
   );
   try {
     const mode = oauthRuntimeMode();
@@ -122,7 +126,7 @@ export async function GET(request: NextRequest) {
     // The response stays coarse on purpose; the reason goes to the server log
     // so a misconfigured issuer/audience is diagnosable without exposing an
     // oracle to an anonymous caller.
-    if (isCompleteCallback) {
+    if (looksLikeProviderReturn) {
       reportOAuthCallbackFailure({ outcome, reason: describeCallbackFailure(error) });
     }
     const response = NextResponse.json({ error: outcome }, {
