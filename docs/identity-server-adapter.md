@@ -58,12 +58,36 @@ nunca o `nonce` que este adapter enviou. Em `required` a comparação nunca bate
 em `disabled` a presença do `nonce` é rejeitada: os dois falham fechado e o
 login não completa.
 
-Nesse desenho o `nonce` não é a defesa contra replay de ID token: o token só
-chega pelo backchannel, amarrado a um authorization code de uso único e ao
-`code_verifier` S256, com `state` cobrindo CSRF. Todo o resto continua
-fail-closed — `iss`, `aud`, assinatura RS256 via JWKS allowlisted, `kid`,
-expiração, `token_use`, `email_verified` e igualdade de `sub` entre access e ID
-token.
+Sendo preciso sobre o que cada mecanismo garante aqui:
+
+- **o que o code de uso único + PKCE S256 + `state` garantem**: um terceiro não
+  consegue trocar nem reusar o authorization code, e o ID token nunca transita
+  pelo front-channel — ele só chega pelo backchannel, na resposta do
+  `/oauth/token` desta troca;
+- **o que eles não garantem**: que o bundle devolvido corresponda a *esta*
+  autorização. Isso é o binding `code → client lógico + redirect URI + PKCE →
+  tokens armazenados`, e quem o faz é a Foundation
+  (`oauth-client.service.ts:124-137`), não este adapter.
+
+Ou seja, `broker` transfere para a Foundation a garantia que o `nonce` daria a
+este client. **Pré-condição obrigatória do modo**: a Foundation precisa manter
+code de uso único, comparação do `client_id` lógico, comparação do redirect URI
+e validação do `code_verifier` S256 antes de devolver os tokens. Se essa
+garantia regredir, `broker` deixa de ser seguro — uma regressão lá não é
+detectável aqui.
+
+Consequência conhecida e **anterior** a este modo: `aud` é o client Cognito, que
+é compartilhado entre produtos. O ID token, sozinho, não distingue `appsell-web`
+de `neuroai-web` ou do Studio; essa separação existe apenas no binding da
+Foundation. `broker` não cria esse fato, mas remove a última barreira residual
+que ainda existia no adapter (`required` rejeitaria um nonce diferente).
+Follow-up: teste de integração cross-repo provando que um code emitido para
+outro produto não pode ser trocado como `appsell-web` — rastreado em
+`autonom-ia/appsell#156`.
+
+Todo o resto continua fail-closed — `iss`, `aud`, assinatura RS256 via JWKS
+allowlisted, `kid`, expiração, `token_use`, `email_verified` e igualdade de
+`sub` entre access e ID token.
 
 `broker` é uma ponte, não o destino: quando
 `autonom-ia/autonomia-identity-foundation#29` emitir ID token lógico assinado
@@ -72,8 +96,10 @@ aponte `APPSELL_IDENTITY_ISSUER`/`APPSELL_IDENTITY_EXPECTED_AUDIENCE` para os
 valores lógicos.
 
 O adapter também exige assinatura `RS256` por JWKS allowlisted, `kid` explícito
-e canônico, issuer e expiração válidos, `token_use`, subjects iguais,
-`email_verified` booleano `true` e `nonce` exato no ID token.
+e canônico, issuer e expiração válidos, `token_use`, subjects iguais e
+`email_verified` booleano `true`. O tratamento do `nonce` é o único item que
+varia por modo, conforme a tabela acima: exato em `required`, ausente em
+`disabled`, não verificado em `broker`.
 
 O `refresh_token` é opcional no retorno de code para preservar compatibilidade
 explícita com a Foundation #29; o contrato #32 devolve um handle lógico opaco.

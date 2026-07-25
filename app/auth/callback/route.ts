@@ -34,6 +34,7 @@ import {
   isOAuthStoreUnavailable
 } from "@/lib/redis-oauth-service";
 import { configuredPublicOrigin } from "@/lib/public-origin";
+import { describeCallbackFailure, reportOAuthCallbackFailure } from "@/lib/oauth-callback-telemetry";
 import {
   DomainApiError,
   isDomainApiConfigured,
@@ -107,13 +108,16 @@ export async function GET(request: NextRequest) {
     const unavailable = error instanceof IdentityOAuthUnavailableError;
     const ambiguous = error instanceof IdentityOAuthAmbiguousError ||
       isOAuthIdentityCallbackUnavailable(error);
-    const response = NextResponse.json({
-      error: configurationError ? "identity_not_configured" :
-        ambiguous ? "identity_callback_ambiguous" :
-        unavailable ? "identity_unavailable" :
-        isOAuthStoreUnavailable(error) ? "oauth_store_unavailable" :
-        error instanceof DomainApiError ? error.code : "invalid_oauth_callback"
-    }, {
+    const outcome = configurationError ? "identity_not_configured" :
+      ambiguous ? "identity_callback_ambiguous" :
+      unavailable ? "identity_unavailable" :
+      isOAuthStoreUnavailable(error) ? "oauth_store_unavailable" :
+      error instanceof DomainApiError ? error.code : "invalid_oauth_callback";
+    // The response stays coarse on purpose; the reason goes to the server log
+    // so a misconfigured issuer/audience is diagnosable without exposing an
+    // oracle to an anonymous caller.
+    reportOAuthCallbackFailure({ outcome, reason: describeCallbackFailure(error) });
+    const response = NextResponse.json({ error: outcome }, {
       status: error instanceof DomainApiError
         ? error.status
         : configurationError || ambiguous || unavailable || isOAuthStoreUnavailable(error) ? 503 : 400,

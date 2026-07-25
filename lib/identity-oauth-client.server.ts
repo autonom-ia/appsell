@@ -37,11 +37,18 @@ export type IdentityRefreshMode = "logical-handle" | "provider-refresh";
 // "broker": the upstream is not an OpenID Provider but a broker that relays a
 // third-party ID token (e.g. Cognito) it did not mint for this client. It
 // neither honours the nonce this adapter sends nor omits one of its own, so the
-// value carries no meaning here and is accepted without comparison. Replay of
-// the ID token is already barred by the single-use authorization code plus the
-// S256 code_verifier; `iss`, `aud`, the RS256 signature, `email_verified` and
-// the access/identity subject match stay fail-closed. Revert to "required"
-// once autonom-ia/autonomia-identity-foundation#29 mints logical ID tokens.
+// value carries no meaning here and is accepted without comparison.
+//
+// The single-use code, PKCE S256 and state keep a third party from replaying or
+// swapping the code, and keep the ID token off the front-channel. They do NOT
+// prove the returned bundle belongs to this authorization: that binding
+// (code -> logical client + redirect URI + PKCE -> stored tokens) lives in the
+// broker. This mode therefore has a precondition — the broker must keep that
+// binding — and a regression there is not detectable here. See
+// docs/identity-server-adapter.md. `iss`, `aud`, the RS256 signature,
+// `email_verified` and the access/identity subject match stay fail-closed.
+// Revert to "required" once autonom-ia/autonomia-identity-foundation#29 mints
+// logical ID tokens.
 export type IdentityNonceMode = "required" | "disabled" | "broker";
 
 // Explicit contract for how the ID token nonce must be treated, so the meaning
@@ -418,7 +425,9 @@ export class IdentityOAuthClient implements OAuthTokenRefresher {
       throw new IdentityOAuthProtocolError("Identity nonce is invalid.");
     }
     if (nonce.kind === "absent" && identity.nonce !== undefined) {
-      throw new IdentityOAuthProtocolError("Identity refresh nonce is invalid.");
+      // Reached by the refresh leg and by the code leg in "disabled" mode, so
+      // the message must not claim to be refresh-specific.
+      throw new IdentityOAuthProtocolError("Identity token contains an unexpected nonce.");
     }
     if (access.sub !== identity.sub) {
       throw new IdentityOAuthProtocolError("Identity token subjects do not match.");

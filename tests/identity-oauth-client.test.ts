@@ -534,6 +534,33 @@ describe("Identity OAuth server adapter", () => {
     await expect(exchange(scenario)).rejects.toThrow(reason);
   });
 
+  test("broker accepts a refreshed ID token that carries a nonce", async () => {
+    await expect(refresh("refresh-with-nonce", { APPSELL_IDENTITY_NONCE_MODE: "broker" }))
+      .resolves.toMatchObject({ kind: "success" });
+  });
+
+  test.each(["required", "disabled"])(
+    "%s still rejects a refreshed ID token that carries a nonce",
+    async (mode) => {
+      await expect(refresh("refresh-with-nonce", { APPSELL_IDENTITY_NONCE_MODE: mode }))
+        .resolves.toEqual({ kind: "ambiguous" });
+    }
+  );
+
+  test("broker accepts the exact production shape: Cognito access token plus a foreign nonce", async () => {
+    const bundle = await exchange("cognito-broker-shape", {
+      APPSELL_IDENTITY_NONCE_MODE: "broker"
+    });
+    expect(bundle).toMatchObject({
+      tokenType: "Bearer",
+      identity: { sub: SUBJECT, email: EMAIL, emailVerified: true }
+    });
+  });
+
+  test("the same production shape is what fails today under required", async () => {
+    await expect(exchange("cognito-broker-shape")).rejects.toThrow("nonce");
+  });
+
   test("never leaks the token or the expected value in the failure message", async () => {
     const error = await exchange("wrong-issuer").catch((caught: unknown) => caught);
     const message = String((error as Error).message);
@@ -588,7 +615,11 @@ async function tokenResponse(scenario: string, includeNonce = true) {
   const access = new SignJWT({
     token_use: scenario === "wrong-token-use" ? "id" : "access",
     // Cognito-shaped access tokens omit `aud` and carry the client in `client_id`.
-    ...(scenario === "cognito-access-client-id" ? { client_id: EXPECTED_AUDIENCE } : {}),
+    // "cognito-broker-shape" reproduces production exactly: Cognito access
+    // token shape plus an ID token whose nonce came from the broker's own flow.
+    ...(scenario === "cognito-access-client-id" || scenario === "cognito-broker-shape"
+      ? { client_id: EXPECTED_AUDIENCE }
+      : {}),
     ...(scenario === "cognito-wrong-client-id" ? { client_id: "other-client" } : {})
   })
     .setProtectedHeader(protectedHeader)
@@ -606,7 +637,9 @@ async function tokenResponse(scenario: string, includeNonce = true) {
       : scenario !== "email-unverified"
   };
   if (includeNonce && scenario !== "missing-nonce") {
-    idClaims.nonce = scenario === "wrong-nonce" ? "different-nonce-value-that-is-long-enough" : NONCE;
+    idClaims.nonce = scenario === "wrong-nonce" || scenario === "cognito-broker-shape"
+      ? "different-nonce-value-that-is-long-enough"
+      : NONCE;
   }
   if (!includeNonce && scenario === "refresh-with-nonce") idClaims.nonce = NONCE;
   const identity = new SignJWT(idClaims)
