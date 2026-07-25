@@ -10,8 +10,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from uuid import UUID
 
 import psycopg
@@ -52,9 +52,13 @@ def sellers() -> dict[str, UUID]:
     # failure mode of this table is cross-tenant.
     assert ADMIN_URL
     with psycopg.connect(ADMIN_URL) as connection:
+        # Apaga por SELLER, nao por conta: limpar so ACCOUNT_A/ACCOUNT_B deixava
+        # binding de rerun anterior vivo (ex. a conta da corrida), e o teste de
+        # PRIMEIRA gravacao passava exercitando update de linha existente.
         connection.execute(
-            "delete from seller_payout_account where provider_account_id in (%s,%s)",
-            (ACCOUNT_A, ACCOUNT_B),
+            "delete from public.seller_payout_account where seller_organization_id in "
+            "(select id from seller_organization where slug in (%s,%s,%s))",
+            (SELLER_A_SLUG, SELLER_B_SLUG, SELLER_C_SLUG),
         )
         created: dict[str, UUID] = {}
         for slug in (SELLER_A_SLUG, SELLER_B_SLUG, SELLER_C_SLUG):
@@ -115,13 +119,23 @@ def test_schema_ready_is_true_after_0021(sellers: dict[str, UUID]) -> None:
 
 
 def test_runtime_has_no_direct_table_access(sellers: dict[str, UUID]) -> None:
-    # Catches a runtime-facing policy being added by accident. The runtime must
-    # only ever see this table through the capability-gated functions; a direct
-    # select would expose every seller's payout account to any tenant.
+    # Catches a runtime-facing grant or policy being added by accident. The
+    # runtime must only ever see this table through the capability-gated
+    # functions; a direct select would expose every seller's payout account.
+    #
+    # Asserts the exact SQLSTATE and the catalog, not a bare psycopg.Error: a
+    # bare Error would also pass on a typo or a missing table, proving nothing.
     assert RUNTIME_URL
     with psycopg.connect(RUNTIME_URL) as connection:
-        with pytest.raises(psycopg.Error):
-            connection.execute("select 1 from seller_payout_account")
+        with pytest.raises(psycopg.Error) as raised:
+            connection.execute("select 1 from public.seller_payout_account")
+        assert raised.value.sqlstate == INSUFFICIENT_PRIVILEGE
+        connection.rollback()
+        privileges = connection.execute(
+            "select has_table_privilege('appsell_runtime','public.seller_payout_account',p) "
+            "from unnest(array['select','insert','update','delete']) p"
+        ).fetchall()
+    assert [row[0] for row in privileges] == [False, False, False, False]
 
 
 def test_upsert_without_capability_is_denied(sellers: dict[str, UUID]) -> None:
@@ -202,7 +216,9 @@ def test_resolve_for_another_seller_is_denied(sellers: dict[str, UUID]) -> None:
 def test_one_provider_account_cannot_serve_two_sellers(sellers: dict[str, UUID]) -> None:
     # The DB-level tenant guarantee: even with a correct capability in its own
     # context, seller B must not be able to claim the account already bound to
-    # seller A — that would route A's sales into B's account.
+    # seller A. Direction matters and the first version of this comment had it
+    # backwards: B claiming A's account would send B's OWN sales into A's
+    # account, and would also deny B a usable binding.
     assert RUNTIME_URL
     seller_a, seller_b = sellers[SELLER_A_SLUG], sellers[SELLER_B_SLUG]
     with psycopg.connect(RUNTIME_URL) as connection:
@@ -261,23 +277,29 @@ def test_a_temp_table_cannot_shadow_the_payout_table(sellers: dict[str, UUID]) -
         _context(connection, MANAGE, seller)
         _upsert(connection, seller, ACCOUNT_A)
         connection.commit()
-        try:
-            # If TEMPORARY is revoked this raises, and the attack is impossible
-            # for a different reason; the assertion below holds either way.
-            connection.execute(
-                "create temporary table seller_payout_account "
-                "(id uuid, seller_organization_id uuid, provider text, "
-                "provider_account_id text, charges_enabled boolean, "
-                "payouts_enabled boolean, details_submitted boolean, "
-                "disabled_reason text, status_synced_at timestamptz)"
-            )
-            connection.execute(
-                "insert into seller_payout_account values "
-                "(gen_random_uuid(),%s,'stripe',%s,true,true,true,null,now())",
-                (seller, forged),
-            )
-        except psycopg.Error:
-            connection.rollback()
+        # No `except` here on purpose. A broad one would swallow a column, syntax
+        # or privilege error and then "pass" on the untouched real table — the
+        # exact false green this test exists to prevent. TEMPORARY is currently
+        # granted to the runtime (001_roles.sh revokes only CONNECT), so both
+        # statements MUST succeed; when #158 revokes it, this becomes a separate
+        # assertion that the create is refused with 42501.
+        connection.execute(
+            "create temporary table seller_payout_account "
+            "(id uuid, seller_organization_id uuid, provider text, "
+            "provider_account_id text, charges_enabled boolean, "
+            "payouts_enabled boolean, details_submitted boolean, "
+            "disabled_reason text, status_synced_at timestamptz)"
+        )
+        connection.execute(
+            "insert into seller_payout_account values "
+            "(gen_random_uuid(),%s,'stripe',%s,true,true,true,null,now())",
+            (seller, forged),
+        )
+        # Proves the shadow is really in front: unqualified now hits the temp copy.
+        shadowed = connection.execute(
+            "select provider_account_id from seller_payout_account"
+        ).fetchone()
+        assert shadowed is not None and shadowed[0] == forged
         _context(connection, READ, seller)
         row = connection.execute(
             "select provider_account_id from "
@@ -289,26 +311,50 @@ def test_a_temp_table_cannot_shadow_the_payout_table(sellers: dict[str, UUID]) -
 
 
 def test_concurrent_first_bind_is_idempotent(sellers: dict[str, UUID]) -> None:
-    # Catches the first-write race that `for update` alone does not cover: with no
-    # row yet there is nothing to lock, so two simultaneous onboardings of the same
-    # seller (a producer retry racing the account.updated webhook) would both reach
-    # the insert and one would take a 23505 on what must be idempotent.
+    # Catches the FIRST-write race that `for update` cannot cover: with no row
+    # there is nothing to lock, so two simultaneous binds of one seller (a
+    # producer retry racing the account.updated webhook) both reach the insert
+    # and one takes a 23505 on an operation that must be idempotent.
+    #
+    # Deterministic by construction. The previous version just fired two threads
+    # and hoped they overlapped: if the second started after the first committed,
+    # even the unlocked implementation passed. Here connection 1 binds and HOLDS
+    # its transaction open, so connection 2 is provably still inside the critical
+    # section when the barrier is released. Without the advisory lock, 2 blocks on
+    # the UNIQUE index instead and surfaces 23505 once 1 commits.
     assert RUNTIME_URL
     seller = sellers[SELLER_C_SLUG]
     account = "acct_test_payout_race"
+    second_reached_upsert = threading.Event()
+    outcome: dict[str, object] = {}
 
-    def bind() -> UUID:
+    def contend() -> None:
         assert RUNTIME_URL
-        with psycopg.connect(RUNTIME_URL) as connection:
-            _context(connection, MANAGE, seller)
-            bound = _upsert(connection, seller, account, charges=True)
-            connection.commit()
-            return bound
+        with psycopg.connect(RUNTIME_URL) as rival:
+            _context(rival, MANAGE, seller)
+            second_reached_upsert.set()
+            try:
+                outcome["id"] = _upsert(rival, seller, account, charges=True)
+                rival.commit()
+            except psycopg.Error as error:
+                outcome["sqlstate"] = error.sqlstate
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        results = [future.result() for future in [pool.submit(bind), pool.submit(bind)]]
+    with psycopg.connect(RUNTIME_URL) as connection:
+        _context(connection, MANAGE, seller)
+        first = _upsert(connection, seller, account)
+        thread = threading.Thread(target=contend)
+        thread.start()
+        # O rival ja pediu o lock (ou vai pedir em instantes) e fica bloqueado
+        # enquanto esta transacao nao termina.
+        assert second_reached_upsert.wait(timeout=10)
+        time.sleep(0.5)
+        connection.commit()
+        thread.join(timeout=30)
+    assert not thread.is_alive(), "o rival nunca destravou"
 
-    assert results[0] == results[1]
+    assert "sqlstate" not in outcome, f"segundo bind falhou com {outcome.get('sqlstate')}"
+    assert outcome["id"] == first, "o segundo bind criou um vinculo diferente"
+
     assert ADMIN_URL
     with psycopg.connect(ADMIN_URL) as connection:
         count = connection.execute(

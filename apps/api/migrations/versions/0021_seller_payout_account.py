@@ -199,9 +199,20 @@ def upgrade() -> None:
           -- e dois onboardings simultaneos do mesmo seller (retry do produtor
           -- concorrendo com o webhook account.updated) chegariam os dois ao insert,
           -- e um levaria 23505 num caso que deveria ser idempotente.
+          -- UM argumento, nao dois. `hashtextextended` devolve bigint e o
+          -- PostgreSQL 16 so oferece pg_advisory_xact_lock(bigint) e
+          -- pg_advisory_xact_lock(integer,integer) — a forma (bigint,bigint) NAO
+          -- existe, e chamar assim quebra o PRIMEIRO upsert com 42883 sem a
+          -- migration reclamar (PL/pgSQL so planeja na primeira execucao).
+          -- Cast para integer tambem esta fora: cortaria a chave para 32 bits.
+          -- O prefixo de namespace mantem a chave de 64 bits distinta de outros
+          -- advisory locks do repo; colisao so causaria serializacao a mais.
           perform pg_advisory_xact_lock(
-            hashtextextended('seller_payout_account', 0),
-            hashtextextended(p_seller_organization_id::text || '/' || p_provider, 0)
+            hashtextextended(
+              'appsell.seller_payout_account:'
+              || p_seller_organization_id::text || ':' || p_provider,
+              0
+            )
           );
           select account.id, account.provider_account_id
             into existing_account_id, existing_provider_account_id
