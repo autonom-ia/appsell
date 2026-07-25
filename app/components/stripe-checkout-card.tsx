@@ -99,11 +99,18 @@ export function StripeCheckoutCard({
         </p>
       </div>
 
-      <div className="checkout-trust">
-        <span>Pagamento processado pelo Stripe</span>
-        <span>Não guardamos os dados do seu cartão</span>
-        <span>Acesso liberado após a confirmação</span>
-      </div>
+      {/* Lista de verdade (ul/li), não divs: são três itens irmãos e o leitor de
+          tela anuncia "lista de 3". O check é SVG inline, não o caractere "✓":
+          glifo de fonte muda de desenho e de largura entre plataformas, e não
+          herda cor por currentColor. */}
+      <ul className="checkout-trust">
+        {["Pagamento processado pelo Stripe", "Não guardamos os dados do seu cartão", "Acesso liberado após a confirmação"].map((item) => (
+          <li key={item}>
+            <CheckIcon />
+            <span>{item}</span>
+          </li>
+        ))}
+      </ul>
 
       {/* O valor aparece uma vez como número (no resumo) e uma vez como ação (no
           botão). Uma linha "Total" repetindo o mesmo número, sem desconto algum
@@ -125,10 +132,13 @@ export function StripeCheckoutCard({
             <>
               <p className="form-error">{error.message}</p>
               <p className="field-help">{error.charged}</p>
+              {/* A ação de recuperação é a saída do erro, não um link no meio de
+                  um parágrafo: ganha alvo de toque próprio de 44px, em vez dos
+                  ~14px de altura de uma linha de texto. */}
               {error.action ? (
-                <p className="field-help">
-                  <a href={error.action.href}>{error.action.label}</a>
-                </p>
+                <a className="checkout-recover" href={error.action.href}>
+                  {error.action.label}
+                </a>
               ) : null}
             </>
           ) : null}
@@ -142,7 +152,8 @@ export function StripeCheckoutCard({
           aria-busy={busy}
           aria-describedby="stripe-account-help"
         >
-          {busy ? "Abrindo pagamento seguro…" : `Pagar ${priceLabel} com cartão`}
+          {busy ? <Spinner /> : null}
+          {busy ? "Abrindo o pagamento…" : `Pagar ${priceLabel} com cartão`}
         </button>
         <p className="field-help checkout-cta-note">
           Cobrança única. Você revisa os dados no Stripe antes de confirmar.
@@ -199,6 +210,28 @@ function errorFor(status: number, code: string): CheckoutError {
   if (status === 404) return ERRORS.unavailable;
   if (status === 503 || status === 502) return ERRORS.instability;
   return ERRORS.generic;
+}
+
+// aria-hidden: o texto ao lado já diz tudo. Um nome acessível aqui faria o leitor
+// de tela anunciar "marca de verificação" antes de cada item.
+function CheckIcon() {
+  return (
+    <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <path d="M4 10.5 8 14.5 16 6"/>
+    </svg>
+  );
+}
+
+// O `prefers-reduced-motion` global (app/styles.css) já reduz a duração de toda
+// animação, então este spinner para de girar sozinho para quem pediu menos
+// movimento — e o rótulo do botão continua dizendo o que está acontecendo.
+function Spinner() {
+  return (
+    <svg className="checkout-spinner" viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true" focusable="false">
+      <circle cx="10" cy="10" r="8" opacity="0.3"/>
+      <path d="M18 10a8 8 0 0 0-8-8"/>
+    </svg>
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

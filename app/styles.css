@@ -516,7 +516,13 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .checkout-summary { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .checkout-summary > strong { color: var(--blue); font-size: clamp(1.25rem,5vw,1.75rem); white-space: nowrap; }
 .checkout-trust { display: grid; grid-template-columns: 1fr; gap: 8px; padding: 16px; border-radius: 16px; background: var(--canvas); color: var(--text); font-size: .875rem; }
-.checkout-trust span::before { content: "✓"; margin-right: 8px; color: #067647; font-weight: 800; }
+/* Filho DIRETO: os dois checkouts legados (checkout-workspace,
+   demo-checkout-workspace) montam `div.checkout-trust > span` e dependem deste
+   glifo. Escopado para não dobrar o check na versão em lista com SVG do
+   checkout Stripe, onde o span fica dentro de um li.
+   TODO: migrar os dois legados para o SVG e remover este glifo de texto — ele é
+   dependente de fonte e não herda cor por currentColor. */
+.checkout-trust > span::before { content: "✓"; margin-right: 8px; color: #067647; font-weight: 800; }
 .checkout-card form { display: grid; gap: 12px; }
 .checkout-card label { color: var(--ink); font-weight: 750; }
 /* Conta cobrada: é dado de confirmação, não campo. Renderizado como texto (e não
@@ -544,10 +550,19 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
    ser comprimido a duas linhas ao lado do valor. */
 .checkout-summary { flex-direction: column; }
 @media (min-width:560px) { .checkout-summary { flex-direction: row; align-items: baseline; } }
-/* O ✓ é um ::before dentro do span, então uma segunda linha corria por baixo
-   dele. Recuo pendente alinha o texto que quebra com a primeira linha. */
-.checkout-trust span { display: block; padding-left: 1.55em; text-indent: -1.55em; }
-.checkout-trust span::before { display: inline-block; width: 1.55em; margin-right: 0; text-indent: 0; }
+/* Lista de confiança: grid de duas colunas por item (ícone + texto) resolve o
+   alinhamento do texto que quebra em várias linhas sem depender de text-indent,
+   que era necessário quando o check era um ::before de texto. */
+.checkout-trust { list-style: none; margin: 0; }
+.checkout-trust li { display: grid; grid-template-columns: 18px minmax(0,1fr); align-items: start; gap: 8px; }
+.checkout-trust li > svg { margin-top: .15em; color: #067647; }
+/* Saída de erro com alvo de toque real (44px), não altura de linha de texto. */
+.checkout-recover { display: inline-flex; align-items: center; min-height: 44px; padding: 0 2px; color: var(--bright); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
+.checkout-recover:hover { color: var(--blue); }
+/* Duração/easing dentro da faixa de micro-interação (150-300ms). O bloco global
+   de prefers-reduced-motion neutraliza isto para quem pediu menos movimento. */
+.checkout-spinner { animation: checkout-spin 800ms linear infinite; }
+@keyframes checkout-spin { to { transform: rotate(360deg); } }
 .checkout-coupon { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; border: 1px solid var(--border); border-radius: 14px; overflow: hidden; background: var(--surface); }
 .checkout-coupon:focus-within { outline: 3px solid rgba(59,130,246,.28); border-color: var(--bright-atmosphere); }
 .checkout-coupon input { width: 100%; min-height: 48px; border: 0; outline: 0; padding: 0 14px; background: transparent; color: var(--ink); font: inherit; text-transform: uppercase; }
