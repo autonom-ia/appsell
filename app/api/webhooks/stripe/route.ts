@@ -88,7 +88,9 @@ export async function POST(request: NextRequest) {
     });
     payloadBuffer = serializeCheckoutPayload(payload);
   } catch (error) {
-    if (error instanceof SelfEmitPayloadError) return jsonError("checkout_webhook_payload_invalid", 500);
+    // Permanently-invalid metadata can never succeed on retry — return 4xx so
+    // Stripe stops redelivering (a 5xx would retry for days and page ops).
+    if (error instanceof SelfEmitPayloadError) return jsonError("checkout_webhook_payload_invalid", 400);
     throw error;
   }
 

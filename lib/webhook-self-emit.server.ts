@@ -10,13 +10,12 @@ import { createHash, createHmac } from "node:crypto";
 // same ingress path (lib/checkout-webhook-proxy.server.ts →
 // /v1/webhooks/checkouts/:endpointKey) accepts it.
 //
-// KNOWN GAP: webhook_adapters.py's `parse_generic_hmac_v1` (read-only
-// reference at authoring time) only accepts the 4-key v1 payload
-// (event_type/external_product_id/external_purchase_id/occurred_at). The
-// 6-key v2 payload below (adding buyer_email/buyer_identity_sub) will be
-// rejected as `webhook_payload_invalid` until the domain API is updated to
-// accept v2. Flagged for the reviewer/tester before this ships to real
-// traffic — do not treat this module as end-to-end verified.
+// The domain ingress accepts BOTH the 4-key v1 payload and the 6-key v2
+// payload below (adding buyer_email/buyer_identity_sub): webhook_adapters.py's
+// `parse_generic_hmac_v1` matches `expected_v1 | {buyer_email,
+// buyer_identity_sub}` and independently validates those fields. The v2 bridge
+// is verified end-to-end at the code level (an earlier "KNOWN GAP" note here
+// predated the domain API accepting v2 and was removed 2026-07-24).
 
 export type CheckoutApprovedPayload = {
   event_type: "purchase.approved";
