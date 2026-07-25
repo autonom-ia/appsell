@@ -100,8 +100,8 @@ describe("callback route failure reporting", () => {
     expect(line.reason).toBeTruthy();
   });
 
-  test("still logs when the transaction cookie is missing but the provider did return", async () => {
-    const { errors } = await callRoute("?code=abc&state=xyz");
+  test("still logs when only the state survives, as with an expired transaction", async () => {
+    const { errors } = await callRoute("?state=xyz");
     expect(errors).toHaveLength(1);
   });
 
@@ -120,7 +120,7 @@ describe("callback route failure reporting", () => {
 // route would leave every unit test above green while production went back to
 // discarding the reason.
 describe("callback route wiring", () => {
-  test("the callback route reports the failure reason and gates it on a complete callback", async () => {
+  test("the callback route reports the failure reason and gates it on a provider return", async () => {
     const source = await readFile(
       new URL("../app/auth/callback/route.ts", import.meta.url),
       "utf8"

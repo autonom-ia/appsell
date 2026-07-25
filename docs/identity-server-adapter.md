@@ -104,8 +104,10 @@ varia por modo, conforme a tabela acima: exato em `required`, ausente em
 
 O `refresh_token` é opcional no retorno de code para preservar compatibilidade
 explícita com a Foundation #29; o contrato #32 devolve um handle lógico opaco.
-O adapter implementa `grant_type=refresh_token`, exige rotação do handle e
-revalida assinatura/issuer/audience/subject. O `nonce` do novo ID token segue o
+O adapter implementa `grant_type=refresh_token` e revalida
+assinatura/issuer/audience/subject. A rotação segue o
+`APPSELL_IDENTITY_REFRESH_MODE`: obrigatória em `logical-handle`, opcional em
+`provider-refresh` (ver tabela acima). O `nonce` do novo ID token segue o
 `APPSELL_IDENTITY_NONCE_MODE`: exigido ausente em `required` e `disabled`, não
 verificado em `broker`. `401` vira `invalid_grant`, `409` vira retry transitório e timeout,
 `502` ou qualquer resposta incerta viram resultado ambíguo, que o lease Redis
