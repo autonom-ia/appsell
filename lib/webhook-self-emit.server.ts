@@ -3,6 +3,8 @@
 // rotas/handlers server-side (checkout/complete, checkout-webhook-proxy).
 import { createHash, createHmac } from "node:crypto";
 
+import { isValidBuyerEmail, normalizeBuyerEmail } from "@/lib/buyer-email";
+
 // Signs and shapes the checkout-completion webhook this BFF emits to itself
 // (the buyer's browser never talks to the domain API's webhook route
 // directly). The signing contract (canonical string, HMAC-SHA256, header
@@ -79,8 +81,8 @@ export function buildCheckoutApprovedPayload(input: {
   if (!SAFE_REFERENCE.test(input.financialProductKey) || !SAFE_REFERENCE.test(input.orderId)) {
     throw new SelfEmitPayloadError("invalid_self_emit_reference");
   }
-  const buyerEmail = input.buyerEmail.trim().toLowerCase();
-  if (!isValidEmail(buyerEmail)) {
+  const buyerEmail = normalizeBuyerEmail(input.buyerEmail);
+  if (!isValidBuyerEmail(buyerEmail)) {
     throw new SelfEmitPayloadError("invalid_self_emit_email");
   }
   if (input.buyerIdentitySub !== null && input.buyerIdentitySub.startsWith(REGISTRATION_SUBJECT_PREFIX)) {
@@ -129,6 +131,3 @@ export function signSelfEmitWebhook(input: {
   return { eventId: input.eventId, timestamp, signature: `v1=${signature}` };
 }
 
-function isValidEmail(value: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) && value.length <= 254;
-}

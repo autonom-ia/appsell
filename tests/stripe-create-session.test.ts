@@ -109,6 +109,25 @@ describe("POST /api/checkout/stripe/create-session", () => {
     expect(sessionsCreate).not.toHaveBeenCalled();
   });
 
+  it("rejects an e-mail the domain ingress would refuse, BEFORE creating a charge", async () => {
+    // The ingress (webhook_adapters.py::_valid_buyer_email) bounds the address
+    // at 6..242 UTF-8 octets and forbids control characters. An address that
+    // passes checkout but fails the ingress yields a paid, unfulfillable order,
+    // so the same contract runs here — before any money moves.
+    readPublicStorefront.mockResolvedValue(storefrontWithPrice(100));
+    for (const buyerEmail of [
+      `${"a".repeat(240)}@example.test`, // 253 octets: over the 242 bound
+      "a@b.c", // 5 octets: under the 6 bound
+      "buyer@exämple.test", // non-ASCII: JS/Python case-folding can diverge
+      "buyer\u0000@example.test" // NUL is in the ingress' forbidden class
+    ]) {
+      const response = await POST(request({ seller_slug: SELLER, product_slug: PRODUCT, buyer_email: buyerEmail }));
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: "invalid_request" });
+    }
+    expect(sessionsCreate).not.toHaveBeenCalled();
+  });
+
   it("returns 409 when the product is not mapped to a Financial product key", async () => {
     process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON = "{}";
     const response = await POST(request(validBody));
@@ -127,6 +146,7 @@ describe("POST /api/checkout/stripe/create-session", () => {
     expect(sessionsCreate).toHaveBeenCalledOnce();
     const params = (sessionsCreate.mock.calls[0] as unknown[])[0] as {
       mode: string;
+      payment_method_types: string[];
       line_items: Array<{
         quantity: number;
         price_data: { currency: string; unit_amount: number; product_data: { name: string } };
@@ -137,6 +157,9 @@ describe("POST /api/checkout/stripe/create-session", () => {
       metadata: Record<string, string>;
     };
     expect(params.mode).toBe("payment");
+    // Pinned, not inherited from the Dashboard: a delayed-notification method
+    // enabled there would settle via checkout.session.async_payment_succeeded.
+    expect(params.payment_method_types).toEqual(["card"]);
     expect(params.line_items).toHaveLength(1);
     expect(params.line_items[0].quantity).toBe(1);
     expect(params.line_items[0].price_data.currency).toBe("brl");

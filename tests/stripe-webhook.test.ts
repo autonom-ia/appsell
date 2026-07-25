@@ -4,9 +4,16 @@ import type { NextRequest } from "next/server";
 vi.mock("server-only", () => ({}));
 
 // Hoisted so the (hoisted) vi.mock factories below can reference them.
-const { constructEvent, proxyCheckoutWebhook, FakeStripeConfigError } = vi.hoisted(() => {
+const { constructEvent, proxyCheckoutWebhook, FakeStripeConfigError, keyMode } = vi.hoisted(() => {
   class FakeStripeConfigError extends Error {}
-  return { constructEvent: vi.fn(), proxyCheckoutWebhook: vi.fn(), FakeStripeConfigError };
+  return {
+    constructEvent: vi.fn(),
+    proxyCheckoutWebhook: vi.fn(),
+    FakeStripeConfigError,
+    // Mutable so a test can put the deployment in test mode and assert the
+    // live/test fence.
+    keyMode: { value: "live" as "live" | "test" }
+  };
 });
 
 // Fake Stripe: constructEvent is the signature gate. Tests drive it to either
@@ -14,6 +21,7 @@ const { constructEvent, proxyCheckoutWebhook, FakeStripeConfigError } = vi.hoist
 vi.mock("@/lib/stripe-config.server", () => ({
   StripeConfigError: FakeStripeConfigError,
   stripeClient: () => ({ webhooks: { constructEvent } }),
+  stripeKeyMode: () => keyMode.value,
   stripeWebhookSecret: () => "whsec_test_123"
 }));
 
@@ -38,11 +46,19 @@ function request(rawBody: string, { signature = "t=1,v1=abc" }: { signature?: st
   }) as unknown as NextRequest;
 }
 
-function completedEvent(overrides: { paymentStatus?: string; metadata?: Record<string, string> | null } = {}) {
+function completedEvent(
+  overrides: {
+    paymentStatus?: string;
+    metadata?: Record<string, string> | null;
+    type?: string;
+    livemode?: boolean;
+  } = {}
+) {
   return {
     id: "evt_test_1",
-    type: "checkout.session.completed",
+    type: overrides.type ?? "checkout.session.completed",
     created: EVENT_CREATED,
+    livemode: overrides.livemode ?? true,
     data: {
       object: {
         object: "checkout.session",
@@ -59,6 +75,7 @@ describe("POST /api/webhooks/stripe", () => {
   beforeEach(() => {
     process.env.APPSELL_CHECKOUT_WEBHOOK_ENDPOINT_KEY = ENDPOINT_KEY;
     process.env.APPSELL_CHECKOUT_WEBHOOK_SECRET_B64 = SECRET_B64;
+    keyMode.value = "live";
     constructEvent.mockReset();
     proxyCheckoutWebhook.mockReset();
   });
@@ -108,8 +125,60 @@ describe("POST /api/webhooks/stripe", () => {
     });
   });
 
+  it("grants on checkout.session.async_payment_succeeded (boleto/Pix settle later)", async () => {
+    // Regression guard for the money hole: a delayed-notification method
+    // completes the session unpaid and confirms with this event. Handling only
+    // checkout.session.completed would keep the payment and never grant access.
+    const event = completedEvent({ type: "checkout.session.async_payment_succeeded" });
+    constructEvent.mockReturnValue(event);
+    proxyCheckoutWebhook.mockResolvedValue({ status: 202, payload: { status: "accepted" } });
+
+    const response = await POST(request(JSON.stringify(event)));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: "accepted" });
+    expect(proxyCheckoutWebhook).toHaveBeenCalledOnce();
+    const [, payloadBuffer] = proxyCheckoutWebhook.mock.calls[0]!;
+    expect(JSON.parse((payloadBuffer as Buffer).toString("utf8")).external_purchase_id).toBe("order-123");
+  });
+
+  it("ignores an async_payment_failed event and never emits", async () => {
+    constructEvent.mockReturnValue(completedEvent({ type: "checkout.session.async_payment_failed" }));
+    const response = await POST(request("{}"));
+    expect(response.status).toBe(200);
+    expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
+  });
+
+  it("refuses a test-mode event on a live deployment and never emits", async () => {
+    // A test endpoint pointed at the live URL (or a Dashboard replay from the
+    // test view) must not grant a real course for a fake payment.
+    keyMode.value = "live";
+    constructEvent.mockReturnValue(completedEvent({ livemode: false }));
+    const response = await POST(request("{}"));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ received: true, ignored: "livemode_mismatch" });
+    expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
+  });
+
+  it("refuses a live-mode event on a test deployment and never emits", async () => {
+    keyMode.value = "test";
+    constructEvent.mockReturnValue(completedEvent({ livemode: true }));
+    const response = await POST(request("{}"));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ received: true, ignored: "livemode_mismatch" });
+    expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
+  });
+
+  it("accepts a test-mode event on a test deployment", async () => {
+    keyMode.value = "test";
+    constructEvent.mockReturnValue(completedEvent({ livemode: false }));
+    proxyCheckoutWebhook.mockResolvedValue({ status: 202, payload: { status: "accepted" } });
+    const response = await POST(request("{}"));
+    expect(response.status).toBe(200);
+    expect(proxyCheckoutWebhook).toHaveBeenCalledOnce();
+  });
+
   it("acknowledges unrelated event types with 200 and does not emit", async () => {
-    constructEvent.mockReturnValue({ id: "evt_2", type: "payment_intent.created", created: EVENT_CREATED, data: { object: {} } });
+    constructEvent.mockReturnValue({ id: "evt_2", type: "payment_intent.created", created: EVENT_CREATED, livemode: true, data: { object: {} } });
     const response = await POST(request("{}"));
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ received: true });
@@ -131,11 +200,38 @@ describe("POST /api/webhooks/stripe", () => {
     expect(await response.json()).toEqual({ status: "replayed" });
   });
 
-  it("returns 400 when required metadata is missing", async () => {
+  it("acknowledges a session it did not create (no usable metadata) with 200", async () => {
+    // Stripe retries EVERY non-2xx for ~3 days, so a 4xx here would only add
+    // noise: a Dashboard Payment Link or another integration on the same
+    // account will never gain our metadata on redelivery.
     constructEvent.mockReturnValue(completedEvent({ metadata: { order_id: "order-123" } }));
     const response = await POST(request("{}"));
-    expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ error: "invalid_session_metadata" });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ received: true, ignored: "unrecognized_session" });
     expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
+  });
+
+  it("acknowledges with 200 when our own metadata fails the outbound contract", async () => {
+    // buyer_email over the ingress' 242-octet bound: deterministic in the event
+    // payload, so every redelivery fails identically.
+    const tooLong = `${"a".repeat(240)}@example.test`;
+    constructEvent.mockReturnValue(
+      completedEvent({
+        metadata: { financial_product_key: "prod_codex_v1", order_id: "order-123", buyer_email: tooLong }
+      })
+    );
+    const response = await POST(request("{}"));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ received: true, ignored: "payload_invalid" });
+    expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
+  });
+
+  it("keeps 5xx for a transient ingress failure so Stripe retries", async () => {
+    // The one case where retrying DOES help must stay non-2xx.
+    constructEvent.mockReturnValue(completedEvent());
+    proxyCheckoutWebhook.mockRejectedValue(new Error("ECONNREFUSED"));
+    const response = await POST(request("{}"));
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "checkout_webhook_unavailable" });
   });
 });

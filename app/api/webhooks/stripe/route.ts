@@ -3,7 +3,13 @@ import type Stripe from "stripe";
 
 import { proxyCheckoutWebhook } from "@/lib/checkout-webhook-proxy.server";
 import { RawBodyTooLargeError, readLimitedRawBody } from "@/lib/limited-raw-body.server";
-import { StripeConfigError, stripeClient, stripeWebhookSecret } from "@/lib/stripe-config.server";
+import {
+  type StripeKeyMode,
+  StripeConfigError,
+  stripeClient,
+  stripeKeyMode,
+  stripeWebhookSecret
+} from "@/lib/stripe-config.server";
 import {
   SelfEmitPayloadError,
   buildCheckoutApprovedPayload,
@@ -26,6 +32,23 @@ export const dynamic = "force-dynamic";
 // same ceiling so an oversized event is rejected here, not deep in the proxy.
 const MAX_BODY_BYTES = 64 * 1024;
 const SIGNATURE_HEADER = "stripe-signature";
+
+// Every event type that can carry a FULLY PAID checkout session.
+//
+// `checkout.session.completed` is the only one card payments produce. Delayed
+// notification methods (boleto, Pix, SEPA debit, …) complete the session with
+// payment_status "unpaid" and confirm the funds hours-to-days later with
+// `checkout.session.async_payment_succeeded` — handling only the first event
+// would take the buyer's money and never grant access. create-session pins
+// payment_method_types to card today; this set is what makes adding a delayed
+// method a one-line, safe change instead of a silent money hole.
+//
+// `async_payment_failed` is intentionally absent: it is acknowledged as an
+// unhandled type, because nothing was granted in the first place.
+const PAID_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "checkout.session.completed",
+  "checkout.session.async_payment_succeeded"
+]);
 
 export async function POST(request: NextRequest) {
   // Read the EXACT bytes: Stripe recomputes the HMAC over the raw payload, so a
@@ -51,9 +74,25 @@ export async function POST(request: NextRequest) {
     return jsonError("invalid_signature", 400);
   }
 
+  // Mode fence. The signature only proves the sender holds the endpoint secret;
+  // it does NOT prove the event belongs to the same Stripe mode as the key this
+  // deployment charges with. Without this check a test-mode event delivered to
+  // the live URL (a test endpoint mistakenly pointed here, or a replay from the
+  // Dashboard's test view) would grant a real course for a fake payment.
+  let keyMode: StripeKeyMode;
+  try {
+    keyMode = stripeKeyMode();
+  } catch {
+    return jsonError("stripe_not_configured", 503);
+  }
+  if (event.livemode !== (keyMode === "live")) {
+    // Permanent by nature — retrying delivers the same mismatched event.
+    return NextResponse.json({ received: true, ignored: "livemode_mismatch" }, { status: 200, headers: noStore() });
+  }
+
   // Acknowledge everything else with 200 so Stripe stops retrying events we
   // intentionally do not act on.
-  if (event.type !== "checkout.session.completed") {
+  if (!PAID_EVENT_TYPES.has(event.type)) {
     return NextResponse.json({ received: true }, { status: 200, headers: noStore() });
   }
 
@@ -64,8 +103,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ received: true, ignored: "not_paid" }, { status: 200, headers: noStore() });
   }
 
+  // No usable metadata means the session was not created by
+  // app/api/checkout/stripe/create-session (a Dashboard-made Payment Link, a
+  // legacy session, another integration on the same account). Nothing to grant,
+  // and no retry can change it — 200 so Stripe stops redelivering. Stripe
+  // retries EVERY non-2xx for ~3 days, so a 4xx here would have bought noise
+  // without buying a fix.
   const metadata = readCheckoutMetadata(session.metadata);
-  if (!metadata) return jsonError("invalid_session_metadata", 400);
+  if (!metadata) {
+    return NextResponse.json({ received: true, ignored: "unrecognized_session" }, { status: 200, headers: noStore() });
+  }
 
   let config: { endpointKey: string; secret: Buffer };
   try {
@@ -88,9 +135,15 @@ export async function POST(request: NextRequest) {
     });
     payloadBuffer = serializeCheckoutPayload(payload);
   } catch (error) {
-    // Permanently-invalid metadata can never succeed on retry — return 4xx so
-    // Stripe stops redelivering (a 5xx would retry for days and page ops).
-    if (error instanceof SelfEmitPayloadError) return jsonError("checkout_webhook_payload_invalid", 400);
+    // Our own metadata failed the outbound contract. Deterministic in the event
+    // payload, so every redelivery fails identically: acknowledge with 200
+    // instead of burning three days of Stripe retries on a payload that can
+    // never be accepted. The real defense is upstream — create-session now
+    // enforces the same buyer-email contract (lib/buyer-email.ts) BEFORE the
+    // charge exists, which is the only e-mail-shaped way to reach this branch.
+    if (error instanceof SelfEmitPayloadError) {
+      return NextResponse.json({ received: true, ignored: "payload_invalid" }, { status: 200, headers: noStore() });
+    }
     throw error;
   }
 

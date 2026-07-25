@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { isValidBuyerEmail, normalizeBuyerEmail } from "@/lib/buyer-email";
 import { resolveCheckoutProduct } from "@/lib/checkout-config";
 import { DomainApiError, readPublicStorefront } from "@/lib/internal-api-client.server";
 import { RawBodyTooLargeError, readLimitedRawBody } from "@/lib/limited-raw-body.server";
@@ -21,7 +22,6 @@ export const dynamic = "force-dynamic";
 
 const MAX_BODY_BYTES = 2_048;
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 interface CreateSessionInput {
   sellerSlug: string;
@@ -71,6 +71,16 @@ export async function POST(request: NextRequest) {
     const orderId = crypto.randomUUID();
     const session = await stripeClient().checkout.sessions.create({
       mode: "payment",
+      // Pinned, NOT inherited from the Dashboard payment-method configuration.
+      // Card settles synchronously: `checkout.session.completed` already carries
+      // payment_status "paid", which is what the paired webhook requires before
+      // granting access. Delayed-notification methods (boleto, Pix, …) confirm
+      // hours-to-days later via `checkout.session.async_payment_succeeded`, so
+      // enabling one in the Dashboard while this list is absent would take the
+      // buyer's money and never grant the course. Adding a method here is only
+      // safe together with the async event handling in
+      // app/api/webhooks/stripe/route.ts (ASYNC_PAID_EVENT_TYPES).
+      payment_method_types: ["card"],
       line_items: [
         {
           quantity: 1,
@@ -128,8 +138,12 @@ function parseCreateSessionInput(rawBody: Buffer): CreateSessionInput | null {
   if (typeof sellerSlug !== "string" || !SLUG.test(sellerSlug)) return null;
   if (typeof productSlug !== "string" || !SLUG.test(productSlug)) return null;
   if (typeof buyerEmailRaw !== "string") return null;
-  const buyerEmail = buyerEmailRaw.trim().toLowerCase();
-  if (!EMAIL.test(buyerEmail) || buyerEmail.length > 254) return null;
+  // Enforce the DOMAIN INGRESS contract here, before any charge exists: the
+  // webhook can only grant access if webhook_adapters.py accepts the e-mail, so
+  // an address that is valid-looking but too long/short or non-ASCII must be
+  // rejected at checkout instead of producing a paid, unfulfillable order.
+  const buyerEmail = normalizeBuyerEmail(buyerEmailRaw);
+  if (!isValidBuyerEmail(buyerEmail)) return null;
   return { sellerSlug, productSlug, buyerEmail };
 }
 

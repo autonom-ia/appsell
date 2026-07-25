@@ -1,3 +1,5 @@
+import { isValidBuyerEmail, normalizeBuyerEmail } from "@/lib/buyer-email";
+
 // Parses the registration-checkout order status response from Financial
 // (GET .../registration-checkout/:orderId, reached server-side via
 // lib/financial-order-client.server.ts).
@@ -50,28 +52,23 @@ function parseOrderFacts(expectedOrderId: string, value: Record<string, unknown>
   if (typeof orderId !== "string" || orderId !== expectedOrderId) return null;
   const financialProductKey = value.financial_product_key;
   if (typeof financialProductKey !== "string" || !SAFE_REFERENCE.test(financialProductKey)) return null;
-  const buyerEmail = value.buyer_email;
-  if (typeof buyerEmail !== "string" || !isValidEmail(buyerEmail)) return null;
+  const rawBuyerEmail = value.buyer_email;
+  if (typeof rawBuyerEmail !== "string") return null;
+  // Financial may hand back a non-normalized address, so normalize FIRST and
+  // validate the normalized form — that is the exact value the ingress will
+  // receive and re-check.
+  const buyerEmail = normalizeBuyerEmail(rawBuyerEmail);
+  if (!isValidBuyerEmail(buyerEmail)) return null;
   const paidAt = value.paid_at;
   const occurredAt = typeof paidAt === "string" ? normalizedIsoUtc(paidAt) : null;
   if (!occurredAt) return null;
-  return { orderId, financialProductKey, buyerEmail: buyerEmail.trim().toLowerCase(), occurredAt };
+  return { orderId, financialProductKey, buyerEmail, occurredAt };
 }
 
 function normalizedIsoUtc(value: string): string | null {
   if (value !== value.trim() || value.length === 0) return null;
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
-}
-
-function isValidEmail(value: string): boolean {
-  // Cap 242 bytes: o ingress (webhook_adapters.py) rejeita e-mail acima disso;
-  // validar aqui evita emitir um webhook que seria recusado num pedido já pago.
-  const trimmed = value.trim();
-  return (
-    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)
-    && Buffer.byteLength(trimmed, "utf8") <= 242
-  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
