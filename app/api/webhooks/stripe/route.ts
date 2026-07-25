@@ -138,11 +138,20 @@ export async function POST(request: NextRequest) {
     // Our own metadata failed the outbound contract. Deterministic in the event
     // payload, so every redelivery fails identically: acknowledge with 200
     // instead of burning three days of Stripe retries on a payload that can
-    // never be accepted. The real defense is upstream — create-session now
-    // enforces the same buyer-email contract (lib/buyer-email.ts) BEFORE the
-    // charge exists, which is the only e-mail-shaped way to reach this branch.
+    // never be accepted.
+    //
+    // KNOWN LIMIT, tracked in #147: a paid session dies here with no durable
+    // record on our side — this repo has no logger in app/api, and Stripe files
+    // a 2xx as success. Still reachable despite the upstream gate, e.g. a
+    // session created before that gate existed, or metadata edited in the
+    // Dashboard. The order id is echoed so it is at least recoverable from the
+    // Stripe event, and the Stripe ↔ buyer_entitlement reconciliation in #147 is
+    // what turns this from silent into detected.
     if (error instanceof SelfEmitPayloadError) {
-      return NextResponse.json({ received: true, ignored: "payload_invalid" }, { status: 200, headers: noStore() });
+      return NextResponse.json(
+        { received: true, ignored: "payload_invalid", order_id: metadata.orderId },
+        { status: 200, headers: noStore() }
+      );
     }
     throw error;
   }
@@ -164,13 +173,33 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ status }, { status: 200, headers: noStore() });
       }
     }
-    // 409 = event id already ingested (idempotent replay of the same order) —
-    // the purchase was already fulfilled; treat as success so Stripe stops
-    // retrying.
+    // 409 is NOT a replay. Migration 0020 distinguishes the two cases: an
+    // identical payload under the same event id returns 202 "replayed" (handled
+    // above), while the SAME event id carrying a DIFFERENT payload_sha256
+    // returns 409 webhook_event_conflict — meaning this payload was rejected and
+    // never ingested. Reachable when two paid events for one order carry
+    // different `occurred_at` (checkout.session.completed and
+    // async_payment_succeeded have different `created`), when session metadata
+    // is edited in the Dashboard, or when the registration path already used
+    // `selfemit:<order_id>` for the same order.
+    //
+    // Retrying cannot resolve a hash conflict, so 2xx is right for Stripe. But
+    // it must not be reported as a replay: whether access exists depends on
+    // whether the FIRST payload was fulfilled, which this route cannot see.
+    // Surfaced under its own marker for the Stripe ↔ buyer_entitlement
+    // reconciliation (Refs #147), which is what closes this properly.
     if (delivered.status === 409) {
-      return NextResponse.json({ status: "replayed" }, { status: 200, headers: noStore() });
+      return NextResponse.json(
+        { received: true, conflict: "event_id_payload_mismatch", order_id: metadata.orderId },
+        { status: 200, headers: noStore() }
+      );
     }
-    if (delivered.status === 404) return jsonError("order_not_found", 404);
+    // The proxy does not look up an order, so a 404 is an integration fault
+    // (wrong domain API version, endpoint key not provisioned, bad base URL) —
+    // never "this purchase does not exist". Non-2xx on purpose: Stripe keeps
+    // redelivering, so fixing the configuration within the retry window still
+    // grants access.
+    if (delivered.status === 404) return jsonError("checkout_webhook_endpoint_not_found", 502);
     return jsonError("checkout_webhook_rejected", 503);
   } catch {
     return jsonError("checkout_webhook_unavailable", 503);

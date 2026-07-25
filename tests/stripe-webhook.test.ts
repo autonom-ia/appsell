@@ -192,12 +192,39 @@ describe("POST /api/webhooks/stripe", () => {
     expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
   });
 
-  it("treats a 409 from the proxy as an idempotent replay (200)", async () => {
+  it("reports a proxy 409 as a payload CONFLICT, never as a replay", async () => {
+    // Migration 0020 returns 202 "replayed" for an identical payload and 409
+    // only when the same event id carries a DIFFERENT payload hash — i.e. this
+    // payload was rejected and never ingested. Calling that a replay claims the
+    // purchase was fulfilled when this route cannot know that.
     constructEvent.mockReturnValue(completedEvent());
-    proxyCheckoutWebhook.mockResolvedValue({ status: 409, payload: { error: "conflict" } });
+    proxyCheckoutWebhook.mockResolvedValue({ status: 409, payload: { error: "webhook_event_conflict" } });
+    const response = await POST(request("{}"));
+    // 2xx because a hash conflict is permanent — retrying delivers the same bytes.
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.conflict).toBe("event_id_payload_mismatch");
+    expect(body.order_id).toBe("order-123");
+    expect(body.status).toBeUndefined();
+  });
+
+  it("reports an identical-payload replay (202) as replayed", async () => {
+    constructEvent.mockReturnValue(completedEvent());
+    proxyCheckoutWebhook.mockResolvedValue({ status: 202, payload: { status: "replayed" } });
     const response = await POST(request("{}"));
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ status: "replayed" });
+  });
+
+  it("maps a proxy 404 to an integration fault, not a missing order", async () => {
+    // The proxy never looks up an order: a 404 means the endpoint key is not
+    // provisioned or the domain API lacks the route. Non-2xx on purpose so
+    // Stripe keeps retrying while the configuration is fixed.
+    constructEvent.mockReturnValue(completedEvent());
+    proxyCheckoutWebhook.mockResolvedValue({ status: 404, payload: { error: "not_found" } });
+    const response = await POST(request("{}"));
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({ error: "checkout_webhook_endpoint_not_found" });
   });
 
   it("acknowledges a session it did not create (no usable metadata) with 200", async () => {
@@ -222,7 +249,13 @@ describe("POST /api/webhooks/stripe", () => {
     );
     const response = await POST(request("{}"));
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ received: true, ignored: "payload_invalid" });
+    // The order id is echoed so the lost sale is recoverable from the Stripe
+    // event even though this repo has no logger in app/api (Refs #147).
+    expect(await response.json()).toEqual({
+      received: true,
+      ignored: "payload_invalid",
+      order_id: "order-123"
+    });
     expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
   });
 

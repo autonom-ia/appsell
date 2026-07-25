@@ -3,7 +3,7 @@
 // rotas/handlers server-side (checkout/complete, checkout-webhook-proxy).
 import { createHash, createHmac } from "node:crypto";
 
-import { isValidBuyerEmail, normalizeBuyerEmail } from "@/lib/buyer-email";
+import { isIngressBuyerEmail, normalizeBuyerEmail } from "@/lib/buyer-email";
 
 // Signs and shapes the checkout-completion webhook this BFF emits to itself
 // (the buyer's browser never talks to the domain API's webhook route
@@ -82,7 +82,7 @@ export function buildCheckoutApprovedPayload(input: {
     throw new SelfEmitPayloadError("invalid_self_emit_reference");
   }
   const buyerEmail = normalizeBuyerEmail(input.buyerEmail);
-  if (!isValidBuyerEmail(buyerEmail)) {
+  if (!isIngressBuyerEmail(buyerEmail)) {
     throw new SelfEmitPayloadError("invalid_self_emit_email");
   }
   if (input.buyerIdentitySub !== null && input.buyerIdentitySub.startsWith(REGISTRATION_SUBJECT_PREFIX)) {

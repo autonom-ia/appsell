@@ -89,16 +89,52 @@ libera o curso.
 - Checkout devolve `stripe_not_configured` (503) → nome de env divergente.
 - Pagamento aprovado no Stripe sem linha em `buyer_entitlement`.
 
-## Rollback (pré-aprovado)
+## Rollback
 
-| Camada | Ação |
-|--------|------|
-| Código | Redeploy da tag anterior do serviço `web`. |
-| Env | Restaurar do backup do campo `env` **completo** (`env_backup_{web,api}_<timestamp>.txt`). Omitir `env` no `updateEnv` do Easypanel **apaga todas** as vars (lição M11b). |
-| Banco | `pg_restore` do dump pré-mudança em `/root/appsell_backups/`. |
-| Stripe | Desabilitar (ou apagar) o endpoint de webhook. Sem endpoint, nenhum evento chega e nada é liberado; cobranças já feitas continuam válidas e reembolsáveis pelo Dashboard. |
+Este release **não tem migration**. Logo, `pg_restore` **não** é rollback e
+**não** é pré-aprovado — ver "Banco" abaixo.
 
-Rollback do webhook **não** estorna. Estorno é ação separada no Dashboard.
+Duas armadilhas governam a ordem dos passos:
+
+1. **Desabilitar o webhook não invalida Checkout Session já criada.** Uma sessão
+   aberta continua pagável por ~24h. Se o endpoint cair primeiro, o comprador
+   paga e não existe webhook para liberar o curso.
+2. **O Stripe não reenvia evento que já respondemos 2xx.** Tudo o que foi
+   confirmado antes do rollback só volta por reconciliação manual, nunca por
+   retry.
+
+### Ordem obrigatória (pré-aprovada)
+
+1. **Parar de criar cobrança nova, mantendo o webhook no ar.** Redeploy da tag
+   anterior do `web` (a rota `create-session` deixa de existir) **ou** esvaziar
+   `APPSELL_CHECKOUT_PRODUCT_MAP_JSON` (todo produto passa a responder
+   `product_not_configured` 409). O endpoint de webhook **continua ativo**.
+2. **Drenar as sessões abertas.** Dashboard → Payments → sessões `open` do
+   período. Para cada uma: expirar (`POST /v1/checkout/sessions/:id/expire`) ou
+   aguardar o pagamento e confirmar que gerou `buyer_entitlement`.
+3. **Reconciliar o período.** Listar as sessões `complete`/`paid` da janela e
+   confirmar `buyer_entitlement` para cada uma. Divergência → liberar acesso
+   manualmente ou estornar; nunca deixar pago sem acesso.
+4. **Só então** desabilitar o endpoint de webhook no Stripe.
+5. Env: restaurar do backup do campo `env` **completo**
+   (`env_backup_{web,api}_<timestamp>.txt`). Omitir `env` no `updateEnv` do
+   Easypanel **apaga todas** as vars (lição M11b).
+
+### Banco — exige 🟢 explícito, não é pré-aprovado
+
+Restaurar o dump pré-release **destrói dados criados depois do snapshot**:
+`webhook_event`, `outbox_event`, `fulfillment_job`, `entitlement_grant`,
+`buyer_entitlement` — inclusive de compradores que pagaram e foram atendidos
+corretamente. E como o Stripe já recebeu 2xx, esses eventos **não voltam**.
+
+Só faz sentido com corrupção de dados comprovada, como incidente, com aprovação
+explícita do Rodrigo, backup do estado **atual** antes do restore, e a lista de
+pagamentos da janela em mãos para re-liberar acesso manualmente.
+
+### Estorno
+
+Rollback **não** estorna. Estorno é ação separada no Dashboard e decisão do
+Rodrigo.
 
 ## Dívida conhecida
 

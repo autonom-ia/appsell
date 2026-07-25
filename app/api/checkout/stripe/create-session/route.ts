@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { isValidBuyerEmail, normalizeBuyerEmail } from "@/lib/buyer-email";
+import { isChargeableBuyerEmail, normalizeBuyerEmail } from "@/lib/buyer-email";
 import { resolveCheckoutProduct } from "@/lib/checkout-config";
 import { DomainApiError, readPublicStorefront } from "@/lib/internal-api-client.server";
 import { RawBodyTooLargeError, readLimitedRawBody } from "@/lib/limited-raw-body.server";
@@ -143,7 +143,7 @@ function parseCreateSessionInput(rawBody: Buffer): CreateSessionInput | null {
   // an address that is valid-looking but too long/short or non-ASCII must be
   // rejected at checkout instead of producing a paid, unfulfillable order.
   const buyerEmail = normalizeBuyerEmail(buyerEmailRaw);
-  if (!isValidBuyerEmail(buyerEmail)) return null;
+  if (!isChargeableBuyerEmail(buyerEmail)) return null;
   return { sellerSlug, productSlug, buyerEmail };
 }
 

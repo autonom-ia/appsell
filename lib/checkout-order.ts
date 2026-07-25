@@ -1,4 +1,4 @@
-import { isValidBuyerEmail, normalizeBuyerEmail } from "@/lib/buyer-email";
+import { isIngressBuyerEmail, normalizeBuyerEmail } from "@/lib/buyer-email";
 
 // Parses the registration-checkout order status response from Financial
 // (GET .../registration-checkout/:orderId, reached server-side via
@@ -58,7 +58,7 @@ function parseOrderFacts(expectedOrderId: string, value: Record<string, unknown>
   // validate the normalized form — that is the exact value the ingress will
   // receive and re-check.
   const buyerEmail = normalizeBuyerEmail(rawBuyerEmail);
-  if (!isValidBuyerEmail(buyerEmail)) return null;
+  if (!isIngressBuyerEmail(buyerEmail)) return null;
   const paidAt = value.paid_at;
   const occurredAt = typeof paidAt === "string" ? normalizedIsoUtc(paidAt) : null;
   if (!occurredAt) return null;
