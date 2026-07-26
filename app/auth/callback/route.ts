@@ -16,6 +16,8 @@ import {
   productCsrfCookieName,
   productPublishCsrfCookieName,
   productUpdateCsrfCookieName,
+  recoveryCookieName,
+  recoveryCookieOptions,
   sellerCsrfCookieName,
   sessionCookieName,
   sessionCookieOptions,
@@ -33,6 +35,8 @@ import {
   isOAuthIdentityCallbackUnavailable,
   isOAuthStoreUnavailable
 } from "@/lib/redis-oauth-service";
+import { shouldRestartLogin } from "@/lib/oauth-callback-recovery";
+import { isBrowserNavigation, renderCallbackErrorPage } from "@/lib/oauth-callback-error-page";
 import { configuredPublicOrigin } from "@/lib/public-origin";
 import { describeCallbackFailure, reportOAuthCallbackFailure } from "@/lib/oauth-callback-telemetry";
 import {
@@ -100,6 +104,8 @@ export async function GET(request: NextRequest) {
       configuredPublicOrigin()
     ));
     expireTransactionCookie(response);
+    // Clear the one-shot guard so a later expiry is recoverable again.
+    response.cookies.set(recoveryCookieName(), "", { ...recoveryCookieOptions(), maxAge: 0 });
     response.cookies.set(sessionCookieName(), sessionId, sessionCookieOptions());
     response.cookies.set(csrfCookieName(), csrfTokenForSession(sessionId, LOGOUT_CSRF_ACTION), csrfCookieOptions());
     if (demoProfile?.persona === "buyer" || demoSuperadmin) {
@@ -129,12 +135,37 @@ export async function GET(request: NextRequest) {
     if (looksLikeProviderReturn) {
       reportOAuthCallbackFailure({ outcome, reason: describeCallbackFailure(error) });
     }
-    const response = NextResponse.json({ error: outcome }, {
-      status: error instanceof DomainApiError
-        ? error.status
-        : configurationError || ambiguous || unavailable || isOAuthStoreUnavailable(error) ? 503 : 400,
-      headers: { "cache-control": "no-store" }
-    });
+    // The browser came back from the provider but this app no longer holds the
+    // login transaction — the usual cause is a sign-up, where creating the
+    // account and confirming the e-mail takes longer than the transaction TTL.
+    // Nothing is wrong with the account, so restart the login instead of
+    // showing raw JSON: with the provider session still valid the round trip is
+    // invisible and the user lands signed in. Guarded by a short-lived cookie
+    // so a failure that survives the restart falls through to the error body
+    // rather than looping.
+    const alreadyRecovered = Boolean(request.cookies.get(recoveryCookieName())?.value);
+    if (shouldRestartLogin(error, alreadyRecovered)) {
+      const retry = NextResponse.redirect(new URL("/auth/login", configuredPublicOrigin()));
+      expireTransactionCookie(retry);
+      retry.cookies.set(recoveryCookieName(), "1", recoveryCookieOptions());
+      retry.headers.set("cache-control", "no-store");
+      return retry;
+    }
+    const status = error instanceof DomainApiError
+      ? error.status
+      : configurationError || ambiguous || unavailable || isOAuthStoreUnavailable(error) ? 503 : 400;
+    // A browser gets a readable page with a way back to the login; API clients
+    // keep the machine-readable body. The page text is identical for every
+    // outcome so it cannot be used to probe configuration.
+    const response = isBrowserNavigation(request.headers.get("accept"))
+      ? new NextResponse(renderCallbackErrorPage(outcome), {
+        status,
+        headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }
+      })
+      : NextResponse.json({ error: outcome }, {
+        status,
+        headers: { "cache-control": "no-store" }
+      });
     if (issuedSessionId) {
       expireTransactionCookie(response);
       response.cookies.set(sessionCookieName(), "", { ...sessionCookieOptions(), maxAge: 0 });

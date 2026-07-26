@@ -15,8 +15,8 @@ import {
   type TokenVault,
   type TokenVaultContext
 } from "./token-vault";
+import { transactionTtlSeconds } from "./cookies";
 
-const DEFAULT_TRANSACTION_TTL_MS = 5 * 60_000;
 const DEFAULT_CODE_TTL_MS = 60_000;
 const DEFAULT_SESSION_TTL_MS = 60 * 60_000;
 const DEFAULT_RATE_WINDOW_MS = 60_000;
@@ -431,7 +431,10 @@ export class RedisOAuthService {
   constructor(options: RedisOAuthOptions) {
     validateConfiguration(options);
     this.prefix = options.prefix;
-    this.transactionTtlMs = options.transactionTtlMs ?? DEFAULT_TRANSACTION_TTL_MS;
+    // Same source as the transaction cookie: both halves of the login window
+    // must expire together. Read per instance, not at module load, so the env
+    // value applies without a rebuild. See lib/cookies.ts.
+    this.transactionTtlMs = options.transactionTtlMs ?? transactionTtlSeconds() * 1_000;
     this.codeTtlMs = options.codeTtlMs ?? DEFAULT_CODE_TTL_MS;
     this.sessionTtlMs = options.sessionTtlMs ?? DEFAULT_SESSION_TTL_MS;
     this.rateWindowMs = options.rateWindowMs ?? DEFAULT_RATE_WINDOW_MS;
@@ -537,7 +540,11 @@ export class RedisOAuthService {
 
   async callback(input: { transactionId?: string; code?: string; state?: string }) {
     if (!input.transactionId || !input.code || !input.state) {
-      throw new OAuthFlowError("Missing callback parameters.");
+      // Provider params present but no transaction: the cookie expired or was
+      // dropped, which restarting the login fixes. Missing provider params is a
+      // malformed hit and stays final.
+      const recoverable = !input.transactionId && Boolean(input.code) && Boolean(input.state);
+      throw new OAuthFlowError("Missing callback parameters.", recoverable ? "recoverable" : "final");
     }
     const transactionId = input.transactionId;
     const code = input.code;
@@ -602,7 +609,7 @@ export class RedisOAuthService {
           assertSessionBundleRevision(existingSession, bundle);
           return sessionId;
         }
-        case "TRANSACTION_MISSING": throw new OAuthFlowError("Login transaction expired.");
+        case "TRANSACTION_MISSING": throw new OAuthFlowError("Login transaction expired.", "recoverable");
         case "INVALID_STATE": throw new OAuthFlowError("Invalid OAuth state.");
         case "CODE_MISSING": throw new OAuthFlowError("Authorization code expired or replayed.");
         case "CODE_INTEGRITY_MISMATCH": throw new OAuthVaultIntegrityError("OAuth authorization code integrity failure.");
@@ -622,7 +629,11 @@ export class RedisOAuthService {
     exchanger: IdentityAuthorizationCodeExchanger
   ) {
     if (!input.transactionId || !input.code || !input.state) {
-      throw new OAuthFlowError("Missing callback parameters.");
+      // Provider params present but no transaction: the cookie expired or was
+      // dropped, which restarting the login fixes. Missing provider params is a
+      // malformed hit and stays final.
+      const recoverable = !input.transactionId && Boolean(input.code) && Boolean(input.state);
+      throw new OAuthFlowError("Missing callback parameters.", recoverable ? "recoverable" : "final");
     }
     if (!exchanger || typeof exchanger.exchangeAuthorizationCode !== "function") {
       throw new OAuthFlowError("Identity OAuth provider is unavailable.");
@@ -638,7 +649,7 @@ export class RedisOAuthService {
         if (await this.isValidIdentityCallbackRetry(transactionId, sessionId, callbackFingerprint)) {
           return sessionId;
         }
-        throw new OAuthFlowError("Login transaction expired.");
+        throw new OAuthFlowError("Login transaction expired.", "recoverable");
       }
       const transaction = parseLoginTransaction(rawTransaction);
       if (!safeEqual(transaction.state, state)) throw new OAuthFlowError("Invalid OAuth state.");
@@ -668,7 +679,7 @@ export class RedisOAuthService {
           return this.waitForIdentityCallbackWinner(transactionId, sessionId, callbackFingerprint);
         case "AMBIGUOUS":
           throw new OAuthIdentityCallbackUnavailableError("Identity callback outcome is ambiguous.");
-        case "TRANSACTION_MISSING": throw new OAuthFlowError("Login transaction expired.");
+        case "TRANSACTION_MISSING": throw new OAuthFlowError("Login transaction expired.", "recoverable");
         case "INVALID_STATE": throw new OAuthFlowError("Invalid OAuth state.");
         case "TRANSACTION_INTEGRITY_ERROR":
         case "PAIR_INTEGRITY_ERROR":
@@ -1314,7 +1325,7 @@ function validateConfiguration(options: RedisOAuthOptions) {
     );
   }
   for (const [label, value] of [
-    ["transaction TTL", options.transactionTtlMs ?? DEFAULT_TRANSACTION_TTL_MS],
+    ["transaction TTL", options.transactionTtlMs ?? transactionTtlSeconds() * 1_000],
     ["code TTL", options.codeTtlMs ?? DEFAULT_CODE_TTL_MS],
     ["session TTL", options.sessionTtlMs ?? DEFAULT_SESSION_TTL_MS],
     ["rate window", options.rateWindowMs ?? DEFAULT_RATE_WINDOW_MS],

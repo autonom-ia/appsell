@@ -1,4 +1,5 @@
 import { pkceChallenge, randomOpaque, safeEqual, sha256 } from "./crypto";
+import { transactionTtlSeconds } from "./cookies";
 
 type Clock = () => number;
 
@@ -38,7 +39,22 @@ interface RateWindow {
   resetsAt: number;
 }
 
-export class OAuthFlowError extends Error {}
+// "recoverable" marks a failure where the browser came back from the identity
+// provider but this app no longer holds the login transaction — it expired, or
+// the cookie is gone. Nothing is wrong with the user or the account: restarting
+// the login completes silently while the provider session is still valid. This
+// is the shape a sign-up hits, because creating an account and confirming the
+// e-mail takes longer than the transaction TTL.
+export type OAuthFlowFailure = "recoverable" | "final";
+
+export class OAuthFlowError extends Error {
+  readonly failure: OAuthFlowFailure;
+
+  constructor(message: string, failure: OAuthFlowFailure = "final") {
+    super(message);
+    this.failure = failure;
+  }
+}
 
 /** Development-only process-local OAuth transaction and token vault. */
 export class DevOAuthService {
@@ -54,7 +70,9 @@ export class DevOAuthService {
 
   constructor(
     private readonly now: Clock = Date.now,
-    private readonly transactionTtlMs = 5 * 60_000,
+    // Same window as production, from the same source, so the local runtime
+    // reproduces sign-up timing instead of expiring three times sooner.
+    private readonly transactionTtlMs = transactionTtlSeconds() * 1_000,
     private readonly codeTtlMs = 60_000,
     private readonly sessionTtlMs = 60 * 60_000,
     limits: ServiceLimits = {}
@@ -106,11 +124,16 @@ export class DevOAuthService {
   }
 
   callback(input: { transactionId?: string; code?: string; state?: string }) {
-    if (!input.transactionId || !input.code || !input.state) throw new OAuthFlowError("Missing callback parameters.");
+    if (!input.transactionId || !input.code || !input.state) {
+      // Same classification as the production service, so the local runtime
+      // reproduces the sign-up recovery instead of diverging from it.
+      const recoverable = !input.transactionId && Boolean(input.code) && Boolean(input.state);
+      throw new OAuthFlowError("Missing callback parameters.", recoverable ? "recoverable" : "final");
+    }
     this.maintain();
     const transactionKey = sha256(input.transactionId);
     const transaction = this.transactions.get(transactionKey);
-    if (!transaction) throw new OAuthFlowError("Login transaction expired.");
+    if (!transaction) throw new OAuthFlowError("Login transaction expired.", "recoverable");
     if (!safeEqual(transaction.state, input.state)) throw new OAuthFlowError("Invalid OAuth state.");
 
     const codeKey = sha256(input.code);
