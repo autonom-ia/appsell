@@ -7,6 +7,7 @@ vi.mock("server-only", () => ({}));
 const {
   sessionsCreate,
   readPublicStorefront,
+  resolveCheckoutPayoutDestination,
   FakeStripeConfigError,
   DomainApiError,
   resolveBuyerIdentityMock
@@ -20,6 +21,9 @@ const {
   return {
     sessionsCreate: vi.fn(async () => ({ url: "https://checkout.stripe.test/session/cs_test_123" })),
     readPublicStorefront: vi.fn(),
+    // The legacy platform-direct suite: no payout destination bound. The
+    // direct-charge branch has its own suite.
+    resolveCheckoutPayoutDestination: vi.fn(async () => ({ payout_destination: null })),
     FakeStripeConfigError,
     DomainApiError,
     resolveBuyerIdentityMock: vi.fn(async () => ({ status: "authenticated", subject: "cognito-sub-default" }) as { status: string; subject?: string })
@@ -38,6 +42,7 @@ vi.mock("@/lib/stripe-config.server", () => ({
 // must use THIS amount, never anything from the request body.
 vi.mock("@/lib/internal-api-client.server", () => ({
   readPublicStorefront,
+  resolveCheckoutPayoutDestination,
   DomainApiError
 }));
 

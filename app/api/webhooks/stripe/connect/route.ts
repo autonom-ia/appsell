@@ -1,8 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import type Stripe from "stripe";
 
+import { proxyCheckoutWebhook } from "@/lib/checkout-webhook-proxy.server";
 import { DomainApiError, syncPayoutAccountStatus } from "@/lib/internal-api-client.server";
 import { RawBodyTooLargeError, readLimitedRawBody } from "@/lib/limited-raw-body.server";
+import {
+  SelfEmitPayloadError,
+  buildCheckoutApprovedPayload,
+  selfEmitEventId,
+  selfEmitWebhookConfig,
+  serializeCheckoutPayload,
+  signSelfEmitWebhook
+} from "@/lib/webhook-self-emit.server";
 import {
   type StripeKeyMode,
   StripeConfigError,
@@ -24,6 +33,15 @@ export const dynamic = "force-dynamic";
 const MAX_BODY_BYTES = 64 * 1024;
 const SIGNATURE_HEADER = "stripe-signature";
 const ACCOUNT_PATTERN = /^acct_[A-Za-z0-9]{1,250}$/;
+
+// Same set and same reasoning as the platform webhook: card settles with
+// `completed` already paid; delayed methods confirm later via
+// `async_payment_succeeded`. Kept in lockstep with create-session's pinned
+// payment_method_types.
+const PAID_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "checkout.session.completed",
+  "checkout.session.async_payment_succeeded"
+]);
 
 // Same deliberate exception as the checkout webhook: branches that answer 2xx
 // stop Stripe from ever redelivering, and this app has no logger — one stderr
@@ -80,6 +98,15 @@ export async function POST(request: NextRequest) {
       { received: true, ignored: "livemode_mismatch" },
       { status: 200, headers: noStore() }
     );
+  }
+
+  // Direct-charge sales complete ON the connected account, so their paid
+  // events arrive HERE, not at the platform endpoint. Same bridge, same
+  // guards as app/api/webhooks/stripe/route.ts: only a fully paid session
+  // with create-session's metadata self-emits the signed purchase.approved
+  // that grants access.
+  if (PAID_EVENT_TYPES.has(event.type)) {
+    return bridgePaidSession(event);
   }
 
   if (event.type !== "account.updated") {
@@ -142,6 +169,113 @@ export async function POST(request: NextRequest) {
     }
     return jsonError("payout_sync_unavailable", 503);
   }
+}
+
+// The paid-session → signed self-emit bridge, mirroring
+// app/api/webhooks/stripe/route.ts branch by branch (that route's comments
+// carry the full reasoning per status code). Deliberately duplicated instead
+// of refactoring the deployed platform route in this PR; extracting the shared
+// bridge is follow-up work.
+async function bridgePaidSession(event: Stripe.Event) {
+  const session = event.data.object as Stripe.Checkout.Session;
+  if (session.payment_status !== "paid") {
+    return NextResponse.json(
+      { received: true, ignored: "not_paid" },
+      { status: 200, headers: noStore() }
+    );
+  }
+
+  const metadata = readCheckoutMetadata(session.metadata);
+  if (!metadata) {
+    logIrreversibleDrop({ reason: "unrecognized_session", event });
+    return NextResponse.json(
+      { received: true, ignored: "unrecognized_session" },
+      { status: 200, headers: noStore() }
+    );
+  }
+
+  let config: { endpointKey: string; secret: Buffer };
+  try {
+    config = selfEmitWebhookConfig();
+  } catch {
+    return jsonError("checkout_webhook_not_configured", 503);
+  }
+
+  let payloadBuffer: Buffer;
+  try {
+    payloadBuffer = serializeCheckoutPayload(
+      buildCheckoutApprovedPayload({
+        financialProductKey: metadata.financialProductKey,
+        orderId: metadata.orderId,
+        buyerEmail: metadata.buyerEmail,
+        buyerIdentitySub: metadata.buyerIdentitySub,
+        occurredAtIso: new Date(event.created * 1_000).toISOString()
+      })
+    );
+  } catch (error) {
+    if (error instanceof SelfEmitPayloadError) {
+      logIrreversibleDrop({ reason: "payload_invalid", event });
+      return NextResponse.json(
+        { received: true, ignored: "payload_invalid", order_id: metadata.orderId },
+        { status: 200, headers: noStore() }
+      );
+    }
+    throw error;
+  }
+
+  const headers = signSelfEmitWebhook({
+    endpointKey: config.endpointKey,
+    eventId: selfEmitEventId(metadata.orderId),
+    timestampSeconds: Math.floor(Date.now() / 1_000),
+    body: payloadBuffer,
+    secret: config.secret
+  });
+
+  try {
+    const delivered = await proxyCheckoutWebhook(config.endpointKey, payloadBuffer, headers);
+    if (delivered.status === 202 && isDeliveredRecord(delivered.payload)) {
+      const status = delivered.payload.status;
+      if (status === "accepted" || status === "replayed") {
+        return NextResponse.json({ status }, { status: 200, headers: noStore() });
+      }
+    }
+    if (delivered.status === 409) {
+      logIrreversibleDrop({ reason: "event_id_payload_mismatch", event });
+      return NextResponse.json(
+        { received: true, conflict: "event_id_payload_mismatch", order_id: metadata.orderId },
+        { status: 200, headers: noStore() }
+      );
+    }
+    if (delivered.status === 404) return jsonError("checkout_webhook_endpoint_not_found", 502);
+    return jsonError("checkout_webhook_rejected", 503);
+  } catch {
+    return jsonError("checkout_webhook_unavailable", 503);
+  }
+}
+
+interface CheckoutMetadata {
+  financialProductKey: string;
+  orderId: string;
+  buyerEmail: string;
+  buyerIdentitySub: string | null;
+}
+
+function readCheckoutMetadata(metadata: Stripe.Metadata | null): CheckoutMetadata | null {
+  if (!metadata) return null;
+  const financialProductKey = metadata.financial_product_key;
+  const orderId = metadata.order_id;
+  const buyerEmail = metadata.buyer_email;
+  if (typeof financialProductKey !== "string" || financialProductKey.length === 0) return null;
+  if (typeof orderId !== "string" || orderId.length === 0) return null;
+  if (typeof buyerEmail !== "string" || buyerEmail.length === 0) return null;
+  const rawIdentitySub = metadata.buyer_identity_sub;
+  if (rawIdentitySub !== undefined && typeof rawIdentitySub !== "string") return null;
+  const buyerIdentitySub = rawIdentitySub && rawIdentitySub.length > 0 ? rawIdentitySub : null;
+  return { financialProductKey, orderId, buyerEmail, buyerIdentitySub };
+}
+
+function isDeliveredRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function noStore() {

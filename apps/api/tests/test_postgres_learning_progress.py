@@ -104,7 +104,7 @@ def test_projection_pin_rls_and_player_are_bound_to_the_buyer() -> None:
             (entitlement, publication, publication),
         ).fetchone()
     assert state == (
-        "0023_payout_status_sync",
+        "0024_payout_destination",
         publication,
         1,
         5,

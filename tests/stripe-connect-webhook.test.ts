@@ -32,6 +32,23 @@ vi.mock("@/lib/internal-api-client.server", () => ({
   DomainApiError
 }));
 
+const { proxyCheckoutWebhook } = vi.hoisted(() => ({
+  proxyCheckoutWebhook: vi.fn()
+}));
+
+vi.mock("@/lib/checkout-webhook-proxy.server", () => ({
+  proxyCheckoutWebhook
+}));
+
+vi.mock("@/lib/webhook-self-emit.server", () => ({
+  SelfEmitPayloadError: class SelfEmitPayloadError extends Error {},
+  buildCheckoutApprovedPayload: vi.fn((input: unknown) => input),
+  selfEmitEventId: vi.fn(() => "selfemit:order-1"),
+  selfEmitWebhookConfig: vi.fn(() => ({ endpointKey: "endpoint-key", secret: Buffer.alloc(32) })),
+  serializeCheckoutPayload: vi.fn(() => Buffer.from("{}")),
+  signSelfEmitWebhook: vi.fn(() => ({ "x-signature": "sig" }))
+}));
+
 import { POST } from "../app/api/webhooks/stripe/connect/route";
 
 const ACCOUNT = "acct_1WebhookTest";
@@ -80,6 +97,7 @@ describe("POST /api/webhooks/stripe/connect", () => {
     syncPayoutAccountStatus.mockReset();
     syncPayoutAccountStatus.mockResolvedValue({ updated: true, payout_account_id: "id" });
     keyMode.mockReturnValue("live");
+    proxyCheckoutWebhook.mockReset();
   });
 
   afterEach(() => {
@@ -166,6 +184,79 @@ describe("POST /api/webhooks/stripe/connect", () => {
     syncPayoutAccountStatus.mockRejectedValue(new DomainApiError(503, "domain_api_unavailable"));
     const response = await POST(request());
     expect(response.status).toBe(503);
+  });
+
+  it("bridges a paid direct-charge session into the signed self-emit", async () => {
+    proxyCheckoutWebhook.mockResolvedValue({ status: 202, payload: { status: "accepted" } });
+    constructEvent.mockReturnValue({
+      id: "evt_paid_1",
+      type: "checkout.session.completed",
+      livemode: true,
+      account: ACCOUNT,
+      created: 1_753_000_000,
+      data: {
+        object: {
+          id: "cs_live_1",
+          object: "checkout.session",
+          payment_status: "paid",
+          metadata: {
+            financial_product_key: "prod_curso_real_v1",
+            order_id: "order-1",
+            buyer_email: "buyer@example.test",
+            buyer_identity_sub: "sub-1"
+          }
+        }
+      }
+    });
+    const response = await POST(request());
+    expect(response.status).toBe(200);
+    expect((await response.json()).status).toBe("accepted");
+    expect(proxyCheckoutWebhook).toHaveBeenCalledTimes(1);
+    expect(syncPayoutAccountStatus).not.toHaveBeenCalled();
+  });
+
+  it("acknowledges an unpaid session without emitting", async () => {
+    constructEvent.mockReturnValue({
+      id: "evt_unpaid_1",
+      type: "checkout.session.completed",
+      livemode: true,
+      account: ACCOUNT,
+      created: 1_753_000_000,
+      data: {
+        object: {
+          id: "cs_live_2",
+          object: "checkout.session",
+          payment_status: "unpaid",
+          metadata: {}
+        }
+      }
+    });
+    const response = await POST(request());
+    expect(response.status).toBe(200);
+    expect((await response.json()).ignored).toBe("not_paid");
+    expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
+  });
+
+  it("drops a paid session that create-session did not mint", async () => {
+    constructEvent.mockReturnValue({
+      id: "evt_foreign_1",
+      type: "checkout.session.completed",
+      livemode: true,
+      account: ACCOUNT,
+      created: 1_753_000_000,
+      data: {
+        object: {
+          id: "cs_live_3",
+          object: "checkout.session",
+          payment_status: "paid",
+          metadata: {}
+        }
+      }
+    });
+    const response = await POST(request());
+    expect(response.status).toBe(200);
+    expect((await response.json()).ignored).toBe("unrecognized_session");
+    expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
   });
 
   it("acknowledges a deterministic rejection instead of retrying forever", async () => {

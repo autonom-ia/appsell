@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
@@ -29,6 +30,7 @@ _STRIPE_ACCOUNT_PATTERN = re.compile(r"^acct_[A-Za-z0-9]{1,250}$")
 # identity; a stolen credential still cannot reuse a user session's envelope
 # here because those carry a seller (refused below) and a different sub.
 _SYNC_SUBJECT = "stripe-connect-webhook-v1"
+_CHECKOUT_SUBJECT = "stripe-checkout-v1"
 
 
 class PayoutStatusSyncBody(BaseModel):
@@ -99,6 +101,46 @@ async def sync_payout_account(request: Request) -> dict[str, Any]:
         # cannot make an unbound account bound.
         return {"updated": False}
     return {"updated": True, "payout_account_id": str(payout_account_id)}
+
+
+@router.get("/sellers/{seller_id}/payout-destination")
+async def resolve_payout_destination(request: Request, seller_id: UUID) -> dict[str, Any]:
+    # The checkout worker's single question before charging: which provider
+    # account receives this seller's money, and can it charge yet. The seller
+    # id is a LOOKUP KEY from the storefront the buyer is viewing, not a tenant
+    # claim — the envelope must be worker-shaped (no seller, pinned subject).
+    auth, internal = await _authenticate(request, "commerce.checkout.destination")
+    envelope = internal.envelope
+    if envelope.seller_organization_id is not None or envelope.identity.sub != _CHECKOUT_SUBJECT:
+        await internal.consume_rejected_request()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+    try:
+        async with auth.domain_session(envelope) as session:
+            row = (
+                (
+                    await session.execute(
+                        text(
+                            "select provider_account_id, charges_enabled "
+                            "from app_private.resolve_payout_destination("
+                            ":seller_id, 'stripe')"
+                        ),
+                        {"seller_id": seller_id},
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+    except DBAPIError as error:
+        raise _sync_domain_error(error) from error
+    if row is None:
+        return {"payout_destination": None}
+    return {
+        "payout_destination": {
+            "provider": "stripe",
+            "provider_account_id": row["provider_account_id"],
+            "charges_enabled": bool(row["charges_enabled"]),
+        }
+    }
 
 
 async def _authenticate(
