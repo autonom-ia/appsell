@@ -8,6 +8,8 @@ import {
   describeCallbackFailure,
   reportOAuthCallbackFailure
 } from "../lib/oauth-callback-telemetry";
+import { shouldRestartLogin } from "../lib/oauth-callback-recovery";
+import { OAuthFlowError } from "../lib/oauth-service";
 import {
   IdentityOAuthAmbiguousError,
   IdentityOAuthConfigurationError,
@@ -113,6 +115,59 @@ describe("callback route failure reporting", () => {
   test("stays silent on a bare hit with no provider parameters", async () => {
     const { errors } = await callRoute("");
     expect(errors).toHaveLength(0);
+  });
+});
+
+// A sign-up takes longer than the login transaction TTL (creating the account,
+// waiting for the confirmation e-mail, confirming). The user did everything
+// right, so the callback must restart the login instead of answering with raw
+// JSON.
+describe("recoverable callback restarts the login", () => {
+  test("restarts when the transaction expired and no restart happened yet", () => {
+    const expired = new OAuthFlowError("Login transaction expired.", "recoverable");
+    expect(shouldRestartLogin(expired, false)).toBe(true);
+  });
+
+  test("restarts when the provider returned but the transaction cookie is gone", () => {
+    const missing = new OAuthFlowError("Missing callback parameters.", "recoverable");
+    expect(shouldRestartLogin(missing, false)).toBe(true);
+  });
+
+  test("does not loop: the guard blocks a second restart", () => {
+    const expired = new OAuthFlowError("Login transaction expired.", "recoverable");
+    expect(shouldRestartLogin(expired, true)).toBe(false);
+  });
+
+  test.each([
+    ["invalid state", new OAuthFlowError("Invalid OAuth state.")],
+    ["replayed code", new OAuthFlowError("Authorization code expired or replayed.")],
+    ["token verification", new IdentityOAuthProtocolError("Identity token verification failed (claim iss).")],
+    ["unknown error", new Error("boom")]
+  ])("never restarts on a final failure: %s", (_label, error) => {
+    expect(shouldRestartLogin(error, false)).toBe(false);
+  });
+
+  test("defaults to final, so a new throw site must opt in deliberately", () => {
+    expect(new OAuthFlowError("anything").failure).toBe("final");
+  });
+});
+
+// Guards the wiring: the helper above is only useful if the route calls it and
+// answers with a redirect that also arms the guard and clears the dead
+// transaction cookie.
+describe("callback route restart wiring", () => {
+  test("the route restarts the login through the helper and arms the guard", async () => {
+    const source = await readFile(
+      new URL("../app/auth/callback/route.ts", import.meta.url),
+      "utf8"
+    );
+    expect(source).toContain("shouldRestartLogin(error, alreadyRecovered)");
+    expect(source).toMatch(/NextResponse\.redirect\(new URL\("\/auth\/login"/);
+    expect(source).toContain("retry.cookies.set(recoveryCookieName(), \"1\", recoveryCookieOptions())");
+    expect(source).toContain("expireTransactionCookie(retry)");
+    // The guard must be cleared on success, otherwise a later expiry within the
+    // guard window would fall through to the raw error body.
+    expect(source).toMatch(/recoveryCookieName\(\), "", \{ \.\.\.recoveryCookieOptions\(\), maxAge: 0 \}/);
   });
 });
 

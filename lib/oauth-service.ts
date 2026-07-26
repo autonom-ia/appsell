@@ -38,7 +38,22 @@ interface RateWindow {
   resetsAt: number;
 }
 
-export class OAuthFlowError extends Error {}
+// "recoverable" marks a failure where the browser came back from the identity
+// provider but this app no longer holds the login transaction — it expired, or
+// the cookie is gone. Nothing is wrong with the user or the account: restarting
+// the login completes silently while the provider session is still valid. This
+// is the shape a sign-up hits, because creating an account and confirming the
+// e-mail takes longer than the transaction TTL.
+export type OAuthFlowFailure = "recoverable" | "final";
+
+export class OAuthFlowError extends Error {
+  readonly failure: OAuthFlowFailure;
+
+  constructor(message: string, failure: OAuthFlowFailure = "final") {
+    super(message);
+    this.failure = failure;
+  }
+}
 
 /** Development-only process-local OAuth transaction and token vault. */
 export class DevOAuthService {

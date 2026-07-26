@@ -30,6 +30,20 @@ export function demoInspectionCookieName(production = process.env.NODE_ENV === "
   return production ? "__Host-appsell_demo_inspection" : "appsell_demo_inspection";
 }
 
+// Marks that a recoverable callback failure already triggered one automatic
+// login restart. Without it, a failure that survives the restart would bounce
+// the browser between /auth/callback and /auth/login forever.
+export function recoveryCookieName(production = process.env.NODE_ENV === "production") {
+  return production ? "__Host-appsell_oauth_recovery" : "appsell_oauth_recovery";
+}
+
+export function recoveryCookieOptions(production = process.env.NODE_ENV === "production") {
+  return {
+    ...sessionCookieOptions(production),
+    maxAge: 120
+  };
+}
+
 export function sessionCookieOptions(production = process.env.NODE_ENV === "production") {
   return {
     httpOnly: true as const,

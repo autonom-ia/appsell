@@ -537,7 +537,11 @@ export class RedisOAuthService {
 
   async callback(input: { transactionId?: string; code?: string; state?: string }) {
     if (!input.transactionId || !input.code || !input.state) {
-      throw new OAuthFlowError("Missing callback parameters.");
+      // Provider params present but no transaction: the cookie expired or was
+      // dropped, which restarting the login fixes. Missing provider params is a
+      // malformed hit and stays final.
+      const recoverable = !input.transactionId && Boolean(input.code) && Boolean(input.state);
+      throw new OAuthFlowError("Missing callback parameters.", recoverable ? "recoverable" : "final");
     }
     const transactionId = input.transactionId;
     const code = input.code;
@@ -602,7 +606,7 @@ export class RedisOAuthService {
           assertSessionBundleRevision(existingSession, bundle);
           return sessionId;
         }
-        case "TRANSACTION_MISSING": throw new OAuthFlowError("Login transaction expired.");
+        case "TRANSACTION_MISSING": throw new OAuthFlowError("Login transaction expired.", "recoverable");
         case "INVALID_STATE": throw new OAuthFlowError("Invalid OAuth state.");
         case "CODE_MISSING": throw new OAuthFlowError("Authorization code expired or replayed.");
         case "CODE_INTEGRITY_MISMATCH": throw new OAuthVaultIntegrityError("OAuth authorization code integrity failure.");
@@ -622,7 +626,11 @@ export class RedisOAuthService {
     exchanger: IdentityAuthorizationCodeExchanger
   ) {
     if (!input.transactionId || !input.code || !input.state) {
-      throw new OAuthFlowError("Missing callback parameters.");
+      // Provider params present but no transaction: the cookie expired or was
+      // dropped, which restarting the login fixes. Missing provider params is a
+      // malformed hit and stays final.
+      const recoverable = !input.transactionId && Boolean(input.code) && Boolean(input.state);
+      throw new OAuthFlowError("Missing callback parameters.", recoverable ? "recoverable" : "final");
     }
     if (!exchanger || typeof exchanger.exchangeAuthorizationCode !== "function") {
       throw new OAuthFlowError("Identity OAuth provider is unavailable.");
@@ -638,7 +646,7 @@ export class RedisOAuthService {
         if (await this.isValidIdentityCallbackRetry(transactionId, sessionId, callbackFingerprint)) {
           return sessionId;
         }
-        throw new OAuthFlowError("Login transaction expired.");
+        throw new OAuthFlowError("Login transaction expired.", "recoverable");
       }
       const transaction = parseLoginTransaction(rawTransaction);
       if (!safeEqual(transaction.state, state)) throw new OAuthFlowError("Invalid OAuth state.");
@@ -668,7 +676,7 @@ export class RedisOAuthService {
           return this.waitForIdentityCallbackWinner(transactionId, sessionId, callbackFingerprint);
         case "AMBIGUOUS":
           throw new OAuthIdentityCallbackUnavailableError("Identity callback outcome is ambiguous.");
-        case "TRANSACTION_MISSING": throw new OAuthFlowError("Login transaction expired.");
+        case "TRANSACTION_MISSING": throw new OAuthFlowError("Login transaction expired.", "recoverable");
         case "INVALID_STATE": throw new OAuthFlowError("Invalid OAuth state.");
         case "TRANSACTION_INTEGRITY_ERROR":
         case "PAIR_INTEGRITY_ERROR":
