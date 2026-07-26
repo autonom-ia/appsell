@@ -133,7 +133,7 @@ def test_denied_repoint_is_recorded_with_the_bound_and_attempted_accounts(
         connection.commit()
 
         _context(connection, MANAGE, seller)
-        with pytest.raises(psycopg.errors.RaiseException) as refusal:
+        with pytest.raises(psycopg.Error) as refusal:
             connection.execute(
                 "select app_private.upsert_seller_payout_account(%s,'stripe',%s,"
                 "false,false,false,null,%s)",
@@ -226,7 +226,7 @@ def test_recording_refuses_when_no_binding_exists(sellers: dict[str, UUID]) -> N
     seller = sellers[SELLER_C_SLUG]
     with psycopg.connect(RUNTIME_URL) as connection:
         _context(connection, MANAGE, seller)
-        with pytest.raises(psycopg.errors.RaiseException) as refusal:
+        with pytest.raises(psycopg.Error) as refusal:
             connection.execute(
                 "select app_private.record_payout_repoint_denied(%s,'stripe',%s,%s)",
                 (seller, ACCOUNT_B, uuid4()),
