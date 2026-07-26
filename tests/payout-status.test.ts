@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { PAYOUT_STAGE_COPY, payoutStageFrom } from "../lib/payout-status";
@@ -67,6 +69,32 @@ describe("payoutStageFrom", () => {
       .flatMap((entry) => [entry.badge, entry.title, entry.description, entry.action ?? ""])
       .join(" ");
     expect(copyText.toLowerCase()).not.toContain("stripe");
+  });
+
+  it("never names the gateway in the connect card's own strings either", () => {
+    // The stage dictionary is only half the surface: the card hardcodes error
+    // messages, headings and the footnote. Auditing the SOURCE (minus its
+    // imports and code comments, which legitimately reference the SDK) is what
+    // keeps a future string edit from leaking the gateway name to producers.
+    const source = readFileSync(
+      join(__dirname, "..", "app", "components", "payout-connect-card.tsx"),
+      "utf8"
+    );
+    const withoutCodeReferences = source
+      .split("\n")
+      .filter((line) => {
+        const trimmed = line.trim();
+        return !trimmed.startsWith("//") && !trimmed.startsWith("*");
+      })
+      .join("\n")
+      // Legitimate CODE references, none of them user-visible: package
+      // specifiers, the env var name, and PascalCase SDK identifiers
+      // (StripeConnectInstance, ...). A leak into copy would be the word
+      // followed by space/punctuation, which none of these patterns match.
+      .replace(/@stripe\/[a-z-]+/g, "")
+      .replace(/APPSELL_STRIPE_[A-Z_]+/g, "")
+      .replace(/\bStripe(?=[A-Z])[A-Za-z]*/g, "");
+    expect(withoutCodeReferences).not.toMatch(/stripe/i);
   });
 
   it("offers an action exactly when the producer can act", () => {

@@ -63,8 +63,30 @@ export function PayoutConnectCard() {
   const [account, setAccount] = useState<PayoutAccountStatus | null>(null);
   const [connectInstance, setConnectInstance] = useState<StripeConnectInstance | null>(null);
   const csrfToken = useRef<string>("");
+  // Last-request-wins guard: loadStatus is reachable from mount, retry and the
+  // embedded-flow exit. Without it, whichever response resolves LAST would
+  // overwrite the state — possibly showing the producer a stale stage about
+  // their own money. Unmount bumps the sequence, so late responses are dropped
+  // instead of setting state on an unmounted component.
+  const loadSequence = useRef(0);
+  // Focus lands on the new section's heading after a USER-initiated
+  // transition (connect, exit, retry): the clicked control disappears from the
+  // DOM, and without this the keyboard/screen-reader user is dropped on
+  // <body> with no announcement of where the content went. Page-load
+  // transitions do not steal focus — only explicit actions arm the flag.
+  const headingRef = useRef<HTMLHeadingElement | null>(null);
+  const focusHeadingNext = useRef(false);
+
+  useEffect(() => {
+    if (focusHeadingNext.current && headingRef.current) {
+      focusHeadingNext.current = false;
+      headingRef.current.focus();
+    }
+  }, [state]);
 
   const loadStatus = useCallback(async (activeSeller: Seller) => {
+    const sequence = ++loadSequence.current;
+    const fresh = () => sequence === loadSequence.current;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8_000);
     try {
@@ -72,15 +94,17 @@ export function PayoutConnectCard() {
         cache: "no-store",
         signal: controller.signal
       });
+      if (!fresh()) return;
       if (response.status === 401) return setState("unauthorized");
       if (response.status === 503) return setState("unavailable");
       if (!response.ok) return setState("error");
       const payload = (await response.json()) as PayoutAccountResponse;
+      if (!fresh()) return;
       csrfToken.current = payload.csrf?.connect ?? "";
       setAccount(payload.payout_account);
       setState("ready");
     } catch {
-      setState("error");
+      if (fresh()) setState("error");
     } finally {
       clearTimeout(timeout);
     }
@@ -110,26 +134,41 @@ export function PayoutConnectCard() {
       .finally(() => clearTimeout(timeout));
     return () => {
       active = false;
+      loadSequence.current += 1;
       controller.abort();
       clearTimeout(timeout);
     };
   }, [loadStatus]);
 
   const fetchClientSecret = useCallback(async () => {
-    if (!seller) throw new Error("seller_unavailable");
-    const body = new FormData();
-    body.set("_csrf", csrfToken.current);
-    const response = await fetch(`/api/sellers/${seller.id}/payout-account`, {
-      method: "POST",
-      body
-    });
-    if (!response.ok) throw new Error("payout_session_unavailable");
-    const payload = (await response.json()) as { client_secret?: string };
-    if (!payload.client_secret) throw new Error("payout_session_unavailable");
-    return payload.client_secret;
+    // The embedded component re-invokes this whenever its session needs
+    // renewing — long after startOnboarding's try/catch returned. A failure
+    // here (expired session, rotated CSRF, network) must surface in OUR UI, in
+    // our words, not only inside the provider's frame: fall the card back to
+    // the error state, which offers the retry path, and still throw so the
+    // embedded component stops cleanly.
+    try {
+      if (!seller) throw new Error("seller_unavailable");
+      const body = new FormData();
+      body.set("_csrf", csrfToken.current);
+      const response = await fetch(`/api/sellers/${seller.id}/payout-account`, {
+        method: "POST",
+        body
+      });
+      if (!response.ok) throw new Error("payout_session_unavailable");
+      const payload = (await response.json()) as { client_secret?: string };
+      if (!payload.client_secret) throw new Error("payout_session_unavailable");
+      return payload.client_secret;
+    } catch (error) {
+      focusHeadingNext.current = true;
+      setConnectInstance(null);
+      setState("error");
+      throw error;
+    }
   }, [seller]);
 
   const startOnboarding = useCallback(async () => {
+    focusHeadingNext.current = true;
     const publishableKey = process.env.NEXT_PUBLIC_APPSELL_STRIPE_PUBLISHABLE_KEY ?? "";
     if (!publishableKey) return setState("unconfigured");
     setState("connecting");
@@ -156,6 +195,7 @@ export function PayoutConnectCard() {
   }, [fetchClientSecret]);
 
   const finishOnboarding = useCallback(() => {
+    focusHeadingNext.current = true;
     setConnectInstance(null);
     if (seller) {
       setState("loading");
@@ -177,7 +217,7 @@ export function PayoutConnectCard() {
     return (
       <section className="payout-card">
         <p className="eyebrow">Recebimentos</p>
-        <h2>Sessão expirada</h2>
+        <h2 ref={headingRef} tabIndex={-1}>Sessão expirada</h2>
         <p className="form-error">
           Sua sessão expirou. <a href="/auth/login">Entre novamente</a> para continuar.
         </p>
@@ -189,7 +229,7 @@ export function PayoutConnectCard() {
     return (
       <section className="payout-card">
         <p className="eyebrow">Recebimentos</p>
-        <h2>Crie seu espaço primeiro</h2>
+        <h2 ref={headingRef} tabIndex={-1}>Crie seu espaço primeiro</h2>
         <p>
           Para conectar uma conta de recebimentos, você precisa de um espaço de vendas
           ativo como proprietário.
@@ -205,7 +245,7 @@ export function PayoutConnectCard() {
     return (
       <section className="payout-card">
         <p className="eyebrow">Recebimentos</p>
-        <h2>Não foi possível carregar agora</h2>
+        <h2 ref={headingRef} tabIndex={-1}>Não foi possível carregar agora</h2>
         <p className="form-error">
           {state === "unconfigured"
             ? "A conexão de recebimentos ainda não está habilitada neste ambiente."
@@ -216,6 +256,7 @@ export function PayoutConnectCard() {
             type="button"
             className="secondary-button"
             onClick={() => {
+              focusHeadingNext.current = true;
               setState("loading");
               void loadStatus(seller);
             }}
@@ -231,7 +272,7 @@ export function PayoutConnectCard() {
     return (
       <section className="payout-card payout-onboarding">
         <p className="eyebrow">Recebimentos</p>
-        <h2>Verificação de identidade</h2>
+        <h2 ref={headingRef} tabIndex={-1}>Verificação de identidade</h2>
         <p>
           Preencha os dados abaixo sem sair da Autonom.ia. Você pode parar e continuar
           depois — nada se perde.
@@ -254,10 +295,10 @@ export function PayoutConnectCard() {
   const busy = state === "connecting";
 
   return (
-    <section className="payout-card">
+    <section className="payout-card" aria-busy={busy}>
       <p className="eyebrow">Recebimentos</p>
       <span className={`payout-badge payout-badge-${stage}`}>{copy.badge}</span>
-      <h2>{copy.title}</h2>
+      <h2 ref={headingRef} tabIndex={-1}>{copy.title}</h2>
       <p>{copy.description}</p>
       <ol className="payout-rail" aria-label="Etapas da conta de recebimentos">
         {STAGES.map((milestone, index) => {
