@@ -15,7 +15,11 @@ import {
 } from "../lib/identity-oauth-client.server";
 
 const LOGICAL_CLIENT_ID = "appsell-web";
-const EXPECTED_AUDIENCE = LOGICAL_CLIENT_ID;
+// In production the audience is the *Cognito* app client, shared across
+// products, and is NOT the logical client id sent to the token endpoint. Keeping
+// them equal here would let a regression that validated against the logical
+// client id pass unnoticed.
+const EXPECTED_AUDIENCE = "shared-cognito-client";
 const NONCE = "n".repeat(43);
 const STATE = "s".repeat(43);
 const CHALLENGE = "c".repeat(43);
@@ -479,6 +483,105 @@ describe("Identity OAuth server adapter", () => {
     await expect(exchange("valid", { APPSELL_IDENTITY_NONCE_MODE: "disabled" }))
       .rejects.toThrow("nonce");
   });
+
+  // Broker mode: the upstream relays an ID token minted by a third party for a
+  // different client, so it neither echoes our nonce nor omits one of its own.
+  // Both shapes must be accepted while every other check stays fail-closed.
+  test("broker omits the nonce from the authorization request", () => {
+    const client = new IdentityOAuthClient(parseIdentityOAuthConfig(environment({
+      APPSELL_IDENTITY_NONCE_MODE: "broker"
+    })));
+    const url = client.authorizationUrl({ state: STATE, codeChallenge: CHALLENGE });
+    expect(url.searchParams.has("nonce")).toBe(false);
+  });
+
+  test("broker accepts an ID token whose nonce was not the one we sent", async () => {
+    const bundle = await exchange("wrong-nonce", { APPSELL_IDENTITY_NONCE_MODE: "broker" });
+    expect(bundle).toMatchObject({
+      tokenType: "Bearer",
+      identity: { sub: SUBJECT, email: EMAIL, emailVerified: true }
+    });
+  });
+
+  test("broker accepts an ID token that omits the nonce entirely", async () => {
+    const bundle = await exchange("missing-nonce", { APPSELL_IDENTITY_NONCE_MODE: "broker" });
+    expect(bundle).toMatchObject({
+      tokenType: "Bearer",
+      identity: { sub: SUBJECT, email: EMAIL, emailVerified: true }
+    });
+  });
+
+  test.each([
+    "wrong-issuer",
+    "wrong-id-audience",
+    "wrong-access-audience",
+    "wrong-token-use",
+    "subject-mismatch",
+    "email-unverified",
+    "expired",
+    "wrong-signature"
+  ])("broker keeps every non-nonce check fail-closed: %s", async (scenario) => {
+    await expect(exchange(scenario, { APPSELL_IDENTITY_NONCE_MODE: "broker" }))
+      .rejects.toThrow(IdentityOAuthProtocolError);
+  });
+
+  test("accepts broker as a known nonce mode", () => {
+    expect(parseIdentityOAuthConfig(environment({
+      APPSELL_IDENTITY_NONCE_MODE: "broker"
+    })).nonceMode).toBe("broker");
+  });
+
+  test.each([
+    ["wrong-issuer", "claim iss"],
+    ["wrong-id-audience", "claim aud"]
+  ])("names the failed claim so a misconfigured %s is diagnosable", async (scenario, reason) => {
+    await expect(exchange(scenario)).rejects.toThrow(reason);
+  });
+
+  test("broker accepts a refreshed ID token that carries a nonce", async () => {
+    await expect(refresh("refresh-with-nonce", { APPSELL_IDENTITY_NONCE_MODE: "broker" }))
+      .resolves.toMatchObject({ kind: "success" });
+  });
+
+  test.each(["required", "disabled"])(
+    "%s still rejects a refreshed ID token that carries a nonce",
+    async (mode) => {
+      await expect(refresh("refresh-with-nonce", { APPSELL_IDENTITY_NONCE_MODE: mode }))
+        .resolves.toEqual({ kind: "ambiguous" });
+    }
+  );
+
+  test("the audience is the shared Cognito client, never the logical client id", () => {
+    const config = parseIdentityOAuthConfig(environment());
+    expect(config.expectedAudience).toBe(EXPECTED_AUDIENCE);
+    expect(config.logicalOAuthClientId).toBe(LOGICAL_CLIENT_ID);
+    // The two identifiers must not be conflated: tokens are validated against
+    // the shared Cognito audience while the token request carries the logical
+    // client id (the mock endpoint 400s if that ever swaps).
+    expect(config.expectedAudience).not.toBe(config.logicalOAuthClientId);
+  });
+
+  test("broker accepts the exact production shape: Cognito access token plus a foreign nonce", async () => {
+    const bundle = await exchange("cognito-broker-shape", {
+      APPSELL_IDENTITY_NONCE_MODE: "broker"
+    });
+    expect(bundle).toMatchObject({
+      tokenType: "Bearer",
+      identity: { sub: SUBJECT, email: EMAIL, emailVerified: true }
+    });
+  });
+
+  test("the same production shape is what fails today under required", async () => {
+    await expect(exchange("cognito-broker-shape")).rejects.toThrow("nonce");
+  });
+
+  test("never leaks the token or the expected value in the failure message", async () => {
+    const error = await exchange("wrong-issuer").catch((caught: unknown) => caught);
+    const message = String((error as Error).message);
+    expect(message).not.toContain(SUBJECT);
+    expect(message).not.toContain(EMAIL);
+    expect(message).not.toContain(LOGICAL_CLIENT_ID);
+  });
 });
 
 async function exchange(scenario: string, override: Record<string, string | undefined> = {}) {
@@ -526,7 +629,11 @@ async function tokenResponse(scenario: string, includeNonce = true) {
   const access = new SignJWT({
     token_use: scenario === "wrong-token-use" ? "id" : "access",
     // Cognito-shaped access tokens omit `aud` and carry the client in `client_id`.
-    ...(scenario === "cognito-access-client-id" ? { client_id: EXPECTED_AUDIENCE } : {}),
+    // "cognito-broker-shape" reproduces production exactly: Cognito access
+    // token shape plus an ID token whose nonce came from the broker's own flow.
+    ...(scenario === "cognito-access-client-id" || scenario === "cognito-broker-shape"
+      ? { client_id: EXPECTED_AUDIENCE }
+      : {}),
     ...(scenario === "cognito-wrong-client-id" ? { client_id: "other-client" } : {})
   })
     .setProtectedHeader(protectedHeader)
@@ -544,7 +651,9 @@ async function tokenResponse(scenario: string, includeNonce = true) {
       : scenario !== "email-unverified"
   };
   if (includeNonce && scenario !== "missing-nonce") {
-    idClaims.nonce = scenario === "wrong-nonce" ? "different-nonce-value-that-is-long-enough" : NONCE;
+    idClaims.nonce = scenario === "wrong-nonce" || scenario === "cognito-broker-shape"
+      ? "different-nonce-value-that-is-long-enough"
+      : NONCE;
   }
   if (!includeNonce && scenario === "refresh-with-nonce") idClaims.nonce = NONCE;
   const identity = new SignJWT(idClaims)
