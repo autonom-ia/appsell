@@ -12,7 +12,8 @@ const {
   getSession,
   verifyMutation,
   DomainApiError,
-  FakeStripeConfigError
+  FakeStripeConfigError,
+  stripePublishableKey
 } = vi.hoisted(() => {
   class FakeStripeConfigError extends Error {}
   class DomainApiError extends Error {
@@ -29,7 +30,8 @@ const {
     getSession: vi.fn(),
     verifyMutation: vi.fn(() => true),
     DomainApiError,
-    FakeStripeConfigError
+    FakeStripeConfigError,
+    stripePublishableKey: vi.fn(() => "pk_live_routetestplaceholder")
   };
 });
 
@@ -40,7 +42,8 @@ vi.mock("@/lib/stripe-connect.server", () => ({
 }));
 
 vi.mock("@/lib/stripe-config.server", () => ({
-  StripeConfigError: FakeStripeConfigError
+  StripeConfigError: FakeStripeConfigError,
+  stripePublishableKey
 }));
 
 vi.mock("@/lib/internal-api-client.server", () => ({
@@ -127,13 +130,33 @@ describe("payout-account route", () => {
     process.env = { ...originalEnvironment };
   });
 
-  it("GET returns the binding and mints the connect CSRF token", async () => {
+  it("GET returns the binding, the connect CSRF token and the publishable key", async () => {
+    // The publishable key travels in THIS response because a NEXT_PUBLIC_ var
+    // would be inlined at build time, and the deployment builds the image
+    // without it — the browser would get undefined and no producer could ever
+    // start the onboarding.
     readSellerPayoutAccount.mockResolvedValue({ payout_account: boundProjection() });
     const response = await GET(getRequest(), context);
     expect(response.status).toBe(200);
     const payload = await response.json();
     expect(payload.payout_account.provider_account_id).toBe(BOUND_ACCOUNT);
     expect(payload.csrf.connect).toBe("csrf-token-test");
+    expect(payload.publishable_key).toBe("pk_live_routetestplaceholder");
+  });
+
+  it("GET still reports the status when no publishable key is configured", async () => {
+    // Reading the payout status must not depend on the connect step being
+    // configured: the producer keeps seeing where they stand, and the card is
+    // the one that says the connect action is unavailable.
+    stripePublishableKey.mockImplementationOnce(() => {
+      throw new FakeStripeConfigError("invalid_stripe_publishable_key");
+    });
+    readSellerPayoutAccount.mockResolvedValue({ payout_account: boundProjection() });
+    const response = await GET(getRequest(), context);
+    expect(response.status).toBe(200);
+    const payload = await response.json();
+    expect(payload.publishable_key).toBeNull();
+    expect(payload.payout_account.provider_account_id).toBe(BOUND_ACCOUNT);
   });
 
   it("GET refuses without a session cookie", async () => {

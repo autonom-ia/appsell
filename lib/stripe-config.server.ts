@@ -15,6 +15,7 @@ export class StripeConfigError extends Error {}
 // Accept both restricted (rk_) and standard (sk_) secret keys, test or live.
 const SECRET_KEY = /^(sk|rk)_(test|live)_[A-Za-z0-9]+$/;
 const WEBHOOK_SECRET = /^whsec_[A-Za-z0-9]+$/;
+const PUBLISHABLE_KEY = /^pk_(test|live)_[A-Za-z0-9]+$/;
 
 export type StripeKeyMode = "test" | "live";
 
@@ -50,6 +51,31 @@ export function stripeKeyMode(
 ): StripeKeyMode {
   const secretKey = readSecretKey(environment);
   return secretKey.startsWith("sk_live_") || secretKey.startsWith("rk_live_") ? "live" : "test";
+}
+
+// The publishable key the BROWSER needs to boot the embedded onboarding.
+// Deliberately NOT a NEXT_PUBLIC_ variable: those are inlined into the bundle
+// at build time, so the value would have to be known when the image is built —
+// and the deployment builds the image from git without it, which would ship
+// `undefined` to the browser and strand every producer on "not configured".
+// Read here at request time and handed to the client by the payout-account
+// route instead, so the key can be replaced with an env change and a restart.
+//
+// Cross-checked against the secret key's mode: a test publishable key with a
+// live secret (or the reverse) fails inside the provider's frame with an opaque
+// message, in front of the producer. Fail here instead, by name.
+export function stripePublishableKey(
+  environment: Partial<Record<string, string | undefined>> = process.env
+): string {
+  const publishableKey = environment.APPSELL_STRIPE_PUBLISHABLE_KEY ?? "";
+  if (!PUBLISHABLE_KEY.test(publishableKey)) {
+    throw new StripeConfigError("invalid_stripe_publishable_key");
+  }
+  const mode = stripeKeyMode(environment);
+  if (!publishableKey.startsWith(`pk_${mode}_`)) {
+    throw new StripeConfigError("stripe_publishable_key_mode_mismatch");
+  }
+  return publishableKey;
 }
 
 export function stripeWebhookSecret(
