@@ -46,7 +46,8 @@ interface ApiRequest {
     "catalog.asset.archive" | "catalog.asset.policy.update" |
     "library.read" | "library.asset.read" | "library.asset.download" |
     "learning.player.read" | "learning.progress.write" |
-    "commerce.demo.checkout.read" | "commerce.demo.checkout.complete";
+    "commerce.demo.checkout.read" | "commerce.demo.checkout.complete" |
+    "commerce.payout.read" | "commerce.payout.manage";
   sellerOrganizationId?: string;
   inspectionToken?: string;
   body?: Record<string, unknown>;
@@ -197,6 +198,68 @@ export async function revokeDomainDemoInspection(
     inspectionToken,
     body: { reason }
   }) as Promise<{ inspection_id: string; status: "revoked"; revoked_at: string }>;
+}
+
+export interface SellerPayoutAccountProjection {
+  payout_account_id: string;
+  provider: string;
+  provider_account_id: string;
+  charges_enabled: boolean;
+  payouts_enabled: boolean;
+  details_submitted: boolean;
+  disabled_reason: string | null;
+  status_synced_at: string;
+}
+
+export async function readSellerPayoutAccount(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/sellers/${sellerOrganizationId}/payout-account`,
+    capability: "commerce.payout.read",
+    sellerOrganizationId
+  }) as Promise<{ payout_account: SellerPayoutAccountProjection | null }>;
+}
+
+// The provider_account_id sent here must come ONLY from an authenticated
+// accounts.create response (or a verified provider webhook) — never from
+// anything the browser submitted. The domain API enforces membership and the
+// database enforces capability + tenant + immutability, but the honesty of the
+// account id itself starts at this call site.
+export async function bindSellerPayoutAccount(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  input: {
+    provider: "stripe";
+    providerAccountId: string;
+    chargesEnabled: boolean;
+    payoutsEnabled: boolean;
+    detailsSubmitted: boolean;
+    disabledReason: string | null;
+  }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `/v1/me/sellers/${sellerOrganizationId}/payout-account`,
+    capability: "commerce.payout.manage",
+    sellerOrganizationId,
+    body: {
+      provider: input.provider,
+      provider_account_id: input.providerAccountId,
+      charges_enabled: input.chargesEnabled,
+      payouts_enabled: input.payoutsEnabled,
+      details_submitted: input.detailsSubmitted,
+      disabled_reason: input.disabledReason
+    }
+  }) as Promise<{
+    payout_account_id: string;
+    provider: string;
+    provider_account_id: string;
+  }>;
 }
 
 export async function listDomainProductDrafts(
