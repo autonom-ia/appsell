@@ -72,5 +72,10 @@ export function stripeConnectWebhookSecret(
   if (!WEBHOOK_SECRET.test(secret)) {
     throw new StripeConfigError("invalid_stripe_connect_webhook_secret");
   }
+  // Each endpoint must have its own secret: reusing the platform endpoint's
+  // secret here would let whoever holds one forge events for the other.
+  if (secret === (environment.APPSELL_STRIPE_WEBHOOK_SECRET ?? "")) {
+    throw new StripeConfigError("stripe_webhook_secret_reused");
+  }
   return secret;
 }

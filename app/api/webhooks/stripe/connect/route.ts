@@ -1,8 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import type Stripe from "stripe";
 
+import { findCheckoutProductByKey } from "@/lib/checkout-config";
 import { proxyCheckoutWebhook } from "@/lib/checkout-webhook-proxy.server";
-import { DomainApiError, syncPayoutAccountStatus } from "@/lib/internal-api-client.server";
+import {
+  DomainApiError,
+  readPublicStorefront,
+  resolveCheckoutPayoutDestination,
+  syncPayoutAccountStatus
+} from "@/lib/internal-api-client.server";
+import { parsePublicStorefront } from "@/lib/public-storefront";
 import { RawBodyTooLargeError, readLimitedRawBody } from "@/lib/limited-raw-body.server";
 import {
   SelfEmitPayloadError,
@@ -47,14 +54,19 @@ const PAID_EVENT_TYPES: ReadonlySet<string> = new Set([
 // stop Stripe from ever redelivering, and this app has no logger — one stderr
 // line is what lets reconciliation find what was dropped. Never logs personal
 // data; account ids are Stripe's own.
-function logIrreversibleDrop(input: { reason: string; event: Stripe.Event }) {
+function logIrreversibleDrop(input: {
+  reason: string;
+  event: Stripe.Event;
+  orderId?: string | null;
+}) {
   console.error(
     JSON.stringify({
       marker: "appsell.stripe_connect_webhook.dropped",
       reason: input.reason,
       stripe_event_id: input.event.id,
       stripe_event_type: input.event.type,
-      livemode: input.event.livemode
+      livemode: input.event.livemode,
+      order_id: input.orderId ?? null
     })
   );
 }
@@ -190,6 +202,61 @@ async function bridgePaidSession(event: Stripe.Event) {
     logIrreversibleDrop({ reason: "unrecognized_session", event });
     return NextResponse.json(
       { received: true, ignored: "unrecognized_session" },
+      { status: 200, headers: noStore() }
+    );
+  }
+
+  // TRUST BOUNDARY (security-review finding): the session's metadata is only
+  // as honest as whoever could mint a session on a connected account. Today
+  // producers cannot (stripe_dashboard "none", no API keys of their own), but
+  // that guarantee lives in ANOTHER file's configuration — so this route
+  // verifies, not assumes:
+  //   1. the product key maps back to exactly one seller/product;
+  //   2. the event's connected account IS that seller's bound destination —
+  //      a session minted on account A can never fulfil seller B's product;
+  //   3. the amount actually paid equals the offer's server-side price — a
+  //      forged R$0,50 session cannot grant a R$199 course.
+  const eventAccount = (event as { account?: unknown }).account;
+  if (typeof eventAccount !== "string" || !ACCOUNT_PATTERN.test(eventAccount)) {
+    logIrreversibleDrop({ reason: "paid_event_without_account", event, orderId: metadata.orderId });
+    return NextResponse.json(
+      { received: true, ignored: "paid_event_without_account" },
+      { status: 200, headers: noStore() }
+    );
+  }
+  const origin = findCheckoutProductByKey(metadata.financialProductKey);
+  if (!origin) {
+    // Deploy configuration, fixable within the retry window: non-2xx keeps
+    // Stripe redelivering while the map is restored.
+    return jsonError("product_not_mapped", 503);
+  }
+  let ownedAccount: string | null;
+  let expectedAmountMinor: number | null;
+  try {
+    const parsed = parsePublicStorefront(await readPublicStorefront(origin.sellerSlug));
+    if (!parsed) return jsonError("fulfillment_verification_unavailable", 503);
+    const product = parsed.products.find((candidate) => candidate.slug === origin.productSlug);
+    expectedAmountMinor = product?.price?.unit_amount_minor ?? null;
+    const destination = await resolveCheckoutPayoutDestination(parsed.seller.id);
+    ownedAccount = destination.payout_destination?.provider_account_id ?? null;
+  } catch {
+    return jsonError("fulfillment_verification_unavailable", 503);
+  }
+  if (ownedAccount !== eventAccount) {
+    logIrreversibleDrop({ reason: "account_product_mismatch", event, orderId: metadata.orderId });
+    return NextResponse.json(
+      { received: true, ignored: "account_product_mismatch" },
+      { status: 200, headers: noStore() }
+    );
+  }
+  if (
+    expectedAmountMinor === null ||
+    session.amount_total !== expectedAmountMinor ||
+    session.currency !== "brl"
+  ) {
+    logIrreversibleDrop({ reason: "amount_mismatch", event, orderId: metadata.orderId });
+    return NextResponse.json(
+      { received: true, ignored: "amount_mismatch" },
       { status: 200, headers: noStore() }
     );
   }

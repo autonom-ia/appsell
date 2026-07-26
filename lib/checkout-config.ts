@@ -38,6 +38,25 @@ export function resolveCheckoutProduct(sellerSlug: string, productSlug: string):
   return map.get(`${sellerSlug}/${productSlug}`) ?? null;
 }
 
+// Reverse lookup for the fulfillment webhooks: which seller/product does this
+// financial_product_key belong to. Ambiguity (the same key mapped to two
+// products) fails CLOSED — fulfilment must never guess which product a paid
+// session was for.
+export function findCheckoutProductByKey(
+  financialProductKey: string
+): { sellerSlug: string; productSlug: string } | null {
+  const map = parseCheckoutProductMap(process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON);
+  if (!map) return null;
+  let found: { sellerSlug: string; productSlug: string } | null = null;
+  for (const [key, mapping] of map) {
+    if (mapping.financialProductKey !== financialProductKey) continue;
+    if (found) return null;
+    const [sellerSlug, productSlug] = key.split("/") as [string, string];
+    found = { sellerSlug, productSlug };
+  }
+  return found;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
