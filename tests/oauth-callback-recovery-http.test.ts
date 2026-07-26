@@ -123,7 +123,7 @@ describe("final failures answer a person, not a JSON blob", () => {
     expect(await response.json()).toEqual({ error: "invalid_oauth_callback" });
   });
 
-  test("the page never varies by outcome, so it cannot probe configuration", async () => {
+  test("the visible page is identical for different outcomes", async () => {
     const invalid = await callRoute("?code=abc&state=xyz", {
       cookie: "__Host-appsell_oauth_recovery=1",
       accept: "text/html"

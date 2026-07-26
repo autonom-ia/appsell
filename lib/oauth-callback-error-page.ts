@@ -10,7 +10,9 @@
 
 const MESSAGES = {
   title: "Não foi possível concluir o acesso",
-  body: "Sua conta está registrada normalmente. Isso costuma acontecer quando a página de login ficou aberta por muito tempo. Entre de novo para continuar.",
+  // Neutral on purpose: this page also serves configuration and upstream
+  // failures, so it must not assert anything about the account.
+  body: "Entre novamente para continuar. Se o problema persistir, fale com o suporte.",
   cta: "Entrar novamente"
 } as const;
 

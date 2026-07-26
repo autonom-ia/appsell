@@ -1,4 +1,5 @@
 import { pkceChallenge, randomOpaque, safeEqual, sha256 } from "./crypto";
+import { transactionTtlSeconds } from "./cookies";
 
 type Clock = () => number;
 
@@ -69,7 +70,9 @@ export class DevOAuthService {
 
   constructor(
     private readonly now: Clock = Date.now,
-    private readonly transactionTtlMs = 5 * 60_000,
+    // Same window as production, from the same source, so the local runtime
+    // reproduces sign-up timing instead of expiring three times sooner.
+    private readonly transactionTtlMs = transactionTtlSeconds() * 1_000,
     private readonly codeTtlMs = 60_000,
     private readonly sessionTtlMs = 60 * 60_000,
     limits: ServiceLimits = {}

@@ -65,7 +65,11 @@ const MAX_TRANSACTION_TTL_SECONDS = 60 * 60;
 export function transactionTtlSeconds(
   environment: Partial<Record<string, string | undefined>> = process.env
 ): number {
-  const raw = Number(environment.APPSELL_OAUTH_TRANSACTION_TTL_SECONDS);
+  const configured = environment.APPSELL_OAUTH_TRANSACTION_TTL_SECONDS?.trim();
+  // Unset or blank means "use the default"; Number("") would be 0 and clamp to
+  // the minimum, silently shortening the window.
+  if (!configured) return DEFAULT_TRANSACTION_TTL_SECONDS;
+  const raw = Number(configured);
   if (!Number.isInteger(raw)) return DEFAULT_TRANSACTION_TTL_SECONDS;
   return Math.min(Math.max(raw, MIN_TRANSACTION_TTL_SECONDS), MAX_TRANSACTION_TTL_SECONDS);
 }

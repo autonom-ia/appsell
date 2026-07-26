@@ -6,7 +6,8 @@ import {
   sessionCookieName,
   sessionCookieOptions,
   transactionCookieName,
-  transactionCookieOptions
+  transactionCookieOptions,
+  transactionTtlSeconds
 } from "../lib/cookies";
 
 function complete(service: DevOAuthService) {
@@ -139,5 +140,31 @@ describe("OAuth BFF development spike", () => {
     expect(isSameOrigin(new Request("http://localhost:3000/auth/logout", { headers: { origin: "http://localhost:3000" } }))).toBe(true);
     expect(isSameOrigin(new Request("http://localhost:3000/auth/logout", { headers: { origin: "http://evil.local" } }))).toBe(false);
     expect(isSameOrigin(new Request("http://localhost:3000/auth/logout"))).toBe(false);
+  });
+});
+
+describe("login transaction window", () => {
+  it("defaults to 15 minutes, long enough for a sign-up with e-mail confirmation", () => {
+    expect(transactionTtlSeconds({})).toBe(900);
+  });
+
+  it.each([
+    ["unset", undefined],
+    ["blank", ""],
+    ["whitespace", "   "],
+    ["not a number", "abc"],
+    ["fractional", "90.5"]
+  ])("falls back to the default when the value is %s", (_label, value) => {
+    expect(transactionTtlSeconds({ APPSELL_OAUTH_TRANSACTION_TTL_SECONDS: value })).toBe(900);
+  });
+
+  it.each([
+    ["30", 60],
+    ["0", 60],
+    ["-10", 60],
+    ["7200", 3600],
+    ["1800", 1800]
+  ])("clamps %s into the supported window", (value, expected) => {
+    expect(transactionTtlSeconds({ APPSELL_OAUTH_TRANSACTION_TTL_SECONDS: value })).toBe(expected);
   });
 });
