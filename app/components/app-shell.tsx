@@ -33,6 +33,7 @@ interface AppShellProps {
 const navigation = [
   { href: "/dashboard", label: "Visão geral", mark: "home" },
   { href: "/products", label: "Produtos", mark: "products" },
+  { href: "/payouts", label: "Recebimentos", mark: "payouts" },
   { href: "/library", label: "Minha biblioteca", mark: "library" },
 ] as const;
 const recoveryNavigation = [{ href: "/", label: "Entrada", mark: "home" }] as const;
@@ -48,6 +49,7 @@ function NavIcon({ name }: { name: NavigationMark }) {
     home: <><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M9 21v-7h6v7"/></>,
     products: <><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M8 4v16M8 9h13"/></>,
     library: <><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/></>,
+    payouts: <><rect x="2.5" y="6" width="19" height="12.5" rx="2.5"/><path d="M2.5 10h19"/><path d="M6.5 15h4"/></>,
     inspection: <><path d="M12 3 4.5 6v5.5c0 4.8 3.1 8 7.5 9.5 4.4-1.5 7.5-4.7 7.5-9.5V6L12 3Z"/><path d="M9.5 12.2 11.2 14l3.6-4"/></>
   };
   return <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
