@@ -61,3 +61,16 @@ export function stripeWebhookSecret(
   }
   return secret;
 }
+
+// Connect events (account.updated for connected accounts) arrive at their own
+// endpoint with their own signing secret — Stripe scopes each webhook secret
+// to one endpoint, and the platform endpoint's secret cannot verify them.
+export function stripeConnectWebhookSecret(
+  environment: Partial<Record<string, string | undefined>> = process.env
+): string {
+  const secret = environment.APPSELL_STRIPE_CONNECT_WEBHOOK_SECRET ?? "";
+  if (!WEBHOOK_SECRET.test(secret)) {
+    throw new StripeConfigError("invalid_stripe_connect_webhook_secret");
+  }
+  return secret;
+}
