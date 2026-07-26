@@ -47,7 +47,7 @@ interface ApiRequest {
     "library.read" | "library.asset.read" | "library.asset.download" |
     "learning.player.read" | "learning.progress.write" |
     "commerce.demo.checkout.read" | "commerce.demo.checkout.complete" |
-    "commerce.payout.read" | "commerce.payout.manage";
+    "commerce.payout.read" | "commerce.payout.manage" | "commerce.payout.sync";
   sellerOrganizationId?: string;
   inspectionToken?: string;
   body?: Record<string, unknown>;
@@ -209,6 +209,79 @@ export interface SellerPayoutAccountProjection {
   details_submitted: boolean;
   disabled_reason: string | null;
   status_synced_at: string;
+}
+
+// Provider-driven status sync: the caller is the Stripe Connect webhook route,
+// which has NO user session. The envelope carries a fixed worker identity and
+// NO seller — the API pins both (payout_sync_routes) and the database resolves
+// the seller from the unique provider-account binding itself. The status flags
+// come from a signature-verified provider event, never from a browser.
+export async function syncPayoutAccountStatus(input: {
+  provider: "stripe";
+  providerAccountId: string;
+  chargesEnabled: boolean;
+  payoutsEnabled: boolean;
+  detailsSubmitted: boolean;
+  disabledReason: string | null;
+}) {
+  const config = internalServiceConfig();
+  const path = "/v1/internal/payout-accounts/sync";
+  const body = Buffer.from(
+    JSON.stringify({
+      provider: input.provider,
+      provider_account_id: input.providerAccountId,
+      charges_enabled: input.chargesEnabled,
+      payouts_enabled: input.payoutsEnabled,
+      details_submitted: input.detailsSubmitted,
+      disabled_reason: input.disabledReason
+    }),
+    "utf8"
+  );
+  const { token } = signInternalEnvelope(
+    {
+      sessionId: "stripe-connect-webhook",
+      sessionEpoch: 1,
+      identity: {
+        issuer: requiredEnvironment("APPSELL_IDENTITY_ISSUER"),
+        sub: "stripe-connect-webhook-v1"
+      },
+      capability: "commerce.payout.sync",
+      sellerOrganizationId: null,
+      method: "POST",
+      path,
+      query: Buffer.alloc(0),
+      body
+    },
+    config.signing
+  );
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3_000);
+  try {
+    const response = await fetch(new URL(path, config.apiOrigin), {
+      method: "POST",
+      body,
+      headers: {
+        "content-type": "application/json",
+        "x-appsell-internal-envelope": token,
+        "x-appsell-service-credential": config.serviceCredentialEncoded
+      },
+      cache: "no-store",
+      signal: controller.signal
+    });
+    const payload = await response.json().catch(() => null) as unknown;
+    if (!response.ok) {
+      const code = isRecord(payload) && typeof payload.detail === "string"
+        ? payload.detail
+        : "domain_api_error";
+      throw new DomainApiError(response.status, code);
+    }
+    return payload as { updated: boolean; payout_account_id?: string };
+  } catch (error) {
+    if (error instanceof DomainApiError) throw error;
+    throw new DomainApiError(503, "domain_api_unavailable");
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export async function readSellerPayoutAccount(

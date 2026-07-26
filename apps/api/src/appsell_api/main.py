@@ -19,6 +19,7 @@ from .fulfillment_worker import run_fulfillment_worker_loop
 from .internal_requests import InternalRequestAuthenticator
 from .learning_routes import router as learning_router
 from .payout_routes import router as payout_router
+from .payout_sync_routes import router as payout_sync_router
 from .platform_bootstrap_routes import router as platform_bootstrap_router
 from .platform_routes import router as platform_router
 from .public_routes import router as public_router
@@ -156,6 +157,7 @@ app.include_router(router)
 app.include_router(catalog_router)
 app.include_router(checkout_router)
 app.include_router(payout_router)
+app.include_router(payout_sync_router)
 app.include_router(learning_router)
 app.include_router(asset_router)
 app.include_router(platform_bootstrap_router)
