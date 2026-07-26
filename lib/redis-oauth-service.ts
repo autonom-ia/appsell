@@ -15,8 +15,8 @@ import {
   type TokenVault,
   type TokenVaultContext
 } from "./token-vault";
+import { transactionTtlSeconds } from "./cookies";
 
-const DEFAULT_TRANSACTION_TTL_MS = 5 * 60_000;
 const DEFAULT_CODE_TTL_MS = 60_000;
 const DEFAULT_SESSION_TTL_MS = 60 * 60_000;
 const DEFAULT_RATE_WINDOW_MS = 60_000;
@@ -431,7 +431,10 @@ export class RedisOAuthService {
   constructor(options: RedisOAuthOptions) {
     validateConfiguration(options);
     this.prefix = options.prefix;
-    this.transactionTtlMs = options.transactionTtlMs ?? DEFAULT_TRANSACTION_TTL_MS;
+    // Same source as the transaction cookie: both halves of the login window
+    // must expire together. Read per instance, not at module load, so the env
+    // value applies without a rebuild. See lib/cookies.ts.
+    this.transactionTtlMs = options.transactionTtlMs ?? transactionTtlSeconds() * 1_000;
     this.codeTtlMs = options.codeTtlMs ?? DEFAULT_CODE_TTL_MS;
     this.sessionTtlMs = options.sessionTtlMs ?? DEFAULT_SESSION_TTL_MS;
     this.rateWindowMs = options.rateWindowMs ?? DEFAULT_RATE_WINDOW_MS;
@@ -1322,7 +1325,7 @@ function validateConfiguration(options: RedisOAuthOptions) {
     );
   }
   for (const [label, value] of [
-    ["transaction TTL", options.transactionTtlMs ?? DEFAULT_TRANSACTION_TTL_MS],
+    ["transaction TTL", options.transactionTtlMs ?? transactionTtlSeconds() * 1_000],
     ["code TTL", options.codeTtlMs ?? DEFAULT_CODE_TTL_MS],
     ["session TTL", options.sessionTtlMs ?? DEFAULT_SESSION_TTL_MS],
     ["rate window", options.rateWindowMs ?? DEFAULT_RATE_WINDOW_MS],

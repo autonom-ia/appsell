@@ -121,11 +121,16 @@ export class DevOAuthService {
   }
 
   callback(input: { transactionId?: string; code?: string; state?: string }) {
-    if (!input.transactionId || !input.code || !input.state) throw new OAuthFlowError("Missing callback parameters.");
+    if (!input.transactionId || !input.code || !input.state) {
+      // Same classification as the production service, so the local runtime
+      // reproduces the sign-up recovery instead of diverging from it.
+      const recoverable = !input.transactionId && Boolean(input.code) && Boolean(input.state);
+      throw new OAuthFlowError("Missing callback parameters.", recoverable ? "recoverable" : "final");
+    }
     this.maintain();
     const transactionKey = sha256(input.transactionId);
     const transaction = this.transactions.get(transactionKey);
-    if (!transaction) throw new OAuthFlowError("Login transaction expired.");
+    if (!transaction) throw new OAuthFlowError("Login transaction expired.", "recoverable");
     if (!safeEqual(transaction.state, input.state)) throw new OAuthFlowError("Invalid OAuth state.");
 
     const codeKey = sha256(input.code);

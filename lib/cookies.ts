@@ -53,10 +53,27 @@ export function sessionCookieOptions(production = process.env.NODE_ENV === "prod
   };
 }
 
+// Must stay in sync with the Redis transaction TTL: the cookie and the stored
+// transaction are two halves of the same window. 5 minutes was shorter than a
+// sign-up takes (fill the form, wait for the confirmation e-mail, confirm), so
+// the default is 15 and the deployment can raise it without a code change.
+// Bounded to keep `state`/PKCE from living arbitrarily long.
+const DEFAULT_TRANSACTION_TTL_SECONDS = 15 * 60;
+const MIN_TRANSACTION_TTL_SECONDS = 60;
+const MAX_TRANSACTION_TTL_SECONDS = 60 * 60;
+
+export function transactionTtlSeconds(
+  environment: Partial<Record<string, string | undefined>> = process.env
+): number {
+  const raw = Number(environment.APPSELL_OAUTH_TRANSACTION_TTL_SECONDS);
+  if (!Number.isInteger(raw)) return DEFAULT_TRANSACTION_TTL_SECONDS;
+  return Math.min(Math.max(raw, MIN_TRANSACTION_TTL_SECONDS), MAX_TRANSACTION_TTL_SECONDS);
+}
+
 export function transactionCookieOptions(production = process.env.NODE_ENV === "production") {
   return {
     ...sessionCookieOptions(production),
-    maxAge: 300
+    maxAge: transactionTtlSeconds()
   };
 }
 

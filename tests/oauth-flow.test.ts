@@ -124,7 +124,9 @@ describe("OAuth BFF development spike", () => {
       secure: true,
       sameSite: "lax",
       path: "/",
-      maxAge: 300
+      // Configurable via APPSELL_OAUTH_TRANSACTION_TTL_SECONDS; the default must
+      // outlast a sign-up, which includes waiting for the confirmation e-mail.
+      maxAge: 900
     });
     expect(transactionCookieOptions(true)).not.toHaveProperty("domain");
     expect(productUpdateCsrfCookieName(false)).toBe("appsell_product_update_csrf");

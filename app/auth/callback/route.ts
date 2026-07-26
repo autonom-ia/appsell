@@ -36,6 +36,7 @@ import {
   isOAuthStoreUnavailable
 } from "@/lib/redis-oauth-service";
 import { shouldRestartLogin } from "@/lib/oauth-callback-recovery";
+import { isBrowserNavigation, renderCallbackErrorPage } from "@/lib/oauth-callback-error-page";
 import { configuredPublicOrigin } from "@/lib/public-origin";
 import { describeCallbackFailure, reportOAuthCallbackFailure } from "@/lib/oauth-callback-telemetry";
 import {
@@ -150,12 +151,21 @@ export async function GET(request: NextRequest) {
       retry.headers.set("cache-control", "no-store");
       return retry;
     }
-    const response = NextResponse.json({ error: outcome }, {
-      status: error instanceof DomainApiError
-        ? error.status
-        : configurationError || ambiguous || unavailable || isOAuthStoreUnavailable(error) ? 503 : 400,
-      headers: { "cache-control": "no-store" }
-    });
+    const status = error instanceof DomainApiError
+      ? error.status
+      : configurationError || ambiguous || unavailable || isOAuthStoreUnavailable(error) ? 503 : 400;
+    // A browser gets a readable page with a way back to the login; API clients
+    // keep the machine-readable body. The page text is identical for every
+    // outcome so it cannot be used to probe configuration.
+    const response = isBrowserNavigation(request.headers.get("accept"))
+      ? new NextResponse(renderCallbackErrorPage(outcome), {
+        status,
+        headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }
+      })
+      : NextResponse.json({ error: outcome }, {
+        status,
+        headers: { "cache-control": "no-store" }
+      });
     if (issuedSessionId) {
       expireTransactionCookie(response);
       response.cookies.set(sessionCookieName(), "", { ...sessionCookieOptions(), maxAge: 0 });

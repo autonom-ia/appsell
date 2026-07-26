@@ -43,10 +43,22 @@ test("admin demo crosses Auth and Foundation into the Autonom.ia Sell dashboard"
   expect(callbackUrls).toHaveLength(1);
   expect(page.url()).not.toMatch(/[?&](?:code|state)=/);
 
+  // Replaying the callback URL after a successful login no longer answers with
+  // raw JSON: the transaction cookie is already gone, which is the same shape a
+  // sign-up hits when it outlives the transaction, so the app restarts the
+  // login. What matters for security is unchanged and asserted here — the
+  // replay must not mint a session, and the spent code is never exchanged again.
   const replay = await page.request.get(callbackUrls[0]!, { maxRedirects: 0 });
-  expect(replay.status()).toBe(400);
-  expect(await replay.json()).toEqual({ error: "invalid_oauth_callback" });
+  expect(replay.status()).toBe(307);
+  expect(replay.headers()["location"]).toContain("/auth/login");
   expect(replay.headers()["set-cookie"] ?? "").not.toContain("appsell_session=");
+  expect(replay.headers()["set-cookie"] ?? "").toContain("appsell_oauth_recovery=");
+
+  // Second replay, now with the guard armed: falls through to the error body
+  // instead of bouncing the browser.
+  const guardedReplay = await page.request.get(callbackUrls[0]!, { maxRedirects: 0 });
+  expect(guardedReplay.status()).toBe(400);
+  expect(guardedReplay.headers()["set-cookie"] ?? "").not.toContain("appsell_session=");
 
   const concurrentRefresh = await Promise.all([
     refreshIdentitySession(page, 1),
