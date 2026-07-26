@@ -33,12 +33,11 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
-from sqlalchemy import bindparam, text
+from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .internal_requests import AuthenticatedInternalRequest, InternalRequestAuthenticator
-from .service_auth import ServiceEnvelope
 
 router = APIRouter(prefix="/v1/me/sellers")
 
@@ -49,13 +48,16 @@ _STRIPE_ACCOUNT_PATTERN = re.compile(r"^acct_[A-Za-z0-9]{1,250}$")
 _READ_ROLES = ("seller_owner", "seller_admin")
 _MANAGE_ROLES = ("seller_owner",)
 
+# Reads the caller's own role through a security-definer function, NOT with a
+# direct select on seller_membership: the runtime policy membership_self_select
+# (0002) admits that read only under the capability allowlist
+# audit.read/audit.write/seller.list/seller.read, so a direct select under
+# commerce.payout.read sees zero rows and every request 403s. Found in
+# production; the tests missed it because they mocked the session and never
+# crossed RLS with the real capability.
 _MEMBERSHIP_STATEMENT = text(
-    "select 1 from public.seller_membership membership "
-    "where membership.seller_organization_id = :seller_id "
-    "and membership.identity_user_id = :identity_user_id "
-    "and membership.status = 'active' "
-    "and membership.role in :roles"
-).bindparams(bindparam("roles", expanding=True))
+    "select app_private.resolve_seller_membership_role(:seller_id) as role"
+)
 
 
 class PayoutAccountBindBody(BaseModel):
@@ -107,7 +109,7 @@ async def read_payout_account(
     envelope = internal.envelope
     try:
         async with auth.domain_session(envelope) as session:
-            await _require_membership(session, envelope, seller_id, _READ_ROLES)
+            await _require_membership(session, seller_id, _READ_ROLES)
             row = (
                 (
                     await session.execute(
@@ -152,7 +154,7 @@ async def bind_payout_account(request: Request, seller_id: UUID) -> dict[str, An
     payout_account_id: Any = None
     try:
         async with auth.domain_session(envelope) as session:
-            await _require_membership(session, envelope, seller_id, _MANAGE_ROLES)
+            await _require_membership(session, seller_id, _MANAGE_ROLES)
             attempt = await session.begin_nested()
             try:
                 payout_account_id = await session.scalar(
@@ -211,25 +213,16 @@ async def bind_payout_account(request: Request, seller_id: UUID) -> dict[str, An
 
 async def _require_membership(
     session: AsyncSession,
-    envelope: ServiceEnvelope,
     seller_id: UUID,
     roles: tuple[str, ...],
 ) -> None:
     # The envelope's seller id only proves what the BFF echoed from the browser.
     # Membership is what makes the caller ENTITLED to this seller's payout
-    # surface. RLS (membership_self_select) already restricts the select to the
-    # caller's own membership rows, so this cannot leak other members.
-    row = (
-        await session.execute(
-            _MEMBERSHIP_STATEMENT,
-            {
-                "seller_id": seller_id,
-                "identity_user_id": envelope.identity.user_id,
-                "roles": list(roles),
-            },
-        )
-    ).first()
-    if row is None:
+    # surface. The function reports only the CALLER's own role, and only for the
+    # seller the request is already scoped to, so this cannot leak another
+    # member — and it refuses (42501) if the scope does not match.
+    membership_role = await session.scalar(_MEMBERSHIP_STATEMENT, {"seller_id": seller_id})
+    if membership_role not in roles:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
 
 
