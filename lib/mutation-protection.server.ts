@@ -23,6 +23,7 @@ export const COMPLETE_LEARNING_LESSON_CSRF_ACTION = "POST:/api/library/complete"
 export const START_DEMO_INSPECTION_CSRF_ACTION = "POST:/api/platform/demo-inspections";
 export const REVOKE_DEMO_INSPECTION_CSRF_ACTION = "POST:/api/platform/demo-inspections/revoke";
 export const COMPLETE_DEMO_CHECKOUT_CSRF_ACTION = "POST:/api/demo-checkout";
+export const CONNECT_PAYOUT_ACCOUNT_CSRF_ACTION = "POST:/api/sellers/payout-account";
 
 export function csrfTokenForSession(sessionId: string, action: string) {
   return deriveCsrfToken(sessionId, action, csrfKey());
