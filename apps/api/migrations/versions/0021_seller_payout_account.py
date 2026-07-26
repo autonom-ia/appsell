@@ -56,7 +56,7 @@ depends_on = None
 
 _RESOLVE_SIGNATURE = "app_private.resolve_seller_payout_account(uuid,text)"
 _UPSERT_SIGNATURE = (
-    "app_private.upsert_seller_payout_account(uuid,text,text,boolean,boolean,boolean,text)"
+    "app_private.upsert_seller_payout_account(uuid,text,text,boolean,boolean,boolean,text,uuid)"
 )
 
 # Readiness assertion appended to schema_ready(). Anchored on the base call that
@@ -67,7 +67,7 @@ _READY_ADDITION = """select app_private.schema_ready_base_0017()
             and to_regclass('public.seller_payout_account') is not null
             and to_regprocedure('app_private.resolve_seller_payout_account(uuid,text)') is not null
             and to_regprocedure(
-              'app_private.upsert_seller_payout_account(uuid,text,text,boolean,boolean,boolean,text)'
+              'app_private.upsert_seller_payout_account(uuid,text,text,boolean,boolean,boolean,text,uuid)'
             ) is not null"""
 
 
@@ -181,19 +181,22 @@ def upgrade() -> None:
         create function app_private.upsert_seller_payout_account(
           p_seller_organization_id uuid, p_provider text, p_provider_account_id text,
           p_charges_enabled boolean, p_payouts_enabled boolean,
-          p_details_submitted boolean, p_disabled_reason text
+          p_details_submitted boolean, p_disabled_reason text,
+          p_request_id uuid
         )
         returns uuid language plpgsql volatile security definer
         set search_path=pg_catalog,app_private,public,pg_temp as $$
-        declare existing_account_id uuid; existing_provider_account_id text;
+        declare existing_account_id uuid; previous record; actor uuid;
         begin
           if app_private.context_text('capability') is distinct from 'commerce.payout.manage'
             or p_seller_organization_id is null
             or app_private.context_uuid('seller_organization_id')
                is distinct from p_seller_organization_id
+            or p_request_id is null
           then
             raise exception 'payout account write denied' using errcode = '42501';
           end if;
+          actor := app_private.context_uuid('identity_user_id');
           -- Serializa por seller ANTES de olhar a tabela. `for update` sozinho nao
           -- resolve a corrida de PRIMEIRA gravacao: sem linha nao ha o que travar,
           -- e dois onboardings simultaneos do mesmo seller (retry do produtor
@@ -214,13 +217,15 @@ def upgrade() -> None:
               0
             )
           );
-          select account.id, account.provider_account_id
-            into existing_account_id, existing_provider_account_id
+          select account.id, account.provider_account_id,
+                 account.charges_enabled, account.payouts_enabled,
+                 account.details_submitted
+            into previous
             from public.seller_payout_account account
             where account.seller_organization_id = p_seller_organization_id
               and account.provider = p_provider
             for update;
-          if existing_account_id is null then
+          if previous.id is null then
             insert into public.seller_payout_account(
               seller_organization_id, provider, provider_account_id,
               charges_enabled, payouts_enabled, details_submitted, disabled_reason
@@ -229,12 +234,57 @@ def upgrade() -> None:
               coalesce(p_charges_enabled, false), coalesce(p_payouts_enabled, false),
               coalesce(p_details_submitted, false), p_disabled_reason
             ) returning id into existing_account_id;
+            -- Vinculo criado = decisao de PARA ONDE VAI O DINHEIRO deste seller.
+            -- Sem esta linha, ninguem sabe quem ligou qual conta nem quando.
+            insert into public.audit_event(
+              seller_organization_id, actor_identity_user_id, action, target_type,
+              target_id, result, request_id, metadata
+            ) values (
+              p_seller_organization_id, actor, 'payout_account.bound',
+              'seller_payout_account', existing_account_id, 'succeeded', p_request_id,
+              jsonb_build_object(
+                'provider', p_provider,
+                'provider_account_id', p_provider_account_id,
+                'charges_enabled', coalesce(p_charges_enabled, false),
+                'payouts_enabled', coalesce(p_payouts_enabled, false)
+              )
+            );
             return existing_account_id;
           end if;
-          if existing_provider_account_id is distinct from p_provider_account_id then
+          existing_account_id := previous.id;
+          if previous.provider_account_id is distinct from p_provider_account_id then
             raise exception
               'payout account already bound to a different provider account'
               using errcode = '55000';
+          end if;
+          -- So audita quando algo REALMENTE mudou: o account.updated do provedor
+          -- chega com frequencia e repetir evento identico viraria ruido que
+           -- esconde a mudanca que importa.
+          if (coalesce(p_charges_enabled, previous.charges_enabled),
+              coalesce(p_payouts_enabled, previous.payouts_enabled),
+              coalesce(p_details_submitted, previous.details_submitted))
+             is distinct from
+             (previous.charges_enabled, previous.payouts_enabled,
+              previous.details_submitted)
+          then
+            insert into public.audit_event(
+              seller_organization_id, actor_identity_user_id, action, target_type,
+              target_id, result, request_id, metadata
+            ) values (
+              p_seller_organization_id, actor, 'payout_account.status_changed',
+              'seller_payout_account', existing_account_id, 'succeeded', p_request_id,
+              jsonb_build_object(
+                'charges_enabled', jsonb_build_object(
+                  'from', previous.charges_enabled,
+                  'to', coalesce(p_charges_enabled, previous.charges_enabled)),
+                'payouts_enabled', jsonb_build_object(
+                  'from', previous.payouts_enabled,
+                  'to', coalesce(p_payouts_enabled, previous.payouts_enabled)),
+                'details_submitted', jsonb_build_object(
+                  'from', previous.details_submitted,
+                  'to', coalesce(p_details_submitted, previous.details_submitted))
+              )
+            );
           end if;
           update public.seller_payout_account
             set charges_enabled = coalesce(p_charges_enabled, charges_enabled),

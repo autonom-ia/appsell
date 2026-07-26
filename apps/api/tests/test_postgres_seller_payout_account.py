@@ -12,7 +12,8 @@ import hmac
 import os
 import threading
 import time
-from uuid import UUID
+from typing import cast
+from uuid import UUID, uuid4
 
 import psycopg
 import pytest
@@ -100,8 +101,8 @@ def _upsert(
     disabled: str | None = None,
 ) -> UUID:
     row = connection.execute(
-        "select app_private.upsert_seller_payout_account(%s,'stripe',%s,%s,%s,%s,%s)",
-        (seller, account, charges, payouts, details, disabled),
+        "select app_private.upsert_seller_payout_account(%s,'stripe',%s,%s,%s,%s,%s,%s)",
+        (seller, account, charges, payouts, details, disabled, uuid4()),
     ).fetchone()
     assert row is not None
     return UUID(str(row[0]))
@@ -384,3 +385,58 @@ def test_concurrent_first_bind_is_idempotent(sellers: dict[str, UUID]) -> None:
         ).fetchone()
     assert count is not None
     assert count[0] == 1
+
+
+def _audit(seller: UUID) -> list[tuple[str, str, str, dict[str, object]]]:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        rows = connection.execute(
+            "select action, result, target_type, metadata from public.audit_event "
+            "where seller_organization_id=%s and target_type='seller_payout_account' "
+            "order by created_at",
+            (seller,),
+        ).fetchall()
+        return [
+            (str(row[0]), str(row[1]), str(row[2]), cast("dict[str, object]", row[3]))
+            for row in rows
+        ]
+
+
+def test_binding_and_status_changes_leave_an_audit_trail(sellers: dict[str, UUID]) -> None:
+    # This table decides WHERE A SELLER'S MONEY GOES. Without an audit row nobody
+    # can answer "who bound which account, and when" after the fact — and the repo
+    # already audits far less consequential actions (seller.onboarded since 0002).
+    #
+    # Also asserts the NEGATIVE: a refresh that changes nothing must not write an
+    # event. account.updated arrives often, and repeating an identical row would
+    # bury the change that matters under noise.
+    assert RUNTIME_URL
+    seller = sellers[SELLER_B_SLUG]
+    with psycopg.connect(RUNTIME_URL) as connection:
+        _context(connection, MANAGE, seller)
+        _upsert(connection, seller, ACCOUNT_B)
+        connection.commit()
+
+    bound = _audit(seller)
+    assert [row[0] for row in bound] == ["payout_account.bound"]
+    assert bound[0][1] == "succeeded"
+    assert bound[0][3]["provider_account_id"] == ACCOUNT_B
+
+    with psycopg.connect(RUNTIME_URL) as connection:
+        _context(connection, MANAGE, seller)
+        _upsert(connection, seller, ACCOUNT_B, charges=True)
+        connection.commit()
+
+    changed = _audit(seller)
+    assert [row[0] for row in changed] == [
+        "payout_account.bound",
+        "payout_account.status_changed",
+    ]
+    assert changed[1][3]["charges_enabled"] == {"from": False, "to": True}
+
+    with psycopg.connect(RUNTIME_URL) as connection:
+        _context(connection, MANAGE, seller)
+        _upsert(connection, seller, ACCOUNT_B, charges=True)
+        connection.commit()
+
+    assert len(_audit(seller)) == 2, "refresh sem mudanca nao pode gerar evento"
