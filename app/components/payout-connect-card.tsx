@@ -30,6 +30,10 @@ interface Seller {
 
 interface PayoutAccountResponse {
   payout_account: (PayoutAccountStatus & { payout_account_id: string }) | null;
+  // Comes from the server on every status read (never inlined into the bundle,
+  // which would freeze it at build time). Null when the deployment has no valid
+  // key configured — the card then says the connect step is unavailable.
+  publishable_key?: string | null;
   csrf?: { connect?: string };
 }
 
@@ -63,6 +67,7 @@ export function PayoutConnectCard() {
   const [account, setAccount] = useState<PayoutAccountStatus | null>(null);
   const [connectInstance, setConnectInstance] = useState<StripeConnectInstance | null>(null);
   const csrfToken = useRef<string>("");
+  const publishableKey = useRef<string>("");
   // Last-request-wins guard: loadStatus is reachable from mount, retry and the
   // embedded-flow exit. Without it, whichever response resolves LAST would
   // overwrite the state — possibly showing the producer a stale stage about
@@ -101,6 +106,7 @@ export function PayoutConnectCard() {
       const payload = (await response.json()) as PayoutAccountResponse;
       if (!fresh()) return;
       csrfToken.current = payload.csrf?.connect ?? "";
+      publishableKey.current = payload.publishable_key ?? "";
       setAccount(payload.payout_account);
       setState("ready");
     } catch {
@@ -169,13 +175,15 @@ export function PayoutConnectCard() {
 
   const startOnboarding = useCallback(async () => {
     focusHeadingNext.current = true;
-    const publishableKey = process.env.NEXT_PUBLIC_APPSELL_STRIPE_PUBLISHABLE_KEY ?? "";
-    if (!publishableKey) return setState("unconfigured");
+    // Served by the payout-account route on every status read, so a key
+    // rotation reaches the browser on the next load — no rebuild involved.
+    const key = publishableKey.current;
+    if (!key) return setState("unconfigured");
     setState("connecting");
     try {
       const { loadConnectAndInitialize } = await import("@stripe/connect-js");
       const instance = loadConnectAndInitialize({
-        publishableKey,
+        publishableKey: key,
         fetchClientSecret,
         locale: "pt-BR",
         appearance: {

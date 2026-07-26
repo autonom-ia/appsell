@@ -16,7 +16,7 @@ import {
 import { oauthService } from "@/lib/oauth-service.server";
 import { configuredPublicOrigin, hasConfiguredOrigin } from "@/lib/public-origin";
 import { isOAuthStoreUnavailable } from "@/lib/redis-oauth-service";
-import { StripeConfigError } from "@/lib/stripe-config.server";
+import { StripeConfigError, stripePublishableKey } from "@/lib/stripe-config.server";
 import {
   createConnectedAccount,
   createOnboardingAccountSession,
@@ -54,6 +54,12 @@ export async function GET(request: NextRequest, context: RouteContext) {
     return NextResponse.json(
       {
         payout_account,
+        // The browser needs the publishable key to boot the embedded
+        // onboarding. It travels in this response — not inlined into the
+        // bundle — so replacing the key is an env change, not a rebuild. A
+        // missing or mode-mismatched key is not fatal to READING the status,
+        // so it degrades to null and the card explains it is not configured.
+        publishable_key: configuredPublishableKey(),
         csrf: {
           connect: csrfTokenForSession(
             authenticated.sessionId,
@@ -170,6 +176,18 @@ function sessionResponse(
     { client_secret: clientSecret, payout_account: payoutAccount },
     { headers: noStore() }
   );
+}
+
+// Absent or mode-mismatched key degrades to null: the producer can still SEE
+// their payout status, and the card says the connect step is unavailable
+// instead of the page failing to load.
+function configuredPublishableKey(): string | null {
+  try {
+    return stripePublishableKey();
+  } catch (error) {
+    if (error instanceof StripeConfigError) return null;
+    throw error;
+  }
 }
 
 function noStore() {

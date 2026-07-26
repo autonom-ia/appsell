@@ -52,7 +52,7 @@ tiver saldo — e escolhemos `stripe`.
 
 | Serviço | Var | Formato | Papel |
 |---------|-----|---------|-------|
-| `web` | `NEXT_PUBLIC_APPSELL_STRIPE_PUBLISHABLE_KEY` | `pk_live_…` | inicializa o componente embarcado no browser. **Pública por design** (vai no bundle); não é secret. |
+| `web` | `APPSELL_STRIPE_PUBLISHABLE_KEY` | `pk_live_…` | o servidor a entrega ao browser na resposta de `/api/sellers/<id>/payout-account`. **Pública por design**, mas **sem** o prefixo `NEXT_PUBLIC_`: esse prefixo embute no bundle em tempo de build, e a imagem é construída sem a var. O modo precisa casar com a chave secreta. |
 | `web` | `APPSELL_STRIPE_CONNECT_WEBHOOK_SECRET` | `whsec_…` | verifica a assinatura do endpoint Connect. **Tem de ser diferente** de `APPSELL_STRIPE_WEBHOOK_SECRET` — o código recusa reuso (`stripe_webhook_secret_reused`). |
 
 As já existentes (`APPSELL_STRIPE_SECRET_KEY`, `APPSELL_STRIPE_WEBHOOK_SECRET`,
@@ -74,7 +74,7 @@ As já existentes (`APPSELL_STRIPE_SECRET_KEY`, `APPSELL_STRIPE_WEBHOOK_SECRET`,
    **eventos de contas conectadas**, assinando `account.updated`,
    `checkout.session.completed` e `checkout.session.async_payment_succeeded`.
    O `whsec` só é devolvido na criação — gravar direto na env.
-4. **Env do `web`**: `+NEXT_PUBLIC_APPSELL_STRIPE_PUBLISHABLE_KEY`,
+4. **Env do `web`**: `+APPSELL_STRIPE_PUBLISHABLE_KEY`,
    `+APPSELL_STRIPE_CONNECT_WEBHOOK_SECRET`. Conferir que a contagem de vars
    **subiu** exatamente 2; se cair, abortar e restaurar o backup.
 5. **Redeploy `web` e `api`** (`services.app.deployService` — `services.app.deploy`
