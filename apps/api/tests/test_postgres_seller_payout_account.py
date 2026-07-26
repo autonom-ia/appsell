@@ -61,6 +61,16 @@ def sellers() -> dict[str, UUID]:
             "(select id from seller_organization where slug in (%s,%s,%s))",
             (SELLER_A_SLUG, SELLER_B_SLUG, SELLER_C_SLUG),
         )
+        # O actor precisa existir em identity_user: audit_event.actor_identity_user_id
+        # tem FK, e o upsert audita usando o identity_user_id do contexto. Sem esta
+        # linha, TODO upsert falharia com 23503 — e nenhuma outra suite cria este id.
+        connection.execute(
+            "insert into identity_user(id,identity_issuer,identity_sub,"
+            "email_normalized,email_verified) "
+            "values(%s,'https://identity.test.autonomia.site','payout-actor',"
+            "'payout.actor@example.test',true) on conflict do nothing",
+            (ACTOR,),
+        )
         created: dict[str, UUID] = {}
         for slug in (SELLER_A_SLUG, SELLER_B_SLUG, SELLER_C_SLUG):
             row = connection.execute(
