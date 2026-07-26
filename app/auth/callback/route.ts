@@ -34,6 +34,7 @@ import {
   isOAuthStoreUnavailable
 } from "@/lib/redis-oauth-service";
 import { configuredPublicOrigin } from "@/lib/public-origin";
+import { describeCallbackFailure, reportOAuthCallbackFailure } from "@/lib/oauth-callback-telemetry";
 import {
   DomainApiError,
   isDomainApiConfigured,
@@ -49,13 +50,23 @@ export const dynamic = "force-dynamic";
 export async function GET(request: NextRequest) {
   let issuedSessionId: string | undefined;
   let demoSuperadmin = false;
+  const callbackInput = {
+    transactionId: request.cookies.get(transactionCookieName())?.value,
+    code: request.nextUrl.searchParams.get("code") ?? undefined,
+    state: request.nextUrl.searchParams.get("state") ?? undefined
+  };
+  // A bare hit on the endpoint (scanner, stale tab) carries none of the
+  // identity-provider parameters and is not a failing login; recording those
+  // would let any anonymous caller amplify the log at will. A real return does
+  // carry them — including the failure shapes worth seeing, such as an expired
+  // transaction cookie (code+state, no cookie) or `error=access_denied`. This
+  // reduces noise without hiding genuine failures; it is not a rate limit, and
+  // a caller willing to forge parameters can still reach the log.
+  const looksLikeProviderReturn = Boolean(
+    callbackInput.code || callbackInput.state || request.nextUrl.searchParams.get("error")
+  );
   try {
     const mode = oauthRuntimeMode();
-    const callbackInput = {
-      transactionId: request.cookies.get(transactionCookieName())?.value,
-      code: request.nextUrl.searchParams.get("code") ?? undefined,
-      state: request.nextUrl.searchParams.get("state") ?? undefined
-    };
     const sessionId = mode === "identity"
       ? await oauthService().callbackIdentity(callbackInput, identityOAuthClient())
       : await oauthService().callback(callbackInput);
@@ -107,13 +118,18 @@ export async function GET(request: NextRequest) {
     const unavailable = error instanceof IdentityOAuthUnavailableError;
     const ambiguous = error instanceof IdentityOAuthAmbiguousError ||
       isOAuthIdentityCallbackUnavailable(error);
-    const response = NextResponse.json({
-      error: configurationError ? "identity_not_configured" :
-        ambiguous ? "identity_callback_ambiguous" :
-        unavailable ? "identity_unavailable" :
-        isOAuthStoreUnavailable(error) ? "oauth_store_unavailable" :
-        error instanceof DomainApiError ? error.code : "invalid_oauth_callback"
-    }, {
+    const outcome = configurationError ? "identity_not_configured" :
+      ambiguous ? "identity_callback_ambiguous" :
+      unavailable ? "identity_unavailable" :
+      isOAuthStoreUnavailable(error) ? "oauth_store_unavailable" :
+      error instanceof DomainApiError ? error.code : "invalid_oauth_callback";
+    // The response stays coarse on purpose; the reason goes to the server log
+    // so a misconfigured issuer/audience is diagnosable without exposing an
+    // oracle to an anonymous caller.
+    if (looksLikeProviderReturn) {
+      reportOAuthCallbackFailure({ outcome, reason: describeCallbackFailure(error) });
+    }
+    const response = NextResponse.json({ error: outcome }, {
       status: error instanceof DomainApiError
         ? error.status
         : configurationError || ambiguous || unavailable || isOAuthStoreUnavailable(error) ? 503 : 400,
