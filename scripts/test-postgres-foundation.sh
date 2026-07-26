@@ -51,7 +51,8 @@ export APPSELL_INTERNAL_ISSUER="appsell-bff-test"
 export APPSELL_INTERNAL_AUDIENCE="appsell-api-test"
 export APPSELL_IDENTITY_ISSUER="https://identity.test.autonomia.site"
 export APPSELL_INTERNAL_HMAC_KEYRING_B64_JSON="[{\"id\":\"test-v1\",\"key\":\"${internal_key_b64}\",\"active\":true}]"
-export APPSELL_API_CONTEXT_HMAC_KEY_B64="$(printf '%s' "$context_key" | xxd -r -p | base64)"
+APPSELL_API_CONTEXT_HMAC_KEY_B64="$(printf '%s' "$context_key" | xxd -r -p | base64)"
+export APPSELL_API_CONTEXT_HMAC_KEY_B64
 export APPSELL_SERVICE_CREDENTIAL_B64="$service_credential_b64"
 export APPSELL_API_WEBHOOK_LOCAL_KEYRING_B64_JSON="[{\"reference\":\"checkout-demo-v1\",\"key\":\"${webhook_secret_b64}\"}]"
 export APPSELL_TEST_WEBHOOK_SECRET_B64="$webhook_secret_b64"
@@ -169,6 +170,7 @@ uv run --project apps/api pytest \
   apps/api/tests/test_postgres_public_storefront.py \
   apps/api/tests/test_postgres_demo_checkout.py \
   apps/api/tests/test_postgres_webhook_ingress.py \
+  apps/api/tests/test_postgres_seller_payout_account.py \
   apps/api/tests/test_postgres_pdf_access_policy.py \
   apps/api/tests/test_postgres_pdf_preraster.py \
   apps/api/tests/test_internal_request_body_limit.py \
