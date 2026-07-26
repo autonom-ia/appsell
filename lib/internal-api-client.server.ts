@@ -47,7 +47,8 @@ interface ApiRequest {
     "library.read" | "library.asset.read" | "library.asset.download" |
     "learning.player.read" | "learning.progress.write" |
     "commerce.demo.checkout.read" | "commerce.demo.checkout.complete" |
-    "commerce.payout.read" | "commerce.payout.manage" | "commerce.payout.sync";
+    "commerce.payout.read" | "commerce.payout.manage" | "commerce.payout.sync" |
+    "commerce.checkout.destination";
   sellerOrganizationId?: string;
   inspectionToken?: string;
   body?: Record<string, unknown>;
@@ -276,6 +277,66 @@ export async function syncPayoutAccountStatus(input: {
       throw new DomainApiError(response.status, code);
     }
     return payload as { updated: boolean; payout_account_id?: string };
+  } catch (error) {
+    if (error instanceof DomainApiError) throw error;
+    throw new DomainApiError(503, "domain_api_unavailable");
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// The checkout worker's destination lookup: which provider account receives
+// this seller's money, and can it charge yet. Worker envelope (no user
+// session, no seller claim, pinned subject) — the seller id is the lookup key
+// from the storefront the buyer is viewing. An empty result means the seller
+// has NO destination and the caller must refuse the direct charge; it must
+// NEVER silently fall back to charging the platform's own account.
+export async function resolveCheckoutPayoutDestination(sellerOrganizationId: string) {
+  const config = internalServiceConfig();
+  const path = `/v1/internal/sellers/${sellerOrganizationId}/payout-destination`;
+  const { token } = signInternalEnvelope(
+    {
+      sessionId: "stripe-checkout",
+      sessionEpoch: 1,
+      identity: {
+        issuer: requiredEnvironment("APPSELL_IDENTITY_ISSUER"),
+        sub: "stripe-checkout-v1"
+      },
+      capability: "commerce.checkout.destination",
+      sellerOrganizationId: null,
+      method: "GET",
+      path,
+      query: Buffer.alloc(0),
+      body: Buffer.alloc(0)
+    },
+    config.signing
+  );
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3_000);
+  try {
+    const response = await fetch(new URL(path, config.apiOrigin), {
+      method: "GET",
+      headers: {
+        "x-appsell-internal-envelope": token,
+        "x-appsell-service-credential": config.serviceCredentialEncoded
+      },
+      cache: "no-store",
+      signal: controller.signal
+    });
+    const payload = await response.json().catch(() => null) as unknown;
+    if (!response.ok) {
+      const code = isRecord(payload) && typeof payload.detail === "string"
+        ? payload.detail
+        : "domain_api_error";
+      throw new DomainApiError(response.status, code);
+    }
+    return payload as {
+      payout_destination: {
+        provider: "stripe";
+        provider_account_id: string;
+        charges_enabled: boolean;
+      } | null;
+    };
   } catch (error) {
     if (error instanceof DomainApiError) throw error;
     throw new DomainApiError(503, "domain_api_unavailable");

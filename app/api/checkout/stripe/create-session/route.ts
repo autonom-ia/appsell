@@ -3,7 +3,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { isChargeableBuyerEmail, normalizeBuyerEmail } from "@/lib/buyer-email";
 import { resolveBuyerIdentity } from "@/lib/buyer-identity.server";
 import { resolveCheckoutProduct } from "@/lib/checkout-config";
-import { DomainApiError, readPublicStorefront } from "@/lib/internal-api-client.server";
+import { directChargeApplicationFeeCents } from "@/lib/checkout-fee";
+import {
+  DomainApiError,
+  readPublicStorefront,
+  resolveCheckoutPayoutDestination
+} from "@/lib/internal-api-client.server";
 import { RawBodyTooLargeError, readLimitedRawBody } from "@/lib/limited-raw-body.server";
 import { configuredPublicOrigin, hasConfiguredOrigin } from "@/lib/public-origin";
 import { parsePublicStorefront, type PublicStorefrontProduct } from "@/lib/public-storefront";
@@ -85,10 +90,34 @@ export async function POST(request: NextRequest) {
   if (identity.status === "mismatch") return jsonError("buyer_email_mismatch", 409);
   const buyerIdentitySub = identity.subject;
 
+  // WHOSE account takes this charge. A seller with a connected account sells
+  // in DIRECT CHARGE: the session is created ON the connected account and the
+  // platform keeps only application_fee_amount. FAIL-CLOSED on lookup failure:
+  // charging without knowing the destination would silently settle a
+  // producer's sale into the platform's own account — the custody model #143
+  // forbids. The platform-direct branch below survives ONLY for sellers with
+  // no destination at all (the legacy platform-owned test product).
+  let destination: { provider_account_id: string; charges_enabled: boolean } | null;
+  try {
+    destination = (await resolveCheckoutPayoutDestination(parsed.seller.id)).payout_destination;
+  } catch {
+    return jsonError("payout_destination_unavailable", 503);
+  }
+  if (destination && !destination.charges_enabled) {
+    // Bound but not yet cleared to charge: the provider would refuse anyway;
+    // failing here gives the storefront an actionable error instead of a
+    // provider error mid-payment.
+    return jsonError("seller_not_ready_to_charge", 409);
+  }
+
   let sessionUrl: string | null;
   try {
     const origin = configuredPublicOrigin();
     const orderId = crypto.randomUUID();
+    // Commission computed server-side from the pricing contract; never from
+    // the request. Only meaningful on a direct charge — the legacy platform
+    // branch has no connected account to split against.
+    const applicationFeeCents = destination ? directChargeApplicationFeeCents(amount) : null;
     const session = await stripeClient().checkout.sessions.create({
       mode: "payment",
       // Pinned, NOT inherited from the Dashboard payment-method configuration.
@@ -124,8 +153,16 @@ export async function POST(request: NextRequest) {
         // request never reaches this point; the webhook still treats "" and an
         // absent field as anonymous, for sessions created before this field.
         buyer_identity_sub: buyerIdentitySub
-      }
-    });
+      },
+      ...(applicationFeeCents === null
+        ? {}
+        : { payment_intent_data: { application_fee_amount: applicationFeeCents } })
+    },
+    // The Stripe-Account header is what makes this a DIRECT charge: the session
+    // lives on the producer's connected account, the money settles there, and
+    // the producer is the merchant of record — which is what makes "quem vendeu
+    // paga o chargeback" real instead of a policy hope.
+    destination ? { stripeAccount: destination.provider_account_id } : undefined);
     sessionUrl = session.url;
   } catch (error) {
     if (error instanceof StripeConfigError) return jsonError("stripe_not_configured", 503);

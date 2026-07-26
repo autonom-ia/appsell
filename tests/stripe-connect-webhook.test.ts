@@ -3,22 +3,31 @@ import type { NextRequest } from "next/server";
 
 vi.mock("server-only", () => ({}));
 
-const { constructEvent, syncPayoutAccountStatus, FakeStripeConfigError, keyMode, DomainApiError } =
-  vi.hoisted(() => {
-    class FakeStripeConfigError extends Error {}
-    class DomainApiError extends Error {
-      constructor(readonly status: number, readonly code: string) {
-        super(code);
-      }
+const {
+  constructEvent,
+  syncPayoutAccountStatus,
+  readPublicStorefront,
+  resolveCheckoutPayoutDestination,
+  FakeStripeConfigError,
+  keyMode,
+  DomainApiError
+} = vi.hoisted(() => {
+  class FakeStripeConfigError extends Error {}
+  class DomainApiError extends Error {
+    constructor(readonly status: number, readonly code: string) {
+      super(code);
     }
-    return {
-      constructEvent: vi.fn(),
-      syncPayoutAccountStatus: vi.fn(),
-      FakeStripeConfigError,
-      DomainApiError,
-      keyMode: vi.fn((): "live" | "test" => "live")
-    };
-  });
+  }
+  return {
+    constructEvent: vi.fn(),
+    syncPayoutAccountStatus: vi.fn(),
+    readPublicStorefront: vi.fn(),
+    resolveCheckoutPayoutDestination: vi.fn(),
+    FakeStripeConfigError,
+    DomainApiError,
+    keyMode: vi.fn((): "live" | "test" => "live")
+  };
+});
 
 vi.mock("@/lib/stripe-config.server", () => ({
   StripeConfigError: FakeStripeConfigError,
@@ -29,7 +38,26 @@ vi.mock("@/lib/stripe-config.server", () => ({
 
 vi.mock("@/lib/internal-api-client.server", () => ({
   syncPayoutAccountStatus,
+  readPublicStorefront,
+  resolveCheckoutPayoutDestination,
   DomainApiError
+}));
+
+const { proxyCheckoutWebhook } = vi.hoisted(() => ({
+  proxyCheckoutWebhook: vi.fn()
+}));
+
+vi.mock("@/lib/checkout-webhook-proxy.server", () => ({
+  proxyCheckoutWebhook
+}));
+
+vi.mock("@/lib/webhook-self-emit.server", () => ({
+  SelfEmitPayloadError: class SelfEmitPayloadError extends Error {},
+  buildCheckoutApprovedPayload: vi.fn((input: unknown) => input),
+  selfEmitEventId: vi.fn(() => "selfemit:order-1"),
+  selfEmitWebhookConfig: vi.fn(() => ({ endpointKey: "endpoint-key", secret: Buffer.alloc(32) })),
+  serializeCheckoutPayload: vi.fn(() => Buffer.from("{}")),
+  signSelfEmitWebhook: vi.fn(() => ({ "x-signature": "sig" }))
 }));
 
 import { POST } from "../app/api/webhooks/stripe/connect/route";
@@ -74,15 +102,75 @@ function request(body = "{}", signature: string | null = "sig_test"): NextReques
   }) as unknown as NextRequest;
 }
 
+const originalEnvironment = { ...process.env };
+
+function paidStorefront(unitAmountMinor = 19_900) {
+  return {
+    schema_version: 1,
+    seller: { id: "11111111-1111-4111-8111-111111111111", slug: "produtor", name: "Produtor" },
+    products: [
+      {
+        id: "22222222-2222-4222-8222-222222222222",
+        slug: "curso",
+        title: "Curso",
+        description: "Curso",
+        publication_id: "33333333-3333-4333-8333-333333333333",
+        publication_version: 1,
+        price: { unit_amount_minor: unitAmountMinor, currency: "BRL", billing_period: "one_time" }
+      }
+    ]
+  };
+}
+
+function paidSessionEvent(overrides: { amountTotal?: number; metadata?: Record<string, string> } = {}) {
+  return {
+    id: "evt_paid_1",
+    type: "checkout.session.completed",
+    livemode: true,
+    account: ACCOUNT,
+    created: 1_753_000_000,
+    data: {
+      object: {
+        id: "cs_live_1",
+        object: "checkout.session",
+        payment_status: "paid",
+        amount_total: overrides.amountTotal ?? 19_900,
+        currency: "brl",
+        metadata: overrides.metadata ?? {
+          financial_product_key: "prod_curso_real_v1",
+          order_id: "order-1",
+          buyer_email: "buyer@example.test",
+          buyer_identity_sub: "sub-1"
+        }
+      }
+    }
+  };
+}
+
 describe("POST /api/webhooks/stripe/connect", () => {
   beforeEach(() => {
+    process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON = JSON.stringify({
+      "produtor/curso": { financial_product_key: "prod_curso_real_v1" }
+    });
     constructEvent.mockReset();
     syncPayoutAccountStatus.mockReset();
     syncPayoutAccountStatus.mockResolvedValue({ updated: true, payout_account_id: "id" });
+    readPublicStorefront.mockReset();
+    readPublicStorefront.mockResolvedValue(paidStorefront());
+    resolveCheckoutPayoutDestination.mockReset();
+    resolveCheckoutPayoutDestination.mockResolvedValue({
+      payout_destination: {
+        provider: "stripe",
+        provider_account_id: ACCOUNT,
+        charges_enabled: true
+      }
+    });
     keyMode.mockReturnValue("live");
+    proxyCheckoutWebhook.mockReset();
   });
 
   afterEach(() => {
+    process.env = { ...originalEnvironment };
     vi.restoreAllMocks();
   });
 
@@ -166,6 +254,97 @@ describe("POST /api/webhooks/stripe/connect", () => {
     syncPayoutAccountStatus.mockRejectedValue(new DomainApiError(503, "domain_api_unavailable"));
     const response = await POST(request());
     expect(response.status).toBe(503);
+  });
+
+  it("bridges a paid direct-charge session into the signed self-emit", async () => {
+    proxyCheckoutWebhook.mockResolvedValue({ status: 202, payload: { status: "accepted" } });
+    constructEvent.mockReturnValue(paidSessionEvent());
+    const response = await POST(request());
+    expect(response.status).toBe(200);
+    expect((await response.json()).status).toBe("accepted");
+    expect(proxyCheckoutWebhook).toHaveBeenCalledTimes(1);
+    expect(syncPayoutAccountStatus).not.toHaveBeenCalled();
+  });
+
+  it("drops a paid session whose account is not the product's bound destination", async () => {
+    // A session minted on account A must never fulfil seller B's product —
+    // this is the code-level guarantee; stripe_dashboard:none is only the
+    // outer fence.
+    resolveCheckoutPayoutDestination.mockResolvedValue({
+      payout_destination: {
+        provider: "stripe",
+        provider_account_id: "acct_1SomeoneElse",
+        charges_enabled: true
+      }
+    });
+    constructEvent.mockReturnValue(paidSessionEvent());
+    const response = await POST(request());
+    expect(response.status).toBe(200);
+    expect((await response.json()).ignored).toBe("account_product_mismatch");
+    expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
+  });
+
+  it("drops a paid session whose amount does not match the offer's price", async () => {
+    // A forged 50-cent session cannot grant a R$199 course.
+    constructEvent.mockReturnValue(paidSessionEvent({ amountTotal: 50 }));
+    const response = await POST(request());
+    expect(response.status).toBe(200);
+    expect((await response.json()).ignored).toBe("amount_mismatch");
+    expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
+  });
+
+  it("asks for a retry when fulfillment verification is unavailable", async () => {
+    resolveCheckoutPayoutDestination.mockRejectedValue(
+      new DomainApiError(503, "domain_api_unavailable")
+    );
+    constructEvent.mockReturnValue(paidSessionEvent());
+    const response = await POST(request());
+    expect(response.status).toBe(503);
+    expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
+  });
+
+  it("acknowledges an unpaid session without emitting", async () => {
+    constructEvent.mockReturnValue({
+      id: "evt_unpaid_1",
+      type: "checkout.session.completed",
+      livemode: true,
+      account: ACCOUNT,
+      created: 1_753_000_000,
+      data: {
+        object: {
+          id: "cs_live_2",
+          object: "checkout.session",
+          payment_status: "unpaid",
+          metadata: {}
+        }
+      }
+    });
+    const response = await POST(request());
+    expect(response.status).toBe(200);
+    expect((await response.json()).ignored).toBe("not_paid");
+    expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
+  });
+
+  it("drops a paid session missing create-session's metadata contract", async () => {
+    constructEvent.mockReturnValue({
+      id: "evt_foreign_1",
+      type: "checkout.session.completed",
+      livemode: true,
+      account: ACCOUNT,
+      created: 1_753_000_000,
+      data: {
+        object: {
+          id: "cs_live_3",
+          object: "checkout.session",
+          payment_status: "paid",
+          metadata: {}
+        }
+      }
+    });
+    const response = await POST(request());
+    expect(response.status).toBe(200);
+    expect((await response.json()).ignored).toBe("unrecognized_session");
+    expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
   });
 
   it("acknowledges a deterministic rejection instead of retrying forever", async () => {
