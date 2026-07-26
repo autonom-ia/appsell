@@ -711,3 +711,28 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 
 @media (min-width: 1280px) { .app-shell { grid-template-columns: 270px minmax(0,1fr); } }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
+
+/* Recebimentos — "Conectar conta Autonom.ia" (peça 3 do #143). O trilho de
+   marcos codifica a sequência real do onboarding: criar conta → verificação →
+   pronta para receber. O marco atual pulsa de leve; reduced-motion desliga. */
+.payout-card { min-width: 0; max-width: 720px; display: grid; gap: 14px; padding: 26px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); box-shadow: var(--shadow-sm); }
+.payout-card h2 { margin: 0; }
+.payout-card > p { margin: 0; color: var(--text); max-width: 62ch; }
+.payout-badge { justify-self: start; display: inline-flex; align-items: center; min-height: 28px; padding: 4px 12px; border-radius: 99px; font-size: .7rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.payout-badge-not_connected { background: rgba(100,116,139,.12); color: var(--soft); }
+.payout-badge-verification_pending, .payout-badge-action_required { background: rgba(154,103,0,.12); color: var(--warning); }
+.payout-badge-under_review { background: rgba(37,99,184,.12); color: var(--bright); }
+.payout-badge-active { background: rgba(8,122,75,.12); color: var(--success); }
+.payout-rail { display: flex; flex-wrap: wrap; gap: 18px; margin: 4px 0 2px; padding: 0; list-style: none; }
+.payout-step { display: flex; align-items: center; gap: 8px; color: var(--soft); font-size: .85rem; font-weight: 650; }
+.payout-step-dot { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--border); background: var(--surface); }
+.payout-step.done { color: var(--success); }
+.payout-step.done .payout-step-dot { border-color: var(--success); background: var(--success); }
+.payout-step.current { color: var(--blue); }
+.payout-step.current .payout-step-dot { border-color: var(--bright); background: rgba(59,130,246,.2); animation: payout-pulse 1.6s ease-in-out infinite; }
+@keyframes payout-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(59,130,246,.28); } 50% { box-shadow: 0 0 0 6px rgba(59,130,246,0); } }
+.payout-card .primary-button { justify-self: start; }
+.payout-card .secondary-button { justify-self: start; }
+.payout-embedded { min-height: 320px; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px; background: var(--surface); }
+.payout-skeleton { height: 132px; border-radius: var(--radius-sm); background: linear-gradient(100deg, rgba(100,116,139,.1) 40%, rgba(100,116,139,.18) 50%, rgba(100,116,139,.1) 60%); background-size: 200% 100%; animation: payout-shimmer 1.4s linear infinite; }
+@keyframes payout-shimmer { to { background-position: -200% 0; } }
