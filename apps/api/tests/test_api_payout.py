@@ -152,12 +152,12 @@ def bind_body(**overrides: Any) -> bytes:
     return json.dumps(value, separators=(",", ":")).encode()
 
 
-def member() -> FakeResult:
-    return FakeResult(first=(1,))
+def member() -> str:
+    return "seller_owner"
 
 
-def not_a_member() -> FakeResult:
-    return FakeResult(first=None)
+def not_a_member() -> str | None:
+    return None
 
 
 @pytest.mark.asyncio
@@ -172,8 +172,8 @@ async def test_bind_checks_membership_then_upserts_with_the_envelope_request_id(
     assert response.json()["payout_account_id"] == str(payout_account_id)
     assert auth.capabilities == ["commerce.payout.manage"]
     membership_sql, membership_params = auth.session.calls[0]
-    assert "seller_membership" in membership_sql
-    assert membership_params["roles"] == ["seller_owner"]
+    assert "resolve_seller_membership_role" in membership_sql
+    assert membership_params["seller_id"] == SELLER_ID
     upsert_sql, upsert_params = auth.session.calls[1]
     assert "upsert_seller_payout_account" in upsert_sql
     assert upsert_params["provider_account_id"] == ACCOUNT
@@ -287,7 +287,7 @@ async def test_read_returns_the_cached_binding_for_a_member() -> None:
     assert payload["status_synced_at"] == synced.isoformat()
     assert auth.capabilities == ["commerce.payout.read"]
     _, membership_params = auth.session.calls[0]
-    assert membership_params["roles"] == ["seller_owner", "seller_admin"]
+    assert membership_params["seller_id"] == SELLER_ID
 
 
 @pytest.mark.asyncio
