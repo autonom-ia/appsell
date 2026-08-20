@@ -50,6 +50,7 @@ FULL_EXACT = {
     "compose.yaml",
     "package.json",
     "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
 }
 WEB_EXACT = {
     "eslint.config.mjs",
@@ -282,6 +283,9 @@ def classify_paths(paths: Iterable[str]) -> dict[str, object]:
 
     if full or unknown_paths:
         safe = _full_route(fallback=bool(unknown_paths))
+        safe["workflow"] = bool(route["workflow"]) or any(
+            path.startswith(".github/workflows/") for path in normalized
+        )
         safe["unknown_paths"] = unknown_paths
         safe["changed_paths"] = normalized
         safe["changed_count"] = len(normalized)

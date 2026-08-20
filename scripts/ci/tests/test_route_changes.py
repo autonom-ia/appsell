@@ -74,6 +74,7 @@ class ClassifyPathsTests(unittest.TestCase):
         route = classify_paths(["compose.yaml"])
 
         self.assertTrue(route["full"])
+        self.assertFalse(route["workflow"])
         for scope in (
             "web",
             "api",
@@ -92,7 +93,27 @@ class ClassifyPathsTests(unittest.TestCase):
 
         self.assertTrue(route["unknown"])
         self.assertTrue(route["full"])
+        self.assertFalse(route["workflow"])
         self.assertIn("new-root-control.conf", route["unknown_paths"])
+
+    def test_pnpm_workspace_change_runs_full_product_certification(self) -> None:
+        route = classify_paths(["pnpm-workspace.yaml"])
+
+        self.assertTrue(route["full"])
+        self.assertFalse(route["workflow"])
+        self.assertFalse(route["unknown"])
+        for scope in (
+            "web",
+            "api",
+            "postgres",
+            "storage",
+            "openbao",
+            "capacity",
+            "image_web",
+            "image_api",
+            "image_bootstrap",
+        ):
+            self.assertTrue(route[scope], scope)
 
     def test_harness_only_change_runs_workflow_lint_without_product_ci(self) -> None:
         route = classify_paths(
@@ -148,6 +169,7 @@ class ClassifyPathsTests(unittest.TestCase):
 
         self.assertTrue(route["unknown"])
         self.assertTrue(route["full"])
+        self.assertTrue(route["workflow"])
 
     def test_all_playwright_configs_route_web(self) -> None:
         route = classify_paths(
