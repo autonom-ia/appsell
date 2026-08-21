@@ -504,5 +504,8 @@ async function stopBff(process: ChildProcess) {
   const exited = new Promise<void>((resolve) => process.once("exit", () => resolve()));
   process.kill("SIGTERM");
   await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, 2_000))]);
-  if (process.exitCode === null) process.kill("SIGKILL");
+  if (process.exitCode === null) {
+    process.kill("SIGKILL");
+    await exited;
+  }
 }

@@ -318,7 +318,10 @@ async function stopBff(process: ChildProcess) {
     new Promise<void>((resolve) => process.once("exit", () => resolve())),
     new Promise<void>((resolve) => setTimeout(resolve, 5_000))
   ]);
-  if (process.exitCode === null) process.kill("SIGKILL");
+  if (process.exitCode === null) {
+    process.kill("SIGKILL");
+    await new Promise<void>((resolve) => process.once("exit", () => resolve()));
+  }
 }
 
 async function expectNoHorizontalOverflow(page: Page) {
