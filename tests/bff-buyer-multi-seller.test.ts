@@ -562,7 +562,12 @@ function startBff(port: number, distDir: string, shared: Record<string, string>)
   return spawn(
     process.execPath,
     [join(process.cwd(), "node_modules/next/dist/bin/next"), "dev", "-H", "127.0.0.1", "-p", String(port)],
-    { cwd: process.cwd(), env: { ...process.env, ...shared, APPSELL_NEXT_DIST_DIR: distDir }, stdio: ["ignore", "pipe", "pipe"] }
+    {
+      cwd: process.cwd(),
+      env: { ...process.env, ...shared, APPSELL_NEXT_DIST_DIR: distDir },
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32"
+    }
   );
 }
 
@@ -600,13 +605,30 @@ function requiredEnvironment(name: string) {
   return value;
 }
 
-async function stopBff(process: ChildProcess) {
-  if (process.exitCode !== null) return;
-  const exited = new Promise<void>((resolve) => process.once("exit", () => resolve()));
-  process.kill("SIGTERM");
+function signalBff(child: ChildProcess, signal: NodeJS.Signals) {
+  if (child.pid === undefined) return;
+  if (process.platform !== "win32") {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    }
+  }
+  try {
+    child.kill(signal);
+  } catch {
+    // The process may have exited while cleanup was in progress.
+  }
+}
+
+async function stopBff(child: ChildProcess) {
+  if (child.exitCode !== null) return;
+  const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+  signalBff(child, "SIGTERM");
   await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, 2_000))]);
-  if (process.exitCode === null) {
-    process.kill("SIGKILL");
+  if (child.exitCode === null) {
+    signalBff(child, "SIGKILL");
     await exited;
   }
 }
