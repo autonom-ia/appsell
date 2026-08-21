@@ -35,10 +35,22 @@ webhook_bff_csrf_b64="$(openssl rand -base64 32)"
 webhook_bff_vault_b64="$(openssl rand -base64 32)"
 multi_seller_fixture="$(mktemp -t appsell-buyer-multi-seller.XXXXXX.json)"
 multi_seller_report="tmp/buyer-multi-seller.json"
+next_env_snapshot="$(mktemp -t appsell-next-env.XXXXXX)"
+tsconfig_snapshot="$(mktemp -t appsell-tsconfig.XXXXXX)"
+cp -- next-env.d.ts "$next_env_snapshot"
+cp -- tsconfig.json "$tsconfig_snapshot"
+
+restore_test_generated_files() {
+  cp -- "$next_env_snapshot" next-env.d.ts
+  cp -- "$tsconfig_snapshot" tsconfig.json
+}
 
 cleanup() {
+  local original_status=$?
+  restore_test_generated_files || original_status=1
   docker compose -p "$project" down --rmi local --volumes --remove-orphans >/dev/null 2>&1 || true
-  rm -f -- "$multi_seller_fixture"
+  rm -f -- "$multi_seller_fixture" "$next_env_snapshot" "$tsconfig_snapshot" || original_status=1
+  return "$original_status"
 }
 trap cleanup EXIT
 
@@ -245,4 +257,5 @@ python3 scripts/assert_capacity_artifact_safe.py "$multi_seller_report"
 unset APPSELL_MULTI_SELLER_ENABLED APPSELL_MULTI_SELLER_DATABASE_URL \
   APPSELL_MULTI_SELLER_MANIFEST APPSELL_MULTI_SELLER_REPORT \
   APPSELL_API_ENVIRONMENT APPSELL_API_IDENTITY_ISSUER
+restore_test_generated_files
 git diff --exit-code -- next-env.d.ts tsconfig.json
