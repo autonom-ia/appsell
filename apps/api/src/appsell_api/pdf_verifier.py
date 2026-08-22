@@ -41,6 +41,8 @@ _ACTIVE_NAMES = frozenset(
     }
 )
 _REMOTE_BLOCKED_NAMES = _ACTIVE_NAMES | {"/ObjStm"}
+_MAX_PDF_OBJECTS = 20_000
+_MAX_PDF_GRAPH_VISITS = 100_000
 
 
 class PdfRejected(ValueError):
@@ -282,7 +284,7 @@ def _bounded_file_digest(path: Path) -> tuple[int, str]:
 def _reject_active_objects(
     document: pikepdf.Pdf, *, allowed_active_names: frozenset[str] = frozenset()
 ) -> None:
-    if len(document.objects) > 20_000:
+    if len(document.objects) > _MAX_PDF_OBJECTS:
         raise PdfRejected("PDF object graph is too large")
     stack = [document.Root]
     stack.extend(document.objects)
@@ -296,10 +298,10 @@ def _reject_active_objects(
                 continue
             seen_indirect.add(object_generation)
         inspected += 1
-        if inspected > 20_000:
+        if inspected > _MAX_PDF_GRAPH_VISITS:
             raise PdfRejected("PDF object graph is too large")
         if isinstance(item, pikepdf.Dictionary):
-            if len(stack) + len(item) > 20_000:
+            if len(stack) + len(item) > _MAX_PDF_GRAPH_VISITS:
                 raise PdfRejected("PDF object graph is too large")
             names = {str(name) for name in item.keys()}
             blocked = (names & _ACTIVE_NAMES) - allowed_active_names
@@ -315,7 +317,7 @@ def _reject_active_objects(
                     raise PdfRejected(f"PDF contains active object: {active_value}")
             stack.extend(item[name] for name in item.keys())
         elif isinstance(item, pikepdf.Array):
-            if len(stack) + len(item) > 20_000:
+            if len(stack) + len(item) > _MAX_PDF_GRAPH_VISITS:
                 raise PdfRejected("PDF object graph is too large")
             stack.extend(item)
 

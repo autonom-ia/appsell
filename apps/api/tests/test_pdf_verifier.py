@@ -104,8 +104,12 @@ def test_sanitizes_uri_actions_from_normalized_pdf(tmp_path: Path) -> None:
     with pikepdf.Pdf.open(source) as document:
         document.Root["/ActiveFixture"] = pikepdf.Dictionary(
             {
-                "/S": pikepdf.Name("/URI"),
-                "/URI": pikepdf.String("https://example.test/course"),
+                "/A": pikepdf.Dictionary(
+                    {
+                        "/S": pikepdf.Name("/URI"),
+                        "/URI": pikepdf.String("https://example.test/course"),
+                    }
+                )
             }
         )
         document.save(output)
