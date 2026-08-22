@@ -251,7 +251,9 @@ def build_pdf_page_archive(
             pages: list[PdfPage] = []
             total_bytes = 0
             for page_number in range(1, verified.page_count + 1):
-                candidate = output_prefix.with_name(f"page-{page_number}.png")
+                candidate = _pdftoppm_page_path(
+                    output_prefix, page_number=page_number, page_count=verified.page_count
+                )
                 page = _sanitize_page(candidate, page_number, raster_directory)
                 total_bytes += page.byte_size
                 if total_bytes > MAX_PDF_DERIVATIVE_BYTES:
@@ -300,6 +302,11 @@ def build_pdf_page_archive(
         raise
     except PdfRejected as error:
         raise PdfDerivativeRejected("PDF verification failed before rasterization") from error
+
+
+def _pdftoppm_page_path(output_prefix: Path, *, page_number: int, page_count: int) -> Path:
+    number_width = len(str(page_count))
+    return output_prefix.with_name(f"{output_prefix.name}-{page_number:0{number_width}d}.png")
 
 
 @contextmanager

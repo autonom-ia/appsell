@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pikepdf
 
-from .pdf_verifier import PdfRejected, _validate_pdf_structure
+from .pdf_verifier import _MAX_PDF_GRAPH_VISITS, PdfRejected, _validate_pdf_structure
 
 _SANITIZABLE_ACTIVE_NAMES = frozenset({"/URI"})
 
@@ -57,18 +57,21 @@ def _strip_uri_actions(document: pikepdf.Pdf) -> None:
                 continue
             seen_indirect.add(object_generation)
         inspected += 1
-        if inspected > 20_000:
+        if inspected > _MAX_PDF_GRAPH_VISITS:
             raise PdfRejected("PDF object graph is too large")
         if isinstance(item, pikepdf.Dictionary):
-            if len(stack) + len(item) > 20_000:
+            if len(stack) + len(item) > _MAX_PDF_GRAPH_VISITS:
                 raise PdfRejected("PDF object graph is too large")
+            action = item.get("/A")
+            if isinstance(action, pikepdf.Dictionary) and str(action.get("/S")) == "/URI":
+                del item["/A"]
             if str(item.get("/S")) == "/URI":
                 del item["/S"]
             if "/URI" in item:
                 del item["/URI"]
             stack.extend(item[name] for name in list(item.keys()))
         elif isinstance(item, pikepdf.Array):
-            if len(stack) + len(item) > 20_000:
+            if len(stack) + len(item) > _MAX_PDF_GRAPH_VISITS:
                 raise PdfRejected("PDF object graph is too large")
             stack.extend(item)
 

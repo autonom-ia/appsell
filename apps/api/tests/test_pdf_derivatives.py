@@ -25,12 +25,20 @@ from appsell_api.pdf_derivatives import (
     PDF_PAGE_ARCHIVE_MIME,
     PdfDerivativeRejected,
     _canonical_png_bytes,
+    _pdftoppm_page_path,
     build_pdf_page_archive,
     prepared_pdf_file,
     verified_page_archive,
 )
 from appsell_api.pdf_sandbox_service import app
 from appsell_api.pdf_verifier import MAX_PDF_BYTES
+
+
+def test_pdftoppm_page_path_uses_page_count_padding() -> None:
+    prefix = Path("/tmp/page")  # noqa: S108
+    assert _pdftoppm_page_path(prefix, page_number=1, page_count=9).name == "page-1.png"
+    assert _pdftoppm_page_path(prefix, page_number=1, page_count=65).name == "page-01.png"
+    assert _pdftoppm_page_path(prefix, page_number=65, page_count=65).name == "page-65.png"
 
 
 @pytest.mark.asyncio
