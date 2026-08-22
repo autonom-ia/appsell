@@ -164,6 +164,13 @@ class ClassifyPathsTests(unittest.TestCase):
         self.assertTrue(route["workflow"])
         self.assertFalse(route["full"])
 
+    def test_native_asset_worker_deploy_routes_api_image(self) -> None:
+        route = classify_paths(["deploy/easypanel-native/ensure-asset-worker.sh"])
+
+        self.assertTrue(route["image_api"])
+        self.assertFalse(route["image_bootstrap"])
+        self.assertFalse(route["full"])
+
     def test_unknown_workflow_fails_safe(self) -> None:
         route = classify_paths([".github/workflows/unclassified.yml"])
 
