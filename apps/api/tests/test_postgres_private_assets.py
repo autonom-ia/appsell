@@ -1763,6 +1763,7 @@ def test_workers_claim_distinct_jobs_recover_expired_leases_and_skip_cancelled()
     assert cancelled["upload_id"] not in claimed_ids
     assert all(job["quarantine_bucket"] == "appsell-quarantine" for job in claimed)
     assert all(job["ready_bucket"] == "appsell-ready" for job in claimed)
+    assert {job["file_name"] for job in claimed} == {"claim-0.pdf", "claim-1.pdf"}
 
     crashed = claimed[0]
     with psycopg.connect(ADMIN_URL) as connection:
