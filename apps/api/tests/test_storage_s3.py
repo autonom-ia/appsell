@@ -333,6 +333,24 @@ def test_head_fails_when_provider_omits_version_or_checksum() -> None:
         storage.head(bucket="ready", key="asset")
 
 
+def test_head_normalizes_provider_metadata_key_casing() -> None:
+    storage = object.__new__(S3Storage)
+    storage._control = SimpleNamespace(
+        head_object=lambda **_kwargs: {
+            "ContentLength": 3,
+            "ContentType": "application/pdf",
+            "ChecksumSHA256": "ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=",
+            "ETag": '"etag"',
+            "VersionId": "v1",
+            "Metadata": {"Appsell-Upload-Id": "upload-id"},
+        }
+    )
+
+    stored = storage.head(bucket="quarantine", key="asset")
+
+    assert stored.appsell_upload_id == "upload-id"
+
+
 def test_copy_fails_if_provider_does_not_return_destination_version() -> None:
     storage = object.__new__(S3Storage)
     storage._control = SimpleNamespace(copy_object=lambda **_kwargs: {})
