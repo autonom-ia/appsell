@@ -13,7 +13,9 @@ def main() -> None:
         raise RuntimeError("S3 storage is not configured")
     storage = S3Storage(settings)
     storage.assert_public_edge_controls(
-        require_tls=settings.environment in {"staging", "production"}
+        require_tls=settings.environment in {"staging", "production"},
+        cors_mode=settings.storage_cors_mode,
+        allowed_origin=settings.storage_allowed_origin,
     )
     print(
         json.dumps(

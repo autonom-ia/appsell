@@ -48,6 +48,7 @@ async def run() -> None:
             storage=storage,
             scanner=scanner,
             allowed_origin=settings.storage_allowed_origin,
+            cors_mode=settings.storage_cors_mode,
         )
     )
 

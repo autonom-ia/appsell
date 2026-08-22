@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 from botocore.exceptions import (  # type: ignore[import-untyped]
     ClientError,
@@ -107,6 +108,105 @@ def test_public_edge_audit_uses_public_anonymous_and_cleanup_clients() -> None:
 
     assert len(calls) == 10
     assert {client for client, _operation in calls} == {"anonymous-public"}
+
+
+def test_public_edge_audit_checks_edge_cors_without_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Denied:
+        def __getattr__(self, operation: str) -> Any:
+            def deny(**_kwargs: Any) -> None:
+                raise ClientError(
+                    {
+                        "Error": {"Code": "AccessDenied", "Message": "denied"},
+                        "ResponseMetadata": {"HTTPStatusCode": 403},
+                    },
+                    operation,
+                )
+
+            return deny
+
+    origins: list[str] = []
+
+    def fake_options(_url: str, *, headers: dict[str, str]) -> httpx.Response:
+        origin = headers["Origin"]
+        origins.append(origin)
+        if origin == "https://sell.autonomia.site":
+            return httpx.Response(
+                204,
+                headers={
+                    "access-control-allow-origin": origin,
+                    "access-control-allow-methods": "GET, HEAD, PUT, OPTIONS",
+                    "access-control-allow-headers": (
+                        "Content-Type, X-Amz-Checksum-Sha256, X-Amz-Meta-Appsell-Upload-Id"
+                    ),
+                },
+            )
+        return httpx.Response(204)
+
+    class FakeClient:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> FakeClient:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def options(self, url: str, *, headers: dict[str, str]) -> httpx.Response:
+            return fake_options(url, headers=headers)
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    storage = object.__new__(S3Storage)
+    storage.public_endpoint = "https://assets.example.test"
+    storage.quarantine_bucket = "quarantine"
+    storage.ready_bucket = "ready"
+    storage._anonymous_public = Denied()
+    storage._public = SimpleNamespace()
+
+    storage.assert_public_edge_controls(
+        require_tls=True,
+        cors_mode="edge",
+        allowed_origin="https://sell.autonomia.site",
+    )
+
+    assert origins == ["https://sell.autonomia.site", "https://appsell-cors-denied.invalid"]
+
+
+def test_edge_cors_mode_keeps_versioning_and_anonymous_denial_without_bucket_cors() -> None:
+    class Denied:
+        def __getattr__(self, operation: str) -> Any:
+            def deny(**_kwargs: Any) -> None:
+                raise ClientError(
+                    {
+                        "Error": {"Code": "AccessDenied", "Message": "denied"},
+                        "ResponseMetadata": {"HTTPStatusCode": 403},
+                    },
+                    operation,
+                )
+
+            return deny
+
+    class Control:
+        def get_bucket_versioning(self, **_kwargs: Any) -> dict[str, str]:
+            return {"Status": "Enabled"}
+
+        def get_bucket_cors(self, **_kwargs: Any) -> None:
+            raise AssertionError("edge CORS mode must not query bucket CORS")
+
+    storage = object.__new__(S3Storage)
+    storage.public_endpoint = "https://assets.example.test"
+    storage.quarantine_bucket = "quarantine"
+    storage.ready_bucket = "ready"
+    storage._control = Control()
+    storage._anonymous = Denied()
+
+    storage.assert_runtime_controls(
+        allowed_origin="https://sell.autonomia.site",
+        require_tls=True,
+        cors_mode="edge",
+    )
 
 
 def test_object_checksum_is_compared_as_sha256_not_etag() -> None:

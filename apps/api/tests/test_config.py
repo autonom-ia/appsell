@@ -79,6 +79,17 @@ def test_production_accepts_remote_postgres_with_tls() -> None:
     assert settings.storage_configured
 
 
+def test_production_accepts_edge_managed_storage_cors() -> None:
+    settings = Settings(
+        environment="production",
+        database_url="postgresql+asyncpg://runtime@db.example.test:5432/appsell?ssl=require",
+        storage_cors_mode="edge",
+        **INTERNAL_AUTH,
+        **REMOTE_STORAGE,
+    )
+    assert settings.storage_cors_mode == "edge"
+
+
 def test_local_allows_storage_disabled_but_rejects_partial_s3() -> None:
     assert Settings(environment="local").video_upload_enabled is False
     assert Settings(environment="local").storage_configured is False

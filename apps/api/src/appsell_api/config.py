@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     storage_control_access_key: str = ""
     storage_control_secret_key: str = ""
     storage_allowed_origin: str = ""
+    storage_cors_mode: Literal["s3", "edge"] = "s3"
     storage_presign_put_ttl_seconds: int = Field(default=300, ge=30, le=300)
     storage_presign_get_ttl_seconds: int = Field(default=60, ge=15, le=60)
     storage_connect_timeout_seconds: int = Field(default=2, ge=1, le=5)
@@ -167,6 +168,7 @@ class Settings(BaseSettings):
                 self.storage_control_access_key,
                 self.storage_control_secret_key,
                 self.storage_allowed_origin,
+                self.storage_cors_mode != "s3",
             )
         ):
             raise ValueError("storage values require storage_provider=s3")
