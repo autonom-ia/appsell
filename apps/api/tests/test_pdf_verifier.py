@@ -73,7 +73,6 @@ def test_rejects_false_magic_polyglot_and_false_mime(
     [
         ("/S", "/JavaScript"),
         ("/S", "/Launch"),
-        ("/S", "/URI"),
         ("/Type", "/EmbeddedFile"),
         ("/Type", "/Filespec"),
         ("/Subtype", "/RichMedia"),
@@ -97,6 +96,31 @@ def test_rejects_active_pdf_objects(dictionary_key: str, active_name: str, tmp_p
             temporary_directory=str(tmp_path),
         ):
             pass
+
+
+def test_sanitizes_uri_actions_from_normalized_pdf(tmp_path: Path) -> None:
+    source = io.BytesIO(valid_pdf())
+    output = io.BytesIO()
+    with pikepdf.Pdf.open(source) as document:
+        document.Root["/ActiveFixture"] = pikepdf.Dictionary(
+            {
+                "/S": pikepdf.Name("/URI"),
+                "/URI": pikepdf.String("https://example.test/course"),
+            }
+        )
+        document.save(output)
+    payload = output.getvalue()
+
+    with verified_pdf_file(
+        io.BytesIO(payload),
+        expected_size=len(payload),
+        expected_sha256_hex=hashlib.sha256(payload).hexdigest(),
+        declared_content_type=PDF_MIME,
+        temporary_directory=str(tmp_path),
+    ) as verified:
+        normalized = verified.ready_path.read_bytes()
+        assert b"/URI" not in normalized
+        assert b"https://example.test/course" not in normalized
 
 
 def test_rejects_size_and_hash_mismatch_without_consuming_unbounded_input(tmp_path: Path) -> None:
