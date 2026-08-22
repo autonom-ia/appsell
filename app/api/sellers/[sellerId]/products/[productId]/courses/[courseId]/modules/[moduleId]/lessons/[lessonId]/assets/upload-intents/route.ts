@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createDomainAssetUploadIntent } from "@/lib/internal-api-client.server";
 import { configuredPublicOrigin } from "@/lib/public-origin";
 import {
+  StorageUploadConfigurationError,
   browserUploadIntent,
   configuredStorageUploadOrigin
 } from "@/lib/storage-upload-policy.server";
@@ -27,6 +28,8 @@ export async function POST(request: NextRequest, context: LessonAssetRouteContex
   const parsed = parseUploadIntent(prepared.fields);
   if (!parsed) return assetInvalidInput("form");
   try {
+    const appOrigin = configuredPublicOrigin();
+    const storageOrigin = configuredStorageUploadOrigin();
     const payload = await createDomainAssetUploadIntent(
       prepared.authenticated.sessionId,
       prepared.authenticated.session,
@@ -35,12 +38,15 @@ export async function POST(request: NextRequest, context: LessonAssetRouteContex
     if (!isRecord(payload)) return NextResponse.json({ error: "invalid_asset_response" }, { status: 502, headers: { "cache-control": "no-store" } });
     const safeIntent = browserUploadIntent(
       payload,
-      configuredPublicOrigin(),
-      configuredStorageUploadOrigin()
+      appOrigin,
+      storageOrigin
     );
     if (!safeIntent) return NextResponse.json({ error: "invalid_asset_response" }, { status: 502, headers: { "cache-control": "no-store" } });
     return NextResponse.json(safeIntent, { status: payload.created === false ? 200 : 201, headers: { "cache-control": "no-store" } });
   } catch (error) {
+    if (error instanceof StorageUploadConfigurationError) {
+      return NextResponse.json({ error: "storage_upload_configuration" }, { status: 503, headers: { "cache-control": "no-store" } });
+    }
     return mappedError(error);
   }
 }
