@@ -35,10 +35,22 @@ webhook_bff_csrf_b64="$(openssl rand -base64 32)"
 webhook_bff_vault_b64="$(openssl rand -base64 32)"
 multi_seller_fixture="$(mktemp -t appsell-buyer-multi-seller.XXXXXX.json)"
 multi_seller_report="tmp/buyer-multi-seller.json"
+next_env_snapshot="$(mktemp -t appsell-next-env.XXXXXX)"
+tsconfig_snapshot="$(mktemp -t appsell-tsconfig.XXXXXX)"
+cp -- next-env.d.ts "$next_env_snapshot"
+cp -- tsconfig.json "$tsconfig_snapshot"
+
+restore_test_generated_files() {
+  cp -- "$next_env_snapshot" next-env.d.ts
+  cp -- "$tsconfig_snapshot" tsconfig.json
+}
 
 cleanup() {
+  local original_status=$?
+  restore_test_generated_files || original_status=1
   docker compose -p "$project" down --rmi local --volumes --remove-orphans >/dev/null 2>&1 || true
-  rm -f -- "$multi_seller_fixture"
+  rm -f -- "$multi_seller_fixture" "$next_env_snapshot" "$tsconfig_snapshot" || original_status=1
+  return "$original_status"
 }
 trap cleanup EXIT
 
@@ -79,6 +91,20 @@ if [[ "$webhook_secret_b64" == "$internal_key_b64" || "$webhook_secret_b64" == "
 fi
 
 docker compose -p "$project" up -d --wait postgres
+postgres_ready="false"
+for _ in $(seq 1 30); do
+  if docker compose -p "$project" exec -T postgres psql -U postgres -d appsell \
+    -v ON_ERROR_STOP=1 -Atc "select 1" >/dev/null 2>&1; then
+    postgres_ready="true"
+    break
+  fi
+  sleep 1
+done
+if [[ "$postgres_ready" != "true" ]]; then
+  echo "PostgreSQL did not accept a query after the compose healthcheck" >&2
+  docker compose -p "$project" ps >&2 || true
+  exit 1
+fi
 docker compose -p "$project" exec -T postgres psql -U postgres -d appsell \
   -v ON_ERROR_STOP=1 -c "comment on database appsell is 'appsell-demo-reset-target-v1'"
 
@@ -231,4 +257,5 @@ python3 scripts/assert_capacity_artifact_safe.py "$multi_seller_report"
 unset APPSELL_MULTI_SELLER_ENABLED APPSELL_MULTI_SELLER_DATABASE_URL \
   APPSELL_MULTI_SELLER_MANIFEST APPSELL_MULTI_SELLER_REPORT \
   APPSELL_API_ENVIRONMENT APPSELL_API_IDENTITY_ISSUER
+restore_test_generated_files
 git diff --exit-code -- next-env.d.ts tsconfig.json

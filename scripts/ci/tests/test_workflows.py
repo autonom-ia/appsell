@@ -112,12 +112,8 @@ class AppCiWorkflowTests(unittest.TestCase):
 
         self.assertIn("bash scripts/ci/run_actionlint.sh", self.source)
         self.assertIn("find .github/workflows", self.source)
-        self.assertIn("agent-harness-check.yml", self.source)
+        self.assertNotIn("agent-harness-check.yml", self.source)
         self.assertIn('"${workflows[@]}"', self.source)
-        self.assertIn(
-            "bash scripts/ci/run_actionlint.sh -shellcheck= .github/workflows/agent-harness-check.yml",
-            self.source,
-        )
         self.assertIn("ACTIONLINT_VERSION=1.7.12", script)
         self.assertIn(
             "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8",

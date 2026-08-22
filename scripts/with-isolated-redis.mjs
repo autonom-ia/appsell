@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +15,8 @@ const port = await unusedPort();
 const directory = await mkdtemp(join(tmpdir(), "appsell-e2e-redis-"));
 const password = randomBytes(32).toString("base64url");
 const binary = process.env.REDIS_SERVER_BIN || "redis-server";
+const generatedFiles = ["next-env.d.ts", "tsconfig.json"];
+const generatedOriginals = await Promise.all(generatedFiles.map((file) => readFile(join(process.cwd(), file))));
 const redis = spawn(binary, [
   "--bind", "127.0.0.1", "--port", String(port), "--dir", directory,
   "--save", "", "--appendonly", "no", "--protected-mode", "yes",
@@ -52,8 +54,9 @@ try {
   process.exitCode = exitCode;
 } finally {
   probe.disconnect();
-  if (child?.exitCode === null) child.kill("SIGTERM");
+  if (child?.exitCode === null) await stopProcess(child);
   await stopProcess(redis);
+  await Promise.all(generatedFiles.map((file, index) => writeFile(join(process.cwd(), file), generatedOriginals[index])));
   await rm(directory, { recursive: true, force: true });
 }
 

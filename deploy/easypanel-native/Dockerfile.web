@@ -7,7 +7,7 @@ ENV COREPACK_HOME=/opt/corepack \
     NEXT_TELEMETRY_DISABLED=1
 WORKDIR /app
 RUN corepack enable
-COPY package.json pnpm-lock.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN corepack pnpm install --frozen-lockfile --prod=false
 COPY . .
 RUN test -n "${GIT_SHA}" \

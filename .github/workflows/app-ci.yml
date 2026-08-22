@@ -84,17 +84,11 @@ jobs:
           set -euo pipefail
           workflows=()
           while IFS= read -r -d '' candidate; do
-            if [[ "$candidate" != .github/workflows/agent-harness-check.yml ]]; then
-              workflows+=("$candidate")
-            fi
+            workflows+=("$candidate")
           done < <(find .github/workflows -maxdepth 1 -type f \
             \( -name '*.yml' -o -name '*.yaml' \) -print0)
           test "${#workflows[@]}" -gt 0
           bash scripts/ci/run_actionlint.sh "${workflows[@]}"
-          # The installed Harness 2.1.2 has two legacy ShellCheck style notices.
-          # Its YAML, expressions and action schema remain fail-closed here;
-          # full ShellCheck becomes clean with the reviewed upstream 2.1.3 update.
-          bash scripts/ci/run_actionlint.sh -shellcheck= .github/workflows/agent-harness-check.yml
 
       - name: Set up pinned pnpm only when selected
         if: ${{ !cancelled() && steps.policy.outputs.product_checks == 'true' && (steps.route.outputs.web == 'true' || steps.route.outputs.postgres == 'true' || steps.route.outputs.openbao == 'true' || steps.route.outputs.capacity == 'true') }}
