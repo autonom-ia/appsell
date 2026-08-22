@@ -6,6 +6,7 @@ import { AccessibleDialog } from "./accessible-dialog";
 
 const MAX_PDF_BYTES = 10 * 1024 * 1024;
 const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
+const MATERIAL_PREPARATION_MESSAGE = "Arquivo recebido. Validando e preparando o material… PDFs longos podem levar até 1 minuto.";
 const ALLOWED_UPLOAD_HEADERS = new Set([
   "content-type",
   "x-amz-checksum-sha256",
@@ -246,7 +247,7 @@ export function LessonAssetPanel({
       const active = payload.uploads.find((upload) => ["pending", "uploaded", "verifying"].includes(upload.status));
       if (active) {
         activeUploadIdRef.current = active.id;
-        dispatch({ type: "phase", phase: "verifying", message: "Arquivo enviado. Verificando segurança…", fileName: active.file_name, uploadId: active.id });
+        dispatch({ type: "phase", phase: "verifying", message: MATERIAL_PREPARATION_MESSAGE, fileName: active.file_name, uploadId: active.id });
       } else {
         dispatch({ type: "reset" });
       }
@@ -309,7 +310,7 @@ export function LessonAssetPanel({
           onCommitted();
           return;
         }
-        dispatch({ type: "phase", phase: "verifying", message: "Arquivo enviado. Verificando segurança…", uploadId });
+        dispatch({ type: "phase", phase: "verifying", message: MATERIAL_PREPARATION_MESSAGE, uploadId });
         const requested = payload.retry_after_seconds;
         const delay = requested && requested >= 1 && requested <= 10
           ? requested * 1_000
@@ -469,7 +470,7 @@ export function LessonAssetPanel({
     const response = await boundedFetch(`${base}/uploads/${uploadId}/confirm`, { method: "POST", body }, 15_000);
     if (response.status !== 202 && !response.ok) throw new Error(`confirm_${response.status}`);
     if (generation !== generationRef.current) return;
-    dispatch({ type: "phase", phase: "verifying", message: "Arquivo enviado. Verificando segurança…", uploadId });
+    dispatch({ type: "phase", phase: "verifying", message: MATERIAL_PREPARATION_MESSAGE, uploadId });
     pollStatus(uploadId);
   }
 
@@ -558,7 +559,7 @@ export function LessonAssetPanel({
     : readyAssets.length > 0
       ? `${readyAssets.length} ${readyAssets.length === 1 ? "material pronto" : "materiais prontos"}`
       : uploads.some((upload) => ["pending", "uploaded", "verifying"].includes(upload.status))
-        ? "Verificação em andamento"
+        ? "Preparação em andamento"
         : "Nenhum material";
 
   return <div className="lesson-assets">
