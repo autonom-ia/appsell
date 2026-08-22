@@ -173,6 +173,10 @@ class S3Storage:
         if version_id:
             params["VersionId"] = version_id
         response = self._control.head_object(**params)
+        metadata = {
+            str(name).lower(): str(value)
+            for name, value in (response.get("Metadata") or {}).items()
+        }
         actual_version = str(response.get("VersionId") or "")
         checksum = str(response.get("ChecksumSHA256") or "")
         if not actual_version:
@@ -187,7 +191,7 @@ class S3Storage:
             content_type=str(response.get("ContentType") or "application/octet-stream"),
             checksum_sha256_b64=checksum,
             etag=str(response.get("ETag") or "").strip('"'),
-            appsell_upload_id=str(response.get("Metadata", {}).get("appsell-upload-id") or ""),
+            appsell_upload_id=metadata.get("appsell-upload-id", ""),
         )
 
     def object_exists(self, *, bucket: str, key: str) -> bool:
