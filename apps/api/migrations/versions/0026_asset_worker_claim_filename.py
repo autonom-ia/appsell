@@ -119,6 +119,22 @@ begin
 end $function$
 """
 
+_PREVIOUS_CLAIM_FUNCTION = _CLAIM_FUNCTION.replace(
+    """      upload.expected_byte_size,upload.expected_sha256,upload.expected_media_type,
+      upload.file_name""",
+    """      upload.expected_byte_size,upload.expected_sha256,upload.expected_media_type""",
+).replace(
+    """      'expected_media_type',candidate.expected_media_type,
+      'file_name',candidate.file_name""",
+    """      'expected_media_type',candidate.expected_media_type""",
+)
+
+if (
+    "upload.file_name" in _PREVIOUS_CLAIM_FUNCTION
+    or "candidate.file_name" in _PREVIOUS_CLAIM_FUNCTION
+):
+    raise RuntimeError("failed to build the previous asset worker claim definition")
+
 
 def upgrade() -> None:
     statements = [
@@ -198,32 +214,9 @@ def downgrade() -> None:
           execute changed;
         end $migration$
         """,
-        """
-        do $migration$
-        declare definition text; changed text;
-        begin
-          definition := pg_get_functiondef(
-            'app_private.claim_asset_verification_jobs(uuid,text,integer,integer)'::regprocedure
-          );
-          changed := replace(
-            definition,
-            $needle$upload.expected_media_type,
-              upload.file_name$needle$,
-            $replacement$upload.expected_media_type$replacement$
-          );
-          changed := replace(
-            changed,
-            $needle$'expected_media_type',candidate.expected_media_type,
-              'file_name',candidate.file_name$needle$,
-            $replacement$'expected_media_type',candidate.expected_media_type$replacement$
-          );
-          if changed = definition then
-            raise exception 'cannot restore asset worker claim payload'
-              using errcode='55000';
-          end if;
-          execute changed;
-        end $migration$
-        """,
+        _PREVIOUS_CLAIM_FUNCTION,
+        f"revoke all on function {_CLAIM_SIGNATURE} from public",
+        f"grant execute on function {_CLAIM_SIGNATURE} to appsell_runtime",
     ]
     for statement in statements:
         op.execute(statement)
