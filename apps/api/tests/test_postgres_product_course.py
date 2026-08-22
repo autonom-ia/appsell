@@ -235,7 +235,7 @@ def test_schema_roles_rls_and_runtime_privileges_are_minimal() -> None:
         ("product_course", "appsell_owner", True, True),
     ]
     assert privileges == (
-        "0025_seller_membership_role",
+        "0026_asset_worker_claim_filename",
         True,
         False,
         False,
@@ -712,7 +712,7 @@ def test_upgrade_from_0002_preserves_existing_tenant() -> None:
                 """,
                 (preserved_seller,),
             ).fetchone()
-        assert state == ("0025_seller_membership_role", 1, True, True)
+        assert state == ("0026_asset_worker_claim_filename", 1, True, True)
     finally:
         with psycopg.connect(maintenance_url, autocommit=True) as connection:
             connection.execute(

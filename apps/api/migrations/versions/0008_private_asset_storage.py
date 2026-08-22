@@ -847,7 +847,8 @@ def upgrade() -> None:
             select job.seller_organization_id,job.upload_id,job.attempts,
               upload.storage_driver,upload.quarantine_bucket,upload.ready_bucket,
               upload.quarantine_key,upload.ready_key,upload.observed_version_id,
-              upload.expected_byte_size,upload.expected_sha256,upload.expected_media_type
+              upload.expected_byte_size,upload.expected_sha256,upload.expected_media_type,
+              upload.file_name
             from app_private.asset_verification_job job
             join app_private.asset_upload upload
               on upload.seller_organization_id=job.seller_organization_id
@@ -890,7 +891,8 @@ def upgrade() -> None:
               'source_version_id',candidate.observed_version_id,
               'expected_byte_size',candidate.expected_byte_size,
               'expected_sha256',candidate.expected_sha256,
-              'expected_media_type',candidate.expected_media_type
+              'expected_media_type',candidate.expected_media_type,
+              'file_name',candidate.file_name
             ));
           end loop;
           return claimed;
