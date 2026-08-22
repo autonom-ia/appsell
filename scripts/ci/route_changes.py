@@ -260,7 +260,7 @@ def classify_paths(paths: Iterable[str]) -> dict[str, object]:
             name = PurePosixPath(path).name.lower()
             if "web" in name:
                 route["image_web"] = True
-            elif "api" in name:
+            elif "api" in name or "asset-worker" in name:
                 route["image_api"] = True
             else:
                 route["image_bootstrap"] = True

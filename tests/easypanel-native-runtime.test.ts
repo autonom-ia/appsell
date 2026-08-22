@@ -11,6 +11,10 @@ const bootstrap = readFileSync(
   "deploy/easypanel-native/bootstrap-native-demo.sh",
   "utf8"
 );
+const assetWorker = readFileSync(
+  "deploy/easypanel-native/ensure-asset-worker.sh",
+  "utf8"
+);
 const readme = readFileSync("deploy/easypanel-native/README.md", "utf8");
 const workflow = readFileSync(".github/workflows/easypanel-native-images.yml", "utf8");
 const appCi = readFileSync(".github/workflows/app-ci.yml", "utf8");
@@ -96,5 +100,22 @@ describe("EasyPanel native runtime contract", () => {
     expect(readme).toContain("PDFs-aula 1–4 não entram");
     expect(readme).toContain("Não existe marker local-demo de produção");
     expect(readme).toContain("assina `state + persona`");
+  });
+
+  it("keeps the production asset worker private and fail-closed", () => {
+    expect(assetWorker).toContain("CONFIRM_APPSSELL_ASSET_WORKER");
+    expect(assetWorker).toContain("sell-autonomia_asset-worker");
+    expect(assetWorker).toContain("-m appsell_api.asset_worker_service");
+    expect(assetWorker).toContain("--replicas 1");
+    expect(assetWorker).toContain("--read-only");
+    expect(assetWorker).toContain("--cap-drop ALL");
+    expect(assetWorker).toContain("/run/appsell-clamav");
+    expect(assetWorker).toContain("/run/appsell-pdf");
+    expect(assetWorker).toContain("clamav_networks");
+    expect(assetWorker).toContain("networks=(\"${clamav_networks[0]}\")");
+    expect(assetWorker).toContain("--update-failure-action pause");
+    expect(assetWorker).toContain("--rollback-order stop-first");
+    expect(assetWorker).not.toContain("--publish");
+    expect(assetWorker).not.toMatch(/echo .*APPSELL_API_.*(?:KEY|SECRET|PASSWORD)/);
   });
 });
