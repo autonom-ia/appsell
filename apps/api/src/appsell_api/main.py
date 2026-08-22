@@ -84,6 +84,7 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
                 storage=storage,
                 scanner=scanner,
                 allowed_origin=settings.storage_allowed_origin,
+                cors_mode=getattr(settings, "storage_cors_mode", "s3"),
             )
         )
         app.state.storage = storage
@@ -265,6 +266,7 @@ async def _refresh_storage_dependencies(
                     lambda: storage.assert_runtime_controls(
                         allowed_origin=settings.storage_allowed_origin,
                         require_tls=settings.environment in {"staging", "production"},
+                        cors_mode=getattr(settings, "storage_cors_mode", "s3"),
                     )
                 )
                 controls_ready = True

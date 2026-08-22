@@ -1,0 +1,46 @@
+# Dynamic Traefik configuration for the browser-facing AppSell S3 endpoint.
+#
+# The production MinIO build supports the S3 data API but does not implement
+# PutBucketCors. Keep bucket versioning and anonymous-denial checks in the API;
+# enforce the browser CORS contract at this HTTPS edge instead.
+http:
+  routers:
+    appsell-storage-https:
+      entryPoints:
+        - https
+      rule: Host(`minio.autonomia.site`) && PathPrefix(`/`)
+      service: appsell-storage
+      middlewares:
+        - appsell-storage-cors
+      priority: 100
+      tls: {}
+  middlewares:
+    appsell-storage-cors:
+      headers:
+        accessControlAllowOriginList:
+          - https://sell.autonomia.site
+        accessControlAllowMethods:
+          - GET
+          - HEAD
+          - PUT
+          - OPTIONS
+        accessControlAllowHeaders:
+          - Content-Type
+          - X-Amz-Checksum-Sha256
+          - X-Amz-Meta-Appsell-Upload-Id
+          - X-Amz-Date
+          - Authorization
+          - X-Amz-Content-Sha256
+          - X-Amz-User-Agent
+        accessControlExposeHeaders:
+          - ETag
+          - X-Amz-Version-Id
+          - X-Amz-Checksum-Sha256
+        accessControlMaxAge: 300
+        addVaryHeader: true
+  services:
+    appsell-storage:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: http://sell-autonomia_storage:9000/

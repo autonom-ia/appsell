@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import UUID
 
 from .pdf_derivatives import prepared_pdf_file
@@ -371,11 +371,17 @@ class PdfStorageWorker:
 
 
 def assert_storage_worker_ready(
-    *, environment: str, storage: S3Storage, scanner: MalwareScanner, allowed_origin: str
+    *,
+    environment: str,
+    storage: S3Storage,
+    scanner: MalwareScanner,
+    allowed_origin: str,
+    cors_mode: Literal["s3", "edge"] = "s3",
 ) -> None:
     storage.assert_runtime_controls(
         allowed_origin=allowed_origin,
         require_tls=environment in {"staging", "production"},
+        cors_mode=cors_mode,
     )
     if not scanner.healthy():
         raise StorageCapabilityError("malware scanner is unhealthy")

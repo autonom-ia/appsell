@@ -11,6 +11,7 @@ from urllib.parse import quote
 from uuid import uuid4
 
 import boto3  # type: ignore[import-untyped]
+import httpx
 from botocore import UNSIGNED  # type: ignore[import-untyped]
 from botocore.client import Config  # type: ignore[import-untyped]
 from botocore.exceptions import BotoCoreError, ClientError  # type: ignore[import-untyped]
@@ -378,35 +379,50 @@ class S3Storage:
         for bucket in (self.quarantine_bucket, self.ready_bucket):
             self._control.head_bucket(Bucket=bucket)
 
-    def assert_runtime_controls(self, *, allowed_origin: str, require_tls: bool) -> None:
+    def assert_runtime_controls(
+        self,
+        *,
+        allowed_origin: str,
+        require_tls: bool,
+        cors_mode: Literal["s3", "edge"] = "s3",
+    ) -> None:
         if require_tls and not self.public_endpoint.startswith("https://"):
             raise StorageCapabilityError("public storage endpoint must use TLS")
+        if cors_mode not in {"s3", "edge"}:
+            raise StorageCapabilityError("storage CORS mode is invalid")
         for bucket in (self.quarantine_bucket, self.ready_bucket):
             versioning = self._control.get_bucket_versioning(Bucket=bucket)
             if versioning.get("Status") != "Enabled":
                 raise StorageCapabilityError(f"versioning is not enabled for {bucket}")
-            cors = self._control.get_bucket_cors(Bucket=bucket).get("CORSRules", [])
-            expected_methods = (
-                {"HEAD", "PUT"} if bucket == self.quarantine_bucket else {"GET", "HEAD"}
-            )
-            expected_headers = (
-                {"content-type", "x-amz-checksum-sha256", "x-amz-meta-appsell-upload-id"}
-                if bucket == self.quarantine_bucket
-                else set()
-            )
-            if len(cors) != 1:
-                raise StorageCapabilityError(f"unexpected CORS rule count for {bucket}")
-            rule = cors[0]
-            actual_headers = {item.lower() for item in rule.get("AllowedHeaders", [])}
-            if (
-                rule.get("AllowedOrigins") != [allowed_origin]
-                or set(rule.get("AllowedMethods", [])) != expected_methods
-                or actual_headers != expected_headers
-            ):
-                raise StorageCapabilityError(f"CORS policy is not exact for {bucket}")
+            if cors_mode == "s3":
+                cors = self._control.get_bucket_cors(Bucket=bucket).get("CORSRules", [])
+                expected_methods = (
+                    {"HEAD", "PUT"} if bucket == self.quarantine_bucket else {"GET", "HEAD"}
+                )
+                expected_headers = (
+                    {"content-type", "x-amz-checksum-sha256", "x-amz-meta-appsell-upload-id"}
+                    if bucket == self.quarantine_bucket
+                    else set()
+                )
+                if len(cors) != 1:
+                    raise StorageCapabilityError(f"unexpected CORS rule count for {bucket}")
+                rule = cors[0]
+                actual_headers = {item.lower() for item in rule.get("AllowedHeaders", [])}
+                if (
+                    rule.get("AllowedOrigins") != [allowed_origin]
+                    or set(rule.get("AllowedMethods", [])) != expected_methods
+                    or actual_headers != expected_headers
+                ):
+                    raise StorageCapabilityError(f"CORS policy is not exact for {bucket}")
             self._assert_anonymous_denied(bucket)
 
-    def assert_public_edge_controls(self, *, require_tls: bool) -> None:
+    def assert_public_edge_controls(
+        self,
+        *,
+        require_tls: bool,
+        cors_mode: Literal["s3", "edge"] = "s3",
+        allowed_origin: str = "",
+    ) -> None:
         """Prove anonymous denial over the browser-facing endpoint.
 
         Run this from a host/runner that can reach ``storage_public_endpoint``;
@@ -415,12 +431,71 @@ class S3Storage:
         """
         if require_tls and not self.public_endpoint.startswith("https://"):
             raise StorageCapabilityError("public storage endpoint must use TLS")
+        if cors_mode not in {"s3", "edge"}:
+            raise StorageCapabilityError("storage CORS mode is invalid")
         for bucket in (self.quarantine_bucket, self.ready_bucket):
             self._assert_anonymous_denied(
                 bucket,
                 anonymous_client=self._anonymous_public,
                 cleanup_client=self._public,
             )
+        if cors_mode == "edge":
+            self._assert_edge_cors(allowed_origin)
+
+    def _assert_edge_cors(self, allowed_origin: str) -> None:
+        if not allowed_origin:
+            raise StorageCapabilityError("edge CORS mode requires an allowed origin")
+        request_headers = "content-type,x-amz-checksum-sha256,x-amz-meta-appsell-upload-id"
+        with httpx.Client(
+            timeout=httpx.Timeout(5.0, connect=2.0),
+            follow_redirects=False,
+            trust_env=False,
+        ) as client:
+            allowed = client.options(
+                f"{self.public_endpoint}/",
+                headers={
+                    "Origin": allowed_origin,
+                    "Access-Control-Request-Method": "PUT",
+                    "Access-Control-Request-Headers": request_headers,
+                },
+            )
+            if allowed.status_code not in {200, 204}:
+                raise StorageCapabilityError(
+                    f"public storage CORS preflight returned HTTP {allowed.status_code}"
+                )
+            if allowed.headers.get("access-control-allow-origin") != allowed_origin:
+                raise StorageCapabilityError("public storage CORS origin is not exact")
+            if allowed.headers.get("access-control-allow-credentials") == "true":
+                raise StorageCapabilityError("public storage CORS must not allow credentials")
+            actual_methods = {
+                method.strip().upper()
+                for method in allowed.headers.get("access-control-allow-methods", "").split(",")
+                if method.strip()
+            }
+            if not {"PUT", "OPTIONS"}.issubset(actual_methods):
+                raise StorageCapabilityError("public storage CORS methods are incomplete")
+            actual_headers = {
+                header.strip().lower()
+                for header in allowed.headers.get("access-control-allow-headers", "").split(",")
+                if header.strip()
+            }
+            if not {
+                "content-type",
+                "x-amz-checksum-sha256",
+                "x-amz-meta-appsell-upload-id",
+            }.issubset(actual_headers):
+                raise StorageCapabilityError("public storage CORS headers are incomplete")
+
+            denied = client.options(
+                f"{self.public_endpoint}/",
+                headers={
+                    "Origin": "https://appsell-cors-denied.invalid",
+                    "Access-Control-Request-Method": "PUT",
+                    "Access-Control-Request-Headers": request_headers,
+                },
+            )
+            if denied.headers.get("access-control-allow-origin"):
+                raise StorageCapabilityError("public storage CORS allows an untrusted origin")
 
     def _assert_anonymous_denied(
         self,
