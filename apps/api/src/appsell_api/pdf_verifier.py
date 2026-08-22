@@ -242,7 +242,9 @@ def normalized_pdf_file(
             normalized_directory.rmdir()
 
 
-def _validate_pdf_structure(path: Path) -> int:
+def _validate_pdf_structure(
+    path: Path, *, allowed_active_names: frozenset[str] = frozenset()
+) -> int:
     try:
         with path.open("rb") as source:
             header = source.read(8)
@@ -253,7 +255,7 @@ def _validate_pdf_structure(path: Path) -> int:
         with pikepdf.Pdf.open(path, attempt_recovery=False) as document:
             if document.is_encrypted:
                 raise PdfRejected("encrypted PDFs are not accepted")
-            _reject_active_objects(document)
+            _reject_active_objects(document, allowed_active_names=allowed_active_names)
             page_count = len(document.pages)
             if page_count < 1:
                 raise PdfRejected("PDF must contain at least one page")
@@ -277,7 +279,9 @@ def _bounded_file_digest(path: Path) -> tuple[int, str]:
     return size, digest.hexdigest()
 
 
-def _reject_active_objects(document: pikepdf.Pdf) -> None:
+def _reject_active_objects(
+    document: pikepdf.Pdf, *, allowed_active_names: frozenset[str] = frozenset()
+) -> None:
     if len(document.objects) > 20_000:
         raise PdfRejected("PDF object graph is too large")
     stack = [document.Root]
@@ -298,12 +302,16 @@ def _reject_active_objects(document: pikepdf.Pdf) -> None:
             if len(stack) + len(item) > 20_000:
                 raise PdfRejected("PDF object graph is too large")
             names = {str(name) for name in item.keys()}
-            blocked = names & _ACTIVE_NAMES
+            blocked = (names & _ACTIVE_NAMES) - allowed_active_names
             if blocked:
                 raise PdfRejected(f"PDF contains active content: {sorted(blocked)[0]}")
             for value_key in ("/S", "/Type", "/Subtype"):
                 active_value = item.get(value_key)
-                if active_value is not None and str(active_value) in _ACTIVE_NAMES:
+                if (
+                    active_value is not None
+                    and str(active_value) in _ACTIVE_NAMES
+                    and str(active_value) not in allowed_active_names
+                ):
                     raise PdfRejected(f"PDF contains active object: {active_value}")
             stack.extend(item[name] for name in item.keys())
         elif isinstance(item, pikepdf.Array):
