@@ -1,20 +1,23 @@
 import { NextResponse } from "next/server";
 
 import { oauthService } from "@/lib/oauth-service.server";
+import { storageUploadConfigurationReady } from "@/lib/storage-upload-policy.server";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const [redis, api] = await Promise.all([
+  const [redis, api, storageUpload] = await Promise.all([
     redisReady(),
-    domainApiReady()
+    domainApiReady(),
+    storageUploadConfigurationReady()
   ]);
-  const ready = redis && api;
+  const ready = redis && api && storageUpload;
   return NextResponse.json(
     {
       status: ready ? "ok" : "unavailable",
       redis,
-      api
+      api,
+      storage_upload: storageUpload
     },
     {
       status: ready ? 200 : 503,

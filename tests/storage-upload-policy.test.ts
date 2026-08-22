@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   browserUploadIntent,
   configuredStorageUploadOrigin,
+  storageUploadConfigurationReady,
   trustedStorageDownloadUrl
 } from "../lib/storage-upload-policy.server";
 
@@ -43,6 +44,19 @@ describe("storage upload boundary", () => {
       NODE_ENV: "production",
       APPSELL_STORAGE_PUBLIC_ORIGIN: "http://assets.autonomia.site"
     })).toThrow(/HTTPS/);
+  });
+
+  it("fails production readiness when the browser storage origin is absent or invalid", () => {
+    expect(storageUploadConfigurationReady({ APP_ENV: "production" })).toBe(false);
+    expect(storageUploadConfigurationReady({
+      APP_ENV: "production",
+      APPSELL_STORAGE_PUBLIC_ORIGIN: "https://assets.autonomia.site/"
+    })).toBe(false);
+    expect(storageUploadConfigurationReady({
+      APP_ENV: "production",
+      APPSELL_STORAGE_PUBLIC_ORIGIN: STORAGE_ORIGIN
+    })).toBe(true);
+    expect(storageUploadConfigurationReady({ APP_ENV: "ci" })).toBe(true);
   });
 
   it("accepts downloads only from the exact configured storage origin", () => {

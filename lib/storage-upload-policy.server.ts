@@ -48,6 +48,20 @@ export function configuredStorageUploadOrigin(
   return url.origin;
 }
 
+export function storageUploadConfigurationReady(
+  environment: Partial<Record<string, string | undefined>> = process.env
+) {
+  // EasyPanel staging runs Next in production mode while keeping APP_ENV=ci and
+  // the domain API storage provider disabled.
+  if (environment.APP_ENV !== "production") return true;
+  try {
+    configuredStorageUploadOrigin(environment);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function browserUploadIntent(
   value: unknown,
   appOrigin: string,
