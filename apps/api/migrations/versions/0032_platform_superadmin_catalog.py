@@ -14,9 +14,7 @@ down_revision = "0031_public_free_access"
 branch_labels = None
 depends_on = None
 
-_PLATFORM_ALLOWED_SIGNATURE = (
-    "app_private.platform_superadmin_catalog_allowed(uuid,uuid,text)"
-)
+_PLATFORM_ALLOWED_SIGNATURE = "app_private.platform_superadmin_catalog_allowed(uuid,uuid,text)"
 _LIST_SIGNATURE = "app_private.list_accessible_sellers(uuid)"
 _READY_TAIL = (
     "'0025_seller_membership_role','0026_asset_worker_claim_filename',"
@@ -585,8 +583,7 @@ def upgrade() -> None:
         """,
     ]
     statements.extend(
-        _rewrite(signature, old, new, label)
-        for signature, old, new, label in _OWNER_MUTATIONS
+        _rewrite(signature, old, new, label) for signature, old, new, label in _OWNER_MUTATIONS
     )
     statements.extend(
         [

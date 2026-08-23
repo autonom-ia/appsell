@@ -549,37 +549,49 @@ def test_platform_superadmin_catalog_access_is_global_audited_and_tenant_safe() 
         connection.rollback()
 
         apply_context(connection, owner_b, seller_b, "catalog.draft.read")
-        assert connection.execute(
-            "select product.id,organization.slug from catalog_product product "
-            "join seller_organization organization "
-            "on organization.id=product.seller_organization_id "
-            "where product.seller_organization_id=%s and product.id=%s",
-            (seller_b, product_id),
-        ).fetchone() is not None
+        assert (
+            connection.execute(
+                "select product.id,organization.slug from catalog_product product "
+                "join seller_organization organization "
+                "on organization.id=product.seller_organization_id "
+                "where product.seller_organization_id=%s and product.id=%s",
+                (seller_b, product_id),
+            ).fetchone()
+            is not None
+        )
         connection.rollback()
 
         apply_context(connection, superadmin, seller_b, "catalog.draft.read")
-        assert connection.execute(
-            "select product.id,organization.slug from catalog_product product "
-            "join seller_organization organization "
-            "on organization.id=product.seller_organization_id "
-            "where product.seller_organization_id=%s and product.id=%s",
-            (seller_b, product_id),
-        ).fetchone() is not None
+        assert (
+            connection.execute(
+                "select product.id,organization.slug from catalog_product product "
+                "join seller_organization organization "
+                "on organization.id=product.seller_organization_id "
+                "where product.seller_organization_id=%s and product.id=%s",
+                (seller_b, product_id),
+            ).fetchone()
+            is not None
+        )
         connection.rollback()
 
         apply_context(connection, owner_a, seller_b, "catalog.draft.read")
-        assert connection.execute(
-            "select id from catalog_product where seller_organization_id=%s and id=%s",
-            (seller_b, product_id),
-        ).fetchall() == []
+        assert (
+            connection.execute(
+                "select id from catalog_product where seller_organization_id=%s and id=%s",
+                (seller_b, product_id),
+            ).fetchall()
+            == []
+        )
         connection.rollback()
 
         apply_context(connection, buyer, seller_b, "catalog.draft.read")
-        assert connection.execute(
-            "select id from catalog_product where seller_organization_id=%s and id=%s",
-            (seller_b, product_id),
-        ).fetchall() == []
+        assert (
+            connection.execute(
+                "select id from catalog_product where seller_organization_id=%s and id=%s",
+                (seller_b, product_id),
+            ).fetchall()
+            == []
+        )
         connection.rollback()
 
         for denied_actor in (owner_a, buyer):
@@ -609,8 +621,7 @@ def test_platform_superadmin_catalog_access_is_global_audited_and_tenant_safe() 
         apply_context(connection, buyer, seller_b, "catalog.publication.create")
         with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
             connection.execute(
-                "select * from app_private.publish_product("
-                "%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s)",
+                "select * from app_private.publish_product(%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s)",
                 (
                     buyer,
                     seller_b,
