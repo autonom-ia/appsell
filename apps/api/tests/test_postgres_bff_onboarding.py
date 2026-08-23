@@ -629,7 +629,7 @@ def test_platform_superadmin_catalog_access_is_global_audited_and_tenant_safe() 
                     uuid4(),
                     1,
                     1,
-                    "{}",
+                    f'{{"{course_id}":1}}',
                     uuid4(),
                     hashlib.sha256(b"denied-publication").hexdigest(),
                     uuid4(),

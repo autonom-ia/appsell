@@ -304,16 +304,15 @@ def test_public_free_access_is_idempotent_and_creates_learning_enrollment() -> N
         assert first is not None
         assert first[1] is True
         first_entitlement_id = first[0]
-        enrollment_row = connection.execute(
-            "select count(*) from learning_enrollment where buyer_identity_user_id=%s "
-            "and entitlement_id=%s",
-            (buyer, first_entitlement_id),
+        apply_context(connection, buyer, "library.read")
+        library_row = connection.execute(
+            "select app_private.read_buyer_library(%s)", (buyer,)
         ).fetchone()
-        assert enrollment_row is not None
-        enrollment_count = enrollment_row[0]
+        assert library_row is not None
+        library = library_row[0]
         connection.rollback()
     assert replay == (first_entitlement_id, False)
-    assert enrollment_count >= 1
+    assert [item["entitlement_id"] for item in library] == [str(first_entitlement_id)]
 
 
 def test_asset_authorization_binds_identity_entitlement_and_manifest() -> None:
