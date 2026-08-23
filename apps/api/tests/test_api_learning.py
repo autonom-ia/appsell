@@ -171,6 +171,29 @@ async def test_pdf_asset_authorization_never_returns_original_locator() -> None:
 
 
 @pytest.mark.asyncio
+async def test_public_free_access_enrollment_is_buyer_scoped_and_idempotent() -> None:
+    auth = FakeAuth({"entitlement_id": ENTITLEMENT_ID, "created": True})
+    body = {
+        "idempotency_key": str(uuid4()),
+        "seller_id": str(SELLER_ID),
+        "product_id": str(uuid4()),
+    }
+    async with client_for(auth) as client:
+        response = await client.post("/v1/me/library/enroll", json=body)
+
+    assert response.status_code == 201
+    assert response.json() == {
+        "status": "active",
+        "entitlement_id": str(ENTITLEMENT_ID),
+        "created": True,
+    }
+    assert auth.capabilities == ["library.enroll"]
+    assert auth.session.calls[0][1]["seller_id"] == SELLER_ID
+    assert auth.session.calls[0][1]["product_id"] == UUID(body["product_id"])
+    assert auth.session.calls[0][1]["identity_user_id"] == IDENTITY_ID
+
+
+@pytest.mark.asyncio
 async def test_s3_pdf_asset_does_not_create_a_signed_original_url() -> None:
     auth = FakeAuth(
         {

@@ -6,7 +6,7 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
-from uuid import NAMESPACE_URL, UUID, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import psycopg
 import pytest
@@ -278,6 +278,42 @@ def test_buyer_reads_only_active_entitlement_and_published_snapshot() -> None:
     assert "snapshot" not in item
     assert "assets" not in item
     assert admin_library == ([],)
+
+
+def test_public_free_access_is_idempotent_and_creates_learning_enrollment() -> None:
+    assert ADMIN_URL and RUNTIME_URL
+    manifest, _ = load_manifest()
+    seller = UUID(manifest["seller"]["id"])
+    product = UUID(manifest["product"]["id"])
+    buyer = OTHER_USER
+    idempotency_key = uuid4()
+    request_id = uuid4()
+    body_sha256 = hashlib.sha256(b"public-free-access-test").hexdigest()
+    with psycopg.connect(RUNTIME_URL) as connection:
+        apply_context(connection, buyer, "library.enroll")
+        first = connection.execute(
+            "select entitlement_id,created from app_private.grant_public_product_access("
+            "%s,%s,%s,%s,%s,%s)",
+            (buyer, seller, product, idempotency_key, body_sha256, request_id),
+        ).fetchone()
+        replay = connection.execute(
+            "select entitlement_id,created from app_private.grant_public_product_access("
+            "%s,%s,%s,%s,%s,%s)",
+            (buyer, seller, product, idempotency_key, body_sha256, request_id),
+        ).fetchone()
+        assert first is not None
+        assert first[1] is True
+        first_entitlement_id = first[0]
+        enrollment_row = connection.execute(
+            "select count(*) from learning_enrollment where buyer_identity_user_id=%s "
+            "and entitlement_id=%s",
+            (buyer, first_entitlement_id),
+        ).fetchone()
+        assert enrollment_row is not None
+        enrollment_count = enrollment_row[0]
+        connection.rollback()
+    assert replay == (first_entitlement_id, False)
+    assert enrollment_count >= 1
 
 
 def test_asset_authorization_binds_identity_entitlement_and_manifest() -> None:

@@ -18,6 +18,8 @@ import {
   productUpdateCsrfCookieName,
   recoveryCookieName,
   recoveryCookieOptions,
+  postLoginCookieName,
+  postLoginCookieOptions,
   sellerCsrfCookieName,
   sessionCookieName,
   sessionCookieOptions,
@@ -48,6 +50,7 @@ import {
 import { ONBOARD_SELLER_CSRF_ACTION } from "@/lib/mutation-protection.server";
 import { demoProfileForSubject } from "@/lib/demo-config";
 import { oauthCallbackHome } from "@/lib/oauth-callback-home";
+import { safePostLoginPath } from "@/lib/post-login-redirect";
 
 export const dynamic = "force-dynamic";
 
@@ -99,11 +102,13 @@ export async function GET(request: NextRequest) {
         throw error;
       }
     }
-    const response = NextResponse.redirect(new URL(
-      oauthCallbackHome(demoProfile),
+    const destination = safePostLoginPath(
+      request.cookies.get(postLoginCookieName())?.value,
       configuredPublicOrigin()
-    ));
+    ) ?? oauthCallbackHome(demoProfile);
+    const response = NextResponse.redirect(new URL(destination, configuredPublicOrigin()));
     expireTransactionCookie(response);
+    response.cookies.set(postLoginCookieName(), "", { ...postLoginCookieOptions(), maxAge: 0 });
     // Clear the one-shot guard so a later expiry is recoverable again.
     response.cookies.set(recoveryCookieName(), "", { ...recoveryCookieOptions(), maxAge: 0 });
     response.cookies.set(sessionCookieName(), sessionId, sessionCookieOptions());
@@ -145,7 +150,13 @@ export async function GET(request: NextRequest) {
     // rather than looping.
     const alreadyRecovered = Boolean(request.cookies.get(recoveryCookieName())?.value);
     if (shouldRestartLogin(error, alreadyRecovered)) {
-      const retry = NextResponse.redirect(new URL("/auth/login", configuredPublicOrigin()));
+      const retryUrl = new URL("/auth/login", configuredPublicOrigin());
+      const postLoginPath = safePostLoginPath(
+        request.cookies.get(postLoginCookieName())?.value,
+        configuredPublicOrigin()
+      );
+      if (postLoginPath) retryUrl.searchParams.set("next", postLoginPath);
+      const retry = NextResponse.redirect(retryUrl);
       expireTransactionCookie(retry);
       retry.cookies.set(recoveryCookieName(), "1", recoveryCookieOptions());
       retry.headers.set("cache-control", "no-store");

@@ -70,7 +70,7 @@ def test_runtime_can_read_only_published_public_projection() -> None:
                 "description": manifest["product"]["description"],
                 "publication_id": manifest["publication"]["id"],
                 "publication_version": 1,
-                # Unpriced offer (unit_amount_minor 0) is exposed as pending, not R$ 0,00.
+                "access_mode": "free",
                 "price": None,
             }
         ],
@@ -87,7 +87,7 @@ def test_storefront_exposes_live_offer_price_for_published_products() -> None:
     with psycopg.connect(ADMIN_URL) as connection:
         connection.execute(
             """
-            update offer set unit_amount_minor = 49900, currency = 'BRL',
+            update offer set status = 'active', unit_amount_minor = 49900, currency = 'BRL',
               billing_period = 'monthly'
             where seller_organization_id = %s and catalog_product_id = %s
             """,
@@ -100,6 +100,7 @@ def test_storefront_exposes_live_offer_price_for_published_products() -> None:
         connection.rollback()
     assert projection is not None
     products = projection[0]["products"]
+    assert [product["access_mode"] for product in products] == ["paid"]
     assert [product["price"] for product in products] == [
         {"unit_amount_minor": 49900, "currency": "BRL", "billing_period": "monthly"}
     ]

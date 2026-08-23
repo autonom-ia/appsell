@@ -19,10 +19,13 @@ export default async function ProductCheckoutPage({
   const { sellerSlug, productSlug } = await params;
   const storefront = await loadStorefront(sellerSlug);
   const product = storefront.products.find((item) => item.slug === productSlug);
-  if (!product || !product.price) notFound();
+  if (!product) notFound();
+  const accessMode = product.access_mode ?? "paid";
+  if (accessMode === "paid" && !product.price) notFound();
 
-  const checkoutProduct = resolveCheckoutProduct(sellerSlug, productSlug);
-  const priceLabel = formatPrice(product.price.unit_amount_minor, product.price.currency);
+  const checkoutProduct = accessMode === "paid" ? resolveCheckoutProduct(sellerSlug, productSlug) : null;
+  const priceLabel = product.price ? formatPrice(product.price.unit_amount_minor, product.price.currency) : "Acesso gratuito";
+  const accessPath = `/s/${storefront.seller.slug}/p/${product.slug}/access`;
 
   return <div className="storefront-page product-checkout-page">
     <a className="skip-link" href="#product-checkout-content">Pular para o produto</a>
@@ -41,7 +44,13 @@ export default async function ProductCheckoutPage({
         <p className="product-checkout-price">{priceLabel}</p>
       </section>
       <section className="product-checkout-action" aria-label="Finalizar compra">
-        {checkoutProduct
+        {accessMode === "free"
+          ? <div className="checkout-card checkout-unavailable">
+              <h2>Acesso gratuito</h2>
+              <p>Entre ou crie sua conta para receber acesso ao produto, sem cobrança.</p>
+              <Link className="primary-button" href={accessPath}>Acessar gratuitamente</Link>
+            </div>
+          : checkoutProduct
           ? <CheckoutWorkspace
               productTitle={product.title}
               priceLabel={priceLabel}

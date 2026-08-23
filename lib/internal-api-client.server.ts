@@ -44,7 +44,7 @@ interface ApiRequest {
     "catalog.curriculum.reorder" | "catalog.asset.read" | "catalog.asset.create" |
     "catalog.asset.upload.confirm" | "catalog.asset.upload.cancel" |
     "catalog.asset.archive" | "catalog.asset.policy.update" |
-    "library.read" | "library.asset.read" | "library.asset.download" |
+    "library.read" | "library.enroll" | "library.asset.read" | "library.asset.download" |
     "learning.player.read" | "learning.progress.write" |
     "commerce.demo.checkout.read" | "commerce.demo.checkout.complete" |
     "commerce.payout.read" | "commerce.payout.manage" | "commerce.payout.sync" |
@@ -931,6 +931,23 @@ export async function readDomainBuyerProducts(sessionId: string, session: Server
   });
 }
 
+export async function grantDomainPublicProductAccess(
+  sessionId: string,
+  session: ServerSession,
+  input: { sellerOrganizationId: string; productId: string; idempotencyKey: string }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: "/v1/me/library/enroll",
+    capability: "library.enroll",
+    body: {
+      idempotency_key: input.idempotencyKey,
+      seller_id: input.sellerOrganizationId,
+      product_id: input.productId
+    }
+  });
+}
+
 export async function readDomainDemoCheckout(sessionId: string, session: ServerSession) {
   return domainRequest(sessionId, session, {
     method: "GET",
@@ -1261,6 +1278,7 @@ function requireDemoCapability(subject: string, request: ApiRequest) {
   if (profile.persona === "buyer" &&
       [
         "library.read",
+        "library.enroll",
         "library.asset.read",
         "library.asset.download",
         "learning.player.read",

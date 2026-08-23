@@ -11,10 +11,9 @@ export interface PublicStorefrontProduct {
   description: string;
   publication_id: string;
   publication_version: number;
-  // Live offer price exposed by app_private.read_public_storefront (migration 0018).
-  // Billing is not connected yet, so unpriced/legacy offers surface `price: null`
-  // ("price pending", not "free"); only a real, positive price yields an object. The
-  // storefront page does not render price yet, so no product advertises R$ 0,00.
+  // Optional only while an old API instance is being replaced. New catalogs
+  // always expose the access mode explicitly.
+  access_mode?: "free" | "paid";
   price: StorefrontPrice | null;
 }
 
@@ -47,7 +46,20 @@ function isSeller(value: unknown) {
 }
 
 function isProduct(value: unknown) {
-  return hasExactKeys(value, [
+  const hasAccessMode = Boolean(
+    value && typeof value === "object" && !Array.isArray(value) &&
+    Object.prototype.hasOwnProperty.call(value, "access_mode")
+  );
+  const keys = hasAccessMode ? [
+    "id",
+    "slug",
+    "title",
+    "description",
+    "publication_id",
+    "publication_version",
+    "price",
+    "access_mode"
+  ] as const : [
     "id",
     "slug",
     "title",
@@ -55,10 +67,12 @@ function isProduct(value: unknown) {
     "publication_id",
     "publication_version",
     "price"
-  ]) && isUuid(value.id) && isSlug(value.slug) && isTrimmedText(value.title, 2, 160) &&
+  ] as const;
+  return hasExactKeys(value, keys) && isUuid(value.id) && isSlug(value.slug) && isTrimmedText(value.title, 2, 160) &&
     typeof value.description === "string" && value.description.length <= 2_000 &&
     isUuid(value.publication_id) && typeof value.publication_version === "number" &&
     Number.isInteger(value.publication_version) && value.publication_version > 0 &&
+    (!hasAccessMode || value.access_mode === "free" || value.access_mode === "paid") &&
     (value.price === null || isPrice(value.price));
 }
 

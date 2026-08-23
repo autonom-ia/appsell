@@ -2,6 +2,10 @@ export function transactionCookieName(production = process.env.NODE_ENV === "pro
   return production ? "__Host-appsell_oauth_tx" : "appsell_oauth_tx";
 }
 
+export function postLoginCookieName(production = process.env.NODE_ENV === "production") {
+  return production ? "__Host-appsell_post_login" : "appsell_post_login";
+}
+
 export function sessionCookieName(production = process.env.NODE_ENV === "production") {
   return production ? "__Host-appsell_session" : "appsell_session";
 }
@@ -78,6 +82,13 @@ export function transactionCookieOptions(production = process.env.NODE_ENV === "
   return {
     ...sessionCookieOptions(production),
     maxAge: transactionTtlSeconds()
+  };
+}
+
+export function postLoginCookieOptions(production = process.env.NODE_ENV === "production") {
+  return {
+    ...sessionCookieOptions(production),
+    maxAge: 15 * 60
   };
 }
 
