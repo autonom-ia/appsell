@@ -546,9 +546,9 @@ async def test_detail_and_preview_are_private_server_projections() -> None:
     assert preview.json()["preview"] is True
     assert preview.json()["snapshot"]["product"]["id"] == str(product_id)
     assert len(preview.json()["snapshot"]["courses"]) == 2
-    preview_asset = preview.json()["snapshot"]["courses"][0]["modules"][0]["lessons"][0][
-        "assets"
-    ][0]
+    preview_asset = preview.json()["snapshot"]["courses"][0]["modules"][0]["lessons"][0]["assets"][
+        0
+    ]
     assert preview_asset["title"] == "Guia de boas-vindas"
     assert preview_asset["file_name"] == "arquivo-fisico.pdf"
     assert auth.capabilities == ["catalog.draft.read", "catalog.draft.preview"]

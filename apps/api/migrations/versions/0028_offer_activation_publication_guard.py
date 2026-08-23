@@ -15,8 +15,7 @@ branch_labels = None
 depends_on = None
 
 _SIGNATURE = (
-    "app_private.transition_offer_status("
-    "uuid,uuid,uuid,uuid,text,text,bigint,uuid,text,uuid)"
+    "app_private.transition_offer_status(uuid,uuid,uuid,uuid,text,text,bigint,uuid,text,uuid)"
 )
 _READY_TAIL = (
     "'0025_seller_membership_role','0026_asset_worker_claim_filename',"
