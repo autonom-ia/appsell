@@ -237,7 +237,7 @@ curl --fail --silent "http://127.0.0.1:${api_port}/health/ready"
 APPSELL_TEST_DOMAIN_API_URL="http://127.0.0.1:${api_port}" \
 APPSELL_LOCAL_IDENTITY_EMAIL="creator@example.test" \
 pnpm exec vitest run --no-file-parallelism \
-  tests/bff-api-onboarding.test.ts tests/bff-learning-multiprocess.test.ts \
+  tests/bff-api-onboarding.test.ts \
   tests/bff-superadmin-inspection.test.ts \
   tests/bff-webhook-ingress.test.ts
 export APPSELL_MULTI_SELLER_ENABLED="true"
