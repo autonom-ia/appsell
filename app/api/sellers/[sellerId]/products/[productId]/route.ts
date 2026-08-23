@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { sessionCookieName } from "@/lib/cookies";
 import {
   readDomainProductDraft,
+  updateDomainProductCourseDraft,
   updateDomainProductDraft
 } from "@/lib/internal-api-client.server";
 import {
@@ -34,6 +35,17 @@ import {
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const CONTROL = /[\p{Cc}\p{Cs}]/u;
 const UNIT_AMOUNT = /^(?:0|[1-9][0-9]{0,10})$/;
+const PRODUCT_UPDATE_FIELDS = [
+  "_csrf",
+  "idempotency_key",
+  "course_id",
+  "expected_product_version",
+  "expected_course_version",
+  "slug",
+  "product_title",
+  "product_description",
+  "course_title"
+] as const;
 const UPDATE_FIELDS = [
   "_csrf",
   "idempotency_key",
@@ -100,7 +112,7 @@ export async function PATCH(request: NextRequest, context: ProductRouteContext) 
   }
   if (!authenticated) return unauthorized();
 
-  const parsed = await readExactLimitedFields(request, [UPDATE_FIELDS, UPDATE_FIELDS_WITH_PRICE]);
+  const parsed = await readExactLimitedFields(request, [PRODUCT_UPDATE_FIELDS, UPDATE_FIELDS, UPDATE_FIELDS_WITH_PRICE]);
   if (parsed.kind === "too_large") return payloadTooLarge();
   if (parsed.kind === "invalid") return invalidInput("form");
   const fields = parsed.fields;
@@ -113,20 +125,45 @@ export async function PATCH(request: NextRequest, context: ProductRouteContext) 
 
   const idempotencyKey = canonicalUuid(fields.idempotency_key);
   const courseId = canonicalUuid(fields.course_id);
-  const offerId = canonicalUuid(fields.offer_id);
   const productVersion = safeVersion(fields.expected_product_version);
   const courseVersion = safeVersion(fields.expected_course_version);
-  const offerVersion = safeVersion(fields.expected_offer_version, true);
   if (!idempotencyKey) return invalidInput("form");
   if (!courseId) return invalidInput("course_id");
-  if (!offerId) return invalidInput("offer_id");
   if (productVersion === null) return invalidInput("expected_product_version");
   if (courseVersion === null) return invalidInput("expected_course_version");
-  if (offerVersion === null) return invalidInput("expected_offer_version");
   if (!validSlug(fields.slug)) return invalidInput("slug");
   if (!validTrimmedText(fields.product_title, 2, 160)) return invalidInput("product_title");
   if (!validText(fields.product_description, 2_000)) return invalidInput("product_description");
   if (!validTrimmedText(fields.course_title, 2, 160)) return invalidInput("course_title");
+
+  if (!Object.hasOwn(fields, "offer_id")) {
+    try {
+      const payload = await updateDomainProductCourseDraft(
+        authenticated.sessionId,
+        authenticated.session,
+        ids.sellerId,
+        ids.productId,
+        {
+          idempotencyKey,
+          courseId,
+          expectedProductVersion: productVersion,
+          expectedCourseVersion: courseVersion,
+          slug: fields.slug!,
+          productTitle: fields.product_title!,
+          productDescription: fields.product_description!,
+          courseTitle: fields.course_title!
+        }
+      );
+      return NextResponse.json(payload, { headers: { "cache-control": "no-store" } });
+    } catch (error) {
+      return mappedError(error);
+    }
+  }
+
+  const offerId = canonicalUuid(fields.offer_id);
+  const offerVersion = safeVersion(fields.expected_offer_version, true);
+  if (!offerId) return invalidInput("offer_id");
+  if (offerVersion === null) return invalidInput("expected_offer_version");
   if (!validTrimmedText(fields.offer_title, 2, 120)) return invalidInput("offer_title");
   if (!validText(fields.offer_summary, 500)) return invalidInput("offer_summary");
   const hasPriceFields = fields.offer_unit_amount_minor !== undefined;

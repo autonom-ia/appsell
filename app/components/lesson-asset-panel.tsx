@@ -6,7 +6,9 @@ import { AccessibleDialog } from "./accessible-dialog";
 
 const MAX_PDF_BYTES = 10 * 1024 * 1024;
 const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
-const MATERIAL_PREPARATION_MESSAGE = "Arquivo recebido. Validando e preparando o material… PDFs longos podem levar até 1 minuto.";
+export const MAX_VERIFICATION_WAIT_MS = 15_000;
+const MATERIAL_PREPARATION_MESSAGE = "Arquivo recebido. Verificando segurança…";
+const MATERIAL_DELAYED_MESSAGE = "A verificação está demorando mais que o esperado. O arquivo continua sendo processado; você pode continuar editando e verificar novamente em instantes.";
 const ALLOWED_UPLOAD_HEADERS = new Set([
   "content-type",
   "x-amz-checksum-sha256",
@@ -20,7 +22,7 @@ export interface AssetDiscardRequestDetail {
 }
 
 type AssetStatus = "pending" | "uploaded" | "verifying" | "ready" | "quarantined" | "rejected" | "archived";
-type Phase = "idle" | "loading" | "hashing" | "creating" | "uploading" | "confirming" | "verifying" | "ready" | "failed" | "cancelled";
+type Phase = "idle" | "loading" | "hashing" | "creating" | "uploading" | "confirming" | "verifying" | "delayed" | "ready" | "failed" | "cancelled";
 
 interface AssetView {
   id: string;
@@ -138,6 +140,7 @@ export function LessonAssetPanel({
   const hashControllerRef = useRef<AbortController | null>(null);
   const pollTimerRef = useRef<number | null>(null);
   const pollingUploadRef = useRef<string | null>(null);
+  const verificationStartedAtRef = useRef<number | null>(null);
   const generationRef = useRef(0);
   const intentRequestRef = useRef<Promise<UploadIntentPayload> | null>(null);
   const activeUploadIdRef = useRef<string | null>(null);
@@ -153,15 +156,16 @@ export function LessonAssetPanel({
   const summaryRef = useRef<HTMLElement>(null);
 
   const base = `/api/sellers/${sellerId}/products/${productId}/courses/${courseId}/modules/${moduleId}/lessons/${lessonId}/assets`;
-  const uploadBusy = ["hashing", "creating", "uploading", "confirming", "verifying"].includes(state.phase);
+  const uploadBusy = ["hashing", "creating", "uploading", "confirming", "verifying", "delayed"].includes(state.phase);
   const busy = policySavingId !== null || uploadBusy;
-  const dirty = busy || state.phase === "failed";
+  const transportBusy = policySavingId !== null || ["hashing", "creating", "uploading", "confirming"].includes(state.phase);
+  const dirty = transportBusy;
 
   const boundedFetch = useCallback(async (input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = 15_000, abortOnStop = true) => {
     return await boundedAssetFetch(input, init, timeoutMs, fetchControllersRef.current, abortOnStop);
   }, []);
 
-  useEffect(() => onActivityChange(lessonId, { dirty, busy }), [busy, dirty, lessonId, onActivityChange]);
+  useEffect(() => onActivityChange(lessonId, { dirty, busy: transportBusy }), [dirty, lessonId, onActivityChange, transportBusy]);
   useEffect(() => () => onActivityChange(lessonId, { dirty: false, busy: false }), [lessonId, onActivityChange]);
 
   const stopTransientWork = useCallback(() => {
@@ -175,6 +179,7 @@ export function LessonAssetPanel({
     if (pollTimerRef.current !== null) window.clearTimeout(pollTimerRef.current);
     pollTimerRef.current = null;
     pollingUploadRef.current = null;
+    verificationStartedAtRef.current = null;
     if (progressFrameRef.current !== null) window.cancelAnimationFrame(progressFrameRef.current);
     progressFrameRef.current = null;
   }, []);
@@ -225,7 +230,7 @@ export function LessonAssetPanel({
       const detail = (event as CustomEvent<AssetDiscardRequestDetail>).detail;
       if (!detail?.register) return;
       const active = intentRequestRef.current !== null || activeUploadIdRef.current !== null ||
-        ["hashing", "creating", "uploading", "confirming", "verifying"].includes(state.phase);
+        ["hashing", "creating", "uploading", "confirming", "verifying", "delayed"].includes(state.phase);
       if (active) detail.register(discardCurrentUpload());
       if (policyTaskRef.current) detail.register(policyTaskRef.current);
     };
@@ -247,8 +252,10 @@ export function LessonAssetPanel({
       const active = payload.uploads.find((upload) => ["pending", "uploaded", "verifying"].includes(upload.status));
       if (active) {
         activeUploadIdRef.current = active.id;
+        verificationStartedAtRef.current = Date.now();
         dispatch({ type: "phase", phase: "verifying", message: MATERIAL_PREPARATION_MESSAGE, fileName: active.file_name, uploadId: active.id });
       } else {
+        verificationStartedAtRef.current = null;
         dispatch({ type: "reset" });
       }
     } catch {
@@ -274,20 +281,36 @@ export function LessonAssetPanel({
     if (pollingUploadRef.current === uploadId) return;
     pollingUploadRef.current = uploadId;
     const generation = generationRef.current;
+    verificationStartedAtRef.current ??= Date.now();
     let attempt = 0;
     const run = async () => {
       if (generation !== generationRef.current) return;
+      pollTimerRef.current = null;
+      const elapsed = Date.now() - (verificationStartedAtRef.current ?? Date.now());
+      if (verificationPhaseForElapsed(elapsed) === "delayed") {
+        pollingUploadRef.current = null;
+        dispatch({ type: "phase", phase: "delayed", message: MATERIAL_DELAYED_MESSAGE, uploadId });
+        return;
+      }
       if (document.hidden) {
-        pollTimerRef.current = window.setTimeout(run, 2_000);
+        pollTimerRef.current = window.setTimeout(run, Math.min(2_000, MAX_VERIFICATION_WAIT_MS - elapsed));
         return;
       }
       try {
-        const response = await boundedFetch(`${base}/uploads/${uploadId}`, { cache: "no-store" }, 10_000);
+        const statusTimeout = verificationStatusTimeoutForElapsed(elapsed);
+        const response = await boundedFetch(`${base}/uploads/${uploadId}`, { cache: "no-store" }, statusTimeout);
         if (!response.ok) throw new Error("status_failed");
         const payload = await response.json() as UploadStatusPayload;
         if (payload.upload_id !== uploadId) throw new Error("status_invalid");
+        const responseElapsed = Date.now() - (verificationStartedAtRef.current ?? Date.now());
+        if (responseElapsed >= MAX_VERIFICATION_WAIT_MS && ["pending", "uploaded", "verifying"].includes(payload.status)) {
+          pollingUploadRef.current = null;
+          dispatch({ type: "phase", phase: "delayed", message: MATERIAL_DELAYED_MESSAGE, uploadId });
+          return;
+        }
         if (payload.status === "ready" && payload.asset) {
           activeUploadIdRef.current = null;
+          verificationStartedAtRef.current = null;
           replacementTargetRef.current = null;
           setAssets((current) => [payload.asset!, ...current.filter((asset) => asset.id !== payload.asset!.id)]);
           setUploads((current) => current.filter((upload) => upload.id !== uploadId));
@@ -299,6 +322,7 @@ export function LessonAssetPanel({
         }
         if (["quarantined", "rejected", "cancelled", "expired"].includes(payload.status)) {
           activeUploadIdRef.current = null;
+          verificationStartedAtRef.current = null;
           const message = payload.status === "quarantined"
             ? "Arquivo isolado para análise. Ele não será publicado."
             : payload.status === "rejected"
@@ -316,16 +340,31 @@ export function LessonAssetPanel({
           ? requested * 1_000
           : Math.min(5_000, [1_500, 2_000, 4_000, 5_000][attempt] ?? 5_000);
         attempt += 1;
-        pollTimerRef.current = window.setTimeout(run, delay + Math.floor(Math.random() * 250));
+        pollTimerRef.current = window.setTimeout(run, Math.min(delay + Math.floor(Math.random() * 250), MAX_VERIFICATION_WAIT_MS - elapsed));
       } catch {
         if (generation !== generationRef.current) return;
+        const retryElapsed = Date.now() - (verificationStartedAtRef.current ?? Date.now());
+        if (verificationPhaseForElapsed(retryElapsed) === "delayed") {
+          pollingUploadRef.current = null;
+          dispatch({ type: "phase", phase: "delayed", message: MATERIAL_DELAYED_MESSAGE, uploadId });
+          return;
+        }
         const delay = Math.min(5_000, [1_500, 2_000, 4_000, 5_000][attempt] ?? 5_000);
         attempt += 1;
-        pollTimerRef.current = window.setTimeout(run, delay);
+        pollTimerRef.current = window.setTimeout(run, Math.min(delay, MAX_VERIFICATION_WAIT_MS - retryElapsed));
       }
     };
     void run();
   }, [base, boundedFetch, onCommitted]);
+
+  const retryVerification = useCallback(() => {
+    const uploadId = state.uploadId ?? activeUploadIdRef.current;
+    if (!uploadId) return;
+    verificationStartedAtRef.current = Date.now();
+    pollingUploadRef.current = null;
+    dispatch({ type: "phase", phase: "verifying", message: MATERIAL_PREPARATION_MESSAGE, uploadId });
+    pollStatus(uploadId);
+  }, [pollStatus, state.uploadId]);
 
   useEffect(() => {
     if (opened && state.phase === "verifying" && state.uploadId && pollTimerRef.current === null) {
@@ -338,6 +377,17 @@ export function LessonAssetPanel({
     if (!file || busy || archived) {
       replacementTargetRef.current = null;
       return;
+    }
+    const previousUploadId = activeUploadIdRef.current;
+    if (previousUploadId) {
+      try {
+        await cancelIntent(previousUploadId);
+        activeUploadIdRef.current = null;
+        onCommitted();
+      } catch {
+        dispatch({ type: "phase", phase: "failed", message: "O envio anterior ainda não foi cancelado com segurança. Tente novamente em instantes.", uploadId: previousUploadId });
+        return;
+      }
     }
     stopTransientWork();
     const generation = generationRef.current;
@@ -456,8 +506,16 @@ export function LessonAssetPanel({
         void confirmUpload(intent.upload_id, generation).then(resolve, reject);
       };
       xhr.send(file);
-    }).catch((error) => {
+    }).catch(async (error) => {
       if (generation !== generationRef.current || (error instanceof DOMException && error.name === "AbortError")) return;
+      try {
+        await cancelIntent(intent.upload_id);
+        activeUploadIdRef.current = null;
+        onCommitted();
+      } catch {
+        dispatch({ type: "phase", phase: "failed", message: "O envio falhou e ainda não foi possível cancelá-lo com segurança. Tente novamente antes de enviar outro arquivo.", uploadId: intent.upload_id });
+        throw error;
+      }
       dispatch({ type: "phase", phase: "failed", message: "O envio foi interrompido. Seu curso não foi alterado.", uploadId: intent.upload_id });
       throw error;
     });
@@ -465,13 +523,28 @@ export function LessonAssetPanel({
 
   async function confirmUpload(uploadId: string, generation: number) {
     if (!csrf) throw new Error("missing_csrf");
+    verificationStartedAtRef.current = Date.now();
     dispatch({ type: "phase", phase: "confirming", message: "Confirmando o envio seguro…", uploadId });
     const body = new FormData();
     body.set("_csrf", csrf.confirm);
     body.set("idempotency_key", crypto.randomUUID());
-    const response = await boundedFetch(`${base}/uploads/${uploadId}/confirm`, { method: "POST", body }, 15_000);
+    let response: Response;
+    try {
+      response = await boundedFetch(`${base}/uploads/${uploadId}/confirm`, { method: "POST", body }, 15_000);
+    } catch (error) {
+      if (error instanceof Error && error.message === "asset_request_timeout" && generation === generationRef.current) {
+        dispatch({ type: "phase", phase: "delayed", message: MATERIAL_DELAYED_MESSAGE, uploadId });
+        return;
+      }
+      throw error;
+    }
     if (response.status !== 202 && !response.ok) throw new Error(`confirm_${response.status}`);
     if (generation !== generationRef.current) return;
+    const elapsed = Date.now() - (verificationStartedAtRef.current ?? Date.now());
+    if (verificationPhaseForElapsed(elapsed) === "delayed") {
+      dispatch({ type: "phase", phase: "delayed", message: MATERIAL_DELAYED_MESSAGE, uploadId });
+      return;
+    }
     dispatch({ type: "phase", phase: "verifying", message: MATERIAL_PREPARATION_MESSAGE, uploadId });
     pollStatus(uploadId);
   }
@@ -569,7 +642,7 @@ export function LessonAssetPanel({
       <summary ref={summaryRef}><span>Materiais da aula</span><small>{summary}</small></summary>
       <div className="lesson-assets-body" aria-busy={busy}>
         {readyAssets.map((asset) => <article className="asset-status-card state-ready" key={asset.id}>
-          <div><span className="asset-state">{mediaLabel(asset.media_type)} pronto para publicar</span><strong dir="auto">{asset.title}</strong><small dir="auto">{asset.file_name} · {formatBytes(asset.byte_size)}</small></div>
+          <div><span className="asset-state">{mediaLabel(asset.media_type)} pronto para publicar</span><strong dir="auto">{asset.title}</strong><small dir="auto">{asset.content_role === "support_material" ? "Material de apoio" : "Conteúdo protegido"} · {formatBytes(asset.byte_size)}</small></div>
           {!archived ? <div className="asset-policy-controls">
             <label htmlFor={`asset-role-${asset.id}`}>Uso deste material</label>
             <select
@@ -606,17 +679,20 @@ export function LessonAssetPanel({
         {policyError ? <p className="form-error" role="alert">{policyError}</p> : null}
 
         {!archived && loaded ? <div className="asset-uploader">
-          <label className="asset-file-label" htmlFor={`asset-file-${lessonId}`} onClick={() => { replacementTargetRef.current = null; }}>{readyAssets.length > 0 ? "Adicionar outro material" : "Adicione um PDF ou vídeo MP4"}</label>
-          <input ref={inputRef} id={`asset-file-${lessonId}`} type="file" accept="application/pdf,.pdf,video/mp4,.mp4" onClick={resetReplacementOnDirectPickerClick} onChange={(event) => void selectFile(event)} disabled={busy}/>
+          <div className="asset-file-picker">
+            <label className="asset-file-label" htmlFor={`asset-file-${lessonId}`} onClick={() => { replacementTargetRef.current = null; }}>{readyAssets.length > 0 ? "Adicionar outro material" : "Adicione um PDF ou vídeo MP4"}</label>
+            <input ref={inputRef} id={`asset-file-${lessonId}`} type="file" accept="application/pdf,.pdf,video/mp4,.mp4" onClick={resetReplacementOnDirectPickerClick} onChange={(event) => void selectFile(event)} disabled={busy}/>
+          </div>
           <p className="asset-help">PDF até 10 MiB ou MP4 até 100 MiB. O arquivo só entra em uma nova publicação depois da verificação.</p>
         </div> : null}
 
-        <div className={`asset-feedback state-${state.phase}`} role="status" aria-live="polite" aria-atomic="true" tabIndex={state.phase === "failed" ? -1 : undefined}>
+        <div className={`asset-feedback state-${state.phase}`} role="status" aria-live="polite" aria-atomic="true" tabIndex={state.phase === "failed" || state.phase === "delayed" ? -1 : undefined}>
           <span>{state.message}</span>
-          {state.fileName ? <small dir="auto">{state.fileName}</small> : null}
+          {state.fileName ? <small>Material selecionado</small> : null}
           {state.phase === "uploading" ? <><label className="sr-only" htmlFor={`asset-progress-${lessonId}`}>Progresso do envio</label><progress id={`asset-progress-${lessonId}`} aria-label="Progresso do envio" max="100" value={state.progress}>{state.progress}%</progress></> : null}
           {uploadBusy ? <button className="secondary-button" type="button" onClick={() => void cancelUpload()}>Cancelar envio</button> : null}
           {state.phase === "failed" && !loaded ? <button className="secondary-button" type="button" onClick={() => void load()}>Recarregar materiais</button> : null}
+          {state.phase === "delayed" ? <button className="secondary-button" type="button" onClick={retryVerification}>Verificar novamente</button> : null}
           {(state.phase === "failed" && loaded) || state.phase === "cancelled" ? <button className="secondary-button" type="button" onClick={() => inputRef.current?.click()}>Tentar novamente</button> : null}
         </div>
       </div>
@@ -684,6 +760,14 @@ export function formatBytes(value: number): string {
     return `${(value / 1024).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} KiB`;
   }
   return `${(value / (1024 * 1024)).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} MiB`;
+}
+
+export function verificationPhaseForElapsed(elapsedMs: number): "verifying" | "delayed" {
+  return elapsedMs >= MAX_VERIFICATION_WAIT_MS ? "delayed" : "verifying";
+}
+
+export function verificationStatusTimeoutForElapsed(elapsedMs: number): number {
+  return Math.max(1, Math.min(10_000, MAX_VERIFICATION_WAIT_MS - Math.max(0, elapsedMs)));
 }
 
 export async function boundedAssetFetch(

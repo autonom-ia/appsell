@@ -519,6 +519,11 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     await pwExpect(adminPage.getByRole("heading", { level: 1, name: productTitle })).toBeVisible({
       timeout: 20_000
     });
+    const editorialTitle = `${productTitle} Editorial`;
+    await adminPage.getByLabel("Nome do produto").fill(editorialTitle);
+    await adminPage.getByRole("button", { name: "Salvar rascunho" }).click();
+    await pwExpect(adminPage.getByRole("heading", { level: 1, name: editorialTitle })).toBeVisible();
+    await pwExpect(adminPage.getByText("Rascunho salvo com segurança.", { exact: true })).toBeVisible();
     await adminPage.locator('a[href="?section=oferta"]').click();
     await adminPage.getByLabel("Nome da oferta").fill(`Oferta ${suffix}`);
     await adminPage.getByLabel("Resumo da oferta").fill("Oferta informativa da demonstração integrada.");

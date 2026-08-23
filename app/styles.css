@@ -296,13 +296,25 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .save-indicator .secondary-button { width: 100%; }
 .save-conflict, .save-invalid, .save-forbidden, .save-error { border-color: rgba(180,35,24,.24); background: #fff5f4; color: #8d251d; }
 .save-saved, .save-saved_with_changes { border-color: rgba(8,122,75,.22); background: #edf9f3; color: #07613d; }
+.form-error-summary { min-width: 0; padding: 12px 14px; display: grid; gap: 4px; border: 2px solid rgba(180,35,24,.34); border-radius: 12px; background: #fff5f4; color: #8d251d; font-size: .78rem; line-height: 1.5; }
+.form-error-summary:focus-visible { outline: 3px solid var(--bright); outline-offset: 2px; }
 .editor-section-nav { min-width: 0; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
 .editor-section-nav a { min-width: 0; min-height: 62px; padding: 10px 12px; display: flex; flex-direction: column; justify-content: center; gap: 3px; border: 1px solid var(--border); border-radius: 14px; background: rgba(255,255,255,.82); color: var(--text); }
 .editor-section-nav a strong, .editor-section-nav a span { min-width: 0; overflow-wrap: anywhere; }
 .editor-section-nav a strong { color: var(--ink); font-size: .82rem; }
 .editor-section-nav a span { font-size: .65rem; line-height: 1.35; }
+.editor-step-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.editor-step-mark { width: 20px; min-height: 20px; display: inline-grid; place-items: center; border-radius: 50%; background: rgba(15,23,42,.08); color: var(--soft); font-size: .72rem; font-weight: 900; }
+.editor-section-nav a.step-complete .editor-step-mark { background: rgba(8,122,75,.12); color: var(--success); }
+.editor-section-nav a.step-pending .editor-step-mark { border: 1px solid rgba(154,103,0,.25); background: #fff9e7; color: #6b4d00; }
 .editor-section-nav a.active { border-color: rgba(30,58,138,.42); background: var(--blue); color: rgba(255,255,255,.74); box-shadow: 0 10px 24px rgba(30,58,138,.16); }
 .editor-section-nav a.active strong { color: #fff; }
+.editor-section-nav a.active .editor-step-mark { background: rgba(255,255,255,.18); color: #fff; }
+.editor-next-step { min-width: 0; padding: 14px 16px; display: grid; gap: 12px; align-items: center; border: 1px solid rgba(30,58,138,.18); border-radius: 14px; background: #eef6ff; }
+.editor-next-step > div { min-width: 0; display: grid; gap: 4px; }
+.editor-next-step strong { color: var(--ink); font-size: .82rem; }
+.editor-next-step p { margin: 0; color: var(--text); font-size: .76rem; line-height: 1.5; }
+.editor-next-step .secondary-button { width: 100%; }
 .editor-form { min-width: 0; padding-bottom: 88px; }
 .editor-form fieldset, .publish-panel, .offer-status-panel { min-width: 0; margin: 0; padding: 20px; display: grid; grid-template-columns: minmax(0,1fr); gap: 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow-sm); }
 .editor-form fieldset:disabled { opacity: .68; }
@@ -330,6 +342,16 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .preview-course strong, .preview-offer strong, .preview-offer p { overflow-wrap: anywhere; }
 .preview-offer p { margin: 0; color: var(--text); font-size: .78rem; line-height: 1.5; }
 .preview-offer button { min-height: 48px; margin-top: 8px; border: 0; border-radius: 13px; background: #e8edf4; color: var(--soft); font-weight: 750; }
+.preview-curriculum { min-width: 0; margin: 0 20px 20px; padding: 17px; display: grid; gap: 12px; border: 1px solid var(--border); border-radius: 16px; background: #fff; }
+.preview-curriculum > div { display: grid; gap: 5px; }
+.preview-curriculum > div > span { color: var(--soft); font-size: .68rem; }
+.preview-curriculum > div > strong { overflow-wrap: anywhere; }
+.preview-curriculum ul { min-width: 0; margin: 0; padding: 0; display: grid; gap: 8px; list-style: none; }
+.preview-curriculum li { min-width: 0; padding: 10px 12px; display: grid; gap: 4px; border-radius: 11px; background: #f8fbff; }
+.preview-curriculum li > strong, .preview-curriculum li > span, .preview-curriculum li > small { overflow-wrap: anywhere; }
+.preview-curriculum li > span { color: var(--soft); font-size: .68rem; }
+.preview-curriculum li > small { color: var(--text); font-size: .72rem; }
+.preview-curriculum > p { margin: 0; color: var(--text); font-size: .78rem; line-height: 1.5; }
 .preview-blocked { padding: 22px; }
 .preview-blocked h2 { margin: 18px 0 10px; font-size: clamp(1.5rem,6vw,2.2rem); }
 .preview-blocked p { color: var(--text); line-height: 1.6; }
@@ -406,9 +428,11 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .asset-download-toggle input { width: 20px; height: 20px; flex: 0 0 auto; accent-color: var(--blue); }
 .asset-actions { min-width: 0; display: grid; grid-template-columns: minmax(0,1fr); gap: 8px; }
 .asset-uploader { display: grid; gap: 8px; }
-.asset-file-label { color: var(--ink); font-size: .78rem; font-weight: 800; }
-.asset-uploader input[type="file"] { width: 100%; min-width: 0; min-height: 48px; padding: 8px; border: 1px solid var(--border); border-radius: 12px; background: #fff; color: var(--ink); font-size: 1rem; }
-.asset-uploader input[type="file"]::file-selector-button { min-height: 44px; margin-right: 10px; padding: 0 14px; border: 0; border-radius: 10px; background: var(--blue); color: #fff; font-weight: 750; cursor: pointer; }
+.asset-file-picker { position: relative; min-width: 0; min-height: 48px; }
+.asset-file-label { min-height: 48px; padding: 0 14px; display: flex; align-items: center; justify-content: center; border: 1px solid var(--blue); border-radius: 12px; background: var(--blue); color: #fff; font-size: .78rem; font-weight: 800; text-align: center; cursor: pointer; }
+.asset-file-picker:focus-within .asset-file-label { outline: 3px solid var(--bright); outline-offset: 3px; }
+.asset-file-picker input[type="file"] { position: absolute; inset: 0; width: 100%; height: 100%; min-width: 0; opacity: 0; cursor: pointer; }
+.asset-file-picker input[type="file"]:disabled { cursor: not-allowed; }
 .asset-help { margin: 0; color: var(--soft); font-size: .7rem; line-height: 1.5; }
 .asset-feedback { display: grid; gap: 9px; color: var(--text); line-height: 1.5; overflow-wrap: anywhere; }
 .asset-feedback > span { font-size: .78rem; font-weight: 750; }
@@ -416,6 +440,7 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .asset-feedback.state-failed { border-color: rgba(180,35,24,.28); background: #fff5f4; color: #8d251d; }
 .asset-feedback.state-ready { border-color: rgba(8,122,75,.25); background: #f1fbf6; color: var(--success); }
 .asset-feedback.state-verifying, .asset-feedback.state-uploading, .asset-feedback.state-confirming { border-color: rgba(37,99,184,.25); background: #eff6ff; color: var(--blue); }
+.asset-feedback.state-delayed { border-color: rgba(154,103,0,.28); background: #fff9e7; color: #6b4d00; }
 .asset-feedback progress { width: 100%; height: 10px; accent-color: var(--bright); }
 .inline-actions { display: grid; gap: 8px; }
 .inline-actions > * { width: 100%; }
@@ -455,6 +480,8 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
   .editor-title-row { flex-direction: row; align-items: center; justify-content: space-between; }
   .save-indicator { grid-template-columns: minmax(0,1fr) auto; }
   .save-indicator .secondary-button { width: auto; }
+  .editor-next-step { grid-template-columns: minmax(0,1fr) auto; }
+  .editor-next-step .secondary-button { width: auto; }
   .editor-section-nav { grid-template-columns: repeat(3,minmax(0,1fr)); }
   .editor-form fieldset, .publish-panel, .curriculum-workspace { padding: 28px; }
   .curriculum-header { flex-direction: row; align-items: flex-start; justify-content: space-between; }
@@ -468,7 +495,7 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
   .editor-save-bar > span { text-align: left; }
   .editor-save-bar .primary-button { width: auto; min-width: 190px; }
   .preview-hero { padding: 48px 38px; }
-  .preview-course, .preview-offer { margin-right: 38px; margin-left: 38px; }
+  .preview-course, .preview-curriculum, .preview-offer { margin-right: 38px; margin-left: 38px; }
   .dialog-actions { grid-template-columns: minmax(0,1fr) minmax(0,1fr); }
   .inspection-grid { grid-template-columns: minmax(0,1.25fr) minmax(280px,.75fr); align-items: start; }
   .inspection-card, .inspection-denied { padding: 30px; }

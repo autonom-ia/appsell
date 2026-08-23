@@ -507,6 +507,40 @@ export async function updateDomainProductDraft(
   });
 }
 
+export async function updateDomainProductCourseDraft(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  input: {
+    idempotencyKey: string;
+    expectedProductVersion: number;
+    expectedCourseVersion: number;
+    courseId: string;
+    slug: string;
+    productTitle: string;
+    productDescription: string;
+    courseTitle: string;
+  }
+) {
+  return domainRequest(sessionId, session, {
+    method: "PATCH",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}/metadata`,
+    capability: "catalog.draft.update",
+    sellerOrganizationId,
+    body: {
+      idempotency_key: input.idempotencyKey,
+      course_id: input.courseId,
+      expected_product_version: input.expectedProductVersion,
+      expected_course_version: input.expectedCourseVersion,
+      slug: input.slug,
+      title: input.productTitle,
+      description: input.productDescription,
+      course_title: input.courseTitle
+    }
+  });
+}
+
 export async function transitionDomainOfferStatus(
   sessionId: string,
   session: ServerSession,

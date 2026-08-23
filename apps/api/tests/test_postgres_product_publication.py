@@ -422,6 +422,16 @@ def test_offer_status_valid_transitions_are_versioned_and_idempotent() -> None:
     seller_id, product_id, course_id = create_graph()
     offer_id = uuid4()
     update_draft(USER_A, seller_id, product_id, course_id, offer_id)
+    publish(
+        USER_A,
+        seller_id,
+        product_id,
+        course_id,
+        offer_id,
+        product_version=2,
+        course_version=2,
+        offer_version=1,
+    )
     assert read_offer_status(seller_id, offer_id) == ("draft", 1)
 
     activation_key = uuid4()
@@ -460,6 +470,16 @@ def test_offer_status_allows_active_to_draft_round_trip() -> None:
     seller_id, product_id, course_id = create_graph()
     offer_id = uuid4()
     update_draft(USER_A, seller_id, product_id, course_id, offer_id)
+    publish(
+        USER_A,
+        seller_id,
+        product_id,
+        course_id,
+        offer_id,
+        product_version=2,
+        course_version=2,
+        offer_version=1,
+    )
 
     assert transition_offer_status(
         USER_A, seller_id, product_id, offer_id, "draft", "active", 1
@@ -491,6 +511,16 @@ def test_offer_status_rejects_invalid_transitions(initial_status: str, target_st
     update_draft(USER_A, seller_id, product_id, course_id, offer_id)
     version = 1
     if initial_status in {"active", "archived"}:
+        publish(
+            USER_A,
+            seller_id,
+            product_id,
+            course_id,
+            offer_id,
+            product_version=2,
+            course_version=2,
+            offer_version=1,
+        )
         transition_offer_status(USER_A, seller_id, product_id, offer_id, "draft", "active", version)
         version = 2
     if initial_status == "archived":
@@ -524,10 +554,51 @@ def test_offer_status_activation_requires_positive_price() -> None:
         offer_id,
         offer_unit_amount_minor=0,
     )
+    publish(
+        USER_A,
+        seller_id,
+        product_id,
+        course_id,
+        offer_id,
+        product_version=2,
+        course_version=2,
+        offer_version=1,
+    )
     with pytest.raises(psycopg.Error) as error:
         transition_offer_status(USER_A, seller_id, product_id, offer_id, "draft", "active", 1)
     assert error.value.sqlstate == "P4222"
     assert read_offer_status(seller_id, offer_id) == ("draft", 1)
+
+
+def test_offer_status_activation_requires_published_catalog() -> None:
+    seller_id, product_id, course_id = create_graph()
+    offer_id = uuid4()
+    update_draft(
+        USER_A,
+        seller_id,
+        product_id,
+        course_id,
+        offer_id,
+        offer_unit_amount_minor=19900,
+    )
+    with pytest.raises(psycopg.Error) as error:
+        transition_offer_status(USER_A, seller_id, product_id, offer_id, "draft", "active", 1)
+    assert error.value.sqlstate == "55000"
+    assert read_offer_status(seller_id, offer_id) == ("draft", 1)
+
+    publish(
+        USER_A,
+        seller_id,
+        product_id,
+        course_id,
+        offer_id,
+        product_version=2,
+        course_version=2,
+        offer_version=1,
+    )
+    assert transition_offer_status(
+        USER_A, seller_id, product_id, offer_id, "draft", "active", 1
+    ) == ("active", 2, True)
 
 
 def test_offer_status_check_rejects_unknown_values() -> None:
@@ -639,7 +710,7 @@ def test_schema_rls_and_runtime_privileges_are_minimal() -> None:
         ("publication", "appsell_owner", True, True),
     ]
     assert privileges == (
-        "0026_asset_worker_claim_filename",
+        "0028_offer_activation_guard",
         True,
         False,
         True,
@@ -1249,7 +1320,7 @@ def test_upgrade_from_0003_preserves_existing_draft() -> None:
                 """,
                 (seller_id, product_id),
             ).fetchone() == (
-                "0026_asset_worker_claim_filename",
+                "0028_offer_activation_guard",
                 "draft",
                 None,
                 True,
@@ -1316,7 +1387,13 @@ def test_offer_status_migration_preserves_history_and_allows_clean_downgrade() -
         run_migration(transitioned_database, "upgrade", "0018_offer_pricing")
         target_admin_url = database_url(ADMIN_URL, transitioned_database)
         target_runtime_url = database_url(RUNTIME_URL, transitioned_database)
-        actor, seller_id, product_id, offer_id = uuid4(), uuid4(), uuid4(), uuid4()
+        actor, seller_id, product_id, offer_id, publication_id = (
+            uuid4(),
+            uuid4(),
+            uuid4(),
+            uuid4(),
+            uuid4(),
+        )
         with psycopg.connect(target_admin_url) as connection:
             connection.execute(
                 "insert into app_private.context_signing_key (secret) values (%s)",
@@ -1361,6 +1438,23 @@ def test_offer_status_migration_preserves_history_and_allows_clean_downgrade() -
                 ) values (%s, %s, %s, 'Offer status', '', 100, 'BRL', 'one_time')
                 """,
                 (seller_id, offer_id, product_id),
+            )
+            connection.execute(
+                """
+                insert into publication (
+                  seller_organization_id, id, catalog_product_id, version,
+                  schema_version, source_sha256, snapshot, actor_identity_user_id
+                ) values (%s, %s, %s, 1, 1, %s, '{}'::jsonb, %s)
+                """,
+                (seller_id, publication_id, product_id, digest("migration-publication"), actor),
+            )
+            connection.execute(
+                """
+                update catalog_product
+                set status = 'published', published_snapshot_id = %s
+                where seller_organization_id = %s and id = %s
+                """,
+                (publication_id, seller_id, product_id),
             )
             connection.commit()
 
@@ -1414,7 +1508,7 @@ def test_offer_status_migration_preserves_history_and_allows_clean_downgrade() -
                 from offer where id = %s
                 """,
                 (offer_id,),
-            ).fetchone() == ("0026_asset_worker_claim_filename", "archived", 3, 2, True)
+            ).fetchone() == ("0028_offer_activation_guard", "archived", 3, 2, True)
             connection.execute("update offer set status = 'draft' where id = %s", (offer_id,))
             connection.commit()
 
@@ -1437,7 +1531,7 @@ def test_offer_status_migration_preserves_history_and_allows_clean_downgrade() -
                 from offer where id = %s
                 """,
                 (offer_id,),
-            ).fetchone() == ("0026_asset_worker_claim_filename", "draft", 3, 2, True)
+            ).fetchone() == ("0028_offer_activation_guard", "draft", 3, 2, True)
 
         run_migration(clean_database, "upgrade", "head")
         run_migration(clean_database, "downgrade", "0018_offer_pricing")

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { boundedAssetFetch, discardPendingAssetUpload, formatBytes, validIntent, type UploadIntentPayload } from "../app/components/lesson-asset-panel";
+import { boundedAssetFetch, discardPendingAssetUpload, formatBytes, MAX_VERIFICATION_WAIT_MS, validIntent, verificationPhaseForElapsed, verificationStatusTimeoutForElapsed, type UploadIntentPayload } from "../app/components/lesson-asset-panel";
 
 const valid: UploadIntentPayload = {
   upload_id: "55000000-0000-4000-8000-000000000001",
@@ -50,6 +50,16 @@ describe("lesson asset size labels", () => {
   it("does not round a small PDF down to zero MiB", () => {
     expect(formatBytes(3181)).toBe("3,1 KiB");
     expect(formatBytes(2 * 1024 * 1024)).toBe("2 MiB");
+  });
+});
+
+describe("lesson asset verification UX", () => {
+  it("leaves the service processing but exits the polling state after 15 seconds", () => {
+    expect(MAX_VERIFICATION_WAIT_MS).toBe(15_000);
+    expect(verificationPhaseForElapsed(14_999)).toBe("verifying");
+    expect(verificationPhaseForElapsed(15_000)).toBe("delayed");
+    expect(verificationStatusTimeoutForElapsed(14_900)).toBe(100);
+    expect(verificationStatusTimeoutForElapsed(15_000)).toBe(1);
   });
 });
 
