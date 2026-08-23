@@ -1300,6 +1300,20 @@ async def test_signed_api_creates_replays_and_lists_persistent_draft() -> None:
                 assert listed.json()["products"][0]["id"] == created.json()["product_id"]
                 assert listed.json()["products"][0]["status"] == "draft"
                 assert listed.json()["products"][0]["course"]["status"] == "draft"
+
+                detail_path = f"{path}/{created.json()['product_id']}"
+                detail = await client.get(
+                    detail_path,
+                    headers=headers(
+                        method="GET",
+                        path=detail_path,
+                        capability="catalog.draft.read",
+                        seller_id=seller_id,
+                    ),
+                )
+                assert detail.status_code == 200, detail.text
+                assert detail.json()["id"] == created.json()["product_id"]
+                assert detail.json()["seller_slug"] == json.loads(seller_body)["slug"]
     finally:
         get_settings.cache_clear()
         for key, value in previous.items():

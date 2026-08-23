@@ -480,3 +480,182 @@ def test_onboarding_rolls_back_every_effect_and_rls_is_capability_aware() -> Non
         apply_context(connection, actor, seller_id, "identity.read")
         assert connection.execute("select count(*) from seller_organization").fetchone() == (0,)
         assert connection.execute("select count(*) from seller_membership").fetchone() == (0,)
+
+
+def test_platform_superadmin_catalog_access_is_global_audited_and_tenant_safe() -> None:
+    """Regression for #195: global admin access cannot weaken tenant isolation."""
+
+    assert ADMIN_URL and RUNTIME_URL
+    owner_a = sync_identity(email=f"owner-a-{uuid4()}@example.test")
+    owner_b = sync_identity(email=f"owner-b-{uuid4()}@example.test")
+    superadmin = sync_identity(email=f"superadmin-{uuid4()}@example.test")
+    buyer = sync_identity(email=f"buyer-{uuid4()}@example.test")
+    seller_a = onboard(
+        owner_a,
+        f"seller-a-{uuid4().hex[:12]}",
+        "Seller A",
+        uuid4(),
+        hashlib.sha256(b"seller-a").hexdigest(),
+    )
+    seller_b = onboard(
+        owner_b,
+        f"seller-b-{uuid4().hex[:12]}",
+        "Seller B",
+        uuid4(),
+        hashlib.sha256(b"seller-b").hexdigest(),
+    )
+
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "insert into platform_grant(identity_user_id,role,status) "
+            "values(%s,'platform_superadmin','active')",
+            (superadmin,),
+        )
+        connection.commit()
+
+    product_key = uuid4()
+    create_hash = hashlib.sha256(b"platform-superadmin-product").hexdigest()
+    with psycopg.connect(RUNTIME_URL) as connection:
+        apply_context(connection, owner_b, seller_b, "catalog.draft.create")
+        created = connection.execute(
+            "select catalog_product_id,course_id from "
+            "app_private.create_product_course_draft(%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (
+                owner_b,
+                seller_b,
+                f"product-{uuid4().hex[:12]}",
+                "Produto Hub",
+                "Descrição original",
+                "Curso Hub",
+                product_key,
+                create_hash,
+                uuid4(),
+            ),
+        ).fetchone()
+        assert created is not None
+        product_id, course_id = created
+        connection.commit()
+
+    with psycopg.connect(RUNTIME_URL) as connection:
+        apply_context(connection, superadmin, None, "seller.list")
+        listed = connection.execute(
+            "select id,role from app_private.list_accessible_sellers(%s) "
+            "where id=any(%s) order by id",
+            (superadmin, [seller_a, seller_b]),
+        ).fetchall()
+        assert listed == sorted(
+            [(seller_a, "platform_superadmin"), (seller_b, "platform_superadmin")]
+        )
+        connection.rollback()
+
+        apply_context(connection, owner_b, seller_b, "catalog.draft.read")
+        assert connection.execute(
+            "select product.id,organization.slug from catalog_product product "
+            "join seller_organization organization "
+            "on organization.id=product.seller_organization_id "
+            "where product.seller_organization_id=%s and product.id=%s",
+            (seller_b, product_id),
+        ).fetchone() is not None
+        connection.rollback()
+
+        apply_context(connection, superadmin, seller_b, "catalog.draft.read")
+        assert connection.execute(
+            "select product.id,organization.slug from catalog_product product "
+            "join seller_organization organization "
+            "on organization.id=product.seller_organization_id "
+            "where product.seller_organization_id=%s and product.id=%s",
+            (seller_b, product_id),
+        ).fetchone() is not None
+        connection.rollback()
+
+        apply_context(connection, owner_a, seller_b, "catalog.draft.read")
+        assert connection.execute(
+            "select id from catalog_product where seller_organization_id=%s and id=%s",
+            (seller_b, product_id),
+        ).fetchall() == []
+        connection.rollback()
+
+        apply_context(connection, buyer, seller_b, "catalog.draft.read")
+        assert connection.execute(
+            "select id from catalog_product where seller_organization_id=%s and id=%s",
+            (seller_b, product_id),
+        ).fetchall() == []
+        connection.rollback()
+
+        for denied_actor in (owner_a, buyer):
+            apply_context(connection, denied_actor, seller_b, "catalog.draft.update")
+            with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
+                connection.execute(
+                    "select * from app_private.update_product_course_draft("
+                    "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (
+                        denied_actor,
+                        seller_b,
+                        product_id,
+                        f"product-{uuid4().hex[:12]}",
+                        course_id,
+                        "Mudança negada",
+                        "Não deve persistir",
+                        "Curso negado",
+                        1,
+                        1,
+                        uuid4(),
+                        hashlib.sha256(b"denied-update").hexdigest(),
+                        uuid4(),
+                    ),
+                )
+            connection.rollback()
+
+        apply_context(connection, buyer, seller_b, "catalog.publication.create")
+        with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
+            connection.execute(
+                "select * from app_private.publish_product("
+                "%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s)",
+                (
+                    buyer,
+                    seller_b,
+                    product_id,
+                    uuid4(),
+                    1,
+                    1,
+                    "{}",
+                    uuid4(),
+                    hashlib.sha256(b"denied-publication").hexdigest(),
+                    uuid4(),
+                ),
+            )
+        connection.rollback()
+
+        update_hash = hashlib.sha256(b"platform-superadmin-update").hexdigest()
+        apply_context(connection, superadmin, seller_b, "catalog.draft.update")
+        updated = connection.execute(
+            "select product_version,course_version,updated from "
+            "app_private.update_product_course_draft("
+            "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (
+                superadmin,
+                seller_b,
+                product_id,
+                f"product-{uuid4().hex[:12]}",
+                course_id,
+                "Produto Hub editado",
+                "Descrição editada pelo superadmin",
+                "Curso Hub editado",
+                1,
+                1,
+                uuid4(),
+                update_hash,
+                uuid4(),
+            ),
+        ).fetchone()
+        assert updated == (2, 2, True)
+        connection.commit()
+
+    with psycopg.connect(ADMIN_URL) as connection:
+        assert connection.execute(
+            "select actor_identity_user_id from audit_event "
+            "where seller_organization_id=%s and target_id=%s "
+            "and action='catalog.product_course_draft_updated' "
+            "order by created_at desc limit 1",
+            (seller_b, product_id),
+        ).fetchone() == (superadmin,)
