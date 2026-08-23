@@ -104,7 +104,7 @@ def test_projection_pin_rls_and_player_are_bound_to_the_buyer() -> None:
             (entitlement, publication, publication),
         ).fetchone()
     assert state == (
-        "0030_product_pending_assets",
+        "0032_platform_superadmin_catalog",
         publication,
         1,
         5,
