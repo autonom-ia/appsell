@@ -376,6 +376,20 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     statements = [
+        """
+        do $migration$
+        begin
+          if exists (
+            select 1 from public.buyer_entitlement where source='free_access'
+          ) or exists (
+            select 1 from app_private.free_access_request
+          ) then
+            raise exception
+              'cannot downgrade 0031_public_free_access: free-access records exist; use a forward migration'
+              using errcode='55000';
+          end if;
+        end $migration$
+        """,
         f"""
         do $migration$
         declare definition text; changed text;
