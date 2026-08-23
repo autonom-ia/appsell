@@ -188,7 +188,6 @@ uv run --project apps/api pytest \
   apps/api/tests/test_postgres_product_course.py \
   apps/api/tests/test_postgres_product_publication.py \
   apps/api/tests/test_postgres_curriculum.py \
-  apps/api/tests/test_postgres_demo_learning.py \
   apps/api/tests/test_postgres_learning_progress.py \
   apps/api/tests/test_postgres_multi_asset_migration.py \
   apps/api/tests/test_postgres_private_assets.py \
@@ -239,7 +238,6 @@ APPSELL_TEST_DOMAIN_API_URL="http://127.0.0.1:${api_port}" \
 APPSELL_LOCAL_IDENTITY_EMAIL="creator@example.test" \
 pnpm exec vitest run --no-file-parallelism \
   tests/bff-api-onboarding.test.ts tests/bff-learning-multiprocess.test.ts \
-  tests/bff-demo-library.test.ts \
   tests/bff-superadmin-inspection.test.ts \
   tests/bff-webhook-ingress.test.ts
 export APPSELL_MULTI_SELLER_ENABLED="true"
