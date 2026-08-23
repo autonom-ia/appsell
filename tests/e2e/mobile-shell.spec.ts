@@ -323,14 +323,15 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   const offerId = "65000000-0000-4000-8000-000000000001";
   let conflictOnce = true;
   const publishKeys: string[] = [];
-  const state = { title: "Creator OS", slug: "creator-os", description: "Draft privado.", courseTitle: "Fundamentos", offerTitle: "Oferta Creator", offerSummary: "Termos informativos.", productVersion: 1, courseVersion: 1, offerVersion: 1, status: "draft", hasChanges: true, publication: null as null | { id: string; version: number; published_at: string } };
+  const submittedOfferPrices: string[] = [];
+  const state = { title: "Creator OS", slug: "creator-os", description: "Draft privado.", courseTitle: "Fundamentos", offerTitle: "Oferta Creator", offerSummary: "Termos informativos.", offerPrice: null as number | null, productVersion: 1, courseVersion: 1, offerVersion: 1, status: "draft", hasChanges: true, publication: null as null | { id: string; version: number; published_at: string } };
   const detail = () => ({
     product: {
       id: productId, seller_organization_id: sellerId, slug: state.slug, title: state.title, description: state.description, status: state.status,
       version: state.productVersion, draft_version: state.productVersion,
       course: { id: courseId, title: state.courseTitle, description: "", status: "draft", draft_version: state.courseVersion, position: 1 },
       courses: [{ id: courseId, title: state.courseTitle, description: "", status: "draft", draft_version: state.courseVersion, position: 1 }],
-      offer: { id: offerId, title: state.offerTitle, summary: state.offerSummary, status: "draft", version: state.offerVersion, draft_version: state.offerVersion },
+      offer: { id: offerId, title: state.offerTitle, summary: state.offerSummary, status: "draft", version: state.offerVersion, draft_version: state.offerVersion, unit_amount_minor: state.offerPrice, currency: "BRL", billing_period: "one_time" },
       publication: state.publication,
       has_unpublished_changes: state.hasChanges,
       readiness: { can_publish: state.hasChanges, items: [{ key: "server", label: state.hasChanges ? "Validação do servidor concluída" : "Nenhuma alteração nova", ready: state.hasChanges }] }
@@ -348,6 +349,7 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
     expect(form.get("offer_id")).toBe(offerId);
     expect(form.get("offer_currency")).toBe("BRL");
     expect(form.get("offer_billing_period")).toBe("one_time");
+    submittedOfferPrices.push(String(form.get("offer_unit_amount_minor")));
     if (conflictOnce) {
       conflictOnce = false;
       state.title = "Título concorrente do servidor";
@@ -355,7 +357,7 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
       return route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: "version_conflict" }) });
     }
     expect(form.get("expected_product_version")).toBe(String(state.productVersion));
-    state.title = String(form.get("product_title")); state.slug = String(form.get("slug")); state.description = String(form.get("product_description")); state.courseTitle = String(form.get("course_title")); state.offerTitle = String(form.get("offer_title")); state.offerSummary = String(form.get("offer_summary"));
+    state.title = String(form.get("product_title")); state.slug = String(form.get("slug")); state.description = String(form.get("product_description")); state.courseTitle = String(form.get("course_title")); state.offerTitle = String(form.get("offer_title")); state.offerSummary = String(form.get("offer_summary")); state.offerPrice = Number(form.get("offer_unit_amount_minor"));
     state.productVersion += 1; state.courseVersion += 1; state.offerVersion += 1;
     state.hasChanges = true;
     return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ product_id: productId, course_id: courseId, offer_id: offerId, product_version: state.productVersion, course_version: state.courseVersion, offer_version: state.offerVersion }) });
@@ -416,6 +418,9 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   await expect(page.getByText("Rascunho salvo com segurança.")).toBeVisible();
 
   await page.getByRole("link", { name: /^Oferta/ }).click();
+  const offerPrice = page.getByLabel("Preço (R$)");
+  await offerPrice.fill("47");
+  await expect(page.getByText("Salve o preço antes de ativar", { exact: true })).toBeVisible();
   const offerSummary = page.getByLabel("Resumo da oferta");
   await offerSummary.fill("Oferta sem cobrança conectada.");
   await offerSummary.focus();
@@ -428,6 +433,8 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   await page.goForward();
   await expect(page).toHaveURL(new RegExp(`/products/${sellerId}/${productId}\\?section=oferta$`));
   await expect(page.getByLabel("Resumo da oferta")).toHaveValue("Oferta sem cobrança conectada.");
+  await expect(page.getByLabel("Preço (R$)")).toHaveValue("47");
+  await expect(page.getByText("Preço salvo; oferta pronta para ativar", { exact: true })).toBeVisible();
   await page.getByRole("link", { name: /^Preview/ }).click();
   await expect(page.getByRole("heading", { name: "Creator OS 2" })).toBeVisible();
   await expect(page.getByText("Compra indisponível nesta prévia")).toBeVisible();
@@ -459,6 +466,7 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   await page.getByRole("button", { name: "Publicar versão" }).click();
   await expect(page.getByText("Versão publicada com sucesso.", { exact: false })).toBeVisible();
   expect(publishKeys).toHaveLength(4);
+  expect(submittedOfferPrices).toContain("4700");
 
   await page.evaluate(() => { document.documentElement.style.fontSize = "200%"; });
   const scaled = await page.evaluate(() => ({
@@ -772,6 +780,8 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
         headers: request.headers(),
         body: posted ? new Uint8Array(posted) : undefined
       }).formData();
+      expect(form.get("title")).toBe("Aula PDF");
+      expect(form.get("file_name")).toBe("guia-novo.pdf");
       intentReplacementTargets.push(form.get("existing_asset_id")?.toString() ?? null);
       intentAttempts += 1;
       if (intentAttempts === 1 || intentAttempts === 3 || intentAttempts === 4) {

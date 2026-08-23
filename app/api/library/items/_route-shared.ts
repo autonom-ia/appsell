@@ -185,7 +185,7 @@ export function learningPlayerResponse(
     (payload.player.selected_asset === null ? [] : [payload.player.selected_asset]);
   const selectedAssets = domainAssets.map((asset) => ({
     ...learningAssetLinks(String(payload.player.entitlement_id), asset),
-    title: asset.title,
+    title: learningAssetDisplayTitle(payload.player, asset),
     media_type: asset.media_type,
     content_role: asset.content_role ?? "course_content",
     download_allowed: asset.download_allowed === true
@@ -199,6 +199,25 @@ export function learningPlayerResponse(
   return NextResponse.json({ player, csrf: learningCsrf(sessionId) }, {
     headers: NO_STORE_HEADERS
   });
+}
+
+function learningAssetDisplayTitle(
+  player: LearningPlayerEnvelope["player"],
+  asset: DomainSelectedAsset
+) {
+  const selectedLessonId = typeof player.selected_lesson_id === "string"
+    ? player.selected_lesson_id
+    : null;
+  const course = isRecord(player.course) ? player.course : null;
+  const modules = course && Array.isArray(course.modules) ? course.modules : [];
+  for (const courseModule of modules) {
+    if (!isRecord(courseModule) || !Array.isArray(courseModule.lessons)) continue;
+    for (const lesson of courseModule.lessons) {
+      if (!isRecord(lesson) || lesson.id !== selectedLessonId) continue;
+      if (typeof lesson.title === "string" && lesson.title.trim()) return lesson.title;
+    }
+  }
+  return asset.content_role === "support_material" ? "Material de apoio" : "Conteúdo do curso";
 }
 
 function learningWatermark(
