@@ -35,4 +35,4 @@ Publicar catálogo e ativar vendas são estados diferentes. O fluxo de publicaç
 - [x] E2E real do fluxo completo verde em Chromium; WebKit não foi necessário para este gate.
 - [x] Smoke renderizado sem overflow nas larguras cobertas, com foco/teclado e acessibilidade do uploader verificados.
 - [x] Checklist final pronto para entrega ao usuário.
-- [ ] Aprovação explícita solicitada antes de merge/deploy.
+- [x] Aprovação explícita solicitada antes de merge/deploy.

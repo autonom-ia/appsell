@@ -3,7 +3,7 @@
 - Issue: #188
 - Branch: `codex/publish-ux-p0-p1`
 - Última atualização: 2026-08-23
-- Estado: implementação P0/P1 e gates técnicos concluídos; merge/deploy continuam bloqueados por aprovação explícita
+- Estado: implementação P0/P1 e gates técnicos concluídos; pedido de aprovação enviado; merge/deploy continuam bloqueados por aprovação explícita
 
 ## Última posição verificável
 
@@ -61,7 +61,7 @@
 | PostgreSQL/migrations 0027–0028 | cluster local descartável, migration head e produto/publicação: `44 passed` | PASS |
 | Review independente P0 | Pauli: `PASS`, P0/P1/P2/P3 = 0; achados anteriores corrigidos | PASS |
 | Review independente P1 | Pauli: `PASS`, P0/P1/P2/P3 = 0; timeout/cancelamento rechecados | PASS |
-| Aprovação para merge | não solicitada | bloqueado por processo |
+| Aprovação para merge | pedido enviado; sincronização da branch ainda não autorizada | bloqueado por processo |
 | Deploy VPS | não autorizado nesta etapa | bloqueado por processo |
 
 ## Registro de atualizações
@@ -73,3 +73,4 @@
 - 2026-08-23 — migrações 0027/0028 aplicadas em PostgreSQL local descartável; o primeiro teste encontrou e corrigiu o limite de 32 caracteres da revision 0028.
 - 2026-08-23 — timeout de confirmação passou a ser recuperável sem cancelar o upload ambíguo; Vitest 26/26, API 47/1 skip, typecheck, lint e Ruff passaram.
 - 2026-08-23 — reviews independentes finais P0/P1: PASS; E2E final de uploader/responsividade: 2/2.
+- 2026-08-23 — checklist final entregue e pedido explícito enviado; PR #189 segue `CONFLICTING` por divergência com `origin/main`, sem merge/deploy.
