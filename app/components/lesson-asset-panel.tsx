@@ -384,7 +384,9 @@ export function LessonAssetPanel({
     body.set("_csrf", csrf.intent);
     body.set("idempotency_key", crypto.randomUUID());
     body.set("expected_course_version", String(courseVersion));
-    body.set("title", file.name.replace(/[.](pdf|mp4)$/i, ""));
+    // O título é o texto humano da aula; o nome físico continua separado em
+    // file_name e serve apenas para armazenamento/entrega controlada.
+    body.set("title", lessonTitle);
     body.set("file_name", file.name);
     body.set("media_type", mediaType);
     body.set("byte_size", String(file.size));

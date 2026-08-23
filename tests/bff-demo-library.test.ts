@@ -269,14 +269,17 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
         selected_asset: {
           view_href: string;
           download_href: string | null;
+          title: string;
           content_role: string;
           download_allowed: boolean;
         };
-        selected_assets: Array<{ view_href: string }>;
+        selected_assets: Array<{ view_href: string; title: string }>;
       };
     };
     const assetHref = playerPayload.player.selected_asset.view_href;
     expect(playerPayload.player.selected_assets).toEqual([playerPayload.player.selected_asset]);
+    expect(playerPayload.player.selected_asset.title).toBe(firstLesson.title);
+    expect(playerPayload.player.selected_asset).not.toHaveProperty("file_name");
     expect(playerPayload.player.selected_asset).toMatchObject({
       content_role: "support_material",
       download_allowed: true,

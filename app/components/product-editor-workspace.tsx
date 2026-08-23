@@ -158,6 +158,10 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   const offerCurrencyLabel = /^[A-Z]{3}$/.test(detail?.offer.currency ?? "")
     ? (detail!.offer.currency === "BRL" ? "R$" : detail!.offer.currency!)
     : "R$";
+  const savedPriceInput = priceInputFromMinor(detail?.offer.unit_amount_minor);
+  const localPriceMinor = parsePriceInputToMinor(fields.offer_price);
+  const localPriceIsPositive = localPriceMinor !== null && localPriceMinor > 0;
+  const priceDirty = detail !== null && fields.offer_price !== savedPriceInput;
 
   useUnsavedChanges(editorDirty);
   useEffect(() => {
@@ -548,7 +552,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
             <fieldset disabled={detail.status === "archived" || offerLocked}>
               <legend>Oferta e preço</legend>
               {detail.offer.status === "draft"
-                ? <div className="billing-boundary" role="note"><strong>Defina o preço antes de ativar</strong><p>O valor em {offerCurrencyLabel} é o que será cobrado no checkout quando a oferta estiver ativa. Sem preço, a oferta permanece em rascunho.</p></div>
+                ? <div className="billing-boundary" role="note"><strong>{!localPriceIsPositive ? "Defina um preço maior que zero" : priceDirty ? "Salve o preço antes de ativar" : dirty ? "Salve as alterações antes de ativar" : "Preço salvo; oferta pronta para ativar"}</strong><p>{!localPriceIsPositive ? `Informe o valor em ${offerCurrencyLabel}. Sem preço maior que zero, a oferta permanece em rascunho.` : priceDirty ? `O valor em ${offerCurrencyLabel} só será considerado no checkout depois que o rascunho for salvo.` : dirty ? "Salve as alterações pendentes antes de ativar a oferta." : `O preço salvo em ${offerCurrencyLabel} será cobrado quando a oferta estiver ativa.`}</p></div>
                 : <div className="billing-boundary" role="note"><strong>{detail.offer.status === "active" ? "Oferta ativa" : "Oferta arquivada"}</strong><p>{detail.offer.status === "active" ? "Para editar termos ou preço, despublique a oferta primeiro." : "Uma oferta arquivada é definitiva e não aparece na vitrine."}</p></div>}
               <EditorField label="Nome da oferta" name="offer_title" value={fields.offer_title} onChange={(value) => updateField("offer_title", value)} minLength={2} maxLength={120} required invalid={invalidField === "offer_title"}/>
               <EditorField label="Resumo da oferta" name="offer_summary" value={fields.offer_summary} onChange={(value) => updateField("offer_summary", value)} maxLength={500} multiline invalid={invalidField === "offer_summary"}/>
@@ -773,7 +777,7 @@ function saveMessage(state: SaveState, dirty: boolean) {
   if (state === "rebasing") return "Recarregando a versão atual do servidor…";
   if (state === "rebased") return "Versão atualizada; suas alterações locais continuam prontas para novo envio.";
   if (state === "invalid") return "Revise o campo indicado. Os demais campos foram preservados.";
-  if (state === "forbidden") return "Sua sessão ou permissão mudou. Entre novamente.";
+  if (state === "forbidden") return "Salvamento recusado. Sua sessão expirou ou esta conta não tem acesso a este espaço; entre novamente e confira o tenant.";
   if (state === "unavailable") return "A API não confirmou o estado final. Seus campos foram preservados; recarregue antes de outra tentativa.";
   if (state === "error") return "Não foi possível salvar. Seus campos continuam neste dispositivo.";
   return dirty ? "Alterações não salvas." : "Rascunho sincronizado.";
