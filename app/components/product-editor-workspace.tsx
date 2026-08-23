@@ -49,6 +49,7 @@ interface ReadinessItem {
 interface ProductDetail {
   id: string;
   seller_organization_id?: string;
+  seller_slug?: string;
   slug: string;
   title: string;
   description: string;
@@ -56,6 +57,7 @@ interface ProductDetail {
   draft_version: number;
   course: CourseDetail;
   courses: CourseDetail[];
+  curriculum: CurriculumSummary;
   offer: OfferDetail;
   publication?: { id?: string; version: number; published_at?: string } | null;
   has_unpublished_changes?: boolean;
@@ -146,7 +148,7 @@ const editorSections: Array<{ id: EditorSection; label: string; hint: string }> 
   { id: "publicar", label: "Publicar", hint: "Snapshot versionado" }
 ];
 
-function workflowState(
+export function workflowState(
   detail: ProductDetail,
   curriculum: CurriculumSummary,
   editorDirty: boolean,
@@ -157,7 +159,10 @@ function workflowState(
   );
   const curriculumComplete = curriculum.modules > 0 && curriculum.lessons > 0;
   const offerComplete = Boolean(detail.offer.id && detail.offer.title.trim());
-  const previewComplete = !editorDirty && previewState === "ready";
+  const hasPublishedSnapshot = Boolean(
+    detail.publication && !(detail.has_unpublished_changes ?? detail.readiness?.has_unpublished_changes)
+  );
+  const previewComplete = !editorDirty && (previewState === "ready" || hasPublishedSnapshot);
   const publishComplete = Boolean(detail.publication && !(detail.has_unpublished_changes ?? detail.readiness?.has_unpublished_changes));
   return {
     produto: productComplete ? "complete" : "pending",
@@ -181,7 +186,7 @@ function nextWorkflowStep(
     curriculo: "Adicione pelo menos um módulo e uma aula para o curso ter conteúdo revisável.",
     oferta: "Configure e salve o nome da oferta. O preço prepara vendas, mas não bloqueia o salvamento editorial.",
     preview: "Salve o que mudou e abra a prévia para conferir o catálogo e o conteúdo incluído.",
-    publicar: "Revise as pendências do servidor; publicar cria o catálogo, não ativa vendas."
+    publicar: "Publique o catálogo e, nesta mesma etapa, escolha entre acesso gratuito ou vendas com checkout."
   };
   return { id: target, label: editorSections.find((item) => item.id === target)?.label ?? target, detail: details[target] };
 }
@@ -257,6 +262,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   }, []);
   const handleCurriculumSummary = useCallback((summary: CurriculumSummary) => {
     setCurriculumSummary(summary);
+    setDetail((current) => current ? { ...current, curriculum: summary } : current);
   }, []);
 
   const loadDetail = useCallback(async () => {
@@ -275,6 +281,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       const nextFields = fieldsFromDetail(nextDetail);
       offerId.current = nextDetail.offer.id ?? crypto.randomUUID();
       setDetail({ ...nextDetail, readiness: payload.readiness ?? nextDetail.readiness });
+      setCurriculumSummary(nextDetail.curriculum);
       setCsrf({ update: payload.csrf?.update ?? readActionCsrf("update"), publish: payload.csrf?.publish ?? readActionCsrf("publish"), offerStatus: payload.csrf?.offer_status ?? "" });
       setFields(nextFields);
       setSavedFields(nextFields);
@@ -396,6 +403,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       if (!updated) return setSaveState("error");
       updateIdempotencyKey.current = null;
       setDetail({ ...updated, readiness: payload.readiness ?? updated.readiness });
+      setCurriculumSummary(updated.curriculum);
       setCsrf((current) => ({ update: payload.csrf?.update ?? current.update, publish: payload.csrf?.publish ?? current.publish, offerStatus: payload.csrf?.offer_status ?? current.offerStatus }));
       setSavedFields(fieldsFromDetail(updated));
       if (sameFields(fieldsRef.current, submitted)) {
@@ -433,6 +441,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
         return;
       }
       setDetail(latest);
+      setCurriculumSummary(latest.curriculum);
       setSavedFields(fieldsFromDetail(latest));
       setCsrf((current) => ({ update: payload.csrf?.update ?? current.update, publish: payload.csrf?.publish ?? current.publish, offerStatus: payload.csrf?.offer_status ?? current.offerStatus }));
       offerId.current = latest.offer.id ?? offerId.current ?? crypto.randomUUID();
@@ -480,6 +489,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       const updated = normalizeEditorPayload(payload);
       if (updated) {
         setDetail({ ...updated, readiness: payload.readiness ?? updated.readiness });
+        setCurriculumSummary(updated.curriculum);
         const serverFields = fieldsFromDetail(updated);
         setFields(serverFields);
         setSavedFields(serverFields);
@@ -501,7 +511,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
 
   async function transitionOffer(nextStatus: "draft" | "active" | "archived") {
     const currentOffer = detail?.offer;
-    if (!currentOffer?.id || offerStatusLocked || dirty) return;
+    if (!currentOffer?.id || offerStatusLocked || editorDirty) return;
     const expectedStatus = currentOffer.status;
     if (expectedStatus === nextStatus) return;
     setOfferStatusState("transitioning");
@@ -608,6 +618,15 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   const hasUnpublishedChanges = detail.has_unpublished_changes ?? readiness?.has_unpublished_changes ?? !detail.publication;
   const canPublish = readiness?.can_publish === true && hasUnpublishedChanges && !editorDirty && publishState !== "publishing";
   const publicationVersion = detail.publication?.version;
+  const publicProductPath = detail.seller_slug
+    ? `/s/${detail.seller_slug}/p/${detail.slug}${detail.offer.status === "draft" ? "/access" : ""}`
+    : null;
+  const canActivateSales = detail.offer.status === "draft" &&
+    Boolean(detail.publication) &&
+    !hasUnpublishedChanges &&
+    (detail.offer.unit_amount_minor ?? 0) > 0 &&
+    !editorDirty &&
+    !offerStatusLocked;
   const workflow = workflowState(detail, curriculumSummary, editorDirty, previewState);
   const nextStep = nextWorkflowStep(section, workflow);
 
@@ -629,9 +648,9 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       <nav className="editor-section-nav" aria-label="Etapas do produto">
         {editorSections.map((item) => {
           const active = section === item.id;
-          const state = active ? "current" : workflow[item.id];
-          const stateLabel = state === "complete" ? "Concluída" : state === "current" ? "Etapa atual" : "Pendente";
-          return <Link key={item.id} href={`?section=${item.id}`} replace scroll={false} className={`${active ? "active " : ""}step-${state}`} aria-current={active ? "step" : undefined} onClick={(event) => requestSectionNavigation(event, item.id)}><span className="editor-step-heading"><strong>{item.label}</strong><span className="editor-step-mark" aria-hidden="true">{state === "complete" ? "✓" : state === "current" ? "•" : ""}</span></span><span>{item.hint}</span><span className="sr-only">{stateLabel}</span></Link>;
+          const state = workflow[item.id];
+          const stateLabel = active && state === "complete" ? "Concluída; etapa atual" : state === "complete" ? "Concluída" : active ? "Etapa atual; pendente" : "Pendente";
+          return <Link key={item.id} href={`?section=${item.id}`} replace scroll={false} className={`${active ? "active " : ""}step-${state}`} aria-current={active ? "step" : undefined} onClick={(event) => requestSectionNavigation(event, item.id)}><span className="editor-step-heading"><strong>{item.label}</strong><span className="editor-step-mark" aria-hidden="true">{state === "complete" ? "✓" : ""}</span></span><span>{item.hint}</span><span className="sr-only">{stateLabel}</span></Link>;
         })}
       </nav>
       {nextStep ? <div className="editor-next-step" role="status"><div><strong>{nextStep.id === section ? "Próximo requisito desta etapa" : `Próximo passo: ${nextStep.label}`}</strong><p>{nextStep.detail}</p></div>{nextStep.id !== section ? <Link className="secondary-button" href={`?section=${nextStep.id}`} replace scroll={false} onClick={(event) => requestSectionNavigation(event, nextStep.id)}>Ir para {nextStep.label}</Link> : null}</div> : null}
@@ -669,26 +688,10 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
             <section className="offer-status-panel" aria-labelledby="offer-status-title">
               <p className="eyebrow">Disponibilidade na vitrine</p>
               <h2 id="offer-status-title">Status da oferta: {offerStatusLabel(detail.offer.status)}</h2>
-              {detail.offer.status === "draft" ? <p>{!detail.publication ? "Publique o catálogo antes de ativar vendas. Esta etapa não cria checkout." : `Ativar vendas torna a oferta vendável com o preço salvo${detail.offer.unit_amount_minor ? ` (${formatOfferPrice(detail.offer.unit_amount_minor, detail.offer.currency)})` : ""}. É preciso salvar um preço maior que zero antes.`}</p> : null}
-              {detail.offer.status === "active" ? <p>Oferta ativa por {detail.offer.unit_amount_minor ? formatOfferPrice(detail.offer.unit_amount_minor, detail.offer.currency) : "preço não informado"}. Despublicar volta a rascunho para editar; arquivar remove da vitrine em definitivo.</p> : null}
+              {detail.offer.status === "draft" ? <p>{!detail.publication ? "Publique o catálogo antes de escolher o acesso. A ativação das vendas fica em Publicar." : "A decisão entre acesso gratuito e vendas com checkout fica em Publicar."}</p> : null}
+              {detail.offer.status === "active" ? <p>Oferta ativa por {detail.offer.unit_amount_minor ? formatOfferPrice(detail.offer.unit_amount_minor, detail.offer.currency) : "preço não informado"}. Para editar termos ou preço, volte a rascunho em Publicar.</p> : null}
               {detail.offer.status === "archived" ? <p>Oferta arquivada. Crie um novo produto para vender novamente.</p> : null}
-              {dirty ? <p className="form-note" role="status">Salve as alterações antes de mudar o status da oferta.</p> : null}
-              <div className="offer-status-actions">
-                {detail.offer.status === "draft" ? <button className="primary-button" type="button" disabled={dirty || offerStatusLocked || !detail.offer.unit_amount_minor || !detail.publication} onClick={() => void transitionOffer("active")}>{offerStatusState === "transitioning" ? "Ativando vendas…" : "Ativar vendas"}</button> : null}
-                {detail.offer.status === "active" ? <>
-                  <button className="secondary-button" type="button" disabled={dirty || offerStatusLocked} onClick={() => void transitionOffer("draft")}>{offerStatusState === "transitioning" ? "Aplicando…" : "Despublicar para editar"}</button>
-                  <button ref={archiveTriggerButton} className="secondary-button" type="button" disabled={dirty || offerStatusLocked} onClick={() => setArchiveDialogOpen(true)}>Arquivar oferta</button>
-                </> : null}
-              </div>
-              <div className="form-feedback" aria-live="polite" aria-atomic="true">
-                {offerStatusState === "done" ? <p className="form-success">Status da oferta atualizado.</p> : null}
-                {offerStatusState === "conflict" ? <><p className="form-error">A oferta mudou em outra sessão. Atualize os dados antes de tentar novamente.</p><button className="secondary-button" type="button" onClick={() => void reloadOfferAfterConflict()}>Atualizar dados da oferta</button></> : null}
-                {offerStatusState === "reloading" ? <p className="form-note">Atualizando os dados da oferta…</p> : null}
-                {offerStatusState === "blocked" ? <p className="form-error">Transição bloqueada. Publique o catálogo e confira se há preço salvo maior que zero.</p> : null}
-                {offerStatusState === "forbidden" ? <p className="form-error">Sua sessão ou permissão mudou. Entre novamente.</p> : null}
-                {offerStatusState === "unavailable" ? <p className="form-note">A API não respondeu. Nenhuma mudança foi confirmada; tente novamente.</p> : null}
-                {offerStatusState === "error" ? <p className="form-error">Não foi possível mudar o status da oferta.</p> : null}
-              </div>
+              <p className="form-note" role="status">A alteração do acesso é feita na etapa Publicar, depois que o rascunho estiver salvo.</p>
             </section>
           </>
         ) : null}
@@ -698,16 +701,44 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
         {section === "publicar" ? (
           <section className="publish-panel" aria-labelledby="publish-panel-title">
             <p className="eyebrow">Validação de segurança</p><h2 id="publish-panel-title">Publicar catálogo</h2>
-            <p>A publicação cria uma versão fixa do catálogo com produto, oferta informativa, módulos, aulas e PDFs já verificados. Vendas, cobrança e checkout continuam separados e desativados.</p>
+            <p>A publicação cria uma versão fixa do catálogo com produto, oferta informativa, módulos, aulas e PDFs já verificados. Depois, escolha aqui se o acesso será gratuito ou passará pelo checkout.</p>
             {readiness ? (
               <ul className="readiness-list">{readiness.items.map((item, index) => <li key={item.key ?? `${item.label}-${index}`} className={item.ready ? "ready" : "blocked"}><span aria-hidden="true">{item.ready ? "✓" : "!"}</span><div><strong>{item.label}</strong>{item.detail ? <p>{item.detail}</p> : null}</div><span className="sr-only">{item.ready ? "Pronto" : "Pendente"}</span></li>)}</ul>
             ) : <p className="form-note" role="status">A API ainda não retornou a validação de publicação. Nada será publicado.</p>}
             {editorDirty ? <p className="form-note" role="status">Salve as alterações e aguarde os materiais em verificação antes de publicar.</p> : null}
             {!dirty && detail.publication && !hasUnpublishedChanges ? <p className="form-note" role="status">Nenhuma mudança desde a versão publicada. Edite e salve o rascunho antes de criar outra versão.</p> : null}
             <div className="publish-action"><button ref={publishTriggerButton} className="primary-button" type="button" disabled={!canPublish} onClick={() => setPublishDialogOpen(true)}><span>{publishState === "publishing" ? "Publicando catálogo…" : `Publicar catálogo${publicationVersion ? ` nova versão após v${publicationVersion}` : " primeira versão"}`}</span></button></div>
+            <section className="offer-status-panel" aria-labelledby="access-mode-title">
+              <p className="eyebrow">Acesso do produto</p>
+              <h2 id="access-mode-title">{detail.offer.status === "active" ? "Vendas ativas" : "Acesso gratuito"}</h2>
+              {detail.offer.status === "active"
+                ? <p>O link público encaminha o comprador para o checkout antes de liberar o conteúdo.</p>
+                : <p>O link público encaminha a pessoa para cadastro ou login e libera o conteúdo sem cobrança. Para vender, salve um preço maior que zero e ative as vendas aqui.</p>}
+              {detail.offer.status === "draft" ? <>
+                {!detail.publication ? <p className="form-note">Publique o catálogo primeiro. Depois desta publicação, o botão de ativação ficará disponível aqui.</p> : null}
+                {detail.publication && hasUnpublishedChanges && !editorDirty ? <p className="form-note">Publique a versão atual antes de ativar vendas. O checkout só deve acompanhar um catálogo publicado.</p> : null}
+                {detail.publication && !editorDirty && (detail.offer.unit_amount_minor ?? 0) <= 0 ? <p className="form-note">Para ativar vendas, informe e salve um preço maior que zero na etapa Oferta.</p> : null}
+                {editorDirty ? <p className="form-note">Salve as alterações antes de escolher o modo de acesso.</p> : null}
+                <div className="offer-status-actions"><button className="primary-button" type="button" disabled={!canActivateSales} onClick={() => void transitionOffer("active")}>{offerStatusState === "transitioning" ? "Ativando vendas…" : "Ativar oferta e usar checkout"}</button></div>
+              </> : null}
+              {detail.offer.status === "active" ? <div className="offer-status-actions">
+                <button className="secondary-button" type="button" disabled={editorDirty || offerStatusLocked} onClick={() => void transitionOffer("draft")}>{offerStatusState === "transitioning" ? "Aplicando…" : "Desativar vendas e voltar ao gratuito"}</button>
+                <button ref={archiveTriggerButton} className="secondary-button" type="button" disabled={editorDirty || offerStatusLocked} onClick={() => setArchiveDialogOpen(true)}>Arquivar oferta</button>
+              </div> : null}
+              <div className="form-feedback" aria-live="polite" aria-atomic="true">
+                {offerStatusState === "done" ? <p className="form-success">Modo de acesso atualizado.</p> : null}
+                {offerStatusState === "conflict" ? <><p className="form-error">A oferta mudou em outra sessão. Atualize os dados antes de tentar novamente.</p><button className="secondary-button" type="button" onClick={() => void reloadOfferAfterConflict()}>Atualizar dados da oferta</button></> : null}
+                {offerStatusState === "reloading" ? <p className="form-note">Atualizando os dados da oferta…</p> : null}
+                {offerStatusState === "blocked" ? <p className="form-error">A mudança foi bloqueada. Publique o catálogo e confira se há preço salvo maior que zero.</p> : null}
+                {offerStatusState === "forbidden" ? <p className="form-error">Sua sessão ou permissão mudou. Entre novamente.</p> : null}
+                {offerStatusState === "unavailable" ? <p className="form-note">A API não respondeu. Nenhuma mudança foi confirmada; tente novamente.</p> : null}
+                {offerStatusState === "error" ? <p className="form-error">Não foi possível mudar o modo de acesso.</p> : null}
+              </div>
+              {publicProductPath && detail.publication ? <p className="form-note">Link público: <a href={publicProductPath} target="_blank" rel="noreferrer">{publicProductPath}</a></p> : null}
+            </section>
             <div ref={publishStatus} className="form-feedback" aria-live="polite" aria-atomic="true" tabIndex={-1}>
               {publishState === "publishing" ? <p className="form-note">Publicando uma versão fixa do catálogo…</p> : null}
-              {publishState === "published" ? <p className="form-success">Catálogo publicado com sucesso. Vendas e checkout continuam separados.</p> : null}
+              {publishState === "published" ? <p className="form-success">Catálogo publicado com sucesso. Agora escolha acima entre acesso gratuito e vendas com checkout.</p> : null}
               {publishState === "conflict" ? <p className="form-error">O produto mudou ou não está pronto. Recarregue os dados antes de publicar.</p> : null}
               {publishState === "forbidden" ? <p className="form-error">Sua sessão ou permissão mudou. Entre novamente.</p> : null}
               {publishState === "unavailable" ? <p className="form-note">A API não respondeu. A chave desta publicação foi preservada para uma tentativa segura.</p> : null}
@@ -728,7 +759,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       {publishDialogOpen ? (
         <AccessibleDialog titleId="publish-dialog-title" descriptionId="publish-dialog-description" initialFocusRef={publishCancelButton} returnFocusRef={publishTriggerButton} onClose={closePublishDialog}>
             <p className="eyebrow">Confirmação de catálogo</p><h2 id="publish-dialog-title">Publicar este catálogo?</h2>
-            <p id="publish-dialog-description">Produto, oferta informativa, módulos, aulas e PDFs verificados ficarão fixos nesta versão do catálogo. Nenhuma venda, cobrança, checkout ou acesso pago será criado.</p>
+            <p id="publish-dialog-description">Produto, oferta informativa, módulos, aulas e PDFs verificados ficarão fixos nesta versão do catálogo. A publicação não ativa vendas: depois você escolhe acima entre acesso gratuito e checkout.</p>
             <div className="dialog-actions"><button ref={publishCancelButton} className="secondary-button" type="button" onClick={closePublishDialog}>Revisar novamente</button><button className="primary-button" type="button" onClick={() => void publish()}>Publicar catálogo</button></div>
         </AccessibleDialog>
       ) : null}
@@ -869,6 +900,7 @@ function normalizeDetail(value: Partial<ProductDetail> | null | undefined): Prod
   return {
     id: value.id,
     seller_organization_id: value.seller_organization_id,
+    seller_slug: value.seller_slug,
     slug: value.slug,
     title: value.title,
     description: value.description ?? "",
@@ -876,6 +908,10 @@ function normalizeDetail(value: Partial<ProductDetail> | null | undefined): Prod
     draft_version: productVersion,
     course: { id: course.id, title: course.title ?? "", status: course.status ?? "draft", draft_version: courseVersion },
     courses: courses.map((item) => ({ id: item.id, title: item.title ?? "", status: item.status ?? "draft", draft_version: item.draft_version ?? 1 })),
+    curriculum: {
+      modules: Math.max(0, Number(value.curriculum?.modules ?? 0)),
+      lessons: Math.max(0, Number(value.curriculum?.lessons ?? 0))
+    },
     offer: { id: offer.id, title: offer.title ?? "", summary: offer.summary ?? "", status: offer.status ?? "draft", draft_version: offerVersion, unit_amount_minor: offer.unit_amount_minor, currency: offer.currency, billing_period: offer.billing_period },
     publication: value.publication ?? null,
     has_unpublished_changes: value.has_unpublished_changes ?? value.readiness?.has_unpublished_changes,

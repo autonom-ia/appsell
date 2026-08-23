@@ -54,6 +54,29 @@ class LessonCompletionBody(BaseModel):
         return _canonical_uuid(value, "invalid idempotency key")
 
 
+class FreeAccessBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    idempotency_key: str
+    seller_id: str
+    product_id: str
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def validate_idempotency_key(cls, value: str) -> str:
+        return _canonical_uuid(value, "invalid idempotency key")
+
+    @field_validator("seller_id")
+    @classmethod
+    def validate_seller_id(cls, value: str) -> str:
+        return _canonical_uuid(value, "invalid seller id")
+
+    @field_validator("product_id")
+    @classmethod
+    def validate_product_id(cls, value: str) -> str:
+        return _canonical_uuid(value, "invalid product id")
+
+
 async def _authenticate(
     request: Request, capability: str
 ) -> tuple[InternalRequestAuthenticator, AuthenticatedInternalRequest]:
@@ -74,6 +97,48 @@ async def read_library(request: Request) -> dict[str, Any]:
 @router.get("/me/products")
 async def read_buyer_products(request: Request) -> dict[str, Any]:
     return await _read_buyer_products(request)
+
+
+@router.post("/me/library/enroll")
+async def enroll_public_product(request: Request) -> Response:
+    auth, internal = await _authenticate(request, "library.enroll")
+    await _require_buyer_scope(internal)
+    body = await _model_from_internal_body(request, internal, FreeAccessBody)
+    try:
+        async with auth.domain_session(internal.envelope) as session:
+            row = (
+                (
+                    await session.execute(
+                        text(
+                            "select entitlement_id,created "
+                            "from app_private.grant_public_product_access("
+                            ":identity_user_id,:seller_id,:product_id,:idempotency_key,"
+                            ":body_sha256,:request_id)"
+                        ),
+                        {
+                            "identity_user_id": internal.envelope.identity.user_id,
+                            "seller_id": UUID(body.seller_id),
+                            "product_id": UUID(body.product_id),
+                            "idempotency_key": UUID(body.idempotency_key),
+                            "body_sha256": internal.envelope.body_sha256,
+                            "request_id": internal.envelope.request_id,
+                        },
+                    )
+                )
+                .mappings()
+                .one()
+            )
+    except DBAPIError as error:
+        raise _learning_domain_error(error) from error
+    return Response(
+        content=json.dumps({
+            "status": "active",
+            "entitlement_id": str(row["entitlement_id"]),
+            "created": bool(row["created"]),
+        }),
+        status_code=status.HTTP_201_CREATED if row["created"] else status.HTTP_200_OK,
+        media_type="application/json",
+    )
 
 
 async def _read_buyer_products(request: Request) -> dict[str, Any]:
@@ -676,6 +741,11 @@ def _canonical_uuid(value: str, label: str) -> str:
 
 def _learning_domain_error(error: DBAPIError) -> HTTPException:
     sqlstate = getattr(error.orig, "sqlstate", None)
+    if sqlstate == "P4222":
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="offer_requires_checkout",
+        )
     if sqlstate in {"28000", "42501"}:
         return _learning_not_found()
     if sqlstate == "23505":

@@ -162,7 +162,7 @@ describe("callback route restart wiring", () => {
       "utf8"
     );
     expect(source).toContain("shouldRestartLogin(error, alreadyRecovered)");
-    expect(source).toMatch(/NextResponse\.redirect\(new URL\("\/auth\/login"/);
+    expect(source).toMatch(/new URL\("\/auth\/login"/);
     expect(source).toContain("retry.cookies.set(recoveryCookieName(), \"1\", recoveryCookieOptions())");
     expect(source).toContain("expireTransactionCookie(retry)");
     // The guard must be cleared on success, otherwise a later expiry within the

@@ -538,6 +538,7 @@ async def test_detail_and_preview_are_private_server_projections() -> None:
     assert detail.status_code == 200
     assert detail.json()["product"]["readiness"]["can_publish"] is True
     assert detail.json()["product"]["offer"]["id"] == str(offer_id)
+    assert detail.json()["product"]["curriculum"] == {"modules": 2, "lessons": 2}
     assert [course["id"] for course in detail.json()["product"]["courses"]] == [
         str(course_id),
         str(second_course_id),

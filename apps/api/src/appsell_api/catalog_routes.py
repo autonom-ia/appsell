@@ -1093,7 +1093,8 @@ async def _read_product_draft(
                 (
                     await session.execute(
                         text(
-                            "select product.seller_organization_id, product.id, "
+                            "select product.seller_organization_id, "
+                            "organization.slug as seller_slug, product.id, "
                             "product.slug, product.title, "
                             "product.description, product.status, product.version, "
                             "product.created_at, product.updated_at, "
@@ -1136,6 +1137,8 @@ async def _read_product_draft(
                             ":identity_user_id, :seller_id, :product_id, :capability) "
                             "as has_pending_asset_upload "
                             "from catalog_product product "
+                            "join seller_organization organization "
+                            "on organization.id = product.seller_organization_id "
                             "join product_course linked "
                             "on linked.seller_organization_id = product.seller_organization_id "
                             "and linked.catalog_product_id = product.id "
@@ -1202,6 +1205,18 @@ def _product_detail_response(rows: list[Any]) -> dict[str, Any]:
         for course in rows
     ]
     course = courses[0]
+    curriculum_modules = 0
+    curriculum_lessons = 0
+    for course_row in rows:
+        modules = course_row.get("curriculum_modules") or []
+        if not isinstance(modules, list):
+            continue
+        curriculum_modules += len(modules)
+        curriculum_lessons += sum(
+            len(module.get("lessons") or [])
+            for module in modules
+            if isinstance(module, dict)
+        )
     offer = (
         {
             "id": str(row["offer_id"]),
@@ -1231,6 +1246,7 @@ def _product_detail_response(rows: list[Any]) -> dict[str, Any]:
         "product": {
             "id": str(row["id"]),
             "seller_organization_id": str(row["seller_organization_id"]),
+            "seller_slug": row.get("seller_slug"),
             "slug": row["slug"],
             "title": row["title"],
             "description": row["description"],
@@ -1241,6 +1257,10 @@ def _product_detail_response(rows: list[Any]) -> dict[str, Any]:
             "updated_at": row["updated_at"].isoformat(),
             "course": course,
             "courses": courses,
+            "curriculum": {
+                "modules": curriculum_modules,
+                "lessons": curriculum_lessons,
+            },
             "offer": offer,
             "publication": publication,
             "has_unpublished_changes": has_unpublished_changes,

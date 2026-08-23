@@ -7,16 +7,21 @@ import {
   oauthRuntimeMode,
   oauthService
 } from "@/lib/oauth-service.server";
-import { transactionCookieName, transactionCookieOptions } from "@/lib/cookies";
+import { postLoginCookieName, postLoginCookieOptions, transactionCookieName, transactionCookieOptions } from "@/lib/cookies";
 import { isOAuthStoreUnavailable } from "@/lib/redis-oauth-service";
 import { configuredPublicOrigin } from "@/lib/public-origin";
 import { signDemoPersonaBinding } from "@/lib/demo-persona-binding.server";
+import { safePostLoginPath } from "@/lib/post-login-redirect";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
   try {
     const mode = oauthRuntimeMode();
+    const postLoginPath = safePostLoginPath(
+      request.nextUrl.searchParams.get("next"),
+      configuredPublicOrigin()
+    );
     const requestedPersona = request.nextUrl.searchParams.get("persona");
     if (mode === "local" && demoModeEnabled() && !requestedPersona) {
       return NextResponse.json({ error: "demo_persona_required" }, {
@@ -56,6 +61,9 @@ export async function GET(request: NextRequest) {
     }
     const response = NextResponse.redirect(authorize);
     response.cookies.set(transactionCookieName(), login.transactionId, transactionCookieOptions());
+    if (postLoginPath) {
+      response.cookies.set(postLoginCookieName(), postLoginPath, postLoginCookieOptions());
+    }
     response.headers.set("cache-control", "no-store");
     return response;
   } catch (error) {

@@ -81,4 +81,23 @@ describe("public storefront payload", () => {
       })).toBeNull();
     }
   });
+
+  it("accepts the explicit free and paid access modes", () => {
+    const value = fixture();
+    const free = { ...value, products: [{ ...value.products[0], access_mode: "free" as const }] };
+    const paid = {
+      ...value,
+      products: [{
+        ...value.products[0],
+        access_mode: "paid" as const,
+        price: { unit_amount_minor: 4700, currency: "BRL", billing_period: "one_time" as const }
+      }]
+    };
+    expect(parsePublicStorefront(free)).toEqual(free);
+    expect(parsePublicStorefront(paid)).toEqual(paid);
+    expect(parsePublicStorefront({
+      ...value,
+      products: [{ ...value.products[0], access_mode: "unknown" }]
+    })).toBeNull();
+  });
 });
