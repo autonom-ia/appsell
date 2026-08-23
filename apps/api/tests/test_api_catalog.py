@@ -551,6 +551,13 @@ async def test_detail_and_preview_are_private_server_projections() -> None:
     ]
     assert preview_asset["title"] == "Guia de boas-vindas"
     assert preview_asset["file_name"] == "arquivo-fisico.pdf"
+    detail_sql, detail_parameters = auth.session.calls[0]
+    preview_sql, preview_parameters = auth.session.calls[1]
+    for statement in (detail_sql, preview_sql):
+        assert "app_private.list_product_draft_lesson_assets" in statement
+        assert "from lesson_asset_draft draft" not in statement
+    assert detail_parameters["capability"] == "catalog.draft.read"
+    assert preview_parameters["capability"] == "catalog.draft.preview"
     assert auth.capabilities == ["catalog.draft.read", "catalog.draft.preview"]
 
 
