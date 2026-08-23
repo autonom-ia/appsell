@@ -57,6 +57,7 @@ export function CurriculumWorkspace({
   archived,
   onDirtyChange,
   onBusyChange,
+  onSummaryChange,
   onCommitted
 }: {
   sellerId: string;
@@ -66,6 +67,7 @@ export function CurriculumWorkspace({
   archived: boolean;
   onDirtyChange: (dirty: boolean) => void;
   onBusyChange: (busy: boolean) => void;
+  onSummaryChange: (summary: { modules: number; lessons: number }) => void;
   onCommitted: () => void;
 }) {
   const [loadState, setLoadState] = useState<LoadState>("loading");
@@ -108,6 +110,7 @@ export function CurriculumWorkspace({
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
   useEffect(() => onBusyChange(assetBusy), [assetBusy, onBusyChange]);
   useEffect(() => () => onBusyChange(false), [onBusyChange]);
+  useEffect(() => onSummaryChange({ modules: modules.length, lessons: modules.reduce((total, module) => total + module.lessons.length, 0) }), [modules, onSummaryChange]);
 
   const endpoint = `/api/sellers/${sellerId}/products/${productId}/courses/${courseId}`;
   const load = useCallback(async () => {

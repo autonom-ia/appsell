@@ -343,13 +343,18 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
     if (route.request().method() === "GET") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(detail()) });
     const posted = route.request().postDataBuffer();
     const form = await new Request(route.request().url(), { method: "PATCH", headers: route.request().headers(), body: posted ? new Uint8Array(posted) : undefined }).formData();
-    expect([...form.keys()].sort()).toEqual(["_csrf", "course_id", "course_title", "expected_course_version", "expected_offer_version", "expected_product_version", "idempotency_key", "offer_billing_period", "offer_currency", "offer_id", "offer_summary", "offer_title", "offer_unit_amount_minor", "product_description", "product_title", "slug"]);
+    const keys = [...form.keys()].sort();
+    const productOnlyKeys = ["_csrf", "course_id", "course_title", "expected_course_version", "expected_product_version", "idempotency_key", "product_description", "product_title", "slug"];
+    const offerKeys = ["_csrf", "course_id", "course_title", "expected_course_version", "expected_offer_version", "expected_product_version", "idempotency_key", "offer_billing_period", "offer_currency", "offer_id", "offer_summary", "offer_title", "offer_unit_amount_minor", "product_description", "product_title", "slug"];
+    expect([productOnlyKeys, offerKeys]).toContainEqual(keys);
     expect(form.get("_csrf")).toBe("csrf-update");
     expect(form.get("course_id")).toBe(courseId);
-    expect(form.get("offer_id")).toBe(offerId);
-    expect(form.get("offer_currency")).toBe("BRL");
-    expect(form.get("offer_billing_period")).toBe("one_time");
-    submittedOfferPrices.push(String(form.get("offer_unit_amount_minor")));
+    if (keys.includes("offer_id")) {
+      expect(form.get("offer_id")).toBe(offerId);
+      expect(form.get("offer_currency")).toBe("BRL");
+      expect(form.get("offer_billing_period")).toBe("one_time");
+      submittedOfferPrices.push(String(form.get("offer_unit_amount_minor")));
+    }
     if (conflictOnce) {
       conflictOnce = false;
       state.title = "Título concorrente do servidor";
@@ -357,8 +362,12 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
       return route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: "version_conflict" }) });
     }
     expect(form.get("expected_product_version")).toBe(String(state.productVersion));
-    state.title = String(form.get("product_title")); state.slug = String(form.get("slug")); state.description = String(form.get("product_description")); state.courseTitle = String(form.get("course_title")); state.offerTitle = String(form.get("offer_title")); state.offerSummary = String(form.get("offer_summary")); state.offerPrice = Number(form.get("offer_unit_amount_minor"));
-    state.productVersion += 1; state.courseVersion += 1; state.offerVersion += 1;
+    state.title = String(form.get("product_title")); state.slug = String(form.get("slug")); state.description = String(form.get("product_description")); state.courseTitle = String(form.get("course_title"));
+    state.productVersion += 1; state.courseVersion += 1;
+    if (keys.includes("offer_id")) {
+      state.offerTitle = String(form.get("offer_title")); state.offerSummary = String(form.get("offer_summary")); state.offerPrice = Number(form.get("offer_unit_amount_minor"));
+      state.offerVersion += 1;
+    }
     state.hasChanges = true;
     return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ product_id: productId, course_id: courseId, offer_id: offerId, product_version: state.productVersion, course_version: state.courseVersion, offer_version: state.offerVersion }) });
   });
@@ -420,7 +429,7 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   await page.getByRole("link", { name: /^Oferta/ }).click();
   const offerPrice = page.getByLabel("Preço (R$)");
   await offerPrice.fill("47");
-  await expect(page.getByText("Salve o preço antes de ativar", { exact: true })).toBeVisible();
+  await expect(page.getByText("Salve o preço antes de ativar vendas", { exact: true })).toBeVisible();
   const offerSummary = page.getByLabel("Resumo da oferta");
   await offerSummary.fill("Oferta sem cobrança conectada.");
   await offerSummary.focus();
@@ -434,37 +443,39 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   await expect(page).toHaveURL(new RegExp(`/products/${sellerId}/${productId}\\?section=oferta$`));
   await expect(page.getByLabel("Resumo da oferta")).toHaveValue("Oferta sem cobrança conectada.");
   await expect(page.getByLabel("Preço (R$)")).toHaveValue("47");
-  await expect(page.getByText("Preço salvo; oferta pronta para ativar", { exact: true })).toBeVisible();
+  await expect(page.getByText("Preço salvo; catálogo pronto para publicar", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Ativar vendas" })).toBeDisabled();
+  await expect(page.getByText("Publique o catálogo antes de ativar vendas. Esta etapa não cria checkout.", { exact: true })).toBeVisible();
   await page.getByRole("link", { name: /^Preview/ }).click();
   await expect(page.getByRole("heading", { name: "Creator OS 2" })).toBeVisible();
   await expect(page.getByText("Compra indisponível nesta prévia")).toBeVisible();
   await page.getByRole("link", { name: /^Publicar/ }).click();
-  await page.getByRole("button", { name: "Publicar primeira versão" }).click();
-  await expect(page.getByRole("dialog", { name: "Publicar esta versão?" })).toBeVisible();
+  await page.getByRole("button", { name: "Publicar catálogo primeira versão" }).click();
+  await expect(page.getByRole("dialog", { name: "Publicar este catálogo?" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Revisar novamente" })).toBeFocused();
   await page.keyboard.press("Shift+Tab");
-  await expect(page.getByRole("button", { name: "Publicar versão" })).toBeFocused();
+  await expect(page.getByRole("button", { name: "Publicar catálogo" })).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(page.getByRole("button", { name: "Revisar novamente" })).toBeFocused();
-  await page.getByRole("button", { name: "Publicar versão" }).click();
+  await page.getByRole("button", { name: "Publicar catálogo" }).click();
   await expect(page.getByText("A API não respondeu.", { exact: false })).toBeVisible();
-  await page.getByRole("button", { name: "Publicar primeira versão" }).click();
-  await page.getByRole("button", { name: "Publicar versão" }).click();
-  await expect(page.getByText("Versão publicada com sucesso.", { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: "Publicar catálogo primeira versão" }).click();
+  await page.getByRole("button", { name: "Publicar catálogo" }).click();
+  await expect(page.getByText("Catálogo publicado com sucesso.", { exact: false })).toBeVisible();
   await expect(page.getByText("Nenhuma mudança desde a versão publicada.", { exact: false })).toBeVisible();
-  await expect(page.getByRole("button", { name: /Publicar nova versão/ })).toBeDisabled();
+  await expect(page.getByRole("button", { name: /Publicar catálogo nova versão/ })).toBeDisabled();
   await page.getByRole("link", { name: /^Produto Identidade/ }).click();
   await page.getByLabel("Descrição curta").fill("Novo draft depois do snapshot.");
   await page.getByRole("button", { name: "Salvar rascunho" }).click();
   await expect(page.getByText("Rascunho salvo com segurança.")).toBeVisible();
   await page.getByRole("link", { name: /^Publicar/ }).click();
-  await expect(page.getByRole("button", { name: "Publicar nova versão após v1" })).toBeEnabled();
-  await page.getByRole("button", { name: "Publicar nova versão após v1" }).click();
-  await page.getByRole("button", { name: "Publicar versão" }).click();
+  await expect(page.getByRole("button", { name: "Publicar catálogo nova versão após v1" })).toBeEnabled();
+  await page.getByRole("button", { name: "Publicar catálogo nova versão após v1" }).click();
+  await page.getByRole("button", { name: "Publicar catálogo" }).click();
   await expect(page.getByText("O produto mudou ou não está pronto.", { exact: false })).toBeVisible();
-  await page.getByRole("button", { name: "Publicar nova versão após v1" }).click();
-  await page.getByRole("button", { name: "Publicar versão" }).click();
-  await expect(page.getByText("Versão publicada com sucesso.", { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: "Publicar catálogo nova versão após v1" }).click();
+  await page.getByRole("button", { name: "Publicar catálogo" }).click();
+  await expect(page.getByText("Catálogo publicado com sucesso.", { exact: false })).toBeVisible();
   expect(publishKeys).toHaveLength(4);
   expect(submittedOfferPrices).toContain("4700");
 
@@ -1005,7 +1016,7 @@ test("fails publication closed for string readiness and a missing offer", async 
   await expect(page.getByText("Oferta ainda não configurada")).toBeVisible();
   await page.getByRole("link", { name: /^Publicar/ }).click();
   await expect(page.getByText("offer_missing")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Publicar primeira versão" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Publicar catálogo primeira versão" })).toBeDisabled();
 });
 
 test("covers the approved responsive widths", async ({ page }, testInfo) => {
@@ -1026,7 +1037,7 @@ test("covers the approved responsive widths", async ({ page }, testInfo) => {
   }
 });
 
-test("locks the product editor and confirms archival when the offer is active", async ({ page }, testInfo) => {
+test("keeps product editing independent and confirms archival when the offer is active", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "offer lifecycle guard runs once in Chromium");
   const sellerId = "62000000-0000-4000-8000-000000000002";
   const productId = "63000000-0000-4000-8000-000000000002";
@@ -1064,10 +1075,9 @@ test("locks the product editor and confirms archival when the offer is active", 
   await page.goto(`/products/${sellerId}/${productId}`);
   await expect(page.getByRole("heading", { name: "Curso Vivo", exact: true })).toBeVisible();
 
-  // Product fields are locked while the offer is active, with guidance.
-  await expect(page.getByText("Edição bloqueada", { exact: true })).toBeVisible();
-  await expect(page.getByText("Todo salvamento inclui a oferta", { exact: false })).toBeVisible();
-  await expect(page.getByLabel("Nome do produto")).toBeDisabled();
+  // Product editing remains independent from the already active offer.
+  await expect(page.getByText("Edite o produto e o curso sem precisar configurar vendas.", { exact: false })).toBeVisible();
+  await expect(page.getByLabel("Nome do produto")).toBeEnabled();
   await expect(page.getByRole("button", { name: "Salvar rascunho" })).toBeDisabled();
 
   // Archival requires explicit confirmation before the terminal transition.
@@ -1086,7 +1096,7 @@ test("locks the product editor and confirms archival when the offer is active", 
   expect(state.transitions).toEqual([{ expected: "active", next: "archived", csrf: "csrf-offer-status" }]);
 });
 
-test("keeps the product editor locked while an offer transition is in flight", async ({ page }, testInfo) => {
+test("keeps product editing available while an offer transition is in flight", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "offer transition lock runs once in Chromium");
   const sellerId = "62000000-0000-4000-8000-000000000003";
   const productId = "63000000-0000-4000-8000-000000000003";
@@ -1102,8 +1112,8 @@ test("keeps the product editor locked while an offer transition is in flight", a
       course: { id: courseId, title: "Fundamentos", description: "", status: "draft", draft_version: 2, position: 1 },
       courses: [{ id: courseId, title: "Fundamentos", description: "", status: "draft", draft_version: 2, position: 1 }],
       offer: { id: offerId, title: "Oferta TR", summary: "Termos.", status: state.offerStatus, version: state.offerVersion, draft_version: state.offerVersion, unit_amount_minor: 100, currency: "BRL", billing_period: "one_time" },
-      publication: null,
-      has_unpublished_changes: true,
+      publication: { id: "66000000-0000-4000-8000-000000000003", version: 1, published_at: "2026-07-11T15:00:00Z" },
+      has_unpublished_changes: false,
       readiness: { can_publish: true, items: [{ key: "server", label: "Pronto", ready: true }] }
     },
     csrf: { update: "csrf-update", publish: "csrf-publish", offer_status: "csrf-offer-status" }
@@ -1130,23 +1140,23 @@ test("keeps the product editor locked while an offer transition is in flight", a
   await login(page);
   await page.goto(`/products/${sellerId}/${productId}?section=oferta`);
   await expect(page.getByRole("heading", { name: /Status da oferta/ })).toBeVisible();
-  await page.getByRole("button", { name: "Ativar oferta" }).click();
-  await expect(page.getByRole("button", { name: "Ativando…" })).toBeVisible();
+  await page.getByRole("button", { name: "Ativar vendas" }).click();
+  await expect(page.getByRole("button", { name: "Ativando vendas…" })).toBeVisible();
 
-  // While the PATCH is in flight, the product editor must already be locked.
+  // While the PATCH is in flight, product editing remains a separate concern.
   await page.getByRole("link", { name: "Produto Identidade e curso" }).click();
-  await expect(page.getByLabel("Nome do produto")).toBeDisabled();
+  await expect(page.getByLabel("Nome do produto")).toBeEnabled();
   await expect(page.getByRole("button", { name: "Salvar rascunho" })).toBeDisabled();
 
-  // Release PATCH; the reconciliation GET is still held → still locked.
+  // Release PATCH; the reconciliation GET is still held → editing stays available.
   releaseStatus();
   await expect.poll(() => getCount).toBeGreaterThanOrEqual(2);
-  await expect(page.getByLabel("Nome do produto")).toBeDisabled();
+  await expect(page.getByLabel("Nome do produto")).toBeEnabled();
 
-  // Release the reconciliation GET; offer is now active → stays locked with the active message.
+  // Release the reconciliation GET; offer is now active → product stays editable.
   releaseReload();
-  await expect(page.getByText("Todo salvamento inclui a oferta", { exact: false })).toBeVisible();
-  await expect(page.getByLabel("Nome do produto")).toBeDisabled();
+  await expect(page.getByText("Edite o produto e o curso sem precisar configurar vendas.", { exact: false })).toBeVisible();
+  await expect(page.getByLabel("Nome do produto")).toBeEnabled();
 });
 
 test("preserves a non-BRL offer currency on save and labels the price in that currency", async ({ page }, testInfo) => {

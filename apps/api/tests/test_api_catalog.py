@@ -149,6 +149,21 @@ def update_body(course_id: UUID, offer_id: UUID, **overrides: Any) -> bytes:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode()
 
 
+def product_course_update_body(course_id: UUID, **overrides: Any) -> bytes:
+    value = {
+        "idempotency_key": str(uuid4()),
+        "course_id": str(course_id),
+        "slug": "produto-editorial",
+        "title": "Produto Editorial",
+        "description": "Descrição editorial",
+        "course_title": "Curso Editorial",
+        "expected_product_version": 1,
+        "expected_course_version": 1,
+        **overrides,
+    }
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode()
+
+
 def publication_body(course_id: UUID, offer_id: UUID, **overrides: Any) -> bytes:
     value = {
         "idempotency_key": str(uuid4()),
@@ -466,6 +481,35 @@ async def test_detail_and_preview_are_private_server_projections() -> None:
         "course_status": "draft",
         "course_draft_version": 2,
         "course_position": 0,
+        "curriculum_modules": [
+            {
+                "id": str(uuid4()),
+                "title": "Fundamentos",
+                "status": "active",
+                "position": 0,
+                "lessons": [
+                    {
+                        "id": str(uuid4()),
+                        "title": "Primeira aula",
+                        "kind": "text",
+                        "content": "Conteúdo",
+                        "status": "active",
+                        "position": 0,
+                        "assets": [
+                            {
+                                "id": str(uuid4()),
+                                "version": 1,
+                                "title": "Guia de boas-vindas",
+                                "file_name": "arquivo-fisico.pdf",
+                                "media_type": "application/pdf",
+                                "byte_size": 2_000_000,
+                                "position": 0,
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
         "offer_id": offer_id,
         "offer_title": "Oferta Principal",
         "offer_summary": "Sem billing",
@@ -502,7 +546,61 @@ async def test_detail_and_preview_are_private_server_projections() -> None:
     assert preview.json()["preview"] is True
     assert preview.json()["snapshot"]["product"]["id"] == str(product_id)
     assert len(preview.json()["snapshot"]["courses"]) == 2
+    preview_asset = preview.json()["snapshot"]["courses"][0]["modules"][0]["lessons"][0][
+        "assets"
+    ][0]
+    assert preview_asset["title"] == "Guia de boas-vindas"
+    assert preview_asset["file_name"] == "arquivo-fisico.pdf"
     assert auth.capabilities == ["catalog.draft.read", "catalog.draft.preview"]
+
+
+def test_readiness_blocks_publication_while_an_asset_upload_is_pending() -> None:
+    now = datetime(2026, 7, 11, 12, 0, tzinfo=UTC)
+    row = {
+        "seller_organization_id": SELLER_ID,
+        "id": uuid4(),
+        "slug": "produto-com-material-pendente",
+        "title": "Produto com material pendente",
+        "description": "Privado",
+        "status": "draft",
+        "version": 2,
+        "created_at": now,
+        "updated_at": now,
+        "published_snapshot_id": None,
+        "course_id": uuid4(),
+        "course_title": "Curso",
+        "course_description": "",
+        "course_status": "draft",
+        "course_draft_version": 2,
+        "course_position": 0,
+        "curriculum_modules": [],
+        "offer_id": uuid4(),
+        "offer_title": "Oferta",
+        "offer_summary": "Informativa",
+        "offer_status": "draft",
+        "offer_version": 1,
+        "offer_unit_amount_minor": 19900,
+        "offer_currency": "BRL",
+        "offer_billing_period": "one_time",
+        "publication_version": None,
+        "publication_source_sha256": None,
+        "published_at": None,
+        "publication_snapshot": None,
+        "has_pending_asset_upload": True,
+    }
+
+    product = _product_detail_response([row])["product"]
+
+    assert product["readiness"] == {
+        "can_publish": False,
+        "items": [
+            {
+                "key": "asset_upload_pending",
+                "label": "Aguarde a verificação dos materiais antes de publicar o catálogo.",
+                "ready": False,
+            }
+        ],
+    }
 
 
 @pytest.mark.asyncio
@@ -537,6 +635,53 @@ async def test_patch_binds_versions_ids_hash_and_actor_to_atomic_function() -> N
     assert parameters["offer_currency"] == "BRL"
     assert parameters["offer_billing_period"] == "one_time"
     assert parameters["body_sha256"] == hashlib.sha256(body).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_patch_product_course_draft_does_not_require_offer() -> None:
+    product_id, course_id = uuid4(), uuid4()
+    auth = FakeAuth(
+        seller_id=SELLER_ID,
+        result=FakeResult(
+            one={
+                "product_version": 2,
+                "course_version": 2,
+                "updated": True,
+            }
+        ),
+    )
+    body = product_course_update_body(course_id)
+    async with client_for(auth) as client:
+        response = await client.patch(
+            f"/v1/me/sellers/{SELLER_ID}/products/{product_id}/metadata", content=body
+        )
+    assert response.status_code == 200
+    assert response.json() == {
+        "product_id": str(product_id),
+        "course_id": str(course_id),
+        "product_version": 2,
+        "course_version": 2,
+        "updated": True,
+    }
+    assert auth.capabilities == ["catalog.draft.update"]
+    statement, parameters = auth.session.calls[0]
+    assert "app_private.update_product_course_draft" in statement
+    assert parameters["product_id"] == product_id
+    assert parameters["course_id"] == course_id
+    assert parameters["body_sha256"] == hashlib.sha256(body).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_patch_product_course_draft_rejects_hidden_offer_fields() -> None:
+    product_id, course_id = uuid4(), uuid4()
+    auth = FakeAuth(seller_id=SELLER_ID, result=FakeResult(one={}))
+    body = product_course_update_body(course_id, offer_title="Oferta escondida")
+    async with client_for(auth) as client:
+        response = await client.patch(
+            f"/v1/me/sellers/{SELLER_ID}/products/{product_id}/metadata", content=body
+        )
+    assert response.status_code == 422
+    assert auth.domain_sessions == 0
 
 
 @pytest.mark.asyncio

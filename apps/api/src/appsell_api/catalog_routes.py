@@ -73,6 +73,19 @@ class ProductCourseDraftBody(BaseModel):
         return value
 
 
+class ProductCourseDraftUpdateBody(ProductCourseDraftBody):
+    """Editorial product/course save; deliberately has no offer fields."""
+
+    course_id: str
+    expected_product_version: int = Field(ge=1, le=_MAX_SAFE_INTEGER)
+    expected_course_version: int = Field(ge=1, le=_MAX_SAFE_INTEGER)
+
+    @field_validator("course_id")
+    @classmethod
+    def validate_course_id(cls, value: str) -> str:
+        return _canonical_uuid(value, "invalid course id")
+
+
 class ProductCourseOfferUpdateBody(ProductCourseDraftBody):
     course_id: str
     offer_id: str
@@ -730,6 +743,60 @@ async def reorder_course_lessons(
     return {"course_version": row["course_version"], "reordered": bool(row["reordered"])}
 
 
+@router.patch("/me/sellers/{seller_id}/products/{product_id}/metadata")
+async def update_product_course_draft(
+    request: Request, seller_id: UUID, product_id: UUID
+) -> dict[str, Any]:
+    """Save the editorial step without requiring a commercial offer."""
+
+    auth, internal = await _authenticate(request, "catalog.draft.update")
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(ProductCourseDraftUpdateBody, internal)
+    envelope = internal.envelope
+    try:
+        async with auth.domain_session(envelope) as session:
+            row = (
+                (
+                    await session.execute(
+                        text(
+                            "select product_version, course_version, updated "
+                            "from app_private.update_product_course_draft("
+                            ":identity_user_id, :seller_id, :product_id, :slug, "
+                            ":course_id, :title, :description, :course_title, "
+                            ":expected_product_version, :expected_course_version, "
+                            ":idempotency_key, :body_sha256, :request_id)"
+                        ),
+                        {
+                            "identity_user_id": envelope.identity.user_id,
+                            "seller_id": seller_id,
+                            "product_id": product_id,
+                            "slug": body.slug,
+                            "course_id": UUID(body.course_id),
+                            "title": body.title,
+                            "description": body.description,
+                            "course_title": body.course_title,
+                            "expected_product_version": body.expected_product_version,
+                            "expected_course_version": body.expected_course_version,
+                            "idempotency_key": UUID(body.idempotency_key),
+                            "body_sha256": envelope.body_sha256,
+                            "request_id": envelope.request_id,
+                        },
+                    )
+                )
+                .mappings()
+                .one()
+            )
+    except DBAPIError as error:
+        raise _domain_error(error) from error
+    return {
+        "product_id": str(product_id),
+        "course_id": body.course_id,
+        "product_version": row["product_version"],
+        "course_version": row["course_version"],
+        "updated": bool(row["updated"]),
+    }
+
+
 @router.patch("/me/sellers/{seller_id}/products/{product_id}")
 async def update_product_draft(
     request: Request, seller_id: UUID, product_id: UUID
@@ -1041,7 +1108,27 @@ async def _read_product_draft(
                             "'lessons', coalesce((select jsonb_agg(jsonb_build_object("
                             "'id', lesson.id, 'title', lesson.title, 'kind', 'text', "
                             "'content', lesson.body_text, 'status', lesson.status, "
-                            "'position', lesson.position) order by lesson.position, lesson.id) "
+                            "'position', lesson.position, 'assets', coalesce(("
+                            "select jsonb_agg(jsonb_build_object("
+                            "'id', draft.asset_id, 'version', draft.asset_version, "
+                            "'title', asset.title, 'file_name', blob.file_name, "
+                            "'media_type', blob.media_type, 'byte_size', blob.byte_size, "
+                            "'sha256', blob.sha256, 'position', draft.position, "
+                            "'content_role', draft.content_role, "
+                            "'download_allowed', draft.download_allowed "
+                            ") order by draft.position, draft.asset_id) "
+                            "from lesson_asset_draft draft "
+                            "join asset_record asset on asset.seller_organization_id = "
+                            "draft.seller_organization_id "
+                            "and asset.id = draft.asset_id and asset.status = 'active' "
+                            "join asset_blob blob on blob.seller_organization_id = "
+                            "draft.seller_organization_id "
+                            "and blob.id = draft.blob_id "
+                            "where draft.seller_organization_id = product.seller_organization_id "
+                            "and draft.catalog_product_id = product.id "
+                            "and draft.course_id = course.id and draft.module_id = module.id "
+                            "and draft.lesson_id = lesson.id and draft.status = 'active'"
+                            "), '[]'::jsonb)) order by lesson.position, lesson.id) "
                             "from lesson where lesson.seller_organization_id = "
                             "module.seller_organization_id and lesson.course_id = module.course_id "
                             "and lesson.module_id = module.id "
@@ -1059,7 +1146,15 @@ async def _read_product_draft(
                             "publication.version as publication_version, "
                             "publication.source_sha256 as publication_source_sha256, "
                             "publication.snapshot as publication_snapshot, "
-                            "publication.published_at "
+                            "publication.published_at, "
+                            "exists(select 1 from app_private.asset_upload pending_upload "
+                            "where pending_upload.seller_organization_id = "
+                            "product.seller_organization_id "
+                            "and pending_upload.catalog_product_id = product.id "
+                            "and (pending_upload.status in ('uploaded', 'verifying') or ("
+                            "pending_upload.status = 'pending' "
+                            "and pending_upload.expires_at > clock_timestamp()))) "
+                            "as has_pending_asset_upload "
                             "from catalog_product product "
                             "join product_course linked "
                             "on linked.seller_organization_id = product.seller_organization_id "
@@ -1103,6 +1198,8 @@ def _product_detail_response(rows: list[Any]) -> dict[str, Any]:
         violations.append(_readiness_item("offer_required"))
     elif row["offer_status"] != "draft":
         violations.append(_readiness_item("offer_not_publishable"))
+    if row.get("has_pending_asset_upload", False):
+        violations.append(_readiness_item("asset_upload_pending"))
     has_unpublished_changes = (
         row["published_snapshot_id"] is None or _draft_snapshot(rows) != row["publication_snapshot"]
     )
@@ -1203,7 +1300,7 @@ def _draft_snapshot(rows: list[Any]) -> dict[str, Any]:
     }
     return {
         **base,
-        "schema_version": 2,
+        "schema_version": 4,
         "courses": [
             {
                 "id": str(course["course_id"]),
@@ -1222,7 +1319,12 @@ def _readiness_item(key: str, *, ready: bool = False) -> dict[str, Any]:
         "product_archived": "O produto está arquivado.",
         "course_archived": "Um curso vinculado está arquivado.",
         "offer_required": "Crie e salve a oferta informativa.",
-        "offer_not_publishable": "A oferta não está em estado publicável.",
+        "offer_not_publishable": (
+            "Desative vendas: a oferta precisa estar em rascunho para publicar o catálogo."
+        ),
+        "asset_upload_pending": (
+            "Aguarde a verificação dos materiais antes de publicar o catálogo."
+        ),
         "no_unpublished_changes": "Não há alterações novas para publicar.",
         "server_validation_complete": "Validação do servidor concluída.",
     }

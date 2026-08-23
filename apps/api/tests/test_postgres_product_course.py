@@ -126,6 +126,50 @@ def create_draft(
     return row[0], row[1], row[2]
 
 
+def update_product_course(
+    actor: UUID,
+    seller: UUID,
+    product_id: UUID,
+    course_id: UUID,
+    *,
+    expected_product_version: int = 1,
+    expected_course_version: int = 1,
+    idempotency_key: UUID | None = None,
+    request_body_hash: str | None = None,
+) -> tuple[int, int, bool]:
+    assert RUNTIME_URL
+    key = idempotency_key or uuid4()
+    digest = request_body_hash or body_hash(f"{product_id}\0{course_id}\0updated")
+    with psycopg.connect(RUNTIME_URL) as connection:
+        apply_context(connection, actor, seller, "catalog.draft.update")
+        row = connection.execute(
+            """
+            select product_version, course_version, updated
+            from app_private.update_product_course_draft(
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
+            """,
+            (
+                actor,
+                seller,
+                product_id,
+                f"updated-{product_id.hex[:12]}",
+                course_id,
+                "Produto Atualizado",
+                "Descrição atualizada",
+                "Curso Atualizado",
+                expected_product_version,
+                expected_course_version,
+                key,
+                digest,
+                uuid4(),
+            ),
+        ).fetchone()
+        assert row is not None
+        connection.commit()
+    return row[0], row[1], row[2]
+
+
 @pytest.fixture(scope="module", autouse=True)
 def seed_catalog_tenants() -> None:
     assert ADMIN_URL
@@ -235,7 +279,7 @@ def test_schema_roles_rls_and_runtime_privileges_are_minimal() -> None:
         ("product_course", "appsell_owner", True, True),
     ]
     assert privileges == (
-        "0026_asset_worker_claim_filename",
+        "0028_offer_activation_guard",
         True,
         False,
         False,
@@ -285,6 +329,54 @@ def test_owner_creates_atomic_draft_and_rls_isolates_sellers() -> None:
 
         apply_context(connection, USER_A, SELLER_B, "catalog.draft.read")
         assert connection.execute("select count(*) from catalog_product").fetchone() == (0,)
+
+
+def test_owner_updates_product_and_course_without_an_offer_and_replays() -> None:
+    product_id, course_id, created = create_draft(
+        USER_A,
+        SELLER_A,
+        f"editorial-{uuid4().hex[:12]}",
+    )
+    assert created is True
+    key = uuid4()
+    digest = body_hash("editorial-update")
+    first = update_product_course(
+        USER_A,
+        SELLER_A,
+        product_id,
+        course_id,
+        idempotency_key=key,
+        request_body_hash=digest,
+    )
+    repeated = update_product_course(
+        USER_A,
+        SELLER_A,
+        product_id,
+        course_id,
+        expected_product_version=2,
+        expected_course_version=2,
+        idempotency_key=key,
+        request_body_hash=digest,
+    )
+    assert first == (2, 2, True)
+    assert repeated == (2, 2, False)
+
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        state = connection.execute(
+            """
+            select
+              (select count(*) from offer
+                where seller_organization_id = %s and catalog_product_id = %s),
+              (select count(*) from app_private.product_course_draft_update_request
+                where seller_organization_id = %s and idempotency_key = %s),
+              (select count(*) from audit_event
+                where seller_organization_id = %s and target_id = %s
+                  and action = 'catalog.product_course_draft_updated')
+            """,
+            (SELLER_A, product_id, SELLER_A, key, SELLER_A, product_id),
+        ).fetchone()
+    assert state == (0, 1, 1)
 
 
 def test_no_context_wrong_capability_and_unauthorized_owner_fail_closed() -> None:
@@ -712,7 +804,7 @@ def test_upgrade_from_0002_preserves_existing_tenant() -> None:
                 """,
                 (preserved_seller,),
             ).fetchone()
-        assert state == ("0026_asset_worker_claim_filename", 1, True, True)
+        assert state == ("0028_offer_activation_guard", 1, True, True)
     finally:
         with psycopg.connect(maintenance_url, autocommit=True) as connection:
             connection.execute(
