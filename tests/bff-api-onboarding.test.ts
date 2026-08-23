@@ -374,7 +374,7 @@ test.skipIf(!domainApiUrl)("two BFFs persist seller onboarding through the real 
       preview: true,
       state: "unpublished_draft",
       snapshot: {
-        schema_version: 2,
+        schema_version: 4,
         product: { title: "Produto Integrado Editado" },
         courses: [{ modules: [{ title: "Fundamentos", lessons: [{ title: "Segunda aula" }] }] }]
       }
