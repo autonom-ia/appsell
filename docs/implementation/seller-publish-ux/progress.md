@@ -3,11 +3,12 @@
 - Issue: #188
 - Branch: `codex/publish-ux-p0-p1`
 - Última atualização: 2026-08-23
-- Estado: implementação P0/P1 e gates técnicos concluídos; pedido de aprovação enviado; merge/deploy continuam bloqueados por aprovação explícita
+- Estado: implementação P0/P1 e gates técnicos concluídos; branch sincronizada e revisão final aprovada; commit/push da correção final pendentes; merge final/deploy VPS continuam bloqueados por aprovação explícita
 
 ## Última posição verificável
 
-- Worktree base auditado: apenas `.playwright-mcp/` não rastreado, preservado.
+- HEAD de sincronização: `bcfc682` (`merge: sync main into publish UX branch`), com `origin/main` incorporado após autorização explícita.
+- Worktree atual: apenas os quatro arquivos da correção final estão modificados; `.playwright-mcp/` permanece não rastreado e preservado.
 - Branch própria criada a partir de `6333a8e`.
 - Issue #188 criada para este slice.
 - Código atual confirma os bloqueios que motivaram o trabalho:
@@ -19,7 +20,9 @@
 - A migração `0028_offer_activation_guard` exige catálogo publicado antes de ativar vendas; o identificador foi mantido dentro do limite de 32 caracteres do Alembic.
 - O editor agora guia Produto → Currículo → Oferta → Preview → Publicar catálogo, com ativação de vendas separada.
 - A verificação de material sai para estado recuperável após 15 segundos e não bloqueia a edição estrutural durante a análise.
-- Nenhuma escrita foi feita em produção.
+- O nome físico do arquivo não é renderizado nos cartões, feedback, Preview, área do aluno ou seletor nativo; o input permanece acessível sobre um botão visual.
+- Conflito 409 de oferta bloqueia nova tentativa até reconciliação e oferece `Atualizar dados da oferta` no próprio fluxo.
+- Nenhuma escrita foi feita em produção e nenhum PostgreSQL da plataforma foi usado; a validação SQL foi feita em cluster local descartável.
 
 ## Mini-entregas
 
@@ -47,7 +50,8 @@
 - [x] P1.3 navegação durante verificação
 - [x] P1.4 Preview coerente
 - [x] P1.5 testes P1 — Vitest, uploader Playwright, responsividade e PostgreSQL isolado passaram
-- [x] Review independente P1 — PASS final; os bloqueios de timeout/cancelamento identificados no primeiro review foram corrigidos
+- [x] P1.6 correção do nome no input nativo e recuperação de conflito de oferta
+- [x] Review independente P1 — PASS final; timeout/cancelamento e nome físico foram rechecados; nenhum bloqueio P0-P3
 
 ## Evidências de verificação
 
@@ -56,13 +60,14 @@
 | Typecheck/lint | `pnpm typecheck`, `pnpm lint` | PASS |
 | API/contrato | `47 passed, 1 skipped` em `test_api_catalog.py`; Ruff PASS | PASS |
 | Upload unitário | `26 passed` em Vitest (asset + storage policy) | PASS |
-| E2E Produto → Preview → Publicar | Chromium, 320 px: `1 passed` | PASS |
-| E2E upload/responsividade | Chromium: uploader + larguras aprovadas `2 passed`; fluxo de readiness/independência `4 passed` | PASS |
+| E2E Produto → Preview → Publicar | Chromium, 320 px: `1 passed`; suíte completa pós-correção: `19 passed` | PASS |
+| E2E upload/responsividade/conflito | Chromium direcionado independente: `2 passed`; suíte completa inclui uploader, conflito e responsive | PASS |
 | PostgreSQL/migrations 0027–0028 | cluster local descartável, migration head e produto/publicação: `44 passed` | PASS |
 | Review independente P0 | Pauli: `PASS`, P0/P1/P2/P3 = 0; achados anteriores corrigidos | PASS |
-| Review independente P1 | Pauli: `PASS`, P0/P1/P2/P3 = 0; timeout/cancelamento rechecados | PASS |
-| Aprovação para merge | pedido enviado; sincronização da branch ainda não autorizada | bloqueado por processo |
-| Deploy VPS | não autorizado nesta etapa | bloqueado por processo |
+| Review independente P1 | Pauli: `PASS`, P0/P1/P2/P3 = 0; picker, Preview/aluno e conflito rechecados | PASS |
+| Vitest independente | asset/storage policy: `26 passed` | PASS |
+| Aprovação para merge final | sincronização autorizada e concluída; aprovação do merge final ainda necessária | bloqueado por processo |
+| Deploy VPS | ainda não autorizado para execução nesta etapa | bloqueado por processo |
 
 ## Registro de atualizações
 
@@ -73,4 +78,7 @@
 - 2026-08-23 — migrações 0027/0028 aplicadas em PostgreSQL local descartável; o primeiro teste encontrou e corrigiu o limite de 32 caracteres da revision 0028.
 - 2026-08-23 — timeout de confirmação passou a ser recuperável sem cancelar o upload ambíguo; Vitest 26/26, API 47/1 skip, typecheck, lint e Ruff passaram.
 - 2026-08-23 — reviews independentes finais P0/P1: PASS; E2E final de uploader/responsividade: 2/2.
-- 2026-08-23 — checklist final entregue e pedido explícito enviado; PR #189 segue `CONFLICTING` por divergência com `origin/main`, sem merge/deploy.
+- 2026-08-23 — sincronização autorizada com `origin/main` concluída em `bcfc682`; conflitos resolvidos preservando o fluxo P0/P1.
+- 2026-08-23 — revisão pós-sincronização encontrou e corrigiu dois pontos P1: nome residual no input nativo e conflito de oferta sem atualização em fluxo.
+- 2026-08-23 — correção final validada por typecheck, lint, Vitest 26/26, E2E direcionado independente 2/2 e suíte Chromium completa 19/19; nenhum banco da plataforma foi usado.
+- 2026-08-23 — checklist final pronto; commit/push da correção final e atualização da PR são os próximos passos; merge final/deploy VPS aguardam autorização explícita.

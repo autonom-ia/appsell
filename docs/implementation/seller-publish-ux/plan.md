@@ -2,9 +2,10 @@
 
 - Issue: #188 — P0/P1: jornada guiada de publicação para sellers
 - Branch: `codex/publish-ux-p0-p1`
-- Base: `6333a8e`
+- Base inicial: `6333a8e`
+- Sincronização autorizada com `origin/main`: `bcfc682` (`merge: sync main into publish UX branch`)
 - Escopo: fluxo seller de criar produto, preparar conteúdo, configurar oferta, revisar e publicar catálogo
-- Limite: não fazer merge, deploy, cobrança, checkout real, secrets ou alteração de produção neste slice
+- Limite: não fazer merge final da PR, deploy, cobrança, checkout real, secrets ou alteração de produção neste slice
 
 ## Decisão de produto adotada para este slice
 
@@ -26,13 +27,14 @@ Publicar catálogo e ativar vendas são estados diferentes. O fluxo de publicaç
 - [x] P1.3 Permitir continuar editando enquanto a verificação está em andamento; bloquear somente a publicação quando necessário.
 - [x] P1.4 Ajustar Preview para declarar o que mostra e incluir resumo do currículo/materiais; não expor nome físico do arquivo ao aluno.
 - [x] P1.5 Testar upload real do fluxo local/integrado, estados de falha/retry, Preview, responsividade e acessibilidade.
+- [x] P1.6 Corrigir a exposição visual residual do nome físico no seletor nativo de arquivo e tornar conflito de oferta recuperável no próprio fluxo.
 
 ## Revisores e gates
 
 - [x] Revisor independente P0: P0/P1/P2/P3 = 0 no review final.
-- [x] Revisor independente P1: P0/P1/P2/P3 = 0 no review final.
+- [x] Revisor independente P1: P0/P1/P2/P3 = 0 no review final; o bloqueio residual do seletor nativo foi corrigido e rechecado.
 - [x] Testes unitários e de integração verdes; PostgreSQL head 0028 passou.
-- [x] E2E real do fluxo completo verde em Chromium; WebKit não foi necessário para este gate.
+- [x] E2E real do fluxo completo verde em Chromium: 19/19; WebKit não foi necessário para este gate.
 - [x] Smoke renderizado sem overflow nas larguras cobertas, com foco/teclado e acessibilidade do uploader verificados.
 - [x] Checklist final pronto para entrega ao usuário.
-- [x] Aprovação explícita solicitada antes de merge/deploy.
+- [x] Aprovação explícita continua necessária antes do merge final/deploy VPS.

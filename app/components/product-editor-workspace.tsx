@@ -19,7 +19,7 @@ type LoadState = "loading" | "ready" | "unauthorized" | "forbidden" | "not_found
 type SaveState = "idle" | "saving" | "saved" | "saved_with_changes" | "conflict" | "rebasing" | "rebased" | "invalid" | "forbidden" | "unavailable" | "error";
 type PreviewState = "idle" | "loading" | "ready" | "unavailable" | "error";
 type PublishState = "idle" | "publishing" | "published" | "conflict" | "forbidden" | "unavailable" | "error";
-type OfferStatusState = "idle" | "transitioning" | "done" | "conflict" | "blocked" | "forbidden" | "unavailable" | "error";
+type OfferStatusState = "idle" | "transitioning" | "reloading" | "done" | "conflict" | "blocked" | "forbidden" | "unavailable" | "error";
 
 interface CourseDetail {
   id: string;
@@ -229,7 +229,8 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   // Edição editorial (produto/curso) e edição comercial (oferta) têm contratos
   // separados. Só a aba Oferta depende do ciclo de vida da oferta.
   const offerNotDraft = detail !== null && detail.offer.status !== "draft";
-  const offerLocked = offerNotDraft || offerStatusState === "transitioning";
+  const offerStatusLocked = offerStatusState === "transitioning" || offerStatusState === "reloading" || offerStatusState === "conflict";
+  const offerLocked = offerNotDraft || offerStatusLocked;
   // Rótulo do preço na moeda armazenada da oferta: "R$" para BRL, o código ISO
   // (ex.: USD) caso contrário — o operador nunca edita um valor USD achando ser BRL.
   const offerCurrencyLabel = /^[A-Z]{3}$/.test(detail?.offer.currency ?? "")
@@ -500,7 +501,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
 
   async function transitionOffer(nextStatus: "draft" | "active" | "archived") {
     const currentOffer = detail?.offer;
-    if (!currentOffer?.id || offerStatusState === "transitioning" || dirty) return;
+    if (!currentOffer?.id || offerStatusLocked || dirty) return;
     const expectedStatus = currentOffer.status;
     if (expectedStatus === nextStatus) return;
     setOfferStatusState("transitioning");
@@ -547,6 +548,16 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  async function reloadOfferAfterConflict() {
+    if (offerStatusState !== "conflict") return;
+    setOfferStatusState("reloading");
+    // O estado local ficou obsoleto; uma nova tentativa só pode nascer depois
+    // de reconciliar a oferta e receber sua versão atual.
+    offerStatusIdempotencyKey.current = null;
+    const refreshed = await loadDetail();
+    setOfferStatusState(refreshed ? "idle" : "unavailable");
   }
 
   function requestListNavigation(event: MouseEvent<HTMLAnchorElement>) {
@@ -663,15 +674,16 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
               {detail.offer.status === "archived" ? <p>Oferta arquivada. Crie um novo produto para vender novamente.</p> : null}
               {dirty ? <p className="form-note" role="status">Salve as alterações antes de mudar o status da oferta.</p> : null}
               <div className="offer-status-actions">
-                {detail.offer.status === "draft" ? <button className="primary-button" type="button" disabled={dirty || offerStatusState === "transitioning" || !detail.offer.unit_amount_minor || !detail.publication} onClick={() => void transitionOffer("active")}>{offerStatusState === "transitioning" ? "Ativando vendas…" : "Ativar vendas"}</button> : null}
+                {detail.offer.status === "draft" ? <button className="primary-button" type="button" disabled={dirty || offerStatusLocked || !detail.offer.unit_amount_minor || !detail.publication} onClick={() => void transitionOffer("active")}>{offerStatusState === "transitioning" ? "Ativando vendas…" : "Ativar vendas"}</button> : null}
                 {detail.offer.status === "active" ? <>
-                  <button className="secondary-button" type="button" disabled={dirty || offerStatusState === "transitioning"} onClick={() => void transitionOffer("draft")}>{offerStatusState === "transitioning" ? "Aplicando…" : "Despublicar para editar"}</button>
-                  <button ref={archiveTriggerButton} className="secondary-button" type="button" disabled={dirty || offerStatusState === "transitioning"} onClick={() => setArchiveDialogOpen(true)}>Arquivar oferta</button>
+                  <button className="secondary-button" type="button" disabled={dirty || offerStatusLocked} onClick={() => void transitionOffer("draft")}>{offerStatusState === "transitioning" ? "Aplicando…" : "Despublicar para editar"}</button>
+                  <button ref={archiveTriggerButton} className="secondary-button" type="button" disabled={dirty || offerStatusLocked} onClick={() => setArchiveDialogOpen(true)}>Arquivar oferta</button>
                 </> : null}
               </div>
               <div className="form-feedback" aria-live="polite" aria-atomic="true">
                 {offerStatusState === "done" ? <p className="form-success">Status da oferta atualizado.</p> : null}
-                {offerStatusState === "conflict" ? <p className="form-error">A oferta mudou em outra sessão. Recarregue antes de tentar novamente.</p> : null}
+                {offerStatusState === "conflict" ? <><p className="form-error">A oferta mudou em outra sessão. Atualize os dados antes de tentar novamente.</p><button className="secondary-button" type="button" onClick={() => void reloadOfferAfterConflict()}>Atualizar dados da oferta</button></> : null}
+                {offerStatusState === "reloading" ? <p className="form-note">Atualizando os dados da oferta…</p> : null}
                 {offerStatusState === "blocked" ? <p className="form-error">Transição bloqueada. Publique o catálogo e confira se há preço salvo maior que zero.</p> : null}
                 {offerStatusState === "forbidden" ? <p className="form-error">Sua sessão ou permissão mudou. Entre novamente.</p> : null}
                 {offerStatusState === "unavailable" ? <p className="form-note">A API não respondeu. Nenhuma mudança foi confirmada; tente novamente.</p> : null}

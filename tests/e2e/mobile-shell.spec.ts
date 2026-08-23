@@ -877,6 +877,8 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
   await expect(summary).toContainText("Materiais da aula");
   await summary.click();
   await expect(lesson.getByText("2 materiais prontos", { exact: true })).toBeVisible();
+  await expect(lesson.locator(".asset-status-card").first()).not.toContainText("guia-atual.pdf");
+  await expect(lesson.locator(".asset-status-card").nth(1)).not.toContainText("exercicios.pdf");
   const input = lesson.getByLabel("Adicionar outro material");
   const feedback = lesson.locator(".asset-feedback");
   await expect(feedback).toHaveAttribute("role", "status");
@@ -933,6 +935,7 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
   const pdf = { name: "guia-novo.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF") };
   await input.setInputFiles(pdf);
   await expect(feedback).toContainText("Não foi possível preparar o arquivo");
+  await expect(feedback).not.toContainText("guia-novo.pdf");
   const retry = lesson.getByRole("button", { name: "Tentar novamente" });
   await expect(retry).toBeVisible();
   await retry.focus();
@@ -1157,6 +1160,50 @@ test("keeps product editing available while an offer transition is in flight", a
   releaseReload();
   await expect(page.getByText("Edite o produto e o curso sem precisar configurar vendas.", { exact: false })).toBeVisible();
   await expect(page.getByLabel("Nome do produto")).toBeEnabled();
+});
+
+test("offers an in-flow refresh after an offer version conflict", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium", "offer conflict recovery runs once in Chromium");
+  const sellerId = "62000000-0000-4000-8000-000000000005";
+  const productId = "63000000-0000-4000-8000-000000000005";
+  const courseId = "64000000-0000-4000-8000-000000000005";
+  const offerId = "65000000-0000-4000-8000-000000000005";
+  const state = { offerStatus: "draft", offerVersion: 2 };
+  const detail = () => ({
+    product: {
+      id: productId, seller_organization_id: sellerId, slug: "curso-conflito", title: "Curso Conflito", description: "Rascunho.", status: "published",
+      version: 3, draft_version: 3,
+      course: { id: courseId, title: "Fundamentos", description: "", status: "draft", draft_version: 2, position: 1 },
+      courses: [{ id: courseId, title: "Fundamentos", description: "", status: "draft", draft_version: 2, position: 1 }],
+      offer: { id: offerId, title: "Oferta Conflito", summary: "Termos.", status: state.offerStatus, version: state.offerVersion, draft_version: state.offerVersion, unit_amount_minor: 100, currency: "BRL", billing_period: "one_time" },
+      publication: { id: "66000000-0000-4000-8000-000000000005", version: 1, published_at: "2026-07-11T15:00:00Z" },
+      has_unpublished_changes: false,
+      readiness: { can_publish: false, items: [{ key: "server", label: "Nenhuma alteração nova", ready: false }] }
+    },
+    csrf: { update: "csrf-update", publish: "csrf-publish", offer_status: "csrf-offer-status" }
+  });
+
+  await page.route(`**/api/sellers/${sellerId}/products/${productId}`, (route) => route.request().method() === "GET"
+    ? route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(detail()) })
+    : route.fulfill({ status: 422, contentType: "application/json", body: "{}" }));
+  await page.route(`**/api/sellers/${sellerId}/products/${productId}/offers/${offerId}/status`, (route) => {
+    state.offerStatus = "active";
+    state.offerVersion = 3;
+    return route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: "version_conflict" }) });
+  });
+
+  await page.setViewportSize({ width: 320, height: 568 });
+  await login(page);
+  await page.goto(`/products/${sellerId}/${productId}?section=oferta`);
+  await expect(page.getByRole("heading", { name: "Status da oferta: rascunho" })).toBeVisible();
+  await page.getByRole("button", { name: "Ativar vendas" }).click();
+  await expect(page.getByText("A oferta mudou em outra sessão.", { exact: false })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Atualizar dados da oferta" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Atualizar dados da oferta" }).click();
+  await expect(page.getByRole("heading", { name: "Status da oferta: ativa" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Despublicar para editar" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Atualizar dados da oferta" })).toHaveCount(0);
 });
 
 test("preserves a non-BRL offer currency on save and labels the price in that currency", async ({ page }, testInfo) => {

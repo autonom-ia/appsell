@@ -428,9 +428,11 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .asset-download-toggle input { width: 20px; height: 20px; flex: 0 0 auto; accent-color: var(--blue); }
 .asset-actions { min-width: 0; display: grid; grid-template-columns: minmax(0,1fr); gap: 8px; }
 .asset-uploader { display: grid; gap: 8px; }
-.asset-file-label { color: var(--ink); font-size: .78rem; font-weight: 800; }
-.asset-uploader input[type="file"] { width: 100%; min-width: 0; min-height: 48px; padding: 8px; border: 1px solid var(--border); border-radius: 12px; background: #fff; color: var(--ink); font-size: 1rem; }
-.asset-uploader input[type="file"]::file-selector-button { min-height: 44px; margin-right: 10px; padding: 0 14px; border: 0; border-radius: 10px; background: var(--blue); color: #fff; font-weight: 750; cursor: pointer; }
+.asset-file-picker { position: relative; min-width: 0; min-height: 48px; }
+.asset-file-label { min-height: 48px; padding: 0 14px; display: flex; align-items: center; justify-content: center; border: 1px solid var(--blue); border-radius: 12px; background: var(--blue); color: #fff; font-size: .78rem; font-weight: 800; text-align: center; cursor: pointer; }
+.asset-file-picker:focus-within .asset-file-label { outline: 3px solid var(--bright); outline-offset: 3px; }
+.asset-file-picker input[type="file"] { position: absolute; inset: 0; width: 100%; height: 100%; min-width: 0; opacity: 0; cursor: pointer; }
+.asset-file-picker input[type="file"]:disabled { cursor: not-allowed; }
 .asset-help { margin: 0; color: var(--soft); font-size: .7rem; line-height: 1.5; }
 .asset-feedback { display: grid; gap: 9px; color: var(--text); line-height: 1.5; overflow-wrap: anywhere; }
 .asset-feedback > span { font-size: .78rem; font-weight: 750; }
