@@ -140,7 +140,7 @@ def test_schema_ready_targets_head_and_runtime_has_only_function_access() -> Non
               )
             """
         ).fetchone()
-    assert state == ("0029_product_draft_asset_access", False, False, True, True, True)
+    assert state == ("0030_product_pending_assets", False, False, True, True, True)
 
 
 def test_schema_ready_fails_when_cumulative_or_multi_asset_dependency_is_missing() -> None:
