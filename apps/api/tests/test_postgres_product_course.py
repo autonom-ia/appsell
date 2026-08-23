@@ -277,6 +277,11 @@ def test_schema_roles_rls_and_runtime_privileges_are_minimal() -> None:
                 'appsell_runtime',
                 'app_private.list_product_draft_lesson_assets(uuid,uuid,uuid,uuid,uuid,uuid,text)',
                 'EXECUTE'
+              ),
+              has_function_privilege(
+                'appsell_runtime',
+                'app_private.product_draft_has_pending_asset_upload(uuid,uuid,uuid,text)',
+                'EXECUTE'
               )
             """
         ).fetchone()
@@ -287,7 +292,7 @@ def test_schema_roles_rls_and_runtime_privileges_are_minimal() -> None:
         ("product_course", "appsell_owner", True, True),
     ]
     assert privileges == (
-        "0029_product_draft_asset_access",
+        "0030_product_pending_assets",
         True,
         False,
         False,
@@ -299,6 +304,7 @@ def test_schema_roles_rls_and_runtime_privileges_are_minimal() -> None:
         False,
         False,
         False,
+        True,
         True,
     )
 
@@ -480,6 +486,15 @@ def test_product_draft_asset_projection_is_tenant_gated_without_table_select() -
         assert asset_row[0][0]["title"] == "Guia de boas-vindas"
         assert asset_row[0][0]["file_name"] == "arquivo-fisico.pdf"
         assert asset_row[0][0]["byte_size"] == 2000000
+        pending_row = connection.execute(
+            """
+            select app_private.product_draft_has_pending_asset_upload(
+              %s,%s,%s,%s
+            )
+            """,
+            (USER_A, SELLER_A, product_id, "catalog.draft.read"),
+        ).fetchone()
+        assert pending_row == (False,)
         connection.rollback()
 
         apply_context(connection, USER_A, SELLER_A, "catalog.draft.preview")
@@ -520,6 +535,18 @@ def test_product_draft_asset_projection_is_tenant_gated_without_table_select() -
                     lesson_id,
                     "catalog.draft.read",
                 ),
+            )
+        connection.rollback()
+
+        apply_context(connection, USER_B, SELLER_A, "catalog.draft.read")
+        with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
+            connection.execute(
+                """
+                select app_private.product_draft_has_pending_asset_upload(
+                  %s,%s,%s,%s
+                )
+                """,
+                (USER_B, SELLER_A, product_id, "catalog.draft.read"),
             )
         connection.rollback()
 
@@ -949,7 +976,7 @@ def test_upgrade_from_0002_preserves_existing_tenant() -> None:
                 """,
                 (preserved_seller,),
             ).fetchone()
-        assert state == ("0029_product_draft_asset_access", 1, True, True)
+        assert state == ("0030_product_pending_assets", 1, True, True)
     finally:
         with psycopg.connect(maintenance_url, autocommit=True) as connection:
             connection.execute(
