@@ -3,12 +3,12 @@
 - Issue: #188
 - Branch: `codex/publish-ux-p0-p1`
 - Última atualização: 2026-08-23
-- Estado: implementação P0/P1 e gates técnicos concluídos; branch sincronizada e revisão final aprovada; commit/push da correção final pendentes; merge final/deploy VPS continuam bloqueados por aprovação explícita
+- Estado: implementação P0/P1, reviews, CI e gates técnicos concluídos; PR #189 pronta para aprovação explícita do merge final; deploy VPS continua separado e bloqueado até autorização
 
 ## Última posição verificável
 
-- HEAD de sincronização: `bcfc682` (`merge: sync main into publish UX branch`), com `origin/main` incorporado após autorização explícita.
-- Worktree atual: apenas os quatro arquivos da correção final estão modificados; `.playwright-mcp/` permanece não rastreado e preservado.
+- HEAD remoto atual: `aebf0a2` (`style: satisfy API CI formatting gate`), sobre `f674fbf` e a sincronização `bcfc682` com `origin/main`.
+- Worktree atual: limpo nos arquivos rastreados; `.playwright-mcp/` permanece não rastreado e preservado.
 - Branch própria criada a partir de `6333a8e`.
 - Issue #188 criada para este slice.
 - Código atual confirma os bloqueios que motivaram o trabalho:
@@ -66,7 +66,9 @@
 | Review independente P0 | Pauli: `PASS`, P0/P1/P2/P3 = 0; achados anteriores corrigidos | PASS |
 | Review independente P1 | Pauli: `PASS`, P0/P1/P2/P3 = 0; picker, Preview/aluno e conflito rechecados | PASS |
 | Vitest independente | asset/storage policy: `26 passed` | PASS |
-| Aprovação para merge final | sincronização autorizada e concluída; aprovação do merge final ainda necessária | bloqueado por processo |
+| CI remoto da PR #189 | primeira execução bloqueou apenas por Ruff format; correção `aebf0a2` reenviada e `ci-gate` PASS | PASS |
+| PR #189 | `OPEN`, `MERGEABLE`, SHA `aebf0a2`; Project #3 atualizado para `Em review` | pronto para aprovação |
+| Aprovação para merge final | CI, reviews e testes verdes; aprovação explícita do merge final ainda necessária | bloqueado por processo |
 | Deploy VPS | ainda não autorizado para execução nesta etapa | bloqueado por processo |
 
 ## Registro de atualizações
@@ -81,4 +83,6 @@
 - 2026-08-23 — sincronização autorizada com `origin/main` concluída em `bcfc682`; conflitos resolvidos preservando o fluxo P0/P1.
 - 2026-08-23 — revisão pós-sincronização encontrou e corrigiu dois pontos P1: nome residual no input nativo e conflito de oferta sem atualização em fluxo.
 - 2026-08-23 — correção final validada por typecheck, lint, Vitest 26/26, E2E direcionado independente 2/2 e suíte Chromium completa 19/19; nenhum banco da plataforma foi usado.
-- 2026-08-23 — checklist final pronto; commit/push da correção final e atualização da PR são os próximos passos; merge final/deploy VPS aguardam autorização explícita.
+- 2026-08-23 — correção final commitada em `f674fbf` e enviada para a branch da PR; CI remoto identificou somente formatação Ruff em dois arquivos.
+- 2026-08-23 — formatação corrigida em `aebf0a2`; fast API local passou (format/check, Ruff, mypy, pip-audit e 34 testes) e o `ci-gate` remoto terminou PASS.
+- 2026-08-23 — Project #3 atualizado para `Em review`, com próxima ação de solicitar aprovação explícita do merge final e depois planejar deploy na VPS.
