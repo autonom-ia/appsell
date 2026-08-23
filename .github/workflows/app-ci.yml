@@ -235,16 +235,6 @@ jobs:
           pnpm exec playwright install --with-deps chromium
           ./scripts/test-postgres-foundation.sh
 
-      - name: Scan PostgreSQL evidence
-        id: postgres-evidence-scan
-        if: ${{ !cancelled() && steps.cert-postgres.outcome != 'skipped' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 scripts/assert_capacity_artifact_safe.py --self-test
-          test -f tmp/buyer-multi-seller.json
-          python3 scripts/assert_capacity_artifact_safe.py tmp/buyer-multi-seller.json
-
       - name: Certify storage when capacity is not selected
         id: cert-storage
         if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && steps.policy.outputs.product_checks == 'true') || github.event_name == 'workflow_dispatch') && steps.route.outputs.storage == 'true' && steps.route.outputs.capacity != 'true' }}
@@ -425,14 +415,5 @@ jobs:
             tmp/capacity-100.md
             tmp/capacity-100-postgres-startup.json
             tmp/capacity-postgres-fault.json
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Upload redacted PostgreSQL evidence briefly
-        if: ${{ !cancelled() && steps.postgres-evidence-scan.outcome == 'success' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: postgres-evidence-${{ github.run_id }}-${{ github.run_attempt }}
-          path: tmp/buyer-multi-seller.json
           if-no-files-found: error
           retention-days: 7

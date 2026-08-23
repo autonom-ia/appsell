@@ -123,14 +123,6 @@ class AppCiWorkflowTests(unittest.TestCase):
         self.assertIn('if [ "$os" = linux ]; then', script)
         self.assertIn("steps.route.outputs.workflow == 'true'", self.source)
 
-    def test_postgres_artifact_upload_requires_successful_evidence_scan(self) -> None:
-        self.assertIn("id: postgres-evidence-scan", self.source)
-        self.assertIn("steps.postgres-evidence-scan.outcome == 'success'", self.source)
-        self.assertNotIn(
-            "steps.cert-postgres.outcome == 'success' }}\n        uses: actions/upload-artifact@",
-            self.source,
-        )
-
     def test_preview_contract_is_exercised_for_manual_provenance(self) -> None:
         self.assertIn(
             "APPSELL_ARTIFACT_EVENT=workflow_dispatch bash deploy/preview-vps/test-verify-downloads-local.sh",

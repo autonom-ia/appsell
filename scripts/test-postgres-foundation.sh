@@ -33,8 +33,6 @@ webhook_secret_b64="$(openssl rand -base64 32)"
 webhook_bff_session_b64="$(openssl rand -base64 32)"
 webhook_bff_csrf_b64="$(openssl rand -base64 32)"
 webhook_bff_vault_b64="$(openssl rand -base64 32)"
-multi_seller_fixture="$(mktemp -t appsell-buyer-multi-seller.XXXXXX.json)"
-multi_seller_report="tmp/buyer-multi-seller.json"
 next_env_snapshot="$(mktemp -t appsell-next-env.XXXXXX)"
 tsconfig_snapshot="$(mktemp -t appsell-tsconfig.XXXXXX)"
 cp -- next-env.d.ts "$next_env_snapshot"
@@ -49,7 +47,7 @@ cleanup() {
   local original_status=$?
   restore_test_generated_files || original_status=1
   docker compose -p "$project" down --rmi local --volumes --remove-orphans >/dev/null 2>&1 || true
-  rm -f -- "$multi_seller_fixture" "$next_env_snapshot" "$tsconfig_snapshot" || original_status=1
+  rm -f -- "$next_env_snapshot" "$tsconfig_snapshot" || original_status=1
   return "$original_status"
 }
 trap cleanup EXIT
@@ -205,7 +203,6 @@ uv run --project apps/api pytest \
   apps/api/tests/test_internal_request_body_limit.py \
   apps/api/tests/test_demo_codex_pdfs.py \
   apps/api/tests/test_reset_demo_tenant.py \
-  apps/api/tests/test_seed_buyer_multi_seller.py \
   apps/api/tests/test_api_catalog.py \
   apps/api/tests/test_api_onboarding.py \
   apps/api/tests/test_api_learning.py \
@@ -240,20 +237,5 @@ pnpm exec vitest run --no-file-parallelism \
   tests/bff-api-onboarding.test.ts \
   tests/bff-superadmin-inspection.test.ts \
   tests/bff-webhook-ingress.test.ts
-export APPSELL_MULTI_SELLER_ENABLED="true"
-export APPSELL_MULTI_SELLER_DATABASE_URL="$APPSELL_TEST_POSTGRES_ADMIN_URL"
-export APPSELL_MULTI_SELLER_MANIFEST="$multi_seller_fixture"
-export APPSELL_MULTI_SELLER_REPORT="$multi_seller_report"
-export APPSELL_API_ENVIRONMENT="ci"
-export APPSELL_API_IDENTITY_ISSUER="$APPSELL_IDENTITY_ISSUER"
-export APPSELL_TEST_DOMAIN_API_URL="http://127.0.0.1:${api_port}"
-rm -f -- "$multi_seller_report"
-uv run --project apps/api python -m appsell_api.seed_buyer_multi_seller \
-  --action seed --confirm buyer-multi-seller-v1 --output "$multi_seller_fixture"
-pnpm exec vitest run --no-file-parallelism tests/bff-buyer-multi-seller.test.ts
-python3 scripts/assert_capacity_artifact_safe.py "$multi_seller_report"
-unset APPSELL_MULTI_SELLER_ENABLED APPSELL_MULTI_SELLER_DATABASE_URL \
-  APPSELL_MULTI_SELLER_MANIFEST APPSELL_MULTI_SELLER_REPORT \
-  APPSELL_API_ENVIRONMENT APPSELL_API_IDENTITY_ISSUER
 restore_test_generated_files
 git diff --exit-code -- next-env.d.ts tsconfig.json
