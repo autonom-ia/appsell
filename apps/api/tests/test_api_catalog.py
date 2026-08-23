@@ -1312,8 +1312,8 @@ async def test_signed_api_creates_replays_and_lists_persistent_draft() -> None:
                     ),
                 )
                 assert detail.status_code == 200, detail.text
-                assert detail.json()["id"] == created.json()["product_id"]
-                assert detail.json()["seller_slug"] == json.loads(seller_body)["slug"]
+                assert detail.json()["product"]["id"] == created.json()["product_id"]
+                assert detail.json()["product"]["seller_slug"] == json.loads(seller_body)["slug"]
     finally:
         get_settings.cache_clear()
         for key, value in previous.items():
