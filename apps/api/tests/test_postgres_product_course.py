@@ -269,6 +269,14 @@ def test_schema_roles_rls_and_runtime_privileges_are_minimal() -> None:
                 'appsell_runtime',
                 'app_private.catalog_draft_read_allowed(uuid)',
                 'EXECUTE'
+              ),
+              has_table_privilege('appsell_runtime', 'asset_record', 'SELECT'),
+              has_table_privilege('appsell_runtime', 'asset_blob', 'SELECT'),
+              has_table_privilege('appsell_runtime', 'lesson_asset_draft', 'SELECT'),
+              has_function_privilege(
+                'appsell_runtime',
+                'app_private.list_product_draft_lesson_assets(uuid,uuid,uuid,uuid,uuid,uuid,text)',
+                'EXECUTE'
               )
             """
         ).fetchone()
@@ -279,7 +287,7 @@ def test_schema_roles_rls_and_runtime_privileges_are_minimal() -> None:
         ("product_course", "appsell_owner", True, True),
     ]
     assert privileges == (
-        "0028_offer_activation_guard",
+        "0029_product_draft_asset_access",
         True,
         False,
         False,
@@ -287,6 +295,10 @@ def test_schema_roles_rls_and_runtime_privileges_are_minimal() -> None:
         False,
         False,
         True,
+        True,
+        False,
+        False,
+        False,
         True,
     )
 
@@ -377,6 +389,139 @@ def test_owner_updates_product_and_course_without_an_offer_and_replays() -> None
             (SELLER_A, product_id, SELLER_A, key, SELLER_A, product_id),
         ).fetchone()
     assert state == (0, 1, 1)
+
+
+def test_product_draft_asset_projection_is_tenant_gated_without_table_select() -> None:
+    assert ADMIN_URL and RUNTIME_URL
+    product_id, course_id, created = create_draft(
+        USER_A,
+        SELLER_A,
+        f"asset-read-{uuid4().hex[:12]}",
+    )
+    assert created is True
+    module_id, lesson_id, asset_id, blob_id = (uuid4() for _ in range(4))
+
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            """
+            insert into course_module(
+              seller_organization_id,id,course_id,title,position
+            ) values (%s,%s,%s,'Material protegido',0)
+            """,
+            (SELLER_A, module_id, course_id),
+        )
+        connection.execute(
+            """
+            insert into lesson(
+              seller_organization_id,id,course_id,module_id,title,body_text,position
+            ) values (%s,%s,%s,%s,'Aula com PDF','Conteúdo de teste',0)
+            """,
+            (SELLER_A, lesson_id, course_id, module_id),
+        )
+        connection.execute(
+            """
+            insert into asset_record(
+              seller_organization_id,id,catalog_product_id,title
+            ) values (%s,%s,%s,'Guia de boas-vindas')
+            """,
+            (SELLER_A, asset_id, product_id),
+        )
+        connection.execute(
+            """
+            insert into asset_blob(
+              seller_organization_id,id,storage_driver,storage_bucket,object_key,
+              file_name,media_type,byte_size,sha256,magic_type,scanner_result,verified_at
+            ) values (
+              %s,%s,'legacy_bundle','appsell-assets','asset-read-test',
+              'arquivo-fisico.pdf','application/pdf',2000000,repeat('a',64),
+              'application/pdf','legacy_trusted',clock_timestamp()
+            )
+            """,
+            (SELLER_A, blob_id),
+        )
+        connection.execute(
+            """
+            insert into asset_version(
+              seller_organization_id,asset_id,version,blob_id,actor_identity_user_id
+            ) values (%s,%s,1,%s,%s)
+            """,
+            (SELLER_A, asset_id, blob_id, USER_A),
+        )
+        connection.execute(
+            """
+            insert into lesson_asset_draft(
+              seller_organization_id,catalog_product_id,course_id,module_id,lesson_id,
+              asset_id,asset_version,blob_id,position,status
+            ) values (%s,%s,%s,%s,%s,%s,1,%s,0,'active')
+            """,
+            (SELLER_A, product_id, course_id, module_id, lesson_id, asset_id, blob_id),
+        )
+        connection.commit()
+
+    with psycopg.connect(RUNTIME_URL) as connection:
+        apply_context(connection, USER_A, SELLER_A, "catalog.draft.read")
+        asset_row = connection.execute(
+            """
+            select app_private.list_product_draft_lesson_assets(
+              %s,%s,%s,%s,%s,%s,%s
+            )
+            """,
+            (
+                USER_A,
+                SELLER_A,
+                product_id,
+                course_id,
+                module_id,
+                lesson_id,
+                "catalog.draft.read",
+            ),
+        ).fetchone()
+        assert asset_row is not None
+        assert asset_row[0][0]["title"] == "Guia de boas-vindas"
+        assert asset_row[0][0]["file_name"] == "arquivo-fisico.pdf"
+        assert asset_row[0][0]["byte_size"] == 2000000
+        connection.rollback()
+
+        apply_context(connection, USER_A, SELLER_A, "catalog.draft.preview")
+        preview_row = connection.execute(
+            """
+            select app_private.list_product_draft_lesson_assets(
+              %s,%s,%s,%s,%s,%s,%s
+            )
+            """,
+            (
+                USER_A,
+                SELLER_A,
+                product_id,
+                course_id,
+                module_id,
+                lesson_id,
+                "catalog.draft.preview",
+            ),
+        ).fetchone()
+        assert preview_row is not None
+        assert preview_row[0] == asset_row[0]
+        connection.rollback()
+
+        apply_context(connection, USER_B, SELLER_A, "catalog.draft.read")
+        with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
+            connection.execute(
+                """
+                select app_private.list_product_draft_lesson_assets(
+                  %s,%s,%s,%s,%s,%s,%s
+                )
+                """,
+                (
+                    USER_B,
+                    SELLER_A,
+                    product_id,
+                    course_id,
+                    module_id,
+                    lesson_id,
+                    "catalog.draft.read",
+                ),
+            )
+        connection.rollback()
 
 
 def test_no_context_wrong_capability_and_unauthorized_owner_fail_closed() -> None:
@@ -804,7 +949,7 @@ def test_upgrade_from_0002_preserves_existing_tenant() -> None:
                 """,
                 (preserved_seller,),
             ).fetchone()
-        assert state == ("0028_offer_activation_guard", 1, True, True)
+        assert state == ("0029_product_draft_asset_access", 1, True, True)
     finally:
         with psycopg.connect(maintenance_url, autocommit=True) as connection:
             connection.execute(

@@ -21,7 +21,7 @@ CHECKOUT_WORKER_SUBJECT = "demo-checkout-worker-v1"
 CHECKOUT_WORKER_EMAIL = "checkout.worker@autonomia.site"
 DEMO_SUPERADMIN_SUBJECT = "demo-superadmin"
 DEMO_SUPERADMIN_EMAIL = "comercial@autonomia.site"
-EXPECTED_MIGRATION = "0028_offer_activation_guard"
+EXPECTED_MIGRATION = "0029_product_draft_asset_access"
 
 
 class RemoteResetTarget(TypedDict):

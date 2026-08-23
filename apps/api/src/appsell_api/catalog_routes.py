@@ -440,7 +440,7 @@ async def create_product_draft(request: Request, seller_id: UUID) -> JSONRespons
 async def get_product_draft(request: Request, seller_id: UUID, product_id: UUID) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "catalog.draft.read")
     await _require_seller(internal, seller_id)
-    rows = await _read_product_draft(auth, internal, seller_id, product_id)
+    rows = await _read_product_draft(auth, internal, seller_id, product_id, "catalog.draft.read")
     return _product_detail_response(rows)
 
 
@@ -450,7 +450,7 @@ async def preview_product_draft(
 ) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "catalog.draft.preview")
     await _require_seller(internal, seller_id)
-    rows = await _read_product_draft(auth, internal, seller_id, product_id)
+    rows = await _read_product_draft(auth, internal, seller_id, product_id, "catalog.draft.preview")
     row = rows[0]
     detail = _product_detail_response(rows)
     readiness = detail["product"]["readiness"]
@@ -1085,6 +1085,7 @@ async def _read_product_draft(
     internal: AuthenticatedInternalRequest,
     seller_id: UUID,
     product_id: UUID,
+    capability: Literal["catalog.draft.read", "catalog.draft.preview"],
 ) -> list[Any]:
     try:
         async with auth.domain_session(internal.envelope) as session:
@@ -1108,27 +1109,11 @@ async def _read_product_draft(
                             "'lessons', coalesce((select jsonb_agg(jsonb_build_object("
                             "'id', lesson.id, 'title', lesson.title, 'kind', 'text', "
                             "'content', lesson.body_text, 'status', lesson.status, "
-                            "'position', lesson.position, 'assets', coalesce(("
-                            "select jsonb_agg(jsonb_build_object("
-                            "'id', draft.asset_id, 'version', draft.asset_version, "
-                            "'title', asset.title, 'file_name', blob.file_name, "
-                            "'media_type', blob.media_type, 'byte_size', blob.byte_size, "
-                            "'sha256', blob.sha256, 'position', draft.position, "
-                            "'content_role', draft.content_role, "
-                            "'download_allowed', draft.download_allowed "
-                            ") order by draft.position, draft.asset_id) "
-                            "from lesson_asset_draft draft "
-                            "join asset_record asset on asset.seller_organization_id = "
-                            "draft.seller_organization_id "
-                            "and asset.id = draft.asset_id and asset.status = 'active' "
-                            "join asset_blob blob on blob.seller_organization_id = "
-                            "draft.seller_organization_id "
-                            "and blob.id = draft.blob_id "
-                            "where draft.seller_organization_id = product.seller_organization_id "
-                            "and draft.catalog_product_id = product.id "
-                            "and draft.course_id = course.id and draft.module_id = module.id "
-                            "and draft.lesson_id = lesson.id and draft.status = 'active'"
-                            "), '[]'::jsonb)) order by lesson.position, lesson.id) "
+                            "'position', lesson.position, 'assets', "
+                            "app_private.list_product_draft_lesson_assets("
+                            ":identity_user_id, :seller_id, :product_id, course.id, "
+                            "module.id, lesson.id, :capability) "
+                            "order by lesson.position, lesson.id) "
                             "from lesson where lesson.seller_organization_id = "
                             "module.seller_organization_id and lesson.course_id = module.course_id "
                             "and lesson.module_id = module.id "
@@ -1174,7 +1159,12 @@ async def _read_product_draft(
                             "and product.id = :product_id "
                             "order by linked.position, course.id"
                         ),
-                        {"seller_id": seller_id, "product_id": product_id},
+                        {
+                            "identity_user_id": internal.envelope.identity.user_id,
+                            "seller_id": seller_id,
+                            "product_id": product_id,
+                            "capability": capability,
+                        },
                     )
                 )
                 .mappings()
