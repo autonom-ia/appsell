@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 
 type AccessState = "idle" | "submitting" | "success" | "error";
 
@@ -20,9 +20,9 @@ export function FreeAccessWorkspace({
 }) {
   const [state, setState] = useState<AccessState>("idle");
   const [message, setMessage] = useState("");
+  const started = useRef(false);
 
-  async function enroll(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function enroll() {
     if (state === "submitting" || state === "success") return;
     setState("submitting");
     setMessage("");
@@ -52,6 +52,20 @@ export function FreeAccessWorkspace({
     }
   }
 
+  useEffect(() => {
+    if (started.current) return;
+    started.current = true;
+    void enroll();
+  // The product/account identifiers are immutable for this page mount. The
+  // guard prevents React Strict Mode from issuing a duplicate request.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    void enroll();
+  }
+
   return <div className="checkout-card free-access-card">
     <p className="eyebrow">Acesso gratuito</p>
     <h2>Entrar em {title}</h2>
@@ -61,9 +75,9 @@ export function FreeAccessWorkspace({
           <Link className="primary-button" href={libraryHref}>Abrir minha biblioteca</Link>
         </>
       : <>
-          <p>Você não pagará nada. Clique para liberar o acesso nesta conta.</p>
-          <form onSubmit={enroll}>
-            <button className="primary-button" type="submit" disabled={state === "submitting"}>{state === "submitting" ? "Liberando acesso…" : "Liberar meu acesso"}</button>
+          <p>Você não pagará nada. Estamos liberando o acesso nesta conta.</p>
+          <form onSubmit={submit}>
+            <button className="primary-button" type="submit" disabled={state === "submitting"}>{state === "submitting" ? "Liberando acesso…" : "Tentar novamente"}</button>
           </form>
           {state === "error" ? <p className="form-error" role="alert">{message}</p> : null}
         </>}

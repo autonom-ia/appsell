@@ -155,12 +155,8 @@ async def list_sellers(request: Request) -> dict[str, Any]:
                 (
                     await session.execute(
                         text(
-                            "select organization.id, organization.slug, organization.display_name, "
-                            "membership.role from seller_organization organization "
-                            "join seller_membership membership "
-                            "on membership.seller_organization_id = organization.id "
-                            "where membership.identity_user_id = :identity_user_id "
-                            "and membership.status = 'active' order by organization.created_at"
+                            "select id,slug,display_name,role "
+                            "from app_private.list_accessible_sellers(:identity_user_id)"
                         ),
                         {"identity_user_id": internal.envelope.identity.user_id},
                     )
