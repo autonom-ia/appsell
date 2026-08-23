@@ -1213,9 +1213,7 @@ def _product_detail_response(rows: list[Any]) -> dict[str, Any]:
             continue
         curriculum_modules += len(modules)
         curriculum_lessons += sum(
-            len(module.get("lessons") or [])
-            for module in modules
-            if isinstance(module, dict)
+            len(module.get("lessons") or []) for module in modules if isinstance(module, dict)
         )
     offer = (
         {

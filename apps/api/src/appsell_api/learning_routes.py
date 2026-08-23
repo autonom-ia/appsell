@@ -131,11 +131,13 @@ async def enroll_public_product(request: Request) -> Response:
     except DBAPIError as error:
         raise _learning_domain_error(error) from error
     return Response(
-        content=json.dumps({
-            "status": "active",
-            "entitlement_id": str(row["entitlement_id"]),
-            "created": bool(row["created"]),
-        }),
+        content=json.dumps(
+            {
+                "status": "active",
+                "entitlement_id": str(row["entitlement_id"]),
+                "created": bool(row["created"]),
+            }
+        ),
         status_code=status.HTTP_201_CREATED if row["created"] else status.HTTP_200_OK,
         media_type="application/json",
     )

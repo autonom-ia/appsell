@@ -301,14 +301,18 @@ def test_public_free_access_is_idempotent_and_creates_learning_enrollment() -> N
             "%s,%s,%s,%s,%s,%s)",
             (buyer, seller, product, idempotency_key, body_sha256, request_id),
         ).fetchone()
-        assert first is not None and first[1] is True
-        enrollment_count = connection.execute(
+        assert first is not None
+        assert first[1] is True
+        first_entitlement_id = first[0]
+        enrollment_row = connection.execute(
             "select count(*) from learning_enrollment where buyer_identity_user_id=%s "
             "and entitlement_id=%s",
-            (buyer, first[0]),
-        ).fetchone()[0]
+            (buyer, first_entitlement_id),
+        ).fetchone()
+        assert enrollment_row is not None
+        enrollment_count = enrollment_row[0]
         connection.rollback()
-    assert replay == (first[0], False)
+    assert replay == (first_entitlement_id, False)
     assert enrollment_count >= 1
 
 
