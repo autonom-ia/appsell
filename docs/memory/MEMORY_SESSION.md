@@ -35,8 +35,8 @@ Project status:
 
 Issue: #202
 Branch: `codex/202-docs-production-handoff`
-PR: não aberta
-Estado: em_progresso
+PR: #203
+Estado: concluído
 Modelo: strong + humano
 Arquivos alterados: `README.md`, `docs/PRODUCTION_CURRENT.md`,
 `docs/runbooks/PRODUCTION_RELEASE_APPSSELL.md`, `docs/STATUS.md`,
@@ -60,17 +60,18 @@ Arquivos alterados: `README.md`, `docs/PRODUCTION_CURRENT.md`,
 Comandos executados: criação da Issue #202 e item no Project #3; criação da
 branch a partir de `origin/main`; leitura e atualização dos documentos; ainda
 não houve merge, deploy ou alteração de runtime nesta sessão.
-Validação: pendente; rodar `git diff --check` e validação de links/formatação
-antes de abrir a PR.
+Validação: `git diff --check` PASS; arquivos canônicos presentes; referências
+de SHA/migration/Issue conferidas; testes de aplicação não rodados porque a
+mudança é somente documental.
 Bloqueios: nenhum técnico; merge/deploy não fazem parte desta autorização.
-Próxima ação: revisar diff, rodar validação documental, commit/push, abrir PR
-#202 e atualizar o Project #3 para `PR aberta`.
+Próxima ação: revisar a PR #203; após aprovação explícita, fazer merge conforme
+o fluxo do projeto. Nenhum deploy faz parte desta PR.
 
 Project status:
   - Projeto: Appsell
-  - Status: Em desenvolvimento
+  - Status: PR aberta
   - Tipo: Docs
   - Prioridade: P1
   - Risco: Baixo
   - Ambiente: Produção
-  - Próxima ação: validar documentação e abrir PR #202 para review
+  - Próxima ação: revisar e aprovar a PR #203
