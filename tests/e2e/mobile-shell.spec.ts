@@ -376,6 +376,19 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
     return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ product_id: productId, course_id: courseId, offer_id: offerId, product_version: state.productVersion, course_version: state.courseVersion, offer_version: state.offerVersion }) });
   });
   await page.route(`**/api/sellers/${sellerId}/products/${productId}/preview`, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ preview: true, snapshot: { product: { id: productId, title: state.title, slug: state.slug, description: state.description, status: "draft" }, courses: [{ title: state.courseTitle }], offer: { title: state.offerTitle, summary: state.offerSummary, status: "draft" } }, versions: { product: state.productVersion, course: state.courseVersion, offer: state.offerVersion } }) }));
+  // No payout account bound, which is the state that must disable the sale
+  // option with a reason the seller can act on.
+  await page.route(`**/api/sellers/${sellerId}/payout-account`, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ payout_account: null }) }));
+  const accessLinkLabels: string[] = [];
+  await page.route(`**/api/sellers/${sellerId}/products/${productId}/access-links`, async (route) => {
+    if (route.request().method() === "GET") {
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ access_links: [] }) });
+    }
+    const posted = route.request().postDataBuffer();
+    const form = await new Request(route.request().url(), { method: "POST", headers: route.request().headers(), body: posted ? new Uint8Array(posted) : undefined }).formData();
+    accessLinkLabels.push(String(form.get("label")));
+    return route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ access_link: { access_link_id: "9f1d6f1e-0e2a-4a3b-8c4d-5e6f70819293", token_prefix: "aabbccdd", label: form.get("label"), max_uses: null, redeemed_count: 0, expires_at: null, created_at: null }, url: `http://localhost:3000/c/${"a".repeat(64)}` }) });
+  });
   await page.route(`**/api/sellers/${sellerId}/products/${productId}/publications`, async (route) => {
     const posted = route.request().postDataBuffer();
     const form = await new Request(route.request().url(), { method: "POST", headers: route.request().headers(), body: posted ? new Uint8Array(posted) : undefined }).formData();
@@ -486,6 +499,12 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   await page.getByRole("button", { name: "Publicar catálogo nova versão após v1" }).click();
   await page.getByRole("button", { name: "Colocar no ar" }).click();
   await expect(page.getByText("Catálogo publicado com sucesso.", { exact: false })).toBeVisible();
+  // The link fields live inside the editor's own form. Pressing Enter there used
+  // to submit the product draft instead of creating the link.
+  await page.getByLabel("Nome do link").fill("Turma piloto");
+  await page.getByLabel("Nome do link").press("Enter");
+  await expect(page.getByText("Copie agora", { exact: false })).toBeVisible();
+  expect(accessLinkLabels).toEqual(["Turma piloto"]);
   expect(publishKeys).toHaveLength(4);
   expect(submittedOfferPrices).toContain("4700");
 

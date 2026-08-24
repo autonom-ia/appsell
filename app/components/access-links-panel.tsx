@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import { AccessibleDialog } from "./accessible-dialog";
 
@@ -28,8 +28,11 @@ interface AccessLinkCsrf {
   rotate: string;
 }
 
-type ListState = "loading" | "ready" | "unauthorized" | "unavailable" | "error";
+type ListState = "loading" | "ready" | "unauthorized" | "forbidden" | "unavailable" | "error";
 type ActionState = "idle" | "working" | "invalid" | "forbidden" | "unavailable" | "error";
+
+const LOAD_TIMEOUT_MS = 8_000;
+const MUTATION_TIMEOUT_MS = 12_000;
 
 export function AccessLinksPanel({
   sellerId,
@@ -48,35 +51,56 @@ export function AccessLinksPanel({
   const [actionState, setActionState] = useState<ActionState>("idle");
   const [invalidField, setInvalidField] = useState("");
   // Shown once, right after minting. There is no way to ask for it again, so the
-  // panel keeps it visible until the seller creates or rotates another link.
+  // panel keeps it visible until another link is created.
   const [issuedUrl, setIssuedUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [label, setLabel] = useState("");
-  const [maxUses, setMaxUses] = useState("");
-  const [expiresAt, setExpiresAt] = useState("");
   const [revokeTarget, setRevokeTarget] = useState<AccessLink | null>(null);
   const [openRedemptions, setOpenRedemptions] = useState<string | null>(null);
   const [redemptions, setRedemptions] = useState<Redemption[]>([]);
+  const [label, setLabel] = useState("");
+  const [maxUses, setMaxUses] = useState("");
+  const [expiresAt, setExpiresAt] = useState("");
+
   const listHeading = useRef<HTMLHeadingElement>(null);
   const revokeCancel = useRef<HTMLButtonElement>(null);
+  // One key per pending mutation, held until the server confirms. A retry after a
+  // dropped connection then replays the same operation instead of minting a
+  // second link or spending a second seat.
+  const createKey = useRef<string | null>(null);
+  const mutationKeys = useRef(new Map<string, string>());
+  const listRequest = useRef<{ controller: AbortController; version: number } | null>(null);
+  const listVersion = useRef(0);
+  const redemptionRequest = useRef<{ controller: AbortController; linkId: string } | null>(null);
+  const inFlight = useRef(new Set<AbortController>());
 
   const base = `/api/sellers/${encodeURIComponent(sellerId)}/products/${encodeURIComponent(productId)}/access-links`;
 
   const loadLinks = useCallback(async () => {
+    listRequest.current?.controller.abort();
+    const version = ++listVersion.current;
+    const controller = new AbortController();
+    listRequest.current = { controller, version };
+    const timeout = setTimeout(() => controller.abort(), LOAD_TIMEOUT_MS);
     try {
-      const response = await fetch(base, { cache: "no-store" });
+      const response = await fetch(base, { cache: "no-store", signal: controller.signal });
+      // A slower earlier answer must never overwrite a newer one.
+      if (listVersion.current !== version) return;
       if (response.status === 401) return setListState("unauthorized");
+      if (response.status === 403) return setListState("forbidden");
       if (response.status === 503) return setListState("unavailable");
       if (!response.ok) return setListState("error");
       const payload = await response.json() as { access_links?: AccessLink[] };
+      if (listVersion.current !== version) return;
       setLinks(Array.isArray(payload.access_links) ? payload.access_links : []);
-      // Captured once per load so the render stays pure: expiry is judged against
-      // the moment the list came from the server, not against a clock read during
-      // rendering.
+      // Captured per load so rendering stays pure: expiry is judged against the
+      // moment the list arrived, not against a clock read during render.
       setLoadedAt(Date.now());
       setListState("ready");
     } catch {
-      setListState("unavailable");
+      if (listVersion.current === version) setListState("unavailable");
+    } finally {
+      clearTimeout(timeout);
+      if (listRequest.current?.version === version) listRequest.current = null;
     }
   }, [base]);
 
@@ -84,21 +108,73 @@ export function AccessLinksPanel({
     // Deferred by a microtask so the first render is never interrupted by the
     // state the load produces.
     void Promise.resolve().then(loadLinks);
+    const pending = inFlight.current;
+    return () => {
+      listRequest.current?.controller.abort();
+      redemptionRequest.current?.controller.abort();
+      for (const controller of pending) controller.abort();
+      pending.clear();
+    };
   }, [loadLinks]);
 
+  async function mutate(
+    path: string,
+    token: string,
+    keyHolder: () => string,
+    onSuccess: (payload: unknown) => void
+  ) {
+    setActionState("working");
+    setInvalidField("");
+    const data = new FormData();
+    data.set("_csrf", token);
+    data.set("idempotency_key", keyHolder());
+    const controller = new AbortController();
+    inFlight.current.add(controller);
+    const timeout = setTimeout(() => controller.abort(), MUTATION_TIMEOUT_MS);
+    try {
+      const response = await fetch(path, { method: "POST", body: data, signal: controller.signal });
+      if (!response.ok) {
+        setActionState(await failureState(response, setInvalidField));
+        return false;
+      }
+      onSuccess(await response.json().catch(() => null));
+      setActionState("idle");
+      return true;
+    } catch {
+      // The key is kept on purpose: the next attempt replays rather than repeats.
+      setActionState("unavailable");
+      return false;
+    } finally {
+      clearTimeout(timeout);
+      inFlight.current.delete(controller);
+    }
+  }
+
   async function submit() {
+    if (actionState === "working" || label.trim().length === 0) return;
+    createKey.current ??= crypto.randomUUID();
+    setActionState("working");
+    setInvalidField("");
     const data = new FormData();
     data.set("_csrf", csrf.create);
-    data.set("idempotency_key", crypto.randomUUID());
+    data.set("idempotency_key", createKey.current);
     data.set("label", label.trim());
     data.set("max_uses", maxUses.trim());
     data.set("expires_at", expiresAt.trim());
-    setActionState("working");
-    setInvalidField("");
+    const controller = new AbortController();
+    inFlight.current.add(controller);
+    const timeout = setTimeout(() => controller.abort(), MUTATION_TIMEOUT_MS);
     try {
-      const response = await fetch(base, { method: "POST", body: data });
-      if (!response.ok) return setActionState(await failureState(response, setInvalidField));
+      const response = await fetch(base, { method: "POST", body: data, signal: controller.signal });
+      if (!response.ok) {
+        const failure = await failureState(response, setInvalidField);
+        // A rejected request will never be accepted as a replay, so the key goes.
+        if (failure === "invalid" || failure === "forbidden") createKey.current = null;
+        setActionState(failure);
+        return;
+      }
       const payload = await response.json() as { url?: string };
+      createKey.current = null;
       setIssuedUrl(typeof payload.url === "string" ? payload.url : null);
       setCopied(false);
       setLabel("");
@@ -109,66 +185,77 @@ export function AccessLinksPanel({
       queueMicrotask(() => listHeading.current?.focus());
     } catch {
       setActionState("unavailable");
+    } finally {
+      clearTimeout(timeout);
+      inFlight.current.delete(controller);
     }
+  }
+
+  function keyFor(action: string, linkId: string) {
+    const composed = `${action}:${linkId}`;
+    const existing = mutationKeys.current.get(composed);
+    if (existing) return existing;
+    const minted = crypto.randomUUID();
+    mutationKeys.current.set(composed, minted);
+    return minted;
   }
 
   async function revoke(link: AccessLink) {
     setRevokeTarget(null);
-    setActionState("working");
-    const data = new FormData();
-    data.set("_csrf", csrf.revoke);
-    data.set("idempotency_key", crypto.randomUUID());
-    try {
-      const response = await fetch(`${base}/${encodeURIComponent(link.access_link_id)}/revoke`, {
-        method: "POST",
-        body: data
-      });
-      if (!response.ok) return setActionState(await failureState(response, setInvalidField));
-      setActionState("idle");
-      await loadLinks();
-    } catch {
-      setActionState("unavailable");
-    }
+    const done = await mutate(
+      `${base}/${encodeURIComponent(link.access_link_id)}/revoke`,
+      csrf.revoke,
+      () => keyFor("revoke", link.access_link_id),
+      () => mutationKeys.current.delete(`revoke:${link.access_link_id}`)
+    );
+    if (done) await loadLinks();
   }
 
   async function rotate(link: AccessLink) {
-    setActionState("working");
-    const data = new FormData();
-    data.set("_csrf", csrf.rotate);
-    data.set("idempotency_key", crypto.randomUUID());
-    try {
-      const response = await fetch(`${base}/${encodeURIComponent(link.access_link_id)}/rotate`, {
-        method: "POST",
-        body: data
-      });
-      if (!response.ok) return setActionState(await failureState(response, setInvalidField));
-      const payload = await response.json() as { url?: string };
-      setIssuedUrl(typeof payload.url === "string" ? payload.url : null);
-      setCopied(false);
-      setActionState("idle");
-      await loadLinks();
-    } catch {
-      setActionState("unavailable");
-    }
+    const done = await mutate(
+      `${base}/${encodeURIComponent(link.access_link_id)}/rotate`,
+      csrf.rotate,
+      () => keyFor("rotate", link.access_link_id),
+      (payload) => {
+        mutationKeys.current.delete(`rotate:${link.access_link_id}`);
+        const url = (payload as { url?: string } | null)?.url;
+        setIssuedUrl(typeof url === "string" ? url : null);
+        setCopied(false);
+      }
+    );
+    if (done) await loadLinks();
   }
 
   async function loadRedemptions(link: AccessLink) {
+    redemptionRequest.current?.controller.abort();
     if (openRedemptions === link.access_link_id) {
       setOpenRedemptions(null);
+      redemptionRequest.current = null;
       return;
     }
     setOpenRedemptions(link.access_link_id);
     setRedemptions([]);
+    const controller = new AbortController();
+    redemptionRequest.current = { controller, linkId: link.access_link_id };
+    const timeout = setTimeout(() => controller.abort(), LOAD_TIMEOUT_MS);
     try {
       const response = await fetch(
         `${base}/${encodeURIComponent(link.access_link_id)}/redemptions`,
-        { cache: "no-store" }
+        { cache: "no-store", signal: controller.signal }
       );
+      // Another link may have been opened while this was in flight.
+      if (redemptionRequest.current?.linkId !== link.access_link_id) return;
       if (!response.ok) return;
       const payload = await response.json() as { redemptions?: Redemption[] };
+      if (redemptionRequest.current?.linkId !== link.access_link_id) return;
       setRedemptions(Array.isArray(payload.redemptions) ? payload.redemptions : []);
     } catch {
-      setRedemptions([]);
+      if (redemptionRequest.current?.linkId === link.access_link_id) setRedemptions([]);
+    } finally {
+      clearTimeout(timeout);
+      if (redemptionRequest.current?.linkId === link.access_link_id) {
+        redemptionRequest.current = null;
+      }
     }
   }
 
@@ -180,6 +267,14 @@ export function AccessLinksPanel({
     } catch {
       setCopied(false);
     }
+  }
+
+  // These inputs live inside the product editor's form, and pressing Enter there
+  // would submit the draft instead of creating the link.
+  function createOnEnter(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    void submit();
   }
 
   return (
@@ -209,7 +304,7 @@ export function AccessLinksPanel({
         </div>
       ) : null}
 
-      <div className="access-link-form">
+      <div className="access-link-form" onKeyDown={createOnEnter}>
         <fieldset aria-label="Novo link de acesso" disabled={actionState === "working"}>
           <label>
             Nome do link
@@ -260,7 +355,9 @@ export function AccessLinksPanel({
             <p className="form-error">Sua sessão mudou. Entre novamente antes de tentar.</p>
           ) : null}
           {actionState === "unavailable" ? (
-            <p className="form-note">A API não respondeu. Nada foi criado; tente novamente.</p>
+            <p className="form-note">
+              A API não respondeu. Tentar de novo repete a mesma operação, sem duplicar nada.
+            </p>
           ) : null}
           {actionState === "error" ? (
             <p className="form-error">Não foi possível concluir a ação.</p>
@@ -271,6 +368,9 @@ export function AccessLinksPanel({
       <h3 ref={listHeading} tabIndex={-1}>Links criados</h3>
       {listState === "loading" ? <p className="empty-state">Carregando links…</p> : null}
       {listState === "unauthorized" ? <p className="empty-state">Sua sessão expirou.</p> : null}
+      {listState === "forbidden" ? (
+        <p className="empty-state">Você não tem permissão nesta loja.</p>
+      ) : null}
       {listState === "unavailable" ? (
         <p className="empty-state">A API está indisponível. Tente novamente.</p>
       ) : null}
@@ -287,6 +387,8 @@ export function AccessLinksPanel({
           : Math.max(link.max_uses - link.redeemed_count, 0);
         const revoked = link.revoked_at !== null;
         const expired = link.expires_at !== null && Date.parse(link.expires_at) <= loadedAt;
+        const open = openRedemptions === link.access_link_id;
+        const listId = `redemptions-${link.access_link_id}`;
         return (
           <article className="access-link-card" key={link.access_link_id}>
             <div className="access-link-heading">
@@ -317,8 +419,14 @@ export function AccessLinksPanel({
               {link.expires_at ? ` · vence em ${formatDate(link.expires_at)}` : ""}
             </p>
             <div className="access-link-actions">
-              <button type="button" className="secondary-button" onClick={() => void loadRedemptions(link)}>
-                {openRedemptions === link.access_link_id ? "Ocultar quem entrou" : "Ver quem entrou"}
+              <button
+                type="button"
+                className="secondary-button"
+                aria-expanded={open}
+                aria-controls={listId}
+                onClick={() => void loadRedemptions(link)}
+              >
+                {open ? "Ocultar quem entrou" : "Ver quem entrou"}
               </button>
               {!revoked ? (
                 <>
@@ -331,13 +439,11 @@ export function AccessLinksPanel({
                 </>
               ) : null}
             </div>
-            {openRedemptions === link.access_link_id ? (
-              <ul className="access-link-redemptions">
+            {open ? (
+              <ul className="access-link-redemptions" id={listId}>
                 {redemptions.length === 0 ? <li>Ninguém entrou por este link ainda.</li> : null}
                 {redemptions.map((entry) => (
-                  <li key={entry.entitlement_id}>
-                    Entrou em {formatDate(entry.redeemed_at)}
-                  </li>
+                  <li key={entry.entitlement_id}>Entrou em {formatDate(entry.redeemed_at)}</li>
                 ))}
               </ul>
             ) : null}

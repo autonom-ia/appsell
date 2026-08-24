@@ -220,7 +220,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   const updateIdempotencyKey = useRef<string | null>(null);
   const publishIdempotencyKey = useRef<string | null>(null);
   const [publishAccessMode, setPublishAccessMode] = useState<"free" | "paid">("free");
-  const [payoutReady, setPayoutReady] = useState<boolean | null>(null);
+  const [payoutState, setPayoutState] = useState<"unknown" | "checking" | "ready" | "missing">("unknown");
   const offerStatusIdempotencyKey = useRef<{ transition: string; key: string } | null>(null);
   const offerId = useRef<string | null>(null);
   const formElement = useRef<HTMLFormElement>(null);
@@ -459,15 +459,28 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
     }
   }
 
-  // Asked only when the seller opens the access decision. Nothing else on the
-  // page depends on it, so there is no reason to spend a request on mount.
+  // Asked every time the seller opens the access decision, because connecting a
+  // payout account happens elsewhere on the page: a cached answer would keep
+  // showing "configure seus recebimentos" after it was already configured.
   useEffect(() => {
-    if (!publishDialogOpen || payoutReady !== null) return;
+    if (!publishDialogOpen) return;
     let active = true;
-    void fetch(`/api/sellers/${encodeURIComponent(sellerId)}/payout-account`, { cache: "no-store" })
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8_000);
+    // Deferred so the render that opened the dialog is never interrupted.
+    void Promise.resolve()
+      .then(() => {
+        if (active) setPayoutState("checking");
+      });
+    void fetch(`/api/sellers/${encodeURIComponent(sellerId)}/payout-account`, {
+      cache: "no-store",
+      signal: controller.signal
+    })
       .then(async (response) => {
         if (!active) return;
-        if (!response.ok) return setPayoutReady(false);
+        // A transient failure is not the same as "not configured", and telling
+        // the seller to go configure what is already configured wastes their time.
+        if (!response.ok) return setPayoutState(response.status === 404 ? "missing" : "unknown");
         const payload = await response.json() as {
           payout_account?: {
             charges_enabled?: boolean;
@@ -475,18 +488,23 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
             disabled_reason?: string | null;
           } | null;
         };
+        if (!active) return;
         const account = payload.payout_account;
-        setPayoutReady(Boolean(
+        const usable = Boolean(
           account?.charges_enabled && account?.payouts_enabled && !account?.disabled_reason
-        ));
+        );
+        setPayoutState(usable ? "ready" : "missing");
       })
       .catch(() => {
-        if (active) setPayoutReady(false);
-      });
+        if (active) setPayoutState("unknown");
+      })
+      .finally(() => clearTimeout(timeout));
     return () => {
       active = false;
+      controller.abort();
+      clearTimeout(timeout);
     };
-  }, [payoutReady, publishDialogOpen, sellerId]);
+  }, [publishDialogOpen, sellerId]);
 
   async function publish(accessMode: "free" | "paid") {
     const hasChanges = detail?.has_unpublished_changes ?? detail?.readiness?.has_unpublished_changes;
@@ -662,7 +680,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
     (detail.offer.unit_amount_minor ?? 0) > 0 &&
     !editorDirty &&
     !offerStatusLocked;
-  const paidAvailable = payoutReady === true && (detail.offer.unit_amount_minor ?? 0) > 0;
+  const paidAvailable = payoutState === "ready" && (detail.offer.unit_amount_minor ?? 0) > 0;
   const workflow = workflowState(detail, curriculumSummary, editorDirty, previewState);
   const nextStep = nextWorkflowStep(section, workflow);
 
@@ -806,14 +824,18 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
                 <input type="radio" name="access_mode" value="paid" checked={publishAccessMode === "paid"} disabled={!paidAvailable} onChange={() => setPublishAccessMode("paid")}/>
                 <span>
                   <strong>Vender com checkout</strong>
-                  <span>{payoutReady === false
-                    ? "Indisponível: configure seus recebimentos para poder cobrar."
-                    : (detail.offer.unit_amount_minor ?? 0) <= 0
-                      ? "Indisponível: salve um preço maior que zero na etapa Oferta."
-                      : `O link leva ao pagamento de ${formatOfferPrice(detail.offer.unit_amount_minor ?? 0, detail.offer.currency)} antes de liberar o conteúdo.`}</span>
-                  {payoutReady === false ? <Link className="access-mode-fix" href="/payouts">Configurar recebimentos</Link> : null}
+                  <span>{payoutState === "checking"
+                    ? "Verificando seus recebimentos…"
+                    : payoutState === "unknown"
+                      ? "Não conseguimos verificar seus recebimentos agora. Feche e abra de novo."
+                      : payoutState === "missing"
+                        ? "Indisponível: configure seus recebimentos para poder cobrar."
+                        : (detail.offer.unit_amount_minor ?? 0) <= 0
+                          ? "Indisponível: salve um preço maior que zero na etapa Oferta."
+                          : `O link leva ao pagamento de ${formatOfferPrice(detail.offer.unit_amount_minor ?? 0, detail.offer.currency)} antes de liberar o conteúdo.`}</span>
                 </span>
               </label>
+              {payoutState === "missing" ? <Link className="access-mode-fix" href="/payouts">Configurar recebimentos</Link> : null}
             </div>
             <div className="dialog-actions"><button ref={publishCancelButton} className="secondary-button" type="button" onClick={closePublishDialog}>Revisar novamente</button><button className="primary-button commercial-button" type="button" onClick={() => void publish(publishAccessMode)}>{publishAccessMode === "paid" ? "Colocar no ar e vender" : "Colocar no ar"}</button></div>
         </AccessibleDialog>

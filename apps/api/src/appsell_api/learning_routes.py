@@ -297,7 +297,7 @@ async def redeem_access_link(request: Request) -> Response:
                 "seats_remaining": row["seats_remaining"],
             }
         ),
-        status_code=status.HTTP_201_CREATED if row["created"] else status.HTTP_200_OK,
+        status_code=(status.HTTP_201_CREATED if row["seat_consumed"] else status.HTTP_200_OK),
         media_type="application/json",
     )
 

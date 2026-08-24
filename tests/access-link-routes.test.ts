@@ -129,7 +129,11 @@ describe("access link routes", () => {
     expect(forwarded.expiresAt).toBeNull();
   });
 
-  it("never reuses a token between two links", async () => {
+  it("forwards the caller's idempotency key untouched and mints a fresh secret", async () => {
+    // The key is what makes a retry replay instead of minting a second budget,
+    // so the route must never substitute its own. The secret, in contrast, must
+    // never repeat between two distinct creations.
+    const otherKey = "88888888-8888-4888-8888-888888888888";
     const first = await createLink(
       formRequest(`/api/sellers/${SELLER_ID}/products/${PRODUCT_ID}/access-links`,
         { _csrf: "c", idempotency_key: IDEMPOTENCY, label: "A", max_uses: "", expires_at: "" }),
@@ -137,9 +141,14 @@ describe("access link routes", () => {
     );
     const second = await createLink(
       formRequest(`/api/sellers/${SELLER_ID}/products/${PRODUCT_ID}/access-links`,
-        { _csrf: "c", idempotency_key: IDEMPOTENCY, label: "B", max_uses: "", expires_at: "" }),
+        { _csrf: "c", idempotency_key: otherKey, label: "B", max_uses: "", expires_at: "" }),
       sellerContext
     );
+
+    const forwarded = createDomainAccessLink.mock.calls.map(
+      (call) => (call[4] as Record<string, unknown>).idempotencyKey
+    );
+    expect(forwarded).toEqual([IDEMPOTENCY, otherKey]);
     expect((await first.json()).url).not.toBe((await second.json()).url);
   });
 

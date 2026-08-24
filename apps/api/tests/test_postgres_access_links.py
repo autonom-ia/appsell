@@ -244,6 +244,8 @@ def create_link(
     label: str = "Turma de teste",
     max_uses: int | None = 30,
     expires_at: datetime | None = None,
+    key: UUID | None = None,
+    body: str | None = None,
 ) -> UUID:
     assert RUNTIME_URL
     token_digest = digest(token)
@@ -265,8 +267,8 @@ def create_link(
                 token_digest[:8],
                 max_uses,
                 expires_at,
-                uuid4(),
-                digest(f"link:{product_id}:{label}"),
+                key or uuid4(),
+                digest(body or f"link:{product_id}:{label}"),
                 uuid4(),
             ),
         ).fetchone()
@@ -276,7 +278,9 @@ def create_link(
     return row[0]
 
 
-def redeem(token: str, buyer: UUID) -> tuple[Any, ...]:
+def redeem(
+    token: str, buyer: UUID, key: UUID | None = None, body: str | None = None
+) -> tuple[Any, ...]:
     assert RUNTIME_URL
     with psycopg.connect(RUNTIME_URL) as connection:
         apply_context(connection, buyer, None, "library.enroll")
@@ -286,7 +290,13 @@ def redeem(token: str, buyer: UUID) -> tuple[Any, ...]:
                    created, seat_consumed, seats_remaining
             from app_private.redeem_product_access_link(%s, %s, %s, %s, %s)
             """,
-            (buyer, digest(token), uuid4(), digest(f"redeem:{buyer}:{uuid4()}"), uuid4()),
+            (
+                buyer,
+                digest(token),
+                key or uuid4(),
+                digest(body or f"redeem:{buyer}:{uuid4()}"),
+                uuid4(),
+            ),
         ).fetchone()
         assert row is not None
         connection.commit()
@@ -730,3 +740,106 @@ def test_a_sold_product_refuses_new_access_links() -> None:
     with pytest.raises(psycopg.errors.Error) as failure:
         create_link(seller_id, product_id, token=f"sold-{uuid4().hex}", max_uses=5)
     assert failure.value.sqlstate == "P4226"
+
+
+def test_creating_a_link_twice_with_one_key_yields_one_link() -> None:
+    """A retry after a lost response must replay, not mint a second budget.
+
+    Without this, a seller who reloads after a timeout ends up with two links of
+    thirty seats each and hands out sixty.
+    """
+    seller_id, product_id = published_free_product()
+    key = uuid4()
+    token = f"replay-{uuid4().hex}"
+    first = create_link(seller_id, product_id, token=token, max_uses=10, key=key, body="fixed")
+    second = create_link(seller_id, product_id, token=token, max_uses=10, key=key, body="fixed")
+
+    assert first == second
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        count = connection.execute(
+            "select count(*) from product_access_link where seller_organization_id = %s",
+            (seller_id,),
+        ).fetchone()
+    assert count is not None and int(count[0]) == 1
+
+
+def test_reusing_a_key_for_a_different_link_is_refused() -> None:
+    """The key identifies one operation, so it cannot be recycled."""
+    seller_id, product_id = published_free_product()
+    key = uuid4()
+    create_link(seller_id, product_id, token=f"a-{uuid4().hex}", max_uses=5, key=key, body="one")
+
+    with pytest.raises(psycopg.errors.Error) as failure:
+        create_link(
+            seller_id, product_id, token=f"b-{uuid4().hex}", max_uses=5, key=key, body="two"
+        )
+    assert failure.value.sqlstate == "23505"
+
+
+def test_redemption_retried_after_revocation_still_returns_the_seat() -> None:
+    """Revoking closes the door; it does not evict who is already inside.
+
+    A buyer whose first response was lost retries and must get their access back,
+    not a refusal that looks like they were thrown out.
+    """
+    seller_id, product_id = published_free_product()
+    token = f"retry-{uuid4().hex}"
+    link_id = create_link(seller_id, product_id, token=token, max_uses=5)
+    granted = redeem(token, buyer_id(9))
+
+    assert RUNTIME_URL
+    with psycopg.connect(RUNTIME_URL) as connection:
+        apply_context(connection, SELLER_USER, seller_id, "catalog.access_link.update")
+        connection.execute(
+            "select changed from app_private.revoke_product_access_link(%s,%s,%s,%s,%s,%s,%s)",
+            (SELLER_USER, seller_id, product_id, link_id, uuid4(), digest("revoke"), uuid4()),
+        ).fetchone()
+        connection.commit()
+
+    retried = redeem(token, buyer_id(9))
+    assert retried[0] == granted[0]
+    assert bool(retried[4]) is False
+
+
+def test_paid_publication_replay_survives_a_payout_account_going_bad() -> None:
+    """A replay must not re-litigate a decision the first call already committed."""
+    seller_id, product_id, course_id = create_graph()
+    bind_payout_account(seller_id)
+    offer_id = save_draft(seller_id, product_id, course_id)
+    key = uuid4()
+    first = publish_with_access(
+        seller_id, product_id, course_id, offer_id, access_mode="paid", key=key
+    )
+    assert first[4] == "active"
+
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "update seller_payout_account set charges_enabled = false, "
+            "disabled_reason = 'requirements.past_due' where seller_organization_id = %s",
+            (seller_id,),
+        )
+        connection.commit()
+
+    replay = publish_with_access(
+        seller_id, product_id, course_id, offer_id, access_mode="paid", key=key
+    )
+    assert bool(replay[6]) is False
+    assert replay[0] == first[0]
+
+
+def test_a_seller_cannot_list_another_tenant_links() -> None:
+    """Tenant isolation on the read path, not only on the mutations."""
+    owner_seller, owner_product = published_free_product()
+    other_seller, other_product, _ = create_graph()
+    create_link(owner_seller, owner_product, token=f"read-{uuid4().hex}", max_uses=2)
+
+    assert RUNTIME_URL
+    with psycopg.connect(RUNTIME_URL) as connection:
+        apply_context(connection, SELLER_USER, other_seller, "catalog.access_link.read")
+        rows = connection.execute(
+            "select access_link_id from app_private.list_product_access_links(%s,%s,%s)",
+            (SELLER_USER, other_seller, other_product),
+        ).fetchall()
+    assert rows == []
