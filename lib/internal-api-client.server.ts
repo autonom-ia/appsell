@@ -54,6 +54,7 @@ interface ApiRequest {
   body?: Record<string, unknown>;
   capacityTrace?: string | null;
   learningAssetsContract?: "v2" | "v3";
+  timeoutMs?: number;
 }
 
 export interface DemoInspectionProjection {
@@ -1019,7 +1020,8 @@ export async function readDomainLearningPdfManifest(
   return domainRequest(sessionId, session, {
     method: "GET",
     path: `/v1/me/learning/items/${entitlementId}/assets/${assetId}/pages`,
-    capability: "library.asset.read"
+    capability: "library.asset.read",
+    timeoutMs: 15_000
   });
 }
 
@@ -1156,7 +1158,7 @@ async function domainRequest(
   };
   const { token } = signInternalEnvelope(envelopeInput, config.signing);
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 3_000);
+  const timeout = setTimeout(() => controller.abort(), request.timeoutMs ?? 3_000);
   try {
     const requestUrl = new URL(request.path, config.apiOrigin);
     requestUrl.search = request.query ?? "";

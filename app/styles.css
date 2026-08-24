@@ -730,13 +730,30 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .pdf-reader-viewport { min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable both-edges; touch-action: pan-x pan-y; background: radial-gradient(circle at 50% 0,rgba(255,255,255,.94),rgba(238,243,250,.78) 42%,#e9f0f8 100%); outline: none; }
 .pdf-reader-viewport:focus-visible { box-shadow: inset 0 0 0 3px rgba(59,130,246,.42); }
 .pdf-reader-pages { width: max-content; min-width: 100%; min-height: 100%; padding: 12px; display: flex; flex-direction: column; align-items: center; gap: 16px; }
-.pdf-reader-page { min-width: 0; max-width: none; min-height: 260px; flex: 0 0 auto; margin: 0; overflow: hidden; scroll-margin: 14px; border: 1px solid rgba(148,163,184,.24); background: white; box-shadow: 0 14px 38px rgba(15,23,42,.12); transition: width 160ms ease; user-select: none; -webkit-user-select: none; }
+.pdf-reader-page { position: relative; min-width: 0; max-width: none; min-height: 260px; flex: 0 0 auto; margin: 0; overflow: hidden; scroll-margin: 14px; border: 1px solid rgba(148,163,184,.24); background: white; box-shadow: 0 14px 38px rgba(15,23,42,.12); transition: width 160ms ease; user-select: none; -webkit-user-select: none; }
 .pdf-reader-page img { display: block; width: 100%; height: auto; background: white; pointer-events: none; }
+.pdf-reader-link-layer { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+.pdf-reader-link { position: absolute; min-width: 0; min-height: 0; padding: 0; display: block; border: 1px solid transparent; border-radius: 6px; background: transparent; color: white; cursor: pointer; pointer-events: auto; transition: background 140ms ease,border-color 140ms ease,box-shadow 140ms ease; }
+.pdf-reader-link:hover, .pdf-reader-link:focus-visible { border-color: rgba(37,99,235,.58); background: rgba(59,130,246,.13); box-shadow: 0 0 0 3px rgba(59,130,246,.14); outline: none; }
+.pdf-reader-video-link { display: grid; place-items: center; }
+.pdf-reader-video-link > span { width: clamp(32px,6vw,54px); height: clamp(32px,6vw,54px); display: grid; place-items: center; border: 1px solid rgba(255,255,255,.66); border-radius: 50%; background: rgba(7,22,46,.78); box-shadow: 0 10px 28px rgba(7,22,46,.25); color: white; font-size: clamp(.78rem,2vw,1.05rem); line-height: 1; text-indent: 2px; backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+.pdf-reader-video-link:hover > span, .pdf-reader-video-link:focus-visible > span { background: #0d4c9b; transform: scale(1.04); }
 .pdf-reader-page .protected-pdf-state { width: 100%; min-height: min(70dvh,680px); border: 0; border-radius: 0; }
 .pdf-reader-touch-hint { margin: 1px 0 12px; color: #728096; font-size: .74rem; font-weight: 700; }
 .pdf-reader-feedback { position: absolute; left: 50%; bottom: 16px; z-index: 3; max-width: min(90vw,520px); margin: 0; padding: 10px 14px; border: 1px solid rgba(255,255,255,.5); border-radius: 12px; background: rgba(7,22,46,.88); box-shadow: 0 12px 30px rgba(7,22,46,.22); color: white; font-size: .78rem; font-weight: 750; text-align: center; transform: translateX(-50%); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }
 .pdf-reader-feedback:empty { display: none; }
-.pdf-reader button:focus-visible, .pdf-reader input:focus-visible, .protected-pdf-open:focus-visible { outline: 3px solid var(--bright); outline-offset: 2px; }
+.pdf-video-dialog { position: fixed; inset: 0; z-index: 5; padding: clamp(12px,3vw,34px); display: grid; place-items: center; background: rgba(2,9,22,.78); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); }
+.pdf-video-card { width: min(100%,1040px); max-height: calc(100dvh - 24px); padding: clamp(12px,2vw,20px); display: grid; gap: 12px; overflow: auto; border: 1px solid rgba(255,255,255,.18); border-radius: 22px; background: #07162e; box-shadow: 0 28px 90px rgba(2,9,22,.48); color: white; }
+.pdf-video-card > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.pdf-video-card > header p { margin: 0 0 2px; color: #91b9f5; }
+.pdf-video-card > header strong { font-size: clamp(1rem,2vw,1.3rem); }
+.pdf-video-close { min-height: 42px; padding: 0 16px; border: 1px solid rgba(255,255,255,.22); border-radius: 12px; background: rgba(255,255,255,.08); color: white; font-weight: 800; }
+.pdf-video-close:hover { background: rgba(255,255,255,.15); }
+.pdf-linked-video { display: block; width: 100%; max-height: min(72dvh,680px); border-radius: 14px; background: black; aspect-ratio: 16/9; }
+.pdf-video-policy { margin: 0; color: #a9bad2; font-size: .76rem; font-weight: 700; text-align: center; }
+.pdf-video-state { min-height: min(56dvh,480px); display: grid; place-items: center; align-content: center; gap: 12px; border-radius: 14px; background: #020916; text-align: center; }
+.pdf-video-state p { margin: 0; }
+.pdf-reader button:focus-visible, .pdf-reader input:focus-visible, .pdf-video-close:focus-visible, .protected-pdf-open:focus-visible { outline: 3px solid var(--bright); outline-offset: 2px; }
 .asset-unavailable { margin: 24px 0 0; padding: 14px 16px; border: 1px dashed var(--border); border-radius: 14px; color: var(--soft); font-size: .85rem; line-height: 1.5; }
 .player-feedback { min-height: 26px; margin: 24px 0 6px; color: var(--text); font-size: .82rem; font-weight: 700; line-height: 1.5; }
 .lesson-actions { display: grid; grid-template-columns: minmax(0,1fr); gap: 9px; padding-top: 18px; border-top: 1px solid var(--border); }

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, contextmanager
@@ -274,18 +275,83 @@ async def test_download_requires_separate_capability_and_presigns_attachment() -
 
 @pytest.mark.asyncio
 async def test_pdf_manifest_is_entitlement_scoped_and_never_returns_original() -> None:
-    auth = FakeAuth(pdf_manifest_row(page_count=7))
+    auth = FakeAuth(
+        pdf_manifest_row(page_count=7),
+        execute_results=[pdf_manifest_row(page_count=7), asset_row()],
+    )
     async with client_for(auth, settings=isolated_viewer_settings()) as client:
         response = await client.get(
             f"/v1/me/learning/items/{ENTITLEMENT_ID}/assets/{ASSET_ID}/pages"
         )
 
     assert response.status_code == 200
-    assert response.json() == {"asset": {"id": str(ASSET_ID), "page_count": 7}}
+    assert response.json() == {"asset": {"id": str(ASSET_ID), "page_count": 7, "links": []}}
     assert response.headers["content-type"] == "application/json"
     assert auth.capabilities == ["library.asset.read"]
     assert "authorize_entitled_pdf_manifest" in auth.session.calls[0][0]
     assert "object_key" not in response.text and "storage_bucket" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_pdf_manifest_extracts_links_from_the_pinned_ready_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = pdf_manifest_row(page_count=2)
+    source = {
+        **asset_row(),
+        "storage_driver": "s3",
+        "storage_bucket": "appsell-ready",
+        "object_key": "tenants/seller/assets/asset/v2/blob",
+        "storage_version_id": "ready-v2",
+        "storage_etag": "etag-v2",
+    }
+    auth = FakeAuth(manifest, execute_results=[manifest, source])
+    opened: list[dict[str, Any]] = []
+
+    class Storage:
+        @contextmanager
+        def open_download(self, **kwargs: Any):  # type: ignore[no-untyped-def]
+            opened.append(kwargs)
+            yield io.BytesIO(b"pdf")
+
+    def extracted(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "page_count": 2,
+            "links": [
+                {
+                    "id": "0123456789abcdef",
+                    "page": 1,
+                    "kind": "page",
+                    "target_page": 2,
+                    "rect": {"left": 10.0, "top": 10.0, "width": 80.0, "height": 20.0},
+                }
+            ],
+        }
+
+    learning_routes._PDF_LINK_CACHE.clear()
+    monkeypatch.setattr(learning_routes, "read_remote_pdf_link_manifest", extracted)
+    async with client_for(auth, Storage(), isolated_viewer_settings()) as client:
+        response = await client.get(
+            f"/v1/me/learning/items/{ENTITLEMENT_ID}/assets/{ASSET_ID}/pages"
+        )
+
+    assert response.status_code == 200
+    assert opened == [
+        {
+            "bucket": "appsell-ready",
+            "key": "tenants/seller/assets/asset/v2/blob",
+            "version_id": "ready-v2",
+        }
+    ]
+    link = response.json()["asset"]["links"][0]
+    assert link["target_page"] == 2
+    assert link["rect"] == {
+        "left": 10.0,
+        "top": 9.7087,
+        "width": 80.0,
+        "height": 19.4175,
+    }
 
 
 @pytest.mark.asyncio
@@ -382,7 +448,16 @@ def pdf_manifest_row(*, page_count: int = 1) -> dict[str, Any]:
         "page_count": page_count,
         "total_byte_size": page_count * 120,
         "manifest_sha256": "ab" * 32,
-        "pages": [],
+        "pages": [
+            {
+                "page_number": page_number,
+                "byte_size": 120,
+                "sha256": "cd" * 32,
+                "pixel_width": 800,
+                "pixel_height": 1200,
+            }
+            for page_number in range(1, page_count + 1)
+        ],
     }
 
 

@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
+import { resolve } from "node:path";
 
 const entitlementId = "bee105e2-7809-5bf5-874a-d6332dc4a4ef";
 const lessonOne = "a39181dd-c70c-57b3-935d-d97fd834d709";
@@ -15,9 +16,10 @@ const secondCourseId = "fb740e5c-2d01-5cc2-8397-bb09188d416a";
 const secondModuleId = "ebf42728-a9d9-53da-b68f-4146539f9295";
 const foreignEnrollmentId = "36a59404-d3f3-5309-95d9-258f4303e687";
 const protectedPng = Buffer.from(
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAC56t6BAAAADklEQVR4nGP4DwUMGAwAQuYX6TviV+QAAAAASUVORK5CYII=",
   "base64"
 );
+const protectedVideoPath = resolve(process.cwd(), "output/pdf/codex/codex-em-3-passos.mp4");
 
 async function login(page: Page) {
   await page.goto("/");
@@ -103,6 +105,7 @@ async function mockLearningApi(
     beforeCompleteResponse?: (lessonId: string) => Promise<void>;
     onFirstProgress?: (route: Route, requestNumber: number, requestedPercent: number) => Promise<void>;
     pdfPageCount?: number;
+    pdfLinks?: Array<Record<string, unknown>>;
   } = {}
 ) {
   const mutations: string[] = [];
@@ -116,8 +119,15 @@ async function mockLearningApi(
       return route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ asset_id: assetId, page_count: options.pdfPageCount ?? 2 })
+        body: JSON.stringify({
+          asset_id: assetId,
+          page_count: options.pdfPageCount ?? 2,
+          links: options.pdfLinks ?? []
+        })
       });
+    }
+    if (request.method() === "GET" && /\/pages\/links\/[0-9a-f]{16}\/media$/.test(url.pathname)) {
+      return route.fulfill({ status: 200, contentType: "video/mp4", path: protectedVideoPath });
     }
     const pdfPage = /\/pages\/([1-9][0-9]*)$/.exec(url.pathname);
     if (request.method() === "GET" && pdfPage && Number(pdfPage[1]) <= (options.pdfPageCount ?? 2)) {
@@ -209,6 +219,10 @@ test("bounds protected PDF requests for a 65-page reader", async ({ page }) => {
   await expect.poll(() => reader.locator(".pdf-reader-page img").evaluateAll((images) =>
     images.every((image) => (image as HTMLImageElement).complete && (image as HTMLImageElement).naturalWidth > 0)
   )).toBe(true);
+  await page.waitForTimeout(4_000);
+  await expect(reader.getByLabel("Ir para página")).toHaveValue("1");
+  await expect(reader.locator(".pdf-reader-page img")).toHaveCount(2);
+  await expect(reader.locator(".pdf-reader-page-placeholder")).toHaveCount(63);
   const initialReaderRequests = new Set(pageRequests);
   expect(initialReaderRequests.size).toBeLessThanOrEqual(2);
   expect(initialReaderRequests.has(
@@ -224,6 +238,8 @@ test("bounds protected PDF requests for a 65-page reader", async ({ page }) => {
   await expect(reader.getByLabel("Ir para página")).toHaveValue("2");
   await expect(reader.locator(".pdf-reader-page img")).toHaveCount(3);
   await expect.poll(() => pageRequests.length).toBeGreaterThan(beforeNext);
+  await page.waitForTimeout(4_000);
+  await expect(reader.getByLabel("Ir para página")).toHaveValue("2");
   expect(new Set(pageRequests.slice(beforeNext))).toEqual(new Set([
     `/api/library/items/${entitlementId}/assets/${assetId}/pages/3`
   ]));
@@ -239,6 +255,68 @@ test("bounds protected PDF requests for a 65-page reader", async ({ page }) => {
     `/api/library/items/${entitlementId}/assets/${assetId}/pages/50`,
     `/api/library/items/${entitlementId}/assets/${assetId}/pages/51`
   ]));
+  await page.waitForTimeout(4_000);
+  await expect(reader.getByLabel("Ir para página")).toHaveValue("50");
+
+  const beforeContinuousScroll = pageRequests.length;
+  await reader.locator('.pdf-reader-page[data-page="52"]').evaluate((element) =>
+    element.scrollIntoView({ behavior: "auto", block: "start" })
+  );
+  await expect(reader.getByLabel("Ir para página")).toHaveValue("52");
+  await expect.poll(() => pageRequests.length).toBeGreaterThanOrEqual(beforeContinuousScroll + 2);
+  expect(new Set(pageRequests.slice(beforeContinuousScroll))).toEqual(new Set([
+    `/api/library/items/${entitlementId}/assets/${assetId}/pages/52`,
+    `/api/library/items/${entitlementId}/assets/${assetId}/pages/53`
+  ]));
+});
+
+test("navigates PDF index links and opens linked video inside the protected reader", async ({ page }) => {
+  const internalLinkId = "0123456789abcdef";
+  const videoLinkId = "fedcba9876543210";
+  await mockLearningApi(page, {
+    pdfPageCount: 6,
+    pdfLinks: [
+      {
+        id: internalLinkId,
+        page: 1,
+        kind: "page",
+        target_page: 4,
+        rect: { left: 8, top: 12, width: 70, height: 7 }
+      },
+      {
+        id: videoLinkId,
+        page: 4,
+        kind: "video",
+        media_href: `/api/library/items/${entitlementId}/assets/${assetId}/pages/links/${videoLinkId}/media`,
+        rect: { left: 12, top: 28, width: 76, height: 26 }
+      }
+    ]
+  });
+  await login(page);
+  await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
+  await page.getByRole("button", { name: "Abrir leitor" }).click();
+  const reader = page.getByRole("dialog", { name: "Leitor de Guia da aula" });
+
+  await reader.getByRole("button", { name: "Ir para a página 4" }).click();
+  await expect(reader.getByLabel("Ir para página")).toHaveValue("4");
+  const openVideo = reader.getByRole("button", {
+    name: "Reproduzir vídeo complementar da página 4"
+  });
+  await expect(openVideo).toBeVisible();
+  await openVideo.click();
+
+  const videoDialog = page.getByRole("dialog", { name: "Vídeo complementar da página 4" });
+  await expect(videoDialog).toBeVisible();
+  const video = videoDialog.locator("video");
+  await expect(video).toHaveAttribute(
+    "src",
+    `/api/library/items/${entitlementId}/assets/${assetId}/pages/links/${videoLinkId}/media`
+  );
+  await expect(video).toHaveAttribute("controlslist", "nodownload noremoteplayback");
+  await page.keyboard.press("Escape");
+  await expect(videoDialog).toHaveCount(0);
+  await expect(reader).toBeVisible();
+  await expect(reader.getByLabel("Ir para página")).toHaveValue("4");
 });
 
 test("opens the mobile shelf, protects the PDF and completes into the next lesson", async ({ page }) => {

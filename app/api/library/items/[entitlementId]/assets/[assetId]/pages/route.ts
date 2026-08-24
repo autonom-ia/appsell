@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { readDomainLearningPdfManifest } from "@/lib/internal-api-client.server";
 import {
+  parseDomainPdfManifest,
+  publicPdfManifest
+} from "@/lib/protected-pdf-links.server";
+import {
   authenticatedLearningSession,
   learningAssetIds,
   learningError,
@@ -9,8 +13,6 @@ import {
   learningUnauthorized,
   type LearningAssetRouteContext
 } from "../../../../_route-shared";
-
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export async function GET(request: NextRequest, context: LearningAssetRouteContext) {
   try {
@@ -24,24 +26,14 @@ export async function GET(request: NextRequest, context: LearningAssetRouteConte
       ids.entitlementId,
       ids.assetId
     );
-    if (!validManifest(payload, ids.assetId)) return manifestUnavailable();
-    return NextResponse.json({ asset_id: ids.assetId, page_count: payload.asset.page_count }, {
+    const manifest = parseDomainPdfManifest(payload, ids.assetId);
+    if (!manifest) return manifestUnavailable();
+    return NextResponse.json(publicPdfManifest(manifest, request.nextUrl.pathname), {
       headers: noStoreHeaders()
     });
   } catch (error) {
     return learningError(error);
   }
-}
-
-function validManifest(value: unknown, expectedAssetId: string): value is {
-  asset: { id: string; page_count: number };
-} {
-  if (!isRecord(value) || Object.keys(value).length !== 1 || !isRecord(value.asset)) return false;
-  const asset = value.asset;
-  return Object.keys(asset).sort().join(",") === "id,page_count" &&
-    asset.id === expectedAssetId && typeof asset.id === "string" && UUID.test(asset.id) &&
-    Number.isSafeInteger(asset.page_count) && Number(asset.page_count) >= 1 &&
-    Number(asset.page_count) <= 100;
 }
 
 function manifestUnavailable() {
@@ -60,8 +52,4 @@ function noStoreHeaders() {
     vary: "Cookie",
     "x-content-type-options": "nosniff"
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

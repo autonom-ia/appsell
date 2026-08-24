@@ -9,7 +9,24 @@ interface ProtectedPdfAsset {
   title: string;
 }
 
-type ManifestState = { pageCount: number } | "loading" | "error";
+interface PdfLinkRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+type PdfLink = {
+  id: string;
+  page: number;
+  rect: PdfLinkRect;
+} & (
+  | { kind: "page"; target_page: number }
+  | { kind: "video"; media_href: string }
+  | { kind: "external"; href: string }
+);
+
+type ManifestState = { pageCount: number; links: PdfLink[] } | "loading" | "error";
 
 const TENANT_PDF_VIEW_HREF = /^\/api\/library\/items\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/assets\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/pages$/;
 const MIN_ZOOM = 1;
@@ -28,7 +45,9 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
   const [failedPages, setFailedPages] = useState<Set<number>>(() => new Set());
   const [policyFeedback, setPolicyFeedback] = useState("");
   const [viewportWidth, setViewportWidth] = useState(0);
+  const [pageHeightRatio, setPageHeightRatio] = useState(PDF_PAGE_HEIGHT_RATIO);
   const [fullscreenActive, setFullscreenActive] = useState(false);
+  const [activeVideoLink, setActiveVideoLink] = useState<Extract<PdfLink, { kind: "video" }> | null>(null);
   const readerRef = useRef<HTMLElement | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const openerRef = useRef<HTMLButtonElement | null>(null);
@@ -39,6 +58,7 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
   const lastTouchTap = useRef(0);
   const pageNumberRef = useRef(1);
   const programmaticPage = useRef<number | null>(null);
+  const pageRatioCaptured = useRef(false);
 
   const pageCount = typeof manifest === "object" ? manifest.pageCount : 0;
   const storageKey = useMemo(
@@ -49,8 +69,10 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
   const loadManifest = useCallback(async () => {
     setManifest("loading");
     setPolicyFeedback("");
+    pageRatioCaptured.current = false;
+    setPageHeightRatio(PDF_PAGE_HEIGHT_RATIO);
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 8_000);
+    const timeout = window.setTimeout(() => controller.abort(), 20_000);
     try {
       const response = await fetch(asset.view_href, {
         cache: "no-store",
@@ -59,15 +81,18 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
       });
       const payload: unknown = response.ok ? await response.json() : null;
       const expectedAssetId = asset.view_href.match(TENANT_PDF_VIEW_HREF)?.[2];
-      if (!validPdfManifest(payload, expectedAssetId)) throw new Error("invalid_pdf_manifest");
+      if (!validPdfManifest(payload, expectedAssetId, asset.view_href)) {
+        throw new Error("invalid_pdf_manifest");
+      }
       const restored = restoreReaderSession(storageKey, payload.page_count);
-      setManifest({ pageCount: payload.page_count });
+      setManifest({ pageCount: payload.page_count, links: payload.links });
       pageNumberRef.current = restored.page;
       setPageNumber(restored.page);
       setPageDraft(String(restored.page));
       setZoom(restored.zoom);
       setPreviewError(false);
       setFailedPages(new Set());
+      setActiveVideoLink(null);
     } catch {
       setManifest("error");
     } finally {
@@ -103,6 +128,7 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
 
   const closeReader = useCallback(() => {
     if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+    setActiveVideoLink(null);
     setReaderOpen(false);
     window.setTimeout(() => openerRef.current?.focus(), 0);
   }, []);
@@ -145,7 +171,11 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
         return;
       }
       if (!readerOpen) return;
-      if (event.key === "Escape") closeReader();
+      if (event.key === "Escape") {
+        if (activeVideoLink) setActiveVideoLink(null);
+        else closeReader();
+        return;
+      }
       if (event.key === "ArrowLeft" || event.key === "PageUp") {
         event.preventDefault();
         selectPage(pageNumber - 1);
@@ -165,7 +195,7 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
     };
     window.addEventListener("keydown", blockProtectedDocumentShortcut, { capture: true });
     return () => window.removeEventListener("keydown", blockProtectedDocumentShortcut, { capture: true });
-  }, [changeZoom, closeReader, pageNumber, readerOpen, selectPage]);
+  }, [activeVideoLink, changeZoom, closeReader, pageNumber, readerOpen, selectPage]);
 
   useEffect(() => {
     if (!readerOpen) return;
@@ -195,37 +225,41 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
 
   useEffect(() => {
     if (!readerOpen || !viewportRef.current || pageCount === 0) return;
-    const intersections = new Map<number, number>();
-    const observer = new IntersectionObserver((entries) => {
-      for (const entry of entries) {
-        const page = Number((entry.target as HTMLElement).dataset.page);
-        if (Number.isSafeInteger(page)) intersections.set(page, entry.intersectionRatio);
-      }
-      const requestedPage = programmaticPage.current;
-      if (requestedPage !== null) {
-        const requestedVisibility = intersections.get(requestedPage) ?? 0;
-        const strongestVisibility = Math.max(0, ...intersections.values());
-        if (requestedVisibility > 0.01 && requestedVisibility >= strongestVisibility) {
-          programmaticPage.current = null;
-        }
+    const viewport = viewportRef.current;
+    let settleTimer = 0;
+    const settleVisiblePage = () => {
+      if (programmaticPage.current !== null) {
+        programmaticPage.current = null;
         return;
       }
-      let visiblePage = 1;
-      let visibility = 0;
-      for (const [page, ratio] of intersections) {
-        if (ratio > visibility) {
+      const viewportBounds = viewport.getBoundingClientRect();
+      const viewportCenter = viewportBounds.top + viewportBounds.height / 2;
+      let visiblePage = pageNumberRef.current;
+      let nearestDistance = Number.POSITIVE_INFINITY;
+      pageElements.current.forEach((element, page) => {
+        const bounds = element.getBoundingClientRect();
+        if (bounds.bottom <= viewportBounds.top || bounds.top >= viewportBounds.bottom) return;
+        const distance = Math.abs(bounds.top + bounds.height / 2 - viewportCenter);
+        if (distance < nearestDistance) {
           visiblePage = page;
-          visibility = ratio;
+          nearestDistance = distance;
         }
-      }
-      if (visibility > 0.01 && visiblePage !== pageNumberRef.current) {
+      });
+      if (visiblePage !== pageNumberRef.current) {
         pageNumberRef.current = visiblePage;
         setPageNumber(visiblePage);
         setPageDraft(String(visiblePage));
       }
-    }, { root: viewportRef.current, threshold: [0, 0.02, 0.08, 0.15, 0.35, 0.6, 0.85] });
-    pageElements.current.forEach((element) => observer.observe(element));
-    return () => observer.disconnect();
+    };
+    const scheduleVisiblePage = () => {
+      window.clearTimeout(settleTimer);
+      settleTimer = window.setTimeout(settleVisiblePage, 180);
+    };
+    viewport.addEventListener("scroll", scheduleVisiblePage, { passive: true });
+    return () => {
+      window.clearTimeout(settleTimer);
+      viewport.removeEventListener("scroll", scheduleVisiblePage);
+    };
   }, [pageCount, readerOpen]);
 
   useEffect(() => {
@@ -309,6 +343,14 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
     });
   };
 
+  const capturePageHeightRatio = (image: HTMLImageElement) => {
+    if (pageRatioCaptured.current || image.naturalWidth <= 0 || image.naturalHeight <= 0) return;
+    const ratio = image.naturalHeight / image.naturalWidth;
+    if (!Number.isFinite(ratio) || ratio < 1.1 || ratio > 2) return;
+    pageRatioCaptured.current = true;
+    setPageHeightRatio(ratio);
+  };
+
   const baseWidth = Math.min(Math.max(viewportWidth - (viewportWidth < 680 ? 24 : 48), 280), 1040);
   const renderedPageWidth = Math.round(baseWidth * zoom);
 
@@ -335,6 +377,7 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
                     draggable={false}
                     loading="eager"
                     referrerPolicy="no-referrer"
+                    onLoad={(event) => capturePageHeightRatio(event.currentTarget)}
                     onDragStart={(event) => event.preventDefault()}
                     onError={() => setPreviewError(true)}
                   />}
@@ -426,7 +469,7 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
                   data-page={page}
                   style={{
                     width: `${renderedPageWidth}px`,
-                    minHeight: `${Math.round(renderedPageWidth * PDF_PAGE_HEIGHT_RATIO)}px`
+                    minHeight: `${Math.round(renderedPageWidth * pageHeightRatio)}px`
                   }}
                   aria-label={`Página ${page} de ${manifest.pageCount}`}
                 >
@@ -434,25 +477,138 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
                     ? <div className="protected-pdf-state" role="alert"><p>Não foi possível carregar a página {page}.</p><button type="button" className="secondary-button" onClick={() => retryPage(page)}>Tentar novamente</button></div>
                     : Math.abs(page - pageNumber) > READER_PAGE_RADIUS
                       ? <span className="pdf-reader-page-placeholder" aria-hidden="true"/>
-                    // Private, authenticated, no-store raster pages cannot use the optimizing image proxy.
-                    // eslint-disable-next-line @next/next/no-img-element
-                      : <img
-                          src={pageHref(asset.view_href, page)}
-                          alt={`${asset.title} — página ${page} de ${manifest.pageCount}`}
-                          draggable={false}
-                          loading="eager"
-                          referrerPolicy="no-referrer"
-                          onDragStart={(event) => event.preventDefault()}
-                          onError={() => markPageFailed(page)}
-                        />}
+                      : <>
+                          {/* Private, authenticated, no-store raster pages cannot use the optimizing image proxy. */}
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={pageHref(asset.view_href, page)}
+                            alt={`${asset.title} — página ${page} de ${manifest.pageCount}`}
+                            draggable={false}
+                            loading="eager"
+                            referrerPolicy="no-referrer"
+                            onLoad={(event) => capturePageHeightRatio(event.currentTarget)}
+                            onDragStart={(event) => event.preventDefault()}
+                            onError={() => markPageFailed(page)}
+                          />
+                          <PdfLinkLayer
+                            links={manifest.links.filter((link) => link.page === page)}
+                            onPage={selectPage}
+                            onVideo={setActiveVideoLink}
+                          />
+                        </>}
                 </figure>)}
               <p className="pdf-reader-touch-hint">Use dois dedos para ampliar</p>
             </div>
           </div>
           <p className="pdf-reader-feedback" aria-live="polite">{policyFeedback}</p>
+          {activeVideoLink
+            ? <PdfVideoDialog link={activeVideoLink} onClose={() => setActiveVideoLink(null)}/>
+            : null}
         </section>
       : null}
   </div>;
+}
+
+function PdfLinkLayer({ links, onPage, onVideo }: {
+  links: PdfLink[];
+  onPage: (page: number) => void;
+  onVideo: (link: Extract<PdfLink, { kind: "video" }>) => void;
+}) {
+  if (links.length === 0) return null;
+  return <div className="pdf-reader-link-layer" aria-label="Links desta página">
+    {links.map((link) => {
+      const style = {
+        left: `${link.rect.left}%`,
+        top: `${link.rect.top}%`,
+        width: `${link.rect.width}%`,
+        height: `${link.rect.height}%`
+      };
+      if (link.kind === "page") {
+        return <button
+          key={link.id}
+          type="button"
+          className="pdf-reader-link pdf-reader-page-link"
+          style={style}
+          aria-label={`Ir para a página ${link.target_page}`}
+          title={`Ir para a página ${link.target_page}`}
+          onPointerUp={(event) => event.stopPropagation()}
+          onClick={() => onPage(link.target_page)}
+        />;
+      }
+      if (link.kind === "video") {
+        return <button
+          key={link.id}
+          type="button"
+          className="pdf-reader-link pdf-reader-video-link"
+          style={style}
+          aria-label={`Reproduzir vídeo complementar da página ${link.page}`}
+          title="Reproduzir vídeo dentro do Sell"
+          onPointerUp={(event) => event.stopPropagation()}
+          onClick={() => onVideo(link)}
+        ><span aria-hidden="true">▶</span></button>;
+      }
+      return <a
+        key={link.id}
+        className="pdf-reader-link pdf-reader-external-link"
+        style={style}
+        href={link.href}
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label="Abrir referência externa em uma nova aba"
+        title="Abrir referência externa"
+        onPointerUp={(event) => event.stopPropagation()}
+      />;
+    })}
+  </div>;
+}
+
+function PdfVideoDialog({ link, onClose }: {
+  link: Extract<PdfLink, { kind: "video" }>;
+  onClose: () => void;
+}) {
+  const [failed, setFailed] = useState(false);
+  return <section
+    className="pdf-video-dialog"
+    role="dialog"
+    aria-modal="true"
+    aria-label={`Vídeo complementar da página ${link.page}`}
+    onMouseDown={(event) => {
+      if (event.target === event.currentTarget) onClose();
+    }}
+  >
+    <div className="pdf-video-card">
+      <header>
+        <div>
+          <p className="eyebrow">Vídeo complementar</p>
+          <strong>Página {link.page}</strong>
+        </div>
+        <button type="button" className="pdf-video-close" onClick={onClose} autoFocus>
+          Fechar
+        </button>
+      </header>
+      {failed
+        ? <div className="pdf-video-state" role="alert">
+            <p>Não foi possível reproduzir este vídeo.</p>
+            <button type="button" className="secondary-button" onClick={() => setFailed(false)}>
+              Tentar novamente
+            </button>
+          </div>
+        : <video
+            key={link.media_href}
+            className="pdf-linked-video"
+            controls
+            controlsList="nodownload noremoteplayback"
+            disablePictureInPicture
+            playsInline
+            preload="metadata"
+            src={link.media_href}
+            aria-label={`Vídeo complementar da página ${link.page}`}
+            onContextMenu={(event) => event.preventDefault()}
+            onError={() => setFailed(true)}
+          >Seu navegador não consegue reproduzir este vídeo.</video>}
+      <p className="pdf-video-policy">Reprodução autenticada dentro do Sell. Download não é disponibilizado.</p>
+    </div>
+  </section>;
 }
 
 function ReaderIcon({ name }: {
@@ -478,14 +634,56 @@ function ReaderIcon({ name }: {
 
 function validPdfManifest(
   value: unknown,
-  expectedAssetId: string | undefined
-): value is { asset_id: string; page_count: number } {
+  expectedAssetId: string | undefined,
+  expectedBaseHref: string
+): value is { asset_id: string; page_count: number; links: PdfLink[] } {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
-  return Object.keys(record).sort().join(",") === "asset_id,page_count" &&
+  return Object.keys(record).sort().join(",") === "asset_id,links,page_count" &&
     typeof expectedAssetId === "string" && record.asset_id === expectedAssetId &&
     Number.isSafeInteger(record.page_count) && Number(record.page_count) >= 1 &&
-    Number(record.page_count) <= 100;
+    Number(record.page_count) <= 100 && Array.isArray(record.links) &&
+    record.links.length <= 512 && record.links.every((link) =>
+      validPdfLink(link, Number(record.page_count), expectedBaseHref)
+    );
+}
+
+function validPdfLink(value: unknown, pageCount: number, expectedBaseHref: string): value is PdfLink {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const link = value as Record<string, unknown>;
+  if (typeof link.id !== "string" || !/^[0-9a-f]{16}$/.test(link.id) ||
+    !Number.isSafeInteger(link.page) || Number(link.page) < 1 || Number(link.page) > pageCount ||
+    !validPdfLinkRect(link.rect)) return false;
+  const common = ["id", "kind", "page", "rect"];
+  if (link.kind === "page") {
+    return Object.keys(link).sort().join(",") === [...common, "target_page"].sort().join(",") &&
+      Number.isSafeInteger(link.target_page) && Number(link.target_page) >= 1 &&
+      Number(link.target_page) <= pageCount;
+  }
+  if (link.kind === "video") {
+    return Object.keys(link).sort().join(",") === [...common, "media_href"].sort().join(",") &&
+      link.media_href === `${expectedBaseHref}/links/${link.id}/media`;
+  }
+  if (link.kind !== "external" ||
+    Object.keys(link).sort().join(",") !== [...common, "href"].sort().join(",") ||
+    typeof link.href !== "string") return false;
+  try {
+    const href = new URL(link.href);
+    return href.protocol === "https:" && !href.username && !href.password;
+  } catch {
+    return false;
+  }
+}
+
+function validPdfLinkRect(value: unknown): value is PdfLinkRect {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const rect = value as Record<string, unknown>;
+  if (Object.keys(rect).sort().join(",") !== "height,left,top,width") return false;
+  const entries = [rect.left, rect.top, rect.width, rect.height];
+  return entries.every((entry) => typeof entry === "number" && Number.isFinite(entry) &&
+    entry >= 0 && entry <= 100) && Number(rect.width) > 0 && Number(rect.height) > 0 &&
+    Number(rect.left) + Number(rect.width) <= 100.01 &&
+    Number(rect.top) + Number(rect.height) <= 100.01;
 }
 
 function restoreReaderSession(storageKey: string, pageCount: number) {
