@@ -104,6 +104,7 @@ async function mockLearningApi(
     beforeProgressResponse?: () => Promise<void>;
     beforeCompleteResponse?: (lessonId: string) => Promise<void>;
     onFirstProgress?: (route: Route, requestNumber: number, requestedPercent: number) => Promise<void>;
+    onPdfPage?: (route: Route, pageNumber: number, requestNumber: number) => Promise<void>;
     pdfPageCount?: number;
     pdfLinks?: Array<Record<string, unknown>>;
   } = {}
@@ -112,6 +113,7 @@ async function mockLearningApi(
   let firstLessonReads = 0;
   let secondLessonReads = 0;
   let firstProgressWrites = 0;
+  const pdfPageReads = new Map<number, number>();
   const handleLearningRoute = async (route: Route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -131,6 +133,10 @@ async function mockLearningApi(
     }
     const pdfPage = /\/pages\/([1-9][0-9]*)$/.exec(url.pathname);
     if (request.method() === "GET" && pdfPage && Number(pdfPage[1]) <= (options.pdfPageCount ?? 2)) {
+      const pageNumber = Number(pdfPage[1]);
+      const requestNumber = (pdfPageReads.get(pageNumber) ?? 0) + 1;
+      pdfPageReads.set(pageNumber, requestNumber);
+      if (options.onPdfPage) return options.onPdfPage(route, pageNumber, requestNumber);
       return route.fulfill({ status: 200, contentType: "image/png", body: protectedPng });
     }
     if (["/api/library", "/api/me/products"].includes(url.pathname) && request.method() === "GET") {
@@ -197,7 +203,21 @@ async function mockLearningApi(
 
 test("bounds protected PDF requests for a 65-page reader", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
-  await mockLearningApi(page, { pdfPageCount: 65 });
+  let activePageRequests = 0;
+  let maxActivePageRequests = 0;
+  await mockLearningApi(page, {
+    pdfPageCount: 65,
+    onPdfPage: async (route) => {
+      activePageRequests += 1;
+      maxActivePageRequests = Math.max(maxActivePageRequests, activePageRequests);
+      try {
+        await page.waitForTimeout(5);
+        await route.fulfill({ status: 200, contentType: "image/png", body: protectedPng });
+      } finally {
+        activePageRequests -= 1;
+      }
+    }
+  });
   const pageRequests: string[] = [];
   page.on("request", (request) => {
     if (/\/assets\/[^/]+\/pages\/[1-9][0-9]*$/.test(new URL(request.url()).pathname)) {
@@ -219,55 +239,100 @@ test("bounds protected PDF requests for a 65-page reader", async ({ page }) => {
   await expect.poll(() => reader.locator(".pdf-reader-page img").evaluateAll((images) =>
     images.every((image) => (image as HTMLImageElement).complete && (image as HTMLImageElement).naturalWidth > 0)
   )).toBe(true);
-  await page.waitForTimeout(4_000);
+  await expect.poll(() => pageRequests.length, { timeout: 10_000 }).toBe(65);
   await expect(reader.getByLabel("Ir para página")).toHaveValue("1");
   await expect(reader.locator(".pdf-reader-page img")).toHaveCount(2);
   await expect(reader.locator(".pdf-reader-page-placeholder")).toHaveCount(63);
-  const initialReaderRequests = new Set(pageRequests);
-  expect(initialReaderRequests.size).toBeLessThanOrEqual(2);
-  expect(initialReaderRequests.has(
-    `/api/library/items/${entitlementId}/assets/${assetId}/pages/2`
-  )).toBe(true);
-  expect([...initialReaderRequests].every((pathname) => [
-    `/api/library/items/${entitlementId}/assets/${assetId}/pages/1`,
-    `/api/library/items/${entitlementId}/assets/${assetId}/pages/2`
-  ].includes(pathname))).toBe(true);
+  expect(maxActivePageRequests).toBe(1);
+  expect(pageRequests).toEqual(Array.from({ length: 65 }, (_, index) =>
+    `/api/library/items/${entitlementId}/assets/${assetId}/pages/${index + 1}`
+  ));
 
   const beforeNext = pageRequests.length;
   await reader.getByRole("button", { name: "Próxima página" }).click();
   await expect(reader.getByLabel("Ir para página")).toHaveValue("2");
   await expect(reader.locator(".pdf-reader-page img")).toHaveCount(3);
-  await expect.poll(() => pageRequests.length).toBeGreaterThan(beforeNext);
-  await page.waitForTimeout(4_000);
-  await expect(reader.getByLabel("Ir para página")).toHaveValue("2");
-  expect(new Set(pageRequests.slice(beforeNext))).toEqual(new Set([
-    `/api/library/items/${entitlementId}/assets/${assetId}/pages/3`
-  ]));
+  expect(pageRequests).toHaveLength(beforeNext);
 
   const beforeJump = pageRequests.length;
   await reader.getByLabel("Ir para página").fill("50");
   await reader.getByLabel("Ir para página").press("Enter");
   await expect(reader.getByLabel("Ir para página")).toHaveValue("50");
   await expect(reader.locator(".pdf-reader-page img")).toHaveCount(3);
-  await expect.poll(() => pageRequests.length).toBeGreaterThanOrEqual(beforeJump + 3);
-  expect(new Set(pageRequests.slice(beforeJump))).toEqual(new Set([
-    `/api/library/items/${entitlementId}/assets/${assetId}/pages/49`,
-    `/api/library/items/${entitlementId}/assets/${assetId}/pages/50`,
-    `/api/library/items/${entitlementId}/assets/${assetId}/pages/51`
-  ]));
+  expect(pageRequests).toHaveLength(beforeJump);
   await page.waitForTimeout(4_000);
-  await expect(reader.getByLabel("Ir para página")).toHaveValue("50");
 
   const beforeContinuousScroll = pageRequests.length;
   await reader.locator('.pdf-reader-page[data-page="52"]').evaluate((element) =>
     element.scrollIntoView({ behavior: "auto", block: "start" })
   );
   await expect(reader.getByLabel("Ir para página")).toHaveValue("52");
-  await expect.poll(() => pageRequests.length).toBeGreaterThanOrEqual(beforeContinuousScroll + 2);
-  expect(new Set(pageRequests.slice(beforeContinuousScroll))).toEqual(new Set([
-    `/api/library/items/${entitlementId}/assets/${assetId}/pages/52`,
-    `/api/library/items/${entitlementId}/assets/${assetId}/pages/53`
-  ]));
+  expect(pageRequests).toHaveLength(beforeContinuousScroll);
+});
+
+test("prioritizes, retries and reuses protected pages while the reader stays open", async ({ page }) => {
+  const requestedPages: number[] = [];
+  const requestCounts = new Map<number, number>();
+  let readerStarted = false;
+  let releaseCurrentPage: (() => void) | undefined;
+  const currentPageGate = new Promise<void>((resolveGate) => {
+    releaseCurrentPage = resolveGate;
+  });
+
+  await mockLearningApi(page, {
+    pdfPageCount: 6,
+    onPdfPage: async (route, pageNumber, requestNumber) => {
+      if (!readerStarted) {
+        await route.fulfill({ status: 200, contentType: "image/png", body: protectedPng });
+        return;
+      }
+      requestedPages.push(pageNumber);
+      requestCounts.set(pageNumber, (requestCounts.get(pageNumber) ?? 0) + 1);
+      if (pageNumber === 1 && requestNumber === 2) await currentPageGate;
+      if (pageNumber === 3 && requestNumber === 1) {
+        await route.fulfill({
+          status: 429,
+          headers: { "retry-after": "1" },
+          contentType: "application/json",
+          body: JSON.stringify({ error: "pdf_viewer_busy" })
+        });
+        return;
+      }
+      await route.fulfill({ status: 200, contentType: "image/png", body: protectedPng });
+    }
+  });
+  await login(page);
+  await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
+  await expect(page.locator(".protected-pdf-preview img")).toBeVisible();
+
+  readerStarted = true;
+  await page.getByRole("button", { name: "Abrir leitor" }).click();
+  const reader = page.getByRole("dialog", { name: "Leitor de Guia da aula" });
+  await expect.poll(() => requestedPages).toEqual([1]);
+  await page.waitForTimeout(150);
+  expect(requestedPages).toEqual([1]);
+
+  releaseCurrentPage?.();
+  await expect.poll(() => requestCounts.get(3) ?? 0, { timeout: 5_000 }).toBe(2);
+  await expect.poll(() => requestCounts.get(6) ?? 0, { timeout: 8_000 }).toBe(1);
+  await expect(reader.getByText(/Não foi possível carregar a página/)).toHaveCount(0);
+
+  const pageOneRequests = requestCounts.get(1);
+  await reader.getByLabel("Ir para página").fill("4");
+  await reader.getByLabel("Ir para página").press("Enter");
+  await expect(reader.getByLabel("Ir para página")).toHaveValue("4");
+  await reader.getByLabel("Ir para página").fill("1");
+  await reader.getByLabel("Ir para página").press("Enter");
+  await expect(reader.getByLabel("Ir para página")).toHaveValue("1");
+  expect(requestCounts.get(1)).toBe(pageOneRequests);
+  await expect(reader.locator('.pdf-reader-page[data-page="1"] img'))
+    .toHaveAttribute("src", /^blob:/);
+
+  await reader.getByRole("button", { name: "Voltar ao curso" }).click();
+  await expect(page.locator(".protected-pdf-preview img")).toBeVisible();
+  const requestsAfterClose = requestCounts.get(1) ?? 0;
+  await page.getByRole("button", { name: "Abrir leitor" }).click();
+  await expect.poll(() => requestCounts.get(1) ?? 0).toBeGreaterThan(requestsAfterClose);
 });
 
 test("navigates PDF index links and opens linked video inside the protected reader", async ({ page }) => {

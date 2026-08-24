@@ -36,7 +36,8 @@ router = APIRouter(prefix="/v1")
 _MAX_LEARNING_BODY_BYTES = 4_096
 _MAX_SAFE_INTEGER = (1 << 53) - 1
 _LEARNING_ASSETS_CONTRACT_HEADER = "x-appsell-learning-assets-contract"
-_PROTECTED_PDF_SLOTS = asyncio.Semaphore(2)
+_PROTECTED_PDF_SLOTS = asyncio.Semaphore(4)
+_PROTECTED_PDF_SLOT_TIMEOUT_SECONDS = 8.0
 _PDF_LINK_CACHE_LOCK = asyncio.Lock()
 _PDF_LINK_CACHE: OrderedDict[str, tuple[dict[str, Any], ...]] = OrderedDict()
 _PDF_LINK_CACHE_SIZE = 32
@@ -339,15 +340,21 @@ async def render_asset_page(
                 watermark=watermark,
             )
 
+    slot_acquired = False
     try:
-        if _PROTECTED_PDF_SLOTS.locked():
+        try:
+            await asyncio.wait_for(
+                _PROTECTED_PDF_SLOTS.acquire(),
+                timeout=_PROTECTED_PDF_SLOT_TIMEOUT_SECONDS,
+            )
+            slot_acquired = True
+        except TimeoutError as error:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="pdf_viewer_busy",
                 headers={"retry-after": "2"},
-            )
-        async with _PROTECTED_PDF_SLOTS:
-            rendered = await to_thread.run_sync(render)
+            ) from error
+        rendered = await to_thread.run_sync(render)
     except LearningPdfRejected as error:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -358,6 +365,9 @@ async def render_asset_page(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="pdf_viewer_unavailable",
         ) from error
+    finally:
+        if slot_acquired:
+            _PROTECTED_PDF_SLOTS.release()
     return Response(
         rendered.payload,
         media_type="image/png",

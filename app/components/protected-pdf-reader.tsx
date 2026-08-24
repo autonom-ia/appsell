@@ -28,12 +28,24 @@ type PdfLink = {
 
 type ManifestState = { pageCount: number; links: PdfLink[] } | "loading" | "error";
 
+interface CachedPdfPage {
+  url: string;
+  bytes: number;
+  touchedAt: number;
+}
+
+class PdfPageLoadRejected extends Error {}
+
 const TENANT_PDF_VIEW_HREF = /^\/api\/library\/items\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/assets\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/pages$/;
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 4;
 const ZOOM_STEP = 0.25;
 const READER_PAGE_RADIUS = 1;
 const PDF_PAGE_HEIGHT_RATIO = 297 / 210;
+const PDF_MEMORY_CACHE_BYTES = 64 * 1024 * 1024;
+const MAX_PDF_PAGE_BYTES = 8 * 1024 * 1024;
+const PDF_PAGE_LOAD_ATTEMPTS = 4;
+const PDF_PAGE_RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
 
 export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
   const [manifest, setManifest] = useState<ManifestState>("loading");
@@ -43,6 +55,7 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
   const [readerOpen, setReaderOpen] = useState(false);
   const [previewError, setPreviewError] = useState(false);
   const [failedPages, setFailedPages] = useState<Set<number>>(() => new Set());
+  const [cachedPages, setCachedPages] = useState<Map<number, string>>(() => new Map());
   const [policyFeedback, setPolicyFeedback] = useState("");
   const [viewportWidth, setViewportWidth] = useState(0);
   const [pageHeightRatio, setPageHeightRatio] = useState(PDF_PAGE_HEIGHT_RATIO);
@@ -59,6 +72,11 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
   const pageNumberRef = useRef(1);
   const programmaticPage = useRef<number | null>(null);
   const pageRatioCaptured = useRef(false);
+  const pageCache = useRef(new Map<number, CachedPdfPage>());
+  const pageCacheBytes = useRef(0);
+  const pageLoads = useRef(new Map<number, Promise<string>>());
+  const pageLoadControllers = useRef(new Set<AbortController>());
+  const pageCacheGeneration = useRef(0);
 
   const pageCount = typeof manifest === "object" ? manifest.pageCount : 0;
   const storageKey = useMemo(
@@ -66,7 +84,78 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
     [asset.view_href]
   );
 
+  const clearProtectedPageCache = useCallback((updateState = true) => {
+    pageCacheGeneration.current += 1;
+    pageLoadControllers.current.forEach((controller) => controller.abort());
+    pageLoadControllers.current.clear();
+    pageLoads.current.clear();
+    pageCache.current.forEach((entry) => URL.revokeObjectURL(entry.url));
+    pageCache.current.clear();
+    pageCacheBytes.current = 0;
+    if (updateState) setCachedPages(new Map());
+  }, []);
+
+  const loadProtectedPage = useCallback((page: number): Promise<string> => {
+    const cached = pageCache.current.get(page);
+    if (cached) {
+      cached.touchedAt = Date.now();
+      return Promise.resolve(cached.url);
+    }
+    const activeLoad = pageLoads.current.get(page);
+    if (activeLoad) return activeLoad;
+
+    const generation = pageCacheGeneration.current;
+    const controller = new AbortController();
+    pageLoadControllers.current.add(controller);
+    const request = (async () => {
+      for (let attempt = 0; attempt < PDF_PAGE_LOAD_ATTEMPTS; attempt += 1) {
+        try {
+          const response = await fetch(pageHref(asset.view_href, page), {
+            cache: "no-store",
+            credentials: "same-origin",
+            referrerPolicy: "no-referrer",
+            signal: controller.signal
+          });
+          if (response.ok) {
+            if (!response.headers.get("content-type")?.toLowerCase().startsWith("image/png")) {
+              throw new PdfPageLoadRejected("invalid_pdf_page_type");
+            }
+            const blob = await response.blob();
+            if (blob.size < 1 || blob.size > MAX_PDF_PAGE_BYTES) {
+              throw new PdfPageLoadRejected("invalid_pdf_page_size");
+            }
+            if (generation !== pageCacheGeneration.current) throw abortError();
+            const url = URL.createObjectURL(blob);
+            const entry: CachedPdfPage = { url, bytes: blob.size, touchedAt: Date.now() };
+            pageCache.current.set(page, entry);
+            pageCacheBytes.current += entry.bytes;
+            evictPdfPages(pageCache.current, pageCacheBytes, page);
+            setCachedPages(new Map(
+              Array.from(pageCache.current, ([pageNumber, cachedPage]) => [pageNumber, cachedPage.url])
+            ));
+            return url;
+          }
+          if (!retryablePdfPageResponse(response) || attempt === PDF_PAGE_LOAD_ATTEMPTS - 1) {
+            throw new PdfPageLoadRejected(`pdf_page_http_${response.status}`);
+          }
+          await waitForPdfPageRetry(response, attempt, controller.signal);
+        } catch (error) {
+          if (isAbortError(error) || error instanceof PdfPageLoadRejected ||
+            attempt === PDF_PAGE_LOAD_ATTEMPTS - 1) throw error;
+          await waitForPdfPageRetry(null, attempt, controller.signal);
+        }
+      }
+      throw new Error("pdf_page_unavailable");
+    })().finally(() => {
+      pageLoadControllers.current.delete(controller);
+      if (pageLoads.current.get(page) === request) pageLoads.current.delete(page);
+    });
+    pageLoads.current.set(page, request);
+    return request;
+  }, [asset.view_href]);
+
   const loadManifest = useCallback(async () => {
+    clearProtectedPageCache();
     setManifest("loading");
     setPolicyFeedback("");
     pageRatioCaptured.current = false;
@@ -98,12 +187,16 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
     } finally {
       window.clearTimeout(timeout);
     }
-  }, [asset.view_href, storageKey]);
+  }, [asset.view_href, clearProtectedPageCache, storageKey]);
 
   useEffect(() => {
     const start = window.setTimeout(() => void loadManifest(), 0);
     return () => window.clearTimeout(start);
   }, [loadManifest]);
+
+  useEffect(() => {
+    return () => clearProtectedPageCache(false);
+  }, [clearProtectedPageCache]);
 
   useEffect(() => {
     if (typeof manifest !== "object") return;
@@ -129,9 +222,10 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
   const closeReader = useCallback(() => {
     if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
     setActiveVideoLink(null);
+    clearProtectedPageCache();
     setReaderOpen(false);
     window.setTimeout(() => openerRef.current?.focus(), 0);
-  }, []);
+  }, [clearProtectedPageCache]);
 
   const scrollToPage = useCallback((nextPage: number, smooth = true) => {
     const target = pageElements.current.get(nextPage);
@@ -205,6 +299,40 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
       document.body.style.overflow = previousOverflow;
     };
   }, [readerOpen]);
+
+  useEffect(() => {
+    if (!readerOpen || pageCount === 0) return;
+    let cancelled = false;
+    const prioritizedPages = Array.from({ length: pageCount }, (_, index) => index + 1)
+      .sort((left, right) => {
+        const distance = Math.abs(left - pageNumber) - Math.abs(right - pageNumber);
+        return distance === 0 ? left - right : distance;
+      });
+    const loadPages = async () => {
+      for (const page of prioritizedPages) {
+        if (cancelled) return;
+        try {
+          await loadProtectedPage(page);
+          if (cancelled) return;
+          setFailedPages((current) => {
+            if (!current.has(page)) return current;
+            const next = new Set(current);
+            next.delete(page);
+            return next;
+          });
+        } catch (error) {
+          if (cancelled || isAbortError(error)) return;
+          if (Math.abs(page - pageNumber) <= READER_PAGE_RADIUS) {
+            setFailedPages((current) => new Set(current).add(page));
+          }
+        }
+      }
+    };
+    void loadPages();
+    return () => {
+      cancelled = true;
+    };
+  }, [loadProtectedPage, pageCount, pageNumber, readerOpen]);
 
   useEffect(() => {
     const updateFullscreen = () => setFullscreenActive(document.fullscreenElement === readerRef.current);
@@ -331,15 +459,16 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
     lastTouchTap.current = now;
   };
 
-  const markPageFailed = (page: number) => {
-    setFailedPages((current) => new Set(current).add(page));
-  };
-
   const retryPage = (page: number) => {
     setFailedPages((current) => {
       const next = new Set(current);
       next.delete(page);
       return next;
+    });
+    void loadProtectedPage(page).catch((error: unknown) => {
+      if (!isAbortError(error)) {
+        setFailedPages((current) => new Set(current).add(page));
+      }
     });
   };
 
@@ -477,25 +606,26 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
                     ? <div className="protected-pdf-state" role="alert"><p>Não foi possível carregar a página {page}.</p><button type="button" className="secondary-button" onClick={() => retryPage(page)}>Tentar novamente</button></div>
                     : Math.abs(page - pageNumber) > READER_PAGE_RADIUS
                       ? <span className="pdf-reader-page-placeholder" aria-hidden="true"/>
-                      : <>
+                      : cachedPages.has(page)
+                        ? <>
                           {/* Private, authenticated, no-store raster pages cannot use the optimizing image proxy. */}
                           {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img
-                            src={pageHref(asset.view_href, page)}
+                            src={cachedPages.get(page)}
                             alt={`${asset.title} — página ${page} de ${manifest.pageCount}`}
                             draggable={false}
                             loading="eager"
                             referrerPolicy="no-referrer"
                             onLoad={(event) => capturePageHeightRatio(event.currentTarget)}
                             onDragStart={(event) => event.preventDefault()}
-                            onError={() => markPageFailed(page)}
                           />
                           <PdfLinkLayer
                             links={manifest.links.filter((link) => link.page === page)}
                             onPage={selectPage}
                             onVideo={setActiveVideoLink}
                           />
-                        </>}
+                        </>
+                        : <span className="pdf-reader-page-placeholder" role="status" aria-label={`Carregando página ${page}`}/>}
                 </figure>)}
               <p className="pdf-reader-touch-hint">Use dois dedos para ampliar</p>
             </div>
@@ -714,4 +844,59 @@ function touchDistance(touches: TouchList) {
 
 function pageHref(base: string, page: number) {
   return `${base}/${page}`;
+}
+
+function retryablePdfPageResponse(response: Response) {
+  return response.status === 429 || response.status >= 500;
+}
+
+function waitForPdfPageRetry(response: Response | null, attempt: number, signal: AbortSignal) {
+  const retryAfter = response?.headers.get("retry-after");
+  let delay = PDF_PAGE_RETRY_DELAYS_MS[Math.min(attempt, PDF_PAGE_RETRY_DELAYS_MS.length - 1)];
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    const parsed = Number.isFinite(seconds)
+      ? seconds * 1_000
+      : Date.parse(retryAfter) - Date.now();
+    if (Number.isFinite(parsed)) delay = Math.min(5_000, Math.max(250, parsed));
+  }
+  return new Promise<void>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    }, delay);
+    const abort = () => {
+      window.clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+      reject(abortError());
+    };
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
+  });
+}
+
+function evictPdfPages(
+  cache: Map<number, CachedPdfPage>,
+  totalBytes: { current: number },
+  protectedPage: number
+) {
+  while (totalBytes.current > PDF_MEMORY_CACHE_BYTES) {
+    let oldest: [number, CachedPdfPage] | undefined;
+    cache.forEach((entry, page) => {
+      if (page === protectedPage || (oldest && entry.touchedAt >= oldest[1].touchedAt)) return;
+      oldest = [page, entry];
+    });
+    if (!oldest) return;
+    cache.delete(oldest[0]);
+    totalBytes.current -= oldest[1].bytes;
+    URL.revokeObjectURL(oldest[1].url);
+  }
+}
+
+function abortError() {
+  return new DOMException("PDF page load aborted", "AbortError");
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof DOMException && error.name === "AbortError";
 }
