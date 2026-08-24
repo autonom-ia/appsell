@@ -255,6 +255,10 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .tenant-picker label { display: block; margin-bottom: 8px; color: var(--ink); font-size: .75rem; font-weight: 800; }
 .tenant-picker select { width: 100%; min-width: 0; max-width: 100%; min-height: 48px; padding: 0 42px 0 14px; border: 1px solid var(--border); border-radius: 12px; background: white; contain: inline-size; overflow: hidden; color: var(--ink); font-size: 1rem; text-overflow: ellipsis; white-space: nowrap; }
 .tenant-picker select:focus-visible { outline: 3px solid var(--bright); outline-offset: 2px; border-color: var(--bright); }
+.tenant-locked { display: grid; gap: 3px; min-width: 0; overflow-wrap: anywhere; }
+.tenant-locked .tenant-locked-label { margin: 0; color: var(--ink); font-size: .75rem; font-weight: 800; }
+.tenant-locked strong { color: var(--ink); font-size: 1rem; line-height: 1.35; }
+.tenant-locked span { color: var(--text); font-size: .78rem; line-height: 1.5; }
 .tenant-picker .form-note, .tenant-picker .form-error { margin: 9px 0 0; font-size: .76rem; line-height: 1.5; }
 .tenant-switch-warning { margin-top: 14px; padding: 14px; display: grid; gap: 13px; border: 1px solid rgba(180,83,9,.25); border-radius: 14px; background: #fff8e7; }
 .tenant-switch-warning p { margin: 4px 0 0; color: #6b4d00; font-size: .78rem; line-height: 1.5; }
