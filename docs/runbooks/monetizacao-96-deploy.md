@@ -1,5 +1,10 @@
 # Runbook — deploy da monetização (#96): migrations 0019+0020 + web + api
 
+> **Status:** plano histórico/futuro de monetização. Não é o registro do
+> release atual de produção, que está em `0032` e no SHA
+> `2c8a36897eadf624955810ffdaee7b33c6239334`. Não executar estes passos sem
+> novo Issue, PR, aprovação explícita, backup e plano de rollback.
+>
 > Escopo: primeiro deploy do bundle de monetização em `sell.autonomia.site`
 > (Easypanel, VPS compartilhada Manu/Lili/n8n — cross-project safety).
 > Pré-requisitos: PRs #124, #125 e a PR do checkout mergeadas em main com CI

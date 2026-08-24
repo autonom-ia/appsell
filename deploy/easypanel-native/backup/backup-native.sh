@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Daily logical backup of the Autonom.ia Sell demo database.
+# Daily logical backup of the Autonom.ia Sell native PostgreSQL database.
 #
 # Pipeline: pg_dump (custom format) -> integrity check (pg_restore --list) ->
 # gpg AES256 encryption -> off-host shipping -> local rotation (keep 7 daily).
 #
 # The dump connects to the native PostgreSQL service (default network alias
 # sell-autonomia_postgres-native-90) through a pinned client container, so the
-# host needs only Docker plus gpg. Nothing is written to the demo database.
+# host needs only Docker plus gpg. Nothing is written to the source database.
 #
 # Required environment (no defaults — must be provided at run time):
 #   BACKUP_DOCKER_NETWORK            EasyPanel project Docker network to join

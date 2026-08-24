@@ -1,6 +1,7 @@
 # Matriz de autorização
 
-- Status: Approved baseline with gates
+- Status: Approved baseline; catalog authorization verified in production
+- Última verificação: 2026-08-23, SHA `2c8a36897eadf624955810ffdaee7b33c6239334`
 - Regra: deny by default
 - Fonte de identidade: `identity_sub` validado e sessão opaca do BFF
 - Escopo tenant: `seller_organization_id` validado server-side
@@ -28,14 +29,15 @@ Papéis:
 
 ## Regras gerais
 
-1. `SO/SA/SE/SS` só valem para o seller da membership ativa.
+1. `SO/SA/SE/SS` só valem para o seller da membership ativa; o seller owner
+   nunca atravessa o tenant de outro seller.
 2. `B` só atua sobre a própria identidade e entitlements.
 3. `PSA` não possui acesso automático ao conteúdo privado, PII integral ou
    downloads. Operação excepcional exige capability temporal separada.
 4. `PS` não impersona, altera grants, publica conteúdo ou manipula entitlement.
 5. `PA` é read-only sobre auditoria/metadados aprovados, sem conteúdo/segredo.
-6. `comercial@autonomia.site` não aparece na avaliação normal; após bootstrap,
-   somente o grant ligado ao `identity_sub` autoriza.
+6. `comercial@autonomia.site` não é a regra de autorização; na produção atual,
+   somente o grant `platform_superadmin` ligado ao `identity_sub` autoriza.
 7. Toda ação `C` falha fechada quando a condição não puder ser provada.
 
 ## Fluxos pré-grant
@@ -84,13 +86,13 @@ de qualquer usuário autenticado.
 
 | Ação | PSA | PS | PA | SO | SA | SE | SS | B | V | Condição/observação |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| Criar/editar produto draft | N | N | N | A | A | A | N | N | N | seller da membership |
-| Criar/editar oferta | N | N | N | A | A | C | N | N | N | SE sem integrar cobrança/segredo; total nunca vem do client |
-| Criar/editar curso/aula draft | N | N | N | A | A | A | N | N | N | optimistic locking |
+| Criar/editar produto draft | C | N | N | A | A | A | N | N | N | PSA com grant global + tenant explícito + auditoria; seller por membership |
+| Criar/editar oferta | C | N | N | A | A | C | N | N | N | PSA com capability de catálogo; SE sem cobrança/segredo; total nunca vem do client |
+| Criar/editar curso/aula draft | C | N | N | A | A | A | N | N | N | PSA com tenant explícito; optimistic locking |
 | Upload de asset privado | N | N | N | A | A | A | N | N | N | allowlist/quarentena; seller da membership |
-| Preview de draft | N | N | N | A | A | A | C | N | N | SS só via capability de suporte concedida pelo seller |
-| Publicar/despublicar | N | N | N | A | A | C | N | N | N | SE se permissão explícita; snapshot validado |
-| Arquivar produto/curso | N | N | N | A | A | C | N | N | N | política de acesso existente aplicada |
+| Preview de draft | C | N | N | A | A | A | C | N | N | PSA com capability e tenant explícitos; SS só via capability de suporte |
+| Publicar/despublicar | C | N | N | A | A | C | N | N | N | PSA/owner publicam snapshot validado; SE se permissão explícita |
+| Arquivar produto/curso | C | N | N | A | A | C | N | N | N | PSA/owner; política de acesso existente aplicada |
 | Ler vitrine/produto publicado | P | P | P | P | P | P | P | P | P | somente projeção pública do seller selecionado |
 | Ler “outros produtos” do seller | P | P | P | P | P | P | P | P | P | published do mesmo seller; sem marketplace global |
 | Ler conteúdo privado publicado | N | N | N | C | C | C | C | C | N | seller staff quando necessário; buyer com entitlement próprio ativo |
@@ -135,3 +137,13 @@ de qualquer usuário autenticado.
 - Worker revalida tenant/estado e usa efeitos idempotentes.
 - Testes negativos são obrigatórios em cada camada; sucesso apenas na UI não
   certifica autorização.
+- O buyer não vira seller member ao receber entitlement; biblioteca, player e
+  asset revalidam o entitlement ativo por identidade.
+
+## Evidência de produção
+
+O superadmin da plataforma listou `autonomia` e `hub2you` e editou produto em
+ambos em transação revertida. O owner Hub2You abriu seu produto e recebeu zero
+linhas ao tentar acessar o produto Autonom.ia. O comprador recebeu biblioteca,
+player e PDF somente após o grant gratuito; o replay foi idempotente. Consulte
+[PRODUCTION_CURRENT.md](../PRODUCTION_CURRENT.md) para o registro completo.

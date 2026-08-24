@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Shared helpers for the native PostgreSQL logical backup of the Autonom.ia Sell
-# demo (database appsell_native_90 on the EasyPanel service postgres-native-90).
+# database (appsell_native_90 on the EasyPanel service postgres-native-90).
 #
 # Design constraints:
 # - No hardcoded credentials. Every secret arrives via environment variables.

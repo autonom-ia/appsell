@@ -4,9 +4,15 @@ Banco: `appsell_native_90` · Serviço EasyPanel: `postgres-native-90` ·
 Projeto: `sell-autonomia` · VPS `85.31.60.100` · Storage off-host: MinIO
 (serviço `storage`).
 
-Estado atual (2026-07): **não existe backup deste banco**. Este runbook cobre a
-primeira camada — dump lógico diário, cifrado, off-host, com restore ensaiado.
-PITR/WAL está na seção "Evolução" como próximo passo de infra 🔴.
+Estado atual (2026-08-24): existe dump lógico pré-cutover do release
+`2c8a36897eadf624955810ffdaee7b33c6239334`, preservado antes da troca de imagem.
+Ainda não há evidência de rotina recorrente diária nem PITR/WAL concluído. Este
+runbook cobre a primeira camada — dump lógico diário, cifrado, off-host, com
+restore ensaiado. PITR/WAL está na seção "Evolução" como próximo passo de infra 🔴.
+
+Evidência do dump pré-cutover:
+`/home/claudete/backups/appsell/appsell_native_90-before-2c8a3689-20260823-183653.dump`;
+SHA-256 `509134d43c1be6f502965b83eecc51eb4f68278ff2a7f0025f7aa5fb93bbea12`.
 
 Scripts: `deploy/easypanel-native/backup/` (ver `README.md` do diretório para o
 contrato completo de variáveis).

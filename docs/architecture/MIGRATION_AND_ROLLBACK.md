@@ -1,8 +1,15 @@
 # Plano de migração, release e rollback
 
-- Status: Approved operating baseline; no production execution authorized
-- Escopo atual: dev/staging isolados e bancos descartáveis
-- Produção/VPS: explicitamente fora do escopo desta Issue
+- Status: Approved operating baseline; production cutover for the catalog slice verified
+- Escopo atual: Local/CI, homologação isolada e produção VPS nativa
+- Release de produção: SHA `2c8a36897eadf624955810ffdaee7b33c6239334`, PR #201, Issue #195
+- Banco de produção: PostgreSQL nativo `appsell_native_90`, migration head `0032_platform_superadmin_catalog`
+
+Este documento registra o método operacional. Ele não autoriza uma nova
+migration, alteração de banco, deploy ou rollback sozinho. A execução já feita
+para o release acima está evidenciada em
+[PRODUCTION_CURRENT.md](../PRODUCTION_CURRENT.md) e no
+[runbook de release](../runbooks/PRODUCTION_RELEASE_APPSSELL.md).
 
 ## 1. Princípios
 
@@ -14,7 +21,9 @@
 5. Backup não é rollback de rotina; restore acontece em banco novo antes de
    qualquer cutover.
 6. Runtime, migration e backup usam roles distintas e least privilege.
-7. Nenhuma migration de produção é autorizada por este documento.
+7. Nenhuma migration nova de produção é autorizada por este documento; cada
+   mudança futura precisa de Issue, PR, review, aprovação explícita e plano de
+   rollback.
 
 ## 2. Ambientes e isolamento
 
@@ -156,6 +165,19 @@ banco novo.
 
 ## 9. Backup e restore
 
+### Evidência do cutover atual
+
+Antes do cutover do release `2c8a3689`, foi gerado e preservado um dump lógico
+do banco de produção:
+
+- `/home/claudete/backups/appsell/appsell_native_90-before-2c8a3689-20260823-183653.dump`;
+- SHA-256: `509134d43c1be6f502965b83eecc51eb4f68278ff2a7f0025f7aa5fb93bbea12`;
+- imagem anterior preservada para rollback: `64ab9956`.
+
+Esse backup é evidência do release, não significa que a rotina recorrente de
+backup/PITR esteja concluída. O estado de backup e os próximos gaps devem ser
+atualizados no runbook operacional antes de qualquer mudança de infraestrutura.
+
 Metas propostas, ainda sujeitas a custo/aprovação:
 
 - RPO 15 minutos;
@@ -199,5 +221,6 @@ Uma migration só fica pronta para aprovação quando há:
 - reviewer de banco e tenancy independente;
 - SHA/digest e comandos/resultados anexados à PR.
 
-Merge, migration persistente e produção continuam dependendo dos gates do Agent
-Harness e de aprovação explícita do Rodrigo.
+Merge, migration persistente e nova operação de produção continuam dependendo
+do fluxo Issue → PR → review → aprovação explícita → deploy/rollback. O Agent
+Harness está descontinuado e não é requisito operacional deste projeto.

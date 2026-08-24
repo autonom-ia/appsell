@@ -1,9 +1,18 @@
-# Progresso — jornada de publicação Seller P0/P1
+# Progresso histórico — jornada de publicação Seller P0/P1
 
 - Issue: #188
 - Branch: `codex/publish-ux-p0-p1`
-- Última atualização: 2026-08-23
-- Estado: implementação P0/P1, reviews, CI e gates técnicos concluídos; PR #189 pronta para aprovação explícita do merge final; deploy VPS continua separado e bloqueado até autorização
+- Última atualização do slice: 2026-08-23
+- Estado histórico: implementação P0/P1 concluída na PR #189; depois, o fluxo foi
+  sincronizado, corrigido e entregue no release da PR #201.
+
+## Estado atual
+
+Não use este arquivo como fotografia de produção. O editor, o upload, a
+publicação e o acesso gratuito/pago foram incorporados ao release
+`2c8a36897eadf624955810ffdaee7b33c6239334` e validados na VPS. A fonte atual é
+[PRODUCTION_CURRENT.md](../../PRODUCTION_CURRENT.md); o acompanhamento da
+documentação desta sessão está na Issue #202.
 
 ## Última posição verificável
 
@@ -22,7 +31,9 @@
 - A verificação de material sai para estado recuperável após 15 segundos e não bloqueia a edição estrutural durante a análise.
 - O nome físico do arquivo não é renderizado nos cartões, feedback, Preview, área do aluno ou seletor nativo; o input permanece acessível sobre um botão visual.
 - Conflito 409 de oferta bloqueia nova tentativa até reconciliação e oferece `Atualizar dados da oferta` no próprio fluxo.
-- Nenhuma escrita foi feita em produção e nenhum PostgreSQL da plataforma foi usado; a validação SQL foi feita em cluster local descartável.
+- Na execução original deste slice, nenhuma escrita foi feita em produção e a
+  validação SQL foi feita em cluster local descartável. Isso foi superseded pelo
+  smoke real posterior registrado em `PRODUCTION_CURRENT.md`.
 
 ## Mini-entregas
 
@@ -67,9 +78,10 @@
 | Review independente P1 | Pauli: `PASS`, P0/P1/P2/P3 = 0; picker, Preview/aluno e conflito rechecados | PASS |
 | Vitest independente | asset/storage policy: `26 passed` | PASS |
 | CI remoto da PR #189 | primeira execução bloqueou apenas por Ruff format; correção `aebf0a2` reenviada e `ci-gate` PASS | PASS |
-| PR #189 | `OPEN`, `MERGEABLE`, SHA `aebf0a2`; Project #3 atualizado para `Em review` | pronto para aprovação |
-| Aprovação para merge final | CI, reviews e testes verdes; aprovação explícita do merge final ainda necessária | bloqueado por processo |
-| Deploy VPS | ainda não autorizado para execução nesta etapa | bloqueado por processo |
+| PR #189 | histórico do slice; supersedida pelo release posterior | histórico |
+| PR #201 / Issue #195 | merge em `main`; SHA `2c8a36897eadf624955810ffdaee7b33c6239334` | PASS |
+| Deploy VPS | web/api/worker ativos no EasyPanel nativo; health/readiness e smoke real verificados | PASS |
+| Aceites do catálogo, tenants e acesso | `14/14` critérios de produção verificados; ver fonte atual | PASS |
 
 ## Registro de atualizações
 
@@ -86,3 +98,4 @@
 - 2026-08-23 — correção final commitada em `f674fbf` e enviada para a branch da PR; CI remoto identificou somente formatação Ruff em dois arquivos.
 - 2026-08-23 — formatação corrigida em `aebf0a2`; fast API local passou (format/check, Ruff, mypy, pip-audit e 34 testes) e o `ci-gate` remoto terminou PASS.
 - 2026-08-23 — Project #3 atualizado para `Em review`, com próxima ação de solicitar aprovação explícita do merge final e depois planejar deploy na VPS.
+- 2026-08-23 — PR #201 mergeada e release `2c8a36897eadf624955810ffdaee7b33c6239334` implantado na VPS; smoke real 14/14 PASS. Ver `docs/PRODUCTION_CURRENT.md`.

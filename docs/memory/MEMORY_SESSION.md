@@ -1,6 +1,7 @@
 # MEMORY_SESSION.md — Estado da tarefa atual
 
-Atualizado continuamente pelo agente durante a sessão. Compactado/persistido em handoff e Stop hook.
+Atualizado durante a sessão para permitir compactação e retomada sem repetir a
+investigação.
 
 ## Schema obrigatório
 
@@ -30,26 +31,46 @@ Project status:
   - Próxima ação: [acionável]
 ```
 
-## Sessão atual
+## Sessão: 2026-08-24 — consolidar documentação e handoff do estado real
 
-<!-- Substituir abaixo a cada nova sessão. Sessões anteriores vão para PROGRESS.md. -->
+Issue: #202
+Branch: `codex/202-docs-production-handoff`
+PR: não aberta
+Estado: em_progresso
+Modelo: strong + humano
+Arquivos alterados: `README.md`, `docs/PRODUCTION_CURRENT.md`,
+`docs/runbooks/PRODUCTION_RELEASE_APPSSELL.md`, `docs/STATUS.md`,
+`docs/PROGRESS.md`, `docs/DECISIONS.md`, `docs/architecture/README.md`,
+`docs/architecture/AUTHORIZATION_MATRIX.md`,
+`docs/architecture/DATA_MODEL.md`,
+`docs/architecture/MIGRATION_AND_ROLLBACK.md`,
+`docs/architecture/DECISION_REGISTER.md`,
+`docs/implementation/seller-publish-ux/progress.md`,
+`deploy/easypanel-native/README.md`,
+`deploy/easypanel-native/backup/README.md`,
+`docs/runbooks/BACKUP_RESTORE_SELL.md`,
+`docs/runbooks/generic-webhook-ingress.md`,
+`docs/runbooks/monetizacao-96-deploy.md`,
+`docs/runbooks/stripe-143-live-checkout.md`,
+`docs/plans/EXECUTIVE_PLAN.md`, `docs/plans/TECHNICAL_PLAN.md`,
+`deploy/easypanel-native/backup/README.md`,
+`deploy/easypanel-native/backup/lib-backup.sh`,
+`deploy/easypanel-native/backup/backup-native.sh`,
+`docs/memory/MEMORY_PROJECT.md`, `docs/memory/MEMORY_SESSION.md`
+Comandos executados: criação da Issue #202 e item no Project #3; criação da
+branch a partir de `origin/main`; leitura e atualização dos documentos; ainda
+não houve merge, deploy ou alteração de runtime nesta sessão.
+Validação: pendente; rodar `git diff --check` e validação de links/formatação
+antes de abrir a PR.
+Bloqueios: nenhum técnico; merge/deploy não fazem parte desta autorização.
+Próxima ação: revisar diff, rodar validação documental, commit/push, abrir PR
+#202 e atualizar o Project #3 para `PR aberta`.
 
-## Sessão: 2026-07-21 16:00 — modo produção real na UI (#118) + landing real (#122), entregues e deployados
-Issue: #118, #122 (ambas fechadas)
-Branch: feat/118-real-mode-dashboard, feat/122-landing-real-entry (mergeadas e removidas)
-PR: #121 (squash ad19e23b), #123 (squash 55ee32e6)
-Estado: concluído
-Modelo: strong + human (produção)
-Arquivos alterados: app/api/session/route.ts (campo runtime, sem PII); app/components/dashboard-overview.tsx (novo, catálogo real via /api/sellers + drafts paginados, empty-state, onboarding inline, demo isolado por persona); app/components/shell-profile-context.tsx (novo, sessão resolvida 1x no shell); app/components/app-shell.tsx (banner por modo real, footer, provider); app/(protected)/dashboard/page.tsx; lib/dashboard-projection.ts (novo, métricas puras); app/page.tsx (landing variante identity: sem badge DEMO, CTA 'Entrar na sua conta'); tests/dashboard-projection.test.ts (novo); tests/e2e-real/identity-cross-repo.spec.ts (nome do link)
-Comandos executados: typecheck/lint/build; vitest (17 verdes); Playwright mobile-shell+oauth-flow 19/19 local; CI 18/18 nas duas PRs (2 flakes de infra re-rodados: capacity threshold, storage-vertical postgres); deploys web via Easypanel deployService forceRebuild
-Validação: prod validada pós-deploy — /api/health/live e /ready ok (redis+api true), landing servindo 'Entrar na sua conta' sem badge DEMO; review cavecrew PR #121 0 vermelho (1 amarelo corrigido: timeout loadCatalog; 1 won't-fix justificado); PR #123 <30 linhas sem reviewer pesado
-Bloqueios: nenhum
-Próxima ação: #96 (Bloco 4 — monetização real: preço na Offer, checkout externo, worker fulfillment webhook→entitlement) — ver prompt de retomada em ~/dev/APPSELL_SSO_STATUS_2026-07-21.md
 Project status:
   - Projeto: Appsell
-  - Status: Mergeada (#121, #123)
-  - Tipo: Feature
+  - Status: Em desenvolvimento
+  - Tipo: Docs
   - Prioridade: P1
   - Risco: Baixo
   - Ambiente: Produção
-  - Próxima ação: iniciar #96
+  - Próxima ação: validar documentação e abrir PR #202 para review

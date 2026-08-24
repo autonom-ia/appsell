@@ -1,80 +1,75 @@
-# DECISIONS
+# DECISIONS — decisões operacionais atuais
 
-Resumo operacional das decisões ativas. O registro canônico, alternativas,
-riscos e gates está em
-[DECISION_REGISTER.md](architecture/DECISION_REGISTER.md) e nos ADRs.
+Última atualização: 2026-08-24.
 
-## Decisão 001 — direção arquitetural aceita com gates
+O registro arquitetural detalhado está em
+[DECISION_REGISTER.md](architecture/DECISION_REGISTER.md) e nos ADRs. Esta
+página contém somente as decisões que orientam a operação atual.
 
-- Data: 2026-07-10
-- Responsável: Rodrigo / Arquitetura / Segurança / Operações
-- Decisão: aceitar a direção dos ADRs 0001–0005; cada slice continua sujeito a
-  Issue, testes reais, review independente e aprovação explícita de merge.
-- Limite: não autoriza produção, VPS, DNS, secrets, billing ou dados de clientes.
+## Decisão 001 — sessão e identidade
 
-## Decisão 002 — sessão opaca no BFF
+O browser recebe somente sessão protegida/opaca. A autorização permanente usa
+o identificador imutável da identidade, não comparação dinâmica de e-mail.
+O Identity real está integrado ao fluxo de produção; mocks de identidade
+continuam limitados a Local/CI.
 
-- Data: 2026-07-10
-- Decisão: browser recebe somente cookie `HttpOnly` opaco; tokens OAuth não são
-  expostos ao JavaScript. As rotas runtime do slice Local/CI usam Redis sem
-  fallback em memória; implementações in-memory permanecem apenas em testes.
-- Estado: verificado localmente nos PRs #11 e #15; Identity real segue bloqueado
-  na Issue #13.
+## Decisão 002 — hierarquia multitenant
 
-## Decisão 003 — bootstrap do superadmin
+`comercial@autonomia.site` é o `platform_superadmin` da plataforma. O grant
+global não cria memberships falsas. Cada cliente opera dentro do seu tenant por
+`seller_owner`; buyer é identidade global e recebe acesso por entitlement.
 
-- Data: 2026-07-10
-- Decisão: `comercial@autonomia.site` é apenas seletor do bootstrap one-shot.
-  E-mail verificado, issuer/audience corretos, autenticação forte e grant
-  persistido pelo `sub` imutável são gates obrigatórios.
-- Limite: o bootstrap real ainda não foi implementado.
+## Decisão 003 — tenants reais atuais
 
-## Decisão 004 — separação multi-tenant e comprador multi-seller
+O ambiente de produção possui os tenants ativos `autonomia` e `hub2you`. O
+superadmin pode listar e administrar o catálogo dos dois; um seller owner não
+atravessa o tenant de outro seller.
 
-- Data: 2026-07-10
-- Decisão: seller admin opera somente seu tenant; buyer é identidade global e
-  pode manter entitlements em sellers diferentes sem papel administrativo.
-- Limite: RBAC, RLS, entidades de domínio e testes A/B ainda não existem.
+## Decisão 004 — jornada de publicação
 
-## Decisão 005 — fronteira financeira do MVP
+O editor segue Produto → Currículo → Oferta → Preview → Publicar. O catálogo é
+publicado como snapshot versionado. Ativar vendas/checkout fica na etapa
+Publicar e depende de catálogo publicado; publicação e cobrança são operações
+distintas.
 
-- Data: 2026-07-10
-- Decisão: Financial corporativo cobra o SaaS do produtor; seller commerce usa
-  checkout externo e webhook idempotente no MVP. Admin não será exposto como
-  backoffice direto do seller.
-- Limite: integrações reais ainda não foram implementadas nem certificadas.
+## Decisão 005 — dois modos de acesso
 
-## Decisão 006 — produção permanece proibida
+- **Gratuito:** link público → cadastro/login → entitlement idempotente →
+  biblioteca; sem checkout e sem cobrança.
+- **Pago:** oferta ativa → checkout → confirmação/fulfillment → entitlement;
+  conteúdo não é liberado antes da confirmação.
 
-- Data: 2026-07-10
-- Decisão: `sell.autonomia.site` é o domínio-alvo, não evidência de ambiente
-  publicado. Nenhuma ação na VPS ou produção faz parte dos slices atuais.
-- Próximo gate: staging isolado, TLS, secrets, observabilidade, restore/rollback,
-  testes reais e aprovação explícita de Rodrigo.
+O browser nunca decide preço final, pagamento ou entitlement.
 
-## Decisão 007 — preview protegido no Proxy, não no RSC
+## Decisão 006 — conteúdo privado
 
-- Data: 2026-07-10
-- Decisão: o slice visual usa `proxy.ts` para validar a sessão antes de servir
-  `/dashboard`, `/products` e `/library`. Server Components não leem cookie nem
-  objeto de sessão, porque a prova adversarial mostrou que valores aguardados
-  no RSC dev podiam aparecer no Flight inline.
-- Limite: o sujeito `dev-user-001` libera apenas uma prévia demonstrativa e
-  fail-closed fora de desenvolvimento; não representa grant seller/buyer.
-- Próximo gate: substituir a regra demo por RBAC/tenant context persistido e
-  testes cross-tenant na Fase 3.
+PDF/MP4 somente entra em publicação após upload, armazenamento e verificação de
+segurança. O aluno acessa aula/PDF pela biblioteca e a API revalida buyer,
+seller, produto, publicação e asset em cada leitura.
 
-## Decisão 008 — retenção mínima do webhook genérico
+## Decisão 007 — produção na VPS
 
-- Data: 2026-07-14
-- Decisão: na Fase 6A, o raw body é preservado byte a byte apenas no trânsito
-  BFF→API para autenticação. O PostgreSQL retém hash/tamanho do raw, tipo e
-  horário normalizados e hashes/tamanhos das referências externas; não retém
-  raw, assinatura, endpoint key, segredo, e-mail ou PII em plaintext.
-- Trade-off aceito: esta fase prova autenticidade, idempotência e durabilidade,
-  mas não permite reprocessar o raw após mudança de parser. Retenção cifrada e
-  reconciliação entram em slice próprio antes de provider real.
-- Gate: nenhum worker ou entitlement pode consumir o outbox até existir decisão
-  explícita de retenção/reprocessamento e teste de reconciliação. Por isso, a
-  Fase 6A grava o outbox como `blocked_retention`, fora do índice `pending`;
-  somente uma migration futura pode liberá-lo.
+O destino operacional do Appsell é a VPS EasyPanel nativa, não AWS/EC2. O SHA
+comprovado em produção é `2c8a36897eadf624955810ffdaee7b33c6239334`. Qualquer
+novo cutover exige backup, rollback e smoke no mesmo SHA.
+
+## Decisão 008 — produção não usa demo
+
+Reset, seed e personas demo são exclusivamente Local/CI descartável. Não podem
+ser executados em `appsell_native_90` nem no domínio público.
+
+## Decisão 009 — dados e rollback
+
+Não apagar/recriar tenant, produto, PDF ou membership para corrigir fluxo.
+Migrations são forward-only; rollback de aplicação usa imagem anterior e
+rollback de dados usa restore ensaiado em banco separado.
+
+## Decisões ainda pendentes
+
+- staging separado e DNS próprio;
+- RPO/RTO formal e operação de backup off-host;
+- refund, cancelamento, chargeback e grace period;
+- recebimentos/Stripe por tenant e responsabilidades financeiras.
+
+Essas pendências não anulam a release comprovada, mas bloqueiam qualquer
+ampliação fora do escopo atual.

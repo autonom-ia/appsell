@@ -1,9 +1,14 @@
 # Modelo de dados e ERD
 
-- Status: Approved logical baseline; migrations remain gated
+- Status: Approved logical model; PostgreSQL production head `0032_platform_superadmin_catalog` verified on 2026-08-23
 - Banco baseline: PostgreSQL 16+
 - Identificadores: UUID/UUIDv7 ou equivalente não sequencial, decisão final no scaffold
-- Escopo: modelo lógico; nomes/tipos finais dependem de migration revisada
+- Escopo: modelo lógico; a implementação atual está aplicada até a migration `0032`; futuras migrations continuam sujeitas a revisão e aprovação
+
+O modelo abaixo é a fonte conceitual das relações. A fotografia operacional do
+banco real, dos tenants e das permissões está em
+[PRODUCTION_CURRENT.md](../PRODUCTION_CURRENT.md). Produção usa dados reais de
+`Autonom.ia` e `Hub2You`; reset/seed demo não faz parte desse ambiente.
 
 `OFFER` é a representação do plano/termos comerciais do seller no MVP. `SAAS_PLAN`
 e `SELLER_SAAS_SUBSCRIPTION` são uma projeção local do billing SaaS corporativo;
@@ -347,7 +352,7 @@ final deve nomear constraints e índices explicitamente.
 
 Índice não substitui teste com plano real e cardinalidade representativa.
 
-## RLS proposta
+## RLS aplicada
 
 | Classe | Policy |
 |---|---|
@@ -360,6 +365,11 @@ final deve nomear constraints e índices explicitamente.
 Policies usam configuração transacional ou mecanismo equivalente que o usuário
 SQL da aplicação não consiga falsificar. A role de runtime não é dona das tabelas
 e não possui `BYPASSRLS`.
+
+Na produção atual, o isolamento não depende apenas desta descrição: as consultas
+de catálogo, edição, publicação e acesso do comprador foram verificadas com
+tenant correto e com tentativa cross-tenant negativa no SHA
+`2c8a36897eadf624955810ffdaee7b33c6239334`.
 
 ## Dados fora do PostgreSQL
 

@@ -1,5 +1,10 @@
 # Plano Executivo — Autonom.ia Sell
 
+> **Leitura atual:** este arquivo registra a direção executiva e o backlog de
+> evolução. O catálogo multi-tenant, publicação e acessos gratuito/pago já
+> possuem release real verificado; consulte
+> [`docs/PRODUCTION_CURRENT.md`](../PRODUCTION_CURRENT.md) para o estado atual.
+
 - Status: Approved direction with gates
 - Data: 2026-07-10
 - Product Owner: Rodrigo / Autonom.ia
