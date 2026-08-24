@@ -352,6 +352,15 @@ test("keeps the restored PDF page after the reader measures its viewport", async
   await page.waitForTimeout(500);
   await expect(reader.getByLabel("Ir para página")).toHaveValue("31");
   await expect(reader.locator('.pdf-reader-page[data-page="31"] img')).toHaveAttribute("src", /^blob:/);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(500);
+  await expect(reader.getByLabel("Ir para página")).toHaveValue("31");
+  const mobileWidth = await page.evaluate(() => ({
+    client: document.documentElement.clientWidth,
+    scroll: document.documentElement.scrollWidth
+  }));
+  expect(mobileWidth.scroll).toBeLessThanOrEqual(mobileWidth.client);
 });
 
 test("navigates PDF index links and opens linked video inside the protected reader", async ({ page }) => {
