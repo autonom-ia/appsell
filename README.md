@@ -7,8 +7,8 @@ Plataforma SaaS white-label mobile-first para produtos digitais e áreas de memb
 O fluxo multitenant real está em produção em `https://sell.autonomia.site` na
 VPS EasyPanel, com `platform_superadmin`, tenants `Autonom.ia` e `Hub2You`,
 `seller_owner`, comprador por entitlement e links gratuito/pago. A release
-comprovada é o SHA `2c8a36897eadf624955810ffdaee7b33c6239334`; não há seed/reset
-demo no banco de produção.
+comprovada usa web `1d2ea631`, API/asset-worker `50b6301` e banco no head
+`0033_pdf_study_state`; não há seed/reset demo no banco de produção.
 
 Para retomar o projeto sem depender do histórico da conversa, comece por
 [Estado atual de produção](docs/PRODUCTION_CURRENT.md), depois consulte o

@@ -1,8 +1,8 @@
 # Sell Reader Premium
 
-Issue: #208
+Issues: #208, #214, #220 e #224
 
-Status: implementação local pronta para revisão. Merge e deploy não autorizados.
+Status: implantado e validado em produção em 2026-08-24.
 
 ## Experiência entregue
 
@@ -12,6 +12,9 @@ Status: implementação local pronta para revisão. Merge e deploy não autoriza
 - Navegação anterior/próxima, salto direto, teclado, tela cheia e retomada por sessão.
 - Preview da aula sem limite artificial de altura e sem tarja sobre o conteúdo.
 - Toolbar responsiva com alvos de toque e nomes acessíveis.
+- Links do índice funcionais e player de vídeo protegido dentro da plataforma.
+- Cache da sessão, favoritos e marcações vetoriais privadas e persistentes.
+- Mão com arraste por mouse no desktop e Editar marcação com orientação de uso.
 
 ## Proteção preservada
 
@@ -46,3 +49,13 @@ Status: implementação local pronta para revisão. Merge e deploy não autoriza
 | Preview integrado com API e banco reais | Bloqueado localmente: Docker indisponível |
 
 O preview visual usa o mesmo componente e uma página PNG real do pacote demo, servida por uma rota simulada apenas no teste. Isso prova o layout renderizado, mas não substitui o smoke pós-deploy com sessão e dados reais.
+
+## Evidência de produção
+
+- PRs #211, #215 a #219, #223 e #225 mergeados.
+- Web `1d2ea631`; API/asset-worker `50b6301`; migration
+  `0033_pdf_study_state`.
+- CI pós-merge `32768382697` verde; web healthy e readiness público saudável.
+- Rodrigo validou Mão e Editar marcação na sessão autenticada real.
+- Rollback do último hotfix: web `50b6301`; nenhuma mudança de API, worker,
+  banco, auth ou billing no cutover do PR #225.

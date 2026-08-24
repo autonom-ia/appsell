@@ -32,16 +32,16 @@ próprio tenant. Buyer não é owner nem editor.
 |---|---|
 | Domínio | `https://sell.autonomia.site` |
 | Infra | VPS `85.31.60.100`, EasyPanel nativo/Docker Swarm; não AWS/EC2 neste release |
-| Release | SHA `2c8a36897eadf624955810ffdaee7b33c6239334` |
-| PR / Issue | #201 / #195 |
-| CI | run `32656218821` — PASS |
+| Release | web `1d2ea631`; API/asset-worker `50b6301` |
+| PR / Issue mais recentes | #225 / #224 |
+| CI | run `32768382697`, PASS |
 | Banco | PostgreSQL nativo `appsell_native_90` |
-| Migration head | `0032_platform_superadmin_catalog` |
-| Imagens | `easypanel/sell-autonomia/{web,api}:2c8a3689`; worker usa a imagem API |
-| Readiness | API interna `database=true`, `storage=true`, `pdf_sandbox=true` |
-| Backup pré-cutover | `/home/claudete/backups/appsell/appsell_native_90-before-2c8a3689-20260823-183653.dump` |
-| SHA-256 do backup | `509134d43c1be6f502965b83eecc51eb4f68278ff2a7f0025f7aa5fb93bbea12` |
-| Rollback de imagem | tag anterior `64ab9956` preservada |
+| Migration head | `0033_pdf_study_state` |
+| Imagens | web `1d2ea63`; API `50b6301`; worker usa a imagem API `50b6301` |
+| Readiness | web healthy; Redis, API e storage saudáveis no endpoint público |
+| Backup pré-cutover atual | `/home/claudete/backups/appsell/pre-web-1d2ea631.dump` |
+| SHA-256 do backup atual | `2a800ceea2605c3cf9b59b7a7d436d03b9c629cacf34365ae1384cbaa31dfd11` |
+| Rollback do web | `easypanel/sell-autonomia/web:50b6301` |
 
 Produção é real e não usa reset, seed ou personas demo. Scripts de demo são
 somente Local/CI/homologação isolada.
@@ -58,16 +58,19 @@ somente Local/CI/homologação isolada.
   um gate separado e não deve ser presumida a partir do catálogo publicado.
 - Conteúdo privado: player e PDF validam buyer + seller + entitlement; não
   são arquivos públicos nem ficam disponíveis ao seller de outro tenant.
+- Leitor PDF: páginas rasterizadas protegidas, índice navegável, vídeo interno,
+  cache da sessão, favoritos e marcações vetoriais privadas. Mão e Editar
+  marcação foram validadas pelo Rodrigo na sessão real em 2026-08-24.
 - Produto publicado é snapshot versionado; editar o rascunho não altera
   silenciosamente o snapshot já publicado.
 
 ## Estado real conhecido
 
-Após o smoke de produção: 3 sellers, 2 memberships de owner, 3 produtos de
-catálogo, 11 assets, 0 entitlements de buyer no momento da medição, 1 grant
-`platform_superadmin` ativo e slugs `autonomia`/`hub2you` ativos. O produto de
-referência Hub2You é `ia-na-pratica`; o produto pago de smoke é
-`teste-checkout-r1`.
+No smoke da release #195 havia 3 sellers, 2 memberships de owner, 3 produtos
+de catálogo, 11 assets e 0 entitlements de buyer ao final da transação
+revertida. Essas contagens são históricas e não devem ser reutilizadas como
+fotografia atual. Permanecem confirmados os slugs `autonomia` e `hub2you`; o
+produto de referência Hub2You é `ia-na-pratica`.
 
 ## Comandos e validação local
 
@@ -93,7 +96,7 @@ pessoais de buyers na documentação.
 - [Matriz de autorização](../architecture/AUTHORIZATION_MATRIX.md)
 - [Modelo de dados](../architecture/DATA_MODEL.md)
 - [Registro de decisões](../architecture/DECISION_REGISTER.md)
-- [Issue #202 de documentação](https://github.com/autonom-ia/appsell/issues/202)
+- [Issue #226 de handoff atual](https://github.com/autonom-ia/appsell/issues/226)
 
 ## Regras de operação
 

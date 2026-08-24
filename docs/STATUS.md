@@ -10,20 +10,21 @@ consulte [PRODUCTION_CURRENT.md](PRODUCTION_CURRENT.md). Auditorias antigas em
 
 | Indicador | Estado | Evidência |
 |---|:---:|---|
-| Build e CI | 🟢 | [CI pós-merge](https://github.com/autonom-ia/appsell/actions/runs/32656218821), SHA `2c8a3689` |
-| Merge | 🟢 | [PR #201](https://github.com/autonom-ia/appsell/pull/201) |
-| Deploy | 🟢 | VPS EasyPanel nativo, web/API/worker em `2c8a3689` |
-| API | 🟢 | `/health/ready`: database, storage e pdf sandbox `true` |
+| Build e CI | 🟢 | [CI pós-merge](https://github.com/autonom-ia/appsell/actions/runs/32768382697), SHA `1d2ea631` |
+| Merge | 🟢 | [PR #225](https://github.com/autonom-ia/appsell/pull/225) |
+| Deploy | 🟢 | VPS EasyPanel nativo, web `1d2ea631`; API/worker `50b6301` |
+| API | 🟢 | readiness público: Redis, API e storage saudáveis |
 | Multi-tenant | 🟢 | superadmin global; owners isolados por tenant |
 | Acesso gratuito | 🟢 | login/cadastro → entitlement idempotente → biblioteca |
 | Acesso pago | 🟢 | checkout obrigatório; sem conteúdo antes da confirmação |
 | Upload privado | 🟢 | worker/verificação; material pronto vinculado à publicação |
+| Leitor PDF | 🟢 | links, vídeo interno, cache, favoritos e marcações; Mão e edição validadas pelo Rodrigo |
 | Demo em produção | 🔴 não usar | produção não usa reset/seed/personas demo |
 
 ## Produção comprovada
 
 - Domínio: `https://sell.autonomia.site`.
-- Banco: `appsell_native_90`; migration head `0032_platform_superadmin_catalog`.
+- Banco: `appsell_native_90`; migration head `0033_pdf_study_state`.
 - Tenant real: Autonom.ia (`autonomia`) e Hub2You (`hub2you`).
 - Hierarquia: `comercial@autonomia.site` como `platform_superadmin`; cada
   vendedor como `seller_owner` no próprio tenant; comprador como identidade
@@ -53,6 +54,13 @@ Os 14 critérios foram marcados como PASS na VPS no SHA implantado:
 
 Detalhes e contagens preservadas estão no [registro da produção](PRODUCTION_CURRENT.md)
 e no [Issue #195](https://github.com/autonom-ia/appsell/issues/195).
+
+## Aceite do leitor protegido
+
+O ciclo das Issues #208, #214, #220 e #224 está implantado. O leitor abre PDFs
+e vídeos dentro da plataforma, navega pelos links do índice, mantém cache da
+sessão e persiste favoritos e anotações privadas. Rodrigo confirmou em produção
+que Mão e Editar marcação funcionam no fluxo autenticado real.
 
 ## Próximas ações, sem confundir com regressão
 
