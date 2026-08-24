@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from datetime import datetime
 from typing import Annotated, Any, Literal, Self
 from uuid import UUID
 
@@ -21,6 +22,9 @@ from .internal_requests import AuthenticatedInternalRequest, InternalRequestAuth
 router = APIRouter(prefix="/v1")
 _SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _CURRENCY = re.compile(r"^[A-Z]{3}$")
+_SHA256 = re.compile(r"[0-9a-f]{64}")
+_TOKEN_PREFIX = re.compile(r"[0-9a-f]{8}")
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _MAX_SAFE_INTEGER = (1 << 53) - 1
 # R$ 999,999,999.99 in minor units (centavos); mirrors the offer table CHECK.
 _MAX_UNIT_AMOUNT_MINOR = 99_999_999_999
@@ -183,6 +187,12 @@ class ProductPublicationBody(BaseModel):
     course_versions: list[CourseVersionBody] = Field(min_length=1, max_length=100)
     expected_product_version: int = Field(ge=1, le=_MAX_SAFE_INTEGER)
     expected_offer_version: int = Field(ge=1, le=_MAX_SAFE_INTEGER)
+    # Publishing decides how the product is reached. "free" keeps the offer in
+    # draft, which is the shape the free-access grant recognises; "paid" activates
+    # the offer inside the same transaction so a paid catalog is never briefly
+    # enrollable for free. Defaulting to "free" preserves the behaviour of every
+    # caller written before this field existed.
+    access_mode: Literal["free", "paid"] = "free"
 
     @field_validator("idempotency_key", "offer_id")
     @classmethod
@@ -194,6 +204,90 @@ class ProductPublicationBody(BaseModel):
     def validate_unique_courses(cls, value: list[CourseVersionBody]) -> list[CourseVersionBody]:
         if len({course.id for course in value}) != len(value):
             raise ValueError("duplicate course version")
+        return value
+
+
+class AccessLinkCreateBody(BaseModel):
+    """A seat-limited invitation to a free product.
+
+    The caller sends only the digest and the display prefix of the token it
+    minted. The raw token stays in the browser that created it, so neither this
+    service nor the database can hand it back, and a database dump grants
+    nobody access.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    idempotency_key: str
+    label: str = Field(min_length=1, max_length=80)
+    token_sha256: str
+    token_prefix: str
+    max_uses: int | None = Field(default=None, ge=1, le=100_000)
+    expires_at: datetime | None = None
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def validate_uuid(cls, value: str) -> str:
+        return _canonical_uuid(value, "invalid UUID")
+
+    @field_validator("label")
+    @classmethod
+    def validate_label(cls, value: str) -> str:
+        if value != value.strip() or _CONTROL.search(value):
+            raise ValueError("invalid label")
+        return value
+
+    @field_validator("token_sha256")
+    @classmethod
+    def validate_digest(cls, value: str) -> str:
+        if not _SHA256.fullmatch(value):
+            raise ValueError("invalid token digest")
+        return value
+
+    @field_validator("token_prefix")
+    @classmethod
+    def validate_prefix(cls, value: str) -> str:
+        if not _TOKEN_PREFIX.fullmatch(value):
+            raise ValueError("invalid token prefix")
+        return value
+
+    @field_validator("expires_at")
+    @classmethod
+    def validate_expiry(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            raise ValueError("expires_at requires a timezone")
+        return value
+
+
+class AccessLinkMutationBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    idempotency_key: str
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def validate_uuid(cls, value: str) -> str:
+        return _canonical_uuid(value, "invalid UUID")
+
+
+class AccessLinkRotateBody(AccessLinkMutationBody):
+    token_sha256: str
+    token_prefix: str
+
+    @field_validator("token_sha256")
+    @classmethod
+    def validate_digest(cls, value: str) -> str:
+        if not _SHA256.fullmatch(value):
+            raise ValueError("invalid token digest")
+        return value
+
+    @field_validator("token_prefix")
+    @classmethod
+    def validate_prefix(cls, value: str) -> str:
+        if not _TOKEN_PREFIX.fullmatch(value):
+            raise ValueError("invalid token prefix")
         return value
 
 
@@ -932,11 +1026,12 @@ async def publish_product(request: Request, seller_id: UUID, product_id: UUID) -
                     await session.execute(
                         text(
                             "select publication_id, publication_version, product_version, "
-                            "source_sha256, created from app_private.publish_product("
+                            "source_sha256, offer_status, offer_version, created "
+                            "from app_private.publish_product_with_access("
                             ":identity_user_id, :seller_id, :product_id, :offer_id, "
                             ":expected_product_version, :expected_offer_version, "
-                            "cast(:expected_course_versions as jsonb), :idempotency_key, "
-                            ":body_sha256, :request_id)"
+                            "cast(:expected_course_versions as jsonb), :access_mode, "
+                            ":idempotency_key, :body_sha256, :request_id)"
                         ),
                         {
                             "identity_user_id": envelope.identity.user_id,
@@ -946,6 +1041,7 @@ async def publish_product(request: Request, seller_id: UUID, product_id: UUID) -
                             "expected_product_version": body.expected_product_version,
                             "expected_offer_version": body.expected_offer_version,
                             "expected_course_versions": expected_courses,
+                            "access_mode": body.access_mode,
                             "idempotency_key": UUID(body.idempotency_key),
                             "body_sha256": envelope.body_sha256,
                             "request_id": envelope.request_id,
@@ -966,9 +1062,225 @@ async def publish_product(request: Request, seller_id: UUID, product_id: UUID) -
             "publication_version": row["publication_version"],
             "product_version": row["product_version"],
             "source_sha256": row["source_sha256"],
+            "access_mode": body.access_mode,
+            "offer_status": row["offer_status"],
+            "offer_version": row["offer_version"],
             "created": created,
         },
     )
+
+
+@router.post("/me/sellers/{seller_id}/products/{product_id}/access-links", response_model=None)
+async def create_access_link(request: Request, seller_id: UUID, product_id: UUID) -> JSONResponse:
+    auth, internal = await _authenticate(request, "catalog.access_link.create")
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(AccessLinkCreateBody, internal)
+    envelope = internal.envelope
+    row = await _execute_access_link(
+        auth,
+        internal,
+        "select access_link_id, token_prefix, label, max_uses, redeemed_count, "
+        "expires_at, created_at from app_private.create_product_access_link("
+        ":identity_user_id, :seller_id, :product_id, :label, :token_sha256, "
+        ":token_prefix, :max_uses, :expires_at, :idempotency_key, :body_sha256, "
+        ":request_id)",
+        {
+            "identity_user_id": envelope.identity.user_id,
+            "seller_id": seller_id,
+            "product_id": product_id,
+            "label": body.label,
+            "token_sha256": body.token_sha256,
+            "token_prefix": body.token_prefix,
+            "max_uses": body.max_uses,
+            "expires_at": body.expires_at,
+            "idempotency_key": UUID(body.idempotency_key),
+            "body_sha256": envelope.body_sha256,
+            "request_id": envelope.request_id,
+        },
+    )
+    return JSONResponse(
+        status_code=status.HTTP_201_CREATED,
+        content=_access_link_payload(row),
+    )
+
+
+@router.get("/me/sellers/{seller_id}/products/{product_id}/access-links")
+async def list_access_links(request: Request, seller_id: UUID, product_id: UUID) -> dict[str, Any]:
+    auth, internal = await _authenticate(request, "catalog.access_link.read")
+    await _require_seller(internal, seller_id)
+    envelope = internal.envelope
+    try:
+        async with auth.domain_session(envelope) as session:
+            rows = (
+                (
+                    await session.execute(
+                        text(
+                            "select access_link_id, token_prefix, label, max_uses, "
+                            "redeemed_count, expires_at, revoked_at, rotated_at, created_at "
+                            "from app_private.list_product_access_links("
+                            ":identity_user_id, :seller_id, :product_id)"
+                        ),
+                        {
+                            "identity_user_id": envelope.identity.user_id,
+                            "seller_id": seller_id,
+                            "product_id": product_id,
+                        },
+                    )
+                )
+                .mappings()
+                .all()
+            )
+    except DBAPIError as error:
+        raise _domain_error(error) from error
+    return {"access_links": [_access_link_payload(row) for row in rows]}
+
+
+@router.get(
+    "/me/sellers/{seller_id}/products/{product_id}/access-links/{access_link_id}/redemptions"
+)
+async def list_access_link_redemptions(
+    request: Request, seller_id: UUID, product_id: UUID, access_link_id: UUID
+) -> dict[str, Any]:
+    auth, internal = await _authenticate(request, "catalog.access_link.read")
+    await _require_seller(internal, seller_id)
+    envelope = internal.envelope
+    try:
+        async with auth.domain_session(envelope) as session:
+            rows = (
+                (
+                    await session.execute(
+                        text(
+                            "select buyer_identity_user_id, entitlement_id, redeemed_at "
+                            "from app_private.list_product_access_link_redemptions("
+                            ":identity_user_id, :seller_id, :product_id, :access_link_id)"
+                        ),
+                        {
+                            "identity_user_id": envelope.identity.user_id,
+                            "seller_id": seller_id,
+                            "product_id": product_id,
+                            "access_link_id": access_link_id,
+                        },
+                    )
+                )
+                .mappings()
+                .all()
+            )
+    except DBAPIError as error:
+        raise _domain_error(error) from error
+    return {
+        "redemptions": [
+            {
+                "buyer_identity_user_id": str(row["buyer_identity_user_id"]),
+                "entitlement_id": str(row["entitlement_id"]),
+                "redeemed_at": _isoformat(row["redeemed_at"]),
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.post("/me/sellers/{seller_id}/products/{product_id}/access-links/{access_link_id}/revoke")
+async def revoke_access_link(
+    request: Request, seller_id: UUID, product_id: UUID, access_link_id: UUID
+) -> dict[str, Any]:
+    auth, internal = await _authenticate(request, "catalog.access_link.update")
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(AccessLinkMutationBody, internal)
+    envelope = internal.envelope
+    row = await _execute_access_link(
+        auth,
+        internal,
+        "select access_link_id, revoked_at, changed "
+        "from app_private.revoke_product_access_link("
+        ":identity_user_id, :seller_id, :product_id, :access_link_id, "
+        ":idempotency_key, :body_sha256, :request_id)",
+        {
+            "identity_user_id": envelope.identity.user_id,
+            "seller_id": seller_id,
+            "product_id": product_id,
+            "access_link_id": access_link_id,
+            "idempotency_key": UUID(body.idempotency_key),
+            "body_sha256": envelope.body_sha256,
+            "request_id": envelope.request_id,
+        },
+    )
+    return {
+        "access_link_id": str(row["access_link_id"]),
+        "revoked_at": _isoformat(row["revoked_at"]),
+        "changed": bool(row["changed"]),
+    }
+
+
+@router.post("/me/sellers/{seller_id}/products/{product_id}/access-links/{access_link_id}/rotate")
+async def rotate_access_link(
+    request: Request, seller_id: UUID, product_id: UUID, access_link_id: UUID
+) -> dict[str, Any]:
+    auth, internal = await _authenticate(request, "catalog.access_link.update")
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(AccessLinkRotateBody, internal)
+    envelope = internal.envelope
+    row = await _execute_access_link(
+        auth,
+        internal,
+        "select access_link_id, token_prefix, redeemed_count, max_uses, rotated_at "
+        "from app_private.rotate_product_access_link("
+        ":identity_user_id, :seller_id, :product_id, :access_link_id, "
+        ":token_sha256, :token_prefix, :idempotency_key, :body_sha256, :request_id)",
+        {
+            "identity_user_id": envelope.identity.user_id,
+            "seller_id": seller_id,
+            "product_id": product_id,
+            "access_link_id": access_link_id,
+            "token_sha256": body.token_sha256,
+            "token_prefix": body.token_prefix,
+            "idempotency_key": UUID(body.idempotency_key),
+            "body_sha256": envelope.body_sha256,
+            "request_id": envelope.request_id,
+        },
+    )
+    return {
+        "access_link_id": str(row["access_link_id"]),
+        "token_prefix": row["token_prefix"],
+        "redeemed_count": row["redeemed_count"],
+        "max_uses": row["max_uses"],
+        "rotated_at": _isoformat(row["rotated_at"]),
+    }
+
+
+async def _execute_access_link(
+    auth: InternalRequestAuthenticator,
+    internal: AuthenticatedInternalRequest,
+    statement: str,
+    parameters: dict[str, Any],
+) -> Any:
+    try:
+        async with auth.domain_session(internal.envelope) as session:
+            return (await session.execute(text(statement), parameters)).mappings().one()
+    except DBAPIError as error:
+        raise _domain_error(error) from error
+
+
+def _access_link_payload(row: Any) -> dict[str, Any]:
+    # The digest never leaves the database and the raw token never reaches it,
+    # so a link can only ever be reported by its display prefix.
+    payload: dict[str, Any] = {
+        "access_link_id": str(row["access_link_id"]),
+        "token_prefix": row["token_prefix"],
+        "label": row["label"],
+        "max_uses": row["max_uses"],
+        "redeemed_count": row["redeemed_count"],
+        "expires_at": _isoformat(row["expires_at"]),
+        "created_at": _isoformat(row["created_at"]),
+    }
+    if "revoked_at" in row:
+        payload["revoked_at"] = _isoformat(row["revoked_at"])
+    if "rotated_at" in row:
+        payload["rotated_at"] = _isoformat(row["rotated_at"])
+    return payload
+
+
+def _isoformat(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
 
 
 async def _execute_curriculum(
@@ -1361,6 +1673,23 @@ def _domain_error(error: DBAPIError) -> HTTPException:
         return HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="invalid_offer_status_transition",
+        )
+    if sqlstate == "P4223":
+        return HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="payout_account_required",
+        )
+    if sqlstate == "P4224":
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="access_link_exhausted",
+        )
+    # A revoked, expired or unknown link answers identically, so probing the
+    # endpoint cannot tell an attacker whether a token exists.
+    if sqlstate == "P4225":
+        return HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="access_link_unavailable",
         )
     if sqlstate == "22023":
         return HTTPException(

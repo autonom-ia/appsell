@@ -860,3 +860,99 @@ def test_domain_errors_are_stable_and_do_not_create_an_idor_oracle(
     mapped = _learning_domain_error(error)  # type: ignore[arg-type]
     assert mapped.status_code == status_code
     assert mapped.detail == detail
+
+
+@pytest.mark.asyncio
+async def test_access_link_redemption_sends_only_the_digest_and_reports_the_seat() -> None:
+    # The BFF hashes the token before it reaches this service. If a raw token
+    # ever arrived here it would end up in request logs and in the database.
+    product_id = uuid4()
+    auth = FakeAuth(
+        {
+            "entitlement_id": ENTITLEMENT_ID,
+            "seller_organization_id": SELLER_ID,
+            "catalog_product_id": product_id,
+            "created": True,
+            "seat_consumed": True,
+            "seats_remaining": 17,
+        }
+    )
+    body = {"idempotency_key": str(uuid4()), "token_sha256": "a" * 64}
+    async with client_for(auth) as client:
+        response = await client.post("/v1/me/library/access-links/redeem", json=body)
+
+    assert response.status_code == 201
+    assert response.json() == {
+        "status": "active",
+        "entitlement_id": str(ENTITLEMENT_ID),
+        "seller_id": str(SELLER_ID),
+        "product_id": str(product_id),
+        "created": True,
+        "seat_consumed": True,
+        "seats_remaining": 17,
+    }
+    assert auth.capabilities == ["library.enroll"]
+    statement, parameters = auth.session.calls[0]
+    assert "app_private.redeem_product_access_link" in statement
+    assert parameters["token_sha256"] == "a" * 64
+    assert parameters["identity_user_id"] == IDENTITY_ID
+
+
+@pytest.mark.asyncio
+async def test_access_link_re_entry_reports_no_seat_consumed() -> None:
+    # Reopening the link must not burn a second seat, otherwise a thirty seat
+    # class is exhausted by thirty people refreshing the page.
+    product_id = uuid4()
+    auth = FakeAuth(
+        {
+            "entitlement_id": ENTITLEMENT_ID,
+            "seller_organization_id": SELLER_ID,
+            "catalog_product_id": product_id,
+            "created": False,
+            "seat_consumed": False,
+            "seats_remaining": 17,
+        }
+    )
+    body = {"idempotency_key": str(uuid4()), "token_sha256": "b" * 64}
+    async with client_for(auth) as client:
+        response = await client.post("/v1/me/library/access-links/redeem", json=body)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["seat_consumed"] is False
+    assert payload["seats_remaining"] == 17
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"idempotency_key": "not-a-uuid", "token_sha256": "a" * 64},
+        {"idempotency_key": str(uuid4()), "token_sha256": "a" * 63},
+        {"idempotency_key": str(uuid4()), "token_sha256": "z" * 64},
+        {"idempotency_key": str(uuid4()), "token_sha256": "A" * 64},
+        {"idempotency_key": str(uuid4())},
+        {"idempotency_key": str(uuid4()), "token_sha256": "a" * 64, "extra": 1},
+    ],
+)
+async def test_access_link_redemption_rejects_malformed_bodies(body: dict[str, Any]) -> None:
+    auth = FakeAuth({})
+    async with client_for(auth) as client:
+        response = await client.post("/v1/me/library/access-links/redeem", json=body)
+
+    assert response.status_code == 422
+    assert auth.domain_sessions == 0
+
+
+def test_access_link_learning_errors_stay_indistinguishable_for_unknown_tokens() -> None:
+    from appsell_api.learning_routes import _learning_domain_error
+
+    for sqlstate, expected_status, expected_detail in [
+        ("P4224", 409, "access_link_exhausted"),
+        ("P4225", 404, "access_link_unavailable"),
+        ("P4222", 409, "offer_requires_checkout"),
+    ]:
+        mapped = _learning_domain_error(
+            SimpleNamespace(orig=SimpleNamespace(sqlstate=sqlstate))  # type: ignore[arg-type]
+        )
+        assert (mapped.status_code, mapped.detail) == (expected_status, expected_detail)

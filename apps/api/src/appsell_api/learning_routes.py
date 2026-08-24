@@ -34,6 +34,7 @@ from .storage_s3 import S3Storage, StorageError
 
 router = APIRouter(prefix="/v1")
 _MAX_LEARNING_BODY_BYTES = 4_096
+_ACCESS_TOKEN_DIGEST = re.compile(r"[0-9a-f]{64}")
 _MAX_PDF_STUDY_BODY_BYTES = 65_536
 _MAX_SAFE_INTEGER = (1 << 53) - 1
 _LEARNING_ASSETS_CONTRACT_HEADER = "x-appsell-learning-assets-contract"
@@ -90,6 +91,32 @@ class FreeAccessBody(BaseModel):
     @classmethod
     def validate_product_id(cls, value: str) -> str:
         return _canonical_uuid(value, "invalid product id")
+
+
+class AccessLinkRedeemBody(BaseModel):
+    """Redemption of a seat-limited invitation.
+
+    Only the digest of the link token travels here. The BFF hashes the token it
+    received in the URL, so the raw value never reaches this service, never
+    reaches the database, and cannot surface in a log line or a stack trace.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    idempotency_key: str
+    token_sha256: str
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def validate_idempotency_key(cls, value: str) -> str:
+        return _canonical_uuid(value, "invalid idempotency key")
+
+    @field_validator("token_sha256")
+    @classmethod
+    def validate_token_digest(cls, value: str) -> str:
+        if _ACCESS_TOKEN_DIGEST.fullmatch(value) is None:
+            raise ValueError("invalid token digest")
+        return value
 
 
 class PdfStudyPoint(BaseModel):
@@ -220,6 +247,54 @@ async def enroll_public_product(request: Request) -> Response:
                 "status": "active",
                 "entitlement_id": str(row["entitlement_id"]),
                 "created": bool(row["created"]),
+            }
+        ),
+        status_code=status.HTTP_201_CREATED if row["created"] else status.HTTP_200_OK,
+        media_type="application/json",
+    )
+
+
+@router.post("/me/library/access-links/redeem")
+async def redeem_access_link(request: Request) -> Response:
+    auth, internal = await _authenticate(request, "library.enroll")
+    await _require_buyer_scope(internal)
+    body = await _model_from_internal_body(request, internal, AccessLinkRedeemBody)
+    try:
+        async with auth.domain_session(internal.envelope) as session:
+            row = (
+                (
+                    await session.execute(
+                        text(
+                            "select entitlement_id,seller_organization_id,catalog_product_id,"
+                            "created,seat_consumed,seats_remaining "
+                            "from app_private.redeem_product_access_link("
+                            ":identity_user_id,:token_sha256,:idempotency_key,"
+                            ":body_sha256,:request_id)"
+                        ),
+                        {
+                            "identity_user_id": internal.envelope.identity.user_id,
+                            "token_sha256": body.token_sha256,
+                            "idempotency_key": UUID(body.idempotency_key),
+                            "body_sha256": internal.envelope.body_sha256,
+                            "request_id": internal.envelope.request_id,
+                        },
+                    )
+                )
+                .mappings()
+                .one()
+            )
+    except DBAPIError as error:
+        raise _learning_domain_error(error) from error
+    return Response(
+        content=json.dumps(
+            {
+                "status": "active",
+                "entitlement_id": str(row["entitlement_id"]),
+                "seller_id": str(row["seller_organization_id"]),
+                "product_id": str(row["catalog_product_id"]),
+                "created": bool(row["created"]),
+                "seat_consumed": bool(row["seat_consumed"]),
+                "seats_remaining": row["seats_remaining"],
             }
         ),
         status_code=status.HTTP_201_CREATED if row["created"] else status.HTTP_200_OK,
@@ -1027,6 +1102,18 @@ def _learning_domain_error(error: DBAPIError) -> HTTPException:
         return HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="offer_requires_checkout",
+        )
+    if sqlstate == "P4224":
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="access_link_exhausted",
+        )
+    # Revoked, expired and unknown links answer identically so that probing the
+    # endpoint cannot reveal whether a token exists.
+    if sqlstate == "P4225":
+        return HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="access_link_unavailable",
         )
     if sqlstate in {"28000", "42501"}:
         return _learning_not_found()
