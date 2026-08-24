@@ -7,7 +7,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, cast
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -101,7 +101,7 @@ def read_remote_pdf_link_manifest(
         raise PdfLinksUnavailable("isolated PDF link response is invalid") from error
     if not valid_pdf_link_manifest(payload, expected_page_count=expected_page_count):
         raise PdfLinksUnavailable("isolated PDF link response contract is invalid")
-    return payload
+    return cast(dict[str, Any], payload)
 
 
 def extract_pdf_link_manifest(
@@ -157,6 +157,8 @@ def _document_links(document: pikepdf.Pdf) -> list[dict[str, Any]]:
         if not isinstance(annotations, pikepdf.Array):
             raise PdfLinksRejected("PDF page annotations are invalid")
         for annotation in annotations:
+            if not isinstance(annotation, pikepdf.Dictionary):
+                raise PdfLinksRejected("PDF link annotation is invalid")
             if str(annotation.get("/Subtype")) != "/Link":
                 continue
             annotations_seen += 1

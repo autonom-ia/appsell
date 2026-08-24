@@ -15,13 +15,9 @@ def test_extracts_internal_and_video_links_without_exposing_active_pdf_actions(
     with pikepdf.new() as document:
         first = document.add_blank_page(page_size=(500, 700))
         second = document.add_blank_page(page_size=(500, 700))
-        destination = pikepdf.Array(
-            [second.obj, pikepdf.Name("/XYZ"), 0, 700, 0]
-        )
+        destination = pikepdf.Array([second.obj, pikepdf.Name("/XYZ"), 0, 700, 0])
         document.Root["/Names"] = pikepdf.Dictionary(
-            Dests=pikepdf.Dictionary(
-                Names=pikepdf.Array([pikepdf.String("chapter"), destination])
-            )
+            Dests=pikepdf.Dictionary(Names=pikepdf.Array([pikepdf.String("chapter"), destination]))
         )
         video_url = "https://media.example.test/course/lesson.mov"
         first.obj["/Annots"] = pikepdf.Array(

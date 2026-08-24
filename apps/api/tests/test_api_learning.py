@@ -285,9 +285,7 @@ async def test_pdf_manifest_is_entitlement_scoped_and_never_returns_original() -
         )
 
     assert response.status_code == 200
-    assert response.json() == {
-        "asset": {"id": str(ASSET_ID), "page_count": 7, "links": []}
-    }
+    assert response.json() == {"asset": {"id": str(ASSET_ID), "page_count": 7, "links": []}}
     assert response.headers["content-type"] == "application/json"
     assert auth.capabilities == ["library.asset.read"]
     assert "authorize_entitled_pdf_manifest" in auth.session.calls[0][0]
