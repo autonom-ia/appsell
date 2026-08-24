@@ -185,6 +185,7 @@ uv run --project apps/api pytest \
   apps/api/tests/test_postgres_bff_onboarding.py \
   apps/api/tests/test_postgres_product_course.py \
   apps/api/tests/test_postgres_product_publication.py \
+  apps/api/tests/test_postgres_access_links.py \
   apps/api/tests/test_postgres_curriculum.py \
   apps/api/tests/test_postgres_learning_progress.py \
   apps/api/tests/test_postgres_multi_asset_migration.py \
