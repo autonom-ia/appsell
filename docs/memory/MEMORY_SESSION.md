@@ -46,9 +46,9 @@ testes das regras de CI; instalação com lockfile congelado; suíte rápida;
 criação da Issue #226, branch e PR #227; reconciliação administrativa das
 Issues #204 e #208 no Project #3.
 Validação: `git diff --check` PASS; links locais PASS em 15 arquivos; 35 testes
-das regras de CI PASS; `pnpm test:fast` com 584 PASS e 2 skipped; CI da PR #227,
-run `32771990446`, PASS. Produção já havia sido validada pelo Rodrigo antes
-desta sessão documental.
+das regras de CI PASS; `pnpm test:fast` com 584 PASS e 2 skipped; CI da PR #227
+PASS. Produção já havia sido validada pelo Rodrigo antes desta sessão
+documental.
 Bloqueios: merge documental aguarda aprovação explícita do Rodrigo. Não há
 deploy associado a esta PR.
 Próxima ação: revisar a PR #227; após aprovação, fazer somente o merge e
