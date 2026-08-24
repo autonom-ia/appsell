@@ -732,6 +732,8 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .pdf-reader-zoom-controls > span { min-width: 44px; color: #07162e; font-size: .78rem; font-weight: 800; text-align: center; }
 .pdf-reader-fullscreen { position: absolute; top: 11px; right: 12px; }
 .pdf-reader-viewport { min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable both-edges; touch-action: pan-x pan-y; background: radial-gradient(circle at 50% 0,rgba(255,255,255,.94),rgba(238,243,250,.78) 42%,#e9f0f8 100%); outline: none; }
+.pdf-reader-viewport.pdf-study-mode-hand { cursor: grab; }
+.pdf-reader-viewport.pdf-study-mode-hand.is-panning { cursor: grabbing; user-select: none; }
 .pdf-reader-viewport:focus-visible { box-shadow: inset 0 0 0 3px rgba(59,130,246,.42); }
 .pdf-reader-pages { width: max-content; min-width: 100%; min-height: 100%; padding: 12px; display: flex; flex-direction: column; align-items: center; gap: 16px; }
 .pdf-reader-page { position: relative; min-width: 0; max-width: none; min-height: 260px; flex: 0 0 auto; margin: 0; overflow: hidden; scroll-margin: 14px; border: 1px solid rgba(148,163,184,.24); background: white; box-shadow: 0 14px 38px rgba(15,23,42,.12); transition: width 160ms ease; user-select: none; -webkit-user-select: none; }
@@ -760,6 +762,7 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .pdf-study-width { width: 30px; min-width: 30px; padding: 0 !important; display: grid; place-items: center; }
 .pdf-study-width span { width: 17px; border-radius: 99px; background: #173b73; }
 .pdf-study-save { min-width: 78px; color: #64748b; font-size: .7rem; font-weight: 750; text-align: center; }
+.pdf-study-hint { max-width: 300px; color: #526176; font-size: .7rem; font-weight: 750; line-height: 1.35; white-space: normal; }
 .pdf-study-save.is-error { color: #b42318; }
 .pdf-study-save.is-saved { color: #087a4b; }
 .pdf-study-layer { position: absolute; inset: 0; z-index: 2; width: 100%; height: 100%; overflow: visible; }
@@ -842,6 +845,7 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
   .pdf-study-tools { width: 100%; padding: 0 0 5px; display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); border-right: 0; border-bottom: 1px solid rgba(148,163,184,.25); }
   .pdf-study-style { width: 100%; padding: 2px 0 6px; justify-content: center; overflow-x: auto; border-right: 0; border-bottom: 1px solid rgba(148,163,184,.25); }
   .pdf-study-actions { width: 100%; margin-left: 0; justify-content: center; }
+  .pdf-study-hint { width: 100%; max-width: none; text-align: center; }
   .pdf-study-toolbar button { min-width: 38px; min-height: 38px; padding: 0 8px; }
   .pdf-study-tools button { width: 100%; min-width: 0; }
   .pdf-study-label { display: none; }

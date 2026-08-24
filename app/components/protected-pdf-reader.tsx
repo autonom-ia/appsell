@@ -62,6 +62,7 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
   const [viewportWidth, setViewportWidth] = useState(0);
   const [pageHeightRatio, setPageHeightRatio] = useState(PDF_PAGE_HEIGHT_RATIO);
   const [fullscreenActive, setFullscreenActive] = useState(false);
+  const [panning, setPanning] = useState(false);
   const [activeVideoLink, setActiveVideoLink] = useState<Extract<PdfLink, { kind: "video" }> | null>(null);
   const readerRef = useRef<HTMLElement | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
@@ -81,6 +82,13 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
   const pageLoads = useRef(new Map<number, Promise<string>>());
   const pageLoadControllers = useRef(new Set<AbortController>());
   const pageCacheGeneration = useRef(0);
+  const panPointer = useRef<{
+    id: number;
+    x: number;
+    y: number;
+    scrollLeft: number;
+    scrollTop: number;
+  } | null>(null);
 
   const pageCount = typeof manifest === "object" ? manifest.pageCount : 0;
   const pageNumbers = useMemo(
@@ -518,6 +526,50 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
     onPage: selectPage
   });
 
+  const startHandPan = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (study.tool !== "hand" || event.pointerType === "touch" || event.button !== 0) return;
+    const target = event.target;
+    if (target instanceof Element && target.closest("a,button,input,video,[role='button']")) return;
+    panPointer.current = {
+      id: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      scrollLeft: event.currentTarget.scrollLeft,
+      scrollTop: event.currentTarget.scrollTop
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setPanning(true);
+    event.preventDefault();
+  };
+
+  const moveHandPan = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const pan = panPointer.current;
+    if (!pan || pan.id !== event.pointerId) return;
+    event.currentTarget.scrollLeft = pan.scrollLeft - (event.clientX - pan.x);
+    event.currentTarget.scrollTop = pan.scrollTop - (event.clientY - pan.y);
+    event.preventDefault();
+  };
+
+  const finishHandPan = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (panPointer.current?.id === event.pointerId) {
+      panPointer.current = null;
+      setPanning(false);
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    }
+    handlePointerUp(event);
+  };
+
+  const cancelHandPan = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (panPointer.current?.id !== event.pointerId) return;
+    panPointer.current = null;
+    setPanning(false);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
   return <div className="protected-pdf">
     {manifest === "loading"
       ? <p className="protected-pdf-state" role="status">Preparando visualização protegida…</p>
@@ -616,10 +668,13 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
           {study.toolbar}
           <div
             ref={viewportRef}
-            className={`pdf-reader-viewport pdf-study-mode-${study.tool}`}
+            className={`pdf-reader-viewport pdf-study-mode-${study.tool}${panning ? " is-panning" : ""}`}
             onContextMenu={(event) => event.preventDefault()}
             onDoubleClick={toggleDoubleTapZoom}
-            onPointerUp={handlePointerUp}
+            onPointerDown={startHandPan}
+            onPointerMove={moveHandPan}
+            onPointerUp={finishHandPan}
+            onPointerCancel={cancelHandPan}
             tabIndex={0}
           >
             <div className="pdf-reader-pages">

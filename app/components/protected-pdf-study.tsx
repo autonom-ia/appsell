@@ -249,6 +249,19 @@ export function useProtectedPdfStudy({
     if (next !== "select") setSelectedId(null);
   }, []);
 
+  const activePageAnnotationCount = state?.annotations.filter(
+    (annotation) => annotation.page === activePage
+  ).length ?? 0;
+  const selectedOnActivePage = state?.annotations.some(
+    (annotation) => annotation.id === selectedId && annotation.page === activePage
+  ) ?? false;
+  const toolHint = tool !== "select" ? ""
+    : selectedOnActivePage
+      ? "Marcação selecionada. Arraste para mover ou ajuste o estilo."
+      : activePageAnnotationCount === 0
+        ? "Sem marcações nesta página. Use Caneta ou Marca-texto primeiro."
+        : "Clique ou arraste uma marcação para editar.";
+
   const updateSelectedStyle = useCallback((nextColor: string, nextWidth = width) => {
     const selected = stateRef.current?.annotations.find((item) => item.id === selectedId);
     if (!selected) return;
@@ -275,7 +288,7 @@ export function useProtectedPdfStudy({
         ><span className="pdf-study-icon" aria-hidden="true">{meta.icon}</span><span className="pdf-study-label">{meta.label}</span></button>;
       })}
     </div>
-    {(tool === "pen" || tool === "highlight" || (tool === "select" && selectedId))
+    {(tool === "pen" || tool === "highlight" || (tool === "select" && selectedOnActivePage))
       ? <div className="pdf-study-style" aria-label="Cor e espessura">
           {COLORS.map((item) => <button
             key={item}
@@ -297,10 +310,11 @@ export function useProtectedPdfStudy({
             ><span style={{ height: `${index + 2}px` }}/></button>)}
         </div>
       : null}
+    {toolHint ? <small className="pdf-study-hint" role="status">{toolHint}</small> : null}
     <div className="pdf-study-actions">
       <button type="button" aria-label="Desfazer" title="Desfazer" onClick={undo} disabled={historyCounts.undo === 0}><span className="pdf-study-icon" aria-hidden="true">↶</span><span className="pdf-study-label">Desfazer</span></button>
       <button type="button" aria-label="Refazer" title="Refazer" onClick={redo} disabled={historyCounts.redo === 0}><span className="pdf-study-icon" aria-hidden="true">↷</span><span className="pdf-study-label">Refazer</span></button>
-      {selectedId ? <button type="button" onClick={() => {
+      {selectedOnActivePage ? <button type="button" onClick={() => {
         const selected = stateRef.current?.annotations.find((item) => item.id === selectedId);
         if (selected) deleteAnnotation(selected);
       }} aria-label="Excluir marcação" title="Excluir marcação"><span className="pdf-study-icon" aria-hidden="true">⌫</span><span className="pdf-study-label">Excluir</span></button> : null}
@@ -318,8 +332,8 @@ export function useProtectedPdfStudy({
     </div>
   </div>, [
     activePageBookmarked, available, chooseTool, color, deleteAnnotation, historyCounts.redo,
-    historyCounts.undo, redo, saveStatus, selectedId, state, toggleBookmark, tool,
-    undo, updateSelectedStyle, width
+    historyCounts.undo, redo, saveStatus, selectedId, selectedOnActivePage, state,
+    toggleBookmark, tool, toolHint, undo, updateSelectedStyle, width
   ]);
 
   const layer = useCallback((page: number): ReactNode => {
@@ -544,7 +558,7 @@ function toolMeta(tool: StudyTool) {
     pen: { icon: "✎", label: "Caneta" },
     highlight: { icon: "▰", label: "Marca-texto" },
     eraser: { icon: "⌫", label: "Borracha" },
-    select: { icon: "⌖", label: "Selecionar" }
+    select: { icon: "⌖", label: "Editar marcação" }
   })[tool];
 }
 
