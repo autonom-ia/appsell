@@ -140,6 +140,111 @@ def completion_body(**overrides: Any) -> bytes:
     return json.dumps(value, separators=(",", ":")).encode()
 
 
+def pdf_study_body(**overrides: Any) -> bytes:
+    value = {
+        "idempotency_key": str(uuid4()),
+        "expected_revision": 0,
+        "mutation": {
+            "action": "annotation.upsert",
+            "annotation": {
+                "id": str(uuid4()),
+                "page": 2,
+                "tool": "pen",
+                "color": "#173B73",
+                "width": 0.003,
+                "points": [{"x": 0.1, "y": 0.2}, {"x": 0.4, "y": 0.5}],
+            },
+        },
+        **overrides,
+    }
+    return json.dumps(value, separators=(",", ":")).encode()
+
+
+def pdf_study_state() -> dict[str, Any]:
+    return {
+        "asset_id": str(ASSET_ID),
+        "asset_version": 1,
+        "page_count": 2,
+        "revision": 1,
+        "annotations": [],
+        "bookmarks": [2],
+        "updated_at": "2026-08-24T12:00:00+00:00",
+    }
+
+
+@pytest.mark.asyncio
+async def test_pdf_study_read_is_buyer_scoped_and_version_pinned() -> None:
+    auth = FakeAuth(pdf_study_state())
+    async with client_for(auth) as client:
+        response = await client.get(
+            f"/v1/me/learning/items/{ENTITLEMENT_ID}/assets/{ASSET_ID}/study"
+        )
+    assert response.status_code == 200
+    assert response.json() == {"state": pdf_study_state()}
+    assert auth.capabilities == ["learning.pdf-study.read"]
+    assert "read_pdf_study_state" in auth.session.calls[0][0]
+    assert auth.session.calls[0][1]["identity_user_id"] == IDENTITY_ID
+
+
+@pytest.mark.asyncio
+async def test_pdf_study_mutation_forwards_only_valid_normalized_operation() -> None:
+    auth = FakeAuth(pdf_study_state())
+    body = pdf_study_body()
+    async with client_for(auth) as client:
+        response = await client.post(
+            f"/v1/me/learning/items/{ENTITLEMENT_ID}/assets/{ASSET_ID}/study",
+            content=body,
+            headers={"content-type": "application/json"},
+        )
+    assert response.status_code == 200
+    assert response.json() == {"state": pdf_study_state()}
+    assert auth.capabilities == ["learning.pdf-study.write"]
+    statement, parameters = auth.session.calls[0]
+    assert "mutate_pdf_study_state" in statement
+    mutation = json.loads(parameters["mutation"])
+    assert mutation["action"] == "annotation.upsert"
+    assert mutation["annotation"]["points"][-1] == {"x": 0.4, "y": 0.5}
+    assert parameters["body_sha256"] == hashlib.sha256(body).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_pdf_study_rejects_unknown_fields_and_oversized_vectors() -> None:
+    auth = FakeAuth(pdf_study_state())
+    invalid = json.loads(pdf_study_body())
+    invalid["mutation"]["annotation"]["unexpected"] = True
+    async with client_for(auth) as client:
+        response = await client.post(
+            f"/v1/me/learning/items/{ENTITLEMENT_ID}/assets/{ASSET_ID}/study",
+            json=invalid,
+        )
+    assert response.status_code == 422
+    assert auth.domain_sessions == 0
+    assert auth.rejected_requests == 1
+
+    oversized_auth = FakeAuth(pdf_study_state())
+    oversized = pdf_study_body(
+        mutation={
+            "action": "annotation.upsert",
+            "annotation": {
+                "id": str(uuid4()),
+                "page": 1,
+                "tool": "pen",
+                "color": "#173B73",
+                "width": 0.003,
+                "points": [{"x": 0.1, "y": 0.2}] * 5000,
+            },
+        }
+    )
+    async with client_for(oversized_auth) as client:
+        response = await client.post(
+            f"/v1/me/learning/items/{ENTITLEMENT_ID}/assets/{ASSET_ID}/study",
+            content=oversized,
+            headers={"content-type": "application/json"},
+        )
+    assert response.status_code == 413
+    assert oversized_auth.domain_sessions == 0
+
+
 @pytest.mark.asyncio
 async def test_pdf_asset_authorization_never_returns_original_locator() -> None:
     auth = FakeAuth(

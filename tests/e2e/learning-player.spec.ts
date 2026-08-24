@@ -21,6 +21,12 @@ const protectedPng = Buffer.from(
 );
 const protectedVideoPath = resolve(process.cwd(), "output/pdf/codex/codex-em-3-passos.mp4");
 
+type PdfStudyMockStore = {
+  revision: number;
+  annotations: Array<Record<string, unknown>>;
+  bookmarks: number[];
+};
+
 async function login(page: Page) {
   await page.goto("/");
   const sessionReady = page.waitForResponse((response) => response.url().endsWith("/api/session") && response.status() === 200);
@@ -107,6 +113,12 @@ async function mockLearningApi(
     onPdfPage?: (route: Route, pageNumber: number, requestNumber: number) => Promise<void>;
     pdfPageCount?: number;
     pdfLinks?: Array<Record<string, unknown>>;
+    pdfStudyInitial?: {
+      annotations?: Array<Record<string, unknown>>;
+      bookmarks?: number[];
+    };
+    pdfStudyStore?: PdfStudyMockStore;
+    onPdfStudyMutation?: (mutation: Record<string, unknown>) => void;
   } = {}
 ) {
   const mutations: string[] = [];
@@ -114,9 +126,66 @@ async function mockLearningApi(
   let secondLessonReads = 0;
   let firstProgressWrites = 0;
   const pdfPageReads = new Map<number, number>();
+  const pdfStudyStore = options.pdfStudyStore ?? {
+    revision: 0,
+    annotations: options.pdfStudyInitial?.annotations ?? [],
+    bookmarks: options.pdfStudyInitial?.bookmarks ?? []
+  };
+  const pdfStudyState = () => ({
+    asset_id: assetId,
+    asset_version: 1,
+    page_count: options.pdfPageCount ?? 2,
+    revision: pdfStudyStore.revision,
+    annotations: pdfStudyStore.annotations,
+    bookmarks: pdfStudyStore.bookmarks,
+    updated_at: pdfStudyStore.revision === 0 ? null : new Date().toISOString()
+  });
   const handleLearningRoute = async (route: Route) => {
     const request = route.request();
     const url = new URL(request.url());
+    if (url.pathname.endsWith(`/assets/${assetId}/study`) && request.method() === "GET") {
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ state: pdfStudyState(), csrf: "pdf-study-token-for-e2e-0123456789" })
+      });
+    }
+    if (url.pathname.endsWith(`/assets/${assetId}/study`) && request.method() === "POST") {
+      const body = request.postDataJSON() as {
+        expected_revision: number;
+        mutation: Record<string, unknown>;
+      };
+      if (body.expected_revision !== pdfStudyStore.revision) {
+        return route.fulfill({
+          status: 409,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "pdf_study_revision_conflict" })
+        });
+      }
+      const mutation = body.mutation;
+      if (mutation.action === "annotation.upsert") {
+        const annotation = mutation.annotation as Record<string, unknown>;
+        pdfStudyStore.annotations = [
+          ...pdfStudyStore.annotations.filter((item) => item.id !== annotation.id),
+          annotation
+        ];
+      } else if (mutation.action === "annotation.delete") {
+        pdfStudyStore.annotations = pdfStudyStore.annotations
+          .filter((item) => item.id !== mutation.id);
+      } else if (mutation.action === "bookmark.set") {
+        const pageNumber = Number(mutation.page);
+        pdfStudyStore.bookmarks = mutation.active
+          ? [...new Set([...pdfStudyStore.bookmarks, pageNumber])].sort((left, right) => left - right)
+          : pdfStudyStore.bookmarks.filter((item) => item !== pageNumber);
+      }
+      pdfStudyStore.revision += 1;
+      options.onPdfStudyMutation?.(mutation);
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ state: pdfStudyState() })
+      });
+    }
     if (request.method() === "GET" && url.pathname.endsWith(`/assets/${assetId}/pages`)) {
       return route.fulfill({
         status: 200,
@@ -410,6 +479,240 @@ test("navigates PDF index links and opens linked video inside the protected read
   await expect(videoDialog).toHaveCount(0);
   await expect(reader).toBeVisible();
   await expect(reader.getByLabel("Ir para página")).toHaveValue("4");
+});
+
+test("persists vector annotations and favorites without drifting across zoom and resize", async ({
+  browser, page
+}, testInfo) => {
+  const mobile = testInfo.project.name.includes("mobile");
+  await page.setViewportSize(mobile ? { width: 390, height: 844 } : { width: 1440, height: 900 });
+  const studyMutations: Record<string, unknown>[] = [];
+  const pdfStudyStore: PdfStudyMockStore = {
+    revision: 0,
+    annotations: [{
+      id: "86000000-0000-4000-8000-000000000002",
+      page: 2,
+      tool: "highlight",
+      color: "#E59819",
+      width: 0.022,
+      points: [{ x: 0.18, y: 0.25 }, { x: 0.72, y: 0.25 }]
+    }],
+    bookmarks: [2]
+  };
+  await mockLearningApi(page, {
+    pdfPageCount: 3,
+    pdfStudyStore,
+    onPdfStudyMutation: (mutation) => studyMutations.push(mutation)
+  });
+  await login(page);
+  await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
+  await page.getByRole("button", { name: "Abrir leitor" }).click();
+  const reader = page.getByRole("dialog", { name: "Leitor de Guia da aula" });
+  const pen = reader.getByRole("button", { name: /Caneta/ });
+  await expect(pen).toBeEnabled();
+  await pen.click();
+
+  const pageOne = reader.locator('.pdf-reader-page[data-page="1"]');
+  const layer = pageOne.locator(".pdf-study-layer");
+  const layerBox = await layer.boundingBox();
+  expect(layerBox).not.toBeNull();
+  const bounds = layerBox!;
+  await page.mouse.move(bounds.x + bounds.width * 0.2, bounds.y + bounds.height * 0.3);
+  await page.mouse.down();
+  for (let step = 1; step <= 10; step += 1) {
+    await page.mouse.move(
+      bounds.x + bounds.width * (0.2 + step * 0.045),
+      bounds.y + bounds.height * (0.3 + Math.sin(step / 2) * 0.015)
+    );
+  }
+  await page.mouse.up();
+  await expect(layer.locator("polyline")).toHaveCount(1);
+  await reader.getByRole("button", { name: /Favorito/ }).click();
+  await expect(reader.getByRole("button", { name: /Favorito/ })).toHaveAttribute(
+    "aria-pressed", "true"
+  );
+
+  await reader.getByRole("button", { name: /Desfazer/ }).click();
+  await expect(layer.locator("polyline")).toHaveCount(0);
+  await reader.getByRole("button", { name: /Refazer/ }).click();
+  await expect(layer.locator("polyline")).toHaveCount(1);
+  await expect.poll(() => studyMutations.length).toBeGreaterThanOrEqual(4);
+
+  const otherDevice = await browser.newContext({
+    viewport: mobile ? { width: 390, height: 844 } : { width: 1366, height: 768 }
+  });
+  const otherPage = await otherDevice.newPage();
+  await mockLearningApi(otherPage, { pdfPageCount: 3, pdfStudyStore });
+  await login(otherPage);
+  await otherPage.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
+  await otherPage.getByRole("button", { name: "Abrir leitor" }).click();
+  const otherReader = otherPage.getByRole("dialog", { name: "Leitor de Guia da aula" });
+  await expect(otherReader.getByRole("button", { name: "Caneta" })).toBeEnabled();
+  await expect(otherReader.locator('.pdf-reader-page[data-page="1"] .pdf-study-layer polyline'))
+    .toHaveCount(1);
+  await expect(otherReader.getByRole("button", { name: "Favorito" }))
+    .toHaveAttribute("aria-pressed", "true");
+  await otherDevice.close();
+
+  const mark = layer.locator("polyline").first();
+  const pageBefore = await pageOne.boundingBox();
+  const markBefore = await mark.boundingBox();
+  const pointsBefore = await mark.getAttribute("points");
+  for (let step = 0; step < 12; step += 1) {
+    await reader.getByRole("button", { name: "Aumentar zoom" }).click();
+  }
+  await expect(reader.getByText("400%", { exact: true })).toBeVisible();
+  await expect.poll(async () => (await pageOne.boundingBox())?.width ?? 0).toBeGreaterThan(
+    (pageBefore?.width ?? 0) * 3.98
+  );
+  const pageAfter = await pageOne.boundingBox();
+  const markAfter = await mark.boundingBox();
+  expect(pageBefore && markBefore && pageAfter && markAfter).toBeTruthy();
+  const normalizedBefore = {
+    x: (markBefore!.x + markBefore!.width / 2 - pageBefore!.x) / pageBefore!.width,
+    y: (markBefore!.y + markBefore!.height / 2 - pageBefore!.y) / pageBefore!.height
+  };
+  const normalizedAfter = {
+    x: (markAfter!.x + markAfter!.width / 2 - pageAfter!.x) / pageAfter!.width,
+    y: (markAfter!.y + markAfter!.height / 2 - pageAfter!.y) / pageAfter!.height
+  };
+  expect(Math.abs(normalizedBefore.x - normalizedAfter.x)).toBeLessThan(0.005);
+  expect(Math.abs(normalizedBefore.y - normalizedAfter.y)).toBeLessThan(0.005);
+  expect(await mark.getAttribute("points")).toBe(pointsBefore);
+
+  await reader.getByRole("button", { name: /Minhas marcações/ }).click();
+  const panel = reader.locator(".pdf-study-panel");
+  await expect(panel).toBeVisible();
+  await panel.getByRole("button", { name: /Página 2/ }).click();
+  await expect(reader.getByLabel("Ir para página")).toHaveValue("2");
+  if (!mobile) await reader.getByRole("button", { name: /Minhas marcações/ }).click();
+
+  await reader.getByLabel("Ir para página").fill("1");
+  await reader.getByLabel("Ir para página").press("Enter");
+  await reader.getByRole("button", { name: "Ajustar à largura" }).click();
+  await reader.getByRole("button", { name: "Voltar ao curso" }).click();
+  await page.reload();
+  await page.getByRole("button", { name: "Abrir leitor" }).click();
+  const reopened = page.getByRole("dialog", { name: "Leitor de Guia da aula" });
+  await expect(reopened.getByRole("button", { name: /Caneta/ })).toBeEnabled();
+  await expect(reopened.locator('.pdf-reader-page[data-page="1"] .pdf-study-layer polyline'))
+    .toHaveCount(1);
+  await expect(reopened.getByRole("button", { name: /Favorito/ })).toHaveAttribute(
+    "aria-pressed", "true"
+  );
+
+  await reopened.getByRole("button", { name: /Borracha/ }).click();
+  await reopened.locator('.pdf-reader-page[data-page="1"] .pdf-study-hit-target')
+    .dispatchEvent("pointerdown", { pointerId: 1, pointerType: "mouse", button: 0 });
+  await expect(reopened.locator('.pdf-reader-page[data-page="1"] .pdf-study-layer polyline'))
+    .toHaveCount(0);
+  await reopened.getByRole("button", { name: /Desfazer/ }).click();
+  await expect(reopened.locator('.pdf-reader-page[data-page="1"] .pdf-study-layer polyline'))
+    .toHaveCount(1);
+
+  await reopened.getByRole("button", { name: "Selecionar" }).click();
+  const reopenedLayer = reopened.locator('.pdf-reader-page[data-page="1"] .pdf-study-layer');
+  const selectedMark = reopenedLayer.locator("polyline").first();
+  const pointsBeforeMove = await selectedMark.getAttribute("points");
+  const selectedPoint = await selectedMark.evaluate((element) => {
+    const mark = element as SVGPolylineElement;
+    const point = mark.getPointAtLength(mark.getTotalLength() / 2);
+    const matrix = mark.getScreenCTM();
+    if (!matrix) throw new Error("missing annotation transform");
+    const projected = new DOMPoint(point.x, point.y).matrixTransform(matrix);
+    return { x: projected.x, y: projected.y };
+  });
+  await page.mouse.move(selectedPoint.x, selectedPoint.y);
+  await page.mouse.down();
+  await page.mouse.move(
+    selectedPoint.x + 18,
+    selectedPoint.y + 14,
+    { steps: 4 }
+  );
+  await page.mouse.up();
+  await expect.poll(() => selectedMark.getAttribute("points")).not.toBe(pointsBeforeMove);
+  await reopened.getByRole("button", { name: "Cor #D73535" }).click();
+  await expect(selectedMark).toHaveAttribute("stroke", "#D73535");
+  await reopened.getByRole("button", { name: "Espessura 3" }).click();
+  await expect(selectedMark).toHaveAttribute("stroke-width", "0.005");
+  await reopened.getByRole("button", { name: "Excluir marcação" }).click();
+  await expect(reopenedLayer.locator("polyline")).toHaveCount(0);
+  await reopened.getByRole("button", { name: "Desfazer" }).click();
+  await expect(reopenedLayer.locator("polyline")).toHaveCount(1);
+  await reopened.getByRole("button", { name: "Refazer" }).click();
+  await expect(reopenedLayer.locator("polyline")).toHaveCount(0);
+  await reopened.getByRole("button", { name: "Desfazer" }).click();
+  await expect(reopenedLayer.locator("polyline")).toHaveCount(1);
+
+  await page.setViewportSize(mobile ? { width: 844, height: 390 } : { width: 1100, height: 760 });
+  await expect(reopened.getByLabel("Ir para página")).toHaveValue("1");
+  await expect(reopened.locator('.pdf-reader-page[data-page="1"] .pdf-study-layer polyline'))
+    .toHaveCount(1);
+  await expect.poll(() => studyMutations.length).toBeGreaterThanOrEqual(13);
+  const size = await page.evaluate(() => ({
+    client: document.documentElement.clientWidth,
+    scroll: document.documentElement.scrollWidth
+  }));
+  expect(size.scroll).toBeLessThanOrEqual(size.client);
+});
+
+test("draws with one touch, reserves two touches for zoom and scrolls in hand mode", async ({
+  page
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium", "Raw multi-touch proof uses Chromium CDP.");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockLearningApi(page, { pdfPageCount: 3 });
+  await login(page);
+  await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
+  await page.getByRole("button", { name: "Abrir leitor" }).click();
+  const reader = page.getByRole("dialog", { name: "Leitor de Guia da aula" });
+  await expect(reader.getByRole("button", { name: "Caneta" })).toBeEnabled();
+  await reader.getByRole("button", { name: "Caneta" }).click();
+  const layer = reader.locator('.pdf-reader-page[data-page="1"] .pdf-study-layer');
+  const bounds = await layer.boundingBox();
+  expect(bounds).not.toBeNull();
+
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 2 });
+  const touch = async (
+    type: "touchStart" | "touchMove" | "touchEnd",
+    points: Array<{ x: number; y: number; id: number }>
+  ) => cdp.send("Input.dispatchTouchEvent", {
+    type,
+    touchPoints: points.map((point) => ({ ...point, radiusX: 2, radiusY: 2, force: 1 }))
+  });
+
+  const start = { x: bounds!.x + bounds!.width * 0.2, y: bounds!.y + bounds!.height * 0.25 };
+  await touch("touchStart", [{ ...start, id: 1 }]);
+  await touch("touchMove", [{ x: start.x + 80, y: start.y + 20, id: 1 }]);
+  await touch("touchEnd", []);
+  await expect(layer.locator("polyline")).toHaveCount(1);
+
+  const center = { x: bounds!.x + bounds!.width / 2, y: bounds!.y + bounds!.height / 2 };
+  await touch("touchStart", [
+    { x: center.x - 36, y: center.y, id: 2 },
+    { x: center.x + 36, y: center.y, id: 3 }
+  ]);
+  await touch("touchMove", [
+    { x: center.x - 92, y: center.y - 24, id: 2 },
+    { x: center.x + 92, y: center.y - 24, id: 3 }
+  ]);
+  await touch("touchEnd", []);
+  await expect.poll(async () => Number((await reader.locator(".pdf-reader-zoom-controls > span").textContent())?.replace("%", "")))
+    .toBeGreaterThan(100);
+  await expect(layer.locator("polyline")).toHaveCount(1);
+
+  await reader.getByRole("button", { name: "Mão" }).click();
+  await expect(layer).toHaveCSS("pointer-events", "none");
+  const viewport = reader.locator(".pdf-reader-viewport");
+  await viewport.evaluate((element) => { element.scrollTop = 0; });
+  const viewportBounds = await viewport.boundingBox();
+  expect(viewportBounds).not.toBeNull();
+  const scrollX = viewportBounds!.x + viewportBounds!.width / 2;
+  await touch("touchStart", [{ x: scrollX, y: viewportBounds!.y + 360, id: 4 }]);
+  await touch("touchMove", [{ x: scrollX, y: viewportBounds!.y + 130, id: 4 }]);
+  await touch("touchEnd", []);
+  await expect.poll(() => viewport.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
 });
 
 test("opens the mobile shelf, protects the PDF and completes into the next lesson", async ({ page }) => {

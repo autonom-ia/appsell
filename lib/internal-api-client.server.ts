@@ -46,6 +46,7 @@ interface ApiRequest {
     "catalog.asset.archive" | "catalog.asset.policy.update" |
     "library.read" | "library.enroll" | "library.asset.read" | "library.asset.download" |
     "learning.player.read" | "learning.progress.write" |
+    "learning.pdf-study.read" | "learning.pdf-study.write" |
     "commerce.demo.checkout.read" | "commerce.demo.checkout.complete" |
     "commerce.payout.read" | "commerce.payout.manage" | "commerce.payout.sync" |
     "commerce.checkout.destination";
@@ -1025,6 +1026,38 @@ export async function readDomainLearningPdfManifest(
   });
 }
 
+export async function readDomainLearningPdfStudy(
+  sessionId: string,
+  session: ServerSession,
+  entitlementId: string,
+  assetId: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/learning/items/${entitlementId}/assets/${assetId}/study`,
+    capability: "learning.pdf-study.read"
+  });
+}
+
+export async function mutateDomainLearningPdfStudy(
+  sessionId: string,
+  session: ServerSession,
+  entitlementId: string,
+  assetId: string,
+  body: {
+    idempotency_key: string;
+    expected_revision: number;
+    mutation: Record<string, unknown>;
+  }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `/v1/me/learning/items/${entitlementId}/assets/${assetId}/study`,
+    capability: "learning.pdf-study.write",
+    body
+  });
+}
+
 export interface DomainLearningPdfPage {
   bytes: Uint8Array;
   contentLength: number;
@@ -1288,6 +1321,8 @@ function requireDemoCapability(subject: string, request: ApiRequest) {
         "library.asset.download",
         "learning.player.read",
         "learning.progress.write",
+        "learning.pdf-study.read",
+        "learning.pdf-study.write",
         "commerce.demo.checkout.read",
         "commerce.demo.checkout.complete"
       ].includes(request.capability)) {

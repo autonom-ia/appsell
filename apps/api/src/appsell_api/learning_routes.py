@@ -6,7 +6,7 @@ import binascii
 import json
 import re
 from collections import OrderedDict
-from typing import Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from anyio import to_thread
@@ -34,6 +34,7 @@ from .storage_s3 import S3Storage, StorageError
 
 router = APIRouter(prefix="/v1")
 _MAX_LEARNING_BODY_BYTES = 4_096
+_MAX_PDF_STUDY_BODY_BYTES = 65_536
 _MAX_SAFE_INTEGER = (1 << 53) - 1
 _LEARNING_ASSETS_CONTRACT_HEADER = "x-appsell-learning-assets-contract"
 _PROTECTED_PDF_SLOTS = asyncio.Semaphore(4)
@@ -89,6 +90,75 @@ class FreeAccessBody(BaseModel):
     @classmethod
     def validate_product_id(cls, value: str) -> str:
         return _canonical_uuid(value, "invalid product id")
+
+
+class PdfStudyPoint(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    x: float = Field(ge=0, le=1)
+    y: float = Field(ge=0, le=1)
+
+
+class PdfStudyAnnotation(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    id: str
+    page: int = Field(ge=1, le=100)
+    tool: Literal["pen", "highlight"]
+    color: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")
+    width: float = Field(ge=0.0005, le=0.05)
+    points: list[PdfStudyPoint] = Field(min_length=2, max_length=1024)
+
+    @field_validator("id")
+    @classmethod
+    def validate_id(cls, value: str) -> str:
+        return _canonical_uuid(value, "invalid annotation id")
+
+
+class PdfStudyAnnotationUpsert(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    action: Literal["annotation.upsert"]
+    annotation: PdfStudyAnnotation
+
+
+class PdfStudyAnnotationDelete(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    action: Literal["annotation.delete"]
+    id: str
+
+    @field_validator("id")
+    @classmethod
+    def validate_id(cls, value: str) -> str:
+        return _canonical_uuid(value, "invalid annotation id")
+
+
+class PdfStudyBookmarkSet(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    action: Literal["bookmark.set"]
+    page: int = Field(ge=1, le=100)
+    active: bool
+
+
+PdfStudyMutation = Annotated[
+    PdfStudyAnnotationUpsert | PdfStudyAnnotationDelete | PdfStudyBookmarkSet,
+    Field(discriminator="action"),
+]
+
+
+class PdfStudyMutationBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    idempotency_key: str
+    expected_revision: int = Field(ge=0, le=_MAX_SAFE_INTEGER)
+    mutation: PdfStudyMutation
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def validate_idempotency_key(cls, value: str) -> str:
+        return _canonical_uuid(value, "invalid idempotency key")
 
 
 async def _authenticate(
@@ -302,6 +372,63 @@ async def inspect_asset_pages(
             "links": links,
         }
     }
+
+
+@router.get("/me/learning/items/{entitlement_id}/assets/{asset_id}/study")
+async def read_learning_pdf_study(
+    request: Request, entitlement_id: UUID, asset_id: UUID
+) -> dict[str, Any]:
+    auth, internal = await _authenticate(request, "learning.pdf-study.read")
+    await _require_buyer_scope(internal)
+    try:
+        async with auth.domain_session(internal.envelope) as session:
+            state = await session.scalar(
+                text(
+                    "select app_private.read_pdf_study_state("
+                    ":identity_user_id,:entitlement_id,:asset_id)"
+                ),
+                {
+                    "identity_user_id": internal.envelope.identity.user_id,
+                    "entitlement_id": entitlement_id,
+                    "asset_id": asset_id,
+                },
+            )
+    except DBAPIError as error:
+        raise _pdf_study_domain_error(error) from error
+    return {"state": state}
+
+
+@router.post("/me/learning/items/{entitlement_id}/assets/{asset_id}/study")
+async def mutate_learning_pdf_study(
+    request: Request, entitlement_id: UUID, asset_id: UUID
+) -> dict[str, Any]:
+    auth, internal = await _authenticate(request, "learning.pdf-study.write")
+    await _require_buyer_scope(internal)
+    body = await _model_from_internal_body(
+        request, internal, PdfStudyMutationBody, _MAX_PDF_STUDY_BODY_BYTES
+    )
+    try:
+        async with auth.domain_session(internal.envelope) as session:
+            state = await session.scalar(
+                text(
+                    "select app_private.mutate_pdf_study_state("
+                    ":identity_user_id,:entitlement_id,:asset_id,:expected_revision,"
+                    ":idempotency_key,:body_sha256,:request_id,cast(:mutation as jsonb))"
+                ),
+                {
+                    "identity_user_id": internal.envelope.identity.user_id,
+                    "entitlement_id": entitlement_id,
+                    "asset_id": asset_id,
+                    "expected_revision": body.expected_revision,
+                    "idempotency_key": UUID(body.idempotency_key),
+                    "body_sha256": internal.envelope.body_sha256,
+                    "request_id": internal.envelope.request_id,
+                    "mutation": json.dumps(body.mutation.model_dump(mode="json")),
+                },
+            )
+    except DBAPIError as error:
+        raise _pdf_study_domain_error(error) from error
+    return {"state": state}
 
 
 @router.get("/me/learning/items/{entitlement_id}/assets/{asset_id}/pages/{page_number}")
@@ -850,6 +977,7 @@ async def _model_from_internal_body(
     request: Request,
     internal: AuthenticatedInternalRequest,
     model: type[BaseModel],
+    max_bytes: int = _MAX_LEARNING_BODY_BYTES,
 ) -> Any:
     if request.headers.get("content-type") != "application/json":
         await internal.consume_rejected_request()
@@ -857,7 +985,7 @@ async def _model_from_internal_body(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             detail="invalid_content_type",
         )
-    if len(internal.body) > _MAX_LEARNING_BODY_BYTES:
+    if len(internal.body) > max_bytes:
         await internal.consume_rejected_request()
         raise HTTPException(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
@@ -921,6 +1049,19 @@ def _learning_domain_error(error: DBAPIError) -> HTTPException:
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail="learning_unavailable",
     )
+
+
+def _pdf_study_domain_error(error: DBAPIError) -> HTTPException:
+    mapped = _learning_domain_error(error)
+    if (
+        mapped.status_code == status.HTTP_409_CONFLICT
+        and mapped.detail == "progress_version_conflict"
+    ):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="pdf_study_revision_conflict",
+        )
+    return mapped
 
 
 def _learning_not_found() -> HTTPException:
