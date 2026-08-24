@@ -77,7 +77,6 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
   const pageLoads = useRef(new Map<number, Promise<string>>());
   const pageLoadControllers = useRef(new Set<AbortController>());
   const pageCacheGeneration = useRef(0);
-  const readerPositioned = useRef(false);
 
   const pageCount = typeof manifest === "object" ? manifest.pageCount : 0;
   const storageKey = useMemo(
@@ -392,15 +391,10 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
   }, [pageCount, readerOpen]);
 
   useEffect(() => {
-    if (!readerOpen) {
-      readerPositioned.current = false;
-      return;
-    }
-    if (viewportWidth <= 0 || readerPositioned.current) return;
+    if (!readerOpen || viewportWidth <= 0) return;
     const frame = window.requestAnimationFrame(() => {
       programmaticPage.current = pageNumberRef.current;
       scrollToPage(pageNumberRef.current, false);
-      readerPositioned.current = true;
     });
     return () => window.cancelAnimationFrame(frame);
   }, [readerOpen, scrollToPage, viewportWidth]);
