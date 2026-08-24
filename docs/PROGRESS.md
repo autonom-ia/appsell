@@ -45,6 +45,7 @@ usa web `1d2ea631`, API/asset-worker `50b6301` e migration
 
 - Issue: [#226](https://github.com/autonom-ia/appsell/issues/226)
 - Branch: `codex/226-prod-reader-handoff`
+- PR: [#227](https://github.com/autonom-ia/appsell/pull/227)
 - Objetivo: consolidar o release do leitor, o aceite real e o ponto seguro de
   retomada para compact/clear.
 - Limite: somente documentação; nenhum novo deploy ou mudança de runtime.

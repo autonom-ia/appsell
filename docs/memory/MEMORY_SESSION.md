@@ -31,6 +31,38 @@ Project status:
   - Próxima ação: [acionável]
 ```
 
+## Sessão: 2026-08-24 — consolidar release do leitor e handoff para compact/clear
+
+Issue: #226
+Branch: `codex/226-prod-reader-handoff`
+PR: #227
+Estado: concluído
+Modelo: strong + humano
+Arquivos alterados: `README.md`, `deploy/easypanel-native/README.md`, documentos
+canônicos em `docs/`, arquitetura, decisões, implementação do leitor, runbooks
+de release/backup e memórias de projeto/sessão.
+Comandos executados: conferência do diff; verificação de links Markdown;
+testes das regras de CI; instalação com lockfile congelado; suíte rápida;
+criação da Issue #226, branch e PR #227; reconciliação administrativa das
+Issues #204 e #208 no Project #3.
+Validação: `git diff --check` PASS; links locais PASS em 15 arquivos; 35 testes
+das regras de CI PASS; `pnpm test:fast` com 584 PASS e 2 skipped. Produção já
+havia sido validada pelo Rodrigo antes desta sessão documental.
+Bloqueios: merge documental aguarda aprovação explícita do Rodrigo. Não há
+deploy associado a esta PR.
+Próxima ação: revisar a PR #227; após aprovação, fazer somente o merge e
+confirmar o CI pós-merge. Para nova evolução, partir de `origin/main` e abrir
+nova Issue/branch.
+
+Project status:
+  - Projeto: Appsell
+  - Status: Em review
+  - Tipo: Docs
+  - Prioridade: P1
+  - Risco: Baixo
+  - Ambiente: Produção
+  - Próxima ação: revisar e aprovar a PR #227
+
 ## Sessão: 2026-08-24 — consolidar documentação e handoff do estado real
 
 Issue: #202
