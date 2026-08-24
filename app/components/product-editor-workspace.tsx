@@ -760,7 +760,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
         <AccessibleDialog titleId="publish-dialog-title" descriptionId="publish-dialog-description" initialFocusRef={publishCancelButton} returnFocusRef={publishTriggerButton} onClose={closePublishDialog}>
             <p className="eyebrow">Confirmação de catálogo</p><h2 id="publish-dialog-title">Publicar este catálogo?</h2>
             <p id="publish-dialog-description">Produto, oferta informativa, módulos, aulas e PDFs verificados ficarão fixos nesta versão do catálogo. A publicação não ativa vendas: depois você escolhe acima entre acesso gratuito e checkout.</p>
-            <div className="dialog-actions"><button ref={publishCancelButton} className="secondary-button" type="button" onClick={closePublishDialog}>Revisar novamente</button><button className="primary-button" type="button" onClick={() => void publish()}>Publicar catálogo</button></div>
+            <div className="dialog-actions"><button ref={publishCancelButton} className="secondary-button" type="button" onClick={closePublishDialog}>Revisar novamente</button><button className="primary-button commercial-button" type="button" onClick={() => void publish()}>Publicar catálogo</button></div>
         </AccessibleDialog>
       ) : null}
 

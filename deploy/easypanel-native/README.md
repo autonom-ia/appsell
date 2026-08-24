@@ -114,3 +114,6 @@ Este diretório não é o procedimento da produção atual e não deve ser usado
 resetar ou semear o banco real. O ambiente `native-90` continua reservado à
 homologação documentada pela Issue #90; novas alterações de produção seguem o
 fluxo Issue → PR → review → aprovação → deploy/rollback.
+
+Não existe marker local-demo de produção; qualquer marker descrito neste fluxo
+pertence exclusivamente à homologação histórica `native-90`.
