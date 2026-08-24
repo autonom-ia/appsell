@@ -40,6 +40,17 @@ const MULTI_COURSE_PUBLISH_FIELDS = [
   "expected_offer_version",
   "course_versions"
 ] as const;
+// Publishing now carries the access decision. The variants without the field
+// stay accepted so a client that has not been updated keeps publishing free
+// access instead of failing.
+const LEGACY_PUBLISH_WITH_ACCESS_FIELDS = [
+  ...LEGACY_PUBLISH_FIELDS,
+  "access_mode"
+] as const;
+const MULTI_COURSE_PUBLISH_WITH_ACCESS_FIELDS = [
+  ...MULTI_COURSE_PUBLISH_FIELDS,
+  "access_mode"
+] as const;
 
 export async function POST(request: NextRequest, context: ProductRouteContext) {
   const ids = await productRouteIds(context);
@@ -58,7 +69,9 @@ export async function POST(request: NextRequest, context: ProductRouteContext) {
 
   const parsed = await readExactLimitedFields(request, [
     LEGACY_PUBLISH_FIELDS,
-    MULTI_COURSE_PUBLISH_FIELDS
+    MULTI_COURSE_PUBLISH_FIELDS,
+    LEGACY_PUBLISH_WITH_ACCESS_FIELDS,
+    MULTI_COURSE_PUBLISH_WITH_ACCESS_FIELDS
   ]);
   if (parsed.kind === "too_large") return payloadTooLarge();
   if (parsed.kind === "invalid") return invalidInput("form");
@@ -78,6 +91,8 @@ export async function POST(request: NextRequest, context: ProductRouteContext) {
   if (!offerId) return invalidInput("offer_id");
   if (productVersion === null) return invalidInput("expected_product_version");
   if (offerVersion === null) return invalidInput("expected_offer_version");
+  const accessMode = fields.access_mode ?? "free";
+  if (accessMode !== "free" && accessMode !== "paid") return invalidInput("access_mode");
 
   try {
     const courseVersions = fields.course_versions === undefined
@@ -95,7 +110,8 @@ export async function POST(request: NextRequest, context: ProductRouteContext) {
         offerId,
         expectedProductVersion: productVersion,
         expectedOfferVersion: offerVersion,
-        courseVersions
+        courseVersions,
+        accessMode
       }
     );
     const created = isRecord(payload) && payload.created === true;
