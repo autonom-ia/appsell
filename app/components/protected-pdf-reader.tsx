@@ -28,6 +28,7 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
   const [failedPages, setFailedPages] = useState<Set<number>>(() => new Set());
   const [policyFeedback, setPolicyFeedback] = useState("");
   const [viewportWidth, setViewportWidth] = useState(0);
+  const [pageHeightRatio, setPageHeightRatio] = useState(PDF_PAGE_HEIGHT_RATIO);
   const [fullscreenActive, setFullscreenActive] = useState(false);
   const readerRef = useRef<HTMLElement | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
@@ -39,6 +40,7 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
   const lastTouchTap = useRef(0);
   const pageNumberRef = useRef(1);
   const programmaticPage = useRef<number | null>(null);
+  const pageRatioCaptured = useRef(false);
 
   const pageCount = typeof manifest === "object" ? manifest.pageCount : 0;
   const storageKey = useMemo(
@@ -49,6 +51,8 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
   const loadManifest = useCallback(async () => {
     setManifest("loading");
     setPolicyFeedback("");
+    pageRatioCaptured.current = false;
+    setPageHeightRatio(PDF_PAGE_HEIGHT_RATIO);
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 8_000);
     try {
@@ -195,37 +199,41 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
 
   useEffect(() => {
     if (!readerOpen || !viewportRef.current || pageCount === 0) return;
-    const intersections = new Map<number, number>();
-    const observer = new IntersectionObserver((entries) => {
-      for (const entry of entries) {
-        const page = Number((entry.target as HTMLElement).dataset.page);
-        if (Number.isSafeInteger(page)) intersections.set(page, entry.intersectionRatio);
-      }
-      const requestedPage = programmaticPage.current;
-      if (requestedPage !== null) {
-        const requestedVisibility = intersections.get(requestedPage) ?? 0;
-        const strongestVisibility = Math.max(0, ...intersections.values());
-        if (requestedVisibility > 0.01 && requestedVisibility >= strongestVisibility) {
-          programmaticPage.current = null;
-        }
+    const viewport = viewportRef.current;
+    let settleTimer = 0;
+    const settleVisiblePage = () => {
+      if (programmaticPage.current !== null) {
+        programmaticPage.current = null;
         return;
       }
-      let visiblePage = 1;
-      let visibility = 0;
-      for (const [page, ratio] of intersections) {
-        if (ratio > visibility) {
+      const viewportBounds = viewport.getBoundingClientRect();
+      const viewportCenter = viewportBounds.top + viewportBounds.height / 2;
+      let visiblePage = pageNumberRef.current;
+      let nearestDistance = Number.POSITIVE_INFINITY;
+      pageElements.current.forEach((element, page) => {
+        const bounds = element.getBoundingClientRect();
+        if (bounds.bottom <= viewportBounds.top || bounds.top >= viewportBounds.bottom) return;
+        const distance = Math.abs(bounds.top + bounds.height / 2 - viewportCenter);
+        if (distance < nearestDistance) {
           visiblePage = page;
-          visibility = ratio;
+          nearestDistance = distance;
         }
-      }
-      if (visibility > 0.01 && visiblePage !== pageNumberRef.current) {
+      });
+      if (visiblePage !== pageNumberRef.current) {
         pageNumberRef.current = visiblePage;
         setPageNumber(visiblePage);
         setPageDraft(String(visiblePage));
       }
-    }, { root: viewportRef.current, threshold: [0, 0.02, 0.08, 0.15, 0.35, 0.6, 0.85] });
-    pageElements.current.forEach((element) => observer.observe(element));
-    return () => observer.disconnect();
+    };
+    const scheduleVisiblePage = () => {
+      window.clearTimeout(settleTimer);
+      settleTimer = window.setTimeout(settleVisiblePage, 180);
+    };
+    viewport.addEventListener("scroll", scheduleVisiblePage, { passive: true });
+    return () => {
+      window.clearTimeout(settleTimer);
+      viewport.removeEventListener("scroll", scheduleVisiblePage);
+    };
   }, [pageCount, readerOpen]);
 
   useEffect(() => {
@@ -309,6 +317,14 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
     });
   };
 
+  const capturePageHeightRatio = (image: HTMLImageElement) => {
+    if (pageRatioCaptured.current || image.naturalWidth <= 0 || image.naturalHeight <= 0) return;
+    const ratio = image.naturalHeight / image.naturalWidth;
+    if (!Number.isFinite(ratio) || ratio < 1.1 || ratio > 2) return;
+    pageRatioCaptured.current = true;
+    setPageHeightRatio(ratio);
+  };
+
   const baseWidth = Math.min(Math.max(viewportWidth - (viewportWidth < 680 ? 24 : 48), 280), 1040);
   const renderedPageWidth = Math.round(baseWidth * zoom);
 
@@ -335,6 +351,7 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
                     draggable={false}
                     loading="eager"
                     referrerPolicy="no-referrer"
+                    onLoad={(event) => capturePageHeightRatio(event.currentTarget)}
                     onDragStart={(event) => event.preventDefault()}
                     onError={() => setPreviewError(true)}
                   />}
@@ -426,7 +443,7 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
                   data-page={page}
                   style={{
                     width: `${renderedPageWidth}px`,
-                    minHeight: `${Math.round(renderedPageWidth * PDF_PAGE_HEIGHT_RATIO)}px`
+                    minHeight: `${Math.round(renderedPageWidth * pageHeightRatio)}px`
                   }}
                   aria-label={`Página ${page} de ${manifest.pageCount}`}
                 >
@@ -442,6 +459,7 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
                           draggable={false}
                           loading="eager"
                           referrerPolicy="no-referrer"
+                          onLoad={(event) => capturePageHeightRatio(event.currentTarget)}
                           onDragStart={(event) => event.preventDefault()}
                           onError={() => markPageFailed(page)}
                         />}

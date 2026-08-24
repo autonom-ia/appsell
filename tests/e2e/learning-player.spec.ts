@@ -15,7 +15,7 @@ const secondCourseId = "fb740e5c-2d01-5cc2-8397-bb09188d416a";
 const secondModuleId = "ebf42728-a9d9-53da-b68f-4146539f9295";
 const foreignEnrollmentId = "36a59404-d3f3-5309-95d9-258f4303e687";
 const protectedPng = Buffer.from(
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAC56t6BAAAADklEQVR4nGP4DwUMGAwAQuYX6TviV+QAAAAASUVORK5CYII=",
   "base64"
 );
 
@@ -209,6 +209,10 @@ test("bounds protected PDF requests for a 65-page reader", async ({ page }) => {
   await expect.poll(() => reader.locator(".pdf-reader-page img").evaluateAll((images) =>
     images.every((image) => (image as HTMLImageElement).complete && (image as HTMLImageElement).naturalWidth > 0)
   )).toBe(true);
+  await page.waitForTimeout(4_000);
+  await expect(reader.getByLabel("Ir para página")).toHaveValue("1");
+  await expect(reader.locator(".pdf-reader-page img")).toHaveCount(2);
+  await expect(reader.locator(".pdf-reader-page-placeholder")).toHaveCount(63);
   const initialReaderRequests = new Set(pageRequests);
   expect(initialReaderRequests.size).toBeLessThanOrEqual(2);
   expect(initialReaderRequests.has(
@@ -224,6 +228,8 @@ test("bounds protected PDF requests for a 65-page reader", async ({ page }) => {
   await expect(reader.getByLabel("Ir para página")).toHaveValue("2");
   await expect(reader.locator(".pdf-reader-page img")).toHaveCount(3);
   await expect.poll(() => pageRequests.length).toBeGreaterThan(beforeNext);
+  await page.waitForTimeout(4_000);
+  await expect(reader.getByLabel("Ir para página")).toHaveValue("2");
   expect(new Set(pageRequests.slice(beforeNext))).toEqual(new Set([
     `/api/library/items/${entitlementId}/assets/${assetId}/pages/3`
   ]));
@@ -238,6 +244,19 @@ test("bounds protected PDF requests for a 65-page reader", async ({ page }) => {
     `/api/library/items/${entitlementId}/assets/${assetId}/pages/49`,
     `/api/library/items/${entitlementId}/assets/${assetId}/pages/50`,
     `/api/library/items/${entitlementId}/assets/${assetId}/pages/51`
+  ]));
+  await page.waitForTimeout(4_000);
+  await expect(reader.getByLabel("Ir para página")).toHaveValue("50");
+
+  const beforeContinuousScroll = pageRequests.length;
+  await reader.locator('.pdf-reader-page[data-page="52"]').evaluate((element) =>
+    element.scrollIntoView({ behavior: "auto", block: "start" })
+  );
+  await expect(reader.getByLabel("Ir para página")).toHaveValue("52");
+  await expect.poll(() => pageRequests.length).toBeGreaterThanOrEqual(beforeContinuousScroll + 2);
+  expect(new Set(pageRequests.slice(beforeContinuousScroll))).toEqual(new Set([
+    `/api/library/items/${entitlementId}/assets/${assetId}/pages/52`,
+    `/api/library/items/${entitlementId}/assets/${assetId}/pages/53`
   ]));
 });
 
