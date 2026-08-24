@@ -68,7 +68,7 @@ export default async function ProductCheckoutPage({
           ? <div className="checkout-card checkout-unavailable">
               <h2>Entre para comprar</h2>
               <p>O acesso ficará vinculado à conta usada no pagamento.</p>
-              <Link className="primary-button" href={`/auth/login?next=${encodeURIComponent(productPath)}`}>Entrar ou criar conta</Link>
+              <Link className="primary-button commercial-button" href={`/auth/login?next=${encodeURIComponent(productPath)}`}>Entrar ou criar conta</Link>
             </div>
           : <div className="checkout-card checkout-unavailable" role="alert">
               <h2>Checkout indisponível</h2>

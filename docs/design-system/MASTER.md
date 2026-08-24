@@ -6,7 +6,7 @@
 
 ## Direção
 
-Interface clara, operacional e editorial. Canvas frio, superfícies brancas, sidebar azul-marinho no desktop e navegação inferior no celular. Azul comunica ação e estrutura; laranja é assinatura de marca, não cor dominante de CTA.
+Interface clara, operacional e editorial. Canvas frio, superfícies brancas, sidebar azul-marinho flutuante no desktop e navegação inferior flutuante no celular. O glass é uma membrana de navegação, nunca uma textura repetida dentro do conteúdo. Azul comunica ação e estrutura; laranja é reservado à conversão comercial, publicação e ativação de vendas.
 
 ## Tokens principais
 
@@ -22,10 +22,13 @@ Interface clara, operacional e editorial. Canvas frio, superfícies brancas, sid
 | text strong | `#0f172a` |
 | text base | `#475569` |
 | sidebar | `#0b1e3f` |
+| glass membrane | `rgba(255,255,255,.74)` |
+| opaque panel | `rgba(255,255,255,.95)` |
+| apex content | `#ffffff` |
 
 ## Regras
 
-- mobile-first a partir de 320 px; breakpoints principais em 680 e 1025 px;
+- mobile-first a partir de 320 px; breakpoints principais em 680 e 1024 px;
 - texto-base mínimo de 16 px em formulários futuros;
 - alvo interativo mínimo de 44 px;
 - foco visível de 3 px;
@@ -35,6 +38,9 @@ Interface clara, operacional e editorial. Canvas frio, superfícies brancas, sid
 - animações entre 150 e 300 ms e neutralizadas com `prefers-reduced-motion`;
 - estados não dependem apenas de cor: sempre há texto;
 - dados de demonstração e integrações bloqueadas devem permanecer rotulados.
+- glass somente em shell, cabeçalhos, navegação e overlays; cards internos são opacos;
+- Inter no corpo e Space Grotesk em títulos, servidas por `next/font`;
+- laranja somente em entrada/conversão, publicação, ativação de vendas e checkout.
 
 ## Anti-padrões
 

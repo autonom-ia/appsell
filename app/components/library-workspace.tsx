@@ -78,7 +78,7 @@ export function LibraryWorkspace({ demoCheckoutEnabled = false }: { demoCheckout
   }
 
   if (!items.length) {
-    return <section className="empty-state library-empty" aria-labelledby="library-empty-title"><h2 id="library-empty-title">Sua biblioteca está vazia</h2><p>Nenhum produto ativo está disponível para esta conta.{demoCheckoutEnabled ? " Conclua a compra demo para liberar o curso." : ""}</p>{demoCheckoutEnabled ? <Link className="primary-button" href="/checkout">Comprar com cupom demo</Link> : null}<button type="button" className="secondary-button" onClick={() => void load()}>Atualizar biblioteca</button></section>;
+    return <section className="empty-state library-empty" aria-labelledby="library-empty-title"><h2 id="library-empty-title">Sua biblioteca está vazia</h2><p>Nenhum produto ativo está disponível para esta conta.{demoCheckoutEnabled ? " Conclua a compra demo para liberar o curso." : ""}</p>{demoCheckoutEnabled ? <Link className="primary-button commercial-button" href="/checkout">Comprar com cupom demo</Link> : null}<button type="button" className="secondary-button" onClick={() => void load()}>Atualizar biblioteca</button></section>;
   }
 
   return <div className="learner-library">{items.map((item) => {

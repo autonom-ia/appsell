@@ -73,7 +73,7 @@ export default async function SellerStorefront({
               </p> : null}
             </div>
             <div className="storefront-product-action">
-              <Link className="primary-button" href={demoCheckoutEnabled ? loginHref : (product.access_mode ?? "paid") === "free" ? `/s/${storefront.seller.slug}/p/${product.slug}/access` : `/s/${storefront.seller.slug}/p/${product.slug}`}>{demoCheckoutEnabled ? "Comprar com cupom demo" : (product.access_mode ?? "paid") === "paid" ? "Comprar agora" : "Acessar gratuitamente"}</Link>
+              <Link className={demoCheckoutEnabled || (product.access_mode ?? "paid") === "paid" ? "primary-button commercial-button" : "primary-button"} href={demoCheckoutEnabled ? loginHref : (product.access_mode ?? "paid") === "free" ? `/s/${storefront.seller.slug}/p/${product.slug}/access` : `/s/${storefront.seller.slug}/p/${product.slug}`}>{demoCheckoutEnabled ? "Comprar com cupom demo" : (product.access_mode ?? "paid") === "paid" ? "Comprar agora" : "Acessar gratuitamente"}</Link>
               {demoCheckoutEnabled ? <small>Compra demonstrativa de valor zero, sem cobrança financeira.</small> : null}
             </div>
           </article>)}
