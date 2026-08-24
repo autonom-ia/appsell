@@ -1,9 +1,9 @@
 # Modelo de dados e ERD
 
-- Status: Approved logical model; PostgreSQL production head `0032_platform_superadmin_catalog` verified on 2026-08-23
+- Status: Approved logical model; PostgreSQL production head `0033_pdf_study_state` verified on 2026-08-24
 - Banco baseline: PostgreSQL 16+
 - Identificadores: UUID/UUIDv7 ou equivalente não sequencial, decisão final no scaffold
-- Escopo: modelo lógico; a implementação atual está aplicada até a migration `0032`; futuras migrations continuam sujeitas a revisão e aprovação
+- Escopo: modelo lógico; a implementação atual está aplicada até a migration `0033`; futuras migrations continuam sujeitas a revisão e aprovação
 
 O modelo abaixo é a fonte conceitual das relações. A fotografia operacional do
 banco real, dos tenants e das permissões está em
@@ -368,8 +368,8 @@ e não possui `BYPASSRLS`.
 
 Na produção atual, o isolamento não depende apenas desta descrição: as consultas
 de catálogo, edição, publicação e acesso do comprador foram verificadas com
-tenant correto e com tentativa cross-tenant negativa no SHA
-`2c8a36897eadf624955810ffdaee7b33c6239334`.
+tenant correto e com tentativa cross-tenant negativa na base de produção. O
+runtime atual usa web `1d2ea631`, API/asset-worker `50b6301` e migration `0033`.
 
 ## Dados fora do PostgreSQL
 

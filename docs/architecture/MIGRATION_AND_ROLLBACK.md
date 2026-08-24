@@ -2,8 +2,8 @@
 
 - Status: Approved operating baseline; production cutover for the catalog slice verified
 - Escopo atual: Local/CI, homologação isolada e produção VPS nativa
-- Release de produção: SHA `2c8a36897eadf624955810ffdaee7b33c6239334`, PR #201, Issue #195
-- Banco de produção: PostgreSQL nativo `appsell_native_90`, migration head `0032_platform_superadmin_catalog`
+- Release de produção: web `1d2ea631`, API/asset-worker `50b6301`
+- Banco de produção: PostgreSQL nativo `appsell_native_90`, migration head `0033_pdf_study_state`
 
 Este documento registra o método operacional. Ele não autoriza uma nova
 migration, alteração de banco, deploy ou rollback sozinho. A execução já feita
@@ -165,7 +165,7 @@ banco novo.
 
 ## 9. Backup e restore
 
-### Evidência do cutover atual
+### Evidência dos cutovers preservados
 
 Antes do cutover do release `2c8a3689`, foi gerado e preservado um dump lógico
 do banco de produção:
@@ -177,6 +177,12 @@ do banco de produção:
 Esse backup é evidência do release, não significa que a rotina recorrente de
 backup/PITR esteja concluída. O estado de backup e os próximos gaps devem ser
 atualizados no runbook operacional antes de qualquer mudança de infraestrutura.
+
+Antes do cutover web `1d2ea631`, também foi criado e validado:
+
+- `/home/claudete/backups/appsell/pre-web-1d2ea631.dump`;
+- SHA-256: `2a800ceea2605c3cf9b59b7a7d436d03b9c629cacf34365ae1384cbaa31dfd11`;
+- rollback do web: `easypanel/sell-autonomia/web:50b6301`.
 
 Metas propostas, ainda sujeitas a custo/aprovação:
 

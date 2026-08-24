@@ -2,7 +2,7 @@
 
 > Fonte operacional para retomar o projeto sem depender do histórico da conversa.
 >
-> Última verificação documentada: 2026-08-23. Esta página separa o que foi
+> Última verificação documentada: 2026-08-24. Esta página separa o que foi
 > comprovado na produção do que continua sendo plano ou laboratório Local/CI.
 
 ## Release em produção
@@ -11,16 +11,18 @@
 |---|---|
 | Domínio | `https://sell.autonomia.site` |
 | Ambiente | VPS EasyPanel nativo, Docker Swarm |
-| SHA implantado | `2c8a36897eadf624955810ffdaee7b33c6239334` |
-| Imagens | `web:2c8a3689`, `api:2c8a3689`, `asset-worker:2c8a3689` |
-| API health | `{"status":"ok","database":true,"storage":true,"pdf_sandbox":true}` |
-| CI pós-merge | [run 32656218821](https://github.com/autonom-ia/appsell/actions/runs/32656218821) — success |
-| PR | [#201](https://github.com/autonom-ia/appsell/pull/201) — merged |
-| Entrega | [Issue #195](https://github.com/autonom-ia/appsell/issues/195) — 14/14 aceites, encerrada |
+| Release web | `1d2ea63119c9124c7d5a4960aa778c3f613f490f` |
+| Release API/worker | `50b6301cfeb6afca696391d7ba8832642bde79e1` |
+| Imagens | `web:1d2ea63`, `api:50b6301`, `asset-worker:50b6301` |
+| Migration head | `0033_pdf_study_state` |
+| Readiness público | `status=ok`, Redis, API e storage saudáveis |
+| CI pós-merge atual | [run 32768382697](https://github.com/autonom-ia/appsell/actions/runs/32768382697), success |
+| PRs do leitor | [#211](https://github.com/autonom-ia/appsell/pull/211), [#215](https://github.com/autonom-ia/appsell/pull/215) a [#219](https://github.com/autonom-ia/appsell/pull/219), [#223](https://github.com/autonom-ia/appsell/pull/223) e [#225](https://github.com/autonom-ia/appsell/pull/225) |
+| Aceite mais recente | [Issue #224](https://github.com/autonom-ia/appsell/issues/224), validada pelo Rodrigo na sessão real |
 
-O release não adicionou migration nem alterou runtime de produção; a PR #201
-consolidou os gates e os testes do fluxo real. O banco de produção permanece no
-head `0032_platform_superadmin_catalog`.
+A API e o asset-worker receberam a persistência de estudo no release `50b6301`.
+O hotfix `1d2ea631` alterou somente o web; banco, migration, API, worker, auth,
+billing e dados permaneceram intactos nesse último cutover.
 
 ## Hierarquia de contas
 
@@ -88,6 +90,20 @@ material pronto pode entrar em nova publicação. O nome físico do arquivo não
 apresentado ao aluno; o conteúdo é servido dentro da biblioteca, com autorização
 por identidade, seller, produto, publicação, entitlement e asset.
 
+### Leitor PDF protegido
+
+- O original continua privado; o aluno recebe páginas rasterizadas sob
+  autorização e cache controlado, com carregamento antecipado limitado.
+- Links do índice navegam para a página correta e vídeos vinculados abrem em um
+  player dentro da plataforma.
+- Favoritos e marcações vetoriais são privados, persistentes e editáveis. A
+  ferramenta Mão arrasta o documento com mouse; Editar marcação move, recolore,
+  muda espessura ou exclui uma anotação existente.
+- Toque com um dedo, pinça com dois dedos, zoom, retomada de página e cache da
+  sessão permanecem disponíveis no mobile.
+- A identificação fica em rodapé discreto fora do conteúdo. A plataforma reduz
+  cópia casual, mas não promete bloquear captura de tela do sistema operacional.
+
 ## Regra de acesso resumida
 
 | Ator | Pode | Não pode |
@@ -97,7 +113,7 @@ por identidade, seller, produto, publicação, entitlement e asset.
 | `buyer` | acessar aulas/PDFs dos entitlements ativos na biblioteca | abrir editor, alterar catálogo ou publicar |
 | visitante | ver vitrine pública e iniciar cadastro/login | ler conteúdo privado |
 
-## Evidência final dos aceites
+## Evidência da base multitenant
 
 - Tenants `autonomia` e `hub2you` foram listados pelo superadmin.
 - Edição transacional de produto foi exercitada nos dois tenants e revertida ao
@@ -113,6 +129,22 @@ por identidade, seller, produto, publicação, entitlement e asset.
   assets e 0 entitlements persistidos.
 - O smoke foi executado dentro da API implantada com as imagens do SHA
   `2c8a3689`; toda escrita de teste ocorreu em transação revertida.
+
+## Evidência do leitor e aceite do usuário
+
+- O reader premium, links, vídeo interno, carregamento sob demanda, cache,
+  anotações e favoritos foram integrados em PRs separados com CI verde.
+- O hotfix da Mão e de Editar marcação foi mergeado no PR #225, SHA
+  `1d2ea631`, e implantado somente no web.
+- O container do web convergiu saudável; readiness público ficou verde e os
+  logs recentes não apresentaram `ERROR`, `Traceback`, `FATAL` ou `panic`.
+- Rodrigo validou Mão e Editar marcação na sessão autenticada real após o
+  deploy, encerrando a Issue #224.
+- Backup pré-deploy validado:
+  `/home/claudete/backups/appsell/pre-web-1d2ea631.dump`, SHA-256
+  `2a800ceea2605c3cf9b59b7a7d436d03b9c629cacf34365ae1384cbaa31dfd11`.
+- Rollback do último cutover: restaurar somente o web para
+  `easypanel/sell-autonomia/web:50b6301`.
 
 ## Produção não usa demo
 

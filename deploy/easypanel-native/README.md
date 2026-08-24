@@ -2,7 +2,7 @@
 
 > **Classificação:** este arquivo documenta a homologação histórica da Issue
 > #90. A produção atual está em `sell.autonomia.site`, no release
-> `2c8a36897eadf624955810ffdaee7b33c6239334`, e é descrita em
+> web `1d2ea631` e API/asset-worker `50b6301`, e é descrita em
 > [`docs/PRODUCTION_CURRENT.md`](../../docs/PRODUCTION_CURRENT.md) e no
 > [runbook de release](../../docs/runbooks/PRODUCTION_RELEASE_APPSSELL.md).
 

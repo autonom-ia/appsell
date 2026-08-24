@@ -50,8 +50,8 @@ seller, produto, publicação e asset em cada leitura.
 ## Decisão 007 — produção na VPS
 
 O destino operacional do Appsell é a VPS EasyPanel nativa, não AWS/EC2. O SHA
-comprovado em produção é `2c8a36897eadf624955810ffdaee7b33c6239334`. Qualquer
-novo cutover exige backup, rollback e smoke no mesmo SHA.
+comprovado do web é `1d2ea631`; API e asset-worker permanecem em `50b6301`.
+Qualquer novo cutover exige backup, rollback e smoke no SHA afetado.
 
 ## Decisão 008 — produção não usa demo
 
@@ -63,6 +63,14 @@ ser executados em `appsell_native_90` nem no domínio público.
 Não apagar/recriar tenant, produto, PDF ou membership para corrigir fluxo.
 Migrations são forward-only; rollback de aplicação usa imagem anterior e
 rollback de dados usa restore ensaiado em banco separado.
+
+## Decisão 010 — leitor protegido e estudo privado
+
+O leitor entrega páginas rasterizadas sob autorização, sem expor o PDF original.
+Links do índice e vídeos abrem dentro da plataforma. Favoritos e marcações
+vetoriais são privados e persistidos; Mão move o documento no desktop e
+Editar marcação altera ou remove anotações existentes. A proteção reduz cópia
+casual, mas não promete impedir captura de tela pelo sistema operacional.
 
 ## Decisões ainda pendentes
 

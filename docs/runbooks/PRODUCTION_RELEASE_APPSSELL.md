@@ -10,7 +10,9 @@ não autoriza por si só novo deploy, mudança de secrets, banco ou cobrança.
 - Serviços: `sell-autonomia_web`, `sell-autonomia_api`,
   `sell-autonomia_asset-worker`
 - Banco: `appsell_native_90` no serviço Postgres nativo
-- Release comprovada: `2c8a36897eadf624955810ffdaee7b33c6239334`
+- Release web comprovada: `1d2ea63119c9124c7d5a4960aa778c3f613f490f`
+- Release API/worker comprovada: `50b6301cfeb6afca696391d7ba8832642bde79e1`
+- Migration head: `0033_pdf_study_state`
 - Health interno da API: `/health/ready`
 
 AWS/EC2 não é o destino deste release do Appsell. Não substituir a VPS pelo
@@ -72,6 +74,12 @@ O rollback da entrega de 2026-08-23 tinha as tags anteriores do release
 `64ab9956` e o backup lógico criado antes do cutover. O caminho exato e os
 nomes devem ser revalidados no host antes de uma nova operação; não reutilizar
 um caminho antigo sem confirmar que o arquivo existe e está íntegro.
+
+O cutover web de 2026-08-24, PR #225, usa rollback direto para
+`easypanel/sell-autonomia/web:50b6301`. API e asset-worker não foram atualizados
+nesse cutover. O backup lógico validado antes da troca é
+`/home/claudete/backups/appsell/pre-web-1d2ea631.dump`, SHA-256
+`2a800ceea2605c3cf9b59b7a7d436d03b9c629cacf34365ae1384cbaa31dfd11`.
 
 ## Backup e restore
 

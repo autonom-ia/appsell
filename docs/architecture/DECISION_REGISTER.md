@@ -25,7 +25,7 @@
 | D-004 | Bootstrap `comercial@autonomia.site` one-shot, verificado, por `sub` | Verified in current production grant | Rodrigo + Identity | Foundation | não criar novo grant manual fora do fluxo |
 | D-005 | Assurance/MFA/passkey disponível no Identity | Pending broader assurance review | Identity + AppSec | future auth hardening | não ampliar privilégios sem step-up/capability |
 | D-006 | RBAC e matriz desta Issue | Fixed by approved direction | Produto + AppSec | Foundation | deny all não explicitamente permitido |
-| D-007 | Tenant compartilhado com RLS/FKs compostas | Verified in production head `0032` | Arquitetura + Banco | future schema changes | toda mudança mantém FK/RLS e teste negativo |
+| D-007 | Tenant compartilhado com RLS/FKs compostas | Verified in production head `0033` | Arquitetura + Banco | future schema changes | toda mudança mantém FK/RLS e teste negativo |
 | D-008 | Buyer global com entitlements multi-seller | Verified in current buyer journey | Produto + Arquitetura | future buyer expansion | cada entitlement permanece seller-scoped |
 | D-009 | “Outros produtos” limitado ao seller selecionado | Fixed by approved direction | Produto | catálogo | não exibir recomendações |
 | D-010 | Checkout externo no seller commerce; Financial só SaaS | Current direction; paid checkout remains separately gated | Rodrigo + Financial | billing expansion | não ativar cobrança nova sem contrato/webhook/rollback |
@@ -54,7 +54,7 @@
 | D-033 | Envelope encryption Local/CI com DEK por registro e keyring local | Verified local slice; merged (#17/#20) | AppSec + Auth | vault local | provider local proibido em produção |
 | D-034 | Refresh distribuído com lease/fencing/CAS | Future hardening; não foi alterado pelo release atual | Identity + AppSec | refresh changes | não alterar sessão distribuída sem smoke real |
 | D-035 | Provider KMS real, vault durável/HA e restore | Pending broader infra hardening | Infra + AppSec | backup/PITR/secret expansion | não declarar backup recorrente concluído |
-| D-036 | Produção do catálogo em VPS nativa, não AWS/EC2 | Verified `2c8a3689` | Infra + Produto | release atual | não trocar topologia por presunção |
+| D-036 | Produção do catálogo em VPS nativa, não AWS/EC2 | Verified web `1d2ea631`, API/worker `50b6301` | Infra + Produto | release atual | não trocar topologia por presunção |
 | D-037 | Dois modos de entrada: gratuito direto e pago com checkout | Verified in current catalog/access flow | Produto + Engenharia | billing expansion | gratuito não cria cobrança; pago não concede antes do checkout |
 | D-038 | Produção real sem reset/seed/personas demo | Verified | Operação + Produto | todos os releases | demo somente Local/CI/homologação isolada |
 

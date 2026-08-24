@@ -1,7 +1,7 @@
 # Matriz de autorização
 
 - Status: Approved baseline; catalog authorization verified in production
-- Última verificação: 2026-08-23, SHA `2c8a36897eadf624955810ffdaee7b33c6239334`
+- Última verificação: 2026-08-24, web `1d2ea631`, API `50b6301`
 - Regra: deny by default
 - Fonte de identidade: `identity_sub` validado e sessão opaca do BFF
 - Escopo tenant: `seller_organization_id` validado server-side

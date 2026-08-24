@@ -1,4 +1,4 @@
-# Sell Glass Premium — implementação da Issue #204
+# Sell Glass Premium — entrega da Issue #204
 
 ## Objetivo
 
@@ -43,7 +43,8 @@ Aplicar ao Sell a hierarquia visual premium estudada no `vector-api`, preservand
 - [x] Storefront, checkout, biblioteca, editor, upload, publicação, entitlement e player mantêm seus contratos e negativas existentes.
 - [x] Lint, typecheck, testes rápidos, testes integrais, E2E em Chromium/WebKit e build de produção passam localmente.
 - [x] Não há mudança de banco, API pública, autenticação, billing, secrets ou infraestrutura.
-- [ ] Merge, deploy, smoke de produção e aceite do usuário dependem de aprovação explícita após review do PR.
+- [x] Merge, deploy e smoke de produção concluídos no PR #205; a evolução do
+  leitor foi validada pelo usuário nos ciclos #208 a #224.
 
 ## Verificação e rollback
 
@@ -65,7 +66,9 @@ Os perfis compartilhados do navegador estavam ocupados, por isso a inspeção us
 
 O `test:fast` de `origin/main` inicialmente falhava porque o teste do EasyPanel exigia uma frase de segurança ausente no README. A frase foi restaurada sem mudança de runtime para devolver o gate ao estado verde.
 
-Não há migração de dados. Antes de merge/deploy, o rollback é descartar a branch; depois do deploy, é restaurar a imagem web/SHA anterior conforme `docs/runbooks/PRODUCTION_RELEASE_APPSSELL.md`.
+Não houve migração de dados nessa entrega. O estado atual e o rollback vigente
+estão em `docs/PRODUCTION_CURRENT.md` e
+`docs/runbooks/PRODUCTION_RELEASE_APPSSELL.md`.
 
 ### Desvios intencionais do conceito
 
