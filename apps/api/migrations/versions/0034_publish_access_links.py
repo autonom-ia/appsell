@@ -314,6 +314,19 @@ begin
     raise exception 'access link product is unavailable' using errcode='28000';
   end if;
 
+  -- Redemption grants free access, which a sold product refuses. Minting a link
+  -- for one would hand the seller an invitation that can never work, so the
+  -- refusal belongs here rather than in the recipient's face.
+  if exists (
+    select 1
+    from public.offer offer
+    where offer.seller_organization_id=p_seller_organization_id
+      and offer.catalog_product_id=p_catalog_product_id
+      and offer.status='active'
+  ) then
+    raise exception 'access link requires a free product' using errcode='P4226';
+  end if;
+
   insert into public.product_access_link(
     seller_organization_id,catalog_product_id,label,token_sha256,token_prefix,
     max_uses,expires_at,created_by_identity_user_id

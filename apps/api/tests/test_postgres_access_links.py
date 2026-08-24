@@ -714,3 +714,19 @@ def test_a_seller_cannot_reach_another_tenant_link() -> None:
                 ),
             ).fetchone()
     assert failure.value.sqlstate == "P4225"
+
+
+def test_a_sold_product_refuses_new_access_links() -> None:
+    """A link that could never be redeemed must not be handed out.
+
+    Redemption grants free access, and a sold product refuses that, so minting an
+    invitation for one would only produce a dead address in someone's hands.
+    """
+    seller_id, product_id, course_id = create_graph()
+    bind_payout_account(seller_id)
+    offer_id = save_draft(seller_id, product_id, course_id)
+    publish_with_access(seller_id, product_id, course_id, offer_id, access_mode="paid")
+
+    with pytest.raises(psycopg.errors.Error) as failure:
+        create_link(seller_id, product_id, token=f"sold-{uuid4().hex}", max_uses=5)
+    assert failure.value.sqlstate == "P4226"

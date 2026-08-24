@@ -1679,6 +1679,11 @@ def _domain_error(error: DBAPIError) -> HTTPException:
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="payout_account_required",
         )
+    if sqlstate == "P4226":
+        return HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="access_link_requires_free_product",
+        )
     if sqlstate == "P4224":
         return HTTPException(
             status_code=status.HTTP_409_CONFLICT,

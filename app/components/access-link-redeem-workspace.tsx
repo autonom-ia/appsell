@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { ACCESS_LINK_CONTINUE_PATH, ACCESS_LINK_HANDOFF_KEY } from "./access-link-handoff-shared";
+
 type RedeemState =
   | "idle"
   | "submitting"
@@ -12,26 +14,42 @@ type RedeemState =
   | "unavailable"
   | "requires_checkout"
   | "rate_limited"
+  | "missing"
   | "error";
 
-export function AccessLinkRedeemWorkspace({ csrf, token }: { csrf: string; token: string }) {
+/**
+ * Claims an invitation seat.
+ *
+ * `token` is null when the visitor came back from login: the invitation was
+ * parked in this tab's session storage precisely so that it never travelled
+ * through the post-login cookie. It is read once and removed.
+ */
+export function AccessLinkRedeemWorkspace(
+  { csrf, token }: { csrf: string; token: string | null }
+) {
   const [state, setState] = useState<RedeemState>("idle");
   const started = useRef(false);
 
   const redeem = useCallback(async () => {
     if (state === "submitting" || state === "granted" || state === "already") return;
+    const carried = token ?? readHandoffToken();
+    if (!carried) return setState("missing");
     setState("submitting");
     const data = new FormData();
     data.set("_csrf", csrf);
     data.set("idempotency_key", crypto.randomUUID());
-    data.set("token", token);
+    data.set("token", carried);
     try {
       const response = await fetch("/api/library/access-links/redeem", {
         method: "POST",
         body: data
       });
       if (response.status === 401) {
-        window.location.href = `/auth/login?next=${encodeURIComponent(window.location.pathname)}`;
+        // The path carries no secret. The invitation stays in session storage,
+        // so signing in again resumes without putting it back on the network.
+        stashHandoffToken(carried);
+        window.location.href =
+          `/auth/login?next=${encodeURIComponent(ACCESS_LINK_CONTINUE_PATH)}`;
         return;
       }
       if (!response.ok) {
@@ -43,6 +61,7 @@ export function AccessLinkRedeemWorkspace({ csrf, token }: { csrf: string; token
         return setState("error");
       }
       const payload = await response.json() as { seat_consumed?: boolean };
+      clearHandoffToken();
       setState(payload.seat_consumed === false ? "already" : "granted");
     } catch {
       setState("error");
@@ -74,6 +93,30 @@ export function AccessLinkRedeemWorkspace({ csrf, token }: { csrf: string; token
   );
 }
 
+function readHandoffToken() {
+  try {
+    return window.sessionStorage.getItem(ACCESS_LINK_HANDOFF_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function stashHandoffToken(token: string) {
+  try {
+    window.sessionStorage.setItem(ACCESS_LINK_HANDOFF_KEY, token);
+  } catch {
+    // Nothing to do: the visitor will be asked to open the link again.
+  }
+}
+
+function clearHandoffToken() {
+  try {
+    window.sessionStorage.removeItem(ACCESS_LINK_HANDOFF_KEY);
+  } catch {
+    // Already gone, or storage is blocked.
+  }
+}
+
 function heading(state: RedeemState) {
   if (state === "submitting" || state === "idle") return "Liberando seu acesso…";
   if (state === "granted") return "Acesso liberado";
@@ -82,6 +125,7 @@ function heading(state: RedeemState) {
   if (state === "unavailable") return "Convite indisponível";
   if (state === "requires_checkout") return "Este produto é pago";
   if (state === "rate_limited") return "Muitas tentativas";
+  if (state === "missing") return "Abra o convite outra vez";
   return "Não foi possível liberar";
 }
 
@@ -97,5 +141,8 @@ function explanation(state: RedeemState) {
   }
   if (state === "requires_checkout") return "Ele passou a ser vendido e precisa de pagamento.";
   if (state === "rate_limited") return "Aguarde um minuto antes de tentar de novo.";
+  if (state === "missing") {
+    return "Perdemos o convite no caminho. Abra o link que você recebeu novamente, agora já conectado.";
+  }
   return "Algo falhou no caminho. Tente novamente em instantes.";
 }
