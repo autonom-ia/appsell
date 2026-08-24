@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import io
@@ -399,26 +400,73 @@ async def test_pdf_page_returns_only_licensed_png(
 
 
 @pytest.mark.asyncio
-async def test_pdf_viewer_rejects_excess_parallel_work_before_spooling() -> None:
+async def test_pdf_viewer_rejects_excess_parallel_work_before_spooling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     auth = FakeAuth(
         pdf_manifest_row(),
         execute_results=[pdf_manifest_row(), pdf_page_row()],
     )
-    first = await learning_routes._PROTECTED_PDF_SLOTS.acquire()
-    second = await learning_routes._PROTECTED_PDF_SLOTS.acquire()
-    assert first is True and second is True
+    slots = asyncio.Semaphore(1)
+    acquired = await slots.acquire()
+    assert acquired is True
+    monkeypatch.setattr(learning_routes, "_PROTECTED_PDF_SLOTS", slots)
+    monkeypatch.setattr(learning_routes, "_PROTECTED_PDF_SLOT_TIMEOUT_SECONDS", 0.01)
     try:
         async with client_for(auth, settings=isolated_viewer_settings()) as client:
             response = await client.get(
                 f"/v1/me/learning/items/{ENTITLEMENT_ID}/assets/{ASSET_ID}/pages/1"
             )
     finally:
-        learning_routes._PROTECTED_PDF_SLOTS.release()
-        learning_routes._PROTECTED_PDF_SLOTS.release()
+        slots.release()
 
     assert response.status_code == 429
     assert response.json() == {"detail": "pdf_viewer_busy"}
     assert response.headers["retry-after"] == "2"
+
+
+@pytest.mark.asyncio
+async def test_pdf_viewer_waits_for_a_short_capacity_spike(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    auth = FakeAuth(
+        pdf_manifest_row(page_count=3),
+        execute_results=[pdf_manifest_row(page_count=3), pdf_page_row(page_number=2)],
+    )
+    slots = asyncio.Semaphore(1)
+    await slots.acquire()
+    monkeypatch.setattr(learning_routes, "_PROTECTED_PDF_SLOTS", slots)
+    monkeypatch.setattr(learning_routes, "_PROTECTED_PDF_SLOT_TIMEOUT_SECONDS", 0.2, raising=False)
+    png = b"\x89PNG\r\n\x1a\nprotected-page"
+
+    @contextmanager
+    def source(*_args: Any, **_kwargs: Any):  # type: ignore[no-untyped-def]
+        yield Path("/verified/page-2.png")
+
+    def render(*_args: Any, **_kwargs: Any) -> RenderedLearningPdfPage:
+        return RenderedLearningPdfPage(
+            payload=png,
+            page_count=3,
+            page_number=2,
+            sha256_hex=hashlib.sha256(png).hexdigest(),
+        )
+
+    monkeypatch.setattr(learning_routes, "authorized_pdf_page", source)
+    monkeypatch.setattr(learning_routes, "render_prepared_pdf_page", render)
+
+    async def release_slot() -> None:
+        await asyncio.sleep(0.02)
+        slots.release()
+
+    releaser = asyncio.create_task(release_slot())
+    async with client_for(auth, settings=isolated_viewer_settings()) as client:
+        response = await client.get(
+            f"/v1/me/learning/items/{ENTITLEMENT_ID}/assets/{ASSET_ID}/pages/2"
+        )
+    await releaser
+
+    assert response.status_code == 200
+    assert response.content == png
 
 
 def asset_row(media_type: str = "application/pdf") -> dict[str, Any]:

@@ -242,7 +242,7 @@ def license_footer_png_file(source_path: Path, watermark: str) -> tuple[bytes, i
     draw.text((text_x, text_y), watermark, font=font, fill=(100, 116, 139))
 
     with tempfile.SpooledTemporaryFile(max_size=MAX_RASTER_BYTES + 1, mode="w+b") as output:
-        licensed.save(output, format="PNG", optimize=True, compress_level=9)
+        licensed.save(output, format="PNG", optimize=False, compress_level=3)
         byte_size = output.tell()
         if byte_size > MAX_RASTER_BYTES:
             raise PdfRasterRejected("licensed PDF page exceeds the output limit")

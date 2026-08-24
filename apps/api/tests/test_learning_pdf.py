@@ -149,3 +149,31 @@ def test_render_adds_license_footer_without_covering_page_or_exposing_pdf_bytes(
         assert image.size == (320, 516)
         assert image.getpixel((160, 240)) == (255, 255, 255)
         assert image.getpixel((160, 481)) == (226, 232, 240)
+
+
+def test_render_uses_fast_lossless_png_compression(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = png_payload()
+    page = tmp_path / "page.png"
+    page.write_bytes(payload)
+    observed: dict[str, Any] = {}
+    original_save = Image.Image.save
+
+    def capture_save(
+        image: Image.Image, output: Any, format: str | None = None, **params: Any
+    ) -> None:
+        observed.update(params)
+        original_save(image, output, format=format, **params)
+
+    monkeypatch.setattr(Image.Image, "save", capture_save)
+
+    render_prepared_pdf_page(
+        page,
+        page_row(payload),
+        page_count=3,
+        watermark="Licenciado para bu***@example.test • ID abcdef",
+    )
+
+    assert observed["optimize"] is False
+    assert observed["compress_level"] == 3
