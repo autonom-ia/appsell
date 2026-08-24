@@ -38,6 +38,7 @@ RUN groupadd --system --gid 10001 appsell \
 WORKDIR /app
 COPY --from=builder --chown=appsell:appsell /app/.next/standalone ./
 COPY --from=builder --chown=appsell:appsell /app/.next/static ./.next/static
+COPY --from=builder --chown=appsell:appsell /app/public ./public
 COPY --from=builder --chown=appsell:appsell /tmp/web-assets/output ./output
 USER appsell
 EXPOSE 3000
