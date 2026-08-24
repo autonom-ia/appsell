@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 
+import { useProtectedPdfStudy } from "./protected-pdf-study";
+
 interface ProtectedPdfAsset {
   view_href: string;
   download_href: string | null;
@@ -67,6 +69,8 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
   const pageElements = useRef(new Map<number, HTMLElement>());
   const pinchStartDistance = useRef<number | null>(null);
   const pinchStartZoom = useRef(MIN_ZOOM);
+  const pinchStartCenter = useRef<{ x: number; y: number } | null>(null);
+  const pinchStartScroll = useRef<{ left: number; top: number } | null>(null);
   const zoomRef = useRef(MIN_ZOOM);
   const lastTouchTap = useRef(0);
   const pageNumberRef = useRef(1);
@@ -79,6 +83,10 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
   const pageCacheGeneration = useRef(0);
 
   const pageCount = typeof manifest === "object" ? manifest.pageCount : 0;
+  const pageNumbers = useMemo(
+    () => Array.from({ length: pageCount }, (_, index) => index + 1),
+    [pageCount]
+  );
   const storageKey = useMemo(
     () => `sell:protected-pdf:v1:${asset.view_href}`,
     [asset.view_href]
@@ -240,6 +248,11 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
 
   const selectPage = useCallback((nextPage: number) => {
     if (nextPage < 1 || nextPage > pageCount) return;
+    if (readerOpen) {
+      void loadProtectedPage(nextPage).catch((error: unknown) => {
+        if (!isAbortError(error)) setFailedPages((current) => new Set(current).add(nextPage));
+      });
+    }
     pageNumberRef.current = nextPage;
     setPageNumber(nextPage);
     setPageDraft(String(nextPage));
@@ -249,7 +262,7 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
       programmaticPage.current = nextPage;
       scrollToPage(nextPage);
     }
-  }, [pageCount, readerOpen, scrollToPage]);
+  }, [loadProtectedPage, pageCount, readerOpen, scrollToPage]);
 
   const changeZoom = useCallback((delta: number) => {
     setZoom((current) => clampZoom(current + delta));
@@ -406,16 +419,27 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
       if (event.touches.length !== 2) return;
       pinchStartDistance.current = touchDistance(event.touches);
       pinchStartZoom.current = zoomRef.current;
+      pinchStartCenter.current = touchCenter(event.touches);
+      pinchStartScroll.current = { left: viewport.scrollLeft, top: viewport.scrollTop };
     };
     const touchMove = (event: TouchEvent) => {
       if (event.touches.length !== 2 || pinchStartDistance.current === null) return;
       event.preventDefault();
       const scale = touchDistance(event.touches) / pinchStartDistance.current;
       setZoom(clampZoom(pinchStartZoom.current * scale));
+      const center = touchCenter(event.touches);
+      if (pinchStartCenter.current && pinchStartScroll.current) {
+        viewport.scrollLeft = pinchStartScroll.current.left -
+          (center.x - pinchStartCenter.current.x);
+        viewport.scrollTop = pinchStartScroll.current.top -
+          (center.y - pinchStartCenter.current.y);
+      }
     };
     const touchEnd = () => {
       pinchStartDistance.current = null;
       pinchStartZoom.current = zoomRef.current;
+      pinchStartCenter.current = null;
+      pinchStartScroll.current = null;
     };
     viewport.addEventListener("touchstart", touchStart, { passive: true });
     viewport.addEventListener("touchmove", touchMove, { passive: false });
@@ -485,6 +509,14 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
 
   const baseWidth = Math.min(Math.max(viewportWidth - (viewportWidth < 680 ? 24 : 48), 280), 1040);
   const renderedPageWidth = Math.round(baseWidth * zoom);
+  const study = useProtectedPdfStudy({
+    viewHref: asset.view_href,
+    pageCount,
+    activePage: pageNumber,
+    pageHeightRatio,
+    open: readerOpen,
+    onPage: selectPage
+  });
 
   return <div className="protected-pdf">
     {manifest === "loading"
@@ -581,16 +613,17 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
               <button type="button" className="pdf-reader-icon-button pdf-reader-fullscreen" aria-label={fullscreenActive ? "Sair da tela cheia" : "Tela cheia"} onClick={() => void toggleFullscreen()}><ReaderIcon name={fullscreenActive ? "collapse" : "expand"}/></button>
             </nav>
           </header>
+          {study.toolbar}
           <div
             ref={viewportRef}
-            className="pdf-reader-viewport"
+            className={`pdf-reader-viewport pdf-study-mode-${study.tool}`}
             onContextMenu={(event) => event.preventDefault()}
             onDoubleClick={toggleDoubleTapZoom}
             onPointerUp={handlePointerUp}
             tabIndex={0}
           >
             <div className="pdf-reader-pages">
-              {Array.from({ length: manifest.pageCount }, (_, index) => index + 1).map((page) =>
+              {pageNumbers.map((page) =>
                 <figure
                   key={page}
                   ref={(element) => {
@@ -627,6 +660,7 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
                             onPage={selectPage}
                             onVideo={setActiveVideoLink}
                           />
+                          {study.layer(page)}
                         </>
                         : <span className="pdf-reader-page-placeholder" role="status" aria-label={`Carregando página ${page}`}/>}
                 </figure>)}
@@ -634,6 +668,7 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
             </div>
           </div>
           <p className="pdf-reader-feedback" aria-live="polite">{policyFeedback}</p>
+          {study.panel}
           {activeVideoLink
             ? <PdfVideoDialog link={activeVideoLink} onClose={() => setActiveVideoLink(null)}/>
             : null}
@@ -843,6 +878,13 @@ function touchDistance(touches: TouchList) {
   const second = touches.item(1);
   if (!first || !second) return 1;
   return Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY);
+}
+
+function touchCenter(touches: TouchList) {
+  const first = touches.item(0);
+  const second = touches.item(1);
+  if (!first || !second) return { x: 0, y: 0 };
+  return { x: (first.clientX + second.clientX) / 2, y: (first.clientY + second.clientY) / 2 };
 }
 
 function pageHref(base: string, page: number) {

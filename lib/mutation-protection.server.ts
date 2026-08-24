@@ -20,6 +20,7 @@ export const ARCHIVE_ASSET_CSRF_ACTION = "POST:/api/assets/archive";
 export const UPDATE_ASSET_POLICY_CSRF_ACTION = "PATCH:/api/assets/policy";
 export const UPDATE_LEARNING_PROGRESS_CSRF_ACTION = "PUT:/api/library/progress";
 export const COMPLETE_LEARNING_LESSON_CSRF_ACTION = "POST:/api/library/complete";
+export const MUTATE_PDF_STUDY_CSRF_ACTION = "POST:/api/library/pdf-study";
 export const START_DEMO_INSPECTION_CSRF_ACTION = "POST:/api/platform/demo-inspections";
 export const REVOKE_DEMO_INSPECTION_CSRF_ACTION = "POST:/api/platform/demo-inspections/revoke";
 export const COMPLETE_DEMO_CHECKOUT_CSRF_ACTION = "POST:/api/demo-checkout";

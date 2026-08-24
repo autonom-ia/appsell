@@ -259,6 +259,10 @@ export function learningJsonErrorForInvalidInput() {
   return learningJsonError("invalid_request_body", 422);
 }
 
+export function learningForbiddenMutation() {
+  return learningJsonError("forbidden_mutation", 403);
+}
+
 export function learningError(error: unknown) {
   if (isOAuthStoreUnavailable(error)) {
     return learningJsonError("oauth_store_unavailable", 503);
@@ -267,7 +271,8 @@ export function learningError(error: unknown) {
     if (error.status === 403 || error.status === 404) return learningNotFound();
     if (error.status === 409 && [
       "idempotency_conflict",
-      "progress_version_conflict"
+      "progress_version_conflict",
+      "pdf_study_revision_conflict"
     ].includes(error.code)) {
       return learningJsonError(error.code, 409);
     }
