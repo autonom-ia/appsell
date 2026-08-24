@@ -610,7 +610,7 @@ test("persists vector annotations and favorites without drifting across zoom and
   await expect(reopened.locator('.pdf-reader-page[data-page="1"] .pdf-study-layer polyline'))
     .toHaveCount(1);
 
-  await reopened.getByRole("button", { name: "Selecionar" }).click();
+  await reopened.getByRole("button", { name: "Editar marcação" }).click();
   const reopenedLayer = reopened.locator('.pdf-reader-page[data-page="1"] .pdf-study-layer');
   const selectedMark = reopenedLayer.locator("polyline").first();
   const pointsBeforeMove = await selectedMark.getAttribute("points");
@@ -712,6 +712,41 @@ test("draws with one touch, reserves two touches for zoom and scrolls in hand mo
   await touch("touchStart", [{ x: scrollX, y: viewportBounds!.y + 360, id: 4 }]);
   await touch("touchMove", [{ x: scrollX, y: viewportBounds!.y + 130, id: 4 }]);
   await touch("touchEnd", []);
+  await expect.poll(() => viewport.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+});
+
+test("pans with a mouse in hand mode and explains how to edit markings", async ({ page }) => {
+  await page.setViewportSize({ width: 1100, height: 760 });
+  await mockLearningApi(page, { pdfPageCount: 3 });
+  await login(page);
+  await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
+  await page.getByRole("button", { name: "Abrir leitor" }).click();
+  const reader = page.getByRole("dialog", { name: "Leitor de Guia da aula" });
+  const edit = reader.getByRole("button", { name: "Editar marcação" });
+  await expect(edit).toBeEnabled();
+  await edit.click();
+  await expect(reader.getByText(
+    "Sem marcações nesta página. Use Caneta ou Marca-texto primeiro."
+  )).toBeVisible();
+
+  await reader.getByRole("button", { name: "Mão" }).click();
+  await reader.getByRole("button", { name: "Aumentar zoom" }).click();
+  await reader.getByRole("button", { name: "Aumentar zoom" }).click();
+  const viewport = reader.locator(".pdf-reader-viewport");
+  await expect(viewport).toHaveCSS("cursor", "grab");
+  await viewport.evaluate((element) => {
+    element.scrollLeft = 0;
+    element.scrollTop = 0;
+  });
+  const bounds = await viewport.boundingBox();
+  expect(bounds).not.toBeNull();
+  const start = { x: bounds!.x + bounds!.width * 0.65, y: bounds!.y + bounds!.height * 0.65 };
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await expect(viewport).toHaveCSS("cursor", "grabbing");
+  await page.mouse.move(start.x - 180, start.y - 140, { steps: 5 });
+  await page.mouse.up();
+  await expect.poll(() => viewport.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
   await expect.poll(() => viewport.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
 });
 
