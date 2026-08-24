@@ -55,6 +55,10 @@ export interface LearningAssetPageRouteContext {
   params: Promise<{ entitlementId: string; assetId: string; page: string }>;
 }
 
+export interface LearningAssetLinkRouteContext {
+  params: Promise<{ entitlementId: string; assetId: string; linkId: string }>;
+}
+
 export async function learningItemId(context: LearningItemRouteContext) {
   const { entitlementId } = await context.params;
   return canonicalUuid(entitlementId);
@@ -85,6 +89,15 @@ export async function learningAssetPageIds(context: LearningAssetPageRouteContex
   const canonicalPage = safeInteger(page, 1, 100);
   return canonicalEntitlement && canonicalAsset && canonicalPage !== null
     ? { entitlementId: canonicalEntitlement, assetId: canonicalAsset, page: canonicalPage }
+    : null;
+}
+
+export async function learningAssetLinkIds(context: LearningAssetLinkRouteContext) {
+  const { entitlementId, assetId, linkId } = await context.params;
+  const canonicalEntitlement = canonicalUuid(entitlementId);
+  const canonicalAsset = canonicalUuid(assetId);
+  return canonicalEntitlement && canonicalAsset && /^[0-9a-f]{16}$/.test(linkId)
+    ? { entitlementId: canonicalEntitlement, assetId: canonicalAsset, linkId }
     : null;
 }
 

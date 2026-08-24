@@ -86,6 +86,28 @@ async def test_isolated_inspector_returns_only_validated_page_count() -> None:
 
 
 @pytest.mark.asyncio
+async def test_isolated_link_inspector_returns_a_bounded_passive_manifest() -> None:
+    payload = valid_pdf(page_count=2)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://parser.test"
+    ) as client:
+        response = await client.post(
+            "/links",
+            content=payload,
+            headers={
+                "content-type": "application/pdf",
+                "x-appsell-byte-size": str(len(payload)),
+                "x-appsell-sha256": hashlib.sha256(payload).hexdigest(),
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"schema_version": 1, "page_count": 2, "links": []}
+    assert response.headers["cache-control"] == "no-store, private, max-age=0"
+    assert len(response.content) < 256 * 1024
+
+
+@pytest.mark.asyncio
 async def test_isolated_parser_and_inspector_share_one_serial_media_slot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

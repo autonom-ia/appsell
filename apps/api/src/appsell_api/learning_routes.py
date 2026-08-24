@@ -5,6 +5,7 @@ import base64
 import binascii
 import json
 import re
+from collections import OrderedDict
 from typing import Any
 from uuid import UUID
 
@@ -23,6 +24,12 @@ from .learning_pdf import (
     authorized_pdf_page,
     render_prepared_pdf_page,
 )
+from .pdf_links import (
+    PdfLinksRejected,
+    PdfLinksUnavailable,
+    read_remote_pdf_link_manifest,
+)
+from .pdf_raster import license_footer_dimensions
 from .storage_s3 import S3Storage, StorageError
 
 router = APIRouter(prefix="/v1")
@@ -30,6 +37,9 @@ _MAX_LEARNING_BODY_BYTES = 4_096
 _MAX_SAFE_INTEGER = (1 << 53) - 1
 _LEARNING_ASSETS_CONTRACT_HEADER = "x-appsell-learning-assets-contract"
 _PROTECTED_PDF_SLOTS = asyncio.Semaphore(2)
+_PDF_LINK_CACHE_LOCK = asyncio.Lock()
+_PDF_LINK_CACHE: OrderedDict[str, tuple[dict[str, Any], ...]] = OrderedDict()
+_PDF_LINK_CACHE_SIZE = 32
 
 
 class LessonProgressBody(BaseModel):
@@ -280,13 +290,15 @@ async def inspect_asset_pages(
     request: Request, entitlement_id: UUID, asset_id: UUID
 ) -> dict[str, Any]:
     try:
-        _, manifest = await _authorized_pdf_manifest(request, entitlement_id, asset_id)
+        _, manifest, source = await _authorized_pdf_manifest(request, entitlement_id, asset_id)
+        links = await _protected_pdf_links(request, manifest, source)
     except DBAPIError as error:
         raise _learning_domain_error(error) from error
     return {
         "asset": {
             "id": str(manifest["asset_id"]),
             "page_count": int(manifest["page_count"]),
+            "links": links,
         }
     }
 
@@ -392,12 +404,12 @@ def _protected_pdf_license_label(
 
 async def _authorized_pdf_manifest(
     request: Request, entitlement_id: UUID, asset_id: UUID
-) -> tuple[AuthenticatedInternalRequest, Any]:
+) -> tuple[AuthenticatedInternalRequest, Any, Any]:
     auth, internal = await _authenticate(request, "library.asset.read")
     await _require_buyer_scope(internal)
     try:
         async with auth.domain_session(internal.envelope) as session:
-            row = (
+            manifest = (
                 (
                     await session.execute(
                         text(
@@ -416,9 +428,114 @@ async def _authorized_pdf_manifest(
                 .mappings()
                 .one()
             )
+            source = (
+                (
+                    await session.execute(
+                        text(
+                            "select asset_id,asset_version,file_name,media_type,byte_size,sha256,"
+                            "storage_driver,storage_bucket,object_key,storage_version_id,"
+                            "storage_etag from app_private.authorize_publication_asset("
+                            ":identity_user_id,:entitlement_id,:asset_id)"
+                        ),
+                        {
+                            "identity_user_id": internal.envelope.identity.user_id,
+                            "entitlement_id": entitlement_id,
+                            "asset_id": asset_id,
+                        },
+                    )
+                )
+                .mappings()
+                .one()
+            )
     except DBAPIError as error:
         raise error
-    return internal, row
+    if (
+        source["asset_id"] != manifest["asset_id"]
+        or int(source["asset_version"]) != int(manifest["asset_version"])
+        or source["media_type"] != "application/pdf"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="pdf_manifest_source_drift",
+        )
+    return internal, manifest, source
+
+
+async def _protected_pdf_links(
+    request: Request,
+    manifest: Any,
+    source: Any,
+) -> list[dict[str, Any]]:
+    if source["storage_driver"] != "s3":
+        return []
+    storage: S3Storage | None = getattr(request.app.state, "storage", None)
+    if storage is None:
+        return []
+    cache_key = f"{source['sha256']}:{source['storage_version_id']}"
+    async with _PDF_LINK_CACHE_LOCK:
+        cached = _PDF_LINK_CACHE.get(cache_key)
+        if cached is not None:
+            _PDF_LINK_CACHE.move_to_end(cache_key)
+            return [dict(link) for link in cached]
+
+    def read_links() -> dict[str, Any]:
+        with storage.open_download(
+            bucket=str(source["storage_bucket"]),
+            key=str(source["object_key"]),
+            version_id=str(source["storage_version_id"]),
+        ) as pdf:
+            return read_remote_pdf_link_manifest(
+                pdf,
+                expected_size=int(source["byte_size"]),
+                expected_sha256_hex=str(source["sha256"]),
+                expected_page_count=int(manifest["page_count"]),
+            )
+
+    try:
+        extracted = await to_thread.run_sync(read_links)
+        adjusted = tuple(_adjust_pdf_link_rectangles(extracted["links"], manifest["pages"]))
+    except (
+        PdfLinksRejected,
+        PdfLinksUnavailable,
+        StorageError,
+        OSError,
+        TypeError,
+        ValueError,
+    ):
+        return []
+    async with _PDF_LINK_CACHE_LOCK:
+        _PDF_LINK_CACHE[cache_key] = adjusted
+        _PDF_LINK_CACHE.move_to_end(cache_key)
+        while len(_PDF_LINK_CACHE) > _PDF_LINK_CACHE_SIZE:
+            _PDF_LINK_CACHE.popitem(last=False)
+    return [dict(link) for link in adjusted]
+
+
+def _adjust_pdf_link_rectangles(
+    links: list[dict[str, Any]], pages: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    dimensions = {
+        int(page["page_number"]): (int(page["pixel_width"]), int(page["pixel_height"]))
+        for page in pages
+    }
+    adjusted: list[dict[str, Any]] = []
+    for link in links:
+        width, height = dimensions[int(link["page"])]
+        _, output_height, content_height, _ = license_footer_dimensions(width, height)
+        content_ratio = content_height / output_height
+        rect = link["rect"]
+        adjusted.append(
+            {
+                **link,
+                "rect": {
+                    "left": rect["left"],
+                    "top": round(rect["top"] * content_ratio, 4),
+                    "width": rect["width"],
+                    "height": round(rect["height"] * content_ratio, 4),
+                },
+            }
+        )
+    return adjusted
 
 
 async def _authorized_pdf_page_row(

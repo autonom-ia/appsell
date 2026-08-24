@@ -20,6 +20,7 @@ from .pdf_derivatives import (
     PdfDerivativeRejected,
     build_pdf_page_archive,
 )
+from .pdf_links import PdfLinksRejected, extract_pdf_link_manifest
 from .pdf_raster import (
     PdfRasterRejected,
     PdfRasterUnavailable,
@@ -120,6 +121,17 @@ async def inspect(request: Request) -> Response:
         _reject_if_draining()
         try:
             return await _inspect_request(request)
+        finally:
+            _begin_draining_after_job(request)
+
+
+@app.post("/links")
+async def links(request: Request) -> Response:
+    _reject_busy_or_draining()
+    async with _MEDIA_SLOT:
+        _reject_if_draining()
+        try:
+            return await _links_request(request)
         finally:
             _begin_draining_after_job(request)
 
@@ -352,6 +364,59 @@ async def _inspect_request(request: Request) -> Response:
         if source_path is not None:
             source_path.unlink(missing_ok=True)
         shutil.rmtree(job_directory)
+
+
+async def _links_request(request: Request) -> Response:
+    if request.headers.get("content-type") != PDF_MIME:
+        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE)
+    try:
+        expected_size = int(request.headers["x-appsell-byte-size"])
+        expected_sha256 = request.headers["x-appsell-sha256"]
+    except (KeyError, ValueError) as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT) from error
+    if not 1 <= expected_size <= MAX_PDF_BYTES or not re.fullmatch(
+        r"[0-9a-f]{64}", expected_sha256
+    ):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT)
+
+    job_directory = _private_job_directory("appsell-links-job-")
+    source_path = job_directory / "source.pdf"
+    try:
+        digest = hashlib.sha256()
+        received = 0
+        with source_path.open("xb") as source:
+            os.chmod(source_path, 0o600)
+            async for chunk in request.stream():
+                received += len(chunk)
+                if received > expected_size or received > MAX_PDF_BYTES:
+                    raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE)
+                digest.update(chunk)
+                source.write(chunk)
+            source.flush()
+            os.fsync(source.fileno())
+        if received != expected_size or digest.hexdigest() != expected_sha256:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT)
+        manifest = await to_thread.run_sync(
+            lambda: extract_pdf_link_manifest(
+                source_path,
+                expected_size=expected_size,
+                expected_sha256_hex=expected_sha256,
+            )
+        )
+        return JSONResponse(
+            manifest,
+            headers={
+                "cache-control": "no-store, private, max-age=0",
+                "pragma": "no-cache",
+                "x-content-type-options": "nosniff",
+            },
+        )
+    except HTTPException:
+        raise
+    except PdfLinksRejected as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT) from error
+    finally:
+        shutil.rmtree(job_directory, ignore_errors=True)
 
 
 def _inspect_file(

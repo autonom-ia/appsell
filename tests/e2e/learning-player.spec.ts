@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
+import { resolve } from "node:path";
 
 const entitlementId = "bee105e2-7809-5bf5-874a-d6332dc4a4ef";
 const lessonOne = "a39181dd-c70c-57b3-935d-d97fd834d709";
@@ -18,6 +19,7 @@ const protectedPng = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAC56t6BAAAADklEQVR4nGP4DwUMGAwAQuYX6TviV+QAAAAASUVORK5CYII=",
   "base64"
 );
+const protectedVideoPath = resolve(process.cwd(), "output/pdf/codex/codex-em-3-passos.mp4");
 
 async function login(page: Page) {
   await page.goto("/");
@@ -103,6 +105,7 @@ async function mockLearningApi(
     beforeCompleteResponse?: (lessonId: string) => Promise<void>;
     onFirstProgress?: (route: Route, requestNumber: number, requestedPercent: number) => Promise<void>;
     pdfPageCount?: number;
+    pdfLinks?: Array<Record<string, unknown>>;
   } = {}
 ) {
   const mutations: string[] = [];
@@ -116,8 +119,15 @@ async function mockLearningApi(
       return route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ asset_id: assetId, page_count: options.pdfPageCount ?? 2 })
+        body: JSON.stringify({
+          asset_id: assetId,
+          page_count: options.pdfPageCount ?? 2,
+          links: options.pdfLinks ?? []
+        })
       });
+    }
+    if (request.method() === "GET" && /\/pages\/links\/[0-9a-f]{16}\/media$/.test(url.pathname)) {
+      return route.fulfill({ status: 200, contentType: "video/mp4", path: protectedVideoPath });
     }
     const pdfPage = /\/pages\/([1-9][0-9]*)$/.exec(url.pathname);
     if (request.method() === "GET" && pdfPage && Number(pdfPage[1]) <= (options.pdfPageCount ?? 2)) {
@@ -258,6 +268,55 @@ test("bounds protected PDF requests for a 65-page reader", async ({ page }) => {
     `/api/library/items/${entitlementId}/assets/${assetId}/pages/52`,
     `/api/library/items/${entitlementId}/assets/${assetId}/pages/53`
   ]));
+});
+
+test("navigates PDF index links and opens linked video inside the protected reader", async ({ page }) => {
+  const internalLinkId = "0123456789abcdef";
+  const videoLinkId = "fedcba9876543210";
+  await mockLearningApi(page, {
+    pdfPageCount: 6,
+    pdfLinks: [
+      {
+        id: internalLinkId,
+        page: 1,
+        kind: "page",
+        target_page: 4,
+        rect: { left: 8, top: 12, width: 70, height: 7 }
+      },
+      {
+        id: videoLinkId,
+        page: 4,
+        kind: "video",
+        media_href: `/api/library/items/${entitlementId}/assets/${assetId}/pages/links/${videoLinkId}/media`,
+        rect: { left: 12, top: 28, width: 76, height: 26 }
+      }
+    ]
+  });
+  await login(page);
+  await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
+  await page.getByRole("button", { name: "Abrir leitor" }).click();
+  const reader = page.getByRole("dialog", { name: "Leitor de Guia da aula" });
+
+  await reader.getByRole("button", { name: "Ir para a página 4" }).click();
+  await expect(reader.getByLabel("Ir para página")).toHaveValue("4");
+  const openVideo = reader.getByRole("button", {
+    name: "Reproduzir vídeo complementar da página 4"
+  });
+  await expect(openVideo).toBeVisible();
+  await openVideo.click();
+
+  const videoDialog = page.getByRole("dialog", { name: "Vídeo complementar da página 4" });
+  await expect(videoDialog).toBeVisible();
+  const video = videoDialog.locator("video");
+  await expect(video).toHaveAttribute(
+    "src",
+    `/api/library/items/${entitlementId}/assets/${assetId}/pages/links/${videoLinkId}/media`
+  );
+  await expect(video).toHaveAttribute("controlslist", "nodownload noremoteplayback");
+  await page.keyboard.press("Escape");
+  await expect(videoDialog).toHaveCount(0);
+  await expect(reader).toBeVisible();
+  await expect(reader.getByLabel("Ir para página")).toHaveValue("4");
 });
 
 test("opens the mobile shelf, protects the PDF and completes into the next lesson", async ({ page }) => {
