@@ -102,6 +102,7 @@ async function mockLearningApi(
     beforeProgressResponse?: () => Promise<void>;
     beforeCompleteResponse?: (lessonId: string) => Promise<void>;
     onFirstProgress?: (route: Route, requestNumber: number, requestedPercent: number) => Promise<void>;
+    pdfPageCount?: number;
   } = {}
 ) {
   const mutations: string[] = [];
@@ -115,10 +116,11 @@ async function mockLearningApi(
       return route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ asset_id: assetId, page_count: 2 })
+        body: JSON.stringify({ asset_id: assetId, page_count: options.pdfPageCount ?? 2 })
       });
     }
-    if (request.method() === "GET" && /\/pages\/[12]$/.test(url.pathname)) {
+    const pdfPage = /\/pages\/([1-9][0-9]*)$/.exec(url.pathname);
+    if (request.method() === "GET" && pdfPage && Number(pdfPage[1]) <= (options.pdfPageCount ?? 2)) {
       return route.fulfill({ status: 200, contentType: "image/png", body: protectedPng });
     }
     if (["/api/library", "/api/me/products"].includes(url.pathname) && request.method() === "GET") {
@@ -182,6 +184,62 @@ async function mockLearningApi(
   await page.route("**/api/me/products**", handleLearningRoute);
   return mutations;
 }
+
+test("bounds protected PDF requests for a 65-page reader", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await mockLearningApi(page, { pdfPageCount: 65 });
+  const pageRequests: string[] = [];
+  page.on("request", (request) => {
+    if (/\/assets\/[^/]+\/pages\/[1-9][0-9]*$/.test(new URL(request.url()).pathname)) {
+      pageRequests.push(new URL(request.url()).pathname);
+    }
+  });
+
+  await login(page);
+  await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
+  await expect(page.locator(".protected-pdf-preview img"))
+    .toHaveAttribute("src", `/api/library/items/${entitlementId}/assets/${assetId}/pages/1`);
+  pageRequests.length = 0;
+
+  await page.getByRole("button", { name: "Abrir leitor" }).click();
+  const reader = page.getByRole("dialog", { name: "Leitor de Guia da aula" });
+  await expect(reader.locator(".pdf-reader-page")).toHaveCount(65);
+  await expect(reader.locator(".pdf-reader-page img")).toHaveCount(2);
+  await expect(reader.locator(".pdf-reader-page-placeholder")).toHaveCount(63);
+  await expect.poll(() => reader.locator(".pdf-reader-page img").evaluateAll((images) =>
+    images.every((image) => (image as HTMLImageElement).complete && (image as HTMLImageElement).naturalWidth > 0)
+  )).toBe(true);
+  const initialReaderRequests = new Set(pageRequests);
+  expect(initialReaderRequests.size).toBeLessThanOrEqual(2);
+  expect(initialReaderRequests.has(
+    `/api/library/items/${entitlementId}/assets/${assetId}/pages/2`
+  )).toBe(true);
+  expect([...initialReaderRequests].every((pathname) => [
+    `/api/library/items/${entitlementId}/assets/${assetId}/pages/1`,
+    `/api/library/items/${entitlementId}/assets/${assetId}/pages/2`
+  ].includes(pathname))).toBe(true);
+
+  const beforeNext = pageRequests.length;
+  await reader.getByRole("button", { name: "Próxima página" }).click();
+  await expect(reader.getByLabel("Ir para página")).toHaveValue("2");
+  await expect(reader.locator(".pdf-reader-page img")).toHaveCount(3);
+  await expect.poll(() => pageRequests.length).toBeGreaterThan(beforeNext);
+  expect(new Set(pageRequests.slice(beforeNext))).toEqual(new Set([
+    `/api/library/items/${entitlementId}/assets/${assetId}/pages/3`
+  ]));
+
+  const beforeJump = pageRequests.length;
+  await reader.getByLabel("Ir para página").fill("50");
+  await reader.getByLabel("Ir para página").press("Enter");
+  await expect(reader.getByLabel("Ir para página")).toHaveValue("50");
+  await expect(reader.locator(".pdf-reader-page img")).toHaveCount(3);
+  await expect.poll(() => pageRequests.length).toBeGreaterThanOrEqual(beforeJump + 3);
+  expect(new Set(pageRequests.slice(beforeJump))).toEqual(new Set([
+    `/api/library/items/${entitlementId}/assets/${assetId}/pages/49`,
+    `/api/library/items/${entitlementId}/assets/${assetId}/pages/50`,
+    `/api/library/items/${entitlementId}/assets/${assetId}/pages/51`
+  ]));
+});
 
 test("opens the mobile shelf, protects the PDF and completes into the next lesson", async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 800 });
