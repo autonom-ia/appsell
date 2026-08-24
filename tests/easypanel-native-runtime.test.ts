@@ -31,6 +31,7 @@ describe("EasyPanel native runtime contract", () => {
     expect(webDockerfile).toContain("pnpm install --frozen-lockfile --prod=false");
     expect(webDockerfile).toContain("NODE_ENV=production corepack pnpm build");
     expect(webDockerfile).toContain("/app/.next/standalone");
+    expect(webDockerfile).toContain("/app/public");
     expect(webDockerfile).toContain('CMD ["node", "server.js"]');
     expect(webDockerfile).toContain("/api/health/ready");
     expect(webDockerfile).not.toContain("/api/health/live').then");
