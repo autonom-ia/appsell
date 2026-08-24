@@ -44,6 +44,14 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .eyebrow { margin-bottom: 8px; color: var(--blue); font-size: .72rem; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; }
 .demo-pill { display: inline-flex; align-items: center; min-height: 28px; padding: 4px 10px; border: 1px solid rgba(59,130,246,.28); border-radius: 99px; background: rgba(59,130,246,.08); color: var(--blue); font-size: .67rem; font-weight: 800; letter-spacing: .1em; }
 .brand-mark { display: grid; width: 42px; height: 42px; place-items: center; flex: 0 0 auto; border-radius: 14px; background: linear-gradient(135deg, var(--bright), var(--blue)); box-shadow: 0 8px 18px rgba(59,130,246,.3); color: #fff; font-size: 1.25rem; font-weight: 800; }
+.sell-brand { display: flex; min-width: 0; align-items: center; gap: 10px; }
+.sell-brand-mark { width: 44px; height: 44px; flex: 0 0 auto; object-fit: contain; filter: drop-shadow(0 8px 18px rgba(0,42,110,.22)); }
+.sell-brand-copy { min-width: 0; display: flex; flex-direction: column; }
+.sell-brand-name { display: inline-flex; align-items: baseline; gap: 1px; color: #fff; font-size: 15px; font-weight: 600; letter-spacing: -.01em; line-height: 1.15; }
+.sell-brand-dot { color: var(--orange); }
+.sell-brand-tag { margin-top: 2px; color: rgba(255,255,255,.55); font-size: 11px; font-weight: 500; letter-spacing: .06em; line-height: 1.2; text-transform: uppercase; white-space: nowrap; }
+.sell-brand-on-light .sell-brand-name { color: var(--ink); }
+.sell-brand-on-light .sell-brand-tag { color: var(--soft); }
 .primary-button { display: inline-flex; min-width: 0; max-width: 100%; min-height: 48px; align-items: center; justify-content: center; gap: 12px; padding: 0 20px; border: 0; border-radius: 15px; background: linear-gradient(135deg, var(--blue), var(--bright)); box-shadow: 0 12px 24px rgba(30,58,138,.22); color: #fff; font-weight: 750; cursor: pointer; text-align: center; white-space: normal; overflow-wrap: anywhere; transition: transform 180ms ease, box-shadow 180ms ease, opacity 180ms ease; }
 .primary-button:hover { transform: translateY(-1px); box-shadow: 0 16px 28px rgba(30,58,138,.27); }
 .primary-button.disabled, .primary-button:disabled { opacity: .55; box-shadow: none; cursor: not-allowed; transform: none; }
@@ -149,8 +157,8 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .mobile-topbar > *, .mobile-topbar form, .mobile-brand { min-width: 0; }
 .mobile-topbar form { flex: 0 0 auto; }
 .mobile-brand { flex: 1 1 auto; max-width: 100%; }
-.mobile-brand strong { min-width: 0; line-height: 1.05; white-space: normal; overflow-wrap: anywhere; }
-.mobile-brand .brand-mark { width: 36px; height: 36px; border-radius: 12px; font-size: 1rem; }
+  .mobile-brand .sell-brand, .mobile-brand .sell-brand-copy { min-width: 0; }
+  .mobile-brand .sell-brand-name { white-space: nowrap; }
 .environment-banner { min-width: 0; padding: 10px max(16px,env(safe-area-inset-right)) 10px max(16px,env(safe-area-inset-left)); border-bottom: 1px solid rgba(198,138,18,.2); background: #fff8df; color: #6b4d00; font-size: .76rem; line-height: 1.5; overflow-wrap: anywhere; }
 .app-main { width: 100%; min-width: 0; max-width: 1120px; margin: 0 auto; padding: 34px max(16px,env(safe-area-inset-right)) 52px max(16px,env(safe-area-inset-left)); }
 .page-header { display: flex; flex-direction: column; align-items: flex-start; gap: 22px; margin-bottom: 28px; }
@@ -510,10 +518,7 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 @media (min-width: 1024px) {
   .app-shell { display: grid; grid-template-columns: 252px minmax(0,1fr); }
   .app-sidebar { position: sticky; top: 0; height: 100dvh; padding: 20px 14px; display: flex; flex-direction: column; overflow-y: auto; background: linear-gradient(180deg,var(--sidebar),var(--sidebar-deep)); color: #fff; }
-  .brand { min-height: 66px; padding: 6px 7px 18px; display: flex; align-items: center; gap: 11px; border-bottom: 1px solid rgba(255,255,255,.09); }
-  .brand strong, .brand small { display: block; }
-  .brand strong { font-size: 1.05rem; white-space: nowrap; }
-  .brand small { margin-top: 2px; color: rgba(255,255,255,.48); font-size: .63rem; letter-spacing: .04em; }
+  .brand { padding: 10px 8px 18px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid rgba(255,255,255,.08); }
   .nav-eyebrow { margin: 28px 10px 9px; color: rgba(255,255,255,.72); font-size: .68rem; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
   .nav-link { min-height: 48px; margin-bottom: 4px; padding: 0 12px; display: flex; align-items: center; gap: 12px; border: 1px solid transparent; border-radius: 14px; color: rgba(255,255,255,.7); font-size: .86rem; font-weight: 650; }
   .nav-link svg { width: 19px; height: 19px; flex: 0 0 auto; }

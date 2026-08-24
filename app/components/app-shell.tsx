@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, MouseEvent, ReactNode } from "react";
 import { AccessibleDialog } from "./accessible-dialog";
+import { SellBrand } from "./sell-brand";
 import { allowUnsavedNavigation, DIRTY_HISTORY_BLOCKED_EVENT, DIRTY_HISTORY_CONTINUE_EVENT, DIRTY_NAVIGATION_REQUEST_EVENT, DIRTY_STATE_EVENT } from "./use-unsaved-changes";
 import {
   DEMO_ADMIN_EMAIL,
@@ -261,9 +262,8 @@ export function AppShell({ children }: AppShellProps) {
     <div className="app-shell">
       <a className="skip-link" href="#conteudo">Pular para o conteúdo</a>
       <aside className="app-sidebar" aria-label="Navegação principal">
-        <Link className="brand" href={home} aria-label="Autonom.ia Sell — início" onClick={(event) => guardLink(event, home)}>
-          <span className="brand-mark" aria-hidden="true">a</span>
-          <span><strong>Autonom.ia <span>Sell</span></strong><small>Produtos digitais</small></span>
+        <Link className="brand" href={home} aria-label="sell. by Autonom.ia — início" onClick={(event) => guardLink(event, home)}>
+          <SellBrand />
         </Link>
         <nav>
           <p className="nav-eyebrow">{profileState.status === "loading" ? "Carregando acesso" : profileState.status === "failed" ? "Acesso indisponível" : platformMode ? "Operação de plataforma" : demoProfile?.persona === "buyer" ? "Área do aluno" : "Seu negócio"}</p>
@@ -281,7 +281,7 @@ export function AppShell({ children }: AppShellProps) {
       </aside>
       <div className="app-content">
         <header className="mobile-topbar">
-          <Link className="mobile-brand" href={home} aria-label="Autonom.ia Sell — início" onClick={(event) => guardLink(event, home)}><span className="brand-mark" aria-hidden="true">a</span><strong>Autonom.ia <span>Sell</span></strong></Link>
+          <Link className="mobile-brand" href={home} aria-label="sell. by Autonom.ia — início" onClick={(event) => guardLink(event, home)}><SellBrand onLight /></Link>
           <LogoutForm mobile onAttempt={guardLogout}/>
         </header>
         {platformMode || (profileState.status === "ready" && !realIdentity) ? (
