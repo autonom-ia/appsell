@@ -335,6 +335,25 @@ test("prioritizes, retries and reuses protected pages while the reader stays ope
   await expect.poll(() => requestCounts.get(1) ?? 0).toBeGreaterThan(requestsAfterClose);
 });
 
+test("keeps the restored PDF page after the reader measures its viewport", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await mockLearningApi(page, { pdfPageCount: 65 });
+  await login(page);
+  const viewHref = `/api/library/items/${entitlementId}/assets/${assetId}/pages`;
+  await page.evaluate(({ key }) => {
+    window.sessionStorage.setItem(key, JSON.stringify({ version: 1, page: 31, zoom: 1 }));
+  }, { key: `sell:protected-pdf:v1:${viewHref}` });
+  await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
+  await expect(page.locator(".protected-pdf-preview img")).toHaveAttribute("src", `${viewHref}/31`);
+
+  await page.getByRole("button", { name: "Abrir leitor" }).click();
+  const reader = page.getByRole("dialog", { name: "Leitor de Guia da aula" });
+  await expect(reader.getByLabel("Ir para página")).toHaveValue("31");
+  await page.waitForTimeout(500);
+  await expect(reader.getByLabel("Ir para página")).toHaveValue("31");
+  await expect(reader.locator('.pdf-reader-page[data-page="31"] img')).toHaveAttribute("src", /^blob:/);
+});
+
 test("navigates PDF index links and opens linked video inside the protected reader", async ({ page }) => {
   const internalLinkId = "0123456789abcdef";
   const videoLinkId = "fedcba9876543210";
