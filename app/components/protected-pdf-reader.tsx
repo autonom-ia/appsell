@@ -15,6 +15,8 @@ const TENANT_PDF_VIEW_HREF = /^\/api\/library\/items\/([0-9a-f]{8}-[0-9a-f]{4}-[
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 4;
 const ZOOM_STEP = 0.25;
+const READER_PAGE_RADIUS = 1;
+const PDF_PAGE_HEIGHT_RATIO = 297 / 210;
 
 export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
   const [manifest, setManifest] = useState<ManifestState>("loading");
@@ -90,21 +92,6 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
       // The reader remains fully usable when browser storage is unavailable.
     }
   }, [manifest, pageNumber, storageKey, zoom]);
-
-  useEffect(() => {
-    if (typeof manifest !== "object") return;
-    const preloaders = [pageNumber - 1, pageNumber + 1]
-      .filter((page) => page >= 1 && page <= manifest.pageCount)
-      .map((page) => {
-        const image = new Image();
-        image.referrerPolicy = "no-referrer";
-        image.src = pageHref(asset.view_href, page);
-        return image;
-      });
-    return () => {
-      preloaders.forEach((image) => image.removeAttribute("src"));
-    };
-  }, [asset.view_href, manifest, pageNumber]);
 
   useEffect(() => {
     pageNumberRef.current = pageNumber;
@@ -336,7 +323,9 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
               onContextMenu={(event) => event.preventDefault()}
               aria-label={`${asset.title}, página ${pageNumber} de ${pageCount}`}
             >
-              {previewError
+              {readerOpen
+                ? null
+                : previewError
                 ? <div className="protected-pdf-state" role="alert"><p>Não foi possível carregar esta página.</p><button type="button" className="secondary-button" onClick={() => setPreviewError(false)}>Tentar novamente</button></div>
                 // Private, authenticated, no-store raster pages cannot use the optimizing image proxy.
                 // eslint-disable-next-line @next/next/no-img-element
@@ -435,22 +424,27 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
                   }}
                   className="pdf-reader-page"
                   data-page={page}
-                  style={{ width: `${renderedPageWidth}px` }}
+                  style={{
+                    width: `${renderedPageWidth}px`,
+                    minHeight: `${Math.round(renderedPageWidth * PDF_PAGE_HEIGHT_RATIO)}px`
+                  }}
                   aria-label={`Página ${page} de ${manifest.pageCount}`}
                 >
                   {failedPages.has(page)
                     ? <div className="protected-pdf-state" role="alert"><p>Não foi possível carregar a página {page}.</p><button type="button" className="secondary-button" onClick={() => retryPage(page)}>Tentar novamente</button></div>
+                    : Math.abs(page - pageNumber) > READER_PAGE_RADIUS
+                      ? <span className="pdf-reader-page-placeholder" aria-hidden="true"/>
                     // Private, authenticated, no-store raster pages cannot use the optimizing image proxy.
                     // eslint-disable-next-line @next/next/no-img-element
-                    : <img
-                        src={pageHref(asset.view_href, page)}
-                        alt={`${asset.title} — página ${page} de ${manifest.pageCount}`}
-                        draggable={false}
-                        loading={Math.abs(page - pageNumber) <= 1 ? "eager" : "lazy"}
-                        referrerPolicy="no-referrer"
-                        onDragStart={(event) => event.preventDefault()}
-                        onError={() => markPageFailed(page)}
-                      />}
+                      : <img
+                          src={pageHref(asset.view_href, page)}
+                          alt={`${asset.title} — página ${page} de ${manifest.pageCount}`}
+                          draggable={false}
+                          loading="eager"
+                          referrerPolicy="no-referrer"
+                          onDragStart={(event) => event.preventDefault()}
+                          onError={() => markPageFailed(page)}
+                        />}
                 </figure>)}
               <p className="pdf-reader-touch-hint">Use dois dedos para ampliar</p>
             </div>
