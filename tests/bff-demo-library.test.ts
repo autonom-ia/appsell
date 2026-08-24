@@ -460,9 +460,11 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     await pwExpect(buyerPage.getByRole("heading", { level: 1, name: "O que é Codex e quando usar" })).toBeVisible();
     await pwExpect(buyerPage.locator(".protected-pdf-page img")).toHaveCount(1);
     await pwExpect(buyerPage.getByRole("link", { name: "Baixar PDF de apoio" })).toHaveCount(1);
-    await pwExpect(buyerPage.locator(".protected-pdf-page > span")).toContainText(
-      "user.demo@autonomia.site"
-    );
+    await pwExpect(buyerPage.locator(".protected-pdf-page > span")).toHaveCount(0);
+    await buyerPage.getByRole("button", { name: "Abrir leitor" }).click();
+    await pwExpect(buyerPage.getByRole("dialog", { name: /Leitor de/ })).toBeVisible();
+    await pwExpect(buyerPage.getByRole("button", { name: "Aumentar zoom" })).toBeVisible();
+    await buyerPage.getByRole("button", { name: "Voltar ao curso" }).click();
     await buyerPage.getByRole("button", { name: "Concluir e avançar" }).click();
     await pwExpect(buyerPage.getByRole("heading", { level: 1, name: "Como preparar contexto, repo e objetivo" })).toBeVisible();
     await pwExpect(buyerPage.getByRole("link", { name: /Baixar PDF/ })).toHaveCount(0);

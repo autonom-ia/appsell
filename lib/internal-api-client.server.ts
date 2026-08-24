@@ -1035,12 +1035,15 @@ export async function renderDomainLearningPdfPage(
   session: ServerSession,
   entitlementId: string,
   assetId: string,
-  page: number
+  page: number,
+  licenseLabel: string
 ): Promise<DomainLearningPdfPage> {
+  const encodedLicense = Buffer.from(licenseLabel, "utf8").toString("base64url");
   return domainBinaryRequest(sessionId, session, {
     method: "GET",
     path: `/v1/me/learning/items/${entitlementId}/assets/${assetId}/pages/${page}`,
-    capability: "library.asset.read"
+    capability: "library.asset.read",
+    query: `license=${encodeURIComponent(encodedLicense)}`
   });
 }
 

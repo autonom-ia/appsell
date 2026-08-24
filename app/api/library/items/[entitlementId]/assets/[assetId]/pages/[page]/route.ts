@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { renderDomainLearningPdfPage } from "@/lib/internal-api-client.server";
+import { learningLicenseLabel } from "@/lib/learning-license.server";
 import {
   authenticatedLearningSession,
   learningAssetPageIds,
@@ -21,7 +22,8 @@ export async function GET(request: NextRequest, context: LearningAssetPageRouteC
       authenticated.session,
       ids.entitlementId,
       ids.assetId,
-      ids.page
+      ids.page,
+      learningLicenseLabel(authenticated.session, ids.entitlementId)
     );
     const body = new ArrayBuffer(page.bytes.byteLength);
     new Uint8Array(body).set(page.bytes);

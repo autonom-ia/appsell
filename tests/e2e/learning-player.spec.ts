@@ -203,8 +203,35 @@ test("opens the mobile shelf, protects the PDF and completes into the next lesso
   await expect(page.getByText("Página 1 de 2", { exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: /Baixar PDF/ })).toHaveCount(0);
   await expect(page.getByText("Download desativado pelo administrador.")).toBeVisible();
-  await expect(page.locator(".protected-pdf-page > span")).toHaveText(
-    "user.demo@autonomia.site · tenant 4df98a2e · abcdef123456"
+  await expect(page.locator(".protected-pdf-page > span")).toHaveCount(0);
+  await page.getByRole("button", { name: "Abrir leitor" }).click();
+  const reader = page.getByRole("dialog", { name: "Leitor de Guia da aula" });
+  await expect(reader).toBeVisible();
+  await expect(reader.locator(".pdf-reader-page img")).toHaveCount(2);
+  await expect.poll(() => reader.locator(".pdf-reader-page img").nth(1).evaluate((image) =>
+    (image as HTMLImageElement).complete && (image as HTMLImageElement).naturalWidth > 0
+  )).toBe(true);
+  await expect(reader.getByLabel("Ir para página")).toHaveValue("1");
+  const zoomIn = reader.getByRole("button", { name: "Aumentar zoom" });
+  for (let step = 0; step < 12; step += 1) await zoomIn.click();
+  await expect(reader.getByText("400%", { exact: true })).toBeVisible();
+  await expect(zoomIn).toBeDisabled();
+  await reader.getByRole("button", { name: "Ajustar à largura" }).click();
+  await expect(reader.getByText("100%", { exact: true })).toBeVisible();
+  await reader.getByLabel("Ir para página").fill("2");
+  await reader.getByLabel("Ir para página").press("Enter");
+  await expect(reader.getByLabel("Ir para página")).toHaveValue("2");
+  await reader.getByRole("button", { name: "Voltar ao curso" }).click();
+  await expect(reader).toHaveCount(0);
+  await expect(pdf).toHaveAttribute(
+    "src",
+    `/api/library/items/${entitlementId}/assets/${assetId}/pages/2`
+  );
+  await page.reload();
+  await expect(page.getByRole("heading", { level: 1, name: "O que é Codex" })).toBeVisible();
+  await expect(pdf).toHaveAttribute(
+    "src",
+    `/api/library/items/${entitlementId}/assets/${assetId}/pages/2`
   );
   await page.keyboard.press("Control+p");
   await expect(page.getByText("A impressão deste conteúdo está desativada.")).toBeVisible();
@@ -214,7 +241,8 @@ test("opens the mobile shelf, protects the PDF and completes into the next lesso
     const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
     return !element.dispatchEvent(event) && event.defaultPrevented;
   })).toBe(true);
-  await page.getByRole("button", { name: "Próxima →" }).click();
+  await page.getByRole("button", { name: "Anterior" }).click();
+  await page.getByRole("button", { name: "Próxima" }).click();
   await expect(pdf).toHaveAttribute(
     "src",
     `/api/library/items/${entitlementId}/assets/${assetId}/pages/2`

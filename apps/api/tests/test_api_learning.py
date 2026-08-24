@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from collections.abc import AsyncIterator
@@ -288,7 +289,7 @@ async def test_pdf_manifest_is_entitlement_scoped_and_never_returns_original() -
 
 
 @pytest.mark.asyncio
-async def test_pdf_page_returns_only_watermarked_png(
+async def test_pdf_page_returns_only_licensed_png(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     auth = FakeAuth(
@@ -313,9 +314,12 @@ async def test_pdf_page_returns_only_watermarked_png(
 
     monkeypatch.setattr(learning_routes, "authorized_pdf_page", source)
     monkeypatch.setattr(learning_routes, "render_prepared_pdf_page", render)
+    license_label = "Licenciado para bu***@example.test • ID 2a5704"
+    encoded_label = base64.urlsafe_b64encode(license_label.encode()).decode().rstrip("=")
     async with client_for(auth, settings=isolated_viewer_settings()) as client:
         response = await client.get(
             f"/v1/me/learning/items/{ENTITLEMENT_ID}/assets/{ASSET_ID}/pages/2"
+            f"?license={encoded_label}",
         )
 
     assert response.status_code == 200
@@ -325,9 +329,7 @@ async def test_pdf_page_returns_only_watermarked_png(
     assert response.headers["cache-control"] == "private, no-store, max-age=0"
     assert response.headers["x-appsell-page-count"] == "3"
     assert observed["page_count"] == 3
-    assert observed["watermark"] == (
-        f"user {IDENTITY_ID.hex[:12]} access {ENTITLEMENT_ID.hex[:12]}"
-    )
+    assert observed["watermark"] == license_label
 
 
 @pytest.mark.asyncio

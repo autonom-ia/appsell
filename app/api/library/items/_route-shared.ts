@@ -1,9 +1,8 @@
-import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 
 import { sessionCookieName } from "@/lib/cookies";
-import { demoProfileForSubject } from "@/lib/demo-config";
 import { DomainApiError } from "@/lib/internal-api-client.server";
+import { learningLicenseLabel } from "@/lib/learning-license.server";
 import { PayloadTooLargeError, readLimitedForm } from "@/lib/limited-form.server";
 import {
   COMPLETE_LEARNING_LESSON_CSRF_ACTION,
@@ -224,19 +223,8 @@ function learningWatermark(
   player: LearningPlayerEnvelope["player"],
   viewer: { subject: string; identity?: { email: string; emailVerified: true } | null }
 ) {
-  const sellerId = String(player.seller && isRecord(player.seller) ? player.seller.id : "");
   const entitlementId = String(player.entitlement_id);
-  const trace = createHash("sha256")
-    .update(`${viewer.subject}:${sellerId}:${entitlementId}`, "utf8")
-    .digest("hex")
-    .slice(0, 12);
-  const demoProfile = demoProfileForSubject(viewer.subject);
-  const viewerLabel = viewer.identity?.emailVerified === true
-    ? viewer.identity.email
-    : demoProfile?.email ?? `acesso-${trace.slice(0, 8)}`;
-  return {
-    label: `${viewerLabel} · tenant ${sellerId.slice(0, 8)} · ${trace}`
-  };
+  return { label: learningLicenseLabel(viewer, entitlementId) };
 }
 
 export function learningProgressResponse(payload: unknown) {

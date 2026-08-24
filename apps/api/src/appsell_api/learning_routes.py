@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
+import re
 from typing import Any
 from uuid import UUID
 
@@ -313,9 +316,7 @@ async def render_asset_page(
             detail="pdf_viewer_unavailable",
         )
     storage: S3Storage | None = getattr(request.app.state, "storage", None)
-    watermark = (
-        f"user {internal.envelope.identity.user_id.hex[:12]} access {entitlement_id.hex[:12]}"
-    )
+    watermark = _protected_pdf_license_label(request, internal, entitlement_id)
 
     def render() -> Any:
         with authorized_pdf_page(row, settings, storage) as source:
@@ -363,6 +364,30 @@ async def render_asset_page(
             "x-content-type-options": "nosniff",
         },
     )
+
+
+def _protected_pdf_license_label(
+    request: Request,
+    internal: AuthenticatedInternalRequest,
+    entitlement_id: UUID,
+) -> str:
+    fallback = (
+        f"Licenciado para usuário protegido • ID "
+        f"{internal.envelope.identity.user_id.hex[:6]}{entitlement_id.hex[:2]}"
+    )
+    encoded = request.query_params.get("license")
+    if encoded is None:
+        return fallback
+    if not 1 <= len(encoded) <= 320 or not re.fullmatch(r"[A-Za-z0-9_-]+", encoded):
+        return fallback
+    try:
+        padding = "=" * (-len(encoded) % 4)
+        label = base64.urlsafe_b64decode(encoded + padding).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError, ValueError):
+        return fallback
+    if not label.startswith("Licenciado para ") or not 24 <= len(label) <= 160:
+        return fallback
+    return label
 
 
 async def _authorized_pdf_manifest(
