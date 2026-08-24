@@ -17,6 +17,10 @@ const spaceGrotesk = Space_Grotesk({
 export const metadata: Metadata = {
   title: "Autonom.ia Sell",
   description: "A plataforma da Autonom.ia para criar, vender e entregar produtos digitais.",
+  icons: {
+    icon: "/logos/autonomia_favicon.png",
+    apple: "/logos/autonomia_favicon.png",
+  },
 };
 
 export const viewport: Viewport = { themeColor: "#f4f6fb" };
