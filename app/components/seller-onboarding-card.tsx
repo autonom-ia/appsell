@@ -2,14 +2,20 @@
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
-interface Seller {
-  id: string;
-  slug: string;
-  display_name: string;
-  role: string;
+import { autoSelectableSpace, SellerSpace, sellerRoleLabel } from "./seller-space";
+
+type Seller = SellerSpace;
+
+interface SellerOnboardingCardProps {
+  /**
+   * Hides the active-spaces summary when the account has a single space that
+   * the catalog workspace already labels on the same page. Surfaces without
+   * that label, such as the dashboard, keep the summary visible.
+   */
+  hideSingleSpaceSummary?: boolean;
 }
 
-export function SellerOnboardingCard() {
+export function SellerOnboardingCard({ hideSingleSpaceSummary = false }: SellerOnboardingCardProps = {}) {
   const [sellers, setSellers] = useState<Seller[] | null>(null);
   const [status, setStatus] = useState<"loading" | "idle" | "saving" | "preview" | "unauthorized" | "conflict" | "invalid_slug" | "invalid_name" | "error">("loading");
   const [creationSucceeded, setCreationSucceeded] = useState(false);
@@ -106,6 +112,7 @@ export function SellerOnboardingCard() {
   }
 
   if (sellers?.length) {
+    if (hideSingleSpaceSummary && autoSelectableSpace(sellers)) return null;
     return <section className="seller-onboarding seller-ready"><div><p className="eyebrow">Espaços ativos</p><h2>{sellers.length === 1 ? "Seu espaço está pronto" : `${sellers.length} espaços disponíveis`}</h2><p>Escolha abaixo qual espaço deseja administrar.</p></div><ul>{sellers.map((seller) => <li key={seller.id}><strong>{seller.display_name}</strong><span>@{seller.slug} · {sellerRoleLabel(seller.role)}</span></li>)}</ul></section>;
   }
 
@@ -136,10 +143,4 @@ function readCookie(name: string) {
   const prefix = `${name}=`;
   const value = document.cookie.split("; ").find((part) => part.startsWith(prefix));
   return value ? decodeURIComponent(value.slice(prefix.length)) : "";
-}
-
-function sellerRoleLabel(role: string) {
-  if (role === "owner" || role === "seller_owner") return "proprietário";
-  if (role === "seller_admin") return "administrador";
-  return "membro da equipe";
 }

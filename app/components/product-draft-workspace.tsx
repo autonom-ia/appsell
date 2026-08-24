@@ -3,14 +3,10 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { autoSelectableSpace, SellerSpace, sellerRoleLabel } from "./seller-space";
 import { DIRTY_NAVIGATION_REQUEST_EVENT, useUnsavedChanges } from "./use-unsaved-changes";
 
-interface Seller {
-  id: string;
-  slug: string;
-  display_name: string;
-  role: string;
-}
+type Seller = SellerSpace;
 
 interface ProductDraft {
   id: string;
@@ -121,9 +117,15 @@ export function ProductDraftWorkspace() {
           const nextSellers = Array.isArray(payload.sellers) ? payload.sellers : [];
           setSellers(nextSellers);
           setSellerState("idle");
+          if (formDirtyRef.current) return;
           const requestedSellerId = new URLSearchParams(window.location.search).get("seller") ?? "";
-          if (!formDirtyRef.current && requestedSellerId && requestedSellerId !== selectedSellerIdRef.current && nextSellers.some((seller) => seller.id === requestedSellerId)) {
+          if (requestedSellerId && requestedSellerId !== selectedSellerIdRef.current && nextSellers.some((seller) => seller.id === requestedSellerId)) {
             switchSeller(requestedSellerId, false);
+            return;
+          }
+          const onlySpace = autoSelectableSpace(nextSellers);
+          if (onlySpace && onlySpace.id !== selectedSellerIdRef.current) {
+            switchSeller(onlySpace.id, false);
           }
         })
         .catch(() => {
@@ -197,6 +199,7 @@ export function ProductDraftWorkspace() {
 
   const selectedSeller = sellers?.find((seller) => seller.id === selectedSellerId) ?? null;
   const pendingSeller = sellers?.find((seller) => seller.id === pendingSellerId) ?? null;
+  const lockedSpace = autoSelectableSpace(sellers);
 
   function isInvalid(field: string) {
     return saveState === "invalid" && invalidField === field;
@@ -214,25 +217,35 @@ export function ProductDraftWorkspace() {
       </div>
 
       <div className="tenant-picker">
-        <label htmlFor="seller-context">Espaço de vendas</label>
-        <select
-          id="seller-context"
-          value={selectedSellerId}
-          disabled={sellerState === "loading" || saveState === "saving" || !sellers?.length}
-          onChange={(event) => {
-            const sellerId = event.target.value;
-            if (formDirty && sellerId !== selectedSellerId) {
-              setPendingSellerId(sellerId);
-              return;
-            }
-            switchSeller(sellerId);
-          }}
-        >
-          <option value="">Selecione o espaço para continuar</option>
-          {sellers?.map((seller) => (
-            <option key={seller.id} value={seller.id}>{seller.display_name} · @{seller.slug}</option>
-          ))}
-        </select>
+        {lockedSpace ? (
+          <div className="tenant-locked">
+            <p className="tenant-locked-label">Espaço de vendas</p>
+            <strong>{lockedSpace.display_name}</strong>
+            <span>@{lockedSpace.slug} · {sellerRoleLabel(lockedSpace.role)}</span>
+          </div>
+        ) : (
+          <>
+            <label htmlFor="seller-context">Espaço de vendas</label>
+            <select
+              id="seller-context"
+              value={selectedSellerId}
+              disabled={sellerState === "loading" || saveState === "saving" || !sellers?.length}
+              onChange={(event) => {
+                const sellerId = event.target.value;
+                if (formDirty && sellerId !== selectedSellerId) {
+                  setPendingSellerId(sellerId);
+                  return;
+                }
+                switchSeller(sellerId);
+              }}
+            >
+              <option value="">Selecione o espaço para continuar</option>
+              {sellers?.map((seller) => (
+                <option key={seller.id} value={seller.id}>{seller.display_name} · @{seller.slug}</option>
+              ))}
+            </select>
+          </>
+        )}
         <div aria-live="polite">
           {sellerState === "loading" ? <p className="form-note">Carregando seus espaços…</p> : null}
           {sellerState === "unavailable" ? <p className="form-note">A API local está indisponível. O catálogo demonstrativo não substitui dados reais.</p> : null}
@@ -300,7 +313,7 @@ export function ProductDraftWorkspace() {
             {(catalogState === "idle" || catalogState === "loading_more" || catalogState === "page_error") && nextCursor ? <button type="button" className="secondary-button load-more" disabled={catalogState === "loading_more"} onClick={() => void loadProducts(selectedSeller.id, nextCursor)}>{catalogState === "loading_more" ? "Carregando…" : catalogState === "page_error" ? "Tentar carregar novamente" : "Carregar mais produtos"}</button> : null}
           </div>
         </div>
-      ) : (
+      ) : sellerState === "loading" ? null : (
         <div className="tenant-required"><strong>Escolha o espaço antes de editar.</strong><p>O espaço de vendas nunca é inferido silenciosamente da sua conta.</p></div>
       )}
     </section>

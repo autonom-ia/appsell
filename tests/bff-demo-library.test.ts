@@ -507,7 +507,9 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     await pwExpect(adminPage.getByRole("heading", { name: "Seu negócio em um só lugar." })).toBeVisible();
     await pwExpect(adminPage.getByRole("link", { name: "Produtos" }).first()).toBeVisible();
     await adminPage.goto(`${origin}/products`);
-    await adminPage.getByLabel("Espaço de vendas").selectOption({ index: 1 });
+    // The demo admin owns exactly one space, so the workspace opens already
+    // scoped and offers no picker to choose from.
+    await pwExpect(adminPage.getByLabel("Espaço de vendas")).toHaveCount(0);
     const productTitle = `Produto Demo ${suffix}`;
     const editedTitle = `${productTitle} Editado`;
     await adminPage.getByLabel("Nome do produto").fill(productTitle);

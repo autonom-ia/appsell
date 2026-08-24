@@ -6,7 +6,7 @@ export default function ProductsPage() {
   return (
     <>
       <header className="page-header products-page-header"><div><p className="eyebrow">Gestão do catálogo</p><h1>Produtos</h1><p>Crie, organize e publique seus cursos em um espaço de vendas explícito.</p></div></header>
-      <SellerOnboardingCard/>
+      <SellerOnboardingCard hideSingleSpaceSummary/>
       <Suspense fallback={<p className="empty-state" role="status">Carregando catálogo…</p>}><ProductDraftWorkspace/></Suspense>
     </>
   );

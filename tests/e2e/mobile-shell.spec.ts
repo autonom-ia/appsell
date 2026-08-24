@@ -309,7 +309,9 @@ test("preserves loaded products when the next catalog page fails", async ({ page
 
   await login(page);
   await page.goto("/products");
-  await page.getByLabel("Espaço de vendas").selectOption(sellerId);
+  // A single space needs no manual pick: the workspace opens already scoped.
+  await expect(page.getByText("@studio-mobile · proprietário")).toBeVisible();
+  await expect(page.getByLabel("Espaço de vendas")).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Produto da primeira página" })).toBeVisible();
   await page.getByRole("button", { name: "Carregar mais produtos" }).click();
   await expect(page.getByText("Os produtos já carregados foram preservados.")).toBeVisible();
