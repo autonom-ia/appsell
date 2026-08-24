@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AccessibleDialog } from "./accessible-dialog";
 
@@ -51,6 +51,9 @@ export function AccessLinksPanel({
   // panel keeps it visible until the seller creates or rotates another link.
   const [issuedUrl, setIssuedUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [label, setLabel] = useState("");
+  const [maxUses, setMaxUses] = useState("");
+  const [expiresAt, setExpiresAt] = useState("");
   const [revokeTarget, setRevokeTarget] = useState<AccessLink | null>(null);
   const [openRedemptions, setOpenRedemptions] = useState<string | null>(null);
   const [redemptions, setRedemptions] = useState<Redemption[]>([]);
@@ -83,14 +86,13 @@ export function AccessLinksPanel({
     void Promise.resolve().then(loadLinks);
   }, [loadLinks]);
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const data = new FormData(form);
+  async function submit() {
+    const data = new FormData();
     data.set("_csrf", csrf.create);
     data.set("idempotency_key", crypto.randomUUID());
-    if (!data.get("max_uses")) data.set("max_uses", "");
-    if (!data.get("expires_at")) data.set("expires_at", "");
+    data.set("label", label.trim());
+    data.set("max_uses", maxUses.trim());
+    data.set("expires_at", expiresAt.trim());
     setActionState("working");
     setInvalidField("");
     try {
@@ -99,7 +101,9 @@ export function AccessLinksPanel({
       const payload = await response.json() as { url?: string };
       setIssuedUrl(typeof payload.url === "string" ? payload.url : null);
       setCopied(false);
-      form.reset();
+      setLabel("");
+      setMaxUses("");
+      setExpiresAt("");
       setActionState("idle");
       await loadLinks();
       queueMicrotask(() => listHeading.current?.focus());
@@ -205,14 +209,13 @@ export function AccessLinksPanel({
         </div>
       ) : null}
 
-      <form className="access-link-form" onSubmit={submit}>
-        <fieldset disabled={actionState === "working"}>
-          <legend className="sr-only">Novo link de acesso</legend>
+      <div className="access-link-form">
+        <fieldset aria-label="Novo link de acesso" disabled={actionState === "working"}>
           <label>
             Nome do link
             <input
-              name="label"
-              required
+              value={label}
+              onChange={(event) => setLabel(event.target.value)}
               maxLength={80}
               autoComplete="off"
               placeholder="Ex.: Turma Royalty Seguros"
@@ -222,9 +225,9 @@ export function AccessLinksPanel({
           <label>
             Vagas
             <input
-              name="max_uses"
+              value={maxUses}
+              onChange={(event) => setMaxUses(event.target.value)}
               inputMode="numeric"
-              pattern="[0-9]*"
               autoComplete="off"
               placeholder="Deixe vazio para ilimitado"
               aria-invalid={invalidField === "max_uses"}
@@ -234,12 +237,18 @@ export function AccessLinksPanel({
             Validade
             <input
               type="datetime-local"
-              name="expires_at"
+              value={expiresAt}
+              onChange={(event) => setExpiresAt(event.target.value)}
               autoComplete="off"
               aria-invalid={invalidField === "expires_at"}
             />
           </label>
-          <button type="submit" className="secondary-button">
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={label.trim().length === 0}
+            onClick={() => void submit()}
+          >
             {actionState === "working" ? "Criando…" : "Criar link"}
           </button>
         </fieldset>
@@ -257,7 +266,7 @@ export function AccessLinksPanel({
             <p className="form-error">Não foi possível concluir a ação.</p>
           ) : null}
         </div>
-      </form>
+      </div>
 
       <h3 ref={listHeading} tabIndex={-1}>Links criados</h3>
       {listState === "loading" ? <p className="empty-state">Carregando links…</p> : null}

@@ -379,8 +379,11 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   await page.route(`**/api/sellers/${sellerId}/products/${productId}/publications`, async (route) => {
     const posted = route.request().postDataBuffer();
     const form = await new Request(route.request().url(), { method: "POST", headers: route.request().headers(), body: posted ? new Uint8Array(posted) : undefined }).formData();
-    expect([...form.keys()].sort()).toEqual(["_csrf", "course_versions", "expected_offer_version", "expected_product_version", "idempotency_key", "offer_id"]);
+    expect([...form.keys()].sort()).toEqual(["_csrf", "access_mode", "course_versions", "expected_offer_version", "expected_product_version", "idempotency_key", "offer_id"]);
     expect(form.get("_csrf")).toBe("csrf-publish");
+    // The access decision travels with the publication. Without a payout account
+    // the sale option is refused, so this flow can only ever publish free access.
+    expect(form.get("access_mode")).toBe("free");
     expect(form.get("course_versions")).toBe(JSON.stringify([{ id: courseId, version: state.courseVersion }]));
     publishKeys.push(String(form.get("idempotency_key")));
     if (publishKeys.length === 1) return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "upstream_unavailable" }) });
@@ -454,16 +457,19 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   await expect(page.getByText("Compra indisponível nesta prévia")).toBeVisible();
   await page.getByRole("link", { name: /^Publicar/ }).click();
   await page.getByRole("button", { name: "Publicar catálogo primeira versão" }).click();
-  await expect(page.getByRole("dialog", { name: "Publicar este catálogo?" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Colocar Creator OS 2 no ar?" })).toBeVisible();
+  // Publishing now decides access. Selling stays visible but refused, with the
+  // reason written next to it, instead of leaving a dead button on the screen.
+  await expect(page.getByRole("radio", { name: /Acesso gratuito/ })).toBeChecked();
+  await expect(page.getByRole("radio", { name: /Vender com checkout/ })).toBeDisabled();
+  await expect(page.getByText("configure seus recebimentos", { exact: false })).toBeVisible();
   await expect(page.getByRole("button", { name: "Revisar novamente" })).toBeFocused();
-  await page.keyboard.press("Shift+Tab");
-  await expect(page.getByRole("button", { name: "Publicar catálogo" })).toBeFocused();
   await page.keyboard.press("Tab");
-  await expect(page.getByRole("button", { name: "Revisar novamente" })).toBeFocused();
-  await page.getByRole("button", { name: "Publicar catálogo" }).click();
+  await expect(page.getByRole("button", { name: "Colocar no ar" })).toBeFocused();
+  await page.getByRole("button", { name: "Colocar no ar" }).click();
   await expect(page.getByText("A API não respondeu.", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "Publicar catálogo primeira versão" }).click();
-  await page.getByRole("button", { name: "Publicar catálogo" }).click();
+  await page.getByRole("button", { name: "Colocar no ar" }).click();
   await expect(page.getByText("Catálogo publicado com sucesso.", { exact: false })).toBeVisible();
   await expect(page.getByText("Nenhuma mudança desde a versão publicada.", { exact: false })).toBeVisible();
   await expect(page.getByRole("button", { name: /Publicar catálogo nova versão/ })).toBeDisabled();
@@ -475,10 +481,10 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   await page.getByRole("link", { name: /^Publicar/ }).click();
   await expect(page.getByRole("button", { name: "Publicar catálogo nova versão após v1" })).toBeEnabled();
   await page.getByRole("button", { name: "Publicar catálogo nova versão após v1" }).click();
-  await page.getByRole("button", { name: "Publicar catálogo" }).click();
+  await page.getByRole("button", { name: "Colocar no ar" }).click();
   await expect(page.getByText("O produto mudou ou não está pronto.", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "Publicar catálogo nova versão após v1" }).click();
-  await page.getByRole("button", { name: "Publicar catálogo" }).click();
+  await page.getByRole("button", { name: "Colocar no ar" }).click();
   await expect(page.getByText("Catálogo publicado com sucesso.", { exact: false })).toBeVisible();
   expect(publishKeys).toHaveLength(4);
   expect(submittedOfferPrices).toContain("4700");

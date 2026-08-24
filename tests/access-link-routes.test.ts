@@ -252,6 +252,28 @@ describe("access link routes", () => {
     expect(redeemDomainAccessLink).not.toHaveBeenCalled();
   });
 
+  it("writes nothing to the console that could leak a token", async () => {
+    // A1.10: the token is a credential. If any layer logged it, a log shipper
+    // would carry working access out of the system.
+    const spies = (["log", "info", "warn", "error", "debug"] as const).map((level) =>
+      vi.spyOn(console, level).mockImplementation(() => {})
+    );
+    try {
+      redeemDomainAccessLink.mockRejectedValueOnce(new DomainApiError(404, "access_link_unavailable"));
+      await redeemLink(
+        formRequest("/api/library/access-links/redeem", {
+          _csrf: "csrf-token-test",
+          idempotency_key: IDEMPOTENCY,
+          token: TOKEN
+        })
+      );
+      const written = spies.flatMap((spy) => spy.mock.calls.flat()).map(String).join(" ");
+      expect(written).not.toContain(TOKEN);
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+  });
+
   it("passes an unavailable link through as the domain reported it", async () => {
     redeemDomainAccessLink.mockRejectedValueOnce(new DomainApiError(404, "access_link_unavailable"));
     const response = await redeemLink(

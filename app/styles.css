@@ -1106,19 +1106,20 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 }
 
 /* Access links: seat limited invitations and the access decision at publish time. */
-.access-links-panel { min-width: 0; margin-top: 16px; padding: 20px; display: grid; gap: 12px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow-sm); }
+.access-links-panel { min-width: 0; max-width: 100%; margin-top: 16px; padding: 14px; display: grid; gap: 12px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow-sm); }
 .access-links-panel > h2 { font-size: clamp(1.2rem,4.5vw,1.5rem); }
 .access-links-panel > h3 { margin: 6px 0 0; font-size: .95rem; }
 .access-links-panel > p { margin: 0; color: var(--text); font-size: .82rem; line-height: 1.55; }
-.access-link-issued { display: grid; gap: 10px; padding: 14px; border: 1px solid rgba(8,122,75,.28); border-radius: 14px; background: #f0fbf5; }
+.access-link-issued { min-width: 0; max-width: 100%; display: grid; gap: 10px; padding: 12px; border: 1px solid rgba(8,122,75,.28); border-radius: 14px; background: #f0fbf5; }
 .access-link-issued strong { color: #05502f; font-size: .84rem; }
 .access-link-issued p { margin: 4px 0 8px; color: #05502f; font-size: .74rem; line-height: 1.5; }
 .access-link-issued code { display: block; padding: 9px 11px; border-radius: 10px; background: #fff; border: 1px solid rgba(8,122,75,.2); color: var(--ink); font-size: .74rem; overflow-wrap: anywhere; }
-.access-link-form fieldset { min-width: 0; margin: 0; padding: 0; border: 0; display: grid; gap: 10px; }
-.access-link-form label { display: grid; gap: 6px; color: var(--ink); font-size: .74rem; font-weight: 800; }
-.access-link-form input { width: 100%; min-width: 0; min-height: 48px; padding: 11px 13px; border: 1px solid var(--border); border-radius: 12px; background: #fff; color: var(--ink); font-size: 1rem; }
+.access-link-form { min-width: 0; max-width: 100%; }
+.access-link-form fieldset { min-width: 0; max-width: 100%; margin: 0; padding: 0; border: 0; display: grid; gap: 10px; }
+.access-link-form label { min-width: 0; max-width: 100%; display: grid; gap: 6px; color: var(--ink); font-size: .74rem; font-weight: 800; }
+.access-link-form input { width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box; min-height: 48px; padding: 11px 13px; border: 1px solid var(--border); border-radius: 12px; background: #fff; color: var(--ink); font-size: 1rem; }
 .access-link-form input:focus-visible { outline: 3px solid var(--bright); outline-offset: 2px; }
-.access-link-card { min-width: 0; padding: 14px; display: grid; gap: 8px; border: 1px solid var(--border); border-radius: 16px; background: #fbfdff; }
+.access-link-card { min-width: 0; max-width: 100%; padding: 12px; display: grid; gap: 8px; border: 1px solid var(--border); border-radius: 16px; background: #fbfdff; }
 .access-link-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .access-link-heading h4 { margin: 0; font-size: .92rem; font-weight: 800; overflow-wrap: anywhere; }
 .access-link-usage { margin: 0; color: var(--text); font-size: .76rem; }
@@ -1126,10 +1127,11 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .access-link-seatbar i { display: block; height: 100%; background: linear-gradient(90deg,var(--bright),var(--sky)); }
 .access-link-address { margin: 0; color: var(--soft); font-size: .7rem; overflow-wrap: anywhere; }
 .access-link-address code { padding: 2px 6px; border-radius: 6px; background: #eef4fd; color: var(--blue); font-size: .7rem; }
-.access-link-actions { display: grid; gap: 8px; }
+.access-link-actions { min-width: 0; display: grid; gap: 8px; }
+.access-link-actions > * { min-width: 0; width: 100%; overflow-wrap: anywhere; }
 .access-link-redemptions { margin: 4px 0 0; padding-left: 18px; display: grid; gap: 4px; color: var(--soft); font-size: .72rem; }
 .access-mode-choice { display: grid; gap: 10px; }
-.access-mode-option { display: flex; align-items: flex-start; gap: 11px; padding: 13px; border: 1px solid var(--border); border-radius: 14px; background: #fff; cursor: pointer; }
+.access-mode-option { min-width: 0; max-width: 100%; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 11px; padding: 13px; border: 1px solid var(--border); border-radius: 14px; background: #fff; cursor: pointer; }
 .access-mode-option.selected { border-color: rgba(37,99,184,.55); background: #f4f9ff; box-shadow: 0 0 0 2px rgba(37,99,184,.16); }
 .access-mode-option.disabled { opacity: .72; cursor: not-allowed; background: repeating-linear-gradient(135deg,#fafbfd,#fafbfd 8px,#f2f5f9 8px,#f2f5f9 16px); }
 .access-mode-option input { width: 20px; height: 20px; margin-top: 2px; flex: 0 0 auto; accent-color: var(--bright); }

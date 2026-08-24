@@ -459,7 +459,10 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
     }
   }
 
+  // Asked only when the seller opens the access decision. Nothing else on the
+  // page depends on it, so there is no reason to spend a request on mount.
   useEffect(() => {
+    if (!publishDialogOpen || payoutReady !== null) return;
     let active = true;
     void fetch(`/api/sellers/${encodeURIComponent(sellerId)}/payout-account`, { cache: "no-store" })
       .then(async (response) => {
@@ -483,7 +486,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
     return () => {
       active = false;
     };
-  }, [sellerId]);
+  }, [payoutReady, publishDialogOpen, sellerId]);
 
   async function publish(accessMode: "free" | "paid") {
     const hasChanges = detail?.has_unpublished_changes ?? detail?.readiness?.has_unpublished_changes;
