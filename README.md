@@ -2,13 +2,35 @@
 
 Plataforma SaaS white-label mobile-first para produtos digitais e áreas de membros da Autonom.ia
 
+## Estado operacional atual
+
+O fluxo multitenant real está em produção em `https://sell.autonomia.site` na
+VPS EasyPanel, com `platform_superadmin`, tenants `Autonom.ia` e `Hub2You`,
+`seller_owner`, comprador por entitlement e links gratuito/pago. A release
+comprovada é o SHA `2c8a36897eadf624955810ffdaee7b33c6239334`; não há seed/reset
+demo no banco de produção.
+
+Para retomar o projeto sem depender do histórico da conversa, comece por
+[Estado atual de produção](docs/PRODUCTION_CURRENT.md), depois consulte o
+[runbook de release/rollback](docs/runbooks/PRODUCTION_RELEASE_APPSSELL.md).
+
 ## Documentação
 
 - [Plano Executivo](docs/plans/EXECUTIVE_PLAN.md)
 - [Plano Técnico](docs/plans/TECHNICAL_PLAN.md)
+- [Estado atual de produção](docs/PRODUCTION_CURRENT.md)
+- [Status do projeto](docs/STATUS.md)
+- [Release, backup e rollback](docs/runbooks/PRODUCTION_RELEASE_APPSSELL.md)
 - [Relatório de Verificação](docs/research/VERIFICATION_REPORT.md)
 - [Arquitetura, ADRs e threat model](docs/architecture/README.md)
 - [OpenBao Transit Local/CI](docs/openbao-transit-local-ci.md)
+
+### Convenção da documentação
+
+Documentos marcados como Local/CI, demo, spike, plano ou histórico não são
+evidência de produção. Auditorias antigas permanecem como registro histórico;
+quando houver conflito de estado, prevalece `docs/PRODUCTION_CURRENT.md` e a
+última evidência vinculada a um SHA real.
 
 ## Spike OAuth/BFF local
 

@@ -1,9 +1,10 @@
 # Backup lógico cifrado — Autonom.ia Sell (native-90)
 
 Scripts de backup/restore do banco `appsell_native_90` (serviço EasyPanel
-`postgres-native-90`, projeto `sell-autonomia`). Hoje **não existe backup** deste
-banco — este diretório entrega a primeira camada: dump lógico diário, cifrado e
-enviado off-host, com restore ensaiável. PITR/WAL fica documentado como evolução
+`postgres-native-90`, projeto `sell-autonomia`). O release de produção possui
+um dump pré-cutover preservado; ainda não há evidência de rotina recorrente
+diária/PITR concluída. Este diretório entrega a primeira camada: dump lógico
+diário, cifrado e enviado off-host, com restore ensaiável. PITR/WAL fica documentado como evolução
 no runbook (`docs/runbooks/BACKUP_RESTORE_SELL.md`), pois exige acesso ao volume
 do Postgres nativo (decisão de infra).
 

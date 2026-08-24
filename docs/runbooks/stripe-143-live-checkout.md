@@ -1,5 +1,10 @@
 # Runbook — checkout Stripe live (#143, slice 1: platform-direct)
 
+> **Status:** desenho/runbook de ativação futura. O release atual valida a
+> separação entre acesso gratuito e pago, mas não declara o Stripe live como
+> ativado. A ativação exige novo gate de billing, secrets, webhook, backup,
+> rollback e aprovação explícita.
+
 Cobra a conta Stripe **da própria plataforma** (Connect é fatia posterior). O
 dinheiro do curso entra na Autonom.ia; repasse ao produtor não existe nesta
 fatia.

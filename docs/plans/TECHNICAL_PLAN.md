@@ -1,5 +1,10 @@
 # Plano Técnico Detalhado — Autonom.ia Sell
 
+> **Leitura atual:** este é o baseline técnico e o plano de evolução, não um
+> espelho do deploy. O slice de catálogo/tenancy/publicação foi materializado
+> e verificado na VPS; o estado efetivo está em
+> [`docs/PRODUCTION_CURRENT.md`](../PRODUCTION_CURRENT.md).
+
 - Status: Approved direction with gates
 - Data: 2026-07-10
 - Issue: https://github.com/autonom-ia/appsell/issues/2
@@ -13,9 +18,9 @@ O plano prioriza fronteiras seguras com os ativos internos da Autonom.ia. Reutil
 
 ## 2. Baseline arquitetural aprovada com gates
 
-A direção foi aceita e registrada nos ADRs. Componentes ainda não implementados,
-integrações reais e materialização de dados continuam condicionados aos spikes,
-testes e aprovações de cada fase:
+A direção foi aceita e registrada nos ADRs. Componentes que não pertencem ao
+slice já entregue, integrações adicionais e materialização de novas capacidades
+continuam condicionados aos spikes, testes e aprovações de cada fase:
 
 | Camada | Baseline proposta | Motivo |
 |---|---|---|

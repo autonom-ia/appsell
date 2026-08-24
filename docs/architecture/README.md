@@ -1,16 +1,22 @@
 # Arquitetura — Autonom.ia Sell
 
-- Status do pacote: Approved direction with gates
+- Status do pacote: direção aprovada; catálogo multitenant real verificado em produção
 - Issue: [autonom-ia/appsell#9](https://github.com/autonom-ia/appsell/issues/9)
-- Data-base: 2026-07-10
+- Data-base: 2026-07-10; estado operacional atualizado em 2026-08-24
 - Gate: direção aprovada; cada slice funcional continua sujeito a Issue, review,
   testes reais e aprovação de merge
+
+> Para a fotografia atual de produção, use primeiro
+> [PRODUCTION_CURRENT.md](../PRODUCTION_CURRENT.md). Este pacote reúne
+> arquitetura, ADRs e regras duráveis; textos que dizem “futuro” ou “Local/CI”
+> descrevem limites de um slice específico, não negam o release real atual.
 
 ## Objetivo
 
 Converter os planos executivo e técnico em decisões verificáveis para um web app
-mobile-first, multi-tenant e seguro. Este pacote não autoriza merge, deploy,
-alterações em produção, VPS, DNS, secrets, billing real ou dados de clientes.
+mobile-first, multi-tenant e seguro. Este pacote não autoriza uma nova operação
+de merge, deploy, alteração em produção, VPS, DNS, secrets, billing real ou
+dados de clientes sem o gate correspondente.
 
 ## Decisões arquiteturais
 
@@ -52,12 +58,14 @@ alterações em produção, VPS, DNS, secrets, billing real ou dados de clientes
    AppSell via checkout externo e webhook até o Financial ser endurecido e
    certificado por operador.
 9. Nenhuma conexão comum de aplicação possui bypass permanente de RLS.
-10. Nenhum artefato deste pacote toca produção, VPS ou secrets.
+10. Nenhum artefato deve alterar produção, VPS ou secrets sem o fluxo Issue →
+    PR → review → aprovação → deploy e rollback. A existência da produção atual
+    não transforma este documento em autorização para nova operação.
 
 ## Gate de aprovação
 
-Antes de habilitar Identity real, tenancy, billing, dados reais ou produção,
-devem estar resolvidos ou formalmente aceitos:
+Antes de ampliar a operação, alterar billing, dados reais ou produção, devem
+estar resolvidos ou formalmente aceitos:
 
 - decisões marcadas como bloqueadoras no [registro](DECISION_REGISTER.md);
 - spikes reais de OAuth/BFF, isolamento A/B, buyer A+B, publicação, asset
@@ -65,7 +73,8 @@ devem estar resolvidos ou formalmente aceitos:
 - matriz de autorização aprovada por produto e segurança;
 - threat model sem risco crítico sem tratamento aceito;
 - auditoria completa de licenças e SBOM sobre os lockfiles atuais e futuros;
-- plano de migração/rollback executado em ambiente descartável.
+- plano de migração/rollback executado em ambiente descartável;
+- smoke no SHA efetivamente implantado, quando a mudança tocar produção.
 
 ## Relação com os planos
 
@@ -74,3 +83,5 @@ Este pacote detalha, sem substituir:
 - [Plano Executivo](../plans/EXECUTIVE_PLAN.md)
 - [Plano Técnico](../plans/TECHNICAL_PLAN.md)
 - [Relatório de Verificação](../research/VERIFICATION_REPORT.md)
+- [Estado atual de produção](../PRODUCTION_CURRENT.md)
+- [Runbook de release/rollback](../runbooks/PRODUCTION_RELEASE_APPSSELL.md)

@@ -1,82 +1,117 @@
-# MEMORY_PROJECT.md — Contexto do projeto
+# MEMORY_PROJECT.md — Contexto operacional do projeto
 
-Atualizado quando arquitetura, integrações ou ambientes mudarem.
+Atualizado em 2026-08-24. Esta memória é um índice curto para retomada. A
+fonte detalhada e atual de produção é
+[`docs/PRODUCTION_CURRENT.md`](../PRODUCTION_CURRENT.md); não usar uma memória
+antiga ou documento histórico para inferir o estado do domínio.
 
-## Objetivo do projeto
+## Objetivo
 
-Construir o Autonom.ia Sell, SaaS white-label mobile-first para produtores
-publicarem produtos digitais e áreas de membros, com compradores globais que
-podem acessar produtos de mais de um seller sem quebrar o isolamento de tenant.
+Autonom.ia Sell é uma plataforma multi-tenant para sellers publicarem cursos,
+ebooks e outros produtos digitais. A plataforma tem um
+`platform_superadmin`; cada tenant tem seu `seller_owner`; compradores são
+identidades globais que podem ter acesso a produtos de vários sellers sem
+receber permissão editorial.
 
-## Arquitetura resumida
+## Hierarquia real
 
-O slice implementado é um Next.js 16/React 19 com BFF OAuth, cookie de sessão
-opaco e rotas runtime usando exclusivamente Redis isolado em Local/CI; classes
-in-memory permanecem apenas em testes. O mock de Identity é somente local e
-falha fechado em modo `production`. A direção aceita
-com gates adiciona API modular FastAPI, PostgreSQL, worker/outbox, storage S3 e
-fronteiras com Identity, Admin e Financial; esses componentes ainda não foram
-materializados. Ver [arquitetura](../architecture/README.md) e
-[progresso](../PROGRESS.md).
+```text
+Plataforma
+└── comercial@autonomia.site — platform_superadmin
+    ├── Tenant Autonom.ia — rodrigo.victor@autonomia.site — seller_owner
+    └── Tenant Hub2You — comercial@hub2you.ai — seller_owner
+```
 
-## Comandos principais
+O superadmin administra a plataforma e pode operar um tenant apenas com
+tenant explícito, capability e auditoria. `seller_owner` fica restrito ao
+próprio tenant. Buyer não é owner nem editor.
+
+## Produção atual
+
+| Item | Valor verificado |
+|---|---|
+| Domínio | `https://sell.autonomia.site` |
+| Infra | VPS `85.31.60.100`, EasyPanel nativo/Docker Swarm; não AWS/EC2 neste release |
+| Release | SHA `2c8a36897eadf624955810ffdaee7b33c6239334` |
+| PR / Issue | #201 / #195 |
+| CI | run `32656218821` — PASS |
+| Banco | PostgreSQL nativo `appsell_native_90` |
+| Migration head | `0032_platform_superadmin_catalog` |
+| Imagens | `easypanel/sell-autonomia/{web,api}:2c8a3689`; worker usa a imagem API |
+| Readiness | API interna `database=true`, `storage=true`, `pdf_sandbox=true` |
+| Backup pré-cutover | `/home/claudete/backups/appsell/appsell_native_90-before-2c8a3689-20260823-183653.dump` |
+| SHA-256 do backup | `509134d43c1be6f502965b83eecc51eb4f68278ff2a7f0025f7aa5fb93bbea12` |
+| Rollback de imagem | tag anterior `64ab9956` preservada |
+
+Produção é real e não usa reset, seed ou personas demo. Scripts de demo são
+somente Local/CI/homologação isolada.
+
+## Fluxos de produto e acesso
+
+- Editor: Produto → Currículo → Oferta → Preview → Publicar.
+- Material: upload assíncrono, verificação de segurança e publicação somente
+  após `ready`; o nome físico do arquivo não é apresentado ao comprador.
+- Link gratuito: abre o acesso do produto, autentica/cadastra o buyer e
+  concede entitlement de forma idempotente, sem checkout.
+- Link pago: não concede biblioteca antes da confirmação do checkout; o
+  entitlement depende do fluxo pago/fulfillment. Ativação de billing live é
+  um gate separado e não deve ser presumida a partir do catálogo publicado.
+- Conteúdo privado: player e PDF validam buyer + seller + entitlement; não
+  são arquivos públicos nem ficam disponíveis ao seller de outro tenant.
+- Produto publicado é snapshot versionado; editar o rascunho não altera
+  silenciosamente o snapshot já publicado.
+
+## Estado real conhecido
+
+Após o smoke de produção: 3 sellers, 2 memberships de owner, 3 produtos de
+catálogo, 11 assets, 0 entitlements de buyer no momento da medição, 1 grant
+`platform_superadmin` ativo e slugs `autonomia`/`hub2you` ativos. O produto de
+referência Hub2You é `ia-na-pratica`; o produto pago de smoke é
+`teste-checkout-r1`.
+
+## Comandos e validação local
 
 ```bash
-# Instalar exatamente o lockfile
 corepack pnpm install --frozen-lockfile
-
-# Rodar localmente
-cp .env.example .env.local
-# Configurar Redis NOVO/isolado, nunca a porta ou instância existente.
 corepack pnpm dev
-
-# Rodar testes
 corepack pnpm test
 corepack pnpm test:e2e
-
-# Build / typecheck / lint
 corepack pnpm lint
 corepack pnpm typecheck
 corepack pnpm build
 ```
 
-## Integrações
+Para a validação de release, preservar o SHA efetivamente implantado e separar
+claramente CI/local de smoke real. Nunca registrar secrets, tokens ou dados
+pessoais de buyers na documentação.
 
-| Sistema | Tipo | Risco | Doc |
-|---------|------|:-----:|-----|
-| Redis isolado | Sessão/state/cache Local e CI | Alto | [README](../../README.md) / [ADR 0002](../architecture/adr/0002-identity-bff-rbac.md) |
-| Autonom.ia Identity | OAuth real | Alto — bloqueado | [Issue #13](https://github.com/autonom-ia/appsell/issues/13) |
-| PostgreSQL | Dados multi-tenant futuros | Alto — não implementado | [Modelo de dados](../architecture/DATA_MODEL.md) |
-| Autonomia Admin | Catálogo corporativo futuro | Alto — não conectado | [ADR 0005](../architecture/adr/0005-jobs-webhooks-financial-boundary.md) |
-| Autonomia Financial | Billing SaaS futuro | Alto — não conectado | [ADR 0005](../architecture/adr/0005-jobs-webhooks-financial-boundary.md) |
+## Documentos canônicos
 
-## Ambientes
+- [Estado atual de produção](../PRODUCTION_CURRENT.md)
+- [Runbook de release/rollback](../runbooks/PRODUCTION_RELEASE_APPSSELL.md)
+- [Status](../STATUS.md) e [progresso](../PROGRESS.md)
+- [Matriz de autorização](../architecture/AUTHORIZATION_MATRIX.md)
+- [Modelo de dados](../architecture/DATA_MODEL.md)
+- [Registro de decisões](../architecture/DECISION_REGISTER.md)
+- [Issue #202 de documentação](https://github.com/autonom-ia/appsell/issues/202)
 
-| Ambiente | URL | Branch | Deploy |
-|----------|-----|--------|--------|
-| Local | `http://localhost:3000` | qualquer | manual |
-| Dev compartilhado | não provisionado | `main` | não configurado |
-| Staging | não provisionado | não definida | não configurado |
-| Produção | `sell.autonomia.site` (alvo; não publicado) | não definida | proibido sem aprovação explícita |
+## Regras de operação
 
-## Riscos conhecidos
+- Toda tarefa persistente segue Issue → Branch → PR → Project → review →
+  aprovação → merge → deploy/rollback.
+- Não fazer merge, deploy, alteração de banco, secrets, auth, billing, DNS ou
+  dados reais sem aprovação explícita correspondente.
+- Não usar demo para validar produção; fazer teste negativo cross-tenant.
+- Não declarar sucesso por CI ou healthcheck isolado: separar CI, merge,
+  deploy, migration, smoke e resultado do usuário.
+- O Autonom.ia Agent Harness está descontinuado; não instalar, restaurar ou
+  usar seus hooks/documentos como requisito.
 
-- Identity real sem dev/hml e com bloqueios P0 upstream — manter a Issue #13
-  bloqueada; não transformar mock em integração de produção.
-- Tenancy, RBAC, KMS/vault, refresh distribuído e dados de domínio ainda não
-  existem — implementar por slices com testes negativos e revisão independente.
-- VPS/TLS/capacidade não estão aprovados para AppSell — nenhuma ação em produção
-  nesta fase; a medição read-only da Issue #5 não autoriza deploy.
-- Gate npm do scaffold está verde, mas licenças, SBOM, imagens e dependências não
-  npm ainda não foram certificados.
+## Pendências sem ampliar o escopo atual
 
-## O que NÃO fazer
-
-- Sem merge sem aprovação Rodrigo
-- Sem deploy, DNS, secrets, auth real, billing ou dados de clientes sem aprovação
-  explícita de Rodrigo e plano de rollback verificado
-- Sem alteração de dados sem migration, backup/restore e rollback exercitados
-- Sem operação destrutiva em Easypanel sem backup confirmado (Regra 001 MEMORY_CORE)
-- Sem omitir campo `env` em updateEnv (Regra 002 MEMORY_CORE)
-- Sem reutilizar Redis, Postgres, portas, volumes ou secrets já existentes na VPS
-- Sem tratar build, mock ou teste local como evidência de produção
+- rotina recorrente de backup/PITR e restore real continuam sendo trabalho de
+  infraestrutura separado;
+- billing/Stripe live, repasse/Connect e políticas comerciais precisam de
+  gate próprio;
+- novas mudanças do editor, catálogo ou tenants devem partir da produção
+  atual e ter regressão negativa antes de qualquer deploy.

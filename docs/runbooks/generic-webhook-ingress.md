@@ -1,5 +1,9 @@
 # Runbook — webhook genérico de checkout (Local/CI)
 
+> **Status:** contrato histórico de Local/CI. Não representa um webhook de
+> produção nem autoriza billing; a fotografia atual está em
+> [`docs/PRODUCTION_CURRENT.md`](../PRODUCTION_CURRENT.md).
+
 ## Escopo e estado
 
 Este runbook cobre somente a Fase 6A da Issue #63. A entrada assinada é

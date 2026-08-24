@@ -1,5 +1,11 @@
 # EasyPanel nativo — Autonom.ia Sell
 
+> **Classificação:** este arquivo documenta a homologação histórica da Issue
+> #90. A produção atual está em `sell.autonomia.site`, no release
+> `2c8a36897eadf624955810ffdaee7b33c6239334`, e é descrita em
+> [`docs/PRODUCTION_CURRENT.md`](../../docs/PRODUCTION_CURRENT.md) e no
+> [runbook de release](../../docs/runbooks/PRODUCTION_RELEASE_APPSSELL.md).
+
 Este diretório substitui o transporte customizado de imagens/TARs por serviços
 nativos do EasyPanel. O rollout da Issue #90 é somente uma homologação pública do
 demo em modo `ci`, protegida por Basic Auth. Ele não pode ser promovido para
@@ -26,7 +32,7 @@ laboratório #71 permanecem intocados. Nenhum serviço novo pode entrar nas rede
 
 ## Gates antes da primeira escrita
 
-1. SHA imutável em Draft PR, Harness 2.1.2 e reviews críticos verdes.
+1. SHA imutável em Draft PR e reviews críticos verdes.
 2. Workflow `EasyPanel native images` verde para os três Dockerfiles.
 3. Inventário read-only de serviços, containers, redes, CPU, memória e disco.
 4. Token GitHub do EasyPanel com acesso somente de leitura ao repo privado.
@@ -102,8 +108,9 @@ O rollout é aditivo e não altera `sell.autonomia.site`; portanto rollback sign
 
 Nenhum banco, role ou volume é apagado no ciclo de rollback.
 
-## Produção permanece bloqueada
+## Limite desta homologação histórica
 
-Mover `sell.autonomia.site` exige outro slice com OAuth real da Autonom.ia Identity,
-PostgreSQL/S3 TLS, ClamAV, sandbox isolado, financeiro real, Neuro.ai, review e um
-cutover/rollback testado. Não existe marker local-demo de produção neste código.
+Este diretório não é o procedimento da produção atual e não deve ser usado para
+resetar ou semear o banco real. O ambiente `native-90` continua reservado à
+homologação documentada pela Issue #90; novas alterações de produção seguem o
+fluxo Issue → PR → review → aprovação → deploy/rollback.
