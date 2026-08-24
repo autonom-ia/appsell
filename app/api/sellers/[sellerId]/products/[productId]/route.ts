@@ -9,6 +9,9 @@ import {
 import {
   csrfTokenForSession,
   PUBLISH_PRODUCT_DRAFT_CSRF_ACTION,
+  CREATE_ACCESS_LINK_CSRF_ACTION,
+  REVOKE_ACCESS_LINK_CSRF_ACTION,
+  ROTATE_ACCESS_LINK_CSRF_ACTION,
   TRANSITION_OFFER_STATUS_CSRF_ACTION,
   UPDATE_PRODUCT_DRAFT_CSRF_ACTION,
   verifyMutation
@@ -89,6 +92,18 @@ export async function GET(request: NextRequest, context: ProductRouteContext) {
         offer_status: csrfTokenForSession(
           authenticated.sessionId,
           TRANSITION_OFFER_STATUS_CSRF_ACTION
+        ),
+        access_link_create: csrfTokenForSession(
+          authenticated.sessionId,
+          CREATE_ACCESS_LINK_CSRF_ACTION
+        ),
+        access_link_revoke: csrfTokenForSession(
+          authenticated.sessionId,
+          REVOKE_ACCESS_LINK_CSRF_ACTION
+        ),
+        access_link_rotate: csrfTokenForSession(
+          authenticated.sessionId,
+          ROTATE_ACCESS_LINK_CSRF_ACTION
         )
       }
     }, { headers: { "cache-control": "no-store" } });
