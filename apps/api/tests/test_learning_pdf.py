@@ -124,7 +124,9 @@ def test_authorized_page_rejects_digest_valid_bytes_that_are_not_png(tmp_path: P
             pass
 
 
-def test_render_adds_buyer_watermark_without_exposing_pdf_bytes(tmp_path: Path) -> None:
+def test_render_adds_license_footer_without_covering_page_or_exposing_pdf_bytes(
+    tmp_path: Path,
+) -> None:
     payload = png_payload()
     page = tmp_path / "page.png"
     page.write_bytes(payload)
@@ -134,7 +136,7 @@ def test_render_adds_buyer_watermark_without_exposing_pdf_bytes(tmp_path: Path) 
         page,
         row,
         page_count=3,
-        watermark="user 12345678 access abcdef12",
+        watermark="Licenciado para bu***@example.test • ID abcdef",
     )
 
     assert rendered.payload.startswith(b"\x89PNG\r\n\x1a\n")
@@ -143,3 +145,7 @@ def test_render_adds_buyer_watermark_without_exposing_pdf_bytes(tmp_path: Path) 
     assert rendered.page_count == 3
     assert rendered.page_number == 1
     assert rendered.sha256_hex == hashlib.sha256(rendered.payload).hexdigest()
+    with Image.open(BytesIO(rendered.payload)) as image:
+        assert image.size == (320, 516)
+        assert image.getpixel((160, 240)) == (255, 255, 255)
+        assert image.getpixel((160, 481)) == (226, 232, 240)

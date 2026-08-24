@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 
+import { ProtectedPdfReader } from "./protected-pdf-reader";
+
 interface CourseLesson {
   id: string;
   title: string;
@@ -380,7 +382,6 @@ export function LearningPlayer({ entitlementId, lessonId }: { entitlementId: str
               index={index}
               initialProgress={selectedProgress?.progress_percent ?? 0}
               busy={mutationState !== "idle"}
-              watermark={payload.watermark.label}
               onVideoProgress={saveVideoProgress}
             />)
           : <p className="asset-unavailable" role="status">Material complementar indisponível para esta aula.</p>}
@@ -537,12 +538,11 @@ function assetEntitlementId(asset: LearningAsset) {
     : TENANT_VIDEO_HREF)?.[1];
 }
 
-function LessonMaterial({ asset, index, initialProgress, busy, watermark, onVideoProgress }: {
+function LessonMaterial({ asset, index, initialProgress, busy, onVideoProgress }: {
   asset: LearningAsset;
   index: number;
   initialProgress: number;
   busy: boolean;
-  watermark: string;
   onVideoProgress: (percent: number) => Promise<boolean>;
 }) {
   const video = asset.media_type === "video/mp4";
@@ -560,115 +560,8 @@ function LessonMaterial({ asset, index, initialProgress, busy, watermark, onVide
     </div>
     {video
       ? <ProtectedVideo asset={asset} initialProgress={initialProgress} busy={busy} onProgress={onVideoProgress}/>
-      : <ProtectedPdf asset={asset} watermark={watermark}/>}
+      : <ProtectedPdfReader asset={asset}/>}
   </aside>;
-}
-
-function ProtectedPdf({ asset, watermark }: { asset: LearningAsset; watermark: string }) {
-  const [manifest, setManifest] = useState<{ pageCount: number } | "loading" | "error">("loading");
-  const [pageNumber, setPageNumber] = useState(1);
-  const [imageError, setImageError] = useState(false);
-  const [policyFeedback, setPolicyFeedback] = useState("");
-
-  const loadManifest = useCallback(async () => {
-    setManifest("loading");
-    setPolicyFeedback("");
-    const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 8_000);
-    try {
-      const response = await fetch(asset.view_href, {
-        cache: "no-store",
-        credentials: "same-origin",
-        signal: controller.signal
-      });
-      const payload: unknown = response.ok ? await response.json() : null;
-      const expectedAssetId = asset.view_href.match(TENANT_PDF_VIEW_HREF)?.[2];
-      if (!validPdfManifest(payload, expectedAssetId)) throw new Error("invalid_pdf_manifest");
-      setManifest({ pageCount: payload.page_count });
-      setPageNumber(1);
-      setImageError(false);
-    } catch {
-      if (!controller.signal.aborted) setManifest("error");
-      else setManifest("error");
-    } finally {
-      window.clearTimeout(timeout);
-    }
-  }, [asset.view_href]);
-
-  useEffect(() => {
-    const start = window.setTimeout(() => void loadManifest(), 0);
-    return () => window.clearTimeout(start);
-  }, [loadManifest]);
-
-  useEffect(() => {
-    const blockProtectedDocumentShortcut = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || !["p", "s"].includes(event.key.toLowerCase())) return;
-      event.preventDefault();
-      setPolicyFeedback(event.key.toLowerCase() === "p"
-        ? "A impressão deste conteúdo está desativada."
-        : "O arquivo original não está disponível para salvar.");
-    };
-    window.addEventListener("keydown", blockProtectedDocumentShortcut, { capture: true });
-    return () => window.removeEventListener("keydown", blockProtectedDocumentShortcut, { capture: true });
-  }, []);
-
-  const pageCount = typeof manifest === "object" ? manifest.pageCount : 0;
-  const selectPage = (nextPage: number) => {
-    if (nextPage < 1 || nextPage > pageCount) return;
-    setImageError(false);
-    setPageNumber(nextPage);
-    setPolicyFeedback("");
-  };
-
-  return <div className="protected-pdf">
-    {manifest === "loading"
-      ? <p className="protected-pdf-state" role="status">Preparando visualização protegida…</p>
-      : manifest === "error"
-        ? <div className="protected-pdf-state" role="alert"><p>Não foi possível preparar este PDF.</p><button type="button" className="secondary-button" onClick={() => void loadManifest()}>Tentar novamente</button></div>
-        : <>
-            <div
-              className="protected-pdf-page"
-              onContextMenu={(event) => event.preventDefault()}
-              aria-label={`${asset.title}, página ${pageNumber} de ${pageCount}`}
-            >
-              {imageError
-                ? <div className="protected-pdf-state" role="alert"><p>Não foi possível carregar esta página.</p><button type="button" className="secondary-button" onClick={() => setImageError(false)}>Tentar novamente</button></div>
-                // Private, authenticated, no-store raster pages cannot use the optimizing image proxy.
-                // eslint-disable-next-line @next/next/no-img-element
-                : <img
-                    src={`${asset.view_href}/${pageNumber}`}
-                    alt={`${asset.title} — página ${pageNumber} de ${pageCount}`}
-                    draggable={false}
-                    loading="eager"
-                    referrerPolicy="no-referrer"
-                    onDragStart={(event) => event.preventDefault()}
-                    onError={() => setImageError(true)}
-                  />}
-              <span aria-hidden="true">{watermark}</span>
-            </div>
-            <nav className="protected-pdf-pagination" aria-label="Páginas do PDF">
-              <button type="button" className="secondary-button" disabled={pageNumber === 1} onClick={() => selectPage(pageNumber - 1)}>← Anterior</button>
-              <span aria-live="polite">Página {pageNumber} de {pageCount}</span>
-              <button type="button" className="secondary-button" disabled={pageNumber === pageCount} onClick={() => selectPage(pageNumber + 1)}>Próxima →</button>
-            </nav>
-          </>}
-    {asset.download_href
-      ? <a className="secondary-button" href={asset.download_href}>Baixar PDF de apoio</a>
-      : <p className="asset-policy-note" role="note">Download desativado pelo administrador.</p>}
-    <p className="asset-policy-feedback" aria-live="polite">{policyFeedback}</p>
-  </div>;
-}
-
-function validPdfManifest(
-  value: unknown,
-  expectedAssetId: string | undefined
-): value is { asset_id: string; page_count: number } {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const record = value as Record<string, unknown>;
-  return Object.keys(record).sort().join(",") === "asset_id,page_count" &&
-    typeof expectedAssetId === "string" && record.asset_id === expectedAssetId &&
-    Number.isSafeInteger(record.page_count) && Number(record.page_count) >= 1 &&
-    Number(record.page_count) <= 100;
 }
 
 function ProtectedVideo({ asset, initialProgress, busy, onProgress }: {

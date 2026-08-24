@@ -18,6 +18,8 @@ from .pdf_verifier import PDF_MIME, PdfRejected, verified_pdf_file
 MAX_RASTER_BYTES = 8 * 1024 * 1024
 MAX_RASTER_DIMENSION = 1_600
 MAX_WATERMARK_CHARACTERS = 200
+MIN_LICENSE_FOOTER_HEIGHT = 36
+MAX_LICENSE_FOOTER_HEIGHT = 56
 _PDFTOPPM_TIMEOUT_SECONDS = 12
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _FONT_PATHS = (
@@ -155,9 +157,9 @@ def _render_verified_page(
             raise PdfRasterRejected("PDF page rasterization returned no image")
         if raster_path.stat().st_size > MAX_RASTER_BYTES:
             raise PdfRasterRejected("rasterized PDF page exceeds the output limit")
-        payload, width, height = watermark_png_file(raster_path, watermark)
+        payload, width, height = license_footer_png_file(raster_path, watermark)
         if len(payload) > MAX_RASTER_BYTES:
-            raise PdfRasterRejected("watermarked PDF page exceeds the output limit")
+            raise PdfRasterRejected("licensed PDF page exceeds the output limit")
         return RenderedPdfPage(
             payload=payload,
             byte_size=len(payload),
@@ -175,7 +177,22 @@ def _render_verified_page(
             render_directory.rmdir()
 
 
-def watermark_png_file(source_path: Path, watermark: str) -> tuple[bytes, int, int]:
+def license_footer_dimensions(width: int, height: int) -> tuple[int, int, int, int]:
+    footer_height = _license_footer_height(width)
+    if max(width, height + footer_height) <= MAX_RASTER_DIMENSION:
+        return width, height + footer_height, height, footer_height
+    scale = (MAX_RASTER_DIMENSION - footer_height) / height
+    page_width = max(1, int(width * scale))
+    page_height = max(1, int(height * scale))
+    footer_height = _license_footer_height(page_width)
+    if page_height + footer_height > MAX_RASTER_DIMENSION:
+        scale = (MAX_RASTER_DIMENSION - footer_height) / height
+        page_width = max(1, int(width * scale))
+        page_height = max(1, int(height * scale))
+    return page_width, page_height + footer_height, page_height, footer_height
+
+
+def license_footer_png_file(source_path: Path, watermark: str) -> tuple[bytes, int, int]:
     try:
         with Image.open(source_path) as source:
             if source.format != "PNG":
@@ -191,43 +208,50 @@ def watermark_png_file(source_path: Path, watermark: str) -> tuple[bytes, int, i
                 or width * height > MAX_RASTER_DIMENSION**2
             ):
                 raise PdfRasterRejected("rasterizer returned invalid image dimensions")
-            image = source.convert("RGBA")
+            image = source.convert("RGB")
     except PdfRasterRejected:
         raise
     except (OSError, UnidentifiedImageError, ValueError) as error:
         raise PdfRasterRejected("rasterizer returned an invalid PNG") from error
 
-    font_size = max(14, min(28, min(width, height) // 18))
-    font = _load_font(font_size)
-    text_box = ImageDraw.Draw(Image.new("RGBA", (1, 1))).textbbox((0, 0), watermark, font=font)
-    text_width = max(1, int(text_box[2] - text_box[0]))
-    text_height = max(1, int(text_box[3] - text_box[1]))
-    tile = Image.new("RGBA", (text_width + 48, text_height + 32), (0, 0, 0, 0))
-    ImageDraw.Draw(tile).text(
-        (24 - text_box[0], 16 - text_box[1]),
-        watermark,
-        font=font,
-        fill=(22, 36, 52, 88),
-        stroke_width=1,
-        stroke_fill=(255, 255, 255, 48),
+    output_width, output_height, page_height, footer_height = license_footer_dimensions(
+        width, height
     )
-    rotated = tile.rotate(28, expand=True, resample=Image.Resampling.BICUBIC)
-    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
-    x_step = max(220, rotated.width + 80)
-    y_step = max(150, rotated.height + 70)
-    for row, y in enumerate(range(-rotated.height, height + rotated.height, y_step)):
-        offset = -(x_step // 2) if row % 2 else 0
-        for x in range(-rotated.width + offset, width + rotated.width, x_step):
-            overlay.alpha_composite(rotated, (x, y))
-    watermarked = Image.alpha_composite(image, overlay).convert("RGB")
+    if image.size != (output_width, page_height):
+        image = image.resize((output_width, page_height), Image.Resampling.LANCZOS)
+    licensed = Image.new("RGB", (output_width, output_height), "white")
+    licensed.paste(image, (0, 0))
+    draw = ImageDraw.Draw(licensed)
+    inset = max(16, output_width // 24)
+    draw.line(
+        (inset, page_height + 1, output_width - inset, page_height + 1),
+        fill=(226, 232, 240),
+        width=1,
+    )
+    font_size = max(10, min(19, output_width // 58))
+    font = _load_font(font_size)
+    text_box = draw.textbbox((0, 0), watermark, font=font)
+    while font_size > 8 and text_box[2] - text_box[0] > output_width - (2 * inset):
+        font_size -= 1
+        font = _load_font(font_size)
+        text_box = draw.textbbox((0, 0), watermark, font=font)
+    text_width = int(text_box[2] - text_box[0])
+    text_height = int(text_box[3] - text_box[1])
+    text_x = max(inset, (output_width - text_width) // 2)
+    text_y = page_height + max(3, (footer_height - text_height) // 2) - text_box[1]
+    draw.text((text_x, text_y), watermark, font=font, fill=(100, 116, 139))
 
     with tempfile.SpooledTemporaryFile(max_size=MAX_RASTER_BYTES + 1, mode="w+b") as output:
-        watermarked.save(output, format="PNG", optimize=True, compress_level=9)
+        licensed.save(output, format="PNG", optimize=True, compress_level=9)
         byte_size = output.tell()
         if byte_size > MAX_RASTER_BYTES:
-            raise PdfRasterRejected("watermarked PDF page exceeds the output limit")
+            raise PdfRasterRejected("licensed PDF page exceeds the output limit")
         output.seek(0)
-        return output.read(), width, height
+        return output.read(), output_width, output_height
+
+
+def _license_footer_height(width: int) -> int:
+    return max(MIN_LICENSE_FOOTER_HEIGHT, min(MAX_LICENSE_FOOTER_HEIGHT, width // 22))
 
 
 def _load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:

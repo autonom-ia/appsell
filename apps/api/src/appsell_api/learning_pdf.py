@@ -13,7 +13,12 @@ from typing import IO, Any, BinaryIO
 from PIL import Image, UnidentifiedImageError
 
 from .config import Settings
-from .pdf_raster import PdfRasterRejected, normalize_watermark, watermark_png_file
+from .pdf_raster import (
+    PdfRasterRejected,
+    license_footer_dimensions,
+    license_footer_png_file,
+    normalize_watermark,
+)
 from .storage_s3 import S3Storage, StorageError
 
 PNG_MIME = "image/png"
@@ -110,13 +115,16 @@ def render_prepared_pdf_page(
     if not 1 <= page_number <= page_count <= MAX_PDF_PAGES:
         raise LearningPdfRejected("PDF page metadata is invalid")
     try:
-        payload, width, height = watermark_png_file(path, normalize_watermark(watermark))
+        payload, width, height = license_footer_png_file(path, normalize_watermark(watermark))
     except PdfRasterRejected as error:
-        raise LearningPdfRejected("PDF page watermarking was rejected") from error
-    if width != int(row["pixel_width"]) or height != int(row["pixel_height"]):
+        raise LearningPdfRejected("PDF page licensing was rejected") from error
+    expected_width, expected_height, _, _ = license_footer_dimensions(
+        int(row["pixel_width"]), int(row["pixel_height"])
+    )
+    if width != expected_width or height != expected_height:
         raise LearningPdfRejected("PDF page dimensions drifted")
     if not 1 <= len(payload) <= MAX_PDF_PAGE_BYTES:
-        raise LearningPdfUnavailable("watermarked PDF page exceeds the output limit")
+        raise LearningPdfUnavailable("licensed PDF page exceeds the output limit")
     return RenderedLearningPdfPage(
         payload=payload,
         page_count=page_count,
