@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { workflowState } from "../app/components/product-editor-workspace";
+import { shouldFlushPendingDraft, workflowState } from "../app/components/product-editor-workspace";
 
 /**
  * `workflowState` diz apenas se cada área já tem conteúdo, para a navegação
@@ -53,5 +53,27 @@ describe("marcadores de área do editor", () => {
     const result = workflowState(detail, { modules: 1, lessons: 1 });
 
     expect(Object.keys(result).sort()).toEqual(["curriculo", "oferta", "produto", "publicar"]);
+  });
+});
+
+/**
+ * Regressão registrada: quando o autosave ganhou o envio na saída da página, o
+ * botão "Descartar e voltar" deixou de descartar. Ele não zerava o estado sujo,
+ * então o envio de saída reenviava ao servidor exatamente a edição que o
+ * vendedor tinha acabado de mandar jogar fora — e a tela já tinha dito que
+ * descartou.
+ */
+describe("envio pendente na saída da página", () => {
+  it("envia o que está sujo quando a página vai embora", () => {
+    expect(shouldFlushPendingDraft({ dirty: true, discarded: false })).toBe(true);
+  });
+
+  it("não envia o que o vendedor mandou descartar", () => {
+    expect(shouldFlushPendingDraft({ dirty: true, discarded: true })).toBe(false);
+  });
+
+  it("não envia nada quando não há alteração", () => {
+    expect(shouldFlushPendingDraft({ dirty: false, discarded: false })).toBe(false);
+    expect(shouldFlushPendingDraft({ dirty: false, discarded: true })).toBe(false);
   });
 });

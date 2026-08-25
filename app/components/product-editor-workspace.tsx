@@ -70,7 +70,7 @@ interface CurriculumSummary {
   lessons: number;
 }
 
-type WorkflowStepState = "complete" | "current" | "pending";
+type WorkflowStepState = "complete" | "pending";
 
 interface EditorPayload {
   product?: ProductDetail;
@@ -145,6 +145,17 @@ interface PrivatePreviewPayload extends PrivatePreview {
 // o que impede publicar é a validação do servidor, mostrada à parte.
 const AUTOSAVE_IDLE_MS = 2_500;
 
+/**
+ * Se a emenda pendente deve ser enviada quando a página vai embora.
+ *
+ * O autosave existe para o vendedor não perder trabalho, mas descartar também é
+ * uma decisão dele. Enviar o que ele acabou de mandar jogar fora seria pior do
+ * que não ter autosave nenhum, porque ele já viu a tela dizer que descartou.
+ */
+export function shouldFlushPendingDraft(state: { dirty: boolean; discarded: boolean }): boolean {
+  return state.dirty && !state.discarded;
+}
+
 const editorSections: Array<{ id: EditorSection; label: string; hint: string }> = [
   { id: "produto", label: "Produto", hint: "Identidade e curso" },
   { id: "curriculo", label: "Currículo", hint: "Módulos e aulas" },
@@ -186,6 +197,9 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   const [fields, setFields] = useState<EditorFields>(emptyFields);
   const fieldsRef = useRef(fields);
   const dirtyRef = useRef(false);
+  // Descartar é uma intenção, e o flush da desmontagem precisa saber dela: sem
+  // isto ele reenviaria justamente a edição que o vendedor mandou jogar fora.
+  const discardedRef = useRef(false);
   const [savedFields, setSavedFields] = useState<EditorFields>(emptyFields);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [invalidField, setInvalidField] = useState("");
@@ -256,6 +270,8 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   useEffect(() => {
     persistDraftRef.current = persistDraft;
     dirtyRef.current = dirty;
+    // Uma edição nova depois do descarte volta a valer, e volta a ser salva.
+    if (dirty) discardedRef.current = false;
   });
   const autosaveBlocked =
     !dirty
@@ -268,14 +284,19 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
 
   useEffect(() => {
     if (autosaveBlocked) return;
-    const timer = window.setTimeout(() => { void persistDraftRef.current(); }, AUTOSAVE_IDLE_MS);
+    const scheduledSection = section;
+    const timer = window.setTimeout(
+      () => { void persistDraftRef.current(scheduledSection); },
+      AUTOSAVE_IDLE_MS
+    );
     return () => window.clearTimeout(timer);
-  }, [autosaveBlocked, fields]);
+  }, [autosaveBlocked, fields, section]);
 
   // A última emenda não pode morrer com a página. Ao sair, o que estiver
   // pendente é enviado sem esperar a pausa.
   useEffect(() => () => {
-    if (dirtyRef.current) void persistDraftRef.current();
+    if (!shouldFlushPendingDraft({ dirty: dirtyRef.current, discarded: discardedRef.current })) return;
+    void persistDraftRef.current();
   }, []);
   useEffect(() => {
     if (publishState !== "publishing") return;
@@ -371,9 +392,11 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
     await persistDraft();
   }
 
-  async function persistDraft(): Promise<boolean> {
+  async function persistDraft(scheduledSection: EditorSection = section): Promise<boolean> {
     if (!detail || saveState === "saving") return false;
-    const savingOffer = section === "oferta";
+    // A área vem de quem chamou. O autosave passa a que estava aberta quando ele
+    // foi agendado, para nunca salvar um grupo de campos achando que é outro.
+    const savingOffer = scheduledSection === "oferta";
     // Guarda de defesa: o form já é desabilitado por offerLocked, mas o submit
     // pode chegar por Enter durante uma transição em voo — não salvar nesse caso.
     if (savingOffer && (detail.offer.status !== "draft" || offerStatusState === "transitioning")) return false;
@@ -695,13 +718,19 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
     router.replace(`?section=${target}`, { scroll: false });
   }
 
-  function discardAndGo() {
-    if (dirty) {
+  function discardLocalEdits() {
+    if (dirtyRef.current) {
       setFields(savedFields);
       fieldsRef.current = savedFields;
       setSaveState("idle");
       setInvalidField("");
     }
+    discardedRef.current = true;
+    dirtyRef.current = false;
+  }
+
+  function discardAndGo() {
+    discardLocalEdits();
     goToPendingSection();
   }
 
@@ -957,7 +986,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       {leaveDialogOpen ? (
         <AccessibleDialog titleId="editor-leave-title" descriptionId="editor-leave-description" initialFocusRef={leaveCancelButton} returnFocusRef={listLink} onClose={closeLeaveDialog}>
             <p className="eyebrow">Alterações não salvas</p><h2 id="editor-leave-title">Voltar para produtos?</h2><p id="editor-leave-description">As alterações feitas neste dispositivo serão descartadas.</p>
-            <div className="dialog-actions"><button ref={leaveCancelButton} className="secondary-button" type="button" onClick={closeLeaveDialog}>Continuar editando</button><button className="danger-button" type="button" onClick={() => { allowUnsavedNavigation(); router.push(`/products?seller=${encodeURIComponent(sellerId)}`); }}>Descartar e voltar</button></div>
+            <div className="dialog-actions"><button ref={leaveCancelButton} className="secondary-button" type="button" onClick={closeLeaveDialog}>Continuar editando</button><button className="danger-button" type="button" onClick={() => { discardLocalEdits(); allowUnsavedNavigation(); router.push(`/products?seller=${encodeURIComponent(sellerId)}`); }}>Descartar e voltar</button></div>
         </AccessibleDialog>
       ) : null}
     </section>
