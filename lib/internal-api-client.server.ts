@@ -889,6 +889,74 @@ export async function archiveDomainCourseLesson(
   });
 }
 
+export async function createDomainLessonMaterial(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  courseId: string,
+  moduleId: string,
+  lessonId: string,
+  input: CurriculumMutationInput & {
+    kind: "external" | "embed";
+    title: string;
+    url: string | null;
+    provider: "youtube" | "vimeo" | null;
+    videoId: string | null;
+  }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}/courses/${courseId}/modules/${moduleId}/lessons/${lessonId}/materials`,
+    capability: "catalog.curriculum.create",
+    sellerOrganizationId,
+    body: curriculumBody(input, {
+      kind: input.kind,
+      title: input.title,
+      url: input.url,
+      provider: input.provider,
+      video_id: input.videoId
+    })
+  });
+}
+
+export async function listDomainLessonMaterials(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  courseId: string,
+  moduleId: string,
+  lessonId: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}/courses/${courseId}/modules/${moduleId}/lessons/${lessonId}/materials`,
+    capability: "catalog.curriculum.read",
+    sellerOrganizationId
+  });
+}
+
+export async function archiveDomainLessonMaterial(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  courseId: string,
+  moduleId: string,
+  lessonId: string,
+  materialId: string,
+  input: CurriculumMutationInput
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}/courses/${courseId}/modules/${moduleId}/lessons/${lessonId}/materials/${materialId}/archive`,
+    capability: "catalog.curriculum.archive",
+    sellerOrganizationId,
+    body: curriculumBody(input)
+  });
+}
+
 export async function reorderDomainCourseLessons(
   sessionId: string,
   session: ServerSession,
