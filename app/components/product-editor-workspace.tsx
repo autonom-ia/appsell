@@ -6,6 +6,7 @@ import { FormEvent, MouseEvent, useCallback, useEffect, useRef, useState } from 
 import { AccessibleDialog } from "./accessible-dialog";
 import { AccessLinksPanel } from "./access-links-panel";
 import { CurriculumWorkspace } from "./curriculum-workspace";
+import { ProductCoverPanel, type ProductCover } from "./product-cover-panel";
 import { allowUnsavedNavigation, useUnsavedChanges } from "./use-unsaved-changes";
 import {
   formatOfferPrice,
@@ -60,6 +61,7 @@ interface ProductDetail {
   courses: CourseDetail[];
   curriculum: CurriculumSummary;
   offer: OfferDetail;
+  cover?: ProductCover | null;
   publication?: { id?: string; version: number; published_at?: string } | null;
   has_unpublished_changes?: boolean;
   readiness?: { can_publish: boolean; has_unpublished_changes?: boolean; items: ReadinessItem[] } | null;
@@ -79,7 +81,7 @@ interface EditorPayload {
   offer?: OfferDetail | null;
   publication?: ProductDetail["publication"];
   latest_publication?: ProductDetail["publication"];
-  csrf?: { update?: string; publish?: string; offer_status?: string; access_link_create?: string; access_link_revoke?: string; access_link_rotate?: string };
+  csrf?: { update?: string; publish?: string; offer_status?: string; access_link_create?: string; access_link_revoke?: string; access_link_rotate?: string; cover_intent?: string; cover_confirm?: string; cover_clear?: string };
   readiness?: { can_publish: boolean; has_unpublished_changes?: boolean; items: Array<ReadinessItem | string> };
   can_publish?: boolean;
   readiness_violations?: Array<string | { key?: string; label?: string; detail?: string }>;
@@ -193,7 +195,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   const section: EditorSection = editorSections.some((item) => item.id === requestedSection) ? requestedSection as EditorSection : "produto";
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [detail, setDetail] = useState<ProductDetail | null>(null);
-  const [csrf, setCsrf] = useState<{ update: string; publish: string; offerStatus: string; accessLinkCreate: string; accessLinkRevoke: string; accessLinkRotate: string }>({ update: "", publish: "", offerStatus: "", accessLinkCreate: "", accessLinkRevoke: "", accessLinkRotate: "" });
+  const [csrf, setCsrf] = useState<{ update: string; publish: string; offerStatus: string; accessLinkCreate: string; accessLinkRevoke: string; accessLinkRotate: string; coverIntent: string; coverConfirm: string; coverClear: string }>({ update: "", publish: "", offerStatus: "", accessLinkCreate: "", accessLinkRevoke: "", accessLinkRotate: "", coverIntent: "", coverConfirm: "", coverClear: "" });
   const [fields, setFields] = useState<EditorFields>(emptyFields);
   const fieldsRef = useRef(fields);
   const dirtyRef = useRef(false);
@@ -333,7 +335,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       offerId.current = nextDetail.offer.id ?? crypto.randomUUID();
       setDetail({ ...nextDetail, readiness: payload.readiness ?? nextDetail.readiness });
       setCurriculumSummary(nextDetail.curriculum);
-      setCsrf({ update: payload.csrf?.update ?? readActionCsrf("update"), publish: payload.csrf?.publish ?? readActionCsrf("publish"), offerStatus: payload.csrf?.offer_status ?? "", accessLinkCreate: payload.csrf?.access_link_create ?? "", accessLinkRevoke: payload.csrf?.access_link_revoke ?? "", accessLinkRotate: payload.csrf?.access_link_rotate ?? "" });
+      setCsrf({ update: payload.csrf?.update ?? readActionCsrf("update"), publish: payload.csrf?.publish ?? readActionCsrf("publish"), offerStatus: payload.csrf?.offer_status ?? "", accessLinkCreate: payload.csrf?.access_link_create ?? "", accessLinkRevoke: payload.csrf?.access_link_revoke ?? "", accessLinkRotate: payload.csrf?.access_link_rotate ?? "", coverIntent: payload.csrf?.cover_intent ?? "", coverConfirm: payload.csrf?.cover_confirm ?? "", coverClear: payload.csrf?.cover_clear ?? "" });
       setFields(nextFields);
       setSavedFields(nextFields);
       setLoadState("ready");
@@ -346,6 +348,10 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
     }
   }, [productId, sellerId]);
   const handleCurriculumCommitted = useCallback(() => { void loadDetail(); }, [loadDetail]);
+  // A capa muda a versão do produto e o endereço assinado da imagem. Recarregar
+  // é o que mantém o painel falando do estado real: o número devolvido pela
+  // mutação sozinho não traz a URL nova.
+  const handleCoverCommitted = useCallback(() => { void loadDetail(); }, [loadDetail]);
 
   useEffect(() => {
     const start = window.setTimeout(() => void loadDetail(), 0);
@@ -467,7 +473,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       updateIdempotencyKey.current = null;
       setDetail({ ...updated, readiness: payload.readiness ?? updated.readiness });
       setCurriculumSummary(updated.curriculum);
-      setCsrf((current) => ({ ...current, update: payload.csrf?.update ?? current.update, publish: payload.csrf?.publish ?? current.publish, offerStatus: payload.csrf?.offer_status ?? current.offerStatus, accessLinkCreate: payload.csrf?.access_link_create ?? current.accessLinkCreate, accessLinkRevoke: payload.csrf?.access_link_revoke ?? current.accessLinkRevoke, accessLinkRotate: payload.csrf?.access_link_rotate ?? current.accessLinkRotate }));
+      setCsrf((current) => ({ ...current, update: payload.csrf?.update ?? current.update, publish: payload.csrf?.publish ?? current.publish, offerStatus: payload.csrf?.offer_status ?? current.offerStatus, accessLinkCreate: payload.csrf?.access_link_create ?? current.accessLinkCreate, accessLinkRevoke: payload.csrf?.access_link_revoke ?? current.accessLinkRevoke, accessLinkRotate: payload.csrf?.access_link_rotate ?? current.accessLinkRotate, coverIntent: payload.csrf?.cover_intent ?? current.coverIntent, coverConfirm: payload.csrf?.cover_confirm ?? current.coverConfirm, coverClear: payload.csrf?.cover_clear ?? current.coverClear }));
       setSavedFields(fieldsFromDetail(updated));
       if (sameFields(fieldsRef.current, submitted)) {
         const serverFields = fieldsFromDetail(updated);
@@ -508,7 +514,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       setDetail(latest);
       setCurriculumSummary(latest.curriculum);
       setSavedFields(fieldsFromDetail(latest));
-      setCsrf((current) => ({ ...current, update: payload.csrf?.update ?? current.update, publish: payload.csrf?.publish ?? current.publish, offerStatus: payload.csrf?.offer_status ?? current.offerStatus, accessLinkCreate: payload.csrf?.access_link_create ?? current.accessLinkCreate, accessLinkRevoke: payload.csrf?.access_link_revoke ?? current.accessLinkRevoke, accessLinkRotate: payload.csrf?.access_link_rotate ?? current.accessLinkRotate }));
+      setCsrf((current) => ({ ...current, update: payload.csrf?.update ?? current.update, publish: payload.csrf?.publish ?? current.publish, offerStatus: payload.csrf?.offer_status ?? current.offerStatus, accessLinkCreate: payload.csrf?.access_link_create ?? current.accessLinkCreate, accessLinkRevoke: payload.csrf?.access_link_revoke ?? current.accessLinkRevoke, accessLinkRotate: payload.csrf?.access_link_rotate ?? current.accessLinkRotate, coverIntent: payload.csrf?.cover_intent ?? current.coverIntent, coverConfirm: payload.csrf?.cover_confirm ?? current.coverConfirm, coverClear: payload.csrf?.cover_clear ?? current.coverClear }));
       offerId.current = latest.offer.id ?? offerId.current ?? crypto.randomUUID();
       updateIdempotencyKey.current = null;
       setInvalidField("");
@@ -906,6 +912,21 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       </form>
       )}
 
+      {/* Fora do formulário de propósito: os campos da capa não fazem parte
+          daquele envio, e Enter aqui não pode salvar o rascunho. */}
+      {section === "produto" ? (
+        <ProductCoverPanel
+          sellerId={sellerId}
+          productId={productId}
+          productTitle={detail.title}
+          cover={detail.cover ?? null}
+          productVersion={detail.draft_version}
+          archived={detail.status === "archived"}
+          csrf={{ intent: csrf.coverIntent, confirm: csrf.coverConfirm, clear: csrf.coverClear }}
+          onCommitted={handleCoverCommitted}
+        />
+      ) : null}
+
       {publishDialogOpen ? (
         <AccessibleDialog titleId="publish-dialog-title" descriptionId="publish-dialog-description" initialFocusRef={publishCancelButton} returnFocusRef={publishTriggerButton} onClose={closePublishDialog}>
             <p className="eyebrow">Colocar no ar</p><h2 id="publish-dialog-title">Colocar {detail.title} no ar?</h2>
@@ -1124,10 +1145,27 @@ function normalizeDetail(value: Partial<ProductDetail> | null | undefined): Prod
       lessons: Math.max(0, Number(value.curriculum?.lessons ?? 0))
     },
     offer: { id: offer.id, title: offer.title ?? "", summary: offer.summary ?? "", status: offer.status ?? "draft", draft_version: offerVersion, unit_amount_minor: offer.unit_amount_minor, currency: offer.currency, billing_period: offer.billing_period },
+    cover: normalizeCover(value.cover),
     publication: value.publication ?? null,
     has_unpublished_changes: value.has_unpublished_changes ?? value.readiness?.has_unpublished_changes,
     readiness: normalizeReadinessValue(value.readiness)
   };
+}
+
+/**
+ * Uma capa mal formada vira ausência de capa, e não um `img` quebrado.
+ *
+ * A origem do endereço já foi conferida no servidor; o que sobra aqui é a
+ * forma. Se faltar largura ou altura, a moldura colapsa e a lista pula de
+ * tamanho enquanto a imagem carrega — a arte gerada é melhor do que isso.
+ */
+function normalizeCover(value: ProductCover | null | undefined): ProductCover | null {
+  if (!value || typeof value.url !== "string" || !value.url) return null;
+  const width = Number(value.width);
+  const height = Number(value.height);
+  if (!Number.isSafeInteger(width) || width < 1) return null;
+  if (!Number.isSafeInteger(height) || height < 1) return null;
+  return { url: value.url, media_type: String(value.media_type ?? ""), width, height };
 }
 
 function fieldsFromDetail(detail: ProductDetail): EditorFields {

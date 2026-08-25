@@ -1033,6 +1033,77 @@ export async function createDomainAssetUploadIntent(
   });
 }
 
+interface ProductCoverPath {
+  sellerOrganizationId: string;
+  productId: string;
+}
+
+function coverPath(input: ProductCoverPath) {
+  return `/v1/me/sellers/${input.sellerOrganizationId}/products/${input.productId}/cover`;
+}
+
+export async function createDomainCoverUploadIntent(
+  sessionId: string,
+  session: ServerSession,
+  input: ProductCoverPath & {
+    idempotencyKey: string;
+    mediaType: string;
+    byteSize: number;
+    sha256: string;
+  }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `${coverPath(input)}/upload-intents`,
+    capability: "catalog.draft.update",
+    sellerOrganizationId: input.sellerOrganizationId,
+    body: {
+      idempotency_key: input.idempotencyKey,
+      media_type: input.mediaType,
+      byte_size: input.byteSize,
+      sha256: input.sha256
+    }
+  });
+}
+
+export async function confirmDomainCoverUpload(
+  sessionId: string,
+  session: ServerSession,
+  input: ProductCoverPath & {
+    uploadId: string;
+    idempotencyKey: string;
+    expectedProductVersion: number;
+  }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `${coverPath(input)}/uploads/${input.uploadId}/confirm`,
+    capability: "catalog.draft.update",
+    sellerOrganizationId: input.sellerOrganizationId,
+    body: {
+      idempotency_key: input.idempotencyKey,
+      expected_product_version: input.expectedProductVersion
+    }
+  });
+}
+
+export async function clearDomainProductCover(
+  sessionId: string,
+  session: ServerSession,
+  input: ProductCoverPath & { idempotencyKey: string; expectedProductVersion: number }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `${coverPath(input)}/clear`,
+    capability: "catalog.draft.update",
+    sellerOrganizationId: input.sellerOrganizationId,
+    body: {
+      idempotency_key: input.idempotencyKey,
+      expected_product_version: input.expectedProductVersion
+    }
+  });
+}
+
 export async function readDomainAssetUploadStatus(
   sessionId: string,
   session: ServerSession,

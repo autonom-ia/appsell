@@ -14,6 +14,7 @@ import {
 import { oauthService } from "@/lib/oauth-service.server";
 import { isOAuthStoreUnavailable } from "@/lib/redis-oauth-service";
 import { configuredPublicOrigin, hasConfiguredOrigin } from "@/lib/public-origin";
+import { withTrustedCovers } from "./[productId]/_route-shared";
 import {
   capacityProductCreateTelemetryEnabled,
   emitCapacityProductCreateTrace,
@@ -43,7 +44,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
       sellerId,
       cursor
     );
-    return NextResponse.json(payload, { headers: { "cache-control": "no-store" } });
+    return NextResponse.json(withTrustedCovers(payload), { headers: { "cache-control": "no-store" } });
   } catch (error) {
     return mappedError(error);
   }

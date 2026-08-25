@@ -65,3 +65,16 @@ export function catalogPrice(
     return null;
   }
 }
+
+/**
+ * Quantos alunos o produto tem, dito por extenso.
+ *
+ * "0 alunos" é uma frase honesta e a lista precisa dela: um produto novo tem
+ * zero alunos, e esconder o número faria a coluna aparecer e sumir de card em
+ * card. O que não pode acontecer é o número mentir, então um valor ausente ou
+ * inválido vira zero em vez de virar "—", que sugere "não sabemos".
+ */
+export function studentCountLabel(students: number | null | undefined): string {
+  const count = Number.isSafeInteger(students) && Number(students) > 0 ? Number(students) : 0;
+  return count === 1 ? "1 aluno" : `${count.toLocaleString("pt-BR")} alunos`;
+}

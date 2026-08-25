@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
+from .asset_routes import _bounded_presigned_expiry, _iso_datetime
 from .catalog_routes import (
     _authenticate,
     _canonical_uuid,
@@ -139,6 +140,12 @@ async def create_cover_upload_intent(
                 upload_request_id=str(intent["upload_id"]),
             )
         )
+        # O navegador precisa do prazo mais curto dos dois: o do intent guardado
+        # e o da assinatura. Anunciar o do intent faria a tela esperar por uma
+        # URL que ja morreu.
+        signed_expires_at = _bounded_presigned_expiry(
+            intent["expires_at"], signed.expires_in_seconds
+        )
     except IntegrityError as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="cover_conflict"
@@ -157,7 +164,7 @@ async def create_cover_upload_intent(
             "upload_url": signed.url,
             "required_headers": signed.headers,
             "required_content_length": signed.required_content_length,
-            "expires_in_seconds": signed.expires_in_seconds,
+            "expires_at": _iso_datetime(signed_expires_at),
             "product_version": int(intent["product_version"]),
         },
         headers={"cache-control": "no-store", "referrer-policy": "no-referrer"},
