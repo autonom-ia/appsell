@@ -1,0 +1,851 @@
+from __future__ import annotations
+
+import hashlib
+import hmac
+import os
+import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
+from typing import Any
+from uuid import UUID, uuid4
+
+import psycopg
+import pytest
+from psycopg.types.json import Jsonb
+
+ADMIN_URL = os.environ.get("APPSELL_TEST_POSTGRES_ADMIN_URL")
+RUNTIME_URL = os.environ.get("APPSELL_TEST_POSTGRES_RUNTIME_URL")
+CONTEXT_KEY_HEX = os.environ.get("APPSELL_TEST_CONTEXT_KEY_HEX")
+
+pytestmark = pytest.mark.skipif(
+    not all((ADMIN_URL, RUNTIME_URL, CONTEXT_KEY_HEX)),
+    reason="isolated PostgreSQL environment is required",
+)
+
+SELLER_USER = UUID("62000000-0000-4000-8000-000000000001")
+BUYER_COUNT = 60
+
+
+def buyer_id(index: int) -> UUID:
+    return UUID(f"63000000-0000-4000-8000-{index:012d}")
+
+
+def sign_context(
+    actor: UUID, seller: UUID | None, capability: str, issued: int, expires: int
+) -> str:
+    payload = f"{actor}:{seller or ''}:{capability}:{issued}:{expires}"
+    return hmac.new(
+        bytes.fromhex(CONTEXT_KEY_HEX or ""), payload.encode(), hashlib.sha256
+    ).hexdigest()
+
+
+def apply_context(
+    connection: psycopg.Connection[tuple[object, ...]],
+    actor: UUID,
+    seller: UUID | None,
+    capability: str,
+) -> None:
+    issued = int(time.time())
+    expires = issued + 60
+    connection.execute(
+        "select app_private.apply_request_context(%s, %s, %s, %s, %s, %s)",
+        (
+            actor,
+            seller,
+            capability,
+            issued,
+            expires,
+            sign_context(actor, seller, capability, issued, expires),
+        ),
+    )
+
+
+def digest(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+@pytest.fixture(scope="module", autouse=True)
+def seed_identities() -> None:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            """
+            insert into identity_user (
+              id, identity_issuer, identity_sub, email_normalized, email_verified
+            ) values (%s, 'https://identity.accesslink.test', 'access-seller',
+              'access-seller@example.test', true)
+            on conflict (id) do nothing
+            """,
+            (SELLER_USER,),
+        )
+        for index in range(BUYER_COUNT):
+            connection.execute(
+                """
+                insert into identity_user (
+                  id, identity_issuer, identity_sub, email_normalized, email_verified
+                ) values (%s, 'https://identity.accesslink.test', %s, %s, true)
+                on conflict (id) do nothing
+                """,
+                (
+                    buyer_id(index),
+                    f"access-buyer-{index}",
+                    f"access-buyer-{index}@example.test",
+                ),
+            )
+        connection.commit()
+
+
+def create_graph() -> tuple[UUID, UUID, UUID]:
+    assert ADMIN_URL
+    seller_id, product_id, course_id = uuid4(), uuid4(), uuid4()
+    suffix = uuid4().hex[:12]
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "insert into seller_organization (id, slug, display_name, status) "
+            "values (%s, %s, %s, 'active')",
+            (seller_id, f"accesslink-{suffix}", f"Access {suffix}"),
+        )
+        connection.execute(
+            "insert into seller_membership "
+            "(seller_organization_id, identity_user_id, role, status) "
+            "values (%s, %s, 'seller_owner', 'active')",
+            (seller_id, SELLER_USER),
+        )
+        connection.execute(
+            "insert into catalog_product (seller_organization_id, id, slug, title, description) "
+            "values (%s, %s, %s, 'Produto Base', 'Descrição Base')",
+            (seller_id, product_id, f"product-{suffix}"),
+        )
+        connection.execute(
+            "insert into course (seller_organization_id, id, title, description) "
+            "values (%s, %s, 'Curso Base', 'Conteúdo Base')",
+            (seller_id, course_id),
+        )
+        connection.execute(
+            "insert into product_course "
+            "(seller_organization_id, catalog_product_id, course_id, position) "
+            "values (%s, %s, %s, 0)",
+            (seller_id, product_id, course_id),
+        )
+        connection.commit()
+    return seller_id, product_id, course_id
+
+
+def bind_payout_account(seller_id: UUID, *, enabled: bool = True) -> None:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            """
+            insert into seller_payout_account (
+              seller_organization_id, provider, provider_account_id,
+              charges_enabled, payouts_enabled, details_submitted, disabled_reason
+            ) values (%s, 'stripe', %s, %s, %s, %s, %s)
+            """,
+            (
+                seller_id,
+                f"acct_{uuid4().hex[:16]}",
+                enabled,
+                enabled,
+                enabled,
+                None if enabled else "requirements.past_due",
+            ),
+        )
+        connection.commit()
+
+
+def save_draft(seller_id: UUID, product_id: UUID, course_id: UUID, price: int = 9700) -> UUID:
+    """Create the offer through the same atomic draft path the editor uses."""
+    assert RUNTIME_URL
+    offer_id = uuid4()
+    with psycopg.connect(RUNTIME_URL) as connection:
+        apply_context(connection, SELLER_USER, seller_id, "catalog.draft.update")
+        connection.execute(
+            """
+            select offer_id
+            from app_private.update_product_course_offer_draft(
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+              %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
+            """,
+            (
+                SELLER_USER,
+                seller_id,
+                product_id,
+                f"edited-{product_id.hex[:12]}",
+                course_id,
+                offer_id,
+                "Produto Editado",
+                "Descrição editada",
+                "Curso Editado",
+                "Oferta Principal",
+                "Resumo da oferta",
+                price,
+                "BRL",
+                "one_time",
+                1,
+                1,
+                0,
+                uuid4(),
+                digest(f"draft:{product_id}"),
+                uuid4(),
+            ),
+        ).fetchone()
+        connection.commit()
+    return offer_id
+
+
+def publish_with_access(
+    seller_id: UUID,
+    product_id: UUID,
+    course_id: UUID,
+    offer_id: UUID,
+    *,
+    access_mode: str,
+    product_version: int = 2,
+    course_version: int = 2,
+    offer_version: int = 1,
+    key: UUID | None = None,
+) -> tuple[Any, ...]:
+    assert RUNTIME_URL
+    with psycopg.connect(RUNTIME_URL) as connection:
+        apply_context(connection, SELLER_USER, seller_id, "catalog.publication.create")
+        row = connection.execute(
+            """
+            select publication_id, publication_version, product_version, source_sha256,
+                   offer_status, offer_version, created
+            from app_private.publish_product_with_access(
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
+            """,
+            (
+                SELLER_USER,
+                seller_id,
+                product_id,
+                offer_id,
+                product_version,
+                offer_version,
+                Jsonb({str(course_id): course_version}),
+                access_mode,
+                key or uuid4(),
+                digest(f"publish:{product_id}:{access_mode}"),
+                uuid4(),
+            ),
+        ).fetchone()
+        assert row is not None
+        connection.commit()
+    return row
+
+
+def create_link(
+    seller_id: UUID,
+    product_id: UUID,
+    *,
+    token: str,
+    label: str = "Turma de teste",
+    max_uses: int | None = 30,
+    expires_at: datetime | None = None,
+    key: UUID | None = None,
+    body: str | None = None,
+) -> UUID:
+    assert RUNTIME_URL
+    token_digest = digest(token)
+    with psycopg.connect(RUNTIME_URL) as connection:
+        apply_context(connection, SELLER_USER, seller_id, "catalog.access_link.create")
+        row = connection.execute(
+            """
+            select access_link_id
+            from app_private.create_product_access_link(
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
+            """,
+            (
+                SELLER_USER,
+                seller_id,
+                product_id,
+                label,
+                token_digest,
+                token_digest[:8],
+                max_uses,
+                expires_at,
+                key or uuid4(),
+                digest(body or f"link:{product_id}:{label}"),
+                uuid4(),
+            ),
+        ).fetchone()
+        assert row is not None
+        connection.commit()
+    assert isinstance(row[0], UUID)
+    return row[0]
+
+
+def redeem(
+    token: str, buyer: UUID, key: UUID | None = None, body: str | None = None
+) -> tuple[Any, ...]:
+    assert RUNTIME_URL
+    with psycopg.connect(RUNTIME_URL) as connection:
+        apply_context(connection, buyer, None, "library.enroll")
+        row = connection.execute(
+            """
+            select entitlement_id, seller_organization_id, catalog_product_id,
+                   created, seat_consumed, seats_remaining
+            from app_private.redeem_product_access_link(%s, %s, %s, %s, %s)
+            """,
+            (
+                buyer,
+                digest(token),
+                key or uuid4(),
+                digest(body or f"redeem:{buyer}:{uuid4()}"),
+                uuid4(),
+            ),
+        ).fetchone()
+        assert row is not None
+        connection.commit()
+    return row
+
+
+def read_product_status(seller_id: UUID, product_id: UUID) -> tuple[Any, ...] | None:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        return connection.execute(
+            "select status, published_snapshot_id, version from catalog_product "
+            "where seller_organization_id = %s and id = %s",
+            (seller_id, product_id),
+        ).fetchone()
+
+
+def read_offer_status(seller_id: UUID, offer_id: UUID) -> tuple[Any, ...] | None:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        return connection.execute(
+            "select status, version from offer where seller_organization_id = %s and id = %s",
+            (seller_id, offer_id),
+        ).fetchone()
+
+
+def count_publications(seller_id: UUID, product_id: UUID) -> int:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        row = connection.execute(
+            "select count(*) from publication "
+            "where seller_organization_id = %s and catalog_product_id = %s",
+            (seller_id, product_id),
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def audit_actions(seller_id: UUID) -> list[str]:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        rows = connection.execute(
+            "select action from audit_event where seller_organization_id = %s order by created_at",
+            (seller_id,),
+        ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
+def published_free_product() -> tuple[UUID, UUID]:
+    seller_id, product_id, course_id = create_graph()
+    offer_id = save_draft(seller_id, product_id, course_id)
+    publish_with_access(seller_id, product_id, course_id, offer_id, access_mode="free")
+    return seller_id, product_id
+
+
+def test_paid_publication_activates_the_offer_in_the_same_transaction() -> None:
+    """A1.1 — publish and activation are inseparable.
+
+    The seller ends the call with a published catalog AND an active offer, from a
+    single write. Nothing in between is observable, because there is no second
+    transaction to observe.
+    """
+    seller_id, product_id, course_id = create_graph()
+    bind_payout_account(seller_id)
+    offer_id = save_draft(seller_id, product_id, course_id)
+
+    row = publish_with_access(seller_id, product_id, course_id, offer_id, access_mode="paid")
+
+    assert row[4] == "active"
+    assert bool(row[6]) is True
+    product = read_product_status(seller_id, product_id)
+    assert product is not None
+    assert product[0] == "published"
+    assert product[1] is not None
+    offer = read_offer_status(seller_id, offer_id)
+    assert offer is not None
+    assert offer[0] == "active"
+
+
+def test_paid_publication_without_a_payout_account_publishes_nothing() -> None:
+    """A1.1 and A1.3 — the failure path leaves no half-finished state.
+
+    This is the injected failure the plan asks for: the sale is refused, and the
+    catalog must NOT be published as a side effect. A seller who cannot be paid
+    must not discover later that the product went live for free.
+    """
+    seller_id, product_id, course_id = create_graph()
+    offer_id = save_draft(seller_id, product_id, course_id)
+
+    with pytest.raises(psycopg.errors.Error) as failure:
+        publish_with_access(seller_id, product_id, course_id, offer_id, access_mode="paid")
+    assert failure.value.sqlstate == "P4223"
+
+    product = read_product_status(seller_id, product_id)
+    assert product is not None
+    assert product[0] == "draft"
+    assert product[1] is None
+    assert count_publications(seller_id, product_id) == 0
+    offer = read_offer_status(seller_id, offer_id)
+    assert offer is not None
+    assert offer[0] == "draft"
+
+
+def test_paid_publication_without_a_positive_price_publishes_nothing() -> None:
+    """A1.1 — second injected failure, same guarantee."""
+    seller_id, product_id, course_id = create_graph()
+    bind_payout_account(seller_id)
+    offer_id = save_draft(seller_id, product_id, course_id, price=0)
+
+    with pytest.raises(psycopg.errors.Error) as failure:
+        publish_with_access(seller_id, product_id, course_id, offer_id, access_mode="paid")
+    assert failure.value.sqlstate == "P4227"
+    assert count_publications(seller_id, product_id) == 0
+
+
+def test_free_publication_keeps_the_offer_in_draft() -> None:
+    """A1.2 — free access is a named outcome, not a pending state."""
+    seller_id, product_id, course_id = create_graph()
+    offer_id = save_draft(seller_id, product_id, course_id)
+
+    row = publish_with_access(seller_id, product_id, course_id, offer_id, access_mode="free")
+
+    assert row[4] == "draft"
+    product = read_product_status(seller_id, product_id)
+    assert product is not None
+    assert product[0] == "published"
+
+
+def test_paid_publication_closes_the_free_enrolment_window() -> None:
+    """The vulnerability this migration exists to fix.
+
+    Before it, a product destined to be sold spent the gap between publish and
+    activate publicly enrollable for free. After it, the first thing a visitor can
+    attempt is already refused.
+    """
+    seller_id, product_id, course_id = create_graph()
+    bind_payout_account(seller_id)
+    offer_id = save_draft(seller_id, product_id, course_id)
+    publish_with_access(seller_id, product_id, course_id, offer_id, access_mode="paid")
+
+    assert RUNTIME_URL
+    with psycopg.connect(RUNTIME_URL) as connection:
+        apply_context(connection, buyer_id(0), None, "library.enroll")
+        with pytest.raises(psycopg.errors.Error) as failure:
+            connection.execute(
+                "select entitlement_id from app_private.grant_public_product_access("
+                "%s, %s, %s, %s, %s, %s)",
+                (buyer_id(0), seller_id, product_id, uuid4(), digest("free-attempt"), uuid4()),
+            ).fetchone()
+    assert failure.value.sqlstate == "P4222"
+
+
+def test_publication_replay_does_not_create_a_second_version() -> None:
+    """A1.4 — a retry is a replay, never a second publication."""
+    seller_id, product_id, course_id = create_graph()
+    offer_id = save_draft(seller_id, product_id, course_id)
+    key = uuid4()
+
+    first = publish_with_access(
+        seller_id, product_id, course_id, offer_id, access_mode="free", key=key
+    )
+    second = publish_with_access(
+        seller_id, product_id, course_id, offer_id, access_mode="free", key=key
+    )
+
+    assert bool(first[6]) is True
+    assert bool(second[6]) is False
+    assert first[0] == second[0]
+    assert count_publications(seller_id, product_id) == 1
+
+
+def test_concurrent_redeemers_never_exceed_the_seat_budget() -> None:
+    """A1.5 — fifty people arrive at once at a thirty seat link.
+
+    Sequential counting would pass a naive implementation, so this has to be a
+    real race. Exactly thirty entitlements may exist afterwards, and the twenty
+    losers must be told the link is full rather than silently admitted.
+    """
+    seller_id, product_id = published_free_product()
+    token = f"seat-race-{uuid4().hex}"
+    create_link(seller_id, product_id, token=token, max_uses=30)
+
+    def attempt(index: int) -> str:
+        try:
+            redeem(token, buyer_id(index))
+        except psycopg.errors.Error as error:
+            # A connection level failure has no sqlstate. Surfacing it by name
+            # keeps a future failure from looking like a seat accounting bug.
+            return str(error.sqlstate) if error.sqlstate else f"driver:{type(error).__name__}"
+        return "granted"
+
+    # The test database runs with max_connections=24, so the pool stays well
+    # under it. Fifty attempts through eight workers still contend for the same
+    # row lock, which is what the seat budget depends on.
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        outcomes = list(pool.map(attempt, range(50)))
+
+    assert [outcome for outcome in outcomes if outcome.startswith("driver:")] == []
+    assert outcomes.count("granted") == 30
+    assert outcomes.count("P4224") == 20
+
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        redemptions = connection.execute(
+            "select count(*) from product_access_link_redemption where seller_organization_id = %s",
+            (seller_id,),
+        ).fetchone()
+        entitlements = connection.execute(
+            "select count(*) from buyer_entitlement where seller_organization_id = %s",
+            (seller_id,),
+        ).fetchone()
+    assert redemptions is not None and int(redemptions[0]) == 30
+    assert entitlements is not None and int(entitlements[0]) == 30
+
+
+def test_the_same_person_never_consumes_a_second_seat() -> None:
+    """A1.6 — re-entry is free.
+
+    Someone who reopens the link, or clicks it on a second device, must not eat
+    another seat. A thirty seat class would otherwise be exhausted by a handful of
+    people refreshing the page.
+    """
+    seller_id, product_id = published_free_product()
+    token = f"reentry-{uuid4().hex}"
+    create_link(seller_id, product_id, token=token, max_uses=3)
+
+    results = [redeem(token, buyer_id(1)) for _ in range(5)]
+
+    assert bool(results[0][4]) is True
+    assert all(bool(row[4]) is False for row in results[1:])
+    assert all(int(row[5]) == 2 for row in results)
+    assert len({row[0] for row in results}) == 1
+
+
+def test_revocation_blocks_new_entry_and_preserves_existing_access() -> None:
+    """A1.7 — revoking closes the door without evicting who is already inside."""
+    seller_id, product_id = published_free_product()
+    token = f"revoke-{uuid4().hex}"
+    link_id = create_link(seller_id, product_id, token=token, max_uses=10)
+    admitted = redeem(token, buyer_id(2))
+
+    assert RUNTIME_URL
+    with psycopg.connect(RUNTIME_URL) as connection:
+        apply_context(connection, SELLER_USER, seller_id, "catalog.access_link.update")
+        row = connection.execute(
+            "select changed from app_private.revoke_product_access_link(%s,%s,%s,%s,%s,%s,%s)",
+            (SELLER_USER, seller_id, product_id, link_id, uuid4(), digest("revoke"), uuid4()),
+        ).fetchone()
+        connection.commit()
+    assert row is not None and bool(row[0]) is True
+
+    with pytest.raises(psycopg.errors.Error) as failure:
+        redeem(token, buyer_id(3))
+    assert failure.value.sqlstate == "P4225"
+
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        still_active = connection.execute(
+            "select status from buyer_entitlement where id = %s",
+            (admitted[0],),
+        ).fetchone()
+    assert still_active is not None and still_active[0] == "active"
+
+
+def test_expired_links_refuse_entry_even_with_seats_left() -> None:
+    """A1.8 — the clock wins over the counter."""
+    seller_id, product_id = published_free_product()
+    token = f"expiry-{uuid4().hex}"
+    link_id = create_link(
+        seller_id,
+        product_id,
+        token=token,
+        max_uses=10,
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
+    )
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "update product_access_link set expires_at = now() - interval '1 minute' "
+            "where seller_organization_id = %s and id = %s",
+            (seller_id, link_id),
+        )
+        connection.commit()
+
+    with pytest.raises(psycopg.errors.Error) as failure:
+        redeem(token, buyer_id(4))
+    assert failure.value.sqlstate == "P4225"
+
+
+def test_rotation_keeps_the_seats_and_kills_the_previous_address() -> None:
+    """A1.9 — losing the link costs the address, not the class."""
+    seller_id, product_id = published_free_product()
+    token = f"rotate-{uuid4().hex}"
+    link_id = create_link(seller_id, product_id, token=token, max_uses=5)
+    redeem(token, buyer_id(5))
+
+    replacement = f"rotated-{uuid4().hex}"
+    assert RUNTIME_URL
+    with psycopg.connect(RUNTIME_URL) as connection:
+        apply_context(connection, SELLER_USER, seller_id, "catalog.access_link.update")
+        row = connection.execute(
+            "select redeemed_count, max_uses "
+            "from app_private.rotate_product_access_link(%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (
+                SELLER_USER,
+                seller_id,
+                product_id,
+                link_id,
+                digest(replacement),
+                digest(replacement)[:8],
+                uuid4(),
+                digest("rotate"),
+                uuid4(),
+            ),
+        ).fetchone()
+        connection.commit()
+    assert row is not None
+    assert int(row[0]) == 1
+    assert int(row[1]) == 5
+
+    with pytest.raises(psycopg.errors.Error) as failure:
+        redeem(token, buyer_id(6))
+    assert failure.value.sqlstate == "P4225"
+
+    granted = redeem(replacement, buyer_id(6))
+    assert bool(granted[4]) is True
+    assert int(granted[5]) == 3
+
+
+def test_unknown_and_revoked_links_are_indistinguishable() -> None:
+    """A1.11 — probing must not reveal whether a token exists."""
+    seller_id, product_id = published_free_product()
+    token = f"probe-{uuid4().hex}"
+    link_id = create_link(seller_id, product_id, token=token, max_uses=1)
+
+    assert RUNTIME_URL
+    with psycopg.connect(RUNTIME_URL) as connection:
+        apply_context(connection, SELLER_USER, seller_id, "catalog.access_link.update")
+        connection.execute(
+            "select changed from app_private.revoke_product_access_link(%s,%s,%s,%s,%s,%s,%s)",
+            (SELLER_USER, seller_id, product_id, link_id, uuid4(), digest("revoke"), uuid4()),
+        ).fetchone()
+        connection.commit()
+
+    with pytest.raises(psycopg.errors.Error) as revoked:
+        redeem(token, buyer_id(7))
+    with pytest.raises(psycopg.errors.Error) as unknown:
+        redeem(f"never-existed-{uuid4().hex}", buyer_id(7))
+
+    assert revoked.value.sqlstate == unknown.value.sqlstate == "P4225"
+
+
+def test_every_link_operation_leaves_an_audit_trail() -> None:
+    """A1.12 — creation, revocation, rotation and redemption are all accountable."""
+    seller_id, product_id = published_free_product()
+    token = f"audit-{uuid4().hex}"
+    link_id = create_link(seller_id, product_id, token=token, max_uses=4)
+    redeem(token, buyer_id(8))
+
+    replacement = f"audit-rotated-{uuid4().hex}"
+    assert RUNTIME_URL
+    with psycopg.connect(RUNTIME_URL) as connection:
+        apply_context(connection, SELLER_USER, seller_id, "catalog.access_link.update")
+        connection.execute(
+            "select access_link_id "
+            "from app_private.rotate_product_access_link(%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (
+                SELLER_USER,
+                seller_id,
+                product_id,
+                link_id,
+                digest(replacement),
+                digest(replacement)[:8],
+                uuid4(),
+                digest("rotate"),
+                uuid4(),
+            ),
+        ).fetchone()
+        connection.execute(
+            "select changed from app_private.revoke_product_access_link(%s,%s,%s,%s,%s,%s,%s)",
+            (SELLER_USER, seller_id, product_id, link_id, uuid4(), digest("revoke"), uuid4()),
+        ).fetchone()
+        connection.commit()
+
+    actions = audit_actions(seller_id)
+    assert "catalog.access_link_created" in actions
+    assert "commerce.access_link_redeemed" in actions
+    assert "catalog.access_link_rotated" in actions
+    assert "catalog.access_link_revoked" in actions
+
+
+def test_the_raw_token_is_never_stored() -> None:
+    """A1.9 and A1.10 — a database dump must not hand out access."""
+    seller_id, product_id = published_free_product()
+    token = f"invitation-{uuid4().hex}"
+    create_link(seller_id, product_id, token=token)
+
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        row = connection.execute(
+            "select token_sha256, token_prefix from product_access_link "
+            "where seller_organization_id = %s",
+            (seller_id,),
+        ).fetchone()
+    assert row is not None
+    assert row[0] == digest(token)
+    assert token not in str(row[0])
+    assert row[1] == digest(token)[:8]
+
+
+def test_a_seller_cannot_reach_another_tenant_link() -> None:
+    """Cross-tenant isolation on the seat budget itself."""
+    owner_seller, owner_product = published_free_product()
+    other_seller, other_product, _ = create_graph()
+    token = f"tenant-{uuid4().hex}"
+    link_id = create_link(owner_seller, owner_product, token=token, max_uses=2)
+
+    assert RUNTIME_URL
+    with psycopg.connect(RUNTIME_URL) as connection:
+        apply_context(connection, SELLER_USER, other_seller, "catalog.access_link.update")
+        with pytest.raises(psycopg.errors.Error) as failure:
+            connection.execute(
+                "select changed from app_private.revoke_product_access_link(%s,%s,%s,%s,%s,%s,%s)",
+                (
+                    SELLER_USER,
+                    other_seller,
+                    other_product,
+                    link_id,
+                    uuid4(),
+                    digest("cross"),
+                    uuid4(),
+                ),
+            ).fetchone()
+    assert failure.value.sqlstate == "P4225"
+
+
+def test_a_sold_product_refuses_new_access_links() -> None:
+    """A link that could never be redeemed must not be handed out.
+
+    Redemption grants free access, and a sold product refuses that, so minting an
+    invitation for one would only produce a dead address in someone's hands.
+    """
+    seller_id, product_id, course_id = create_graph()
+    bind_payout_account(seller_id)
+    offer_id = save_draft(seller_id, product_id, course_id)
+    publish_with_access(seller_id, product_id, course_id, offer_id, access_mode="paid")
+
+    with pytest.raises(psycopg.errors.Error) as failure:
+        create_link(seller_id, product_id, token=f"sold-{uuid4().hex}", max_uses=5)
+    assert failure.value.sqlstate == "P4226"
+
+
+def test_creating_a_link_twice_with_one_key_yields_one_link() -> None:
+    """A retry after a lost response must replay, not mint a second budget.
+
+    Without this, a seller who reloads after a timeout ends up with two links of
+    thirty seats each and hands out sixty.
+    """
+    seller_id, product_id = published_free_product()
+    key = uuid4()
+    token = f"replay-{uuid4().hex}"
+    first = create_link(seller_id, product_id, token=token, max_uses=10, key=key, body="fixed")
+    second = create_link(seller_id, product_id, token=token, max_uses=10, key=key, body="fixed")
+
+    assert first == second
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        count = connection.execute(
+            "select count(*) from product_access_link where seller_organization_id = %s",
+            (seller_id,),
+        ).fetchone()
+    assert count is not None and int(count[0]) == 1
+
+
+def test_reusing_a_key_for_a_different_link_is_refused() -> None:
+    """The key identifies one operation, so it cannot be recycled."""
+    seller_id, product_id = published_free_product()
+    key = uuid4()
+    create_link(seller_id, product_id, token=f"a-{uuid4().hex}", max_uses=5, key=key, body="one")
+
+    with pytest.raises(psycopg.errors.Error) as failure:
+        create_link(
+            seller_id, product_id, token=f"b-{uuid4().hex}", max_uses=5, key=key, body="two"
+        )
+    assert failure.value.sqlstate == "23505"
+
+
+def test_redemption_retried_after_revocation_still_returns_the_seat() -> None:
+    """Revoking closes the door; it does not evict who is already inside.
+
+    A buyer whose first response was lost retries and must get their access back,
+    not a refusal that looks like they were thrown out.
+    """
+    seller_id, product_id = published_free_product()
+    token = f"retry-{uuid4().hex}"
+    link_id = create_link(seller_id, product_id, token=token, max_uses=5)
+    granted = redeem(token, buyer_id(9))
+
+    assert RUNTIME_URL
+    with psycopg.connect(RUNTIME_URL) as connection:
+        apply_context(connection, SELLER_USER, seller_id, "catalog.access_link.update")
+        connection.execute(
+            "select changed from app_private.revoke_product_access_link(%s,%s,%s,%s,%s,%s,%s)",
+            (SELLER_USER, seller_id, product_id, link_id, uuid4(), digest("revoke"), uuid4()),
+        ).fetchone()
+        connection.commit()
+
+    retried = redeem(token, buyer_id(9))
+    assert retried[0] == granted[0]
+    assert bool(retried[4]) is False
+
+
+def test_paid_publication_replay_survives_a_payout_account_going_bad() -> None:
+    """A replay must not re-litigate a decision the first call already committed."""
+    seller_id, product_id, course_id = create_graph()
+    bind_payout_account(seller_id)
+    offer_id = save_draft(seller_id, product_id, course_id)
+    key = uuid4()
+    first = publish_with_access(
+        seller_id, product_id, course_id, offer_id, access_mode="paid", key=key
+    )
+    assert first[4] == "active"
+
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "update seller_payout_account set charges_enabled = false, "
+            "disabled_reason = 'requirements.past_due' where seller_organization_id = %s",
+            (seller_id,),
+        )
+        connection.commit()
+
+    replay = publish_with_access(
+        seller_id, product_id, course_id, offer_id, access_mode="paid", key=key
+    )
+    assert bool(replay[6]) is False
+    assert replay[0] == first[0]
+
+
+def test_a_seller_cannot_list_another_tenant_links() -> None:
+    """Tenant isolation on the read path, not only on the mutations."""
+    owner_seller, owner_product = published_free_product()
+    other_seller, other_product, _ = create_graph()
+    create_link(owner_seller, owner_product, token=f"read-{uuid4().hex}", max_uses=2)
+
+    assert RUNTIME_URL
+    with psycopg.connect(RUNTIME_URL) as connection:
+        apply_context(connection, SELLER_USER, other_seller, "catalog.access_link.read")
+        rows = connection.execute(
+            "select access_link_id from app_private.list_product_access_links(%s,%s,%s)",
+            (SELLER_USER, other_seller, other_product),
+        ).fetchall()
+    assert rows == []

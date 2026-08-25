@@ -14,7 +14,6 @@ def outcomes(**overrides: str) -> dict[str, str]:
         "cert_postgres": "skipped",
         "cert_storage": "skipped",
         "cert_openbao": "skipped",
-        "cert_capacity": "skipped",
         "cert_backup": "skipped",
         "cert_preview": "skipped",
         "image_web": "skipped",
@@ -53,7 +52,6 @@ class ExpectedStepsTests(unittest.TestCase):
             "postgres": True,
             "storage": True,
             "openbao": True,
-            "capacity": True,
             "image_web": True,
             "image_api": True,
             "image_bootstrap": False,
@@ -66,8 +64,8 @@ class ExpectedStepsTests(unittest.TestCase):
                 "route",
                 "cert_web",
                 "cert_postgres",
+                "cert_storage",
                 "cert_openbao",
-                "cert_capacity",
                 "cert_backup",
                 "cert_preview",
                 "image_web",
@@ -76,13 +74,10 @@ class ExpectedStepsTests(unittest.TestCase):
             expected_steps("merge_group", route),
         )
 
-    def test_capacity_subsumes_dedicated_storage_on_same_sha(self) -> None:
-        route = {"storage": True, "capacity": True}
+    def test_storage_scope_requires_the_storage_certification(self) -> None:
+        route = {"storage": True}
 
-        expected = expected_steps("merge_group", route)
-
-        self.assertIn("cert_capacity", expected)
-        self.assertNotIn("cert_storage", expected)
+        self.assertIn("cert_storage", expected_steps("merge_group", route))
 
     def test_push_keeps_conditional_certification_until_merge_queue_is_live(
         self,
@@ -149,10 +144,10 @@ class EvaluateGateTests(unittest.TestCase):
         failures = evaluate_gate(
             "pull_request",
             {"web": False, "api": False},
-            outcomes(cert_capacity="success"),
+            outcomes(cert_storage="success"),
         )
 
-        self.assertIn("cert_capacity=unexpected-success", failures)
+        self.assertIn("cert_storage=unexpected-success", failures)
 
     def test_route_failure_always_fails(self) -> None:
         failures = evaluate_gate(

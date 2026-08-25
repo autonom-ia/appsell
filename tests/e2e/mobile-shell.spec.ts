@@ -376,11 +376,27 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
     return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ product_id: productId, course_id: courseId, offer_id: offerId, product_version: state.productVersion, course_version: state.courseVersion, offer_version: state.offerVersion }) });
   });
   await page.route(`**/api/sellers/${sellerId}/products/${productId}/preview`, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ preview: true, snapshot: { product: { id: productId, title: state.title, slug: state.slug, description: state.description, status: "draft" }, courses: [{ title: state.courseTitle }], offer: { title: state.offerTitle, summary: state.offerSummary, status: "draft" } }, versions: { product: state.productVersion, course: state.courseVersion, offer: state.offerVersion } }) }));
+  // No payout account bound, which is the state that must disable the sale
+  // option with a reason the seller can act on.
+  await page.route(`**/api/sellers/${sellerId}/payout-account`, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ payout_account: null }) }));
+  const accessLinkLabels: string[] = [];
+  await page.route(`**/api/sellers/${sellerId}/products/${productId}/access-links`, async (route) => {
+    if (route.request().method() === "GET") {
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ access_links: [] }) });
+    }
+    const posted = route.request().postDataBuffer();
+    const form = await new Request(route.request().url(), { method: "POST", headers: route.request().headers(), body: posted ? new Uint8Array(posted) : undefined }).formData();
+    accessLinkLabels.push(String(form.get("label")));
+    return route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ access_link: { access_link_id: "9f1d6f1e-0e2a-4a3b-8c4d-5e6f70819293", token_prefix: "aabbccdd", label: form.get("label"), max_uses: null, redeemed_count: 0, expires_at: null, created_at: null }, url: `http://localhost:3000/c/${"a".repeat(64)}` }) });
+  });
   await page.route(`**/api/sellers/${sellerId}/products/${productId}/publications`, async (route) => {
     const posted = route.request().postDataBuffer();
     const form = await new Request(route.request().url(), { method: "POST", headers: route.request().headers(), body: posted ? new Uint8Array(posted) : undefined }).formData();
-    expect([...form.keys()].sort()).toEqual(["_csrf", "course_versions", "expected_offer_version", "expected_product_version", "idempotency_key", "offer_id"]);
+    expect([...form.keys()].sort()).toEqual(["_csrf", "access_mode", "course_versions", "expected_offer_version", "expected_product_version", "idempotency_key", "offer_id"]);
     expect(form.get("_csrf")).toBe("csrf-publish");
+    // The access decision travels with the publication. Without a payout account
+    // the sale option is refused, so this flow can only ever publish free access.
+    expect(form.get("access_mode")).toBe("free");
     expect(form.get("course_versions")).toBe(JSON.stringify([{ id: courseId, version: state.courseVersion }]));
     publishKeys.push(String(form.get("idempotency_key")));
     if (publishKeys.length === 1) return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "upstream_unavailable" }) });
@@ -454,16 +470,19 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   await expect(page.getByText("Compra indisponível nesta prévia")).toBeVisible();
   await page.getByRole("link", { name: /^Publicar/ }).click();
   await page.getByRole("button", { name: "Publicar catálogo primeira versão" }).click();
-  await expect(page.getByRole("dialog", { name: "Publicar este catálogo?" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Colocar Creator OS 2 no ar?" })).toBeVisible();
+  // Publishing now decides access. Selling stays visible but refused, with the
+  // reason written next to it, instead of leaving a dead button on the screen.
+  await expect(page.getByRole("radio", { name: /Acesso gratuito/ })).toBeChecked();
+  await expect(page.getByRole("radio", { name: /Vender com checkout/ })).toBeDisabled();
+  await expect(page.getByText("configure seus recebimentos", { exact: false })).toBeVisible();
   await expect(page.getByRole("button", { name: "Revisar novamente" })).toBeFocused();
-  await page.keyboard.press("Shift+Tab");
-  await expect(page.getByRole("button", { name: "Publicar catálogo" })).toBeFocused();
   await page.keyboard.press("Tab");
-  await expect(page.getByRole("button", { name: "Revisar novamente" })).toBeFocused();
-  await page.getByRole("button", { name: "Publicar catálogo" }).click();
+  await expect(page.getByRole("button", { name: "Colocar no ar" })).toBeFocused();
+  await page.getByRole("button", { name: "Colocar no ar" }).click();
   await expect(page.getByText("A API não respondeu.", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "Publicar catálogo primeira versão" }).click();
-  await page.getByRole("button", { name: "Publicar catálogo" }).click();
+  await page.getByRole("button", { name: "Colocar no ar" }).click();
   await expect(page.getByText("Catálogo publicado com sucesso.", { exact: false })).toBeVisible();
   await expect(page.getByText("Nenhuma mudança desde a versão publicada.", { exact: false })).toBeVisible();
   await expect(page.getByRole("button", { name: /Publicar catálogo nova versão/ })).toBeDisabled();
@@ -475,11 +494,17 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   await page.getByRole("link", { name: /^Publicar/ }).click();
   await expect(page.getByRole("button", { name: "Publicar catálogo nova versão após v1" })).toBeEnabled();
   await page.getByRole("button", { name: "Publicar catálogo nova versão após v1" }).click();
-  await page.getByRole("button", { name: "Publicar catálogo" }).click();
+  await page.getByRole("button", { name: "Colocar no ar" }).click();
   await expect(page.getByText("O produto mudou ou não está pronto.", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "Publicar catálogo nova versão após v1" }).click();
-  await page.getByRole("button", { name: "Publicar catálogo" }).click();
+  await page.getByRole("button", { name: "Colocar no ar" }).click();
   await expect(page.getByText("Catálogo publicado com sucesso.", { exact: false })).toBeVisible();
+  // The link fields live inside the editor's own form. Pressing Enter there used
+  // to submit the product draft instead of creating the link.
+  await page.getByLabel("Nome do link").fill("Turma piloto");
+  await page.getByLabel("Nome do link").press("Enter");
+  await expect(page.getByText("Copie agora", { exact: false })).toBeVisible();
+  expect(accessLinkLabels).toEqual(["Turma piloto"]);
   expect(publishKeys).toHaveLength(4);
   expect(submittedOfferPrices).toContain("4700");
 

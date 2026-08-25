@@ -868,6 +868,32 @@ export class RedisOAuthService {
     return { namespace: this.prefix, sessionHash: sha256(sessionId), subject, revision };
   }
 
+  /**
+   * Fixed window limiter for endpoints outside the OAuth flow.
+   *
+   * Redemption needs this because an access token is guessable in principle:
+   * without a ceiling, an authenticated buyer could enumerate tokens at full
+   * request rate. The client key is hashed before it becomes part of a Redis
+   * key, so the token itself never lands in the datastore.
+   */
+  async consumeRateLimit(
+    action: string,
+    clientKey: string,
+    options: { maxPerClient: number; maxGlobal: number; windowMs: number }
+  ) {
+    const window = Math.floor(Date.now() / options.windowMs);
+    const result = await this.redis.eval(
+      RATE_LIMIT_SCRIPT,
+      2,
+      `${this.scope()}:rate:${action}:global:${window}`,
+      `${this.scope()}:rate:${action}:client:${sha256(clientKey)}:${window}`,
+      String(options.maxGlobal),
+      String(options.maxPerClient),
+      String(options.windowMs + 1_000)
+    );
+    return result === 1;
+  }
+
   private async assertAllowed(action: string, clientKey: string) {
     const window = Math.floor(Date.now() / this.rateWindowMs);
     const result = await this.redis.eval(

@@ -26,6 +26,10 @@ export const REVOKE_DEMO_INSPECTION_CSRF_ACTION = "POST:/api/platform/demo-inspe
 export const COMPLETE_DEMO_CHECKOUT_CSRF_ACTION = "POST:/api/demo-checkout";
 export const ENROLL_PUBLIC_PRODUCT_CSRF_ACTION = "POST:/api/library/enroll";
 export const CONNECT_PAYOUT_ACCOUNT_CSRF_ACTION = "POST:/api/sellers/payout-account";
+export const CREATE_ACCESS_LINK_CSRF_ACTION = "POST:/api/products/access-links";
+export const REVOKE_ACCESS_LINK_CSRF_ACTION = "POST:/api/products/access-links/revoke";
+export const ROTATE_ACCESS_LINK_CSRF_ACTION = "POST:/api/products/access-links/rotate";
+export const REDEEM_ACCESS_LINK_CSRF_ACTION = "POST:/api/library/access-links/redeem";
 
 export function csrfTokenForSession(sessionId: string, action: string) {
   return deriveCsrfToken(sessionId, action, csrfKey());

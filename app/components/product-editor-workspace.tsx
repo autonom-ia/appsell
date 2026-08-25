@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, MouseEvent, useCallback, useEffect, useRef, useState } from "react";
 import { AccessibleDialog } from "./accessible-dialog";
+import { AccessLinksPanel } from "./access-links-panel";
 import { CurriculumWorkspace } from "./curriculum-workspace";
 import { allowUnsavedNavigation, useUnsavedChanges } from "./use-unsaved-changes";
 import {
@@ -78,7 +79,7 @@ interface EditorPayload {
   offer?: OfferDetail | null;
   publication?: ProductDetail["publication"];
   latest_publication?: ProductDetail["publication"];
-  csrf?: { update?: string; publish?: string; offer_status?: string };
+  csrf?: { update?: string; publish?: string; offer_status?: string; access_link_create?: string; access_link_revoke?: string; access_link_rotate?: string };
   readiness?: { can_publish: boolean; has_unpublished_changes?: boolean; items: Array<ReadinessItem | string> };
   can_publish?: boolean;
   readiness_violations?: Array<string | { key?: string; label?: string; detail?: string }>;
@@ -198,7 +199,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   const section: EditorSection = editorSections.some((item) => item.id === requestedSection) ? requestedSection as EditorSection : "produto";
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [detail, setDetail] = useState<ProductDetail | null>(null);
-  const [csrf, setCsrf] = useState<{ update: string; publish: string; offerStatus: string }>({ update: "", publish: "", offerStatus: "" });
+  const [csrf, setCsrf] = useState<{ update: string; publish: string; offerStatus: string; accessLinkCreate: string; accessLinkRevoke: string; accessLinkRotate: string }>({ update: "", publish: "", offerStatus: "", accessLinkCreate: "", accessLinkRevoke: "", accessLinkRotate: "" });
   const [fields, setFields] = useState<EditorFields>(emptyFields);
   const fieldsRef = useRef(fields);
   const [savedFields, setSavedFields] = useState<EditorFields>(emptyFields);
@@ -218,6 +219,8 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   const [assetNavigationWarning, setAssetNavigationWarning] = useState(false);
   const updateIdempotencyKey = useRef<string | null>(null);
   const publishIdempotencyKey = useRef<string | null>(null);
+  const [publishAccessMode, setPublishAccessMode] = useState<"free" | "paid">("free");
+  const [payoutState, setPayoutState] = useState<"unknown" | "checking" | "ready" | "missing">("unknown");
   const offerStatusIdempotencyKey = useRef<{ transition: string; key: string } | null>(null);
   const offerId = useRef<string | null>(null);
   const formElement = useRef<HTMLFormElement>(null);
@@ -282,7 +285,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       offerId.current = nextDetail.offer.id ?? crypto.randomUUID();
       setDetail({ ...nextDetail, readiness: payload.readiness ?? nextDetail.readiness });
       setCurriculumSummary(nextDetail.curriculum);
-      setCsrf({ update: payload.csrf?.update ?? readActionCsrf("update"), publish: payload.csrf?.publish ?? readActionCsrf("publish"), offerStatus: payload.csrf?.offer_status ?? "" });
+      setCsrf({ update: payload.csrf?.update ?? readActionCsrf("update"), publish: payload.csrf?.publish ?? readActionCsrf("publish"), offerStatus: payload.csrf?.offer_status ?? "", accessLinkCreate: payload.csrf?.access_link_create ?? "", accessLinkRevoke: payload.csrf?.access_link_revoke ?? "", accessLinkRotate: payload.csrf?.access_link_rotate ?? "" });
       setFields(nextFields);
       setSavedFields(nextFields);
       setLoadState("ready");
@@ -404,7 +407,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       updateIdempotencyKey.current = null;
       setDetail({ ...updated, readiness: payload.readiness ?? updated.readiness });
       setCurriculumSummary(updated.curriculum);
-      setCsrf((current) => ({ update: payload.csrf?.update ?? current.update, publish: payload.csrf?.publish ?? current.publish, offerStatus: payload.csrf?.offer_status ?? current.offerStatus }));
+      setCsrf((current) => ({ ...current, update: payload.csrf?.update ?? current.update, publish: payload.csrf?.publish ?? current.publish, offerStatus: payload.csrf?.offer_status ?? current.offerStatus, accessLinkCreate: payload.csrf?.access_link_create ?? current.accessLinkCreate, accessLinkRevoke: payload.csrf?.access_link_revoke ?? current.accessLinkRevoke, accessLinkRotate: payload.csrf?.access_link_rotate ?? current.accessLinkRotate }));
       setSavedFields(fieldsFromDetail(updated));
       if (sameFields(fieldsRef.current, submitted)) {
         const serverFields = fieldsFromDetail(updated);
@@ -443,7 +446,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       setDetail(latest);
       setCurriculumSummary(latest.curriculum);
       setSavedFields(fieldsFromDetail(latest));
-      setCsrf((current) => ({ update: payload.csrf?.update ?? current.update, publish: payload.csrf?.publish ?? current.publish, offerStatus: payload.csrf?.offer_status ?? current.offerStatus }));
+      setCsrf((current) => ({ ...current, update: payload.csrf?.update ?? current.update, publish: payload.csrf?.publish ?? current.publish, offerStatus: payload.csrf?.offer_status ?? current.offerStatus, accessLinkCreate: payload.csrf?.access_link_create ?? current.accessLinkCreate, accessLinkRevoke: payload.csrf?.access_link_revoke ?? current.accessLinkRevoke, accessLinkRotate: payload.csrf?.access_link_rotate ?? current.accessLinkRotate }));
       offerId.current = latest.offer.id ?? offerId.current ?? crypto.randomUUID();
       updateIdempotencyKey.current = null;
       setInvalidField("");
@@ -456,7 +459,54 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
     }
   }
 
-  async function publish() {
+  // Asked every time the seller opens the access decision, because connecting a
+  // payout account happens elsewhere on the page: a cached answer would keep
+  // showing "configure seus recebimentos" after it was already configured.
+  useEffect(() => {
+    if (!publishDialogOpen) return;
+    let active = true;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8_000);
+    // Deferred so the render that opened the dialog is never interrupted.
+    void Promise.resolve()
+      .then(() => {
+        if (active) setPayoutState("checking");
+      });
+    void fetch(`/api/sellers/${encodeURIComponent(sellerId)}/payout-account`, {
+      cache: "no-store",
+      signal: controller.signal
+    })
+      .then(async (response) => {
+        if (!active) return;
+        // A transient failure is not the same as "not configured", and telling
+        // the seller to go configure what is already configured wastes their time.
+        if (!response.ok) return setPayoutState(response.status === 404 ? "missing" : "unknown");
+        const payload = await response.json() as {
+          payout_account?: {
+            charges_enabled?: boolean;
+            payouts_enabled?: boolean;
+            disabled_reason?: string | null;
+          } | null;
+        };
+        if (!active) return;
+        const account = payload.payout_account;
+        const usable = Boolean(
+          account?.charges_enabled && account?.payouts_enabled && !account?.disabled_reason
+        );
+        setPayoutState(usable ? "ready" : "missing");
+      })
+      .catch(() => {
+        if (active) setPayoutState("unknown");
+      })
+      .finally(() => clearTimeout(timeout));
+    return () => {
+      active = false;
+      controller.abort();
+      clearTimeout(timeout);
+    };
+  }, [publishDialogOpen, sellerId]);
+
+  async function publish(accessMode: "free" | "paid") {
     const hasChanges = detail?.has_unpublished_changes ?? detail?.readiness?.has_unpublished_changes;
     if (!detail || editorDirty || publishState === "publishing" || detail.readiness?.can_publish !== true || (detail.publication && hasChanges !== true)) return;
     setPublishDialogOpen(false);
@@ -471,6 +521,9 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
     data.set("expected_offer_version", String(versions.offer));
     data.set("offer_id", offerId.current ?? crypto.randomUUID());
     data.set("course_versions", JSON.stringify(detail.courses.map((course) => ({ id: course.id, version: course.draft_version }))));
+    // Publishing carries the access decision, so the catalog and the sale can
+    // never disagree: either both land or neither does.
+    data.set("access_mode", accessMode);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 12_000);
     try {
@@ -627,6 +680,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
     (detail.offer.unit_amount_minor ?? 0) > 0 &&
     !editorDirty &&
     !offerStatusLocked;
+  const paidAvailable = payoutState === "ready" && (detail.offer.unit_amount_minor ?? 0) > 0;
   const workflow = workflowState(detail, curriculumSummary, editorDirty, previewState);
   const nextStep = nextWorkflowStep(section, workflow);
 
@@ -736,6 +790,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
               </div>
               {publicProductPath && detail.publication ? <p className="form-note">Link público: <a href={publicProductPath} target="_blank" rel="noreferrer">{publicProductPath}</a></p> : null}
             </section>
+            <AccessLinksPanel sellerId={sellerId} productId={productId} published={Boolean(detail.publication)} csrf={{ create: csrf.accessLinkCreate, revoke: csrf.accessLinkRevoke, rotate: csrf.accessLinkRotate }}/>
             <div ref={publishStatus} className="form-feedback" aria-live="polite" aria-atomic="true" tabIndex={-1}>
               {publishState === "publishing" ? <p className="form-note">Publicando uma versão fixa do catálogo…</p> : null}
               {publishState === "published" ? <p className="form-success">Catálogo publicado com sucesso. Agora escolha acima entre acesso gratuito e vendas com checkout.</p> : null}
@@ -758,9 +813,31 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
 
       {publishDialogOpen ? (
         <AccessibleDialog titleId="publish-dialog-title" descriptionId="publish-dialog-description" initialFocusRef={publishCancelButton} returnFocusRef={publishTriggerButton} onClose={closePublishDialog}>
-            <p className="eyebrow">Confirmação de catálogo</p><h2 id="publish-dialog-title">Publicar este catálogo?</h2>
-            <p id="publish-dialog-description">Produto, oferta informativa, módulos, aulas e PDFs verificados ficarão fixos nesta versão do catálogo. A publicação não ativa vendas: depois você escolhe acima entre acesso gratuito e checkout.</p>
-            <div className="dialog-actions"><button ref={publishCancelButton} className="secondary-button" type="button" onClick={closePublishDialog}>Revisar novamente</button><button className="primary-button commercial-button" type="button" onClick={() => void publish()}>Publicar catálogo</button></div>
+            <p className="eyebrow">Colocar no ar</p><h2 id="publish-dialog-title">Colocar {detail.title} no ar?</h2>
+            <p id="publish-dialog-description">Conteúdo, materiais verificados e a oferta ficam congelados nesta versão. Escolha agora como as pessoas entram.</p>
+            <div className="access-mode-choice" role="radiogroup" aria-label="Modo de acesso">
+              <label className={publishAccessMode === "free" ? "access-mode-option selected" : "access-mode-option"}>
+                <input type="radio" name="access_mode" value="free" checked={publishAccessMode === "free"} onChange={() => setPublishAccessMode("free")}/>
+                <span><strong>Acesso gratuito</strong><span>Você distribui por link. Cada pessoa entra com o próprio cadastro.</span></span>
+              </label>
+              <label className={`${publishAccessMode === "paid" ? "access-mode-option selected" : "access-mode-option"}${paidAvailable ? "" : " disabled"}`}>
+                <input type="radio" name="access_mode" value="paid" checked={publishAccessMode === "paid"} disabled={!paidAvailable} onChange={() => setPublishAccessMode("paid")}/>
+                <span>
+                  <strong>Vender com checkout</strong>
+                  <span>{payoutState === "checking"
+                    ? "Verificando seus recebimentos…"
+                    : payoutState === "unknown"
+                      ? "Não conseguimos verificar seus recebimentos agora. Feche e abra de novo."
+                      : payoutState === "missing"
+                        ? "Indisponível: configure seus recebimentos para poder cobrar."
+                        : (detail.offer.unit_amount_minor ?? 0) <= 0
+                          ? "Indisponível: salve um preço maior que zero na etapa Oferta."
+                          : `O link leva ao pagamento de ${formatOfferPrice(detail.offer.unit_amount_minor ?? 0, detail.offer.currency)} antes de liberar o conteúdo.`}</span>
+                </span>
+              </label>
+              {payoutState === "missing" ? <Link className="access-mode-fix" href="/payouts">Configurar recebimentos</Link> : null}
+            </div>
+            <div className="dialog-actions"><button ref={publishCancelButton} className="secondary-button" type="button" onClick={closePublishDialog}>Revisar novamente</button><button className="primary-button commercial-button" type="button" onClick={() => void publish(publishAccessMode)}>{publishAccessMode === "paid" ? "Colocar no ar e vender" : "Colocar no ar"}</button></div>
         </AccessibleDialog>
       ) : null}
 

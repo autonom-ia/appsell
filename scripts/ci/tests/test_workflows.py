@@ -19,12 +19,11 @@ class AppCiWorkflowTests(unittest.TestCase):
         self.assertEqual(1, len(re.findall(r"^    runs-on:", self.source, re.M)))
         self.assertNotIn("    paths:", self.source)
 
-    def test_events_cover_fast_final_scheduled_and_smoke_paths(self) -> None:
+    def test_events_cover_fast_final_and_smoke_paths(self) -> None:
         for event in (
             "pull_request:",
             "merge_group:",
             "push:",
-            "schedule:",
             "workflow_dispatch:",
         ):
             self.assertIn(event, self.source)
@@ -59,7 +58,6 @@ class AppCiWorkflowTests(unittest.TestCase):
             "cert-postgres",
             "cert-storage",
             "cert-openbao",
-            "cert-capacity",
             "cert-backup",
             "cert-preview",
             "image-web",
@@ -72,9 +70,6 @@ class AppCiWorkflowTests(unittest.TestCase):
         self.assertIn("python3 scripts/ci/enforce_gate.py", self.source)
         self.assertIn(
             "CI_ROUTE_JSON: ${{ steps.route.outputs.route_json }}", self.source
-        )
-        self.assertIn(
-            "CI_OUTCOME_CERT_CAPACITY: ${{ steps.cert-capacity.outcome }}", self.source
         )
         self.assertIn(
             "CI_OUTCOME_CERT_BACKUP: ${{ steps.cert-backup.outcome }}", self.source

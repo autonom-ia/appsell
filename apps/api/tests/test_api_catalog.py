@@ -998,6 +998,8 @@ async def test_publish_binds_complete_expected_version_set_and_is_idempotent() -
                 "publication_version": 1,
                 "product_version": 3,
                 "source_sha256": "a" * 64,
+                "offer_status": "draft",
+                "offer_version": 2,
                 "created": True,
             }
         ),
@@ -1012,7 +1014,10 @@ async def test_publish_binds_complete_expected_version_set_and_is_idempotent() -
     assert response.json()["publication_id"] == str(publication_id)
     assert auth.capabilities == ["catalog.publication.create"]
     statement, parameters = auth.session.calls[0]
-    assert "app_private.publish_product" in statement
+    assert "app_private.publish_product_with_access" in statement
+    # A caller written before the access mode existed must keep publishing free
+    # access, never activate a sale as a side effect of the upgrade.
+    assert parameters["access_mode"] == "free"
     assert json.loads(parameters["expected_course_versions"]) == {str(course_id): 2}
     assert parameters["body_sha256"] == hashlib.sha256(body).hexdigest()
 
@@ -1321,3 +1326,246 @@ async def test_signed_api_creates_replays_and_lists_persistent_draft() -> None:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+LINK_PREFIX = "7f3a92aa"
+ROTATED_PREFIX = "aa11bb22"
+
+
+def access_link_body(**overrides: Any) -> bytes:
+    value: dict[str, Any] = {
+        "idempotency_key": str(uuid4()),
+        "label": "Turma Royalty Seguros",
+        "token_sha256": "b" * 64,
+        "token_prefix": LINK_PREFIX,
+        "max_uses": 30,
+        **overrides,
+    }
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode()
+
+
+@pytest.mark.asyncio
+async def test_publish_forwards_paid_access_mode_to_the_atomic_function() -> None:
+    # Publication and sale activation must reach the domain as ONE call. If the
+    # route ever split them again, the product would be publicly free between the
+    # two writes.
+    product_id, course_id, offer_id, publication_id = uuid4(), uuid4(), uuid4(), uuid4()
+    auth = FakeAuth(
+        seller_id=SELLER_ID,
+        result=FakeResult(
+            one={
+                "publication_id": publication_id,
+                "publication_version": 1,
+                "product_version": 3,
+                "source_sha256": "a" * 64,
+                "offer_status": "active",
+                "offer_version": 3,
+                "created": True,
+            }
+        ),
+    )
+    body = publication_body(course_id, offer_id, access_mode="paid")
+    async with client_for(auth) as client:
+        response = await client.post(
+            f"/v1/me/sellers/{SELLER_ID}/products/{product_id}/publications",
+            content=body,
+        )
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["access_mode"] == "paid"
+    assert payload["offer_status"] == "active"
+    assert payload["offer_version"] == 3
+    assert auth.domain_sessions == 1
+    statement, parameters = auth.session.calls[0]
+    assert "app_private.publish_product_with_access" in statement
+    assert parameters["access_mode"] == "paid"
+
+
+@pytest.mark.asyncio
+async def test_publish_rejects_an_unknown_access_mode_before_the_database() -> None:
+    product_id, course_id, offer_id = uuid4(), uuid4(), uuid4()
+    auth = FakeAuth(seller_id=SELLER_ID, result=FakeResult(one={}))
+    async with client_for(auth) as client:
+        response = await client.post(
+            f"/v1/me/sellers/{SELLER_ID}/products/{product_id}/publications",
+            content=publication_body(course_id, offer_id, access_mode="gratis"),
+        )
+    assert response.status_code == 422
+    assert auth.domain_sessions == 0
+
+
+def test_access_domain_errors_map_to_distinct_actionable_reasons() -> None:
+    # A seller who cannot sell yet has to be told why. Collapsing these into one
+    # generic 422 is what leaves a dead button on screen with no explanation.
+    # The unavailable case deliberately answers 404 for revoked, expired and
+    # unknown links alike, so probing cannot reveal whether a token exists.
+    for sqlstate, expected_status, expected_detail in [
+        ("P4223", 422, "payout_account_required"),
+        ("P4224", 409, "access_link_exhausted"),
+        ("P4225", 404, "access_link_unavailable"),
+    ]:
+        mapped = _domain_error(
+            SimpleNamespace(  # type: ignore[arg-type]
+                orig=SimpleNamespace(sqlstate=sqlstate, constraint_name=None)
+            )
+        )
+        assert mapped.status_code == expected_status
+        assert mapped.detail == expected_detail
+
+
+@pytest.mark.asyncio
+async def test_create_access_link_sends_only_the_digest_and_prefix() -> None:
+    # The raw token must never reach this service. If it ever did, it would land
+    # in request logs and in the database, and a dump would hand out access.
+    product_id, link_id = uuid4(), uuid4()
+    auth = FakeAuth(
+        seller_id=SELLER_ID,
+        result=FakeResult(
+            one={
+                "access_link_id": link_id,
+                "token_prefix": LINK_PREFIX,
+                "label": "Turma Royalty Seguros",
+                "max_uses": 30,
+                "redeemed_count": 0,
+                "expires_at": None,
+                "created_at": None,
+            }
+        ),
+    )
+    body = access_link_body()
+    async with client_for(auth) as client:
+        response = await client.post(
+            f"/v1/me/sellers/{SELLER_ID}/products/{product_id}/access-links",
+            content=body,
+        )
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["access_link_id"] == str(link_id)
+    assert payload["token_prefix"] == LINK_PREFIX
+    assert "token" not in payload
+    assert "token_sha256" not in payload
+    assert auth.capabilities == ["catalog.access_link.create"]
+    statement, parameters = auth.session.calls[0]
+    assert "app_private.create_product_access_link" in statement
+    assert parameters["token_sha256"] == "b" * 64
+    assert parameters["max_uses"] == 30
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"token_sha256": "z" * 64},
+        {"token_sha256": "b" * 63},
+        {"token_prefix": "7f3a"},
+        {"label": " espaco na ponta"},
+        {"label": ""},
+        {"max_uses": 0},
+        {"max_uses": 100_001},
+        {"expires_at": "not-a-date"},
+    ],
+)
+async def test_create_access_link_rejects_malformed_input_before_the_database(
+    overrides: dict[str, Any],
+) -> None:
+    product_id = uuid4()
+    auth = FakeAuth(seller_id=SELLER_ID, result=FakeResult(one={}))
+    async with client_for(auth) as client:
+        response = await client.post(
+            f"/v1/me/sellers/{SELLER_ID}/products/{product_id}/access-links",
+            content=access_link_body(**overrides),
+        )
+    assert response.status_code == 422
+    assert auth.domain_sessions == 0
+
+
+@pytest.mark.asyncio
+async def test_list_access_links_never_returns_a_token() -> None:
+    product_id, link_id = uuid4(), uuid4()
+    auth = FakeAuth(
+        seller_id=SELLER_ID,
+        result=FakeResult(
+            all=[
+                {
+                    "access_link_id": link_id,
+                    "token_prefix": LINK_PREFIX,
+                    "label": "Turma Royalty Seguros",
+                    "max_uses": 30,
+                    "redeemed_count": 12,
+                    "expires_at": None,
+                    "revoked_at": None,
+                    "rotated_at": None,
+                    "created_at": None,
+                }
+            ]
+        ),
+    )
+    async with client_for(auth) as client:
+        response = await client.get(
+            f"/v1/me/sellers/{SELLER_ID}/products/{product_id}/access-links"
+        )
+    assert response.status_code == 200
+    links = response.json()["access_links"]
+    assert len(links) == 1
+    assert links[0]["redeemed_count"] == 12
+    assert not any(key.startswith("token_sha") for key in links[0])
+    assert auth.capabilities == ["catalog.access_link.read"]
+
+
+@pytest.mark.asyncio
+async def test_revoke_access_link_is_idempotent_and_reports_whether_it_changed() -> None:
+    product_id, link_id = uuid4(), uuid4()
+    auth = FakeAuth(
+        seller_id=SELLER_ID,
+        result=FakeResult(one={"access_link_id": link_id, "revoked_at": None, "changed": False}),
+    )
+    async with client_for(auth) as client:
+        response = await client.post(
+            f"/v1/me/sellers/{SELLER_ID}/products/{product_id}/access-links/{link_id}/revoke",
+            content=json.dumps({"idempotency_key": str(uuid4())}, separators=(",", ":")).encode(),
+        )
+    assert response.status_code == 200
+    assert response.json()["changed"] is False
+    assert auth.capabilities == ["catalog.access_link.update"]
+    statement, _ = auth.session.calls[0]
+    assert "app_private.revoke_product_access_link" in statement
+
+
+@pytest.mark.asyncio
+async def test_rotate_access_link_keeps_the_seat_budget() -> None:
+    # Losing the link must not cost the seats already handed out, otherwise a
+    # rotation silently re-opens a closed class.
+    product_id, link_id = uuid4(), uuid4()
+    auth = FakeAuth(
+        seller_id=SELLER_ID,
+        result=FakeResult(
+            one={
+                "access_link_id": link_id,
+                "token_prefix": ROTATED_PREFIX,
+                "redeemed_count": 12,
+                "max_uses": 30,
+                "rotated_at": None,
+            }
+        ),
+    )
+    body = json.dumps(
+        {
+            "idempotency_key": str(uuid4()),
+            "token_sha256": "c" * 64,
+            "token_prefix": ROTATED_PREFIX,
+        },
+        separators=(",", ":"),
+    ).encode()
+    async with client_for(auth) as client:
+        response = await client.post(
+            f"/v1/me/sellers/{SELLER_ID}/products/{product_id}/access-links/{link_id}/rotate",
+            content=body,
+        )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["redeemed_count"] == 12
+    assert payload["max_uses"] == 30
+    assert payload["token_prefix"] == ROTATED_PREFIX
+    statement, parameters = auth.session.calls[0]
+    assert "app_private.rotate_product_access_link" in statement
+    assert parameters["token_sha256"] == "c" * 64

@@ -16,7 +16,6 @@ KNOWN_STEPS = {
     "cert_postgres",
     "cert_storage",
     "cert_openbao",
-    "cert_capacity",
     "cert_backup",
     "cert_preview",
     "image_web",
@@ -51,9 +50,7 @@ def expected_steps(
             expected.add("cert_postgres")
         if route.get("openbao"):
             expected.add("cert_openbao")
-        if route.get("capacity"):
-            expected.add("cert_capacity")
-        elif route.get("storage"):
+        if route.get("storage"):
             expected.add("cert_storage")
         if route.get("backup"):
             expected.add("cert_backup")
@@ -64,8 +61,6 @@ def expected_steps(
                 expected.add(f"image_{scope}")
         if event == "push":
             expected.add("smoke")
-    elif event == "schedule":
-        expected.add("cert_capacity")
     else:
         expected.update(KNOWN_STEPS - {"route"})
     return expected

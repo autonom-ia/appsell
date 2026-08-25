@@ -44,6 +44,8 @@ interface ApiRequest {
     "catalog.curriculum.reorder" | "catalog.asset.read" | "catalog.asset.create" |
     "catalog.asset.upload.confirm" | "catalog.asset.upload.cancel" |
     "catalog.asset.archive" | "catalog.asset.policy.update" |
+    "catalog.access_link.create" | "catalog.access_link.read" |
+    "catalog.access_link.update" |
     "library.read" | "library.enroll" | "library.asset.read" | "library.asset.download" |
     "learning.player.read" | "learning.progress.write" |
     "learning.pdf-study.read" | "learning.pdf-study.write" |
@@ -595,6 +597,7 @@ export async function publishDomainProductDraft(
     expectedOfferVersion: number;
     offerId: string;
     courseVersions: Array<{ id: string; version: number }>;
+    accessMode?: "free" | "paid";
   }
 ) {
   return domainRequest(sessionId, session, {
@@ -607,7 +610,133 @@ export async function publishDomainProductDraft(
       offer_id: input.offerId,
       expected_product_version: input.expectedProductVersion,
       course_versions: input.courseVersions,
-      expected_offer_version: input.expectedOfferVersion
+      expected_offer_version: input.expectedOfferVersion,
+      // Publishing decides access. Omitting the mode keeps the pre-existing
+      // behaviour, which is free access with the offer left in draft.
+      access_mode: input.accessMode ?? "free"
+    }
+  });
+}
+
+export async function createDomainAccessLink(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  input: {
+    idempotencyKey: string;
+    label: string;
+    tokenSha256: string;
+    tokenPrefix: string;
+    maxUses: number | null;
+    expiresAt: string | null;
+  }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}/access-links`,
+    capability: "catalog.access_link.create",
+    sellerOrganizationId,
+    // Only the digest and the display prefix cross this boundary. The raw token
+    // stays in the response to the seller's own browser and is never persisted.
+    body: {
+      idempotency_key: input.idempotencyKey,
+      label: input.label,
+      token_sha256: input.tokenSha256,
+      token_prefix: input.tokenPrefix,
+      max_uses: input.maxUses,
+      expires_at: input.expiresAt
+    }
+  });
+}
+
+export async function listDomainAccessLinks(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}/access-links`,
+    capability: "catalog.access_link.read",
+    sellerOrganizationId
+  });
+}
+
+export async function listDomainAccessLinkRedemptions(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  accessLinkId: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path:
+      `/v1/me/sellers/${sellerOrganizationId}/products/${productId}` +
+      `/access-links/${accessLinkId}/redemptions`,
+    capability: "catalog.access_link.read",
+    sellerOrganizationId
+  });
+}
+
+export async function revokeDomainAccessLink(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  accessLinkId: string,
+  input: { idempotencyKey: string }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path:
+      `/v1/me/sellers/${sellerOrganizationId}/products/${productId}` +
+      `/access-links/${accessLinkId}/revoke`,
+    capability: "catalog.access_link.update",
+    sellerOrganizationId,
+    body: { idempotency_key: input.idempotencyKey }
+  });
+}
+
+export async function rotateDomainAccessLink(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  accessLinkId: string,
+  input: { idempotencyKey: string; tokenSha256: string; tokenPrefix: string }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path:
+      `/v1/me/sellers/${sellerOrganizationId}/products/${productId}` +
+      `/access-links/${accessLinkId}/rotate`,
+    capability: "catalog.access_link.update",
+    sellerOrganizationId,
+    body: {
+      idempotency_key: input.idempotencyKey,
+      token_sha256: input.tokenSha256,
+      token_prefix: input.tokenPrefix
+    }
+  });
+}
+
+export async function redeemDomainAccessLink(
+  sessionId: string,
+  session: ServerSession,
+  input: { idempotencyKey: string; tokenSha256: string }
+) {
+  // Buyer scoped on purpose: no sellerOrganizationId, which is what the domain
+  // function requires before it will grant an entitlement.
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: "/v1/me/library/access-links/redeem",
+    capability: "library.enroll",
+    body: {
+      idempotency_key: input.idempotencyKey,
+      token_sha256: input.tokenSha256
     }
   });
 }
