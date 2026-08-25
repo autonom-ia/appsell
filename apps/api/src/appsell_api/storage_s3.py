@@ -144,6 +144,66 @@ class S3Storage:
             required_content_length=byte_size,
         )
 
+    def put_cover(
+        self,
+        *,
+        destination_key: str,
+        source_path: Path,
+        byte_size: int,
+        sha256_hex: str,
+        content_type: str,
+    ) -> StoredObject:
+        """Guarda a capa já saneada de um produto.
+
+        Não passa pelo caminho dos materiais de aula de propósito. Aquele
+        caminho valida contra ``SUPPORTED_MEDIA``, e alargar aquele catálogo
+        para caber JPEG e WebP faria uma capa poder ser anexada como material —
+        outro caminho, com outra política de download. A capa é uma imagem para
+        exibir, então a disposição é sempre ``inline`` e o nome do arquivo nunca
+        vem do vendedor: é derivado do digest.
+        """
+        if content_type not in {"image/jpeg", "image/png", "image/webp"}:
+            raise StorageCapabilityError("cover media type is not storable")
+        extension = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}[content_type]
+        response = self._control.put_object(
+            Bucket=self.ready_bucket,
+            Key=destination_key,
+            Body=source_path.read_bytes(),
+            ContentLength=byte_size,
+            ContentType=content_type,
+            ContentDisposition=f"inline; filename*=UTF-8''capa-{sha256_hex[:16]}.{extension}",
+            CacheControl="private, no-store, max-age=0",
+            ChecksumSHA256=_checksum_b64(sha256_hex),
+        )
+        version_id = str(response.get("VersionId") or "")
+        if not version_id:
+            raise StorageCapabilityError("cover PUT did not return VersionId")
+        stored = self.head(bucket=self.ready_bucket, key=destination_key, version_id=version_id)
+        if stored.size != byte_size or not object_sha256_matches(stored, sha256_hex):
+            self.delete_version(
+                bucket=self.ready_bucket, key=destination_key, version_id=version_id
+            )
+            raise StorageCapabilityError("stored cover does not match what was verified")
+        return stored
+
+    def presign_cover(self, *, key: str, version_id: str, media_type: str) -> PresignedRequest:
+        """Endereço temporário para exibir a capa. Sempre inline, nunca download."""
+        if not version_id:
+            raise StorageCapabilityError("cover display requires an immutable VersionId")
+        url = self._public.generate_presigned_url(
+            "get_object",
+            Params={
+                "Bucket": self.ready_bucket,
+                "Key": key,
+                "VersionId": version_id,
+                "ResponseCacheControl": "private, max-age=300",
+                "ResponseContentType": media_type,
+            },
+            ExpiresIn=self.get_ttl,
+            HttpMethod="GET",
+        )
+        return PresignedRequest(url=str(url), headers={}, expires_in_seconds=self.get_ttl)
+
     def presign_get(
         self,
         *,
