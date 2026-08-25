@@ -24,6 +24,7 @@ from .asset_media import (
 )
 from .asset_media import max_bytes as asset_max_bytes
 from .config import Settings
+from .image_verifier import COVER_EXTENSION, COVER_MAX_BYTES, is_cover_media
 
 
 class StorageError(RuntimeError):
@@ -144,6 +145,58 @@ class S3Storage:
             required_content_length=byte_size,
         )
 
+    def presign_cover_put(
+        self,
+        *,
+        key: str,
+        content_type: str,
+        sha256_hex: str,
+        byte_size: int,
+        upload_request_id: str,
+    ) -> PresignedRequest:
+        """Assina o envio de uma capa direto do navegador para a quarentena.
+
+        Separado de ``presign_put`` de proposito. Aquele metodo tira o teto de
+        ``SUPPORTED_MEDIA``, e ensinar aquele catalogo a conhecer JPEG e WebP
+        faria uma capa poder ser assinada como material de aula — outro caminho,
+        com outra politica de download. Sao duas politicas; sao dois metodos.
+
+        Tudo o que a capa declara fica preso na assinatura: tipo, tamanho exato,
+        digest e a identidade do upload. O S3 recusa o PUT que discordar de
+        qualquer um deles, entao o objeto que chega a quarentena e exatamente o
+        que foi pedido — o que nao diz nada sobre ele ser mesmo uma imagem, e
+        por isso o verificador ainda abre os bytes depois.
+        """
+        if not is_cover_media(content_type):
+            raise StorageCapabilityError("cover media type is not storable")
+        if byte_size < 1 or byte_size > COVER_MAX_BYTES:
+            raise ValueError("cover byte_size is outside the allowed range")
+        if not upload_request_id or len(upload_request_id) > 128:
+            raise ValueError("upload_request_id is invalid")
+        checksum = _checksum_b64(sha256_hex)
+        params = {
+            "Bucket": self.quarantine_bucket,
+            "Key": key,
+            "ContentType": content_type,
+            "ChecksumSHA256": checksum,
+            "ContentLength": byte_size,
+            "Metadata": {"appsell-upload-id": upload_request_id},
+        }
+        return PresignedRequest(
+            url=str(
+                self._public.generate_presigned_url(
+                    "put_object", Params=params, ExpiresIn=self.put_ttl, HttpMethod="PUT"
+                )
+            ),
+            headers={
+                "content-type": content_type,
+                "x-amz-checksum-sha256": checksum,
+                "x-amz-meta-appsell-upload-id": upload_request_id,
+            },
+            expires_in_seconds=self.put_ttl,
+            required_content_length=byte_size,
+        )
+
     def put_cover(
         self,
         *,
@@ -162,9 +215,9 @@ class S3Storage:
         exibir, então a disposição é sempre ``inline`` e o nome do arquivo nunca
         vem do vendedor: é derivado do digest.
         """
-        if content_type not in {"image/jpeg", "image/png", "image/webp"}:
+        if not is_cover_media(content_type):
             raise StorageCapabilityError("cover media type is not storable")
-        extension = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}[content_type]
+        extension = COVER_EXTENSION[content_type]
         response = self._control.put_object(
             Bucket=self.ready_bucket,
             Key=destination_key,

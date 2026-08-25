@@ -13,6 +13,7 @@ from .asset_worker_runner import run_asset_worker_loop
 from .catalog_routes import router as catalog_router
 from .checkout_routes import router as checkout_router
 from .config import Settings, get_settings
+from .cover_routes import router as cover_router
 from .db import create_engine, create_session_factory, database_ready
 from .demo_checkout_worker import run_demo_checkout_worker_loop
 from .fulfillment_worker import run_fulfillment_worker_loop
@@ -161,6 +162,7 @@ app.include_router(payout_router)
 app.include_router(payout_sync_router)
 app.include_router(learning_router)
 app.include_router(asset_router)
+app.include_router(cover_router)
 app.include_router(platform_bootstrap_router)
 app.include_router(platform_router)
 app.include_router(public_router)

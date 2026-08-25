@@ -18,6 +18,7 @@ from .capacity_telemetry import (
     emit_capacity_product_create_trace,
 )
 from .internal_requests import AuthenticatedInternalRequest, InternalRequestAuthenticator
+from .storage_s3 import S3Storage, StorageError
 
 router = APIRouter(prefix="/v1")
 _SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -446,7 +447,11 @@ async def list_product_drafts(
                             "course.draft_version as course_draft_version, "
                             "current_offer.status as offer_status, "
                             "current_offer.unit_amount_minor as offer_unit_amount_minor, "
-                            "current_offer.currency as offer_currency "
+                            "current_offer.currency as offer_currency, "
+                            "product.cover_object_key, product.cover_storage_version_id, "
+                            "product.cover_media_type, product.cover_width, "
+                            "product.cover_height, "
+                            "coalesce(counts.students, 0) as students "
                             "from catalog_product product "
                             "join product_course linked "
                             "on linked.seller_organization_id = product.seller_organization_id "
@@ -468,6 +473,14 @@ async def list_product_drafts(
                             "order by (candidate.status = 'active') desc, candidate.version desc "
                             "limit 1"
                             ") current_offer on true "
+                            # A matrícula não é legível pelo papel de runtime, e
+                            # não deve passar a ser. A função atravessa essa
+                            # fronteira de propósito e devolve só números, uma
+                            # vez para o vendedor inteiro — não uma consulta por
+                            # linha da lista.
+                            "left join app_private.product_student_counts("
+                            ":identity_user_id, :seller_id) counts "
+                            "on counts.catalog_product_id = product.id "
                             "where product.seller_organization_id = :seller_id "
                             "and product.status <> 'archived' and course.status <> 'archived' "
                             "and (:cursor is null or (product.created_at, product.id) < "
@@ -476,6 +489,7 @@ async def list_product_drafts(
                             "limit :fetch_limit"
                         ),
                         {
+                            "identity_user_id": internal.envelope.identity.user_id,
                             "seller_id": seller_id,
                             "cursor": cursor,
                             "fetch_limit": limit + 1,
@@ -490,8 +504,9 @@ async def list_product_drafts(
 
     has_more = len(rows) > limit
     visible_rows = rows[:limit]
+    storage: S3Storage | None = getattr(request.app.state, "storage", None)
     return {
-        "products": [_product_response(row) for row in visible_rows],
+        "products": [_product_response(row, storage) for row in visible_rows],
         "next_cursor": str(visible_rows[-1]["id"]) if has_more else None,
     }
 
@@ -613,7 +628,7 @@ async def get_product_draft(request: Request, seller_id: UUID, product_id: UUID)
     auth, internal = await _authenticate(request, "catalog.draft.read")
     await _require_seller(internal, seller_id)
     rows = await _read_product_draft(auth, internal, seller_id, product_id, "catalog.draft.read")
-    return _product_detail_response(rows)
+    return _product_detail_response(rows, getattr(request.app.state, "storage", None))
 
 
 @router.get("/me/sellers/{seller_id}/products/{product_id}/preview")
@@ -624,7 +639,7 @@ async def preview_product_draft(
     await _require_seller(internal, seller_id)
     rows = await _read_product_draft(auth, internal, seller_id, product_id, "catalog.draft.preview")
     row = rows[0]
-    detail = _product_detail_response(rows)
+    detail = _product_detail_response(rows, getattr(request.app.state, "storage", None))
     readiness = detail["product"]["readiness"]
     return {
         "preview": True,
@@ -1605,8 +1620,10 @@ def _canonical_uuid(value: str, message: str) -> str:
     return value
 
 
-def _product_response(row: Any) -> dict[str, Any]:
+def _product_response(row: Any, storage: S3Storage | None) -> dict[str, Any]:
     return {
+        "cover": _cover_response(row, storage),
+        "students": int(row["students"]),
         "id": str(row["id"]),
         "slug": row["slug"],
         "title": row["title"],
@@ -1622,6 +1639,33 @@ def _product_response(row: Any) -> dict[str, Any]:
             "draft_version": row["course_draft_version"],
         },
         **_product_access_response(row),
+    }
+
+
+def _cover_response(row: Any, storage: S3Storage | None) -> dict[str, Any] | None:
+    """Endereço temporário da capa, ou nada.
+
+    Nada é uma resposta legítima: um produto sem capa recebe a arte gerada a
+    partir do próprio nome, do lado do navegador. Devolver um endereço quebrado
+    faria a tela mostrar um retângulo cinza de imagem falhada em vez daquela
+    arte, que é pior do que não ter capa nenhuma.
+    """
+    if row["cover_object_key"] is None or storage is None:
+        return None
+    try:
+        signed = storage.presign_cover(
+            key=str(row["cover_object_key"]),
+            version_id=str(row["cover_storage_version_id"]),
+            media_type=str(row["cover_media_type"]),
+        )
+    except StorageError:
+        return None
+    return {
+        "url": signed.url,
+        "media_type": str(row["cover_media_type"]),
+        "width": int(row["cover_width"]),
+        "height": int(row["cover_height"]),
+        "expires_in_seconds": signed.expires_in_seconds,
     }
 
 
@@ -1662,6 +1706,9 @@ async def _read_product_draft(
                             "product.description, product.status, product.version, "
                             "product.created_at, product.updated_at, "
                             "product.published_snapshot_id, "
+                            "product.cover_object_key, product.cover_storage_version_id, "
+                            "product.cover_media_type, product.cover_width, "
+                            "product.cover_height, "
                             "course.id as course_id, course.title as course_title, "
                             "course.description as course_description, "
                             "course.status as course_status, "
@@ -1738,7 +1785,7 @@ async def _read_product_draft(
     return list(rows)
 
 
-def _product_detail_response(rows: list[Any]) -> dict[str, Any]:
+def _product_detail_response(rows: list[Any], storage: S3Storage | None) -> dict[str, Any]:
     row = rows[0]
     violations: list[dict[str, Any]] = []
     if row["status"] == "archived":
@@ -1805,6 +1852,7 @@ def _product_detail_response(rows: list[Any]) -> dict[str, Any]:
     )
     return {
         "product": {
+            "cover": _cover_response(row, storage),
             "id": str(row["id"]),
             "seller_organization_id": str(row["seller_organization_id"]),
             "seller_slug": row.get("seller_slug"),
@@ -1951,6 +1999,23 @@ def _domain_error(error: DBAPIError) -> HTTPException:
         return HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="access_link_unavailable",
+        )
+    if sqlstate == "P4228":
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="product_archived",
+        )
+    if sqlstate == "P4229":
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="cover_upload_closed",
+        )
+    # Uma linha que nao existe e 404. Sem isto ela cairia no 503 do fim, que
+    # diz "o dominio esta fora do ar" sobre um pedido que so estava errado.
+    if sqlstate == "P4041":
+        return HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="not_found",
         )
     if sqlstate == "22023":
         return HTTPException(

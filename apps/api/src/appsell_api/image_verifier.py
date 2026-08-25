@@ -55,6 +55,14 @@ _SIGNATURES: Final[dict[str, tuple[bytes, ...]]] = {
     WEBP_MEDIA_TYPE: (b"RIFF",),
 }
 
+# A extensao acompanha o tipo, e nao o nome que o vendedor deu ao arquivo. O
+# nome dele nunca chega ao armazenamento.
+COVER_EXTENSION: Final[dict[str, str]] = {
+    JPEG_MEDIA_TYPE: "jpg",
+    PNG_MEDIA_TYPE: "png",
+    WEBP_MEDIA_TYPE: "webp",
+}
+
 _PILLOW_FORMAT: Final[dict[str, str]] = {
     JPEG_MEDIA_TYPE: "JPEG",
     PNG_MEDIA_TYPE: "PNG",
