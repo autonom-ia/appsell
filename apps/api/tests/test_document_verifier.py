@@ -197,8 +197,13 @@ def orphan_payload_container() -> bytes:
         for name, part in WORD.items():
             archive.writestr(name, part)
     payload = clean.getvalue()
-    directory_start = payload.rfind(b"PK\x01\x02")
     end = payload.rfind(b"PK\x05\x06")
+    # The closing record names where the index begins. Searching for the first
+    # directory signature instead finds the LAST entry's row, which splices the
+    # payload into the middle of the index and corrupts it, so the reader refuses
+    # the file before the layout check ever runs and the test passes for the
+    # wrong reason.
+    directory_start = struct.unpack_from("<I", payload, end + 16)[0]
 
     spliced = payload[:directory_start] + hidden[:hidden_end] + payload[directory_start:end]
     shift = hidden_end
@@ -217,10 +222,7 @@ def test_a_container_hiding_bytes_outside_its_index_is_refused() -> None:
     """
     payload = orphan_payload_container()
     assert len(payload) < 2 * 1024 * 1024, "the carrier must stay small on disk"
-    # Refused either because the layout check finds the bytes the index omits, or
-    # because the reader will not parse the spliced archive at all. Both are the
-    # door being shut; only silent acceptance is a failure.
-    with pytest.raises(DocumentRejected):
+    with pytest.raises(DocumentRejected, match="hides bytes before its index"):
         verify(payload, DOCX_MEDIA_TYPE)
 
 
