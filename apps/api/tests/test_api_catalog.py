@@ -384,6 +384,12 @@ async def test_list_drafts_is_tenant_scoped_and_uses_bounded_keyset() -> None:
             "course_title": f"Curso {index}",
             "course_status": "draft",
             "course_draft_version": 1,
+            "cover_object_key": None,
+            "cover_storage_version_id": None,
+            "cover_media_type": None,
+            "cover_width": None,
+            "cover_height": None,
+            "students": 0,
         }
         for index, product_id in enumerate(product_ids)
     ]
@@ -406,7 +412,14 @@ async def test_list_drafts_is_tenant_scoped_and_uses_bounded_keyset() -> None:
     assert "product.status <> 'archived'" in statement
     assert "course.status <> 'archived'" in statement
     assert "order by product.created_at desc, product.id desc" in statement
-    assert parameters == {"seller_id": SELLER_ID, "cursor": cursor, "fetch_limit": 3}
+    # O ator entra nos parâmetros porque a contagem de alunos atravessa a
+    # fronteira da matrícula e confere o contexto da transação contra ele.
+    assert parameters == {
+        "identity_user_id": IDENTITY_ID,
+        "seller_id": SELLER_ID,
+        "cursor": cursor,
+        "fetch_limit": 3,
+    }
 
 
 @pytest.mark.asyncio
@@ -475,6 +488,11 @@ async def test_detail_and_preview_are_private_server_projections() -> None:
         "created_at": now,
         "updated_at": now,
         "published_snapshot_id": None,
+        "cover_object_key": None,
+        "cover_storage_version_id": None,
+        "cover_media_type": None,
+        "cover_width": None,
+        "cover_height": None,
         "course_id": course_id,
         "course_title": "Curso Editado",
         "course_description": "",
@@ -595,9 +613,14 @@ def test_readiness_blocks_publication_while_an_asset_upload_is_pending() -> None
         "published_at": None,
         "publication_snapshot": None,
         "has_pending_asset_upload": True,
+        "cover_object_key": None,
+        "cover_storage_version_id": None,
+        "cover_media_type": None,
+        "cover_width": None,
+        "cover_height": None,
     }
 
-    product = _product_detail_response([row])["product"]
+    product = _product_detail_response([row], None)["product"]
 
     assert product["readiness"] == {
         "can_publish": False,
@@ -892,6 +915,11 @@ def test_detail_offer_projection_includes_public_pricing() -> None:
         "created_at": now,
         "updated_at": now,
         "published_snapshot_id": None,
+        "cover_object_key": None,
+        "cover_storage_version_id": None,
+        "cover_media_type": None,
+        "cover_width": None,
+        "cover_height": None,
         "course_id": course_id,
         "course_title": "Curso",
         "course_description": "",
@@ -912,7 +940,7 @@ def test_detail_offer_projection_includes_public_pricing() -> None:
         "published_at": None,
         "publication_snapshot": None,
     }
-    offer = _product_detail_response([row])["product"]["offer"]
+    offer = _product_detail_response([row], None)["product"]["offer"]
     assert offer["unit_amount_minor"] == 49900
     assert offer["currency"] == "BRL"
     assert offer["billing_period"] == "yearly"
@@ -938,6 +966,11 @@ def test_readiness_blocks_a_semantically_identical_publication() -> None:
         "created_at": now,
         "updated_at": now,
         "published_snapshot_id": publication_id,
+        "cover_object_key": None,
+        "cover_storage_version_id": None,
+        "cover_media_type": None,
+        "cover_width": None,
+        "cover_height": None,
         "course_id": course_id,
         "course_title": "Curso",
         "course_description": "",
@@ -973,7 +1006,7 @@ def test_readiness_blocks_a_semantically_identical_publication() -> None:
         },
         "courses": [{"id": str(course_id), "title": "Curso", "description": "", "position": 0}],
     }
-    product = _product_detail_response([row])["product"]
+    product = _product_detail_response([row], None)["product"]
     assert product["has_unpublished_changes"] is True
     assert product["readiness"] == {
         "can_publish": True,

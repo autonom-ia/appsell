@@ -1172,6 +1172,17 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 }
 
 .draft-card-art { width: 100%; aspect-ratio: 16 / 7; margin: -4px 0 10px; display: flex; align-items: center; justify-content: center; border-radius: 12px; color: #fff; font-size: 1.5rem; font-weight: 700; letter-spacing: .06em; }
+/* `.draft-card > div` e `.draft-card > div > span:last-child` acertam este bloco
+   por serem mais especificas do que uma classe sozinha: as iniciais saiam
+   cinzas, com 10.88px e encostadas na esquerda, e a arte virava um retangulo
+   chapado com sujeira no canto. Estas regras existem para ganhar daquelas. */
+.draft-card > .draft-card-art { justify-content: center; }
+/* `:last-child` nao e enfeite: sem ele esta regra fica em (0,2,1) e perde para
+   a de cima, que esta em (0,2,2). Foi exatamente assim que as iniciais ficaram
+   cinzas e minusculas sem ninguem perceber. */
+.draft-card > .draft-card-art > span:last-child { color: #fff; font-size: 1.35rem; font-weight: 700; letter-spacing: .08em; opacity: .92; overflow: visible; }
+.draft-card-cover { object-fit: cover; background: #eef2f7; }
+.draft-card-students { margin: 6px 0 0; color: var(--soft); font-size: .78rem; }
 .draft-card-access { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; margin: 8px 0 0; }
 .access-badge { padding: .15em .6em; border-radius: 999px; font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; }
 .access-badge.access-paid { background: rgba(8,122,75,.12); color: #0a6b43; }
@@ -1192,3 +1203,21 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
     scroll-behavior: auto !important;
   }
 }
+
+/* Capa do produto, no editor do vendedor. A moldura tem proporção fixa para a
+   tela não pular entre "sem capa" e "com capa": o mesmo espaço é reservado nos
+   dois casos. */
+.cover-panel { min-width: 0; margin: 16px 0; padding: 16px; display: grid; gap: 12px; border: 1px solid var(--border); border-radius: 16px; background: rgba(255,255,255,.7); }
+.cover-panel h3 { margin: 0; font-size: .95rem; color: var(--ink); }
+.cover-preview { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; }
+.cover-image, .cover-fallback { width: 200px; flex: none; aspect-ratio: 16 / 9; border-radius: 12px; }
+.cover-image { object-fit: cover; background: #eef2f7; }
+.cover-fallback { display: flex; align-items: center; justify-content: center; color: #fff; font-size: 1.35rem; font-weight: 700; letter-spacing: .08em; opacity: .92; }
+.cover-fallback-note { flex: 1 1 180px; margin: 0; color: var(--soft); font-size: .78rem; }
+.cover-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.cover-choose { position: relative; display: inline-flex; align-items: center; cursor: pointer; }
+/* O input fica sobre o rótulo inteiro em vez de escondido: assim o alvo de
+   clique é o botão que se vê, e o foco do teclado continua chegando nele. */
+.cover-choose input[type="file"] { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.cover-choose:has(input[type="file"]:disabled) { opacity: .55; cursor: default; }
+.cover-choose:has(input[type="file"]:focus-visible) { outline: 2px solid var(--ink); outline-offset: 2px; }

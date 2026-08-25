@@ -5,6 +5,10 @@ import { DomainApiError } from "@/lib/internal-api-client.server";
 import { PayloadTooLargeError, readLimitedForm } from "@/lib/limited-form.server";
 import { oauthService } from "@/lib/oauth-service.server";
 import { isOAuthStoreUnavailable } from "@/lib/redis-oauth-service";
+import {
+  configuredStorageUploadOrigin,
+  trustedProductCover
+} from "@/lib/storage-upload-policy.server";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -111,4 +115,32 @@ function jsonError(error: string, status: number) {
     status,
     headers: { "cache-control": "no-store" }
   });
+}
+
+/**
+ * Deixa sair para o navegador só a capa que aponta para o nosso armazenamento.
+ *
+ * Vale tanto para a lista quanto para o produto isolado, porque nos dois casos
+ * o endereço vira um `img` que o navegador busca sozinho. Quando não há origem
+ * de armazenamento configurada — desenvolvimento local, CI — não há capa
+ * nenhuma para começo de conversa, e remover é o comportamento certo.
+ */
+export function withTrustedCovers(payload: unknown): unknown {
+  if (!isRecord(payload)) return payload;
+  let storageOrigin: string;
+  try {
+    storageOrigin = configuredStorageUploadOrigin();
+  } catch {
+    storageOrigin = "";
+  }
+  const gate = (value: unknown) => storageOrigin ? trustedProductCover(value, storageOrigin) : null;
+  const products = payload.products;
+  const product = payload.product;
+  return {
+    ...payload,
+    ...(Array.isArray(products)
+      ? { products: products.map((row) => isRecord(row) ? { ...row, cover: gate(row.cover) } : row) }
+      : {}),
+    ...(isRecord(product) ? { product: { ...product, cover: gate(product.cover) } } : {})
+  };
 }

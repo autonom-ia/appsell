@@ -8,6 +8,9 @@ import {
 } from "@/lib/internal-api-client.server";
 import {
   csrfTokenForSession,
+  CLEAR_PRODUCT_COVER_CSRF_ACTION,
+  CONFIRM_COVER_UPLOAD_CSRF_ACTION,
+  CREATE_COVER_UPLOAD_CSRF_ACTION,
   PUBLISH_PRODUCT_DRAFT_CSRF_ACTION,
   CREATE_ACCESS_LINK_CSRF_ACTION,
   REVOKE_ACCESS_LINK_CSRF_ACTION,
@@ -28,6 +31,7 @@ import {
   mappedError,
   notFound,
   payloadTooLarge,
+  withTrustedCovers,
   productRouteIds,
   type ProductRouteContext,
   readExactLimitedFields,
@@ -85,7 +89,7 @@ export async function GET(request: NextRequest, context: ProductRouteContext) {
     );
     if (!isRecord(payload)) return mappedError(new Error("invalid domain response"));
     return NextResponse.json({
-      ...payload,
+      ...(withTrustedCovers(payload) as Record<string, unknown>),
       csrf: {
         update: csrfTokenForSession(authenticated.sessionId, UPDATE_PRODUCT_DRAFT_CSRF_ACTION),
         publish: csrfTokenForSession(authenticated.sessionId, PUBLISH_PRODUCT_DRAFT_CSRF_ACTION),
@@ -104,6 +108,18 @@ export async function GET(request: NextRequest, context: ProductRouteContext) {
         access_link_rotate: csrfTokenForSession(
           authenticated.sessionId,
           ROTATE_ACCESS_LINK_CSRF_ACTION
+        ),
+        cover_intent: csrfTokenForSession(
+          authenticated.sessionId,
+          CREATE_COVER_UPLOAD_CSRF_ACTION
+        ),
+        cover_confirm: csrfTokenForSession(
+          authenticated.sessionId,
+          CONFIRM_COVER_UPLOAD_CSRF_ACTION
+        ),
+        cover_clear: csrfTokenForSession(
+          authenticated.sessionId,
+          CLEAR_PRODUCT_COVER_CSRF_ACTION
         )
       }
     }, { headers: { "cache-control": "no-store" } });

@@ -11,6 +11,7 @@ from uuid import UUID
 
 from .asset_media import is_document
 from .document_verifier import spooled_document_file
+from .image_verifier import ImageRejected, spooled_cover_file
 from .pdf_derivatives import prepared_pdf_file
 from .pdf_verifier import PDF_MIME, spooled_pdf_file
 from .storage_s3 import S3Storage, StorageCapabilityError, StoredObject, object_sha256_matches
@@ -412,6 +413,153 @@ class PdfStorageWorker:
             )
         except Exception as error:
             raise CleanupRetryableError("quarantine cleanup must be retried") from error
+
+
+@dataclass(frozen=True)
+class VerifyCoverJob:
+    seller_id: UUID
+    product_id: UUID
+    upload_id: UUID
+    source_bucket: str
+    ready_bucket: str
+    source_key: str
+    ready_key: str
+    expected_size: int
+    expected_sha256_hex: str
+    declared_content_type: str
+
+
+@dataclass(frozen=True)
+class VerifiedCoverResult:
+    source: StoredObject
+    ready: StoredObject
+    media_type: str
+    byte_size: int
+    sha256_hex: str
+    width: int
+    height: int
+    scanner_provider: str
+
+
+class ProductCoverWorker:
+    """Promove a capa de um produto da quarentena para o bucket servido.
+
+    Segue o mesmo desenho do material de aula — cabeçalho conferido contra o
+    intent, scanner antes de qualquer promoção, e compensação se a etapa
+    seguinte falhar — mas com um caminho próprio, porque a capa não é material:
+    ela é reescrita para perder metadados, é sempre exibida em vez de baixada, e
+    o digest que sobrevive é o do arquivo reescrito, não o do que subiu.
+    """
+
+    def __init__(self, storage: S3Storage, scanner: MalwareScanner) -> None:
+        self.storage = storage
+        self.scanner = scanner
+
+    def process(self, job: VerifyCoverJob) -> VerifiedCoverResult:
+        _validate_storage_key(job.source_key)
+        _validate_storage_key(job.ready_key)
+        if (
+            job.source_bucket != self.storage.quarantine_bucket
+            or job.ready_bucket != self.storage.ready_bucket
+        ):
+            raise ScanRejected("job buckets do not match configured storage boundaries")
+        if job.source_key != cover_quarantine_key(job.seller_id, job.product_id):
+            raise ScanRejected("cover quarantine key is outside the job tenant scope")
+        if job.ready_key != cover_ready_key(job.seller_id, job.product_id, job.upload_id):
+            raise ScanRejected("cover ready key is outside the job tenant scope")
+        if not self.scanner.healthy():
+            raise ScannerUnavailable("malware scanner health check failed")
+
+        source = self.storage.head(bucket=job.source_bucket, key=job.source_key)
+        if source.size != job.expected_size:
+            raise ScanRejected("quarantine cover size differs from upload intent")
+        if source.content_type != job.declared_content_type:
+            raise ScanRejected("quarantine cover MIME differs from upload intent")
+        if not object_sha256_matches(source, job.expected_sha256_hex):
+            raise ScanRejected("quarantine cover checksum differs from upload intent")
+        # A quarentena da capa tem chave por produto, não por upload: a segunda
+        # tentativa sobrescreve a primeira em vez de acumular lixo. É este
+        # cabeçalho que diz qual das tentativas está ali agora.
+        if source.appsell_upload_id != str(job.upload_id):
+            raise ScanRejected("quarantine cover belongs to another upload attempt")
+
+        ready: StoredObject | None = None
+        try:
+            with self.storage.open_download(
+                bucket=source.bucket, key=source.key, version_id=source.version_id
+            ) as stream:
+                with spooled_cover_file(
+                    stream,
+                    expected_size=job.expected_size,
+                    expected_sha256_hex=job.expected_sha256_hex,
+                    declared_content_type=job.declared_content_type,
+                ) as cover:
+                    if not self.scanner.scan(cover.path):
+                        raise ScanRejected("scanner rejected the quarantined cover")
+                    ready = self.storage.put_cover(
+                        destination_key=job.ready_key,
+                        source_path=cover.path,
+                        byte_size=cover.byte_size,
+                        sha256_hex=cover.sha256_hex,
+                        content_type=cover.media_type,
+                    )
+                    return VerifiedCoverResult(
+                        source=source,
+                        ready=ready,
+                        media_type=cover.media_type,
+                        byte_size=cover.byte_size,
+                        sha256_hex=cover.sha256_hex,
+                        width=cover.width,
+                        height=cover.height,
+                        scanner_provider=self.scanner.provider_name,
+                    )
+        except ImageRejected as rejection:
+            raise ScanRejected(str(rejection)) from rejection
+        except Exception as processing_error:
+            if ready is None:
+                raise
+            errors = _delete_versions(self.storage, [ready])
+            if errors:
+                raise ExceptionGroup(
+                    "cover processing and ready compensation both failed",
+                    [processing_error, *errors],
+                ) from processing_error
+            raise
+
+    def discard_ready_cover(self, result: VerifiedCoverResult) -> None:
+        """Desfaz a promoção quando a gravação no banco não aconteceu."""
+        if _delete_versions(self.storage, [result.ready]):
+            raise CleanupRetryableError("ready cover cleanup must be retried")
+
+    def cleanup_source_after_commit(self, result: VerifiedCoverResult) -> None:
+        """Apaga a tentativa da quarentena, todas as versões dela.
+
+        Todas, e não a que foi lida: a chave é por produto, então tentativas
+        anteriores do mesmo produto deixaram versões atrás desta. Apagar só uma
+        deixaria o resto para sempre.
+        """
+        try:
+            self.storage.delete_all_versions(bucket=result.source.bucket, key=result.source.key)
+        except Exception as error:
+            raise CleanupRetryableError("cover quarantine cleanup must be retried") from error
+
+    def discard_abandoned_cover(self, *, seller_id: UUID, product_id: UUID) -> None:
+        """Apaga a quarentena de uma tentativa que não virou capa."""
+        try:
+            self.storage.delete_all_versions(
+                bucket=self.storage.quarantine_bucket,
+                key=cover_quarantine_key(seller_id, product_id),
+            )
+        except Exception as error:
+            raise CleanupRetryableError("cover quarantine cleanup must be retried") from error
+
+
+def cover_quarantine_key(seller_id: UUID, product_id: UUID) -> str:
+    return f"tenants/{seller_id}/quarantine/cover/{product_id}"
+
+
+def cover_ready_key(seller_id: UUID, product_id: UUID, upload_id: UUID) -> str:
+    return f"tenants/{seller_id}/covers/{product_id}/{upload_id}"
 
 
 def assert_storage_worker_ready(

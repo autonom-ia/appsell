@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 
-import { catalogPrice, productArt } from "@/lib/product-art";
+import { catalogPrice, productArt, studentCountLabel } from "@/lib/product-art";
 import { useRouter } from "next/navigation";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { autoSelectableSpace, SellerSpace, sellerRoleLabel } from "./seller-space";
@@ -18,6 +18,8 @@ interface ProductDraft {
   status: "draft" | "published" | "unpublished" | "archived";
   created_at: string;
   access_mode?: "free" | "paid";
+  cover?: { url: string; media_type: string; width: number; height: number } | null;
+  students?: number;
   unit_amount_minor?: number | null;
   currency?: string | null;
   course?: { id: string; title: string; status: "draft" | "published" | "archived" } | null;
@@ -303,12 +305,17 @@ export function ProductDraftWorkspace() {
             {catalogState === "idle" && products.length === 0 ? <p className="empty-state">Nenhum produto ainda. Crie o primeiro como rascunho privado.</p> : null}
             {catalogState === "idle" || catalogState === "loading_more" || catalogState === "page_error" ? products.map((product) => (
               <article className="draft-card" key={product.id}>
-                {/* A capa ainda não existe; a arte vem do nome, então nunca há
-                    imagem quebrada nem espaço vazio. Decorativa: quem informa é
-                    o título ao lado. */}
-                <div className="draft-card-art" aria-hidden="true" style={{ background: productArt(product.title).gradient }}>
-                  <span>{productArt(product.title).initials}</span>
-                </div>
+                {/* Quando não há capa, a arte vem do nome: nunca há imagem
+                    quebrada nem espaço vazio. Nos dois casos é decorativa —
+                    quem informa é o título logo ao lado. */}
+                {product.cover
+                  // eslint-disable-next-line @next/next/no-img-element
+                  ? <img className="draft-card-art draft-card-cover" src={product.cover.url} alt="" width={product.cover.width} height={product.cover.height} loading="lazy" decoding="async" />
+                  : (
+                    <div className="draft-card-art" aria-hidden="true" style={{ background: productArt(product.title).gradient }}>
+                      <span>{productArt(product.title).initials}</span>
+                    </div>
+                  )}
                 <div><span className={`status status-${product.status}`}>{productStatusLabel(product.status)}</span><span>@{product.slug}</span></div>
                 <h3>{product.title}</h3>
                 <p>{product.description || "Descrição ainda não informada."}</p>
@@ -321,6 +328,7 @@ export function ProductDraftWorkspace() {
                     : <span className="access-noprice">sem preço em vigor</span>}
                 </div>
                 <footer><span>Curso inicial</span><strong>{product.course?.title ?? product.course_title ?? "Curso em rascunho"}</strong></footer>
+                <p className="draft-card-students">{studentCountLabel(product.students)}</p>
                 <Link className="draft-card-action" href={`/products/${encodeURIComponent(selectedSeller.id)}/${encodeURIComponent(product.id)}`} onClick={(event) => {
                   if (!formDirty || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
                   event.preventDefault();

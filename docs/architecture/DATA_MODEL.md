@@ -290,6 +290,19 @@ final deve nomear constraints e índices explicitamente.
 4. Publication é append-only e unique `(seller, product, version)`.
 5. Ponteiro publicado referencia publication do mesmo seller/produto.
 6. Snapshot não contém secret, URL assinada ou PII de buyer.
+7. Capa do produto é tudo-ou-nada: `catalog_product` guarda chave, version id
+   do storage, tipo, digest, dimensões, tamanho e data juntos, ou tudo nulo. O
+   digest gravado é o do arquivo **saneado** — a API reescreve toda capa para
+   remover metadados, então gravar o digest do que subiu faria a linha
+   descrever algo que não é o que está guardado.
+8. `app_private.product_cover_upload` registra a intenção antes de existir
+   byte. A chave de quarentena é derivada do produto, e um índice único parcial
+   permite no máximo uma tentativa `pending` por produto: uma tentativa
+   abandonada é sobrescrita pela seguinte em vez de acumular.
+9. Contagem de alunos por produto sai de `app_private.product_student_counts`,
+   `SECURITY DEFINER`. O papel de runtime não tem `SELECT` em
+   `learning_enrollment` e não deve passar a ter; a função devolve apenas
+   números, nunca quem é o aluno.
 
 ### Buyer, entitlement e progresso
 

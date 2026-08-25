@@ -219,13 +219,13 @@ test("creates a tenant-scoped product draft in the mobile UI", async ({ page }, 
   await page.setViewportSize({ width: 360, height: 800 });
   await login(page);
   await page.goto("/products");
-  await page.getByLabel("Espaço de vendas").selectOption({ label: "Studio Mobile · @studio-mobile" });
+  await page.getByLabel("Sua loja").selectOption({ label: "Studio Mobile · @studio-mobile" });
   await expect(page.getByRole("heading", { name: "Estruture sua próxima oferta" })).toBeVisible();
   await expect(page.getByText("Publicado", { exact: true })).toBeVisible();
   await expect(page.getByText("Despublicado", { exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "Editar nova versão" })).toBeVisible();
 
-  await page.getByLabel("Espaço de vendas").focus();
+  await page.getByLabel("Sua loja").focus();
   await page.keyboard.press("Tab");
   await expect(page.getByLabel("Nome do produto")).toBeFocused();
   await page.keyboard.type("Rascunho do tenant A");
@@ -233,14 +233,14 @@ test("creates a tenant-scoped product draft in the mobile UI", async ({ page }, 
   await expect(page.getByRole("dialog", { name: "Sair desta edição?" })).toBeVisible();
   await page.getByRole("button", { name: "Continuar editando" }).click();
   await expect(page.getByLabel("Nome do produto")).toHaveValue("Rascunho do tenant A");
-  await page.getByLabel("Espaço de vendas").selectOption({ label: "Studio B · @studio-b" });
+  await page.getByLabel("Sua loja").selectOption({ label: "Studio B · @studio-b" });
   await expect(page.getByText("Você tem alterações não salvas.", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("Espaço de vendas")).toHaveValue(sellerId);
+  await expect(page.getByLabel("Sua loja")).toHaveValue(sellerId);
   await expect(page.getByLabel("Nome do produto")).toHaveValue("Rascunho do tenant A");
   await page.getByRole("button", { name: "Descartar e trocar" }).click();
-  await expect(page.getByLabel("Espaço de vendas")).toHaveValue(otherSellerId);
+  await expect(page.getByLabel("Sua loja")).toHaveValue(otherSellerId);
   await expect(page.getByLabel("Nome do produto")).toHaveValue("");
-  await page.getByLabel("Espaço de vendas").selectOption({ label: "Studio Mobile · @studio-mobile" });
+  await page.getByLabel("Sua loja").selectOption({ label: "Studio Mobile · @studio-mobile" });
 
   await page.getByLabel("Nome do produto").focus();
   await page.keyboard.type("Creator OS Mobile");
@@ -249,11 +249,11 @@ test("creates a tenant-scoped product draft in the mobile UI", async ({ page }, 
   await page.getByLabel("Nome do curso inicial").fill("Fundamentos Mobile");
   await page.getByRole("button", { name: "Criar produto e curso" }).click();
   await createStarted;
-  await expect(page.getByLabel("Espaço de vendas")).toBeDisabled();
+  await expect(page.getByLabel("Sua loja")).toBeDisabled();
   releaseCreate?.();
   await expect(page.getByRole("heading", { name: "Creator OS Mobile" })).toBeVisible();
   await expect(page.getByText("Fundamentos Mobile", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("Espaço de vendas")).toBeEnabled();
+  await expect(page.getByLabel("Sua loja")).toBeEnabled();
   await expect(page.getByLabel("Nome do produto")).toHaveValue("");
 
   const dimensions = await page.evaluate(() => ({
@@ -311,7 +311,7 @@ test("preserves loaded products when the next catalog page fails", async ({ page
   await page.goto("/products");
   // A single space needs no manual pick: the workspace opens already scoped.
   await expect(page.getByText("@studio-mobile · proprietário")).toBeVisible();
-  await expect(page.getByLabel("Espaço de vendas")).toHaveCount(0);
+  await expect(page.getByLabel("Sua loja")).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Produto da primeira página" })).toBeVisible();
   await page.getByRole("button", { name: "Carregar mais produtos" }).click();
   await expect(page.getByText("Os produtos já carregados foram preservados.")).toBeVisible();
@@ -465,10 +465,17 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   await expect(page.getByLabel("Preço (R$)")).toHaveValue("47");
   await expect(page.getByText("Preço salvo; catálogo pronto para publicar", { exact: true })).toBeVisible();
   await expect(page.getByText("A alteração do acesso é feita na etapa Publicar, depois que o rascunho estiver salvo.", { exact: true })).toBeVisible();
-  await page.getByRole("link", { name: /^Preview/ }).click();
-  await expect(page.getByRole("heading", { name: "Creator OS 2" })).toBeVisible();
-  await expect(page.getByText("Compra indisponível nesta prévia")).toBeVisible();
-  await page.getByRole("link", { name: /^Publicar/ }).click();
+  // A prévia deixou de ser etapa de navegação na Onda 3 e virou "Ver como
+  // aluno", alcançável de qualquer área. O que se afirma continua igual: o
+  // vendedor vê o produto como o aluno veria, e a compra não existe ali.
+  await page.getByRole("button", { name: "Ver como aluno" }).click();
+  const studentPreview = page.getByRole("dialog");
+  await expect(studentPreview.getByRole("heading", { name: "Creator OS 2" })).toBeVisible();
+  await expect(studentPreview.getByText("Compra indisponível nesta prévia")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(studentPreview).toBeHidden();
+  await page.getByRole("navigation", { name: "Áreas do produto" })
+    .getByRole("link", { name: /^Publicar/ }).click();
   await page.getByRole("button", { name: "Publicar catálogo primeira versão" }).click();
   await expect(page.getByRole("dialog", { name: "Colocar Creator OS 2 no ar?" })).toBeVisible();
   // Publishing now decides access. Selling stays visible but refused, with the
@@ -594,6 +601,23 @@ test("authors and reorders a tenant curriculum at 320px without drag", async ({ 
         limits: { modules_per_course: 50, lessons_per_module: 100, lessons_per_course: 500, title_bytes: 160, lesson_content_bytes: 8192 }
       }) });
       return;
+    }
+    // O painel de material complementar carrega a lista ao montar. Ele não é o
+    // objeto deste teste, mas cai neste mesmo manipulador, e sem uma resposta
+    // aqui a requisição seguia para o leitor de formulário e morria com um erro
+    // sobre content-type que não dizia nada sobre a causa.
+    if (path.endsWith("/materials") && request.method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        materials: [],
+        csrf: { create: "create-token", update: "update-token", reorder: "reorder-token", archive: "archive-token" }
+      }) });
+      return;
+    }
+    // Daqui para baixo só passa envio de formulário. Qualquer outra coisa é uma
+    // rota que a tela passou a chamar e este teste ainda não conhece: falhar
+    // dizendo isso custa menos do que um erro de content-type.
+    if (request.method() === "GET") {
+      throw new Error(`requisição não prevista por este teste: ${request.method()} ${path}`);
     }
     const posted = request.postDataBuffer();
     const form = await new Request(request.url(), {
@@ -1050,9 +1074,19 @@ test("fails publication closed for string readiness and a missing offer", async 
   await page.route(`**/api/sellers/${sellerId}/products/${productId}`, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ product: { id: productId, seller_organization_id: sellerId, slug: "produto-sem-oferta", title: "Produto sem oferta", description: "Privado", status: "draft", version: 1, draft_version: 1, course, courses: [course], offer: null, publication: null, has_unpublished_changes: true, readiness: { can_publish: false, items: ["offer_missing"] } }, csrf: { update: "csrf-update", publish: "csrf-publish" } }) }));
   await page.route(`**/api/sellers/${sellerId}/products/${productId}/preview`, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ snapshot: { product: { id: productId, title: "Produto sem oferta", slug: "produto-sem-oferta", description: "Privado", status: "draft" }, courses: [{ title: course.title }], offer: null }, versions: { product: 1, course: 1, offer: 0 } }) }));
   await login(page);
-  await page.goto(`/products/${sellerId}/${productId}?section=preview`);
-  await expect(page.getByText("Oferta ainda não configurada")).toBeVisible();
-  await page.getByRole("link", { name: /^Publicar/ }).click();
+  // A prévia deixou de ser uma etapa com endereço próprio na Onda 3: virou o
+  // diálogo "Ver como aluno", alcançável de qualquer área. O que este teste
+  // afirma continua sendo o mesmo — sem oferta, a prévia diz isso e a
+  // publicação permanece fechada.
+  await page.goto(`/products/${sellerId}/${productId}?section=produto`);
+  await page.getByRole("button", { name: "Ver como aluno" }).click();
+  const preview = page.getByRole("dialog");
+  await expect(preview.getByText("Oferta ainda não configurada")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(preview).toBeHidden();
+
+  await page.getByRole("navigation", { name: "Áreas do produto" })
+    .getByRole("link", { name: /^Publicar/ }).click();
   await expect(page.getByText("offer_missing")).toBeVisible();
   await expect(page.getByRole("button", { name: "Publicar catálogo primeira versão" })).toBeDisabled();
 });
