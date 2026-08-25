@@ -35,10 +35,17 @@ def _body() -> bytes:
     ).encode()
 
 
-def _signature(secret: bytes, endpoint: str, timestamp: str, event_id: str, body: bytes) -> str:
+def _signature(
+    secret: bytes,
+    endpoint: str,
+    timestamp: str,
+    event_id: str,
+    body: bytes,
+    protocol: str = "appsell.webhook.generic-hmac.v1",
+) -> str:
     digest = hashlib.sha256(body).hexdigest()
     canonical = (
-        f"appsell.webhook.generic-hmac.v1\n{endpoint}\n{timestamp}\n{event_id}\n{digest}"
+        f"{protocol}\n{endpoint}\n{timestamp}\n{event_id}\n{digest}"
     ).encode()
     return "v1=" + hmac.new(secret, canonical, hashlib.sha256).hexdigest()
 
@@ -63,6 +70,33 @@ def test_verifies_signature_before_parsing_and_preserves_raw_hash() -> None:
     event = parse_generic_hmac_v1(body)
     assert event.event_type == "purchase.approved"
     assert event.external_product_reference == "course-codex"
+
+
+def test_verifies_external_checkout_signature_protocol() -> None:
+    secret = bytes([9]) * 32
+    body = _body()
+    signature = _signature(
+        secret,
+        "endpoint-key",
+        "1784012400",
+        "financial:external-checkout:purchase-001",
+        body,
+        protocol="external-checkout.webhook.generic-hmac.v1",
+    )
+    assert (
+        verify_generic_hmac_v1(
+            secret=secret,
+            endpoint_key="endpoint-key",
+            timestamp="1784012400",
+            event_id="financial:external-checkout:purchase-001",
+            signature=signature,
+            body=body,
+            now=1784012400,
+            max_clock_skew_seconds=300,
+            protocol="external-checkout.webhook.generic-hmac.v1",
+        )
+        == hashlib.sha256(body).hexdigest()
+    )
 
 
 @pytest.mark.parametrize("mutation", [b" ", b"\n", "ç".encode()])

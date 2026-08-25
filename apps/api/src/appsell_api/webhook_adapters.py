@@ -11,6 +11,9 @@ _EVENT_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _REFERENCE = re.compile(r"^[^\x00-\x1f\x7f]{1,255}$")
 _SIGNATURE = re.compile(r"^v1=([0-9a-f]{64})$")
 _EVENT_TYPES = frozenset({"purchase.approved", "purchase.refunded", "subscription.cancelled"})
+_LEGACY_PROTOCOL = "appsell.webhook.generic-hmac.v1"
+_EXTERNAL_CHECKOUT_PROTOCOL = "external-checkout.webhook.generic-hmac.v1"
+_SUPPORTED_PROTOCOLS = frozenset({_LEGACY_PROTOCOL, _EXTERNAL_CHECKOUT_PROTOCOL})
 
 
 class WebhookRejectedError(ValueError):
@@ -42,8 +45,9 @@ def verify_generic_hmac_v1(
     body: bytes,
     now: int,
     max_clock_skew_seconds: int,
+    protocol: str = _LEGACY_PROTOCOL,
 ) -> str:
-    if len(secret) != 32 or _EVENT_ID.fullmatch(event_id) is None:
+    if len(secret) != 32 or protocol not in _SUPPORTED_PROTOCOLS or _EVENT_ID.fullmatch(event_id) is None:
         raise WebhookRejectedError("webhook_rejected")
     try:
         timestamp_value = int(timestamp)
@@ -61,7 +65,7 @@ def verify_generic_hmac_v1(
         raise WebhookRejectedError("webhook_rejected")
     payload_hash = hashlib.sha256(body).hexdigest()
     canonical = (
-        f"appsell.webhook.generic-hmac.v1\n{endpoint_key}\n{timestamp}\n{event_id}\n{payload_hash}"
+        f"{protocol}\n{endpoint_key}\n{timestamp}\n{event_id}\n{payload_hash}"
     ).encode()
     expected = hmac.new(secret, canonical, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(match.group(1), expected):

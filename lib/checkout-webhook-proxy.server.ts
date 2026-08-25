@@ -9,19 +9,37 @@ const TIMESTAMP = /^(0|[1-9][0-9]{0,10})$/;
 const SIGNATURE = /^v1=[0-9a-f]{64}$/;
 
 export interface CheckoutWebhookHeaders {
+  protocol: "legacy" | "external_checkout";
   eventId: string;
   timestamp: string;
   signature: string;
 }
 
 export function parseCheckoutWebhookHeaders(headers: Headers): CheckoutWebhookHeaders | null {
+  const external = {
+    eventId: headers.get("x-external-checkout-webhook-event-id"),
+    timestamp: headers.get("x-external-checkout-webhook-timestamp"),
+    signature: headers.get("x-external-checkout-webhook-signature")
+  };
+  if (external.eventId !== null || external.timestamp !== null || external.signature !== null) {
+    if (!EVENT_ID.test(external.eventId ?? "") || !TIMESTAMP.test(external.timestamp ?? "") || !SIGNATURE.test(external.signature ?? "")) {
+      return null;
+    }
+    return {
+      protocol: "external_checkout",
+      eventId: external.eventId ?? "",
+      timestamp: external.timestamp ?? "",
+      signature: external.signature ?? ""
+    };
+  }
+
   const eventId = headers.get("x-appsell-webhook-event-id") ?? "";
   const timestamp = headers.get("x-appsell-webhook-timestamp") ?? "";
   const signature = headers.get("x-appsell-webhook-signature") ?? "";
   if (!EVENT_ID.test(eventId) || !TIMESTAMP.test(timestamp) || !SIGNATURE.test(signature)) {
     return null;
   }
-  return { eventId, timestamp, signature };
+  return { protocol: "legacy", eventId, timestamp, signature };
 }
 
 export function validCheckoutWebhookEndpointKey(value: string) {
@@ -53,6 +71,17 @@ export async function proxyCheckoutWebhook(
   }, config.signing);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5_000);
+  const providerHeaders: Record<string, string> = webhookHeaders.protocol === "external_checkout"
+    ? {
+        "x-external-checkout-webhook-event-id": webhookHeaders.eventId,
+        "x-external-checkout-webhook-timestamp": webhookHeaders.timestamp,
+        "x-external-checkout-webhook-signature": webhookHeaders.signature
+      }
+    : {
+        "x-appsell-webhook-event-id": webhookHeaders.eventId,
+        "x-appsell-webhook-timestamp": webhookHeaders.timestamp,
+        "x-appsell-webhook-signature": webhookHeaders.signature
+      };
   try {
     const response = await fetch(new URL(path, config.apiOrigin), {
       method: "POST",
@@ -61,9 +90,7 @@ export async function proxyCheckoutWebhook(
         "content-type": "application/json",
         "x-appsell-internal-envelope": token,
         "x-appsell-service-credential": config.serviceCredentialEncoded,
-        "x-appsell-webhook-event-id": webhookHeaders.eventId,
-        "x-appsell-webhook-timestamp": webhookHeaders.timestamp,
-        "x-appsell-webhook-signature": webhookHeaders.signature
+        ...providerHeaders
       },
       cache: "no-store",
       signal: controller.signal

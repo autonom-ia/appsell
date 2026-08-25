@@ -13,7 +13,25 @@ reconciliação, staging ou produção neste slice.
 ## Contrato público
 
 `POST /api/webhooks/checkouts/{endpointKey}` aceita `application/json` de até
-64 KiB e exige:
+64 KiB e exige um dos contratos de assinatura abaixo.
+
+Contrato atual para checkout externo hospedado no Financial:
+
+- `x-external-checkout-webhook-event-id`;
+- `x-external-checkout-webhook-timestamp` em epoch seconds;
+- `x-external-checkout-webhook-signature: v1=<hex sha256>`.
+
+O HMAC usa bytes exatos do body e a forma canônica:
+
+```text
+external-checkout.webhook.generic-hmac.v1
+{endpoint_key}
+{timestamp}
+{event_id}
+{payload_sha256}
+```
+
+Contrato legado, preservado para self-emit e compatibilidade:
 
 - `x-appsell-webhook-event-id`;
 - `x-appsell-webhook-timestamp` em epoch seconds;
