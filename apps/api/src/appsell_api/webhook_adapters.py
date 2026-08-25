@@ -110,9 +110,7 @@ def parse_generic_hmac_v1(body: bytes) -> NormalizedCheckoutEvent:
     if is_v2:
         buyer_email = payload["buyer_email"]
         buyer_identity_sub = payload["buyer_identity_sub"]
-        if not _valid_buyer_email(buyer_email) or not _valid_buyer_sub(
-            buyer_identity_sub
-        ):
+        if not _valid_buyer_email(buyer_email) or not _valid_buyer_sub(buyer_identity_sub):
             raise WebhookRejectedError("webhook_payload_invalid")
     try:
         occurred_at = datetime.fromisoformat(occurred.replace("Z", "+00:00"))
