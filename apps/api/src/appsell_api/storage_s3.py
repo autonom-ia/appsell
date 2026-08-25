@@ -16,6 +16,13 @@ from botocore import UNSIGNED  # type: ignore[import-untyped]
 from botocore.client import Config  # type: ignore[import-untyped]
 from botocore.exceptions import BotoCoreError, ClientError  # type: ignore[import-untyped]
 
+from .asset_media import (
+    PAGE_IMAGE_MEDIA_TYPE,
+    SUPPORTED_MEDIA,
+    extension_matches,
+    is_document,
+)
+from .asset_media import max_bytes as asset_max_bytes
 from .config import Settings
 
 
@@ -108,10 +115,7 @@ class S3Storage:
         byte_size: int,
         upload_request_id: str,
     ) -> PresignedRequest:
-        maximum = {
-            "application/pdf": 10 * 1024 * 1024,
-            "video/mp4": 100 * 1024 * 1024,
-        }.get(content_type, 0)
+        maximum = asset_max_bytes(content_type)
         if byte_size < 1 or byte_size > maximum:
             raise ValueError("upload byte_size is outside the allowed range")
         if not upload_request_id or len(upload_request_id) > 128:
@@ -266,7 +270,12 @@ class S3Storage:
         file_name: str,
     ) -> StoredObject:
         checksum = _checksum_b64(sha256_hex)
-        disposition = _asset_content_disposition(file_name, content_type, "inline")
+        # A document is stored to be downloaded. Asking for inline here is what
+        # the delivery guard refuses, so promoting one would crash rather than
+        # store.
+        disposition = _asset_content_disposition(
+            file_name, content_type, "attachment" if is_document(content_type) else "inline"
+        )
         version_id = ""
         try:
             with source_path.open("rb") as source:
@@ -596,11 +605,13 @@ def _asset_content_disposition(
         or "/" in file_name
         or "\\" in file_name
         or any(ord(character) < 32 or ord(character) == 127 for character in file_name)
-        or (media_type == "application/pdf" and not file_name.lower().endswith(".pdf"))
-        or (media_type == "video/mp4" and not file_name.lower().endswith(".mp4"))
-        or (media_type == "image/png" and not file_name.lower().endswith(".png"))
-        or media_type not in {"application/pdf", "video/mp4", "image/png"}
+        or (media_type != PAGE_IMAGE_MEDIA_TYPE and not extension_matches(media_type, file_name))
+        or (media_type == PAGE_IMAGE_MEDIA_TYPE and not file_name.lower().endswith(".png"))
+        or (media_type not in SUPPORTED_MEDIA and media_type != PAGE_IMAGE_MEDIA_TYPE)
         or disposition not in {"inline", "attachment"}
+        # A document is never opened inside the page. Asking for it inline is a
+        # programming mistake, and answering it would be the vulnerability.
+        or (is_document(media_type) and disposition != "attachment")
     ):
         raise ValueError("asset file_name or media_type is invalid")
     return f"{disposition}; filename*=UTF-8''{quote(file_name, safe='')}"

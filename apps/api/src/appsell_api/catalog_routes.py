@@ -25,6 +25,7 @@ _CURRENCY = re.compile(r"^[A-Z]{3}$")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _TOKEN_PREFIX = re.compile(r"[0-9a-f]{8}")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+_VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _MAX_SAFE_INTEGER = (1 << 53) - 1
 # R$ 999,999,999.99 in minor units (centavos); mirrors the offer table CHECK.
 _MAX_UNIT_AMOUNT_MINOR = 99_999_999_999
@@ -301,6 +302,67 @@ class CurriculumMutationBody(BaseModel):
     @classmethod
     def validate_idempotency_key(cls, value: str) -> str:
         return _canonical_uuid(value, "invalid idempotency key")
+
+
+class LessonMaterialBody(CurriculumMutationBody):
+    """An external link or an embedded video attached to a lesson.
+
+    An embed is a provider and an identifier, never markup: refusing anything
+    else here means the browser is never handed something to interpret. A link is
+    accepted only over https and is never fetched by this service.
+    """
+
+    kind: Literal["external", "embed"]
+    title: str
+    url: str | None = None
+    provider: Literal["youtube", "vimeo"] | None = None
+    video_id: str | None = None
+
+    @field_validator("title")
+    @classmethod
+    def validate_material_title(cls, value: str) -> str:
+        if (
+            value != value.strip()
+            or not 2 <= len(value.encode("utf-8")) <= 160
+            or _contains_control(value)
+        ):
+            raise ValueError("invalid material title")
+        return value
+
+    @field_validator("url")
+    @classmethod
+    def validate_material_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if (
+            not value.startswith("https://")
+            or not 11 < len(value) <= 2000
+            or _contains_control(value)
+            or any(character in value for character in ' <>"')
+        ):
+            raise ValueError("invalid material url")
+        return value
+
+    @field_validator("video_id")
+    @classmethod
+    def validate_material_video_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if _VIDEO_ID.fullmatch(value) is None:
+            raise ValueError("invalid material video id")
+        return value
+
+    @model_validator(mode="after")
+    def validate_material_shape(self) -> Self:
+        if self.kind == "external" and (
+            self.url is None or self.provider is not None or self.video_id is not None
+        ):
+            raise ValueError("an external material carries only a url")
+        if self.kind == "embed" and (
+            self.url is not None or self.provider is None or self.video_id is None
+        ):
+            raise ValueError("an embedded material carries only a provider and an id")
+        return self
 
 
 class ModuleMutationBody(CurriculumMutationBody):
@@ -1281,6 +1343,160 @@ def _access_link_payload(row: Any) -> dict[str, Any]:
 
 def _isoformat(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
+
+
+@router.post(
+    "/me/sellers/{seller_id}/products/{product_id}/courses/{course_id}"
+    "/modules/{module_id}/lessons/{lesson_id}/materials"
+)
+async def create_lesson_material(
+    request: Request,
+    seller_id: UUID,
+    product_id: UUID,
+    course_id: UUID,
+    module_id: UUID,
+    lesson_id: UUID,
+) -> JSONResponse:
+    auth, internal = await _authenticate(request, "catalog.curriculum.create")
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(LessonMaterialBody, internal)
+    envelope = internal.envelope
+    row = await _execute_curriculum(
+        auth,
+        internal,
+        "select material_id, course_version, position "
+        "from app_private.create_lesson_material_link("
+        ":identity_user_id, :seller_id, :product_id, :course_id, :module_id, :lesson_id, "
+        ":kind, :title, :url, :provider, :video_id, :expected_course_version, "
+        ":idempotency_key, :body_sha256, :request_id)",
+        {
+            "identity_user_id": envelope.identity.user_id,
+            "seller_id": seller_id,
+            "product_id": product_id,
+            "course_id": course_id,
+            "module_id": module_id,
+            "lesson_id": lesson_id,
+            "kind": body.kind,
+            "title": body.title,
+            "url": body.url,
+            "provider": body.provider,
+            "video_id": body.video_id,
+            "expected_course_version": body.expected_course_version,
+            "idempotency_key": UUID(body.idempotency_key),
+            "body_sha256": envelope.body_sha256,
+            "request_id": envelope.request_id,
+        },
+    )
+    return JSONResponse(
+        status_code=status.HTTP_201_CREATED,
+        content={
+            "material_id": str(row["material_id"]),
+            "course_version": row["course_version"],
+            "position": row["position"],
+        },
+    )
+
+
+@router.get(
+    "/me/sellers/{seller_id}/products/{product_id}/courses/{course_id}"
+    "/modules/{module_id}/lessons/{lesson_id}/materials"
+)
+async def list_lesson_materials(
+    request: Request,
+    seller_id: UUID,
+    product_id: UUID,
+    course_id: UUID,
+    module_id: UUID,
+    lesson_id: UUID,
+) -> dict[str, Any]:
+    auth, internal = await _authenticate(request, "catalog.curriculum.read")
+    await _require_seller(internal, seller_id)
+    envelope = internal.envelope
+    try:
+        async with auth.domain_session(envelope) as session:
+            rows = (
+                (
+                    await session.execute(
+                        text(
+                            "select material_id, kind, title, url, provider, video_id, position "
+                            "from app_private.list_lesson_material_links("
+                            ":identity_user_id, :seller_id, :product_id, :course_id, "
+                            ":module_id, :lesson_id)"
+                        ),
+                        {
+                            "identity_user_id": envelope.identity.user_id,
+                            "seller_id": seller_id,
+                            "product_id": product_id,
+                            "course_id": course_id,
+                            "module_id": module_id,
+                            "lesson_id": lesson_id,
+                        },
+                    )
+                )
+                .mappings()
+                .all()
+            )
+    except DBAPIError as error:
+        raise _domain_error(error) from error
+    return {
+        "materials": [
+            {
+                "material_id": str(row["material_id"]),
+                "kind": row["kind"],
+                "title": row["title"],
+                "url": row["url"],
+                "provider": row["provider"],
+                "video_id": row["video_id"],
+                "position": row["position"],
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.post(
+    "/me/sellers/{seller_id}/products/{product_id}/courses/{course_id}"
+    "/modules/{module_id}/lessons/{lesson_id}/materials/{material_id}/archive"
+)
+async def archive_lesson_material(
+    request: Request,
+    seller_id: UUID,
+    product_id: UUID,
+    course_id: UUID,
+    module_id: UUID,
+    lesson_id: UUID,
+    material_id: UUID,
+) -> dict[str, Any]:
+    auth, internal = await _authenticate(request, "catalog.curriculum.archive")
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(CurriculumMutationBody, internal)
+    envelope = internal.envelope
+    row = await _execute_curriculum(
+        auth,
+        internal,
+        "select material_id, course_version, changed "
+        "from app_private.archive_lesson_material_link("
+        ":identity_user_id, :seller_id, :product_id, :course_id, :module_id, :lesson_id, "
+        ":material_id, :expected_course_version, :idempotency_key, :body_sha256, :request_id)",
+        {
+            "identity_user_id": envelope.identity.user_id,
+            "seller_id": seller_id,
+            "product_id": product_id,
+            "course_id": course_id,
+            "module_id": module_id,
+            "lesson_id": lesson_id,
+            "material_id": material_id,
+            "expected_course_version": body.expected_course_version,
+            "idempotency_key": UUID(body.idempotency_key),
+            "body_sha256": envelope.body_sha256,
+            "request_id": envelope.request_id,
+        },
+    )
+    return {
+        "material_id": str(row["material_id"]),
+        "course_version": row["course_version"],
+        "changed": bool(row["changed"]),
+    }
 
 
 async def _execute_curriculum(

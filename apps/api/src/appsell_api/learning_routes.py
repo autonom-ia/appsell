@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
+from .asset_media import is_document
 from .catalog_routes import _domain_error
 from .config import Settings
 from .internal_requests import AuthenticatedInternalRequest, InternalRequestAuthenticator
@@ -364,6 +365,21 @@ async def authorize_asset(request: Request, entitlement_id: UUID, asset_id: UUID
             )
     except DBAPIError as error:
         raise _domain_error(error) from error
+    # A document is downloaded, never opened in the page, so this route hands
+    # back no inline locator for one. The download route is the only way in,
+    # and it is gated on the seller having marked the material downloadable.
+    if is_document(row["media_type"]):
+        return {
+            "asset": {
+                "id": str(row["asset_id"]),
+                "delivery": "download_only",
+                "file_name": row["file_name"],
+                "title": row["title"],
+                "media_type": row["media_type"],
+                "byte_size": row["byte_size"],
+                "sha256": row["sha256"],
+            }
+        }
     if row["media_type"] == "application/pdf":
         return {
             "asset": {

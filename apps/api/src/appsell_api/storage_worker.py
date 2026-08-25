@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Literal, Protocol
 from uuid import UUID
 
+from .asset_media import is_document
+from .document_verifier import spooled_document_file
 from .pdf_derivatives import prepared_pdf_file
 from .pdf_verifier import PDF_MIME, spooled_pdf_file
 from .storage_s3 import S3Storage, StorageCapabilityError, StoredObject, object_sha256_matches
@@ -214,6 +216,8 @@ class PdfStorageWorker:
 
         if job.declared_content_type == VIDEO_MP4_MIME:
             return self._process_video(job, source)
+        if is_document(job.declared_content_type):
+            return self._process_document(job, source)
         if job.declared_content_type != PDF_MIME:
             raise ScanRejected("job MIME is unsupported")
 
@@ -298,6 +302,46 @@ class PdfStorageWorker:
                     [processing_error, *cleanup_errors],
                 ) from processing_error
             raise
+
+    def _process_document(self, job: VerifyPdfJob, source: StoredObject) -> VerifiedAssetResult:
+        """Promote a document only after proving it is what it claims to be.
+
+        The bytes are stored unchanged, exactly as the video branch does, because
+        a document is handed over as a download and never rendered. What must not
+        be trusted is the extension: the verifier opens the container and refuses
+        a macro project whatever the file is called.
+        """
+        with self.storage.open_download(
+            bucket=source.bucket, key=source.key, version_id=source.version_id
+        ) as stream:
+            with spooled_document_file(
+                stream,
+                expected_size=job.expected_size,
+                expected_sha256_hex=job.expected_sha256_hex,
+                declared_content_type=job.declared_content_type,
+            ) as document:
+                if not self.scanner.scan(document.path):
+                    raise ScanRejected("scanner rejected the quarantined document")
+                ready = self.storage.put_verified(
+                    destination_bucket=job.ready_bucket,
+                    destination_key=job.ready_key,
+                    source_path=document.path,
+                    byte_size=document.byte_size,
+                    sha256_hex=document.sha256_hex,
+                    content_type=job.declared_content_type,
+                    upload_id=str(job.upload_id),
+                    file_name=job.file_name,
+                )
+                return VerifiedAssetResult(
+                    source=source,
+                    ready=ready,
+                    source_byte_size=document.byte_size,
+                    source_sha256_hex=document.sha256_hex,
+                    ready_byte_size=document.byte_size,
+                    ready_sha256_hex=document.sha256_hex,
+                    pdf_page_count=0,
+                    scanner_provider=self.scanner.provider_name,
+                )
 
     def _process_video(self, job: VerifyPdfJob, source: StoredObject) -> VerifiedAssetResult:
         ready: StoredObject | None = None
