@@ -53,7 +53,6 @@ class ClassifyPathsTests(unittest.TestCase):
 
         self.assertTrue(route["api"])
         self.assertTrue(route["storage"])
-        self.assertFalse(route["capacity"])
 
     def test_openbao_change_covers_real_suite_and_node_inputs(self) -> None:
         route = classify_paths(
@@ -64,10 +63,9 @@ class ClassifyPathsTests(unittest.TestCase):
         self.assertTrue(route["openbao"])
         self.assertTrue(route["image_web"])
 
-    def test_capacity_change_covers_capacity_and_storage_it_subsumes(self) -> None:
+    def test_capacity_scoped_change_still_covers_storage(self) -> None:
         route = classify_paths(["lib/capacity-postgres-sampler.ts"])
 
-        self.assertTrue(route["capacity"])
         self.assertTrue(route["storage"])
 
     def test_compose_change_fails_safe_to_full_certification(self) -> None:
@@ -81,7 +79,6 @@ class ClassifyPathsTests(unittest.TestCase):
             "postgres",
             "storage",
             "openbao",
-            "capacity",
             "image_web",
             "image_api",
             "image_bootstrap",
@@ -108,7 +105,6 @@ class ClassifyPathsTests(unittest.TestCase):
             "postgres",
             "storage",
             "openbao",
-            "capacity",
             "image_web",
             "image_api",
             "image_bootstrap",
@@ -132,13 +128,12 @@ class ClassifyPathsTests(unittest.TestCase):
         self.assertFalse(route["web"])
         self.assertFalse(route["api"])
 
-    def test_env_contract_routes_web_and_api_without_capacity(self) -> None:
+    def test_env_contract_routes_web_and_api(self) -> None:
         route = classify_paths([".env.example"])
 
         self.assertTrue(route["web"])
         self.assertTrue(route["api"])
         self.assertTrue(route["postgres"])
-        self.assertFalse(route["capacity"])
         self.assertFalse(route["full"])
 
     def test_postgres_script_routes_postgres_without_unknown_fallback(self) -> None:
@@ -248,13 +243,3 @@ class GitDiffTests(unittest.TestCase):
         self.assertTrue(route["full"])
         self.assertTrue(route["routing_error"])
 
-    def test_schedule_routes_capacity_without_diff(self) -> None:
-        route = route_for_event(event="schedule", repository=Path.cwd())
-
-        self.assertTrue(route["capacity"])
-        self.assertTrue(route["storage"])
-        self.assertFalse(route["openbao"])
-
-
-if __name__ == "__main__":
-    unittest.main()

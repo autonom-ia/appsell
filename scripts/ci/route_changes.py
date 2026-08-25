@@ -16,7 +16,6 @@ SCOPES = (
     "postgres",
     "storage",
     "openbao",
-    "capacity",
     "image_web",
     "image_api",
     "image_bootstrap",
@@ -72,17 +71,14 @@ OPENBAO_PATTERNS = (
     "tests/token-vault*",
     "scripts/test-openbao-transit.sh",
 )
-CAPACITY_PATTERNS = (
+STORAGE_PATTERNS = (
+    "apps/api/migrations/**",
     "apps/api/src/appsell_api/capacity_*",
     "apps/api/tests/test_capacity_*",
-    "apps/api/tests/test_db_pool_budget.py",
     "lib/capacity-*",
     "tests/*capacity*",
     "scripts/*capacity*",
     "scripts/run_with_rss.py",
-)
-STORAGE_PATTERNS = (
-    "apps/api/migrations/**",
     "apps/api/src/appsell_api/asset_*.py",
     "apps/api/src/appsell_api/learning_pdf.py",
     "apps/api/src/appsell_api/pdf_*.py",
@@ -243,11 +239,6 @@ def classify_paths(paths: Iterable[str]) -> dict[str, object]:
                 route["image_bootstrap"] = True
             matched = True
 
-        if _matches(path, CAPACITY_PATTERNS):
-            route["capacity"] = True
-            route["storage"] = True
-            matched = True
-
         if path == ".dockerignore":
             route["image_web"] = True
             route["image_api"] = True
@@ -362,10 +353,6 @@ def route_for_event(
     base: str | None = None,
     head: str | None = None,
 ) -> dict[str, object]:
-    if event == "schedule":
-        route = classify_paths(["scripts/test-capacity-100-tenants.sh"])
-        route["event"] = event
-        return route
     if event == "workflow_dispatch":
         route = _full_route(fallback=False)
         route["event"] = event
