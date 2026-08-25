@@ -242,3 +242,4 @@ class GitDiffTests(unittest.TestCase):
         self.assertTrue(route["fallback"])
         self.assertTrue(route["full"])
         self.assertTrue(route["routing_error"])
+

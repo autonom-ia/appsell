@@ -126,7 +126,11 @@ services:
       - appsell_postgres_data:/var/lib/postgresql/data
       - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d appsell"]
+      # The entrypoint runs a temporary socket-only server while it applies
+      # the init scripts, then shuts it down and starts the real one. Asking
+      # over TCP is what tells the two apart, so --wait stops handing back a
+      # server that is about to go away.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d appsell"]
       interval: 2s
       timeout: 2s
       retries: 30
