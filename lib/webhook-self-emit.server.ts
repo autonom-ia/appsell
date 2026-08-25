@@ -29,6 +29,7 @@ export type CheckoutApprovedPayload = {
 };
 
 export interface SelfEmitWebhookHeaders {
+  protocol: "legacy";
   eventId: string;
   timestamp: string;
   signature: string;
@@ -128,6 +129,5 @@ export function signSelfEmitWebhook(input: {
     payloadHash
   ].join("\n");
   const signature = createHmac("sha256", input.secret).update(canonical).digest("hex");
-  return { eventId: input.eventId, timestamp, signature: `v1=${signature}` };
+  return { protocol: "legacy", eventId: input.eventId, timestamp, signature: `v1=${signature}` };
 }
-

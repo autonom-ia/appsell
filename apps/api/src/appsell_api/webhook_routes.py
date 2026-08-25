@@ -55,9 +55,7 @@ async def accept_checkout_webhook(endpoint_key: str, request: Request) -> dict[s
             secret = secrets.resolve(str(resolution["secret_reference"]))
             if secret is None:
                 raise _unavailable()
-            event_id = request.headers.get("x-appsell-webhook-event-id", "")
-            timestamp_header = request.headers.get("x-appsell-webhook-timestamp", "")
-            signature = request.headers.get("x-appsell-webhook-signature", "")
+            protocol, event_id, timestamp_header, signature = _provider_signature(request)
             payload_hash = verify_generic_hmac_v1(
                 secret=secret,
                 endpoint_key=endpoint_key,
@@ -67,6 +65,7 @@ async def accept_checkout_webhook(endpoint_key: str, request: Request) -> dict[s
                 body=internal.body,
                 now=int(time.time()),
                 max_clock_skew_seconds=int(resolution["max_clock_skew_seconds"]),
+                protocol=protocol,
             )
             if resolution["adapter"] != "generic_hmac_v1":
                 raise _unavailable()
@@ -133,6 +132,29 @@ async def accept_checkout_webhook(endpoint_key: str, request: Request) -> dict[s
 
 def _sha256(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _provider_signature(request: Request) -> tuple[str, str, str, str]:
+    external_event_id = request.headers.get("x-external-checkout-webhook-event-id")
+    external_timestamp = request.headers.get("x-external-checkout-webhook-timestamp")
+    external_signature = request.headers.get("x-external-checkout-webhook-signature")
+    if (
+        external_event_id is not None
+        or external_timestamp is not None
+        or external_signature is not None
+    ):
+        return (
+            "external-checkout.webhook.generic-hmac.v1",
+            external_event_id or "",
+            external_timestamp or "",
+            external_signature or "",
+        )
+    return (
+        "appsell.webhook.generic-hmac.v1",
+        request.headers.get("x-appsell-webhook-event-id", ""),
+        request.headers.get("x-appsell-webhook-timestamp", ""),
+        request.headers.get("x-appsell-webhook-signature", ""),
+    )
 
 
 def _rejected() -> HTTPException:

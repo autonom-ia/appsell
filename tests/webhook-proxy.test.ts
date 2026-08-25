@@ -43,6 +43,7 @@ describe("checkout webhook proxy", () => {
       "x-appsell-webhook-signature": `v1=${"a".repeat(64)}`
     });
     expect(parseCheckoutWebhookHeaders(valid)).toEqual({
+      protocol: "legacy",
       eventId: "evt-2026:001",
       timestamp: "1784000000",
       signature: `v1=${"a".repeat(64)}`
@@ -51,14 +52,29 @@ describe("checkout webhook proxy", () => {
     expect(parseCheckoutWebhookHeaders(valid)).toBeNull();
   });
 
-  it("forwards unchanged bytes with a body-bound internal envelope", async () => {
+  it("accepts the generic external checkout provider headers", () => {
+    const valid = new Headers({
+      "x-external-checkout-webhook-event-id": "financial:external-checkout:order-1",
+      "x-external-checkout-webhook-timestamp": "1784000000",
+      "x-external-checkout-webhook-signature": `v1=${"c".repeat(64)}`
+    });
+    expect(parseCheckoutWebhookHeaders(valid)).toEqual({
+      protocol: "external_checkout",
+      eventId: "financial:external-checkout:order-1",
+      timestamp: "1784000000",
+      signature: `v1=${"c".repeat(64)}`
+    });
+  });
+
+  it("forwards generic provider headers with a body-bound internal envelope", async () => {
     const rawBody = Buffer.from('{ "type": "purchase.approved", "unicode": "olá" }\n');
     const fetchMock = vi.fn(async (_input: URL | RequestInfo, init?: RequestInit) => {
       const headers = new Headers(init?.headers);
       expect(Buffer.from(init?.body as Buffer)).toEqual(rawBody);
-      expect(headers.get("x-appsell-webhook-event-id")).toBe("evt-001");
-      expect(headers.get("x-appsell-webhook-timestamp")).toBe("1784000000");
-      expect(headers.get("x-appsell-webhook-signature")).toBe(`v1=${"b".repeat(64)}`);
+      expect(headers.get("x-external-checkout-webhook-event-id")).toBe("evt-001");
+      expect(headers.get("x-external-checkout-webhook-timestamp")).toBe("1784000000");
+      expect(headers.get("x-external-checkout-webhook-signature")).toBe(`v1=${"b".repeat(64)}`);
+      expect(headers.get("x-appsell-webhook-event-id")).toBeNull();
       const token = headers.get("x-appsell-internal-envelope")!;
       const encodedPayload = token.split(".")[1]!;
       const payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8"));
@@ -70,6 +86,7 @@ describe("checkout webhook proxy", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(proxyCheckoutWebhook(endpointKey, rawBody, {
+      protocol: "external_checkout",
       eventId: "evt-001",
       timestamp: "1784000000",
       signature: `v1=${"b".repeat(64)}`
