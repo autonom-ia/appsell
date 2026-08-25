@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import struct
 import tempfile
 import zipfile
 from collections.abc import Iterator
@@ -51,6 +52,12 @@ _MAX_ENTRIES: Final = 4_096
 _MAX_EXPANDED_BYTES: Final = 256 * 1024 * 1024
 _TEXT_MEDIA: Final = ("text/plain", "text/markdown", "text/csv", "application/json")
 _CHUNK: Final = 256 * 1024
+_LOCAL_HEADER: Final = b"PK\x03\x04"
+_DESCRIPTOR: Final = b"PK\x07\x08"
+_EOCD: Final = b"PK\x05\x06"
+_ZIP64_LOCATOR: Final = b"PK\x06\x07"
+_EOCD_SIZE: Final = 22
+_LOCAL_HEADER_SIZE: Final = 30
 
 
 @dataclass(frozen=True)
@@ -156,9 +163,54 @@ def _validate_ooxml(path: Path, media_type: str) -> None:
             manifest = container.read(_CONTENT_TYPES_PART).decode("utf-8", "replace").lower()
             if any(marker in manifest for marker in _MACRO_MARKERS):
                 raise DocumentRejected("office document declares a macro part")
+            _validate_layout(path, entries)
             _measure_expansion(container, entries)
     except zipfile.BadZipFile as error:
         raise DocumentRejected("office document container is unreadable") from error
+
+
+def _validate_layout(path: Path, entries: list[zipfile.ZipInfo]) -> None:
+    """Refuse a container holding bytes its own index does not describe.
+
+    Every guard above reads the archive through its central directory, which is
+    a table of contents the author writes. A local header planted before that
+    table, with no matching row in it, is invisible to all of them: the file
+    passes every check and is then stored unchanged, carrying whatever was
+    hidden. The defence is to stop trusting the table as a description of the
+    file and verify it against the bytes: entries contiguous from the first one,
+    ending exactly where the directory begins, and nothing after the closing
+    record.
+    """
+    payload = path.read_bytes()
+    size = len(payload)
+    end = payload.rfind(_EOCD)
+    if end < 0 or end + _EOCD_SIZE > size:
+        raise DocumentRejected("office document has no closing record")
+    if payload.rfind(_ZIP64_LOCATOR) >= 0:
+        # The 64 bit layout carries a second directory this check does not model,
+        # and no support material within the size ceilings needs it.
+        raise DocumentRejected("office document uses an unsupported container layout")
+    directory_size, directory_offset, comment_length = struct.unpack_from("<IIH", payload, end + 12)
+    if end + _EOCD_SIZE + comment_length != size:
+        raise DocumentRejected("office document carries bytes after its closing record")
+    if directory_offset + directory_size != end:
+        raise DocumentRejected("office document index does not meet its closing record")
+
+    cursor = 0
+    for entry in sorted(entries, key=lambda item: item.header_offset):
+        if entry.header_offset != cursor:
+            raise DocumentRejected("office document hides bytes between its parts")
+        if payload[cursor : cursor + 4] != _LOCAL_HEADER:
+            raise DocumentRejected("office document part header is missing")
+        (flags,) = struct.unpack_from("<H", payload, cursor + 6)
+        name_length, extra_length = struct.unpack_from("<HH", payload, cursor + 26)
+        cursor += _LOCAL_HEADER_SIZE + name_length + extra_length + entry.compress_size
+        if flags & 0x08:
+            if payload[cursor : cursor + 4] == _DESCRIPTOR:
+                cursor += 4
+            cursor += 12
+    if cursor != directory_offset:
+        raise DocumentRejected("office document hides bytes before its index")
 
 
 def _measure_expansion(container: zipfile.ZipFile, entries: list[zipfile.ZipInfo]) -> None:

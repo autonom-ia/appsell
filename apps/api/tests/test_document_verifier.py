@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import struct
 import zipfile
 from typing import Any
 
@@ -175,3 +176,65 @@ def test_the_catalogue_agrees_with_itself() -> None:
     assert extension_matches(XLSX_MEDIA_TYPE, "planilha.XLSX")
     assert not extension_matches(XLSX_MEDIA_TYPE, "planilha.docx")
     assert spec_for("application/vnd.ms-word.document.macroEnabled.12") is None
+
+
+def orphan_payload_container() -> bytes:
+    """Reproduce the exploit the security review proved.
+
+    A clean archive is built, then a local header describing a large hidden part
+    is spliced in before the central directory with no matching row in it. Every
+    guard that reads the archive through its own index sees only the two honest
+    parts; the file on disk carries the payload anyway.
+    """
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("ppt/hidden.bin", "\0" * (50 * 1024 * 1024))
+    hidden = inner.getvalue()
+    hidden_end = hidden.rfind(b"PK\x01\x02")
+
+    clean = io.BytesIO()
+    with zipfile.ZipFile(clean, "w") as archive:
+        for name, part in WORD.items():
+            archive.writestr(name, part)
+    payload = clean.getvalue()
+    directory_start = payload.rfind(b"PK\x01\x02")
+    end = payload.rfind(b"PK\x05\x06")
+
+    spliced = payload[:directory_start] + hidden[:hidden_end] + payload[directory_start:end]
+    shift = hidden_end
+    directory_size, directory_offset, comment_length = struct.unpack_from("<IIH", payload, end + 12)
+    closing = bytearray(payload[end : end + 22])
+    struct.pack_into("<I", closing, 16, directory_offset + shift)
+    return spliced + bytes(closing)
+
+
+def test_a_container_hiding_bytes_outside_its_index_is_refused() -> None:
+    """The exploit that failed the first security gate.
+
+    A 51 KB document carrying 50 MiB of hidden content was accepted, because both
+    expansion guards read the archive through the very index that omits it. The
+    layout check refuses it by comparing the index against the bytes.
+    """
+    payload = orphan_payload_container()
+    assert len(payload) < 2 * 1024 * 1024, "the carrier must stay small on disk"
+    # Refused either because the layout check finds the bytes the index omits, or
+    # because the reader will not parse the spliced archive at all. Both are the
+    # door being shut; only silent acceptance is a failure.
+    with pytest.raises(DocumentRejected):
+        verify(payload, DOCX_MEDIA_TYPE)
+
+
+def test_a_container_with_trailing_bytes_is_refused() -> None:
+    with pytest.raises(DocumentRejected, match="after its closing record"):
+        verify(container(WORD) + b"payload appended after the archive", DOCX_MEDIA_TYPE)
+
+
+def test_an_ordinary_container_still_passes_the_layout_check() -> None:
+    # The guard must not refuse the archives every office application produces.
+    assert verify(container(WORD), DOCX_MEDIA_TYPE) > 0
+    deflated = io.BytesIO()
+    with zipfile.ZipFile(deflated, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, part in WORD.items():
+            archive.writestr(name, part)
+        archive.writestr("word/styles.xml", "<styles/>" * 100)
+    assert verify(deflated.getvalue(), DOCX_MEDIA_TYPE) > 0
