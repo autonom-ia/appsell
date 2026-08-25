@@ -323,16 +323,14 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .editor-section-nav a span { font-size: .65rem; line-height: 1.35; }
 .editor-step-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .editor-step-mark { width: 20px; min-height: 20px; display: inline-grid; place-items: center; border-radius: 50%; background: rgba(15,23,42,.08); color: var(--soft); font-size: .72rem; font-weight: 900; }
-.editor-section-nav a.step-complete .editor-step-mark { background: rgba(8,122,75,.12); color: var(--success); }
-.editor-section-nav a.step-pending .editor-step-mark { border: 1px solid rgba(154,103,0,.25); background: #fff9e7; color: #6b4d00; }
+/* Área com conteúdo x área vazia. Não é "concluída" x "pendente": nenhuma
+   delas bloqueia a outra, e o que impede publicar aparece na coluna de
+   prontidão. O par de cores mantém contraste AA sobre o fundo do cartão. */
+.editor-section-nav a.area-filled .editor-step-mark { background: rgba(8,122,75,.12); color: #0a6b43; }
+.editor-section-nav a.area-empty .editor-step-mark { border: 1px solid rgba(71,85,105,.3); background: #f1f5f9; color: #47556b; }
 .editor-section-nav a.active { border-color: rgba(30,58,138,.42); background: var(--blue); color: rgba(255,255,255,.74); box-shadow: 0 10px 24px rgba(30,58,138,.16); }
 .editor-section-nav a.active strong { color: #fff; }
 .editor-section-nav a.active .editor-step-mark { background: rgba(255,255,255,.18); color: #fff; }
-.editor-next-step { min-width: 0; padding: 14px 16px; display: grid; gap: 12px; align-items: center; border: 1px solid rgba(30,58,138,.18); border-radius: 14px; background: #eef6ff; }
-.editor-next-step > div { min-width: 0; display: grid; gap: 4px; }
-.editor-next-step strong { color: var(--ink); font-size: .82rem; }
-.editor-next-step p { margin: 0; color: var(--text); font-size: .76rem; line-height: 1.5; }
-.editor-next-step .secondary-button { width: 100%; }
 .editor-form { min-width: 0; padding-bottom: 88px; }
 .editor-form fieldset, .publish-panel, .offer-status-panel { min-width: 0; margin: 0; padding: 20px; display: grid; grid-template-columns: minmax(0,1fr); gap: 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow-sm); }
 .editor-form fieldset:disabled { opacity: .68; }
@@ -498,8 +496,6 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
   .editor-title-row { flex-direction: row; align-items: center; justify-content: space-between; }
   .save-indicator { grid-template-columns: minmax(0,1fr) auto; }
   .save-indicator .secondary-button { width: auto; }
-  .editor-next-step { grid-template-columns: minmax(0,1fr) auto; }
-  .editor-next-step .secondary-button { width: auto; }
   .editor-section-nav { grid-template-columns: repeat(3,minmax(0,1fr)); }
   .editor-form fieldset, .publish-panel, .curriculum-workspace { padding: 28px; }
   .curriculum-header { flex-direction: row; align-items: flex-start; justify-content: space-between; }
@@ -1173,4 +1169,19 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
   .access-link-form .secondary-button { min-height: 48px; }
   .access-link-issued { grid-template-columns: minmax(0,1fr) auto; align-items: center; }
   .access-link-actions { grid-template-columns: repeat(3,auto); justify-content: start; }
+}
+
+.editor-readiness { min-width: 0; margin: 16px 0; padding: 16px; display: grid; gap: 10px; border: 1px solid var(--border); border-radius: 16px; background: rgba(255,255,255,.7); }
+.editor-readiness h2 { margin: 0; font-size: .95rem; color: var(--ink); }
+.editor-readiness .readiness-list { margin: 0; }
+.editor-readiness .form-note { margin: 0; }
+
+/* A3.8 — quem pediu menos movimento não recebe transição nenhuma. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+    scroll-behavior: auto !important;
+  }
 }

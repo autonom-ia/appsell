@@ -15,7 +15,7 @@ import {
   priceInputFromMinor
 } from "@/lib/offer-price";
 
-type EditorSection = "produto" | "curriculo" | "oferta" | "preview" | "publicar";
+type EditorSection = "produto" | "curriculo" | "oferta" | "publicar";
 type LoadState = "loading" | "ready" | "unauthorized" | "forbidden" | "not_found" | "unavailable" | "error";
 type SaveState = "idle" | "saving" | "saved" | "saved_with_changes" | "conflict" | "rebasing" | "rebased" | "invalid" | "forbidden" | "unavailable" | "error";
 type PreviewState = "idle" | "loading" | "ready" | "unavailable" | "error";
@@ -141,55 +141,38 @@ interface PrivatePreviewPayload extends PrivatePreview {
   versions?: { product?: number; course?: number; offer?: number };
 }
 
+// Áreas, não etapas. Não há ordem obrigatória e nenhuma delas bloqueia a outra:
+// o que impede publicar é a validação do servidor, mostrada à parte.
+const AUTOSAVE_IDLE_MS = 2_500;
+
 const editorSections: Array<{ id: EditorSection; label: string; hint: string }> = [
   { id: "produto", label: "Produto", hint: "Identidade e curso" },
   { id: "curriculo", label: "Currículo", hint: "Módulos e aulas" },
   { id: "oferta", label: "Oferta", hint: "Preço e disponibilidade" },
-  { id: "preview", label: "Preview", hint: "Revisão privada" },
   { id: "publicar", label: "Publicar", hint: "Snapshot versionado" }
 ];
 
+/**
+ * Se cada área já tem conteúdo. É pista de navegação, não portão: o que libera a
+ * publicação é `detail.readiness`, calculado pelo servidor, e essa é a única
+ * validação que a coluna de prontidão mostra.
+ */
 export function workflowState(
   detail: ProductDetail,
-  curriculum: CurriculumSummary,
-  editorDirty: boolean,
-  previewState: PreviewState
+  curriculum: CurriculumSummary
 ): Record<EditorSection, WorkflowStepState> {
   const productComplete = Boolean(
     detail.title.trim() && detail.slug.trim() && detail.course.title.trim()
   );
   const curriculumComplete = curriculum.modules > 0 && curriculum.lessons > 0;
   const offerComplete = Boolean(detail.offer.id && detail.offer.title.trim());
-  const hasPublishedSnapshot = Boolean(
-    detail.publication && !(detail.has_unpublished_changes ?? detail.readiness?.has_unpublished_changes)
-  );
-  const previewComplete = !editorDirty && (previewState === "ready" || hasPublishedSnapshot);
   const publishComplete = Boolean(detail.publication && !(detail.has_unpublished_changes ?? detail.readiness?.has_unpublished_changes));
   return {
     produto: productComplete ? "complete" : "pending",
     curriculo: curriculumComplete ? "complete" : "pending",
     oferta: offerComplete ? "complete" : "pending",
-    preview: previewComplete ? "complete" : "pending",
     publicar: publishComplete ? "complete" : "pending"
   };
-}
-
-function nextWorkflowStep(
-  section: EditorSection,
-  workflow: Record<EditorSection, WorkflowStepState>
-) {
-  const firstPending = editorSections.find((item) => workflow[item.id] !== "complete");
-  if (!firstPending) return null;
-  const currentPending = workflow[section] !== "complete";
-  const target = currentPending ? section : firstPending.id;
-  const details: Record<EditorSection, string> = {
-    produto: "Confirme o nome, endereço, descrição e nome do curso; o salvamento do produto é independente da oferta.",
-    curriculo: "Adicione pelo menos um módulo e uma aula para o curso ter conteúdo revisável.",
-    oferta: "Configure e salve o nome da oferta. O preço prepara vendas, mas não bloqueia o salvamento editorial.",
-    preview: "Salve o que mudou e abra a prévia para conferir o catálogo e o conteúdo incluído.",
-    publicar: "Publique o catálogo e, nesta mesma etapa, escolha entre acesso gratuito ou vendas com checkout."
-  };
-  return { id: target, label: editorSections.find((item) => item.id === target)?.label ?? target, detail: details[target] };
 }
 
 export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: string; productId: string }) {
@@ -202,12 +185,14 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   const [csrf, setCsrf] = useState<{ update: string; publish: string; offerStatus: string; accessLinkCreate: string; accessLinkRevoke: string; accessLinkRotate: string }>({ update: "", publish: "", offerStatus: "", accessLinkCreate: "", accessLinkRevoke: "", accessLinkRotate: "" });
   const [fields, setFields] = useState<EditorFields>(emptyFields);
   const fieldsRef = useRef(fields);
+  const dirtyRef = useRef(false);
   const [savedFields, setSavedFields] = useState<EditorFields>(emptyFields);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [invalidField, setInvalidField] = useState("");
   const [previewState, setPreviewState] = useState<PreviewState>("idle");
   const [preview, setPreview] = useState<PrivatePreview | null>(null);
   const [previewRetry, setPreviewRetry] = useState(0);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const [publishState, setPublishState] = useState<PublishState>("idle");
   const [offerStatusState, setOfferStatusState] = useState<OfferStatusState>("idle");
   const [publishDialogOpen, setPublishDialogOpen] = useState(false);
@@ -227,6 +212,8 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   const formElement = useRef<HTMLFormElement>(null);
   const publishCancelButton = useRef<HTMLButtonElement>(null);
   const sectionKeepButton = useRef<HTMLButtonElement>(null);
+  const previewTriggerButton = useRef<HTMLButtonElement>(null);
+  const previewCloseButton = useRef<HTMLButtonElement>(null);
   const leaveCancelButton = useRef<HTMLButtonElement>(null);
   const publishTriggerButton = useRef<HTMLButtonElement>(null);
   const archiveTriggerButton = useRef<HTMLButtonElement>(null);
@@ -252,6 +239,44 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   const priceDirty = detail !== null && fields.offer_price !== savedPriceInput;
 
   useUnsavedChanges(editorDirty);
+
+  // Autosave (A3.1/A3.7).
+  //
+  // A pausa existe para o salvamento não acompanhar a digitação: só depois de
+  // AUTOSAVE_IDLE_MS parado é que a emenda vai. `persistDraft` já usa a trava de
+  // versão e já sabe lidar com campos que mudaram durante o envio, então o
+  // autosave não precisa de caminho próprio.
+  //
+  // Preço pela metade não é erro do vendedor, é digitação em curso: enquanto o
+  // valor não faz sentido, o autosave espera em vez de acusar. O salvamento
+  // manual continua acusando na hora.
+  const persistDraftRef = useRef(persistDraft);
+  // Sincronizados depois do render: escrever numa ref durante o render deixa o
+  // valor inconsistente se o React descartar a renderização.
+  useEffect(() => {
+    persistDraftRef.current = persistDraft;
+    dirtyRef.current = dirty;
+  });
+  const autosaveBlocked =
+    !dirty
+    || saveState === "saving"
+    || saveState === "conflict"
+    || saveState === "rebasing"
+    || detail?.status === "archived"
+    || offerLocked
+    || (section === "oferta" && parsePriceInputToMinor(fields.offer_price) === null);
+
+  useEffect(() => {
+    if (autosaveBlocked) return;
+    const timer = window.setTimeout(() => { void persistDraftRef.current(); }, AUTOSAVE_IDLE_MS);
+    return () => window.clearTimeout(timer);
+  }, [autosaveBlocked, fields]);
+
+  // A última emenda não pode morrer com a página. Ao sair, o que estiver
+  // pendente é enviado sem esperar a pausa.
+  useEffect(() => () => {
+    if (dirtyRef.current) void persistDraftRef.current();
+  }, []);
   useEffect(() => {
     if (publishState !== "publishing") return;
     requestAnimationFrame(() => publishStatus.current?.focus());
@@ -307,7 +332,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   }, [loadDetail]);
 
   useEffect(() => {
-    if (section !== "preview" || loadState !== "ready" || dirty) return;
+    if (!previewOpen || loadState !== "ready" || dirty) return;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8_000);
     void fetch(`/api/sellers/${sellerId}/products/${productId}/preview`, { cache: "no-store", signal: controller.signal })
@@ -326,7 +351,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       })
       .finally(() => clearTimeout(timeout));
     return () => { clearTimeout(timeout); controller.abort(); };
-  }, [dirty, loadState, previewRetry, productId, section, sellerId]);
+  }, [dirty, loadState, previewOpen, previewRetry, productId, sellerId]);
 
   function updateField<K extends keyof EditorFields>(field: K, value: EditorFields[K]) {
     updateIdempotencyKey.current = null;
@@ -713,8 +738,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
     !editorDirty &&
     !offerStatusLocked;
   const paidAvailable = payoutState === "ready" && (detail.offer.unit_amount_minor ?? 0) > 0;
-  const workflow = workflowState(detail, curriculumSummary, editorDirty, previewState);
-  const nextStep = nextWorkflowStep(section, workflow);
+  const workflow = workflowState(detail, curriculumSummary);
 
   return (
     <section className="product-editor" aria-labelledby="product-editor-title">
@@ -726,21 +750,32 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
         </div>
         <div className={`save-indicator save-${saveState}`}>
           <span role="status" aria-live="polite" aria-atomic="true">{saveMessage(saveState, dirty)}</span>
+          <button ref={previewTriggerButton} className="secondary-button" type="button" onClick={() => setPreviewOpen(true)}>Ver como aluno</button>
           {saveState === "conflict" || saveState === "rebasing" ? <button className="secondary-button" type="button" disabled={saveState === "rebasing"} onClick={() => void rebaseFromServer()}>{saveState === "rebasing" ? "Recarregando…" : "Recarregar versão do servidor"}</button> : null}
         </div>
         {saveState === "invalid" ? <div ref={saveErrorSummary} className="form-error-summary" role="alert" tabIndex={-1}><strong>Não foi salvo.</strong><span>Corrija o campo destacado{invalidField && invalidField !== "form" ? ` (${editorFieldLabel(invalidField)})` : ""} e tente novamente.</span></div> : null}
       </header>
 
-      <nav className="editor-section-nav" aria-label="Etapas do produto">
+      <nav className="editor-section-nav" aria-label="Áreas do produto">
         {editorSections.map((item) => {
           const active = section === item.id;
-          const state = workflow[item.id];
-          const stateLabel = active && state === "complete" ? "Concluída; etapa atual" : state === "complete" ? "Concluída" : active ? "Etapa atual; pendente" : "Pendente";
-          return <Link key={item.id} href={`?section=${item.id}`} replace scroll={false} className={`${active ? "active " : ""}step-${state}`} aria-current={active ? "step" : undefined} onClick={(event) => requestSectionNavigation(event, item.id)}><span className="editor-step-heading"><strong>{item.label}</strong><span className="editor-step-mark" aria-hidden="true">{state === "complete" ? "✓" : ""}</span></span><span>{item.hint}</span><span className="sr-only">{stateLabel}</span></Link>;
+          const filled = workflow[item.id] === "complete";
+          return <Link key={item.id} href={`?section=${item.id}`} replace scroll={false} className={`${active ? "active " : ""}area-${filled ? "filled" : "empty"}`} aria-current={active ? "page" : undefined} onClick={(event) => requestSectionNavigation(event, item.id)}><span className="editor-step-heading"><strong>{item.label}</strong><span className="editor-step-mark" aria-hidden="true">{filled ? "●" : "○"}</span></span><span>{item.hint}</span><span className="sr-only">{filled ? "com conteúdo" : "ainda vazia"}{active ? "; área aberta" : ""}</span></Link>;
         })}
       </nav>
-      {nextStep ? <div className="editor-next-step" role="status"><div><strong>{nextStep.id === section ? "Próximo requisito desta etapa" : `Próximo passo: ${nextStep.label}`}</strong><p>{nextStep.detail}</p></div>{nextStep.id !== section ? <Link className="secondary-button" href={`?section=${nextStep.id}`} replace scroll={false} onClick={(event) => requestSectionNavigation(event, nextStep.id)}>Ir para {nextStep.label}</Link> : null}</div> : null}
       {assetNavigationWarning ? <p className="form-note asset-navigation-warning" role="alert">O arquivo ainda está sendo enviado. Aguarde ou cancele o envio antes de sair do currículo.</p> : null}
+
+      {/* A mesma validação que o servidor usa para liberar a publicação, visível
+          de qualquer área. Nada aqui é calculado no cliente. */}
+      <aside className="editor-readiness" aria-labelledby="editor-readiness-title">
+        <h2 id="editor-readiness-title">O que falta para publicar</h2>
+        {readiness
+          ? readiness.items.length > 0
+            ? <ul className="readiness-list">{readiness.items.map((item, index) => <li key={item.key ?? `${item.label}-${index}`} className={item.ready ? "ready" : "blocked"}><span aria-hidden="true">{item.ready ? "✓" : "!"}</span><div><strong>{item.label}</strong>{item.detail ? <p>{item.detail}</p> : null}</div><span className="sr-only">{item.ready ? "Pronto" : "Pendente"}</span></li>)}</ul>
+            : <p className="form-note" role="status">O servidor não apontou nenhuma pendência.</p>
+          : <p className="form-note" role="status">A validação de publicação ainda não chegou. Nada será publicado até ela chegar.</p>}
+        {editorDirty ? <p className="form-note" role="status">Há alterações não salvas.</p> : null}
+      </aside>
 
       {section === "curriculo" ? <CurriculumWorkspace sellerId={sellerId} productId={productId} courseId={detail.course.id} courseTitle={detail.course.title} archived={detail.status === "archived"} onDirtyChange={handleCurriculumDirty} onBusyChange={handleCurriculumBusy} onSummaryChange={handleCurriculumSummary} onCommitted={handleCurriculumCommitted}/> : (
       <form ref={formElement} className="editor-form" onSubmit={saveDraft}>
@@ -782,7 +817,6 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
           </>
         ) : null}
 
-        {section === "preview" ? <PrivatePreviewPanel state={previewState} preview={preview} detail={detail} dirty={dirty} onReload={() => { setPreviewState("idle"); setPreview(null); setPreviewRetry((value) => value + 1); }}/> : null}
 
         {section === "publicar" ? (
           <section className="publish-panel" aria-labelledby="publish-panel-title">
@@ -870,6 +904,18 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
               {payoutState === "missing" ? <Link className="access-mode-fix" href="/payouts">Configurar recebimentos</Link> : null}
             </div>
             <div className="dialog-actions"><button ref={publishCancelButton} className="secondary-button" type="button" onClick={closePublishDialog}>Revisar novamente</button><button className="primary-button commercial-button" type="button" onClick={() => void publish(publishAccessMode)}>{publishAccessMode === "paid" ? "Colocar no ar e vender" : "Colocar no ar"}</button></div>
+        </AccessibleDialog>
+      ) : null}
+
+      {previewOpen ? (
+        <AccessibleDialog titleId="preview-dialog-title" descriptionId="preview-dialog-description" initialFocusRef={previewCloseButton} returnFocusRef={previewTriggerButton} onClose={() => setPreviewOpen(false)}>
+          <p className="eyebrow">Revisão privada</p>
+          <h2 id="preview-dialog-title">Ver como aluno</h2>
+          <p id="preview-dialog-description">É o que o aluno veria com o rascunho salvo agora. Nada aqui está publicado.</p>
+          <PrivatePreviewPanel state={previewState} preview={preview} detail={detail} dirty={dirty} onReload={() => { setPreviewState("idle"); setPreview(null); setPreviewRetry((value) => value + 1); }}/>
+          <div className="inline-actions">
+            <button ref={previewCloseButton} className="secondary-button" type="button" onClick={() => setPreviewOpen(false)}>Fechar</button>
+          </div>
         </AccessibleDialog>
       ) : null}
 
