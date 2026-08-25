@@ -14,6 +14,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
+from .asset_media import MAX_ASSET_BYTES, extension_matches, spec_for
+from .asset_media import max_bytes as asset_max_bytes
 from .asset_worker_runner import process_asset_upload
 from .catalog_routes import (
     _authenticate,
@@ -39,9 +41,11 @@ class AssetUploadIntentBody(BaseModel):
     expected_course_version: int = Field(ge=1, le=_MAX_SAFE_INTEGER)
     existing_asset_id: str | None = None
     title: str
-    media_type: Literal["application/pdf", "video/mp4"]
+    # Validated against the shared catalogue rather than restated here, so a
+    # format accepted by the database is never refused by the request model.
+    media_type: str
     file_name: str
-    byte_size: int = Field(ge=1, le=_MAX_VIDEO_BYTES)
+    byte_size: int = Field(ge=1, le=MAX_ASSET_BYTES)
     sha256: str
 
     @field_validator("idempotency_key")
@@ -74,17 +78,23 @@ class AssetUploadIntentBody(BaseModel):
             or _contains_control(value)
             or "/" in value
             or "\\" in value
-            or not value.lower().endswith((".pdf", ".mp4"))
+            or "." not in value
         ):
             raise ValueError("invalid asset file name")
+        return value
+
+    @field_validator("media_type")
+    @classmethod
+    def validate_media_type(cls, value: str) -> str:
+        if spec_for(value) is None:
+            raise ValueError("unsupported asset media type")
         return value
 
     @field_validator("byte_size")
     @classmethod
     def validate_media_size(cls, value: int, info: Any) -> int:
         media_type = info.data.get("media_type")
-        maximum = _MAX_PDF_BYTES if media_type == "application/pdf" else _MAX_VIDEO_BYTES
-        if value > maximum:
+        if not isinstance(media_type, str) or value > asset_max_bytes(media_type):
             raise ValueError("asset exceeds media size limit")
         return value
 
@@ -92,9 +102,7 @@ class AssetUploadIntentBody(BaseModel):
     @classmethod
     def validate_media_extension(cls, value: str, info: Any) -> str:
         media_type = info.data.get("media_type")
-        if (media_type == "application/pdf" and not value.lower().endswith(".pdf")) or (
-            media_type == "video/mp4" and not value.lower().endswith(".mp4")
-        ):
+        if not isinstance(media_type, str) or not extension_matches(media_type, value):
             raise ValueError("asset extension does not match MIME")
         return value
 
