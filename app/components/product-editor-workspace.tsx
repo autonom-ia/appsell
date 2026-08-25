@@ -160,7 +160,7 @@ const editorSections: Array<{ id: EditorSection; label: string; hint: string }> 
   { id: "produto", label: "Produto", hint: "Identidade e curso" },
   { id: "curriculo", label: "Currículo", hint: "Módulos e aulas" },
   { id: "oferta", label: "Oferta", hint: "Preço e disponibilidade" },
-  { id: "publicar", label: "Publicar", hint: "Snapshot versionado" }
+  { id: "publicar", label: "Publicar", hint: "Versão publicada" }
 ];
 
 /**

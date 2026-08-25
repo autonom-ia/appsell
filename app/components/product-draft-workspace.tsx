@@ -1,6 +1,8 @@
 "use client";
 
 import Link from "next/link";
+
+import { catalogPrice, productArt } from "@/lib/product-art";
 import { useRouter } from "next/navigation";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { autoSelectableSpace, SellerSpace, sellerRoleLabel } from "./seller-space";
@@ -15,6 +17,9 @@ interface ProductDraft {
   description: string;
   status: "draft" | "published" | "unpublished" | "archived";
   created_at: string;
+  access_mode?: "free" | "paid";
+  unit_amount_minor?: number | null;
+  currency?: string | null;
   course?: { id: string; title: string; status: "draft" | "published" | "archived" } | null;
   course_id?: string;
   course_title?: string;
@@ -219,13 +224,13 @@ export function ProductDraftWorkspace() {
       <div className="tenant-picker">
         {lockedSpace ? (
           <div className="tenant-locked">
-            <p className="tenant-locked-label">Espaço de vendas</p>
+            <p className="tenant-locked-label">Sua loja</p>
             <strong>{lockedSpace.display_name}</strong>
             <span>@{lockedSpace.slug} · {sellerRoleLabel(lockedSpace.role)}</span>
           </div>
         ) : (
           <>
-            <label htmlFor="seller-context">Espaço de vendas</label>
+            <label htmlFor="seller-context">Sua loja</label>
             <select
               id="seller-context"
               value={selectedSellerId}
@@ -251,7 +256,7 @@ export function ProductDraftWorkspace() {
           {sellerState === "unavailable" ? <p className="form-note">A API local está indisponível. O catálogo demonstrativo não substitui dados reais.</p> : null}
           {sellerState === "unauthorized" ? <p className="form-error">Sua sessão expirou. <a href="/auth/login">Entre novamente</a>.</p> : null}
           {sellerState === "error" ? <p className="form-error">Não foi possível carregar seus espaços.</p> : null}
-          {sellerState === "idle" && sellers?.length === 0 ? <p className="form-note">Ative um espaço de vendas acima antes de criar produtos.</p> : null}
+          {sellerState === "idle" && sellers?.length === 0 ? <p className="form-note">Ative uma loja acima antes de criar produtos.</p> : null}
         </div>
         {pendingSeller ? (
           <div className="tenant-switch-warning" role="alert">
@@ -298,9 +303,23 @@ export function ProductDraftWorkspace() {
             {catalogState === "idle" && products.length === 0 ? <p className="empty-state">Nenhum produto ainda. Crie o primeiro como rascunho privado.</p> : null}
             {catalogState === "idle" || catalogState === "loading_more" || catalogState === "page_error" ? products.map((product) => (
               <article className="draft-card" key={product.id}>
+                {/* A capa ainda não existe; a arte vem do nome, então nunca há
+                    imagem quebrada nem espaço vazio. Decorativa: quem informa é
+                    o título ao lado. */}
+                <div className="draft-card-art" aria-hidden="true" style={{ background: productArt(product.title).gradient }}>
+                  <span>{productArt(product.title).initials}</span>
+                </div>
                 <div><span className={`status status-${product.status}`}>{productStatusLabel(product.status)}</span><span>@{product.slug}</span></div>
                 <h3>{product.title}</h3>
                 <p>{product.description || "Descrição ainda não informada."}</p>
+                <div className="draft-card-access">
+                  <span className={`access-badge access-${product.access_mode ?? "free"}`}>
+                    {product.access_mode === "paid" ? "Venda ativa" : "Acesso gratuito"}
+                  </span>
+                  {catalogPrice(product.unit_amount_minor, product.currency)
+                    ? <strong>{catalogPrice(product.unit_amount_minor, product.currency)}</strong>
+                    : <span className="access-noprice">sem preço em vigor</span>}
+                </div>
                 <footer><span>Curso inicial</span><strong>{product.course?.title ?? product.course_title ?? "Curso em rascunho"}</strong></footer>
                 <Link className="draft-card-action" href={`/products/${encodeURIComponent(selectedSeller.id)}/${encodeURIComponent(product.id)}`} onClick={(event) => {
                   if (!formDirty || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -314,7 +333,7 @@ export function ProductDraftWorkspace() {
           </div>
         </div>
       ) : sellerState === "loading" ? null : (
-        <div className="tenant-required"><strong>Escolha o espaço antes de editar.</strong><p>O espaço de vendas nunca é inferido silenciosamente da sua conta.</p></div>
+        <div className="tenant-required"><strong>Escolha o espaço antes de editar.</strong><p>A loja nunca é escolhida por nós no seu lugar.</p></div>
       )}
     </section>
   );

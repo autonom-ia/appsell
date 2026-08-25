@@ -118,7 +118,7 @@ export function SellerOnboardingCard({ hideSingleSpaceSummary = false }: SellerO
 
   return (
     <section className="seller-onboarding">
-      <div><p className="eyebrow">Ativação do produtor</p><h2>Crie seu espaço de vendas</h2><p>Use este espaço para organizar seus produtos, cursos e alunos.</p></div>
+      <div><p className="eyebrow">Ativação do produtor</p><h2>Crie sua loja</h2><p>Use a loja para organizar seus produtos, cursos e alunos.</p></div>
       <form action="/api/sellers" method="post" onSubmit={submit}>
         <input type="hidden" name="_csrf" defaultValue=""/>
         <input type="hidden" name="idempotency_key" defaultValue=""/>
