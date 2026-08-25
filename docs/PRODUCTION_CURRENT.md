@@ -11,8 +11,8 @@
 |---|---|
 | Domínio | `https://sell.autonomia.site` |
 | Ambiente | VPS EasyPanel nativo, Docker Swarm |
-| SHA implantado | `3ddd58b9d2efe192185f0708fd024b5ca278ed7e` |
-| Imagens | `web:3ddd58b`, `api:3ddd58b`, `asset-worker:3ddd58b` |
+| SHA implantado | `50f584951b01e7d01e827c1e20b875d3bbc172b4` |
+| Imagens | `web:50f5849`, `api:50f5849`, `asset-worker:50f5849` |
 | API health | `{"status":"ok","database":true,"storage":true,"pdf_sandbox":true}` |
 | Web health | `{"status":"ok","redis":true,"api":true,"storage_upload":true}` |
 | CI pós-merge | [run 32656218821](https://github.com/autonom-ia/appsell/actions/runs/32656218821) — success |
@@ -30,6 +30,11 @@ Backup lógico pré-cutover:
 `/home/claudete/backups/appsell/appsell_native_90_20260825T114340Z.dump`
 (881 KB, 828 objetos, validado com `pg_restore --list`, permissão 600).
 Rollback de imagem: tag `easypanel/sell-autonomia/api:50b6301` segue no host.
+
+O release de 2026-08-25 (segundo do dia, `50f5849`) entregou a interface de
+material complementar e a descrição formatada da aula. **Não aplicou migration**
+— o banco segue em `0036_lesson_material_links`. Rollback de imagem disponível
+nas tags `api:3ddd58b` e `api:50b6301` no host.
 
 ## Hierarquia de contas
 
