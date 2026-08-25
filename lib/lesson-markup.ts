@@ -49,6 +49,11 @@ export function safeLessonLink(candidate: string): string | null {
   }
   if (parsed.protocol !== "https:") return null;
   if (!parsed.hostname) return null;
+  // `https://suporte.exemplo.com@evil.example/` is a real address at
+  // evil.example, and the part a reader's eye lands on first is the part that
+  // is not the host. No lesson link needs credentials, so the whole userinfo
+  // component is refused rather than displayed carefully.
+  if (parsed.username || parsed.password) return null;
   return parsed.toString();
 }
 

@@ -2,6 +2,7 @@
 
 import { KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
 
+import { isEmbedId } from "@/lib/lesson-embed";
 import { safeLessonLink } from "@/lib/lesson-markup";
 
 import { AccessibleDialog } from "./accessible-dialog";
@@ -26,7 +27,6 @@ type ActionState = "idle" | "working" | "invalid" | "conflict" | "forbidden" | "
 
 const LOAD_TIMEOUT_MS = 8_000;
 const MUTATION_TIMEOUT_MS = 12_000;
-const EMBED_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 /**
  * The seller's list of links and embedded videos for one lesson.
@@ -73,7 +73,12 @@ export function LessonMaterialPanel({
   const archiveCancel = useRef<HTMLButtonElement>(null);
   // One key per pending mutation, held until the server answers. A retry after a
   // dropped connection replays the same operation instead of adding a second row.
-  const createKey = useRef<string | null>(null);
+  //
+  // The key is paired with the payload it was minted for. A replay is only a
+  // replay of the same thing: if the seller edits the fields after a failed
+  // attempt, the old key would make the server answer for the old material while
+  // this panel reported the new one, so the edit earns a new key instead.
+  const createKey = useRef<{ key: string; payload: string } | null>(null);
   const archiveKeys = useRef(new Map<string, string>());
   const listRequest = useRef<{ controller: AbortController; version: number } | null>(null);
   const listVersion = useRef(0);
@@ -123,7 +128,7 @@ export function LessonMaterialPanel({
   function invalidLocalField() {
     if (title.trim().length < 2) return "title";
     if (kind === "external") return safeLessonLink(url.trim()) ? "" : "url";
-    return EMBED_ID.test(videoId.trim()) ? "" : "video_id";
+    return isEmbedId(videoId.trim()) ? "" : "video_id";
   }
 
   async function create() {
@@ -134,18 +139,22 @@ export function LessonMaterialPanel({
       setActionState("invalid");
       return;
     }
-    createKey.current ??= crypto.randomUUID();
+    const fields = {
+      expected_course_version: String(courseVersion),
+      kind,
+      title: title.trim(),
+      url: kind === "external" ? (safeLessonLink(url.trim()) ?? "") : "",
+      provider: kind === "embed" ? provider : "",
+      video_id: kind === "embed" ? videoId.trim() : ""
+    };
+    const payload = JSON.stringify(fields);
+    createKey.current = nextCreateKey(createKey.current, payload, () => crypto.randomUUID());
     setActionState("working");
     setInvalidField("");
     const data = new FormData();
     data.set("_csrf", csrf.create);
-    data.set("idempotency_key", createKey.current);
-    data.set("expected_course_version", String(courseVersion));
-    data.set("kind", kind);
-    data.set("title", title.trim());
-    data.set("url", kind === "external" ? (safeLessonLink(url.trim()) ?? "") : "");
-    data.set("provider", kind === "embed" ? provider : "");
-    data.set("video_id", kind === "embed" ? videoId.trim() : "");
+    data.set("idempotency_key", createKey.current.key);
+    for (const [name, value] of Object.entries(fields)) data.set(name, value);
     const controller = new AbortController();
     inFlight.current.add(controller);
     const timeout = setTimeout(() => controller.abort(), MUTATION_TIMEOUT_MS);
@@ -204,6 +213,11 @@ export function LessonMaterialPanel({
       }
       archiveKeys.current.delete(material.material_id);
       setActionState("idle");
+      // Only a removal that actually happened closes the dialog. Closing it on a
+      // refusal would leave the failure in a live region at the foot of the
+      // panel while the thing the seller was looking at disappeared, which reads
+      // as success.
+      setArchiveTarget(null);
       await loadMaterials();
       onCommitted?.();
       queueMicrotask(() => listHeading.current?.focus());
@@ -212,7 +226,6 @@ export function LessonMaterialPanel({
     } finally {
       clearTimeout(timeout);
       inFlight.current.delete(controller);
-      setArchiveTarget(null);
     }
   }
 
@@ -373,6 +386,29 @@ export function LessonMaterialPanel({
       </div>
     </AccessibleDialog> : null}
   </section>;
+}
+
+export interface CreateKey {
+  key: string;
+  payload: string;
+}
+
+/**
+ * Decides whether the next attempt is a replay or a new operation.
+ *
+ * Keeping the key across a dropped connection is what makes a retry safe. But a
+ * key only means "the same request again": if the seller edited the fields after
+ * the failure, replaying would let the server answer for the material they typed
+ * first while this panel reports the one they typed second. A changed payload
+ * therefore earns a new key.
+ */
+export function nextCreateKey(
+  current: CreateKey | null,
+  payload: string,
+  mint: () => string
+): CreateKey {
+  if (current && current.payload === payload) return current;
+  return { key: mint(), payload };
 }
 
 function hostOf(url: string | null) {

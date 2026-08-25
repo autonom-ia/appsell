@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { isEmbedId, isEmbedProvider } from "@/lib/lesson-embed";
 import { safeLessonLink } from "@/lib/lesson-markup";
 import {
   createDomainLessonMaterial,
@@ -35,8 +36,6 @@ const CREATE_FIELDS = [
   "video_id"
 ] as const;
 
-const EMBED_ID = /^[A-Za-z0-9_-]{1,64}$/;
-const PROVIDERS = new Set(["youtube", "vimeo"]);
 
 export async function GET(request: NextRequest, context: LessonRouteContext) {
   const ids = await lessonRouteIds(context);
@@ -105,8 +104,8 @@ export async function POST(request: NextRequest, context: LessonRouteContext) {
 
   const provider = prepared.fields.provider;
   const videoId = prepared.fields.video_id;
-  if (!provider || !PROVIDERS.has(provider)) return curriculumInvalidInput("provider");
-  if (!videoId || !EMBED_ID.test(videoId)) return curriculumInvalidInput("video_id");
+  if (!isEmbedProvider(provider)) return curriculumInvalidInput("provider");
+  if (!isEmbedId(videoId)) return curriculumInvalidInput("video_id");
   if (prepared.fields.url) return curriculumInvalidInput("kind");
   return await send(prepared, ids, {
     idempotencyKey,
@@ -114,7 +113,7 @@ export async function POST(request: NextRequest, context: LessonRouteContext) {
     kind,
     title,
     url: null,
-    provider: provider as "youtube" | "vimeo",
+    provider,
     videoId
   });
 }

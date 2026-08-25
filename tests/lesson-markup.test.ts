@@ -124,6 +124,17 @@ describe("A2.8 — lesson description cannot carry a payload into the player", (
   it("refuses a link longer than the bounded length", () => {
     expect(safeLessonLink(`https://exemplo.com/${"a".repeat(2_000)}`)).toBeNull();
   });
+
+  it("refuses userinfo, which makes the host read as something it is not", () => {
+    // https://suporte.exemplo.com@evil.example/ is an address at evil.example,
+    // and the part the eye lands on first is the part that is not the host.
+    expect(safeLessonLink("https://suporte.exemplo.com@evil.example/login")).toBeNull();
+    expect(safeLessonLink("https://user:senha@evil.example/")).toBeNull();
+    expect(safeLessonLink("https://exemplo.com@evil.example/")).toBeNull();
+
+    const blocks = parseLessonMarkup("[Suporte oficial](https://exemplo.com@evil.example/login)");
+    expect(inlineNodes(blocks).some((node) => node.type === "link")).toBe(false);
+  });
 });
 
 describe("lesson markup renders the subset a seller is offered", () => {

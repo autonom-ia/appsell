@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 
+import { embedSource } from "@/lib/lesson-embed";
 import { safeLessonLink } from "@/lib/lesson-markup";
 
 import { LessonDescription } from "./lesson-description";
@@ -453,20 +454,6 @@ function flattenLessons(modules: CourseModule[]) {
   return modules.flatMap((module) => module.lessons.map((lesson) => ({ lesson, moduleTitle: module.title })));
 }
 
-/** Matches the server-side contract for an embed identifier. */
-const EMBED_ID = /^[A-Za-z0-9_-]{1,64}$/;
-
-function embedSource(material: LessonMaterialLink) {
-  if (!material.video_id || !EMBED_ID.test(material.video_id)) return null;
-  if (material.provider === "youtube") {
-    return `https://www.youtube-nocookie.com/embed/${material.video_id}`;
-  }
-  if (material.provider === "vimeo") {
-    return `https://player.vimeo.com/video/${material.video_id}`;
-  }
-  return null;
-}
-
 /**
  * Links and embedded videos the seller attached to the lesson.
  *
@@ -483,7 +470,7 @@ function LessonSupportLinks({ materials }: { materials: readonly LessonMaterialL
     .filter((entry): entry is { material: LessonMaterialLink; href: string } => entry.href !== null);
   const embeds = materials
     .filter((material) => material.kind === "embed")
-    .map((material) => ({ material, source: embedSource(material) }))
+    .map((material) => ({ material, source: embedSource(material.provider, material.video_id) }))
     .filter((entry): entry is { material: LessonMaterialLink; source: string } => entry.source !== null);
 
   if (external.length === 0 && embeds.length === 0) return null;
