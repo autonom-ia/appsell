@@ -166,8 +166,12 @@ test("sair da área durante o envio é bloqueado, e a falha chega aos olhos de q
 
   // O intent fica pendurado: é assim que o painel permanece "ocupado" enquanto
   // o teste tenta navegar para longe.
-  let release: (() => void) | null = null;
-  const held = new Promise<void>((resolve) => { release = resolve; });
+  // O executor da Promise roda de imediato, mas a análise de fluxo do
+  // TypeScript não enxerga isso e estreitaria `release` para `never`. Guardar o
+  // `resolve` numa referência já resolvida evita a asserção que esconderia um
+  // contrato quebrado de verdade.
+  const release: { fire: () => void } = { fire: () => undefined };
+  const held = new Promise<void>((resolve) => { release.fire = resolve; });
   await page.route("**/cover/upload-intents", async (route) => {
     await held;
     await route.fulfill({ status: 503, json: { error: "cover_storage_unavailable" } });
@@ -186,6 +190,6 @@ test("sair da área durante o envio é bloqueado, e a falha chega aos olhos de q
   await expect(page.getByRole("heading", { name: "Capa do produto" })).toBeVisible();
   await expect(page.getByText(/capa ainda está sendo enviada/i)).toBeVisible();
 
-  release?.();
+  release.fire();
   await expect(page.getByText("O envio não terminou. Tente novamente; nada foi alterado.")).toBeVisible();
 });
