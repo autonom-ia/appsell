@@ -44,9 +44,7 @@ def _signature(
     protocol: str = "appsell.webhook.generic-hmac.v1",
 ) -> str:
     digest = hashlib.sha256(body).hexdigest()
-    canonical = (
-        f"{protocol}\n{endpoint}\n{timestamp}\n{event_id}\n{digest}"
-    ).encode()
+    canonical = f"{protocol}\n{endpoint}\n{timestamp}\n{event_id}\n{digest}".encode()
     return "v1=" + hmac.new(secret, canonical, hashlib.sha256).hexdigest()
 
 
@@ -224,9 +222,9 @@ def test_local_resolver_rejects_secret_reuse_and_non_local_configuration() -> No
             [{"reference": "checkout-demo-v1", "key": _key(4)}]
         ),
     )
-    assert (
-        WebhookSecretResolver.from_settings(settings).resolve("checkout-demo-v1") == bytes([4]) * 32
-    )
+    assert WebhookSecretResolver.from_settings(settings).resolve(
+        "checkout-demo-v1"
+    ) == bytes([4]) * 32
     reused = Settings(
         **base,
         webhook_local_keyring_b64_json=json.dumps(

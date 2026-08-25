@@ -138,7 +138,11 @@ def _provider_signature(request: Request) -> tuple[str, str, str, str]:
     external_event_id = request.headers.get("x-external-checkout-webhook-event-id")
     external_timestamp = request.headers.get("x-external-checkout-webhook-timestamp")
     external_signature = request.headers.get("x-external-checkout-webhook-signature")
-    if external_event_id is not None or external_timestamp is not None or external_signature is not None:
+    if (
+        external_event_id is not None
+        or external_timestamp is not None
+        or external_signature is not None
+    ):
         return (
             "external-checkout.webhook.generic-hmac.v1",
             external_event_id or "",

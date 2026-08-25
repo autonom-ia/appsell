@@ -47,7 +47,11 @@ def verify_generic_hmac_v1(
     max_clock_skew_seconds: int,
     protocol: str = _LEGACY_PROTOCOL,
 ) -> str:
-    if len(secret) != 32 or protocol not in _SUPPORTED_PROTOCOLS or _EVENT_ID.fullmatch(event_id) is None:
+    if (
+        len(secret) != 32
+        or protocol not in _SUPPORTED_PROTOCOLS
+        or _EVENT_ID.fullmatch(event_id) is None
+    ):
         raise WebhookRejectedError("webhook_rejected")
     try:
         timestamp_value = int(timestamp)
@@ -64,9 +68,7 @@ def verify_generic_hmac_v1(
     if match is None:
         raise WebhookRejectedError("webhook_rejected")
     payload_hash = hashlib.sha256(body).hexdigest()
-    canonical = (
-        f"{protocol}\n{endpoint_key}\n{timestamp}\n{event_id}\n{payload_hash}"
-    ).encode()
+    canonical = f"{protocol}\n{endpoint_key}\n{timestamp}\n{event_id}\n{payload_hash}".encode()
     expected = hmac.new(secret, canonical, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(match.group(1), expected):
         raise WebhookRejectedError("webhook_rejected")
@@ -108,7 +110,9 @@ def parse_generic_hmac_v1(body: bytes) -> NormalizedCheckoutEvent:
     if is_v2:
         buyer_email = payload["buyer_email"]
         buyer_identity_sub = payload["buyer_identity_sub"]
-        if not _valid_buyer_email(buyer_email) or not _valid_buyer_sub(buyer_identity_sub):
+        if not _valid_buyer_email(buyer_email) or not _valid_buyer_sub(
+            buyer_identity_sub
+        ):
             raise WebhookRejectedError("webhook_payload_invalid")
     try:
         occurred_at = datetime.fromisoformat(occurred.replace("Z", "+00:00"))
