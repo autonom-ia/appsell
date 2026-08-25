@@ -443,7 +443,10 @@ async def list_product_drafts(
                             "product.created_at, product.updated_at, "
                             "course.id as course_id, course.title as course_title, "
                             "course.status as course_status, "
-                            "course.draft_version as course_draft_version "
+                            "course.draft_version as course_draft_version, "
+                            "current_offer.status as offer_status, "
+                            "current_offer.unit_amount_minor as offer_unit_amount_minor, "
+                            "current_offer.currency as offer_currency "
                             "from catalog_product product "
                             "join product_course linked "
                             "on linked.seller_organization_id = product.seller_organization_id "
@@ -452,6 +455,19 @@ async def list_product_drafts(
                             "join course "
                             "on course.seller_organization_id = linked.seller_organization_id "
                             "and course.id = linked.course_id "
+                            # Uma oferta por produto na prática, mas a ordem é
+                            # explícita para o preço nunca depender de sorte:
+                            # a ativa manda, e entre rascunhos vence a mais nova.
+                            "left join lateral ("
+                            "select candidate.status, candidate.unit_amount_minor, "
+                            "candidate.currency from offer candidate "
+                            "where candidate.seller_organization_id = "
+                            "product.seller_organization_id "
+                            "and candidate.catalog_product_id = product.id "
+                            "and candidate.status <> 'archived' "
+                            "order by (candidate.status = 'active') desc, candidate.version desc "
+                            "limit 1"
+                            ") current_offer on true "
                             "where product.seller_organization_id = :seller_id "
                             "and product.status <> 'archived' and course.status <> 'archived' "
                             "and (:cursor is null or (product.created_at, product.id) < "
@@ -1605,6 +1621,25 @@ def _product_response(row: Any) -> dict[str, Any]:
             "status": row["course_status"],
             "draft_version": row["course_draft_version"],
         },
+        **_product_access_response(row),
+    }
+
+
+def _product_access_response(row: Any) -> dict[str, Any]:
+    """Modo de acesso e preço de um produto na listagem.
+
+    O preço só existe quando a oferta está ativa. Uma oferta em rascunho pode
+    ter valor gravado, mas ninguém paga por ela ainda: devolvê-lo faria a lista
+    anunciar um preço que não está em vigor.
+    """
+    if "offer_status" not in row.keys():
+        return {}
+    active = row["offer_status"] == "active"
+    return {
+        "access_mode": "paid" if active else "free",
+        "offer_status": row["offer_status"],
+        "unit_amount_minor": row["offer_unit_amount_minor"] if active else None,
+        "currency": row["offer_currency"] if active else None,
     }
 
 

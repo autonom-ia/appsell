@@ -239,11 +239,11 @@ export function PayoutConnectCard() {
         <p className="eyebrow">Recebimentos</p>
         <h2 ref={headingRef} tabIndex={-1}>Crie seu espaço primeiro</h2>
         <p>
-          Para conectar uma conta de recebimentos, você precisa de um espaço de vendas
+          Para conectar uma conta de recebimentos, você precisa de uma loja
           ativo como proprietário.
         </p>
         <Link className="secondary-button" href="/products">
-          Criar meu espaço de vendas
+          Criar minha loja
         </Link>
       </section>
     );

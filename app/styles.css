@@ -1171,6 +1171,13 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
   .access-link-actions { grid-template-columns: repeat(3,auto); justify-content: start; }
 }
 
+.draft-card-art { width: 100%; aspect-ratio: 16 / 7; margin: -4px 0 10px; display: flex; align-items: center; justify-content: center; border-radius: 12px; color: #fff; font-size: 1.5rem; font-weight: 700; letter-spacing: .06em; }
+.draft-card-access { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; margin: 8px 0 0; }
+.access-badge { padding: .15em .6em; border-radius: 999px; font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; }
+.access-badge.access-paid { background: rgba(8,122,75,.12); color: #0a6b43; }
+.access-badge.access-free { background: #f1f5f9; color: #47556b; }
+.draft-card-access strong { color: var(--ink); font-size: .95rem; }
+.access-noprice { color: var(--soft); font-size: .78rem; }
 .editor-readiness { min-width: 0; margin: 16px 0; padding: 16px; display: grid; gap: 10px; border: 1px solid var(--border); border-radius: 16px; background: rgba(255,255,255,.7); }
 .editor-readiness h2 { margin: 0; font-size: .95rem; color: var(--ink); }
 .editor-readiness .readiness-list { margin: 0; }
