@@ -5,7 +5,21 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 
+import { embedSource } from "@/lib/lesson-embed";
+import { safeLessonLink } from "@/lib/lesson-markup";
+
+import { LessonDescription } from "./lesson-description";
 import { ProtectedPdfReader } from "./protected-pdf-reader";
+
+interface LessonMaterialLink {
+  id: string;
+  kind: "external" | "embed";
+  title: string;
+  url: string | null;
+  provider: "youtube" | "vimeo" | null;
+  video_id: string | null;
+  position: number;
+}
 
 interface CourseLesson {
   id: string;
@@ -14,6 +28,7 @@ interface CourseLesson {
   content: string;
   status: "active";
   position: number;
+  materials?: LessonMaterialLink[];
 }
 
 interface CourseModule {
@@ -347,7 +362,6 @@ export function LearningPlayer({ entitlementId, lessonId }: { entitlementId: str
 
   const lessonNumber = selectedIndex + 1;
   const completed = selectedProgress?.completed === true;
-  const lessonParagraphs = paragraphs(selected.lesson.content);
   const saveVideoProgress = async (percent: number) => {
     if (percent <= (selectedProgress?.progress_percent ?? 0)) return true;
     return await saveProgress(payload, selected.lesson.id, percent);
@@ -371,10 +385,9 @@ export function LearningPlayer({ entitlementId, lessonId }: { entitlementId: str
         </div>
         <section className="lesson-content" aria-labelledby="lesson-content-title">
           <h2 id="lesson-content-title" className="sr-only">Conteúdo da aula</h2>
-          {lessonParagraphs.length
-            ? lessonParagraphs.map((paragraph, index) => <p key={`${selected.lesson.id}:${index}`}>{paragraph}</p>)
-            : <p className="lesson-content-empty">Esta aula não possui conteúdo textual.</p>}
+          <LessonDescription content={selected.lesson.content} emptyLabel="Esta aula não possui conteúdo textual."/>
         </section>
+        <LessonSupportLinks materials={selected.lesson.materials ?? []}/>
         {payload.selected_assets.length > 0
           ? payload.selected_assets.map((asset, index) => <LessonMaterial
               key={asset.view_href}
@@ -441,8 +454,48 @@ function flattenLessons(modules: CourseModule[]) {
   return modules.flatMap((module) => module.lessons.map((lesson) => ({ lesson, moduleTitle: module.title })));
 }
 
-function paragraphs(content: string) {
-  return content.split(/\n{2,}/).map((entry) => entry.trim()).filter(Boolean);
+/**
+ * Links and embedded videos the seller attached to the lesson.
+ *
+ * Both are rebuilt here rather than trusted: an external address goes through
+ * the same https-only check the description uses, and an embed address is
+ * assembled from a provider we know and an identifier that matches the server's
+ * contract. A row the browser cannot be handed safely is dropped instead of
+ * being rendered as something inert-looking.
+ */
+function LessonSupportLinks({ materials }: { materials: readonly LessonMaterialLink[] }) {
+  const external = materials
+    .filter((material) => material.kind === "external")
+    .map((material) => ({ material, href: safeLessonLink(material.url ?? "") }))
+    .filter((entry): entry is { material: LessonMaterialLink; href: string } => entry.href !== null);
+  const embeds = materials
+    .filter((material) => material.kind === "embed")
+    .map((material) => ({ material, source: embedSource(material.provider, material.video_id) }))
+    .filter((entry): entry is { material: LessonMaterialLink; source: string } => entry.source !== null);
+
+  if (external.length === 0 && embeds.length === 0) return null;
+
+  return <section className="lesson-support-links" aria-labelledby="lesson-support-title">
+    <h2 id="lesson-support-title">Material complementar</h2>
+    {embeds.map(({ material, source }) => <figure key={material.id} className="lesson-embed">
+      <iframe
+        src={source}
+        title={material.title}
+        loading="lazy"
+        referrerPolicy="no-referrer"
+        sandbox="allow-scripts allow-same-origin allow-presentation"
+        allow="encrypted-media; picture-in-picture; fullscreen"
+        allowFullScreen
+      />
+      <figcaption>{material.title}</figcaption>
+    </figure>)}
+    {external.length > 0 ? <ul className="lesson-support-list">
+      {external.map(({ material, href }) => <li key={material.id}>
+        <a href={href} target="_blank" rel="noopener noreferrer">{material.title}</a>
+        <span className="lesson-support-host"> · {new URL(href).hostname}</span>
+      </li>)}
+    </ul> : null}
+  </section>;
 }
 
 function lessonHref(entitlementId: string, lessonId: string) {
