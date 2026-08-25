@@ -323,9 +323,14 @@ def test_another_seller_cannot_touch_this_products_cover() -> None:
     intent = create_intent()
     version = product_version(PRODUCT_A, SELLER_A)
 
-    # O contexto e do vendedor B, mas os argumentos falam do produto de A.
-    with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
+    # O contexto e do vendedor B, mas os argumentos falam do produto de A. A
+    # resposta e "nao encontrado", e nao "nao autorizado", porque a busca e
+    # escopada ao vendedor B: para ele, aquele upload realmente nao existe.
+    # Responder 28000 confirmaria que o produto do outro existe, que e
+    # exatamente o que a resposta nao pode dizer.
+    with pytest.raises(psycopg.Error) as recusa:
         set_cover(intent, expected_version=version, actor=USER_B, seller=SELLER_B)
+    assert recusa.value.sqlstate == "P4041"
 
 
 def test_a_read_capability_cannot_write_a_cover() -> None:
