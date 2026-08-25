@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { AccessibleDialog } from "./accessible-dialog";
 import { LessonAssetPanel } from "./lesson-asset-panel";
 
 interface CurriculumLesson {
@@ -49,6 +50,10 @@ const defaultLimits = {
   lesson_content_bytes: 8_192
 };
 
+type PendingArchive =
+  | { kind: "module"; module: CurriculumModule }
+  | { kind: "lesson"; module: CurriculumModule; lesson: CurriculumLesson };
+
 export function CurriculumWorkspace({
   sellerId,
   productId,
@@ -86,6 +91,8 @@ export function CurriculumWorkspace({
   const [mutationState, setMutationState] = useState<MutationState>("idle");
   const [message, setMessage] = useState("");
   const [invalidField, setInvalidField] = useState("");
+  const [pendingArchive, setPendingArchive] = useState<PendingArchive | null>(null);
+  const archiveKeepButton = useRef<HTMLButtonElement>(null);
   const [assetActivity, setAssetActivity] = useState<Record<string, { dirty: boolean; busy: boolean }>>({});
   const mutationKeys = useRef(new Map<string, string>());
 
@@ -288,8 +295,19 @@ export function CurriculumWorkspace({
     });
   }
 
+  function requestArchive(target: PendingArchive) {
+    setPendingArchive(target);
+  }
+
+  async function confirmArchive() {
+    const target = pendingArchive;
+    setPendingArchive(null);
+    if (!target) return;
+    if (target.kind === "module") await archiveModule(target.module);
+    else await archiveLesson(target.module, target.lesson);
+  }
+
   async function archiveModule(module: CurriculumModule) {
-    if (!window.confirm(`Arquivar o módulo ${module.title} e suas aulas?`)) return;
     await mutate(`module:archive:${module.id}`, `${endpoint}/modules/${module.id}/archive`, "POST", "archive", {}, () => {
       setEditDrafts((current) => removeKeys(current, [
         `module:${module.id}`,
@@ -302,7 +320,6 @@ export function CurriculumWorkspace({
   }
 
   async function archiveLesson(module: CurriculumModule, lesson: CurriculumLesson) {
-    if (!window.confirm(`Arquivar a aula ${lesson.title}?`)) return;
     await mutate(`lesson:archive:${lesson.id}`, `${endpoint}/modules/${module.id}/lessons/${lesson.id}/archive`, "POST", "archive", {}, () => {
       setEditDrafts((current) => removeKeys(current, [`lesson-title:${lesson.id}`, `lesson-content:${lesson.id}`]));
       setMessage(`Aula ${lesson.title} arquivada.`);
@@ -348,13 +365,41 @@ export function CurriculumWorkspace({
           {modules.map((module, moduleIndex) => <li key={module.id} data-testid={`module-${module.id}`}>
             <article className="curriculum-module" aria-labelledby={`module-title-${module.id}`}>
               <header><div><span>Módulo {moduleIndex + 1}</span><h3 id={`module-title-${module.id}`}>{module.title}</h3><small>{module.lessons.length}/{limits.lessons_per_module} aulas</small></div><div className="order-actions" aria-label={`Ordenar módulo ${module.title}`}><button data-focus-key={`module-move-up-${module.id}`} type="button" className="secondary-button" disabled={archived || moduleIndex === 0 || mutationState === "saving" || assetDirty} onClick={() => void reorderModules(moduleIndex, -1)} aria-label={`Mover módulo ${module.title} para cima`}>↑ <span>Subir</span></button><button data-focus-key={`module-move-down-${module.id}`} type="button" className="secondary-button" disabled={archived || moduleIndex === modules.length - 1 || mutationState === "saving" || assetDirty} onClick={() => void reorderModules(moduleIndex, 1)} aria-label={`Mover módulo ${module.title} para baixo`}>↓ <span>Descer</span></button></div></header>
-              {!archived ? <details className="curriculum-edit"><summary>Editar módulo</summary><form onSubmit={(event) => void updateModule(event, module)}><label htmlFor={`module-title-input-${module.id}`}>Nome do módulo</label><input id={`module-title-input-${module.id}`} name="title" value={editDrafts[`module:${module.id}`] ?? module.title} onChange={(event) => setEditDrafts((current) => ({ ...current, [`module:${module.id}`]: event.target.value }))} minLength={2} maxLength={160} required aria-invalid={invalidField === `module:update:${module.id}:title`} aria-describedby={invalidField === `module:update:${module.id}:title` ? `module-title-error-${module.id}` : undefined}/>{invalidField === `module:update:${module.id}:title` ? <span id={`module-title-error-${module.id}`} className="form-error">Informe um nome de módulo válido.</span> : null}<div className="inline-actions"><button className="primary-button" type="submit" disabled={mutationState === "saving" || assetDirty}>Salvar módulo</button><button className="danger-button" type="button" disabled={assetDirty} onClick={() => void archiveModule(module)}>Arquivar módulo</button></div></form></details> : null}
-              {module.lessons.length === 0 ? <p className="lesson-empty">Nenhuma aula neste módulo.</p> : <ol className="curriculum-lessons">{module.lessons.map((lesson, lessonIndex) => <li key={lesson.id} data-testid={`lesson-${lesson.id}`}><article aria-labelledby={`lesson-title-${lesson.id}`}><header><div><span>Aula {lessonIndex + 1}</span><h4 id={`lesson-title-${lesson.id}`}>{lesson.title}</h4></div><div className="order-actions"><button data-focus-key={`lesson-move-up-${lesson.id}`} className="secondary-button" type="button" disabled={archived || lessonIndex === 0 || mutationState === "saving" || assetDirty} onClick={() => void reorderLessons(module, lessonIndex, -1)} aria-label={`Mover aula ${lesson.title} para cima`}>↑ <span>Subir</span></button><button data-focus-key={`lesson-move-down-${lesson.id}`} className="secondary-button" type="button" disabled={archived || lessonIndex === module.lessons.length - 1 || mutationState === "saving" || assetDirty} onClick={() => void reorderLessons(module, lessonIndex, 1)} aria-label={`Mover aula ${lesson.title} para baixo`}>↓ <span>Descer</span></button></div></header><p>{lesson.content || "Aula de texto ainda sem conteúdo."}</p><LessonAssetPanel sellerId={sellerId} productId={productId} courseId={courseId} moduleId={module.id} lessonId={lesson.id} lessonTitle={lesson.title} courseVersion={courseVersion} archived={archived} onActivityChange={handleAssetActivity} onCommitted={handleAssetCommitted}/>{!archived ? <details className="curriculum-edit"><summary>Editar aula</summary><form onSubmit={(event) => void updateLesson(event, module, lesson)}><label htmlFor={`lesson-title-input-${lesson.id}`}>Nome da aula</label><input id={`lesson-title-input-${lesson.id}`} name="title" value={editDrafts[`lesson-title:${lesson.id}`] ?? lesson.title} onChange={(event) => setEditDrafts((current) => ({ ...current, [`lesson-title:${lesson.id}`]: event.target.value }))} minLength={2} maxLength={160} required aria-invalid={invalidField === `lesson:update:${lesson.id}:title`} aria-describedby={invalidField === `lesson:update:${lesson.id}:title` ? `lesson-title-error-${lesson.id}` : undefined}/>{invalidField === `lesson:update:${lesson.id}:title` ? <span id={`lesson-title-error-${lesson.id}`} className="form-error">Informe um nome de aula válido.</span> : null}<label htmlFor={`lesson-content-input-${lesson.id}`}>Conteúdo textual</label><textarea id={`lesson-content-input-${lesson.id}`} name="content" value={editDrafts[`lesson-content:${lesson.id}`] ?? lesson.content} onChange={(event) => setEditDrafts((current) => ({ ...current, [`lesson-content:${lesson.id}`]: event.target.value }))} maxLength={8192} aria-invalid={invalidField === `lesson:update:${lesson.id}:content`} aria-describedby={invalidField === `lesson:update:${lesson.id}:content` ? `lesson-content-error-${lesson.id}` : undefined}/>{invalidField === `lesson:update:${lesson.id}:content` ? <span id={`lesson-content-error-${lesson.id}`} className="form-error">O conteúdo textual ultrapassa o limite permitido.</span> : null}<div className="inline-actions"><button className="primary-button" type="submit" disabled={mutationState === "saving" || assetDirty}>Salvar aula</button><button className="danger-button" type="button" disabled={assetDirty} onClick={() => void archiveLesson(module, lesson)}>Arquivar aula</button></div></form></details> : null}</article></li>)}</ol>}
+              {!archived ? <details className="curriculum-edit"><summary>Editar módulo</summary><form onSubmit={(event) => void updateModule(event, module)}><label htmlFor={`module-title-input-${module.id}`}>Nome do módulo</label><input id={`module-title-input-${module.id}`} name="title" value={editDrafts[`module:${module.id}`] ?? module.title} onChange={(event) => setEditDrafts((current) => ({ ...current, [`module:${module.id}`]: event.target.value }))} minLength={2} maxLength={160} required aria-invalid={invalidField === `module:update:${module.id}:title`} aria-describedby={invalidField === `module:update:${module.id}:title` ? `module-title-error-${module.id}` : undefined}/>{invalidField === `module:update:${module.id}:title` ? <span id={`module-title-error-${module.id}`} className="form-error">Informe um nome de módulo válido.</span> : null}<div className="inline-actions"><button className="primary-button" type="submit" disabled={mutationState === "saving" || assetDirty}>Salvar módulo</button><button className="danger-button" type="button" disabled={assetDirty} onClick={() => requestArchive({ kind: "module", module })}>Arquivar módulo</button></div></form></details> : null}
+              {module.lessons.length === 0 ? <p className="lesson-empty">Nenhuma aula neste módulo.</p> : <ol className="curriculum-lessons">{module.lessons.map((lesson, lessonIndex) => <li key={lesson.id} data-testid={`lesson-${lesson.id}`}><article aria-labelledby={`lesson-title-${lesson.id}`}><header><div><span>Aula {lessonIndex + 1}</span><h4 id={`lesson-title-${lesson.id}`}>{lesson.title}</h4></div><div className="order-actions"><button data-focus-key={`lesson-move-up-${lesson.id}`} className="secondary-button" type="button" disabled={archived || lessonIndex === 0 || mutationState === "saving" || assetDirty} onClick={() => void reorderLessons(module, lessonIndex, -1)} aria-label={`Mover aula ${lesson.title} para cima`}>↑ <span>Subir</span></button><button data-focus-key={`lesson-move-down-${lesson.id}`} className="secondary-button" type="button" disabled={archived || lessonIndex === module.lessons.length - 1 || mutationState === "saving" || assetDirty} onClick={() => void reorderLessons(module, lessonIndex, 1)} aria-label={`Mover aula ${lesson.title} para baixo`}>↓ <span>Descer</span></button></div></header><p>{lesson.content || "Aula de texto ainda sem conteúdo."}</p><LessonAssetPanel sellerId={sellerId} productId={productId} courseId={courseId} moduleId={module.id} lessonId={lesson.id} lessonTitle={lesson.title} courseVersion={courseVersion} archived={archived} onActivityChange={handleAssetActivity} onCommitted={handleAssetCommitted}/>{!archived ? <details className="curriculum-edit"><summary>Editar aula</summary><form onSubmit={(event) => void updateLesson(event, module, lesson)}><label htmlFor={`lesson-title-input-${lesson.id}`}>Nome da aula</label><input id={`lesson-title-input-${lesson.id}`} name="title" value={editDrafts[`lesson-title:${lesson.id}`] ?? lesson.title} onChange={(event) => setEditDrafts((current) => ({ ...current, [`lesson-title:${lesson.id}`]: event.target.value }))} minLength={2} maxLength={160} required aria-invalid={invalidField === `lesson:update:${lesson.id}:title`} aria-describedby={invalidField === `lesson:update:${lesson.id}:title` ? `lesson-title-error-${lesson.id}` : undefined}/>{invalidField === `lesson:update:${lesson.id}:title` ? <span id={`lesson-title-error-${lesson.id}`} className="form-error">Informe um nome de aula válido.</span> : null}<label htmlFor={`lesson-content-input-${lesson.id}`}>Conteúdo textual</label><textarea id={`lesson-content-input-${lesson.id}`} name="content" value={editDrafts[`lesson-content:${lesson.id}`] ?? lesson.content} onChange={(event) => setEditDrafts((current) => ({ ...current, [`lesson-content:${lesson.id}`]: event.target.value }))} maxLength={8192} aria-invalid={invalidField === `lesson:update:${lesson.id}:content`} aria-describedby={invalidField === `lesson:update:${lesson.id}:content` ? `lesson-content-error-${lesson.id}` : undefined}/>{invalidField === `lesson:update:${lesson.id}:content` ? <span id={`lesson-content-error-${lesson.id}`} className="form-error">O conteúdo textual ultrapassa o limite permitido.</span> : null}<div className="inline-actions"><button className="primary-button" type="submit" disabled={mutationState === "saving" || assetDirty}>Salvar aula</button><button className="danger-button" type="button" disabled={assetDirty} onClick={() => requestArchive({ kind: "lesson", module, lesson })}>Arquivar aula</button></div></form></details> : null}</article></li>)}</ol>}
               {!archived ? <form className="lesson-create" onSubmit={(event) => void createLesson(event, module)} data-testid={`lesson-create-form-${module.id}`}><fieldset disabled={mutationState === "saving" || assetDirty || (usage.lessons_by_module[module.id] ?? module.lessons.length) >= limits.lessons_per_module || usage.lessons_total >= limits.lessons_per_course}><legend>Adicionar aula de texto</legend><label htmlFor={`new-lesson-title-${module.id}`}>Nome da aula</label><input id={`new-lesson-title-${module.id}`} name="title" value={lessonDrafts[module.id]?.title ?? ""} onChange={(event) => setLessonDrafts((current) => ({ ...current, [module.id]: { title: event.target.value, content: current[module.id]?.content ?? "" } }))} minLength={2} maxLength={160} required aria-invalid={invalidField === `lesson:create:${module.id}:title`} aria-describedby={invalidField === `lesson:create:${module.id}:title` ? `new-lesson-title-error-${module.id}` : undefined}/>{invalidField === `lesson:create:${module.id}:title` ? <span id={`new-lesson-title-error-${module.id}`} className="form-error">Informe um nome de aula válido.</span> : null}<label htmlFor={`new-lesson-content-${module.id}`}>Conteúdo textual</label><textarea id={`new-lesson-content-${module.id}`} name="content" value={lessonDrafts[module.id]?.content ?? ""} onChange={(event) => setLessonDrafts((current) => ({ ...current, [module.id]: { title: current[module.id]?.title ?? "", content: event.target.value } }))} maxLength={8192} aria-invalid={invalidField === `lesson:create:${module.id}:content`} aria-describedby={invalidField === `lesson:create:${module.id}:content` ? `new-lesson-content-error-${module.id}` : undefined}/>{invalidField === `lesson:create:${module.id}:content` ? <span id={`new-lesson-content-error-${module.id}`} className="form-error">O conteúdo textual ultrapassa o limite permitido.</span> : null}<button className="primary-button" type="submit">Adicionar aula</button></fieldset></form> : null}
             </article>
           </li>)}
         </ol>
       )}
+      {pendingArchive ? (
+        <AccessibleDialog
+          titleId="curriculum-archive-title"
+          descriptionId="curriculum-archive-description"
+          initialFocusRef={archiveKeepButton}
+          onClose={() => setPendingArchive(null)}
+        >
+          <p className="eyebrow">Ação irreversível</p>
+          <h2 id="curriculum-archive-title">
+            {pendingArchive.kind === "module"
+              ? `Arquivar o módulo ${pendingArchive.module.title}?`
+              : `Arquivar a aula ${pendingArchive.lesson.title}?`}
+          </h2>
+          <p id="curriculum-archive-description">
+            {pendingArchive.kind === "module"
+              ? "As aulas dentro dele saem junto. Quem já tem acesso continua vendo a versão publicada até você publicar outra."
+              : "Ela sai do curso. Quem já tem acesso continua vendo a versão publicada até você publicar outra."}
+          </p>
+          <div className="dialog-actions">
+            <button ref={archiveKeepButton} type="button" className="secondary-button" onClick={() => setPendingArchive(null)}>
+              Manter
+            </button>
+            <button type="button" className="danger-button" onClick={() => void confirmArchive()}>
+              Arquivar
+            </button>
+          </div>
+        </AccessibleDialog>
+      ) : null}
     </section>
   );
 }

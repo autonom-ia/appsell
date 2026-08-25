@@ -212,6 +212,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   const [offerStatusState, setOfferStatusState] = useState<OfferStatusState>("idle");
   const [publishDialogOpen, setPublishDialogOpen] = useState(false);
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
+  const [pendingSection, setPendingSection] = useState<EditorSection | null>(null);
   const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
   const [curriculumDirty, setCurriculumDirty] = useState(false);
   const [curriculumBusy, setCurriculumBusy] = useState(false);
@@ -225,6 +226,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   const offerId = useRef<string | null>(null);
   const formElement = useRef<HTMLFormElement>(null);
   const publishCancelButton = useRef<HTMLButtonElement>(null);
+  const sectionKeepButton = useRef<HTMLButtonElement>(null);
   const leaveCancelButton = useRef<HTMLButtonElement>(null);
   const publishTriggerButton = useRef<HTMLButtonElement>(null);
   const archiveTriggerButton = useRef<HTMLButtonElement>(null);
@@ -341,11 +343,15 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
 
   async function saveDraft(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!detail || saveState === "saving") return;
+    await persistDraft();
+  }
+
+  async function persistDraft(): Promise<boolean> {
+    if (!detail || saveState === "saving") return false;
     const savingOffer = section === "oferta";
     // Guarda de defesa: o form já é desabilitado por offerLocked, mas o submit
     // pode chegar por Enter durante uma transição em voo — não salvar nesse caso.
-    if (savingOffer && (detail.offer.status !== "draft" || offerStatusState === "transitioning")) return;
+    if (savingOffer && (detail.offer.status !== "draft" || offerStatusState === "transitioning")) return false;
     const submitted = fields;
     const submittedUnitAmountMinor = savingOffer ? parsePriceInputToMinor(submitted.offer_price) : null;
     if (savingOffer && submittedUnitAmountMinor === null) {
@@ -353,7 +359,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       setSaveState("invalid");
       const input = formElement.current?.elements.namedItem("offer_price");
       if (input instanceof HTMLElement) input.focus();
-      return;
+      return false;
     }
     const submittedVersions = versionsFromDetail(detail);
     const key = updateIdempotencyKey.current ?? crypto.randomUUID();
@@ -397,13 +403,19 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
           if (input instanceof HTMLElement) input.focus();
         } else if (response.status === 503) setSaveState("unavailable");
         else setSaveState("error");
-        return;
+        return false;
       }
       const refreshResponse = await fetch(`/api/sellers/${sellerId}/products/${productId}`, { cache: "no-store", signal: controller.signal });
-      if (!refreshResponse.ok) return setSaveState("unavailable");
+      if (!refreshResponse.ok) {
+        setSaveState("unavailable");
+        return false;
+      }
       const payload = await refreshResponse.json() as EditorPayload & ProductDetail;
       const updated = normalizeEditorPayload(payload);
-      if (!updated) return setSaveState("error");
+      if (!updated) {
+        setSaveState("error");
+        return false;
+      }
       updateIdempotencyKey.current = null;
       setDetail({ ...updated, readiness: payload.readiness ?? updated.readiness });
       setCurriculumSummary(updated.curriculum);
@@ -419,8 +431,10 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       }
       setPreview(null);
       setPreviewState("idle");
+      return true;
     } catch {
       setSaveState("unavailable");
+      return false;
     } finally {
       clearTimeout(timeout);
     }
@@ -641,17 +655,35 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       return;
     }
     if (target === section || !editorDirty || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    if (!window.confirm("Há alterações não salvas nesta etapa. Descartar e continuar?")) {
-      event.preventDefault();
-      return;
-    }
+    // Leaving with unsaved work used to be a browser confirm whose only outcomes
+    // were losing the edits or staying put. Keeping them is the outcome a seller
+    // actually wants, so it has to be on offer.
+    event.preventDefault();
+    setPendingSection(target);
+  }
+
+  function goToPendingSection() {
+    const target = pendingSection;
+    setPendingSection(null);
+    if (!target) return;
+    setCurriculumDirty(false);
+    router.replace(`?section=${target}`, { scroll: false });
+  }
+
+  function discardAndGo() {
     if (dirty) {
       setFields(savedFields);
       fieldsRef.current = savedFields;
       setSaveState("idle");
       setInvalidField("");
     }
-    setCurriculumDirty(false);
+    goToPendingSection();
+  }
+
+  async function saveAndGo() {
+    const saved = await persistDraft();
+    if (!saved) return;
+    goToPendingSection();
   }
 
   function closePublishDialog() {
@@ -846,6 +878,33 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
             <p className="eyebrow">Ação irreversível</p><h2 id="archive-dialog-title">Arquivar esta oferta?</h2>
             <p id="archive-dialog-description">Arquivar é definitivo: a oferta sai da vitrine e não pode voltar a rascunho nem ser ativada de novo. Para apenas editar, use &quot;Despublicar para editar&quot;.</p>
             <div className="dialog-actions"><button ref={archiveCancelButton} className="secondary-button" type="button" onClick={() => setArchiveDialogOpen(false)}>Cancelar</button><button className="danger-button" type="button" onClick={() => { setArchiveDialogOpen(false); void transitionOffer("archived"); }}>Arquivar definitivamente</button></div>
+        </AccessibleDialog>
+      ) : null}
+
+      {pendingSection ? (
+        <AccessibleDialog
+          titleId="section-leave-title"
+          descriptionId="section-leave-description"
+          initialFocusRef={sectionKeepButton}
+          onClose={() => setPendingSection(null)}
+        >
+          <p className="eyebrow">Alterações não salvas</p>
+          <h2 id="section-leave-title">Guardar antes de sair desta etapa?</h2>
+          <p id="section-leave-description">
+            Você editou algo aqui e ainda não salvou. Pode guardar agora e seguir, ou descartar
+            o que mudou nesta etapa.
+          </p>
+          <div className="dialog-actions">
+            <button ref={sectionKeepButton} type="button" className="secondary-button" onClick={() => setPendingSection(null)}>
+              Continuar editando
+            </button>
+            <button type="button" className="primary-button" disabled={saveState === "saving"} onClick={() => void saveAndGo()}>
+              {saveState === "saving" ? "Salvando…" : "Salvar e continuar"}
+            </button>
+            <button type="button" className="danger-button" onClick={discardAndGo}>
+              Descartar
+            </button>
+          </div>
         </AccessibleDialog>
       ) : null}
 
