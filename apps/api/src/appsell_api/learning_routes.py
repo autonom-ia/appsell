@@ -370,13 +370,15 @@ async def authorize_asset(request: Request, entitlement_id: UUID, asset_id: UUID
     # and it is gated on the seller having marked the material downloadable.
     if is_document(row["media_type"]):
         return {
-            "asset_id": str(row["asset_id"]),
-            "asset_version": row["asset_version"],
-            "title": row["title"],
-            "media_type": row["media_type"],
-            "byte_size": row["byte_size"],
-            "sha256": row["sha256"],
-            "delivery": "download_only",
+            "asset": {
+                "id": str(row["asset_id"]),
+                "delivery": "download_only",
+                "file_name": row["file_name"],
+                "title": row["title"],
+                "media_type": row["media_type"],
+                "byte_size": row["byte_size"],
+                "sha256": row["sha256"],
+            }
         }
     if row["media_type"] == "application/pdf":
         return {

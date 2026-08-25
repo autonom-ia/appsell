@@ -1,5 +1,7 @@
 import "server-only";
 
+import type { AssetMediaType } from "./asset-media";
+
 import { createHash, timingSafeEqual } from "node:crypto";
 import demoCodexAssets from "./demo-codex-assets.json";
 import { capacityLocalCiRuntimeEnabled } from "./capacity-local-ci-runtime";
@@ -940,7 +942,7 @@ export async function createDomainAssetUploadIntent(
     existingAssetId?: string;
     title: string;
     fileName: string;
-    mediaType: "application/pdf" | "video/mp4";
+    mediaType: AssetMediaType;
     byteSize: number;
     sha256: string;
   }

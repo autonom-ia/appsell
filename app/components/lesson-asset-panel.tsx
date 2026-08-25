@@ -2,10 +2,17 @@
 
 import { ChangeEvent, MouseEvent as ReactMouseEvent, useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { sha256File } from "../../lib/file-sha256.client";
+import {
+  ASSET_UPLOAD_ACCEPT,
+  assetMediaLimit,
+  assetMediaSpec,
+  assetMediaTypeForFile,
+  isDownloadableMedia,
+  type AssetMediaType
+} from "../../lib/asset-media";
 import { AccessibleDialog } from "./accessible-dialog";
 
-const MAX_PDF_BYTES = 10 * 1024 * 1024;
-const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
+
 export const MAX_VERIFICATION_WAIT_MS = 15_000;
 const MATERIAL_PREPARATION_MESSAGE = "Arquivo recebido. Verificando segurança…";
 const MATERIAL_DELAYED_MESSAGE = "A verificação está demorando mais que o esperado. O arquivo continua sendo processado; você pode continuar editando e verificar novamente em instantes.";
@@ -29,7 +36,7 @@ interface AssetView {
   title: string;
   file_name: string;
   byte_size: number;
-  media_type: "application/pdf" | "video/mp4";
+  media_type: AssetMediaType;
   status: AssetStatus;
   content_role: "course_content" | "support_material";
   download_allowed: boolean;
@@ -392,9 +399,9 @@ export function LessonAssetPanel({
     stopTransientWork();
     const generation = generationRef.current;
     const mediaType = selectedMediaType(file);
-    const maximum = mediaType === "application/pdf" ? MAX_PDF_BYTES : mediaType === "video/mp4" ? MAX_VIDEO_BYTES : 0;
+    const maximum = assetMediaLimit(mediaType);
     if (!mediaType || file.size < 1 || file.size > maximum) {
-      dispatch({ type: "phase", phase: "failed", message: "Escolha um PDF de até 10 MiB ou vídeo MP4 de até 100 MiB.", fileName: file.name });
+      dispatch({ type: "phase", phase: "failed", message: uploadRefusalMessage(file), fileName: file.name });
       event.target.value = "";
       return;
     }
@@ -427,7 +434,7 @@ export function LessonAssetPanel({
     if (event.nativeEvent.isTrusted) replacementTargetRef.current = null;
   }
 
-  async function createIntentAndUpload(file: File, mediaType: "application/pdf" | "video/mp4", sha256: string, generation: number) {
+  async function createIntentAndUpload(file: File, mediaType: AssetMediaType, sha256: string, generation: number) {
     if (!csrf) throw new Error("missing_csrf");
     dispatch({ type: "phase", phase: "creating", message: "Preparando envio seguro…", fileName: file.name });
     const body = new FormData();
@@ -582,7 +589,7 @@ export function LessonAssetPanel({
     downloadAllowed: boolean
   ) {
     if (!csrf || policySavingId || archived) return;
-    const safeDownload = asset.media_type === "application/pdf" &&
+    const safeDownload = isDownloadableMedia(asset.media_type) &&
       contentRole === "support_material" && downloadAllowed;
     const operation = `${asset.id}:${contentRole}:${safeDownload}`;
     const idempotencyKey = policyKeysRef.current.get(operation) ?? crypto.randomUUID();
@@ -658,7 +665,7 @@ export function LessonAssetPanel({
               <option value="course_content">Conteúdo do curso — protegido</option>
               <option value="support_material">Material de apoio</option>
             </select>
-            {asset.media_type === "application/pdf" && asset.content_role === "support_material"
+            {isDownloadableMedia(asset.media_type) && asset.content_role === "support_material"
               ? <label className="asset-download-toggle">
                   <input
                     type="checkbox"
@@ -681,9 +688,9 @@ export function LessonAssetPanel({
         {!archived && loaded ? <div className="asset-uploader">
           <div className="asset-file-picker">
             <label className="asset-file-label" htmlFor={`asset-file-${lessonId}`} onClick={() => { replacementTargetRef.current = null; }}>{readyAssets.length > 0 ? "Adicionar outro material" : "Adicione um PDF ou vídeo MP4"}</label>
-            <input ref={inputRef} id={`asset-file-${lessonId}`} type="file" accept="application/pdf,.pdf,video/mp4,.mp4" onClick={resetReplacementOnDirectPickerClick} onChange={(event) => void selectFile(event)} disabled={busy}/>
+            <input ref={inputRef} id={`asset-file-${lessonId}`} type="file" accept={ASSET_UPLOAD_ACCEPT} onClick={resetReplacementOnDirectPickerClick} onChange={(event) => void selectFile(event)} disabled={busy}/>
           </div>
-          <p className="asset-help">PDF até 10 MiB ou MP4 até 100 MiB. O arquivo só entra em uma nova publicação depois da verificação.</p>
+          <p className="asset-help">PDF ou vídeo MP4 como conteúdo da aula. Documento, planilha, apresentação ou texto como material de apoio para baixar. O arquivo só entra em uma nova publicação depois da verificação.</p>
         </div> : null}
 
         <div className={`asset-feedback state-${state.phase}`} role="status" aria-live="polite" aria-atomic="true" tabIndex={state.phase === "failed" || state.phase === "delayed" ? -1 : undefined}>
@@ -710,24 +717,30 @@ export function LessonAssetPanel({
 
 function validListPayload(value: AssetListPayload): boolean {
   return Array.isArray(value.assets) && Array.isArray(value.uploads) && Boolean(value.csrf)
-    && value.assets.every((asset) => (asset.media_type === "application/pdf" || asset.media_type === "video/mp4")
+    && value.assets.every((asset) => assetMediaSpec(asset.media_type) !== null
       && (asset.content_role === "course_content" || asset.content_role === "support_material")
       && typeof asset.download_allowed === "boolean"
       && (!asset.download_allowed || (
-        asset.content_role === "support_material" && asset.media_type === "application/pdf"
+        asset.content_role === "support_material" && isDownloadableMedia(asset.media_type)
       )))
     && ["intent", "confirm", "cancel", "archive", "policy"].every((key) => typeof value.csrf[key as keyof AssetListPayload["csrf"]] === "string");
 }
 
-function selectedMediaType(file: File): "application/pdf" | "video/mp4" | null {
-  const lower = file.name.toLowerCase();
-  if (lower.endsWith(".pdf") && (!file.type || file.type === "application/pdf")) return "application/pdf";
-  if (lower.endsWith(".mp4") && (!file.type || file.type === "video/mp4")) return "video/mp4";
-  return null;
+function uploadRefusalMessage(file: File): string {
+  const mediaType = assetMediaTypeForFile(file.name, file.type);
+  if (!mediaType) return "Formato não aceito. Envie PDF, MP4, documento, planilha, apresentação ou texto.";
+  const limit = assetMediaLimit(mediaType);
+  return `Este arquivo passa do limite de ${formatBytes(limit)} para o formato escolhido.`;
 }
 
-function mediaLabel(mediaType: "application/pdf" | "video/mp4") {
-  return mediaType === "video/mp4" ? "vídeo" : "PDF";
+function selectedMediaType(file: File): AssetMediaType | null {
+  return assetMediaTypeForFile(file.name, file.type);
+}
+
+function mediaLabel(mediaType: AssetMediaType) {
+  if (mediaType === "video/mp4") return "vídeo";
+  if (mediaType === "application/pdf") return "PDF";
+  return "documento";
 }
 
 export function validIntent(
