@@ -228,12 +228,9 @@ alter table public.asset_blob add constraint asset_blob_media_contract_check che
         _widen(
             "create_asset_upload_intent", _INTENT_ANCHOR, _INTENT_REPLACEMENT, "the upload intent"
         ),
-        _widen(
-            "finalize_asset_verification",
-            _FINALIZE_ANCHOR,
-            _FINALIZE_REPLACEMENT,
-            "the verification finaliser",
-        ),
+        # Only the versioned finaliser carries the media branch. The plain
+        # wrapper decides on PDF alone and already lets every other format
+        # through, so there is nothing in it to widen.
         _widen(
             "finalize_asset_verification_v2",
             _FINALIZE_ANCHOR,
@@ -334,12 +331,6 @@ def downgrade() -> None:
             _FINALIZE_REPLACEMENT,
             _FINALIZE_ANCHOR,
             "the versioned verification finaliser back",
-        ),
-        _widen(
-            "finalize_asset_verification",
-            _FINALIZE_REPLACEMENT,
-            _FINALIZE_ANCHOR,
-            "the verification finaliser back",
         ),
         _widen(
             "create_asset_upload_intent",

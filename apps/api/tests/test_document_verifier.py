@@ -88,17 +88,52 @@ def test_a_part_escaping_its_directory_is_refused() -> None:
         verify(payload, DOCX_MEDIA_TYPE)
 
 
-def test_a_container_declaring_an_enormous_expansion_is_refused() -> None:
-    # A zip bomb declares a huge uncompressed size in its own directory. Forging
-    # that field is exactly what a malicious archive does, and it is what the
-    # guard reads, so no gigabyte has to be produced to exercise the refusal.
+def test_a_bomb_is_refused_by_what_it_declares() -> None:
+    """The classic bomb inflates its own declared size so consumers allocate.
+
+    Forging that field is exactly what such an archive does, and it is the first
+    number the guard reads, so the refusal happens before any part is opened and
+    without producing a gigabyte here.
+    """
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
-        for name, payload in WORD.items():
-            archive.writestr(name, payload)
+        for name, part in WORD.items():
+            archive.writestr(name, part)
         archive.writestr("word/huge.xml", "a")
         archive.filelist[-1].file_size = 512 * 1024 * 1024
     with pytest.raises(DocumentRejected, match="expands"):
+        verify(buffer.getvalue(), DOCX_MEDIA_TYPE)
+
+
+def test_a_bomb_is_also_measured_by_what_it_really_contains() -> None:
+    """And the opposite lie is covered by reading the parts.
+
+    An archive that understates its own header would slip past a check that only
+    believes the directory, so the second pass reads until the ceiling.
+    """
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, part in WORD.items():
+            archive.writestr(name, part)
+        archive.writestr("word/huge.xml", "\0" * (300 * 1024 * 1024))
+    bomb = buffer.getvalue()
+    assert len(bomb) < 2 * 1024 * 1024, "the bomb must stay small on disk"
+    with pytest.raises(DocumentRejected, match="expands"):
+        verify(bomb, DOCX_MEDIA_TYPE)
+
+
+def test_a_repeated_part_name_is_refused() -> None:
+    """Two parts under one name let a reader and this validator disagree.
+
+    Python resolves a duplicate name to the last entry, so a macro declaring
+    manifest planted first would be checked against a clean copy planted last.
+    """
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types ContentType='ms-office.vbaProject'/>")
+        archive.writestr("word/document.xml", "<w/>")
+        archive.writestr("[Content_Types].xml", "<Types/>")
+    with pytest.raises(DocumentRejected, match="repeats a part name"):
         verify(buffer.getvalue(), DOCX_MEDIA_TYPE)
 
 

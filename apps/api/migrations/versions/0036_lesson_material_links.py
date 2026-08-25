@@ -67,7 +67,7 @@ create function app_private.create_lesson_material_link(
   p_actor uuid,p_seller uuid,p_product uuid,p_course uuid,p_module uuid,p_lesson uuid,
   p_kind text,p_title text,p_url text,p_provider text,p_video_id text,
   p_expected_course_version bigint,p_idempotency uuid,p_body text,p_request uuid
-) returns table(material_id uuid, course_version bigint, position integer)
+) returns table(material_id uuid, course_version bigint, "position" integer)
 language plpgsql security definer
 set search_path=pg_catalog,app_private,public,pg_temp as $$
 declare
@@ -146,7 +146,7 @@ create function app_private.list_lesson_material_links(
   p_actor uuid,p_seller uuid,p_product uuid,p_course uuid,p_module uuid,p_lesson uuid
 ) returns table(
   material_id uuid, kind text, title text, url text,
-  provider text, video_id text, position integer
+  provider text, video_id text, "position" integer
 )
 language plpgsql stable security definer
 set search_path=pg_catalog,app_private,public,pg_temp as $$
@@ -326,7 +326,12 @@ def upgrade() -> None:
         statements.append(f"revoke all on function {signature} from public")
         statements.append(f"grant execute on function {signature} to appsell_runtime")
     statements.append(
-        _widen("project_publication", _PROJECTION_ANCHOR, _PROJECTION_REPLACEMENT, "materials")
+        _widen(
+            "curriculum_courses_snapshot",
+            _PROJECTION_ANCHOR,
+            _PROJECTION_REPLACEMENT,
+            "materials",
+        )
     )
     statements.append(
         f"""
@@ -393,7 +398,7 @@ def downgrade() -> None:
         end $migration$
         """,
         _widen(
-            "project_publication",
+            "curriculum_courses_snapshot",
             _PROJECTION_REPLACEMENT,
             _PROJECTION_ANCHOR,
             "materials back out of",

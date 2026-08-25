@@ -129,16 +129,24 @@ def _validate_ooxml(path: Path, media_type: str) -> None:
             entries = container.infolist()
             if len(entries) > _MAX_ENTRIES:
                 raise DocumentRejected("office document holds too many parts")
-            expanded = 0
             names: list[str] = []
+            declared = 0
             for entry in entries:
                 name = entry.filename
                 if name.startswith("/") or ".." in Path(name).parts or "\\" in name:
                     raise DocumentRejected("office document part name is unsafe")
-                expanded += entry.file_size
-                if expanded > _MAX_EXPANDED_BYTES:
+                # The classic bomb declares an enormous size so the consumer
+                # allocates for it. Refusing on the declared number stops that
+                # before a single part is read.
+                declared += entry.file_size
+                if declared > _MAX_EXPANDED_BYTES:
                     raise DocumentRejected("office document expands beyond the allowed size")
                 names.append(name.lower())
+            # Two parts under one name let a reader and this validator disagree
+            # about which copy is real, which is exactly how a macro declaration
+            # hides behind a clean duplicate.
+            if len(set(names)) != len(names):
+                raise DocumentRejected("office document repeats a part name")
             if _CONTENT_TYPES_PART.lower() not in names:
                 raise DocumentRejected("office document has no content type manifest")
             if _REQUIRED_PART[media_type].lower() not in names:
@@ -148,8 +156,32 @@ def _validate_ooxml(path: Path, media_type: str) -> None:
             manifest = container.read(_CONTENT_TYPES_PART).decode("utf-8", "replace").lower()
             if any(marker in manifest for marker in _MACRO_MARKERS):
                 raise DocumentRejected("office document declares a macro part")
+            _measure_expansion(container, entries)
     except zipfile.BadZipFile as error:
         raise DocumentRejected("office document container is unreadable") from error
+
+
+def _measure_expansion(container: zipfile.ZipFile, entries: list[zipfile.ZipInfo]) -> None:
+    """Measure what the parts really expand to, alongside what they claim.
+
+    The declared size stops the classic bomb, which inflates that field so the
+    consumer allocates for it. This second pass covers the opposite lie: an
+    archive whose header understates its content. Together they mean neither
+    number alone has to be trusted, and the read stops at the ceiling rather than
+    after the damage.
+    """
+    expanded = 0
+    for entry in entries:
+        if entry.is_dir():
+            continue
+        with container.open(entry) as part:
+            while True:
+                chunk = part.read(_CHUNK)
+                if not chunk:
+                    break
+                expanded += len(chunk)
+                if expanded > _MAX_EXPANDED_BYTES:
+                    raise DocumentRejected("office document expands beyond the allowed size")
 
 
 def _validate_text(path: Path, media_type: str) -> None:

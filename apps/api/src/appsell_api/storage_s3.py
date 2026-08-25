@@ -270,7 +270,12 @@ class S3Storage:
         file_name: str,
     ) -> StoredObject:
         checksum = _checksum_b64(sha256_hex)
-        disposition = _asset_content_disposition(file_name, content_type, "inline")
+        # A document is stored to be downloaded. Asking for inline here is what
+        # the delivery guard refuses, so promoting one would crash rather than
+        # store.
+        disposition = _asset_content_disposition(
+            file_name, content_type, "attachment" if is_document(content_type) else "inline"
+        )
         version_id = ""
         try:
             with source_path.open("rb") as source:
