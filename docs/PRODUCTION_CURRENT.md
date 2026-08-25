@@ -2,7 +2,7 @@
 
 > Fonte operacional para retomar o projeto sem depender do histórico da conversa.
 >
-> Última verificação documentada: 2026-08-23. Esta página separa o que foi
+> Última verificação documentada: 2026-08-25. Esta página separa o que foi
 > comprovado na produção do que continua sendo plano ou laboratório Local/CI.
 
 ## Release em produção
@@ -11,16 +11,25 @@
 |---|---|
 | Domínio | `https://sell.autonomia.site` |
 | Ambiente | VPS EasyPanel nativo, Docker Swarm |
-| SHA implantado | `2c8a36897eadf624955810ffdaee7b33c6239334` |
-| Imagens | `web:2c8a3689`, `api:2c8a3689`, `asset-worker:2c8a3689` |
+| SHA implantado | `3ddd58b9d2efe192185f0708fd024b5ca278ed7e` |
+| Imagens | `web:3ddd58b`, `api:3ddd58b`, `asset-worker:3ddd58b` |
 | API health | `{"status":"ok","database":true,"storage":true,"pdf_sandbox":true}` |
+| Web health | `{"status":"ok","redis":true,"api":true,"storage_upload":true}` |
 | CI pós-merge | [run 32656218821](https://github.com/autonom-ia/appsell/actions/runs/32656218821) — success |
 | PR | [#201](https://github.com/autonom-ia/appsell/pull/201) — merged |
 | Entrega | [Issue #195](https://github.com/autonom-ia/appsell/issues/195) — 14/14 aceites, encerrada |
 
-O release não adicionou migration nem alterou runtime de produção; a PR #201
-consolidou os gates e os testes do fluxo real. O banco de produção permanece no
-head `0032_platform_superadmin_catalog`.
+O release de 2026-08-25 aplicou as migrations `0034`, `0035` e `0036` e trocou
+as imagens de web, api e asset-worker. O banco de produção está no head
+`0036_lesson_material_links` com `app_private.schema_ready()` = `t`.
+
+Antes desta entrega o estado real divergia desta página: produção rodava
+`50b6301` com o banco em `0033_pdf_study_state`, não `2c8a3689`/`0032`.
+
+Backup lógico pré-cutover:
+`/home/claudete/backups/appsell/appsell_native_90_20260825T114340Z.dump`
+(881 KB, 828 objetos, validado com `pg_restore --list`, permissão 600).
+Rollback de imagem: tag `easypanel/sell-autonomia/api:50b6301` segue no host.
 
 ## Hierarquia de contas
 
