@@ -5,6 +5,14 @@ import { resolveBuyerIdentity } from "@/lib/buyer-identity.server";
 import { resolveCheckoutProduct } from "@/lib/checkout-config";
 import { directChargeApplicationFeeCents } from "@/lib/checkout-fee";
 import {
+  checkoutProvider,
+  checkoutWebhookEndpointKey,
+  createFinancialExternalCheckoutIntent,
+  financialCheckoutOperatorId,
+  FinancialExternalCheckoutConfigError,
+  FinancialExternalCheckoutError
+} from "@/lib/financial-external-checkout.server";
+import {
   DomainApiError,
   readPublicStorefront,
   resolveCheckoutPayoutDestination
@@ -50,10 +58,9 @@ export async function POST(request: NextRequest) {
   const input = parseCreateSessionInput(rawBody);
   if (!input) return jsonError("invalid_request", 400);
 
-  // Product must be provisioned to a Financial product key (interim map, Refs
-  // #96); otherwise it is not sellable and we must not create a charge.
+  const provider = checkoutProvider();
   const mapping = resolveCheckoutProduct(input.sellerSlug, input.productSlug);
-  if (!mapping) return jsonError("product_not_configured", 409);
+  if (provider === "local_stripe" && !mapping) return jsonError("product_not_configured", 409);
 
   let storefront: unknown;
   try {
@@ -110,14 +117,65 @@ export async function POST(request: NextRequest) {
     return jsonError("seller_not_ready_to_charge", 409);
   }
 
+  const origin = configuredPublicOrigin();
+  const applicationFeeCents = destination ? directChargeApplicationFeeCents(amount) : null;
+  if (provider === "financial_checkout") {
+    try {
+      const endpointKey = checkoutWebhookEndpointKey();
+      const result = await createFinancialExternalCheckoutIntent({
+        operatorId: financialCheckoutOperatorId(),
+        seller: {
+          id: parsed.seller.id,
+          slug: parsed.seller.slug,
+          name: parsed.seller.name
+        },
+        buyer: {
+          userId: buyerIdentitySub,
+          email: input.buyerEmail,
+          identitySub: buyerIdentitySub
+        },
+        product: {
+          externalProductId: product.id,
+          externalOfferId: product.publication_id,
+          fulfillmentExternalProductId: mapping?.financialProductKey ?? product.id,
+          title: product.title,
+          description: product.description || null,
+          imageUrl: null
+        },
+        pricing: {
+          amountMinor: amount,
+          currency: "BRL",
+          billingPeriod: "one_time"
+        },
+        connect: {
+          accountId: destination?.provider_account_id ?? null,
+          applicationFeeAmountMinor: applicationFeeCents
+        },
+        successUrl: `${origin}/library?checkout=success`,
+        cancelUrl: `${origin}/s/${input.sellerSlug}/p/${input.productSlug}?checkout=cancelled`,
+        fulfillmentWebhookUrl: `${origin}/api/webhooks/checkouts/${endpointKey}`,
+        fulfillmentEndpointKey: endpointKey,
+        idempotencyKey: crypto.randomUUID()
+      });
+      return NextResponse.json({ url: result.checkoutUrl }, { headers: noStore() });
+    } catch (error) {
+      if (error instanceof FinancialExternalCheckoutConfigError) return jsonError("financial_checkout_not_configured", 503);
+      if (error instanceof FinancialExternalCheckoutError) {
+        return jsonError(
+          error.status >= 400 && error.status < 500 ? "financial_checkout_rejected" : "financial_checkout_unavailable",
+          error.status >= 400 && error.status < 500 ? 409 : 503
+        );
+      }
+      return jsonError("financial_checkout_unavailable", 503);
+    }
+  }
+
   let sessionUrl: string | null;
   try {
-    const origin = configuredPublicOrigin();
     const orderId = crypto.randomUUID();
     // Commission computed server-side from the pricing contract; never from
     // the request. Only meaningful on a direct charge — the legacy platform
     // branch has no connected account to split against.
-    const applicationFeeCents = destination ? directChargeApplicationFeeCents(amount) : null;
     const session = await stripeClient().checkout.sessions.create({
       mode: "payment",
       // Pinned, NOT inherited from the Dashboard payment-method configuration.
@@ -145,7 +203,7 @@ export async function POST(request: NextRequest) {
       cancel_url: `${origin}/s/${input.sellerSlug}/p/${input.productSlug}?checkout=cancelled`,
       metadata: {
         // external_product_id for the self-emitted webhook.
-        financial_product_key: mapping.financialProductKey,
+        financial_product_key: mapping!.financialProductKey,
         order_id: orderId,
         buyer_email: input.buyerEmail,
         // The buyer's authenticated subject, resolved server-side — the browser
