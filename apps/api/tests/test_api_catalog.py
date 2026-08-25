@@ -1569,3 +1569,97 @@ async def test_rotate_access_link_keeps_the_seat_budget() -> None:
     statement, parameters = auth.session.calls[0]
     assert "app_private.rotate_product_access_link" in statement
     assert parameters["token_sha256"] == "c" * 64
+
+
+def material_body(**overrides: Any) -> bytes:
+    value: dict[str, Any] = {
+        "idempotency_key": str(uuid4()),
+        "expected_course_version": 2,
+        "kind": "external",
+        "title": "Circular oficial",
+        "url": "https://www.gov.br/susep/circular-621",
+        **overrides,
+    }
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode()
+
+
+def material_path(product_id: UUID, course_id: UUID, module_id: UUID, lesson_id: UUID) -> str:
+    return (
+        f"/v1/me/sellers/{SELLER_ID}/products/{product_id}/courses/{course_id}"
+        f"/modules/{module_id}/lessons/{lesson_id}/materials"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_external_material_is_stored_and_never_fetched() -> None:
+    # The server keeps the address and hands it to the student. It must not visit
+    # it, because that would turn a seller supplied string into a server request.
+    product_id, course_id, module_id, lesson_id = uuid4(), uuid4(), uuid4(), uuid4()
+    material_id = uuid4()
+    auth = FakeAuth(
+        seller_id=SELLER_ID,
+        result=FakeResult(one={"material_id": material_id, "course_version": 3, "position": 0}),
+    )
+    async with client_for(auth) as client:
+        response = await client.post(
+            material_path(product_id, course_id, module_id, lesson_id),
+            content=material_body(),
+        )
+    assert response.status_code == 201
+    assert response.json()["material_id"] == str(material_id)
+    assert auth.capabilities == ["catalog.curriculum.create"]
+    statement, parameters = auth.session.calls[0]
+    assert "app_private.create_lesson_material_link" in statement
+    assert parameters["url"] == "https://www.gov.br/susep/circular-621"
+    assert parameters["provider"] is None
+    assert parameters["video_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_an_embedded_video_is_a_provider_and_an_id_never_markup() -> None:
+    product_id, course_id, module_id, lesson_id = uuid4(), uuid4(), uuid4(), uuid4()
+    auth = FakeAuth(
+        seller_id=SELLER_ID,
+        result=FakeResult(one={"material_id": uuid4(), "course_version": 3, "position": 1}),
+    )
+    async with client_for(auth) as client:
+        response = await client.post(
+            material_path(product_id, course_id, module_id, lesson_id),
+            content=material_body(
+                kind="embed", url=None, provider="youtube", video_id="dQw4w9WgXcQ"
+            ),
+        )
+    assert response.status_code == 201
+    _, parameters = auth.session.calls[0]
+    assert parameters["provider"] == "youtube"
+    assert parameters["video_id"] == "dQw4w9WgXcQ"
+    assert parameters["url"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"url": "http://inseguro.test/pagina"},
+        {"url": "javascript:alert(1)"},
+        {"url": "https://host/<script>"},
+        {"url": 'https://host/"onload'},
+        {"kind": "embed", "url": None, "provider": "tiktok", "video_id": "abc"},
+        {"kind": "embed", "url": None, "provider": "youtube", "video_id": "<iframe>"},
+        {"kind": "embed", "url": None, "provider": "youtube", "video_id": "a" * 65},
+        {"kind": "embed", "provider": "youtube", "video_id": "abc"},
+        {"kind": "external", "provider": "youtube"},
+        {"title": " espaco na ponta"},
+        {"title": "x"},
+    ],
+)
+async def test_a_material_is_refused_before_the_database(overrides: dict[str, Any]) -> None:
+    product_id, course_id, module_id, lesson_id = uuid4(), uuid4(), uuid4(), uuid4()
+    auth = FakeAuth(seller_id=SELLER_ID, result=FakeResult(one={}))
+    async with client_for(auth) as client:
+        response = await client.post(
+            material_path(product_id, course_id, module_id, lesson_id),
+            content=material_body(**overrides),
+        )
+    assert response.status_code == 422
+    assert auth.domain_sessions == 0
