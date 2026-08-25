@@ -8,11 +8,20 @@ const {
   sessionsCreate,
   readPublicStorefront,
   resolveCheckoutPayoutDestination,
+  createFinancialAppSellCheckoutIntent,
   FakeStripeConfigError,
+  FakeFinancialConfigError,
+  FakeFinancialCheckoutError,
   DomainApiError,
   resolveBuyerIdentityMock
 } = vi.hoisted(() => {
   class FakeStripeConfigError extends Error {}
+  class FakeFinancialConfigError extends Error {}
+  class FakeFinancialCheckoutError extends Error {
+    constructor(message: string, readonly status: number) {
+      super(message);
+    }
+  }
   class DomainApiError extends Error {
     constructor(readonly status: number, readonly code: string) {
       super(code);
@@ -24,7 +33,13 @@ const {
     // The legacy platform-direct suite: no payout destination bound. The
     // direct-charge branch has its own suite.
     resolveCheckoutPayoutDestination: vi.fn(async () => ({ payout_destination: null })),
+    createFinancialAppSellCheckoutIntent: vi.fn(async () => ({
+      checkoutIntentId: "0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c",
+      checkoutUrl: "https://financial.test/financial/public/appsell/checkout/0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c"
+    })),
     FakeStripeConfigError,
+    FakeFinancialConfigError,
+    FakeFinancialCheckoutError,
     DomainApiError,
     resolveBuyerIdentityMock: vi.fn(async () => ({ status: "authenticated", subject: "cognito-sub-default" }) as { status: string; subject?: string })
   };
@@ -50,6 +65,15 @@ vi.mock("@/lib/internal-api-client.server", () => ({
 // buyer's real login instead of the synthetic registration:<e-mail> one.
 vi.mock("@/lib/buyer-identity.server", () => ({
   resolveBuyerIdentity: resolveBuyerIdentityMock
+}));
+
+vi.mock("@/lib/financial-appsell-checkout.server", () => ({
+  appSellCheckoutProvider: () => process.env.APPSELL_CHECKOUT_PROVIDER === "financial_checkout" ? "financial_checkout" : "local_stripe",
+  appsellFinancialOperatorId: () => process.env.APPSELL_FINANCIAL_OPERATOR_ID ?? "",
+  appsellCheckoutWebhookEndpointKey: () => process.env.APPSELL_CHECKOUT_WEBHOOK_ENDPOINT_KEY ?? "",
+  createFinancialAppSellCheckoutIntent,
+  FinancialAppSellCheckoutConfigError: FakeFinancialConfigError,
+  FinancialAppSellCheckoutError: FakeFinancialCheckoutError
 }));
 
 import { POST } from "../app/api/checkout/stripe/create-session/route";
@@ -100,6 +124,7 @@ describe("POST /api/checkout/stripe/create-session", () => {
     });
     readPublicStorefront.mockReset();
     sessionsCreate.mockClear();
+    createFinancialAppSellCheckoutIntent.mockClear();
     resolveBuyerIdentityMock.mockReset();
     resolveBuyerIdentityMock.mockResolvedValue({ status: "authenticated", subject: "cognito-sub-default" });
   });
@@ -154,6 +179,34 @@ describe("POST /api/checkout/stripe/create-session", () => {
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({ error: "product_not_configured" });
     expect(readPublicStorefront).not.toHaveBeenCalled();
+  });
+
+  it("uses Financial hosted checkout with Sell snapshot when the provider flag is enabled", async () => {
+    process.env.APPSELL_CHECKOUT_PROVIDER = "financial_checkout";
+    process.env.APPSELL_FINANCIAL_OPERATOR_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    process.env.APPSELL_CHECKOUT_WEBHOOK_ENDPOINT_KEY = "endpointkeyendpointkeyendpointkey123456";
+    process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON = "{}";
+    readPublicStorefront.mockResolvedValue(storefrontWithPrice(4990));
+
+    const response = await POST(request(validBody));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      url: "https://financial.test/financial/public/appsell/checkout/0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c"
+    });
+    expect(sessionsCreate).not.toHaveBeenCalled();
+    expect(createFinancialAppSellCheckoutIntent).toHaveBeenCalledWith(expect.objectContaining({
+      operatorId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      seller: expect.objectContaining({ slug: SELLER }),
+      buyer: expect.objectContaining({ userId: "cognito-sub-default", email: "buyer@example.test" }),
+      product: expect.objectContaining({
+        externalProductId: "22222222-2222-4222-8222-222222222222",
+        fulfillmentExternalProductId: "22222222-2222-4222-8222-222222222222",
+        title: "Codex na Prática"
+      }),
+      pricing: { amountMinor: 4990, currency: "BRL", billingPeriod: "one_time" },
+      fulfillmentWebhookUrl: `${ORIGIN}/api/webhooks/checkouts/endpointkeyendpointkeyendpointkey123456`
+    }));
   });
 
   it("builds a one-time BRL session with the SERVER-SIDE amount and correct metadata", async () => {
