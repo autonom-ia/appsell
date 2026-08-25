@@ -140,7 +140,7 @@ def test_schema_ready_targets_head_and_runtime_has_only_function_access() -> Non
               )
             """
         ).fetchone()
-    assert state == ("0035_document_support_material", False, False, True, True, True)
+    assert state == ("0036_lesson_material_links", False, False, True, True, True)
 
 
 def test_schema_ready_fails_when_cumulative_or_multi_asset_dependency_is_missing() -> None:
