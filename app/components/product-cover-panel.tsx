@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { productArt } from "@/lib/product-art";
 import {
@@ -31,6 +31,7 @@ type CoverState =
   | "hashing"
   | "uploading"
   | "verifying"
+  | "saved_stale"
   | "invalid"
   | "rejected"
   | "conflict"
@@ -53,6 +54,57 @@ interface CoverIntent {
 }
 
 /**
+ * Uma chave de idempotência vale para o estado em que ela nasceu.
+ *
+ * Repetir só é repetir a mesma coisa. Se a versão do produto mudou entre uma
+ * tentativa falha e a seguinte — porque o vendedor salvou o formulário, ou
+ * trocou a capa —, a operação já não é a mesma, e reaproveitar a chave faria o
+ * servidor responder pela antiga enquanto a tela relata a nova.
+ */
+export function nextClearKey(
+  current: { key: string; productVersion: number } | null,
+  productVersion: number,
+  mint: () => string
+): { key: string; productVersion: number } {
+  if (current && current.productVersion === productVersion) return current;
+  return { key: mint(), productVersion };
+}
+
+/** O intent chega da nossa própria rota, mas nada obriga o contrato a bater. */
+export function readCoverIntent(value: unknown): CoverIntent | null {
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  const headers = record.required_headers;
+  if (
+    typeof record.upload_id !== "string" ||
+    typeof record.upload_url !== "string" ||
+    !record.upload_id ||
+    !record.upload_url ||
+    typeof headers !== "object" ||
+    headers === null ||
+    Array.isArray(headers) ||
+    Object.values(headers).some((header) => typeof header !== "string") ||
+    !Number.isSafeInteger(record.required_content_length) ||
+    !Number.isSafeInteger(record.product_version)
+  ) return null;
+  return {
+    upload_id: record.upload_id,
+    upload_url: record.upload_url,
+    required_headers: headers as Record<string, string>,
+    required_content_length: Number(record.required_content_length),
+    product_version: Number(record.product_version)
+  };
+}
+
+export function failureState(status: number): CoverState {
+  if (status === 401 || status === 403) return "forbidden";
+  if (status === 409) return "conflict";
+  if (status === 413 || status === 422) return "invalid";
+  if (status === 503) return "unavailable";
+  return "error";
+}
+
+/**
  * A capa do produto, do lado do vendedor.
  *
  * Os bytes nunca passam pela nossa API: o navegador pede um endereço assinado,
@@ -68,6 +120,7 @@ export function ProductCoverPanel({
   productVersion,
   archived,
   csrf,
+  onBusyChange,
   onCommitted
 }: {
   sellerId: string;
@@ -77,20 +130,54 @@ export function ProductCoverPanel({
   productVersion: number;
   archived: boolean;
   csrf: CoverCsrf;
-  onCommitted: (productVersion: number) => void;
+  onBusyChange?: (busy: boolean) => void;
+  onCommitted: () => Promise<boolean>;
 }) {
   const [state, setState] = useState<CoverState>("idle");
   const [rejection, setRejection] = useState("");
   const [removing, setRemoving] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const removeCancel = useRef<HTMLButtonElement>(null);
-  // Uma chave por tentativa pendente. Uma retentativa depois de conexão caída
-  // repete a mesma operação em vez de somar uma segunda.
-  const clearKey = useRef<string | null>(null);
+  // O painel pode desmontar no meio de um envio — o vendedor troca de área e o
+  // React tira a árvore inteira. Sem isto, um `setState` tardio some sem falar
+  // com ninguém, e a falha nunca chega aos olhos de quem enviou.
+  const mounted = useRef(true);
+  const inFlight = useRef(new Set<AbortController>());
+  const clearKey = useRef<{ key: string; productVersion: number } | null>(null);
 
   const base = `/api/sellers/${encodeURIComponent(sellerId)}/products/${encodeURIComponent(productId)}/cover`;
   const busy = state === "hashing" || state === "uploading" || state === "verifying";
   const art = productArt(productTitle);
+
+  useEffect(() => {
+    mounted.current = true;
+    const pending = inFlight.current;
+    return () => {
+      mounted.current = false;
+      for (const controller of pending) controller.abort();
+      pending.clear();
+    };
+  }, []);
+
+  useEffect(() => {
+    onBusyChange?.(busy);
+  }, [busy, onBusyChange]);
+
+  function settle(next: CoverState) {
+    if (mounted.current) setState(next);
+  }
+
+  async function guarded<T>(timeoutMs: number, run: (signal: AbortSignal) => Promise<T>) {
+    const controller = new AbortController();
+    inFlight.current.add(controller);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await run(controller.signal);
+    } finally {
+      clearTimeout(timeout);
+      inFlight.current.delete(controller);
+    }
+  }
 
   async function choose(file: File) {
     const choice = describeCoverFile(file);
@@ -111,16 +198,17 @@ export function ProductCoverPanel({
       bytes = await file.arrayBuffer();
       sha256 = await coverDigestHex(bytes);
     } catch {
-      setState("error");
+      settle("error");
       return;
     }
+    if (!mounted.current) return;
 
     const intent = await requestIntent(choice.mediaType, choice.byteSize, sha256);
     if (!intent) return;
     if (intent.required_content_length !== choice.byteSize) {
       // O servidor assinou um tamanho diferente do que este arquivo tem. Mandar
       // assim mesmo seria um PUT que o armazenamento recusa sem explicação.
-      setState("error");
+      settle("error");
       return;
     }
     if (!(await sendBytes(intent, bytes))) return;
@@ -138,50 +226,46 @@ export function ProductCoverPanel({
     data.set("media_type", mediaType);
     data.set("byte_size", String(byteSize));
     data.set("sha256", sha256);
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), INTENT_TIMEOUT_MS);
     try {
-      const response = await fetch(`${base}/upload-intents`, {
-        method: "POST",
-        body: data,
-        signal: controller.signal
+      return await guarded(INTENT_TIMEOUT_MS, async (signal) => {
+        const response = await fetch(`${base}/upload-intents`, { method: "POST", body: data, signal });
+        if (!response.ok) {
+          settle(failureState(response.status));
+          return null;
+        }
+        const intent = readCoverIntent(await response.json());
+        if (!intent) {
+          settle("error");
+          return null;
+        }
+        settle("uploading");
+        return intent;
       });
-      if (!response.ok) {
-        setState(failureState(response.status));
-        return null;
-      }
-      const payload = await response.json() as CoverIntent;
-      setState("uploading");
-      return payload;
     } catch {
-      setState("unavailable");
+      settle("unavailable");
       return null;
-    } finally {
-      clearTimeout(timeout);
     }
   }
 
   async function sendBytes(intent: CoverIntent, bytes: ArrayBuffer): Promise<boolean> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
     try {
-      const response = await fetch(intent.upload_url, {
-        method: "PUT",
-        headers: intent.required_headers,
-        body: bytes,
-        signal: controller.signal
+      return await guarded(UPLOAD_TIMEOUT_MS, async (signal) => {
+        const response = await fetch(intent.upload_url, {
+          method: "PUT",
+          headers: intent.required_headers,
+          body: bytes,
+          signal
+        });
+        if (!response.ok) {
+          settle("unavailable");
+          return false;
+        }
+        settle("verifying");
+        return true;
       });
-      if (!response.ok) {
-        setState("unavailable");
-        return false;
-      }
-      setState("verifying");
-      return true;
     } catch {
-      setState("unavailable");
+      settle("unavailable");
       return false;
-    } finally {
-      clearTimeout(timeout);
     }
   }
 
@@ -190,65 +274,74 @@ export function ProductCoverPanel({
     data.set("_csrf", csrf.confirm);
     data.set("idempotency_key", crypto.randomUUID());
     data.set("expected_product_version", String(intent.product_version));
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), CONFIRM_TIMEOUT_MS);
+    let saved = false;
     try {
-      const response = await fetch(`${base}/uploads/${encodeURIComponent(intent.upload_id)}/confirm`, {
-        method: "POST",
-        body: data,
-        signal: controller.signal
+      saved = await guarded(CONFIRM_TIMEOUT_MS, async (signal) => {
+        const response = await fetch(`${base}/uploads/${encodeURIComponent(intent.upload_id)}/confirm`, {
+          method: "POST",
+          body: data,
+          signal
+        });
+        if (!response.ok) {
+          settle(response.status === 422 ? "rejected" : failureState(response.status));
+          return false;
+        }
+        return true;
       });
-      if (!response.ok) {
-        setState(response.status === 422 ? "rejected" : failureState(response.status));
-        return;
-      }
-      const payload = await response.json() as { product_version?: number };
-      setState("idle");
-      if (fileInput.current) fileInput.current.value = "";
-      onCommitted(payload.product_version ?? intent.product_version + 1);
     } catch {
-      setState("unavailable");
-    } finally {
-      clearTimeout(timeout);
+      settle("unavailable");
+      return;
     }
+    if (!saved) return;
+    if (fileInput.current) fileInput.current.value = "";
+    await finish();
   }
 
   async function removeCover() {
     if (busy) return;
-    clearKey.current ??= crypto.randomUUID();
+    clearKey.current = nextClearKey(clearKey.current, productVersion, () => crypto.randomUUID());
     setState("verifying");
     const data = new FormData();
     data.set("_csrf", csrf.clear);
-    data.set("idempotency_key", clearKey.current);
+    data.set("idempotency_key", clearKey.current.key);
     data.set("expected_product_version", String(productVersion));
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), CONFIRM_TIMEOUT_MS);
+    let cleared = false;
     try {
-      const response = await fetch(`${base}/clear`, {
-        method: "POST",
-        body: data,
-        signal: controller.signal
+      cleared = await guarded(CONFIRM_TIMEOUT_MS, async (signal) => {
+        const response = await fetch(`${base}/clear`, { method: "POST", body: data, signal });
+        if (!response.ok) {
+          const failure = failureState(response.status);
+          // Um pedido recusado nunca será aceito como repetição, então a chave vai.
+          if (failure === "forbidden" || failure === "invalid") clearKey.current = null;
+          settle(failure);
+          return false;
+        }
+        return true;
       });
-      if (!response.ok) {
-        const failure = failureState(response.status);
-        // Um pedido recusado nunca será aceito como repetição, então a chave vai.
-        if (failure === "forbidden" || failure === "invalid") clearKey.current = null;
-        setState(failure);
-        return;
-      }
-      const payload = await response.json() as { product_version?: number };
-      clearKey.current = null;
-      // Só fecha depois do sucesso. Fechar antes faria a tela dizer que a capa
-      // saiu enquanto ela continua no ar.
-      setRemoving(false);
-      setState("idle");
-      onCommitted(payload.product_version ?? productVersion + 1);
     } catch {
       // A chave fica de propósito: a próxima tentativa repete, não duplica.
-      setState("unavailable");
-    } finally {
-      clearTimeout(timeout);
+      settle("unavailable");
+      return;
     }
+    if (!cleared) return;
+    clearKey.current = null;
+    // Só fecha depois do sucesso. Fechar antes faria a tela dizer que a capa
+    // saiu enquanto ela continua no ar.
+    if (mounted.current) setRemoving(false);
+    await finish();
+  }
+
+  /**
+   * Fecha uma mutação bem-sucedida.
+   *
+   * Continua "ocupado" até a releitura terminar. Se soltasse antes, o botão de
+   * remover voltaria a valer com a versão antiga do produto em mãos, e o
+   * servidor recusaria por conflito uma ação que o próprio vendedor acabou de
+   * fazer nesta mesma aba.
+   */
+  async function finish() {
+    const reloaded = await onCommitted();
+    settle(reloaded ? "idle" : "saved_stale");
   }
 
   return (
@@ -292,6 +385,7 @@ export function ProductCoverPanel({
         {state === "hashing" ? <p className="form-note">Preparando o arquivo…</p> : null}
         {state === "uploading" ? <p className="form-note">Enviando a imagem…</p> : null}
         {state === "verifying" ? <p className="form-note">Verificando a imagem…</p> : null}
+        {state === "saved_stale" ? <p className="form-note">A capa foi salva, mas não consegui recarregar a tela. Atualize a página para vê-la.</p> : null}
         {state === "invalid" ? <p className="form-error">{rejection}</p> : null}
         {state === "rejected" ? <p className="form-error">Este arquivo não passou na verificação. Escolha outra imagem.</p> : null}
         {state === "conflict" ? <p className="form-error">O produto mudou em outra aba. Recarregue antes de tentar de novo.</p> : null}
@@ -316,12 +410,4 @@ export function ProductCoverPanel({
       ) : null}
     </section>
   );
-}
-
-export function failureState(status: number): CoverState {
-  if (status === 401 || status === 403) return "forbidden";
-  if (status === 409) return "conflict";
-  if (status === 413 || status === 422) return "invalid";
-  if (status === 503) return "unavailable";
-  return "error";
 }

@@ -114,6 +114,10 @@ def test_refuses_svg_even_when_it_claims_to_be_png() -> None:
         b"<!DOCTYPE html><html><body>oi</body></html>",
         b"<html><script>alert(1)</script></html>",
         b"   \n\t<svg/>",
+        # `bytes.lstrip()` nao remove BOM. Sem tratar isto, este payload escapa
+        # da checagem de markup e e recusado so pela assinatura — outro motivo,
+        # outra mensagem, e uma checagem que nao faz o que promete.
+        b'\xef\xbb\xbf<svg xmlns="http://www.w3.org/2000/svg"/>',
     ],
 )
 def test_refuses_any_markup_disguised_as_an_image(payload: bytes) -> None:

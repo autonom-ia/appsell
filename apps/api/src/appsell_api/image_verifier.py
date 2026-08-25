@@ -73,6 +73,13 @@ _PILLOW_FORMAT: Final[dict[str, str]] = {
 # issue nomeia, mas qualquer XML ou HTML aqui é a mesma classe de problema.
 _MARKUP_PREFIXES: Final = (b"<?xml", b"<svg", b"<!doctype", b"<html", b"<!--")
 
+# `bytes.lstrip()` remove espaço ASCII e mais nada, então um BOM UTF-8 antes do
+# `<svg` faria o arquivo escapar da checagem de markup. Ele ainda seria recusado
+# pela assinatura logo depois, mas por outro motivo e com outra mensagem — e uma
+# checagem que não faz o que o nome dela diz é uma que ninguém pode confiar na
+# próxima vez que alguém mexer na ordem das etapas.
+_UTF8_BOM: Final = b"\xef\xbb\xbf"
+
 
 class ImageRejected(ValueError):
     """A capa não pode ser guardada como está."""
@@ -155,7 +162,7 @@ def _head(path: Path, size: int = 64) -> bytes:
 
 
 def _reject_markup(path: Path) -> None:
-    head = _head(path).lstrip().lower()
+    head = _head(path).removeprefix(_UTF8_BOM).lstrip().lower()
     for prefix in _MARKUP_PREFIXES:
         if head.startswith(prefix):
             raise ImageRejected("cover looks like markup, not an image")

@@ -22,6 +22,7 @@ import base64
 from typing import Any
 from uuid import UUID
 
+import anyio
 from anyio import to_thread
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import JSONResponse
@@ -52,6 +53,22 @@ from .storage_worker import (
 
 router = APIRouter(prefix="/v1")
 _MAX_SAFE_INTEGER = (1 << 53) - 1
+
+# Quantas capas este processo verifica ao mesmo tempo.
+#
+# Verificar uma capa é caro — decodificar até 12 megapixels, reescrever, e
+# passar 5 MiB pelo antivírus — e, ao contrário do PDF e do vídeo, esse trabalho
+# acontece dentro da requisição, não num worker com lease. Sem um teto, um único
+# vendedor autenticado dispara N confirmações em paralelo e ocupa o pool de
+# threads do processo inteiro; e este processo divide VPS com outros serviços.
+#
+# Dois é deliberadamente baixo: o pool padrão do anyio tem 40 lugares, e o resto
+# da API precisa deles. Quem chega com o teto cheio espera pouco e recebe uma
+# recusa que diz para tentar de novo — degradar esta tela é recuperável, ocupar
+# a máquina não é.
+_CONCURRENT_COVER_VERIFICATIONS = 2
+_COVER_QUEUE_WAIT_SECONDS = 5.0
+_cover_verification_slots = anyio.Semaphore(_CONCURRENT_COVER_VERIFICATIONS)
 
 
 class CoverUploadIntentBody(BaseModel):
@@ -205,7 +222,7 @@ async def confirm_cover_upload(
         declared_content_type=observed.content_type,
     )
     try:
-        verified = await to_thread.run_sync(lambda: worker.process(job))
+        verified = await _verify_within_budget(worker, job)
     except ScanRejected as rejection:
         await _close_upload(
             auth=auth,
@@ -313,6 +330,26 @@ async def clear_cover(request: Request, seller_id: UUID, product_id: UUID) -> di
     if row.changed and row.previous_object_key:
         await _discard_replaced_cover(storage, str(row.previous_object_key))
     return {"product_version": int(row.product_version), "changed": bool(row.changed)}
+
+
+async def _verify_within_budget(worker: ProductCoverWorker, job: VerifyCoverJob) -> Any:
+    """Verifica a capa sem deixar esta rota tomar o processo para si.
+
+    Esperar um pouco por um lugar é melhor do que recusar de imediato: uma
+    disputa curta é o caso normal quando dois vendedores clicam junto. O que não
+    pode é a fila crescer sem limite — daí a recusa com prazo depois da espera.
+    """
+    with anyio.move_on_after(_COVER_QUEUE_WAIT_SECONDS):
+        await _cover_verification_slots.acquire()
+        try:
+            return await to_thread.run_sync(lambda: worker.process(job))
+        finally:
+            _cover_verification_slots.release()
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="cover_verification_busy",
+        headers={"retry-after": "5"},
+    )
 
 
 async def _close_upload(

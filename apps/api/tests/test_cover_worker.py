@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import io
+import threading
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from fastapi import HTTPException
 from PIL import Image
 
+from appsell_api import cover_routes
 from appsell_api.storage_s3 import StoredObject
 from appsell_api.storage_worker import (
     CleanupRetryableError,
@@ -275,3 +279,75 @@ def test_a_quarantine_that_will_not_die_is_reported_as_retryable() -> None:
         cover_worker.cleanup_source_after_commit(result)
     with pytest.raises(CleanupRetryableError):
         cover_worker.discard_abandoned_cover(seller_id=SELLER, product_id=PRODUCT)
+
+
+class SlowWorker:
+    """Um verificador que segura o lugar até ser liberado."""
+
+    def __init__(self, gate: threading.Event) -> None:
+        self.gate = gate
+        self.started = threading.Semaphore(0)
+        self.peak = 0
+        self._live = 0
+        self._lock = threading.Lock()
+
+    def process(self, _job: VerifyCoverJob) -> str:
+        with self._lock:
+            self._live += 1
+            self.peak = max(self.peak, self._live)
+        self.started.release()
+        self.gate.wait(timeout=5)
+        with self._lock:
+            self._live -= 1
+        return "done"
+
+
+@pytest.mark.asyncio
+async def test_the_inline_verification_never_takes_more_than_its_share() -> None:
+    # Verificar uma capa e caro e acontece dentro da requisicao, ao contrario do
+    # PDF e do video, que vao para um worker com lease. Sem teto, um vendedor
+    # autenticado dispara N confirmacoes e ocupa o pool de threads do processo —
+    # que divide maquina com outros servicos.
+    gate = threading.Event()
+    slow = SlowWorker(gate)
+    job = make_job(png())
+    running = [
+        asyncio.create_task(cover_routes._verify_within_budget(slow, job))  # type: ignore[arg-type]
+        for _ in range(6)
+    ]
+    try:
+        for _ in range(cover_routes._CONCURRENT_COVER_VERIFICATIONS):
+            assert await asyncio.to_thread(slow.started.acquire, True, 5)
+        await asyncio.sleep(0.05)
+        assert slow.peak == cover_routes._CONCURRENT_COVER_VERIFICATIONS
+    finally:
+        gate.set()
+        results = await asyncio.gather(*running, return_exceptions=True)
+    assert any(result == "done" for result in results)
+
+
+@pytest.mark.asyncio
+async def test_a_saturated_queue_refuses_with_a_deadline_instead_of_waiting_forever(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Uma fila que cresce sem limite e o proprio problema. Recusar com prazo
+    # devolve a decisao a quem chamou.
+    monkeypatch.setattr(cover_routes, "_COVER_QUEUE_WAIT_SECONDS", 0.05)
+    gate = threading.Event()
+    slow = SlowWorker(gate)
+    job = make_job(png())
+    holders = [
+        asyncio.create_task(cover_routes._verify_within_budget(slow, job))  # type: ignore[arg-type]
+        for _ in range(cover_routes._CONCURRENT_COVER_VERIFICATIONS)
+    ]
+    try:
+        for _ in range(cover_routes._CONCURRENT_COVER_VERIFICATIONS):
+            assert await asyncio.to_thread(slow.started.acquire, True, 5)
+        with pytest.raises(HTTPException) as refusal:
+            await cover_routes._verify_within_budget(slow, job)  # type: ignore[arg-type]
+        assert refusal.value.status_code == 503
+        assert refusal.value.detail == "cover_verification_busy"
+        assert (refusal.value.headers or {})["retry-after"] == "5"
+    finally:
+        gate.set()
+        await asyncio.gather(*holders, return_exceptions=True)

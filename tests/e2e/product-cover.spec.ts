@@ -159,3 +159,33 @@ test("A4.6 — o catálogo cheio mantém capa e contagem de alunos em todos os c
   await expect(page.locator("article.draft-card").nth(1).locator(".draft-card-students"))
     .toHaveText("1 aluno");
 });
+
+test("sair da área durante o envio é bloqueado, e a falha chega aos olhos de quem enviou", async ({ page }) => {
+  await login(page);
+  await openEditor(page, null);
+
+  // O intent fica pendurado: é assim que o painel permanece "ocupado" enquanto
+  // o teste tenta navegar para longe.
+  let release: (() => void) | null = null;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/cover/upload-intents", async (route) => {
+    await held;
+    await route.fulfill({ status: 503, json: { error: "cover_storage_unavailable" } });
+  });
+
+  await page.locator('.cover-choose input[type="file"]').setInputFiles({
+    name: "capa.png",
+    mimeType: "image/png",
+    buffer: Buffer.from(PNG_BASE64, "base64")
+  });
+  await expect(page.getByText("Enviando a imagem…").or(page.getByText("Preparando o arquivo…"))).toBeVisible();
+
+  await page.getByRole("link", { name: /Currículo/ }).first().click();
+  // A área não pode trocar: trocar desmontaria o painel e a falha seguinte
+  // sumiria sem falar com ninguém.
+  await expect(page.getByRole("heading", { name: "Capa do produto" })).toBeVisible();
+  await expect(page.getByText(/capa ainda está sendo enviada/i)).toBeVisible();
+
+  release?.();
+  await expect(page.getByText("O envio não terminou. Tente novamente; nada foi alterado.")).toBeVisible();
+});

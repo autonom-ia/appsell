@@ -217,6 +217,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
   const [curriculumDirty, setCurriculumDirty] = useState(false);
   const [curriculumBusy, setCurriculumBusy] = useState(false);
+  const [coverBusy, setCoverBusy] = useState(false);
   const [curriculumSummary, setCurriculumSummary] = useState<CurriculumSummary>({ modules: 0, lessons: 0 });
   const [assetNavigationWarning, setAssetNavigationWarning] = useState(false);
   const updateIdempotencyKey = useRef<string | null>(null);
@@ -318,19 +319,33 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
     setDetail((current) => current ? { ...current, curriculum: summary } : current);
   }, []);
 
-  const loadDetail = useCallback(async () => {
+  /**
+   * Relê o produto.
+   *
+   * `keepScreenOnFailure` existe porque esta função serve a dois momentos
+   * diferentes. No carregamento inicial, falhar significa que não há nada para
+   * mostrar, e trocar a tela por um erro é a resposta certa. Depois de uma
+   * mutação que já teve sucesso no servidor, falhar significa só que a tela
+   * ficou velha — e apagar o editor inteiro faria o vendedor achar que perdeu o
+   * que acabou de salvar.
+   */
+  const loadDetail = useCallback(async (keepScreenOnFailure = false) => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8_000);
+    const fail = (next: LoadState) => {
+      if (!keepScreenOnFailure) setLoadState(next);
+      return false;
+    };
     try {
       const response = await fetch(`/api/sellers/${sellerId}/products/${productId}`, { cache: "no-store", signal: controller.signal });
-      if (response.status === 401) { setLoadState("unauthorized"); return false; }
-      if (response.status === 403) { setLoadState("forbidden"); return false; }
-      if (response.status === 404) { setLoadState("not_found"); return false; }
-      if (response.status === 503) { setLoadState("unavailable"); return false; }
-      if (!response.ok) { setLoadState("error"); return false; }
+      if (response.status === 401) return fail("unauthorized");
+      if (response.status === 403) return fail("forbidden");
+      if (response.status === 404) return fail("not_found");
+      if (response.status === 503) return fail("unavailable");
+      if (!response.ok) return fail("error");
       const payload = await response.json() as EditorPayload & ProductDetail;
       const nextDetail = normalizeEditorPayload(payload);
-      if (!nextDetail) { setLoadState("error"); return false; }
+      if (!nextDetail) return fail("error");
       const nextFields = fieldsFromDetail(nextDetail);
       offerId.current = nextDetail.offer.id ?? crypto.randomUUID();
       setDetail({ ...nextDetail, readiness: payload.readiness ?? nextDetail.readiness });
@@ -341,8 +356,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       setLoadState("ready");
       return true;
     } catch {
-      setLoadState("unavailable");
-      return false;
+      return fail("unavailable");
     } finally {
       clearTimeout(timeout);
     }
@@ -350,8 +364,10 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   const handleCurriculumCommitted = useCallback(() => { void loadDetail(); }, [loadDetail]);
   // A capa muda a versão do produto e o endereço assinado da imagem. Recarregar
   // é o que mantém o painel falando do estado real: o número devolvido pela
-  // mutação sozinho não traz a URL nova.
-  const handleCoverCommitted = useCallback(() => { void loadDetail(); }, [loadDetail]);
+  // mutação sozinho não traz a URL nova. Falhar aqui não desfaz nada, então a
+  // tela do editor fica de pé e quem avisa é o próprio painel.
+  const handleCoverCommitted = useCallback(() => loadDetail(true), [loadDetail]);
+  const handleCoverBusy = useCallback((busy: boolean) => setCoverBusy(busy), []);
 
   useEffect(() => {
     const start = window.setTimeout(() => void loadDetail(), 0);
@@ -692,7 +708,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   }
 
   function requestListNavigation(event: MouseEvent<HTMLAnchorElement>) {
-    if (curriculumBusy) {
+    if (curriculumBusy || coverBusy) {
       event.preventDefault();
       setAssetNavigationWarning(true);
       return;
@@ -703,7 +719,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   }
 
   function requestSectionNavigation(event: MouseEvent<HTMLAnchorElement>, target: EditorSection) {
-    if (target !== section && curriculumBusy) {
+    if (target !== section && (curriculumBusy || coverBusy)) {
       event.preventDefault();
       setAssetNavigationWarning(true);
       return;
@@ -798,7 +814,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
           return <Link key={item.id} href={`?section=${item.id}`} replace scroll={false} className={`${active ? "active " : ""}area-${filled ? "filled" : "empty"}`} aria-current={active ? "page" : undefined} onClick={(event) => requestSectionNavigation(event, item.id)}><span className="editor-step-heading"><strong>{item.label}</strong><span className="editor-step-mark" aria-hidden="true">{filled ? "●" : "○"}</span></span><span>{item.hint}</span><span className="sr-only">{filled ? "com conteúdo" : "ainda vazia"}{active ? "; área aberta" : ""}</span></Link>;
         })}
       </nav>
-      {assetNavigationWarning ? <p className="form-note asset-navigation-warning" role="alert">O arquivo ainda está sendo enviado. Aguarde ou cancele o envio antes de sair do currículo.</p> : null}
+      {assetNavigationWarning ? <p className="form-note asset-navigation-warning" role="alert">{coverBusy ? "A capa ainda está sendo enviada. Aguarde o envio terminar antes de sair desta área." : "O arquivo ainda está sendo enviado. Aguarde ou cancele o envio antes de sair do currículo."}</p> : null}
 
       {/* A mesma validação que o servidor usa para liberar a publicação, visível
           de qualquer área. Nada aqui é calculado no cliente. */}
@@ -923,6 +939,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
           productVersion={detail.draft_version}
           archived={detail.status === "archived"}
           csrf={{ intent: csrf.coverIntent, confirm: csrf.coverConfirm, clear: csrf.coverClear }}
+          onBusyChange={handleCoverBusy}
           onCommitted={handleCoverCommitted}
         />
       ) : null}
