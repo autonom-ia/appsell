@@ -11,8 +11,8 @@
 |---|---|
 | Domínio | `https://sell.autonomia.site` |
 | Ambiente | VPS EasyPanel nativo, Docker Swarm |
-| SHA implantado | `50f584951b01e7d01e827c1e20b875d3bbc172b4` |
-| Imagens | `web:50f5849`, `api:50f5849`, `asset-worker:50f5849` |
+| SHA implantado | `adc3fa498d54140a2296da62fab903e34365f93b` |
+| Imagens | `web:adc3fa4`, `api:adc3fa4`, `asset-worker:adc3fa4` |
 | API health | `{"status":"ok","database":true,"storage":true,"pdf_sandbox":true}` |
 | Web health | `{"status":"ok","redis":true,"api":true,"storage_upload":true}` |
 | CI pós-merge | [run 32656218821](https://github.com/autonom-ia/appsell/actions/runs/32656218821) — success |
@@ -35,6 +35,11 @@ O release de 2026-08-25 (segundo do dia, `50f5849`) entregou a interface de
 material complementar e a descrição formatada da aula. **Não aplicou migration**
 — o banco segue em `0036_lesson_material_links`. Rollback de imagem disponível
 nas tags `api:3ddd58b` e `api:50b6301` no host.
+
+O terceiro release de 2026-08-25 (`adc3fa4`) entregou o editor por áreas, a
+coluna de prontidão vinda do servidor e o autosave. **Também sem migration** —
+o banco segue em `0036_lesson_material_links`. Rollback nas tags `api:50f5849`,
+`api:3ddd58b` e `api:50b6301`.
 
 ## Hierarquia de contas
 
