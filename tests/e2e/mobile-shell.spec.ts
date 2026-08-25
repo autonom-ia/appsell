@@ -667,8 +667,14 @@ test("authors and reorders a tenant curriculum at 320px without drag", async ({ 
   const practice = page.getByTestId("lesson-86000000-0000-4000-8000-000000000002");
   await practice.getByText("Editar aula").click();
   await practice.getByLabel("Nome da aula").fill("Rascunho que será descartado");
-  page.once("dialog", (dialog) => dialog.accept());
+  // Archiving used to hand off to the browser's own confirm, which announces
+  // nothing and traps no focus. It is a dialog in the page now, so the test has
+  // to confirm the way a person does.
   await practice.getByRole("button", { name: "Arquivar aula" }).click();
+  const archiveDialog = page.getByRole("dialog", { name: "Arquivar a aula Prática guiada?" });
+  await expect(archiveDialog).toBeVisible();
+  await expect(archiveDialog.getByRole("button", { name: "Manter" })).toBeFocused();
+  await archiveDialog.getByRole("button", { name: "Arquivar" }).click();
   await expect(page.getByRole("heading", { name: "Prática guiada" })).toHaveCount(0);
 
   const touchAndWidth = await page.evaluate(() => ({
