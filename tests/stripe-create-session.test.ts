@@ -8,7 +8,7 @@ const {
   sessionsCreate,
   readPublicStorefront,
   resolveCheckoutPayoutDestination,
-  createFinancialAppSellCheckoutIntent,
+  createFinancialExternalCheckoutIntent,
   FakeStripeConfigError,
   FakeFinancialConfigError,
   FakeFinancialCheckoutError,
@@ -33,9 +33,9 @@ const {
     // The legacy platform-direct suite: no payout destination bound. The
     // direct-charge branch has its own suite.
     resolveCheckoutPayoutDestination: vi.fn(async () => ({ payout_destination: null })),
-    createFinancialAppSellCheckoutIntent: vi.fn(async () => ({
+    createFinancialExternalCheckoutIntent: vi.fn(async () => ({
       checkoutIntentId: "0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c",
-      checkoutUrl: "https://financial.test/financial/public/appsell/checkout/0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c"
+      checkoutUrl: "https://financial.test/financial/public/external-checkout/0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c"
     })),
     FakeStripeConfigError,
     FakeFinancialConfigError,
@@ -67,13 +67,13 @@ vi.mock("@/lib/buyer-identity.server", () => ({
   resolveBuyerIdentity: resolveBuyerIdentityMock
 }));
 
-vi.mock("@/lib/financial-appsell-checkout.server", () => ({
-  appSellCheckoutProvider: () => process.env.APPSELL_CHECKOUT_PROVIDER === "financial_checkout" ? "financial_checkout" : "local_stripe",
-  appsellFinancialOperatorId: () => process.env.APPSELL_FINANCIAL_OPERATOR_ID ?? "",
-  appsellCheckoutWebhookEndpointKey: () => process.env.APPSELL_CHECKOUT_WEBHOOK_ENDPOINT_KEY ?? "",
-  createFinancialAppSellCheckoutIntent,
-  FinancialAppSellCheckoutConfigError: FakeFinancialConfigError,
-  FinancialAppSellCheckoutError: FakeFinancialCheckoutError
+vi.mock("@/lib/financial-external-checkout.server", () => ({
+  checkoutProvider: () => process.env.APPSELL_CHECKOUT_PROVIDER === "financial_checkout" ? "financial_checkout" : "local_stripe",
+  financialCheckoutOperatorId: () => process.env.APPSELL_FINANCIAL_OPERATOR_ID ?? "",
+  checkoutWebhookEndpointKey: () => process.env.APPSELL_CHECKOUT_WEBHOOK_ENDPOINT_KEY ?? "",
+  createFinancialExternalCheckoutIntent,
+  FinancialExternalCheckoutConfigError: FakeFinancialConfigError,
+  FinancialExternalCheckoutError: FakeFinancialCheckoutError
 }));
 
 import { POST } from "../app/api/checkout/stripe/create-session/route";
@@ -124,7 +124,7 @@ describe("POST /api/checkout/stripe/create-session", () => {
     });
     readPublicStorefront.mockReset();
     sessionsCreate.mockClear();
-    createFinancialAppSellCheckoutIntent.mockClear();
+    createFinancialExternalCheckoutIntent.mockClear();
     resolveBuyerIdentityMock.mockReset();
     resolveBuyerIdentityMock.mockResolvedValue({ status: "authenticated", subject: "cognito-sub-default" });
   });
@@ -192,10 +192,10 @@ describe("POST /api/checkout/stripe/create-session", () => {
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
-      url: "https://financial.test/financial/public/appsell/checkout/0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c"
+      url: "https://financial.test/financial/public/external-checkout/0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c"
     });
     expect(sessionsCreate).not.toHaveBeenCalled();
-    expect(createFinancialAppSellCheckoutIntent).toHaveBeenCalledWith(expect.objectContaining({
+    expect(createFinancialExternalCheckoutIntent).toHaveBeenCalledWith(expect.objectContaining({
       operatorId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       seller: expect.objectContaining({ slug: SELLER }),
       buyer: expect.objectContaining({ userId: "cognito-sub-default", email: "buyer@example.test" }),
