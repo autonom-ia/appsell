@@ -9,6 +9,18 @@
 
 const GOLDEN_ANGLE = 137.508;
 
+/**
+ * A faixa de matiz que a arte pode usar.
+ *
+ * Espalhar pelo círculo inteiro dava verde-limão, magenta e laranja ao lado de
+ * uma interface azul-marinho — parecia defeito, não identidade. A arte precisa
+ * distinguir um produto do outro, e para isso bastam os 150 graus que vão do
+ * azul ao violeta passando pelo ciano: dois produtos ainda saem diferentes, e
+ * nenhum sai gritando.
+ */
+const HUE_START = 190;
+const HUE_SPAN = 150;
+
 /** Hash estável e pequeno. Não é criptográfico e não precisa ser. */
 function hashTitle(title: string): number {
   let hash = 2166136261;
@@ -29,11 +41,13 @@ export function productArt(title: string): ProductArt {
   const clean = title.trim();
   // O ângulo áureo espalha os matizes: dois produtos com nomes parecidos não
   // acabam com a mesma cor.
-  const hue = Math.round((hashTitle(clean || "produto") * GOLDEN_ANGLE) % 360);
-  const second = (hue + 38) % 360;
+  const hue = HUE_START + Math.round((hashTitle(clean || "produto") * GOLDEN_ANGLE) % HUE_SPAN);
+  const second = HUE_START + ((hue - HUE_START + 34) % HUE_SPAN);
   return {
     initials: initialsOf(clean),
-    gradient: `linear-gradient(135deg, hsl(${hue} 62% 42%), hsl(${second} 58% 32%))`,
+    // Saturação contida e luminosidade baixa: a arte é fundo de uma miniatura,
+    // não um cartaz. O texto branco por cima precisa continuar legível.
+    gradient: `linear-gradient(135deg, hsl(${hue} 46% 32%), hsl(${second} 52% 22%))`,
     hue
   };
 }

@@ -9,13 +9,27 @@ describe("A4.2 — produto sem capa nunca fica vazio", () => {
     const second = productArt("IA na prática");
 
     expect(first).toEqual(second);
-    expect(first.gradient).toMatch(/^linear-gradient\(135deg, hsl\(\d+ 62% 42%\), hsl\(\d+ 58% 32%\)\)$/);
+    expect(first.gradient).toMatch(/^linear-gradient\(135deg, hsl\(\d+ 46% 32%\), hsl\(\d+ 52% 22%\)\)$/);
   });
 
   it("separa nomes parecidos em cores diferentes", () => {
     const hues = ["Curso A", "Curso B", "Curso C", "Curso D"].map((name) => productArt(name).hue);
 
     expect(new Set(hues).size).toBe(hues.length);
+  });
+
+  it("fica dentro da faixa da marca, sem verde-limão nem laranja", () => {
+    // Espalhar pelo círculo inteiro punha magenta e laranja ao lado de uma
+    // interface azul-marinho, e o resultado parecia defeito. A distinção entre
+    // produtos continua; o grito, não.
+    const nomes = ["IA na prática", "Codex do zero", "Vendas com IA", "Automação real",
+                   "Dados para todos", "Prompt avançado", "", "x"];
+
+    for (const nome of nomes) {
+      const { hue } = productArt(nome);
+      expect(hue).toBeGreaterThanOrEqual(190);
+      expect(hue).toBeLessThan(340);
+    }
   });
 
   it("sempre produz iniciais legíveis, inclusive no limite", () => {

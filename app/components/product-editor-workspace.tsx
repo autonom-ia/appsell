@@ -828,6 +828,24 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
         {editorDirty ? <p className="form-note" role="status">Há alterações não salvas.</p> : null}
       </aside>
 
+      {/* Fora do formulário de propósito: os campos da capa não fazem parte
+          daquele envio, e Enter aqui não pode salvar o rascunho. Fica antes
+          dele, e não depois, porque a capa é identidade — e um painel solto no
+          fim da página, atrás do rodapé de salvar, parecia coisa esquecida. */}
+      {section === "produto" ? (
+        <ProductCoverPanel
+          sellerId={sellerId}
+          productId={productId}
+          productTitle={detail.title}
+          cover={detail.cover ?? null}
+          productVersion={detail.draft_version}
+          archived={detail.status === "archived"}
+          csrf={{ intent: csrf.coverIntent, confirm: csrf.coverConfirm, clear: csrf.coverClear }}
+          onBusyChange={handleCoverBusy}
+          onCommitted={handleCoverCommitted}
+        />
+      ) : null}
+
       {section === "curriculo" ? <CurriculumWorkspace sellerId={sellerId} productId={productId} courseId={detail.course.id} courseTitle={detail.course.title} archived={detail.status === "archived"} onDirtyChange={handleCurriculumDirty} onBusyChange={handleCurriculumBusy} onSummaryChange={handleCurriculumSummary} onCommitted={handleCurriculumCommitted}/> : (
       <form ref={formElement} className="editor-form" onSubmit={saveDraft}>
         {section === "produto" ? (
@@ -928,21 +946,6 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       </form>
       )}
 
-      {/* Fora do formulário de propósito: os campos da capa não fazem parte
-          daquele envio, e Enter aqui não pode salvar o rascunho. */}
-      {section === "produto" ? (
-        <ProductCoverPanel
-          sellerId={sellerId}
-          productId={productId}
-          productTitle={detail.title}
-          cover={detail.cover ?? null}
-          productVersion={detail.draft_version}
-          archived={detail.status === "archived"}
-          csrf={{ intent: csrf.coverIntent, confirm: csrf.coverConfirm, clear: csrf.coverClear }}
-          onBusyChange={handleCoverBusy}
-          onCommitted={handleCoverCommitted}
-        />
-      ) : null}
 
       {publishDialogOpen ? (
         <AccessibleDialog titleId="publish-dialog-title" descriptionId="publish-dialog-description" initialFocusRef={publishCancelButton} returnFocusRef={publishTriggerButton} onClose={closePublishDialog}>

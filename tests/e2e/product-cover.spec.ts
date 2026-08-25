@@ -193,3 +193,51 @@ test("sair da área durante o envio é bloqueado, e a falha chega aos olhos de q
   release.fire();
   await expect(page.getByText("O envio não terminou. Tente novamente; nada foi alterado.")).toBeVisible();
 });
+
+test("A4.2 — as iniciais da arte são legíveis de fato, não só presentes no DOM", async ({ page }) => {
+  // Este é o teste que faltava. As iniciais existiam no DOM desde sempre, e um
+  // teste de estrutura passava — mas `.draft-card > div > span:last-child` é
+  // mais específica do que `.draft-card-art`, então elas renderizavam cinzas,
+  // com 10.88px e encostadas na esquerda. Ninguém viu porque ninguém olhou.
+  await login(page);
+  await page.route("**/api/sellers", async (route) => {
+    await route.fulfill({
+      json: { sellers: [{ id: SELLER_ID, slug: "autonomia", display_name: "Autonom.ia", role: "seller_owner" }] }
+    });
+  });
+  await page.route(`**/api/sellers/${SELLER_ID}/products*`, async (route) => {
+    await route.fulfill({
+      json: {
+        products: [{
+          id: PRODUCT_ID, slug: "ia-na-pratica", title: "IA na prática", description: "Curso",
+          status: "draft", created_at: "2026-08-25T00:00:00Z",
+          course: { id: COURSE_ID, title: "Curso", status: "draft" },
+          access_mode: "free", unit_amount_minor: null, currency: null, students: 3, cover: null
+        }],
+        next_cursor: null
+      }
+    });
+  });
+  await page.goto("/products");
+
+  const art = page.locator("article.draft-card .draft-card-art").first();
+  await expect(art).toBeVisible();
+  const rendered = await art.evaluate((node) => {
+    const span = node.querySelector("span");
+    if (!span) return null;
+    const style = getComputedStyle(span);
+    return {
+      texto: span.textContent,
+      px: parseFloat(style.fontSize),
+      cor: style.color,
+      centralizado: getComputedStyle(node).justifyContent
+    };
+  });
+
+  expect(rendered?.texto).toBe("IN");
+  // Grande o bastante para ser lida, branca o bastante para aparecer sobre o
+  // gradiente escuro, e no meio do bloco.
+  expect(rendered?.px).toBeGreaterThanOrEqual(18);
+  expect(rendered?.cor).toBe("rgb(255, 255, 255)");
+  expect(rendered?.centralizado).toBe("center");
+});
