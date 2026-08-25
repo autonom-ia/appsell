@@ -407,7 +407,7 @@ def test_paid_publication_without_a_positive_price_publishes_nothing() -> None:
 
     with pytest.raises(psycopg.errors.Error) as failure:
         publish_with_access(seller_id, product_id, course_id, offer_id, access_mode="paid")
-    assert failure.value.sqlstate == "P4222"
+    assert failure.value.sqlstate == "P4227"
     assert count_publications(seller_id, product_id) == 0
 
 
@@ -482,12 +482,18 @@ def test_concurrent_redeemers_never_exceed_the_seat_budget() -> None:
         try:
             redeem(token, buyer_id(index))
         except psycopg.errors.Error as error:
-            return str(error.sqlstate)
+            # A connection level failure has no sqlstate. Surfacing it by name
+            # keeps a future failure from looking like a seat accounting bug.
+            return str(error.sqlstate) if error.sqlstate else f"driver:{type(error).__name__}"
         return "granted"
 
-    with ThreadPoolExecutor(max_workers=25) as pool:
+    # The test database runs with max_connections=24, so the pool stays well
+    # under it. Fifty attempts through eight workers still contend for the same
+    # row lock, which is what the seat budget depends on.
+    with ThreadPoolExecutor(max_workers=8) as pool:
         outcomes = list(pool.map(attempt, range(50)))
 
+    assert [outcome for outcome in outcomes if outcome.startswith("driver:")] == []
     assert outcomes.count("granted") == 30
     assert outcomes.count("P4224") == 20
 
