@@ -182,7 +182,7 @@ def set_cover(
         apply_context(connection, actor, seller, "catalog.draft.update")
         row = connection.execute(
             "select * from app_private.set_product_cover("
-            "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (
                 actor,
                 seller,
@@ -337,7 +337,7 @@ def test_a_read_capability_cannot_write_a_cover() -> None:
         with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
             connection.execute(
                 "select * from app_private.set_product_cover("
-                "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (
                     USER_A,
                     SELLER_A,
