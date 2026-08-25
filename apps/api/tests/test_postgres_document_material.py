@@ -117,13 +117,21 @@ def test_download_policy_reaches_documents_and_stops_at_macros() -> None:
 
 
 def test_only_a_pdf_still_requires_a_raster_manifest() -> None:
-    """A document must take the plain finalisation branch. Before this migration
-    the branch named MP4 explicitly, so a document would have been sent looking
-    for page images it never had."""
-    for name in ("finalize_asset_verification", "finalize_asset_verification_v2"):
-        body = definition(name)
-        assert "expected_media_type<>'application/pdf'" in body
-        assert "expected_media_type='video/mp4'" not in body
+    """A document must take the plain finalisation branch.
+
+    The versioned finaliser used to name MP4 explicitly, so a document would have
+    been sent looking for page images it never had; it now asks whether the media
+    is not a PDF. The plain wrapper never had that branch: it gates on PDF alone
+    and passes every other format through, which is already what a document needs,
+    so widening it would have been patching a function that has nothing to say.
+    """
+    versioned = definition("finalize_asset_verification_v2")
+    assert "expected_media_type<>'application/pdf'" in versioned
+    assert "expected_media_type='video/mp4'" not in versioned
+
+    plain = definition("finalize_asset_verification")
+    assert "expected_media='application/pdf'" in plain
+    assert "video/mp4" not in plain
 
 
 def test_the_upload_intent_consults_the_shared_contract() -> None:
