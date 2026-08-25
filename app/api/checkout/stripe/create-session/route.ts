@@ -5,13 +5,13 @@ import { resolveBuyerIdentity } from "@/lib/buyer-identity.server";
 import { resolveCheckoutProduct } from "@/lib/checkout-config";
 import { directChargeApplicationFeeCents } from "@/lib/checkout-fee";
 import {
-  appSellCheckoutProvider,
-  appsellCheckoutWebhookEndpointKey,
-  appsellFinancialOperatorId,
-  createFinancialAppSellCheckoutIntent,
-  FinancialAppSellCheckoutConfigError,
-  FinancialAppSellCheckoutError
-} from "@/lib/financial-appsell-checkout.server";
+  checkoutProvider,
+  checkoutWebhookEndpointKey,
+  createFinancialExternalCheckoutIntent,
+  financialCheckoutOperatorId,
+  FinancialExternalCheckoutConfigError,
+  FinancialExternalCheckoutError
+} from "@/lib/financial-external-checkout.server";
 import {
   DomainApiError,
   readPublicStorefront,
@@ -58,7 +58,7 @@ export async function POST(request: NextRequest) {
   const input = parseCreateSessionInput(rawBody);
   if (!input) return jsonError("invalid_request", 400);
 
-  const provider = appSellCheckoutProvider();
+  const provider = checkoutProvider();
   const mapping = resolveCheckoutProduct(input.sellerSlug, input.productSlug);
   if (provider === "local_stripe" && !mapping) return jsonError("product_not_configured", 409);
 
@@ -121,9 +121,9 @@ export async function POST(request: NextRequest) {
   const applicationFeeCents = destination ? directChargeApplicationFeeCents(amount) : null;
   if (provider === "financial_checkout") {
     try {
-      const endpointKey = appsellCheckoutWebhookEndpointKey();
-      const result = await createFinancialAppSellCheckoutIntent({
-        operatorId: appsellFinancialOperatorId(),
+      const endpointKey = checkoutWebhookEndpointKey();
+      const result = await createFinancialExternalCheckoutIntent({
+        operatorId: financialCheckoutOperatorId(),
         seller: {
           id: parsed.seller.id,
           slug: parsed.seller.slug,
@@ -159,8 +159,8 @@ export async function POST(request: NextRequest) {
       });
       return NextResponse.json({ url: result.checkoutUrl }, { headers: noStore() });
     } catch (error) {
-      if (error instanceof FinancialAppSellCheckoutConfigError) return jsonError("financial_checkout_not_configured", 503);
-      if (error instanceof FinancialAppSellCheckoutError) {
+      if (error instanceof FinancialExternalCheckoutConfigError) return jsonError("financial_checkout_not_configured", 503);
+      if (error instanceof FinancialExternalCheckoutError) {
         return jsonError(
           error.status >= 400 && error.status < 500 ? "financial_checkout_rejected" : "financial_checkout_unavailable",
           error.status >= 400 && error.status < 500 ? 409 : 503

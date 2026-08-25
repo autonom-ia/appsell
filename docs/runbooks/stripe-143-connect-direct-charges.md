@@ -22,8 +22,8 @@ Stripe    → POST /api/webhooks/stripe/connect  (account.updated)
                       →  refresh do cache de status  (audit payout_account.status_changed)
 comprador → POST /api/checkout/stripe/create-session
                       →  AppSell monta snapshot server-side do produto/oferta/preço/cupom
-                      →  POST /financial/internal/appsell/checkout-intents
-Financial → tela publica /financial/public/appsell/checkout/:orderId
+                      →  POST /financial/internal/external-checkout/checkout-intents
+Financial → tela publica /financial/public/external-checkout/:orderId
                       →  Hosted Stripe Checkout NA CONTA CONECTADA
                          + application_fee_amount calculado pelo AppSell
 Stripe    → POST /financial/webhooks/stripe  (checkout.session.completed)
@@ -72,7 +72,7 @@ Para o provider Financial hosted, o `web` também exige:
 | `web` | `APPSELL_CHECKOUT_PROVIDER` | `financial_checkout` | ativa o caminho Financial sem mudar a rota pública do AppSell. |
 | `web` | `APPSELL_FINANCIAL_OPERATOR_ID` | UUID | operador/empresa no Financial que recebe a fatura. |
 | `web` | `FINANCIAL_API_URL` | HTTPS | base interna do Financial. |
-| `web` | `FINANCIAL_INTERNAL_API_KEY` | secret | chave server-to-server para `/financial/internal/appsell/checkout-intents`. |
+| `web` | `FINANCIAL_INTERNAL_API_KEY` | secret | chave server-to-server para `/financial/internal/external-checkout/checkout-intents`. |
 
 No Financial PRD, o deploy gate exige:
 
@@ -103,7 +103,7 @@ No Financial PRD, o deploy gate exige:
    não caiu; se cair, abortar e restaurar o backup.
 5. **Financial antes do AppSell**: publicar o Financial via PR/workflow,
    confirmar migration `042_appsell_external_checkout_invoices.sql` aplicada e
-   `release-smoke` com `appSellCheckoutValidated=true`.
+   `release-smoke` com `externalCheckoutValidated=true`.
 6. **Redeploy `web` e `api`** (`services.app.deployService` — `services.app.deploy`
    dá 404). Env sozinha não muda processo em execução.
 7. **Prova de deploy**: `POST /api/webhooks/stripe/connect` sem assinatura tem de

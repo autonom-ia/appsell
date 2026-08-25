@@ -5,8 +5,8 @@ import { financialInternalConfig, trimTrailingSlash } from "./financial-internal
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ENDPOINT_KEY = /^[A-Za-z0-9_-]{32,64}$/;
 
-export class FinancialAppSellCheckoutConfigError extends Error {}
-export class FinancialAppSellCheckoutError extends Error {
+export class FinancialExternalCheckoutConfigError extends Error {}
+export class FinancialExternalCheckoutError extends Error {
   constructor(
     message: string,
     readonly status: number
@@ -15,7 +15,7 @@ export class FinancialAppSellCheckoutError extends Error {
   }
 }
 
-export function appSellCheckoutProvider(
+export function checkoutProvider(
   environment: Partial<Record<string, string | undefined>> = process.env
 ) {
   return environment.APPSELL_CHECKOUT_PROVIDER === "financial_checkout"
@@ -23,23 +23,23 @@ export function appSellCheckoutProvider(
     : "local_stripe";
 }
 
-export function appsellFinancialOperatorId(
+export function financialCheckoutOperatorId(
   environment: Partial<Record<string, string | undefined>> = process.env
 ) {
   const value = environment.APPSELL_FINANCIAL_OPERATOR_ID ?? "";
-  if (!UUID.test(value)) throw new FinancialAppSellCheckoutConfigError("invalid_financial_operator_id");
+  if (!UUID.test(value)) throw new FinancialExternalCheckoutConfigError("invalid_financial_operator_id");
   return value;
 }
 
-export function appsellCheckoutWebhookEndpointKey(
+export function checkoutWebhookEndpointKey(
   environment: Partial<Record<string, string | undefined>> = process.env
 ) {
   const value = environment.APPSELL_CHECKOUT_WEBHOOK_ENDPOINT_KEY ?? "";
-  if (!ENDPOINT_KEY.test(value)) throw new FinancialAppSellCheckoutConfigError("invalid_checkout_webhook_endpoint_key");
+  if (!ENDPOINT_KEY.test(value)) throw new FinancialExternalCheckoutConfigError("invalid_checkout_webhook_endpoint_key");
   return value;
 }
 
-export interface CreateFinancialAppSellCheckoutIntentInput {
+export interface CreateFinancialExternalCheckoutIntentInput {
   operatorId: string;
   seller: { id: string; slug: string; name: string };
   buyer: { userId: string; email: string; identitySub: string };
@@ -60,23 +60,23 @@ export interface CreateFinancialAppSellCheckoutIntentInput {
   idempotencyKey: string;
 }
 
-export interface FinancialAppSellCheckoutIntent {
+export interface FinancialExternalCheckoutIntent {
   checkoutIntentId: string;
   checkoutUrl: string;
 }
 
-export async function createFinancialAppSellCheckoutIntent(
-  input: CreateFinancialAppSellCheckoutIntentInput
-): Promise<FinancialAppSellCheckoutIntent> {
+export async function createFinancialExternalCheckoutIntent(
+  input: CreateFinancialExternalCheckoutIntentInput
+): Promise<FinancialExternalCheckoutIntent> {
   const config = financialInternalConfig();
-  const response = await fetch(new URL("/financial/internal/appsell/checkout-intents", trimTrailingSlash(config.apiUrl)), {
+  const response = await fetch(new URL("/financial/internal/external-checkout/checkout-intents", trimTrailingSlash(config.apiUrl)), {
     method: "POST",
     headers: {
       "content-type": "application/json",
       "x-api-key": config.apiKey
     },
     body: JSON.stringify({
-      source_system: "appsell",
+      source_system: "external_checkout",
       operator_id: input.operatorId,
       seller: input.seller,
       buyer: {
@@ -111,10 +111,10 @@ export async function createFinancialAppSellCheckoutIntent(
   });
   const payload = await response.json().catch(() => null) as unknown;
   if (!response.ok) {
-    throw new FinancialAppSellCheckoutError("financial_checkout_rejected", response.status);
+    throw new FinancialExternalCheckoutError("financial_checkout_rejected", response.status);
   }
   if (!isRecord(payload) || typeof payload.checkout_intent_id !== "string" || typeof payload.checkout_url !== "string") {
-    throw new FinancialAppSellCheckoutError("financial_checkout_invalid_response", 502);
+    throw new FinancialExternalCheckoutError("financial_checkout_invalid_response", 502);
   }
   return {
     checkoutIntentId: payload.checkout_intent_id,
