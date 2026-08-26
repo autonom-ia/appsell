@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import socket
 import struct
 from collections.abc import Iterable
@@ -581,6 +582,15 @@ def assert_storage_worker_ready(
         raise StorageCapabilityError(
             "production-capable malware scanner is required outside local/CI"
         )
+
+    # O worker chama pdftoppm e ffmpeg como processos. Faltando, ele pega o
+    # trabalho, falha no meio, engole o erro e repete ate o lease expirar — sem
+    # nada dizer que a ferramenta nao existe. Recusar subir e alto e imediato.
+    for tool in ("pdftoppm", "ffmpeg"):
+        if shutil.which(tool) is None:
+            raise StorageCapabilityError(
+                f"{tool} is unavailable: the asset worker cannot process media without it"
+            )
 
 
 def _validate_storage_key(key: str) -> None:

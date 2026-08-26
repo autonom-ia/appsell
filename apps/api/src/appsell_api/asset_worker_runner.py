@@ -294,9 +294,20 @@ async def _process_claimed_job(
         VideoSandboxUnavailable,
         ScannerUnavailable,
         OSError,
-    ):
+    ) as error:
         # Leave the lease/source intact. The durable consumer can retry after lease expiry.
-        logger.warning("asset_worker_storage_retry", upload_id=str(upload_id))
+        #
+        # O motivo vai junto de proposito: sao seis modos de falha muito
+        # diferentes — storage fora, sandbox fora, antivirus fora, ferramenta
+        # ausente — e por dias este aviso disse apenas que "algo" falhou. O
+        # material de aula ficou impossivel de 22/08 a 26/08/2026 e o log nao
+        # apontava para lugar nenhum.
+        logger.warning(
+            "asset_worker_storage_retry",
+            upload_id=str(upload_id),
+            reason=type(error).__name__,
+            detail=str(error)[:200],
+        )
         return
     except Exception:
         # Parser/scanner compensation can surface an ExceptionGroup. One poisoned
