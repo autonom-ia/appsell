@@ -5,6 +5,8 @@ import os
 import psycopg
 import pytest
 
+from appsell_api.asset_media import SUPPORTED_MEDIA
+
 ADMIN_URL = os.environ.get("APPSELL_TEST_POSTGRES_ADMIN_URL")
 
 pytestmark = pytest.mark.skipif(not ADMIN_URL, reason="isolated PostgreSQL environment is required")
@@ -13,6 +15,10 @@ DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 DOCM = "application/vnd.ms-word.document.macroEnabled.12"
+
+# Derivado do catalogo, nao cravado: repetir o numero aqui foi como o banco
+# acabou discordando do navegador e da API em 26/08/2026.
+PDF_MAX = SUPPORTED_MEDIA["application/pdf"].max_bytes
 
 
 def contract(media_type: str, file_name: str, byte_size: int) -> bool:
@@ -81,7 +87,7 @@ def test_the_contract_accepts_every_supported_format(
         (DOCX, "roteiro.docx", 20_971_521, "one byte over its ceiling"),
         (PPTX, "aula.pptx", 41_943_041, "one byte over its ceiling"),
         ("text/plain", "notas.txt", 2_097_153, "one byte over its ceiling"),
-        ("application/pdf", "apostila.pdf", 10_485_761, "pdf ceiling unchanged"),
+        ("application/pdf", "apostila.pdf", PDF_MAX + 1, "one byte over its ceiling"),
         ("application/zip", "pacote.zip", 10, "container format never accepted"),
         ("text/html", "pagina.html", 10, "markup never accepted"),
         (DOCX, "roteiro.docx", 0, "empty upload"),
