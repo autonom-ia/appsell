@@ -10,6 +10,15 @@ import {
   readSeatInput,
   seatRangeMessage
 } from "@/lib/numeric-field";
+import {
+  EXPIRY_PRESET_DAYS,
+  SEAT_PRESETS,
+  earliestExpiryDate,
+  expiresAtFrom,
+  maxUsesFrom,
+  type ExpiryChoice,
+  type SeatChoice
+} from "@/lib/access-class";
 
 import { AccessibleDialog } from "./accessible-dialog";
 
@@ -68,19 +77,35 @@ export function AccessLinksPanel({
   const [redemptions, setRedemptions] = useState<Redemption[]>([]);
   const [label, setLabel] = useState("");
   const [maxUses, setMaxUses] = useState("");
-  const [expiresAt, setExpiresAt] = useState("");
+  // Sem limite e sem prazo são o começo porque são a turma que a maioria cria:
+  // um link para mandar hoje. Quem precisa de teto ou de data escolhe.
+  const [seatChoice, setSeatChoice] = useState<SeatChoice>({ kind: "unlimited" });
+  const [expiryChoice, setExpiryChoice] = useState<ExpiryChoice>({ kind: "never" });
   // Só vira verdadeiro quando a pessoa aciona o botão sem nome preenchido. O
   // formulário não abre reclamando de um campo que ninguém tentou usar ainda.
   const [missingLabel, setMissingLabel] = useState(false);
+  const [missingExpiryDate, setMissingExpiryDate] = useState(false);
 
   // Derivado a cada render: o limite de vagas é conferido enquanto se digita,
   // não no envio.
-  const seatMessage = seatRangeMessage(readSeatInput(maxUses));
-  const createBlocked = label.trim().length === 0 || seatMessage !== null;
+  const seatMessage = seatChoice.kind === "custom" ? seatRangeMessage(readSeatInput(maxUses)) : null;
+  const seatsMissing = seatChoice.kind === "custom" && maxUses.trim() === "";
+  const dateMissing = expiryChoice.kind === "date" && expiryChoice.value.trim() === "";
+  const createBlocked = label.trim().length === 0 || seatMessage !== null || seatsMissing || dateMissing;
+  // O motivo fica na tela antes de acionar, não só depois. Um só de cada vez:
+  // uma lista de pendências ao lado de um botão vivo assusta mais do que ajuda.
+  const blockingReason = label.trim().length === 0
+    ? "Falta o nome da turma."
+    : seatsMissing || seatMessage !== null
+      ? "Informe quantas vagas."
+      : dateMissing
+        ? "Escolha o último dia."
+        : null;
 
   const listHeading = useRef<HTMLHeadingElement>(null);
   const labelInput = useRef<HTMLInputElement>(null);
   const seatsInput = useRef<HTMLInputElement>(null);
+  const expiryInput = useRef<HTMLInputElement>(null);
   const revokeCancel = useRef<HTMLButtonElement>(null);
   // One key per pending mutation, held until the server confirms. A retry after a
   // dropped connection then replays the same operation instead of minting a
@@ -177,12 +202,16 @@ export function AccessLinksPanel({
       if (label.trim().length === 0) {
         setMissingLabel(true);
         labelInput.current?.focus();
+      } else if (dateMissing) {
+        setMissingExpiryDate(true);
+        expiryInput.current?.focus();
       } else {
         seatsInput.current?.focus();
       }
       return;
     }
     setMissingLabel(false);
+    setMissingExpiryDate(false);
     createKey.current ??= crypto.randomUUID();
     setActionState("working");
     setInvalidField("");
@@ -190,8 +219,10 @@ export function AccessLinksPanel({
     data.set("_csrf", csrf.create);
     data.set("idempotency_key", createKey.current);
     data.set("label", label.trim());
-    data.set("max_uses", maxUses.trim());
-    data.set("expires_at", expiresAt.trim());
+    data.set("max_uses", maxUsesFrom(seatChoice, maxUses));
+    // A hora é lida aqui, no envio, e nunca durante a renderização: "sete dias"
+    // conta a partir do momento em que a turma é criada.
+    data.set("expires_at", expiresAtFrom(expiryChoice, Date.now()));
     const controller = new AbortController();
     inFlight.current.add(controller);
     const timeout = setTimeout(() => controller.abort(), MUTATION_TIMEOUT_MS);
@@ -210,7 +241,8 @@ export function AccessLinksPanel({
       setCopied(false);
       setLabel("");
       setMaxUses("");
-      setExpiresAt("");
+      setSeatChoice({ kind: "unlimited" });
+      setExpiryChoice({ kind: "never" });
       setActionState("idle");
       await loadLinks();
       queueMicrotask(() => listHeading.current?.focus());
@@ -311,14 +343,14 @@ export function AccessLinksPanel({
   return (
     <section className="access-links-panel" aria-labelledby="access-links-title">
       <p className="eyebrow">Distribuição</p>
-      <h2 id="access-links-title">Links de acesso</h2>
+      <h2 id="access-links-title">Turmas</h2>
       <p>
-        Cada link libera vagas contadas por pessoa. Quem abrir entra com o próprio cadastro, e
-        reabrir o link não consome outra vaga.
+        Cada turma tem um endereço próprio. Quem abrir entra com o próprio cadastro, e voltar
+        depois não gasta outra vaga.
       </p>
       {!published ? (
         <p className="form-note" role="status">
-          Coloque o produto no ar para os links começarem a funcionar. Você já pode criá-los.
+          Coloque o produto no ar para as turmas começarem a funcionar. Você já pode criá-las.
         </p>
       ) : null}
 
@@ -336,15 +368,15 @@ export function AccessLinksPanel({
       ) : null}
 
       <div className="access-link-form" onKeyDown={createOnEnter}>
-        <fieldset aria-label="Novo link de acesso" disabled={actionState === "working"}>
+        <fieldset aria-label="Nova turma" disabled={actionState === "working"}>
           {/*
             Rótulo ligado por `htmlFor`/`id`, e ajuda e erro FORA do rótulo. Com
-            os textos dentro dele, o nome acessível do campo viraria "Vagas De 1
-            a 100.000 vagas…" — o leitor de tela leria a ajuda como se fosse o
-            nome do campo. `aria-describedby` é o que os liga sem poluir o nome.
+            os textos dentro dele, o nome acessível do campo carregaria a ajuda
+            junto — o leitor de tela leria "Vagas De 1 a 100.000 vagas…" como se
+            fosse o nome. `aria-describedby` liga sem poluir o nome.
           */}
           <div className="access-link-field">
-            <label htmlFor="access-link-label">Nome do link</label>
+            <label htmlFor="access-link-label">Nome da turma</label>
             <input
               id="access-link-label"
               ref={labelInput}
@@ -352,78 +384,175 @@ export function AccessLinksPanel({
               onChange={(event) => { setLabel(event.target.value); setMissingLabel(false); }}
               maxLength={80}
               autoComplete="off"
-              placeholder="Ex.: Turma Royalty Seguros"
+              placeholder="Ex.: Turma de agosto"
               aria-required="true"
               aria-invalid={invalidField === "label" || missingLabel}
-              aria-describedby={missingLabel ? "access-link-label-required" : undefined}
+              aria-describedby={missingLabel ? "access-link-label-required" : "access-link-label-help"}
             />
             {missingLabel ? (
               <span id="access-link-label-required" className="form-error" role="alert">
-                Dê um nome ao link para conseguir criá-lo.
+                Dê um nome à turma para conseguir criá-la.
               </span>
-            ) : null}
-          </div>
-          <div className="access-link-field">
-            <label htmlFor="access-link-seats">Vagas</label>
-            <input
-              id="access-link-seats"
-              ref={seatsInput}
-              type="number"
-              value={maxUses}
-              onChange={(event) => setMaxUses(keepDigits(event.target.value))}
-              // O campo recusa a tecla impossível em vez de aceitar e reclamar
-              // depois: `type="number"` deixaria passar "e", "+" e "-".
-              onKeyDown={(event) => { if (isRejectedNumericKey(event.key)) event.preventDefault(); }}
-              // Sem isto, rolar a página sobre o campo focado altera as vagas.
-              onWheel={(event) => event.currentTarget.blur()}
-              min={SEAT_RANGE.min}
-              max={SEAT_RANGE.max}
-              step={1}
-              inputMode="numeric"
-              autoComplete="off"
-              placeholder="Ilimitado"
-              aria-invalid={invalidField === "max_uses" || seatMessage !== null}
-              aria-describedby={seatMessage ? "access-link-seats-error" : "access-link-seats-help"}
-            />
-            {/* O erro toma o lugar da ajuda em vez de se empilhar sob ela: as
-                duas dizem o mesmo limite, e mostrar as duas era repetir a
-                mesma frase duas vezes logo abaixo do campo. */}
-            {seatMessage ? (
-              <span id="access-link-seats-error" className="form-error" role="alert">{seatMessage}</span>
             ) : (
-              <span id="access-link-seats-help" className="field-help">{SEAT_HELP}</span>
+              <span id="access-link-label-help" className="field-help">
+                Só você vê. Serve para reconhecer a turma na lista.
+              </span>
             )}
           </div>
-          <div className="access-link-field">
-            <label htmlFor="access-link-expires">Validade</label>
-            <input
-              id="access-link-expires"
-              type="datetime-local"
-              value={expiresAt}
-              onChange={(event) => setExpiresAt(event.target.value)}
-              autoComplete="off"
-              aria-invalid={invalidField === "expires_at"}
-            />
-          </div>
+
+          {/*
+            Vagas e prazo viraram escolha, não digitação. Os presets cobrem o
+            que se decide de fato; a entrada livre continua existindo para o
+            resto, e não aceita nada fora da faixa. Rádio de verdade, não botão
+            com estado fingido: é o teclado e o leitor de tela que ganham.
+          */}
+          <fieldset className="access-link-choice">
+            <legend>Quantas vagas</legend>
+            <div className="chip-row">
+              {SEAT_PRESETS.map((preset) => (
+                <label key={preset} className={seatChoice.kind === "preset" && seatChoice.seats === preset ? "chip selected" : "chip"}>
+                  <input
+                    type="radio"
+                    name="access_link_seats"
+                    checked={seatChoice.kind === "preset" && seatChoice.seats === preset}
+                    onChange={() => { setSeatChoice({ kind: "preset", seats: preset }); setMaxUses(""); }}
+                  />
+                  <span>{preset}</span>
+                </label>
+              ))}
+              <label className={seatChoice.kind === "unlimited" ? "chip selected" : "chip"}>
+                <input
+                  type="radio"
+                  name="access_link_seats"
+                  checked={seatChoice.kind === "unlimited"}
+                  onChange={() => { setSeatChoice({ kind: "unlimited" }); setMaxUses(""); }}
+                />
+                <span>Sem limite</span>
+              </label>
+              <label className={seatChoice.kind === "custom" ? "chip selected" : "chip"}>
+                <input
+                  type="radio"
+                  name="access_link_seats"
+                  checked={seatChoice.kind === "custom"}
+                  onChange={() => { setSeatChoice({ kind: "custom" }); queueMicrotask(() => seatsInput.current?.focus()); }}
+                />
+                <span>Outro número</span>
+              </label>
+            </div>
+            {seatChoice.kind === "custom" ? (
+              <div className="access-link-field">
+                <label htmlFor="access-link-seats">Número exato</label>
+                <input
+                  id="access-link-seats"
+                  ref={seatsInput}
+                  type="number"
+                  value={maxUses}
+                  onChange={(event) => setMaxUses(keepDigits(event.target.value))}
+                  // O campo recusa a tecla impossível em vez de aceitar e
+                  // reclamar depois: `type="number"` deixaria passar "e", "+" e "-".
+                  onKeyDown={(event) => { if (isRejectedNumericKey(event.key)) event.preventDefault(); }}
+                  // Sem isto, rolar a página sobre o campo focado altera as vagas.
+                  onWheel={(event) => event.currentTarget.blur()}
+                  min={SEAT_RANGE.min}
+                  max={SEAT_RANGE.max}
+                  step={1}
+                  inputMode="numeric"
+                  autoComplete="off"
+                  aria-invalid={invalidField === "max_uses" || seatMessage !== null}
+                  aria-describedby={seatMessage ? "access-link-seats-error" : "access-link-seats-help"}
+                />
+                {/* O erro toma o lugar da ajuda em vez de se empilhar sob ela:
+                    as duas dizem o mesmo limite. */}
+                {seatMessage ? (
+                  <span id="access-link-seats-error" className="form-error" role="alert">{seatMessage}</span>
+                ) : (
+                  <span id="access-link-seats-help" className="field-help">{SEAT_HELP}</span>
+                )}
+              </div>
+            ) : null}
+          </fieldset>
+
+          <fieldset className="access-link-choice">
+            <legend>Até quando</legend>
+            <div className="chip-row">
+              {EXPIRY_PRESET_DAYS.map((days) => (
+                <label key={days} className={expiryChoice.kind === "days" && expiryChoice.days === days ? "chip selected" : "chip"}>
+                  <input
+                    type="radio"
+                    name="access_link_expiry"
+                    checked={expiryChoice.kind === "days" && expiryChoice.days === days}
+                    onChange={() => setExpiryChoice({ kind: "days", days })}
+                  />
+                  <span>{days} dias</span>
+                </label>
+              ))}
+              <label className={expiryChoice.kind === "never" ? "chip selected" : "chip"}>
+                <input
+                  type="radio"
+                  name="access_link_expiry"
+                  checked={expiryChoice.kind === "never"}
+                  onChange={() => setExpiryChoice({ kind: "never" })}
+                />
+                <span>Sem prazo</span>
+              </label>
+              <label className={expiryChoice.kind === "date" ? "chip selected" : "chip"}>
+                <input
+                  type="radio"
+                  name="access_link_expiry"
+                  checked={expiryChoice.kind === "date"}
+                  onChange={() => { setExpiryChoice({ kind: "date", value: "" }); queueMicrotask(() => expiryInput.current?.focus()); }}
+                />
+                <span>Escolher data</span>
+              </label>
+            </div>
+            {expiryChoice.kind === "date" ? (
+              <div className="access-link-field">
+                <label htmlFor="access-link-expires">Último dia</label>
+                {/*
+                  `type="date"`, não `datetime-local`: pedir hora e minuto para
+                  fechar uma turma é precisão que ninguém tem. O dia escolhido
+                  vale inteiro — fechar à meia-noite trancaria do lado de fora
+                  justamente quem entrasse no dia que a pessoa quis incluir.
+
+                  O piso do calendário vem do instante em que a lista chegou, e
+                  nunca de um Date.now() no render: ler o relógio durante a
+                  renderização faz a mesma árvore produzir telas diferentes.
+                */}
+                <input
+                  id="access-link-expires"
+                  ref={expiryInput}
+                  type="date"
+                  value={expiryChoice.value}
+                  min={loadedAt ? earliestExpiryDate(loadedAt) : undefined}
+                  onChange={(event) => setExpiryChoice({ kind: "date", value: event.target.value })}
+                  autoComplete="off"
+                  aria-invalid={invalidField === "expires_at" || missingExpiryDate}
+                  aria-describedby={missingExpiryDate ? "access-link-expires-error" : "access-link-expires-help"}
+                />
+                {missingExpiryDate ? (
+                  <span id="access-link-expires-error" className="form-error" role="alert">
+                    Escolha o último dia da turma, ou use “Sem prazo”.
+                  </span>
+                ) : (
+                  <span id="access-link-expires-help" className="field-help">A turma vale até o fim desse dia.</span>
+                )}
+              </div>
+            ) : null}
+          </fieldset>
+
           {/*
             O botão não é desligado por campo vazio, nem com `disabled` nem com
             `aria-disabled` — ambos anunciam "indisponível" e tiram do vendedor
-            a única forma de descobrir o que falta. Ele aciona sempre: quando
-            algo falta, `submit` diz o que é e leva o foco até lá. Desligado, o
-            botão fica reservado ao que é mesmo momentâneo (o envio em curso),
-            e aí o próprio rótulo vira "Criando…".
+            a única forma de descobrir o que falta (#254). O motivo fica visível
+            ao lado dele antes mesmo de acionar, e acionar leva o foco até o
+            campo. Desligado fica reservado ao que é momentâneo, o envio em
+            curso, e aí o próprio rótulo vira "Criando…".
           */}
-          <div className="access-link-field">
-            {/* Espaço inquebrável: um espaço comum colapsaria e o espaçador
-                ficaria sem a altura de um rótulo. */}
-            <span className="access-link-label-spacer" aria-hidden="true">{"\u00a0"}</span>
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={() => void submit()}
-            >
-              {actionState === "working" ? "Criando…" : "Criar link"}
+          <div className="access-link-submit">
+            <button type="button" className="primary-button" onClick={() => void submit()}>
+              {actionState === "working" ? "Criando…" : "Criar turma"}
             </button>
+            {blockingReason ? <p className="field-help" id="access-link-blocked">{blockingReason}</p> : null}
           </div>
         </fieldset>
         <div className="form-feedback" aria-live="polite" aria-atomic="true">
@@ -444,8 +573,8 @@ export function AccessLinksPanel({
         </div>
       </div>
 
-      <h3 ref={listHeading} tabIndex={-1}>Links criados</h3>
-      {listState === "loading" ? <p className="empty-state">Carregando links…</p> : null}
+      <h3 ref={listHeading} tabIndex={-1}>Turmas criadas</h3>
+      {listState === "loading" ? <p className="empty-state">Carregando turmas…</p> : null}
       {listState === "unauthorized" ? <p className="empty-state">Sua sessão expirou.</p> : null}
       {listState === "forbidden" ? (
         <p className="empty-state">Você não tem permissão nesta loja.</p>
@@ -454,10 +583,10 @@ export function AccessLinksPanel({
         <p className="empty-state">A API está indisponível. Tente novamente.</p>
       ) : null}
       {listState === "error" ? (
-        <p className="empty-state">Não foi possível carregar os links.</p>
+        <p className="empty-state">Não foi possível carregar as turmas.</p>
       ) : null}
       {listState === "ready" && links.length === 0 ? (
-        <p className="empty-state">Nenhum link ainda. Crie o primeiro acima.</p>
+        <p className="empty-state">Nenhuma turma ainda. Crie a primeira acima.</p>
       ) : null}
 
       {links.map((link) => {
@@ -520,7 +649,7 @@ export function AccessLinksPanel({
             </div>
             {open ? (
               <ul className="access-link-redemptions" id={listId}>
-                {redemptions.length === 0 ? <li>Ninguém entrou por este link ainda.</li> : null}
+                {redemptions.length === 0 ? <li>Ninguém entrou nesta turma ainda.</li> : null}
                 {redemptions.map((entry) => (
                   <li key={entry.entitlement_id}>Entrou em {formatDate(entry.redeemed_at)}</li>
                 ))}
@@ -545,10 +674,10 @@ export function AccessLinksPanel({
           </p>
           <div className="dialog-actions">
             <button ref={revokeCancel} type="button" className="secondary-button" onClick={() => setRevokeTarget(null)}>
-              Manter o link
+              Manter a turma
             </button>
             <button type="button" className="danger-button" onClick={() => void revoke(revokeTarget)}>
-              Revogar link
+              Revogar turma
             </button>
           </div>
         </AccessibleDialog>

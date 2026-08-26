@@ -1152,9 +1152,6 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .access-link-form input[type="number"] { appearance: textfield; -moz-appearance: textfield; }
 .access-link-form input[type="number"]::-webkit-outer-spin-button,
 .access-link-form input[type="number"]::-webkit-inner-spin-button { appearance: none; -webkit-appearance: none; margin: 0; }
-/* O espaçador só existe na fila de quatro colunas; empilhado, ele seria uma
-   linha em branco entre a validade e o botão. */
-.access-link-form .access-link-label-spacer { display: none; }
 .access-link-form input:focus-visible { outline: 3px solid var(--bright); outline-offset: 2px; }
 .access-link-card { min-width: 0; max-width: 100%; padding: 12px; display: grid; gap: 8px; border: 1px solid var(--border); border-radius: 16px; background: #fbfdff; }
 .access-link-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
@@ -1182,14 +1179,16 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 
 @media (min-width: 769px) {
   .access-links-panel { padding: 28px; }
-  /* `align-items: start`, não `end`. Alinhado pelo rodapé, qualquer ajuda ou
+  /* Duas colunas, não quatro: o formulário deixou de ser uma fila de campos e
+     virou três decisões. O nome ocupa a linha inteira porque é texto livre; as
+     duas escolhas dividem a linha seguinte; o botão fecha embaixo.
+
+     `align-items: start`, não `end`. Alinhado pelo rodapé, qualquer ajuda ou
      erro que aparecesse numa coluna empurrava as outras para baixo: a fila
-     inteira dançava a cada tecla. Alinhado pelo topo, cada coluna cresce para
-     baixo sozinha e os campos ficam parados. */
-  .access-link-form fieldset { grid-template-columns: minmax(0,2fr) minmax(0,1fr) minmax(0,1.2fr) auto; align-items: start; }
-  /* O espaçador ocupa a linha do rótulo para o botão descer até a linha dos
-     campos. Sem ele, alinhado pelo topo, o botão ficaria acima deles. */
-  .access-link-form .access-link-label-spacer { display: block; font-size: .74rem; font-weight: 800; }
+     inteira dançava a cada tecla. */
+  .access-link-form > fieldset { grid-template-columns: minmax(0,1fr) minmax(0,1fr); align-items: start; column-gap: 24px; }
+  .access-link-form > fieldset > .access-link-field:first-of-type { grid-column: 1 / -1; }
+  .access-link-form .access-link-submit { grid-column: 1 / -1; }
   .access-link-form .secondary-button { min-height: 48px; }
   .access-link-issued { grid-template-columns: minmax(0,1fr) auto; align-items: center; }
   .access-link-actions { grid-template-columns: repeat(3,auto); justify-content: start; }
@@ -1245,3 +1244,27 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .cover-choose input[type="file"] { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
 .cover-choose:has(input[type="file"]:disabled) { opacity: .55; cursor: default; }
 .cover-choose:has(input[type="file"]:focus-visible) { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+/* Turmas (#256): vagas e prazo viraram escolha, não digitação. Os chips são
+   rádios de verdade — o círculo some, o rótulo inteiro é a área de toque, e o
+   teclado continua andando entre eles com as setas, que é o que um grupo de
+   rádio dá de graça e um botão com estado fingido não dá. */
+.access-link-choice { min-width: 0; margin: 0; padding: 0; border: 0; display: grid; gap: 8px; }
+.access-link-choice > legend { padding: 0; color: var(--ink); font-size: .74rem; font-weight: 800; }
+.chip-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { position: relative; display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 16px; border: 1px solid var(--border); border-radius: 999px; background: #fff; color: var(--ink); font-size: .9rem; font-weight: 650; cursor: pointer; transition: border-color 180ms ease, background-color 180ms ease, color 180ms ease; }
+/* O rádio fica invisível, mas cobrindo o chip inteiro — não recortado a 1px.
+   Recortado, ele deixa de ser alvo de clique: só o rótulo respondia, e nenhuma
+   ferramenta que aciona o controle pelo papel de rádio conseguia marcá-lo.
+   Coberto e transparente, a área de toque é o chip todo. */
+.chip input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0; opacity: 0; cursor: pointer; }
+.chip:hover { border-color: rgba(30,58,138,.4); background: #f8fbff; }
+.chip.selected { border-color: var(--blue); background: var(--blue); color: #fff; }
+/* O anel de foco vai no rótulo, porque o rádio em si está fora da tela. Sem
+   isto, quem anda de teclado pelo grupo não vê onde está. */
+.chip:has(input:focus-visible) { outline: 3px solid var(--bright); outline-offset: 2px; }
+.access-link-submit { display: grid; gap: 6px; align-content: start; }
+.access-link-submit .field-help { margin: 0; }
+@media (min-width: 769px) {
+  .access-link-submit { grid-column: 1 / -1; grid-template-columns: auto minmax(0,1fr); align-items: center; gap: 12px; }
+}

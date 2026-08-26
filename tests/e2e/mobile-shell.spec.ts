@@ -508,8 +508,8 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   await expect(page.getByText("Catálogo publicado com sucesso.", { exact: false })).toBeVisible();
   // The link fields live inside the editor's own form. Pressing Enter there used
   // to submit the product draft instead of creating the link.
-  await page.getByLabel("Nome do link").fill("Turma piloto");
-  await page.getByLabel("Nome do link").press("Enter");
+  await page.getByLabel("Nome da turma").fill("Turma piloto");
+  await page.getByLabel("Nome da turma").press("Enter");
   await expect(page.getByText("Copie agora", { exact: false })).toBeVisible();
   expect(accessLinkLabels).toEqual(["Turma piloto"]);
   expect(publishKeys).toHaveLength(4);

@@ -7,7 +7,7 @@ import { expect, test, type Page } from "@playwright/test";
  * Estes dois critérios não se conferem lendo o código. O primeiro depende do
  * que o navegador deixa entrar no campo; o segundo depende do que a folha de
  * estilo realmente pinta — e foi exatamente aí que a interface mentiu: o botão
- * "Criar link" tinha `disabled` no DOM e `opacity: 1` com `cursor: pointer` na
+ * "Criar turma" tinha `disabled` no DOM e `opacity: 1` com `cursor: pointer` na
  * tela, indistinguível de um botão vivo que ignora o clique.
  *
  * Por isso as asserções abaixo leem `getComputedStyle`, não atributos. Apagar a
@@ -124,7 +124,8 @@ test.describe("#253 — o campo numérico recusa o impossível", () => {
     await mockEditor(page);
     await page.goto(`/products/${SELLER_ID}/${PRODUCT_ID}?section=publicar`);
 
-    const seats = page.getByLabel("Vagas");
+    await page.getByRole("radio", { name: "Outro número" }).check();
+    const seats = page.getByLabel("Número exato");
     await expect(seats).toBeVisible();
 
     // A faixa é declarada ao navegador e ao leitor de tela, não só conferida
@@ -156,7 +157,8 @@ test.describe("#253 — o campo numérico recusa o impossível", () => {
     await mockEditor(page);
     await page.goto(`/products/${SELLER_ID}/${PRODUCT_ID}?section=publicar`);
 
-    const seats = page.getByLabel("Vagas");
+    await page.getByRole("radio", { name: "Outro número" }).check();
+    const seats = page.getByLabel("Número exato");
     await seats.pressSequentially("200000");
     await expect(seats).toHaveAttribute("aria-invalid", "true");
     // "Revise o campo destacado" era a resposta antiga, e não dizia o limite.
@@ -220,20 +222,20 @@ test.describe("#253 — o campo numérico recusa o impossível", () => {
 });
 
 test.describe("#254 — nenhum botão desligado em silêncio", () => {
-  test("'Criar link' não é desligado por campo vazio: ele diz o que falta", async ({ page }) => {
+  test("'Criar turma' não é desligado por campo vazio: ele diz o que falta", async ({ page }) => {
     await login(page);
     await mockEditor(page);
     await page.goto(`/products/${SELLER_ID}/${PRODUCT_ID}?section=publicar`);
 
-    const create = page.getByRole("button", { name: "Criar link" });
+    const create = page.getByRole("button", { name: "Criar turma" });
     await expect(create).toBeVisible();
     // Nem `disabled` nem `aria-disabled`: os dois anunciam "indisponível" e
     // tiram do vendedor a única forma de descobrir o que falta.
     await expect(create).toBeEnabled();
 
     await create.click();
-    await expect(page.getByText("Dê um nome ao link para conseguir criá-lo.")).toBeVisible();
-    await expect(page.getByLabel("Nome do link")).toBeFocused();
+    await expect(page.getByText("Dê um nome à turma para conseguir criá-la.")).toBeVisible();
+    await expect(page.getByLabel("Nome da turma")).toBeFocused();
   });
 
   test("com vagas fora da faixa, acionar leva o foco ao campo errado", async ({ page }) => {
@@ -241,11 +243,12 @@ test.describe("#254 — nenhum botão desligado em silêncio", () => {
     await mockEditor(page);
     await page.goto(`/products/${SELLER_ID}/${PRODUCT_ID}?section=publicar`);
 
-    await page.getByLabel("Nome do link").fill("Turma de agosto");
-    await page.getByLabel("Vagas").pressSequentially("200000");
+    await page.getByLabel("Nome da turma").fill("Turma de agosto");
+    await page.getByRole("radio", { name: "Outro número" }).check();
+    await page.getByLabel("Número exato").pressSequentially("200000");
 
-    await page.getByRole("button", { name: "Criar link" }).click();
-    await expect(page.getByLabel("Vagas")).toBeFocused();
+    await page.getByRole("button", { name: "Criar turma" }).click();
+    await expect(page.getByLabel("Número exato")).toBeFocused();
     await expect(page.getByRole("alert").filter({ hasText: "100.000" })).toBeVisible();
   });
 
