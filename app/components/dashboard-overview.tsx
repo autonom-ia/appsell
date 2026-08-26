@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { productArt } from "@/lib/product-art";
 import { useCallback, useEffect, useState } from "react";
 import { ProductCard } from "./product-card";
 import { SellerOnboardingCard } from "./seller-onboarding-card";
@@ -164,14 +165,26 @@ function RealDashboard({ catalog }: { catalog: CatalogState }) {
           {visibleDrafts.length ? (
             <div className="draft-list">
               {visibleDrafts.map((draft) => (
+                /* Mesmo objeto, mesmo cartão. A Visão geral tinha uma cópia da
+                   marcação antiga do catálogo, então a #257 a teria quebrado em
+                   silêncio: as regras de estilo mudaram junto com a estrutura
+                   lá, e aqui a estrutura ficou para trás. */
                 <article className="draft-card" key={draft.id}>
-                  <div><span className={`status status-${draft.status}`}>{draftStatusLabel(draft.status)}</span><span>@{draft.slug}</span></div>
-                  <h3>{draft.title}</h3>
-                  <p>{draft.description || "Descrição ainda não informada."}</p>
-                  <footer><span>Curso inicial</span><strong>{draft.course?.title ?? draft.course_title ?? "Curso em rascunho"}</strong></footer>
-                  <Link className="draft-card-action" href={`/products/${encodeURIComponent(ready.sellers[0].id)}/${encodeURIComponent(draft.id)}`}>
-                    {draft.status === "published" ? "Editar nova versão" : "Continuar edição"} <span aria-hidden="true">→</span>
-                  </Link>
+                  <div className="draft-card-media">
+                    <div className="draft-card-art" aria-hidden="true" style={{ background: productArt(draft.title).gradient }}>
+                      <span>{productArt(draft.title).initials}</span>
+                    </div>
+                  </div>
+                  <div className="draft-card-body">
+                    <div className="draft-card-badges">
+                      <span className={`status status-${draft.status}`}>{draftStatusLabel(draft.status)}</span>
+                    </div>
+                    <h3>{draft.title}</h3>
+                    <p className="draft-card-meta">@{draft.slug} · {draft.course?.title ?? draft.course_title ?? "Conteúdo em rascunho"}</p>
+                    <div className="draft-card-actions">
+                      <Link className="draft-card-action" href={`/products/${encodeURIComponent(ready.sellers[0].id)}/${encodeURIComponent(draft.id)}`}>Abrir</Link>
+                    </div>
+                  </div>
                 </article>
               ))}
             </div>

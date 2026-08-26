@@ -220,16 +220,17 @@ test("creates a tenant-scoped product draft in the mobile UI", async ({ page }, 
   await login(page);
   await page.goto("/products");
   await page.getByLabel("Sua loja").selectOption({ label: "Studio Mobile · @studio-mobile" });
-  await expect(page.getByRole("heading", { name: "Estruture seu próximo produto" })).toBeVisible();
+  // A lista vem antes do formulário desde a #257: quem chega em Produtos vê o
+  // que já tem, e criar é um botão.
   await expect(page.getByText("Publicado", { exact: true })).toBeVisible();
   await expect(page.getByText("Despublicado", { exact: true })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Editar nova versão" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Abrir" }).first()).toBeVisible();
+  await expect(page.getByLabel("Nome do produto")).toHaveCount(0);
 
-  await page.getByLabel("Sua loja").focus();
-  await page.keyboard.press("Tab");
-  await expect(page.getByLabel("Nome do produto")).toBeFocused();
-  await page.keyboard.type("Rascunho do tenant A");
-  await page.getByRole("article").filter({ hasText: "Draft existente" }).getByRole("link", { name: "Continuar edição" }).click();
+  await page.getByRole("button", { name: "Novo produto" }).click();
+  await expect(page.getByRole("heading", { name: "Estruture seu próximo produto" })).toBeVisible();
+  await page.getByLabel("Nome do produto").fill("Rascunho do tenant A");
+  await page.getByRole("article").filter({ hasText: "Draft existente" }).getByRole("link", { name: "Abrir" }).click();
   await expect(page.getByRole("dialog", { name: "Sair desta edição?" })).toBeVisible();
   await page.getByRole("button", { name: "Continuar editando" }).click();
   await expect(page.getByLabel("Nome do produto")).toHaveValue("Rascunho do tenant A");
@@ -252,9 +253,13 @@ test("creates a tenant-scoped product draft in the mobile UI", async ({ page }, 
   await expect(page.getByLabel("Sua loja")).toBeDisabled();
   releaseCreate?.();
   await expect(page.getByRole("heading", { name: "Creator OS Mobile" })).toBeVisible();
-  await expect(page.getByText("Fundamentos Mobile", { exact: true })).toBeVisible();
+  // O conteúdo passou a dividir uma linha com o endereço do produto no cartão
+  // ("@endereço · Conteúdo"), então a correspondência exata deixou de valer.
+  await expect(page.locator(".draft-card-meta").filter({ hasText: "Fundamentos Mobile" })).toBeVisible();
   await expect(page.getByLabel("Sua loja")).toBeEnabled();
-  await expect(page.getByLabel("Nome do produto")).toHaveValue("");
+  // Criar fecha o formulário: deixá-lo aberto e vazio convida a criar de novo
+  // sem querer.
+  await expect(page.getByLabel("Nome do produto")).toHaveCount(0);
 
   const dimensions = await page.evaluate(() => ({
     client: document.documentElement.clientWidth,

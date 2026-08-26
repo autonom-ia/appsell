@@ -41,6 +41,16 @@ export function ProductDraftWorkspace() {
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [invalidField, setInvalidField] = useState("");
   const [formDirty, setFormDirty] = useState(false);
+  // Qual produto acabou de ter o endereço copiado. Guardar o id e não um
+  // booleano é o que impede o "Endereço copiado" de aparecer em todos os
+  // cartões de uma vez.
+  const [shared, setShared] = useState<string | null>(null);
+  // O endereço em texto, para quando copiar não é possível. Guarda o produto
+  // junto pelo mesmo motivo de `shared`: sem isso a mensagem apareceria em
+  // todos os cartões de uma vez.
+  const [shareFallback, setShareFallback] = useState<{ id: string; url: string } | null>(null);
+  // Fechado por padrão: quem chega em Produtos quer ver os que tem.
+  const [creating, setCreating] = useState(false);
   const formDirtyRef = useRef(false);
   const [pendingSellerId, setPendingSellerId] = useState("");
   const idempotencyKey = useRef<string | null>(null);
@@ -95,6 +105,13 @@ export function ProductDraftWorkspace() {
     selectedSellerIdRef.current = sellerId;
     setSelectedSellerId(sellerId);
     setPendingSellerId("");
+    // O "Endereço copiado" pertence a um produto de uma loja; trocar de loja
+    // troca a lista inteira, e deixá-lo ligado marcaria um cartão que a pessoa
+    // nunca tocou.
+    setShared(null);
+    // O formulário NÃO fecha aqui: quem troca de loja no meio da criação
+    // continua querendo criar, só que na outra loja. Fechar tiraria da tela o
+    // que a pessoa estava fazendo. Ele fecha ao criar e ao cancelar.
     setFormDirty(false);
     formDirtyRef.current = false;
     setSaveState("idle");
@@ -195,7 +212,12 @@ export function ProductDraftWorkspace() {
       setFormDirty(false);
       formDirtyRef.current = false;
       setSaveState("idle");
+      // O formulário fecha e o foco volta para a lista, que é onde o produto
+      // recém-criado apareceu. Deixá-lo aberto e vazio depois de criar convida
+      // a criar de novo sem querer.
+      setCreating(false);
       await loadProducts(submittedSellerId);
+      queueMicrotask(() => catalogHeading.current?.focus());
     } catch {
       if (selectedSellerIdRef.current !== submittedSellerId) return;
       setSaveState("unavailable");
@@ -212,16 +234,38 @@ export function ProductDraftWorkspace() {
     return saveState === "invalid" && invalidField === field;
   }
 
+  /**
+   * Copia o endereço público do produto.
+   *
+   * Um produto no ar sem preço entra pela página de acesso; com venda ativa,
+   * pela vitrine. Mandar todo mundo para a vitrine faria o link gratuito pedir
+   * um pagamento que não existe.
+   */
+  async function share(product: ProductDraft) {
+    if (!selectedSeller) return;
+    const path = product.access_mode === "paid"
+      ? `/s/${selectedSeller.slug}/p/${product.slug}`
+      : `/s/${selectedSeller.slug}/p/${product.slug}/access`;
+    try {
+      await navigator.clipboard.writeText(new URL(path, window.location.origin).toString());
+      setShared(product.id);
+      setShareFallback(null);
+    } catch {
+      // Área de transferência bloqueada — contexto não seguro, ou permissão
+      // negada. Um clique que não faz nada e não diz nada é o defeito que a
+      // #254 fechou; o endereço aparece para copiar à mão.
+      setShared(null);
+      setShareFallback({ id: product.id, url: new URL(path, window.location.origin).toString() });
+    }
+  }
+
   return (
     <section className="catalog-workspace" aria-labelledby="catalog-workspace-title">
-      <div className="catalog-workspace-heading">
-        <div>
-          <p className="eyebrow">Seu catálogo</p>
-          <h2 id="catalog-workspace-title">Organize seus produtos</h2>
-          <p>Crie o produto e o primeiro conteúdo juntos. Tudo permanece privado até uma publicação futura.</p>
-        </div>
-        <span className="private-badge">Catálogo por loja</span>
-      </div>
+      {/* A tela tinha três títulos de tamanho parecido disputando a atenção:
+          "Produtos" (o h1 da página), "Organize seus produtos" e "Produtos
+          cadastrados". Sobrou um. O rótulo desta região vira nome acessível,
+          não manchete. */}
+      <h2 id="catalog-workspace-title" className="sr-only">Catálogo desta loja</h2>
 
       <div className="tenant-picker">
         {lockedSpace ? (
@@ -270,31 +314,6 @@ export function ProductDraftWorkspace() {
 
       {selectedSeller ? (
         <div className="catalog-workspace-grid">
-          <form key={selectedSeller.id} className="product-draft-form" action={`/api/sellers/${selectedSeller.id}/products`} method="post" onInput={() => { formDirtyRef.current = true; setFormDirty(true); }} onSubmit={submit}>
-            <div className="form-heading">
-              <p className="eyebrow">Novo rascunho</p>
-              <h2>Estruture seu próximo produto</h2>
-              <p>Loja: <strong>{selectedSeller.display_name}</strong>. Nenhuma cobrança ou publicação acontece nesta etapa.</p>
-            </div>
-            <fieldset className="product-create-fields" disabled={saveState === "saving"}>
-              <legend className="sr-only">Dados do novo produto</legend>
-              <input type="hidden" name="_csrf" defaultValue="" />
-              <input type="hidden" name="idempotency_key" defaultValue="" />
-              <label>Nome do produto<input name="product_title" minLength={2} maxLength={160} required autoComplete="off" placeholder="Ex.: Codex na prática…" aria-invalid={isInvalid("product_title")} aria-describedby={isInvalid("product_title") ? "product-title-error" : undefined} />{isInvalid("product_title") ? <span id="product-title-error" className="form-error">Informe um nome entre 2 e 160 bytes, sem sobras nas pontas.</span> : null}</label>
-              <label>Endereço do produto<input name="slug" minLength={3} maxLength={63} required autoComplete="off" autoCapitalize="none" spellCheck={false} pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="codex-na-pratica…" aria-invalid={isInvalid("slug")} aria-describedby={isInvalid("slug") ? "product-slug-help product-slug-error" : "product-slug-help"} /><span id="product-slug-help">Somente letras minúsculas, números e hífens.</span>{isInvalid("slug") ? <span id="product-slug-error" className="form-error">Use de 3 a 63 caracteres válidos.</span> : null}</label>
-              <label>Descrição curta<textarea name="product_description" maxLength={2000} rows={4} placeholder="Ex.: Aprenda a trabalhar com Codex com segurança…" aria-invalid={isInvalid("product_description")} aria-describedby={isInvalid("product_description") ? "product-description-error" : undefined} />{isInvalid("product_description") ? <span id="product-description-error" className="form-error">A descrição deve ter até 2.000 bytes e não pode conter controles.</span> : null}</label>
-              <label>Nome do conteúdo<input name="course_title" minLength={2} maxLength={160} required autoComplete="off" placeholder="Ex.: Fundamentos do Codex…" aria-invalid={isInvalid("course_title")} aria-describedby={isInvalid("course_title") ? "course-title-error" : undefined} />{isInvalid("course_title") ? <span id="course-title-error" className="form-error">Informe um nome entre 2 e 160 bytes, sem sobras nas pontas.</span> : null}</label>
-              <button className="primary-button" type="submit">{saveState === "saving" ? "Salvando rascunho…" : "Criar produto"}</button>
-            </fieldset>
-            <div className="form-feedback" aria-live="polite" aria-atomic="true">
-              {saveState === "invalid" ? <p className="form-error">Revise o campo {fieldLabel(invalidField)}.</p> : null}
-              {saveState === "conflict" ? <p className="form-error">Este endereço já existe nesta loja. Escolha outro.</p> : null}
-              {saveState === "forbidden" ? <p className="form-error">Sua sessão ou permissão mudou. Entre novamente antes de tentar.</p> : null}
-              {saveState === "unavailable" ? <p className="form-note">A API está indisponível. Seus campos e a chave desta tentativa foram preservados; tente novamente.</p> : null}
-              {saveState === "error" ? <p className="form-error">Não foi possível salvar. Tente novamente sem alterar os dados.</p> : null}
-            </div>
-          </form>
-
           <div className="draft-list">
             <div className="draft-list-heading"><div><p className="eyebrow">Nesta loja</p><h2 ref={catalogHeading} tabIndex={-1}>Produtos cadastrados</h2></div><strong aria-label={`${products.length} produtos carregados`}>{products.length}</strong></div>
             <div className="sr-only" aria-live="polite" aria-atomic="true">{catalogState === "idle" ? `${products.length} ${products.length === 1 ? "produto carregado" : "produtos carregados"}.` : ""}</div>
@@ -305,39 +324,111 @@ export function ProductDraftWorkspace() {
             {catalogState === "idle" && products.length === 0 ? <p className="empty-state">Nenhum produto ainda. Crie o primeiro como rascunho privado.</p> : null}
             {catalogState === "idle" || catalogState === "loading_more" || catalogState === "page_error" ? products.map((product) => (
               <article className="draft-card" key={product.id}>
-                {/* Quando não há capa, a arte vem do nome: nunca há imagem
-                    quebrada nem branco vazio. Nos dois casos é decorativa —
-                    quem informa é o título logo ao lado. */}
-                {product.cover
-                  // eslint-disable-next-line @next/next/no-img-element
-                  ? <img className="draft-card-art draft-card-cover" src={product.cover.url} alt="" width={product.cover.width} height={product.cover.height} loading="lazy" decoding="async" />
-                  : (
-                    <div className="draft-card-art" aria-hidden="true" style={{ background: productArt(product.title).gradient }}>
-                      <span>{productArt(product.title).initials}</span>
-                    </div>
-                  )}
-                <div><span className={`status status-${product.status}`}>{productStatusLabel(product.status)}</span><span>@{product.slug}</span></div>
-                <h3>{product.title}</h3>
-                <p>{product.description || "Descrição ainda não informada."}</p>
-                <div className="draft-card-access">
-                  <span className={`access-badge access-${product.access_mode ?? "free"}`}>
-                    {product.access_mode === "paid" ? "Venda ativa" : "Acesso gratuito"}
-                  </span>
-                  {catalogPrice(product.unit_amount_minor, product.currency)
-                    ? <strong>{catalogPrice(product.unit_amount_minor, product.currency)}</strong>
-                    : <span className="access-noprice">sem preço em vigor</span>}
+                {/* Miniatura quadrada de 104px, não uma faixa 16:7 ocupando um
+                    terço da tela. A capa é decoração — quem informa é o título
+                    ao lado —, então ela encolhe e o texto cresce. */}
+                <div className="draft-card-media">
+                  {product.cover
+                    // eslint-disable-next-line @next/next/no-img-element
+                    ? <img className="draft-card-art draft-card-cover" src={product.cover.url} alt="" width={product.cover.width} height={product.cover.height} loading="lazy" decoding="async" />
+                    : (
+                      <div className="draft-card-art" aria-hidden="true" style={{ background: productArt(product.title).gradient }}>
+                        <span>{productArt(product.title).initials}</span>
+                      </div>
+                    )}
                 </div>
-                <footer><span>Conteúdo</span><strong>{product.course?.title ?? product.course_title ?? "Conteúdo em rascunho"}</strong></footer>
-                <p className="draft-card-students">{studentCountLabel(product.students)}</p>
-                <Link className="draft-card-action" href={`/products/${encodeURIComponent(selectedSeller.id)}/${encodeURIComponent(product.id)}`} onClick={(event) => {
-                  if (!formDirty || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-                  event.preventDefault();
-                  window.dispatchEvent(new CustomEvent(DIRTY_NAVIGATION_REQUEST_EVENT, { detail: { href: event.currentTarget.href, trigger: event.currentTarget } }));
-                }}>{product.status === "published" ? "Editar nova versão" : "Continuar edição"} <span aria-hidden="true">→</span></Link>
+                <div className="draft-card-body">
+                  <div className="draft-card-badges">
+                    <span className={`status status-${product.status}`}>{productStatusLabel(product.status)}</span>
+                    <span className={`access-badge access-${product.access_mode ?? "free"}`}>
+                      {product.access_mode === "paid" ? "Venda ativa" : "Acesso gratuito"}
+                    </span>
+                    {catalogPrice(product.unit_amount_minor, product.currency)
+                      ? <strong className="draft-card-price">{catalogPrice(product.unit_amount_minor, product.currency)}</strong>
+                      : null}
+                  </div>
+                  <h3>{product.title}</h3>
+                  <p className="draft-card-meta">@{product.slug} · {product.course?.title ?? product.course_title ?? "Conteúdo em rascunho"}</p>
+                  {/* O número que mais importa era o menor texto do cartão, em
+                      cinza. Agora é o maior, e em cor de texto cheia. */}
+                  <p className="draft-card-count">{studentCountLabel(product.students)}</p>
+                  <div className="draft-card-actions">
+                    <Link className="draft-card-action" href={`/products/${encodeURIComponent(selectedSeller.id)}/${encodeURIComponent(product.id)}`} onClick={(event) => {
+                      if (!formDirty || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                      event.preventDefault();
+                      window.dispatchEvent(new CustomEvent(DIRTY_NAVIGATION_REQUEST_EVENT, { detail: { href: event.currentTarget.href, trigger: event.currentTarget } }));
+                    }}>Abrir</Link>
+                    {/* Compartilhar só existe para produto no ar: um rascunho
+                        não tem endereço público para copiar, e um botão que
+                        copia um link quebrado é pior do que botão nenhum. */}
+                    {product.status === "published" ? (
+                      <button type="button" className="secondary-button draft-card-share" onClick={() => void share(product)}>
+                        {shared === product.id ? "Endereço copiado" : "Compartilhar"}
+                      </button>
+                    ) : null}
+                  </div>
+                  {shareFallback?.id === product.id ? (
+                    <p className="draft-card-fallback" role="status">
+                      Não consegui copiar. O endereço é <code>{shareFallback.url}</code>
+                    </p>
+                  ) : null}
+                </div>
               </article>
             )) : null}
             {catalogState === "page_error" ? <p className="form-note" role="alert">Não foi possível carregar a próxima página. Os produtos já carregados foram preservados.</p> : null}
             {(catalogState === "idle" || catalogState === "loading_more" || catalogState === "page_error") && nextCursor ? <button type="button" className="secondary-button load-more" disabled={catalogState === "loading_more"} onClick={() => void loadProducts(selectedSeller.id, nextCursor)}>{catalogState === "loading_more" ? "Carregando…" : catalogState === "page_error" ? "Tentar carregar novamente" : "Carregar mais produtos"}</button> : null}
+          </div>
+
+          {/* O formulário desce para depois da lista e some atrás de um botão.
+              Ele vinha primeiro, então quem já tem produtos era recebido por um
+              pedido de criar mais um antes de ver o que já existe. */}
+          <div className="draft-create">
+            <button
+              type="button"
+              className="primary-button draft-create-toggle"
+              aria-expanded={creating}
+              aria-controls="draft-create-form"
+              onClick={() => setCreating((open) => {
+                // Fechar é cancelar: sem zerar a marca de alterações, o aviso
+                // de "não salvo" continuaria travando a navegação por causa de
+                // um formulário que já saiu da tela.
+                if (open) {
+                  formDirtyRef.current = false;
+                  setFormDirty(false);
+                }
+                return !open;
+              })}
+            >
+              {creating ? "Cancelar" : "Novo produto"}
+            </button>
+            {creating ? (
+              <div id="draft-create-form">
+            <form key={selectedSeller.id} className="product-draft-form" action={`/api/sellers/${selectedSeller.id}/products`} method="post" onInput={() => { formDirtyRef.current = true; setFormDirty(true); }} onSubmit={submit}>
+              <div className="form-heading">
+                <p className="eyebrow">Novo rascunho</p>
+                <h2>Estruture seu próximo produto</h2>
+                <p>Loja: <strong>{selectedSeller.display_name}</strong>. Nenhuma cobrança ou publicação acontece nesta etapa.</p>
+              </div>
+              <fieldset className="product-create-fields" disabled={saveState === "saving"}>
+                <legend className="sr-only">Dados do novo produto</legend>
+                <input type="hidden" name="_csrf" defaultValue="" />
+                <input type="hidden" name="idempotency_key" defaultValue="" />
+                <label>Nome do produto<input name="product_title" minLength={2} maxLength={160} required autoComplete="off" placeholder="Ex.: Codex na prática…" aria-invalid={isInvalid("product_title")} aria-describedby={isInvalid("product_title") ? "product-title-error" : undefined} />{isInvalid("product_title") ? <span id="product-title-error" className="form-error">Informe um nome entre 2 e 160 bytes, sem sobras nas pontas.</span> : null}</label>
+                <label>Endereço do produto<input name="slug" minLength={3} maxLength={63} required autoComplete="off" autoCapitalize="none" spellCheck={false} pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="codex-na-pratica…" aria-invalid={isInvalid("slug")} aria-describedby={isInvalid("slug") ? "product-slug-help product-slug-error" : "product-slug-help"} /><span id="product-slug-help">Somente letras minúsculas, números e hífens.</span>{isInvalid("slug") ? <span id="product-slug-error" className="form-error">Use de 3 a 63 caracteres válidos.</span> : null}</label>
+                <label>Descrição curta<textarea name="product_description" maxLength={2000} rows={4} placeholder="Ex.: Aprenda a trabalhar com Codex com segurança…" aria-invalid={isInvalid("product_description")} aria-describedby={isInvalid("product_description") ? "product-description-error" : undefined} />{isInvalid("product_description") ? <span id="product-description-error" className="form-error">A descrição deve ter até 2.000 bytes e não pode conter controles.</span> : null}</label>
+                <label>Nome do conteúdo<input name="course_title" minLength={2} maxLength={160} required autoComplete="off" placeholder="Ex.: Fundamentos do Codex…" aria-invalid={isInvalid("course_title")} aria-describedby={isInvalid("course_title") ? "course-title-error" : undefined} />{isInvalid("course_title") ? <span id="course-title-error" className="form-error">Informe um nome entre 2 e 160 bytes, sem sobras nas pontas.</span> : null}</label>
+                <button className="primary-button" type="submit">{saveState === "saving" ? "Salvando rascunho…" : "Criar produto"}</button>
+              </fieldset>
+              <div className="form-feedback" aria-live="polite" aria-atomic="true">
+                {saveState === "invalid" ? <p className="form-error">Revise o campo {fieldLabel(invalidField)}.</p> : null}
+                {saveState === "conflict" ? <p className="form-error">Este endereço já existe nesta loja. Escolha outro.</p> : null}
+                {saveState === "forbidden" ? <p className="form-error">Sua sessão ou permissão mudou. Entre novamente antes de tentar.</p> : null}
+                {saveState === "unavailable" ? <p className="form-note">A API está indisponível. Seus campos e a chave desta tentativa foram preservados; tente novamente.</p> : null}
+                {saveState === "error" ? <p className="form-error">Não foi possível salvar. Tente novamente sem alterar os dados.</p> : null}
+              </div>
+            </form>
+              </div>
+            ) : null}
           </div>
         </div>
       ) : sellerState === "loading" ? null : (
