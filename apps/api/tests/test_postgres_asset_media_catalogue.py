@@ -216,3 +216,36 @@ def test_a_constraint_do_upload_aceita_o_playbook_e_recusa_o_excesso() -> None:
         ).fetchone()
     assert aceita is not None and aceita[0] is True
     assert no_teto is not None and int(no_teto[0]) == pdf_max
+
+
+def test_o_lease_do_worker_cabe_na_faixa_que_o_banco_aceita() -> None:
+    """A constante do worker e a faixa do banco precisam concordar.
+
+    `claim_asset_verification_jobs` recusa qualquer lease fora de [30, 600] com
+    `errcode 22023`. Em 26/08/2026 a constante subiu para 1800 sem que a faixa
+    subisse junto: o worker passou a ser recusado em toda tentativa de claim,
+    num laço de retry por segundo, e o vendedor via "a verificação está
+    demorando mais que o esperado" para sempre — porque ninguém chegava a pegar
+    o trabalho.
+
+    O worker não emitia erro, só `asset_worker_claim_loop_retry`. Nada dizia que
+    o número estava fora da faixa.
+    """
+    assert ADMIN_URL
+    from appsell_api.asset_worker_runner import _ASSET_LEASE_SECONDS
+
+    with psycopg.connect(ADMIN_URL) as connection:
+        row = connection.execute(
+            "select prosrc from pg_proc p join pg_namespace n on n.oid=p.pronamespace "
+            "where n.nspname='app_private' and p.proname='claim_asset_verification_jobs'"
+        ).fetchone()
+    assert row is not None, "claim_asset_verification_jobs não existe"
+
+    faixa = re.search(r"lease_seconds\s+not\s+between\s+(\d+)\s+and\s+(\d+)", str(row[0]))
+    assert faixa, "a função deixou de declarar a faixa de lease que aceita"
+    minimo, maximo = int(faixa.group(1)), int(faixa.group(2))
+    assert minimo <= _ASSET_LEASE_SECONDS <= maximo, (
+        f"o worker pede lease de {_ASSET_LEASE_SECONDS}s e o banco só aceita "
+        f"entre {minimo}s e {maximo}s — o claim falha em silêncio e o material "
+        f"nunca é verificado"
+    )

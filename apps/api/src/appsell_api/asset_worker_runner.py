@@ -34,14 +34,17 @@ from .video_verifier import VideoRejected, VideoSandboxUnavailable
 
 _WORKER_SUBJECT = "asset-worker-v1"
 _WORKER_LABEL = f"api-inline-{os.getpid()}"
-# 30 min. Este numero — nao a memoria — e o teto do tamanho do documento: o
-# pdftoppm roda uma pagina por processo, entao paginas custam tempo, nao RAM.
-# Medido num playbook real: 0,3 s por pagina. Assumindo a VPS tres vezes mais
-# lenta e metade do lease reservada para download, antivirus e arquivamento,
-# 1800 s cobrem ~900 paginas com margem.
-# O custo de aumentar: um worker que morre no meio segura o job por 30 min
-# antes de outro tentar de novo.
-_ASSET_LEASE_SECONDS = 1800
+# 600 s, e este numero NAO pode subir sozinho: o banco recusa qualquer lease
+# fora de [30, 600] em `claim_asset_verification_jobs`, com errcode 22023. Subir
+# so a constante fez o worker ser recusado em toda tentativa de claim, num laco
+# de retry por segundo — e o vendedor via "a verificacao esta demorando mais que
+# o esperado" para sempre, porque ninguem chegava a pegar o trabalho.
+#
+# O lease e o teto real do tamanho do documento: o pdftoppm roda uma pagina por
+# processo, entao paginas custam tempo, nao RAM. Medido num playbook real,
+# 0,3 s por pagina. Alargar o teto de paginas exige alargar ANTES a faixa aceita
+# no banco, e as duas coisas na mesma migration.
+_ASSET_LEASE_SECONDS = 600
 logger = structlog.get_logger(__name__)
 
 
