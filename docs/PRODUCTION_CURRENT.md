@@ -2,44 +2,59 @@
 
 > Fonte operacional para retomar o projeto sem depender do histórico da conversa.
 >
-> Última verificação documentada: 2026-08-25. Esta página separa o que foi
+> Última verificação documentada: 2026-08-26. Esta página separa o que foi
 > comprovado na produção do que continua sendo plano ou laboratório Local/CI.
 
 ## Release em produção
+
+> Última verificação: **2026-08-26**, lendo o host — não a memória desta página.
+> Esta página já divergiu da realidade duas vezes; o que vale é o label
+> `org.opencontainers.image.revision` da imagem em execução.
 
 | Item | Estado |
 |---|---|
 | Domínio | `https://sell.autonomia.site` |
 | Ambiente | VPS EasyPanel nativo, Docker Swarm |
-| SHA implantado | `adc3fa498d54140a2296da62fab903e34365f93b` |
-| Imagens | `web:adc3fa4`, `api:adc3fa4`, `asset-worker:adc3fa4` |
-| API health | `{"status":"ok","database":true,"storage":true,"pdf_sandbox":true}` |
+| SHA do **web** | `b2a5a6e02edf777ac59e2c2128cb3f0db95e2dc6` (`b2a5a6e`) |
+| SHA do **api** e do **asset-worker** | `4cbdcf7` — **não se moveram** |
+| Imagens | `web:b2a5a6e`, `api:4cbdcf7`, `asset-worker` em `api:4cbdcf7` |
+| Banco | head `0038_player_hides_materials` — **sem migration neste release** |
 | Web health | `{"status":"ok","redis":true,"api":true,"storage_upload":true}` |
-| CI pós-merge | [run 32656218821](https://github.com/autonom-ia/appsell/actions/runs/32656218821) — success |
-| PR | [#201](https://github.com/autonom-ia/appsell/pull/201) — merged |
-| Entrega | [Issue #195](https://github.com/autonom-ia/appsell/issues/195) — 14/14 aceites, encerrada |
+| Épico | [#252](https://github.com/autonom-ia/appsell/issues/252) — 6/6 fechado |
 
-O release de 2026-08-25 aplicou as migrations `0034`, `0035` e `0036` e trocou
-as imagens de web, api e asset-worker. O banco de produção está no head
-`0036_lesson_material_links` com `app_private.schema_ready()` = `t`.
+O release de 2026-08-26 (`b2a5a6e`) entregou o épico de interface #252 inteiro:
+campos numéricos que recusam o inválido (#253), nenhum botão desligado em
+silêncio (#254), vocabulário do vendedor (#255, que fechou o A4.5 da #232),
+turmas (#256), cartão e entrada do catálogo (#257) e editor por etapas (#258).
 
-Antes desta entrega o estado real divergia desta página: produção rodava
-`50b6301` com o banco em `0033_pdf_study_state`, não `2c8a3689`/`0032`.
+**Só o serviço `web` mudou.** O diff de `4cbdcf7..b2a5a6e` não toca `apps/api`
+nem `migrations`: são 13 arquivos em `app/`, 4 em `lib/` e 14 em `tests/`.
+Por isso `api` e `asset-worker` seguem em `4cbdcf7` e o banco não foi tocado.
 
-Backup lógico pré-cutover:
-`/home/claudete/backups/appsell/appsell_native_90_20260825T114340Z.dump`
-(881 KB, 828 objetos, validado com `pg_restore --list`, permissão 600).
-Rollback de imagem: tag `easypanel/sell-autonomia/api:50b6301` segue no host.
+### Rollback deste release
 
-O release de 2026-08-25 (segundo do dia, `50f5849`) entregou a interface de
-material complementar e a descrição formatada da aula. **Não aplicou migration**
-— o banco segue em `0036_lesson_material_links`. Rollback de imagem disponível
-nas tags `api:3ddd58b` e `api:50b6301` no host.
+A imagem anterior do web foi preservada **antes** do build, com o SHA que ela
+carregava:
 
-O terceiro release de 2026-08-25 (`adc3fa4`) entregou o editor por áreas, a
-coluna de prontidão vinda do servidor e o autosave. **Também sem migration** —
-o banco segue em `0036_lesson_material_links`. Rollback nas tags `api:50f5849`,
-`api:3ddd58b` e `api:50b6301`.
+```sh
+ssh claudete 'sudo docker service update --image easypanel/sell-autonomia/web:4cbdcf7 --force sell-autonomia_web'
+```
+
+ETA ~40 s. Não há migration para reverter.
+
+> **Armadilha registrada:** os serviços `web` e `api` rodavam a imagem **sem
+> tag** (`:latest`). Sem marcar a imagem em uso antes de reconstruir, o build
+> sobrescreve `:latest` e **não sobra rollback**. Marcar primeiro, sempre.
+
+### Releases anteriores
+
+O release de 2026-08-25 aplicou as migrations `0034`, `0035` e `0036`. Depois
+vieram `50f5849` e `adc3fa4` (sem migration), e em 2026-08-26 as migrations
+`0037` (capa do produto) e `0038` (materiais do player) sobre `4cbdcf7`.
+
+Backups lógicos em `/home/claudete/backups/appsell/`, o mais recente
+`appsell_native_90_pre0038_20260826T071544Z.dump`. Tags de rollback de api no
+host: `4cbdcf7`, `16112c5`, `adc3fa4`, `50f5849`, `3ddd58b`.
 
 ## Hierarquia de contas
 
@@ -68,11 +83,15 @@ membership de seller e não dá acesso automático ao conteúdo privado do aluno
 
 O editor segue a ordem:
 
-1. **Produto** — identidade, slug, título e descrição.
-2. **Currículo** — módulos, aulas e materiais.
-3. **Oferta** — nome, resumo, preço e cobrança.
-4. **Preview** — revisão privada do que será publicado.
-5. **Publicar** — criação do snapshot versionado e escolha do acesso.
+1. **Produto** — identidade, endereço, título e descrição.
+2. **Conteúdo** — módulos, aulas e materiais.
+3. **Preço** — nome no checkout, descrição, valor e cobrança.
+4. **Distribuição** — publicação da versão fixa, modo de acesso e turmas.
+
+Os rótulos mudaram na #255 e na #258; os identificadores de área na URL **não**
+(`?section=produto|curriculo|oferta|publicar`), porque endereço em circulação é
+contrato. A etapa "Preview" deixou de existir na Onda 3 — `?section=preview`
+continua abrindo em Produto, sem erro.
 
 Publicar catálogo cria uma versão fixa do produto, currículo, aulas e materiais
 verificados. Publicar não cobra, não cria compra e não cria entitlement.
