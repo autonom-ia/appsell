@@ -324,7 +324,7 @@ export function LessonMaterialPanel({
             />
             <span id={`${panelId}-url-help`} className={invalidField === "url" ? "form-error" : "field-help"}>
               {invalidField === "url"
-                ? "O endereço precisa começar com https:// e não pode conter espaços ou aspas."
+                ? "O endereço precisa começar com https:// e não pode conter branco nem aspas."
                 : "Somente endereços https. O aluno abre em outra aba."}
             </span>
           </> : <>
@@ -427,7 +427,7 @@ function listMessage(state: ListState) {
 function actionMessage(state: ActionState) {
   if (state === "working") return "Salvando…";
   if (state === "invalid") return "Confira os campos destacados.";
-  if (state === "conflict") return "O currículo mudou em outra aba. Recarregue a página e tente de novo.";
+  if (state === "conflict") return "O conteúdo mudou em outra aba. Recarregue a página e tente de novo.";
   if (state === "forbidden") return "Você não tem permissão para alterar o material desta aula.";
   if (state === "unavailable") return "Não foi possível falar com o servidor. Tente de novo.";
   if (state === "error") return "Não foi possível concluir a operação.";

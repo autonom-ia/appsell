@@ -160,7 +160,7 @@ function RealDashboard({ catalog }: { catalog: CatalogState }) {
             <div><p className="eyebrow">{ready.sellers[0].display_name}</p><h2>Seus produtos</h2></div>
             <Link href="/products">Ver todos <span aria-hidden="true">→</span></Link>
           </section>
-          {ready.sellers.length > 1 ? <p className="form-note">Mostrando {ready.sellers[0].display_name}. Gerencie os outros espaços em Produtos.</p> : null}
+          {ready.sellers.length > 1 ? <p className="form-note">Mostrando {ready.sellers[0].display_name}. Gerencie as outras lojas em Produtos.</p> : null}
           {visibleDrafts.length ? (
             <div className="draft-list">
               {visibleDrafts.map((draft) => (
@@ -197,7 +197,7 @@ function DemoDashboard() {
       </section>
       <section className="section-heading"><div><p className="eyebrow">Catálogo demonstrativo</p><h2>Seus produtos</h2></div><Link href="/products">Ver todos <span aria-hidden="true">→</span></Link></section>
       {products.length ? <div className="product-grid">{products.slice(0, 2).map((product) => <ProductCard key={product.id} product={product}/>)}</div> : <p className="empty-state">Nenhum produto demonstrativo disponível.</p>}
-      <section className="blocked-card"><span className="blocked-icon" aria-hidden="true">i</span><div><strong>Ambiente de demonstração</strong><p>Pagamentos e login comercial ainda estão desativados. Criação, edição, currículo e publicação local já podem ser demonstrados com isolamento entre espaços.</p></div></section>
+      <section className="blocked-card"><span className="blocked-icon" aria-hidden="true">i</span><div><strong>Ambiente de demonstração</strong><p>Pagamentos e login comercial ainda estão desativados. Criação, edição, conteúdo e publicação local já podem ser demonstrados com isolamento entre lojas.</p></div></section>
     </>
   );
 }

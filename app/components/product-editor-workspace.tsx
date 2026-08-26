@@ -160,9 +160,9 @@ export function shouldFlushPendingDraft(state: { dirty: boolean; discarded: bool
 }
 
 const editorSections: Array<{ id: EditorSection; label: string; hint: string }> = [
-  { id: "produto", label: "Produto", hint: "Identidade e curso" },
-  { id: "curriculo", label: "Currículo", hint: "Módulos e aulas" },
-  { id: "oferta", label: "Oferta", hint: "Preço e disponibilidade" },
+  { id: "produto", label: "Produto", hint: "Nome, endereço e descrição" },
+  { id: "curriculo", label: "Conteúdo", hint: "Módulos e aulas" },
+  { id: "oferta", label: "Preço", hint: "Quanto custa e se está à venda" },
   { id: "publicar", label: "Publicar", hint: "Versão publicada" }
 ];
 
@@ -803,7 +803,17 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       <header className="editor-header">
         <div className="editor-breadcrumb"><Link ref={listLink} href={`/products?seller=${encodeURIComponent(sellerId)}`} onClick={requestListNavigation}>Produtos</Link><span aria-hidden="true">/</span><span aria-current="page">{detail.title}</span></div>
         <div className="editor-title-row">
-          <div><p className="eyebrow">Espaço selecionado · {shortId(sellerId)}</p><h1 id="product-editor-title">{detail.title}</h1><p>@{detail.slug} · curso {detail.course.title}</p></div>
+          <div>
+            {/* Nem "Espaço selecionado" nem os oito primeiros caracteres do
+                UUID. Quem vende reconhece a própria loja pelo endereço dela,
+                não por um identificador do nosso banco. */}
+            <p className="eyebrow">{detail.seller_slug ? `Loja @${detail.seller_slug}` : "Sua loja"}</p>
+            <h1 id="product-editor-title">{detail.title}</h1>
+            {/* Decisão travada do Pacote A: a interface esconde o conceito de
+                curso enquanto houver um só. Com dois ou mais, ele volta a ser
+                informação que o vendedor precisa. */}
+            <p>@{detail.slug}{detail.courses.length > 1 ? ` · ${detail.course.title}` : ""}</p>
+          </div>
           <span className={`status status-${detail.status}`}>{detail.status === "published" ? `Publicado${publicationVersion ? ` v${publicationVersion}` : ""}` : detail.status === "draft" ? "Rascunho privado" : detail.status === "unpublished" ? "Despublicado" : "Arquivado"}</span>
         </div>
         <div className={`save-indicator save-${saveState}`}>
@@ -821,7 +831,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
           return <Link key={item.id} href={`?section=${item.id}`} replace scroll={false} className={`${active ? "active " : ""}area-${filled ? "filled" : "empty"}`} aria-current={active ? "page" : undefined} onClick={(event) => requestSectionNavigation(event, item.id)}><span className="editor-step-heading"><strong>{item.label}</strong><span className="editor-step-mark" aria-hidden="true">{filled ? "●" : "○"}</span></span><span>{item.hint}</span><span className="sr-only">{filled ? "com conteúdo" : "ainda vazia"}{active ? "; área aberta" : ""}</span></Link>;
         })}
       </nav>
-      {assetNavigationWarning ? <p className="form-note asset-navigation-warning" role="alert">{coverBusy ? "A capa ainda está sendo enviada. Aguarde o envio terminar antes de sair desta área." : "O arquivo ainda está sendo enviado. Aguarde ou cancele o envio antes de sair do currículo."}</p> : null}
+      {assetNavigationWarning ? <p className="form-note asset-navigation-warning" role="alert">{coverBusy ? "A capa ainda está sendo enviada. Aguarde o envio terminar antes de sair desta área." : "O arquivo ainda está sendo enviado. Aguarde ou cancele o envio antes de sair do conteúdo."}</p> : null}
 
       {/* A mesma validação que o servidor usa para liberar a publicação, visível
           de qualquer área. Nada aqui é calculado no cliente. */}
@@ -858,23 +868,23 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
         {section === "produto" ? (
           <fieldset disabled={detail.status === "archived"}>
             <legend>Identidade do produto</legend>
-            <p className="section-intro">Edite o produto e o curso sem precisar configurar vendas. Uma publicação existente permanece estável até você publicar outra versão.</p>
+            <p className="section-intro">Edite o produto sem precisar configurar vendas. Uma publicação existente permanece estável até você publicar outra versão.</p>
             <EditorField label="Nome do produto" name="product_title" value={fields.product_title} onChange={(value) => updateField("product_title", value)} minLength={2} maxLength={160} required invalid={invalidField === "product_title"}/>
             <EditorField label="Endereço do produto" name="slug" value={fields.slug} onChange={(value) => updateField("slug", value)} minLength={3} maxLength={63} required invalid={invalidField === "slug"} pattern="[a-z0-9]+(?:-[a-z0-9]+)*" help="Somente letras minúsculas, números e hífens."/>
             <EditorField label="Descrição curta" name="product_description" value={fields.product_description} onChange={(value) => updateField("product_description", value)} maxLength={2000} multiline invalid={invalidField === "product_description"}/>
-            <EditorField label="Nome do curso inicial" name="course_title" value={fields.course_title} onChange={(value) => updateField("course_title", value)} minLength={2} maxLength={160} required invalid={invalidField === "course_title"}/>
+            <EditorField label="Nome do conteúdo" name="course_title" value={fields.course_title} onChange={(value) => updateField("course_title", value)} minLength={2} maxLength={160} required invalid={invalidField === "course_title"}/>
           </fieldset>
         ) : null}
 
         {section === "oferta" ? (
           <>
             <fieldset disabled={detail.status === "archived" || offerLocked}>
-              <legend>Oferta e preço</legend>
+              <legend>Preço e cobrança</legend>
               {detail.offer.status === "draft"
-                ? <div className="billing-boundary" role="note"><strong>{!localPriceIsPositive ? "Defina um preço maior que zero" : priceDirty ? "Salve o preço antes de ativar vendas" : dirty ? "Salve as alterações antes de ativar vendas" : detail.publication ? "Preço salvo; oferta pronta para vender" : "Preço salvo; catálogo pronto para publicar"}</strong><p>{!localPriceIsPositive ? `Informe o valor em ${offerCurrencyLabel}. Sem preço maior que zero, as vendas permanecem desativadas.` : priceDirty ? `O valor em ${offerCurrencyLabel} só será considerado no checkout depois que o rascunho for salvo.` : dirty ? "Salve as alterações pendentes antes de ativar vendas." : detail.publication ? `O preço salvo em ${offerCurrencyLabel} será cobrado quando as vendas estiverem ativas.` : "Publique o catálogo antes de ativar vendas; esta etapa não cria checkout."}</p></div>
-                : <div className="billing-boundary" role="note"><strong>{detail.offer.status === "active" ? "Oferta ativa" : "Oferta arquivada"}</strong><p>{detail.offer.status === "active" ? "Para editar termos ou preço, despublique a oferta primeiro." : "Uma oferta arquivada é definitiva e não aparece na vitrine."}</p></div>}
-              <EditorField label="Nome da oferta" name="offer_title" value={fields.offer_title} onChange={(value) => updateField("offer_title", value)} minLength={2} maxLength={120} required invalid={invalidField === "offer_title"}/>
-              <EditorField label="Resumo da oferta" name="offer_summary" value={fields.offer_summary} onChange={(value) => updateField("offer_summary", value)} maxLength={500} multiline invalid={invalidField === "offer_summary"}/>
+                ? <div className="billing-boundary" role="note"><strong>{!localPriceIsPositive ? "Defina um preço maior que zero" : priceDirty ? "Salve o preço antes de ativar vendas" : dirty ? "Salve as alterações antes de ativar vendas" : detail.publication ? "Preço salvo; pronto para vender" : "Preço salvo; catálogo pronto para publicar"}</strong><p>{!localPriceIsPositive ? `Informe o valor em ${offerCurrencyLabel}. Sem preço maior que zero, as vendas permanecem desativadas.` : priceDirty ? `O valor em ${offerCurrencyLabel} só será considerado no checkout depois que o rascunho for salvo.` : dirty ? "Salve as alterações pendentes antes de ativar vendas." : detail.publication ? `O preço salvo em ${offerCurrencyLabel} será cobrado quando as vendas estiverem ativas.` : "Publique o catálogo antes de ativar vendas; esta etapa não cria checkout."}</p></div>
+                : <div className="billing-boundary" role="note"><strong>{detail.offer.status === "active" ? "Vendas ativas" : "Vendas encerradas"}</strong><p>{detail.offer.status === "active" ? "Para editar termos ou preço, desative as vendas primeiro." : "Encerrar vendas é definitivo, e o produto não volta para a vitrine."}</p></div>}
+              <EditorField label="Nome no checkout" name="offer_title" value={fields.offer_title} onChange={(value) => updateField("offer_title", value)} minLength={2} maxLength={120} required invalid={invalidField === "offer_title"}/>
+              <EditorField label="Descrição no checkout" name="offer_summary" value={fields.offer_summary} onChange={(value) => updateField("offer_summary", value)} maxLength={500} multiline invalid={invalidField === "offer_summary"}/>
               <EditorField label={`Preço (${offerCurrencyLabel})`} name="offer_price" value={fields.offer_price} onChange={(value) => updateField("offer_price", value)} onBlur={() => setPriceTouched(true)} maxLength={12} inputMode="decimal" pattern="[0-9]{1,9}([.,][0-9]{1,2})?" sanitize={keepPriceCharacters} invalid={invalidField === "offer_price" || invalidField === "offer_unit_amount_minor" || priceLocallyInvalid} help="Use vírgula para centavos, ex.: 49,90. Deixe vazio para manter sem preço."/>
               <label className="editor-field">Cobrança
                 <select id="offer_billing_period" name="offer_billing_period" value={fields.offer_billing_period} onChange={(event) => updateField("offer_billing_period", event.target.value)} aria-invalid={invalidField === "offer_billing_period"}>
@@ -884,10 +894,10 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
             </fieldset>
             <section className="offer-status-panel" aria-labelledby="offer-status-title">
               <p className="eyebrow">Disponibilidade na vitrine</p>
-              <h2 id="offer-status-title">Status da oferta: {offerStatusLabel(detail.offer.status)}</h2>
+              <h2 id="offer-status-title">Situação das vendas: {offerStatusLabel(detail.offer.status)}</h2>
               {detail.offer.status === "draft" ? <p>{!detail.publication ? "Publique o catálogo antes de escolher o acesso. A ativação das vendas fica em Publicar." : "A decisão entre acesso gratuito e vendas com checkout fica em Publicar."}</p> : null}
-              {detail.offer.status === "active" ? <p>Oferta ativa por {detail.offer.unit_amount_minor ? formatOfferPrice(detail.offer.unit_amount_minor, detail.offer.currency) : "preço não informado"}. Para editar termos ou preço, volte a rascunho em Publicar.</p> : null}
-              {detail.offer.status === "archived" ? <p>Oferta arquivada. Crie um novo produto para vender novamente.</p> : null}
+              {detail.offer.status === "active" ? <p>Vendas ativas por {detail.offer.unit_amount_minor ? formatOfferPrice(detail.offer.unit_amount_minor, detail.offer.currency) : "preço não informado"}. Para editar termos ou preço, volte a rascunho em Publicar.</p> : null}
+              {detail.offer.status === "archived" ? <p>Vendas encerradas. Crie um novo produto para vender novamente.</p> : null}
               <p className="form-note" role="status">A alteração do acesso é feita na etapa Publicar, depois que o rascunho estiver salvo.</p>
             </section>
           </>
@@ -897,7 +907,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
         {section === "publicar" ? (
           <section className="publish-panel" aria-labelledby="publish-panel-title">
             <p className="eyebrow">Validação de segurança</p><h2 id="publish-panel-title">Publicar catálogo</h2>
-            <p>A publicação cria uma versão fixa do catálogo com produto, oferta informativa, módulos, aulas e PDFs já verificados. Depois, escolha aqui se o acesso será gratuito ou passará pelo checkout.</p>
+            <p>A publicação cria uma versão fixa do catálogo com produto, preço informativo, módulos, aulas e PDFs já verificados. Depois, escolha aqui se o acesso será gratuito ou passará pelo checkout.</p>
             {readiness ? (
               <ul className="readiness-list">{readiness.items.map((item, index) => <li key={item.key ?? `${item.label}-${index}`} className={item.ready ? "ready" : "blocked"}><span aria-hidden="true">{item.ready ? "✓" : "!"}</span><div><strong>{item.label}</strong>{item.detail ? <p>{item.detail}</p> : null}</div><span className="sr-only">{item.ready ? "Pronto" : "Pendente"}</span></li>)}</ul>
             ) : <p className="form-note" role="status">A API ainda não retornou a validação de publicação. Nada será publicado.</p>}
@@ -913,21 +923,21 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
               {detail.offer.status === "draft" ? <>
                 {!detail.publication ? <p className="form-note">Publique o catálogo primeiro. Depois desta publicação, o botão de ativação ficará disponível aqui.</p> : null}
                 {detail.publication && hasUnpublishedChanges && !editorDirty ? <p className="form-note">Publique a versão atual antes de ativar vendas. O checkout só deve acompanhar um catálogo publicado.</p> : null}
-                {detail.publication && !editorDirty && (detail.offer.unit_amount_minor ?? 0) <= 0 ? <p className="form-note">Para ativar vendas, informe e salve um preço maior que zero na etapa Oferta.</p> : null}
+                {detail.publication && !editorDirty && (detail.offer.unit_amount_minor ?? 0) <= 0 ? <p className="form-note">Para ativar vendas, informe e salve um preço maior que zero na etapa Preço.</p> : null}
                 {editorDirty ? <p className="form-note">Salve as alterações antes de escolher o modo de acesso.</p> : null}
-                <div className="offer-status-actions"><button className="primary-button" type="button" disabled={!canActivateSales} onClick={() => void transitionOffer("active")}>{offerStatusState === "transitioning" ? "Ativando vendas…" : "Ativar oferta e usar checkout"}</button></div>
+                <div className="offer-status-actions"><button className="primary-button" type="button" disabled={!canActivateSales} onClick={() => void transitionOffer("active")}>{offerStatusState === "transitioning" ? "Ativando vendas…" : "Ativar vendas e usar checkout"}</button></div>
               </> : null}
               {/* O ramo do rascunho já explica cada bloqueio; o da oferta ativa
                   desligava os dois botões calado. */}
-              {detail.offer.status === "active" && editorDirty ? <p className="form-note">Salve as alterações antes de desativar ou arquivar a oferta.</p> : null}
+              {detail.offer.status === "active" && editorDirty ? <p className="form-note">Salve as alterações antes de desativar ou encerrar as vendas.</p> : null}
               {detail.offer.status === "active" ? <div className="offer-status-actions">
                 <button className="secondary-button" type="button" disabled={editorDirty || offerStatusLocked} onClick={() => void transitionOffer("draft")}>{offerStatusState === "transitioning" ? "Aplicando…" : "Desativar vendas e voltar ao gratuito"}</button>
-                <button ref={archiveTriggerButton} className="secondary-button" type="button" disabled={editorDirty || offerStatusLocked} onClick={() => setArchiveDialogOpen(true)}>Arquivar oferta</button>
+                <button ref={archiveTriggerButton} className="secondary-button" type="button" disabled={editorDirty || offerStatusLocked} onClick={() => setArchiveDialogOpen(true)}>Encerrar vendas</button>
               </div> : null}
               <div className="form-feedback" aria-live="polite" aria-atomic="true">
                 {offerStatusState === "done" ? <p className="form-success">Modo de acesso atualizado.</p> : null}
-                {offerStatusState === "conflict" ? <><p className="form-error">A oferta mudou em outra sessão. Atualize os dados antes de tentar novamente.</p><button className="secondary-button" type="button" onClick={() => void reloadOfferAfterConflict()}>Atualizar dados da oferta</button></> : null}
-                {offerStatusState === "reloading" ? <p className="form-note">Atualizando os dados da oferta…</p> : null}
+                {offerStatusState === "conflict" ? <><p className="form-error">O preço mudou em outra sessão. Atualize os dados antes de tentar novamente.</p><button className="secondary-button" type="button" onClick={() => void reloadOfferAfterConflict()}>Atualizar dados do preço</button></> : null}
+                {offerStatusState === "reloading" ? <p className="form-note">Atualizando os dados do preço…</p> : null}
                 {offerStatusState === "blocked" ? <p className="form-error">A mudança foi bloqueada. Publique o catálogo e confira se há preço salvo maior que zero.</p> : null}
                 {offerStatusState === "forbidden" ? <p className="form-error">Sua sessão ou permissão mudou. Entre novamente.</p> : null}
                 {offerStatusState === "unavailable" ? <p className="form-note">A API não respondeu. Nenhuma mudança foi confirmada; tente novamente.</p> : null}
@@ -949,7 +959,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
 
         {(section === "produto" || section === "oferta") ? (
           <div className="editor-save-bar">
-            <span aria-live="polite">{dirty ? "Alterações não salvas" : "Rascunho salvo"}</span>
+            <span aria-live="polite">{dirty ? "Alterações não salvas" : "Tudo salvo"}</span>
             <button className="primary-button" type="submit" disabled={!dirty || saveState === "saving" || detail.status === "archived" || (section === "oferta" && offerLocked)}>{saveState === "saving" ? "Salvando…" : "Salvar rascunho"}</button>
           </div>
         ) : null}
@@ -960,7 +970,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       {publishDialogOpen ? (
         <AccessibleDialog titleId="publish-dialog-title" descriptionId="publish-dialog-description" initialFocusRef={publishCancelButton} returnFocusRef={publishTriggerButton} onClose={closePublishDialog}>
             <p className="eyebrow">Colocar no ar</p><h2 id="publish-dialog-title">Colocar {detail.title} no ar?</h2>
-            <p id="publish-dialog-description">Conteúdo, materiais verificados e a oferta ficam congelados nesta versão. Escolha agora como as pessoas entram.</p>
+            <p id="publish-dialog-description">Conteúdo, materiais verificados e o preço ficam congelados nesta versão. Escolha agora como as pessoas entram.</p>
             <div className="access-mode-choice" role="radiogroup" aria-label="Modo de acesso">
               <label className={publishAccessMode === "free" ? "access-mode-option selected" : "access-mode-option"}>
                 <input type="radio" name="access_mode" value="free" checked={publishAccessMode === "free"} onChange={() => setPublishAccessMode("free")}/>
@@ -977,7 +987,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
                       : payoutState === "missing"
                         ? "Indisponível: configure seus recebimentos para poder cobrar."
                         : (detail.offer.unit_amount_minor ?? 0) <= 0
-                          ? "Indisponível: salve um preço maior que zero na etapa Oferta."
+                          ? "Indisponível: salve um preço maior que zero na etapa Preço."
                           : `O link leva ao pagamento de ${formatOfferPrice(detail.offer.unit_amount_minor ?? 0, detail.offer.currency)} antes de liberar o conteúdo.`}</span>
                 </span>
               </label>
@@ -1001,8 +1011,8 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
 
       {archiveDialogOpen ? (
         <AccessibleDialog titleId="archive-dialog-title" descriptionId="archive-dialog-description" initialFocusRef={archiveCancelButton} returnFocusRef={archiveTriggerButton} onClose={() => setArchiveDialogOpen(false)}>
-            <p className="eyebrow">Ação irreversível</p><h2 id="archive-dialog-title">Arquivar esta oferta?</h2>
-            <p id="archive-dialog-description">Arquivar é definitivo: a oferta sai da vitrine e não pode voltar a rascunho nem ser ativada de novo. Para apenas editar, use &quot;Despublicar para editar&quot;.</p>
+            <p className="eyebrow">Ação irreversível</p><h2 id="archive-dialog-title">Encerrar as vendas deste produto?</h2>
+            <p id="archive-dialog-description">Encerrar é definitivo: o produto sai da vitrine e não volta a rascunho nem pode ser vendido de novo. Para apenas editar, use &quot;Despublicar para editar&quot;.</p>
             <div className="dialog-actions"><button ref={archiveCancelButton} className="secondary-button" type="button" onClick={() => setArchiveDialogOpen(false)}>Cancelar</button><button className="danger-button" type="button" onClick={() => { setArchiveDialogOpen(false); void transitionOffer("archived"); }}>Arquivar definitivamente</button></div>
         </AccessibleDialog>
       ) : null}
@@ -1048,8 +1058,8 @@ function EditorLoadState({ state, sellerId, onRetry }: { state: LoadState; selle
   const messages: Record<Exclude<LoadState, "ready">, string> = {
     loading: "Carregando produto…",
     unauthorized: "Sua sessão expirou. Entre novamente.",
-    forbidden: "Você não possui permissão ativa neste espaço.",
-    not_found: "Produto não encontrado neste espaço.",
+    forbidden: "Você não possui permissão ativa nesta loja.",
+    not_found: "Produto não encontrado nesta loja.",
     unavailable: "A API está indisponível. Nenhum dado demonstrativo substituiu o produto real.",
     error: "Não foi possível carregar o editor."
   };
@@ -1068,9 +1078,9 @@ function EditorField({ label, name, value, onChange, onBlur, multiline = false, 
 }
 
 function editorFieldError(field: string) {
-  if (field === "slug") return "Use apenas letras minúsculas, números e hífens, sem espaços.";
+  if (field === "slug") return "Use apenas letras minúsculas, números e hífens.";
   if (field === "offer_price" || field === "offer_unit_amount_minor") return "Informe um preço válido, maior que zero para ativar vendas.";
-  if (field === "offer_title") return "Informe um nome de oferta com pelo menos 2 caracteres.";
+  if (field === "offer_title") return "Informe um nome de checkout com pelo menos 2 caracteres.";
   return "Corrija este campo e tente novamente.";
 }
 
@@ -1079,9 +1089,9 @@ function editorFieldLabel(field: string) {
     product_title: "nome do produto",
     slug: "endereço do produto",
     product_description: "descrição curta",
-    course_title: "nome do curso",
-    offer_title: "nome da oferta",
-    offer_summary: "resumo da oferta",
+    course_title: "nome do conteúdo",
+    offer_title: "nome no checkout",
+    offer_summary: "descrição no checkout",
     offer_price: "preço",
     offer_unit_amount_minor: "preço",
     offer_billing_period: "tipo de cobrança"
@@ -1103,7 +1113,7 @@ function PrivatePreviewPanel({ state, preview, detail, dirty, onReload }: { stat
   const modules = courses.flatMap((course) => course.modules ?? []);
   const lessons = modules.flatMap((module) => module.lessons ?? []);
   const materials = lessons.flatMap((lesson) => lesson.assets ?? []);
-  return <section className="private-preview" aria-labelledby="private-preview-title"><div className="preview-context"><span className="private-badge">Prévia privada</span><span>Espaço {preview?.seller?.display_name ?? shortId(detail.seller_organization_id ?? "")}</span><span>Versão {preview?.draft_version ?? preview?.version ?? detail.draft_version}</span></div><div className="preview-hero"><p className="eyebrow">Ainda não publicado</p><h2 id="private-preview-title">{product?.title ?? detail.title}</h2><p>{product?.description || detail.description || "Descrição ainda não informada."}</p></div><div className="preview-course"><span>Curso incluído</span><strong>{preview?.course?.title ?? courses[0]?.title ?? detail.course.title}</strong></div><section className="preview-curriculum" aria-labelledby="preview-curriculum-title"><div><span>Conteúdo incluído</span><strong id="preview-curriculum-title">{modules.length} {modules.length === 1 ? "módulo" : "módulos"} · {lessons.length} {lessons.length === 1 ? "aula" : "aulas"} · {materials.length} {materials.length === 1 ? "material" : "materiais"}</strong></div>{modules.length ? <ul>{modules.map((module, moduleIndex) => <li key={module.id ?? `${module.title}-${moduleIndex}`}><strong>{module.title || `Módulo ${moduleIndex + 1}`}</strong><span>{(module.lessons ?? []).length} {(module.lessons ?? []).length === 1 ? "aula" : "aulas"}</span>{(module.lessons ?? []).flatMap((lesson, lessonIndex) => (lesson.assets ?? []).map((asset, assetIndex) => <small key={asset.id ?? `${lesson.title}-${lessonIndex}-${assetIndex}`}>{asset.title || "Material da aula"}</small>))}</li>)}</ul> : <p>O currículo ainda não tem módulos e aulas salvos.</p>}</section><div className="preview-offer"><span>Oferta informativa</span><strong>{offer?.title || detail.offer.title || "Oferta ainda não configurada"}</strong><p>{offer?.summary || detail.offer.summary || "Configure e salve a oferta antes de publicar."}</p><button type="button" disabled>Compra indisponível nesta prévia</button></div></section>;
+  return <section className="private-preview" aria-labelledby="private-preview-title"><div className="preview-context"><span className="private-badge">Prévia privada</span><span>{preview?.seller?.display_name ?? "Sua loja"}</span><span>Versão {preview?.draft_version ?? preview?.version ?? detail.draft_version}</span></div><div className="preview-hero"><p className="eyebrow">Ainda não publicado</p><h2 id="private-preview-title">{product?.title ?? detail.title}</h2><p>{product?.description || detail.description || "Descrição ainda não informada."}</p></div>{courses.length > 1 ? <div className="preview-course"><span>Curso incluído</span><strong>{preview?.course?.title ?? courses[0]?.title ?? detail.course.title}</strong></div> : null}<section className="preview-curriculum" aria-labelledby="preview-curriculum-title"><div><span>Conteúdo incluído</span><strong id="preview-curriculum-title">{modules.length} {modules.length === 1 ? "módulo" : "módulos"} · {lessons.length} {lessons.length === 1 ? "aula" : "aulas"} · {materials.length} {materials.length === 1 ? "material" : "materiais"}</strong></div>{modules.length ? <ul>{modules.map((module, moduleIndex) => <li key={module.id ?? `${module.title}-${moduleIndex}`}><strong>{module.title || `Módulo ${moduleIndex + 1}`}</strong><span>{(module.lessons ?? []).length} {(module.lessons ?? []).length === 1 ? "aula" : "aulas"}</span>{(module.lessons ?? []).flatMap((lesson, lessonIndex) => (lesson.assets ?? []).map((asset, assetIndex) => <small key={asset.id ?? `${lesson.title}-${lessonIndex}-${assetIndex}`}>{asset.title || "Material da aula"}</small>))}</li>)}</ul> : <p>O conteúdo ainda não tem módulos e aulas salvos.</p>}</section><div className="preview-offer"><span>Preço informativo</span><strong>{offer?.title || detail.offer.title || "Preço ainda não configurado"}</strong><p>{offer?.summary || detail.offer.summary || "Informe e salve o preço antes de publicar."}</p><button type="button" disabled>Compra indisponível nesta prévia</button></div></section>;
 }
 
 function normalizeEditorPayload(payload: EditorPayload & Partial<ProductDetail>): ProductDetail | null {
@@ -1225,7 +1235,7 @@ function sameFields(left: EditorFields, right: EditorFields) {
 
 function saveMessage(state: SaveState, dirty: boolean) {
   if (state === "saving") return "Salvando rascunho…";
-  if (state === "saved") return "Rascunho salvo com segurança.";
+  if (state === "saved") return "Tudo salvo com segurança.";
   if (state === "saved_with_changes") return "Último envio salvo; há alterações mais recentes neste dispositivo.";
   if (state === "conflict") return "Conflito de versão. Suas alterações foram preservadas; recarregue antes de tentar novamente.";
   if (state === "rebasing") return "Recarregando a versão atual do servidor…";
@@ -1234,16 +1244,12 @@ function saveMessage(state: SaveState, dirty: boolean) {
   if (state === "forbidden") return "Salvamento recusado. Sua sessão expirou ou esta conta não tem acesso a este espaço; entre novamente e confira o tenant.";
   if (state === "unavailable") return "A API não confirmou o estado final. Seus campos foram preservados; recarregue antes de outra tentativa.";
   if (state === "error") return "Não foi possível salvar. Seus campos continuam neste dispositivo.";
-  return dirty ? "Alterações não salvas." : "Rascunho sincronizado.";
-}
-
-function shortId(value: string) {
-  return value ? `${value.slice(0, 8)}…` : "não informado";
+  return dirty ? "Alterações não salvas." : "Tudo salvo.";
 }
 
 function offerStatusLabel(status: string) {
-  if (status === "active") return "ativa";
-  if (status === "archived") return "arquivada";
+  if (status === "active") return "ativas";
+  if (status === "archived") return "encerradas";
   return "rascunho";
 }
 

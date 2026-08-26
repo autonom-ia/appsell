@@ -21,6 +21,59 @@ async function login(page: Page) {
   await expect(page).toHaveURL("/dashboard");
 }
 
+const EDITOR_SECTIONS = ["produto", "curriculo", "oferta", "publicar"] as const;
+
+const COURSE_ID = "9a4a73d6-bf11-5429-8582-89434000af44";
+
+/**
+ * O identificador da área continua `curriculo` e `oferta` na URL: endereço já
+ * em circulação é contrato, e trocá-lo quebraria links salvos. O portão lê o
+ * texto renderizado, não a barra de endereço.
+ */
+async function mockEditor(page: Page, options: { extraCourse?: boolean } = {}) {
+  await page.route(`**/api/sellers/${SELLER_ID}/products/${PRODUCT_ID}`, async (route) => {
+    await route.fulfill({
+      json: {
+        id: PRODUCT_ID,
+        seller_organization_id: SELLER_ID,
+        seller_slug: "autonomia",
+        slug: "ia-na-pratica",
+        title: "IA na prática",
+        description: "Conteúdo de teste",
+        status: "draft",
+        draft_version: 3,
+        course: { id: COURSE_ID, title: "Especialista", description: "", status: "draft", draft_version: 2, position: 1 },
+        courses: options.extraCourse
+          ? [{ id: COURSE_ID, title: "Especialista" }, { id: "segundo", title: "Avançado" }]
+          : [],
+        offer: { id: "b1d0c9f6-5a1e-52a4-9c3f-2f0f1d3a7e55", title: "Padrão", summary: "", status: "draft", draft_version: 1, unit_amount_minor: 4990, currency: "BRL", billing_period: "one_time" },
+        curriculum: { modules: 1, lessons: 2 },
+        publication: null,
+        has_unpublished_changes: true,
+        readiness: { can_publish: true, has_unpublished_changes: true, items: [{ key: "k", label: "Validação do servidor concluída.", ready: true }] },
+        csrf: { update: "u", publish: "p", offer_status: "o" }
+      }
+    });
+  });
+  await page.route("**/api/sellers/**/curriculum", async (route) => {
+    await route.fulfill({
+      json: {
+        course: { id: COURSE_ID, title: "Especialista", draft_version: 2 },
+        modules: [{ id: "mod-1", title: "Fundamentos", position: 1, lessons: [] }],
+        limits: { modules_per_course: 20, lessons_per_module: 30, lessons_per_course: 200 },
+        usage: { modules_total: 1, lessons_total: 0, lessons_by_module: {} },
+        csrf: { create: "c", update: "u", reorder: "r", archive: "a" }
+      }
+    });
+  });
+  await page.route("**/materials", async (route) => {
+    await route.fulfill({ json: { materials: [], csrf: { create: "c", update: "u", reorder: "r", archive: "a" } } });
+  });
+  await page.route("**/access-links", async (route) => {
+    await route.fulfill({ json: { access_links: [] } });
+  });
+}
+
 async function visibleText(page: Page) {
   return await page.evaluate(() => document.body.innerText || "");
 }
@@ -53,7 +106,20 @@ test("nenhum termo de sistema aparece nas telas de venda", async ({ page }) => {
     });
   });
 
-  for (const path of ["/dashboard", "/products", "/payouts"]) {
+  await mockEditor(page);
+
+  // O editor é onde o vendedor passa mais tempo, e era justamente ele que
+  // ficava de fora da varredura. As quatro áreas entram uma a uma: elas
+  // renderizam telas diferentes, e olhar só a primeira deixaria as outras três
+  // livres para dizer o que quisessem.
+  const paths = [
+    "/dashboard",
+    "/products",
+    "/payouts",
+    ...EDITOR_SECTIONS.map((section) => `/products/${SELLER_ID}/${PRODUCT_ID}?section=${section}`)
+  ];
+
+  for (const path of paths) {
     await page.goto(path);
     // A tela precisa ter carregado alguma coisa, senão o teste passa por vazio.
     await expect(page.locator("h1, h2").first()).toBeVisible();
@@ -84,4 +150,39 @@ test("a varredura acusa um termo banido quando ele existe de fato", async ({ pag
 test("a lista de termos banidos não está vazia", async () => {
   // Um portão sem termos é um portão aberto que parece fechado.
   expect(BANNED_SALES_TERMS.length).toBeGreaterThan(0);
+});
+
+test("com um só curso, a identidade do produto não fala em curso", async ({ page }) => {
+  // B3.4 — decisão travada do Pacote A, nunca cumprida até aqui: o cabeçalho
+  // dizia "@ia-na-pratica · curso Especialista" e o olho subia até
+  // "Espaço selecionado · 4df98a2e…". Nenhum dos dois é informação de quem
+  // vende um produto só.
+  await login(page);
+  await mockEditor(page);
+  await page.goto(`/products/${SELLER_ID}/${PRODUCT_ID}?section=produto`);
+
+  const identity = page.locator(".editor-title-row");
+  await expect(identity).toBeVisible();
+  const text = (await identity.innerText()).toLowerCase();
+
+  expect(text).not.toContain("curso");
+  expect(text).not.toContain("espaço");
+  // E nada de identificador: os oito primeiros caracteres do UUID da loja
+  // apareciam ali como se fossem o nome dela.
+  expect(text).not.toContain(SELLER_ID.slice(0, 8));
+  // O que sobra é o que serve: o endereço da loja e o do produto.
+  expect(text).toContain("@autonomia");
+  expect(text).toContain("@ia-na-pratica");
+});
+
+test("com dois cursos, o nome do curso volta — ele passa a ser informação", async ({ page }) => {
+  // Esconder é uma decisão sobre o caso de um curso só, não sobre a palavra.
+  // Sem esta prova, apagar a condicional deixaria o teste acima verde.
+  await login(page);
+  await mockEditor(page, { extraCourse: true });
+  await page.goto(`/products/${SELLER_ID}/${PRODUCT_ID}?section=produto`);
+
+  const identity = page.locator(".editor-title-row");
+  await expect(identity).toBeVisible();
+  expect(await identity.innerText()).toContain("Especialista");
 });

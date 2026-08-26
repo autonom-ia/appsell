@@ -184,7 +184,7 @@ test("sair da área durante o envio é bloqueado, e a falha chega aos olhos de q
   });
   await expect(page.getByText("Enviando a imagem…").or(page.getByText("Preparando o arquivo…"))).toBeVisible();
 
-  await page.getByRole("link", { name: /Currículo/ }).first().click();
+  await page.getByRole("link", { name: /Conteúdo/ }).first().click();
   // A área não pode trocar: trocar desmontaria o painel e a falha seguinte
   // sumiria sem falar com ninguém.
   await expect(page.getByRole("heading", { name: "Capa do produto" })).toBeVisible();

@@ -330,12 +330,12 @@ export function CurriculumWorkspace({
 
   if (loadState !== "ready") {
     const labels: Record<Exclude<LoadState, "ready">, string> = {
-      loading: "Carregando currículo…",
+      loading: "Carregando conteúdo…",
       unauthorized: "Sua sessão expirou. Entre novamente.",
-      forbidden: "Você não pode acessar o currículo deste espaço.",
-      not_found: "Curso não encontrado neste espaço.",
-      unavailable: "A API do currículo não respondeu. Nenhum conteúdo demonstrativo foi usado.",
-      error: "Não foi possível carregar o currículo."
+      forbidden: "Você não pode acessar o conteúdo desta loja.",
+      not_found: "Conteúdo não encontrado nesta loja.",
+      unavailable: "A API do conteúdo não respondeu. Nada demonstrativo foi usado.",
+      error: "Não foi possível carregar o conteúdo."
     };
     return <section className="curriculum-state" aria-live="polite"><h2>{labels[loadState]}</h2>{loadState === "unavailable" || loadState === "error" ? <button className="primary-button" type="button" onClick={() => void load()}>Tentar novamente</button> : null}</section>;
   }
@@ -343,20 +343,20 @@ export function CurriculumWorkspace({
   return (
     <section className="curriculum-workspace" aria-labelledby="curriculum-title" data-testid="curriculum-workspace">
       <header className="curriculum-header">
-        <div><p className="eyebrow">Estrutura do curso</p><h2 id="curriculum-title">Módulos e aulas</h2><p><strong>{courseTitle}</strong> · versão {courseVersion}</p></div>
+        <div><p className="eyebrow">Conteúdo do produto</p><h2 id="curriculum-title">Módulos e aulas</h2><p><strong>{courseTitle}</strong> · versão {courseVersion}</p></div>
         <span>{usage.modules_total}/{limits.modules_per_course} módulos usados</span>
       </header>
       <p className="curriculum-intro">Organize aulas de texto e PDFs verificados em uma sequência clara. Vídeos, checkout e acesso pago ainda não estão disponíveis.</p>
-      {archived ? <p className="form-note" role="status">Produto arquivado: currículo disponível somente para leitura.</p> : null}
-      {assetDirty ? <p className="form-note" role="status">Conclua ou cancele o envio do PDF antes de alterar a estrutura do currículo.</p> : null}
+      {archived ? <p className="form-note" role="status">Produto arquivado: conteúdo disponível somente para leitura.</p> : null}
+      {assetDirty ? <p className="form-note" role="status">Conclua ou cancele o envio do PDF antes de alterar a estrutura do conteúdo.</p> : null}
       {/* Os dois tetos desligam botões de adicionar. O contador do cabeçalho
           mostra os módulos, mas nada mostrava as aulas do curso inteiro — e um
           botão morto sem motivo na tela é o defeito que a #254 fecha. */}
-      {usage.modules_total >= limits.modules_per_course ? <p className="form-note" role="status">Você chegou ao limite de {limits.modules_per_course} módulos neste curso. Remova um módulo para adicionar outro.</p> : null}
-      {usage.lessons_total >= limits.lessons_per_course ? <p className="form-note" role="status">Você chegou ao limite de {limits.lessons_per_course} aulas neste curso. Remova uma aula para adicionar outra.</p> : null}
+      {usage.modules_total >= limits.modules_per_course ? <p className="form-note" role="status">Você chegou ao limite de {limits.modules_per_course} módulos neste produto. Remova um módulo para adicionar outro.</p> : null}
+      {usage.lessons_total >= limits.lessons_per_course ? <p className="form-note" role="status">Você chegou ao limite de {limits.lessons_per_course} aulas neste produto. Remova uma aula para adicionar outra.</p> : null}
       <div className={`curriculum-feedback state-${mutationState}`} role="status" aria-live="polite" aria-atomic="true" data-testid="curriculum-live">
         {mutationState === "idle" ? message || mutationMessage(mutationState) : mutationMessage(mutationState)}
-        {mutationState === "conflict" ? <button className="secondary-button" type="button" onClick={() => void load()}>Recarregar currículo</button> : null}
+        {mutationState === "conflict" ? <button className="secondary-button" type="button" onClick={() => void load()}>Recarregar conteúdo</button> : null}
       </div>
 
       {!archived ? <form className="curriculum-create" onSubmit={createModule} data-testid="module-create-form">
@@ -366,7 +366,7 @@ export function CurriculumWorkspace({
         <button className="primary-button" type="submit" disabled={mutationState === "saving" || assetDirty || usage.modules_total >= limits.modules_per_course}>{mutationState === "saving" ? "Salvando…" : "Adicionar módulo"}</button>
       </form> : null}
 
-      {modules.length === 0 ? <div className="curriculum-empty" data-testid="curriculum-empty"><strong>Seu curso ainda não tem módulos.</strong><p>Adicione o primeiro módulo para começar a organizar a jornada do aluno.</p></div> : (
+      {modules.length === 0 ? <div className="curriculum-empty" data-testid="curriculum-empty"><strong>Seu produto ainda não tem módulos.</strong><p>Adicione o primeiro módulo para começar a organizar a jornada do aluno.</p></div> : (
         <ol className="curriculum-modules">
           {modules.map((module, moduleIndex) => <li key={module.id} data-testid={`module-${module.id}`}>
             <article className="curriculum-module" aria-labelledby={`module-title-${module.id}`}>
@@ -394,7 +394,7 @@ export function CurriculumWorkspace({
           <p id="curriculum-archive-description">
             {pendingArchive.kind === "module"
               ? "As aulas dentro dele saem junto. Quem já tem acesso continua vendo a versão publicada até você publicar outra."
-              : "Ela sai do curso. Quem já tem acesso continua vendo a versão publicada até você publicar outra."}
+              : "Ela sai do produto. Quem já tem acesso continua vendo a versão publicada até você publicar outra."}
           </p>
           <div className="dialog-actions">
             <button ref={archiveKeepButton} type="button" className="secondary-button" onClick={() => setPendingArchive(null)}>
@@ -416,13 +416,13 @@ function validPayload(payload: CurriculumPayload, expectedCourseId: string) {
 
 function mutationMessage(state: MutationState) {
   const messages: Record<MutationState, string> = {
-    idle: "Currículo sincronizado.",
-    saving: "Salvando currículo…",
-    conflict: "O currículo mudou no servidor. Recarregue antes de tentar novamente.",
+    idle: "Tudo salvo.",
+    saving: "Salvando conteúdo…",
+    conflict: "O conteúdo mudou no servidor. Recarregue antes de tentar novamente.",
     invalid: "Revise o campo indicado e tente novamente.",
-    forbidden: "Sua sessão ou permissão neste espaço mudou.",
+    forbidden: "Sua sessão ou permissão nesta loja mudou.",
     unavailable: "A API não respondeu. Seu texto e a chave da tentativa foram preservados.",
-    error: "Não foi possível salvar o currículo."
+    error: "Não foi possível salvar o conteúdo."
   };
   return messages[state];
 }

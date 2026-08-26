@@ -17,19 +17,16 @@ export interface BannedTerm {
 
 export const BANNED_SALES_TERMS: readonly BannedTerm[] = [
   { term: "snapshot", instead: "versão publicada" },
-  { term: "espaço de vendas", instead: "sua loja" }
-];
-
-/**
- * Ainda não banidos, e por quê.
- *
- * `oferta` é rótulo de tela e conceito do domínio ao mesmo tempo: trocá-lo na
- * interface sem decidir o substituto deixaria a tela e a API falando línguas
- * diferentes sobre a mesma coisa. Fica registrado aqui, fora do portão, até a
- * decisão — e não esquecido num comentário solto.
- */
-export const PENDING_SALES_TERMS: readonly BannedTerm[] = [
-  { term: "oferta", instead: "decisão pendente: rótulo de tela x conceito do domínio" }
+  // "espaço", não "espaço de vendas": a tela dizia ESPAÇO SELECIONADO e passava
+  // pelo portão porque a frase banida era outra. O portão pega a ideia agora.
+  // Onde "espaço" queria dizer o branco entre palavras, o texto foi reescrito
+  // para não depender do substantivo.
+  { term: "espaço", instead: "loja" },
+  { term: "currículo", instead: "conteúdo" },
+  // Decidido: na tela do vendedor a etapa se chama Preço, e o que se liga e
+  // desliga são as vendas. "Oferta" continua sendo o nome da coisa na API e no
+  // banco — o contrato não muda, só para de vazar para quem vende.
+  { term: "oferta", instead: "preço, ou vendas" }
 ];
 
 function fold(value: string): string {

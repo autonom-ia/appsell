@@ -69,7 +69,16 @@ describe("A4.5 — varredura de vocabulário", () => {
   it("acha o termo ignorando acento e caixa", () => {
     const hits = findBannedTerms("Publique o SNAPSHOT agora\nUse o Espaco De Vendas");
 
-    expect(hits.map((hit) => hit.term).sort()).toEqual(["espaço de vendas", "snapshot"]);
+    expect(hits.map((hit) => hit.term).sort()).toEqual(["espaço", "snapshot"]);
+  });
+
+  // O furo que a #255 fechou: o termo banido era a frase inteira "espaço de
+  // vendas", e a tela dizia ESPAÇO SELECIONADO — passava batido. O portão pega
+  // a ideia agora, não a frase.
+  it("pega espaço fora da frase que estava banida", () => {
+    const hits = findBannedTerms("ESPAÇO SELECIONADO · AEA20A25…");
+
+    expect(hits.map((hit) => hit.term)).toEqual(["espaço"]);
   });
 
   it("aponta a linha e sugere o que dizer no lugar", () => {
