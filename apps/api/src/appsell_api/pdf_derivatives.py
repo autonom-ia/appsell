@@ -26,14 +26,14 @@ PDF_PAGE_ARCHIVE_MIME = "application/vnd.autonomia.pdf-pages-v1+tar"
 # 300 e o teto do LEASE, nao da memoria. O pdftoppm roda uma pagina por
 # processo, entao a memoria nao cresce com o documento; o que cresce e o
 # tempo. Medido num playbook real de 83 paginas: 0,3 s por pagina. Assumindo
-# a VPS tres vezes mais lenta e reservando metade dos 1800 s de lease para
-# download, antivirus e arquivamento, sobram ~900 s de rasterizacao.
-MAX_PDF_PAGES = 1000
+# a VPS tres vezes mais lenta e reservando metade dos 600 s de lease para
+# download, antivirus e arquivamento, sobram ~300 s de rasterizacao.
+MAX_PDF_PAGES = 300
 MAX_PDF_PAGE_BYTES = 8 * 1024 * 1024
 # Precisa acompanhar MAX_PDF_PAGES. Medido: 0,25 MiB por pagina num documento
-# com muitas capturas de tela. 1000 paginas dao ~250 MiB no caso tipico; 1 GiB
+# com muitas capturas de tela. 300 paginas dao ~75 MiB no caso tipico; 512 MiB
 # cobre um documento tres vezes mais pesado sem virar teto ilimitado.
-MAX_PDF_DERIVATIVE_BYTES = 1024 * 1024 * 1024
+MAX_PDF_DERIVATIVE_BYTES = 512 * 1024 * 1024
 MAX_PDF_PAGE_PIXELS = MAX_RASTER_DIMENSION**2
 _ARCHIVE_OVERHEAD_BYTES = 2 * 1024 * 1024
 MAX_PDF_PAGE_ARCHIVE_BYTES = MAX_PDF_DERIVATIVE_BYTES + MAX_PDF_BYTES + _ARCHIVE_OVERHEAD_BYTES
