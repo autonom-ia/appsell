@@ -273,7 +273,7 @@ export function ProductDraftWorkspace() {
           <form key={selectedSeller.id} className="product-draft-form" action={`/api/sellers/${selectedSeller.id}/products`} method="post" onInput={() => { formDirtyRef.current = true; setFormDirty(true); }} onSubmit={submit}>
             <div className="form-heading">
               <p className="eyebrow">Novo rascunho</p>
-              <h2>Estruture sua próxima oferta</h2>
+              <h2>Estruture seu próximo produto</h2>
               <p>Loja: <strong>{selectedSeller.display_name}</strong>. Nenhuma cobrança ou publicação acontece nesta etapa.</p>
             </div>
             <fieldset className="product-create-fields" disabled={saveState === "saving"}>

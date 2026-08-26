@@ -66,7 +66,7 @@ export function DemoCheckoutWorkspace() {
     setState("ready");
   }
 
-  if (state === "loading") return <section className="checkout-card checkout-loading" aria-live="polite" aria-busy="true"><p>Validando oferta e identidade…</p></section>;
+  if (state === "loading") return <section className="checkout-card checkout-loading" aria-live="polite" aria-busy="true"><p>Validando o pedido e a identidade…</p></section>;
   if (state === "error" || !payload) return <section className="checkout-card" role="alert"><h2>Checkout indisponível</h2><p>Nenhuma cobrança foi realizada.</p><button className="primary-button" type="button" onClick={() => { setState("loading"); void load().catch(() => setState("error")); }}>Tentar novamente</button></section>;
   if (state === "success") return <section className="checkout-card checkout-success" aria-live="polite"><p className="eyebrow">Acesso liberado</p><h2>Compra demo aprovada</h2><p>O pedido de valor zero criou uma única compra e seu acesso ao curso. Nenhum provedor financeiro foi acionado.</p><Link className="primary-button" href="/library">Abrir minha biblioteca</Link></section>;
 

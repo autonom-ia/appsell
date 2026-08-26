@@ -894,7 +894,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
             </fieldset>
             <section className="offer-status-panel" aria-labelledby="offer-status-title">
               <p className="eyebrow">Disponibilidade na vitrine</p>
-              <h2 id="offer-status-title">Situação das vendas: {offerStatusLabel(detail.offer.status)}</h2>
+              <h2 id="offer-status-title">Vendas {offerStatusLabel(detail.offer.status)}</h2>
               {detail.offer.status === "draft" ? <p>{!detail.publication ? "Publique o catálogo antes de escolher o acesso. A ativação das vendas fica em Publicar." : "A decisão entre acesso gratuito e vendas com checkout fica em Publicar."}</p> : null}
               {detail.offer.status === "active" ? <p>Vendas ativas por {detail.offer.unit_amount_minor ? formatOfferPrice(detail.offer.unit_amount_minor, detail.offer.currency) : "preço não informado"}. Para editar termos ou preço, volte a rascunho em Publicar.</p> : null}
               {detail.offer.status === "archived" ? <p>Vendas encerradas. Crie um novo produto para vender novamente.</p> : null}
@@ -1241,7 +1241,7 @@ function saveMessage(state: SaveState, dirty: boolean) {
   if (state === "rebasing") return "Recarregando a versão atual do servidor…";
   if (state === "rebased") return "Versão atualizada; suas alterações locais continuam prontas para novo envio.";
   if (state === "invalid") return "Revise o campo indicado. Os demais campos foram preservados.";
-  if (state === "forbidden") return "Salvamento recusado. Sua sessão expirou ou esta conta não tem acesso a este espaço; entre novamente e confira o tenant.";
+  if (state === "forbidden") return "Salvamento recusado. Sua sessão expirou ou esta conta não tem acesso a esta loja; entre novamente e confira qual loja está aberta.";
   if (state === "unavailable") return "A API não confirmou o estado final. Seus campos foram preservados; recarregue antes de outra tentativa.";
   if (state === "error") return "Não foi possível salvar. Seus campos continuam neste dispositivo.";
   return dirty ? "Alterações não salvas." : "Tudo salvo.";
@@ -1250,7 +1250,7 @@ function saveMessage(state: SaveState, dirty: boolean) {
 function offerStatusLabel(status: string) {
   if (status === "active") return "ativas";
   if (status === "archived") return "encerradas";
-  return "rascunho";
+  return "ainda não ativadas";
 }
 
 function readActionCsrf(action: "update" | "publish") {

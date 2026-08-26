@@ -220,7 +220,7 @@ test("creates a tenant-scoped product draft in the mobile UI", async ({ page }, 
   await login(page);
   await page.goto("/products");
   await page.getByLabel("Sua loja").selectOption({ label: "Studio Mobile · @studio-mobile" });
-  await expect(page.getByRole("heading", { name: "Estruture sua próxima oferta" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Estruture seu próximo produto" })).toBeVisible();
   await expect(page.getByText("Publicado", { exact: true })).toBeVisible();
   await expect(page.getByText("Despublicado", { exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "Editar nova versão" })).toBeVisible();
