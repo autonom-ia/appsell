@@ -237,7 +237,7 @@ export function PayoutConnectCard() {
     return (
       <section className="payout-card">
         <p className="eyebrow">Recebimentos</p>
-        <h2 ref={headingRef} tabIndex={-1}>Crie seu espaço primeiro</h2>
+        <h2 ref={headingRef} tabIndex={-1}>Crie sua loja primeiro</h2>
         <p>
           Para conectar uma conta de recebimentos, você precisa de uma loja
           ativo como proprietário.

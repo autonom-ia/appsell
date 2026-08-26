@@ -143,7 +143,7 @@ test("keeps seller onboarding recoverable when the domain API is unavailable", a
   await page.setViewportSize({ width: 390, height: 844 });
   await login(page);
   await page.goto("/products");
-  const submit = page.getByRole("button", { name: "Ativar meu espaço" });
+  const submit = page.getByRole("button", { name: "Ativar minha loja" });
   await expect(submit).toBeEnabled();
   await expect(page.getByText("A API está indisponível.")).toBeVisible();
   await page.getByLabel("Nome do negócio").fill("Studio Mobile");
@@ -220,7 +220,7 @@ test("creates a tenant-scoped product draft in the mobile UI", async ({ page }, 
   await login(page);
   await page.goto("/products");
   await page.getByLabel("Sua loja").selectOption({ label: "Studio Mobile · @studio-mobile" });
-  await expect(page.getByRole("heading", { name: "Estruture sua próxima oferta" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Estruture seu próximo produto" })).toBeVisible();
   await expect(page.getByText("Publicado", { exact: true })).toBeVisible();
   await expect(page.getByText("Despublicado", { exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "Editar nova versão" })).toBeVisible();
@@ -246,8 +246,8 @@ test("creates a tenant-scoped product draft in the mobile UI", async ({ page }, 
   await page.keyboard.type("Creator OS Mobile");
   await page.getByLabel("Endereço do produto", { exact: false }).fill("creator-os-mobile");
   await page.getByLabel("Descrição curta").fill("Fluxo mobile persistente e privado.");
-  await page.getByLabel("Nome do curso inicial").fill("Fundamentos Mobile");
-  await page.getByRole("button", { name: "Criar produto e curso" }).click();
+  await page.getByLabel("Nome do conteúdo").fill("Fundamentos Mobile");
+  await page.getByRole("button", { name: "Criar produto" }).click();
   await createStarted;
   await expect(page.getByLabel("Sua loja")).toBeDisabled();
   releaseCreate?.();
@@ -444,24 +444,24 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   await expect(page.getByText("Versão atualizada; suas alterações locais continuam prontas para novo envio.")).toBeVisible();
   await expect(page.getByLabel("Nome do produto")).toHaveValue("Creator OS 2");
   await page.getByRole("button", { name: "Salvar rascunho" }).click();
-  await expect(page.getByText("Rascunho salvo com segurança.")).toBeVisible();
+  await expect(page.getByText("Tudo salvo com segurança.")).toBeVisible();
 
-  await page.getByRole("link", { name: /^Oferta/ }).click();
+  await page.getByRole("link", { name: /^Preço/ }).click();
   const offerPrice = page.getByLabel("Preço (R$)");
   await offerPrice.fill("47");
   await expect(page.getByText("Salve o preço antes de ativar vendas", { exact: true })).toBeVisible();
-  const offerSummary = page.getByLabel("Resumo da oferta");
+  const offerSummary = page.getByLabel("Descrição no checkout");
   await offerSummary.fill("Oferta sem cobrança conectada.");
   await offerSummary.focus();
   await offerSummary.evaluate((element) => (element as HTMLTextAreaElement).form?.requestSubmit());
-  await expect(page.getByText("Rascunho salvo com segurança.")).toBeVisible();
+  await expect(page.getByText("Tudo salvo com segurança.")).toBeVisible();
   await expect(page).toHaveURL(new RegExp(`/products/${sellerId}/${productId}\\?section=oferta$`));
   await expect(offerSummary).toBeFocused();
   await page.goBack();
   await expect(page).toHaveURL("/dashboard");
   await page.goForward();
   await expect(page).toHaveURL(new RegExp(`/products/${sellerId}/${productId}\\?section=oferta$`));
-  await expect(page.getByLabel("Resumo da oferta")).toHaveValue("Oferta sem cobrança conectada.");
+  await expect(page.getByLabel("Descrição no checkout")).toHaveValue("Oferta sem cobrança conectada.");
   await expect(page.getByLabel("Preço (R$)")).toHaveValue("47");
   await expect(page.getByText("Preço salvo; catálogo pronto para publicar", { exact: true })).toBeVisible();
   await expect(page.getByText("A alteração do acesso é feita na etapa Publicar, depois que o rascunho estiver salvo.", { exact: true })).toBeVisible();
@@ -493,11 +493,11 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   await expect(page.getByText("Catálogo publicado com sucesso.", { exact: false })).toBeVisible();
   await expect(page.getByText("Nenhuma mudança desde a versão publicada.", { exact: false })).toBeVisible();
   await expect(page.getByRole("button", { name: /Publicar catálogo nova versão/ })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Ativar oferta e usar checkout" })).toBeEnabled();
-  await page.getByRole("link", { name: /^Produto Identidade/ }).click();
+  await expect(page.getByRole("button", { name: "Ativar vendas e usar checkout" })).toBeEnabled();
+  await page.getByRole("link", { name: /^Produto Nome, endereço/ }).click();
   await page.getByLabel("Descrição curta").fill("Novo draft depois do snapshot.");
   await page.getByRole("button", { name: "Salvar rascunho" }).click();
-  await expect(page.getByText("Rascunho salvo com segurança.")).toBeVisible();
+  await expect(page.getByText("Tudo salvo com segurança.")).toBeVisible();
   await page.getByRole("link", { name: /^Publicar/ }).click();
   await expect(page.getByRole("button", { name: "Publicar catálogo nova versão após v1" })).toBeEnabled();
   await page.getByRole("button", { name: "Publicar catálogo nova versão após v1" }).click();
@@ -734,7 +734,7 @@ test("authors and reorders a tenant curriculum at 320px without drag", async ({ 
 
   productArchived = true;
   await page.reload();
-  await expect(page.getByText("Produto arquivado: currículo disponível somente para leitura.")).toBeVisible();
+  await expect(page.getByText("Produto arquivado: conteúdo disponível somente para leitura.")).toBeVisible();
   await expect(page.getByTestId("module-create-form")).toHaveCount(0);
   const archivedOrderButtons = page.getByRole("button", { name: /Mover módulo/ });
   await expect(archivedOrderButtons).toHaveCount(4);
@@ -1081,7 +1081,7 @@ test("fails publication closed for string readiness and a missing offer", async 
   await page.goto(`/products/${sellerId}/${productId}?section=produto`);
   await page.getByRole("button", { name: "Ver como aluno" }).click();
   const preview = page.getByRole("dialog");
-  await expect(preview.getByText("Oferta ainda não configurada")).toBeVisible();
+  await expect(preview.getByText("Preço ainda não configurado")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(preview).toBeHidden();
 
@@ -1148,21 +1148,21 @@ test("keeps product editing independent and confirms archival when the offer is 
   await expect(page.getByRole("heading", { name: "Curso Vivo", exact: true })).toBeVisible();
 
   // Product editing remains independent from the already active offer.
-  await expect(page.getByText("Edite o produto e o curso sem precisar configurar vendas.", { exact: false })).toBeVisible();
+  await expect(page.getByText("Edite o produto sem precisar configurar vendas.", { exact: false })).toBeVisible();
   await expect(page.getByLabel("Nome do produto")).toBeEnabled();
   await expect(page.getByRole("button", { name: "Salvar rascunho" })).toBeDisabled();
 
   // Archival requires explicit confirmation before the terminal transition.
   await page.getByRole("link", { name: /^Publicar/ }).click();
-  await page.getByRole("button", { name: "Arquivar oferta" }).click();
-  const dialog = page.getByRole("dialog", { name: "Arquivar esta oferta?" });
+  await page.getByRole("button", { name: "Encerrar vendas" }).click();
+  const dialog = page.getByRole("dialog", { name: "Encerrar as vendas deste produto?" });
   await expect(dialog).toBeVisible();
   expect(state.transitions).toHaveLength(0);
   await page.getByRole("button", { name: "Cancelar" }).click();
   await expect(dialog).toBeHidden();
   expect(state.transitions).toHaveLength(0);
 
-  await page.getByRole("button", { name: "Arquivar oferta" }).click();
+  await page.getByRole("button", { name: "Encerrar vendas" }).click();
   await page.getByRole("button", { name: "Arquivar definitivamente" }).click();
   await expect(page.getByText("Modo de acesso atualizado.")).toBeVisible();
   expect(state.transitions).toEqual([{ expected: "active", next: "archived", csrf: "csrf-offer-status" }]);
@@ -1212,11 +1212,11 @@ test("keeps product editing available while an offer transition is in flight", a
   await login(page);
   await page.goto(`/products/${sellerId}/${productId}?section=publicar`);
   await expect(page.getByRole("heading", { name: "Acesso gratuito" })).toBeVisible();
-  await page.getByRole("button", { name: "Ativar oferta e usar checkout" }).click();
+  await page.getByRole("button", { name: "Ativar vendas e usar checkout" }).click();
   await expect(page.getByRole("button", { name: "Ativando vendas…" })).toBeVisible();
 
   // While the PATCH is in flight, product editing remains a separate concern.
-  await page.getByRole("link", { name: "Produto Identidade e curso" }).click();
+  await page.getByRole("link", { name: "Produto Nome, endereço e descrição" }).click();
   await expect(page.getByLabel("Nome do produto")).toBeEnabled();
   await expect(page.getByRole("button", { name: "Salvar rascunho" })).toBeDisabled();
 
@@ -1227,7 +1227,7 @@ test("keeps product editing available while an offer transition is in flight", a
 
   // Release the reconciliation GET; offer is now active → product stays editable.
   releaseReload();
-  await expect(page.getByText("Edite o produto e o curso sem precisar configurar vendas.", { exact: false })).toBeVisible();
+  await expect(page.getByText("Edite o produto sem precisar configurar vendas.", { exact: false })).toBeVisible();
   await expect(page.getByLabel("Nome do produto")).toBeEnabled();
 });
 
@@ -1265,14 +1265,14 @@ test("offers an in-flow refresh after an offer version conflict", async ({ page 
   await login(page);
   await page.goto(`/products/${sellerId}/${productId}?section=publicar`);
   await expect(page.getByRole("heading", { name: "Acesso gratuito" })).toBeVisible();
-  await page.getByRole("button", { name: "Ativar oferta e usar checkout" }).click();
-  await expect(page.getByText("A oferta mudou em outra sessão.", { exact: false })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Atualizar dados da oferta" })).toBeVisible();
+  await page.getByRole("button", { name: "Ativar vendas e usar checkout" }).click();
+  await expect(page.getByText("O preço mudou em outra sessão.", { exact: false })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Atualizar dados do preço" })).toBeVisible();
 
-  await page.getByRole("button", { name: "Atualizar dados da oferta" }).click();
+  await page.getByRole("button", { name: "Atualizar dados do preço" }).click();
   await expect(page.getByRole("heading", { name: "Vendas ativas" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Desativar vendas e voltar ao gratuito" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Atualizar dados da oferta" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Atualizar dados do preço" })).toHaveCount(0);
 });
 
 test("preserves a non-BRL offer currency on save and labels the price in that currency", async ({ page }, testInfo) => {
@@ -1308,8 +1308,8 @@ test("preserves a non-BRL offer currency on save and labels the price in that cu
   // Price label is in the stored currency, not R$.
   await expect(page.getByText("Preço (USD)")).toBeVisible();
   await expect(page.getByLabel("Preço (USD)")).toHaveValue("49,90");
-  await page.getByLabel("Nome da oferta").fill("Oferta USD 2");
+  await page.getByLabel("Nome no checkout").fill("Oferta USD 2");
   await page.getByRole("button", { name: "Salvar rascunho" }).click();
-  await expect(page.getByText("Rascunho salvo com segurança.")).toBeVisible();
+  await expect(page.getByText("Tudo salvo com segurança.")).toBeVisible();
   expect(savedCurrency).toBe("USD");
 });
