@@ -67,7 +67,31 @@ class Settings(BaseSettings):
 
     @property
     def pdf_sandbox_required(self) -> bool:
-        return self.storage_configured
+        """
+        Se ESTE processo precisa de um parser de PDF isolado para subir.
+
+        Nao e "tem storage". Ter storage significa assinar URL de envio e
+        consultar objeto; abrir PDF e outra coisa. Quem abre e o worker, que
+        exige o sandbox VIVO no proprio boot (asset_worker_service.py) — uma
+        checagem mais forte do que esta, e que continua valendo.
+
+        Enquanto isto dizia "tem storage", a API so podia ter storage se
+        tambem montasse o sandbox. Sem storage ela nao consegue nem assinar o
+        envio, e foi por isso que o upload de material de aula parou em 22/08 e
+        a capa nunca funcionou em producao (#268).
+        """
+        return self.storage_configured and self.verifies_uploads
+
+    @property
+    def verifies_uploads(self) -> bool:
+        """
+        Se este processo varre e parseia o que foi enviado, em vez de delegar.
+
+        Fora de local/CI quem verifica e o worker autonomo; a API so assina,
+        consulta e responde. E o mesmo criterio que `inline_asset_worker_enabled`
+        usa em main.py para decidir se processa o upload na propria requisicao.
+        """
+        return self.environment in {"local", "ci"}
 
     @model_validator(mode="after")
     def validate_fail_closed_environment(self) -> Self:
@@ -133,8 +157,18 @@ class Settings(BaseSettings):
                 or allowed_origin.fragment
             ):
                 raise ValueError("storage allowed origin must be an exact HTTP origin")
-            if bool(self.pdf_sandbox_url) == bool(self.pdf_sandbox_socket):
-                raise ValueError("configure exactly one isolated PDF parser transport")
+            # Dois transportes configurados é ambiguidade: ninguem sabe por
+            # qual o PDF vai passar. Isso continua proibido.
+            #
+            # Nenhum, nao. Ter storage significa assinar URL e consultar objeto;
+            # nao significa abrir PDF. Quem abre e o worker, e ele ja recusa
+            # subir sem sandbox VIVO em asset_worker_service.py — checagem mais
+            # forte do que uma variavel preenchida. Exigir o transporte aqui
+            # impedia a API de ter storage, e sem storage nao ha nem como
+            # assinar o envio: foi o que deixou o upload de material de aula
+            # parado desde 22/08 e a capa impossivel.
+            if self.pdf_sandbox_url and self.pdf_sandbox_socket:
+                raise ValueError("configure at most one isolated PDF parser transport")
             if self.pdf_sandbox_url:
                 sandbox = urlparse(self.pdf_sandbox_url)
                 if (
@@ -148,7 +182,7 @@ class Settings(BaseSettings):
                     or _is_local_host(sandbox.hostname)
                 ):
                     raise ValueError("an isolated PDF parser service is required with S3 storage")
-            else:
+            elif self.pdf_sandbox_socket:
                 socket_path = Path(self.pdf_sandbox_socket)
                 socket_root = Path("/run/appsell-pdf")
                 if (
