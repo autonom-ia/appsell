@@ -179,3 +179,44 @@ test.describe("#257 — cartão e entrada do catálogo", () => {
     expect(copied).toContain("/s/studio-rodrigo/p/ia-na-pratica/access");
   });
 });
+
+test.describe("abrir o formulário de novo produto", () => {
+  test("o primeiro campo recebe o foco, em vez de o formulário abrir fora da tela", async ({ page, isMobile }) => {
+    test.skip(isMobile === true, "no layout de telefone o formulário já nasce à vista");
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await login(page);
+    await openCatalog(page);
+
+    await page.getByRole("button", { name: "Novo produto" }).click();
+    // Sem isto o formulário abre abaixo da dobra e a tela parece não ter
+    // reagido ao clique. Focar o primeiro campo rola até ele e já deixa o
+    // vendedor digitando — serve para o mouse e para o teclado.
+    await expect(page.getByLabel("Nome do produto")).toBeFocused();
+  });
+
+  test("nada fica por cima dos campos do formulário", async ({ page, isMobile }) => {
+    test.skip(isMobile === true, "a lista grudada no topo só existia no layout de mesa");
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await login(page);
+    await openCatalog(page);
+
+    await page.getByRole("button", { name: "Novo produto" }).click();
+    const field = page.getByLabel("Nome do produto");
+    await field.scrollIntoViewIfNeeded();
+    const box = await field.boundingBox();
+    expect(box).not.toBeNull();
+
+    // `.draft-list` continuou `position: sticky` depois que o layout virou uma
+    // coluna só e o formulário desceu para depois da lista. A lista ficava
+    // colada no topo e sentava em cima dos campos: dava para ver o formulário,
+    // não para preencher. Ler a marcação não mostra isso; perguntar quem está
+    // no ponto do campo, sim.
+    const quemEstaNoPonto = await page.evaluate(({ x, y }) => {
+      const node = document.elementFromPoint(x, y) as HTMLElement | null;
+      if (!node) return "nada";
+      if (node.closest(".draft-list")) return "a lista de produtos";
+      return node.tagName.toLowerCase();
+    }, { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 });
+    expect(quemEstaNoPonto).toBe("input");
+  });
+});

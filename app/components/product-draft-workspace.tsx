@@ -54,10 +54,19 @@ export function ProductDraftWorkspace() {
   const formDirtyRef = useRef(false);
   const [pendingSellerId, setPendingSellerId] = useState("");
   const idempotencyKey = useRef<string | null>(null);
+  const productTitleInput = useRef<HTMLInputElement>(null);
   const selectedSellerIdRef = useRef("");
   const catalogRequest = useRef<{ controller: AbortController; version: number } | null>(null);
   const catalogVersion = useRef(0);
   const catalogHeading = useRef<HTMLHeadingElement>(null);
+
+  // Abrir o formulario sem levar o foco fazia a tela parecer nao ter reagido ao
+  // clique: os campos nascem abaixo da dobra. Focar o primeiro campo rola ate
+  // ele e ja deixa o vendedor digitando — vale para o mouse e para o teclado.
+  useEffect(() => {
+    if (!creating) return;
+    productTitleInput.current?.focus();
+  }, [creating]);
 
   useUnsavedChanges(formDirty);
 
@@ -413,7 +422,7 @@ export function ProductDraftWorkspace() {
                 <legend className="sr-only">Dados do novo produto</legend>
                 <input type="hidden" name="_csrf" defaultValue="" />
                 <input type="hidden" name="idempotency_key" defaultValue="" />
-                <label>Nome do produto<input name="product_title" minLength={2} maxLength={160} required autoComplete="off" placeholder="Ex.: Codex na prática…" aria-invalid={isInvalid("product_title")} aria-describedby={isInvalid("product_title") ? "product-title-error" : undefined} />{isInvalid("product_title") ? <span id="product-title-error" className="form-error">Informe um nome entre 2 e 160 bytes, sem sobras nas pontas.</span> : null}</label>
+                <label>Nome do produto<input ref={productTitleInput} name="product_title" minLength={2} maxLength={160} required autoComplete="off" placeholder="Ex.: Codex na prática…" aria-invalid={isInvalid("product_title")} aria-describedby={isInvalid("product_title") ? "product-title-error" : undefined} />{isInvalid("product_title") ? <span id="product-title-error" className="form-error">Informe um nome entre 2 e 160 bytes, sem sobras nas pontas.</span> : null}</label>
                 <label>Endereço do produto<input name="slug" minLength={3} maxLength={63} required autoComplete="off" autoCapitalize="none" spellCheck={false} pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="codex-na-pratica…" aria-invalid={isInvalid("slug")} aria-describedby={isInvalid("slug") ? "product-slug-help product-slug-error" : "product-slug-help"} /><span id="product-slug-help">Somente letras minúsculas, números e hífens.</span>{isInvalid("slug") ? <span id="product-slug-error" className="form-error">Use de 3 a 63 caracteres válidos.</span> : null}</label>
                 <label>Descrição curta<textarea name="product_description" maxLength={2000} rows={4} placeholder="Ex.: Aprenda a trabalhar com Codex com segurança…" aria-invalid={isInvalid("product_description")} aria-describedby={isInvalid("product_description") ? "product-description-error" : undefined} />{isInvalid("product_description") ? <span id="product-description-error" className="form-error">A descrição deve ter até 2.000 bytes e não pode conter controles.</span> : null}</label>
                 <label>Nome do conteúdo<input name="course_title" minLength={2} maxLength={160} required autoComplete="off" placeholder="Ex.: Fundamentos do Codex…" aria-invalid={isInvalid("course_title")} aria-describedby={isInvalid("course_title") ? "course-title-error" : undefined} />{isInvalid("course_title") ? <span id="course-title-error" className="form-error">Informe um nome entre 2 e 160 bytes, sem sobras nas pontas.</span> : null}</label>

@@ -555,7 +555,10 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
    quando pedido, então a segunda coluna deixaria a lista estreita à toa e
    penduraria o botão "Novo produto" sozinho no vazio à direita. */
 .catalog-workspace-grid { grid-template-columns: minmax(0,1fr); max-width: 860px; }
-  .draft-list { position: sticky; top: 24px; }
+  /* A lista NAO pode ser `position: sticky` aqui. Ela era, de quando havia
+     duas colunas e a lista acompanhava o formulario ao lado. Numa coluna so,
+     com o formulario depois dela, grudar a lista no topo faz ela sentar em
+     cima dos campos: da para ver o formulario, nao para preencher. */
   .product-editor { gap: 26px; }
   .editor-section-nav { grid-template-columns: repeat(4,minmax(0,1fr)); }
   .editor-save-bar { bottom: 18px; }
@@ -1113,7 +1116,6 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
   .page-header h1 { font-size: clamp(2.35rem,3vw,3.15rem); }
   .metric-grid article { min-height: 158px; padding: 28px 26px; }
   .product-card { border-radius: 24px; }
-  .draft-list { top: 20px; }
   .player-outline-desktop { top: 20px; }
 }
 
