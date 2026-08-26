@@ -40,6 +40,38 @@ REMOTE_STORAGE: dict[str, Any] = {
 }
 
 
+def test_storage_without_a_pdf_transport_is_allowed() -> None:
+    """
+    Ter storage nao obriga a parsear PDF.
+
+    Um processo que so assina URL e consulta objeto — a API — nunca abre um PDF.
+    Exigir o transporte aqui impedia a API de ter storage, e sem storage nao ha
+    nem como assinar o envio: foi o que deixou o upload de material de aula
+    parado desde 22/08 e a capa impossivel em producao (issue #268).
+
+    Quem realmente abre PDF e o worker, e ele recusa subir sem sandbox VIVO em
+    asset_worker_service.py — checagem mais forte do que uma variavel cheia.
+    """
+    storage = {**REMOTE_STORAGE, "pdf_sandbox_url": "", "pdf_sandbox_socket": ""}
+    settings = Settings(environment="local", **INTERNAL_AUTH, **storage)
+
+    assert settings.storage_provider == "s3"
+    assert settings.pdf_sandbox_url == ""
+    assert settings.pdf_sandbox_socket == ""
+
+
+def test_two_pdf_transports_at_once_are_still_refused() -> None:
+    # Ambiguidade continua proibida: com os dois preenchidos ninguem sabe por
+    # qual transporte o PDF passaria.
+    storage = {
+        **REMOTE_STORAGE,
+        "pdf_sandbox_url": "https://pdf-sandbox.internal/normalize",
+        "pdf_sandbox_socket": "/run/appsell-pdf/pdf.sock",
+    }
+    with pytest.raises(ValidationError):
+        Settings(environment="local", **INTERNAL_AUTH, **storage)
+
+
 def test_production_rejects_local_database() -> None:
     with pytest.raises(ValidationError):
         Settings(environment="production", **INTERNAL_AUTH, **REMOTE_STORAGE)
