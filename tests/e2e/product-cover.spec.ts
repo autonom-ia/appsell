@@ -241,3 +241,27 @@ test("A4.2 — as iniciais da arte são legíveis de fato, não só presentes no
   expect(rendered?.cor).toBe("rgb(255, 255, 255)");
   expect(rendered?.centralizado).toBe("center");
 });
+
+test("uma capa larga é enquadrada em 16:9, e não esticada na vertical", async ({ page }) => {
+  await login(page);
+  // As dimensões reais de um banner 16:9 — foi assim que o defeito apareceu em
+  // produção. O fixture de 64x64 usado nos outros testes esconde o problema:
+  // 200x64 não chama atenção; 200x954 come a tela inteira.
+  await openEditor(page, {
+    url: `data:image/png;base64,${PNG_BASE64}`,
+    media_type: "image/png",
+    width: 1683,
+    height: 954
+  });
+
+  const box = await page.locator(".cover-image").boundingBox();
+  expect(box).not.toBeNull();
+
+  // Os atributos width/height do <img> viram presentational hints de CSS. O
+  // `.cover-image` sobrescreve a largura mas não declarava altura, então o hint
+  // de 954px sobrevivia e o `aspect-ratio: 16/9` era ignorado — largura e
+  // altura já estavam ambas definidas. Medir o quadro renderizado é a única
+  // forma de ver isso; a marcação está correta nos dois casos.
+  expect(box!.height).toBeLessThan(160);
+  expect(box!.width / box!.height).toBeCloseTo(16 / 9, 1);
+});
