@@ -198,6 +198,23 @@ test.describe("#256 — turmas", () => {
     expect(sent).toHaveLength(0);
   });
 
+  test("B4.3 — com dois campos pendentes, o foco vai para o que a tela nomeia", async ({ page }) => {
+    // A ordem do motivo e a ordem do foco precisam ser a mesma. Estavam
+    // trocadas: a tela dizia "informe quantas vagas" e o cursor caía no campo
+    // de data.
+    await login(page);
+    const sent = await openPanel(page);
+
+    await page.getByLabel("Nome da turma").fill("Turma de agosto");
+    await page.getByRole("radio", { name: "Outro número" }).check();
+    await page.getByRole("radio", { name: "Escolher data" }).check();
+
+    await expect(page.getByText("Informe quantas vagas.")).toBeVisible();
+    await page.getByRole("button", { name: "Criar turma" }).click();
+    await expect(page.getByLabel("Número exato")).toBeFocused();
+    expect(sent).toHaveLength(0);
+  });
+
   test("B4.4 — a lista mostra usadas, restantes e estado sem passar o mouse", async ({ page }) => {
     await login(page);
     await page.route(`**/api/sellers/${SELLER_ID}/products/${PRODUCT_ID}`, async (route) => {

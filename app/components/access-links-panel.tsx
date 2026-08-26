@@ -85,6 +85,9 @@ export function AccessLinksPanel({
   // formulário não abre reclamando de um campo que ninguém tentou usar ainda.
   const [missingLabel, setMissingLabel] = useState(false);
   const [missingExpiryDate, setMissingExpiryDate] = useState(false);
+  // Lido quando a pessoa escolhe "Escolher data", não quando a lista carregou:
+  // um formulário aberto desde ontem ofereceria um piso de ontem.
+  const [calendarFloor, setCalendarFloor] = useState(0);
 
   // Derivado a cada render: o limite de vagas é conferido enquanto se digita,
   // não no envio.
@@ -199,14 +202,17 @@ export function AccessLinksPanel({
     // O botão está acionável de propósito quando falta preencher algo. Aqui é
     // onde ele diz o que falta e leva o foco até lá, em vez de não fazer nada.
     if (createBlocked) {
+      // A ordem aqui é a mesma de `blockingReason`. Fora de ordem, a tela
+      // dizia "informe quantas vagas" e o foco caía no campo de data — a
+      // pessoa lê uma coisa e o cursor vai para outra.
       if (label.trim().length === 0) {
         setMissingLabel(true);
         labelInput.current?.focus();
-      } else if (dateMissing) {
+      } else if (seatsMissing || seatMessage !== null) {
+        seatsInput.current?.focus();
+      } else {
         setMissingExpiryDate(true);
         expiryInput.current?.focus();
-      } else {
-        seatsInput.current?.focus();
       }
       return;
     }
@@ -500,7 +506,11 @@ export function AccessLinksPanel({
                   type="radio"
                   name="access_link_expiry"
                   checked={expiryChoice.kind === "date"}
-                  onChange={() => { setExpiryChoice({ kind: "date", value: "" }); queueMicrotask(() => expiryInput.current?.focus()); }}
+                  onChange={() => {
+                    setExpiryChoice({ kind: "date", value: "" });
+                    setCalendarFloor(Date.now());
+                    queueMicrotask(() => expiryInput.current?.focus());
+                  }}
                 />
                 <span>Escolher data</span>
               </label>
@@ -523,7 +533,7 @@ export function AccessLinksPanel({
                   ref={expiryInput}
                   type="date"
                   value={expiryChoice.value}
-                  min={loadedAt ? earliestExpiryDate(loadedAt) : undefined}
+                  min={calendarFloor ? earliestExpiryDate(calendarFloor) : undefined}
                   onChange={(event) => setExpiryChoice({ kind: "date", value: event.target.value })}
                   autoComplete="off"
                   aria-invalid={invalidField === "expires_at" || missingExpiryDate}
