@@ -16,6 +16,7 @@ import {
   priceInputFromMinor
 } from "@/lib/offer-price";
 import { keepPriceCharacters } from "@/lib/numeric-field";
+import { publishedOnLabel, stepSummaries } from "@/lib/editor-steps";
 
 type EditorSection = "produto" | "curriculo" | "oferta" | "publicar";
 type LoadState = "loading" | "ready" | "unauthorized" | "forbidden" | "not_found" | "unavailable" | "error";
@@ -163,7 +164,10 @@ const editorSections: Array<{ id: EditorSection; label: string; hint: string }> 
   { id: "produto", label: "Produto", hint: "Nome, endereço e descrição" },
   { id: "curriculo", label: "Conteúdo", hint: "Módulos e aulas" },
   { id: "oferta", label: "Preço", hint: "Quanto custa e se está à venda" },
-  { id: "publicar", label: "Publicar", hint: "Versão publicada" }
+  // "Publicar" virou "Distribuição": um produto no ar não tem o que publicar,
+  // tem o que compartilhar. O identificador da área continua `publicar` porque
+  // endereço em circulação é contrato — `?section=publicar` precisa abrir.
+  { id: "publicar", label: "Distribuição", hint: "Quem entra e como" }
 ];
 
 /**
@@ -797,6 +801,19 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
     !offerStatusLocked;
   const paidAvailable = payoutState === "ready" && (detail.offer.unit_amount_minor ?? 0) > 0;
   const workflow = workflowState(detail, curriculumSummary);
+  const summaries = stepSummaries({
+    title: detail.title,
+    slug: detail.slug,
+    modules: curriculumSummary.modules,
+    lessons: curriculumSummary.lessons,
+    offerStatus: detail.offer.status,
+    unitAmountMinor: detail.offer.unit_amount_minor,
+    currency: detail.offer.currency,
+    published: Boolean(detail.publication),
+    publishedAt: detail.publication?.published_at,
+    hasUnpublishedChanges: Boolean(detail.has_unpublished_changes ?? detail.readiness?.has_unpublished_changes)
+  });
+  const liveSince = detail.publication ? publishedOnLabel(detail.publication.published_at) : null;
 
   return (
     <section className="product-editor" aria-labelledby="product-editor-title">
@@ -812,7 +829,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
             {/* Decisão travada do Pacote A: a interface esconde o conceito de
                 curso enquanto houver um só. Com dois ou mais, ele volta a ser
                 informação que o vendedor precisa. */}
-            <p>@{detail.slug}{detail.courses.length > 1 ? ` · ${detail.course.title}` : ""}</p>
+            <p>@{detail.slug}{detail.courses.length > 1 ? ` · ${detail.course.title}` : ""}{liveSince ? ` · no ar desde ${liveSince}` : ""}</p>
           </div>
           <span className={`status status-${detail.status}`}>{detail.status === "published" ? `Publicado${publicationVersion ? ` v${publicationVersion}` : ""}` : detail.status === "draft" ? "Rascunho privado" : detail.status === "unpublished" ? "Despublicado" : "Arquivado"}</span>
         </div>
@@ -828,7 +845,11 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
         {editorSections.map((item) => {
           const active = section === item.id;
           const filled = workflow[item.id] === "complete";
-          return <Link key={item.id} href={`?section=${item.id}`} replace scroll={false} className={`${active ? "active " : ""}area-${filled ? "filled" : "empty"}`} aria-current={active ? "page" : undefined} onClick={(event) => requestSectionNavigation(event, item.id)}><span className="editor-step-heading"><strong>{item.label}</strong><span className="editor-step-mark" aria-hidden="true">{filled ? "●" : "○"}</span></span><span>{item.hint}</span><span className="sr-only">{filled ? "com conteúdo" : "ainda vazia"}{active ? "; área aberta" : ""}</span></Link>;
+          // O resumo troca a dica fixa: em vez de "Módulos e aulas" para
+          // sempre, a etapa diz o que ela tem agora — "2 módulos, 5 aulas" — ou
+          // o que falta nela.
+          const summary = summaries[item.id] ?? item.hint;
+          return <Link key={item.id} href={`?section=${item.id}`} replace scroll={false} className={`${active ? "active " : ""}area-${filled ? "filled" : "empty"}`} aria-current={active ? "page" : undefined} onClick={(event) => requestSectionNavigation(event, item.id)}><span className="editor-step-heading"><strong>{item.label}</strong><span className="editor-step-mark" aria-hidden="true">{filled ? "●" : "○"}</span></span><span className="editor-step-summary">{summary}</span>{active ? <span className="sr-only">área aberta</span> : null}</Link>;
         })}
       </nav>
       {assetNavigationWarning ? <p className="form-note asset-navigation-warning" role="alert">{coverBusy ? "A capa ainda está sendo enviada. Aguarde o envio terminar antes de sair desta área." : "O arquivo ainda está sendo enviado. Aguarde ou cancele o envio antes de sair do conteúdo."}</p> : null}
@@ -898,7 +919,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
               {detail.offer.status === "draft" ? <p>{!detail.publication ? "Publique o catálogo antes de escolher o acesso. A ativação das vendas fica em Publicar." : "A decisão entre acesso gratuito e vendas com checkout fica em Publicar."}</p> : null}
               {detail.offer.status === "active" ? <p>Vendas ativas por {detail.offer.unit_amount_minor ? formatOfferPrice(detail.offer.unit_amount_minor, detail.offer.currency) : "preço não informado"}. Para editar termos ou preço, volte a rascunho em Publicar.</p> : null}
               {detail.offer.status === "archived" ? <p>Vendas encerradas. Crie um novo produto para vender novamente.</p> : null}
-              <p className="form-note" role="status">A alteração do acesso é feita na etapa Publicar, depois que o rascunho estiver salvo.</p>
+              <p className="form-note" role="status">A alteração do acesso é feita na etapa Distribuição, depois que o rascunho estiver salvo.</p>
             </section>
           </>
         ) : null}

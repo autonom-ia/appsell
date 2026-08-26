@@ -469,7 +469,7 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   await expect(page.getByLabel("Descrição no checkout")).toHaveValue("Oferta sem cobrança conectada.");
   await expect(page.getByLabel("Preço (R$)")).toHaveValue("47");
   await expect(page.getByText("Preço salvo; catálogo pronto para publicar", { exact: true })).toBeVisible();
-  await expect(page.getByText("A alteração do acesso é feita na etapa Publicar, depois que o rascunho estiver salvo.", { exact: true })).toBeVisible();
+  await expect(page.getByText("A alteração do acesso é feita na etapa Distribuição, depois que o rascunho estiver salvo.", { exact: true })).toBeVisible();
   // A prévia deixou de ser etapa de navegação na Onda 3 e virou "Ver como
   // aluno", alcançável de qualquer área. O que se afirma continua igual: o
   // vendedor vê o produto como o aluno veria, e a compra não existe ali.
@@ -480,7 +480,7 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   await page.keyboard.press("Escape");
   await expect(studentPreview).toBeHidden();
   await page.getByRole("navigation", { name: "Áreas do produto" })
-    .getByRole("link", { name: /^Publicar/ }).click();
+    .getByRole("link", { name: /^Distribuição/ }).click();
   await page.getByRole("button", { name: "Publicar catálogo primeira versão" }).click();
   await expect(page.getByRole("dialog", { name: "Colocar Creator OS 2 no ar?" })).toBeVisible();
   // Publishing now decides access. Selling stays visible but refused, with the
@@ -499,11 +499,11 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   await expect(page.getByText("Nenhuma mudança desde a versão publicada.", { exact: false })).toBeVisible();
   await expect(page.getByRole("button", { name: /Publicar catálogo nova versão/ })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Ativar vendas e usar checkout" })).toBeEnabled();
-  await page.getByRole("link", { name: /^Produto Nome, endereço/ }).click();
+  await page.getByRole("navigation", { name: "Áreas do produto" }).getByRole("link", { name: /^Produto/ }).click();
   await page.getByLabel("Descrição curta").fill("Novo draft depois do snapshot.");
   await page.getByRole("button", { name: "Salvar rascunho" }).click();
   await expect(page.getByText("Tudo salvo com segurança.")).toBeVisible();
-  await page.getByRole("link", { name: /^Publicar/ }).click();
+  await page.getByRole("link", { name: /^Distribuição/ }).click();
   await expect(page.getByRole("button", { name: "Publicar catálogo nova versão após v1" })).toBeEnabled();
   await page.getByRole("button", { name: "Publicar catálogo nova versão após v1" }).click();
   await page.getByRole("button", { name: "Colocar no ar" }).click();
@@ -1091,7 +1091,7 @@ test("fails publication closed for string readiness and a missing offer", async 
   await expect(preview).toBeHidden();
 
   await page.getByRole("navigation", { name: "Áreas do produto" })
-    .getByRole("link", { name: /^Publicar/ }).click();
+    .getByRole("link", { name: /^Distribuição/ }).click();
   await expect(page.getByText("offer_missing")).toBeVisible();
   await expect(page.getByRole("button", { name: "Publicar catálogo primeira versão" })).toBeDisabled();
 });
@@ -1158,7 +1158,7 @@ test("keeps product editing independent and confirms archival when the offer is 
   await expect(page.getByRole("button", { name: "Salvar rascunho" })).toBeDisabled();
 
   // Archival requires explicit confirmation before the terminal transition.
-  await page.getByRole("link", { name: /^Publicar/ }).click();
+  await page.getByRole("link", { name: /^Distribuição/ }).click();
   await page.getByRole("button", { name: "Encerrar vendas" }).click();
   const dialog = page.getByRole("dialog", { name: "Encerrar as vendas deste produto?" });
   await expect(dialog).toBeVisible();
@@ -1221,7 +1221,7 @@ test("keeps product editing available while an offer transition is in flight", a
   await expect(page.getByRole("button", { name: "Ativando vendas…" })).toBeVisible();
 
   // While the PATCH is in flight, product editing remains a separate concern.
-  await page.getByRole("link", { name: "Produto Nome, endereço e descrição" }).click();
+  await page.getByRole("navigation", { name: "Áreas do produto" }).getByRole("link", { name: /^Produto/ }).click();
   await expect(page.getByLabel("Nome do produto")).toBeEnabled();
   await expect(page.getByRole("button", { name: "Salvar rascunho" })).toBeDisabled();
 
