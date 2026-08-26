@@ -20,15 +20,17 @@ export type SeatReading =
   | { kind: "empty" }
   | { kind: "ok"; seats: number }
   | { kind: "below" }
-  | { kind: "above" };
+  | { kind: "above" }
+  | { kind: "not_a_number" };
 
 // Vazio significa ilimitado — é um valor legítimo, não um campo por preencher.
 export function readSeatInput(raw: string): SeatReading {
   const trimmed = raw.trim();
   if (trimmed === "") return { kind: "empty" };
-  // O filtro de digitação já impede letras; um resto não numérico aqui só
-  // aparece por colagem, e vale a mesma resposta de fora de faixa.
-  if (!/^\d+$/.test(trimmed)) return { kind: "below" };
+  // O filtro de digitação já impede letras; um resto não numérico só chega
+  // aqui por colagem. Tem espécie própria porque "1 vaga é o mínimo" seria uma
+  // resposta enganosa para quem colou "dez".
+  if (!/^\d+$/.test(trimmed)) return { kind: "not_a_number" };
   const seats = Number(trimmed);
   if (seats < SEAT_RANGE.min) return { kind: "below" };
   if (seats > SEAT_RANGE.max) return { kind: "above" };
@@ -42,6 +44,7 @@ const SEAT_LIMIT_TEXT = `${SEAT_RANGE.min} a ${SEAT_RANGE.max.toLocaleString("pt
 export const SEAT_HELP = `De ${SEAT_LIMIT_TEXT} vagas. Deixe vazio para ilimitado.`;
 
 export function seatRangeMessage(reading: SeatReading): string | null {
+  if (reading.kind === "not_a_number") return `Use só números, de ${SEAT_LIMIT_TEXT}.`;
   if (reading.kind === "below") return `A menor turma tem ${SEAT_RANGE.min} vaga. Use de ${SEAT_LIMIT_TEXT}.`;
   if (reading.kind === "above") return `O limite por link é ${SEAT_RANGE.max.toLocaleString("pt-BR")} vagas.`;
   return null;

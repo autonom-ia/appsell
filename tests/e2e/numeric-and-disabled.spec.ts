@@ -181,6 +181,42 @@ test.describe("#253 — o campo numérico recusa o impossível", () => {
     await price.pressSequentially("49,90");
     await expect(price).toHaveValue("49,90");
   });
+
+  test("Preço não acusa erro no meio de uma digitação válida", async ({ page }) => {
+    await login(page);
+    await mockEditor(page);
+    await page.goto(`/products/${SELLER_ID}/${PRODUCT_ID}?section=oferta`);
+
+    const price = page.locator("#offer_price");
+    await price.fill("");
+    // "49," é um estado de passagem a caminho de "49,90". Julgado a cada tecla,
+    // o campo ficaria vermelho acusando um erro que ainda está sendo digitado.
+    await price.pressSequentially("49,");
+    await expect(price).toHaveAttribute("aria-invalid", "false");
+
+    await price.pressSequentially("90");
+    await price.blur();
+    await expect(price).toHaveAttribute("aria-invalid", "false");
+  });
+
+  test("Preço acusa, aí sim, quando a pessoa sai do campo com valor pela metade", async ({ page }) => {
+    await login(page);
+    await mockEditor(page);
+    await page.goto(`/products/${SELLER_ID}/${PRODUCT_ID}?section=oferta`);
+
+    const price = page.locator("#offer_price");
+    await price.fill("");
+    await price.pressSequentially("49,");
+    await price.blur();
+    await expect(price).toHaveAttribute("aria-invalid", "true");
+
+    // E some assim que for corrigido: depois do primeiro erro, o campo volta a
+    // acompanhar a digitação em vez de esperar outro blur. `fill` e não
+    // `pressSequentially`: reentrando no campo, o cursor volta ao início, e as
+    // teclas cairiam antes da vírgula em vez de depois dela.
+    await price.fill("49,90");
+    await expect(price).toHaveAttribute("aria-invalid", "false");
+  });
 });
 
 test.describe("#254 — nenhum botão desligado em silêncio", () => {

@@ -36,11 +36,12 @@ describe("readSeatInput", () => {
     expect(readSeatInput("100001").kind).toBe("above");
   });
 
-  it("recusa texto colado no campo", () => {
-    // A digitação é filtrada, mas colar continua sendo um caminho aberto.
-    expect(readSeatInput("dez").kind).toBe("below");
-    expect(readSeatInput("1e3").kind).toBe("below");
-    expect(readSeatInput("-5").kind).toBe("below");
+  it("separa texto colado de valor fora de faixa", () => {
+    // A digitação é filtrada, mas colar continua sendo um caminho aberto. "dez"
+    // não é uma turma pequena demais: é outro erro, e merece outra resposta.
+    expect(readSeatInput("dez").kind).toBe("not_a_number");
+    expect(readSeatInput("1e3").kind).toBe("not_a_number");
+    expect(readSeatInput("-5").kind).toBe("not_a_number");
   });
 });
 
@@ -55,6 +56,12 @@ describe("seatRangeMessage", () => {
   it("nomeia o limite quando o valor não serve", () => {
     expect(seatRangeMessage({ kind: "above" })).toContain("100.000");
     expect(seatRangeMessage({ kind: "below" })).toContain("1");
+  });
+
+  it("não chama texto colado de turma pequena demais", () => {
+    const message = seatRangeMessage({ kind: "not_a_number" });
+    expect(message).toContain("só números");
+    expect(message).not.toContain("A menor turma");
   });
 });
 
