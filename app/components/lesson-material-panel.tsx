@@ -2,7 +2,7 @@
 
 import { KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
 
-import { isEmbedId } from "@/lib/lesson-embed";
+import { embedIdFromInput } from "@/lib/lesson-embed";
 import { safeLessonLink } from "@/lib/lesson-markup";
 
 import { AccessibleDialog } from "./accessible-dialog";
@@ -128,7 +128,7 @@ export function LessonMaterialPanel({
   function invalidLocalField() {
     if (title.trim().length < 2) return "title";
     if (kind === "external") return safeLessonLink(url.trim()) ? "" : "url";
-    return isEmbedId(videoId.trim()) ? "" : "video_id";
+    return embedIdFromInput(provider, videoId) ? "" : "video_id";
   }
 
   async function create() {
@@ -145,7 +145,7 @@ export function LessonMaterialPanel({
       title: title.trim(),
       url: kind === "external" ? (safeLessonLink(url.trim()) ?? "") : "",
       provider: kind === "embed" ? provider : "",
-      video_id: kind === "embed" ? videoId.trim() : ""
+      video_id: kind === "embed" ? (embedIdFromInput(provider, videoId) ?? "") : ""
     };
     const payload = JSON.stringify(fields);
     createKey.current = nextCreateKey(createKey.current, payload, () => crypto.randomUUID());
@@ -339,21 +339,23 @@ export function LessonMaterialPanel({
               <option value="vimeo">Vimeo</option>
             </select>
 
-            <label htmlFor={`${panelId}-video`}>Identificador do vídeo</label>
+            <label htmlFor={`${panelId}-video`}>Link do vídeo</label>
             <input
               id={`${panelId}-video`}
               value={videoId}
               onChange={(event) => setVideoId(event.target.value)}
               onKeyDown={createOnEnter}
-              maxLength={64}
-              placeholder={provider === "youtube" ? "dQw4w9WgXcQ" : "76979871"}
+              maxLength={2000}
+              placeholder={provider === "youtube"
+                ? "https://youtu.be/dQw4w9WgXcQ"
+                : "https://vimeo.com/76979871"}
               aria-invalid={invalidField === "video_id"}
               aria-describedby={`${panelId}-video-help`}
             />
             <span id={`${panelId}-video-help`} className={invalidField === "video_id" ? "form-error" : "field-help"}>
               {invalidField === "video_id"
-                ? "Use apenas o identificador do vídeo, sem o endereço completo."
-                : "Apenas o identificador, não o endereço inteiro. Ele aparece depois de /watch?v= ou /video/."}
+                ? "Não reconhecemos um vídeo neste endereço. Cole o link da página do vídeo."
+                : "Cole o link do vídeo. Pode ser o endereço inteiro, com ou sem os parâmetros que o site acrescenta."}
             </span>
           </>}
 

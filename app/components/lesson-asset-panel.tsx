@@ -90,7 +90,7 @@ type UploadAction =
 const initialUploadState: UploadState = {
   phase: "idle",
   progress: 0,
-  message: "Selecione um PDF ou vídeo MP4 para iniciar.",
+  message: "Selecione um arquivo para iniciar.",
   uploadId: null,
   fileName: ""
 };
@@ -687,10 +687,14 @@ export function LessonAssetPanel({
 
         {!archived && loaded ? <div className="asset-uploader">
           <div className="asset-file-picker">
-            <label className="asset-file-label" htmlFor={`asset-file-${lessonId}`} onClick={() => { replacementTargetRef.current = null; }}>{readyAssets.length > 0 ? "Adicionar outro material" : "Adicione um PDF ou vídeo MP4"}</label>
+            <label className="asset-file-label" htmlFor={`asset-file-${lessonId}`} onClick={() => { replacementTargetRef.current = null; }}>{readyAssets.length > 0 ? "Adicionar outro material" : "Adicionar material"}</label>
             <input ref={inputRef} id={`asset-file-${lessonId}`} type="file" accept={ASSET_UPLOAD_ACCEPT} onClick={resetReplacementOnDirectPickerClick} onChange={(event) => void selectFile(event)} disabled={busy}/>
           </div>
-          <p className="asset-help">PDF ou vídeo MP4 como conteúdo da aula. Documento, planilha, apresentação ou texto como material de apoio para baixar. O arquivo só entra em uma nova publicação depois da verificação.</p>
+          {/* O rotulo dizia "Adicione um PDF ou vídeo MP4" e o seletor sempre aceitou
+    nove formatos. O vendedor lia o rotulo, concluia que documento nao
+    cabia, e ia procurar em "Material complementar" — que so faz link e
+    video. A capacidade existia; o rotulo escondia. */}
+          <p className="asset-help"><strong>PDF</strong> ou <strong>MP4</strong> viram conteúdo da aula, protegido. <strong>DOCX</strong>, <strong>XLSX</strong>, <strong>PPTX</strong>, <strong>TXT</strong>, <strong>MD</strong>, <strong>CSV</strong> e <strong>JSON</strong> entram como material de apoio, que o aluno pode baixar. Uma aula aceita vários. O arquivo só entra em uma nova publicação depois da verificação.</p>
         </div> : null}
 
         <div className={`asset-feedback state-${state.phase}`} role="status" aria-live="polite" aria-atomic="true" tabIndex={state.phase === "failed" || state.phase === "delayed" ? -1 : undefined}>
