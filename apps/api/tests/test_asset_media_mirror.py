@@ -17,9 +17,7 @@ from pathlib import Path
 from appsell_api.asset_media import SUPPORTED_MEDIA
 
 _TS = Path(__file__).resolve().parents[3] / "lib" / "asset-media.ts"
-_ENTRY = re.compile(
-    r'extension:\s*"(?P<ext>[a-z0-9]+)",\s*maxBytes:\s*(?P<n>\d+)\s*\*\s*MIB'
-)
+_ENTRY = re.compile(r'extension:\s*"(?P<ext>[a-z0-9]+)",\s*maxBytes:\s*(?P<n>\d+)\s*\*\s*MIB')
 
 
 def _browser_limits() -> dict[str, int]:
@@ -36,9 +34,7 @@ def test_o_arquivo_do_navegador_foi_encontrado() -> None:
 def test_todo_formato_do_servidor_existe_no_navegador_com_o_mesmo_limite() -> None:
     navegador = _browser_limits()
     for media_type, spec in SUPPORTED_MEDIA.items():
-        assert spec.extension in navegador, (
-            f"{media_type} existe no servidor e não no navegador"
-        )
+        assert spec.extension in navegador, f"{media_type} existe no servidor e não no navegador"
         assert navegador[spec.extension] == spec.max_bytes, (
             f"{media_type}: navegador aceita {navegador[spec.extension]} bytes "
             f"e servidor aceita {spec.max_bytes}"
@@ -48,6 +44,4 @@ def test_todo_formato_do_servidor_existe_no_navegador_com_o_mesmo_limite() -> No
 def test_o_navegador_nao_oferece_formato_que_o_servidor_recusa() -> None:
     servidor = {spec.extension for spec in SUPPORTED_MEDIA.values()}
     for extensao in _browser_limits():
-        assert extensao in servidor, (
-            f".{extensao} é oferecido na tela e o servidor não conhece"
-        )
+        assert extensao in servidor, f".{extensao} é oferecido na tela e o servidor não conhece"
