@@ -141,7 +141,7 @@ services:
     cpus: 0.40
     pids_limit: 192
     read_only: true
-    tmpfs: ["/tmp:size=402653184,mode=1777,noexec,nosuid"]
+    tmpfs: ["/tmp:size=3221225472,mode=1777,noexec,nosuid"]
     volumes: ["runtime_pdf_socket:/run/appsell-pdf:ro"]
     <<: *runtime-security
     logging: *runtime-logging
@@ -204,7 +204,7 @@ services:
     pids_limit: 96
     read_only: true
     tmpfs:
-      - "/tmp:size=402653184,mode=1777,noexec,nosuid"
+      - "/tmp:size=3221225472,mode=1777,noexec,nosuid"
       - "/workspace/sell/output/pdf:size=1048576,mode=000,noexec,nosuid"
     <<: *runtime-security
     logging: *runtime-logging

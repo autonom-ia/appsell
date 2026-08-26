@@ -307,7 +307,12 @@ async def test_durable_claim_uses_null_tenant_worker_context() -> None:
     assert events == ["claim"]
     assert auth.contexts == [("catalog.asset.verify", None)]
     assert auth.session.calls[-1][1]["job_limit"] == 1
-    assert auth.session.calls[-1][1]["lease_seconds"] == 600
+    # Deriva da constante: repetir o numero aqui so faz o teste quebrar quando
+    # o lease muda de propósito, sem proteger nada.
+    assert (
+        auth.session.calls[-1][1]["lease_seconds"]
+        == asset_worker_runner._ASSET_LEASE_SECONDS
+    )
 
 
 @pytest.mark.asyncio

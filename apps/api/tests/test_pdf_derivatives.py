@@ -138,7 +138,10 @@ def test_pdf_temp_contract_covers_near_limit_archive_and_runtime_tmpfs() -> None
     assert MAX_PDF_JOB_TEMP_BYTES == (
         MAX_PDF_PAGE_ARCHIVE_BYTES + MAX_PDF_DERIVATIVE_BYTES + (3 * MAX_PDF_BYTES)
     )
-    configured_tmpfs = 402_653_184
+    # 3 GiB. O tmpfs aloca sob demanda: o teto nao reserva RAM, so permite.
+    # Precisa caber o pior caso de MAX_PDF_JOB_TEMP_BYTES, senao o job fica sem
+    # espaco no meio da rasterizacao — e este teste existe para isso.
+    configured_tmpfs = 3_221_225_472
     assert configured_tmpfs > MAX_PDF_JOB_TEMP_BYTES
     root = Path(__file__).parents[3]
     tmpfs_contract = f"{'/' + 'tmp'}:size={configured_tmpfs}"

@@ -34,7 +34,14 @@ from .video_verifier import VideoRejected, VideoSandboxUnavailable
 
 _WORKER_SUBJECT = "asset-worker-v1"
 _WORKER_LABEL = f"api-inline-{os.getpid()}"
-_ASSET_LEASE_SECONDS = 600
+# 30 min. Este numero — nao a memoria — e o teto do tamanho do documento: o
+# pdftoppm roda uma pagina por processo, entao paginas custam tempo, nao RAM.
+# Medido num playbook real: 0,3 s por pagina. Assumindo a VPS tres vezes mais
+# lenta e metade do lease reservada para download, antivirus e arquivamento,
+# 1800 s cobrem ~900 paginas com margem.
+# O custo de aumentar: um worker que morre no meio segura o job por 30 min
+# antes de outro tentar de novo.
+_ASSET_LEASE_SECONDS = 1800
 logger = structlog.get_logger(__name__)
 
 

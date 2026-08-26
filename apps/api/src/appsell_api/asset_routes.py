@@ -26,12 +26,17 @@ from .catalog_routes import (
     _require_seller,
 )
 from .internal_requests import AuthenticatedInternalRequest
+from .asset_media import (
+    PDF_MEDIA_TYPE,
+    VIDEO_MEDIA_TYPE,
+    max_bytes as _catalogue_max_bytes,
+)
 from .storage_s3 import S3Storage, StorageError
 
 router = APIRouter(prefix="/v1")
 _MAX_SAFE_INTEGER = (1 << 53) - 1
-_MAX_PDF_BYTES = 10 * 1024 * 1024
-_MAX_VIDEO_BYTES = 100 * 1024 * 1024
+_MAX_PDF_BYTES = _catalogue_max_bytes(PDF_MEDIA_TYPE)
+_MAX_VIDEO_BYTES = _catalogue_max_bytes(VIDEO_MEDIA_TYPE)
 
 
 class AssetUploadIntentBody(BaseModel):
