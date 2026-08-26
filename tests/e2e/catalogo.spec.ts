@@ -107,9 +107,10 @@ test.describe("#257 — cartão e entrada do catálogo", () => {
     expect(measured).not.toBeNull();
     // Era o menor texto do cartão, em cinza. Agora é o maior.
     expect(measured!.countSize).toBeGreaterThan(measured!.metaSize);
-    // O cartão tem fundo em gradiente entre branco e um azul quase branco; a
-    // conta usa o branco, que é a ponta de menor contraste dos dois.
-    expect(contrast(measured!.color, "rgb(255,255,255)")).toBeGreaterThanOrEqual(4.5);
+    // O fundo do cartão é um gradiente entre #fff e #f8fbff. Para texto escuro
+    // o pior caso é a ponta MAIS ESCURA, não o branco — medir contra branco
+    // seria medir o lado otimista e chamar de prova.
+    expect(contrast(measured!.color, "rgb(248,251,255)")).toBeGreaterThanOrEqual(4.5);
   });
 
   test("B5.3 — quem já tem loja não vê o formulário de criar loja", async ({ page }) => {

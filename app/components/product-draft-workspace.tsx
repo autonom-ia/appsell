@@ -45,6 +45,10 @@ export function ProductDraftWorkspace() {
   // booleano é o que impede o "Endereço copiado" de aparecer em todos os
   // cartões de uma vez.
   const [shared, setShared] = useState<string | null>(null);
+  // O endereço em texto, para quando copiar não é possível. Guarda o produto
+  // junto pelo mesmo motivo de `shared`: sem isso a mensagem apareceria em
+  // todos os cartões de uma vez.
+  const [shareFallback, setShareFallback] = useState<{ id: string; url: string } | null>(null);
   // Fechado por padrão: quem chega em Produtos quer ver os que tem.
   const [creating, setCreating] = useState(false);
   const formDirtyRef = useRef(false);
@@ -101,6 +105,13 @@ export function ProductDraftWorkspace() {
     selectedSellerIdRef.current = sellerId;
     setSelectedSellerId(sellerId);
     setPendingSellerId("");
+    // O "Endereço copiado" pertence a um produto de uma loja; trocar de loja
+    // troca a lista inteira, e deixá-lo ligado marcaria um cartão que a pessoa
+    // nunca tocou.
+    setShared(null);
+    // O formulário NÃO fecha aqui: quem troca de loja no meio da criação
+    // continua querendo criar, só que na outra loja. Fechar tiraria da tela o
+    // que a pessoa estava fazendo. Ele fecha ao criar e ao cancelar.
     setFormDirty(false);
     formDirtyRef.current = false;
     setSaveState("idle");
@@ -238,10 +249,13 @@ export function ProductDraftWorkspace() {
     try {
       await navigator.clipboard.writeText(new URL(path, window.location.origin).toString());
       setShared(product.id);
+      setShareFallback(null);
     } catch {
-      // Sem área de transferência não há o que compartilhar em silêncio: o
-      // rótulo continua "Compartilhar" em vez de mentir que copiou.
+      // Área de transferência bloqueada — contexto não seguro, ou permissão
+      // negada. Um clique que não faz nada e não diz nada é o defeito que a
+      // #254 fechou; o endereço aparece para copiar à mão.
       setShared(null);
+      setShareFallback({ id: product.id, url: new URL(path, window.location.origin).toString() });
     }
   }
 
@@ -353,6 +367,11 @@ export function ProductDraftWorkspace() {
                       </button>
                     ) : null}
                   </div>
+                  {shareFallback?.id === product.id ? (
+                    <p className="draft-card-fallback" role="status">
+                      Não consegui copiar. O endereço é <code>{shareFallback.url}</code>
+                    </p>
+                  ) : null}
                 </div>
               </article>
             )) : null}

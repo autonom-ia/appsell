@@ -1304,3 +1304,5 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
    "Compartilhar", que é a secundária. */
 .draft-card-actions .draft-card-action { border-color: transparent; background: var(--blue); color: #fff; font-weight: 700; }
 .draft-card-actions .draft-card-action:hover { border-color: transparent; background: #0a49a0; }
+.draft-card-fallback { margin: 8px 0 0; color: var(--text); font-size: .78rem; line-height: 1.5; overflow-wrap: anywhere; }
+.draft-card-fallback code { padding: .1em .35em; border-radius: 6px; background: rgba(59,130,246,.1); font-size: .95em; }
