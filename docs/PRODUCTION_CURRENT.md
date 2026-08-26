@@ -15,11 +15,13 @@
 |---|---|
 | Domínio | `https://sell.autonomia.site` |
 | Ambiente | VPS EasyPanel nativo, Docker Swarm |
-| SHA do **web** | `b2a5a6e02edf777ac59e2c2128cb3f0db95e2dc6` (`b2a5a6e`) |
-| SHA do **api** e do **asset-worker** | `4cbdcf7` — **não se moveram** |
-| Imagens | `web:b2a5a6e`, `api:4cbdcf7`, `asset-worker` em `api:4cbdcf7` |
+| SHA do **web** | `e112c2c` |
+| SHA do **api** | `e112c2c` — subiu em 2026-08-26, ver abaixo |
+| SHA do **asset-worker** | `4cbdcf7` — **não se moveu** |
+| Imagens | `web:e112c2c`, `api:e112c2c`, `asset-worker` em `api:4cbdcf7` |
 | Banco | head `0038_player_hides_materials` — **sem migration neste release** |
 | Web health | `{"status":"ok","redis":true,"api":true,"storage_upload":true}` |
+| API health | `{"status":"ok","database":true,"storage":true,"pdf_sandbox":true}` |
 | Épico | [#252](https://github.com/autonom-ia/appsell/issues/252) — 6/6 fechado |
 
 O release de 2026-08-26 (`b2a5a6e`) entregou o épico de interface #252 inteiro:
@@ -45,6 +47,88 @@ ETA ~40 s. Não há migration para reverter.
 > **Armadilha registrada:** os serviços `web` e `api` rodavam a imagem **sem
 > tag** (`:latest`). Sem marcar a imagem em uso antes de reconstruir, o build
 > sobrescreve `:latest` e **não sobra rollback**. Marcar primeiro, sempre.
+
+## API em produção — o corte de 2026-08-26
+
+Até este dia a API rodava com `APPSELL_API_ENVIRONMENT=ci` em produção. Não era
+detalhe de rótulo: `ci` desliga de uma vez **quatro** guardas fail-closed, entre
+elas a que **exige** storage S3. Foi essa a causa raiz da capa do produto e do
+material de aula não subirem — a API devolvia `503 cover_storage_unavailable`
+porque `APPSELL_API_STORAGE_PROVIDER=disabled`, e ligar o storage era impossível
+enquanto `pdf_sandbox_required` significasse "tem storage" (corrigido em #269).
+
+A escada medida, com o env real e a imagem `api:e112c2c`, em contêiner
+descartável `--network none`:
+
+| # | configuração | resultado |
+|---|---|---|
+| 1 | `environment=ci` (como estava) | OK — storage desligado |
+| 2 | `environment=production` | ❌ `local webhook secrets are forbidden outside local/CI` |
+| 3 | + `WEBHOOK_ENV_KEYRING_ALLOWED=true` | ❌ `S3 storage is required outside local/CI` |
+| 4 | + as 11 variáveis de storage | ❌ `a real malware scanner is required outside local/CI` |
+| 5 | + `MALWARE_SCANNER_PROVIDER=clamav` + socket | ❌ `production database URL must require TLS` |
+| 6 | + `ssl=require` na URL do banco | ✅ OK |
+
+### O que foi aplicado
+
+Sete variáveis **e um volume** — o volume é o ponto que exige decisão, não
+carimbo:
+
+1. imagem `easypanel/sell-autonomia/api:e112c2c`
+2. `APPSELL_API_ENVIRONMENT=production`
+3. `APPSELL_API_WEBHOOK_ENV_KEYRING_ALLOWED=true`
+4. `APPSELL_API_MALWARE_SCANNER_PROVIDER=clamav`
+5. `APPSELL_API_MALWARE_SCANNER_SOCKET=/run/appsell-clamav/clamd.sock`
+6. as 11 variáveis `APPSELL_API_STORAGE_*`, copiadas do `asset-worker`
+7. `ssl=require` em `APPSELL_API_DATABASE_URL`
+8. mount `sell-autonomia_clamav_socket` → `/run/appsell-clamav`, **read-only**,
+   espelhando o worker
+
+Contagem final: **32 variáveis, 1 mount**. Antes eram 20 e 0.
+
+> **Armadilha aritmética, de novo.** Das 11 variáveis de storage, uma
+> (`APPSELL_API_STORAGE_PROVIDER`) **já existia**. `--env-add` sobrescreve, e
+> `--env-rm` no rollback **apagaria** em vez de restaurar. Por isso o rollback
+> faz `--env-add APPSELL_API_STORAGE_PROVIDER=disabled` e `--env-rm` só nas
+> outras 10.
+
+### O que isto significa em segurança
+
+A API exposta passou a ter socket do ClamAV. Dois limites permanecem:
+
+- **O sandbox de PDF continua fora da API.** Capa é imagem; não passa pelo
+  parser. `pdf_sandbox_required` é `False` porque `verifies_uploads` só é
+  verdadeiro em local/CI.
+- **Material de aula continua indo para o worker.** `inline_asset_worker_enabled`
+  é `environment in {local, ci}` → `False` em produção.
+
+Só a **capa** verifica dentro da requisição, e esse código já era assim
+(`apps/api/src/appsell_api/cover_routes.py:225`) — hoje ele apenas deixou de dar
+503. Tirar a capa de dentro da API é a
+[#268](https://github.com/autonom-ia/appsell/issues/268), e é trabalho de código:
+o worker não tem caminho de capa nenhum.
+
+### Validação executada
+
+- boot limpo, sem erro nos logs; handshake TLS com o Postgres passou
+- `/health/ready` → `{"status":"ok","database":true,"storage":true,"pdf_sandbox":true}`
+  (esse `storage:true` já cobre `probe_availability`, `assert_runtime_controls` e
+  `scanner.healthy()`)
+- `PING` no `clamd.sock` de dentro do contêiner → `PONG`
+- round-trip real na produção: presign → `PUT` no MinIO **HTTP 200** → `HEAD` →
+  scan de imagem limpa `True` → scan do EICAR `False` → objeto de teste apagado
+- `https://sell.autonomia.site` HTTP 200
+
+### Rollback deste release
+
+```sh
+ssh claudete 'bash /home/claudete/rollback_api.sh'
+```
+
+Desfaz imagem, as sete variáveis, o mount e o `ssl=require`. Backup íntegro da
+spec anterior em
+`/home/claudete/backups/appsell/appsell_api_spec_20260826T173516Z.json`
+(20 variáveis, 0 mounts). ETA ~40 s. Não há migration para reverter.
 
 ### Releases anteriores
 
