@@ -152,11 +152,11 @@ test("A4.6 — o catálogo cheio mantém capa e contagem de alunos em todos os c
   await expect(page.locator("article.draft-card")).toHaveCount(50);
   await expect(page.locator("article.draft-card .draft-card-art")).toHaveCount(50);
   await expect(page.locator("article.draft-card .draft-card-cover")).toHaveCount(25);
-  await expect(page.locator("article.draft-card .draft-card-students")).toHaveCount(50);
+  await expect(page.locator("article.draft-card .draft-card-count")).toHaveCount(50);
 
   const first = page.locator("article.draft-card").first();
-  await expect(first.locator(".draft-card-students")).toHaveText("0 alunos");
-  await expect(page.locator("article.draft-card").nth(1).locator(".draft-card-students"))
+  await expect(first.locator(".draft-card-count")).toHaveText("0 alunos");
+  await expect(page.locator("article.draft-card").nth(1).locator(".draft-card-count"))
     .toHaveText("1 aluno");
 });
 

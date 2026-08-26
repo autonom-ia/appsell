@@ -274,7 +274,10 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .product-draft-form { display: grid; gap: 15px; }
 .product-create-fields { min-width: 0; margin: 0; padding: 0; display: grid; gap: 15px; border: 0; }
 .product-create-fields:disabled { opacity: .78; }
-.form-heading h2, .draft-list-heading h2 { margin: 4px 0 8px; font-size: clamp(1.6rem,6vw,2.25rem); }
+.form-heading h2 { margin: 4px 0 8px; font-size: clamp(1.6rem,6vw,2.25rem); }
+/* Rótulo de seção, não manchete: em 2.25rem ele empatava com o "Produtos" do
+   cabeçalho da página e a tela ficava com dois títulos disputando. */
+.draft-list-heading h2 { margin: 4px 0 8px; font-size: 1.05rem; }
 .form-heading > p:last-child { margin: 0; color: var(--text); font-size: .85rem; line-height: 1.55; }
 .product-draft-form label { min-width: 0; display: grid; gap: 7px; color: var(--ink); font-size: .76rem; font-weight: 800; }
 .product-draft-form label > span { color: var(--soft); font-size: .7rem; font-weight: 600; line-height: 1.45; }
@@ -293,8 +296,11 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .draft-card { min-width: 0; padding: 17px; border: 1px solid var(--border); border-radius: 16px; background: linear-gradient(145deg,#fff,#f8fbff); }
 .draft-card { content-visibility: auto; contain-intrinsic-size: auto 260px; }
 .draft-card + .draft-card { margin-top: 12px; }
-.draft-card > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.draft-card > div > span:last-child { min-width: 0; overflow: hidden; color: var(--soft); font-size: .68rem; text-overflow: ellipsis; white-space: nowrap; }
+/* `.draft-card > div` e `.draft-card > div > span:last-child` existiam para a
+   linha de selos da marcação antiga. Com o cartão em duas colunas, elas
+   passariam a acertar a miniatura e o corpo — virando `display: flex` por cima
+   da grade e pintando de cinza o que não devem. A linha de selos tem classe
+   própria agora, `.draft-card-badges`. */
 .draft-card h3 { margin: 14px 0 7px; font-size: 1.2rem; overflow-wrap: anywhere; }
 .draft-card > p { margin-bottom: 16px; color: var(--text); font-size: .82rem; line-height: 1.55; overflow-wrap: anywhere; }
 .draft-card footer { padding-top: 13px; display: grid; gap: 4px; border-top: 1px solid var(--border); }
@@ -544,7 +550,11 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
   .app-main { width: min(1120px, calc(100% - 64px)); padding: 56px 0 72px; }
   .product-grid-wide { grid-template-columns: repeat(3,minmax(0,1fr)); }
   .product-art { height: 170px; }
-  .catalog-workspace-grid { grid-template-columns: minmax(0,1.08fr) minmax(320px,.92fr); gap: 24px; }
+  /* Uma coluna só. As duas colunas existiam para pôr o formulário de criação ao
+   lado da lista; desde a #257 o formulário desceu para depois dela e só aparece
+   quando pedido, então a segunda coluna deixaria a lista estreita à toa e
+   penduraria o botão "Novo produto" sozinho no vazio à direita. */
+.catalog-workspace-grid { grid-template-columns: minmax(0,1fr); max-width: 860px; }
   .draft-list { position: sticky; top: 24px; }
   .product-editor { gap: 26px; }
   .editor-section-nav { grid-template-columns: repeat(5,minmax(0,1fr)); }
@@ -1194,18 +1204,14 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
   .access-link-actions { grid-template-columns: repeat(3,auto); justify-content: start; }
 }
 
-.draft-card-art { width: 100%; aspect-ratio: 16 / 7; margin: -4px 0 10px; display: flex; align-items: center; justify-content: center; border-radius: 12px; color: #fff; font-size: 1.5rem; font-weight: 700; letter-spacing: .06em; }
-/* `.draft-card > div` e `.draft-card > div > span:last-child` acertam este bloco
-   por serem mais especificas do que uma classe sozinha: as iniciais saiam
-   cinzas, com 10.88px e encostadas na esquerda, e a arte virava um retangulo
-   chapado com sujeira no canto. Estas regras existem para ganhar daquelas. */
-.draft-card > .draft-card-art { justify-content: center; }
-/* `:last-child` nao e enfeite: sem ele esta regra fica em (0,2,1) e perde para
-   a de cima, que esta em (0,2,2). Foi exatamente assim que as iniciais ficaram
-   cinzas e minusculas sem ninguem perceber. */
-.draft-card > .draft-card-art > span:last-child { color: #fff; font-size: 1.35rem; font-weight: 700; letter-spacing: .08em; opacity: .92; overflow: visible; }
+/* A arte agora vive dentro de `.draft-card-media`, que dá a ela o quadrado.
+   As regras que a disputavam por especificidade foram embora junto com a
+   marcação que as criava, então uma classe simples basta — mas as iniciais
+   continuam declaradas explicitamente, porque foi ficarem cinzas por herança
+   que passou despercebido da última vez. */
+.draft-card-art { display: flex; align-items: center; justify-content: center; border-radius: 12px; background: #eef2f7; }
+.draft-card-art > span { color: #fff; font-size: 1.35rem; font-weight: 700; letter-spacing: .08em; opacity: .92; overflow: visible; }
 .draft-card-cover { object-fit: cover; background: #eef2f7; }
-.draft-card-students { margin: 6px 0 0; color: var(--soft); font-size: .78rem; }
 .draft-card-access { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; margin: 8px 0 0; }
 .access-badge { padding: .15em .6em; border-radius: 999px; font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; }
 .access-badge.access-paid { background: rgba(8,122,75,.12); color: #0a6b43; }
@@ -1268,3 +1274,33 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 @media (min-width: 769px) {
   .access-link-submit { grid-column: 1 / -1; grid-template-columns: auto minmax(0,1fr); align-items: center; gap: 12px; }
 }
+
+/* Cartão do produto (#257): miniatura quadrada à esquerda, conteúdo à direita.
+   Antes eram nove blocos empilhados com a capa em 16:7 comendo quase um terço
+   da tela, e o número de alunos — o dado que mais importa — era o menor texto
+   do cartão, em cinza. */
+.draft-card { grid-template-columns: 104px minmax(0,1fr); gap: 16px; display: grid; align-items: start; padding: 16px; }
+.draft-card-media { width: 104px; height: 104px; overflow: hidden; border-radius: 14px; }
+.draft-card-media .draft-card-art { width: 100%; height: 100%; margin: 0; border-radius: 0; }
+.draft-card-body { min-width: 0; display: grid; gap: 8px; align-content: start; }
+.draft-card-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.draft-card-price { color: var(--ink); font-size: .85rem; font-variant-numeric: tabular-nums; }
+.draft-card h3 { margin: 0; font-size: 1.15rem; line-height: 1.25; overflow-wrap: anywhere; }
+.draft-card-meta { margin: 0; color: var(--soft); font-size: .78rem; line-height: 1.45; overflow-wrap: anywhere; }
+/* Corpo grande e cor de texto cheia: é o número que o vendedor procura. */
+.draft-card-count { margin: 2px 0 0; color: var(--ink); font-size: 1.35rem; font-weight: 750; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.draft-card-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.draft-card-actions .draft-card-action, .draft-card-actions .draft-card-share { width: auto; min-height: 44px; margin: 0; padding: 0 18px; justify-content: center; }
+.draft-create { margin-top: 20px; display: grid; gap: 16px; justify-items: start; }
+.draft-create > .product-draft-form { width: 100%; }
+@media (max-width: 520px) {
+  /* Abaixo disso a miniatura e o texto não cabem lado a lado sem espremer o
+     título a duas palavras por linha. */
+  .draft-card { grid-template-columns: minmax(0,1fr); }
+  .draft-card-media { width: 88px; height: 88px; }
+}
+
+/* "Abrir" é a ação principal do cartão e estava com menos peso visual que
+   "Compartilhar", que é a secundária. */
+.draft-card-actions .draft-card-action { border-color: transparent; background: var(--blue); color: #fff; font-weight: 700; }
+.draft-card-actions .draft-card-action:hover { border-color: transparent; background: #0a49a0; }

@@ -519,7 +519,7 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     await adminPage.getByRole("button", { name: "Criar produto" }).click();
     const createdCard = adminPage.locator("article.draft-card").filter({ hasText: productTitle });
     await pwExpect(createdCard.getByRole("heading", { name: productTitle })).toBeVisible();
-    await createdCard.getByRole("link", { name: /Continuar edição/ }).click();
+    await createdCard.getByRole("link", { name: "Abrir" }).click();
     await pwExpect(adminPage.getByRole("heading", { level: 1, name: productTitle })).toBeVisible({
       timeout: 20_000
     });
