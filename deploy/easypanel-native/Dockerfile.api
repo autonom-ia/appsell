@@ -17,10 +17,16 @@ ENV PATH="/opt/app/apps/api/.venv/bin:${PATH}" \
     PYTHONPATH="/opt/app/apps/api/src" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
+# poppler-utils e ffmpeg existem aqui porque o asset-worker roda ESTA imagem e
+# invoca pdftoppm e ffmpeg como processos. Sem eles o worker pegava o trabalho,
+# falhava com PdfDerivativeUnavailable, engolia o erro num warning e repetia ate
+# o lease expirar — para sempre. Material de aula ficou impossivel de 22/08 a
+# 26/08/2026 por causa disto, sem nenhum erro visivel.
 RUN groupadd --system --gid 10001 appsell \
     && useradd --system --uid 10001 --gid 10001 --home /opt/app appsell \
     && apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates fonts-dejavu-core \
+    && apt-get install --yes --no-install-recommends \
+        ca-certificates ffmpeg fonts-dejavu-core poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /opt/app
 COPY --from=builder /opt/app/apps/api/.venv apps/api/.venv
