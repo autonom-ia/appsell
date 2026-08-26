@@ -469,7 +469,7 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   await expect(page.getByLabel("Descrição no checkout")).toHaveValue("Oferta sem cobrança conectada.");
   await expect(page.getByLabel("Preço (R$)")).toHaveValue("47");
   await expect(page.getByText("Preço salvo; catálogo pronto para publicar", { exact: true })).toBeVisible();
-  await expect(page.getByText("A alteração do acesso é feita na etapa Publicar, depois que o rascunho estiver salvo.", { exact: true })).toBeVisible();
+  await expect(page.getByText("A alteração do acesso é feita na etapa Distribuição, depois que o rascunho estiver salvo.", { exact: true })).toBeVisible();
   // A prévia deixou de ser etapa de navegação na Onda 3 e virou "Ver como
   // aluno", alcançável de qualquer área. O que se afirma continua igual: o
   // vendedor vê o produto como o aluno veria, e a compra não existe ali.

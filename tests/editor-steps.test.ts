@@ -56,8 +56,25 @@ describe("resumo do preço", () => {
     expect(summary).not.toContain("R$");
   });
 
+  it("vendas ativas sem preço não inventam um R$ 0,00", () => {
+    // Par que não deveria existir — a ativação exige valor maior que zero —,
+    // mas se o servidor devolver, a frase não pode anunciar um preço.
+    const summary = stepSummaries(facts({ offerStatus: "active", unitAmountMinor: 0 })).oferta;
+    expect(summary).toBe("Vendas ativas");
+    expect(summary).not.toContain("0,00");
+  });
+
+  it("preço ausente é tratado como zero, não como falha", () => {
+    expect(stepSummaries(facts({ unitAmountMinor: null })).oferta).toBe("Gratuito");
+    expect(stepSummaries(facts({ unitAmountMinor: undefined })).oferta).toBe("Gratuito");
+  });
+
   it("vendas encerradas são definitivas e aparecem como tal", () => {
     expect(stepSummaries(facts({ offerStatus: "archived" })).oferta).toBe("Vendas encerradas");
+    // Mesmo com preço guardado: encerrada não vende mais, e mostrar o valor
+    // sugeriria o contrário.
+    expect(stepSummaries(facts({ offerStatus: "archived", unitAmountMinor: 4990 })).oferta)
+      .toBe("Vendas encerradas");
   });
 });
 

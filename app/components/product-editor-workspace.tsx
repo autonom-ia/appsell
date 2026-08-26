@@ -849,7 +849,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
           // sempre, a etapa diz o que ela tem agora — "2 módulos, 5 aulas" — ou
           // o que falta nela.
           const summary = summaries[item.id] ?? item.hint;
-          return <Link key={item.id} href={`?section=${item.id}`} replace scroll={false} className={`${active ? "active " : ""}area-${filled ? "filled" : "empty"}`} aria-current={active ? "page" : undefined} onClick={(event) => requestSectionNavigation(event, item.id)}><span className="editor-step-heading"><strong>{item.label}</strong><span className="editor-step-mark" aria-hidden="true">{filled ? "●" : "○"}</span></span><span className="editor-step-summary">{summary}</span><span className="sr-only">{active ? "área aberta" : ""}</span></Link>;
+          return <Link key={item.id} href={`?section=${item.id}`} replace scroll={false} className={`${active ? "active " : ""}area-${filled ? "filled" : "empty"}`} aria-current={active ? "page" : undefined} onClick={(event) => requestSectionNavigation(event, item.id)}><span className="editor-step-heading"><strong>{item.label}</strong><span className="editor-step-mark" aria-hidden="true">{filled ? "●" : "○"}</span></span><span className="editor-step-summary">{summary}</span>{active ? <span className="sr-only">área aberta</span> : null}</Link>;
         })}
       </nav>
       {assetNavigationWarning ? <p className="form-note asset-navigation-warning" role="alert">{coverBusy ? "A capa ainda está sendo enviada. Aguarde o envio terminar antes de sair desta área." : "O arquivo ainda está sendo enviado. Aguarde ou cancele o envio antes de sair do conteúdo."}</p> : null}
@@ -919,7 +919,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
               {detail.offer.status === "draft" ? <p>{!detail.publication ? "Publique o catálogo antes de escolher o acesso. A ativação das vendas fica em Publicar." : "A decisão entre acesso gratuito e vendas com checkout fica em Publicar."}</p> : null}
               {detail.offer.status === "active" ? <p>Vendas ativas por {detail.offer.unit_amount_minor ? formatOfferPrice(detail.offer.unit_amount_minor, detail.offer.currency) : "preço não informado"}. Para editar termos ou preço, volte a rascunho em Publicar.</p> : null}
               {detail.offer.status === "archived" ? <p>Vendas encerradas. Crie um novo produto para vender novamente.</p> : null}
-              <p className="form-note" role="status">A alteração do acesso é feita na etapa Publicar, depois que o rascunho estiver salvo.</p>
+              <p className="form-note" role="status">A alteração do acesso é feita na etapa Distribuição, depois que o rascunho estiver salvo.</p>
             </section>
           </>
         ) : null}

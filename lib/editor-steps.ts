@@ -9,6 +9,9 @@
 
 import { formatOfferPrice } from "./offer-price";
 
+/** As mesmas áreas que a navegação do editor conhece. */
+export type EditorStep = "produto" | "curriculo" | "oferta" | "publicar";
+
 export interface StepFacts {
   title: string;
   slug: string;
@@ -40,7 +43,7 @@ export function publishedOnLabel(publishedAt: string | null | undefined): string
  * Cada resposta é uma frase curta e concreta. "Pendente" não serve — foi
  * exatamente o tipo de rótulo que fez a bolinha não significar nada.
  */
-export function stepSummaries(facts: StepFacts): Record<string, string> {
+export function stepSummaries(facts: StepFacts): Record<EditorStep, string> {
   return {
     produto: facts.title.trim() && facts.slug.trim()
       ? `@${facts.slug.trim()}`
@@ -56,7 +59,12 @@ export function stepSummaries(facts: StepFacts): Record<string, string> {
 function offerSummary(facts: StepFacts): string {
   const amount = facts.unitAmountMinor ?? 0;
   if (facts.offerStatus === "archived") return "Vendas encerradas";
-  if (facts.offerStatus === "active") return `Vendendo por ${formatOfferPrice(amount, facts.currency)}`;
+  // Vendas ativas sem preço não deveriam existir — a ativação exige valor
+  // maior que zero. Se o servidor devolver esse par mesmo assim, dizer
+  // "vendendo por R$ 0,00" seria inventar um preço que ninguém definiu.
+  if (facts.offerStatus === "active") {
+    return amount > 0 ? `Vendendo por ${formatOfferPrice(amount, facts.currency)}` : "Vendas ativas";
+  }
   // Rascunho com preço salvo ainda não cobra nada: dizer o valor sem dizer que
   // as vendas estão desligadas faria o vendedor pensar que já está vendendo.
   if (amount > 0) return `Gratuito · preço de ${formatOfferPrice(amount, facts.currency)} salvo`;
