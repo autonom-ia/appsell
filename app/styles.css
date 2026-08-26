@@ -328,12 +328,12 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .save-saved, .save-saved_with_changes { border-color: rgba(8,122,75,.22); background: #edf9f3; color: #07613d; }
 .form-error-summary { min-width: 0; padding: 12px 14px; display: grid; gap: 4px; border: 2px solid rgba(180,35,24,.34); border-radius: 12px; background: #fff5f4; color: #8d251d; font-size: .78rem; line-height: 1.5; }
 .form-error-summary:focus-visible { outline: 3px solid var(--bright); outline-offset: 2px; }
-.editor-section-nav { min-width: 0; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
-.editor-section-nav a { min-width: 0; min-height: 62px; padding: 10px 12px; display: flex; flex-direction: column; justify-content: center; gap: 3px; border: 1px solid var(--border); border-radius: 14px; background: rgba(255,255,255,.82); color: var(--text); }
+.editor-section-nav { min-width: 0; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; align-items: stretch; }
+.editor-section-nav a { min-width: 0; min-height: 62px; padding: 12px 14px; display: flex; flex-direction: column; justify-content: flex-start; gap: 4px; border: 1px solid var(--border); border-radius: 14px; background: rgba(255,255,255,.82); color: var(--text); }
 .editor-section-nav a strong, .editor-section-nav a span { min-width: 0; overflow-wrap: anywhere; }
 .editor-section-nav a strong { color: var(--ink); font-size: .82rem; }
 .editor-section-nav a span { font-size: .65rem; line-height: 1.35; }
-.editor-step-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.editor-step-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
 .editor-step-mark { width: 20px; min-height: 20px; display: inline-grid; place-items: center; border-radius: 50%; background: rgba(15,23,42,.08); color: var(--soft); font-size: .72rem; font-weight: 900; }
 /* Área com conteúdo x área vazia. Não é "concluída" x "pendente": nenhuma
    delas bloqueia a outra, e o que impede publicar aparece na coluna de
@@ -508,7 +508,7 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
   .editor-title-row { flex-direction: row; align-items: center; justify-content: space-between; }
   .save-indicator { grid-template-columns: minmax(0,1fr) auto; }
   .save-indicator .secondary-button { width: auto; }
-  .editor-section-nav { grid-template-columns: repeat(3,minmax(0,1fr)); }
+  .editor-section-nav { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .editor-form fieldset, .publish-panel, .curriculum-workspace { padding: 28px; }
   .curriculum-header { flex-direction: row; align-items: flex-start; justify-content: space-between; }
   .curriculum-module > header, .curriculum-lessons article > header { grid-template-columns: minmax(0,1fr) auto; align-items: start; }
@@ -557,7 +557,7 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .catalog-workspace-grid { grid-template-columns: minmax(0,1fr); max-width: 860px; }
   .draft-list { position: sticky; top: 24px; }
   .product-editor { gap: 26px; }
-  .editor-section-nav { grid-template-columns: repeat(5,minmax(0,1fr)); }
+  .editor-section-nav { grid-template-columns: repeat(4,minmax(0,1fr)); }
   .editor-save-bar { bottom: 18px; }
 }
 
