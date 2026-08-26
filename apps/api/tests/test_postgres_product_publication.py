@@ -710,7 +710,7 @@ def test_schema_rls_and_runtime_privileges_are_minimal() -> None:
         ("publication", "appsell_owner", True, True),
     ]
     assert privileges == (
-        "0039_asset_media_catalogue",
+        "0040_asset_media_checks",
         True,
         False,
         True,
@@ -1320,7 +1320,7 @@ def test_upgrade_from_0003_preserves_existing_draft() -> None:
                 """,
                 (seller_id, product_id),
             ).fetchone() == (
-                "0039_asset_media_catalogue",
+                "0040_asset_media_checks",
                 "draft",
                 None,
                 True,
@@ -1509,7 +1509,7 @@ def test_offer_status_migration_preserves_history_and_allows_clean_downgrade() -
                 """,
                 (offer_id,),
             ).fetchone() == (
-                "0039_asset_media_catalogue",
+                "0040_asset_media_checks",
                 "archived",
                 3,
                 2,
@@ -1537,7 +1537,7 @@ def test_offer_status_migration_preserves_history_and_allows_clean_downgrade() -
                 from offer where id = %s
                 """,
                 (offer_id,),
-            ).fetchone() == ("0039_asset_media_catalogue", "draft", 3, 2, True)
+            ).fetchone() == ("0040_asset_media_checks", "draft", 3, 2, True)
 
         run_migration(clean_database, "upgrade", "head")
         run_migration(clean_database, "downgrade", "0018_offer_pricing")

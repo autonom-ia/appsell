@@ -136,3 +136,83 @@ def test_o_intent_nao_repete_mais_o_catalogo() -> None:
     assert not re.search(r"(?<!\d)10485760(?!\d)", fonte), (
         "a regra do PDF voltou a ser transcrita dentro de create_asset_upload_intent"
     )
+
+
+def test_nenhuma_constraint_transcreve_o_catalogo() -> None:
+    """CHECK CONSTRAINT também é lugar onde o catálogo pode se esconder.
+
+    Foi exatamente por aqui que o defeito escapou: a `0039` limpou as funções, e
+    três CHECK CONSTRAINTS continuavam com a tabela transcrita. Constraint não é
+    função, então nenhuma varredura em `pg_proc` as via.
+
+    Elas mordiam em três momentos da mesma jornada — pedir o envio, confirmar,
+    publicar —, de modo que corrigir uma só empurraria o vendedor para a
+    seguinte.
+    """
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        rows = connection.execute(
+            "select conrelid::regclass::text, conname, pg_get_constraintdef(oid) "
+            "from pg_constraint where contype='c'"
+        ).fetchall()
+
+    limites = {spec.max_bytes for spec in SUPPORTED_MEDIA.values()}
+    culpadas = []
+    for tabela, nome, definicao in rows:
+        texto = str(definicao)
+        # Só constraints que decidem por tipo de mídia. A capa tem teto próprio
+        # (5 MiB) em outras constraints, e limpeza tem um teto genérico: são
+        # outros conceitos, e varrer por número solto os acusaria à toa.
+        if "media_type" not in texto:
+            continue
+        # A capa do produto tem catálogo próprio (5 MiB), que por coincidência
+        # é o mesmo teto de CSV e JSON. É outro conceito e não pertence a esta
+        # varredura.
+        if "cover" in texto or "cover" in nome:
+            continue
+        for limite in limites:
+            # Fronteira de dígito: sem ela, 10485760 casa dentro de 104857600 e
+            # o resultado engana.
+            if re.search(rf"(?<!\d){limite}(?!\d)", texto):
+                culpadas.append(f"{tabela}.{nome} carrega o literal {limite}")
+    assert not culpadas, "constraints com o catálogo transcrito: " + "; ".join(culpadas)
+
+
+def test_as_tres_constraints_derivam_do_catalogo() -> None:
+    """Não basta o literal sumir: elas têm de consultar a fonte única."""
+    assert ADMIN_URL
+    esperado = {
+        "asset_upload_media_contract_check": "asset_media_contract_ok",
+        "asset_blob_media_contract_check": "asset_media_max_bytes",
+        "learning_asset_media_contract_check": "asset_media_max_bytes",
+    }
+    with psycopg.connect(ADMIN_URL) as connection:
+        for nome, funcao in esperado.items():
+            row = connection.execute(
+                "select pg_get_constraintdef(oid) from pg_constraint where conname=%s",
+                (nome,),
+            ).fetchone()
+            assert row is not None, f"{nome} não existe"
+            assert funcao in str(row[0]), f"{nome} não deriva do catálogo: esperava chamar {funcao}"
+
+
+def test_a_constraint_do_upload_aceita_o_playbook_e_recusa_o_excesso() -> None:
+    """A borda medida na própria tabela, não só na função.
+
+    A função podia estar certa e a tabela continuar recusando — foi o que
+    aconteceu por três rodadas. Este teste escreve de verdade, dentro de uma
+    transação desfeita no fim.
+    """
+    assert ADMIN_URL
+    pdf_max = SUPPORTED_MEDIA["application/pdf"].max_bytes
+    nome = "Playbook_HUB2YOU_02_Gerador_Cotacoes_Comparativas_PROVA_v0.6 (1).pdf"
+    with psycopg.connect(ADMIN_URL) as connection:
+        aceita = connection.execute(
+            "select app_private.asset_media_contract_ok('application/pdf',%s,%s)",
+            (nome, 12_222_444),
+        ).fetchone()
+        no_teto = connection.execute(
+            "select app_private.asset_media_max_bytes('application/pdf')"
+        ).fetchone()
+    assert aceita is not None and aceita[0] is True
+    assert no_teto is not None and int(no_teto[0]) == pdf_max

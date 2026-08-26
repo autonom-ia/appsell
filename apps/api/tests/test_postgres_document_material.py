@@ -99,16 +99,28 @@ def test_the_contract_refuses_what_it_must(
     assert contract(media_type, file_name, byte_size) is False, why
 
 
-def test_the_upload_and_blob_constraints_quote_the_document_formats() -> None:
+def test_the_upload_and_blob_constraints_derive_from_the_contract() -> None:
     """The database refuses a document the API would accept, or the reverse, if
-    these two drift apart from the contract function."""
+    these two drift apart from the contract function.
+
+    A intencao e a mesma de antes; o meio mudou. Ate a `0040` estas constraints
+    transcreviam o catalogo, e o teste conferia se os formatos apareciam no
+    texto. Transcrever era justamente o defeito: em 26/08/2026 o teto do PDF
+    subiu em todas as camadas e estas duas ficaram para tras, recusando o envio
+    com `23514` que a tela mostrava como "nao foi possivel preparar o arquivo".
+
+    Agora elas derivam, entao o que se confere e a derivacao — e o catalogo do
+    banco, que e quem decide.
+    """
     upload = constraint("app_private.asset_upload", "asset_upload_media_contract_check")
     blob = constraint("public.asset_blob", "asset_blob_media_contract_check")
+    assert "asset_media_contract_ok" in upload
+    assert "asset_media_max_bytes" in blob
+
     for media_type in (DOCX, XLSX, PPTX, "text/csv", "application/json"):
-        assert media_type in upload
-        assert media_type in blob
-    assert DOCM not in upload
-    assert DOCM not in blob
+        assert contract(media_type, f"a.{SUPPORTED_MEDIA[media_type].extension}", 1) is True
+    # DOCM continua fora do catalogo, e por isso fora das duas constraints.
+    assert contract(DOCM, "macro.docm", 1) is False
 
 
 def test_download_policy_reaches_documents_and_stops_at_macros() -> None:
