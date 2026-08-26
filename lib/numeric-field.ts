@@ -41,7 +41,11 @@ const SEAT_LIMIT_TEXT = `${SEAT_RANGE.min} a ${SEAT_RANGE.max.toLocaleString("pt
 
 // O texto de ajuda fica sempre visível: o limite é informação do campo, não
 // castigo por errar.
-export const SEAT_HELP = `De ${SEAT_LIMIT_TEXT} vagas. Deixe vazio para ilimitado.`;
+// Não diz mais "deixe vazio para ilimitado": desde a #256 quem quer turma sem
+// teto escolhe o chip "Sem limite", e este campo só existe depois de escolher
+// "Outro número". A instrução antiga passou a apontar para um caminho que não
+// existe mais, e instrução falsa é pior do que instrução nenhuma.
+export const SEAT_HELP = `De ${SEAT_LIMIT_TEXT} vagas.`;
 
 export function seatRangeMessage(reading: SeatReading): string | null {
   if (reading.kind === "not_a_number") return `Use só números, de ${SEAT_LIMIT_TEXT}.`;
