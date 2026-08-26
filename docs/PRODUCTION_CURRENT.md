@@ -15,10 +15,10 @@
 |---|---|
 | Domínio | `https://sell.autonomia.site` |
 | Ambiente | VPS EasyPanel nativo, Docker Swarm |
-| SHA do **web** | `e112c2c` |
+| SHA do **web** | `b09c690` |
 | SHA do **api** | `e112c2c` — subiu em 2026-08-26, ver abaixo |
 | SHA do **asset-worker** | `4cbdcf7` — **não se moveu** |
-| Imagens | `web:e112c2c`, `api:e112c2c`, `asset-worker` em `api:4cbdcf7` |
+| Imagens | `web:b09c690`, `api:e112c2c`, `asset-worker` em `api:4cbdcf7` |
 | Banco | head `0038_player_hides_materials` — **sem migration neste release** |
 | Web health | `{"status":"ok","redis":true,"api":true,"storage_upload":true}` |
 | API health | `{"status":"ok","database":true,"storage":true,"pdf_sandbox":true}` |
@@ -129,6 +129,34 @@ Desfaz imagem, as sete variáveis, o mount e o `ssl=require`. Backup íntegro da
 spec anterior em
 `/home/claudete/backups/appsell/appsell_api_spec_20260826T173516Z.json`
 (20 variáveis, 0 mounts). ETA ~40 s. Não há migration para reverter.
+
+### Release `b09c690` — a moldura da capa (2026-08-26, fim do dia)
+
+Só `web`. A primeira capa real subida depois da #270 saiu esticada: um banner de
+1683×954 desenhava um quadro de **200×954**.
+
+Causa: os atributos `width`/`height` do `<img>` viram presentational hints de
+CSS. O `.cover-image` sobrescrevia a largura (`200px`) mas não declarava altura,
+então o hint de `954px` sobrevivia — e com as duas dimensões definidas, o
+`aspect-ratio: 16 / 9` é ignorado.
+
+**Regra que fica:** quando a folha manda na largura de uma imagem com atributos,
+precisa mandar na altura também. O `.draft-card-cover` passa os mesmos atributos
+e não tem o defeito, porque já declara `height: 100%`.
+
+Nenhum teste pegou porque o fixture do e2e usa uma capa de 64×64 — com o
+defeito, 200×64 não chama atenção — e nenhuma asserção media o quadro
+renderizado. O teste novo usa as dimensões reais e mede: falhava com `954`,
+passa com `112.5`.
+
+Rollback:
+
+```sh
+ssh claudete 'sudo docker service update --image easypanel/sell-autonomia/web:e112c2c sell-autonomia_web'
+```
+
+Issue [#272](https://github.com/autonom-ia/appsell/issues/272), PR
+[#273](https://github.com/autonom-ia/appsell/pull/273).
 
 ### Releases anteriores
 
