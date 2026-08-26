@@ -1306,3 +1306,9 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .draft-card-actions .draft-card-action:hover { border-color: transparent; background: #0a49a0; }
 .draft-card-fallback { margin: 8px 0 0; color: var(--text); font-size: .78rem; line-height: 1.5; overflow-wrap: anywhere; }
 .draft-card-fallback code { padding: .1em .35em; border-radius: 6px; background: rgba(59,130,246,.1); font-size: .95em; }
+
+/* O resumo de cada etapa (#258). Sobe de .65rem para .74rem porque deixou de
+   ser uma dica decorativa e passou a ser a informação da etapa: quantos
+   módulos existem, se está no ar, o que falta. */
+.editor-section-nav a .editor-step-summary { color: var(--text); font-size: .74rem; line-height: 1.4; }
+.editor-section-nav a.active .editor-step-summary { color: rgba(255,255,255,.86); }

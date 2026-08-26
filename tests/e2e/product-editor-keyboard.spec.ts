@@ -132,7 +132,7 @@ test("percorre as áreas e publica somente com o teclado", async ({ page }) => {
   await expect(areaNav.getByRole("link")).toHaveCount(4);
 
   await page.locator("body").click({ position: { x: 1, y: 1 } });
-  const onArea = await tabTo(page, /Publicar/);
+  const onArea = await tabTo(page, /Distribuição/);
   expect(onArea.tag).toBe("a");
   expect(onArea.visible).toBe(true);
 
