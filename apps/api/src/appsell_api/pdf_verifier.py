@@ -17,7 +17,8 @@ from typing import BinaryIO
 import httpx
 import pikepdf
 
-from .asset_media import PDF_MEDIA_TYPE, max_bytes as _catalogue_max_bytes
+from .asset_media import PDF_MEDIA_TYPE
+from .asset_media import max_bytes as _catalogue_max_bytes
 
 # Derivado do catalogo, nao repetido. Este numero ja viveu em quatro
 # arquivos ao mesmo tempo, e duas copias podiam divergir sem nada acusar.
