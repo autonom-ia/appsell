@@ -2,6 +2,15 @@
 
 import { KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
 
+import {
+  SEAT_HELP,
+  SEAT_RANGE,
+  isRejectedNumericKey,
+  keepDigits,
+  readSeatInput,
+  seatRangeMessage
+} from "@/lib/numeric-field";
+
 import { AccessibleDialog } from "./accessible-dialog";
 
 interface AccessLink {
@@ -60,8 +69,18 @@ export function AccessLinksPanel({
   const [label, setLabel] = useState("");
   const [maxUses, setMaxUses] = useState("");
   const [expiresAt, setExpiresAt] = useState("");
+  // Só vira verdadeiro quando a pessoa aciona o botão sem nome preenchido. O
+  // formulário não abre reclamando de um campo que ninguém tentou usar ainda.
+  const [missingLabel, setMissingLabel] = useState(false);
+
+  // Derivado a cada render: o limite de vagas é conferido enquanto se digita,
+  // não no envio.
+  const seatMessage = seatRangeMessage(readSeatInput(maxUses));
+  const createBlocked = label.trim().length === 0 || seatMessage !== null;
 
   const listHeading = useRef<HTMLHeadingElement>(null);
+  const labelInput = useRef<HTMLInputElement>(null);
+  const seatsInput = useRef<HTMLInputElement>(null);
   const revokeCancel = useRef<HTMLButtonElement>(null);
   // One key per pending mutation, held until the server confirms. A retry after a
   // dropped connection then replays the same operation instead of minting a
@@ -151,7 +170,19 @@ export function AccessLinksPanel({
   }
 
   async function submit() {
-    if (actionState === "working" || label.trim().length === 0) return;
+    if (actionState === "working") return;
+    // O botão está acionável de propósito quando falta preencher algo. Aqui é
+    // onde ele diz o que falta e leva o foco até lá, em vez de não fazer nada.
+    if (createBlocked) {
+      if (label.trim().length === 0) {
+        setMissingLabel(true);
+        labelInput.current?.focus();
+      } else {
+        seatsInput.current?.focus();
+      }
+      return;
+    }
+    setMissingLabel(false);
     createKey.current ??= crypto.randomUUID();
     setActionState("working");
     setInvalidField("");
@@ -306,46 +337,94 @@ export function AccessLinksPanel({
 
       <div className="access-link-form" onKeyDown={createOnEnter}>
         <fieldset aria-label="Novo link de acesso" disabled={actionState === "working"}>
-          <label>
-            Nome do link
+          {/*
+            Rótulo ligado por `htmlFor`/`id`, e ajuda e erro FORA do rótulo. Com
+            os textos dentro dele, o nome acessível do campo viraria "Vagas De 1
+            a 100.000 vagas…" — o leitor de tela leria a ajuda como se fosse o
+            nome do campo. `aria-describedby` é o que os liga sem poluir o nome.
+          */}
+          <div className="access-link-field">
+            <label htmlFor="access-link-label">Nome do link</label>
             <input
+              id="access-link-label"
+              ref={labelInput}
               value={label}
-              onChange={(event) => setLabel(event.target.value)}
+              onChange={(event) => { setLabel(event.target.value); setMissingLabel(false); }}
               maxLength={80}
               autoComplete="off"
               placeholder="Ex.: Turma Royalty Seguros"
-              aria-invalid={invalidField === "label"}
+              aria-required="true"
+              aria-invalid={invalidField === "label" || missingLabel}
+              aria-describedby={missingLabel ? "access-link-label-required" : undefined}
             />
-          </label>
-          <label>
-            Vagas
+            {missingLabel ? (
+              <span id="access-link-label-required" className="form-error" role="alert">
+                Dê um nome ao link para conseguir criá-lo.
+              </span>
+            ) : null}
+          </div>
+          <div className="access-link-field">
+            <label htmlFor="access-link-seats">Vagas</label>
             <input
+              id="access-link-seats"
+              ref={seatsInput}
+              type="number"
               value={maxUses}
-              onChange={(event) => setMaxUses(event.target.value)}
+              onChange={(event) => setMaxUses(keepDigits(event.target.value))}
+              // O campo recusa a tecla impossível em vez de aceitar e reclamar
+              // depois: `type="number"` deixaria passar "e", "+" e "-".
+              onKeyDown={(event) => { if (isRejectedNumericKey(event.key)) event.preventDefault(); }}
+              // Sem isto, rolar a página sobre o campo focado altera as vagas.
+              onWheel={(event) => event.currentTarget.blur()}
+              min={SEAT_RANGE.min}
+              max={SEAT_RANGE.max}
+              step={1}
               inputMode="numeric"
               autoComplete="off"
-              placeholder="Deixe vazio para ilimitado"
-              aria-invalid={invalidField === "max_uses"}
+              placeholder="Ilimitado"
+              aria-invalid={invalidField === "max_uses" || seatMessage !== null}
+              aria-describedby={seatMessage ? "access-link-seats-error" : "access-link-seats-help"}
             />
-          </label>
-          <label>
-            Validade
+            {/* O erro toma o lugar da ajuda em vez de se empilhar sob ela: as
+                duas dizem o mesmo limite, e mostrar as duas era repetir a
+                mesma frase duas vezes logo abaixo do campo. */}
+            {seatMessage ? (
+              <span id="access-link-seats-error" className="form-error" role="alert">{seatMessage}</span>
+            ) : (
+              <span id="access-link-seats-help" className="field-help">{SEAT_HELP}</span>
+            )}
+          </div>
+          <div className="access-link-field">
+            <label htmlFor="access-link-expires">Validade</label>
             <input
+              id="access-link-expires"
               type="datetime-local"
               value={expiresAt}
               onChange={(event) => setExpiresAt(event.target.value)}
               autoComplete="off"
               aria-invalid={invalidField === "expires_at"}
             />
-          </label>
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={label.trim().length === 0}
-            onClick={() => void submit()}
-          >
-            {actionState === "working" ? "Criando…" : "Criar link"}
-          </button>
+          </div>
+          {/*
+            O botão não é desligado por campo vazio, nem com `disabled` nem com
+            `aria-disabled` — ambos anunciam "indisponível" e tiram do vendedor
+            a única forma de descobrir o que falta. Ele aciona sempre: quando
+            algo falta, `submit` diz o que é e leva o foco até lá. Desligado, o
+            botão fica reservado ao que é mesmo momentâneo (o envio em curso),
+            e aí o próprio rótulo vira "Criando…".
+          */}
+          <div className="access-link-field">
+            {/* Espaço inquebrável: um espaço comum colapsaria e o espaçador
+                ficaria sem a altura de um rótulo. */}
+            <span className="access-link-label-spacer" aria-hidden="true">{"\u00a0"}</span>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => void submit()}
+            >
+              {actionState === "working" ? "Criando…" : "Criar link"}
+            </button>
+          </div>
         </fieldset>
         <div className="form-feedback" aria-live="polite" aria-atomic="true">
           {actionState === "invalid" ? (

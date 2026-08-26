@@ -349,6 +349,11 @@ export function CurriculumWorkspace({
       <p className="curriculum-intro">Organize aulas de texto e PDFs verificados em uma sequência clara. Vídeos, checkout e acesso pago ainda não estão disponíveis.</p>
       {archived ? <p className="form-note" role="status">Produto arquivado: currículo disponível somente para leitura.</p> : null}
       {assetDirty ? <p className="form-note" role="status">Conclua ou cancele o envio do PDF antes de alterar a estrutura do currículo.</p> : null}
+      {/* Os dois tetos desligam botões de adicionar. O contador do cabeçalho
+          mostra os módulos, mas nada mostrava as aulas do curso inteiro — e um
+          botão morto sem motivo na tela é o defeito que a #254 fecha. */}
+      {usage.modules_total >= limits.modules_per_course ? <p className="form-note" role="status">Você chegou ao limite de {limits.modules_per_course} módulos neste curso. Remova um módulo para adicionar outro.</p> : null}
+      {usage.lessons_total >= limits.lessons_per_course ? <p className="form-note" role="status">Você chegou ao limite de {limits.lessons_per_course} aulas neste curso. Remova uma aula para adicionar outra.</p> : null}
       <div className={`curriculum-feedback state-${mutationState}`} role="status" aria-live="polite" aria-atomic="true" data-testid="curriculum-live">
         {mutationState === "idle" ? message || mutationMessage(mutationState) : mutationMessage(mutationState)}
         {mutationState === "conflict" ? <button className="secondary-button" type="button" onClick={() => void load()}>Recarregar currículo</button> : null}

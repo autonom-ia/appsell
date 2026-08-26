@@ -58,8 +58,14 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .primary-button[aria-disabled="true"] { opacity: .62; box-shadow: none; cursor: not-allowed; transform: none; }
 .secondary-button { display: inline-flex; min-width: 0; max-width: 100%; min-height: 48px; align-items: center; justify-content: center; padding: 0 20px; border: 1px solid var(--border); border-radius: 15px; background: white; color: var(--blue); font-weight: 750; cursor: pointer; text-align: center; white-space: normal; overflow-wrap: anywhere; }
 .danger-button { display: inline-flex; min-width: 0; max-width: 100%; min-height: 48px; align-items: center; justify-content: center; padding: 0 20px; border: 1px solid rgba(180,35,24,.25); border-radius: 15px; background: #fff1f0; color: #9f241b; font-weight: 750; cursor: pointer; text-align: center; white-space: normal; overflow-wrap: anywhere; }
-.secondary-button:hover { border-color: rgba(30,58,138,.4); background: #f8fbff; }
-.danger-button:hover { border-color: rgba(180,35,24,.45); background: #ffe9e7; }
+.secondary-button:hover:not(:disabled):not([aria-disabled="true"]) { border-color: rgba(30,58,138,.4); background: #f8fbff; }
+.danger-button:hover:not(:disabled):not([aria-disabled="true"]) { border-color: rgba(180,35,24,.45); background: #ffe9e7; }
+/* Um botão desligado precisa parecer desligado. Sem estas regras, os botões
+   secundário e de perigo ficavam com opacity 1 e cursor pointer enquanto
+   `disabled` — indistinguíveis de um botão vivo que não responde ao clique.
+   Só `.primary-button` tinha o tratamento. */
+.secondary-button:disabled, .danger-button:disabled { opacity: .55; cursor: not-allowed; }
+.secondary-button[aria-disabled="true"], .danger-button[aria-disabled="true"] { opacity: .62; cursor: not-allowed; }
 .blocked-action { max-width: 260px; }
 .blocked-action p { margin: 8px 0 0; color: var(--soft); font-size: .72rem; line-height: 1.45; }
 
@@ -1136,8 +1142,19 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .access-link-issued code { display: block; padding: 9px 11px; border-radius: 10px; background: #fff; border: 1px solid rgba(8,122,75,.2); color: var(--ink); font-size: .74rem; overflow-wrap: anywhere; }
 .access-link-form { min-width: 0; max-width: 100%; }
 .access-link-form fieldset { min-width: 0; max-width: 100%; margin: 0; padding: 0; border: 0; display: grid; gap: 10px; }
-.access-link-form label { min-width: 0; max-width: 100%; display: grid; gap: 6px; color: var(--ink); font-size: .74rem; font-weight: 800; }
+/* A célula do formulário empilha rótulo, campo, ajuda e erro. O rótulo deixou
+   de envolver o campo para que a ajuda não entre no nome acessível dele. */
+.access-link-form .access-link-field { min-width: 0; max-width: 100%; display: grid; gap: 6px; align-content: start; }
+.access-link-form .access-link-field > label { color: var(--ink); font-size: .74rem; font-weight: 800; }
 .access-link-form input { width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box; min-height: 48px; padding: 11px 13px; border: 1px solid var(--border); border-radius: 12px; background: #fff; color: var(--ink); font-size: 1rem; }
+/* Sem as setinhas do `type="number"`: numa faixa de 1 a 100.000 elas não levam
+   a lugar nenhum e são o mesmo acidente que a rolagem sobre o campo. */
+.access-link-form input[type="number"] { appearance: textfield; -moz-appearance: textfield; }
+.access-link-form input[type="number"]::-webkit-outer-spin-button,
+.access-link-form input[type="number"]::-webkit-inner-spin-button { appearance: none; -webkit-appearance: none; margin: 0; }
+/* O espaçador só existe na fila de quatro colunas; empilhado, ele seria uma
+   linha em branco entre a validade e o botão. */
+.access-link-form .access-link-label-spacer { display: none; }
 .access-link-form input:focus-visible { outline: 3px solid var(--bright); outline-offset: 2px; }
 .access-link-card { min-width: 0; max-width: 100%; padding: 12px; display: grid; gap: 8px; border: 1px solid var(--border); border-radius: 16px; background: #fbfdff; }
 .access-link-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
@@ -1165,7 +1182,14 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 
 @media (min-width: 769px) {
   .access-links-panel { padding: 28px; }
-  .access-link-form fieldset { grid-template-columns: minmax(0,2fr) minmax(0,1fr) minmax(0,1.2fr) auto; align-items: end; }
+  /* `align-items: start`, não `end`. Alinhado pelo rodapé, qualquer ajuda ou
+     erro que aparecesse numa coluna empurrava as outras para baixo: a fila
+     inteira dançava a cada tecla. Alinhado pelo topo, cada coluna cresce para
+     baixo sozinha e os campos ficam parados. */
+  .access-link-form fieldset { grid-template-columns: minmax(0,2fr) minmax(0,1fr) minmax(0,1.2fr) auto; align-items: start; }
+  /* O espaçador ocupa a linha do rótulo para o botão descer até a linha dos
+     campos. Sem ele, alinhado pelo topo, o botão ficaria acima deles. */
+  .access-link-form .access-link-label-spacer { display: block; font-size: .74rem; font-weight: 800; }
   .access-link-form .secondary-button { min-height: 48px; }
   .access-link-issued { grid-template-columns: minmax(0,1fr) auto; align-items: center; }
   .access-link-actions { grid-template-columns: repeat(3,auto); justify-content: start; }
