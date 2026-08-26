@@ -163,7 +163,7 @@ function RealDashboard({ catalog }: { catalog: CatalogState }) {
           </section>
           {ready.sellers.length > 1 ? <p className="form-note">Mostrando {ready.sellers[0].display_name}. Gerencie as outras lojas em Produtos.</p> : null}
           {visibleDrafts.length ? (
-            <div className="draft-list">
+            <div className="draft-list draft-list-bare">
               {visibleDrafts.map((draft) => (
                 /* Mesmo objeto, mesmo cartão. A Visão geral tinha uma cópia da
                    marcação antiga do catálogo, então a #257 a teria quebrado em

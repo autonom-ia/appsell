@@ -1312,3 +1312,21 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
    módulos existem, se está no ar, o que falta. */
 .editor-section-nav a .editor-step-summary { color: var(--text); font-size: .74rem; line-height: 1.4; }
 .editor-section-nav a.active .editor-step-summary { color: rgba(255,255,255,.86); }
+
+/* Visão geral: a lista de produtos não é um cartão. Ela só segura cartões, e
+   pintar superfície nos dois níveis criava caixa dentro de caixa — na página de
+   catálogo a superfície se justifica porque ela também abriga o cabeçalho e o
+   contador, aqui não há nem um nem outro. */
+.draft-list-bare { padding: 0; border: 0; background: none; box-shadow: none; }
+/* A ação vai para a direita quando há largura sobrando, em vez de deixar dois
+   terços do cartão vazios com o botão pendurado embaixo do texto. */
+@media (min-width: 860px) {
+  /* O botão sai de baixo do texto e vai para a borda direita. A ação mora no
+     corpo do cartão, não como filha dele, então a divisão acontece aqui. */
+  .draft-list-bare .draft-card { align-items: center; }
+  .draft-list-bare .draft-card-body { grid-template-columns: minmax(0,1fr) auto; align-items: center; column-gap: 20px; }
+  .draft-list-bare .draft-card-badges { grid-column: 1; }
+  .draft-list-bare .draft-card-body > h3 { grid-column: 1; }
+  .draft-list-bare .draft-card-meta { grid-column: 1; }
+  .draft-list-bare .draft-card-actions { grid-column: 2; grid-row: 1 / -1; margin: 0; }
+}
