@@ -50,14 +50,24 @@ describe("embedded video address", () => {
   it("never produces an address outside the two known hosts", () => {
     // Whatever the identifier, the origin is one of two literals. This is the
     // property the iframe sandbox depends on.
+    // Os identificadores agora seguem o formato de cada provedor: 11
+    // caracteres no YouTube, dígitos no Vimeo. Antes qualquer coisa de 1 a 64
+    // passava, e foi assim que um parâmetro de rastreamento virou "vídeo".
     const hosts = new Set<string>();
-    for (const id of ["a", "Z9", "_-", "a".repeat(64), "dQw4w9WgXcQ"]) {
-      for (const provider of ["youtube", "vimeo"] as const) {
+    const validos = {
+      youtube: ["dQw4w9WgXcQ", "-vvGAKtV_Ek", "_-_-_-_-_-_"],
+      vimeo: ["123456", "123456789012"]
+    } as const;
+    for (const provider of ["youtube", "vimeo"] as const) {
+      for (const id of validos[provider]) {
         const source = embedSource(provider, id);
-        expect(source).not.toBeNull();
+        expect(source, `${provider}/${id}`).not.toBeNull();
         hosts.add(new URL(source as string).origin);
       }
     }
+    // E o que não tem o formato do provedor não vira endereço nenhum.
+    expect(embedSource("youtube", "LW2Oweh9T56VW1nR")).toBeNull();
+    expect(embedSource("vimeo", "dQw4w9WgXcQ")).toBeNull();
     expect([...hosts].sort()).toEqual([
       "https://player.vimeo.com",
       "https://www.youtube-nocookie.com"
