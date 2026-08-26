@@ -15,6 +15,7 @@ import {
   parsePriceInputToMinor,
   priceInputFromMinor
 } from "@/lib/offer-price";
+import { keepPriceCharacters } from "@/lib/numeric-field";
 
 type EditorSection = "produto" | "curriculo" | "oferta" | "publicar";
 type LoadState = "loading" | "ready" | "unauthorized" | "forbidden" | "not_found" | "unavailable" | "error";
@@ -254,6 +255,12 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   const localPriceMinor = parsePriceInputToMinor(fields.offer_price);
   const localPriceIsPositive = localPriceMinor !== null && localPriceMinor > 0;
   const priceDirty = detail !== null && fields.offer_price !== savedPriceInput;
+  // Preço só é julgado depois que a pessoa sai do campo. Julgado a cada tecla,
+  // "49," fica vermelho no caminho para "49,90" — o campo acusaria um erro que
+  // ainda está sendo digitado. Depois do primeiro blur com erro, volta a
+  // acompanhar a digitação para o vermelho sumir assim que for corrigido.
+  const [priceTouched, setPriceTouched] = useState(false);
+  const priceLocallyInvalid = priceTouched && localPriceMinor === null;
 
   useUnsavedChanges(editorDirty);
 
@@ -868,7 +875,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
                 : <div className="billing-boundary" role="note"><strong>{detail.offer.status === "active" ? "Oferta ativa" : "Oferta arquivada"}</strong><p>{detail.offer.status === "active" ? "Para editar termos ou preço, despublique a oferta primeiro." : "Uma oferta arquivada é definitiva e não aparece na vitrine."}</p></div>}
               <EditorField label="Nome da oferta" name="offer_title" value={fields.offer_title} onChange={(value) => updateField("offer_title", value)} minLength={2} maxLength={120} required invalid={invalidField === "offer_title"}/>
               <EditorField label="Resumo da oferta" name="offer_summary" value={fields.offer_summary} onChange={(value) => updateField("offer_summary", value)} maxLength={500} multiline invalid={invalidField === "offer_summary"}/>
-              <EditorField label={`Preço (${offerCurrencyLabel})`} name="offer_price" value={fields.offer_price} onChange={(value) => updateField("offer_price", value)} maxLength={12} invalid={invalidField === "offer_price" || invalidField === "offer_unit_amount_minor"} help="Use vírgula para centavos, ex.: 49,90. Deixe vazio para manter sem preço."/>
+              <EditorField label={`Preço (${offerCurrencyLabel})`} name="offer_price" value={fields.offer_price} onChange={(value) => updateField("offer_price", value)} onBlur={() => setPriceTouched(true)} maxLength={12} inputMode="decimal" pattern="[0-9]{1,9}([.,][0-9]{1,2})?" sanitize={keepPriceCharacters} invalid={invalidField === "offer_price" || invalidField === "offer_unit_amount_minor" || priceLocallyInvalid} help="Use vírgula para centavos, ex.: 49,90. Deixe vazio para manter sem preço."/>
               <label className="editor-field">Cobrança
                 <select id="offer_billing_period" name="offer_billing_period" value={fields.offer_billing_period} onChange={(event) => updateField("offer_billing_period", event.target.value)} aria-invalid={invalidField === "offer_billing_period"}>
                   {OFFER_BILLING_PERIODS.map((entry) => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
@@ -910,6 +917,9 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
                 {editorDirty ? <p className="form-note">Salve as alterações antes de escolher o modo de acesso.</p> : null}
                 <div className="offer-status-actions"><button className="primary-button" type="button" disabled={!canActivateSales} onClick={() => void transitionOffer("active")}>{offerStatusState === "transitioning" ? "Ativando vendas…" : "Ativar oferta e usar checkout"}</button></div>
               </> : null}
+              {/* O ramo do rascunho já explica cada bloqueio; o da oferta ativa
+                  desligava os dois botões calado. */}
+              {detail.offer.status === "active" && editorDirty ? <p className="form-note">Salve as alterações antes de desativar ou arquivar a oferta.</p> : null}
               {detail.offer.status === "active" ? <div className="offer-status-actions">
                 <button className="secondary-button" type="button" disabled={editorDirty || offerStatusLocked} onClick={() => void transitionOffer("draft")}>{offerStatusState === "transitioning" ? "Aplicando…" : "Desativar vendas e voltar ao gratuito"}</button>
                 <button ref={archiveTriggerButton} className="secondary-button" type="button" disabled={editorDirty || offerStatusLocked} onClick={() => setArchiveDialogOpen(true)}>Arquivar oferta</button>
@@ -1046,11 +1056,15 @@ function EditorLoadState({ state, sellerId, onRetry }: { state: LoadState; selle
   return <section className="editor-load-state" aria-live="polite"><p className="eyebrow">Editor protegido</p><h1>{messages[state === "ready" ? "error" : state]}</h1><div className="error-actions"><Link className="secondary-button" href={`/products?seller=${encodeURIComponent(sellerId)}`}>Voltar aos produtos</Link>{state === "unavailable" || state === "error" ? <button className="primary-button" type="button" onClick={onRetry}>Tentar novamente</button> : null}{state === "unauthorized" ? <a className="primary-button" href="/auth/login">Entrar novamente</a> : null}</div></section>;
 }
 
-function EditorField({ label, name, value, onChange, multiline = false, invalid = false, help, ...inputProps }: { label: string; name: keyof EditorFields; value: string; onChange: (value: string) => void; multiline?: boolean; invalid?: boolean; help?: string; minLength?: number; maxLength?: number; required?: boolean; pattern?: string }) {
+// `sanitize` é o que impede um campo numérico de aceitar texto: ele filtra a
+// digitação em vez de deixar o valor entrar e recusá-lo no envio. Fica fora do
+// spread de propriedades porque não é atributo de DOM.
+function EditorField({ label, name, value, onChange, onBlur, multiline = false, invalid = false, help, sanitize, ...inputProps }: { label: string; name: keyof EditorFields; value: string; onChange: (value: string) => void; onBlur?: () => void; multiline?: boolean; invalid?: boolean; help?: string; sanitize?: (raw: string) => string; minLength?: number; maxLength?: number; required?: boolean; pattern?: string; inputMode?: "decimal" | "numeric" }) {
   const helpId = `${name}-help`;
   const errorId = `${name}-error`;
   const describedBy = [help ? helpId : "", invalid ? errorId : ""].filter(Boolean).join(" ") || undefined;
-  return <label className="editor-field">{label}{multiline ? <textarea id={name} name={name} value={value} onChange={(event) => onChange(event.target.value)} rows={5} autoComplete="off" aria-invalid={invalid} aria-describedby={describedBy} {...inputProps}/> : <input id={name} name={name} value={value} onChange={(event) => onChange(event.target.value)} autoComplete="off" spellCheck={name === "slug" ? false : undefined} autoCapitalize={name === "slug" ? "none" : undefined} aria-invalid={invalid} aria-describedby={describedBy} {...inputProps}/>} {help ? <span id={helpId}>{help}</span> : null}{invalid ? <span id={errorId} className="form-error" role="alert">{editorFieldError(name)}</span> : null}</label>;
+  const accept = (raw: string) => onChange(sanitize ? sanitize(raw) : raw);
+  return <label className="editor-field">{label}{multiline ? <textarea id={name} name={name} value={value} onChange={(event) => accept(event.target.value)} onBlur={onBlur} rows={5} autoComplete="off" aria-invalid={invalid} aria-describedby={describedBy} {...inputProps}/> : <input id={name} name={name} value={value} onChange={(event) => accept(event.target.value)} onBlur={onBlur} autoComplete="off" spellCheck={name === "slug" ? false : undefined} autoCapitalize={name === "slug" ? "none" : undefined} aria-invalid={invalid} aria-describedby={describedBy} {...inputProps}/>} {help ? <span id={helpId}>{help}</span> : null}{invalid ? <span id={errorId} className="form-error" role="alert">{editorFieldError(name)}</span> : null}</label>;
 }
 
 function editorFieldError(field: string) {

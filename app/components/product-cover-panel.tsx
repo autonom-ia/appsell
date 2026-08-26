@@ -361,6 +361,13 @@ export function ProductCoverPanel({
           )}
         {cover ? null : <p className="cover-fallback-note">Arte gerada a partir do nome do produto.</p>}
       </div>
+      {/* Sem esta linha, os dois controles abaixo ficam desligados num produto
+          arquivado sem nada na tela explicando o motivo. */}
+      {archived ? (
+        <p className="form-note" role="status">
+          Produto arquivado: a capa fica somente para leitura.
+        </p>
+      ) : null}
       <div className="cover-actions">
         <label className="secondary-button cover-choose">
           {cover ? "Trocar capa" : "Escolher capa"}
