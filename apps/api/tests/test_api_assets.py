@@ -15,6 +15,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from appsell_api.asset_media import PDF_MEDIA_TYPE, max_bytes
 from appsell_api.asset_routes import router
 from appsell_api.internal_requests import AuthenticatedInternalRequest
 from appsell_api.service_auth import ServiceEnvelope, ServiceIdentity
@@ -497,7 +498,7 @@ async def test_storage_unavailable_consumes_authenticated_request() -> None:
 @pytest.mark.parametrize(
     "body",
     [
-        intent_body(byte_size=10 * 1024 * 1024 + 1),
+        intent_body(byte_size=max_bytes(PDF_MEDIA_TYPE) + 1),
         intent_body(file_name="../secret.pdf"),
         intent_body(media_type="text/html"),
         intent_body(media_type="video/mp4", file_name="material.pdf"),

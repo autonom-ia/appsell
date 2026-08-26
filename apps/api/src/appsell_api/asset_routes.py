@@ -14,7 +14,16 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
-from .asset_media import MAX_ASSET_BYTES, extension_matches, spec_for
+from .asset_media import (
+    MAX_ASSET_BYTES,
+    PDF_MEDIA_TYPE,
+    VIDEO_MEDIA_TYPE,
+    extension_matches,
+    spec_for,
+)
+from .asset_media import (
+    max_bytes as _catalogue_max_bytes,
+)
 from .asset_media import max_bytes as asset_max_bytes
 from .asset_worker_runner import process_asset_upload
 from .catalog_routes import (
@@ -30,8 +39,8 @@ from .storage_s3 import S3Storage, StorageError
 
 router = APIRouter(prefix="/v1")
 _MAX_SAFE_INTEGER = (1 << 53) - 1
-_MAX_PDF_BYTES = 10 * 1024 * 1024
-_MAX_VIDEO_BYTES = 100 * 1024 * 1024
+_MAX_PDF_BYTES = _catalogue_max_bytes(PDF_MEDIA_TYPE)
+_MAX_VIDEO_BYTES = _catalogue_max_bytes(VIDEO_MEDIA_TYPE)
 
 
 class AssetUploadIntentBody(BaseModel):

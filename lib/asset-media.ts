@@ -27,7 +27,7 @@ export const PPTX_MEDIA_TYPE =
   "application/vnd.openxmlformats-officedocument.presentationml.presentation";
 
 export const SUPPORTED_ASSET_MEDIA: Readonly<Record<string, AssetMediaSpec>> = {
-  [PDF_MEDIA_TYPE]: { extension: "pdf", maxBytes: 10 * MIB, supportMaterialOnly: false, downloadable: true },
+  [PDF_MEDIA_TYPE]: { extension: "pdf", maxBytes: 100 * MIB, supportMaterialOnly: false, downloadable: true },
   [VIDEO_MEDIA_TYPE]: { extension: "mp4", maxBytes: 100 * MIB, supportMaterialOnly: false, downloadable: false },
   [DOCX_MEDIA_TYPE]: { extension: "docx", maxBytes: 20 * MIB, supportMaterialOnly: true, downloadable: true },
   [XLSX_MEDIA_TYPE]: { extension: "xlsx", maxBytes: 20 * MIB, supportMaterialOnly: true, downloadable: true },

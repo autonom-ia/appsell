@@ -36,7 +36,7 @@ class AssetMediaSpec:
 _MIB: Final = 1024 * 1024
 
 SUPPORTED_MEDIA: Final[dict[str, AssetMediaSpec]] = {
-    PDF_MEDIA_TYPE: AssetMediaSpec("pdf", 10 * _MIB, False, True),
+    PDF_MEDIA_TYPE: AssetMediaSpec("pdf", 100 * _MIB, False, True),
     VIDEO_MEDIA_TYPE: AssetMediaSpec("mp4", 100 * _MIB, False, False),
     DOCX_MEDIA_TYPE: AssetMediaSpec("docx", 20 * _MIB, True, True),
     XLSX_MEDIA_TYPE: AssetMediaSpec("xlsx", 20 * _MIB, True, True),

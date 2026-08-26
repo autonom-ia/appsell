@@ -97,7 +97,7 @@ services:
     mem_limit: 1g
     cpus: 1.0
     tmpfs:
-      - /tmp:size=402653184,mode=1777,noexec,nosuid
+      - /tmp:size=3221225472,mode=1777,noexec,nosuid
     healthcheck:
       test: ["CMD", "python", "-c", "import httpx; t=httpx.HTTPTransport(uds='/run/appsell-pdf/pdf.sock'); r=httpx.Client(transport=t,trust_env=False,timeout=1).get('http://pdf-sandbox/health'); assert r.status_code==200 and r.json()=={'status':'ok'}"]
       interval: 2s
