@@ -38,6 +38,11 @@ aula de alguém.
 Uma linha com identificador fora do novo formato impediria a constraint de ser
 criada. A migration arquiva essas linhas antes — elas já estavam quebradas na
 prática, e arquivar preserva o registro em vez de apagar.
+
+Por isso a regra vale para linhas **ativas**. Arquivada é histórico: nunca chega
+ao aluno, e `embedSource` valida de novo na hora de montar o quadro. Exigir o
+formato de uma linha que já saiu de circulação obrigaria a apagar registro para
+poder criar a constraint.
 """
 
 from __future__ import annotations
@@ -66,17 +71,53 @@ _URL_CHECK = """
       );
 """
 
-# Arquiva o que ja entrou com identificador invalido. Sao vinculos que nunca
-# renderizariam; arquivar preserva o registro e libera a constraint.
+# Arquiva o que ja entrou com identificador invalido, e confere que sobrou zero.
+#
+# Suspender o FORCE e obrigatorio, nao precaucao. A tabela tem FORCE ROW LEVEL
+# SECURITY, e nesse modo ate o dono e filtrado — `set row_security = off` nao
+# ajuda, o proprio Postgres manda usar NO FORCE. Sem isto o UPDATE atinge ZERO
+# linhas *em silencio* e a constraint seguinte falha por causa de uma linha que
+# a migration acreditava ter corrigido. Foi o que aconteceu na primeira
+# tentativa em producao.
+#
+# A contagem no fim existe porque um UPDATE que nao encontra nada nao e erro em
+# SQL. Essa mudez foi o defeito; aqui ela vira excecao.
 _ARCHIVE_INVALID = """
-    update public.lesson_material_link
-    set status = 'archived'
-    where status = 'active'
-      and video_id is not null
-      and not (
-        (provider = 'youtube' and video_id ~ '^[A-Za-z0-9_-]{11}$')
-        or (provider = 'vimeo' and video_id ~ '^[0-9]{6,12}$')
-      );
+    do $migration$
+    declare restantes bigint;
+    begin
+      -- Duas coisas, nao uma. `no force` isenta apenas o DONO da tabela, e o
+      -- migrator e so membro do papel dono: sem virar `appsell_owner` a
+      -- politica continua aplicando e o UPDATE volta a nao achar nada.
+      set local role appsell_owner;
+      alter table public.lesson_material_link no force row level security;
+
+      update public.lesson_material_link
+      set status = 'archived'
+      where status = 'active'
+        and video_id is not null
+        and not (
+          (provider = 'youtube' and video_id ~ '^[A-Za-z0-9_-]{11}$')
+          or (provider = 'vimeo' and video_id ~ '^[0-9]{6,12}$')
+        );
+
+      select count(*) into restantes from public.lesson_material_link
+      where status = 'active'
+        and video_id is not null
+        and not (
+          (provider = 'youtube' and video_id ~ '^[A-Za-z0-9_-]{11}$')
+          or (provider = 'vimeo' and video_id ~ '^[0-9]{6,12}$')
+        );
+
+      alter table public.lesson_material_link force row level security;
+      reset role;
+
+      if restantes > 0 then
+        raise exception
+          'still % material link(s) with an identifier the new check refuses', restantes
+          using errcode='55000';
+      end if;
+    end $migration$;
 """
 
 _VIDEO_CHECK = """
@@ -85,7 +126,8 @@ _VIDEO_CHECK = """
     alter table public.lesson_material_link
       add constraint lesson_material_link_video_id_check
       check (
-        video_id is null
+        status <> 'active'
+        or video_id is null
         or (provider = 'youtube' and video_id ~ '^[A-Za-z0-9_-]{11}$')
         or (provider = 'vimeo' and video_id ~ '^[0-9]{6,12}$')
       );
