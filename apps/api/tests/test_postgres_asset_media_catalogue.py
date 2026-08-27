@@ -249,3 +249,28 @@ def test_o_lease_do_worker_cabe_na_faixa_que_o_banco_aceita() -> None:
         f"entre {minimo}s e {maximo}s — o claim falha em silêncio e o material "
         f"nunca é verificado"
     )
+
+
+def test_nenhuma_funcao_fecha_o_conjunto_de_midia_em_pdf_e_mp4() -> None:
+    """A quarta camada onde o catálogo se escondeu: dentro de uma função.
+
+    `register_asset_ready_candidate_v1_legacy` recusava qualquer coisa que não
+    fosse PDF ou MP4 na última porta do caminho de verificação, depois do
+    antivírus e da verificação. Os sete documentos do catálogo nunca puderam ser
+    registrados, e o worker engolia o erro sem log.
+
+    A varredura procura o padrão exato de *lista fechada de mídia aceita*. Um
+    `expected_media='application/pdf'` é outro assunto — é roteamento, não
+    permissão: o PDF exige manifesto de raster e as funções precisam desviar por
+    isso.
+    """
+    assert ADMIN_URL
+    fechamento = re.compile(r"not\s+in\s*\(\s*'application/pdf'\s*,\s*'video/mp4'\s*\)")
+    with psycopg.connect(ADMIN_URL) as connection:
+        rows = connection.execute(
+            "select n.nspname||'.'||p.proname, p.prosrc from pg_proc p "
+            "join pg_namespace n on n.oid=p.pronamespace "
+            "where n.nspname in ('app_private','public')"
+        ).fetchall()
+    culpadas = [str(nome) for nome, fonte in rows if fechamento.search(str(fonte))]
+    assert not culpadas, "funções que recusam todo formato fora de PDF/MP4: " + "; ".join(culpadas)
