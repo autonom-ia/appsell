@@ -15,14 +15,105 @@
 |---|---|
 | Domínio | `https://sell.autonomia.site` |
 | Ambiente | VPS EasyPanel nativo, Docker Swarm |
-| SHA do **web** | `b09c690` |
-| SHA do **api** | `e112c2c` — subiu em 2026-08-26, ver abaixo |
-| SHA do **asset-worker** | `4cbdcf7` — **não se moveu** |
-| Imagens | `web:b09c690`, `api:e112c2c`, `asset-worker` em `api:4cbdcf7` |
-| Banco | head `0038_player_hides_materials` — **sem migration neste release** |
+| SHA do **web** | `bfeb14b` |
+| SHA do **api** | `3524e2a` — subiu em 2026-08-27, ver abaixo |
+| SHA do **asset-worker** | `3524e2a` — mesma imagem da api |
+| SHA do **pdf-sandbox** | `f8738e4` |
+| Imagens | `web:bfeb14b`, `api:3524e2a`, `asset-worker` em `api:3524e2a`, `pdf-sandbox:f8738e4` |
+| Banco | head `0042_ready_candidate_media` |
 | Web health | `{"status":"ok","redis":true,"api":true,"storage_upload":true}` |
 | API health | `{"status":"ok","database":true,"storage":true,"pdf_sandbox":true}` |
 | Épico | [#252](https://github.com/autonom-ia/appsell/issues/252) — 6/6 fechado |
+
+## Release `3524e2a` — o documento chega ao fim do caminho (2026-08-27)
+
+`app_private.register_asset_ready_candidate_v1_legacy` era a **única** função do
+caminho de verificação que restringia formato:
+
+```sql
+or p_ready_media not in ('application/pdf','video/mp4')
+  then raise exception 'invalid ready asset candidate' using errcode='22023'
+```
+
+Tudo antes dela já aceitava os nove formatos — o intent, o `confirm`, o
+`finalize`, a constraint de `asset_blob`, a de `asset_storage_cleanup_job`. O
+arquivo subia, passava no antivírus, era verificado em 0,1 s e morria na última
+porta. **DOCX, XLSX, PPTX, TXT, MD, CSV e JSON nunca puderam ser registrados**,
+desde que entraram no catálogo. E o worker engolia a exceção sem uma linha de
+log: a tela dizia "a verificação está demorando mais que o esperado", que promete
+que vai resolver sozinho.
+
+A `0042` troca a lista fechada por `asset_media_extension(p_ready_media) is null`
+— deriva do catálogo criado na `0039`, em vez de listar formato de novo. Os
+quatro `except DBAPIError` mudos do worker passam a registrar sqlstate e a frase
+do banco, com redação de sequência de 32+ caracteres.
+
+Detalhe da entrega: [#291](https://github.com/autonom-ia/appsell/issues/291),
+[PR #292](https://github.com/autonom-ia/appsell/pull/292).
+
+### Como foi aplicado
+
+| passo | comando |
+|---|---|
+| backup lógico | `pg_dump -Fc` → `appsell_native_90_pre0042_20260827T112847Z.dump` (922 entradas) |
+| specs | `spec_{api,asset-worker,web,pdf-sandbox}_pre0042_20260827T112847Z.json` |
+| migration | container descartável da `api:3799d86` com `migrations/` e `alembic.ini` montados do host |
+| build | `docker build -f deploy/easypanel-native/Dockerfile.api --build-arg GIT_SHA=3524e2a` |
+| deploy | `docker service update --image ...api:3524e2a` em `asset-worker`, depois `api` |
+
+> **A imagem da `api` tem o binário do Alembic mas não tem as migrations.** Só
+> `apps/api/src` entra no `Dockerfile.api`. Por isso a migration roda montando
+> `/home/claudete/appsell-src-<sha>/apps/api/migrations` de leitura no
+> contêiner, na rede `easypanel-sell-autonomia`. A senha do migrator é lida da
+> spec do serviço `bootstrap-native-90` em tempo de execução; nunca fica escrita
+> em disco.
+
+### Validação executada em produção
+
+- `alembic current` → `0042_ready_candidate_media`
+- `schema_ready_base_0016()` e `_0017()` → `true`
+- a lista fechada sumiu da definição viva; a linha derivada está lá
+- os nove formatos do catálogo respondem extensão; `application/x-msdownload`
+  responde `NULL` (continua recusado)
+- worker em `3524e2a`, 0 reinícios, tmpfs de 3 GiB intacto, `pdftoppm` e
+  `ffmpeg` presentes — conferido **de dentro** do contêiner
+- `/health/ready` da api → `{"status":"ok","database":true,"storage":true,"pdf_sandbox":true}`
+- `https://sell.autonomia.site/api/health/ready` → `{"status":"ok","redis":true,"api":true,"storage_upload":true}`
+
+**A prova de verdade:** o `.md` que o vendedor tentou subir às 10:38 estava
+parado em `verifying` com o lease do worker antigo. Um segundo depois de o lease
+vencer, o worker novo pegou:
+
+```text
+11:38:47 [info] asset_worker_completed upload_id=2d14b869-…
+```
+
+E o banco: `upload=ready`, `asset_blob` com `magic_type=text/markdown`, 10.557
+bytes, `scanner=clean`, `asset_record` criado, rascunho ativo na aula. Nenhuma
+intervenção manual.
+
+### Rollback deste release
+
+```sh
+ssh claudete 'bash /home/claudete/rollback_0042.sh'
+```
+
+Volta `api` e `asset-worker` para `3799d86` e roda `alembic downgrade -1`.
+**Voltar fecha de novo a porta do documento** — o script avisa isso ao terminar.
+O dump lógico pré-migration é a rede embaixo dessa rede.
+
+### O que este release NÃO resolveu
+
+- **PDF acima de 100 páginas continua sendo recusado.** O worker rasteriza até
+  300 desde 26/08 e o teto antigo sobrevive em doze lugares do banco, incluindo
+  a autorização de página do aluno. Uma versão desta PR alargava parte deles; o
+  review pegou que estava pela metade — alargar parte só muda a porta em que o
+  vendedor bate. Virou [#293](https://github.com/autonom-ia/appsell/issues/293).
+- **O papel do material continua vindo errado.** O `.md` entrou como
+  `content_role=course_content` com `download_allowed=false`, que não é o que um
+  material de apoio deveria ser. É a Fase 2 do plano de conteúdo da aula: o
+  seletor "Uso deste material" sai e o painel em que o vendedor clica passa a ser
+  a resposta.
 
 O release de 2026-08-26 (`b2a5a6e`) entregou o épico de interface #252 inteiro:
 campos numéricos que recusam o inválido (#253), nenhum botão desligado em
