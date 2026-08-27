@@ -515,3 +515,26 @@ async def test_a_recusa_do_banco_no_registro_chega_ao_log(
     assert "asset_worker_register_failed" in saida
     assert "invalid ready asset candidate" in saida, "o log nao diz o que o banco recusou"
     assert "22023" in saida, "o log nao diz qual regra do banco foi violada"
+
+
+def test_o_log_nao_repete_sequencia_longa_que_o_banco_devolveu() -> None:
+    """A mensagem do Postgres pode repetir o valor que a violou.
+
+    `invalid input syntax for type uuid: "<valor>"` e parecidas devolvem o
+    parametro dentro da frase. Nenhuma credencial passa por estas chamadas, mas
+    a regra da casa e nao deixar sequencia longa cair em log — e o sha256 de um
+    arquivo do vendedor e uma sequencia longa.
+    """
+
+    class _ComValor(RuntimeError):
+        sqlstate = "22P02"
+
+        def __str__(self) -> str:
+            return 'invalid input syntax: "' + "ab" * 32 + '"'
+
+    campos = asset_worker_runner._database_reason(DBAPIError("s", {}, _ComValor()))
+
+    assert campos["sqlstate"] == "22P02"
+    assert "invalid input syntax" in campos["detail"]
+    assert "ab" * 32 not in campos["detail"]
+    assert "<REDACTED>" in campos["detail"]

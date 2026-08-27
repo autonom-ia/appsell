@@ -48,6 +48,12 @@ _ASSET_LEASE_SECONDS = 600
 logger = structlog.get_logger(__name__)
 
 
+# Uma mensagem do Postgres pode repetir o valor que a violou —
+# `invalid input syntax ...: "<valor>"`. Nada credencial passa por estas
+# chamadas, mas a regra da casa e nao deixar sequencia longa cair em log.
+_OPACO = re.compile(r"[A-Za-z0-9_\-]{32,}")
+
+
 def _database_reason(error: DBAPIError) -> dict[str, str]:
     """O que o Postgres disse, em campos que o log preserva.
 
@@ -56,10 +62,11 @@ def _database_reason(error: DBAPIError) -> dict[str, str]:
     carrega o sqlstate e a frase do `raise` do banco.
     """
     original = getattr(error, "orig", None) or error
+    mensagem = str(original).strip()
     return {
         "reason": type(original).__name__,
         "sqlstate": str(getattr(original, "sqlstate", "") or ""),
-        "detail": str(original).strip().splitlines()[0][:200] if str(original).strip() else "",
+        "detail": _OPACO.sub("<REDACTED>", mensagem.splitlines()[0])[:200] if mensagem else "",
     }
 
 

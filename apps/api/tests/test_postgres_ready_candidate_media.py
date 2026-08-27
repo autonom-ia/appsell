@@ -138,12 +138,17 @@ def _seed_upload(connection: psycopg.Connection[Any], media_type: str) -> tuple[
 
 @pytest.fixture
 def limpeza() -> Iterator[list[tuple[UUID, UUID]]]:
-    """Nada deste arquivo pode sobrar no banco compartilhado.
+    """Esvazia a fila de limpeza de storage que estes testes enchem.
 
-    O registro do candidato enfileira uma limpeza de storage, e
-    `claim_asset_storage_cleanup_jobs` varre a fila inteira. Um envio esquecido
-    aqui reaparece como uma linha a mais na contagem de outro teste — que passa
-    sozinho e falha na suite, o pior tipo de falso vermelho.
+    O registro do candidato enfileira uma limpeza, e
+    `claim_asset_storage_cleanup_jobs` varre a fila **inteira**, sem filtro de
+    tenant. Um envio esquecido aqui reaparece como uma linha a mais na contagem
+    de outro teste — que passa sozinho e falha na suíte, o pior tipo de falso
+    vermelho. Aconteceu na primeira versão deste arquivo.
+
+    O grafo (vendedor, produto, curso, aula) fica: ele é tenant-isolado e nenhuma
+    varredura global o alcança, e todos os testes de Postgres desta base o
+    deixam para trás do mesmo jeito.
     """
     criados: list[tuple[UUID, UUID]] = []
     yield criados

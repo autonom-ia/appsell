@@ -1,4 +1,4 @@
-"""O documento chega ao fim do caminho, e o PDF longo para de ser recusado.
+"""O documento chega ao fim do caminho de verificação.
 
 ## A última porta
 
@@ -27,24 +27,14 @@ A correção deriva do catálogo criado na `0039` em vez de listar formato de no
 `asset_media_extension(p_ready_media) is null` recusa exatamente o que o
 catálogo não conhece, e passa a acompanhá-lo sozinho.
 
-## O PDF de 120 páginas
+## O que esta migration NÃO faz
 
-Achado enquanto isto era corrigido, e do mesmo tipo. Em 26/08/2026 o worker
-passou a rasterizar até 300 páginas e 512 MiB de derivado. O banco continuou em
-100 páginas e 128 MiB:
-
-    or jsonb_array_length(p_pdf_pages) not between 1 and 100 then
-    if page_count<>expected_page-1 or page_total not between 1 and 134217728 then
-
-O playbook de 83 páginas passou por sorte. Um documento de 120 seria
-rasterizado inteiro — gastando o lease — e recusado no fim com `invalid PDF
-raster manifest`.
-
-Aqui os números continuam transcritos, porque criar um catálogo de raster no
-banco para dois valores usados em uma função só seria mais estrutura do que
-regra. O que fecha a divergência são os dois testes que leem `prosrc` e comparam
-com `MAX_PDF_PAGES` e `MAX_PDF_DERIVATIVE_BYTES` — mesma rede que já guarda a
-faixa de lease do worker.
+O teto de 100 páginas do PDF é outro defeito, achado enquanto este era
+corrigido: o worker rasteriza até 300 páginas desde 26/08/2026 e o banco
+continua em 100. Não cabe aqui. Ele aparece em **nove** lugares do esquema — o
+manifesto, as páginas, os dois candidatos, o gatilho de totais, a autorização de
+página do aluno, a anotação e o marcador — e em três módulos Python. Alargar
+parte deles só mudaria a porta em que o vendedor bate. Fica em #293.
 
 ## Por que patch com âncora
 
@@ -66,23 +56,9 @@ _LEGACY_SIGNATURE = (
     "'app_private.register_asset_ready_candidate_v1_legacy("
     "uuid,uuid,uuid,text,text,text,bigint,text,text,text,text)'::regprocedure"
 )
-_V2_SIGNATURE = (
-    "'app_private.register_asset_ready_candidate_v2("
-    "uuid,uuid,uuid,text,text,text,bigint,text,text,text,text,jsonb)'::regprocedure"
-)
 
 _MEDIA_ANCHOR = "             or p_ready_media not in ('application/pdf','video/mp4')\n"
 _MEDIA_REPLACEMENT = "             or app_private.asset_media_extension(p_ready_media) is null\n"
-
-_PAGES_ANCHOR = "             or jsonb_array_length(p_pdf_pages) not between 1 and 100 then\n"
-_PAGES_REPLACEMENT = "             or jsonb_array_length(p_pdf_pages) not between 1 and 300 then\n"
-
-_TOTAL_ANCHOR = (
-    "          if page_count<>expected_page-1 or page_total not between 1 and 134217728 then\n"
-)
-_TOTAL_REPLACEMENT = (
-    "          if page_count<>expected_page-1 or page_total not between 1 and 536870912 then\n"
-)
 
 _READY_TAIL = "'0040_asset_media_checks','0041_material_link_checks')"
 _READY_TAIL_WITH_0042 = _READY_TAIL[:-1] + ",'0042_ready_candidate_media')"
@@ -139,43 +115,11 @@ def upgrade() -> None:
             "cannot route the ready candidate through the media catalogue",
         )
     )
-    op.execute(
-        _patch(
-            _V2_SIGNATURE,
-            _PAGES_ANCHOR,
-            _PAGES_REPLACEMENT,
-            "cannot widen the PDF raster page limit",
-        )
-    )
-    op.execute(
-        _patch(
-            _V2_SIGNATURE,
-            _TOTAL_ANCHOR,
-            _TOTAL_REPLACEMENT,
-            "cannot widen the PDF raster byte limit",
-        )
-    )
     op.execute(_ready(_READY_TAIL, _READY_TAIL_WITH_0042, "cannot extend readiness for 0042 in"))
 
 
 def downgrade() -> None:
     op.execute(_ready(_READY_TAIL_WITH_0042, _READY_TAIL, "cannot restore readiness from 0042 in"))
-    op.execute(
-        _patch(
-            _V2_SIGNATURE,
-            _TOTAL_REPLACEMENT,
-            _TOTAL_ANCHOR,
-            "cannot restore the PDF raster byte limit",
-        )
-    )
-    op.execute(
-        _patch(
-            _V2_SIGNATURE,
-            _PAGES_REPLACEMENT,
-            _PAGES_ANCHOR,
-            "cannot restore the PDF raster page limit",
-        )
-    )
     op.execute(
         _patch(
             _LEGACY_SIGNATURE,
