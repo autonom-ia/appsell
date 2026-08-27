@@ -48,6 +48,21 @@ _ASSET_LEASE_SECONDS = 600
 logger = structlog.get_logger(__name__)
 
 
+def _database_reason(error: DBAPIError) -> dict[str, str]:
+    """O que o Postgres disse, em campos que o log preserva.
+
+    `str(error)` traz a instrucao SQL inteira antes da mensagem, entao truncar
+    esconde exatamente a parte util. O `orig` e a excecao do driver: ela
+    carrega o sqlstate e a frase do `raise` do banco.
+    """
+    original = getattr(error, "orig", None) or error
+    return {
+        "reason": type(original).__name__,
+        "sqlstate": str(getattr(original, "sqlstate", "") or ""),
+        "detail": str(original).strip().splitlines()[0][:200] if str(original).strip() else "",
+    }
+
+
 async def process_asset_upload(app: FastAPI, seller_id: UUID, upload_id: UUID) -> None:
     """Local/CI runner. Production requires a separately credentialed worker service."""
     settings: Settings = app.state.settings
@@ -319,14 +334,27 @@ async def _process_claimed_job(
         registered_manifest = await _register_ready_candidate(
             auth, settings, worker_id, seller_id, upload_id, result
         )
-    except DBAPIError:
+    except DBAPIError as error:
+        # O motivo vai junto, e este foi o terceiro log mudo do mesmo arquivo em
+        # um dia. Ate 27/08/2026 o banco recusava todo formato fora de PDF e MP4
+        # nesta chamada; a excecao morria aqui, o material nunca virava
+        # `asset_record`, e a tela dizia "a verificacao esta demorando mais que o
+        # esperado" — que promete que vai resolver sozinho, e nao ia.
+        logger.warning(
+            "asset_worker_register_retry", upload_id=str(upload_id), **_database_reason(error)
+        )
         try:
             registered_manifest = await _register_ready_candidate(
                 auth, settings, worker_id, seller_id, upload_id, result
             )
-        except DBAPIError:
+        except DBAPIError as retry_error:
             # No durable locator could be proven. The object is not referenced by
             # a publication yet, so exact-version compensation is safe.
+            logger.error(
+                "asset_worker_register_failed",
+                upload_id=str(upload_id),
+                **_database_reason(retry_error),
+            )
             try:
                 await _run_blocking(worker.compensate_ready_after_finalize_failure, result)
             except CleanupRetryableError:
@@ -346,9 +374,15 @@ async def _process_claimed_job(
             result,
             registered_manifest,
         )
-    except DBAPIError:
+    except DBAPIError as error:
         # A connection error during COMMIT is ambiguous. Replay the same receipt once;
         # never delete ready bytes unless the database proves they are unreferenced.
+        #
+        # Ambiguo nao e o mesmo que mudo: um erro de conexao e uma regra violada
+        # chegam aqui iguais, e so o sqlstate separa os dois.
+        logger.warning(
+            "asset_worker_finalize_retry", upload_id=str(upload_id), **_database_reason(error)
+        )
         try:
             await _finalize_ready(
                 auth,
@@ -359,8 +393,12 @@ async def _process_claimed_job(
                 result,
                 registered_manifest,
             )
-        except DBAPIError:
-            logger.warning("asset_worker_finalize_reconcile", upload_id=str(upload_id))
+        except DBAPIError as retry_error:
+            logger.warning(
+                "asset_worker_finalize_reconcile",
+                upload_id=str(upload_id),
+                **_database_reason(retry_error),
+            )
             return
 
     try:

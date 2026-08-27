@@ -469,3 +469,49 @@ async def test_parser_outage_leaves_job_for_retry_without_rejecting(
     await asset_worker_runner.process_asset_upload(app, SELLER, UPLOAD)
 
     assert events == ["begin", "process"]
+
+
+class _RejectedByDatabase(RuntimeError):
+    """O que o psycopg entrega: mensagem do `raise` do banco mais o sqlstate."""
+
+    sqlstate = "22023"
+
+    def __str__(self) -> str:
+        return "invalid ready asset candidate\nCONTEXT:  função PL/pgSQL ... linha 15 em RAISE"
+
+
+class RejectingSession(FakeSession):
+    async def scalar(self, statement: Any, parameters: dict[str, Any]) -> Any:
+        if "register_asset_ready_candidate" in str(statement):
+            self.events.append("register-ready")
+            raise DBAPIError("register", {}, _RejectedByDatabase())
+        return await super().scalar(statement, parameters)
+
+
+@pytest.mark.asyncio
+async def test_a_recusa_do_banco_no_registro_chega_ao_log(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """O terceiro log mudo do mesmo arquivo, em um dia.
+
+    De 22/08 a 27/08/2026 o banco recusou todo formato fora de PDF e MP4 nesta
+    chamada. A excecao morria em `except DBAPIError:` sem uma linha de log: o
+    material nunca virava `asset_record`, e a tela dizia "a verificacao esta
+    demorando mais que o esperado". Nada, em lugar nenhum, dizia por que.
+
+    O que este teste guarda nao e a correcao daquele defeito — e a condicao para
+    que o proximo seja encontrado em minutos.
+    """
+    events: list[str] = []
+    app, auth = build_app(events, fail_finalize=0)
+    auth.session = RejectingSession(events)
+    monkeypatch.setattr(asset_worker_runner, "PdfStorageWorker", FakeWorker)
+    monkeypatch.setattr(asset_worker_runner, "_worker_id", lambda _settings: WORKER_ID)
+
+    await asset_worker_runner.process_asset_upload(app, SELLER, UPLOAD)
+
+    saida = capsys.readouterr().out
+    assert "asset_worker_register_retry" in saida
+    assert "asset_worker_register_failed" in saida
+    assert "invalid ready asset candidate" in saida, "o log nao diz o que o banco recusou"
+    assert "22023" in saida, "o log nao diz qual regra do banco foi violada"

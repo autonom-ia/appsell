@@ -249,3 +249,70 @@ def test_o_lease_do_worker_cabe_na_faixa_que_o_banco_aceita() -> None:
         f"entre {minimo}s e {maximo}s — o claim falha em silêncio e o material "
         f"nunca é verificado"
     )
+
+
+def test_nenhuma_funcao_fecha_o_conjunto_de_midia_em_pdf_e_mp4() -> None:
+    """A quarta camada onde o catálogo se escondeu: dentro de uma função.
+
+    `register_asset_ready_candidate_v1_legacy` recusava qualquer coisa que não
+    fosse PDF ou MP4 na última porta do caminho de verificação, depois do
+    antivírus e da verificação. Os sete documentos do catálogo nunca puderam ser
+    registrados, e o worker engolia o erro sem log.
+
+    A varredura procura o padrão exato de *lista fechada de mídia aceita*. Um
+    `expected_media='application/pdf'` é outro assunto — é roteamento, não
+    permissão: o PDF exige manifesto de raster e as funções precisam desviar por
+    isso.
+    """
+    assert ADMIN_URL
+    fechamento = re.compile(r"not\s+in\s*\(\s*'application/pdf'\s*,\s*'video/mp4'\s*\)")
+    with psycopg.connect(ADMIN_URL) as connection:
+        rows = connection.execute(
+            "select n.nspname||'.'||p.proname, p.prosrc from pg_proc p "
+            "join pg_namespace n on n.oid=p.pronamespace "
+            "where n.nspname in ('app_private','public')"
+        ).fetchall()
+    culpadas = [str(nome) for nome, fonte in rows if fechamento.search(str(fonte))]
+    assert not culpadas, "funções que recusam todo formato fora de PDF/MP4: " + "; ".join(culpadas)
+
+
+def _v2_source() -> str:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        row = connection.execute(
+            "select prosrc from pg_proc p join pg_namespace n on n.oid=p.pronamespace "
+            "where n.nspname='app_private' and p.proname='register_asset_ready_candidate_v2'"
+        ).fetchone()
+    assert row is not None, "register_asset_ready_candidate_v2 não existe"
+    return str(row[0])
+
+
+def test_o_banco_aceita_o_mesmo_numero_de_paginas_que_o_worker_produz() -> None:
+    """O worker rasteriza até 300 páginas; o banco recusava acima de 100.
+
+    O playbook de 83 páginas passou por sorte. Um documento de 120 morreria em
+    `invalid PDF raster manifest` — depois de rasterizar as 120, gastando o
+    lease inteiro — e o vendedor veria a mesma mensagem de sempre.
+    """
+    from appsell_api.pdf_derivatives import MAX_PDF_PAGES
+
+    faixa = re.search(
+        r"jsonb_array_length\(p_pdf_pages\)\s+not\s+between\s+1\s+and\s+(\d+)", _v2_source()
+    )
+    assert faixa, "a função deixou de declarar quantas páginas aceita"
+    assert int(faixa.group(1)) == MAX_PDF_PAGES, (
+        f"o worker rasteriza até {MAX_PDF_PAGES} páginas e o banco aceita até "
+        f"{faixa.group(1)} — o excedente é rasterizado e depois recusado"
+    )
+
+
+def test_o_banco_aceita_o_mesmo_total_de_bytes_que_o_worker_produz() -> None:
+    """Mesmo defeito, outra dimensão: 512 MiB de raster contra 128 MiB no banco."""
+    from appsell_api.pdf_derivatives import MAX_PDF_DERIVATIVE_BYTES
+
+    faixa = re.search(r"page_total\s+not\s+between\s+1\s+and\s+(\d+)", _v2_source())
+    assert faixa, "a função deixou de declarar o total de bytes que aceita"
+    assert int(faixa.group(1)) == MAX_PDF_DERIVATIVE_BYTES, (
+        f"o worker produz até {MAX_PDF_DERIVATIVE_BYTES} bytes de raster e o banco "
+        f"aceita até {faixa.group(1)}"
+    )
