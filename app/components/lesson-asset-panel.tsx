@@ -351,14 +351,32 @@ export function LessonAssetPanel({
     };
   });
 
+  // O PDF é o único formato que os dois painéis aceitam, e para ele o papel
+  // chega do banco como `course_content` e só vira anexo quando o PATCH de
+  // política volta. Até lá o card está filtrado para fora deste painel. Sem
+  // esperar por ele, o efeito rodava com a lista ainda sem o card e o material
+  // perdia o destaque e o foco de vez.
+  const justReadyVisible = assets.some((asset) => asset.id === justReadyId
+    && asset.status === "ready" && asset.content_role === contentRole);
+
   useEffect(() => {
-    if (!justReadyId) return;
+    if (!justReadyId || !justReadyVisible) return;
     // Um quadro depois: o card acabou de entrar na lista e o painel ainda vai
     // crescer. Medir antes do layout assentar dá uma posição que deixa de valer
     // no quadro seguinte — e o card fica fora da vista mesmo tendo "rolado".
     const quadro = window.requestAnimationFrame(() => {
       const card = justReadyRef.current;
       if (!card) return;
+      // Se o vendedor está em outro controle, a verificação terminou enquanto
+      // ele fazia outra coisa. Puxar a página e roubar o foco ali faria a
+      // próxima tecla dele ir para o lugar errado. O destaque continua, e é o
+      // suficiente para ele achar o material quando olhar.
+      const ativo = document.activeElement;
+      const ocupado = ativo instanceof HTMLElement
+        && ativo !== document.body
+        && !card.contains(ativo)
+        && (ativo.isContentEditable || /^(input|textarea|select|button|a)$/i.test(ativo.tagName));
+      if (ocupado) return;
       // Rola só quando o card está inteiramente fora da janela; se já aparece,
       // a página não se mexe debaixo do vendedor.
       const caixa = card.getBoundingClientRect();
@@ -375,7 +393,7 @@ export function LessonAssetPanel({
       window.cancelAnimationFrame(quadro);
       window.clearTimeout(limpar);
     };
-  }, [justReadyId]);
+  }, [justReadyId, justReadyVisible]);
 
   const pollStatus = useCallback((uploadId: string) => {
     if (pollingUploadRef.current === uploadId) return;

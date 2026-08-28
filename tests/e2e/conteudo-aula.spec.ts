@@ -272,6 +272,7 @@ test.describe("o material verificado aparece onde o vendedor está olhando", () 
     };
     const uploadId = "bb000000-0000-4000-8000-000000000001";
 
+    await page.clock.install();
     await openCurriculum(page);
     await page.route("**/assets/upload-intents", async (route) => {
       await route.fulfill({ json: {
@@ -305,6 +306,23 @@ test.describe("o material verificado aparece onde o vendedor está olhando", () 
     await anexos.locator("summary").click();
     await expect(anexos.locator(".asset-status-card")).toHaveCount(2);
 
+    // `window.scrollY` não serve de prova: o shell tem o próprio container
+    // rolável. O que prova o comportamento é a rolagem ter sido pedida, e para
+    // qual elemento — combinada com o card acabar visível.
+    await page.evaluate(() => {
+      const janela = window as unknown as { __rolou: string[] };
+      janela.__rolou = [];
+      const original = Element.prototype.scrollIntoView;
+      Element.prototype.scrollIntoView = function (this: Element, ...args: unknown[]) {
+        const resultado = (original as (...a: unknown[]) => void).apply(this, args);
+        // Registrar DEPOIS de rolar. Registrando antes, o teste via a marca e
+        // media a posição enquanto a rolagem ainda não tinha acontecido — o que
+        // só aparecia com a suíte inteira sob carga.
+        janela.__rolou.push((this as HTMLElement).className || this.tagName);
+        return resultado;
+      } as typeof Element.prototype.scrollIntoView;
+    });
+
     await anexos.locator('input[type="file"]').setInputFiles({
       name: NOVO.file_name,
       mimeType: "text/markdown",
@@ -312,6 +330,11 @@ test.describe("o material verificado aparece onde o vendedor está olhando", () 
     });
 
     await expect(anexos.locator(".asset-status-card")).toHaveCount(3);
+    // Sem esta asserção o teste passaria mesmo sem existir rolagem nenhuma,
+    // bastando o card cair por acaso dentro da janela.
+    await expect.poll(() => page.evaluate(
+      () => (window as unknown as { __rolou: string[] }).__rolou.join(" | ")
+    )).toContain("state-just-ready");
     // O defeito: o card entrava no topo. O vendedor estava no fim da lista,
     // perto do botão de adicionar, e via a mensagem de pronto sem card nenhum
     // por perto — e concluía, com razão, que não tinha entrado. Recarregar
@@ -323,7 +346,18 @@ test.describe("o material verificado aparece onde o vendedor está olhando", () 
     // E o vendedor é levado até ele, com destaque que some sozinho.
     const cardNovo = anexos.locator(".asset-status-card").filter({ hasText: NOVO.file_name });
     await expect(cardNovo).toHaveClass(/state-just-ready/);
-    await expect(cardNovo).toBeInViewport();
-    await expect(cardNovo).not.toHaveClass(/state-just-ready/, { timeout: 6_000 });
+    // `toBeInViewport` mede uma vez a cada tentativa do locator e, com a suíte
+    // inteira sob carga, chegava a medir entre o quadro em que a rolagem foi
+    // pedida e o quadro em que ela assentou. Medido de dentro, o poll refaz a
+    // conta até o layout parar — o card fica com `top` bem abaixo da altura da
+    // janela nos dois navegadores.
+    await expect.poll(() => cardNovo.evaluate((card) => {
+      const caixa = card.getBoundingClientRect();
+      return caixa.top < window.innerHeight && caixa.bottom > 0;
+    })).toBe(true);
+    // O destaque some sozinho: marcar o card para sempre transformaria "este
+    // acabou de chegar" em ruído permanente.
+    await page.clock.runFor(3_000);
+    await expect(cardNovo).not.toHaveClass(/state-just-ready/);
   });
 });
