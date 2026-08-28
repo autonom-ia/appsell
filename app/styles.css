@@ -444,16 +444,48 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .lesson-assets > details > summary small { color: var(--soft); font-size: .68rem; font-weight: 700; text-align: right; }
 .lesson-assets-body { min-width: 0; padding: 0 12px 12px; display: grid; gap: 12px; }
 .asset-status-card, .asset-uploader, .asset-feedback { min-width: 0; padding: 14px; border: 1px solid var(--border); border-radius: 13px; background: #fff; }
-.asset-status-card { display: grid; gap: 12px; }
+/* `align-content: start` mantem os cards da mesma altura mesmo quando um tem a
+   caixa de download e o outro nao: sem isso o conteudo estica e a lista fica
+   com blocos de alturas diferentes, que foi o que o vendedor viu como
+   desalinhamento. */
+.asset-status-card { display: grid; align-content: start; gap: 12px; }
 .asset-status-card > div:first-child { min-width: 0; display: grid; gap: 5px; }
 .asset-status-card strong, .asset-status-card small { overflow-wrap: anywhere; }
 .asset-status-card small { color: var(--soft); font-size: .7rem; line-height: 1.5; }
+/* O nome do arquivo e o que distingue um material do outro: cinco `.md` de uma
+   aula tinham o mesmo titulo e nada mais na tela para diferencia-los. */
+.asset-file-name { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace; font-size: .66rem; color: var(--soft); }
+.asset-panel-hint { margin: 0; padding: 0 13px 10px; color: var(--soft); font-size: .7rem; line-height: 1.5; }
 .asset-state { color: var(--success); font-size: .7rem; font-weight: 800; }
 .asset-policy-controls { min-width: 0; display: grid; gap: 7px; }
 .asset-policy-controls > label { color: var(--ink); font-size: .72rem; font-weight: 800; }
 .asset-policy-controls select { width: 100%; min-height: 44px; padding: 0 10px; border: 1px solid var(--border); border-radius: 10px; background: #fff; color: var(--ink); }
-.asset-download-toggle { min-height: 44px; display: flex; align-items: center; gap: 9px; line-height: 1.35; }
-.asset-download-toggle input { width: 20px; height: 20px; flex: 0 0 auto; accent-color: var(--blue); }
+.asset-download-toggle { min-height: 44px; display: flex; align-items: center; gap: 5px; line-height: 1.35; }
+/* A caixa desenhada continua com 20px; o alvo de toque tem 44. Antes o próprio
+   input media 20x20 e ficava abaixo do minimo — o teste de acessibilidade movel
+   nao pegava porque parava numa assercao anterior. */
+.asset-download-toggle input {
+  width: 44px; height: 44px; flex: 0 0 auto; margin: 0; padding: 0;
+  appearance: none; -webkit-appearance: none;
+  background: none; border: 0; cursor: pointer;
+  display: grid; place-content: center;
+}
+.asset-download-toggle input::before {
+  content: ""; width: 20px; height: 20px;
+  border: 1px solid var(--border); border-radius: 5px; background: #fff;
+}
+.asset-download-toggle input:checked::before {
+  border-color: var(--blue); background: var(--blue); box-shadow: inset 0 0 0 3px #fff;
+}
+.asset-download-toggle input:disabled { cursor: not-allowed; opacity: .5; }
+.asset-download-toggle input:focus-visible { outline: 2px solid var(--blue); outline-offset: -8px; }
+/* Em alto contraste o desenho proprio some: a marca dependia de background e
+   box-shadow, que o modo substitui. Devolver o controle nativo mantem o estado
+   marcado distinguivel, e a area de toque continua sendo a do rotulo. */
+@media (forced-colors: active) {
+  .asset-download-toggle input { appearance: auto; -webkit-appearance: auto; width: 20px; height: 20px; }
+  .asset-download-toggle input::before { content: none; }
+}
 .asset-actions { min-width: 0; display: grid; grid-template-columns: minmax(0,1fr); gap: 8px; }
 .asset-uploader { display: grid; gap: 8px; }
 .asset-file-picker { position: relative; min-width: 0; min-height: 48px; }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { MAX_PDF_BYTES, MAX_VIDEO_BYTES, validAssetMediaFile , ASSET_UPLOAD_ACCEPT, assetMediaSpec, assetMediaTypeForFile, isDocumentMedia, isDownloadableMedia } from "../lib/asset-media";
+import { MAX_PDF_BYTES, MAX_VIDEO_BYTES, validAssetMediaFile , ASSET_UPLOAD_ACCEPT, DOCX_MEDIA_TYPE, PDF_MEDIA_TYPE, SUPPORTED_ASSET_MEDIA, VIDEO_MEDIA_TYPE, acceptForContentRole, acceptedByBothPanels, assetMediaSpec, assetMediaTypeForFile, isDocumentMedia, isDownloadableMedia, mediaFitsContentRole } from "../lib/asset-media";
 
 describe("private media upload contract", () => {
   it("accepts MP4 at the bounded video limit", () => {
@@ -65,5 +65,70 @@ describe("document support material", () => {
     expect(ASSET_UPLOAD_ACCEPT).toContain(".csv");
     expect(ASSET_UPLOAD_ACCEPT).toContain(".mp4");
     expect(ASSET_UPLOAD_ACCEPT).not.toContain(".docm");
+  });
+});
+
+describe("os dois painéis do editor de conteúdo", () => {
+  /**
+   * O painel em que o vendedor clica é o que decide o papel do material. Se um
+   * painel oferecer um formato que o papel dele não comporta, o servidor recusa
+   * a política depois — e o vendedor descobre tarde.
+   */
+  it("Conteúdo da aula só oferece o que o player sabe apresentar", () => {
+    const accept = acceptForContentRole("course_content");
+    expect(accept).toContain(".pdf");
+    expect(accept).toContain(".mp4");
+    for (const extensao of [".docx", ".xlsx", ".pptx", ".txt", ".md", ".csv", ".json"]) {
+      expect(accept).not.toContain(extensao);
+    }
+  });
+
+  it("Anexos e links não oferece vídeo, que o aluno não pode baixar", () => {
+    const accept = acceptForContentRole("support_material");
+    // O MP4 tem `downloadable: false` e `set_lesson_asset_policy` recusa
+    // download em vídeo. Oferecê-lo aqui deixaria o vendedor substituir um
+    // documento por um vídeo e cair numa política impossível.
+    expect(accept).not.toContain(".mp4");
+    expect(accept).not.toContain(VIDEO_MEDIA_TYPE);
+    for (const extensao of [".pdf", ".docx", ".xlsx", ".pptx", ".txt", ".md", ".csv", ".json"]) {
+      expect(accept).toContain(extensao);
+    }
+  });
+
+  it("o PDF é o único formato que os dois painéis aceitam", () => {
+    const dosDois = Object.keys(SUPPORTED_ASSET_MEDIA).filter(acceptedByBothPanels);
+    expect(dosDois).toEqual([PDF_MEDIA_TYPE]);
+  });
+});
+
+describe("o painel recusa o que não lhe pertence", () => {
+  /**
+   * O `accept` do input é uma dica: quem escolhe "todos os arquivos" no seletor
+   * do sistema passa por cima dele. O revisor mostrou o caminho: um `.md` no
+   * painel de conteúdo era normalizado pelo banco e o cliente logo depois o
+   * marcava como conteúdo do curso de novo, desfazendo a correção.
+   */
+  it("documento não cabe em Conteúdo da aula", () => {
+    for (const mediaType of ["text/markdown", "text/csv", "application/json", DOCX_MEDIA_TYPE]) {
+      expect(mediaFitsContentRole(mediaType, "course_content")).toBe(false);
+      expect(mediaFitsContentRole(mediaType, "support_material")).toBe(true);
+    }
+  });
+
+  it("vídeo não cabe em Anexos e links", () => {
+    expect(mediaFitsContentRole(VIDEO_MEDIA_TYPE, "support_material")).toBe(false);
+    expect(mediaFitsContentRole(VIDEO_MEDIA_TYPE, "course_content")).toBe(true);
+  });
+
+  it("o PDF cabe nos dois", () => {
+    expect(mediaFitsContentRole(PDF_MEDIA_TYPE, "course_content")).toBe(true);
+    expect(mediaFitsContentRole(PDF_MEDIA_TYPE, "support_material")).toBe(true);
+  });
+
+  it("formato desconhecido não cabe em lugar nenhum", () => {
+    for (const role of ["course_content", "support_material"] as const) {
+      expect(mediaFitsContentRole("application/x-msdownload", role)).toBe(false);
+      expect(mediaFitsContentRole(null, role)).toBe(false);
+    }
   });
 });

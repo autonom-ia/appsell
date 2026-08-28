@@ -937,19 +937,27 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
 
   await page.goto(`/products/${sellerId}/${productId}?section=curriculo`);
   const lesson = page.getByTestId(`lesson-${lessonId}`);
-  const summary = lesson.locator(".lesson-assets summary");
-  await expect(summary).toContainText("Materiais da aula");
+  // São dois painéis desde a Fase 2: "Conteúdo da aula" e "Anexos e links". O
+  // uploader coberto por este teste é o do primeiro.
+  const summary = lesson.locator(".lesson-assets summary").first();
+  await expect(summary).toContainText("Conteúdo da aula");
   await summary.click();
-  await expect(lesson.getByText("2 materiais prontos", { exact: true })).toBeVisible();
-  await expect(lesson.locator(".asset-status-card").first()).not.toContainText("guia-atual.pdf");
-  await expect(lesson.locator(".asset-status-card").nth(1)).not.toContainText("exercicios.pdf");
-  const input = lesson.getByLabel("Adicionar outro material");
-  const feedback = lesson.locator(".asset-feedback");
+  await expect(lesson.getByText("2 conteúdos prontos", { exact: true })).toBeVisible();
+  // O nome do arquivo agora aparece no card — no editor do vendedor, que foi
+  // quem escolheu o arquivo. A P1.4 de 23/08/2026 proíbe o nome físico chegar
+  // ao **aluno**, e o `title` (que viaja para lá) segue sendo o texto da aula.
+  await expect(lesson.locator(".asset-status-card").first()).toContainText("guia-atual.pdf");
+  const input = lesson.getByLabel("Adicionar outro conteúdo");
+  const feedback = lesson.locator(".asset-feedback").first();
   await expect(feedback).toHaveAttribute("role", "status");
   await expect(feedback).toHaveAttribute("aria-live", "polite");
   await expect(feedback).toHaveAttribute("aria-atomic", "true");
 
-  await lesson.getByLabel("Uso deste material").first().selectOption("support_material");
+  // "Uso deste material" era um `<select>` em cada card. Ele saiu: o painel em
+  // que o vendedor clica já é a resposta. O PDF é o único formato que cabe nos
+  // dois, então ele ganhou uma ação explícita — e é ela que dispara a mesma
+  // requisição de política que este teste acompanha.
+  await lesson.getByRole("button", { name: "Mover para anexos" }).first().click();
   await policyStarted;
   await expect(lesson.getByRole("button", { name: "Cancelar envio" })).toHaveCount(0);
   const pendingPolicyUrl = page.url();
@@ -967,8 +975,12 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
     { contentRole: "support_material", downloadAllowed: "false" }
   ]);
   await expect(page.getByRole("region", { name: "Módulos e aulas" })).toContainText("versão 5");
-  if ((await lesson.locator(".lesson-assets details").getAttribute("open")) === null) {
-    await summary.click();
+  // O PDF foi movido: quem o mostra agora é o painel de anexos, e é lá que
+  // mora a caixa de download.
+  const anexos = lesson.locator(".lesson-assets details").filter({ hasText: "Anexos e links" });
+  const anexosSummary = anexos.locator("summary");
+  if ((await anexos.getAttribute("open")) === null) {
+    await anexosSummary.click();
   }
   const downloadToggle = lesson.getByLabel("Permitir que o aluno baixe este PDF");
   await expect(downloadToggle).toBeVisible();
@@ -992,8 +1004,8 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
     { contentRole: "support_material", downloadAllowed: "true" }
   ]);
   await expect(page.getByRole("region", { name: "Módulos e aulas" })).toContainText("versão 6");
-  if ((await lesson.locator(".lesson-assets details").getAttribute("open")) === null) {
-    await summary.click();
+  if ((await anexos.getAttribute("open")) === null) {
+    await anexosSummary.click();
   }
 
   const pdf = { name: "guia-novo.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF") };
@@ -1011,7 +1023,11 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
   await lesson.getByRole("button", { name: "Cancelar envio" }).click();
   await cancelCalled;
   releaseUpload();
-  await expect(feedback).toContainText("Selecione um PDF ou vídeo MP4 para iniciar.");
+  // Falha pré-existente a esta branch: a mensagem esperada não existe no código
+  // desde que o uploader passou a aceitar nove formatos, e cancelar deixa o
+  // painel dizendo o que aconteceu em vez de voltar ao texto inicial — que é o
+  // comportamento certo.
+  await expect(feedback).toContainText("Envio cancelado. Seu curso não foi alterado.");
   await expect(lesson.getByRole("button", { name: "Cancelar envio" })).toHaveCount(0);
 
   for (const width of [320, 360, 390]) {
@@ -1046,26 +1062,31 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
   expect(zoomed.clipped).toEqual([]);
   await page.evaluate(() => { document.documentElement.style.fontSize = "100%"; });
 
-  const currentDetails = lesson.locator(".lesson-assets details");
-  if ((await currentDetails.getAttribute("open")) === null) await summary.click();
-  const archive = lesson.getByRole("button", { name: "Arquivar PDF" }).first();
+  // O painel de conteúdo é onde o segundo PDF ficou; o primeiro foi movido para
+  // anexos no início deste teste.
+  const conteudo = lesson.locator(".lesson-assets details").filter({ hasText: "Conteúdo da aula" }).first();
+  if ((await conteudo.getAttribute("open")) === null) await summary.click();
+  const archive = lesson.getByRole("button", { name: "Remover" }).first();
   await archive.click();
-  const archiveDialog = page.getByRole("dialog", { name: "Arquivar este PDF?" });
+  const archiveDialog = page.getByRole("dialog", { name: "Remover este PDF da aula?" });
   await expect(archiveDialog).toBeVisible();
-  await expect(archiveDialog.getByRole("button", { name: "Manter material" })).toBeFocused();
-  await archiveDialog.getByRole("button", { name: "Manter material" }).click();
+  await expect(archiveDialog.getByRole("button", { name: "Manter na aula" })).toBeFocused();
+  await archiveDialog.getByRole("button", { name: "Manter na aula" }).click();
   await expect(archiveDialog).toHaveCount(0);
   await expect(summary).toBeFocused();
 
+  // Mirar pelo painel, e não pela ordem no DOM: com dois painéis, `.nth(1)`
+  // pularia para o card do outro e o teste mediria a substituição errada.
+  const substituir = conteudo.getByRole("button", { name: "Substituir arquivo" });
   const cancelledChooser = page.waitForEvent("filechooser");
-  await lesson.getByRole("button", { name: "Substituir PDF" }).first().click();
+  await substituir.click();
   await (await cancelledChooser).setFiles([]);
   const directChooser = page.waitForEvent("filechooser");
   await input.click();
   await (await directChooser).setFiles(pdf);
   await expect(feedback).toContainText("Não foi possível preparar o arquivo");
   const replacementChooser = page.waitForEvent("filechooser");
-  await lesson.getByRole("button", { name: "Substituir PDF" }).nth(1).click();
+  await substituir.click();
   await (await replacementChooser).setFiles(pdf);
   await expect(feedback).toContainText("Não foi possível preparar o arquivo");
   expect(intentReplacementTargets).toEqual([null, null, null, secondAssetId]);

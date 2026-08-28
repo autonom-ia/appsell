@@ -50,6 +50,68 @@ export const ASSET_UPLOAD_ACCEPT = Object.entries(SUPPORTED_ASSET_MEDIA)
   .flatMap(([mediaType, spec]) => [mediaType, `.${spec.extension}`])
   .join(",");
 
+/**
+ * Os dois conjuntos que os painéis oferecem, derivados do catálogo.
+ *
+ * `Conteúdo da aula` só aceita o que o player sabe apresentar — a mesma regra
+ * que `app_private.player_renders_media` declara no banco. `Anexos e links`
+ * aceita tudo, porque o PDF é o único formato genuinamente ambíguo: ebook
+ * protegido no leitor ou anexo para o aluno baixar. Aí a escolha é legítima, e
+ * quem a expressa é o painel em que o vendedor clicou — não um `<select>`.
+ */
+export const PLAYER_RENDERED_MEDIA = [PDF_MEDIA_TYPE, VIDEO_MEDIA_TYPE] as const;
+
+function acceptList(mediaTypes: readonly string[]): string {
+  return mediaTypes
+    .flatMap((mediaType) => [mediaType, `.${SUPPORTED_ASSET_MEDIA[mediaType].extension}`])
+    .join(",");
+}
+
+/**
+ * Anexo é o que o aluno baixa, então o MP4 fica fora.
+ *
+ * Não é preferência de tela: o vídeo tem `downloadable: false` no catálogo, e
+ * `set_lesson_asset_policy` recusa download em vídeo. Oferecê-lo aqui deixaria o
+ * vendedor substituir um documento baixável por um vídeo e cair numa política
+ * que o servidor não aceita.
+ */
+export const ATTACHMENT_MEDIA = Object.keys(SUPPORTED_ASSET_MEDIA)
+  .filter((mediaType) => SUPPORTED_ASSET_MEDIA[mediaType].downloadable);
+
+export function mediaForContentRole(
+  contentRole: "course_content" | "support_material"
+): readonly string[] {
+  return contentRole === "course_content" ? PLAYER_RENDERED_MEDIA : ATTACHMENT_MEDIA;
+}
+
+export function acceptForContentRole(contentRole: "course_content" | "support_material"): string {
+  return acceptList(mediaForContentRole(contentRole));
+}
+
+/**
+ * O `accept` do input é uma dica, não uma regra: quem escolhe "todos os
+ * arquivos" no seletor do sistema passa por cima dele. Esta é a regra.
+ */
+export function mediaFitsContentRole(
+  mediaType: unknown,
+  contentRole: "course_content" | "support_material"
+): boolean {
+  return mediaForContentRole(contentRole).includes(String(mediaType));
+}
+
+/**
+ * O formato cabe nos dois painéis, e por isso a escolha é do vendedor.
+ *
+ * Só o PDF: o player o desenha (ebook protegido) e o aluno também pode baixá-lo
+ * (anexo). O MP4 o player desenha mas não é baixável; os documentos são
+ * baixáveis mas o player não os desenha. Nos dois casos não há escolha a fazer.
+ */
+export function acceptedByBothPanels(mediaType: unknown): boolean {
+  const spec = assetMediaSpec(mediaType);
+  if (!spec) return false;
+  return spec.downloadable && (PLAYER_RENDERED_MEDIA as readonly string[]).includes(String(mediaType));
+}
+
 export function assetMediaSpec(mediaType: unknown): AssetMediaSpec | null {
   if (typeof mediaType !== "string") return null;
   return SUPPORTED_ASSET_MEDIA[mediaType] ?? null;

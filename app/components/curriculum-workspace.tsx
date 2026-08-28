@@ -121,19 +121,45 @@ export function CurriculumWorkspace({
   useEffect(() => onSummaryChange({ modules: modules.length, lessons: modules.reduce((total, module) => total + module.lessons.length, 0) }), [modules, onSummaryChange]);
 
   const endpoint = `/api/sellers/${sellerId}/products/${productId}/courses/${courseId}`;
-  const load = useCallback(async () => {
-    setLoadState("loading");
+
+  /**
+   * Carregar e revalidar não são a mesma coisa.
+   *
+   * `setLoadState("loading")` faz o `return` antecipado trocar a página inteira
+   * por "Carregando conteúdo…". Na primeira carga isso é o certo — não há nada
+   * na tela ainda. Depois de uma ação do vendedor é destrutivo: **todo** painel
+   * desmonta e perde o estado de aberto, e como a página encolhe para uma linha
+   * de texto o navegador leva o scroll de volta ao topo.
+   *
+   * O painel de materiais dispara isto em oito pontos — enviar, cancelar,
+   * falhar, arquivar, substituir, mudar o papel — e as mutações de módulo e aula
+   * em mais seis. Era isto que fazia "clico em qualquer coisa e ele fecha tudo e
+   * volta para o começo".
+   *
+   * Revalidar troca os dados por baixo e não mexe em `loadState`. As três
+   * respostas que invalidam a sessão ou o endereço continuam derrubando a tela
+   * mesmo numa revalidação: seguir mostrando conteúdo que o servidor acabou de
+   * negar seria pior do que a interrupção.
+   */
+  const load = useCallback(async (mode: "initial" | "revalidate" = "initial") => {
+    const initial = mode === "initial";
+    if (initial) setLoadState("loading");
+    const fail = (state: Exclude<LoadState, "ready">) => {
+      const fatal = state === "unauthorized" || state === "forbidden" || state === "not_found";
+      if (initial || fatal) return setLoadState(state);
+      setMessage("Não foi possível atualizar o conteúdo. O que está na tela pode estar desatualizado.");
+    };
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 8_000);
     try {
       const response = await fetch(`${endpoint}/curriculum`, { cache: "no-store", signal: controller.signal });
-      if (response.status === 401) return setLoadState("unauthorized");
-      if (response.status === 403) return setLoadState("forbidden");
-      if (response.status === 404) return setLoadState("not_found");
-      if (response.status === 503) return setLoadState("unavailable");
-      if (!response.ok) return setLoadState("error");
+      if (response.status === 401) return fail("unauthorized");
+      if (response.status === 403) return fail("forbidden");
+      if (response.status === 404) return fail("not_found");
+      if (response.status === 503) return fail("unavailable");
+      if (!response.ok) return fail("error");
       const payload = await response.json() as CurriculumPayload;
-      if (!validPayload(payload, courseId)) return setLoadState("error");
+      if (!validPayload(payload, courseId)) return fail("error");
       setModules(payload.modules);
       setCourseVersion(payload.course.draft_version);
       setCsrf(payload.csrf);
@@ -146,7 +172,7 @@ export function CurriculumWorkspace({
       setMutationState("idle");
       setLoadState("ready");
     } catch {
-      setLoadState("unavailable");
+      fail("unavailable");
     } finally {
       window.clearTimeout(timeout);
     }
@@ -154,7 +180,7 @@ export function CurriculumWorkspace({
 
   const handleAssetCommitted = useCallback(() => {
     onCommitted();
-    void load();
+    void load("revalidate");
   }, [load, onCommitted]);
 
   useEffect(() => {
@@ -221,7 +247,7 @@ export function CurriculumWorkspace({
     await mutate("module:create", `${endpoint}/modules`, "POST", "create", { title: moduleTitle }, () => {
       setModuleTitle("");
       setMessage(`Módulo ${moduleTitle} criado.`);
-      void load();
+      void load("revalidate");
     }, event.currentTarget);
   }
 
@@ -235,7 +261,7 @@ export function CurriculumWorkspace({
     }, () => {
       setLessonDrafts((current) => ({ ...current, [module.id]: { title: "", content: "" } }));
       setMessage(`Aula ${draft.title} criada em ${module.title}.`);
-      void load();
+      void load("revalidate");
     }, event.currentTarget);
   }
 
@@ -245,7 +271,7 @@ export function CurriculumWorkspace({
     await mutate(`module:update:${module.id}`, `${endpoint}/modules/${module.id}`, "PATCH", "update", { title }, () => {
       setEditDrafts((current) => removeKey(current, `module:${module.id}`));
       setMessage(`Módulo atualizado para ${title}.`);
-      void load();
+      void load("revalidate");
     }, event.currentTarget);
   }
 
@@ -260,7 +286,7 @@ export function CurriculumWorkspace({
     }, () => {
       setEditDrafts((current) => removeKeys(current, [`lesson-title:${lesson.id}`, `lesson-content:${lesson.id}`]));
       setMessage(`Aula ${title} atualizada.`);
-      void load();
+      void load("revalidate");
     }, event.currentTarget);
   }
 
@@ -316,7 +342,7 @@ export function CurriculumWorkspace({
       ]));
       setLessonDrafts((current) => removeKey(current, module.id));
       setMessage(`Módulo ${module.title} arquivado.`);
-      void load();
+      void load("revalidate");
     });
   }
 
@@ -324,7 +350,7 @@ export function CurriculumWorkspace({
     await mutate(`lesson:archive:${lesson.id}`, `${endpoint}/modules/${module.id}/lessons/${lesson.id}/archive`, "POST", "archive", {}, () => {
       setEditDrafts((current) => removeKeys(current, [`lesson-title:${lesson.id}`, `lesson-content:${lesson.id}`]));
       setMessage(`Aula ${lesson.title} arquivada.`);
-      void load();
+      void load("revalidate");
     });
   }
 
@@ -372,7 +398,7 @@ export function CurriculumWorkspace({
             <article className="curriculum-module" aria-labelledby={`module-title-${module.id}`}>
               <header><div><span>Módulo {moduleIndex + 1}</span><h3 id={`module-title-${module.id}`}>{module.title}</h3><small>{module.lessons.length}/{limits.lessons_per_module} aulas</small></div><div className="order-actions" aria-label={`Ordenar módulo ${module.title}`}><button data-focus-key={`module-move-up-${module.id}`} type="button" className="secondary-button" disabled={archived || moduleIndex === 0 || mutationState === "saving" || assetDirty} onClick={() => void reorderModules(moduleIndex, -1)} aria-label={`Mover módulo ${module.title} para cima`}>↑ <span>Subir</span></button><button data-focus-key={`module-move-down-${module.id}`} type="button" className="secondary-button" disabled={archived || moduleIndex === modules.length - 1 || mutationState === "saving" || assetDirty} onClick={() => void reorderModules(moduleIndex, 1)} aria-label={`Mover módulo ${module.title} para baixo`}>↓ <span>Descer</span></button></div></header>
               {!archived ? <details className="curriculum-edit"><summary>Editar módulo</summary><form onSubmit={(event) => void updateModule(event, module)}><label htmlFor={`module-title-input-${module.id}`}>Nome do módulo</label><input id={`module-title-input-${module.id}`} name="title" value={editDrafts[`module:${module.id}`] ?? module.title} onChange={(event) => setEditDrafts((current) => ({ ...current, [`module:${module.id}`]: event.target.value }))} minLength={2} maxLength={160} required aria-invalid={invalidField === `module:update:${module.id}:title`} aria-describedby={invalidField === `module:update:${module.id}:title` ? `module-title-error-${module.id}` : undefined}/>{invalidField === `module:update:${module.id}:title` ? <span id={`module-title-error-${module.id}`} className="form-error">Informe um nome de módulo válido.</span> : null}<div className="inline-actions"><button className="primary-button" type="submit" disabled={mutationState === "saving" || assetDirty}>Salvar módulo</button><button className="danger-button" type="button" disabled={assetDirty} onClick={() => requestArchive({ kind: "module", module })}>Arquivar módulo</button></div></form></details> : null}
-              {module.lessons.length === 0 ? <p className="lesson-empty">Nenhuma aula neste módulo.</p> : <ol className="curriculum-lessons">{module.lessons.map((lesson, lessonIndex) => <li key={lesson.id} data-testid={`lesson-${lesson.id}`}><article aria-labelledby={`lesson-title-${lesson.id}`}><header><div><span>Aula {lessonIndex + 1}</span><h4 id={`lesson-title-${lesson.id}`}>{lesson.title}</h4></div><div className="order-actions"><button data-focus-key={`lesson-move-up-${lesson.id}`} className="secondary-button" type="button" disabled={archived || lessonIndex === 0 || mutationState === "saving" || assetDirty} onClick={() => void reorderLessons(module, lessonIndex, -1)} aria-label={`Mover aula ${lesson.title} para cima`}>↑ <span>Subir</span></button><button data-focus-key={`lesson-move-down-${lesson.id}`} className="secondary-button" type="button" disabled={archived || lessonIndex === module.lessons.length - 1 || mutationState === "saving" || assetDirty} onClick={() => void reorderLessons(module, lessonIndex, 1)} aria-label={`Mover aula ${lesson.title} para baixo`}>↓ <span>Descer</span></button></div></header><p>{lesson.content || "Aula de texto ainda sem conteúdo."}</p><LessonAssetPanel sellerId={sellerId} productId={productId} courseId={courseId} moduleId={module.id} lessonId={lesson.id} lessonTitle={lesson.title} courseVersion={courseVersion} archived={archived} onActivityChange={handleAssetActivity} onCommitted={handleAssetCommitted}/><LessonMaterialPanel sellerId={sellerId} productId={productId} courseId={courseId} moduleId={module.id} lessonId={lesson.id} lessonTitle={lesson.title} courseVersion={courseVersion} archived={archived} onCommitted={handleAssetCommitted}/>{!archived ? <details className="curriculum-edit"><summary>Editar aula</summary><form onSubmit={(event) => void updateLesson(event, module, lesson)}><label htmlFor={`lesson-title-input-${lesson.id}`}>Nome da aula</label><input id={`lesson-title-input-${lesson.id}`} name="title" value={editDrafts[`lesson-title:${lesson.id}`] ?? lesson.title} onChange={(event) => setEditDrafts((current) => ({ ...current, [`lesson-title:${lesson.id}`]: event.target.value }))} minLength={2} maxLength={160} required aria-invalid={invalidField === `lesson:update:${lesson.id}:title`} aria-describedby={invalidField === `lesson:update:${lesson.id}:title` ? `lesson-title-error-${lesson.id}` : undefined}/>{invalidField === `lesson:update:${lesson.id}:title` ? <span id={`lesson-title-error-${lesson.id}`} className="form-error">Informe um nome de aula válido.</span> : null}<label htmlFor={`lesson-content-input-${lesson.id}`}>Conteúdo textual</label><textarea id={`lesson-content-input-${lesson.id}`} name="content" value={editDrafts[`lesson-content:${lesson.id}`] ?? lesson.content} onChange={(event) => setEditDrafts((current) => ({ ...current, [`lesson-content:${lesson.id}`]: event.target.value }))} maxLength={8192} aria-invalid={invalidField === `lesson:update:${lesson.id}:content`} aria-describedby={invalidField === `lesson:update:${lesson.id}:content` ? `lesson-content-error-${lesson.id}` : undefined}/>{invalidField === `lesson:update:${lesson.id}:content` ? <span id={`lesson-content-error-${lesson.id}`} className="form-error">O conteúdo textual ultrapassa o limite permitido.</span> : null}<div className="inline-actions"><button className="primary-button" type="submit" disabled={mutationState === "saving" || assetDirty}>Salvar aula</button><button className="danger-button" type="button" disabled={assetDirty} onClick={() => requestArchive({ kind: "lesson", module, lesson })}>Arquivar aula</button></div></form></details> : null}</article></li>)}</ol>}
+              {module.lessons.length === 0 ? <p className="lesson-empty">Nenhuma aula neste módulo.</p> : <ol className="curriculum-lessons">{module.lessons.map((lesson, lessonIndex) => <li key={lesson.id} data-testid={`lesson-${lesson.id}`}><article aria-labelledby={`lesson-title-${lesson.id}`}><header><div><span>Aula {lessonIndex + 1}</span><h4 id={`lesson-title-${lesson.id}`}>{lesson.title}</h4></div><div className="order-actions"><button data-focus-key={`lesson-move-up-${lesson.id}`} className="secondary-button" type="button" disabled={archived || lessonIndex === 0 || mutationState === "saving" || assetDirty} onClick={() => void reorderLessons(module, lessonIndex, -1)} aria-label={`Mover aula ${lesson.title} para cima`}>↑ <span>Subir</span></button><button data-focus-key={`lesson-move-down-${lesson.id}`} className="secondary-button" type="button" disabled={archived || lessonIndex === module.lessons.length - 1 || mutationState === "saving" || assetDirty} onClick={() => void reorderLessons(module, lessonIndex, 1)} aria-label={`Mover aula ${lesson.title} para baixo`}>↓ <span>Descer</span></button></div></header><p>{lesson.content || "Aula de texto ainda sem conteúdo."}</p><LessonAssetPanel contentRole="course_content" sellerId={sellerId} productId={productId} courseId={courseId} moduleId={module.id} lessonId={lesson.id} lessonTitle={lesson.title} courseVersion={courseVersion} archived={archived} onActivityChange={handleAssetActivity} onCommitted={handleAssetCommitted}/><LessonAssetPanel contentRole="support_material" sellerId={sellerId} productId={productId} courseId={courseId} moduleId={module.id} lessonId={lesson.id} lessonTitle={lesson.title} courseVersion={courseVersion} archived={archived} onActivityChange={handleAssetActivity} onCommitted={handleAssetCommitted}><LessonMaterialPanel sellerId={sellerId} productId={productId} courseId={courseId} moduleId={module.id} lessonId={lesson.id} lessonTitle={lesson.title} courseVersion={courseVersion} archived={archived} onCommitted={handleAssetCommitted}/></LessonAssetPanel>{!archived ? <details className="curriculum-edit"><summary>Editar aula</summary><form onSubmit={(event) => void updateLesson(event, module, lesson)}><label htmlFor={`lesson-title-input-${lesson.id}`}>Nome da aula</label><input id={`lesson-title-input-${lesson.id}`} name="title" value={editDrafts[`lesson-title:${lesson.id}`] ?? lesson.title} onChange={(event) => setEditDrafts((current) => ({ ...current, [`lesson-title:${lesson.id}`]: event.target.value }))} minLength={2} maxLength={160} required aria-invalid={invalidField === `lesson:update:${lesson.id}:title`} aria-describedby={invalidField === `lesson:update:${lesson.id}:title` ? `lesson-title-error-${lesson.id}` : undefined}/>{invalidField === `lesson:update:${lesson.id}:title` ? <span id={`lesson-title-error-${lesson.id}`} className="form-error">Informe um nome de aula válido.</span> : null}<label htmlFor={`lesson-content-input-${lesson.id}`}>Conteúdo textual</label><textarea id={`lesson-content-input-${lesson.id}`} name="content" value={editDrafts[`lesson-content:${lesson.id}`] ?? lesson.content} onChange={(event) => setEditDrafts((current) => ({ ...current, [`lesson-content:${lesson.id}`]: event.target.value }))} maxLength={8192} aria-invalid={invalidField === `lesson:update:${lesson.id}:content`} aria-describedby={invalidField === `lesson:update:${lesson.id}:content` ? `lesson-content-error-${lesson.id}` : undefined}/>{invalidField === `lesson:update:${lesson.id}:content` ? <span id={`lesson-content-error-${lesson.id}`} className="form-error">O conteúdo textual ultrapassa o limite permitido.</span> : null}<div className="inline-actions"><button className="primary-button" type="submit" disabled={mutationState === "saving" || assetDirty}>Salvar aula</button><button className="danger-button" type="button" disabled={assetDirty} onClick={() => requestArchive({ kind: "lesson", module, lesson })}>Arquivar aula</button></div></form></details> : null}</article></li>)}</ol>}
               {!archived ? <form className="lesson-create" onSubmit={(event) => void createLesson(event, module)} data-testid={`lesson-create-form-${module.id}`}><fieldset disabled={mutationState === "saving" || assetDirty || (usage.lessons_by_module[module.id] ?? module.lessons.length) >= limits.lessons_per_module || usage.lessons_total >= limits.lessons_per_course}><legend>Adicionar aula de texto</legend><label htmlFor={`new-lesson-title-${module.id}`}>Nome da aula</label><input id={`new-lesson-title-${module.id}`} name="title" value={lessonDrafts[module.id]?.title ?? ""} onChange={(event) => setLessonDrafts((current) => ({ ...current, [module.id]: { title: event.target.value, content: current[module.id]?.content ?? "" } }))} minLength={2} maxLength={160} required aria-invalid={invalidField === `lesson:create:${module.id}:title`} aria-describedby={invalidField === `lesson:create:${module.id}:title` ? `new-lesson-title-error-${module.id}` : undefined}/>{invalidField === `lesson:create:${module.id}:title` ? <span id={`new-lesson-title-error-${module.id}`} className="form-error">Informe um nome de aula válido.</span> : null}<label htmlFor={`new-lesson-content-${module.id}`}>Conteúdo textual</label><textarea id={`new-lesson-content-${module.id}`} name="content" value={lessonDrafts[module.id]?.content ?? ""} onChange={(event) => setLessonDrafts((current) => ({ ...current, [module.id]: { title: current[module.id]?.title ?? "", content: event.target.value } }))} maxLength={8192} aria-invalid={invalidField === `lesson:create:${module.id}:content`} aria-describedby={invalidField === `lesson:create:${module.id}:content` ? `new-lesson-content-error-${module.id}` : undefined}/>{invalidField === `lesson:create:${module.id}:content` ? <span id={`new-lesson-content-error-${module.id}`} className="form-error">O conteúdo textual ultrapassa o limite permitido.</span> : null}<button className="primary-button" type="submit">Adicionar aula</button></fieldset></form> : null}
             </article>
           </li>)}
