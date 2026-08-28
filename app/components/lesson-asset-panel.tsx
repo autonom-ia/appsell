@@ -329,21 +329,18 @@ export function LessonAssetPanel({
       setUploads(payload.uploads);
       setCsrf(payload.csrf);
       setLoaded(true);
-      const active = payload.uploads.find((upload) => ["pending", "uploaded", "verifying"].includes(upload.status));
       // Numa revalidação a mensagem é do que o vendedor acabou de fazer, e
-      // trocá-la aqui apagaria a resposta que ele estava esperando. A exceção é
-      // um envio ativo que este painel não conhece — de outra aba, ou de outra
-      // sessão: sem adotá-lo, o resumo diria "preparação em andamento" e
-      // ninguém estaria acompanhando.
-      if (!initial) {
-        const desconhecido = active && !activeUploadIdRef.current && !uploadBusy;
-        if (desconhecido) {
-          activeUploadIdRef.current = active.id;
-          verificationStartedAtRef.current = Date.now();
-          dispatch({ type: "phase", phase: "verifying", message: MATERIAL_PREPARATION_MESSAGE, fileName: active.file_name, uploadId: active.id });
-        }
-        return;
-      }
+      // trocá-la aqui apagaria a resposta que ele estava esperando.
+      //
+      // Limite conhecido e aceito: um envio começado em OUTRA aba aparece no
+      // resumo sem que este painel o acompanhe, até ele ser reaberto. Tentei
+      // adotá-lo aqui e o remédio saiu pior — a decisão dependia de um
+      // `uploadBusy` capturado quando `load` foi criado, não de quando a
+      // resposta chegou, e um envio remoto podia ser adotado por cima de um
+      // envio local recém-começado, os dois dividindo as mesmas referências de
+      // controle. Um caso de outra aba não paga esse preço.
+      if (!initial) return;
+      const active = payload.uploads.find((upload) => ["pending", "uploaded", "verifying"].includes(upload.status));
       if (active) {
         activeUploadIdRef.current = active.id;
         verificationStartedAtRef.current = Date.now();
@@ -359,7 +356,7 @@ export function LessonAssetPanel({
       if (!initial) return setRefreshFailed(true);
       dispatch({ type: "phase", phase: "failed", message: "Não foi possível carregar os materiais. Tente novamente." });
     }
-  }, [base, boundedFetch, uploadBusy]);
+  }, [base, boundedFetch]);
 
   const anunciarMudanca = useCallback(() => {
     window.dispatchEvent(new CustomEvent<LessonAssetsChangedDetail>(
@@ -374,12 +371,15 @@ export function LessonAssetPanel({
       // Só o painel irmão da mesma aula: quem anunciou já revalidou, e outras
       // aulas não têm nada a ver com esta mudança.
       if (!detail || detail.lessonId !== lessonId || detail.panelId === panelId) return;
-      if (!loaded) return;
+      // Aberto basta: se o carregamento inicial ainda está em voo, ele responde
+      // com o retrato de antes da mudança, e a sequência mais nova o descarta.
+      // Fechado não precisa — ele carrega ao abrir.
+      if (!opened) return;
       void load("revalidate");
     };
     window.addEventListener(LESSON_ASSETS_CHANGED_EVENT, ouvir);
     return () => window.removeEventListener(LESSON_ASSETS_CHANGED_EVENT, ouvir);
-  }, [lessonId, load, loaded, panelId]);
+  }, [lessonId, load, opened, panelId]);
 
   useEffect(() => {
     if (!opened || loaded) return;
