@@ -568,3 +568,82 @@ test.describe("mover um PDF entre os painéis", () => {
     await expect(anexos).toContainText(PDF.file_name);
   });
 });
+
+test.describe("o aviso chega enquanto o painel de destino ainda carrega", () => {
+  /**
+   * A corrida mais difícil desta entrega, e a que quase escapou.
+   *
+   * O painel de destino está aberto com o carregamento inicial ainda em voo
+   * quando o irmão anuncia a mudança. A revalidação vence — e é ela que entrega
+   * a primeira lista. Se ela não **fechar** o carregamento, a lista aparece com
+   * "Carregando materiais…" pendurado embaixo, para sempre.
+   */
+  test("a lista aparece e o carregamento não fica pendurado", async ({ page }) => {
+    await login(page);
+
+    const lista: MaterialView[] = [PDF, MARKDOWN, TEXTO];
+    let chamadas = 0;
+    let liberarSegunda: (() => void) | null = null;
+    const segundaPedida = new Promise<void>((resolve) => {
+      void page.route("**/lessons/*/assets", async (route) => {
+        if (route.request().method() !== "GET") return route.fallback();
+        chamadas += 1;
+        // A segunda é a do painel de anexos: fica presa até o teste soltar,
+        // reproduzindo o carregamento inicial ainda em voo.
+        if (chamadas === 2) {
+          resolve();
+          await new Promise<void>((liberar) => { liberarSegunda = liberar; });
+        }
+        await route.fulfill({ json: { assets: lista, uploads: [], csrf: CSRF } });
+      });
+    });
+
+    await page.route(`**/api/sellers/${SELLER_ID}/products/${PRODUCT_ID}`, async (route) => {
+      if (route.request().method() !== "GET") return route.fallback();
+      await route.fulfill({ json: {
+        id: PRODUCT_ID, seller_organization_id: SELLER_ID, seller_slug: "autonomia",
+        slug: "ia-na-pratica", title: "IA na prática", description: "Conteúdo",
+        status: "draft", draft_version: 3,
+        course: { id: COURSE_ID, title: "Especialista", description: "", status: "draft", draft_version: 2, position: 1 },
+        courses: [],
+        offer: { id: "b1d0c9f6-5a1e-52a4-9c3f-2f0f1d3a7e55", title: "Padrão", summary: "", status: "draft", draft_version: 1, unit_amount_minor: 0, currency: "BRL", billing_period: "one_time" }
+      } });
+    });
+    await page.route("**/api/sellers/**/curriculum", async (route) => {
+      await route.fulfill({ json: curriculum() });
+    });
+    await page.route("**/materials", async (route) => {
+      await route.fulfill({ json: { materials: [], csrf: { create: "m", archive: "n" } } });
+    });
+    await page.route("**/access-links", async (route) => {
+      await route.fulfill({ json: { access_links: [] } });
+    });
+    await page.route("**/assets/*/policy", async (route) => {
+      const indice = lista.findIndex((asset) => asset.id === PDF.id);
+      lista[indice] = { ...PDF, content_role: "support_material", download_allowed: true };
+      await route.fulfill({ json: {
+        asset_id: PDF.id, content_role: "support_material",
+        download_allowed: true, course_version: 5, applied: true, replayed: false
+      } });
+    });
+
+    await page.goto(`/products/${SELLER_ID}/${PRODUCT_ID}?section=curriculo`);
+    await expect(page.getByTestId("curriculum-workspace")).toBeVisible();
+
+    const aula = page.getByTestId(`lesson-${LESSON_ID}`);
+    const conteudo = aula.locator("details").filter({ hasText: "Conteúdo da aula" }).first();
+    const anexos = aula.locator("details").filter({ hasText: "Anexos e links" }).first();
+
+    await conteudo.locator("summary").click();
+    await expect(conteudo.locator(".asset-status-card")).toHaveCount(1);
+    await anexos.locator("summary").click();
+    await segundaPedida;
+
+    // O irmão anuncia enquanto o destino ainda espera a própria lista.
+    await conteudo.getByRole("button", { name: "Mover para anexos" }).click();
+    liberarSegunda!();
+
+    await expect(anexos.locator(".asset-status-card")).toHaveCount(3);
+    await expect(anexos).not.toContainText("Carregando materiais…");
+  });
+});

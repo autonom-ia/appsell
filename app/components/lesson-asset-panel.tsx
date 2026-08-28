@@ -183,6 +183,9 @@ export function LessonAssetPanel({
   const [justReadyId, setJustReadyId] = useState<string | null>(null);
   const [refreshFailed, setRefreshFailed] = useState(false);
   const refreshSeqRef = useRef(0);
+  // `loaded` lido no instante da resposta, não no da criação da closure: é a
+  // diferença entre saber se ESTA resposta é a primeira lista a chegar.
+  const loadedRef = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const xhrRef = useRef<XMLHttpRequest | null>(null);
   const hashControllerRef = useRef<AbortController | null>(null);
@@ -320,17 +323,22 @@ export function LessonAssetPanel({
     const seq = ++refreshSeqRef.current;
     const atual = () => seq === refreshSeqRef.current;
     try {
+      // Quem entrega a primeira lista tem de fechar o carregamento, mesmo tendo
+      // sido pedida como revalidação. Um aviso do painel irmão pode vencer o
+      // carregamento inicial ainda em voo — e sem isto a lista aparecia com
+      // "Carregando materiais…" pendurado embaixo, para sempre.
       const response = await boundedFetch(base, { cache: "no-store" }, 10_000);
       if (!response.ok) throw new Error("asset_list_failed");
       const payload = await response.json() as AssetListPayload;
       if (!validListPayload(payload)) throw new Error("asset_list_invalid");
       if (!atual()) return;
+      const primeiraEntrega = initial || !loadedRef.current;
       setAssets(payload.assets);
       setUploads(payload.uploads);
       setCsrf(payload.csrf);
       setLoaded(true);
-      // Numa revalidação a mensagem é do que o vendedor acabou de fazer, e
-      // trocá-la aqui apagaria a resposta que ele estava esperando.
+      // Fora isso, numa revalidação a mensagem é do que o vendedor acabou de
+      // fazer, e trocá-la aqui apagaria a resposta que ele estava esperando.
       //
       // Limite conhecido e aceito: um envio começado em OUTRA aba aparece no
       // resumo sem que este painel o acompanhe, até ele ser reaberto. Tentei
@@ -339,7 +347,7 @@ export function LessonAssetPanel({
       // resposta chegou, e um envio remoto podia ser adotado por cima de um
       // envio local recém-começado, os dois dividindo as mesmas referências de
       // controle. Um caso de outra aba não paga esse preço.
-      if (!initial) return;
+      if (!primeiraEntrega) return;
       const active = payload.uploads.find((upload) => ["pending", "uploaded", "verifying"].includes(upload.status));
       if (active) {
         activeUploadIdRef.current = active.id;
@@ -353,7 +361,7 @@ export function LessonAssetPanel({
       // Falhar calado aqui devolveria o vendedor à dúvida que este caminho
       // existe para acabar: o arquivo subiu, e a lista não mostra.
       if (!atual()) return;
-      if (!initial) return setRefreshFailed(true);
+      if (!initial && loadedRef.current) return setRefreshFailed(true);
       dispatch({ type: "phase", phase: "failed", message: "Não foi possível carregar os materiais. Tente novamente." });
     }
   }, [base, boundedFetch]);
@@ -380,6 +388,8 @@ export function LessonAssetPanel({
     window.addEventListener(LESSON_ASSETS_CHANGED_EVENT, ouvir);
     return () => window.removeEventListener(LESSON_ASSETS_CHANGED_EVENT, ouvir);
   }, [lessonId, load, opened, panelId]);
+
+  useEffect(() => { loadedRef.current = loaded; }, [loaded]);
 
   useEffect(() => {
     if (!opened || loaded) return;
