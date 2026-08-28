@@ -183,8 +183,9 @@ export function LessonAssetPanel({
   const [justReadyId, setJustReadyId] = useState<string | null>(null);
   const [refreshFailed, setRefreshFailed] = useState(false);
   const refreshSeqRef = useRef(0);
-  // `loaded` lido no instante da resposta, não no da criação da closure: é a
-  // diferença entre saber se ESTA resposta é a primeira lista a chegar.
+  // `loaded` lido e escrito no instante da resposta, não no da criação da
+  // closure nem num efeito depois do commit: é a diferença entre saber se ESTA
+  // resposta é a primeira lista a chegar.
   const loadedRef = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const xhrRef = useRef<XMLHttpRequest | null>(null);
@@ -337,6 +338,10 @@ export function LessonAssetPanel({
       setUploads(payload.uploads);
       setCsrf(payload.csrf);
       setLoaded(true);
+      // No mesmo instante, não num efeito depois do commit: entre `setLoaded` e
+      // o efeito cabe uma revalidação inteira, e ela se acharia a primeira
+      // entrega — apagando com `reset` a mensagem que o vendedor está lendo.
+      loadedRef.current = true;
       // Fora isso, numa revalidação a mensagem é do que o vendedor acabou de
       // fazer, e trocá-la aqui apagaria a resposta que ele estava esperando.
       //
@@ -388,8 +393,6 @@ export function LessonAssetPanel({
     window.addEventListener(LESSON_ASSETS_CHANGED_EVENT, ouvir);
     return () => window.removeEventListener(LESSON_ASSETS_CHANGED_EVENT, ouvir);
   }, [lessonId, load, opened, panelId]);
-
-  useEffect(() => { loadedRef.current = loaded; }, [loaded]);
 
   useEffect(() => {
     if (!opened || loaded) return;
