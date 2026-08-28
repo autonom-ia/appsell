@@ -27,6 +27,23 @@ const ALLOWED_UPLOAD_HEADERS = new Set([
 export const ASSET_DISCARD_REQUEST_EVENT = "appsell:asset-discard-request";
 
 /**
+ * Um material mudou de painel, e o painel de destino precisa saber.
+ *
+ * Cada aula renderiza duas instâncias deste componente, cada uma com a própria
+ * lista. Mover um PDF de "Conteúdo da aula" para "Anexos e links" tira o card da
+ * primeira — e a segunda, se já estiver aberta, não fica sabendo. O material
+ * sumiria de vista até recarregar a página, que é exatamente a experiência que
+ * esta entrega existe para acabar.
+ */
+export const LESSON_ASSETS_CHANGED_EVENT = "appsell:lesson-assets-changed";
+
+export interface LessonAssetsChangedDetail {
+  lessonId: string;
+  /** Quem avisou; a própria instância ignora o próprio aviso. */
+  panelId: string;
+}
+
+/**
  * O rótulo diz qual formato o aluno vai baixar.
  *
  * Dizia "PDF" em todo card, inclusive num markdown de 10 KiB.
@@ -165,6 +182,7 @@ export function LessonAssetPanel({
   const [policyError, setPolicyError] = useState("");
   const [justReadyId, setJustReadyId] = useState<string | null>(null);
   const [refreshFailed, setRefreshFailed] = useState(false);
+  const refreshSeqRef = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const xhrRef = useRef<XMLHttpRequest | null>(null);
   const hashControllerRef = useRef<AbortController | null>(null);
@@ -188,6 +206,12 @@ export function LessonAssetPanel({
   const justReadyRef = useRef<HTMLElement>(null);
   const panelRef = useRef<HTMLDetailsElement>(null);
 
+  // Há dois painéis por aula. Sem o papel no identificador, os dois inputs de
+  // arquivo nascem com o mesmo `id`, e um `<label htmlFor>` ativa o primeiro do
+  // documento — "Adicionar anexo" abriria o seletor do painel de conteúdo e o
+  // arquivo entraria com o papel errado. O mesmo valia para os dois diálogos, e
+  // é o que distingue uma instância da outra ao avisar o irmão.
+  const panelId = `${lessonId}-${contentRole}`;
   const base = `/api/sellers/${sellerId}/products/${productId}/courses/${courseId}/modules/${moduleId}/lessons/${lessonId}/assets`;
   const uploadBusy = ["hashing", "creating", "uploading", "confirming", "verifying", "delayed"].includes(state.phase);
   const busy = policySavingId !== null || uploadBusy;
@@ -289,19 +313,37 @@ export function LessonAssetPanel({
     const initial = mode === "initial";
     if (initial) dispatch({ type: "phase", phase: "loading", message: "Carregando materiais…" });
     setRefreshFailed(false);
+    // Duas revalidações podem correr juntas — a do envio e a da política, por
+    // exemplo. Sem isto vence a **última a responder**, não a mais nova: a
+    // resposta antiga chega atrasada e reescreve a lista já correta, e o card
+    // some. Seria o defeito original de volta, por outra porta.
+    const seq = ++refreshSeqRef.current;
+    const atual = () => seq === refreshSeqRef.current;
     try {
       const response = await boundedFetch(base, { cache: "no-store" }, 10_000);
       if (!response.ok) throw new Error("asset_list_failed");
       const payload = await response.json() as AssetListPayload;
       if (!validListPayload(payload)) throw new Error("asset_list_invalid");
+      if (!atual()) return;
       setAssets(payload.assets);
       setUploads(payload.uploads);
       setCsrf(payload.csrf);
       setLoaded(true);
-      // Numa revalidação a mensagem é do que o vendedor acabou de fazer, e
-      // trocá-la aqui apagaria a resposta que ele estava esperando.
-      if (!initial) return;
       const active = payload.uploads.find((upload) => ["pending", "uploaded", "verifying"].includes(upload.status));
+      // Numa revalidação a mensagem é do que o vendedor acabou de fazer, e
+      // trocá-la aqui apagaria a resposta que ele estava esperando. A exceção é
+      // um envio ativo que este painel não conhece — de outra aba, ou de outra
+      // sessão: sem adotá-lo, o resumo diria "preparação em andamento" e
+      // ninguém estaria acompanhando.
+      if (!initial) {
+        const desconhecido = active && !activeUploadIdRef.current && !uploadBusy;
+        if (desconhecido) {
+          activeUploadIdRef.current = active.id;
+          verificationStartedAtRef.current = Date.now();
+          dispatch({ type: "phase", phase: "verifying", message: MATERIAL_PREPARATION_MESSAGE, fileName: active.file_name, uploadId: active.id });
+        }
+        return;
+      }
       if (active) {
         activeUploadIdRef.current = active.id;
         verificationStartedAtRef.current = Date.now();
@@ -313,10 +355,31 @@ export function LessonAssetPanel({
     } catch {
       // Falhar calado aqui devolveria o vendedor à dúvida que este caminho
       // existe para acabar: o arquivo subiu, e a lista não mostra.
+      if (!atual()) return;
       if (!initial) return setRefreshFailed(true);
       dispatch({ type: "phase", phase: "failed", message: "Não foi possível carregar os materiais. Tente novamente." });
     }
-  }, [base, boundedFetch]);
+  }, [base, boundedFetch, uploadBusy]);
+
+  const anunciarMudanca = useCallback(() => {
+    window.dispatchEvent(new CustomEvent<LessonAssetsChangedDetail>(
+      LESSON_ASSETS_CHANGED_EVENT,
+      { detail: { lessonId, panelId } }
+    ));
+  }, [lessonId, panelId]);
+
+  useEffect(() => {
+    const ouvir = (event: Event) => {
+      const detail = (event as CustomEvent<LessonAssetsChangedDetail>).detail;
+      // Só o painel irmão da mesma aula: quem anunciou já revalidou, e outras
+      // aulas não têm nada a ver com esta mudança.
+      if (!detail || detail.lessonId !== lessonId || detail.panelId === panelId) return;
+      if (!loaded) return;
+      void load("revalidate");
+    };
+    window.addEventListener(LESSON_ASSETS_CHANGED_EVENT, ouvir);
+    return () => window.removeEventListener(LESSON_ASSETS_CHANGED_EVENT, ouvir);
+  }, [lessonId, load, loaded, panelId]);
 
   useEffect(() => {
     if (!opened || loaded) return;
@@ -458,6 +521,7 @@ export function LessonAssetPanel({
           // verificação. É o que faz o material aparecer sem o vendedor ter de
           // recarregar a página para descobrir se subiu.
           void load("revalidate");
+          anunciarMudanca();
           // E leva o vendedor até ele: a lista pode ser longa, e um card que
           // aparece fora da tela é indistinguível de um card que não apareceu.
           setJustReadyId(payload.asset.id);
@@ -501,7 +565,7 @@ export function LessonAssetPanel({
       }
     };
     void run();
-  }, [base, boundedFetch, load, onCommitted]);
+  }, [anunciarMudanca, base, boundedFetch, load, onCommitted]);
 
   const retryVerification = useCallback(() => {
     const uploadId = state.uploadId ?? activeUploadIdRef.current;
@@ -778,6 +842,8 @@ export function LessonAssetPanel({
         // atualização local só acerta quando ele já está na lista que estamos
         // editando — o que não é o caso de um PDF que acabou de virar anexo.
         void load("revalidate");
+        // E o painel de destino precisa saber: é ele que vai mostrar o card.
+        anunciarMudanca();
         policyKeysRef.current.delete(operation);
         dispatch({
           type: "phase",
@@ -808,11 +874,6 @@ export function LessonAssetPanel({
   const heading = attachments ? "Anexos e links" : "Conteúdo da aula";
   const noun = attachments ? "anexo" : "conteúdo";
   const otherRole: AssetView["content_role"] = attachments ? "course_content" : "support_material";
-  // Há dois painéis por aula. Sem o papel no identificador, os dois inputs de
-  // arquivo nascem com o mesmo `id`, e um `<label htmlFor>` ativa o primeiro do
-  // documento — "Adicionar anexo" abriria o seletor do painel de conteúdo e o
-  // arquivo entraria com o papel errado. O mesmo valia para os dois diálogos.
-  const panelId = `${lessonId}-${contentRole}`;
   const summary = !loaded
     ? "Abrir para carregar"
     : readyAssets.length > 0

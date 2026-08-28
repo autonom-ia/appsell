@@ -528,3 +528,43 @@ test.describe("o PDF em Anexos só entra na lista depois da política", () => {
     await expect(anexos.getByRole("alert")).toContainText("Recarregue");
   });
 });
+
+test.describe("mover um PDF entre os painéis", () => {
+  /**
+   * Cada aula renderiza duas instâncias do painel, cada uma com a própria
+   * lista. Mover o PDF tirava o card da origem e o destino — já aberto — não
+   * ficava sabendo: o material sumia de vista até recarregar a página. Que é
+   * exatamente a experiência que esta entrega existe para acabar.
+   */
+  test("o card sai de um painel e aparece no outro, sem recarregar", async ({ page }) => {
+    await login(page);
+    const lista: MaterialView[] = [PDF, MARKDOWN, TEXTO];
+    await openCurriculum(page, lista);
+
+    await page.route("**/assets/*/policy", async (route) => {
+      // O servidor grava e passa a listar o PDF como anexo.
+      const indice = lista.findIndex((asset) => asset.id === PDF.id);
+      lista[indice] = { ...PDF, content_role: "support_material", download_allowed: true };
+      await route.fulfill({ json: {
+        asset_id: PDF.id, content_role: "support_material",
+        download_allowed: true, course_version: 5, applied: true, replayed: false
+      } });
+    });
+
+    const aula = page.getByTestId(`lesson-${LESSON_ID}`);
+    const conteudo = aula.locator("details").filter({ hasText: "Conteúdo da aula" }).first();
+    const anexos = aula.locator("details").filter({ hasText: "Anexos e links" }).first();
+
+    // Os dois painéis abertos: é a situação em que o defeito aparecia.
+    await conteudo.locator("summary").click();
+    await anexos.locator("summary").click();
+    await expect(conteudo.locator(".asset-status-card")).toHaveCount(1);
+    await expect(anexos.locator(".asset-status-card")).toHaveCount(2);
+
+    await conteudo.getByRole("button", { name: "Mover para anexos" }).click();
+
+    await expect(conteudo.locator(".asset-status-card")).toHaveCount(0);
+    await expect(anexos.locator(".asset-status-card")).toHaveCount(3);
+    await expect(anexos).toContainText(PDF.file_name);
+  });
+});
