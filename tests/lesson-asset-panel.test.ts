@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { boundedAssetFetch, discardPendingAssetUpload, formatBytes, MAX_VERIFICATION_WAIT_MS, validIntent, verificationPhaseForElapsed, verificationStatusTimeoutForElapsed, type UploadIntentPayload } from "../app/components/lesson-asset-panel";
+import { boundedAssetFetch, discardPendingAssetUpload, downloadToggleLabel, formatBytes, MAX_VERIFICATION_WAIT_MS, validIntent, verificationPhaseForElapsed, verificationStatusTimeoutForElapsed, type UploadIntentPayload } from "../app/components/lesson-asset-panel";
 
 const valid: UploadIntentPayload = {
   upload_id: "55000000-0000-4000-8000-000000000001",
@@ -111,5 +111,17 @@ describe("lesson asset logout discard", () => {
     const cancel = async () => { throw new Error("cancel unavailable"); };
     await expect(discardPendingAssetUpload(null, null, cancel)).resolves.toBeUndefined();
     await expect(discardPendingAssetUpload(valid.upload_id, null, cancel)).rejects.toThrow("cancel unavailable");
+  });
+});
+
+describe("o rotulo de download fala do formato certo", () => {
+  /**
+   * O texto dizia "Permitir que o aluno baixe este PDF" em todo card, inclusive
+   * num `.md` de 10 KiB. O vendedor lia "PDF" olhando para um markdown.
+   */
+  it("nomeia o formato do material, nao PDF sempre", () => {
+    expect(downloadToggleLabel("text/markdown")).toBe("Permitir que o aluno baixe este documento");
+    expect(downloadToggleLabel("application/pdf")).toBe("Permitir que o aluno baixe este PDF");
+    expect(downloadToggleLabel("text/csv")).toBe("Permitir que o aluno baixe este documento");
   });
 });

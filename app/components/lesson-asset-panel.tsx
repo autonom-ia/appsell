@@ -1,9 +1,10 @@
 "use client";
 
-import { ChangeEvent, MouseEvent as ReactMouseEvent, useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { ChangeEvent, MouseEvent as ReactMouseEvent, ReactNode, useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { sha256File } from "../../lib/file-sha256.client";
 import {
-  ASSET_UPLOAD_ACCEPT,
+  acceptedByBothPanels,
+  acceptForContentRole,
   assetMediaLimit,
   assetMediaSpec,
   assetMediaTypeForFile,
@@ -23,6 +24,15 @@ const ALLOWED_UPLOAD_HEADERS = new Set([
 ]);
 
 export const ASSET_DISCARD_REQUEST_EVENT = "appsell:asset-discard-request";
+
+/**
+ * O rótulo diz qual formato o aluno vai baixar.
+ *
+ * Dizia "PDF" em todo card, inclusive num markdown de 10 KiB.
+ */
+export function downloadToggleLabel(mediaType: string): string {
+  return `Permitir que o aluno baixe este ${mediaLabel(mediaType)}`;
+}
 
 export interface AssetDiscardRequestDetail {
   register(task: Promise<void>): void;
@@ -117,8 +127,10 @@ export function LessonAssetPanel({
   lessonTitle,
   courseVersion,
   archived,
+  contentRole,
   onActivityChange,
-  onCommitted
+  onCommitted,
+  children
 }: {
   sellerId: string;
   productId: string;
@@ -128,8 +140,16 @@ export function LessonAssetPanel({
   lessonTitle: string;
   courseVersion: number;
   archived: boolean;
+  /**
+   * O papel que este painel representa. Era um `<select>` em cada card — o
+   * sistema perguntava ao vendedor uma coisa que o painel em que ele clicou já
+   * responde. Aqui ele deixa de ser pergunta e passa a ser o endereço.
+   */
+  contentRole: AssetView["content_role"];
   onActivityChange: (lessonId: string, value: { dirty: boolean; busy: boolean }) => void;
   onCommitted: () => void;
+  /** Links e vídeos, que moram na mesma lista de anexos mas em outra tabela. */
+  children?: ReactNode;
 }) {
   const [state, dispatch] = useReducer(uploadReducer, initialUploadState);
   const [assets, setAssets] = useState<AssetView[]>([]);
@@ -161,6 +181,7 @@ export function LessonAssetPanel({
   const pendingProgressRef = useRef(0);
   const archiveCancelRef = useRef<HTMLButtonElement>(null);
   const summaryRef = useRef<HTMLElement>(null);
+  const applyPanelRoleRef = useRef<(asset: AssetView) => void>(() => {});
 
   const base = `/api/sellers/${sellerId}/products/${productId}/courses/${courseId}/modules/${moduleId}/lessons/${lessonId}/assets`;
   const uploadBusy = ["hashing", "creating", "uploading", "confirming", "verifying", "delayed"].includes(state.phase);
@@ -284,6 +305,26 @@ export function LessonAssetPanel({
     return () => input.removeEventListener("cancel", resetReplacement);
   }, [loaded]);
 
+  /**
+   * O papel do painel, aplicado quando o material fica pronto.
+   *
+   * O banco já deriva o papel do formato e acerta oito dos nove — só o PDF é
+   * ambíguo (ebook protegido no leitor ou anexo para baixar), e quem sabe é o
+   * painel em que o vendedor clicou. Por isso só chama quando discorda: nos
+   * outros oito não sai requisição nenhuma.
+   *
+   * Vive numa ref porque `pollStatus` é memoizado e `updatePolicy` é recriada a
+   * cada render. Pô-la nas dependências recriaria o callback do polling, que
+   * guarda o próprio controle de geração — e o laço perderia o fio. A ref é
+   * reescrita a cada render, então nunca guarda uma closure velha.
+   */
+  useEffect(() => {
+    applyPanelRoleRef.current = (asset: AssetView) => {
+      if (asset.content_role === contentRole) return;
+      void updatePolicy(asset, contentRole, contentRole === "support_material");
+    };
+  });
+
   const pollStatus = useCallback((uploadId: string) => {
     if (pollingUploadRef.current === uploadId) return;
     pollingUploadRef.current = uploadId;
@@ -319,6 +360,7 @@ export function LessonAssetPanel({
           activeUploadIdRef.current = null;
           verificationStartedAtRef.current = null;
           replacementTargetRef.current = null;
+          applyPanelRoleRef.current(payload.asset);
           setAssets((current) => [payload.asset!, ...current.filter((asset) => asset.id !== payload.asset!.id)]);
           setUploads((current) => current.filter((upload) => upload.id !== uploadId));
           dispatch({ type: "phase", phase: "ready", message: `${mediaLabel(payload.asset.media_type)} pronto para publicar.`, uploadId });
@@ -441,8 +483,10 @@ export function LessonAssetPanel({
     body.set("_csrf", csrf.intent);
     body.set("idempotency_key", crypto.randomUUID());
     body.set("expected_course_version", String(courseVersion));
-    // O título é o texto humano da aula; o nome físico continua separado em
-    // file_name e serve apenas para armazenamento/entrega controlada.
+    // O título viaja até a área do aluno, e a P1.4 da revisão de 23/08/2026
+    // proíbe o nome físico do arquivo chegar lá. Por isso ele continua sendo o
+    // texto humano da aula; quem distingue um material do outro na tela do
+    // vendedor é `file_name`, que só o editor renderiza.
     body.set("title", lessonTitle);
     body.set("file_name", file.name);
     body.set("media_type", mediaType);
@@ -573,7 +617,7 @@ export function LessonAssetPanel({
       if (!response.ok) throw new Error("archive_failed");
       setAssets((current) => current.filter((asset) => asset.id !== archiveTarget.id));
       setArchiveTarget(null);
-      dispatch({ type: "phase", phase: "idle", message: "Material arquivado. Publicações anteriores continuam inalteradas." });
+      dispatch({ type: "phase", phase: "idle", message: "Material removido da aula. Publicações anteriores continuam inalteradas." });
       onCommitted();
       queueMicrotask(() => summaryRef.current?.focus());
     } catch {
@@ -585,20 +629,20 @@ export function LessonAssetPanel({
 
   async function updatePolicy(
     asset: AssetView,
-    contentRole: AssetView["content_role"],
+    role: AssetView["content_role"],
     downloadAllowed: boolean
   ) {
     if (!csrf || policySavingId || archived) return;
     const safeDownload = isDownloadableMedia(asset.media_type) &&
-      contentRole === "support_material" && downloadAllowed;
-    const operation = `${asset.id}:${contentRole}:${safeDownload}`;
+      role === "support_material" && downloadAllowed;
+    const operation = `${asset.id}:${role}:${safeDownload}`;
     const idempotencyKey = policyKeysRef.current.get(operation) ?? crypto.randomUUID();
     policyKeysRef.current.set(operation, idempotencyKey);
     const body = new FormData();
     body.set("_csrf", csrf.policy);
     body.set("idempotency_key", idempotencyKey);
     body.set("expected_course_version", String(courseVersion));
-    body.set("content_role", contentRole);
+    body.set("content_role", role);
     body.set("download_allowed", String(safeDownload));
     setPolicySavingId(asset.id);
     setPolicyError("");
@@ -610,7 +654,7 @@ export function LessonAssetPanel({
         }, 8_000);
         if (!response.ok) throw new Error(`policy_${response.status}`);
         setAssets((current) => current.map((entry) => entry.id === asset.id
-          ? { ...entry, content_role: contentRole, download_allowed: safeDownload }
+          ? { ...entry, content_role: role, download_allowed: safeDownload }
           : entry));
         policyKeysRef.current.delete(operation);
         dispatch({
@@ -635,37 +679,32 @@ export function LessonAssetPanel({
     }
   }
 
-  const readyAssets = assets.filter((asset) => asset.status === "ready");
+  const attachments = contentRole === "support_material";
+  const readyAssets = assets.filter(
+    (asset) => asset.status === "ready" && asset.content_role === contentRole
+  );
+  const heading = attachments ? "Anexos e links" : "Conteúdo da aula";
+  const noun = attachments ? "anexo" : "conteúdo";
+  const otherRole: AssetView["content_role"] = attachments ? "course_content" : "support_material";
   const summary = !loaded
     ? "Abrir para carregar"
     : readyAssets.length > 0
-      ? `${readyAssets.length} ${readyAssets.length === 1 ? "material pronto" : "materiais prontos"}`
+      ? `${readyAssets.length} ${readyAssets.length === 1 ? `${noun} pronto` : `${noun}s prontos`}`
       : uploads.some((upload) => ["pending", "uploaded", "verifying"].includes(upload.status))
         ? "Preparação em andamento"
-        : "Nenhum material";
+        : `Nenhum ${noun}`;
 
   return <div className="lesson-assets">
     <details onToggle={(event) => setOpened(event.currentTarget.open)}>
-      <summary ref={summaryRef}><span>Materiais da aula</span><small>{summary}</small></summary>
+      <summary ref={summaryRef}><span>{heading}</span><small>{summary}</small></summary>
+      <p className="asset-panel-hint">{attachments
+        ? "Documentos, planilhas, apresentações, links e vídeos. O aluno pode baixar ou abrir."
+        : "PDF ou vídeo MP4. Fica protegido dentro da área do aluno, sem download."}</p>
       <div className="lesson-assets-body" aria-busy={busy}>
         {readyAssets.map((asset) => <article className="asset-status-card state-ready" key={asset.id}>
-          <div><span className="asset-state">{mediaLabel(asset.media_type)} pronto para publicar</span><strong dir="auto">{asset.title}</strong><small dir="auto">{asset.content_role === "support_material" ? "Material de apoio" : "Conteúdo protegido"} · {formatBytes(asset.byte_size)}</small></div>
+          <div><span className="asset-state">{mediaLabel(asset.media_type)} pronto para publicar</span><strong dir="auto">{asset.title}</strong><small className="asset-file-name" dir="auto" title={asset.file_name}>{asset.file_name}</small><small dir="auto">{asset.content_role === "support_material" ? "Material de apoio" : "Conteúdo protegido"} · {formatBytes(asset.byte_size)}</small></div>
           {!archived ? <div className="asset-policy-controls">
-            <label htmlFor={`asset-role-${asset.id}`}>Uso deste material</label>
-            <select
-              id={`asset-role-${asset.id}`}
-              value={asset.content_role}
-              disabled={busy}
-              onChange={(event) => void updatePolicy(
-                asset,
-                event.target.value as AssetView["content_role"],
-                event.target.value === "support_material" ? asset.download_allowed : false
-              )}
-            >
-              <option value="course_content">Conteúdo do curso — protegido</option>
-              <option value="support_material">Material de apoio</option>
-            </select>
-            {isDownloadableMedia(asset.media_type) && asset.content_role === "support_material"
+            {attachments && isDownloadableMedia(asset.media_type)
               ? <label className="asset-download-toggle">
                   <input
                     type="checkbox"
@@ -677,18 +716,36 @@ export function LessonAssetPanel({
                       event.target.checked
                     )}
                   />
-                  Permitir que o aluno baixe este PDF
+                  {downloadToggleLabel(asset.media_type)}
                 </label>
-              : <small>Este material fica disponível apenas dentro da área do aluno.</small>}
+              : <small>Fica disponível apenas dentro da área do aluno, sem download.</small>}
           </div> : null}
-          {!archived ? <div className="asset-actions"><button className="secondary-button" type="button" disabled={busy} onClick={() => openReplacementPicker(asset.id)}>Substituir {mediaLabel(asset.media_type)}</button><button className="danger-button" type="button" disabled={busy} onClick={() => setArchiveTarget(asset)}>Arquivar {mediaLabel(asset.media_type)}</button></div> : null}
+          {!archived ? <div className="asset-actions">
+            {/* O PDF é o único formato que os dois painéis aceitam: ebook
+                protegido no leitor ou anexo para o aluno baixar. Sem esta ação
+                o vendedor teria de remover e reenviar o arquivo só para mudar
+                de ideia.
+
+                Mover só move: a permissão de download é levada como está e
+                continua sendo uma escolha à parte. Indo para o conteúdo da
+                aula ela cai para `false` sozinha, porque `updatePolicy` não
+                deixa material protegido ser baixável. */}
+            {acceptedByBothPanels(asset.media_type)
+              ? <button className="secondary-button" type="button" disabled={busy} onClick={() => void updatePolicy(asset, otherRole, asset.download_allowed)}>
+                  {attachments ? "Mover para conteúdo da aula" : "Mover para anexos"}
+                </button>
+              : null}
+            <button className="secondary-button" type="button" disabled={busy} onClick={() => openReplacementPicker(asset.id)}>Substituir arquivo</button>
+            <button className="danger-button" type="button" disabled={busy} onClick={() => setArchiveTarget(asset)}>Remover</button>
+          </div> : null}
         </article>)}
         {policyError ? <p className="form-error" role="alert">{policyError}</p> : null}
+        {children}
 
         {!archived && loaded ? <div className="asset-uploader">
           <div className="asset-file-picker">
-            <label className="asset-file-label" htmlFor={`asset-file-${lessonId}`} onClick={() => { replacementTargetRef.current = null; }}>{readyAssets.length > 0 ? "Adicionar outro material" : "Adicionar material"}</label>
-            <input ref={inputRef} id={`asset-file-${lessonId}`} type="file" accept={ASSET_UPLOAD_ACCEPT} onClick={resetReplacementOnDirectPickerClick} onChange={(event) => void selectFile(event)} disabled={busy}/>
+            <label className="asset-file-label" htmlFor={`asset-file-${lessonId}`} onClick={() => { replacementTargetRef.current = null; }}>{readyAssets.length > 0 ? `Adicionar outro ${noun}` : `Adicionar ${noun}`}</label>
+            <input ref={inputRef} id={`asset-file-${lessonId}`} type="file" accept={acceptForContentRole(contentRole)} onClick={resetReplacementOnDirectPickerClick} onChange={(event) => void selectFile(event)} disabled={busy}/>
           </div>
           {/* O rotulo dizia "Adicione um PDF ou vídeo MP4" e o seletor sempre aceitou
     nove formatos. O vendedor lia o rotulo, concluia que documento nao
@@ -710,11 +767,11 @@ export function LessonAssetPanel({
     </details>
 
     {archiveTarget ? <AccessibleDialog titleId={`archive-asset-title-${lessonId}`} descriptionId={`archive-asset-description-${lessonId}`} initialFocusRef={archiveCancelRef} returnFocusRef={summaryRef} onClose={() => { if (!archiving) setArchiveTarget(null); }}>
-      <p className="eyebrow">Arquivar material</p>
-      <h2 id={`archive-asset-title-${lessonId}`}>Arquivar este {archiveTarget ? mediaLabel(archiveTarget.media_type) : "material"}?</h2>
+      <p className="eyebrow">Remover material</p>
+      <h2 id={`archive-asset-title-${lessonId}`}>Remover este {archiveTarget ? mediaLabel(archiveTarget.media_type) : "material"} da aula?</h2>
       <p id={`archive-asset-description-${lessonId}`}>Ele sairá do rascunho da aula <strong>{lessonTitle}</strong>. Publicações anteriores e alunos com acesso a elas continuarão usando a versão já publicada.</p>
       {archiveError ? <p className="form-error" role="alert">{archiveError}</p> : null}
-      <div className="dialog-actions"><button ref={archiveCancelRef} className="secondary-button" type="button" disabled={archiving} onClick={() => setArchiveTarget(null)}>Manter material</button><button className="danger-button" type="button" disabled={archiving} onClick={() => void archiveAsset()}>{archiving ? "Arquivando…" : "Arquivar material"}</button></div>
+      <div className="dialog-actions"><button ref={archiveCancelRef} className="secondary-button" type="button" disabled={archiving} onClick={() => setArchiveTarget(null)}>Manter na aula</button><button className="danger-button" type="button" disabled={archiving} onClick={() => void archiveAsset()}>{archiving ? "Removendo…" : "Remover da aula"}</button></div>
     </AccessibleDialog> : null}
   </div>;
 }

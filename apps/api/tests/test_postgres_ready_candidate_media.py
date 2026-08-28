@@ -90,9 +90,19 @@ def identities() -> None:
 def _seed_upload(connection: psycopg.Connection[Any], media_type: str) -> tuple[UUID, UUID, str]:
     """Deixa um envio em `verifying`, com lease vivo, pronto para o candidato."""
     graph = create_graph(connection)
-    # O grafo (produto, curso, módulo, aula) precisa de um asset qualquer; o
-    # formato dele não tem relação com o do envio que estamos testando.
-    asset = add_asset(connection, graph, media_type=PDF_MEDIA_TYPE, position=0)
+    # O grafo (produto, curso, módulo, aula) precisa de um asset qualquer para
+    # existir; o formato dele não tem relação com o do envio testado aqui.
+    add_asset(connection, graph, media_type=PDF_MEDIA_TYPE, position=0)
+    # O envio aponta para um asset **novo**, sem rascunho. Reaproveitar o asset
+    # do grafo mediria o caminho de substituição, e ali o `on conflict do update`
+    # preserva o papel de propósito: reenviar um arquivo não pode desfazer a
+    # classificação que o vendedor já deu.
+    asset_id = uuid4()
+    connection.execute(
+        "insert into asset_record(seller_organization_id,id,catalog_product_id,title) "
+        "values(%s,%s,%s,%s)",
+        (graph.seller, asset_id, graph.product, f"Material {media_type}"),
+    )
     extension = SUPPORTED_MEDIA[media_type].extension
     upload = uuid4()
     connection.execute(
@@ -116,12 +126,12 @@ def _seed_upload(connection: psycopg.Connection[Any], media_type: str) -> tuple[
             graph.course,
             graph.module,
             graph.lesson,
-            asset.asset,
+            asset_id,
             uuid4(),
             media_type,
             digest(f"source-{upload}"),
             f"tenants/{graph.seller}/quarantine/{upload}.{extension}",
-            f"tenants/{graph.seller}/assets/{asset.asset}/v2/original.{extension}",
+            f"tenants/{graph.seller}/assets/{asset_id}/v2/original.{extension}",
         ),
     )
     connection.execute(
@@ -222,3 +232,97 @@ def test_um_formato_fora_do_catalogo_continua_recusado(
                 (WORKER, seller, upload, ready_sha),
             )
         connection.rollback()
+
+
+@pytest.mark.parametrize("media_type", DOCUMENT_MEDIA)
+def test_o_documento_nasce_como_material_de_apoio_que_o_aluno_baixa(
+    media_type: str, limpeza: list[tuple[UUID, UUID]]
+) -> None:
+    """O papel do material vem do formato, não de uma pergunta na tela.
+
+    `lesson_asset_draft.content_role` tem `default 'course_content'`, e quem
+    insere a linha é o worker, no `finalize`. Todo material nascia como conteúdo
+    protegido sem download — inclusive um `.md` de 10 KiB, que só existe para o
+    aluno baixar. A tela compensava com um `<select>` em cada card, perguntando
+    ao vendedor uma coisa que o catálogo já sabia.
+
+    Este teste **grava**: registra o candidato, finaliza e lê a linha. Ler o
+    texto da função provaria só que o SQL mudou — e foi exatamente uma checagem
+    de texto que, mais cedo neste mesmo dia, passou verde por cima de uma
+    divergência viva.
+    """
+    assert ADMIN_URL and RUNTIME_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        seller, upload, ready_sha = _seed_upload(connection, media_type)
+    limpeza.append((seller, upload))
+
+    with psycopg.connect(RUNTIME_URL) as connection:
+        apply_context(connection, WORKER, None, "catalog.asset.verify")
+        connection.execute(
+            """
+            select app_private.register_asset_ready_candidate(
+              %s,%s,%s,'media-worker','ready-version','ready-etag',8192,%s,%s,%s,'clean')
+            """,
+            (WORKER, seller, upload, ready_sha, media_type, media_type),
+        )
+        connection.execute(
+            """
+            select app_private.finalize_asset_verification(
+              %s,%s,%s,'media-worker',8192,%s,8192,%s,%s,%s,'clean',
+              'ready-version','ready-etag','ready',%s,%s,%s)
+            """,
+            (
+                WORKER,
+                seller,
+                upload,
+                digest(f"source-{upload}"),
+                ready_sha,
+                media_type,
+                media_type,
+                uuid4(),
+                digest(f"body-{upload}"),
+                uuid4(),
+            ),
+        )
+        connection.commit()
+
+    with psycopg.connect(ADMIN_URL) as connection:
+        row = connection.execute(
+            """
+            select draft.content_role, draft.download_allowed
+            from lesson_asset_draft draft
+            join app_private.asset_upload upload
+              on upload.seller_organization_id=draft.seller_organization_id
+             and upload.asset_id=draft.asset_id
+            where upload.id=%s
+            """,
+            (upload,),
+        ).fetchone()
+
+    assert row is not None, f"{media_type}: o material nao chegou ao rascunho da aula"
+    assert row[0] == "support_material", (
+        f"{media_type} nasceu como {row[0]} — o vendedor teria de corrigir na mao"
+    )
+    assert row[1] is True, f"{media_type} nasceu sem permissao de download e nao serve para nada"
+
+
+def test_o_player_declara_o_que_sabe_apresentar() -> None:
+    """A regra que decide o papel, exercitada formato a formato.
+
+    PDF e MP4 o player desenha — leitor paginado e player de vídeo. O resto o
+    aluno baixa. É a mesma regra que `learning_asset_media_contract_check`
+    declara desde a `0017`; a `0043` só lhe deu nome e um lugar só.
+    """
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        for media_type in SUPPORTED_MEDIA:
+            row = connection.execute(
+                "select app_private.player_renders_media(%s)", (media_type,)
+            ).fetchone()
+            assert row is not None
+            esperado = media_type in (PDF_MEDIA_TYPE, VIDEO_MEDIA_TYPE)
+            assert row[0] is esperado, f"{media_type}: o player diz {row[0]}, esperado {esperado}"
+        desconhecido = connection.execute(
+            "select app_private.player_renders_media('application/x-msdownload')"
+        ).fetchone()
+    assert desconhecido is not None and desconhecido[0] is False
