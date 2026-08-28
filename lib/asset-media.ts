@@ -67,8 +67,19 @@ function acceptList(mediaTypes: readonly string[]): string {
     .join(",");
 }
 
+/**
+ * Anexo é o que o aluno baixa, então o MP4 fica fora.
+ *
+ * Não é preferência de tela: o vídeo tem `downloadable: false` no catálogo, e
+ * `set_lesson_asset_policy` recusa download em vídeo. Oferecê-lo aqui deixaria o
+ * vendedor substituir um documento baixável por um vídeo e cair numa política
+ * que o servidor não aceita.
+ */
+export const ATTACHMENT_MEDIA = Object.keys(SUPPORTED_ASSET_MEDIA)
+  .filter((mediaType) => SUPPORTED_ASSET_MEDIA[mediaType].downloadable);
+
 export function acceptForContentRole(contentRole: "course_content" | "support_material"): string {
-  return contentRole === "course_content" ? acceptList(PLAYER_RENDERED_MEDIA) : ASSET_UPLOAD_ACCEPT;
+  return acceptList(contentRole === "course_content" ? PLAYER_RENDERED_MEDIA : ATTACHMENT_MEDIA);
 }
 
 /**

@@ -78,7 +78,31 @@ _RENDERS = """
     grant execute on function app_private.player_renders_media(text) to appsell_runtime;
 """
 
-_DROP_RENDERS = "drop function if exists app_private.player_renders_media(text);"
+# A outra metade da regra: o aluno recebe o arquivo inteiro? O PDF sim (baixar e
+# opcional), o video nao — `set_lesson_asset_policy` ja recusa download em video.
+# Deriva do catalogo da 0039 pelo mesmo caminho de `player_renders_media`, e o
+# teste de espelho amarra os dois lados ao catalogo Python.
+_DOWNLOADABLE = """
+    create or replace function app_private.asset_media_downloadable(p_media_type text)
+    returns boolean
+    language sql
+    immutable
+    set search_path to 'pg_catalog', 'app_private', 'public', 'pg_temp'
+    as $downloadable$
+      select exists (
+        select 1 from app_private.asset_media_spec(p_media_type) as s
+        where s.extension <> 'mp4'
+      )
+    $downloadable$;
+    alter function app_private.asset_media_downloadable(text) owner to appsell_owner;
+    revoke all on function app_private.asset_media_downloadable(text) from public;
+    grant execute on function app_private.asset_media_downloadable(text) to appsell_runtime;
+"""
+
+_DROP_RENDERS = (
+    "drop function if exists app_private.player_renders_media(text);"
+    "drop function if exists app_private.asset_media_downloadable(text);"
+)
 
 _INSERT_ANCHOR = """          insert into lesson_asset_draft(seller_organization_id,catalog_product_id,course_id,
             module_id,lesson_id,asset_id,asset_version,blob_id,position,status)
@@ -90,8 +114,15 @@ _INSERT_ANCHOR = """          insert into lesson_asset_draft(seller_organization
             updated_at=clock_timestamp();
 """
 
-# O `do update` de proposito NAO toca no papel: reenviar um arquivo nao pode
-# desfazer a classificacao que o vendedor ja deu.
+# O `do update` preserva a classificacao do vendedor: reenviar um arquivo nao
+# pode desfaze-la. Mas preservar as cegas grava estado invalido — substituir um
+# `.md` baixavel por um MP4 manteria `download_allowed=true` num video, e a
+# constraint da tabela nao pega isso: ela so exige que download implique
+# `support_material`, sem olhar a midia.
+#
+# Entao preserva o que continua valendo e normaliza o resto: um formato que o
+# player nao apresenta nunca fica como conteudo do curso, e um formato que o
+# aluno nao baixa nunca fica com download ligado.
 _INSERT_REPLACEMENT = """          insert into lesson_asset_draft(seller_organization_id,catalog_product_id,course_id,
             module_id,lesson_id,asset_id,asset_version,blob_id,position,status,
             content_role,download_allowed)
@@ -103,6 +134,12 @@ _INSERT_REPLACEMENT = """          insert into lesson_asset_draft(seller_organiz
             not app_private.player_renders_media(p_ready_media))
           on conflict(seller_organization_id,lesson_id,asset_id) do update set
             asset_version=excluded.asset_version,blob_id=excluded.blob_id,status='active',
+            content_role=case when app_private.player_renders_media(p_ready_media)
+              then lesson_asset_draft.content_role else 'support_material' end,
+            download_allowed=lesson_asset_draft.download_allowed
+              and app_private.asset_media_downloadable(p_ready_media)
+              and (not app_private.player_renders_media(p_ready_media)
+                or lesson_asset_draft.content_role='support_material'),
             updated_at=clock_timestamp();
 """
 
@@ -148,6 +185,7 @@ def _ready(old: str, new: str, label: str) -> str:
 
 def upgrade() -> None:
     op.execute(_RENDERS)
+    op.execute(_DOWNLOADABLE)
     op.execute(
         _patch(
             _FINALIZE_SIGNATURE,

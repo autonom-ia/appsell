@@ -686,6 +686,11 @@ export function LessonAssetPanel({
   const heading = attachments ? "Anexos e links" : "Conteúdo da aula";
   const noun = attachments ? "anexo" : "conteúdo";
   const otherRole: AssetView["content_role"] = attachments ? "course_content" : "support_material";
+  // Há dois painéis por aula. Sem o papel no identificador, os dois inputs de
+  // arquivo nascem com o mesmo `id`, e um `<label htmlFor>` ativa o primeiro do
+  // documento — "Adicionar anexo" abriria o seletor do painel de conteúdo e o
+  // arquivo entraria com o papel errado. O mesmo valia para os dois diálogos.
+  const panelId = `${lessonId}-${contentRole}`;
   const summary = !loaded
     ? "Abrir para carregar"
     : readyAssets.length > 0
@@ -744,8 +749,8 @@ export function LessonAssetPanel({
 
         {!archived && loaded ? <div className="asset-uploader">
           <div className="asset-file-picker">
-            <label className="asset-file-label" htmlFor={`asset-file-${lessonId}`} onClick={() => { replacementTargetRef.current = null; }}>{readyAssets.length > 0 ? `Adicionar outro ${noun}` : `Adicionar ${noun}`}</label>
-            <input ref={inputRef} id={`asset-file-${lessonId}`} type="file" accept={acceptForContentRole(contentRole)} onClick={resetReplacementOnDirectPickerClick} onChange={(event) => void selectFile(event)} disabled={busy}/>
+            <label className="asset-file-label" htmlFor={`asset-file-${panelId}`} onClick={() => { replacementTargetRef.current = null; }}>{readyAssets.length > 0 ? `Adicionar outro ${noun}` : `Adicionar ${noun}`}</label>
+            <input ref={inputRef} id={`asset-file-${panelId}`} type="file" accept={acceptForContentRole(contentRole)} onClick={resetReplacementOnDirectPickerClick} onChange={(event) => void selectFile(event)} disabled={busy}/>
           </div>
           {/* O rotulo dizia "Adicione um PDF ou vídeo MP4" e o seletor sempre aceitou
     nove formatos. O vendedor lia o rotulo, concluia que documento nao
@@ -757,7 +762,7 @@ export function LessonAssetPanel({
         <div className={`asset-feedback state-${state.phase}`} role="status" aria-live="polite" aria-atomic="true" tabIndex={state.phase === "failed" || state.phase === "delayed" ? -1 : undefined}>
           <span>{state.message}</span>
           {state.fileName ? <small>Material selecionado</small> : null}
-          {state.phase === "uploading" ? <><label className="sr-only" htmlFor={`asset-progress-${lessonId}`}>Progresso do envio</label><progress id={`asset-progress-${lessonId}`} aria-label="Progresso do envio" max="100" value={state.progress}>{state.progress}%</progress></> : null}
+          {state.phase === "uploading" ? <><label className="sr-only" htmlFor={`asset-progress-${panelId}`}>Progresso do envio</label><progress id={`asset-progress-${panelId}`} aria-label="Progresso do envio" max="100" value={state.progress}>{state.progress}%</progress></> : null}
           {uploadBusy ? <button className="secondary-button" type="button" onClick={() => void cancelUpload()}>Cancelar envio</button> : null}
           {state.phase === "failed" && !loaded ? <button className="secondary-button" type="button" onClick={() => void load()}>Recarregar materiais</button> : null}
           {state.phase === "delayed" ? <button className="secondary-button" type="button" onClick={retryVerification}>Verificar novamente</button> : null}
@@ -766,10 +771,10 @@ export function LessonAssetPanel({
       </div>
     </details>
 
-    {archiveTarget ? <AccessibleDialog titleId={`archive-asset-title-${lessonId}`} descriptionId={`archive-asset-description-${lessonId}`} initialFocusRef={archiveCancelRef} returnFocusRef={summaryRef} onClose={() => { if (!archiving) setArchiveTarget(null); }}>
+    {archiveTarget ? <AccessibleDialog titleId={`archive-asset-title-${panelId}`} descriptionId={`archive-asset-description-${panelId}`} initialFocusRef={archiveCancelRef} returnFocusRef={summaryRef} onClose={() => { if (!archiving) setArchiveTarget(null); }}>
       <p className="eyebrow">Remover material</p>
-      <h2 id={`archive-asset-title-${lessonId}`}>Remover este {archiveTarget ? mediaLabel(archiveTarget.media_type) : "material"} da aula?</h2>
-      <p id={`archive-asset-description-${lessonId}`}>Ele sairá do rascunho da aula <strong>{lessonTitle}</strong>. Publicações anteriores e alunos com acesso a elas continuarão usando a versão já publicada.</p>
+      <h2 id={`archive-asset-title-${panelId}`}>Remover este {archiveTarget ? mediaLabel(archiveTarget.media_type) : "material"} da aula?</h2>
+      <p id={`archive-asset-description-${panelId}`}>Ele sairá do rascunho da aula <strong>{lessonTitle}</strong>. Publicações anteriores e alunos com acesso a elas continuarão usando a versão já publicada.</p>
       {archiveError ? <p className="form-error" role="alert">{archiveError}</p> : null}
       <div className="dialog-actions"><button ref={archiveCancelRef} className="secondary-button" type="button" disabled={archiving} onClick={() => setArchiveTarget(null)}>Manter na aula</button><button className="danger-button" type="button" disabled={archiving} onClick={() => void archiveAsset()}>{archiving ? "Removendo…" : "Remover da aula"}</button></div>
     </AccessibleDialog> : null}

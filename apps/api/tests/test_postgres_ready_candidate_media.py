@@ -146,6 +146,60 @@ def _seed_upload(connection: psycopg.Connection[Any], media_type: str) -> tuple[
     return graph.seller, upload, digest(f"ready-{upload}")
 
 
+def _seed_replacement(
+    connection: psycopg.Connection[Any], seller: UUID, asset_id: UUID, media_type: str
+) -> tuple[UUID, str]:
+    """Um envio novo para um asset que já existe: o caminho de substituição."""
+    extension = SUPPORTED_MEDIA[media_type].extension
+    upload = uuid4()
+    row = connection.execute(
+        "select catalog_product_id,course_id,module_id,lesson_id,reserved_version "
+        "from app_private.asset_upload where asset_id=%s and seller_organization_id=%s "
+        "order by created_at desc limit 1",
+        (asset_id, seller),
+    ).fetchone()
+    assert row is not None
+    product, course, module, lesson, version = row
+    connection.execute(
+        f"""
+        insert into app_private.asset_upload(
+          seller_organization_id,id,identity_user_id,catalog_product_id,course_id,
+          module_id,lesson_id,asset_id,blob_id,reserved_version,title,file_name,
+          expected_media_type,expected_byte_size,expected_sha256,storage_driver,
+          quarantine_bucket,ready_bucket,quarantine_key,ready_key,observed_version_id,
+          observed_etag,status,expires_at
+        ) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'Material','material.{extension}',
+          %s,8192,%s,'s3','appsell-quarantine','appsell-ready',
+          %s,%s,'source-version','source-etag','verifying',
+          clock_timestamp()+interval '1 hour')
+        """,
+        (
+            seller,
+            upload,
+            OWNER,
+            product,
+            course,
+            module,
+            lesson,
+            asset_id,
+            uuid4(),
+            int(version) + 1,
+            media_type,
+            digest(f"source-{upload}"),
+            f"tenants/{seller}/quarantine/{upload}.{extension}",
+            f"tenants/{seller}/assets/{asset_id}/v{int(version) + 1}/original.{extension}",
+        ),
+    )
+    connection.execute(
+        "insert into app_private.asset_verification_job("
+        "seller_organization_id,upload_id,status,attempts,worker_id,lease_expires_at) "
+        "values(%s,%s,'leased',1,'media-worker',clock_timestamp()+interval '5 minutes')",
+        (seller, upload),
+    )
+    connection.commit()
+    return upload, digest(f"ready-{upload}")
+
+
 @pytest.fixture
 def limpeza() -> Iterator[list[tuple[UUID, UUID]]]:
     """Esvazia a fila de limpeza de storage que estes testes enchem.
@@ -326,3 +380,87 @@ def test_o_player_declara_o_que_sabe_apresentar() -> None:
             "select app_private.player_renders_media('application/x-msdownload')"
         ).fetchone()
     assert desconhecido is not None and desconhecido[0] is False
+
+
+def test_substituir_por_video_desliga_o_download_que_o_documento_tinha(
+    limpeza: list[tuple[UUID, UUID]],
+) -> None:
+    """Preservar a escolha do vendedor não pode gravar estado impossível.
+
+    O `on conflict do update` preserva a classificação — reenviar um arquivo não
+    desfaz o que o vendedor decidiu. Mas preservar às cegas é outra coisa:
+    trocar um `.md` baixável por um MP4 manteria `download_allowed=true` num
+    vídeo, e a constraint da tabela **não** pega isso. Ela só exige que download
+    implique `support_material`; a mídia ela não olha.
+
+    `set_lesson_asset_policy` recusaria essa combinação vinda da tela. Chegando
+    pelo `finalize`, entraria calada.
+    """
+    assert ADMIN_URL and RUNTIME_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        seller, upload, ready_sha = _seed_upload(connection, "text/markdown")
+    limpeza.append((seller, upload))
+
+    def verificar(media_type: str, upload_id: UUID, sha: str) -> None:
+        with psycopg.connect(RUNTIME_URL) as connection:
+            apply_context(connection, WORKER, None, "catalog.asset.verify")
+            connection.execute(
+                "select app_private.register_asset_ready_candidate("
+                "%s,%s,%s,'media-worker','ready-version','ready-etag',8192,%s,%s,%s,'clean')",
+                (WORKER, seller, upload_id, sha, media_type, media_type),
+            )
+            connection.execute(
+                """
+                select app_private.finalize_asset_verification(
+                  %s,%s,%s,'media-worker',8192,%s,8192,%s,%s,%s,'clean',
+                  'ready-version','ready-etag','ready',%s,%s,%s)
+                """,
+                (
+                    WORKER,
+                    seller,
+                    upload_id,
+                    digest(f"source-{upload_id}"),
+                    sha,
+                    media_type,
+                    media_type,
+                    uuid4(),
+                    digest(f"body-{upload_id}"),
+                    uuid4(),
+                ),
+            )
+            connection.commit()
+
+    verificar("text/markdown", upload, ready_sha)
+
+    with psycopg.connect(ADMIN_URL) as connection:
+        antes = connection.execute(
+            "select draft.content_role, draft.download_allowed from lesson_asset_draft draft "
+            "join app_private.asset_upload upload on upload.asset_id=draft.asset_id "
+            "and upload.seller_organization_id=draft.seller_organization_id where upload.id=%s",
+            (upload,),
+        ).fetchone()
+        assert antes == ("support_material", True)
+
+        # A substituição reusa o mesmo asset, com um envio novo.
+        asset_id = connection.execute(
+            "select asset_id from app_private.asset_upload where id=%s", (upload,)
+        ).fetchone()
+        assert asset_id is not None
+        substituicao, sha = _seed_replacement(connection, seller, asset_id[0], "video/mp4")
+    limpeza.append((seller, substituicao))
+
+    verificar("video/mp4", substituicao, sha)
+
+    with psycopg.connect(ADMIN_URL) as connection:
+        depois = connection.execute(
+            "select draft.content_role, draft.download_allowed from lesson_asset_draft draft "
+            "join app_private.asset_upload upload on upload.asset_id=draft.asset_id "
+            "and upload.seller_organization_id=draft.seller_organization_id where upload.id=%s",
+            (substituicao,),
+        ).fetchone()
+
+    assert depois is not None
+    assert depois[1] is False, "o video ficou com download ligado, herdado do documento"
+    assert depois[0] == "support_material", (
+        "o papel escolhido pelo vendedor foi desfeito pela substituicao"
+    )

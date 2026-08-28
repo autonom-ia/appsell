@@ -479,6 +479,13 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 }
 .asset-download-toggle input:disabled { cursor: not-allowed; opacity: .5; }
 .asset-download-toggle input:focus-visible { outline: 2px solid var(--blue); outline-offset: -8px; }
+/* Em alto contraste o desenho proprio some: a marca dependia de background e
+   box-shadow, que o modo substitui. Devolver o controle nativo mantem o estado
+   marcado distinguivel, e a area de toque continua sendo a do rotulo. */
+@media (forced-colors: active) {
+  .asset-download-toggle input { appearance: auto; -webkit-appearance: auto; width: 20px; height: 20px; }
+  .asset-download-toggle input::before { content: none; }
+}
 .asset-actions { min-width: 0; display: grid; grid-template-columns: minmax(0,1fr); gap: 8px; }
 .asset-uploader { display: grid; gap: 8px; }
 .asset-file-picker { position: relative; min-width: 0; min-height: 48px; }

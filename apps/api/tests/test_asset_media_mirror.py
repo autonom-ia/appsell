@@ -14,6 +14,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 from appsell_api.asset_media import SUPPORTED_MEDIA
 
 _TS = Path(__file__).resolve().parents[3] / "lib" / "asset-media.ts"
@@ -45,3 +47,42 @@ def test_o_navegador_nao_oferece_formato_que_o_servidor_recusa() -> None:
     servidor = {spec.extension for spec in SUPPORTED_MEDIA.values()}
     for extensao in _browser_limits():
         assert extensao in servidor, f".{extensao} é oferecido na tela e o servidor não conhece"
+
+
+def test_o_banco_concorda_com_o_catalogo_sobre_apresentar_e_baixar() -> None:
+    """As duas regras que decidem o papel do material, espelhadas.
+
+    `player_renders_media` e `asset_media_downloadable` derivam do catálogo por
+    extensão, e o revisor apontou o risco: se o catálogo ganhar outro formato
+    apresentável, ou outro que o aluno não baixe, o SQL continuaria respondendo
+    pelo par antigo sem nada acusar.
+
+    Este teste é a rede. Ele compara formato a formato contra
+    `SUPPORTED_MEDIA`, que é a fonte de onde o navegador e a API já derivam.
+    """
+    import os
+
+    import psycopg
+
+    admin_url = os.environ.get("APPSELL_TEST_POSTGRES_ADMIN_URL")
+    if not admin_url:
+        pytest.skip("isolated PostgreSQL environment is required")
+
+    from appsell_api.asset_media import PDF_MEDIA_TYPE, VIDEO_MEDIA_TYPE
+
+    with psycopg.connect(admin_url) as connection:
+        for media_type, spec in SUPPORTED_MEDIA.items():
+            apresenta = connection.execute(
+                "select app_private.player_renders_media(%s)", (media_type,)
+            ).fetchone()
+            baixa = connection.execute(
+                "select app_private.asset_media_downloadable(%s)", (media_type,)
+            ).fetchone()
+            assert apresenta is not None and baixa is not None
+            assert apresenta[0] is (media_type in (PDF_MEDIA_TYPE, VIDEO_MEDIA_TYPE)), (
+                f"{media_type}: o banco discorda sobre o player saber apresentar"
+            )
+            assert baixa[0] is spec.downloadable, (
+                f"{media_type}: catálogo diz downloadable={spec.downloadable} "
+                f"e o banco diz {baixa[0]}"
+            )
