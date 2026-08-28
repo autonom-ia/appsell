@@ -461,10 +461,16 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
    pode ser longa, e um card que aparece fora da tela e sem marca nenhuma e
    indistinguivel de um card que nao apareceu. */
 .asset-status-card.state-just-ready { border-color: var(--success); box-shadow: 0 0 0 3px rgba(22,163,74,.14); }
-.asset-status-card:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
-/* O card recem-pronto recebe foco por codigo. Sem outline proprio, o destaque
-   verde — que existe com e sem foco — nao diz onde o foco esta. */
-.asset-status-card.state-just-ready:focus { outline: 2px solid var(--blue); outline-offset: 2px; }
+/* O card so recebe foco por codigo, quando acaba de ficar pronto. `:focus`, e
+   nao `:focus-visible`: o destaque verde expira em 2,5 s e o foco continua ali,
+   e um foco sem indicador e um foco perdido. */
+.asset-status-card:focus { outline: 2px solid var(--blue); outline-offset: 2px; }
+/* Em alto contraste o box-shadow some e a borda e normalizada — o destaque
+   ficaria invisivel justamente para quem mais precisa dele. */
+@media (forced-colors: active) {
+  .asset-status-card.state-just-ready { outline: 3px solid Highlight; outline-offset: 2px; }
+  .asset-status-card:focus { outline: 3px solid Highlight; outline-offset: 2px; }
+}
 @media (prefers-reduced-motion: no-preference) {
   .asset-status-card.state-just-ready { animation: asset-just-ready 2.5s ease-out; }
   @keyframes asset-just-ready {

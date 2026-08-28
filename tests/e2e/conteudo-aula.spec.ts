@@ -212,7 +212,7 @@ test.describe("o painel em que se clica é a resposta", () => {
     await expect(conteudo).toContainText("Playbook_HUB2YOU_02_Gerador_Cotacoes_Comparativas.pdf");
     await expect(conteudo).not.toContainText("SKILL-01");
 
-    await expect(anexos.locator(".asset-status-card")).toHaveCount(2);
+    await expect(anexos.locator(".asset-status-card")).toHaveCount(2, { timeout: 20_000 });
     await expect(anexos).not.toContainText("Playbook_HUB2YOU_02");
   });
 
@@ -304,7 +304,7 @@ test.describe("o material verificado aparece onde o vendedor está olhando", () 
     const anexos = page.getByTestId(`lesson-${LESSON_ID}`)
       .locator("details").filter({ hasText: "Anexos e links" }).first();
     await anexos.locator("summary").click();
-    await expect(anexos.locator(".asset-status-card")).toHaveCount(2);
+    await expect(anexos.locator(".asset-status-card")).toHaveCount(2, { timeout: 20_000 });
 
     // `window.scrollY` não serve de prova: o shell tem o próprio container
     // rolável. O que prova o comportamento é a rolagem ter sido pedida, e para
@@ -359,5 +359,149 @@ test.describe("o material verificado aparece onde o vendedor está olhando", () 
     // acabou de chegar" em ruído permanente.
     await page.clock.runFor(3_000);
     await expect(cardNovo).not.toHaveClass(/state-just-ready/);
+  });
+});
+
+test.describe("o PDF em Anexos só entra na lista depois da política", () => {
+  /**
+   * O caminho de maior risco desta correção, e o único onde a corrida existe.
+   *
+   * O PDF é o único formato que os dois painéis aceitam. O banco o classifica
+   * como conteúdo da aula, então enviado em "Anexos e links" ele nasce filtrado
+   * para **fora** deste painel, e só entra quando o PATCH de política volta. O
+   * efeito que rola e destaca rodava antes disso, não encontrava o card, e não
+   * rodava de novo — o material aparecia sem destaque e sem levar o vendedor
+   * até ele.
+   */
+  const PDF_NOVO = {
+    id: "aa000000-0000-4000-8000-0000000000ff",
+    title: "Gerador de Cotações Comparativas",
+    file_name: "anexo-para-baixar.pdf",
+    byte_size: 4_096,
+    media_type: "application/pdf",
+    status: "ready",
+    content_role: "course_content",
+    download_allowed: false
+  };
+  const uploadId = "bb000000-0000-4000-8000-0000000000ff";
+
+  test("aparece com destaque e foco quando a política demora", async ({ page }) => {
+    await login(page);
+    await page.clock.install();
+    await openCurriculum(page);
+
+    let liberarPolitica: (() => void) | null = null;
+    const politicaPedida = new Promise<void>((resolve) => {
+      page.route("**/assets/*/policy", async (route) => {
+        resolve();
+        // A resposta só chega quando o teste mandar: é a demora que criava a
+        // corrida, e sem controlá-la o teste passaria por sorte.
+        await new Promise<void>((liberar) => { liberarPolitica = liberar; });
+        await route.fulfill({ json: {
+          asset_id: PDF_NOVO.id, content_role: "support_material",
+          download_allowed: true, course_version: 5, applied: true, replayed: false
+        } });
+      });
+    });
+
+    await page.route("**/assets/upload-intents", async (route) => {
+      await route.fulfill({ json: {
+        upload_id: uploadId,
+        asset_id: PDF_NOVO.id,
+        upload_url: "http://127.0.0.1:8333/appsell-quarantine/obj?X-Amz-Signature=assinado",
+        upload_origin: "http://127.0.0.1:8333",
+        expires_at: new Date(Date.now() + 300_000).toISOString(),
+        required_headers: {
+          "Content-Type": "application/pdf",
+          "x-amz-checksum-sha256": "checksum",
+          "x-amz-meta-appsell-upload-id": uploadId
+        }
+      } });
+    });
+    await page.route("http://127.0.0.1:8333/**", async (route) => {
+      await route.fulfill({ status: 200, headers: { etag: '"etag"' }, body: "" });
+    });
+    await page.route(`**/assets/uploads/${uploadId}/confirm`, async (route) => {
+      await route.fulfill({ status: 202, json: { upload_id: uploadId, status: "verifying" } });
+    });
+    await page.route(`**/assets/uploads/${uploadId}`, async (route) => {
+      if (route.request().method() !== "GET") return route.fallback();
+      await route.fulfill({ json: { upload_id: uploadId, status: "ready", asset: PDF_NOVO } });
+    });
+
+    const anexos = page.getByTestId(`lesson-${LESSON_ID}`)
+      .locator("details").filter({ hasText: "Anexos e links" }).first();
+    await anexos.locator("summary").click();
+    await expect(anexos.locator(".asset-status-card")).toHaveCount(2, { timeout: 20_000 });
+
+    await anexos.locator('input[type="file"]').setInputFiles({
+      name: PDF_NOVO.file_name,
+      mimeType: "application/pdf",
+      buffer: Buffer.from("%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF")
+    });
+
+    await politicaPedida;
+    // Enquanto a política não volta, o PDF é conteúdo da aula: ele não pertence
+    // a este painel, e mostrá-lo aqui seria mentir sobre o que já vale.
+    await expect(anexos.locator(".asset-status-card")).toHaveCount(2, { timeout: 20_000 });
+
+    liberarPolitica!();
+
+    await expect(anexos.locator(".asset-status-card")).toHaveCount(3);
+    const cardNovo = anexos.locator(".asset-status-card").filter({ hasText: PDF_NOVO.file_name });
+    await expect(cardNovo).toHaveClass(/state-just-ready/);
+    // O foco é a prova de que o efeito rodou **depois** do PATCH: antes dele o
+    // card nem existia neste painel. A lista aqui é curta e o card já nasce
+    // visível, então não rolar é o comportamento certo.
+    await expect(cardNovo).toBeFocused();
+  });
+
+  test("a política que falha não deixa o destaque pendurado", async ({ page }) => {
+    await login(page);
+    await page.clock.install();
+    await openCurriculum(page);
+
+    await page.route("**/assets/*/policy", async (route) => {
+      await route.fulfill({ status: 503, json: { error: "policy_unavailable" } });
+    });
+    await page.route("**/assets/upload-intents", async (route) => {
+      await route.fulfill({ json: {
+        upload_id: uploadId, asset_id: PDF_NOVO.id,
+        upload_url: "http://127.0.0.1:8333/appsell-quarantine/obj?X-Amz-Signature=assinado",
+        upload_origin: "http://127.0.0.1:8333",
+        expires_at: new Date(Date.now() + 300_000).toISOString(),
+        required_headers: {
+          "Content-Type": "application/pdf",
+          "x-amz-checksum-sha256": "checksum",
+          "x-amz-meta-appsell-upload-id": uploadId
+        }
+      } });
+    });
+    await page.route("http://127.0.0.1:8333/**", async (route) => {
+      await route.fulfill({ status: 200, headers: { etag: '"etag"' }, body: "" });
+    });
+    await page.route(`**/assets/uploads/${uploadId}/confirm`, async (route) => {
+      await route.fulfill({ status: 202, json: { upload_id: uploadId, status: "verifying" } });
+    });
+    await page.route(`**/assets/uploads/${uploadId}`, async (route) => {
+      if (route.request().method() !== "GET") return route.fallback();
+      await route.fulfill({ json: { upload_id: uploadId, status: "ready", asset: PDF_NOVO } });
+    });
+
+    const anexos = page.getByTestId(`lesson-${LESSON_ID}`)
+      .locator("details").filter({ hasText: "Anexos e links" }).first();
+    await anexos.locator("summary").click();
+    await anexos.locator('input[type="file"]').setInputFiles({
+      name: PDF_NOVO.file_name,
+      mimeType: "application/pdf",
+      buffer: Buffer.from("%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF")
+    });
+
+    await expect(anexos.getByRole("alert")).toContainText("Não foi possível salvar a permissão");
+    // O card nunca entra neste painel. Sem a rede de 15 s o identificador do
+    // destaque ficaria pendurado até o próximo envio, e o material seguinte
+    // nasceria sem destaque.
+    await page.clock.runFor(16_000);
+    await expect(anexos.locator(".state-just-ready")).toHaveCount(0);
   });
 });

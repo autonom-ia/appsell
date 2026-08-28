@@ -203,6 +203,7 @@ export function LessonAssetPanel({
   const summaryRef = useRef<HTMLElement>(null);
   const applyPanelRoleRef = useRef<(asset: AssetView) => void>(() => {});
   const justReadyRef = useRef<HTMLElement>(null);
+  const panelRef = useRef<HTMLDetailsElement>(null);
 
   const base = `/api/sellers/${sellerId}/products/${productId}/courses/${courseId}/modules/${moduleId}/lessons/${lessonId}/assets`;
   const uploadBusy = ["hashing", "creating", "uploading", "confirming", "verifying", "delayed"].includes(state.phase);
@@ -360,22 +361,27 @@ export function LessonAssetPanel({
     && asset.status === "ready" && asset.content_role === contentRole);
 
   useEffect(() => {
-    if (!justReadyId || !justReadyVisible) return;
+    if (!justReadyId) return;
     // Um quadro depois: o card acabou de entrar na lista e o painel ainda vai
     // crescer. Medir antes do layout assentar dá uma posição que deixa de valer
     // no quadro seguinte — e o card fica fora da vista mesmo tendo "rolado".
-    const quadro = window.requestAnimationFrame(() => {
+    const quadro = justReadyVisible ? window.requestAnimationFrame(() => {
       const card = justReadyRef.current;
       if (!card) return;
-      // Se o vendedor está em outro controle, a verificação terminou enquanto
-      // ele fazia outra coisa. Puxar a página e roubar o foco ali faria a
-      // próxima tecla dele ir para o lugar errado. O destaque continua, e é o
-      // suficiente para ele achar o material quando olhar.
+      // Se o vendedor está trabalhando **fora deste painel**, a verificação
+      // terminou enquanto ele fazia outra coisa. Puxar a página e roubar o foco
+      // ali faria a próxima tecla dele ir para o lugar errado; o destaque
+      // continua, e basta para ele achar o material quando olhar.
+      //
+      // Dentro do painel é o contrário: ele abriu este painel e clicou no botão
+      // de adicionar daqui. O `<summary>` que ele acabou de acionar retém o foco
+      // em alguns navegadores, e tratá-lo como "outro controle" impedia o card
+      // de receber o foco justamente de quem estava esperando por ele.
       const ativo = document.activeElement;
+      const painel = panelRef.current;
       const ocupado = ativo instanceof HTMLElement
         && ativo !== document.body
-        && !card.contains(ativo)
-        && (ativo.isContentEditable || /^(input|textarea|select|button|a)$/i.test(ativo.tagName));
+        && !(painel?.contains(ativo) ?? false);
       if (ocupado) return;
       // Rola só quando o card está inteiramente fora da janela; se já aparece,
       // a página não se mexe debaixo do vendedor.
@@ -385,12 +391,14 @@ export function LessonAssetPanel({
       // O foco leva quem navega por teclado ou leitor de tela até o material
       // que acabou de entrar.
       card.focus({ preventScroll: true });
-    });
-    // O destaque some sozinho. Marcar o card para sempre transformaria "este
-    // acabou de chegar" em ruído permanente.
-    const limpar = window.setTimeout(() => setJustReadyId(null), 2_500);
+    }) : null;
+    // O destaque some sozinho — marcá-lo para sempre transformaria "este acabou
+    // de chegar" em ruído permanente. E some mesmo que o card nunca apareça:
+    // se o PATCH de política falhar, o PDF fica fora deste painel, e sem esta
+    // rede o identificador ficaria pendurado até o próximo envio.
+    const limpar = window.setTimeout(() => setJustReadyId(null), justReadyVisible ? 2_500 : 15_000);
     return () => {
-      window.cancelAnimationFrame(quadro);
+      if (quadro !== null) window.cancelAnimationFrame(quadro);
       window.clearTimeout(limpar);
     };
   }, [justReadyId, justReadyVisible]);
@@ -796,7 +804,7 @@ export function LessonAssetPanel({
         : `Nenhum ${noun}`;
 
   return <div className="lesson-assets">
-    <details onToggle={(event) => setOpened(event.currentTarget.open)}>
+    <details ref={panelRef} onToggle={(event) => setOpened(event.currentTarget.open)}>
       <summary ref={summaryRef}><span>{heading}</span><small>{summary}</small></summary>
       <p className="asset-panel-hint">{attachments
         ? "Documentos, planilhas, apresentações, links e vídeos. O aluno pode baixar ou abrir."
