@@ -97,7 +97,9 @@ function curriculum() {
   };
 }
 
-async function openCurriculum(page: Page, assets = [PDF, MARKDOWN, TEXTO]) {
+type MaterialView = typeof PDF;
+
+async function openCurriculum(page: Page, assets: MaterialView[] = [PDF, MARKDOWN, TEXTO]) {
   await page.route(`**/api/sellers/${SELLER_ID}/products/${PRODUCT_ID}`, async (route) => {
     if (route.request().method() !== "GET") return route.fallback();
     await route.fulfill({ json: {
@@ -275,9 +277,12 @@ test.describe("o material verificado aparece onde o vendedor está olhando", () 
       download_allowed: true
     };
     const uploadId = "bb000000-0000-4000-8000-000000000001";
+    // A lista do servidor, que o teste muta quando a verificação termina — como
+    // o servidor real faz. O painel vai buscá-la em vez de montá-la sozinho.
+    const lista: MaterialView[] = [PDF, MARKDOWN, TEXTO];
 
     await page.clock.install();
-    await openCurriculum(page);
+    await openCurriculum(page, lista);
     await page.route("**/assets/upload-intents", async (route) => {
       await route.fulfill({ json: {
         upload_id: uploadId,
@@ -302,6 +307,9 @@ test.describe("o material verificado aparece onde o vendedor está olhando", () 
     });
     await page.route(`**/assets/uploads/${uploadId}`, async (route) => {
       if (route.request().method() !== "GET") return route.fallback();
+      // O servidor passa a conhecer o material. É dele que o painel vai buscar
+      // a lista — ordem e papel vêm de quem grava, não de um palpite do cliente.
+      if (!lista.some((asset) => asset.id === NOVO.id)) lista.push(NOVO);
       await route.fulfill({ json: { upload_id: uploadId, status: "ready", asset: NOVO } });
     });
 
@@ -392,7 +400,8 @@ test.describe("o PDF em Anexos só entra na lista depois da política", () => {
   test("aparece com destaque e foco quando a política demora", async ({ page }) => {
     await login(page);
     await page.clock.install();
-    await openCurriculum(page);
+    const lista: MaterialView[] = [PDF, MARKDOWN, TEXTO];
+    await openCurriculum(page, lista);
 
     let liberarPolitica: (() => void) | null = null;
     let registrada: Promise<unknown> = Promise.resolve();
@@ -402,6 +411,9 @@ test.describe("o PDF em Anexos só entra na lista depois da política", () => {
         // A resposta só chega quando o teste mandar: é a demora que criava a
         // corrida, e sem controlá-la o teste passaria por sorte.
         await new Promise<void>((liberar) => { liberarPolitica = liberar; });
+        // Só agora o servidor o conhece como anexo: antes da política ele é
+        // conteúdo da aula, e a lista deste painel não o traz.
+        lista.push({ ...PDF_NOVO, content_role: "support_material", download_allowed: true });
         await route.fulfill({ json: {
           asset_id: PDF_NOVO.id, content_role: "support_material",
           download_allowed: true, course_version: 5, applied: true, replayed: false
@@ -465,7 +477,8 @@ test.describe("o PDF em Anexos só entra na lista depois da política", () => {
   test("a política que falha avisa o vendedor e não põe o PDF nos anexos", async ({ page }) => {
     await login(page);
     await page.clock.install();
-    await openCurriculum(page);
+    // A política falha, então o servidor nunca passa a listá-lo como anexo.
+    await openCurriculum(page, [PDF, MARKDOWN, TEXTO]);
 
     await page.route("**/assets/*/policy", async (route) => {
       await route.fulfill({ status: 503, json: { error: "policy_unavailable" } });

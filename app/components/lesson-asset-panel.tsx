@@ -27,24 +27,6 @@ const ALLOWED_UPLOAD_HEADERS = new Set([
 export const ASSET_DISCARD_REQUEST_EVENT = "appsell:asset-discard-request";
 
 /**
- * Onde o material recém-verificado entra na lista.
- *
- * O servidor ordena por `position`, então o material novo é o **último**. O
- * cliente o punha no topo, e o vendedor — que estava no fim da lista, onde fica
- * o botão de adicionar — via "pronto para publicar" e nenhum card novo por
- * perto. Concluía, com razão, que não tinha entrado. Recarregar a página fazia
- * o card pular do topo para o fim.
- *
- * Substituir é outro caso: a `position` não muda no banco, então o card fica
- * onde estava. Mandá-lo para o fim reorganizaria a lista na cara do vendedor.
- */
-export function withReadyAsset<T extends { id: string }>(assets: readonly T[], ready: T): T[] {
-  const posicao = assets.findIndex((asset) => asset.id === ready.id);
-  if (posicao === -1) return [...assets, ready];
-  return assets.map((asset, indice) => (indice === posicao ? ready : asset));
-}
-
-/**
  * O rótulo diz qual formato o aluno vai baixar.
  *
  * Dizia "PDF" em todo card, inclusive num markdown de 10 KiB.
@@ -182,6 +164,7 @@ export function LessonAssetPanel({
   const [policySavingId, setPolicySavingId] = useState<string | null>(null);
   const [policyError, setPolicyError] = useState("");
   const [justReadyId, setJustReadyId] = useState<string | null>(null);
+  const [refreshFailed, setRefreshFailed] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const xhrRef = useRef<XMLHttpRequest | null>(null);
   const hashControllerRef = useRef<AbortController | null>(null);
@@ -288,8 +271,24 @@ export function LessonAssetPanel({
     return () => window.removeEventListener(ASSET_DISCARD_REQUEST_EVENT, requestDiscard);
   }, [discardCurrentUpload, state.phase, state.uploadId]);
 
-  const load = useCallback(async () => {
-    dispatch({ type: "phase", phase: "loading", message: "Carregando materiais…" });
+  /**
+   * Carregar e revalidar não são a mesma coisa.
+   *
+   * Carregar é a primeira vez: não há nada na tela, e mostrar "Carregando
+   * materiais…" é o certo. Revalidar acontece depois que o vendedor fez algo —
+   * ali a mesma mensagem apagaria o "pronto para publicar" e faria o painel
+   * piscar em cima de quem está olhando.
+   *
+   * Revalidar é o que faz o material aparecer depois do envio. Antes disto o
+   * painel tentava montar a lista sozinho a partir do que vinha na resposta da
+   * verificação — o que exigia ter adivinhado certo o formato daquele dado.
+   * Perguntar ao servidor dispensa o palpite: a lista vem ordenada e com o
+   * papel que de fato está gravado.
+   */
+  const load = useCallback(async (mode: "initial" | "revalidate" = "initial") => {
+    const initial = mode === "initial";
+    if (initial) dispatch({ type: "phase", phase: "loading", message: "Carregando materiais…" });
+    setRefreshFailed(false);
     try {
       const response = await boundedFetch(base, { cache: "no-store" }, 10_000);
       if (!response.ok) throw new Error("asset_list_failed");
@@ -299,6 +298,9 @@ export function LessonAssetPanel({
       setUploads(payload.uploads);
       setCsrf(payload.csrf);
       setLoaded(true);
+      // Numa revalidação a mensagem é do que o vendedor acabou de fazer, e
+      // trocá-la aqui apagaria a resposta que ele estava esperando.
+      if (!initial) return;
       const active = payload.uploads.find((upload) => ["pending", "uploaded", "verifying"].includes(upload.status));
       if (active) {
         activeUploadIdRef.current = active.id;
@@ -309,6 +311,9 @@ export function LessonAssetPanel({
         dispatch({ type: "reset" });
       }
     } catch {
+      // Falhar calado aqui devolveria o vendedor à dúvida que este caminho
+      // existe para acabar: o arquivo subiu, e a lista não mostra.
+      if (!initial) return setRefreshFailed(true);
       dispatch({ type: "phase", phase: "failed", message: "Não foi possível carregar os materiais. Tente novamente." });
     }
   }, [base, boundedFetch]);
@@ -447,12 +452,15 @@ export function LessonAssetPanel({
           verificationStartedAtRef.current = null;
           replacementTargetRef.current = null;
           applyPanelRoleRef.current(payload.asset);
-          setAssets((current) => withReadyAsset(current, payload.asset!));
+          setUploads((current) => current.filter((upload) => upload.id !== uploadId));
+          dispatch({ type: "phase", phase: "ready", message: `${mediaLabel(payload.asset.media_type)} pronto para publicar.`, uploadId });
+          // A lista vem do servidor, não de um palpite sobre a resposta da
+          // verificação. É o que faz o material aparecer sem o vendedor ter de
+          // recarregar a página para descobrir se subiu.
+          void load("revalidate");
           // E leva o vendedor até ele: a lista pode ser longa, e um card que
           // aparece fora da tela é indistinguível de um card que não apareceu.
           setJustReadyId(payload.asset.id);
-          setUploads((current) => current.filter((upload) => upload.id !== uploadId));
-          dispatch({ type: "phase", phase: "ready", message: `${mediaLabel(payload.asset.media_type)} pronto para publicar.`, uploadId });
           pollingUploadRef.current = null;
           if (inputRef.current) inputRef.current.value = "";
           onCommitted();
@@ -493,7 +501,7 @@ export function LessonAssetPanel({
       }
     };
     void run();
-  }, [base, boundedFetch, onCommitted]);
+  }, [base, boundedFetch, load, onCommitted]);
 
   const retryVerification = useCallback(() => {
     const uploadId = state.uploadId ?? activeUploadIdRef.current;
@@ -765,9 +773,11 @@ export function LessonAssetPanel({
           body
         }, 8_000);
         if (!response.ok) throw new Error(`policy_${response.status}`);
-        setAssets((current) => current.map((entry) => entry.id === asset.id
-          ? { ...entry, content_role: role, download_allowed: safeDownload }
-          : entry));
+        // De novo do servidor, e não uma edição na lista local. Mover um
+        // material entre painéis muda de que lista ele faz parte, e uma
+        // atualização local só acerta quando ele já está na lista que estamos
+        // editando — o que não é o caso de um PDF que acabou de virar anexo.
+        void load("revalidate");
         policyKeysRef.current.delete(operation);
         dispatch({
           type: "phase",
@@ -857,6 +867,10 @@ export function LessonAssetPanel({
           </div> : null}
         </article>)}
         {policyError ? <p className="form-error" role="alert">{policyError}</p> : null}
+        {refreshFailed ? <p className="form-error asset-refresh-failed" role="alert">
+          <span>Seu arquivo foi salvo, mas não foi possível atualizar esta lista.</span>
+          <button className="secondary-button" type="button" disabled={busy} onClick={() => void load("revalidate")}>Atualizar lista</button>
+        </p> : null}
         {children}
 
         {!archived && loaded ? <div className="asset-uploader">
