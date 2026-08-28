@@ -1,4 +1,8 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect as expectBase, test, type Page } from "@playwright/test";
+
+// Ver o comentário no topo: 20 s cobrem o carregamento sob carga da suíte
+// inteira. As asserções continuam medindo comportamento; só a paciência muda.
+const expect = expectBase.configure({ timeout: 20_000 });
 
 /**
  * O painel de conteúdo da aula, do ponto de vista de quem cadastra um produto.
@@ -212,7 +216,7 @@ test.describe("o painel em que se clica é a resposta", () => {
     await expect(conteudo).toContainText("Playbook_HUB2YOU_02_Gerador_Cotacoes_Comparativas.pdf");
     await expect(conteudo).not.toContainText("SKILL-01");
 
-    await expect(anexos.locator(".asset-status-card")).toHaveCount(2, { timeout: 20_000 });
+    await expect(anexos.locator(".asset-status-card")).toHaveCount(2);
     await expect(anexos).not.toContainText("Playbook_HUB2YOU_02");
   });
 
@@ -304,7 +308,7 @@ test.describe("o material verificado aparece onde o vendedor está olhando", () 
     const anexos = page.getByTestId(`lesson-${LESSON_ID}`)
       .locator("details").filter({ hasText: "Anexos e links" }).first();
     await anexos.locator("summary").click();
-    await expect(anexos.locator(".asset-status-card")).toHaveCount(2, { timeout: 20_000 });
+    await expect(anexos.locator(".asset-status-card")).toHaveCount(2);
 
     // `window.scrollY` não serve de prova: o shell tem o próprio container
     // rolável. O que prova o comportamento é a rolagem ter sido pedida, e para
@@ -391,8 +395,9 @@ test.describe("o PDF em Anexos só entra na lista depois da política", () => {
     await openCurriculum(page);
 
     let liberarPolitica: (() => void) | null = null;
+    let registrada: Promise<unknown> = Promise.resolve();
     const politicaPedida = new Promise<void>((resolve) => {
-      page.route("**/assets/*/policy", async (route) => {
+      registrada = page.route("**/assets/*/policy", async (route) => {
         resolve();
         // A resposta só chega quando o teste mandar: é a demora que criava a
         // corrida, e sem controlá-la o teste passaria por sorte.
@@ -403,6 +408,7 @@ test.describe("o PDF em Anexos só entra na lista depois da política", () => {
         } });
       });
     });
+    await registrada;
 
     await page.route("**/assets/upload-intents", async (route) => {
       await route.fulfill({ json: {
@@ -432,7 +438,7 @@ test.describe("o PDF em Anexos só entra na lista depois da política", () => {
     const anexos = page.getByTestId(`lesson-${LESSON_ID}`)
       .locator("details").filter({ hasText: "Anexos e links" }).first();
     await anexos.locator("summary").click();
-    await expect(anexos.locator(".asset-status-card")).toHaveCount(2, { timeout: 20_000 });
+    await expect(anexos.locator(".asset-status-card")).toHaveCount(2);
 
     await anexos.locator('input[type="file"]').setInputFiles({
       name: PDF_NOVO.file_name,
@@ -443,7 +449,7 @@ test.describe("o PDF em Anexos só entra na lista depois da política", () => {
     await politicaPedida;
     // Enquanto a política não volta, o PDF é conteúdo da aula: ele não pertence
     // a este painel, e mostrá-lo aqui seria mentir sobre o que já vale.
-    await expect(anexos.locator(".asset-status-card")).toHaveCount(2, { timeout: 20_000 });
+    await expect(anexos.locator(".asset-status-card")).toHaveCount(2);
 
     liberarPolitica!();
 
@@ -456,7 +462,7 @@ test.describe("o PDF em Anexos só entra na lista depois da política", () => {
     await expect(cardNovo).toBeFocused();
   });
 
-  test("a política que falha não deixa o destaque pendurado", async ({ page }) => {
+  test("a política que falha avisa o vendedor e não engole o material", async ({ page }) => {
     await login(page);
     await page.clock.install();
     await openCurriculum(page);
@@ -497,11 +503,15 @@ test.describe("o PDF em Anexos só entra na lista depois da política", () => {
       buffer: Buffer.from("%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF")
     });
 
+    // O vendedor precisa saber. O pior desfecho aqui seria o silêncio: o
+    // arquivo subiu, foi verificado, e não está em painel nenhum.
     await expect(anexos.getByRole("alert")).toContainText("Não foi possível salvar a permissão");
-    // O card nunca entra neste painel. Sem a rede de 15 s o identificador do
-    // destaque ficaria pendurado até o próximo envio, e o material seguinte
-    // nasceria sem destaque.
-    await page.clock.runFor(16_000);
-    await expect(anexos.locator(".state-just-ready")).toHaveCount(0);
+    // E não entra nos anexos: enquanto a política não valer, ele continua sendo
+    // conteúdo da aula, e mostrá-lo aqui seria mentir sobre o que está gravado.
+    // A mensagem pede para recarregar, que é onde ele reaparece no painel certo
+    // — cada painel é uma instância com a própria lista, e a do outro só
+    // conhece o material novo depois de recarregar.
+    await expect(anexos.locator(".asset-status-card")).toHaveCount(2);
+    await expect(anexos.getByRole("alert")).toContainText("Recarregue");
   });
 });

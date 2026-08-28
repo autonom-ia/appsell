@@ -383,19 +383,26 @@ export function LessonAssetPanel({
         && ativo !== document.body
         && !(painel?.contains(ativo) ?? false);
       if (ocupado) return;
-      // Rola só quando o card está inteiramente fora da janela; se já aparece,
-      // a página não se mexe debaixo do vendedor.
-      const caixa = card.getBoundingClientRect();
-      const aparece = caixa.bottom > 0 && caixa.top < window.innerHeight;
-      if (!aparece) card.scrollIntoView({ block: "center" });
+      // `nearest` já é "mova o mínimo necessário": se o card aparece, a página
+      // não se mexe debaixo do vendedor; se não aparece, ele entra.
+      //
+      // Medir a posição e decidir aqui era mais frágil do que parecia: um
+      // quadro depois do render o painel às vezes ainda não assentou, e sob
+      // carga a conta saía de uma geometria que deixava de valer no quadro
+      // seguinte — o card ficava fora da vista tendo "rolado".
+      card.scrollIntoView({ block: "nearest" });
       // O foco leva quem navega por teclado ou leitor de tela até o material
       // que acabou de entrar.
       card.focus({ preventScroll: true });
     }) : null;
     // O destaque some sozinho — marcá-lo para sempre transformaria "este acabou
-    // de chegar" em ruído permanente. E some mesmo que o card nunca apareça:
-    // se o PATCH de política falhar, o PDF fica fora deste painel, e sem esta
-    // rede o identificador ficaria pendurado até o próximo envio.
+    // de chegar" em ruído permanente.
+    //
+    // Os 15 s são higiene, não comportamento: se o PATCH de política falhar, o
+    // PDF nunca entra neste painel e nada na tela muda quando o identificador
+    // é solto. Ele existe para o estado não ficar preso a um material que já
+    // não vai chegar — e por não produzir efeito visível, não tem teste de
+    // comportamento. Dizer que tem seria pior do que não ter.
     const limpar = window.setTimeout(() => setJustReadyId(null), justReadyVisible ? 2_500 : 15_000);
     return () => {
       if (quadro !== null) window.cancelAnimationFrame(quadro);
