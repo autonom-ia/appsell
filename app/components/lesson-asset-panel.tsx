@@ -433,24 +433,11 @@ export function LessonAssetPanel({
       replacementTargetRef.current = null;
       return;
     }
-    const previousUploadId = activeUploadIdRef.current;
-    if (previousUploadId) {
-      try {
-        await cancelIntent(previousUploadId);
-        activeUploadIdRef.current = null;
-        onCommitted();
-      } catch {
-        dispatch({ type: "phase", phase: "failed", message: "O envio anterior ainda não foi cancelado com segurança. Tente novamente em instantes.", uploadId: previousUploadId });
-        return;
-      }
-    }
-    stopTransientWork();
-    const generation = generationRef.current;
+    // Antes de qualquer requisição. O `accept` do input é dica — quem escolhe
+    // "todos os arquivos" no seletor do sistema passa por cima —, e recusar
+    // depois de cancelar o envio anterior faria uma escolha inválida derrubar
+    // trabalho válido.
     const mediaType = selectedMediaType(file);
-    // O `accept` do input é dica: quem escolhe "todos os arquivos" no seletor
-    // do sistema passa por cima. Sem esta recusa, um documento entrava pelo
-    // painel de conteúdo e o passo seguinte o marcava como conteúdo do curso,
-    // desfazendo a normalização que o banco tinha acabado de fazer.
     if (mediaType && !mediaFitsContentRole(mediaType, contentRole)) {
       dispatch({
         type: "phase",
@@ -460,9 +447,26 @@ export function LessonAssetPanel({
           : "Este formato o aluno abre fora da aula. Envie-o em Anexos e links.",
         fileName: file.name
       });
-      if (inputRef.current) inputRef.current.value = "";
+      event.target.value = "";
+      replacementTargetRef.current = null;
       return;
     }
+    const previousUploadId = activeUploadIdRef.current;
+    if (previousUploadId) {
+      try {
+        await cancelIntent(previousUploadId);
+        activeUploadIdRef.current = null;
+        onCommitted();
+      } catch {
+        dispatch({ type: "phase", phase: "failed", message: "O envio anterior ainda não foi cancelado com segurança. Tente novamente em instantes.", uploadId: previousUploadId });
+        // Sem limpar, reescolher o mesmo arquivo não dispara outro `change` e o
+        // vendedor fica sem saída.
+        event.target.value = "";
+        return;
+      }
+    }
+    stopTransientWork();
+    const generation = generationRef.current;
     const maximum = assetMediaLimit(mediaType);
     if (!mediaType || file.size < 1 || file.size > maximum) {
       dispatch({ type: "phase", phase: "failed", message: uploadRefusalMessage(file), fileName: file.name });
