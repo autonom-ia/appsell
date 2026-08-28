@@ -1,4 +1,8 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect as expectBase, test, type Page } from "@playwright/test";
+
+// Ver o comentário no topo: 20 s cobrem o carregamento sob carga da suíte
+// inteira. As asserções continuam medindo comportamento; só a paciência muda.
+const expect = expectBase.configure({ timeout: 20_000 });
 
 /**
  * O painel de conteúdo da aula, do ponto de vista de quem cadastra um produto.
@@ -253,5 +257,261 @@ test.describe("o painel em que se clica é a resposta", () => {
     // complementar" — e foi por isso que o vendedor procurou o arquivo no lugar
     // errado. Agora arquivo, link e vídeo dividem o mesmo lugar.
     await expect(anexos.getByRole("heading", { name: /Material complementar/ })).toBeVisible();
+  });
+});
+
+test.describe("o material verificado aparece onde o vendedor está olhando", () => {
+  test("entra no fim da lista, e não no topo fora da tela", async ({ page }) => {
+    await login(page);
+
+    const NOVO = {
+      id: "aa000000-0000-4000-8000-00000000000f",
+      title: "Gerador de Cotações Comparativas",
+      file_name: "INSTRUCOES_PROJETO.md",
+      byte_size: 8_192,
+      media_type: "text/markdown",
+      status: "ready",
+      content_role: "support_material",
+      download_allowed: true
+    };
+    const uploadId = "bb000000-0000-4000-8000-000000000001";
+
+    await page.clock.install();
+    await openCurriculum(page);
+    await page.route("**/assets/upload-intents", async (route) => {
+      await route.fulfill({ json: {
+        upload_id: uploadId,
+        asset_id: NOVO.id,
+        upload_url: "http://127.0.0.1:8333/appsell-quarantine/obj?X-Amz-Signature=assinado",
+        upload_origin: "http://127.0.0.1:8333",
+        // `validIntent` recusa validade acima de 330 s: uma assinatura de vida
+        // longa demais e uma assinatura vazada valem quase a mesma coisa.
+        expires_at: new Date(Date.now() + 300_000).toISOString(),
+        required_headers: {
+          "Content-Type": "text/markdown",
+          "x-amz-checksum-sha256": "checksum",
+          "x-amz-meta-appsell-upload-id": uploadId
+        }
+      } });
+    });
+    await page.route("http://127.0.0.1:8333/**", async (route) => {
+      await route.fulfill({ status: 200, headers: { etag: '"etag"' }, body: "" });
+    });
+    await page.route(`**/assets/uploads/${uploadId}/confirm`, async (route) => {
+      await route.fulfill({ status: 202, json: { upload_id: uploadId, status: "verifying" } });
+    });
+    await page.route(`**/assets/uploads/${uploadId}`, async (route) => {
+      if (route.request().method() !== "GET") return route.fallback();
+      await route.fulfill({ json: { upload_id: uploadId, status: "ready", asset: NOVO } });
+    });
+
+    const anexos = page.getByTestId(`lesson-${LESSON_ID}`)
+      .locator("details").filter({ hasText: "Anexos e links" }).first();
+    await anexos.locator("summary").click();
+    await expect(anexos.locator(".asset-status-card")).toHaveCount(2);
+
+    // `window.scrollY` não serve de prova: o shell tem o próprio container
+    // rolável. O que prova o comportamento é a rolagem ter sido pedida, e para
+    // qual elemento — combinada com o card acabar visível.
+    await page.evaluate(() => {
+      const janela = window as unknown as { __rolou: string[] };
+      janela.__rolou = [];
+      const original = Element.prototype.scrollIntoView;
+      Element.prototype.scrollIntoView = function (this: Element, ...args: unknown[]) {
+        const resultado = (original as (...a: unknown[]) => void).apply(this, args);
+        // Registrar DEPOIS de rolar. Registrando antes, o teste via a marca e
+        // media a posição enquanto a rolagem ainda não tinha acontecido — o que
+        // só aparecia com a suíte inteira sob carga.
+        janela.__rolou.push((this as HTMLElement).className || this.tagName);
+        return resultado;
+      } as typeof Element.prototype.scrollIntoView;
+    });
+
+    await anexos.locator('input[type="file"]').setInputFiles({
+      name: NOVO.file_name,
+      mimeType: "text/markdown",
+      buffer: Buffer.from("# instruções\n")
+    });
+
+    await expect(anexos.locator(".asset-status-card")).toHaveCount(3);
+    // Sem esta asserção o teste passaria mesmo sem existir rolagem nenhuma,
+    // bastando o card cair por acaso dentro da janela.
+    await expect.poll(() => page.evaluate(
+      () => (window as unknown as { __rolou: string[] }).__rolou.join(" | ")
+    )).toContain("state-just-ready");
+    // O defeito: o card entrava no topo. O vendedor estava no fim da lista,
+    // perto do botão de adicionar, e via a mensagem de pronto sem card nenhum
+    // por perto — e concluía, com razão, que não tinha entrado. Recarregar
+    // fazia o card pular do topo para o fim, porque o servidor ordena por
+    // `position`.
+    const nomes = await anexos.locator(".asset-status-card .asset-file-name").allInnerTexts();
+    expect(nomes[nomes.length - 1]).toBe(NOVO.file_name);
+
+    // E o vendedor é levado até ele, com destaque que some sozinho.
+    const cardNovo = anexos.locator(".asset-status-card").filter({ hasText: NOVO.file_name });
+    await expect(cardNovo).toHaveClass(/state-just-ready/);
+    // `toBeInViewport` mede uma vez a cada tentativa do locator e, com a suíte
+    // inteira sob carga, chegava a medir entre o quadro em que a rolagem foi
+    // pedida e o quadro em que ela assentou. Medido de dentro, o poll refaz a
+    // conta até o layout parar — o card fica com `top` bem abaixo da altura da
+    // janela nos dois navegadores.
+    await expect.poll(() => cardNovo.evaluate((card) => {
+      const caixa = card.getBoundingClientRect();
+      return caixa.top < window.innerHeight && caixa.bottom > 0;
+    })).toBe(true);
+    // O destaque some sozinho: marcar o card para sempre transformaria "este
+    // acabou de chegar" em ruído permanente.
+    await page.clock.runFor(3_000);
+    await expect(cardNovo).not.toHaveClass(/state-just-ready/);
+  });
+});
+
+test.describe("o PDF em Anexos só entra na lista depois da política", () => {
+  /**
+   * O caminho de maior risco desta correção, e o único onde a corrida existe.
+   *
+   * O PDF é o único formato que os dois painéis aceitam. O banco o classifica
+   * como conteúdo da aula, então enviado em "Anexos e links" ele nasce filtrado
+   * para **fora** deste painel, e só entra quando o PATCH de política volta. O
+   * efeito que rola e destaca rodava antes disso, não encontrava o card, e não
+   * rodava de novo — o material aparecia sem destaque e sem levar o vendedor
+   * até ele.
+   */
+  const PDF_NOVO = {
+    id: "aa000000-0000-4000-8000-0000000000ff",
+    title: "Gerador de Cotações Comparativas",
+    file_name: "anexo-para-baixar.pdf",
+    byte_size: 4_096,
+    media_type: "application/pdf",
+    status: "ready",
+    content_role: "course_content",
+    download_allowed: false
+  };
+  const uploadId = "bb000000-0000-4000-8000-0000000000ff";
+
+  test("aparece com destaque e foco quando a política demora", async ({ page }) => {
+    await login(page);
+    await page.clock.install();
+    await openCurriculum(page);
+
+    let liberarPolitica: (() => void) | null = null;
+    let registrada: Promise<unknown> = Promise.resolve();
+    const politicaPedida = new Promise<void>((resolve) => {
+      registrada = page.route("**/assets/*/policy", async (route) => {
+        resolve();
+        // A resposta só chega quando o teste mandar: é a demora que criava a
+        // corrida, e sem controlá-la o teste passaria por sorte.
+        await new Promise<void>((liberar) => { liberarPolitica = liberar; });
+        await route.fulfill({ json: {
+          asset_id: PDF_NOVO.id, content_role: "support_material",
+          download_allowed: true, course_version: 5, applied: true, replayed: false
+        } });
+      });
+    });
+    await registrada;
+
+    await page.route("**/assets/upload-intents", async (route) => {
+      await route.fulfill({ json: {
+        upload_id: uploadId,
+        asset_id: PDF_NOVO.id,
+        upload_url: "http://127.0.0.1:8333/appsell-quarantine/obj?X-Amz-Signature=assinado",
+        upload_origin: "http://127.0.0.1:8333",
+        expires_at: new Date(Date.now() + 300_000).toISOString(),
+        required_headers: {
+          "Content-Type": "application/pdf",
+          "x-amz-checksum-sha256": "checksum",
+          "x-amz-meta-appsell-upload-id": uploadId
+        }
+      } });
+    });
+    await page.route("http://127.0.0.1:8333/**", async (route) => {
+      await route.fulfill({ status: 200, headers: { etag: '"etag"' }, body: "" });
+    });
+    await page.route(`**/assets/uploads/${uploadId}/confirm`, async (route) => {
+      await route.fulfill({ status: 202, json: { upload_id: uploadId, status: "verifying" } });
+    });
+    await page.route(`**/assets/uploads/${uploadId}`, async (route) => {
+      if (route.request().method() !== "GET") return route.fallback();
+      await route.fulfill({ json: { upload_id: uploadId, status: "ready", asset: PDF_NOVO } });
+    });
+
+    const anexos = page.getByTestId(`lesson-${LESSON_ID}`)
+      .locator("details").filter({ hasText: "Anexos e links" }).first();
+    await anexos.locator("summary").click();
+    await expect(anexos.locator(".asset-status-card")).toHaveCount(2);
+
+    await anexos.locator('input[type="file"]').setInputFiles({
+      name: PDF_NOVO.file_name,
+      mimeType: "application/pdf",
+      buffer: Buffer.from("%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF")
+    });
+
+    await politicaPedida;
+    // Enquanto a política não volta, o PDF é conteúdo da aula: ele não pertence
+    // a este painel, e mostrá-lo aqui seria mentir sobre o que já vale.
+    await expect(anexos.locator(".asset-status-card")).toHaveCount(2);
+
+    liberarPolitica!();
+
+    await expect(anexos.locator(".asset-status-card")).toHaveCount(3);
+    const cardNovo = anexos.locator(".asset-status-card").filter({ hasText: PDF_NOVO.file_name });
+    await expect(cardNovo).toHaveClass(/state-just-ready/);
+    // O foco é a prova de que o efeito rodou **depois** do PATCH: antes dele o
+    // card nem existia neste painel. A lista aqui é curta e o card já nasce
+    // visível, então não rolar é o comportamento certo.
+    await expect(cardNovo).toBeFocused();
+  });
+
+  test("a política que falha avisa o vendedor e não põe o PDF nos anexos", async ({ page }) => {
+    await login(page);
+    await page.clock.install();
+    await openCurriculum(page);
+
+    await page.route("**/assets/*/policy", async (route) => {
+      await route.fulfill({ status: 503, json: { error: "policy_unavailable" } });
+    });
+    await page.route("**/assets/upload-intents", async (route) => {
+      await route.fulfill({ json: {
+        upload_id: uploadId, asset_id: PDF_NOVO.id,
+        upload_url: "http://127.0.0.1:8333/appsell-quarantine/obj?X-Amz-Signature=assinado",
+        upload_origin: "http://127.0.0.1:8333",
+        expires_at: new Date(Date.now() + 300_000).toISOString(),
+        required_headers: {
+          "Content-Type": "application/pdf",
+          "x-amz-checksum-sha256": "checksum",
+          "x-amz-meta-appsell-upload-id": uploadId
+        }
+      } });
+    });
+    await page.route("http://127.0.0.1:8333/**", async (route) => {
+      await route.fulfill({ status: 200, headers: { etag: '"etag"' }, body: "" });
+    });
+    await page.route(`**/assets/uploads/${uploadId}/confirm`, async (route) => {
+      await route.fulfill({ status: 202, json: { upload_id: uploadId, status: "verifying" } });
+    });
+    await page.route(`**/assets/uploads/${uploadId}`, async (route) => {
+      if (route.request().method() !== "GET") return route.fallback();
+      await route.fulfill({ json: { upload_id: uploadId, status: "ready", asset: PDF_NOVO } });
+    });
+
+    const anexos = page.getByTestId(`lesson-${LESSON_ID}`)
+      .locator("details").filter({ hasText: "Anexos e links" }).first();
+    await anexos.locator("summary").click();
+    await anexos.locator('input[type="file"]').setInputFiles({
+      name: PDF_NOVO.file_name,
+      mimeType: "application/pdf",
+      buffer: Buffer.from("%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF")
+    });
+
+    // O vendedor precisa saber. O pior desfecho aqui seria o silêncio: o
+    // arquivo subiu, foi verificado, e não está em painel nenhum.
+    await expect(anexos.getByRole("alert")).toContainText("Não foi possível salvar a permissão");
+    // E não entra nos anexos: enquanto a política não valer, ele continua sendo
+    // conteúdo da aula, e mostrá-lo aqui seria mentir sobre o que está gravado.
+    // Este teste não vai além disso — que ele reapareça no painel de conteúdo
+    // depois de recarregar é o que a mensagem promete, e provar isso exigiria
+    // recarregar a página aqui.
+    await expect(anexos.locator(".asset-status-card")).toHaveCount(2);
+    await expect(anexos.getByRole("alert")).toContainText("Recarregue");
   });
 });

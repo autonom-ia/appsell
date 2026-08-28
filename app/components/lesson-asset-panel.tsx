@@ -27,6 +27,24 @@ const ALLOWED_UPLOAD_HEADERS = new Set([
 export const ASSET_DISCARD_REQUEST_EVENT = "appsell:asset-discard-request";
 
 /**
+ * Onde o material recém-verificado entra na lista.
+ *
+ * O servidor ordena por `position`, então o material novo é o **último**. O
+ * cliente o punha no topo, e o vendedor — que estava no fim da lista, onde fica
+ * o botão de adicionar — via "pronto para publicar" e nenhum card novo por
+ * perto. Concluía, com razão, que não tinha entrado. Recarregar a página fazia
+ * o card pular do topo para o fim.
+ *
+ * Substituir é outro caso: a `position` não muda no banco, então o card fica
+ * onde estava. Mandá-lo para o fim reorganizaria a lista na cara do vendedor.
+ */
+export function withReadyAsset<T extends { id: string }>(assets: readonly T[], ready: T): T[] {
+  const posicao = assets.findIndex((asset) => asset.id === ready.id);
+  if (posicao === -1) return [...assets, ready];
+  return assets.map((asset, indice) => (indice === posicao ? ready : asset));
+}
+
+/**
  * O rótulo diz qual formato o aluno vai baixar.
  *
  * Dizia "PDF" em todo card, inclusive num markdown de 10 KiB.
@@ -163,6 +181,7 @@ export function LessonAssetPanel({
   const [archiving, setArchiving] = useState(false);
   const [policySavingId, setPolicySavingId] = useState<string | null>(null);
   const [policyError, setPolicyError] = useState("");
+  const [justReadyId, setJustReadyId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const xhrRef = useRef<XMLHttpRequest | null>(null);
   const hashControllerRef = useRef<AbortController | null>(null);
@@ -183,6 +202,8 @@ export function LessonAssetPanel({
   const archiveCancelRef = useRef<HTMLButtonElement>(null);
   const summaryRef = useRef<HTMLElement>(null);
   const applyPanelRoleRef = useRef<(asset: AssetView) => void>(() => {});
+  const justReadyRef = useRef<HTMLElement>(null);
+  const panelRef = useRef<HTMLDetailsElement>(null);
 
   const base = `/api/sellers/${sellerId}/products/${productId}/courses/${courseId}/modules/${moduleId}/lessons/${lessonId}/assets`;
   const uploadBusy = ["hashing", "creating", "uploading", "confirming", "verifying", "delayed"].includes(state.phase);
@@ -331,6 +352,65 @@ export function LessonAssetPanel({
     };
   });
 
+  // O PDF é o único formato que os dois painéis aceitam, e para ele o papel
+  // chega do banco como `course_content` e só vira anexo quando o PATCH de
+  // política volta. Até lá o card está filtrado para fora deste painel. Sem
+  // esperar por ele, o efeito rodava com a lista ainda sem o card e o material
+  // perdia o destaque e o foco de vez.
+  const justReadyVisible = assets.some((asset) => asset.id === justReadyId
+    && asset.status === "ready" && asset.content_role === contentRole);
+
+  useEffect(() => {
+    if (!justReadyId) return;
+    // Um quadro depois: o card acabou de entrar na lista e o painel ainda vai
+    // crescer. Medir antes do layout assentar dá uma posição que deixa de valer
+    // no quadro seguinte — e o card fica fora da vista mesmo tendo "rolado".
+    const quadro = justReadyVisible ? window.requestAnimationFrame(() => {
+      const card = justReadyRef.current;
+      if (!card) return;
+      // Se o vendedor está trabalhando **fora deste painel**, a verificação
+      // terminou enquanto ele fazia outra coisa. Puxar a página e roubar o foco
+      // ali faria a próxima tecla dele ir para o lugar errado; o destaque
+      // continua, e basta para ele achar o material quando olhar.
+      //
+      // Dentro do painel é o contrário: ele abriu este painel e clicou no botão
+      // de adicionar daqui. O `<summary>` que ele acabou de acionar retém o foco
+      // em alguns navegadores, e tratá-lo como "outro controle" impedia o card
+      // de receber o foco justamente de quem estava esperando por ele.
+      const ativo = document.activeElement;
+      const painel = panelRef.current;
+      const ocupado = ativo instanceof HTMLElement
+        && ativo !== document.body
+        && !(painel?.contains(ativo) ?? false);
+      if (ocupado) return;
+      // `nearest` já é "mova o mínimo necessário": com o card inteiro à vista a
+      // página não se mexe; com ele parcialmente visível, rola só o suficiente
+      // para completá-lo; fora da vista, traz para dentro.
+      //
+      // Medir a posição e decidir aqui era mais frágil do que parecia: um
+      // quadro depois do render o painel às vezes ainda não assentou, e sob
+      // carga a conta saía de uma geometria que deixava de valer no quadro
+      // seguinte — o card ficava fora da vista tendo "rolado".
+      card.scrollIntoView({ block: "nearest" });
+      // O foco leva quem navega por teclado ou leitor de tela até o material
+      // que acabou de entrar.
+      card.focus({ preventScroll: true });
+    }) : null;
+    // O destaque some sozinho — marcá-lo para sempre transformaria "este acabou
+    // de chegar" em ruído permanente.
+    //
+    // Os 15 s são higiene, não comportamento: se o PATCH de política falhar, o
+    // PDF nunca entra neste painel e nada na tela muda quando o identificador
+    // é solto. Ele existe para o estado não ficar preso a um material que já
+    // não vai chegar — e por não produzir efeito visível, não tem teste de
+    // comportamento. Dizer que tem seria pior do que não ter.
+    const limpar = window.setTimeout(() => setJustReadyId(null), justReadyVisible ? 2_500 : 15_000);
+    return () => {
+      if (quadro !== null) window.cancelAnimationFrame(quadro);
+      window.clearTimeout(limpar);
+    };
+  }, [justReadyId, justReadyVisible]);
+
   const pollStatus = useCallback((uploadId: string) => {
     if (pollingUploadRef.current === uploadId) return;
     pollingUploadRef.current = uploadId;
@@ -367,7 +447,10 @@ export function LessonAssetPanel({
           verificationStartedAtRef.current = null;
           replacementTargetRef.current = null;
           applyPanelRoleRef.current(payload.asset);
-          setAssets((current) => [payload.asset!, ...current.filter((asset) => asset.id !== payload.asset!.id)]);
+          setAssets((current) => withReadyAsset(current, payload.asset!));
+          // E leva o vendedor até ele: a lista pode ser longa, e um card que
+          // aparece fora da tela é indistinguível de um card que não apareceu.
+          setJustReadyId(payload.asset.id);
           setUploads((current) => current.filter((upload) => upload.id !== uploadId));
           dispatch({ type: "phase", phase: "ready", message: `${mediaLabel(payload.asset.media_type)} pronto para publicar.`, uploadId });
           pollingUploadRef.current = null;
@@ -729,13 +812,13 @@ export function LessonAssetPanel({
         : `Nenhum ${noun}`;
 
   return <div className="lesson-assets">
-    <details onToggle={(event) => setOpened(event.currentTarget.open)}>
+    <details ref={panelRef} onToggle={(event) => setOpened(event.currentTarget.open)}>
       <summary ref={summaryRef}><span>{heading}</span><small>{summary}</small></summary>
       <p className="asset-panel-hint">{attachments
         ? "Documentos, planilhas, apresentações, links e vídeos. O aluno pode baixar ou abrir."
         : "PDF ou vídeo MP4. Fica protegido dentro da área do aluno, sem download."}</p>
       <div className="lesson-assets-body" aria-busy={busy}>
-        {readyAssets.map((asset) => <article className="asset-status-card state-ready" key={asset.id}>
+        {readyAssets.map((asset) => <article className={`asset-status-card state-ready${asset.id === justReadyId ? " state-just-ready" : ""}`} key={asset.id} ref={asset.id === justReadyId ? justReadyRef : undefined} tabIndex={asset.id === justReadyId ? -1 : undefined}>
           <div><span className="asset-state">{mediaLabel(asset.media_type)} pronto para publicar</span><strong dir="auto">{asset.title}</strong><small className="asset-file-name" dir="auto" title={asset.file_name}>{asset.file_name}</small><small dir="auto">{asset.content_role === "support_material" ? "Material de apoio" : "Conteúdo protegido"} · {formatBytes(asset.byte_size)}</small></div>
           {!archived ? <div className="asset-policy-controls">
             {attachments && isDownloadableMedia(asset.media_type)

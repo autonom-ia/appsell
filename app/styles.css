@@ -457,6 +457,27 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .asset-file-name { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace; font-size: .66rem; color: var(--soft); }
 .asset-panel-hint { margin: 0; padding: 0 13px 10px; color: var(--soft); font-size: .7rem; line-height: 1.5; }
 .asset-state { color: var(--success); font-size: .7rem; font-weight: 800; }
+/* O material que acabou de ser verificado se anuncia por um instante. A lista
+   pode ser longa, e um card que aparece fora da tela e sem marca nenhuma e
+   indistinguivel de um card que nao apareceu. */
+.asset-status-card.state-just-ready { border-color: var(--success); box-shadow: 0 0 0 3px rgba(22,163,74,.14); }
+/* O card so recebe foco por codigo, quando acaba de ficar pronto. `:focus`, e
+   nao `:focus-visible`: o destaque verde expira em 2,5 s e o foco continua ali,
+   e um foco sem indicador e um foco perdido. */
+.asset-status-card:focus { outline: 2px solid var(--blue); outline-offset: 2px; }
+/* Em alto contraste o box-shadow some e a borda e normalizada — o destaque
+   ficaria invisivel justamente para quem mais precisa dele. */
+@media (forced-colors: active) {
+  .asset-status-card.state-just-ready { outline: 3px solid Highlight; outline-offset: 2px; }
+  .asset-status-card:focus { outline: 3px solid Highlight; outline-offset: 2px; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .asset-status-card.state-just-ready { animation: asset-just-ready 2.5s ease-out; }
+  @keyframes asset-just-ready {
+    from { box-shadow: 0 0 0 6px rgba(22,163,74,.28); }
+    to { box-shadow: 0 0 0 3px rgba(22,163,74,.14); }
+  }
+}
 .asset-policy-controls { min-width: 0; display: grid; gap: 7px; }
 .asset-policy-controls > label { color: var(--ink); font-size: .72rem; font-weight: 800; }
 .asset-policy-controls select { width: 100%; min-height: 44px; padding: 0 10px; border: 1px solid var(--border); border-radius: 10px; background: #fff; color: var(--ink); }
