@@ -435,7 +435,21 @@ export class IdentityOAuthClient implements OAuthTokenRefresher {
     const sub = canonicalSubject(identity.sub);
     const email = canonicalEmail(identity.email);
     if (identity.email_verified !== true) {
-      throw new IdentityOAuthProtocolError("Identity email is not verified.");
+      // Três situações muito diferentes chegavam aqui com a mesma frase, e a
+      // diferença entre elas é a diferença entre "o aluno precisa confirmar o
+      // e-mail" e "o provedor não está mandando o claim".
+      //
+      // A mensagem continua sem valor nenhum — o `reason` é lido por telemetria
+      // e não pode virar oráculo de configuração. Nomear a **forma** do claim
+      // não revela o que ele contém, e é o que separa um problema do aluno de
+      // um problema de integração.
+      throw new IdentityOAuthProtocolError(
+        identity.email_verified === undefined
+          ? "Identity email verification claim is absent."
+          : typeof identity.email_verified !== "boolean"
+            ? "Identity email verification claim is not a boolean."
+            : "Identity email is not verified."
+      );
     }
     const now = Date.now();
     const expiresAt = Math.min(

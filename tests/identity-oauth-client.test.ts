@@ -267,6 +267,7 @@ describe("Identity OAuth server adapter", () => {
     "subject-mismatch",
     "email-unverified",
     "email-verified-string",
+    "email-verified-absent",
     "expired",
     "missing-exp",
     "wrong-signature",
@@ -274,6 +275,32 @@ describe("Identity OAuth server adapter", () => {
     "invalid-kid"
   ])("rejects invalid signed claims: %s", async (scenario) => {
     await expect(exchange(scenario)).rejects.toThrow(IdentityOAuthProtocolError);
+  });
+
+  /**
+   * As três formas de recusa por verificação de e-mail dizem coisas diferentes.
+   *
+   * Em 28/08/2026 um vendedor confirmou o e-mail, tentou entrar seis vezes e
+   * recebeu sempre a mesma tela. O log dizia "Identity email is not verified."
+   * nas seis — que é o que se diz quando o aluno não confirmou. Não havia como
+   * distinguir isso de o provedor não estar mandando o claim, ou de mandá-lo
+   * como texto em vez de booleano. Três problemas com naturezas opostas — um do
+   * aluno, dois de integração — e uma frase só para os três.
+   *
+   * As mensagens continuam sem valor nenhum: o `reason` é lido por telemetria e
+   * não pode virar oráculo de configuração. Nomear a **forma** do claim não
+   * revela o que ele contém.
+   */
+  test("a recusa por e-mail nomeia qual das três situações ocorreu", async () => {
+    await expect(exchange("email-unverified")).rejects.toThrow(
+      "Identity email is not verified."
+    );
+    await expect(exchange("email-verified-absent")).rejects.toThrow(
+      "Identity email verification claim is absent."
+    );
+    await expect(exchange("email-verified-string")).rejects.toThrow(
+      "Identity email verification claim is not a boolean."
+    );
   });
 
   test.each(["redirect", "wrong-content-type", "oversized"])("rejects unsafe HTTP response: %s", async (scenario) => {
@@ -650,6 +677,9 @@ async function tokenResponse(scenario: string, includeNonce = true) {
       ? "true"
       : scenario !== "email-unverified"
   };
+  // Um provedor que simplesmente não manda o claim é outro caso, e por muito
+  // tempo ele era indistinguível de um e-mail não confirmado.
+  if (scenario === "email-verified-absent") delete idClaims.email_verified;
   if (includeNonce && scenario !== "missing-nonce") {
     idClaims.nonce = scenario === "wrong-nonce" || scenario === "cognito-broker-shape"
       ? "different-nonce-value-that-is-long-enough"
