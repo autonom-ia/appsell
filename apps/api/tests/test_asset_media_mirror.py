@@ -68,8 +68,6 @@ def test_o_banco_concorda_com_o_catalogo_sobre_apresentar_e_baixar() -> None:
     if not admin_url:
         pytest.skip("isolated PostgreSQL environment is required")
 
-    from appsell_api.asset_media import PDF_MEDIA_TYPE, VIDEO_MEDIA_TYPE
-
     with psycopg.connect(admin_url) as connection:
         for media_type, spec in SUPPORTED_MEDIA.items():
             apresenta = connection.execute(
@@ -79,8 +77,13 @@ def test_o_banco_concorda_com_o_catalogo_sobre_apresentar_e_baixar() -> None:
                 "select app_private.asset_media_downloadable(%s)", (media_type,)
             ).fetchone()
             assert apresenta is not None and baixa is not None
-            assert apresenta[0] is (media_type in (PDF_MEDIA_TYPE, VIDEO_MEDIA_TYPE)), (
-                f"{media_type}: o banco discorda sobre o player saber apresentar"
+            # Derivado de `support_material_only`, não do par PDF/MP4 escrito à
+            # mão: repetir a lista faria o teste concordar com o SQL por
+            # construção, justamente onde ele deveria discordar.
+            assert apresenta[0] is not spec.support_material_only, (
+                f"{media_type}: catálogo diz support_material_only="
+                f"{spec.support_material_only} e o banco diz que o player "
+                f"{'apresenta' if apresenta[0] else 'não apresenta'}"
             )
             assert baixa[0] is spec.downloadable, (
                 f"{media_type}: catálogo diz downloadable={spec.downloadable} "

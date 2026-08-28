@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { MAX_PDF_BYTES, MAX_VIDEO_BYTES, validAssetMediaFile , ASSET_UPLOAD_ACCEPT, PDF_MEDIA_TYPE, SUPPORTED_ASSET_MEDIA, VIDEO_MEDIA_TYPE, acceptForContentRole, acceptedByBothPanels, assetMediaSpec, assetMediaTypeForFile, isDocumentMedia, isDownloadableMedia } from "../lib/asset-media";
+import { MAX_PDF_BYTES, MAX_VIDEO_BYTES, validAssetMediaFile , ASSET_UPLOAD_ACCEPT, DOCX_MEDIA_TYPE, PDF_MEDIA_TYPE, SUPPORTED_ASSET_MEDIA, VIDEO_MEDIA_TYPE, acceptForContentRole, acceptedByBothPanels, assetMediaSpec, assetMediaTypeForFile, isDocumentMedia, isDownloadableMedia, mediaFitsContentRole } from "../lib/asset-media";
 
 describe("private media upload contract", () => {
   it("accepts MP4 at the bounded video limit", () => {
@@ -98,5 +98,37 @@ describe("os dois painéis do editor de conteúdo", () => {
   it("o PDF é o único formato que os dois painéis aceitam", () => {
     const dosDois = Object.keys(SUPPORTED_ASSET_MEDIA).filter(acceptedByBothPanels);
     expect(dosDois).toEqual([PDF_MEDIA_TYPE]);
+  });
+});
+
+describe("o painel recusa o que não lhe pertence", () => {
+  /**
+   * O `accept` do input é uma dica: quem escolhe "todos os arquivos" no seletor
+   * do sistema passa por cima dele. O revisor mostrou o caminho: um `.md` no
+   * painel de conteúdo era normalizado pelo banco e o cliente logo depois o
+   * marcava como conteúdo do curso de novo, desfazendo a correção.
+   */
+  it("documento não cabe em Conteúdo da aula", () => {
+    for (const mediaType of ["text/markdown", "text/csv", "application/json", DOCX_MEDIA_TYPE]) {
+      expect(mediaFitsContentRole(mediaType, "course_content")).toBe(false);
+      expect(mediaFitsContentRole(mediaType, "support_material")).toBe(true);
+    }
+  });
+
+  it("vídeo não cabe em Anexos e links", () => {
+    expect(mediaFitsContentRole(VIDEO_MEDIA_TYPE, "support_material")).toBe(false);
+    expect(mediaFitsContentRole(VIDEO_MEDIA_TYPE, "course_content")).toBe(true);
+  });
+
+  it("o PDF cabe nos dois", () => {
+    expect(mediaFitsContentRole(PDF_MEDIA_TYPE, "course_content")).toBe(true);
+    expect(mediaFitsContentRole(PDF_MEDIA_TYPE, "support_material")).toBe(true);
+  });
+
+  it("formato desconhecido não cabe em lugar nenhum", () => {
+    for (const role of ["course_content", "support_material"] as const) {
+      expect(mediaFitsContentRole("application/x-msdownload", role)).toBe(false);
+      expect(mediaFitsContentRole(null, role)).toBe(false);
+    }
   });
 });

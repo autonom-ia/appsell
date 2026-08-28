@@ -6,6 +6,7 @@ import {
   acceptedByBothPanels,
   acceptForContentRole,
   assetMediaLimit,
+  mediaFitsContentRole,
   assetMediaSpec,
   assetMediaTypeForFile,
   isDownloadableMedia,
@@ -320,6 +321,11 @@ export function LessonAssetPanel({
    */
   useEffect(() => {
     applyPanelRoleRef.current = (asset: AssetView) => {
+      // Só o formato que cabe nos dois painéis tem papel a escolher. Nos
+      // outros o banco já decidiu pelo formato, e insistir aqui desfazia a
+      // normalização — um documento voltava a ser conteúdo do curso, que o
+      // player não sabe apresentar.
+      if (!acceptedByBothPanels(asset.media_type)) return;
       if (asset.content_role === contentRole) return;
       void updatePolicy(asset, contentRole, contentRole === "support_material");
     };
@@ -441,6 +447,22 @@ export function LessonAssetPanel({
     stopTransientWork();
     const generation = generationRef.current;
     const mediaType = selectedMediaType(file);
+    // O `accept` do input é dica: quem escolhe "todos os arquivos" no seletor
+    // do sistema passa por cima. Sem esta recusa, um documento entrava pelo
+    // painel de conteúdo e o passo seguinte o marcava como conteúdo do curso,
+    // desfazendo a normalização que o banco tinha acabado de fazer.
+    if (mediaType && !mediaFitsContentRole(mediaType, contentRole)) {
+      dispatch({
+        type: "phase",
+        phase: "failed",
+        message: attachments
+          ? "Vídeo não é anexo: o aluno não pode baixá-lo. Envie-o em Conteúdo da aula."
+          : "Este formato o aluno abre fora da aula. Envie-o em Anexos e links.",
+        fileName: file.name
+      });
+      if (inputRef.current) inputRef.current.value = "";
+      return;
+    }
     const maximum = assetMediaLimit(mediaType);
     if (!mediaType || file.size < 1 || file.size > maximum) {
       dispatch({ type: "phase", phase: "failed", message: uploadRefusalMessage(file), fileName: file.name });

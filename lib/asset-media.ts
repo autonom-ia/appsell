@@ -78,8 +78,25 @@ function acceptList(mediaTypes: readonly string[]): string {
 export const ATTACHMENT_MEDIA = Object.keys(SUPPORTED_ASSET_MEDIA)
   .filter((mediaType) => SUPPORTED_ASSET_MEDIA[mediaType].downloadable);
 
+export function mediaForContentRole(
+  contentRole: "course_content" | "support_material"
+): readonly string[] {
+  return contentRole === "course_content" ? PLAYER_RENDERED_MEDIA : ATTACHMENT_MEDIA;
+}
+
 export function acceptForContentRole(contentRole: "course_content" | "support_material"): string {
-  return acceptList(contentRole === "course_content" ? PLAYER_RENDERED_MEDIA : ATTACHMENT_MEDIA);
+  return acceptList(mediaForContentRole(contentRole));
+}
+
+/**
+ * O `accept` do input é uma dica, não uma regra: quem escolhe "todos os
+ * arquivos" no seletor do sistema passa por cima dele. Esta é a regra.
+ */
+export function mediaFitsContentRole(
+  mediaType: unknown,
+  contentRole: "course_content" | "support_material"
+): boolean {
+  return mediaForContentRole(contentRole).includes(String(mediaType));
 }
 
 /**
