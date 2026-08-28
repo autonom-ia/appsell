@@ -383,8 +383,9 @@ export function LessonAssetPanel({
         && ativo !== document.body
         && !(painel?.contains(ativo) ?? false);
       if (ocupado) return;
-      // `nearest` já é "mova o mínimo necessário": se o card aparece, a página
-      // não se mexe debaixo do vendedor; se não aparece, ele entra.
+      // `nearest` já é "mova o mínimo necessário": com o card inteiro à vista a
+      // página não se mexe; com ele parcialmente visível, rola só o suficiente
+      // para completá-lo; fora da vista, traz para dentro.
       //
       // Medir a posição e decidir aqui era mais frágil do que parecia: um
       // quadro depois do render o painel às vezes ainda não assentou, e sob

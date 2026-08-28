@@ -462,7 +462,7 @@ test.describe("o PDF em Anexos só entra na lista depois da política", () => {
     await expect(cardNovo).toBeFocused();
   });
 
-  test("a política que falha avisa o vendedor e não engole o material", async ({ page }) => {
+  test("a política que falha avisa o vendedor e não põe o PDF nos anexos", async ({ page }) => {
     await login(page);
     await page.clock.install();
     await openCurriculum(page);
@@ -508,9 +508,9 @@ test.describe("o PDF em Anexos só entra na lista depois da política", () => {
     await expect(anexos.getByRole("alert")).toContainText("Não foi possível salvar a permissão");
     // E não entra nos anexos: enquanto a política não valer, ele continua sendo
     // conteúdo da aula, e mostrá-lo aqui seria mentir sobre o que está gravado.
-    // A mensagem pede para recarregar, que é onde ele reaparece no painel certo
-    // — cada painel é uma instância com a própria lista, e a do outro só
-    // conhece o material novo depois de recarregar.
+    // Este teste não vai além disso — que ele reapareça no painel de conteúdo
+    // depois de recarregar é o que a mensagem promete, e provar isso exigiria
+    // recarregar a página aqui.
     await expect(anexos.locator(".asset-status-card")).toHaveCount(2);
     await expect(anexos.getByRole("alert")).toContainText("Recarregue");
   });
