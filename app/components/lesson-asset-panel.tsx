@@ -27,6 +27,24 @@ const ALLOWED_UPLOAD_HEADERS = new Set([
 export const ASSET_DISCARD_REQUEST_EVENT = "appsell:asset-discard-request";
 
 /**
+ * Onde o material recém-verificado entra na lista.
+ *
+ * O servidor ordena por `position`, então o material novo é o **último**. O
+ * cliente o punha no topo, e o vendedor — que estava no fim da lista, onde fica
+ * o botão de adicionar — via "pronto para publicar" e nenhum card novo por
+ * perto. Concluía, com razão, que não tinha entrado. Recarregar a página fazia
+ * o card pular do topo para o fim.
+ *
+ * Substituir é outro caso: a `position` não muda no banco, então o card fica
+ * onde estava. Mandá-lo para o fim reorganizaria a lista na cara do vendedor.
+ */
+export function withReadyAsset<T extends { id: string }>(assets: readonly T[], ready: T): T[] {
+  const posicao = assets.findIndex((asset) => asset.id === ready.id);
+  if (posicao === -1) return [...assets, ready];
+  return assets.map((asset, indice) => (indice === posicao ? ready : asset));
+}
+
+/**
  * O rótulo diz qual formato o aluno vai baixar.
  *
  * Dizia "PDF" em todo card, inclusive num markdown de 10 KiB.
@@ -163,6 +181,7 @@ export function LessonAssetPanel({
   const [archiving, setArchiving] = useState(false);
   const [policySavingId, setPolicySavingId] = useState<string | null>(null);
   const [policyError, setPolicyError] = useState("");
+  const [justReadyId, setJustReadyId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const xhrRef = useRef<XMLHttpRequest | null>(null);
   const hashControllerRef = useRef<AbortController | null>(null);
@@ -183,6 +202,7 @@ export function LessonAssetPanel({
   const archiveCancelRef = useRef<HTMLButtonElement>(null);
   const summaryRef = useRef<HTMLElement>(null);
   const applyPanelRoleRef = useRef<(asset: AssetView) => void>(() => {});
+  const justReadyRef = useRef<HTMLElement>(null);
 
   const base = `/api/sellers/${sellerId}/products/${productId}/courses/${courseId}/modules/${moduleId}/lessons/${lessonId}/assets`;
   const uploadBusy = ["hashing", "creating", "uploading", "confirming", "verifying", "delayed"].includes(state.phase);
@@ -331,6 +351,32 @@ export function LessonAssetPanel({
     };
   });
 
+  useEffect(() => {
+    if (!justReadyId) return;
+    // Um quadro depois: o card acabou de entrar na lista e o painel ainda vai
+    // crescer. Medir antes do layout assentar dá uma posição que deixa de valer
+    // no quadro seguinte — e o card fica fora da vista mesmo tendo "rolado".
+    const quadro = window.requestAnimationFrame(() => {
+      const card = justReadyRef.current;
+      if (!card) return;
+      // Rola só quando o card está inteiramente fora da janela; se já aparece,
+      // a página não se mexe debaixo do vendedor.
+      const caixa = card.getBoundingClientRect();
+      const aparece = caixa.bottom > 0 && caixa.top < window.innerHeight;
+      if (!aparece) card.scrollIntoView({ block: "center" });
+      // O foco leva quem navega por teclado ou leitor de tela até o material
+      // que acabou de entrar.
+      card.focus({ preventScroll: true });
+    });
+    // O destaque some sozinho. Marcar o card para sempre transformaria "este
+    // acabou de chegar" em ruído permanente.
+    const limpar = window.setTimeout(() => setJustReadyId(null), 2_500);
+    return () => {
+      window.cancelAnimationFrame(quadro);
+      window.clearTimeout(limpar);
+    };
+  }, [justReadyId]);
+
   const pollStatus = useCallback((uploadId: string) => {
     if (pollingUploadRef.current === uploadId) return;
     pollingUploadRef.current = uploadId;
@@ -367,7 +413,10 @@ export function LessonAssetPanel({
           verificationStartedAtRef.current = null;
           replacementTargetRef.current = null;
           applyPanelRoleRef.current(payload.asset);
-          setAssets((current) => [payload.asset!, ...current.filter((asset) => asset.id !== payload.asset!.id)]);
+          setAssets((current) => withReadyAsset(current, payload.asset!));
+          // E leva o vendedor até ele: a lista pode ser longa, e um card que
+          // aparece fora da tela é indistinguível de um card que não apareceu.
+          setJustReadyId(payload.asset.id);
           setUploads((current) => current.filter((upload) => upload.id !== uploadId));
           dispatch({ type: "phase", phase: "ready", message: `${mediaLabel(payload.asset.media_type)} pronto para publicar.`, uploadId });
           pollingUploadRef.current = null;
@@ -735,7 +784,7 @@ export function LessonAssetPanel({
         ? "Documentos, planilhas, apresentações, links e vídeos. O aluno pode baixar ou abrir."
         : "PDF ou vídeo MP4. Fica protegido dentro da área do aluno, sem download."}</p>
       <div className="lesson-assets-body" aria-busy={busy}>
-        {readyAssets.map((asset) => <article className="asset-status-card state-ready" key={asset.id}>
+        {readyAssets.map((asset) => <article className={`asset-status-card state-ready${asset.id === justReadyId ? " state-just-ready" : ""}`} key={asset.id} ref={asset.id === justReadyId ? justReadyRef : undefined} tabIndex={asset.id === justReadyId ? -1 : undefined}>
           <div><span className="asset-state">{mediaLabel(asset.media_type)} pronto para publicar</span><strong dir="auto">{asset.title}</strong><small className="asset-file-name" dir="auto" title={asset.file_name}>{asset.file_name}</small><small dir="auto">{asset.content_role === "support_material" ? "Material de apoio" : "Conteúdo protegido"} · {formatBytes(asset.byte_size)}</small></div>
           {!archived ? <div className="asset-policy-controls">
             {attachments && isDownloadableMedia(asset.media_type)

@@ -255,3 +255,75 @@ test.describe("o painel em que se clica é a resposta", () => {
     await expect(anexos.getByRole("heading", { name: /Material complementar/ })).toBeVisible();
   });
 });
+
+test.describe("o material verificado aparece onde o vendedor está olhando", () => {
+  test("entra no fim da lista, e não no topo fora da tela", async ({ page }) => {
+    await login(page);
+
+    const NOVO = {
+      id: "aa000000-0000-4000-8000-00000000000f",
+      title: "Gerador de Cotações Comparativas",
+      file_name: "INSTRUCOES_PROJETO.md",
+      byte_size: 8_192,
+      media_type: "text/markdown",
+      status: "ready",
+      content_role: "support_material",
+      download_allowed: true
+    };
+    const uploadId = "bb000000-0000-4000-8000-000000000001";
+
+    await openCurriculum(page);
+    await page.route("**/assets/upload-intents", async (route) => {
+      await route.fulfill({ json: {
+        upload_id: uploadId,
+        asset_id: NOVO.id,
+        upload_url: "http://127.0.0.1:8333/appsell-quarantine/obj?X-Amz-Signature=assinado",
+        upload_origin: "http://127.0.0.1:8333",
+        // `validIntent` recusa validade acima de 330 s: uma assinatura de vida
+        // longa demais e uma assinatura vazada valem quase a mesma coisa.
+        expires_at: new Date(Date.now() + 300_000).toISOString(),
+        required_headers: {
+          "Content-Type": "text/markdown",
+          "x-amz-checksum-sha256": "checksum",
+          "x-amz-meta-appsell-upload-id": uploadId
+        }
+      } });
+    });
+    await page.route("http://127.0.0.1:8333/**", async (route) => {
+      await route.fulfill({ status: 200, headers: { etag: '"etag"' }, body: "" });
+    });
+    await page.route(`**/assets/uploads/${uploadId}/confirm`, async (route) => {
+      await route.fulfill({ status: 202, json: { upload_id: uploadId, status: "verifying" } });
+    });
+    await page.route(`**/assets/uploads/${uploadId}`, async (route) => {
+      if (route.request().method() !== "GET") return route.fallback();
+      await route.fulfill({ json: { upload_id: uploadId, status: "ready", asset: NOVO } });
+    });
+
+    const anexos = page.getByTestId(`lesson-${LESSON_ID}`)
+      .locator("details").filter({ hasText: "Anexos e links" }).first();
+    await anexos.locator("summary").click();
+    await expect(anexos.locator(".asset-status-card")).toHaveCount(2);
+
+    await anexos.locator('input[type="file"]').setInputFiles({
+      name: NOVO.file_name,
+      mimeType: "text/markdown",
+      buffer: Buffer.from("# instruções\n")
+    });
+
+    await expect(anexos.locator(".asset-status-card")).toHaveCount(3);
+    // O defeito: o card entrava no topo. O vendedor estava no fim da lista,
+    // perto do botão de adicionar, e via a mensagem de pronto sem card nenhum
+    // por perto — e concluía, com razão, que não tinha entrado. Recarregar
+    // fazia o card pular do topo para o fim, porque o servidor ordena por
+    // `position`.
+    const nomes = await anexos.locator(".asset-status-card .asset-file-name").allInnerTexts();
+    expect(nomes[nomes.length - 1]).toBe(NOVO.file_name);
+
+    // E o vendedor é levado até ele, com destaque que some sozinho.
+    const cardNovo = anexos.locator(".asset-status-card").filter({ hasText: NOVO.file_name });
+    await expect(cardNovo).toHaveClass(/state-just-ready/);
+    await expect(cardNovo).toBeInViewport();
+    await expect(cardNovo).not.toHaveClass(/state-just-ready/, { timeout: 6_000 });
+  });
+});
