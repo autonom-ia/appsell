@@ -457,6 +457,10 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .asset-file-name { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace; font-size: .66rem; color: var(--soft); }
 .asset-panel-hint { margin: 0; padding: 0 13px 10px; color: var(--soft); font-size: .7rem; line-height: 1.5; }
 .asset-state { color: var(--success); font-size: .7rem; font-weight: 800; }
+/* O arquivo subiu e a lista nao atualizou: o vendedor precisa saber as duas
+   coisas e ter o caminho de volta na mesma linha, sem recarregar a pagina. */
+.asset-refresh-failed { display: grid; gap: 8px; }
+.asset-refresh-failed button { min-height: 44px; }
 /* O material que acabou de ser verificado se anuncia por um instante. A lista
    pode ser longa, e um card que aparece fora da tela e sem marca nenhuma e
    indistinguivel de um card que nao apareceu. */

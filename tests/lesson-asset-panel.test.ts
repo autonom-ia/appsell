@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { boundedAssetFetch, discardPendingAssetUpload, downloadToggleLabel, withReadyAsset, formatBytes, MAX_VERIFICATION_WAIT_MS, validIntent, verificationPhaseForElapsed, verificationStatusTimeoutForElapsed, type UploadIntentPayload } from "../app/components/lesson-asset-panel";
+import { boundedAssetFetch, discardPendingAssetUpload, downloadToggleLabel, formatBytes, MAX_VERIFICATION_WAIT_MS, validIntent, verificationPhaseForElapsed, verificationStatusTimeoutForElapsed, type UploadIntentPayload } from "../app/components/lesson-asset-panel";
 
 const valid: UploadIntentPayload = {
   upload_id: "55000000-0000-4000-8000-000000000001",
@@ -123,49 +123,5 @@ describe("o rotulo de download fala do formato certo", () => {
     expect(downloadToggleLabel("text/markdown")).toBe("Permitir que o aluno baixe este documento");
     expect(downloadToggleLabel("application/pdf")).toBe("Permitir que o aluno baixe este PDF");
     expect(downloadToggleLabel("text/csv")).toBe("Permitir que o aluno baixe este documento");
-  });
-});
-
-describe("onde o material recém-verificado aparece na lista", () => {
-  const asset = (id: string, name: string) => ({
-    id,
-    title: "Aula",
-    file_name: name,
-    byte_size: 1024,
-    media_type: "text/markdown" as const,
-    status: "ready" as const,
-    content_role: "support_material" as const,
-    download_allowed: true
-  });
-
-  /**
-   * O servidor ordena por `position`, então o material novo é o **último**. O
-   * cliente o punha no topo. O vendedor, que estava olhando o fim da lista —
-   * onde fica o botão de adicionar —, via a mensagem "pronto para publicar" e
-   * nenhum card novo por perto, e concluía que não tinha entrado. Recarregar a
-   * página fazia o card pular do topo para o fim.
-   */
-  it("entra no fim, onde o servidor o coloca", () => {
-    const atual = [asset("a", "primeiro.md"), asset("b", "segundo.md")];
-    const depois = withReadyAsset(atual, asset("c", "terceiro.md"));
-    expect(depois.map((entry) => entry.file_name)).toEqual([
-      "primeiro.md", "segundo.md", "terceiro.md"
-    ]);
-  });
-
-  it("substituir mantém o material onde já estava", () => {
-    // Substituir não muda a `position` no banco. Mandar o card para o fim faria
-    // a lista se reorganizar sozinha na cara do vendedor.
-    const atual = [asset("a", "primeiro.md"), asset("b", "segundo.md"), asset("c", "terceiro.md")];
-    const depois = withReadyAsset(atual, asset("b", "segundo-v2.md"));
-    expect(depois.map((entry) => entry.file_name)).toEqual([
-      "primeiro.md", "segundo-v2.md", "terceiro.md"
-    ]);
-  });
-
-  it("não duplica quando o mesmo material chega duas vezes", () => {
-    const atual = [asset("a", "primeiro.md")];
-    const depois = withReadyAsset(withReadyAsset(atual, asset("b", "novo.md")), asset("b", "novo.md"));
-    expect(depois).toHaveLength(2);
   });
 });

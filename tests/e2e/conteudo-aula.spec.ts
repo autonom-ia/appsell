@@ -97,7 +97,9 @@ function curriculum() {
   };
 }
 
-async function openCurriculum(page: Page, assets = [PDF, MARKDOWN, TEXTO]) {
+type MaterialView = typeof PDF;
+
+async function openCurriculum(page: Page, assets: MaterialView[] = [PDF, MARKDOWN, TEXTO]) {
   await page.route(`**/api/sellers/${SELLER_ID}/products/${PRODUCT_ID}`, async (route) => {
     if (route.request().method() !== "GET") return route.fallback();
     await route.fulfill({ json: {
@@ -275,9 +277,12 @@ test.describe("o material verificado aparece onde o vendedor está olhando", () 
       download_allowed: true
     };
     const uploadId = "bb000000-0000-4000-8000-000000000001";
+    // A lista do servidor, que o teste muta quando a verificação termina — como
+    // o servidor real faz. O painel vai buscá-la em vez de montá-la sozinho.
+    const lista: MaterialView[] = [PDF, MARKDOWN, TEXTO];
 
     await page.clock.install();
-    await openCurriculum(page);
+    await openCurriculum(page, lista);
     await page.route("**/assets/upload-intents", async (route) => {
       await route.fulfill({ json: {
         upload_id: uploadId,
@@ -302,6 +307,9 @@ test.describe("o material verificado aparece onde o vendedor está olhando", () 
     });
     await page.route(`**/assets/uploads/${uploadId}`, async (route) => {
       if (route.request().method() !== "GET") return route.fallback();
+      // O servidor passa a conhecer o material. É dele que o painel vai buscar
+      // a lista — ordem e papel vêm de quem grava, não de um palpite do cliente.
+      if (!lista.some((asset) => asset.id === NOVO.id)) lista.push(NOVO);
       await route.fulfill({ json: { upload_id: uploadId, status: "ready", asset: NOVO } });
     });
 
@@ -392,7 +400,8 @@ test.describe("o PDF em Anexos só entra na lista depois da política", () => {
   test("aparece com destaque e foco quando a política demora", async ({ page }) => {
     await login(page);
     await page.clock.install();
-    await openCurriculum(page);
+    const lista: MaterialView[] = [PDF, MARKDOWN, TEXTO];
+    await openCurriculum(page, lista);
 
     let liberarPolitica: (() => void) | null = null;
     let registrada: Promise<unknown> = Promise.resolve();
@@ -402,6 +411,9 @@ test.describe("o PDF em Anexos só entra na lista depois da política", () => {
         // A resposta só chega quando o teste mandar: é a demora que criava a
         // corrida, e sem controlá-la o teste passaria por sorte.
         await new Promise<void>((liberar) => { liberarPolitica = liberar; });
+        // Só agora o servidor o conhece como anexo: antes da política ele é
+        // conteúdo da aula, e a lista deste painel não o traz.
+        lista.push({ ...PDF_NOVO, content_role: "support_material", download_allowed: true });
         await route.fulfill({ json: {
           asset_id: PDF_NOVO.id, content_role: "support_material",
           download_allowed: true, course_version: 5, applied: true, replayed: false
@@ -465,7 +477,8 @@ test.describe("o PDF em Anexos só entra na lista depois da política", () => {
   test("a política que falha avisa o vendedor e não põe o PDF nos anexos", async ({ page }) => {
     await login(page);
     await page.clock.install();
-    await openCurriculum(page);
+    // A política falha, então o servidor nunca passa a listá-lo como anexo.
+    await openCurriculum(page, [PDF, MARKDOWN, TEXTO]);
 
     await page.route("**/assets/*/policy", async (route) => {
       await route.fulfill({ status: 503, json: { error: "policy_unavailable" } });
@@ -513,5 +526,124 @@ test.describe("o PDF em Anexos só entra na lista depois da política", () => {
     // recarregar a página aqui.
     await expect(anexos.locator(".asset-status-card")).toHaveCount(2);
     await expect(anexos.getByRole("alert")).toContainText("Recarregue");
+  });
+});
+
+test.describe("mover um PDF entre os painéis", () => {
+  /**
+   * Cada aula renderiza duas instâncias do painel, cada uma com a própria
+   * lista. Mover o PDF tirava o card da origem e o destino — já aberto — não
+   * ficava sabendo: o material sumia de vista até recarregar a página. Que é
+   * exatamente a experiência que esta entrega existe para acabar.
+   */
+  test("o card sai de um painel e aparece no outro, sem recarregar", async ({ page }) => {
+    await login(page);
+    const lista: MaterialView[] = [PDF, MARKDOWN, TEXTO];
+    await openCurriculum(page, lista);
+
+    await page.route("**/assets/*/policy", async (route) => {
+      // O servidor grava e passa a listar o PDF como anexo.
+      const indice = lista.findIndex((asset) => asset.id === PDF.id);
+      lista[indice] = { ...PDF, content_role: "support_material", download_allowed: true };
+      await route.fulfill({ json: {
+        asset_id: PDF.id, content_role: "support_material",
+        download_allowed: true, course_version: 5, applied: true, replayed: false
+      } });
+    });
+
+    const aula = page.getByTestId(`lesson-${LESSON_ID}`);
+    const conteudo = aula.locator("details").filter({ hasText: "Conteúdo da aula" }).first();
+    const anexos = aula.locator("details").filter({ hasText: "Anexos e links" }).first();
+
+    // Os dois painéis abertos: é a situação em que o defeito aparecia.
+    await conteudo.locator("summary").click();
+    await anexos.locator("summary").click();
+    await expect(conteudo.locator(".asset-status-card")).toHaveCount(1);
+    await expect(anexos.locator(".asset-status-card")).toHaveCount(2);
+
+    await conteudo.getByRole("button", { name: "Mover para anexos" }).click();
+
+    await expect(conteudo.locator(".asset-status-card")).toHaveCount(0);
+    await expect(anexos.locator(".asset-status-card")).toHaveCount(3);
+    await expect(anexos).toContainText(PDF.file_name);
+  });
+});
+
+test.describe("o aviso chega enquanto o painel de destino ainda carrega", () => {
+  /**
+   * A corrida mais difícil desta entrega, e a que quase escapou.
+   *
+   * O painel de destino está aberto com o carregamento inicial ainda em voo
+   * quando o irmão anuncia a mudança. A revalidação vence — e é ela que entrega
+   * a primeira lista. Se ela não **fechar** o carregamento, a lista aparece com
+   * "Carregando materiais…" pendurado embaixo, para sempre.
+   */
+  test("a lista aparece e o carregamento não fica pendurado", async ({ page }) => {
+    await login(page);
+
+    const lista: MaterialView[] = [PDF, MARKDOWN, TEXTO];
+    let chamadas = 0;
+    let liberarSegunda: (() => void) | null = null;
+    const segundaPedida = new Promise<void>((resolve) => {
+      void page.route("**/lessons/*/assets", async (route) => {
+        if (route.request().method() !== "GET") return route.fallback();
+        chamadas += 1;
+        // A segunda é a do painel de anexos: fica presa até o teste soltar,
+        // reproduzindo o carregamento inicial ainda em voo.
+        if (chamadas === 2) {
+          resolve();
+          await new Promise<void>((liberar) => { liberarSegunda = liberar; });
+        }
+        await route.fulfill({ json: { assets: lista, uploads: [], csrf: CSRF } });
+      });
+    });
+
+    await page.route(`**/api/sellers/${SELLER_ID}/products/${PRODUCT_ID}`, async (route) => {
+      if (route.request().method() !== "GET") return route.fallback();
+      await route.fulfill({ json: {
+        id: PRODUCT_ID, seller_organization_id: SELLER_ID, seller_slug: "autonomia",
+        slug: "ia-na-pratica", title: "IA na prática", description: "Conteúdo",
+        status: "draft", draft_version: 3,
+        course: { id: COURSE_ID, title: "Especialista", description: "", status: "draft", draft_version: 2, position: 1 },
+        courses: [],
+        offer: { id: "b1d0c9f6-5a1e-52a4-9c3f-2f0f1d3a7e55", title: "Padrão", summary: "", status: "draft", draft_version: 1, unit_amount_minor: 0, currency: "BRL", billing_period: "one_time" }
+      } });
+    });
+    await page.route("**/api/sellers/**/curriculum", async (route) => {
+      await route.fulfill({ json: curriculum() });
+    });
+    await page.route("**/materials", async (route) => {
+      await route.fulfill({ json: { materials: [], csrf: { create: "m", archive: "n" } } });
+    });
+    await page.route("**/access-links", async (route) => {
+      await route.fulfill({ json: { access_links: [] } });
+    });
+    await page.route("**/assets/*/policy", async (route) => {
+      const indice = lista.findIndex((asset) => asset.id === PDF.id);
+      lista[indice] = { ...PDF, content_role: "support_material", download_allowed: true };
+      await route.fulfill({ json: {
+        asset_id: PDF.id, content_role: "support_material",
+        download_allowed: true, course_version: 5, applied: true, replayed: false
+      } });
+    });
+
+    await page.goto(`/products/${SELLER_ID}/${PRODUCT_ID}?section=curriculo`);
+    await expect(page.getByTestId("curriculum-workspace")).toBeVisible();
+
+    const aula = page.getByTestId(`lesson-${LESSON_ID}`);
+    const conteudo = aula.locator("details").filter({ hasText: "Conteúdo da aula" }).first();
+    const anexos = aula.locator("details").filter({ hasText: "Anexos e links" }).first();
+
+    await conteudo.locator("summary").click();
+    await expect(conteudo.locator(".asset-status-card")).toHaveCount(1);
+    await anexos.locator("summary").click();
+    await segundaPedida;
+
+    // O irmão anuncia enquanto o destino ainda espera a própria lista.
+    await conteudo.getByRole("button", { name: "Mover para anexos" }).click();
+    liberarSegunda!();
+
+    await expect(anexos.locator(".asset-status-card")).toHaveCount(3);
+    await expect(anexos).not.toContainText("Carregando materiais…");
   });
 });

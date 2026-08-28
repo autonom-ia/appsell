@@ -27,21 +27,20 @@ const ALLOWED_UPLOAD_HEADERS = new Set([
 export const ASSET_DISCARD_REQUEST_EVENT = "appsell:asset-discard-request";
 
 /**
- * Onde o material recém-verificado entra na lista.
+ * Um material mudou de painel, e o painel de destino precisa saber.
  *
- * O servidor ordena por `position`, então o material novo é o **último**. O
- * cliente o punha no topo, e o vendedor — que estava no fim da lista, onde fica
- * o botão de adicionar — via "pronto para publicar" e nenhum card novo por
- * perto. Concluía, com razão, que não tinha entrado. Recarregar a página fazia
- * o card pular do topo para o fim.
- *
- * Substituir é outro caso: a `position` não muda no banco, então o card fica
- * onde estava. Mandá-lo para o fim reorganizaria a lista na cara do vendedor.
+ * Cada aula renderiza duas instâncias deste componente, cada uma com a própria
+ * lista. Mover um PDF de "Conteúdo da aula" para "Anexos e links" tira o card da
+ * primeira — e a segunda, se já estiver aberta, não fica sabendo. O material
+ * sumiria de vista até recarregar a página, que é exatamente a experiência que
+ * esta entrega existe para acabar.
  */
-export function withReadyAsset<T extends { id: string }>(assets: readonly T[], ready: T): T[] {
-  const posicao = assets.findIndex((asset) => asset.id === ready.id);
-  if (posicao === -1) return [...assets, ready];
-  return assets.map((asset, indice) => (indice === posicao ? ready : asset));
+export const LESSON_ASSETS_CHANGED_EVENT = "appsell:lesson-assets-changed";
+
+export interface LessonAssetsChangedDetail {
+  lessonId: string;
+  /** Quem avisou; a própria instância ignora o próprio aviso. */
+  panelId: string;
 }
 
 /**
@@ -182,6 +181,12 @@ export function LessonAssetPanel({
   const [policySavingId, setPolicySavingId] = useState<string | null>(null);
   const [policyError, setPolicyError] = useState("");
   const [justReadyId, setJustReadyId] = useState<string | null>(null);
+  const [refreshFailed, setRefreshFailed] = useState(false);
+  const refreshSeqRef = useRef(0);
+  // `loaded` lido e escrito no instante da resposta, não no da criação da
+  // closure nem num efeito depois do commit: é a diferença entre saber se ESTA
+  // resposta é a primeira lista a chegar.
+  const loadedRef = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const xhrRef = useRef<XMLHttpRequest | null>(null);
   const hashControllerRef = useRef<AbortController | null>(null);
@@ -205,6 +210,12 @@ export function LessonAssetPanel({
   const justReadyRef = useRef<HTMLElement>(null);
   const panelRef = useRef<HTMLDetailsElement>(null);
 
+  // Há dois painéis por aula. Sem o papel no identificador, os dois inputs de
+  // arquivo nascem com o mesmo `id`, e um `<label htmlFor>` ativa o primeiro do
+  // documento — "Adicionar anexo" abriria o seletor do painel de conteúdo e o
+  // arquivo entraria com o papel errado. O mesmo valia para os dois diálogos, e
+  // é o que distingue uma instância da outra ao avisar o irmão.
+  const panelId = `${lessonId}-${contentRole}`;
   const base = `/api/sellers/${sellerId}/products/${productId}/courses/${courseId}/modules/${moduleId}/lessons/${lessonId}/assets`;
   const uploadBusy = ["hashing", "creating", "uploading", "confirming", "verifying", "delayed"].includes(state.phase);
   const busy = policySavingId !== null || uploadBusy;
@@ -288,17 +299,60 @@ export function LessonAssetPanel({
     return () => window.removeEventListener(ASSET_DISCARD_REQUEST_EVENT, requestDiscard);
   }, [discardCurrentUpload, state.phase, state.uploadId]);
 
-  const load = useCallback(async () => {
-    dispatch({ type: "phase", phase: "loading", message: "Carregando materiais…" });
+  /**
+   * Carregar e revalidar não são a mesma coisa.
+   *
+   * Carregar é a primeira vez: não há nada na tela, e mostrar "Carregando
+   * materiais…" é o certo. Revalidar acontece depois que o vendedor fez algo —
+   * ali a mesma mensagem apagaria o "pronto para publicar" e faria o painel
+   * piscar em cima de quem está olhando.
+   *
+   * Revalidar é o que faz o material aparecer depois do envio. Antes disto o
+   * painel tentava montar a lista sozinho a partir do que vinha na resposta da
+   * verificação — o que exigia ter adivinhado certo o formato daquele dado.
+   * Perguntar ao servidor dispensa o palpite: a lista vem ordenada e com o
+   * papel que de fato está gravado.
+   */
+  const load = useCallback(async (mode: "initial" | "revalidate" = "initial") => {
+    const initial = mode === "initial";
+    if (initial) dispatch({ type: "phase", phase: "loading", message: "Carregando materiais…" });
+    setRefreshFailed(false);
+    // Duas revalidações podem correr juntas — a do envio e a da política, por
+    // exemplo. Sem isto vence a **última a responder**, não a mais nova: a
+    // resposta antiga chega atrasada e reescreve a lista já correta, e o card
+    // some. Seria o defeito original de volta, por outra porta.
+    const seq = ++refreshSeqRef.current;
+    const atual = () => seq === refreshSeqRef.current;
     try {
+      // Quem entrega a primeira lista tem de fechar o carregamento, mesmo tendo
+      // sido pedida como revalidação. Um aviso do painel irmão pode vencer o
+      // carregamento inicial ainda em voo — e sem isto a lista aparecia com
+      // "Carregando materiais…" pendurado embaixo, para sempre.
       const response = await boundedFetch(base, { cache: "no-store" }, 10_000);
       if (!response.ok) throw new Error("asset_list_failed");
       const payload = await response.json() as AssetListPayload;
       if (!validListPayload(payload)) throw new Error("asset_list_invalid");
+      if (!atual()) return;
+      const primeiraEntrega = initial || !loadedRef.current;
       setAssets(payload.assets);
       setUploads(payload.uploads);
       setCsrf(payload.csrf);
       setLoaded(true);
+      // No mesmo instante, não num efeito depois do commit: entre `setLoaded` e
+      // o efeito cabe uma revalidação inteira, e ela se acharia a primeira
+      // entrega — apagando com `reset` a mensagem que o vendedor está lendo.
+      loadedRef.current = true;
+      // Fora isso, numa revalidação a mensagem é do que o vendedor acabou de
+      // fazer, e trocá-la aqui apagaria a resposta que ele estava esperando.
+      //
+      // Limite conhecido e aceito: um envio começado em OUTRA aba aparece no
+      // resumo sem que este painel o acompanhe, até ele ser reaberto. Tentei
+      // adotá-lo aqui e o remédio saiu pior — a decisão dependia de um
+      // `uploadBusy` capturado quando `load` foi criado, não de quando a
+      // resposta chegou, e um envio remoto podia ser adotado por cima de um
+      // envio local recém-começado, os dois dividindo as mesmas referências de
+      // controle. Um caso de outra aba não paga esse preço.
+      if (!primeiraEntrega) return;
       const active = payload.uploads.find((upload) => ["pending", "uploaded", "verifying"].includes(upload.status));
       if (active) {
         activeUploadIdRef.current = active.id;
@@ -309,9 +363,36 @@ export function LessonAssetPanel({
         dispatch({ type: "reset" });
       }
     } catch {
+      // Falhar calado aqui devolveria o vendedor à dúvida que este caminho
+      // existe para acabar: o arquivo subiu, e a lista não mostra.
+      if (!atual()) return;
+      if (!initial && loadedRef.current) return setRefreshFailed(true);
       dispatch({ type: "phase", phase: "failed", message: "Não foi possível carregar os materiais. Tente novamente." });
     }
   }, [base, boundedFetch]);
+
+  const anunciarMudanca = useCallback(() => {
+    window.dispatchEvent(new CustomEvent<LessonAssetsChangedDetail>(
+      LESSON_ASSETS_CHANGED_EVENT,
+      { detail: { lessonId, panelId } }
+    ));
+  }, [lessonId, panelId]);
+
+  useEffect(() => {
+    const ouvir = (event: Event) => {
+      const detail = (event as CustomEvent<LessonAssetsChangedDetail>).detail;
+      // Só o painel irmão da mesma aula: quem anunciou já revalidou, e outras
+      // aulas não têm nada a ver com esta mudança.
+      if (!detail || detail.lessonId !== lessonId || detail.panelId === panelId) return;
+      // Aberto basta: se o carregamento inicial ainda está em voo, ele responde
+      // com o retrato de antes da mudança, e a sequência mais nova o descarta.
+      // Fechado não precisa — ele carrega ao abrir.
+      if (!opened) return;
+      void load("revalidate");
+    };
+    window.addEventListener(LESSON_ASSETS_CHANGED_EVENT, ouvir);
+    return () => window.removeEventListener(LESSON_ASSETS_CHANGED_EVENT, ouvir);
+  }, [lessonId, load, opened, panelId]);
 
   useEffect(() => {
     if (!opened || loaded) return;
@@ -447,12 +528,16 @@ export function LessonAssetPanel({
           verificationStartedAtRef.current = null;
           replacementTargetRef.current = null;
           applyPanelRoleRef.current(payload.asset);
-          setAssets((current) => withReadyAsset(current, payload.asset!));
+          setUploads((current) => current.filter((upload) => upload.id !== uploadId));
+          dispatch({ type: "phase", phase: "ready", message: `${mediaLabel(payload.asset.media_type)} pronto para publicar.`, uploadId });
+          // A lista vem do servidor, não de um palpite sobre a resposta da
+          // verificação. É o que faz o material aparecer sem o vendedor ter de
+          // recarregar a página para descobrir se subiu.
+          void load("revalidate");
+          anunciarMudanca();
           // E leva o vendedor até ele: a lista pode ser longa, e um card que
           // aparece fora da tela é indistinguível de um card que não apareceu.
           setJustReadyId(payload.asset.id);
-          setUploads((current) => current.filter((upload) => upload.id !== uploadId));
-          dispatch({ type: "phase", phase: "ready", message: `${mediaLabel(payload.asset.media_type)} pronto para publicar.`, uploadId });
           pollingUploadRef.current = null;
           if (inputRef.current) inputRef.current.value = "";
           onCommitted();
@@ -493,7 +578,7 @@ export function LessonAssetPanel({
       }
     };
     void run();
-  }, [base, boundedFetch, onCommitted]);
+  }, [anunciarMudanca, base, boundedFetch, load, onCommitted]);
 
   const retryVerification = useCallback(() => {
     const uploadId = state.uploadId ?? activeUploadIdRef.current;
@@ -765,9 +850,13 @@ export function LessonAssetPanel({
           body
         }, 8_000);
         if (!response.ok) throw new Error(`policy_${response.status}`);
-        setAssets((current) => current.map((entry) => entry.id === asset.id
-          ? { ...entry, content_role: role, download_allowed: safeDownload }
-          : entry));
+        // De novo do servidor, e não uma edição na lista local. Mover um
+        // material entre painéis muda de que lista ele faz parte, e uma
+        // atualização local só acerta quando ele já está na lista que estamos
+        // editando — o que não é o caso de um PDF que acabou de virar anexo.
+        void load("revalidate");
+        // E o painel de destino precisa saber: é ele que vai mostrar o card.
+        anunciarMudanca();
         policyKeysRef.current.delete(operation);
         dispatch({
           type: "phase",
@@ -798,11 +887,6 @@ export function LessonAssetPanel({
   const heading = attachments ? "Anexos e links" : "Conteúdo da aula";
   const noun = attachments ? "anexo" : "conteúdo";
   const otherRole: AssetView["content_role"] = attachments ? "course_content" : "support_material";
-  // Há dois painéis por aula. Sem o papel no identificador, os dois inputs de
-  // arquivo nascem com o mesmo `id`, e um `<label htmlFor>` ativa o primeiro do
-  // documento — "Adicionar anexo" abriria o seletor do painel de conteúdo e o
-  // arquivo entraria com o papel errado. O mesmo valia para os dois diálogos.
-  const panelId = `${lessonId}-${contentRole}`;
   const summary = !loaded
     ? "Abrir para carregar"
     : readyAssets.length > 0
@@ -857,6 +941,10 @@ export function LessonAssetPanel({
           </div> : null}
         </article>)}
         {policyError ? <p className="form-error" role="alert">{policyError}</p> : null}
+        {refreshFailed ? <p className="form-error asset-refresh-failed" role="alert">
+          <span>Seu arquivo foi salvo, mas não foi possível atualizar esta lista.</span>
+          <button className="secondary-button" type="button" disabled={busy} onClick={() => void load("revalidate")}>Atualizar lista</button>
+        </p> : null}
         {children}
 
         {!archived && loaded ? <div className="asset-uploader">
