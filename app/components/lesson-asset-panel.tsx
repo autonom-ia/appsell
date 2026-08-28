@@ -433,10 +433,14 @@ export function LessonAssetPanel({
       replacementTargetRef.current = null;
       return;
     }
-    // Antes de qualquer requisição. O `accept` do input é dica — quem escolhe
-    // "todos os arquivos" no seletor do sistema passa por cima —, e recusar
-    // depois de cancelar o envio anterior faria uma escolha inválida derrubar
-    // trabalho válido.
+    // Toda recusa vem antes de qualquer requisição: uma escolha inválida não
+    // pode cancelar o envio anterior, que é trabalho válido. E nenhuma delas
+    // zera `replacementTargetRef` — o vendedor mirou um card, e perder isso
+    // faria o próximo arquivo entrar como material novo em vez de substituir o
+    // original, sem nada dizer.
+    //
+    // O `accept` do input é dica: quem escolhe "todos os arquivos" no seletor
+    // do sistema passa por cima dele.
     const mediaType = selectedMediaType(file);
     if (mediaType && !mediaFitsContentRole(mediaType, contentRole)) {
       dispatch({
@@ -448,7 +452,12 @@ export function LessonAssetPanel({
         fileName: file.name
       });
       event.target.value = "";
-      replacementTargetRef.current = null;
+      return;
+    }
+    const maximum = assetMediaLimit(mediaType);
+    if (!mediaType || file.size < 1 || file.size > maximum) {
+      dispatch({ type: "phase", phase: "failed", message: uploadRefusalMessage(file), fileName: file.name });
+      event.target.value = "";
       return;
     }
     const previousUploadId = activeUploadIdRef.current;
@@ -467,12 +476,6 @@ export function LessonAssetPanel({
     }
     stopTransientWork();
     const generation = generationRef.current;
-    const maximum = assetMediaLimit(mediaType);
-    if (!mediaType || file.size < 1 || file.size > maximum) {
-      dispatch({ type: "phase", phase: "failed", message: uploadRefusalMessage(file), fileName: file.name });
-      event.target.value = "";
-      return;
-    }
     dispatch({ type: "phase", phase: "hashing", message: "Verificando o arquivo neste dispositivo — 0%", fileName: file.name });
     const hashController = new AbortController();
     hashControllerRef.current = hashController;
