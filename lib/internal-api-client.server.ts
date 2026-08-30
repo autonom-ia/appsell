@@ -1296,6 +1296,29 @@ export async function readDomainLearningPdfManifest(
   });
 }
 
+/**
+ * O endereço de um vídeo do PDF que o navegador consegue tocar.
+ *
+ * A origem costuma ser QuickTime, e o Chrome recusa esse container. Quem
+ * prepara o MP4 equivalente é o domínio, que tem `ffmpeg`; o BFF só pede e
+ * repassa. Enquanto o preparo não termina, a resposta vem com
+ * `status: "preparing"` e o intervalo de nova tentativa.
+ */
+export async function readDomainPdfLinkVideo(
+  sessionId: string,
+  session: ServerSession,
+  entitlementId: string,
+  assetId: string,
+  linkId: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/learning/items/${entitlementId}/assets/${assetId}/pdf-links/${linkId}/video`,
+    capability: "library.asset.read",
+    timeoutMs: 20_000
+  });
+}
+
 export async function readDomainLearningPdfStudy(
   sessionId: string,
   session: ServerSession,

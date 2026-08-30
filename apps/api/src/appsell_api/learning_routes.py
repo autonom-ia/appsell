@@ -6,6 +6,7 @@ import binascii
 import json
 import re
 from collections import OrderedDict
+from pathlib import Path
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
@@ -26,6 +27,16 @@ from .learning_pdf import (
     authorized_pdf_page,
     render_prepared_pdf_page,
 )
+from .pdf_link_video import (
+    DERIVATIVE_MEDIA_TYPE,
+    PdfLinkVideoRejected,
+    PdfLinkVideoUnavailable,
+    PreparationRegistry,
+    derivative_key,
+    prepare_video,
+    temporary_workspace,
+    trusted_video_target,
+)
 from .pdf_links import (
     PdfLinksRejected,
     PdfLinksUnavailable,
@@ -41,6 +52,10 @@ _MAX_PDF_STUDY_BODY_BYTES = 65_536
 _MAX_SAFE_INTEGER = (1 << 53) - 1
 _LEARNING_ASSETS_CONTRACT_HEADER = "x-appsell-learning-assets-contract"
 logger = structlog.get_logger(__name__)
+_PDF_LINK_VIDEO_PREPARATIONS = PreparationRegistry()
+#: Um preparo por vez na maquina. Recodificar e caro, e a fila protege o resto
+#: da API de ficar sem CPU porque tres alunos abriram videos diferentes.
+_PDF_LINK_VIDEO_SLOTS = asyncio.Semaphore(1)
 _PROTECTED_PDF_SLOTS = asyncio.Semaphore(4)
 _PROTECTED_PDF_SLOT_TIMEOUT_SECONDS = 8.0
 _PDF_LINK_CACHE_LOCK = asyncio.Lock()
@@ -465,6 +480,128 @@ async def inspect_asset_pages(
             "links": links,
         }
     }
+
+
+@router.get(
+    "/me/learning/items/{entitlement_id}/assets/{asset_id}/pdf-links/{link_id}/video"
+)
+async def prepare_pdf_link_video(
+    request: Request, entitlement_id: UUID, asset_id: UUID, link_id: str, response: Response
+) -> dict[str, Any]:
+    """O endereço de um vídeo do PDF que o navegador consegue tocar.
+
+    A origem costuma ser QuickTime, que o Chrome recusa. Aqui o servidor
+    entrega um MP4 equivalente — preparado uma vez e guardado no storage — em
+    vez de repassar o arquivo original e deixar o aluno sem saída.
+
+    Enquanto o preparo não terminou, responde `202` com o intervalo de nova
+    tentativa. É o mesmo desenho do envio de material no painel do vendedor: o
+    trabalho demorado não segura a requisição.
+    """
+    if not re.fullmatch(r"[0-9a-f]{16}", link_id):
+        raise _learning_not_found()
+    try:
+        _, manifest, source = await _authorized_pdf_manifest(request, entitlement_id, asset_id)
+        links = await _protected_pdf_links(request, manifest, source)
+    except DBAPIError as error:
+        raise _learning_domain_error(error) from error
+    link = next(
+        (item for item in links if item["id"] == link_id and item["kind"] == "video"), None
+    )
+    if link is None:
+        raise _learning_not_found()
+    target = trusted_video_target(link["target_url"])
+    if target is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="protected_video_unavailable",
+        )
+
+    storage: S3Storage | None = getattr(request.app.state, "storage", None)
+    settings = request.app.state.settings
+    if storage is None or not settings.storage_configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="protected_video_unavailable",
+        )
+    bucket = settings.storage_ready_bucket
+    key = derivative_key(target)
+
+    ready = await to_thread.run_sync(
+        lambda: _pdf_link_video_ready(storage, bucket, key)
+    )
+    if ready is not None:
+        presigned = await to_thread.run_sync(
+            lambda: storage.presign_get(
+                bucket=bucket,
+                key=key,
+                version_id=ready.version_id,
+                file_name="video-protegido.mp4",
+                media_type=DERIVATIVE_MEDIA_TYPE,
+                disposition="inline",
+            )
+        )
+        return {
+            "video": {
+                "status": "ready",
+                "download_url": presigned.url,
+                "expires_in_seconds": presigned.expires_in_seconds,
+                "byte_size": ready.size,
+                "media_type": DERIVATIVE_MEDIA_TYPE,
+            }
+        }
+
+    if _PDF_LINK_VIDEO_PREPARATIONS.start(key):
+        asyncio.create_task(_run_pdf_link_video_preparation(storage, bucket, key, target))
+    response.status_code = status.HTTP_202_ACCEPTED
+    return {"video": {"status": "preparing", "retry_after_seconds": 3}}
+
+
+def _pdf_link_video_ready(storage: S3Storage, bucket: str, key: str) -> Any:
+    """O derivado já gravado, ou `None`. Nunca deixa a falha virar 'não existe'."""
+    try:
+        if not storage.object_exists(bucket=bucket, key=key):
+            return None
+        return storage.head(bucket=bucket, key=key)
+    except StorageError:
+        return None
+
+
+async def _run_pdf_link_video_preparation(
+    storage: S3Storage, bucket: str, key: str, target: str
+) -> None:
+    try:
+        async with _PDF_LINK_VIDEO_SLOTS:
+            # Outro pedido pode ter preparado enquanto este esperava a vez.
+            if await to_thread.run_sync(
+                lambda: _pdf_link_video_ready(storage, bucket, key)
+            ) is not None:
+                return
+            await to_thread.run_sync(lambda: _store_pdf_link_video(storage, bucket, key, target))
+        logger.info("pdf_link_video_prepared", key=key)
+    except PdfLinkVideoRejected:
+        logger.warning("pdf_link_video_rejected", key=key)
+    except (PdfLinkVideoUnavailable, StorageError):
+        logger.warning("pdf_link_video_unavailable", key=key)
+    except Exception:
+        logger.exception("pdf_link_video_failed", key=key)
+    finally:
+        _PDF_LINK_VIDEO_PREPARATIONS.finish(key)
+
+
+def _store_pdf_link_video(storage: S3Storage, bucket: str, key: str, target: str) -> None:
+    with temporary_workspace() as workspace:
+        prepared = prepare_video(target, Path(workspace))
+        storage.put_verified(
+            destination_bucket=bucket,
+            destination_key=key,
+            source_path=prepared.path,
+            byte_size=prepared.byte_size,
+            sha256_hex=prepared.sha256_hex,
+            content_type=DERIVATIVE_MEDIA_TYPE,
+            upload_id=key,
+            file_name="video-protegido.mp4",
+        )
 
 
 @router.get("/me/learning/items/{entitlement_id}/assets/{asset_id}/study")
