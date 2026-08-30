@@ -38,6 +38,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import os
+import re
 import socket
 import tempfile
 import threading
@@ -169,7 +170,7 @@ async def origin_validator(target_url: str) -> str:
                 ) as response:
                     status_code = response.status_code
                     location = response.headers.get("location", "")
-                    validator = _origin_validator_header(response.headers)
+                    validator = _origin_validator_header(status_code, response.headers)
             except (httpx.HTTPError, OSError) as error:
                 # Rede, TLS e tempo esgotado são falhas passageiras: quem chama
                 # trata como "não sei" e serve o que já existe.
@@ -202,23 +203,32 @@ async def origin_validator(target_url: str) -> str:
     raise PdfLinkVideoRejected("video target redirects too many times")
 
 
-def _origin_validator_header(headers: Any) -> str:
-    """O que identifica a versão do arquivo, sem confundir tamanho de trecho.
+_CONTENT_RANGE_TOTAL: Final = re.compile(r"^bytes \d+-\d+/(\d+)$")
+
+
+def _origin_validator_header(status_code: int, headers: Any) -> str:
+    """O que identifica a versão do arquivo, sem confundir trecho com arquivo.
 
     O caminho alternativo pergunta pelo primeiro byte, e aí `content-length` é
     `1` — não o tamanho do arquivo. Compará-lo com o tamanho gravado no download
     marcaria o derivado como velho toda vez, e o remux se repetiria para sempre.
-    O total está no `content-range`, e é ele que serve.
+
+    Por isso o status importa: numa resposta parcial o total só pode vir do
+    `content-range`, e numa resposta inteira só do `content-length`. Fora disso
+    a resposta é vazia, e quem chama serve o vídeo que já existe.
     """
     marcado = headers.get("etag") or headers.get("last-modified")
     if marcado:
         return str(marcado)
-    faixa = str(headers.get("content-range") or "")
-    total = faixa.rpartition("/")[2].strip()
-    if total.isdigit():
-        return total
+    faixa = str(headers.get("content-range") or "").strip()
+    if status_code == 206:
+        encontrado = _CONTENT_RANGE_TOTAL.match(faixa)
+        total = encontrado.group(1) if encontrado else ""
+        return total if total.strip("0") else ""
+    if faixa:
+        return ""
     tamanho = str(headers.get("content-length") or "").strip()
-    return tamanho if tamanho.isdigit() and not faixa else ""
+    return tamanho if tamanho.isdigit() and tamanho.strip("0") else ""
 
 
 #: Os status em que a origem afirma que o arquivo não está mais lá.

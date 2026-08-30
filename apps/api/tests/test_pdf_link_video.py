@@ -574,3 +574,48 @@ class TestOriginValidator:
             (302, "/a.mov"), (302, "/b.mov"), (302, "/c.mov"), 405, 206
         ])
         assert await origin_validator(f"{ALLOWED}/aula.mov") == '"abc123"'
+
+    async def test_the_fallback_without_etag_uses_the_total_from_the_range(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # O caminho completo: a origem recusa `HEAD`, responde ao trecho, e não
+        # tem `etag`. É o cenário em que confundir `content-length` com tamanho
+        # do arquivo faria o remux se repetir a cada acesso.
+        monkeypatch.setenv("APPSELL_PDF_VIDEO_ALLOWED_ORIGINS", ALLOWED)
+        self._dns(monkeypatch)
+        self._client(monkeypatch, [
+            405,
+            _Cabecalhos(206, {"content-length": "1", "content-range": "bytes 0-0/50000000"}),
+        ])
+        assert await origin_validator(f"{ALLOWED}/aula.mov") == "50000000"
+
+    @pytest.mark.parametrize(
+        "cabecalhos",
+        [
+            {"content-length": "1"},
+            {"content-length": "1", "content-range": "qualquer-coisa/50000000"},
+            {"content-length": "1", "content-range": "bytes 0-0/*"},
+            {"content-range": "bytes 0-0/0"},
+        ],
+    )
+    async def test_a_partial_answer_never_falls_back_to_the_length(
+        self, monkeypatch: pytest.MonkeyPatch, cabecalhos: dict
+    ) -> None:
+        monkeypatch.setenv("APPSELL_PDF_VIDEO_ALLOWED_ORIGINS", ALLOWED)
+        self._dns(monkeypatch)
+        self._client(monkeypatch, [_Cabecalhos(206, cabecalhos)])
+        with pytest.raises(pdf_link_video.PdfLinkVideoUnavailable):
+            await origin_validator(f"{ALLOWED}/aula.mov")
+
+    async def test_a_whole_answer_with_a_range_is_not_comparable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # `200` com `content-range` é resposta contraditória; usar o total dali
+        # seria adivinhar sobre uma origem que não está se explicando.
+        monkeypatch.setenv("APPSELL_PDF_VIDEO_ALLOWED_ORIGINS", ALLOWED)
+        self._dns(monkeypatch)
+        self._client(monkeypatch, [
+            _Cabecalhos(200, {"content-length": "1", "content-range": "bytes 0-0/50000000"})
+        ])
+        with pytest.raises(pdf_link_video.PdfLinkVideoUnavailable):
+            await origin_validator(f"{ALLOWED}/aula.mov")
