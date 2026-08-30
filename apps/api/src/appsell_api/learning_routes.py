@@ -9,6 +9,7 @@ from collections import OrderedDict
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
+import structlog
 from anyio import to_thread
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -39,6 +40,7 @@ _ACCESS_TOKEN_DIGEST = re.compile(r"[0-9a-f]{64}")
 _MAX_PDF_STUDY_BODY_BYTES = 65_536
 _MAX_SAFE_INTEGER = (1 << 53) - 1
 _LEARNING_ASSETS_CONTRACT_HEADER = "x-appsell-learning-assets-contract"
+logger = structlog.get_logger(__name__)
 _PROTECTED_PDF_SLOTS = asyncio.Semaphore(4)
 _PROTECTED_PDF_SLOT_TIMEOUT_SECONDS = 8.0
 _PDF_LINK_CACHE_LOCK = asyncio.Lock()
@@ -1148,6 +1150,18 @@ def _learning_domain_error(error: DBAPIError) -> HTTPException:
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="invalid_domain_request",
         )
+    # O sqlstate e a unica coisa que separa "o banco recusou por uma regra que
+    # ainda nao mapeamos" de "o banco caiu". Sem ele, as duas viram a mesma tela
+    # dizendo ao aluno para verificar a conexao — e em 30/08/2026 uma
+    # investigacao inteira nao chegou ao motivo porque ele era descartado aqui.
+    #
+    # Cinco caracteres de codigo, nenhum valor: o sqlstate nomeia a classe do
+    # erro, nao o dado que o causou.
+    logger.warning(
+        "learning_domain_error_unmapped",
+        sqlstate=str(sqlstate or "ausente"),
+        exception=type(getattr(error, "orig", error)).__name__,
+    )
     return HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail="learning_unavailable",

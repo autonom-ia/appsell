@@ -263,12 +263,41 @@ export function learningForbiddenMutation() {
   return learningJsonError("forbidden_mutation", 403);
 }
 
+/**
+ * Registra por que a leitura da área do aluno falhou, antes de a resposta virar
+ * um código grosso.
+ *
+ * A resposta ao aluno é deliberadamente vaga — ele não pode descobrir, pelo
+ * erro, o que existe do outro lado. Mas o servidor precisa saber, e até
+ * 30/08/2026 não sabia: o motivo era descartado aqui e no `except` equivalente
+ * da API. Uma investigação inteira não chegou ao motivo imediato porque as duas
+ * camadas o jogavam fora, e a tela ainda culpava a conexão do aluno.
+ *
+ * Só a classe do erro e o status recebido da API entram. Nenhum valor.
+ */
+function reportLearningFailure(reason: string, status?: number): void {
+  console.error(JSON.stringify({
+    event: "learning_request_failed",
+    reason,
+    ...(status === undefined ? {} : { upstream_status: status })
+  }));
+}
+
 export function learningError(error: unknown) {
   if (isOAuthStoreUnavailable(error)) {
+    reportLearningFailure("oauth_store_unavailable");
     return learningJsonError("oauth_store_unavailable", 503);
   }
   if (error instanceof DomainApiError) {
     if (error.status === 403 || error.status === 404) return learningNotFound();
+    // 401 e 403 da API significam que o envelope interno foi recusado — um
+    // problema entre BFF e API, não uma indisponibilidade. Sem esta linha os
+    // dois eram indistinguíveis, e a tela dizia ao aluno para verificar a
+    // conexão dele.
+    if (error.status === 401) {
+      reportLearningFailure("internal_request_rejected", error.status);
+      return learningJsonError("learning_unavailable", 503);
+    }
     if (error.status === 409 && [
       "idempotency_conflict",
       "progress_version_conflict",
@@ -280,6 +309,10 @@ export function learningError(error: unknown) {
     if (error.status === 422) return learningJsonError("invalid_request_body", 422);
     if (error.status === 429) return learningJsonError("rate_limited", 429);
   }
+  reportLearningFailure(
+    error instanceof DomainApiError ? `domain_api_${error.code || "sem_codigo"}` : "erro_nao_classificado",
+    error instanceof DomainApiError ? error.status : undefined
+  );
   return learningJsonError("learning_unavailable", 503);
 }
 
