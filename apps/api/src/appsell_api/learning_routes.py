@@ -6,6 +6,7 @@ import binascii
 import json
 import re
 from collections import OrderedDict
+from functools import partial
 from pathlib import Path
 from typing import Annotated, Any, Final, Literal
 from uuid import UUID
@@ -59,22 +60,41 @@ _PDF_LINK_VIDEO_PREPARATIONS = PreparationRegistry()
 #: pode recolher a tarefa no meio do preparo — o `asyncio` só guarda referência
 #: fraca, e a documentação pede que quem cria mantenha a sua.
 _PDF_LINK_VIDEO_TASKS: set[asyncio.Task[None]] = set()
+#: As tarefas que decidem o que adiantar. Uma por abertura de PDF.
+#:
+#: Separadas das tarefas de preparo: estas só perguntam ao storage o que falta,
+#: e não podem contar contra o teto da fila que existe para limitar download e
+#: conversão.
+_WARM_TASKS: set[asyncio.Task[None]] = set()
 #: Quanto da fila o adiantamento pode ocupar.
 #:
 #: Metade. Quem clicou num botão está esperando na frente da tela; quem foi
 #: adiantado ainda nem chegou na página. A reserva garante que o primeiro nunca
 #: perca a vez para o segundo.
 _WARM_PREPARATION_BUDGET: Final = MAX_PENDING_PREPARATIONS // 2
-#: Quantos preparos correm ao mesmo tempo.
+#: Quantos preparos ficam vivos ao mesmo tempo.
 #:
-#: Medido no vídeo do vendedor: 1,3 s de download e 0,6 s de conversão. O que
-#: domina é a rede, e ela é da API — a conversão acontece no serviço isolado,
-#: que atende um por vez de propósito e se recicla depois de cada arquivo.
+#: Cada um ocupa o disco com a origem e com o derivado enquanto trabalha. O teto
+#: por arquivo é de 512 MiB e o `/tmp` do serviço é de 3 GiB, que precisa caber
+#: também as páginas protegidas — dois é o que sobra com folga.
 #:
-#: Então três aqui deixam três downloads correrem juntos enquanto as conversões
-#: se enfileiram no serviço, que é rápido. Subir mais não ajudaria: passaria a
-#: esperar na fila do isolamento, que não se abre mãos.
-_PDF_LINK_VIDEO_SLOTS = asyncio.Semaphore(3)
+#: Dois em vez de um porque o que domina é o download, que é da API: medido no
+#: vídeo do vendedor, 1,3 s de rede contra 0,6 s de conversão. Serializar tudo
+#: fazia o segundo aluno esperar o download inteiro do primeiro sem motivo.
+PDF_LINK_VIDEO_CONCURRENCY: Final = 2
+_PDF_LINK_VIDEO_SLOTS = asyncio.Semaphore(PDF_LINK_VIDEO_CONCURRENCY)
+#: Quantas conversões correm ao mesmo tempo. Uma.
+#:
+#: O serviço isolado atende um arquivo por vez e **recusa** quem chega junto,
+#: com `429` — ele não enfileira. Quem recebe a recusa insiste quatro vezes, de
+#: três em três segundos, e então desiste de vez. Dois preparos chegando juntos
+#: à conversão não formariam fila: o segundo teria nove segundos para o primeiro
+#: terminar, e um vídeo grande passa disso — o aluno ficaria sem vídeo nenhum.
+#:
+#: A fila é aqui, onde esperar não custa nada. Assim o `429` volta a significar
+#: só o que significava: o serviço reciclando depois do arquivo anterior.
+PDF_LINK_VIDEO_TRANSCODE_CONCURRENCY: Final = 1
+_PDF_LINK_VIDEO_TRANSCODE_SLOT = asyncio.Semaphore(PDF_LINK_VIDEO_TRANSCODE_CONCURRENCY)
 _PROTECTED_PDF_SLOTS = asyncio.Semaphore(4)
 _PROTECTED_PDF_SLOT_TIMEOUT_SECONDS = 8.0
 _PDF_LINK_CACHE_LOCK = asyncio.Lock()
@@ -510,30 +530,65 @@ async def inspect_asset_pages(
 
 
 def _warm_pdf_link_videos(request: Request, manifest: Any, links: list[dict[str, Any]]) -> None:
-    """Começa a preparar os vídeos do PDF, sem segurar a resposta."""
+    """Começa a preparar os vídeos do PDF, sem segurar a resposta.
+
+    Uma tarefa só para o documento inteiro, e não uma por vídeo. A primeira
+    coisa que ela faz é perguntar ao storage o que já existe — e perguntar
+    custa uma requisição, enquanto preparar custa o download inteiro.
+
+    Sem essa consulta, a segunda abertura da mesma aula recriava tarefas para os
+    vídeos já prontos, que só descobriam isso lá dentro. Elas gastavam o
+    orçamento do adiantamento, e o vídeo que ainda faltava nunca chegava a ser
+    agendado: o ganho parava nos primeiros e não avançava nunca.
+    """
     storage: S3Storage | None = getattr(request.app.state, "storage", None)
     settings = request.app.state.settings
     if storage is None or not settings.storage_configured:
         return
-    bucket = settings.storage_ready_bucket
     seller = str(manifest["seller_organization_id"])
+    alvos: list[str] = []
     for link in links:
         if link.get("kind") != "video":
             continue
-        if len(_PDF_LINK_VIDEO_TASKS) >= _WARM_PREPARATION_BUDGET:
+        target = trusted_video_target(link.get("target_url"))
+        # Mesma fronteira do clique. O adiantamento é um caminho novo até o
+        # download, e um PDF de terceiro cita o endereço que quiser.
+        if target is not None and target not in alvos:
+            alvos.append(target)
+    if not alvos:
+        return
+    task = asyncio.create_task(
+        _warm_missing_videos(storage, settings.storage_ready_bucket, seller, alvos)
+    )
+    _WARM_TASKS.add(task)
+    task.add_done_callback(_WARM_TASKS.discard)
+
+
+async def _warm_missing_videos(
+    storage: S3Storage, bucket: str, seller: str, targets: list[str]
+) -> None:
+    """Prepara o que falta, e só o que falta."""
+    preparados = 0
+    for target in targets:
+        if preparados >= _WARM_PREPARATION_BUDGET:
             # O adiantamento fica com metade da fila, não com ela toda. Sem esta
             # reserva, abrir um PDF com oito vídeos encheria o teto e o próximo
             # aluno que clicasse num botão receberia o prazo longo de fila cheia
             # — mais lento do que antes de existir adiantamento.
             return
-        target = trusted_video_target(link.get("target_url"))
-        if target is None:
-            continue
         key = derivative_key(seller, target)
         if _PDF_LINK_VIDEO_PREPARATIONS.rejected(key):
             continue
+        guardado = await to_thread.run_sync(partial(_pdf_link_video_ready, storage, bucket, key))
+        if guardado is not None:
+            # Já existe. Se está velho, quem decide isso é o clique, que
+            # consultou a origem — o adiantamento nunca substitui, e por isso
+            # também não pode segurar a chave enquanto descobre que não tem o
+            # que fazer.
+            continue
         if not _PDF_LINK_VIDEO_PREPARATIONS.start(key):
             continue
+        preparados += 1
         task = asyncio.create_task(
             _run_pdf_link_video_preparation(storage, bucket, key, target, replace=False)
         )
@@ -708,7 +763,9 @@ async def _run_pdf_link_video_preparation(
 
 async def _store_pdf_link_video(storage: S3Storage, bucket: str, key: str, target: str) -> None:
     with temporary_workspace() as workspace:
-        prepared = await prepare_video(target, Path(workspace))
+        prepared = await prepare_video(
+            target, Path(workspace), transcode_gate=_PDF_LINK_VIDEO_TRANSCODE_SLOT
+        )
         await to_thread.run_sync(
             lambda: storage.put_verified(
                 destination_bucket=bucket,
