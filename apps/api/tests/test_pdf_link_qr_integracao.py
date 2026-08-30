@@ -17,7 +17,7 @@ import zxingcpp
 from PIL import Image
 
 from appsell_api import pdf_link_qr, pdf_links
-from appsell_api.pdf_link_qr import PdfLinkQrUnavailable, QrBudget, read_page_qr_targets
+from appsell_api.pdf_link_qr import PdfLinkQrUnavailable, QrBudget, read_qr_targets
 from appsell_api.pdf_links import extract_pdf_link_manifest
 
 ALVO = "https://midia.example.test/aula.mov"
@@ -107,14 +107,18 @@ class TestCaminhoCompleto:
         _com_botoes(pdf, [(550, 600), (190, 240)])
 
         leituras = {"quantas": 0}
-        original = pdf_link_qr.read_page_qr_targets
+        original = pdf_link_qr.read_qr_targets
 
         def _contando(*args: object, **kwargs: object) -> object:
             leituras["quantas"] += 1
             return original(*args, **kwargs)  # type: ignore[arg-type]
 
-        monkeypatch.setattr("appsell_api.pdf_links.read_page_qr_targets", _contando)
+        monkeypatch.setattr("appsell_api.pdf_links.read_qr_targets", _contando)
         links = _manifesto(pdf)
+        # Uma leitura para o documento inteiro. Uma por página gastava o tempo
+        # de partida do processo vezes o número de páginas, e o orçamento
+        # acabava antes de o leitor terminar — foi o que fez o PDF do vendedor
+        # voltar sem nenhum link novo em produção.
         assert leituras["quantas"] == 1
         assert sorted(str(link["target_url"]) for link in links) == sorted([ALVO, OUTRO])
 
@@ -142,6 +146,6 @@ class TestWorkerTerminavel:
         pdf = tmp_path / "e.pdf"
         _pdf_com_qr(pdf, [(ALVO, 400)])
         with pytest.raises(PdfLinkQrUnavailable):
-            read_page_qr_targets(pdf, 1, QrBudget(0.5))
+            read_qr_targets(pdf, [1], QrBudget(0.5))
         # Sessão própria é o que permite matar o grupo, e não só o filho direto.
         assert visto["start_new_session"] is True

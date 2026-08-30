@@ -47,8 +47,6 @@ MAX_QR_PAGES: Final = 200
 #: slot do serviço por dezenas de minutos — e o cliente já teria desistido muito
 #: antes. O orçamento é do documento, e fica abaixo do tempo que ele espera.
 DOCUMENT_BUDGET_SECONDS: Final = 25.0
-#: Prazo de uma página, dentro do orçamento do documento.
-PAGE_TIMEOUT_SECONDS: Final = 15.0
 #: Distância vertical máxima, em fração da altura, entre o botão e o QR do
 #: mesmo cartão.
 MAX_VERTICAL_DISTANCE: Final = 0.12
@@ -76,15 +74,22 @@ class QrBudget:
         return self._deadline - time.monotonic()
 
 
-def read_page_qr_targets(
-    source: Path, page_number: int, budget: QrBudget | None = None
-) -> list[QrTarget]:
-    """Os endereços que os QR codes de uma página carregam."""
-    if not 1 <= page_number <= MAX_QR_PAGES:
-        return []
-    restante = budget.remaining() if budget is not None else PAGE_TIMEOUT_SECONDS
+def read_qr_targets(
+    source: Path, page_numbers: list[int], budget: QrBudget | None = None
+) -> dict[int, list[QrTarget]]:
+    """Os QR de todas as páginas pedidas, numa leitura só.
+
+    Um processo por página gastava o tempo de partida do Python vezes o número
+    de páginas. Medido no servidor: num PDF com vinte botões sem destino, isso
+    sozinho consumia o orçamento inteiro e o documento voltava sem nenhum link
+    novo — o leitor funcionava e não sobrava tempo para ele terminar.
+    """
+    paginas = sorted({n for n in page_numbers if 1 <= n <= MAX_QR_PAGES})
+    if not paginas:
+        return {}
+    restante = budget.remaining() if budget is not None else DOCUMENT_BUDGET_SECONDS
     if restante <= 0:
-        return []
+        return {}
     try:
         processo = subprocess.Popen(  # noqa: S603 - argv only; local path, no shell
             [
@@ -92,7 +97,7 @@ def read_page_qr_targets(
                 "-m",
                 "appsell_api.pdf_link_qr_worker",
                 str(source),
-                str(page_number),
+                ",".join(str(n) for n in paginas),
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -103,27 +108,36 @@ def read_page_qr_targets(
     except OSError as error:
         raise PdfLinkQrUnavailable("QR reader could not start") from error
     try:
-        saida, _ = processo.communicate(timeout=min(PAGE_TIMEOUT_SECONDS, restante))
+        saida, _ = processo.communicate(timeout=restante)
     except subprocess.TimeoutExpired as error:
         _kill_group(processo)
         raise PdfLinkQrUnavailable("QR reading exceeded its budget") from error
     if processo.returncode != 0 or not saida:
-        return []
+        return {}
     try:
         lidos = json.loads(saida)
     except json.JSONDecodeError:
-        return []
-    if not isinstance(lidos, list):
-        return []
-    return [
-        QrTarget(
-            url=str(item["url"]),
-            center=float(item["center"]),
-            center_x=float(item["center_x"]),
-        )
-        for item in lidos
-        if isinstance(item, dict) and {"url", "center", "center_x"} <= set(item)
-    ]
+        return {}
+    if not isinstance(lidos, dict):
+        return {}
+    resultado: dict[int, list[QrTarget]] = {}
+    for numero, itens in lidos.items():
+        try:
+            pagina = int(numero)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(itens, list):
+            continue
+        resultado[pagina] = [
+            QrTarget(
+                url=str(item["url"]),
+                center=float(item["center"]),
+                center_x=float(item["center_x"]),
+            )
+            for item in itens
+            if isinstance(item, dict) and {"url", "center", "center_x"} <= set(item)
+        ]
+    return resultado
 
 
 def _kill_group(processo: subprocess.Popen[bytes]) -> None:
