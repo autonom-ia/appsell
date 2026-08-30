@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 
+import { assetMediaSpec, isDownloadableMedia, type AssetMediaType } from "../../lib/asset-media";
 import { embedSource } from "@/lib/lesson-embed";
 import { safeLessonLink } from "@/lib/lesson-markup";
 
@@ -50,7 +51,7 @@ interface LearningAsset {
   view_href: string;
   download_href: string | null;
   title: string;
-  media_type: "application/pdf" | "video/mp4";
+  media_type: AssetMediaType;
   content_role: "course_content" | "support_material";
   download_allowed: boolean;
 }
@@ -98,7 +99,9 @@ const playerMessages: Record<Exclude<PlayerStatus, "loading" | "ready">, { title
   unavailable: { title: "Não foi possível carregar a aula", body: "Verifique sua conexão e tente novamente." },
   invalid: { title: "Resposta inválida", body: "Os dados da aula não puderam ser validados com segurança." }
 };
-const TENANT_VIDEO_HREF = /^\/api\/library\/items\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/assets\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/;
+// Vale para todo formato entregue inteiro — vídeo e os sete documentos.
+// Só o PDF tem o sufixo `/pages`, porque só ele é rasterizado.
+const TENANT_WHOLE_FILE_HREF = /^\/api\/library\/items\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/assets\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/;
 const TENANT_PDF_VIEW_HREF = /^\/api\/library\/items\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/assets\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/pages$/;
 const TENANT_ASSET_DOWNLOAD_HREF = /^\/api\/library\/items\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/assets\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/download$/;
 
@@ -559,15 +562,18 @@ export function isLearningPlayerPayload(value: unknown): value is LearningPlayer
 
 function isLearningAsset(value: unknown, entitlementId: unknown): value is LearningAsset {
   if (!isStringRecord(value, ["view_href", "title"]) ||
-    !["application/pdf", "video/mp4"].includes(String(value.media_type)) ||
+    // Do catálogo. Esta era a quinta cópia do par PDF/MP4, e a que continuaria
+    // barrando o aluno mesmo depois de o BFF ser corrigido: um anexo `.md`
+    // reprovava o payload aqui, dentro do navegador.
+    assetMediaSpec(value.media_type) === null ||
     !["course_content", "support_material"].includes(String(value.content_role)) ||
     typeof value.download_allowed !== "boolean" ||
     (value.download_href !== null && typeof value.download_href !== "string")) return false;
   const assetHref = String(value.view_href).match(value.media_type === "application/pdf"
     ? TENANT_PDF_VIEW_HREF
-    : TENANT_VIDEO_HREF);
+    : TENANT_WHOLE_FILE_HREF);
   if (assetHref === null || assetHref[1] !== entitlementId) return false;
-  const downloadable = value.media_type === "application/pdf" &&
+  const downloadable = isDownloadableMedia(value.media_type) &&
     value.content_role === "support_material" && value.download_allowed;
   if (!downloadable) return value.download_href === null;
   const downloadHref = String(value.download_href).match(TENANT_ASSET_DOWNLOAD_HREF);
@@ -588,7 +594,7 @@ function selectedAssetMatches(value: unknown, firstAsset: LearningAsset | null) 
 function assetEntitlementId(asset: LearningAsset) {
   return asset.view_href.match(asset.media_type === "application/pdf"
     ? TENANT_PDF_VIEW_HREF
-    : TENANT_VIDEO_HREF)?.[1];
+    : TENANT_WHOLE_FILE_HREF)?.[1];
 }
 
 function LessonMaterial({ asset, index, initialProgress, busy, onVideoProgress }: {

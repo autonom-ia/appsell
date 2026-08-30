@@ -1,6 +1,7 @@
 import { Readable } from "node:stream";
 import { NextRequest, NextResponse } from "next/server";
 
+import { assetMediaSpec, type AssetMediaType } from "@/lib/asset-media";
 import { authorizeDomainLearningAsset } from "@/lib/internal-api-client.server";
 import {
   configuredPrivateLearningAssetRoot,
@@ -23,9 +24,11 @@ import { parseSingleByteRange } from "@/lib/http-byte-range";
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const MAX_PDF_BYTES = 10 * 1024 * 1024;
-const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
-type MediaType = "application/pdf" | "video/mp4";
+// O catálogo, não números escritos à mão. Estes dois estavam parados no valor
+// antigo: o PDF em 10 MiB, teto que a #287 levou a 100 MiB em 26/08/2026 — um
+// playbook de 12 MiB era recusado nesta rota depois de ter sido aceito em todas
+// as outras.
+type MediaType = AssetMediaType;
 
 interface AssetMetadata {
   id: string;
@@ -255,9 +258,8 @@ function secureAssetHeaders(metadata: AssetMetadata | RedirectAssetMetadata | Pr
 function validAssetFile(fileName: unknown, mediaType: unknown): mediaType is MediaType {
   if (typeof fileName !== "string" || Buffer.byteLength(fileName) > 160
     || fileName !== fileName.trim() || /[\\/\u0000-\u001f\u007f]/.test(fileName)) return false;
-  if (mediaType === "application/pdf") return fileName.toLowerCase().endsWith(".pdf");
-  if (mediaType === "video/mp4") return fileName.toLowerCase().endsWith(".mp4");
-  return false;
+  const spec = assetMediaSpec(mediaType);
+  return spec !== null && fileName.toLowerCase().endsWith(`.${spec.extension}`);
 }
 
 function inlineContentDisposition(fileName: string) {
@@ -270,9 +272,7 @@ function inlineContentDisposition(fileName: string) {
 }
 
 function maxAssetBytes(mediaType: unknown) {
-  if (mediaType === "application/pdf") return MAX_PDF_BYTES;
-  if (mediaType === "video/mp4") return MAX_VIDEO_BYTES;
-  return 0;
+  return assetMediaSpec(mediaType)?.maxBytes ?? 0;
 }
 
 function seedKey(fileName: unknown, mediaType: unknown) {

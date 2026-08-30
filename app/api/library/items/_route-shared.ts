@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { assetMediaSpec, isDownloadableMedia, PDF_MEDIA_TYPE, type AssetMediaType } from "@/lib/asset-media";
 import { sessionCookieName } from "@/lib/cookies";
 import { DomainApiError } from "@/lib/internal-api-client.server";
 import { learningLicenseLabel } from "@/lib/learning-license.server";
@@ -27,7 +28,9 @@ const NO_STORE_HEADERS = {
 type DomainSelectedAsset = {
   id: string;
   title: string;
-  media_type: "application/pdf" | "video/mp4";
+  // Do catálogo. O par escrito à mão aqui fazia o tipo mentir sobre o que o
+  // sistema aceita desde a #235, e o validador logo abaixo repetia a mentira.
+  media_type: AssetMediaType;
   content_role?: "course_content" | "support_material";
   download_allowed?: boolean;
 };
@@ -426,12 +429,20 @@ function isSelectedAsset(value: unknown): value is DomainSelectedAsset | null {
       : ["id", "media_type", "title"]) &&
     typeof value.id === "string" && UUID.test(value.id) &&
     typeof value.title === "string" && value.title.length > 0 &&
-    (value.media_type === "application/pdf" || value.media_type === "video/mp4") &&
+    // Do catálogo, não de uma lista própria. Esta era a terceira cópia do par
+    // PDF/MP4 no sistema: a `0042` tirou a do banco em 29/08/2026 e o teste que
+    // a guarda varre `pg_proc`, então esta, em TypeScript, sobreviveu. O
+    // resultado é que uma aula com um único anexo `.md` não abria para o aluno
+    // — nem os anexos, nem o PDF, nem a aula: um item fora da lista invalidava
+    // o payload inteiro.
+    assetMediaSpec(value.media_type) !== null &&
     (!policy || (
       (value.content_role === "course_content" || value.content_role === "support_material") &&
       typeof value.download_allowed === "boolean" &&
       (!value.download_allowed || (
-        value.content_role === "support_material" && value.media_type === "application/pdf"
+        // Baixar é para material de apoio cujo formato o aluno recebe inteiro.
+        // O vídeo não é baixável; o resto do catálogo é.
+        value.content_role === "support_material" && isDownloadableMedia(value.media_type)
       ))
     ))
   );
@@ -462,11 +473,12 @@ function selectedAssetsEqual(left: DomainSelectedAsset, right: DomainSelectedAss
 function learningAssetLinks(entitlementId: string, asset: DomainSelectedAsset) {
   const assetHref = `/api/library/items/${encodeURIComponent(entitlementId)}` +
     `/assets/${encodeURIComponent(asset.id)}`;
-  const viewHref = asset.media_type === "application/pdf" ? `${assetHref}/pages` : assetHref;
+  // Só o PDF tem páginas rasterizadas para o leitor; o resto é entregue inteiro.
+  const viewHref = asset.media_type === PDF_MEDIA_TYPE ? `${assetHref}/pages` : assetHref;
   return {
     view_href: viewHref,
     download_href: asset.content_role === "support_material" &&
-      asset.download_allowed === true && asset.media_type === "application/pdf"
+      asset.download_allowed === true && isDownloadableMedia(asset.media_type)
       ? `${assetHref}/download`
       : null
   };
