@@ -264,35 +264,24 @@ export function learningForbiddenMutation() {
 }
 
 /**
- * Registra por que a leitura da área do aluno falhou, antes de a resposta virar
- * um código grosso.
+ * Registra onde a falha aconteceu; o que ela foi, quem sabe é a API.
  *
  * A resposta ao aluno é deliberadamente vaga — ele não pode descobrir, pelo
- * erro, o que existe do outro lado. Mas o servidor precisa saber, e até
+ * erro, o que existe do outro lado. Mas o servidor precisava saber, e até
  * 30/08/2026 não sabia: o motivo era descartado aqui e no `except` equivalente
  * da API. Uma investigação inteira não chegou ao motivo imediato porque as duas
  * camadas o jogavam fora, e a tela ainda culpava a conexão do aluno.
  *
- * Só a classe do erro e o status recebido da API entram. Nenhum valor.
- */
-// `DomainApiError.code` e o `detail` da resposta, repassado sem validacao. Hoje
-// os detalhes sao codigos fixos, mas nada obriga isso a continuar: uma rota nova,
-// um proxy ou uma mensagem de erro do driver colocariam texto livre ali, e o log
-// gravaria por inteiro. Registrar so o que reconhecemos mantem a promessa de
-// "classe e status, nenhum valor" independente do que chegue.
-/**
- * O BFF registra onde a falha aconteceu; o que ela foi, quem sabe é a API.
+ * O que **não** entra aqui é o código da API. Três tentativas passaram por este
+ * ponto antes desta: gravá-lo direto (é o `detail` da resposta, texto sem
+ * contrato), uma allowlist de nomes (dessincronizou na primeira rota que
+ * delegava a outro módulo) e validar o formato (formato é sintaxe, não
+ * procedência: `secret123` tem cara de código). As três respondiam "como filtro
+ * melhor?" quando a pergunta era "por que preciso deste dado?".
  *
- * Três tentativas passaram por aqui antes desta. A primeira gravava
- * `error.code` direto — e ele é o `detail` da resposta, texto sem contrato
- * nenhum. A segunda usou allowlist de nomes, que dessincronizou na primeira
- * rota que delegava a outro módulo. A terceira validou o formato — e formato é
- * sintaxe, não procedência: `secret123` tem cara de código.
- *
- * O erro nasce na API, e é lá que ele tem contexto e proveniência: desde a
- * #306 ela registra o `sqlstate` e a classe da exceção. O BFF não precisa
- * repetir um dado em que não pode confiar; precisa dizer que a chamada falhou e
- * com que status, para que se saiba em qual log da API procurar.
+ * Não preciso. O erro nasce na API, e é lá que tem contexto e proveniência —
+ * ela registra o `sqlstate` e a classe da exceção. Aqui basta dizer que a
+ * chamada falhou e com que status, para se saber em qual log procurar.
  *
  * Status é um número. Números não vazam nada.
  */
