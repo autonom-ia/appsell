@@ -232,8 +232,10 @@ async function mockLearningApi(
         return route.fulfill({
           status: 202,
           contentType: "application/json",
-          headers: { "retry-after": "1" },
-          body: JSON.stringify({ error: "protected_video_preparing", retryAfterSeconds: 1 })
+          // Dois segundos, e nao um: com um a nova tentativa podia chegar
+          // antes da verificacao e o teste passava ou falhava por sorte.
+          headers: { "retry-after": "2" },
+          body: JSON.stringify({ error: "protected_video_preparing", retryAfterSeconds: 2 })
         });
       }
       return route.fulfill({ status: 200, contentType: "video/mp4", path: protectedVideoPath });
@@ -1169,7 +1171,7 @@ test("o vídeo do PDF diz que está sendo preparado, e depois toca", async ({ pa
   const videoLinkId = "fedcba9876543210";
   await mockLearningApi(page, {
     pdfPageCount: 6,
-    videoPreparingResponses: 1,
+    videoPreparingResponses: 2,
     pdfLinks: [
       {
         id: internalLinkId,

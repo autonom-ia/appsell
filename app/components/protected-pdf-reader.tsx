@@ -869,7 +869,10 @@ function PdfVideoDialog({ link, onClose }: {
             <button
               type="button"
               className="secondary-button"
-              onClick={() => { setAttempt(0); setState("checking"); }}
+              // Somar em vez de zerar: o efeito depende de `attempt`, e voltar
+              // ao mesmo número não dispara nada — a tela ficava em "preparando"
+              // para sempre quando a primeira sondagem falhava.
+              onClick={() => { setAttempt((current) => current + 1); setState("checking"); }}
             >
               Tentar novamente
             </button>

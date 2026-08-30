@@ -127,14 +127,21 @@ describe("o vídeo do PDF chega ao aluno como MP4", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("HEAD responde exatamente o que GET responderia, sem corpo", async () => {
+  it("a sonda pede um byte com GET, porque a assinatura é de GET", async () => {
+    // O método entra na assinatura SigV4: um `HEAD` no endereço assinado volta
+    // como assinatura inválida, e a tela mostraria "não foi possível" logo
+    // depois de o preparo terminar. Um byte basta para saber o tamanho.
     readDomainPdfLinkVideo.mockResolvedValue(ready());
+    fetchMock.mockResolvedValue(upstream({ status: 206, length: 1, range: "bytes 0-0/5203696" }));
     const response = await HEAD(request({ range: "", method: "HEAD" }), context);
-    expect(response.status).toBe(206);
+    expect(fetchMock.mock.calls[0][1].method).toBe("GET");
+    expect(fetchMock.mock.calls[0][1].headers).toEqual({ range: "bytes=0-0" });
+    // A sonda descreve o recurso inteiro, não o byte que foi buscado.
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-length")).toBe("5203696");
+    expect(response.headers.get("content-range")).toBeNull();
     expect(response.headers.get("content-type")).toBe("video/mp4");
     expect(await response.text()).toBe("");
-    // O método chega até a origem: uma sonda não pode custar o vídeo inteiro.
-    expect(fetchMock.mock.calls[0][1].method).toBe("HEAD");
   });
 });
 

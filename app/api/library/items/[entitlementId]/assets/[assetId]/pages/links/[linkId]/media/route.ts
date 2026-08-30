@@ -62,21 +62,31 @@ async function proxyPdfVideo(request: NextRequest, context: LearningAssetLinkRou
     const target = trustedDerivative(prepared.downloadUrl, prepared.expiresInSeconds);
     if (target === null) return videoUnavailable();
 
+    // O endereço assinado vale para `GET` — o método entra na assinatura, e um
+    // `HEAD` nele volta como assinatura inválida. Então a sonda vira um `GET`
+    // do primeiro byte: o storage responde com o `content-range`, que carrega o
+    // tamanho total, e nada além de um byte trafega.
+    const probing = request.method === "HEAD";
+    const upstreamRange = probing ? "bytes=0-0" : requestedRange;
     const upstream = await fetch(target, {
-      method: request.method === "HEAD" ? "HEAD" : "GET",
-      headers: requestedRange ? { range: requestedRange } : undefined,
+      method: "GET",
+      headers: upstreamRange ? { range: upstreamRange } : undefined,
       cache: "no-store",
       redirect: "error",
       signal: AbortSignal.timeout(10 * 60 * 1_000)
     });
     if (![200, 206].includes(upstream.status)) return videoUnavailable();
-    const contentLength = Number(upstream.headers.get("content-length"));
     const contentRange = upstream.headers.get("content-range");
-    if (!Number.isSafeInteger(contentLength) || contentLength < 1 ||
-      contentLength > MAX_VIDEO_BYTES ||
-      !validContentRange(upstream.status, contentRange)) return videoUnavailable();
-    return new NextResponse(request.method === "HEAD" ? null : upstream.body, {
-      status: upstream.status,
+    if (!validContentRange(upstream.status, contentRange)) return videoUnavailable();
+    const contentLength = probing
+      ? totalFromContentRange(upstream.status, contentRange)
+      : Number(upstream.headers.get("content-length"));
+    if (!Number.isSafeInteger(contentLength) || contentLength === null || contentLength < 1 ||
+      contentLength > MAX_VIDEO_BYTES) return videoUnavailable();
+    if (probing) await upstream.body?.cancel();
+    return new NextResponse(probing ? null : upstream.body, {
+      // A sonda descreve o recurso inteiro, não o byte que foi buscado.
+      status: probing ? 200 : upstream.status,
       headers: {
         "accept-ranges": "bytes",
         "cache-control": "private, no-store, max-age=0",
@@ -91,7 +101,7 @@ async function proxyPdfVideo(request: NextRequest, context: LearningAssetLinkRou
         "surrogate-control": "no-store",
         vary: "Cookie, Range",
         "x-content-type-options": "nosniff",
-        ...(contentRange ? { "content-range": contentRange } : {})
+        ...(contentRange && !probing ? { "content-range": contentRange } : {})
       }
     });
   } catch (error) {
@@ -142,6 +152,13 @@ function trustedDerivative(value: string, expires: number) {
   } catch {
     return null;
   }
+}
+
+/** O tamanho total que o storage declarou no `content-range`. */
+function totalFromContentRange(status: number, value: string | null) {
+  if (status === 200) return null;
+  const total = Number(value?.match(/^bytes \d+-\d+\/(\d+)$/)?.[1]);
+  return Number.isSafeInteger(total) ? total : null;
 }
 
 function validContentRange(status: number, value: string | null) {

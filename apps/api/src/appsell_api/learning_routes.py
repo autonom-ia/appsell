@@ -53,6 +53,10 @@ _MAX_SAFE_INTEGER = (1 << 53) - 1
 _LEARNING_ASSETS_CONTRACT_HEADER = "x-appsell-learning-assets-contract"
 logger = structlog.get_logger(__name__)
 _PDF_LINK_VIDEO_PREPARATIONS = PreparationRegistry()
+#: Referência forte para as tarefas em andamento. Sem isto o coletor de lixo
+#: pode recolher a tarefa no meio do preparo — o `asyncio` só guarda referência
+#: fraca, e a documentação pede que quem cria mantenha a sua.
+_PDF_LINK_VIDEO_TASKS: set[asyncio.Task[None]] = set()
 #: Um preparo por vez na maquina. Recodificar e caro, e a fila protege o resto
 #: da API de ficar sem CPU porque tres alunos abriram videos diferentes.
 _PDF_LINK_VIDEO_SLOTS = asyncio.Semaphore(1)
@@ -525,7 +529,7 @@ async def prepare_pdf_link_video(
             detail="protected_video_unavailable",
         )
     bucket = settings.storage_ready_bucket
-    key = derivative_key(target)
+    key = derivative_key(str(manifest["seller_organization_id"]), target)
 
     ready = await to_thread.run_sync(
         lambda: _pdf_link_video_ready(storage, bucket, key)
@@ -552,7 +556,11 @@ async def prepare_pdf_link_video(
         }
 
     if _PDF_LINK_VIDEO_PREPARATIONS.start(key):
-        asyncio.create_task(_run_pdf_link_video_preparation(storage, bucket, key, target))
+        task = asyncio.create_task(
+            _run_pdf_link_video_preparation(storage, bucket, key, target)
+        )
+        _PDF_LINK_VIDEO_TASKS.add(task)
+        task.add_done_callback(_PDF_LINK_VIDEO_TASKS.discard)
     response.status_code = status.HTTP_202_ACCEPTED
     return {"video": {"status": "preparing", "retry_after_seconds": 3}}
 
