@@ -172,7 +172,7 @@ class TestLeituraEmLote:
 
         def _contando(argv: list[str], **kwargs: object) -> subprocess.Popen[bytes]:
             chamadas.append(list(argv))
-            processo: subprocess.Popen[bytes] = real(argv, **kwargs)  # type: ignore[arg-type,call-overload]
+            processo: subprocess.Popen[bytes] = real(argv, **kwargs)  # type: ignore[call-overload]
             return processo
 
         monkeypatch.setattr("appsell_api.pdf_link_qr.subprocess.Popen", _contando)
@@ -182,7 +182,7 @@ class TestLeituraEmLote:
         assert len(chamadas) == 1
         assert chamadas[0][-1] == "1,2"
         # E cada página com o seu próprio endereço, não o da outra.
-        por_pagina = {int(link["page"]): str(link["target_url"]) for link in links}
+        por_pagina = {int(str(link["page"])): str(link["target_url"]) for link in links}
         assert por_pagina == {1: ALVO, 2: OUTRO}
 
 
