@@ -75,15 +75,18 @@ async function proxyPdfVideo(request: NextRequest, context: LearningAssetLinkRou
       redirect: "error",
       signal: AbortSignal.timeout(10 * 60 * 1_000)
     });
-    if (![200, 206].includes(upstream.status)) return videoUnavailable();
     const contentRange = upstream.headers.get("content-range");
-    if (!validContentRange(upstream.status, contentRange)) return videoUnavailable();
     const contentLength = probing
-      ? totalFromContentRange(upstream.status, contentRange)
+      ? totalFromProbe(contentRange)
       : Number(upstream.headers.get("content-length"));
-    if (!Number.isSafeInteger(contentLength) || contentLength === null || contentLength < 1 ||
-      contentLength > MAX_VIDEO_BYTES) return videoUnavailable();
-    if (probing) await upstream.body?.cancel();
+    const usable = [200, 206].includes(upstream.status)
+      && validContentRange(upstream.status, contentRange)
+      && Number.isSafeInteger(contentLength) && contentLength !== null
+      && contentLength >= 1 && contentLength <= MAX_VIDEO_BYTES;
+    // A sonda leu um byte e o descarta; uma resposta inutil tambem e descartada,
+    // em vez de deixar a conexao com o storage aberta ate o coletor agir.
+    if (probing || !usable) await upstream.body?.cancel().catch(() => undefined);
+    if (!usable) return videoUnavailable();
     return new NextResponse(probing ? null : upstream.body, {
       // A sonda descreve o recurso inteiro, não o byte que foi buscado.
       status: probing ? 200 : upstream.status,
@@ -154,10 +157,14 @@ function trustedDerivative(value: string, expires: number) {
   }
 }
 
-/** O tamanho total que o storage declarou no `content-range`. */
-function totalFromContentRange(status: number, value: string | null) {
-  if (status === 200) return null;
-  const total = Number(value?.match(/^bytes \d+-\d+\/(\d+)$/)?.[1]);
+/**
+ * O tamanho total que o storage declarou, e só para a sonda.
+ *
+ * Exige exatamente o primeiro byte: aceitar qualquer trecho deixaria uma
+ * resposta que não é a que foi pedida passar por descrição do recurso.
+ */
+function totalFromProbe(value: string | null) {
+  const total = Number(value?.match(/^bytes 0-0\/(\d+)$/)?.[1]);
   return Number.isSafeInteger(total) ? total : null;
 }
 

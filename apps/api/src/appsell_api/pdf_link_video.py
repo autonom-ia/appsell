@@ -44,6 +44,7 @@ import socket
 import subprocess
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -62,6 +63,23 @@ MAX_DERIVATIVE_BYTES: Final = 512 * _MIB
 MAX_DURATION_SECONDS: Final = 4 * 60 * 60
 #: Quantos redirecionamentos o download aceita. Cada um é revalidado.
 MAX_REDIRECTS: Final = 3
+#: Prazo total do download, em segundos.
+#:
+#: O timeout do cliente é por operação: uma origem que envia alguns bytes a
+#: cada 59 segundos nunca o dispara e segura o único slot de preparo para
+#: sempre. Este prazo é sobre o relógio, do começo ao fim.
+DOWNLOAD_DEADLINE_SECONDS: Final = 15 * 60
+#: Teto da saída do `ffprobe`, que é lida para a memória.
+MAX_PROBE_BYTES: Final = 256 * 1024
+
+#: Os containers que aceitamos abrir.
+#:
+#: `hls`, `dash` e `concat` ficam de fora de propósito: são formatos que apontam
+#: para outros recursos, e é por eles que um parser de mídia vira um cliente de
+#: rede. A restrição vale para a inspeção e para a conversão.
+_ALLOWED_FORMATS: Final = (
+    "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,avi,mpegts,mpeg,asf,flv,ogg"
+)
 #: Orçamento de tempo do `ffmpeg`. Recodificar é lento, mas não é infinito.
 REMUX_TIMEOUT_SECONDS: Final = 5 * 60
 TRANSCODE_TIMEOUT_SECONDS: Final = 60 * 60
@@ -140,12 +158,16 @@ def derivative_key(seller_organization_id: str, target_url: str) -> str:
     return f"{DERIVATIVE_PREFIX}/{digest[:2]}/{digest}.mp4"
 
 
-def _public_address(host: str) -> None:
-    """Recusa um host que resolve para endereço que não é da internet pública.
+def public_address(host: str) -> str:
+    """O endereço público do host, ou recusa.
 
     Metadata de nuvem, laço local e redes internas ficam de fora, em IPv4 e
     IPv6. Sem isto a allowlist protegeria só contra o endereço óbvio: bastaria
     uma origem permitida apontar o DNS para dentro.
+
+    Devolve o endereço para que a conexão seja feita **nele**, e não numa
+    segunda resolução. Validar um endereço e conectar em outro é uma checagem
+    que não garante nada: entre as duas resoluções o DNS pode ter mudado.
     """
     try:
         resolved = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
@@ -157,6 +179,14 @@ def _public_address(host: str) -> None:
         address = ipaddress.ip_address(entry[4][0])
         if not address.is_global or address.is_multicast:
             raise PdfLinkVideoRejected("video host resolves to a non public address")
+    return str(ipaddress.ip_address(resolved[0][4][0]))
+
+
+def _pinned(url: str, address: str) -> str:
+    """O mesmo endereço, apontando para o IP já validado."""
+    parts = urlsplit(url)
+    literal = f"[{address}]" if ":" in address else address
+    return parts._replace(netloc=literal).geturl()
 
 
 def download_source(target_url: str, destination: Path) -> int:
@@ -171,6 +201,7 @@ def download_source(target_url: str, destination: Path) -> int:
     declara — um `content-length` mentiroso não enche o disco.
     """
     seen = target_url
+    deadline = time.monotonic() + DOWNLOAD_DEADLINE_SECONDS
     with httpx.Client(follow_redirects=False, timeout=httpx.Timeout(60.0, connect=10.0),
                       trust_env=False) as client:
         for _ in range(MAX_REDIRECTS + 1):
@@ -178,8 +209,16 @@ def download_source(target_url: str, destination: Path) -> int:
             if trusted is None:
                 raise PdfLinkVideoRejected("video target is not an allowed origin")
             host = urlsplit(trusted).hostname or ""
-            _public_address(host)
-            with client.stream("GET", trusted) as response:
+            address = public_address(host)
+            # Conecta no endereço que acabou de ser validado, e apresenta o
+            # nome do host para o TLS: o certificado continua sendo conferido
+            # contra o nome, e o DNS não tem uma segunda chance de responder.
+            with client.stream(
+                "GET",
+                _pinned(trusted, address),
+                headers={"host": host},
+                extensions={"sni_hostname": host},
+            ) as response:
                 if response.status_code in (301, 302, 303, 307, 308):
                     location = response.headers.get("location", "")
                     seen = str(httpx.URL(trusted).join(location))
@@ -189,6 +228,8 @@ def download_source(target_url: str, destination: Path) -> int:
                 written = 0
                 with destination.open("wb") as sink:
                     for chunk in response.iter_bytes(_MIB):
+                        if time.monotonic() > deadline:
+                            raise PdfLinkVideoUnavailable("video download exceeded its deadline")
                         written += len(chunk)
                         if written > MAX_SOURCE_BYTES:
                             raise PdfLinkVideoRejected("video exceeds the accepted source size")
@@ -221,7 +262,14 @@ def probe_video(source: Path) -> dict[str, Any]:
     try:
         completed = subprocess.run(  # noqa: S603 - argv only; local path, no shell
             [
-                _binary("ffprobe"), "-v", "error", "-show_streams", "-show_format",
+                _binary("ffprobe"), "-v", "error",
+                # O parser de mídia é o outro caminho pelo qual isto viraria um
+                # cliente de rede: um container que aponta para outro recurso
+                # faria o `ffprobe` buscá-lo. Nada de rede, nada de playlist.
+                "-protocol_whitelist", "file",
+                "-format_whitelist", _ALLOWED_FORMATS,
+                # Só os campos que a decisão usa: a saída vai para a memória.
+                "-show_entries", "format=duration:stream=codec_type,codec_name,pix_fmt",
                 "-of", "json", "-i", str(source),
             ],
             capture_output=True,
@@ -234,6 +282,8 @@ def probe_video(source: Path) -> dict[str, Any]:
         raise PdfLinkVideoUnavailable("video probe could not start") from error
     if completed.returncode != 0:
         raise PdfLinkVideoRejected("source is not a readable video")
+    if len(completed.stdout) > MAX_PROBE_BYTES:
+        raise PdfLinkVideoRejected("video metadata is larger than expected")
     try:
         return json.loads(completed.stdout)
     except json.JSONDecodeError as error:
@@ -296,6 +346,7 @@ def prepare_video(target_url: str, workspace: Path) -> PreparedVideo:
     common = [
         # Só arquivo local: o `ffmpeg` não fala com a rede em momento nenhum.
         "-protocol_whitelist", "file",
+        "-format_whitelist", _ALLOWED_FORMATS,
         "-i", str(source), "-map", "0:v:0", "-map", "0:a:0?",
         "-movflags", "+faststart",
         # Teto de bytes na própria escrita, e não só depois que o arquivo existe.
@@ -350,10 +401,11 @@ class PreparationRegistry:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._running: set[str] = set()
+        self._rejected: set[str] = set()
 
     def start(self, key: str) -> bool:
         with self._lock:
-            if key in self._running:
+            if key in self._running or key in self._rejected:
                 return False
             self._running.add(key)
             return True
@@ -361,6 +413,19 @@ class PreparationRegistry:
     def finish(self, key: str) -> None:
         with self._lock:
             self._running.discard(key)
+
+    def reject(self, key: str) -> None:
+        """A origem não pode virar vídeo, e tentar de novo daria no mesmo.
+
+        Sem isto cada sondagem do aluno — e são dezenas — recomeça o download e
+        a conversão de algo que já se sabe que não vai dar certo.
+        """
+        with self._lock:
+            self._rejected.add(key)
+
+    def rejected(self, key: str) -> bool:
+        with self._lock:
+            return key in self._rejected
 
     def running(self, key: str) -> bool:
         with self._lock:

@@ -186,6 +186,16 @@ class TestPreparationRegistry:
         assert registry.start("uma") is True
         assert registry.start("outra") is True
 
+    def test_a_rejected_key_is_not_attempted_again(self) -> None:
+        # A tela sonda dezenas de vezes. Sem lembrar da recusa, cada sondagem
+        # recomeça um download e uma conversão que já se sabe que não vão dar.
+        registry = PreparationRegistry()
+        registry.start("chave")
+        registry.reject("chave")
+        registry.finish("chave")
+        assert registry.rejected("chave") is True
+        assert registry.start("chave") is False
+
 
 class TestRecognisedContainers:
     """O leitor abre no player o que o servidor sabe preparar."""
@@ -239,7 +249,13 @@ class TestDownloadSource:
                 return self._corpo
 
         class _Cliente:
-            def __init__(self, **_: object) -> None:
+            def __init__(self, **kwargs: object) -> None:
+                # Se estas duas sumirem, o cliente volta a seguir
+                # redirecionamento sozinho e a ler proxy do ambiente — e a
+                # revalidação de cada salto deixa de acontecer sem que nenhum
+                # teste perceba.
+                assert kwargs.get("follow_redirects") is False
+                assert kwargs.get("trust_env") is False
                 self._restantes = list(respostas)
 
             def __enter__(self) -> _Cliente:
@@ -248,7 +264,17 @@ class TestDownloadSource:
             def __exit__(self, *_: object) -> None:
                 return None
 
-            def stream(self, _method: str, url: str) -> _Resposta:
+            def stream(
+                self,
+                _method: str,
+                url: str,
+                *,
+                headers: dict[str, str],
+                extensions: dict[str, str],
+            ) -> _Resposta:
+                # A conexão vai no IP validado, com o nome do host no TLS.
+                assert headers["host"] == "midia.example.test"
+                assert extensions["sni_hostname"] == "midia.example.test"
                 pedidos.append(url)
                 return _Resposta(self._restantes.pop(0))
 
@@ -268,10 +294,13 @@ class TestDownloadSource:
     ) -> None:
         monkeypatch.setenv("APPSELL_PDF_VIDEO_ALLOWED_ORIGINS", ALLOWED)
         self._dns(monkeypatch)
-        self._client(monkeypatch, [b"conteudo do video"])
+        pedidos = self._client(monkeypatch, [b"conteudo do video"])
         destino = tmp_path / "source.bin"
         assert download_source(f"{ALLOWED}/aula.mov", destino) == 17
         assert destino.read_bytes() == b"conteudo do video"
+        # Conectou no endereço validado, não no nome — sem uma segunda
+        # resolução entre a checagem e a conexão.
+        assert pedidos == ["https://93.184.216.34/aula.mov"]
 
     def test_a_redirect_to_an_origin_outside_the_allowlist_is_refused(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -292,7 +321,10 @@ class TestDownloadSource:
         self._dns(monkeypatch)
         pedidos = self._client(monkeypatch, [(302, "/outra.mov"), b"conteudo"])
         assert download_source(f"{ALLOWED}/aula.mov", tmp_path / "source.bin") == 8
-        assert pedidos == [f"{ALLOWED}/aula.mov", f"{ALLOWED}/outra.mov"]
+        assert pedidos == [
+            "https://93.184.216.34/aula.mov",
+            "https://93.184.216.34/outra.mov",
+        ]
 
     def test_endless_redirects_stop(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -328,6 +360,18 @@ class TestDownloadSource:
         self._dns(monkeypatch)
         self._client(monkeypatch, [b"muito maior que o teto"])
         with pytest.raises(PdfLinkVideoRejected):
+            download_source(f"{ALLOWED}/aula.mov", tmp_path / "source.bin")
+
+    def test_a_slow_origin_hits_the_total_deadline(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # O timeout do cliente é por operação: uma origem que envia alguns bytes
+        # a cada 59 s nunca o dispara e segura o único slot para sempre.
+        monkeypatch.setenv("APPSELL_PDF_VIDEO_ALLOWED_ORIGINS", ALLOWED)
+        monkeypatch.setattr(pdf_link_video, "DOWNLOAD_DEADLINE_SECONDS", 0)
+        self._dns(monkeypatch)
+        self._client(monkeypatch, [b"conteudo"])
+        with pytest.raises(pdf_link_video.PdfLinkVideoUnavailable):
             download_source(f"{ALLOWED}/aula.mov", tmp_path / "source.bin")
 
     def test_an_empty_body_is_refused(

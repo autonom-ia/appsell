@@ -555,6 +555,11 @@ async def prepare_pdf_link_video(
             }
         }
 
+    if _PDF_LINK_VIDEO_PREPARATIONS.rejected(key):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="protected_video_unavailable",
+        )
     if _PDF_LINK_VIDEO_PREPARATIONS.start(key):
         task = asyncio.create_task(
             _run_pdf_link_video_preparation(storage, bucket, key, target)
@@ -588,6 +593,7 @@ async def _run_pdf_link_video_preparation(
             await to_thread.run_sync(lambda: _store_pdf_link_video(storage, bucket, key, target))
         logger.info("pdf_link_video_prepared", key=key)
     except PdfLinkVideoRejected:
+        _PDF_LINK_VIDEO_PREPARATIONS.reject(key)
         logger.warning("pdf_link_video_rejected", key=key)
     except (PdfLinkVideoUnavailable, StorageError):
         logger.warning("pdf_link_video_unavailable", key=key)
