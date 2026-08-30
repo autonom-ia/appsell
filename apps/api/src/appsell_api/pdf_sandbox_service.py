@@ -7,7 +7,7 @@ import re
 import shutil
 import tempfile
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 
 from anyio import to_thread
@@ -45,6 +45,31 @@ from .video_verifier import (
     _validate_mp4_container,
     probe_mp4_file,
 )
+
+
+class _CleanupStreamingResponse(StreamingResponse):
+    """Uma resposta em fluxo que sempre limpa, mesmo se o cliente sumir.
+
+    O `finally` dentro do gerador não basta: quando o envio falha por
+    desconexão, o Starlette não fecha o gerador sozinho, e se a desconexão
+    acontece antes da primeira iteração o corpo dele nunca roda. Uma
+    `BackgroundTask` também não serve — ela só executa se a resposta terminar.
+
+    Isso importava mais do que o diretório deixado para trás: a reciclagem
+    também ficava sem rodar, e com `_DRAINING` já ligado o serviço passaria a
+    responder 503 para sempre.
+    """
+
+    def __init__(self, *args: object, cleanup: Callable[[], None], **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+        self._cleanup = cleanup
+
+    async def __call__(self, scope, receive, send) -> None:  # type: ignore[no-untyped-def]
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._cleanup()
+
 
 app = FastAPI(title="AppSell isolated PDF parser", docs_url=None, redoc_url=None)
 _MEDIA_SLOT = asyncio.Semaphore(1)
@@ -594,17 +619,20 @@ async def _prepare_video_request(request: Request) -> Response:
         # de fundo só roda se a resposta terminar, e um cliente que aborta
         # deixaria o diretório para trás e o serviço drenando para sempre.
         async def _entregar() -> AsyncIterator[bytes]:
-            try:
-                with prepared.open("rb") as handle:
-                    while chunk := handle.read(1024 * 1024):
-                        yield chunk
-            finally:
-                shutil.rmtree(job_directory, ignore_errors=True)
+            with prepared.open("rb") as handle:
+                while chunk := handle.read(1024 * 1024):
+                    yield chunk
 
-        return StreamingResponse(
+        def _encerrar() -> None:
+            shutil.rmtree(job_directory, ignore_errors=True)
+            if _recycle_enabled() and bool(getattr(request.state, "recycle_owner", False)):
+                _terminate_sandbox_process()
+
+        return _CleanupStreamingResponse(
             _entregar(),
             media_type="video/mp4",
             headers={"x-appsell-recoded": "true" if recoded else "false"},
+            cleanup=_encerrar,
         )
     except HTTPException:
         raise

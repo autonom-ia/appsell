@@ -536,29 +536,23 @@ async def prepare_pdf_link_video(
     ready = await to_thread.run_sync(
         lambda: _pdf_link_video_ready(storage, bucket, key)
     )
-    if ready is not None and await _pdf_link_video_is_current(ready, target):
-        presigned = await to_thread.run_sync(
-            lambda: storage.presign_get(
-                bucket=bucket,
-                key=key,
-                version_id=ready.version_id,
-                file_name="video-protegido.mp4",
-                media_type=DERIVATIVE_MEDIA_TYPE,
-                disposition="inline",
-            )
+    estado = await _pdf_link_video_state(ready, target)
+    if estado == "gone":
+        # A origem existe e disse que este arquivo não. Servir a cópia guardada
+        # manteria no ar algo que foi retirado.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="protected_video_unavailable",
         )
-        return {
-            "video": {
-                "status": "ready",
-                "download_url": presigned.url,
-                "expires_in_seconds": presigned.expires_in_seconds,
-                "byte_size": ready.size,
-                "media_type": DERIVATIVE_MEDIA_TYPE,
-            }
-        }
+    if estado == "current":
+        return await _pdf_link_video_ready_response(storage, bucket, key, ready)
 
     stale = ready is not None
-    if not stale and _PDF_LINK_VIDEO_PREPARATIONS.rejected(key):
+    if _PDF_LINK_VIDEO_PREPARATIONS.rejected(key):
+        # A recusa impede trabalho novo, não a entrega do que já existe: durante
+        # a janela o aluno continua vendo a versão anterior em vez de nada.
+        if ready is not None:
+            return await _pdf_link_video_ready_response(storage, bucket, key, ready)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="protected_video_unavailable",
@@ -578,17 +572,50 @@ async def prepare_pdf_link_video(
     return {"video": {"status": "preparing", "retry_after_seconds": 3}}
 
 
-async def _pdf_link_video_is_current(ready: Any, target: str) -> bool:
+async def _pdf_link_video_ready_response(
+    storage: S3Storage, bucket: str, key: str, ready: Any
+) -> dict[str, Any]:
+    """O endereço assinado do derivado já guardado."""
+    presigned = await to_thread.run_sync(
+        lambda: storage.presign_get(
+            bucket=bucket,
+            key=key,
+            version_id=ready.version_id,
+            file_name="video-protegido.mp4",
+            media_type=DERIVATIVE_MEDIA_TYPE,
+            disposition="inline",
+        )
+    )
+    return {
+        "video": {
+            "status": "ready",
+            "download_url": presigned.url,
+            "expires_in_seconds": presigned.expires_in_seconds,
+            "byte_size": ready.size,
+            "media_type": DERIVATIVE_MEDIA_TYPE,
+        }
+    }
+
+
+async def _pdf_link_video_state(ready: Any, target: str) -> str:
     """O derivado guardado ainda corresponde ao que a origem serve?
 
-    A resposta é tolerante de propósito: se a origem não responde, o aluno
-    recebe o vídeo que já existe. Derrubar um vídeo pronto porque o servidor de
-    alguém está fora do ar seria trocar um problema por outro pior.
+    Três respostas, porque as duas formas de falhar são diferentes:
+
+    - não conseguir perguntar — rede, TLS, tempo esgotado — não pode derrubar um
+      vídeo pronto. O aluno recebe o que existe.
+    - a origem responder que o arquivo não está mais lá é outra coisa: ali ela
+      existe e falou. Servir a cópia manteria no ar algo retirado.
     """
+    if ready is None:
+        return "absent"
     try:
-        return ready.appsell_upload_id == await origin_validator(target)
-    except (PdfLinkVideoRejected, PdfLinkVideoUnavailable):
-        return True
+        atual = await origin_validator(target)
+    except PdfLinkVideoUnavailable:
+        return "current"
+    except PdfLinkVideoRejected:
+        return "gone"
+    return "current" if ready.appsell_upload_id == atual else "stale"
 
 
 def _pdf_link_video_ready(storage: S3Storage, bucket: str, key: str) -> Any:
@@ -617,10 +644,10 @@ async def _run_pdf_link_video_preparation(
             await _store_pdf_link_video(storage, bucket, key, target)
         logger.info("pdf_link_video_prepared", key=key)
     except PdfLinkVideoRejected:
-        # A recusa vale para o arquivo que está lá agora. Trocar a origem por um
-        # vídeo bom precisa poder desfazê-la, senão o endereço fica queimado.
-        if not replace:
-            _PDF_LINK_VIDEO_PREPARATIONS.reject(key)
+        # Registrada também quando havia um objeto velho: sem isso, cada
+        # sondagem recomeçava download e conversão de uma origem que já se sabia
+        # ruim. Quem devolve o endereço ao vendedor é o prazo da recusa.
+        _PDF_LINK_VIDEO_PREPARATIONS.reject(key)
         logger.warning("pdf_link_video_rejected", key=key)
     except (PdfLinkVideoUnavailable, StorageError):
         logger.warning("pdf_link_video_unavailable", key=key)
