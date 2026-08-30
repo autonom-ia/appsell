@@ -9,6 +9,7 @@ from collections import OrderedDict
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
+import structlog
 from anyio import to_thread
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -39,6 +40,7 @@ _ACCESS_TOKEN_DIGEST = re.compile(r"[0-9a-f]{64}")
 _MAX_PDF_STUDY_BODY_BYTES = 65_536
 _MAX_SAFE_INTEGER = (1 << 53) - 1
 _LEARNING_ASSETS_CONTRACT_HEADER = "x-appsell-learning-assets-contract"
+logger = structlog.get_logger(__name__)
 _PROTECTED_PDF_SLOTS = asyncio.Semaphore(4)
 _PROTECTED_PDF_SLOT_TIMEOUT_SECONDS = 8.0
 _PDF_LINK_CACHE_LOCK = asyncio.Lock()
@@ -1112,6 +1114,23 @@ def _canonical_uuid(value: str, label: str) -> str:
     return value
 
 
+def _safe_sqlstate(value: object) -> str:
+    """Só a forma de um SQLSTATE entra no log.
+
+    O valor vem do driver e hoje é sempre um código de cinco caracteres — mas
+    "hoje é sempre" foi exatamente a suposição que deixou passar o vazamento
+    equivalente do lado do BFF. Prometer "cinco caracteres, nenhum valor" e não
+    impor a forma é a mesma coisa que não prometer.
+    """
+    texto = "" if value is None else str(value)
+    return texto if re.fullmatch(r"[0-9A-Z]{5}", texto) else "ausente_ou_invalido"
+
+
+def _safe_identifier(value: str) -> str:
+    """O nome de uma classe, e nada além disso."""
+    return value if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", value) else "desconhecido"
+
+
 def _learning_domain_error(error: DBAPIError) -> HTTPException:
     sqlstate = getattr(error.orig, "sqlstate", None)
     if sqlstate == "P4222":
@@ -1148,6 +1167,18 @@ def _learning_domain_error(error: DBAPIError) -> HTTPException:
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="invalid_domain_request",
         )
+    # O sqlstate e a unica coisa que separa "o banco recusou por uma regra que
+    # ainda nao mapeamos" de "o banco caiu". Sem ele, as duas viram a mesma tela
+    # dizendo ao aluno para verificar a conexao — e em 30/08/2026 uma
+    # investigacao inteira nao chegou ao motivo porque ele era descartado aqui.
+    #
+    # Cinco caracteres de codigo, nenhum valor: o sqlstate nomeia a classe do
+    # erro, nao o dado que o causou.
+    logger.warning(
+        "learning_domain_error_unmapped",
+        sqlstate=_safe_sqlstate(sqlstate),
+        exception=_safe_identifier(type(getattr(error, "orig", error)).__name__),
+    )
     return HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail="learning_unavailable",

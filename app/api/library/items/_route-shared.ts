@@ -263,12 +263,51 @@ export function learningForbiddenMutation() {
   return learningJsonError("forbidden_mutation", 403);
 }
 
+/**
+ * Registra onde a falha aconteceu; o que ela foi, quem sabe é a API.
+ *
+ * A resposta ao aluno é deliberadamente vaga — ele não pode descobrir, pelo
+ * erro, o que existe do outro lado. Mas o servidor precisava saber, e até
+ * 30/08/2026 não sabia: o motivo era descartado aqui e no `except` equivalente
+ * da API. Uma investigação inteira não chegou ao motivo imediato porque as duas
+ * camadas o jogavam fora, e a tela ainda culpava a conexão do aluno.
+ *
+ * O que **não** entra aqui é o código da API. Três tentativas passaram por este
+ * ponto antes desta: gravá-lo direto (é o `detail` da resposta, texto sem
+ * contrato), uma allowlist de nomes (dessincronizou na primeira rota que
+ * delegava a outro módulo) e validar o formato (formato é sintaxe, não
+ * procedência: `secret123` tem cara de código). As três respondiam "como filtro
+ * melhor?" quando a pergunta era "por que preciso deste dado?".
+ *
+ * Não preciso. O erro nasce na API, e é lá que tem contexto e proveniência —
+ * ela registra o `sqlstate` e a classe da exceção. Aqui basta dizer que a
+ * chamada falhou e com que status, para se saber em qual log procurar.
+ *
+ * Status é um número. Números não vazam nada.
+ */
+function reportLearningFailure(reason: string, status?: number): void {
+  console.error(JSON.stringify({
+    event: "learning_request_failed",
+    reason,
+    ...(status === undefined ? {} : { upstream_status: status })
+  }));
+}
+
 export function learningError(error: unknown) {
   if (isOAuthStoreUnavailable(error)) {
+    reportLearningFailure("oauth_store_unavailable");
     return learningJsonError("oauth_store_unavailable", 503);
   }
   if (error instanceof DomainApiError) {
     if (error.status === 403 || error.status === 404) return learningNotFound();
+    // 401 e 403 da API significam que o envelope interno foi recusado — um
+    // problema entre BFF e API, não uma indisponibilidade. Sem esta linha os
+    // dois eram indistinguíveis, e a tela dizia ao aluno para verificar a
+    // conexão dele.
+    if (error.status === 401) {
+      reportLearningFailure("internal_request_rejected", error.status);
+      return learningJsonError("learning_unavailable", 503);
+    }
     if (error.status === 409 && [
       "idempotency_conflict",
       "progress_version_conflict",
@@ -279,6 +318,11 @@ export function learningError(error: unknown) {
     if (error.status === 413) return learningJsonError("payload_too_large", 413);
     if (error.status === 422) return learningJsonError("invalid_request_body", 422);
     if (error.status === 429) return learningJsonError("rate_limited", 429);
+  }
+  if (error instanceof DomainApiError) {
+    reportLearningFailure("domain_api_error", error.status);
+  } else {
+    reportLearningFailure("erro_nao_classificado");
   }
   return learningJsonError("learning_unavailable", 503);
 }

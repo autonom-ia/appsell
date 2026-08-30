@@ -956,3 +956,94 @@ def test_access_link_learning_errors_stay_indistinguishable_for_unknown_tokens()
             SimpleNamespace(orig=SimpleNamespace(sqlstate=sqlstate))  # type: ignore[arg-type]
         )
         assert (mapped.status_code, mapped.detail) == (expected_status, expected_detail)
+
+
+def test_o_sqlstate_nao_mapeado_deixa_rastro_antes_do_503() -> None:
+    """O motivo do 503 tem de sobrar em algum lugar.
+
+    Em 30/08/2026 um aluno não conseguiu abrir a aula e recebeu "verifique sua
+    conexão". A requisição tinha chegado ao servidor e voltado em 160 ms.
+    Durante duas tentativas, `web` e `api` não escreveram uma única linha: o
+    erro era descartado pelo catch-all dos dois lados.
+
+    Uma investigação de uma hora descartou publicação, funções do banco, rota,
+    chave interna, Redis e saúde da API — e não chegou ao motivo, porque o
+    motivo tinha sido jogado fora exatamente aqui.
+
+    O sqlstate é um código de cinco caracteres: nomeia a classe do erro, nunca o
+    dado que o causou.
+    """
+    import structlog
+
+    captura = structlog.testing.LogCapture()
+    structlog.configure(processors=[captura])
+    try:
+        error = SimpleNamespace(orig=SimpleNamespace(sqlstate="XX000"))
+        mapped = _learning_domain_error(error)  # type: ignore[arg-type]
+    finally:
+        structlog.reset_defaults()
+
+    assert mapped.status_code == 503
+    assert mapped.detail == "learning_unavailable"
+    eventos = [e for e in captura.entries if e.get("event") == "learning_domain_error_unmapped"]
+    assert eventos, "o 503 saiu sem deixar rastro do sqlstate"
+    assert eventos[0]["sqlstate"] == "XX000"
+
+
+def test_um_sqlstate_ja_mapeado_nao_vira_ruido_no_log() -> None:
+    """Só o desconhecido merece aviso; o mapeado já tem resposta própria."""
+    import structlog
+
+    captura = structlog.testing.LogCapture()
+    structlog.configure(processors=[captura])
+    try:
+        error = SimpleNamespace(orig=SimpleNamespace(sqlstate="28000"))
+        mapped = _learning_domain_error(error)  # type: ignore[arg-type]
+    finally:
+        structlog.reset_defaults()
+
+    assert mapped.status_code == 404
+    assert not [e for e in captura.entries if e.get("event") == "learning_domain_error_unmapped"]
+
+
+@pytest.mark.parametrize(
+    ("bruto", "esperado"),
+    [
+        ("XX000", "XX000"),
+        ("28000", "28000"),
+        (None, "ausente_ou_invalido"),
+        ("", "ausente_ou_invalido"),
+        ("joao@exemplo.com", "ausente_ou_invalido"),
+        ("select * from identity_user", "ausente_ou_invalido"),
+        ("xx000", "ausente_ou_invalido"),
+    ],
+)
+def test_so_a_forma_de_um_sqlstate_entra_no_log(bruto: object, esperado: str) -> None:
+    """Prometer "cinco caracteres, nenhum valor" sem impor a forma não é promessa.
+
+    O sqlstate vem do driver e hoje é sempre um código de cinco caracteres — mas
+    "hoje é sempre" foi exatamente a suposição que deixou passar o vazamento
+    equivalente no BFF, onde o código do erro vinha do `detail` da resposta sem
+    validação nenhuma.
+    """
+    from appsell_api.learning_routes import _safe_sqlstate
+
+    assert _safe_sqlstate(bruto) == esperado
+
+
+@pytest.mark.parametrize(
+    ("bruto", "esperado"),
+    [
+        ("OperationalError", "OperationalError"),
+        ("ProgrammingError", "ProgrammingError"),
+        ("joao@exemplo.com", "desconhecido"),
+        ("classe com espaco", "desconhecido"),
+        ("", "desconhecido"),
+        ("A" * 80, "desconhecido"),
+    ],
+)
+def test_so_um_identificador_entra_no_log(bruto: str, esperado: str) -> None:
+    """O nome da classe do erro, e nada além disso."""
+    from appsell_api.learning_routes import _safe_identifier
+
+    assert _safe_identifier(bruto) == esperado
