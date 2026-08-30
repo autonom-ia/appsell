@@ -280,22 +280,22 @@ export function learningForbiddenMutation() {
 // um proxy ou uma mensagem de erro do driver colocariam texto livre ali, e o log
 // gravaria por inteiro. Registrar so o que reconhecemos mantem a promessa de
 // "classe e status, nenhum valor" independente do que chegue.
-// `DomainApiError.code` é o `detail` da resposta, repassado sem validação. Hoje
-// são códigos fixos, mas nada obriga isso — uma rota nova, um proxy ou uma
-// mensagem do driver poriam texto livre ali, e o log gravaria por inteiro.
-//
-// A primeira tentativa aqui foi uma allowlist dos códigos conhecidos. Ela
-// dessincroniza sozinha: o revisor mostrou que `learning_routes.py` também
-// delega a `_domain_error()` de outro módulo, que emite códigos que a lista não
-// tinha — e o caminho voltava a perder a classificação. Uma lista de nomes
-// sempre envelhece.
-//
-// Validar a **forma** não envelhece: todo código de erro nosso é minúsculo com
-// underscore. Isso aceita qualquer código legítimo, de qualquer módulo, hoje ou
-// depois, e recusa exatamente o que não é código — espaço, arroba, pontuação,
-// uma frase.
-const CODIGO_DE_ERRO = /^[a-z][a-z0-9_]{0,63}$/;
-
+/**
+ * O BFF registra onde a falha aconteceu; o que ela foi, quem sabe é a API.
+ *
+ * Três tentativas passaram por aqui antes desta. A primeira gravava
+ * `error.code` direto — e ele é o `detail` da resposta, texto sem contrato
+ * nenhum. A segunda usou allowlist de nomes, que dessincronizou na primeira
+ * rota que delegava a outro módulo. A terceira validou o formato — e formato é
+ * sintaxe, não procedência: `secret123` tem cara de código.
+ *
+ * O erro nasce na API, e é lá que ele tem contexto e proveniência: desde a
+ * #306 ela registra o `sqlstate` e a classe da exceção. O BFF não precisa
+ * repetir um dado em que não pode confiar; precisa dizer que a chamada falhou e
+ * com que status, para que se saiba em qual log da API procurar.
+ *
+ * Status é um número. Números não vazam nada.
+ */
 function reportLearningFailure(reason: string, status?: number): void {
   console.error(JSON.stringify({
     event: "learning_request_failed",
@@ -331,10 +331,7 @@ export function learningError(error: unknown) {
     if (error.status === 429) return learningJsonError("rate_limited", 429);
   }
   if (error instanceof DomainApiError) {
-    const codigo = typeof error.code === "string" && CODIGO_DE_ERRO.test(error.code)
-      ? error.code
-      : "codigo_invalido";
-    reportLearningFailure(`domain_api_${codigo}`, error.status);
+    reportLearningFailure("domain_api_error", error.status);
   } else {
     reportLearningFailure("erro_nao_classificado");
   }

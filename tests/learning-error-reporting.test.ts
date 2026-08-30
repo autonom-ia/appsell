@@ -36,42 +36,27 @@ describe("a falha na área do aluno deixa rastro", () => {
 
   it.each([
     "learning_unavailable",
-    "pdf_viewer_busy",
-    // Emitido por `_domain_error()` de outro módulo. Uma allowlist de nomes não
-    // o continha, e o caminho perdia a classificação — foi por isso que a
-    // validação passou a ser de forma, não de lista.
     "domain_unavailable",
-    "draft_version_conflict"
-  ])("registra o código quando ele tem forma de código: %s", async (codigo) => {
+    // Nenhum destes pode chegar ao log: o `detail` da API é texto sem contrato,
+    // e três tentativas de filtrá-lo falharam — gravar direto, allowlist de
+    // nomes, e validar o formato, que aceita `secret123` porque formato é
+    // sintaxe, não procedência.
+    "usuario joao@exemplo.com nao encontrado",
+    "identity_user",
+    "secret123",
+    "select * from identity_user",
+    ""
+  ])("nunca copia o detalhe da API para o log: %s", async (detalhe) => {
     const linhas = capturar();
-    const resposta = learningError(new DomainApiError(500, codigo));
+    const resposta = learningError(new DomainApiError(500, detalhe));
     expect(resposta.status).toBe(503);
+    // Uma linha só, e o detalhe não aparece em nenhuma parte dela.
+    expect(linhas).toHaveLength(1);
     const registro = JSON.parse(linhas[0]);
     expect(registro.event).toBe("learning_request_failed");
+    expect(registro.reason).toBe("domain_api_error");
     expect(registro.upstream_status).toBe(500);
-    expect(registro.reason).toBe(`domain_api_${codigo}`);
-  });
-
-  it.each([
-    "usuario joao@exemplo.com nao encontrado",
-    "select * from identity_user where email='joao@exemplo.com'",
-    "Erro: senha inválida",
-    ""
-  ])("não copia para o log o que não tem forma de código: %s", async (detalhe) => {
-    // `DomainApiError.code` é o `detail` da resposta, repassado sem validação.
-    // Hoje são códigos fixos, mas uma rota nova ou um proxy poderiam pôr texto
-    // livre ali — e a primeira versão deste teste **exigia** que ele fosse
-    // gravado, consolidando o vazamento em vez de impedi-lo.
-    const linhas = capturar();
-    learningError(new DomainApiError(500, detalhe));
-    // Todas as linhas, não só a primeira: um segundo registro vazando o valor
-    // passaria despercebido se olhássemos apenas `linhas[0]`.
-    expect(linhas).toHaveLength(1);
-    expect(linhas.join(" ")).not.toContain("joao@exemplo.com");
-    expect(linhas.join(" ")).not.toContain("identity_user");
-    const registro = JSON.parse(linhas[0]);
-    expect(registro.reason).toBe("domain_api_codigo_invalido");
-    expect(registro.upstream_status).toBe(500);
+    if (detalhe) expect(linhas[0]).not.toContain(detalhe);
   });
 
   it("o 403 é silencioso, como o 404: não revela existência", async () => {
