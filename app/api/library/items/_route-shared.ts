@@ -280,19 +280,30 @@ export function learningForbiddenMutation() {
 // um proxy ou uma mensagem de erro do driver colocariam texto livre ali, e o log
 // gravaria por inteiro. Registrar so o que reconhecemos mantem a promessa de
 // "classe e status, nenhum valor" independente do que chegue.
+// Os 20 `detail=` que `learning_routes.py` emite. Quem acrescentar um lá e
+// esquecer aqui não abre vazamento — o código vira `codigo_desconhecido` —,
+// mas perde a classificação, que é justamente o que este log existe para dar.
 const CODIGOS_CONHECIDOS = new Set([
-  "learning_unavailable",
-  "learning_item_unavailable",
-  "invalid_internal_request",
-  "invalid_domain_request",
-  "offer_requires_checkout",
   "access_link_exhausted",
   "access_link_unavailable",
+  "asset_storage_driver_unavailable",
+  "asset_storage_unavailable",
   "idempotency_conflict",
-  "progress_version_conflict",
-  "pdf_study_revision_conflict",
+  "internal_auth_not_configured",
+  "invalid_content_type",
+  "invalid_domain_request",
+  "invalid_internal_request",
+  "invalid_request_body",
+  "learning_item_unavailable",
+  "learning_unavailable",
+  "offer_requires_checkout",
   "payload_too_large",
-  "rate_limited"
+  "pdf_manifest_source_drift",
+  "pdf_study_revision_conflict",
+  "pdf_viewer_busy",
+  "pdf_viewer_unavailable",
+  "progress_version_conflict",
+  "protected_pdf_unavailable"
 ]);
 
 function reportLearningFailure(reason: string, status?: number): void {

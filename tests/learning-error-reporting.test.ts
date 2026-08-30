@@ -51,10 +51,13 @@ describe("a falha na área do aluno deixa rastro", () => {
     // gravado, consolidando o vazamento em vez de impedi-lo.
     const linhas = capturar();
     learningError(new DomainApiError(500, "usuario joao@exemplo.com nao encontrado"));
+    // Todas as linhas, não só a primeira: um segundo registro vazando o valor
+    // passaria despercebido se olhássemos apenas `linhas[0]`.
+    expect(linhas).toHaveLength(1);
+    expect(linhas.join(" ")).not.toContain("joao@exemplo.com");
     const registro = JSON.parse(linhas[0]);
     expect(registro.reason).toBe("domain_api_codigo_desconhecido");
     expect(registro.upstream_status).toBe(500);
-    expect(linhas[0]).not.toContain("joao@exemplo.com");
   });
 
   it("o 403 é silencioso, como o 404: não revela existência", async () => {

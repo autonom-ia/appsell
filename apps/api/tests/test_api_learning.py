@@ -1004,3 +1004,28 @@ def test_um_sqlstate_ja_mapeado_nao_vira_ruido_no_log() -> None:
 
     assert mapped.status_code == 404
     assert not [e for e in captura.entries if e.get("event") == "learning_domain_error_unmapped"]
+
+
+@pytest.mark.parametrize(
+    ("bruto", "esperado"),
+    [
+        ("XX000", "XX000"),
+        ("28000", "28000"),
+        (None, "ausente_ou_invalido"),
+        ("", "ausente_ou_invalido"),
+        ("joao@exemplo.com", "ausente_ou_invalido"),
+        ("select * from identity_user", "ausente_ou_invalido"),
+        ("xx000", "ausente_ou_invalido"),
+    ],
+)
+def test_so_a_forma_de_um_sqlstate_entra_no_log(bruto: object, esperado: str) -> None:
+    """Prometer "cinco caracteres, nenhum valor" sem impor a forma não é promessa.
+
+    O sqlstate vem do driver e hoje é sempre um código de cinco caracteres — mas
+    "hoje é sempre" foi exatamente a suposição que deixou passar o vazamento
+    equivalente no BFF, onde o código do erro vinha do `detail` da resposta sem
+    validação nenhuma.
+    """
+    from appsell_api.learning_routes import _safe_sqlstate
+
+    assert _safe_sqlstate(bruto) == esperado

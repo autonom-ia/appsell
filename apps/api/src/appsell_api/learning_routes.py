@@ -1114,6 +1114,23 @@ def _canonical_uuid(value: str, label: str) -> str:
     return value
 
 
+def _safe_sqlstate(value: object) -> str:
+    """Só a forma de um SQLSTATE entra no log.
+
+    O valor vem do driver e hoje é sempre um código de cinco caracteres — mas
+    "hoje é sempre" foi exatamente a suposição que deixou passar o vazamento
+    equivalente do lado do BFF. Prometer "cinco caracteres, nenhum valor" e não
+    impor a forma é a mesma coisa que não prometer.
+    """
+    texto = "" if value is None else str(value)
+    return texto if re.fullmatch(r"[0-9A-Z]{5}", texto) else "ausente_ou_invalido"
+
+
+def _safe_identifier(value: str) -> str:
+    """O nome de uma classe, e nada além disso."""
+    return value if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", value) else "desconhecido"
+
+
 def _learning_domain_error(error: DBAPIError) -> HTTPException:
     sqlstate = getattr(error.orig, "sqlstate", None)
     if sqlstate == "P4222":
@@ -1159,8 +1176,8 @@ def _learning_domain_error(error: DBAPIError) -> HTTPException:
     # erro, nao o dado que o causou.
     logger.warning(
         "learning_domain_error_unmapped",
-        sqlstate=str(sqlstate or "ausente"),
-        exception=type(getattr(error, "orig", error)).__name__,
+        sqlstate=_safe_sqlstate(sqlstate),
+        exception=_safe_identifier(type(getattr(error, "orig", error)).__name__),
     )
     return HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
