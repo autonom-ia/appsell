@@ -34,29 +34,43 @@ describe("a falha na área do aluno deixa rastro", () => {
     return linhas;
   }
 
-  it("registra o status e o código quando o código é conhecido", async () => {
+  it.each([
+    "learning_unavailable",
+    "pdf_viewer_busy",
+    // Emitido por `_domain_error()` de outro módulo. Uma allowlist de nomes não
+    // o continha, e o caminho perdia a classificação — foi por isso que a
+    // validação passou a ser de forma, não de lista.
+    "domain_unavailable",
+    "draft_version_conflict"
+  ])("registra o código quando ele tem forma de código: %s", async (codigo) => {
     const linhas = capturar();
-    const resposta = learningError(new DomainApiError(500, "learning_unavailable"));
+    const resposta = learningError(new DomainApiError(500, codigo));
     expect(resposta.status).toBe(503);
     const registro = JSON.parse(linhas[0]);
     expect(registro.event).toBe("learning_request_failed");
     expect(registro.upstream_status).toBe(500);
-    expect(registro.reason).toBe("domain_api_learning_unavailable");
+    expect(registro.reason).toBe(`domain_api_${codigo}`);
   });
 
-  it("não copia para o log um código que não reconhece", async () => {
+  it.each([
+    "usuario joao@exemplo.com nao encontrado",
+    "select * from identity_user where email='joao@exemplo.com'",
+    "Erro: senha inválida",
+    ""
+  ])("não copia para o log o que não tem forma de código: %s", async (detalhe) => {
     // `DomainApiError.code` é o `detail` da resposta, repassado sem validação.
     // Hoje são códigos fixos, mas uma rota nova ou um proxy poderiam pôr texto
     // livre ali — e a primeira versão deste teste **exigia** que ele fosse
     // gravado, consolidando o vazamento em vez de impedi-lo.
     const linhas = capturar();
-    learningError(new DomainApiError(500, "usuario joao@exemplo.com nao encontrado"));
+    learningError(new DomainApiError(500, detalhe));
     // Todas as linhas, não só a primeira: um segundo registro vazando o valor
     // passaria despercebido se olhássemos apenas `linhas[0]`.
     expect(linhas).toHaveLength(1);
     expect(linhas.join(" ")).not.toContain("joao@exemplo.com");
+    expect(linhas.join(" ")).not.toContain("identity_user");
     const registro = JSON.parse(linhas[0]);
-    expect(registro.reason).toBe("domain_api_codigo_desconhecido");
+    expect(registro.reason).toBe("domain_api_codigo_invalido");
     expect(registro.upstream_status).toBe(500);
   });
 

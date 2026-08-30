@@ -280,31 +280,21 @@ export function learningForbiddenMutation() {
 // um proxy ou uma mensagem de erro do driver colocariam texto livre ali, e o log
 // gravaria por inteiro. Registrar so o que reconhecemos mantem a promessa de
 // "classe e status, nenhum valor" independente do que chegue.
-// Os 20 `detail=` que `learning_routes.py` emite. Quem acrescentar um lá e
-// esquecer aqui não abre vazamento — o código vira `codigo_desconhecido` —,
-// mas perde a classificação, que é justamente o que este log existe para dar.
-const CODIGOS_CONHECIDOS = new Set([
-  "access_link_exhausted",
-  "access_link_unavailable",
-  "asset_storage_driver_unavailable",
-  "asset_storage_unavailable",
-  "idempotency_conflict",
-  "internal_auth_not_configured",
-  "invalid_content_type",
-  "invalid_domain_request",
-  "invalid_internal_request",
-  "invalid_request_body",
-  "learning_item_unavailable",
-  "learning_unavailable",
-  "offer_requires_checkout",
-  "payload_too_large",
-  "pdf_manifest_source_drift",
-  "pdf_study_revision_conflict",
-  "pdf_viewer_busy",
-  "pdf_viewer_unavailable",
-  "progress_version_conflict",
-  "protected_pdf_unavailable"
-]);
+// `DomainApiError.code` é o `detail` da resposta, repassado sem validação. Hoje
+// são códigos fixos, mas nada obriga isso — uma rota nova, um proxy ou uma
+// mensagem do driver poriam texto livre ali, e o log gravaria por inteiro.
+//
+// A primeira tentativa aqui foi uma allowlist dos códigos conhecidos. Ela
+// dessincroniza sozinha: o revisor mostrou que `learning_routes.py` também
+// delega a `_domain_error()` de outro módulo, que emite códigos que a lista não
+// tinha — e o caminho voltava a perder a classificação. Uma lista de nomes
+// sempre envelhece.
+//
+// Validar a **forma** não envelhece: todo código de erro nosso é minúsculo com
+// underscore. Isso aceita qualquer código legítimo, de qualquer módulo, hoje ou
+// depois, e recusa exatamente o que não é código — espaço, arroba, pontuação,
+// uma frase.
+const CODIGO_DE_ERRO = /^[a-z][a-z0-9_]{0,63}$/;
 
 function reportLearningFailure(reason: string, status?: number): void {
   console.error(JSON.stringify({
@@ -341,11 +331,10 @@ export function learningError(error: unknown) {
     if (error.status === 429) return learningJsonError("rate_limited", 429);
   }
   if (error instanceof DomainApiError) {
-    const conhecido = typeof error.code === "string" && CODIGOS_CONHECIDOS.has(error.code);
-    reportLearningFailure(
-      conhecido ? `domain_api_${error.code}` : "domain_api_codigo_desconhecido",
-      error.status
-    );
+    const codigo = typeof error.code === "string" && CODIGO_DE_ERRO.test(error.code)
+      ? error.code
+      : "codigo_invalido";
+    reportLearningFailure(`domain_api_${codigo}`, error.status);
   } else {
     reportLearningFailure("erro_nao_classificado");
   }

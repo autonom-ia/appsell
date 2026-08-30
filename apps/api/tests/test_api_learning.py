@@ -1029,3 +1029,21 @@ def test_so_a_forma_de_um_sqlstate_entra_no_log(bruto: object, esperado: str) ->
     from appsell_api.learning_routes import _safe_sqlstate
 
     assert _safe_sqlstate(bruto) == esperado
+
+
+@pytest.mark.parametrize(
+    ("bruto", "esperado"),
+    [
+        ("OperationalError", "OperationalError"),
+        ("ProgrammingError", "ProgrammingError"),
+        ("joao@exemplo.com", "desconhecido"),
+        ("classe com espaco", "desconhecido"),
+        ("", "desconhecido"),
+        ("A" * 80, "desconhecido"),
+    ],
+)
+def test_so_um_identificador_entra_no_log(bruto: str, esperado: str) -> None:
+    """O nome da classe do erro, e nada além disso."""
+    from appsell_api.learning_routes import _safe_identifier
+
+    assert _safe_identifier(bruto) == esperado
