@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import anyio
+import anyio.lowlevel
 import pytest
 
 from appsell_api import pdf_link_video
 from appsell_api.pdf_link_video import (
-    MAX_DURATION_SECONDS,
     PdfLinkVideoRejected,
     PreparationRegistry,
-    copyable_streams,
     derivative_key,
     download_source,
     trusted_video_target,
@@ -23,26 +23,6 @@ ALLOWED = "https://midia.example.test"
 
 SELLER = "aea20a25-9889-47a5-bdbf-8588aae3ba1c"
 OUTRO_SELLER = "1c2d3e4f-5678-4abc-8def-9012345678ab"
-
-
-def _probe(
-    *,
-    duration: float = 30.0,
-    video_codec: str | None = "h264",
-    audio_codec: str | None = "aac",
-    pix_fmt: str = "yuv420p",
-    extra_video: bool = False,
-) -> dict[str, object]:
-    streams: list[dict[str, object]] = []
-    if video_codec is not None:
-        streams.append(
-            {"codec_type": "video", "codec_name": video_codec, "pix_fmt": pix_fmt}
-        )
-    if extra_video:
-        streams.append({"codec_type": "video", "codec_name": "h264", "pix_fmt": pix_fmt})
-    if audio_codec is not None:
-        streams.append({"codec_type": "audio", "codec_name": audio_codec})
-    return {"format": {"duration": str(duration)}, "streams": streams}
 
 
 class TestTrustedTarget:
@@ -95,74 +75,36 @@ class TestTrustedTarget:
 
 class TestDerivativeKey:
     def test_the_same_address_always_lands_on_the_same_object(self) -> None:
-        assert derivative_key(SELLER, "https://a.test/x.mov") == derivative_key(
-            SELLER, "https://a.test/x.mov"
+        assert derivative_key(SELLER, "https://a.test/x.mov", "v1") == derivative_key(
+            SELLER, "https://a.test/x.mov", "v1"
         )
 
     def test_different_addresses_do_not_collide(self) -> None:
-        assert derivative_key(SELLER, "https://a.test/x.mov") != derivative_key(
-            SELLER, "https://a.test/y.mov"
+        assert derivative_key(SELLER, "https://a.test/x.mov", "v1") != derivative_key(
+            SELLER, "https://a.test/y.mov", "v1"
         )
 
     def test_two_sellers_citing_the_same_address_do_not_share_the_object(self) -> None:
         # Uma chave só do endereço faria o segundo vendedor receber a cópia que
         # o primeiro preparou — de um conteúdo que aquele endereço talvez nem
         # sirva mais.
-        assert derivative_key(SELLER, "https://a.test/x.mov") != derivative_key(
-            OUTRO_SELLER, "https://a.test/x.mov"
+        assert derivative_key(SELLER, "https://a.test/x.mov", "v1") != derivative_key(
+            OUTRO_SELLER, "https://a.test/x.mov", "v1"
+        )
+
+    def test_a_new_version_of_the_source_lands_on_a_new_object(self) -> None:
+        # Sem o validador na chave, trocar o vídeo mantendo o endereço deixaria
+        # o aluno com a versão antiga para sempre, e o vendedor sem correção.
+        assert derivative_key(SELLER, "https://a.test/x.mov", "etag-1") != derivative_key(
+            SELLER, "https://a.test/x.mov", "etag-2"
         )
 
     def test_the_key_carries_no_characters_from_the_address(self) -> None:
         # A chave é um resumo, então nem o host nem o caminho da origem ficam
         # legíveis no nome do objeto guardado.
-        key = derivative_key(SELLER, "https://midia.example.test/pasta secreta/aula.mov")
+        key = derivative_key(SELLER, "https://midia.example.test/pasta secreta/aula.mov", "v1")
         assert "midia" not in key and "secreta" not in key
         assert key.startswith("derivatives/pdf-link-video/") and key.endswith(".mp4")
-
-
-class TestPlan:
-    """Copiar quando dá, recodificar quando é preciso, recusar o impossível."""
-
-    def test_h264_with_aac_only_changes_container(self) -> None:
-        assert copyable_streams(_probe()) is True
-
-    def test_mp3_audio_is_also_copyable(self) -> None:
-        assert copyable_streams(_probe(audio_codec="mp3")) is True
-
-    def test_video_without_audio_is_copyable(self) -> None:
-        assert copyable_streams(_probe(audio_codec=None)) is True
-
-    @pytest.mark.parametrize("codec", ["prores", "hevc", "vp9", "mpeg4"])
-    def test_a_codec_the_browser_cannot_play_is_recoded(self, codec: str) -> None:
-        assert copyable_streams(_probe(video_codec=codec)) is False
-
-    def test_audio_the_browser_cannot_play_is_recoded(self) -> None:
-        assert copyable_streams(_probe(audio_codec="pcm_s16le")) is False
-
-    def test_more_than_one_video_track_is_recoded(self) -> None:
-        assert copyable_streams(_probe(extra_video=True)) is False
-
-    def test_a_source_without_video_is_refused(self) -> None:
-        with pytest.raises(PdfLinkVideoRejected):
-            copyable_streams(_probe(video_codec=None))
-
-    def test_a_source_longer_than_the_ceiling_is_refused(self) -> None:
-        with pytest.raises(PdfLinkVideoRejected):
-            copyable_streams(_probe(duration=MAX_DURATION_SECONDS + 1))
-
-    def test_a_source_with_no_duration_is_refused(self) -> None:
-        with pytest.raises(PdfLinkVideoRejected):
-            copyable_streams(_probe(duration=0))
-
-    def test_metadata_that_is_not_numeric_is_refused(self) -> None:
-        with pytest.raises(PdfLinkVideoRejected):
-            copyable_streams({"format": {"duration": "muito"}, "streams": []})
-
-    @pytest.mark.parametrize("pix_fmt", ["yuv420p10le", "yuv422p", "yuv444p"])
-    def test_h264_in_a_variant_the_browser_cannot_draw_is_recoded(self, pix_fmt: str) -> None:
-        # H.264 de 10 bits ou 4:2:2 é H.264, e mesmo assim o navegador não
-        # desenha. Copiar entregaria um MP4 tão inútil quanto o original.
-        assert copyable_streams(_probe(pix_fmt=pix_fmt)) is False
 
 
 class TestPreparationRegistry:
@@ -215,6 +157,7 @@ class TestRecognisedContainers:
             assert extension not in VIDEO_EXTENSIONS
 
 
+
 class TestDownloadSource:
     """O único ponto que fala com a rede, e onde o SSRF seria explorado.
 
@@ -236,17 +179,21 @@ class TestDownloadSource:
                     self._corpo: list[bytes] = []
                 else:
                     self.status_code = 200
-                    self.headers = {}
-                    self._corpo = [bytes(item)] if isinstance(item, (bytes, bytearray)) else [item]
+                    self.headers = {"etag": '"abc123"'}
+                    self._corpo = [bytes(item)]
 
-            def __enter__(self) -> _Resposta:
+            async def __aenter__(self) -> _Resposta:
                 return self
 
-            def __exit__(self, *_: object) -> None:
+            async def __aexit__(self, *_: object) -> None:
                 return None
 
-            def iter_bytes(self, _size: int) -> list[bytes]:
-                return self._corpo
+            async def aiter_bytes(self, _size: int):
+                for chunk in self._corpo:
+                    # Cede o controle: é o que permite a um escopo de
+                    # cancelamento externo interromper um download em curso.
+                    await anyio.lowlevel.checkpoint()
+                    yield chunk
 
         class _Cliente:
             def __init__(self, **kwargs: object) -> None:
@@ -258,10 +205,10 @@ class TestDownloadSource:
                 assert kwargs.get("trust_env") is False
                 self._restantes = list(respostas)
 
-            def __enter__(self) -> _Cliente:
+            async def __aenter__(self) -> _Cliente:
                 return self
 
-            def __exit__(self, *_: object) -> None:
+            async def __aexit__(self, *_: object) -> None:
                 return None
 
             def stream(
@@ -278,7 +225,7 @@ class TestDownloadSource:
                 pedidos.append(url)
                 return _Resposta(self._restantes.pop(0))
 
-        monkeypatch.setattr(pdf_link_video.httpx, "Client", _Cliente)
+        monkeypatch.setattr(pdf_link_video.httpx, "AsyncClient", _Cliente)
         return pedidos
 
     @staticmethod
@@ -289,20 +236,20 @@ class TestDownloadSource:
             lambda *_a, **_k: [(2, 1, 6, "", (endereco, 443))],
         )
 
-    def test_downloads_from_an_allowed_origin(
+    async def test_downloads_from_an_allowed_origin(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         monkeypatch.setenv("APPSELL_PDF_VIDEO_ALLOWED_ORIGINS", ALLOWED)
         self._dns(monkeypatch)
         pedidos = self._client(monkeypatch, [b"conteudo do video"])
         destino = tmp_path / "source.bin"
-        assert download_source(f"{ALLOWED}/aula.mov", destino) == 17
+        assert await download_source(f"{ALLOWED}/aula.mov", destino) == (17, '"abc123"')
         assert destino.read_bytes() == b"conteudo do video"
         # Conectou no endereço validado, não no nome — sem uma segunda
         # resolução entre a checagem e a conexão.
         assert pedidos == ["https://93.184.216.34/aula.mov"]
 
-    def test_a_redirect_to_an_origin_outside_the_allowlist_is_refused(
+    async def test_a_redirect_to_an_origin_outside_the_allowlist_is_refused(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         # O ataque concreto: a origem permitida responde 302 para o serviço de
@@ -312,34 +259,34 @@ class TestDownloadSource:
         self._dns(monkeypatch)
         self._client(monkeypatch, [(302, "https://169.254.169.254/latest/meta-data")])
         with pytest.raises(PdfLinkVideoRejected):
-            download_source(f"{ALLOWED}/aula.mov", tmp_path / "source.bin")
+            await download_source(f"{ALLOWED}/aula.mov", tmp_path / "source.bin")
 
-    def test_a_redirect_inside_the_allowlist_is_followed(
+    async def test_a_redirect_inside_the_allowlist_is_followed(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         monkeypatch.setenv("APPSELL_PDF_VIDEO_ALLOWED_ORIGINS", ALLOWED)
         self._dns(monkeypatch)
         pedidos = self._client(monkeypatch, [(302, "/outra.mov"), b"conteudo"])
-        assert download_source(f"{ALLOWED}/aula.mov", tmp_path / "source.bin") == 8
+        assert (await download_source(f"{ALLOWED}/aula.mov", tmp_path / "source.bin"))[0] == 8
         assert pedidos == [
             "https://93.184.216.34/aula.mov",
             "https://93.184.216.34/outra.mov",
         ]
 
-    def test_endless_redirects_stop(
+    async def test_endless_redirects_stop(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         monkeypatch.setenv("APPSELL_PDF_VIDEO_ALLOWED_ORIGINS", ALLOWED)
         self._dns(monkeypatch)
         self._client(monkeypatch, [(302, "/a.mov")] * 10)
         with pytest.raises(PdfLinkVideoRejected):
-            download_source(f"{ALLOWED}/aula.mov", tmp_path / "source.bin")
+            await download_source(f"{ALLOWED}/aula.mov", tmp_path / "source.bin")
 
     @pytest.mark.parametrize(
         "endereco",
         ["127.0.0.1", "10.0.0.5", "169.254.169.254", "192.168.1.1", "::1", "fd00::1"],
     )
-    def test_a_host_resolving_inside_the_network_is_refused(
+    async def test_a_host_resolving_inside_the_network_is_refused(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, endereco: str
     ) -> None:
         # A allowlist confere o nome; isto confere para onde o nome aponta.
@@ -348,9 +295,9 @@ class TestDownloadSource:
         self._dns(monkeypatch, endereco)
         self._client(monkeypatch, [b"conteudo"])
         with pytest.raises(PdfLinkVideoRejected):
-            download_source(f"{ALLOWED}/aula.mov", tmp_path / "source.bin")
+            await download_source(f"{ALLOWED}/aula.mov", tmp_path / "source.bin")
 
-    def test_a_body_larger_than_the_ceiling_stops_mid_download(
+    async def test_a_body_larger_than_the_ceiling_stops_mid_download(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         # O teto vale sobre os bytes lidos, não sobre o que a origem declara:
@@ -360,25 +307,27 @@ class TestDownloadSource:
         self._dns(monkeypatch)
         self._client(monkeypatch, [b"muito maior que o teto"])
         with pytest.raises(PdfLinkVideoRejected):
-            download_source(f"{ALLOWED}/aula.mov", tmp_path / "source.bin")
+            await download_source(f"{ALLOWED}/aula.mov", tmp_path / "source.bin")
 
-    def test_a_slow_origin_hits_the_total_deadline(
+    async def test_the_download_can_be_cancelled_from_outside(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        # O timeout do cliente é por operação: uma origem que envia alguns bytes
-        # a cada 59 s nunca o dispara e segura o único slot para sempre.
+        # O prazo é um escopo de cancelamento em volta, e não um relógio olhado
+        # entre pedaços: um relógio só é consultado quando chega um pedaço, e
+        # uma origem que manda alguns bytes de vez em quando nunca chega lá.
+        # Isto prova que o download cede o controle e pode ser interrompido.
         monkeypatch.setenv("APPSELL_PDF_VIDEO_ALLOWED_ORIGINS", ALLOWED)
-        monkeypatch.setattr(pdf_link_video, "DOWNLOAD_DEADLINE_SECONDS", 0)
         self._dns(monkeypatch)
         self._client(monkeypatch, [b"conteudo"])
-        with pytest.raises(pdf_link_video.PdfLinkVideoUnavailable):
-            download_source(f"{ALLOWED}/aula.mov", tmp_path / "source.bin")
+        with pytest.raises(TimeoutError):
+            with anyio.fail_after(0):
+                await download_source(f"{ALLOWED}/aula.mov", tmp_path / "source.bin")
 
-    def test_an_empty_body_is_refused(
+    async def test_an_empty_body_is_refused(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         monkeypatch.setenv("APPSELL_PDF_VIDEO_ALLOWED_ORIGINS", ALLOWED)
         self._dns(monkeypatch)
         self._client(monkeypatch, [b""])
         with pytest.raises(PdfLinkVideoRejected):
-            download_source(f"{ALLOWED}/aula.mov", tmp_path / "source.bin")
+            await download_source(f"{ALLOWED}/aula.mov", tmp_path / "source.bin")

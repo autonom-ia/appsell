@@ -37,20 +37,18 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
-import json
 import os
-import shutil
 import socket
-import subprocess
 import tempfile
 import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final
+from typing import Final
 from urllib.parse import urlsplit
 
+import anyio
 import httpx
+from anyio import to_thread
 
 _MIB: Final = 1024 * 1024
 
@@ -59,8 +57,6 @@ _MIB: Final = 1024 * 1024
 MAX_SOURCE_BYTES: Final = 512 * _MIB
 #: Teto do derivado gerado, pelo mesmo motivo.
 MAX_DERIVATIVE_BYTES: Final = 512 * _MIB
-#: Duração máxima aceita, em segundos. Uma aula não é um filme.
-MAX_DURATION_SECONDS: Final = 4 * 60 * 60
 #: Quantos redirecionamentos o download aceita. Cada um é revalidado.
 MAX_REDIRECTS: Final = 3
 #: Prazo total do download, em segundos.
@@ -69,26 +65,9 @@ MAX_REDIRECTS: Final = 3
 #: cada 59 segundos nunca o dispara e segura o único slot de preparo para
 #: sempre. Este prazo é sobre o relógio, do começo ao fim.
 DOWNLOAD_DEADLINE_SECONDS: Final = 15 * 60
-#: Teto da saída do `ffprobe`, que é lida para a memória.
-MAX_PROBE_BYTES: Final = 256 * 1024
 
-#: Os containers que aceitamos abrir.
-#:
-#: `hls`, `dash` e `concat` ficam de fora de propósito: são formatos que apontam
-#: para outros recursos, e é por eles que um parser de mídia vira um cliente de
-#: rede. A restrição vale para a inspeção e para a conversão.
-_ALLOWED_FORMATS: Final = (
-    "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,avi,mpegts,mpeg,asf,flv,ogg"
-)
-#: Orçamento de tempo do `ffmpeg`. Recodificar é lento, mas não é infinito.
-REMUX_TIMEOUT_SECONDS: Final = 5 * 60
 TRANSCODE_TIMEOUT_SECONDS: Final = 60 * 60
 
-#: O que o navegador toca dentro de um MP4, sem recodificar.
-_COPYABLE_VIDEO: Final = frozenset({"h264"})
-_COPYABLE_AUDIO: Final = frozenset({"aac", "mp3"})
-#: O que o navegador desenha sem recodificar. 10 bits e 4:2:2 ficam de fora.
-_COPYABLE_PIXEL_FORMATS: Final = frozenset({"yuv420p", "yuvj420p"})
 
 DERIVATIVE_MEDIA_TYPE: Final = "video/mp4"
 DERIVATIVE_PREFIX: Final = "derivatives/pdf-link-video"
@@ -108,6 +87,7 @@ class PreparedVideo:
     byte_size: int
     sha256_hex: str
     recoded: bool
+    validator: str
 
 
 def allowed_video_origins() -> tuple[str, ...]:
@@ -141,7 +121,50 @@ def trusted_video_target(value: object) -> str | None:
     return value if origin in origins else None
 
 
-def derivative_key(seller_organization_id: str, target_url: str) -> str:
+async def origin_validator(target_url: str) -> str:
+    """O que a origem diz sobre a versão atual do arquivo.
+
+    Um `HEAD` barato, pelo mesmo caminho conferido do download: allowlist,
+    endereço público e conexão no IP validado, com cada redirecionamento
+    revalidado.
+
+    Existe para a chave do derivado poder mudar quando o arquivo muda. Sem
+    isto, trocar o vídeo mantendo o mesmo endereço deixaria o aluno recebendo a
+    versão antiga para sempre — e o vendedor sem nenhuma forma de corrigir.
+    """
+    seen = target_url
+    async with httpx.AsyncClient(
+        follow_redirects=False,
+        timeout=httpx.Timeout(20.0, connect=10.0),
+        trust_env=False,
+    ) as client:
+        for _ in range(MAX_REDIRECTS + 1):
+            trusted = trusted_video_target(seen)
+            if trusted is None:
+                raise PdfLinkVideoRejected("video target is not an allowed origin")
+            host = urlsplit(trusted).hostname or ""
+            address = public_address(host)
+            response = await client.head(
+                _pinned(trusted, address),
+                headers={"host": host},
+                extensions={"sni_hostname": host},
+            )
+            if response.status_code in (301, 302, 303, 307, 308):
+                seen = str(httpx.URL(trusted).join(response.headers.get("location", "")))
+                continue
+            if response.status_code != 200:
+                raise PdfLinkVideoRejected("video origin refused the request")
+            validator = (
+                response.headers.get("etag")
+                or response.headers.get("last-modified")
+                or response.headers.get("content-length")
+                or ""
+            )
+            return validator[:120]
+    raise PdfLinkVideoRejected("video target redirects too many times")
+
+
+def derivative_key(seller_organization_id: str, target_url: str, validator: str) -> str:
     """A chave do derivado, por vendedor e endereço de origem.
 
     A existência do objeto é o registro: sem tabela, sem migration, e sem um
@@ -149,11 +172,14 @@ def derivative_key(seller_organization_id: str, target_url: str) -> str:
 
     O vendedor entra na chave de propósito. Uma chave só do endereço faria dois
     produtos de donos diferentes que citam a mesma URL compartilharem o objeto —
-    e o segundo receberia a cópia que o primeiro preparou, possivelmente de um
-    conteúdo que aquele endereço não serve mais.
+    e o segundo receberia a cópia que o primeiro preparou.
+
+    O validador entra pelo mesmo motivo no tempo: trocar o arquivo mantendo o
+    endereço passa a gerar uma chave nova, e o aluno recebe o vídeo atual em vez
+    da versão que alguém preparou meses atrás.
     """
     digest = hashlib.sha256(
-        f"{seller_organization_id}\n{target_url}".encode()
+        f"{seller_organization_id}\n{target_url}\n{validator}".encode()
     ).hexdigest()
     return f"{DERIVATIVE_PREFIX}/{digest[:2]}/{digest}.mp4"
 
@@ -189,7 +215,7 @@ def _pinned(url: str, address: str) -> str:
     return parts._replace(netloc=literal).geturl()
 
 
-def download_source(target_url: str, destination: Path) -> int:
+async def download_source(target_url: str, destination: Path) -> tuple[int, str]:
     """Baixa a origem uma vez, e é o único ponto que fala com a rede.
 
     Antes o endereço ia direto para o `ffmpeg`, que segue redirecionamento por
@@ -201,9 +227,11 @@ def download_source(target_url: str, destination: Path) -> int:
     declara — um `content-length` mentiroso não enche o disco.
     """
     seen = target_url
-    deadline = time.monotonic() + DOWNLOAD_DEADLINE_SECONDS
-    with httpx.Client(follow_redirects=False, timeout=httpx.Timeout(60.0, connect=10.0),
-                      trust_env=False) as client:
+    async with httpx.AsyncClient(
+        follow_redirects=False,
+        timeout=httpx.Timeout(60.0, connect=10.0),
+        trust_env=False,
+    ) as client:
         for _ in range(MAX_REDIRECTS + 1):
             trusted = trusted_video_target(seen)
             if trusted is None:
@@ -213,7 +241,7 @@ def download_source(target_url: str, destination: Path) -> int:
             # Conecta no endereço que acabou de ser validado, e apresenta o
             # nome do host para o TLS: o certificado continua sendo conferido
             # contra o nome, e o DNS não tem uma segunda chance de responder.
-            with client.stream(
+            async with client.stream(
                 "GET",
                 _pinned(trusted, address),
                 headers={"host": host},
@@ -226,180 +254,112 @@ def download_source(target_url: str, destination: Path) -> int:
                 if response.status_code != 200:
                     raise PdfLinkVideoRejected("video origin refused the download")
                 written = 0
-                with destination.open("wb") as sink:
-                    for chunk in response.iter_bytes(_MIB):
-                        if time.monotonic() > deadline:
-                            raise PdfLinkVideoUnavailable("video download exceeded its deadline")
+                sink = await anyio.Path(destination).open("wb")
+                try:
+                    async for chunk in response.aiter_bytes(_MIB):
                         written += len(chunk)
                         if written > MAX_SOURCE_BYTES:
                             raise PdfLinkVideoRejected("video exceeds the accepted source size")
-                        sink.write(chunk)
+                        await sink.write(chunk)
+                finally:
+                    await sink.aclose()
                 if written < 1:
                     raise PdfLinkVideoRejected("video origin returned an empty body")
-                return written
+                # O validador da origem entra na chave do derivado: trocar o
+                # arquivo mantendo o endereço passa a gerar um objeto novo, em
+                # vez de o aluno continuar recebendo a versão antiga para sempre.
+                validator = (
+                    response.headers.get("etag")
+                    or response.headers.get("last-modified")
+                    or str(written)
+                )
+                return written, validator[:120]
     raise PdfLinkVideoRejected("video target redirects too many times")
 
 
-def _binary(name: str) -> str:
-    """O caminho absoluto da ferramenta, resolvido uma vez.
+async def prepare_video(target_url: str, workspace: Path) -> PreparedVideo:
+    """Baixa a origem e devolve um MP4 que o navegador toca.
 
-    Chamar por nome deixaria a resolução a cargo do `PATH` do processo, que não
-    é nosso para garantir. E a ausência vira uma falha nomeada em vez de um
-    `OSError` genérico lá adiante.
+    O download acontece aqui, porque a API é quem tem rede. A conversão
+    acontece no serviço isolado, porque o arquivo é do vendedor e um parser de
+    mídia não tem o que fazer no processo que carrega as credenciais.
     """
-    resolved = shutil.which(name)
-    if resolved is None:
-        raise PdfLinkVideoUnavailable(f"{name} is not available in this image")
-    return resolved
-
-
-def probe_video(source: Path) -> dict[str, Any]:
-    """Lê container, duração e codecs do arquivo já baixado.
-
-    Ler do arquivo local, e não do endereço, elimina a janela em que a origem
-    entregava um arquivo pequeno para a inspeção e outro para a conversão.
-    """
-    argumentos = [
-        _binary("ffprobe"), "-v", "error",
-        # O parser de mídia é o outro caminho pelo qual isto viraria um cliente
-        # de rede: um container que aponta para outro recurso faria o `ffprobe`
-        # buscá-lo. Nada de rede, nada de playlist.
-        "-protocol_whitelist", "file",
-        "-format_whitelist", _ALLOWED_FORMATS,
-        # Só os campos que a decisão usa.
-        "-show_entries", "format=duration:stream=codec_type,codec_name,pix_fmt",
-        "-of", "json", "-i", str(source),
-    ]
-    try:
-        # `capture_output` leria a saída inteira para a memória e só depois
-        # deixaria conferir o tamanho — o teto chegaria tarde demais. Aqui a
-        # leitura para no teto, e o erro do processo vai para o vazio.
-        with subprocess.Popen(  # noqa: S603 - argv only; local path, no shell
-            argumentos,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        ) as processo:
-            saida = processo.stdout.read(MAX_PROBE_BYTES + 1) if processo.stdout else b""
-            try:
-                codigo = processo.wait(timeout=60)
-            except subprocess.TimeoutExpired:
-                processo.kill()
-                raise
-    except subprocess.TimeoutExpired as error:
-        raise PdfLinkVideoUnavailable("video probe exceeded its budget") from error
-    except OSError as error:
-        raise PdfLinkVideoUnavailable("video probe could not start") from error
-    if codigo != 0:
-        raise PdfLinkVideoRejected("source is not a readable video")
-    if len(saida) > MAX_PROBE_BYTES:
-        raise PdfLinkVideoRejected("video metadata is larger than expected")
-    try:
-        return json.loads(saida)
-    except json.JSONDecodeError as error:
-        raise PdfLinkVideoRejected("video probe returned no usable metadata") from error
-
-
-def copyable_streams(probed: dict[str, Any]) -> bool:
-    """`True` quando basta trocar o container; `False` quando precisa recodificar."""
-    fmt = probed.get("format") or {}
-    try:
-        duration = float(fmt.get("duration") or 0.0)
-    except (TypeError, ValueError) as error:
-        raise PdfLinkVideoRejected("video metadata is not numeric") from error
-    if duration <= 0 or duration > MAX_DURATION_SECONDS:
-        raise PdfLinkVideoRejected("video duration is outside the accepted range")
-
-    streams = probed.get("streams") or []
-    video = [s for s in streams if s.get("codec_type") == "video"]
-    audio = [s for s in streams if s.get("codec_type") == "audio"]
-    if not video:
-        raise PdfLinkVideoRejected("source carries no video stream")
-    # Uma faixa de cada, no máximo: o player mostra uma, e copiar as demais só
-    # engorda o derivado.
-    if len(video) > 1 or len(audio) > 1:
-        return False
-    if str(video[0].get("codec_name")) not in _COPYABLE_VIDEO:
-        return False
-    # H.264 existe em variantes que o navegador não desenha — 10 bits, 4:2:2.
-    # Copiar essas entregaria um MP4 tão inútil quanto o QuickTime original.
-    if str(video[0].get("pix_fmt")) not in _COPYABLE_PIXEL_FORMATS:
-        return False
-    if audio and str(audio[0].get("codec_name")) not in _COPYABLE_AUDIO:
-        return False
-    return True
-
-
-def _run_ffmpeg(arguments: list[str], *, timeout: int) -> None:
-    try:
-        completed = subprocess.run(  # noqa: S603 - argv only; target checked against the allowlist
-            [_binary("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y", *arguments],
-            # Nada da saída é lido, e uma hora de erros prolixos acumulados na
-            # memória da API seria um jeito barato de derrubá-la.
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as error:
-        raise PdfLinkVideoUnavailable("video preparation exceeded its budget") from error
-    except OSError as error:
-        raise PdfLinkVideoUnavailable("video preparation could not start") from error
-    if completed.returncode != 0:
-        raise PdfLinkVideoRejected("video preparation failed")
-
-
-def prepare_video(target_url: str, workspace: Path) -> PreparedVideo:
-    """Baixa a origem e devolve um MP4 que o navegador toca."""
     source = workspace / "source.bin"
-    download_source(target_url, source)
-
-    copyable = copyable_streams(probe_video(source))
-    destination = workspace / "derivative.mp4"
-    common = [
-        # Só arquivo local: o `ffmpeg` não fala com a rede em momento nenhum.
-        "-protocol_whitelist", "file",
-        "-format_whitelist", _ALLOWED_FORMATS,
-        "-i", str(source), "-map", "0:v:0", "-map", "0:a:0?",
-        "-movflags", "+faststart",
-        # Teto de bytes na própria escrita, e não só depois que o arquivo existe.
-        "-fs", str(MAX_DERIVATIVE_BYTES),
-        # Um vídeo não pode tomar a máquina inteira enquanto o resto da API espera.
-        "-threads", "2",
-        "-f", "mp4",
-    ]
-    if copyable:
-        arguments = [*common, "-c", "copy", str(destination)]
-        timeout = REMUX_TIMEOUT_SECONDS
-    else:
-        arguments = [
-            *common,
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-            "-pix_fmt", "yuv420p",
-            # Dimensões ímpares o H.264 recusa; acima de 1080p não serve a
-            # ninguém numa aula e custa minutos de CPU.
-            "-vf", "scale='min(1920,trunc(iw/2)*2)':'min(1080,trunc(ih/2)*2)'"
-                   ":force_original_aspect_ratio=decrease",
-            "-c:a", "aac", "-b:a", "128k", "-ac", "2",
-            str(destination),
-        ]
-        timeout = TRANSCODE_TIMEOUT_SECONDS
-    _run_ffmpeg(arguments, timeout=timeout)
-
-    if not destination.exists():
-        raise PdfLinkVideoRejected("video preparation produced no file")
-    byte_size = destination.stat().st_size
-    if byte_size < 1 or byte_size > MAX_DERIVATIVE_BYTES:
-        raise PdfLinkVideoRejected("prepared video is outside the accepted size")
+    # Prazo absoluto sobre tudo — conexão, cabeçalhos e corpo. O timeout do
+    # cliente é por operação, e uma origem que envia alguns bytes a cada 59 s
+    # nunca o dispara: seguraria o único slot de preparo para sempre.
+    with anyio.fail_after(DOWNLOAD_DEADLINE_SECONDS):
+        size, validator = await download_source(target_url, source)
     digest = hashlib.sha256()
-    with destination.open("rb") as prepared:
-        for chunk in iter(lambda: prepared.read(_MIB), b""):
+    with source.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(_MIB), b""):
             digest.update(chunk)
+
+    destination = workspace / "derivative.mp4"
+    recoded = await to_thread.run_sync(
+        lambda: remux_in_sandbox(source, size, digest.hexdigest(), destination)
+    )
+    byte_size = destination.stat().st_size
+    prepared_digest = hashlib.sha256()
+    with destination.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(_MIB), b""):
+            prepared_digest.update(chunk)
     return PreparedVideo(
         path=destination,
         byte_size=byte_size,
-        sha256_hex=digest.hexdigest(),
-        recoded=not copyable,
+        sha256_hex=prepared_digest.hexdigest(),
+        recoded=recoded,
+        validator=validator,
     )
+
+
+def _sandbox_client() -> tuple[httpx.BaseTransport | None, str]:
+    """Como se fala com o serviço isolado, espelhando `pdf_links`."""
+    remote_socket = os.environ.get("APPSELL_API_PDF_SANDBOX_SOCKET", "").strip()
+    remote_url = os.environ.get("APPSELL_API_PDF_SANDBOX_URL", "").strip()
+    if remote_socket:
+        return httpx.HTTPTransport(uds=remote_socket, retries=0), "http://pdf-sandbox"
+    if remote_url:
+        parsed = httpx.URL(remote_url)
+        base = f"{parsed.scheme}://{parsed.host}"
+        if parsed.port is not None:
+            base += f":{parsed.port}"
+        return None, base
+    raise PdfLinkVideoUnavailable("isolated media service is not configured")
+
+
+def remux_in_sandbox(
+    source: Path, byte_size: int, sha256_hex: str, destination: Path
+) -> bool:
+    """Manda o arquivo ao serviço isolado e grava o MP4 que ele devolve."""
+    transport, base_url = _sandbox_client()
+    try:
+        with httpx.Client(
+            transport=transport,
+            timeout=httpx.Timeout(TRANSCODE_TIMEOUT_SECONDS, connect=5.0),
+            trust_env=False,
+            follow_redirects=False,
+        ) as client:
+            with source.open("rb") as body:
+                response = client.post(
+                    f"{base_url}/prepare-video",
+                    headers={
+                        "content-type": "application/octet-stream",
+                        "x-appsell-byte-size": str(byte_size),
+                        "x-appsell-sha256": sha256_hex,
+                    },
+                    content=body,
+                )
+    except (httpx.HTTPError, OSError) as error:
+        raise PdfLinkVideoUnavailable("isolated media service request failed") from error
+    if response.status_code in {413, 415, 422}:
+        raise PdfLinkVideoRejected("isolated media service refused the source")
+    if response.status_code != 200 or response.headers.get("content-type") != "video/mp4":
+        raise PdfLinkVideoUnavailable("isolated media service is unavailable")
+    if not 1 <= len(response.content) <= MAX_DERIVATIVE_BYTES:
+        raise PdfLinkVideoRejected("prepared video is outside the accepted size")
+    destination.write_bytes(response.content)
+    return response.headers.get("x-appsell-recoded") == "true"
 
 
 class PreparationRegistry:

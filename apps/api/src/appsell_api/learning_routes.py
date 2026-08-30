@@ -33,6 +33,7 @@ from .pdf_link_video import (
     PdfLinkVideoUnavailable,
     PreparationRegistry,
     derivative_key,
+    origin_validator,
     prepare_video,
     temporary_workspace,
     trusted_video_target,
@@ -529,7 +530,19 @@ async def prepare_pdf_link_video(
             detail="protected_video_unavailable",
         )
     bucket = settings.storage_ready_bucket
-    key = derivative_key(str(manifest["seller_organization_id"]), target)
+    try:
+        validator = await origin_validator(target)
+    except PdfLinkVideoRejected as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="protected_video_unavailable",
+        ) from error
+    except PdfLinkVideoUnavailable as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="protected_video_unavailable",
+        ) from error
+    key = derivative_key(str(manifest["seller_organization_id"]), target, validator)
 
     ready = await to_thread.run_sync(
         lambda: _pdf_link_video_ready(storage, bucket, key)
@@ -590,7 +603,7 @@ async def _run_pdf_link_video_preparation(
                 lambda: _pdf_link_video_ready(storage, bucket, key)
             ) is not None:
                 return
-            await to_thread.run_sync(lambda: _store_pdf_link_video(storage, bucket, key, target))
+            await _store_pdf_link_video(storage, bucket, key, target)
         logger.info("pdf_link_video_prepared", key=key)
     except PdfLinkVideoRejected:
         _PDF_LINK_VIDEO_PREPARATIONS.reject(key)
@@ -603,10 +616,12 @@ async def _run_pdf_link_video_preparation(
         _PDF_LINK_VIDEO_PREPARATIONS.finish(key)
 
 
-def _store_pdf_link_video(storage: S3Storage, bucket: str, key: str, target: str) -> None:
+async def _store_pdf_link_video(
+    storage: S3Storage, bucket: str, key: str, target: str
+) -> None:
     with temporary_workspace() as workspace:
-        prepared = prepare_video(target, Path(workspace))
-        storage.put_verified(
+        prepared = await prepare_video(target, Path(workspace))
+        await to_thread.run_sync(lambda: storage.put_verified(
             destination_bucket=bucket,
             destination_key=key,
             source_path=prepared.path,
@@ -615,7 +630,7 @@ def _store_pdf_link_video(storage: S3Storage, bucket: str, key: str, target: str
             content_type=DERIVATIVE_MEDIA_TYPE,
             upload_id=key,
             file_name="video-protegido.mp4",
-        )
+        ))
 
 
 @router.get("/me/learning/items/{entitlement_id}/assets/{asset_id}/study")
