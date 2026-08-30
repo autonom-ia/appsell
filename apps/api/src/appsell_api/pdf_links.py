@@ -15,10 +15,12 @@ import pikepdf
 
 from .pdf_link_qr import (
     PdfLinkQrUnavailable,
+    QrBudget,
     QrTarget,
     read_page_qr_targets,
     target_for_rectangle,
 )
+from .pdf_link_url import safe_plain_https_url as _safe_plain_https_url
 from .pdf_verifier import MAX_PDF_BYTES, _validate_pdf_structure
 
 #: O que o leitor abre no player, em vez de mandar o aluno para outra aba.
@@ -178,6 +180,9 @@ def _document_links(document: pikepdf.Pdf, path: Path) -> list[dict[str, Any]]:
     named_destinations = _named_destinations(document)
     candidates: list[_Candidate] = []
     qr_cache: dict[int, list[QrTarget]] = {}
+    # O orçamento é do documento inteiro: um PDF com um botão sem destino por
+    # página não pode segurar o serviço por dezenas de minutos.
+    qr_budget = QrBudget()
     annotations_seen = 0
     for page_number, page in enumerate(document.pages, start=1):
         page_box = _page_box(page.obj)
@@ -212,7 +217,7 @@ def _document_links(document: pikepdf.Pdf, path: Path) -> list[dict[str, Any]]:
                 # ao lado, o endereço existe — está em pixels, e é o mesmo que
                 # quem lê no papel usa. Ler de volta é o que faz o clique na
                 # tela valer tanto quanto a câmera do celular.
-                target_url = _qr_url_for(path, page_number, rect, qr_cache)
+                target_url = _qr_url_for(path, page_number, rect, qr_cache, qr_budget)
             if target_url is None:
                 continue
             caminho = urlsplit(target_url).path.lower()
@@ -413,6 +418,7 @@ def _qr_url_for(
     page_number: int,
     rect: tuple[float, float, float, float],
     cache: dict[int, list[QrTarget]],
+    budget: QrBudget,
 ) -> str | None:
     """O endereço do QR do mesmo cartão que este botão sem destino.
 
@@ -421,12 +427,13 @@ def _qr_url_for(
     """
     if page_number not in cache:
         try:
-            cache[page_number] = read_page_qr_targets(path, page_number)
+            cache[page_number] = read_page_qr_targets(path, page_number, budget)
         except PdfLinkQrUnavailable:
             cache[page_number] = []
     # `rect` é (left, top, width, height) em porcentagem da página.
-    centro = (rect[1] + rect[3] / 2.0) / 100.0
-    return target_for_rectangle(cache[page_number], centro)
+    centro_y = (rect[1] + rect[3] / 2.0) / 100.0
+    centro_x = (rect[0] + rect[2] / 2.0) / 100.0
+    return target_for_rectangle(cache[page_number], centro_y, centro_x)
 
 
 def _safe_https_url(value: object) -> str | None:
@@ -491,25 +498,6 @@ def _valid_link(value: object, page_count: int) -> bool:
             and float(rect["top"]) + float(rect["height"]) <= 100.01
         )
     )
-
-
-def _safe_plain_https_url(value: str) -> str | None:
-    if not 1 <= len(value) <= MAX_PDF_LINK_URL_CHARACTERS:
-        return None
-    try:
-        parsed = urlsplit(value)
-        port = parsed.port
-    except ValueError:
-        return None
-    if (
-        parsed.scheme != "https"
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or port not in {None, 443}
-    ):
-        return None
-    return value
 
 
 def _percent(value: float, total: float) -> float:
