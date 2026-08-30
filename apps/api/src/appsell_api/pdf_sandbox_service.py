@@ -624,9 +624,12 @@ async def _prepare_video_request(request: Request) -> Response:
                     yield chunk
 
         def _encerrar() -> None:
+            # Só limpa. A reciclagem continua com o middleware, que espera meio
+            # segundo antes de matar o processo: aqui o `finally` roda assim que
+            # o último pedaço é entregue ao servidor, e o cliente ainda não leu
+            # o que está no buffer do socket — matar neste ponto fecha a conexão
+            # no meio e o arquivo chega truncado.
             shutil.rmtree(job_directory, ignore_errors=True)
-            if _recycle_enabled() and bool(getattr(request.state, "recycle_owner", False)):
-                _terminate_sandbox_process()
 
         return _CleanupStreamingResponse(
             _entregar(),
