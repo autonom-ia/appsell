@@ -125,3 +125,19 @@ class TestAllowedFormats:
     def test_the_containers_the_seller_actually_uses_are_present(self) -> None:
         for formato in ("mov", "mp4", "matroska", "webm", "avi"):
             assert formato in ALLOWED_FORMATS.split(",")
+
+
+class TestNonFiniteMetadata:
+    """`NaN` falha toda comparação, e por isso passaria por qualquer faixa."""
+
+    @pytest.mark.parametrize("duracao", ["nan", "inf", "-nan"])
+    def test_a_duration_that_is_not_a_finite_number_is_refused(self, duracao: str) -> None:
+        with pytest.raises(VideoRemuxRejected):
+            copyable_streams(_probe(duration=float(duracao)))
+
+    @pytest.mark.parametrize("taxa", ["nan/1", "0/0", "1/0", "-30/1"])
+    def test_a_frame_rate_that_is_not_a_positive_number_is_refused(self, taxa: str) -> None:
+        # `0/0` chega de arquivo sem taxa declarada. Tratar como zero e aceitar
+        # deixaria passar exatamente o que o teto existe para barrar.
+        with pytest.raises(VideoRemuxRejected):
+            copyable_streams(_probe(frame_rate=taxa))

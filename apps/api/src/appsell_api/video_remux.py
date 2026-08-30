@@ -25,6 +25,7 @@ sem baixar o vídeo inteiro.
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import subprocess
 from pathlib import Path
@@ -117,6 +118,8 @@ def _frame_rate(value: object) -> float:
     try:
         numerator, _, denominator = str(value).partition("/")
         divisor = float(denominator or 1)
+        # `0/0` chega de arquivos sem taxa declarada; devolver zero faz quem
+        # chama recusar, que é o que se quer.
         return float(numerator) / divisor if divisor else 0.0
     except (TypeError, ValueError):
         return 0.0
@@ -129,7 +132,9 @@ def copyable_streams(probed: dict[str, Any]) -> bool:
         duration = float(fmt.get("duration") or 0.0)
     except (TypeError, ValueError) as error:
         raise VideoRemuxRejected("video metadata is not numeric") from error
-    if duration <= 0 or duration > MAX_DURATION_SECONDS:
+    # `NaN` falha toda comparação, então passaria por qualquer faixa sem ser
+    # visto. Exigir número finito é o que fecha isso.
+    if not math.isfinite(duration) or duration <= 0 or duration > MAX_DURATION_SECONDS:
         raise VideoRemuxRejected("video duration is outside the accepted range")
 
     streams = probed.get("streams") or []
@@ -145,7 +150,8 @@ def copyable_streams(probed: dict[str, Any]) -> bool:
     height = int(video[0].get("height") or 0)
     if width < 1 or height < 1 or width * height > MAX_SOURCE_PIXELS:
         raise VideoRemuxRejected("video dimensions are outside the accepted range")
-    if _frame_rate(video[0].get("r_frame_rate")) > MAX_SOURCE_FPS:
+    frame_rate = _frame_rate(video[0].get("r_frame_rate"))
+    if not math.isfinite(frame_rate) or frame_rate <= 0 or frame_rate > MAX_SOURCE_FPS:
         raise VideoRemuxRejected("video frame rate is outside the accepted range")
 
     # Uma faixa de cada, no máximo: o player mostra uma, e copiar as demais só

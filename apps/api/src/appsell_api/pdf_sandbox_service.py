@@ -7,13 +7,14 @@ import re
 import shutil
 import tempfile
 import time
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 from anyio import to_thread
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi import Path as PathParameter
-from fastapi.responses import FileResponse, JSONResponse, Response
-from starlette.background import BackgroundTask, BackgroundTasks
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from starlette.background import BackgroundTasks
 
 from .pdf_derivatives import (
     PDF_PAGE_ARCHIVE_MIME,
@@ -587,13 +588,23 @@ async def _prepare_video_request(request: Request) -> Response:
         prepared = job_directory / "prepared.mp4"
         recoded = await to_thread.run_sync(lambda: remux_to_mp4(source_path, prepared))
         entregue = True
-        # O arquivo sai do disco em pedaços. Le-lo inteiro para a memória seria
-        # meio giga de cada lado, e é o suficiente para derrubar os dois.
-        return FileResponse(
-            prepared,
+
+        # O arquivo sai do disco em pedaços — lê-lo inteiro seria meio giga de
+        # cada lado. A limpeza fica no `finally` do próprio gerador: uma tarefa
+        # de fundo só roda se a resposta terminar, e um cliente que aborta
+        # deixaria o diretório para trás e o serviço drenando para sempre.
+        async def _entregar() -> AsyncIterator[bytes]:
+            try:
+                with prepared.open("rb") as handle:
+                    while chunk := handle.read(1024 * 1024):
+                        yield chunk
+            finally:
+                shutil.rmtree(job_directory, ignore_errors=True)
+
+        return StreamingResponse(
+            _entregar(),
             media_type="video/mp4",
             headers={"x-appsell-recoded": "true" if recoded else "false"},
-            background=BackgroundTask(shutil.rmtree, job_directory, ignore_errors=True),
         )
     except HTTPException:
         raise

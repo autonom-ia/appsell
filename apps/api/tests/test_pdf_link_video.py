@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import anyio
@@ -324,3 +325,24 @@ class TestDownloadSource:
         self._client(monkeypatch, [b""])
         with pytest.raises(PdfLinkVideoRejected):
             await download_source(f"{ALLOWED}/aula.mov", tmp_path / "source.bin")
+
+
+class TestRejectionWindow:
+    """Uma recusa não pode queimar o endereço para sempre."""
+
+    def test_a_rejection_expires(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # O vendedor troca o arquivo por um bom; sem prazo, o aluno continuaria
+        # sem vídeo para sempre porque a chave é a mesma.
+        registry = PreparationRegistry()
+        registry.reject("chave")
+        assert registry.rejected("chave") is True
+        # O relógio é adiantado, e não a suíte: esperar dez minutos por um
+        # teste seria trocar uma espera do aluno por uma espera do CI.
+        agora = time.monotonic()
+        monkeypatch.setattr(
+            pdf_link_video.time,
+            "monotonic",
+            lambda: agora + PreparationRegistry.REJECTION_SECONDS + 1,
+        )
+        assert registry.rejected("chave") is False
+        assert registry.start("chave") is True

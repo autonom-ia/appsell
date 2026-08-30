@@ -41,6 +41,7 @@ import os
 import socket
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -146,16 +147,26 @@ async def origin_validator(target_url: str) -> str:
             if trusted is None:
                 raise PdfLinkVideoRejected("video target is not an allowed origin")
             host = urlsplit(trusted).hostname or ""
-            address = await to_thread.run_sync(public_address, host)
-            response = await client.head(
-                _pinned(trusted, address),
-                headers={"host": host},
-                extensions={"sni_hostname": host},
+            address = await to_thread.run_sync(
+                public_address, host, abandon_on_cancel=True
             )
+            try:
+                response = await client.head(
+                    _pinned(trusted, address),
+                    headers={"host": host},
+                    extensions={"sni_hostname": host},
+                )
+            except (httpx.HTTPError, OSError) as error:
+                # Rede, TLS e tempo esgotado são falhas passageiras: quem chama
+                # trata como "não sei" e serve o que já existe.
+                raise PdfLinkVideoUnavailable("video origin did not answer") from error
             if response.status_code in (301, 302, 303, 307, 308):
                 seen = str(httpx.URL(trusted).join(response.headers.get("location", "")))
                 continue
             if response.status_code != 200:
+                # Resposta definitiva: a origem existe e disse que este arquivo
+                # não. Diferente de não conseguir perguntar — aqui servir a
+                # cópia antiga seria manter no ar algo que foi retirado.
                 raise PdfLinkVideoRejected("video origin refused the request")
             validator = (
                 response.headers.get("etag")
@@ -250,7 +261,9 @@ async def download_source(target_url: str, destination: Path) -> tuple[int, str]
             host = urlsplit(trusted).hostname or ""
             # `getaddrinfo` bloqueia, e bloquear o laço impede o próprio escopo
             # de cancelamento de rodar: um resolvedor travado seguraria tudo.
-            address = await to_thread.run_sync(public_address, host)
+            address = await to_thread.run_sync(
+                public_address, host, abandon_on_cancel=True
+            )
             # Conecta no endereço que acabou de ser validado, e apresenta o
             # nome do host para o TLS: o certificado continua sendo conferido
             # contra o nome, e o DNS não tem uma segunda chance de responder.
@@ -395,14 +408,21 @@ class PreparationRegistry:
     o aluno insiste.
     """
 
+    #: Por quanto tempo uma recusa vale.
+    #:
+    #: Sem prazo, o endereço fica queimado: o vendedor troca o arquivo por um
+    #: bom e o aluno continua sem vídeo para sempre. Com prazo, o trabalho caro
+    #: não se repete a cada sondagem e a correção ainda chega.
+    REJECTION_SECONDS = 10 * 60
+
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._running: set[str] = set()
-        self._rejected: set[str] = set()
+        self._rejected: dict[str, float] = {}
 
     def start(self, key: str) -> bool:
         with self._lock:
-            if key in self._running or key in self._rejected:
+            if key in self._running or self._rejected_at(key):
                 return False
             self._running.add(key)
             return True
@@ -418,11 +438,20 @@ class PreparationRegistry:
         a conversão de algo que já se sabe que não vai dar certo.
         """
         with self._lock:
-            self._rejected.add(key)
+            self._rejected[key] = time.monotonic()
 
     def rejected(self, key: str) -> bool:
         with self._lock:
-            return key in self._rejected
+            return self._rejected_at(key)
+
+    def _rejected_at(self, key: str) -> bool:
+        marcado = self._rejected.get(key)
+        if marcado is None:
+            return False
+        if time.monotonic() - marcado > self.REJECTION_SECONDS:
+            del self._rejected[key]
+            return False
+        return True
 
     def running(self, key: str) -> bool:
         with self._lock:

@@ -557,7 +557,8 @@ async def prepare_pdf_link_video(
             }
         }
 
-    if _PDF_LINK_VIDEO_PREPARATIONS.rejected(key):
+    stale = ready is not None
+    if not stale and _PDF_LINK_VIDEO_PREPARATIONS.rejected(key):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="protected_video_unavailable",
@@ -569,7 +570,7 @@ async def prepare_pdf_link_video(
         return {"video": {"status": "preparing", "retry_after_seconds": 15}}
     if _PDF_LINK_VIDEO_PREPARATIONS.start(key):
         task = asyncio.create_task(
-            _run_pdf_link_video_preparation(storage, bucket, key, target)
+            _run_pdf_link_video_preparation(storage, bucket, key, target, replace=stale)
         )
         _PDF_LINK_VIDEO_TASKS.add(task)
         task.add_done_callback(_PDF_LINK_VIDEO_TASKS.discard)
@@ -601,19 +602,25 @@ def _pdf_link_video_ready(storage: S3Storage, bucket: str, key: str) -> Any:
 
 
 async def _run_pdf_link_video_preparation(
-    storage: S3Storage, bucket: str, key: str, target: str
+    storage: S3Storage, bucket: str, key: str, target: str, *, replace: bool
 ) -> None:
     try:
         async with _PDF_LINK_VIDEO_SLOTS:
-            # Outro pedido pode ter preparado enquanto este esperava a vez.
-            if await to_thread.run_sync(
+            # Outro pedido pode ter preparado enquanto este esperava a vez. Mas
+            # quando o trabalho existe justamente porque o objeto guardado está
+            # velho, encontrá-lo não é motivo para desistir — era assim que a
+            # troca do vídeo na origem nunca chegava ao aluno.
+            if not replace and await to_thread.run_sync(
                 lambda: _pdf_link_video_ready(storage, bucket, key)
             ) is not None:
                 return
             await _store_pdf_link_video(storage, bucket, key, target)
         logger.info("pdf_link_video_prepared", key=key)
     except PdfLinkVideoRejected:
-        _PDF_LINK_VIDEO_PREPARATIONS.reject(key)
+        # A recusa vale para o arquivo que está lá agora. Trocar a origem por um
+        # vídeo bom precisa poder desfazê-la, senão o endereço fica queimado.
+        if not replace:
+            _PDF_LINK_VIDEO_PREPARATIONS.reject(key)
         logger.warning("pdf_link_video_rejected", key=key)
     except (PdfLinkVideoUnavailable, StorageError):
         logger.warning("pdf_link_video_unavailable", key=key)
