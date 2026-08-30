@@ -5,6 +5,7 @@ import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  assetSeedKey,
   ASSET_MEDIA_TYPES,
   SUPPORTED_ASSET_MEDIA,
   VIDEO_MEDIA_TYPE,
@@ -127,7 +128,9 @@ describe("a rota de download entrega todo formato baixável do catálogo", () =>
     expect(response.headers.get("content-disposition")).toContain(`filename="${fileNameFor(mediaType)}"`);
   });
 
-  it.each(BAIXAVEIS)("aceita %s no teto do próprio formato, e recusa um byte além", async (mediaType) => {
+  // O helper de integridade é mockado, então o que estes dois provam é a
+  // validação de metadados da rota — não a entrega de um arquivo de 100 MiB.
+  it.each(BAIXAVEIS)("valida %s no teto do próprio formato, e recusa um byte além", async (mediaType) => {
     const teto = SUPPORTED_ASSET_MEDIA[mediaType].maxBytes;
     authorizeDomainLearningAssetDownload.mockResolvedValue(authorization(mediaType, teto));
     expect((await download()).status).toBe(200);
@@ -154,6 +157,18 @@ describe("a rota de download entrega todo formato baixável do catálogo", () =>
       }
     });
     expect((await download()).status).toBe(503);
+  });
+
+  it("a chave do bundle espelha o rsplit do Python, inclusive nos nomes estranhos", async () => {
+    // `assetSeedKey` compara com o que `learning_routes.py` gravou. Divergir
+    // aqui recusa arquivo legítimo com 503, que foi o defeito do `slice(0, -4)`.
+    expect(assetSeedKey("guia.final.pdf")).toBe("guia.final");
+    expect(assetSeedKey(".pdf")).toBe("");
+    expect(assetSeedKey("sem-extensao")).toBeNull();
+    for (const mediaType of BAIXAVEIS) {
+      const nome = `material-de-apoio.${SUPPORTED_ASSET_MEDIA[mediaType].extension}`;
+      expect(assetSeedKey(nome), mediaType).toBe("material-de-apoio");
+    }
   });
 
   it("recusa quando a extensão do nome discorda da mídia declarada", async () => {
@@ -189,7 +204,19 @@ describe("o BFF e o player concordam sobre o catálogo inteiro", () => {
     }));
     return {
       player: {
-        selected_asset: selecionados[0] ?? null,
+        // O contrato real. `read_learning_player_v3` devolve
+        // `schema_version: 3`, `selected_assets` com política, e um
+        // `selected_asset` herdado da v2 — sem política, só id/título/mídia.
+        // Sem o `schema_version`, o BFF entrava no ramo de compatibilidade e o
+        // teste provava um caminho que a produção não percorre.
+        schema_version: 3,
+        selected_asset: selecionados[0]
+          ? {
+              id: selecionados[0].id,
+              title: selecionados[0].title,
+              media_type: selecionados[0].media_type
+            }
+          : null,
         seller: { id: "27310fea-1a96-42f0-807c-2b4f9669d1e4" },
         product: {
           id: "7d4602dc-229f-456b-82e8-ad5fb37a14aa",
@@ -236,6 +263,14 @@ describe("o BFF e o player concordam sobre o catálogo inteiro", () => {
     const body = await response.json();
     return { ...body.player, csrf: body.csrf };
   }
+
+  it("a fixture percorre o contrato v3, não o ramo de compatibilidade", async () => {
+    // Sem esta âncora, tirar `schema_version` da fixture faria os testes abaixo
+    // continuarem verdes exercitando um caminho que a produção não percorre.
+    const player = await playerDoBff([{ mediaType: "application/pdf", suporte: false }]);
+    expect(player.schema_version).toBe(3);
+    expect(Object.hasOwn(player.selected_asset, "content_role")).toBe(true);
+  });
 
   it.each(ASSET_MEDIA_TYPES)("atravessa %s do BFF até o validador do player", async (mediaType) => {
     const suporte = SUPPORTED_ASSET_MEDIA[mediaType].supportMaterialOnly;

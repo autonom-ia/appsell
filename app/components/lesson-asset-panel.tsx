@@ -10,6 +10,7 @@ import {
   assetMediaSpec,
   assetMediaTypeForFile,
   isDownloadableMedia,
+  mediaAgreement,
   mediaDemonstrative,
   mediaLabel,
   type AssetMediaType
@@ -531,7 +532,7 @@ export function LessonAssetPanel({
           replacementTargetRef.current = null;
           applyPanelRoleRef.current(payload.asset);
           setUploads((current) => current.filter((upload) => upload.id !== uploadId));
-          dispatch({ type: "phase", phase: "ready", message: `${mediaLabel(payload.asset.media_type)} pronto para publicar.`, uploadId });
+          dispatch({ type: "phase", phase: "ready", message: `${mediaLabel(payload.asset.media_type)} ${mediaAgreement(payload.asset.media_type, "pronto", "pronta")} para publicar.`, uploadId });
           // A lista vem do servidor, não de um palpite sobre a resposta da
           // verificação. É o que faz o material aparecer sem o vendedor ter de
           // recarregar a página para descobrir se subiu.
@@ -905,7 +906,7 @@ export function LessonAssetPanel({
         : "PDF ou vídeo MP4. Fica protegido dentro da área do aluno, sem download."}</p>
       <div className="lesson-assets-body" aria-busy={busy}>
         {readyAssets.map((asset) => <article className={`asset-status-card state-ready${asset.id === justReadyId ? " state-just-ready" : ""}`} key={asset.id} ref={asset.id === justReadyId ? justReadyRef : undefined} tabIndex={asset.id === justReadyId ? -1 : undefined}>
-          <div><span className="asset-state">{mediaLabel(asset.media_type)} pronto para publicar</span><strong dir="auto">{asset.title}</strong><small className="asset-file-name" dir="auto" title={asset.file_name}>{asset.file_name}</small><small dir="auto">{asset.content_role === "support_material" ? "Material de apoio" : "Conteúdo protegido"} · {formatBytes(asset.byte_size)}</small></div>
+          <div><span className="asset-state">{mediaLabel(asset.media_type)} {mediaAgreement(asset.media_type, "pronto", "pronta")} para publicar</span><strong dir="auto">{asset.title}</strong><small className="asset-file-name" dir="auto" title={asset.file_name}>{asset.file_name}</small><small dir="auto">{asset.content_role === "support_material" ? "Material de apoio" : "Conteúdo protegido"} · {formatBytes(asset.byte_size)}</small></div>
           {!archived ? <div className="asset-policy-controls">
             {attachments && isDownloadableMedia(asset.media_type)
               ? <label className="asset-download-toggle">
@@ -975,7 +976,7 @@ export function LessonAssetPanel({
 
     {archiveTarget ? <AccessibleDialog titleId={`archive-asset-title-${panelId}`} descriptionId={`archive-asset-description-${panelId}`} initialFocusRef={archiveCancelRef} returnFocusRef={summaryRef} onClose={() => { if (!archiving) setArchiveTarget(null); }}>
       <p className="eyebrow">Remover material</p>
-      <h2 id={`archive-asset-title-${panelId}`}>Remover este {archiveTarget ? mediaLabel(archiveTarget.media_type) : "material"} da aula?</h2>
+      <h2 id={`archive-asset-title-${panelId}`}>Remover {archiveTarget ? `${mediaDemonstrative(archiveTarget.media_type)} ${mediaLabel(archiveTarget.media_type)}` : "este material"} da aula?</h2>
       <p id={`archive-asset-description-${panelId}`}>Ele sairá do rascunho da aula <strong>{lessonTitle}</strong>. Publicações anteriores e alunos com acesso a elas continuarão usando a versão já publicada.</p>
       {archiveError ? <p className="form-error" role="alert">{archiveError}</p> : null}
       <div className="dialog-actions"><button ref={archiveCancelRef} className="secondary-button" type="button" disabled={archiving} onClick={() => setArchiveTarget(null)}>Manter na aula</button><button className="danger-button" type="button" disabled={archiving} onClick={() => void archiveAsset()}>{archiving ? "Removendo…" : "Remover da aula"}</button></div>

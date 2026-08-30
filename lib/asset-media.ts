@@ -150,7 +150,10 @@ export function isAssetMediaType(value: unknown): value is AssetMediaType {
 export function assetSeedKey(fileName: unknown): string | null {
   if (typeof fileName !== "string") return null;
   const dot = fileName.lastIndexOf(".");
-  return dot <= 0 ? null : fileName.slice(0, dot);
+  // `dot === 0` é um nome só de extensão, como `.pdf`: o Python devolve string
+  // vazia, e o espelho tem de devolver o mesmo. Recusar aqui daria 503 num
+  // arquivo que o upload aceita.
+  return dot < 0 ? null : fileName.slice(0, dot);
 }
 
 export function assetMediaLimit(mediaType: unknown) {
@@ -162,9 +165,19 @@ export function mediaLabel(mediaType: unknown): string {
   return assetMediaSpec(mediaType)?.label ?? "arquivo";
 }
 
-/** "este PDF", "esta planilha" — o demonstrativo que concorda com o rótulo. */
+/**
+ * Concorda com o gênero do rótulo: `mediaAgreement(t, "pronto", "pronta")`.
+ *
+ * O rótulo passou a nomear o formato de verdade — "planilha", "apresentação" —
+ * e aí a frase em volta precisa concordar, senão sai "planilha pronto".
+ */
+export function mediaAgreement(mediaType: unknown, masculino: string, feminino: string): string {
+  return assetMediaSpec(mediaType)?.feminine ? feminino : masculino;
+}
+
+/** "este PDF", "esta planilha". */
 export function mediaDemonstrative(mediaType: unknown): string {
-  return assetMediaSpec(mediaType)?.feminine ? "esta" : "este";
+  return mediaAgreement(mediaType, "este", "esta");
 }
 
 export function isDocumentMedia(mediaType: unknown) {

@@ -69,9 +69,17 @@ const PERMITIDOS = new Map([
 export function copiasEm(linhas: readonly string[]): { linha: number; trecho: string }[] {
   const achados: { linha: number; trecho: string }[] = [];
   linhas.forEach((linha, indice) => {
-    if (!linha.includes("application/pdf")) return;
+    // As duas ordens: `["video/mp4", "application/pdf"]` é a mesma lista fechada
+    // escrita ao contrário, e procurar só numa direção a deixaria passar.
+    const primeiro = ["application/pdf", "video/mp4"].find((literal) => linha.includes(literal));
+    if (primeiro === undefined) return;
+    const outro = primeiro === "application/pdf" ? "video/mp4" : "application/pdf";
+    if (linha.includes(outro)) {
+      achados.push({ linha: indice + 1, trecho: linha.trim().slice(0, 140) });
+      return;
+    }
     const janela = linhas.slice(indice, indice + JANELA);
-    const parceira = janela.findIndex((vizinha) => vizinha.includes("video/mp4"));
+    const parceira = janela.findIndex((vizinha) => vizinha.includes(outro));
     if (parceira < 0) return;
     const trecho = janela.slice(0, parceira + 1).map((l) => l.trim()).join(" ⏎ ");
     achados.push({ linha: indice + 1, trecho: trecho.slice(0, 140) });
@@ -140,6 +148,10 @@ describe("o catálogo de mídia tem uma fonte por linguagem", () => {
       "  | \"video/mp4\";"
     ];
     expect(copiasEm(emUniao)).toHaveLength(1);
+
+    // A mesma lista ao contrário. Procurar só a partir do PDF a deixava passar.
+    const invertida = ["const MIDIA = [", "  \"video/mp4\",", "  \"application/pdf\"", "];"];
+    expect(copiasEm(invertida).map((c) => c.linha)).toEqual([2]);
 
     // Longe demais para ser a mesma lista: não acusa.
     const distantes = ["\"application/pdf\"", ...Array(JANELA).fill(""), "\"video/mp4\""];
