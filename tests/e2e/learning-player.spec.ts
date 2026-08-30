@@ -73,6 +73,24 @@ function playerEnvelope(selectedLessonId: string, version = 1, firstCompleted = 
   };
 }
 
+/**
+ * A aula com os links do vendedor, isolada dos demais testes.
+ *
+ * Fica fora do envelope compartilhado de proposito: colocar um `<iframe>` do
+ * YouTube na fixture de todo mundo faria dezenas de testes sem relacao nenhuma
+ * abrirem uma conexao externa real, com o trafego e a instabilidade que vem
+ * junto.
+ */
+function lessonMaterialsEnvelope(provider: "youtube" | "vimeo" = "youtube") {
+  const response = playerEnvelope(lessonOne);
+  const aula = response.player.course.modules[0].lessons[0] as Record<string, unknown>;
+  aula.materials = [
+    { id: "5c1f3f2a-9c1c-5b7e-9d4a-1f2b3c4d5e6f", kind: "external", title: "Documentação oficial", url: "https://exemplo.test/docs", provider: null, video_id: null, position: 1 },
+    { id: "6d2a4a3b-ad2d-5c8f-8e5b-2a3c4d5e6f70", kind: "embed", title: "Aula em vídeo", url: null, provider, video_id: provider === "youtube" ? "Exemplo_1-A" : "123456789", position: 2 }
+  ];
+  return response;
+}
+
 function secondCourseEnvelope() {
   const response = playerEnvelope(lessonTwo, 1, false, lessonTwo);
   response.player.course = {
@@ -1051,3 +1069,65 @@ test("revalidates revocation after completing the final lesson", async ({ page }
   await expect(page.getByText("Conteúdo exclusivo da segunda aula.")).toHaveCount(0);
   await expect(page.getByRole("heading", { level: 1, name: "Conteúdo indisponível" })).toBeFocused();
 });
+
+/**
+ * O material complementar da aula, no navegador de verdade.
+ *
+ * Nao havia um unico teste de ponta a ponta sobre `materials` — nem no BFF nem
+ * na tela — e foi por isso que o campo ficou proibido no validador do BFF sem
+ * ninguem notar, derrubando a aula inteira do vendedor com 503.
+ *
+ * O atributo `referrerPolicy` do iframe e o assunto do primeiro caso. Ele
+ * estava em `no-referrer`, e o YouTube recusa sem saber quem incorpora: "Erro
+ * 153 — erro de configuracao do player". Reproduzido em 30/08/2026 numa pagina
+ * servida com o mesmo cabecalho da producao — `no-referrer` no iframe da 153, e
+ * sem atributo nenhum da 153 tambem, porque o cabecalho da pagina propaga.
+ */
+test("o video incorporado declara uma politica de referrer que o provedor aceita", async ({ page }) => {
+  await login(page);
+  await mockLearningApi(page);
+  await mockLessonMaterials(page);
+  await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
+
+  const frame = page.locator(".lesson-embed iframe");
+  await expect(frame).toHaveCount(1);
+  // Nem `no-referrer`, nem ausente: as duas formas dao Erro 153.
+  await expect(frame).toHaveAttribute("referrerpolicy", "strict-origin-when-cross-origin");
+  await expect(frame).toHaveAttribute("src", "https://www.youtube-nocookie.com/embed/Exemplo_1-A");
+  await expect(frame).toHaveAttribute("title", "Aula em vídeo");
+});
+
+test("o Vimeo continua sem referrer: a excecao vale onde foi provada", async ({ page }) => {
+  // O 153 foi reproduzido no YouTube, e so nele. Entregar a origem ao Vimeo
+  // por analogia seria afrouxar sem motivo demonstrado.
+  await login(page);
+  await mockLearningApi(page);
+  await mockLessonMaterials(page, "vimeo");
+  await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
+
+  const frame = page.locator(".lesson-embed iframe");
+  await expect(frame).toHaveAttribute("referrerpolicy", "no-referrer");
+  await expect(frame).toHaveAttribute("src", "https://player.vimeo.com/video/123456789");
+});
+
+test("o link externo da aula chega ao aluno com o destino intacto", async ({ page }) => {
+  await login(page);
+  await mockLearningApi(page);
+  await mockLessonMaterials(page);
+  await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
+
+  const link = page.getByRole("link", { name: "Documentação oficial" });
+  await expect(link).toHaveAttribute("href", "https://exemplo.test/docs");
+  await expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  await expect(page.getByText("exemplo.test")).toBeVisible();
+});
+
+/** Sobrepoe a aula do envelope compartilhado pela versao com links. */
+async function mockLessonMaterials(page: Page, provider: "youtube" | "vimeo" = "youtube") {
+  await page.route(`**/api/library/items/${entitlementId}/lessons/${lessonOne}`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(lessonMaterialsEnvelope(provider))
+    }));
+}

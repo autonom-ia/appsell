@@ -492,7 +492,24 @@ function LessonSupportLinks({ materials }: { materials: readonly LessonMaterialL
         src={source}
         title={material.title}
         loading="lazy"
-        referrerPolicy="no-referrer"
+        // O YouTube precisa saber qual domínio incorpora o vídeo, e sem isso
+        // recusa com "Erro 153 — erro de configuração do player". Reproduzido
+        // em 30/08/2026 numa página servida com `Referrer-Policy: no-referrer`
+        // igual à produção: com `no-referrer` no iframe dá 153; sem atributo
+        // nenhum dá 153 também, porque o cabeçalho da página propaga; só com
+        // uma política explícita aqui o vídeo carrega.
+        //
+        // `strict-origin-when-cross-origin` envia a origem e nada mais: o
+        // provedor fica sabendo que a página é do sell, nunca qual aula nem
+        // qual aluno. Não existe forma de incorporar sem dizer quem incorpora,
+        // e o resto do site segue em `no-referrer`.
+        //
+        // Só o YouTube abre a exceção, porque só nele o 153 foi reproduzido. O
+        // Vimeo continua fechado até haver a mesma prova: afrouxar por analogia
+        // é entregar a origem a um terceiro sem motivo demonstrado.
+        referrerPolicy={material.provider === "youtube"
+          ? "strict-origin-when-cross-origin"
+          : "no-referrer"}
         sandbox="allow-scripts allow-same-origin allow-presentation"
         allow="encrypted-media; picture-in-picture; fullscreen"
         allowFullScreen
