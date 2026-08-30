@@ -29,6 +29,7 @@ from .learning_pdf import (
 )
 from .pdf_link_video import (
     DERIVATIVE_MEDIA_TYPE,
+    MAX_PENDING_PREPARATIONS,
     PdfLinkVideoRejected,
     PdfLinkVideoUnavailable,
     PreparationRegistry,
@@ -530,24 +531,12 @@ async def prepare_pdf_link_video(
             detail="protected_video_unavailable",
         )
     bucket = settings.storage_ready_bucket
-    try:
-        validator = await origin_validator(target)
-    except PdfLinkVideoRejected as error:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="protected_video_unavailable",
-        ) from error
-    except PdfLinkVideoUnavailable as error:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="protected_video_unavailable",
-        ) from error
-    key = derivative_key(str(manifest["seller_organization_id"]), target, validator)
+    key = derivative_key(str(manifest["seller_organization_id"]), target)
 
     ready = await to_thread.run_sync(
         lambda: _pdf_link_video_ready(storage, bucket, key)
     )
-    if ready is not None:
+    if ready is not None and await _pdf_link_video_is_current(ready, target):
         presigned = await to_thread.run_sync(
             lambda: storage.presign_get(
                 bucket=bucket,
@@ -573,6 +562,11 @@ async def prepare_pdf_link_video(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="protected_video_unavailable",
         )
+    if len(_PDF_LINK_VIDEO_TASKS) >= MAX_PENDING_PREPARATIONS:
+        # A fila e recusada cedo, e nao acumulada: um PDF pode citar centenas de
+        # enderecos, e cada um viraria uma tarefa viva na frente das outras.
+        response.status_code = status.HTTP_202_ACCEPTED
+        return {"video": {"status": "preparing", "retry_after_seconds": 15}}
     if _PDF_LINK_VIDEO_PREPARATIONS.start(key):
         task = asyncio.create_task(
             _run_pdf_link_video_preparation(storage, bucket, key, target)
@@ -581,6 +575,19 @@ async def prepare_pdf_link_video(
         task.add_done_callback(_PDF_LINK_VIDEO_TASKS.discard)
     response.status_code = status.HTTP_202_ACCEPTED
     return {"video": {"status": "preparing", "retry_after_seconds": 3}}
+
+
+async def _pdf_link_video_is_current(ready: Any, target: str) -> bool:
+    """O derivado guardado ainda corresponde ao que a origem serve?
+
+    A resposta é tolerante de propósito: se a origem não responde, o aluno
+    recebe o vídeo que já existe. Derrubar um vídeo pronto porque o servidor de
+    alguém está fora do ar seria trocar um problema por outro pior.
+    """
+    try:
+        return ready.appsell_upload_id == await origin_validator(target)
+    except (PdfLinkVideoRejected, PdfLinkVideoUnavailable):
+        return True
 
 
 def _pdf_link_video_ready(storage: S3Storage, bucket: str, key: str) -> Any:
@@ -628,7 +635,10 @@ async def _store_pdf_link_video(
             byte_size=prepared.byte_size,
             sha256_hex=prepared.sha256_hex,
             content_type=DERIVATIVE_MEDIA_TYPE,
-            upload_id=key,
+            # O metadado guarda de qual versão da origem este derivado veio, e
+            # é o validador do próprio download — não o de um `HEAD` anterior,
+            # que a origem pode ter mudado entre uma coisa e outra.
+            upload_id=prepared.validator,
             file_name="video-protegido.mp4",
         ))
 

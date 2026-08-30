@@ -75,34 +75,27 @@ class TestTrustedTarget:
 
 class TestDerivativeKey:
     def test_the_same_address_always_lands_on_the_same_object(self) -> None:
-        assert derivative_key(SELLER, "https://a.test/x.mov", "v1") == derivative_key(
-            SELLER, "https://a.test/x.mov", "v1"
+        assert derivative_key(SELLER, "https://a.test/x.mov") == derivative_key(
+            SELLER, "https://a.test/x.mov"
         )
 
     def test_different_addresses_do_not_collide(self) -> None:
-        assert derivative_key(SELLER, "https://a.test/x.mov", "v1") != derivative_key(
-            SELLER, "https://a.test/y.mov", "v1"
+        assert derivative_key(SELLER, "https://a.test/x.mov") != derivative_key(
+            SELLER, "https://a.test/y.mov"
         )
 
     def test_two_sellers_citing_the_same_address_do_not_share_the_object(self) -> None:
         # Uma chave só do endereço faria o segundo vendedor receber a cópia que
         # o primeiro preparou — de um conteúdo que aquele endereço talvez nem
         # sirva mais.
-        assert derivative_key(SELLER, "https://a.test/x.mov", "v1") != derivative_key(
-            OUTRO_SELLER, "https://a.test/x.mov", "v1"
-        )
-
-    def test_a_new_version_of_the_source_lands_on_a_new_object(self) -> None:
-        # Sem o validador na chave, trocar o vídeo mantendo o endereço deixaria
-        # o aluno com a versão antiga para sempre, e o vendedor sem correção.
-        assert derivative_key(SELLER, "https://a.test/x.mov", "etag-1") != derivative_key(
-            SELLER, "https://a.test/x.mov", "etag-2"
+        assert derivative_key(SELLER, "https://a.test/x.mov") != derivative_key(
+            OUTRO_SELLER, "https://a.test/x.mov"
         )
 
     def test_the_key_carries_no_characters_from_the_address(self) -> None:
         # A chave é um resumo, então nem o host nem o caminho da origem ficam
         # legíveis no nome do objeto guardado.
-        key = derivative_key(SELLER, "https://midia.example.test/pasta secreta/aula.mov", "v1")
+        key = derivative_key(SELLER, "https://midia.example.test/pasta secreta/aula.mov")
         assert "midia" not in key and "secreta" not in key
         assert key.startswith("derivatives/pdf-link-video/") and key.endswith(".mp4")
 

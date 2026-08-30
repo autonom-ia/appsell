@@ -128,9 +128,12 @@ async def origin_validator(target_url: str) -> str:
     endereço público e conexão no IP validado, com cada redirecionamento
     revalidado.
 
-    Existe para a chave do derivado poder mudar quando o arquivo muda. Sem
+    Existe para saber se o derivado guardado ainda corresponde à origem. Sem
     isto, trocar o vídeo mantendo o mesmo endereço deixaria o aluno recebendo a
     versão antiga para sempre — e o vendedor sem nenhuma forma de corrigir.
+
+    Quem chama trata a falha como "não sei": a origem fora do ar não pode
+    invalidar um vídeo que já está pronto.
     """
     seen = target_url
     async with httpx.AsyncClient(
@@ -143,7 +146,7 @@ async def origin_validator(target_url: str) -> str:
             if trusted is None:
                 raise PdfLinkVideoRejected("video target is not an allowed origin")
             host = urlsplit(trusted).hostname or ""
-            address = public_address(host)
+            address = await to_thread.run_sync(public_address, host)
             response = await client.head(
                 _pinned(trusted, address),
                 headers={"host": host},
@@ -164,7 +167,15 @@ async def origin_validator(target_url: str) -> str:
     raise PdfLinkVideoRejected("video target redirects too many times")
 
 
-def derivative_key(seller_organization_id: str, target_url: str, validator: str) -> str:
+#: Quantos preparos podem estar pendentes ao mesmo tempo.
+#:
+#: O semáforo serializa a execução, mas não a fila: um PDF pode citar 512
+#: endereços, e cada um criaria uma tarefa viva. Recusar cedo é o que impede um
+#: vendedor de enfileirar semanas de trabalho na frente dos outros.
+MAX_PENDING_PREPARATIONS: Final = 8
+
+
+def derivative_key(seller_organization_id: str, target_url: str) -> str:
     """A chave do derivado, por vendedor e endereço de origem.
 
     A existência do objeto é o registro: sem tabela, sem migration, e sem um
@@ -174,12 +185,12 @@ def derivative_key(seller_organization_id: str, target_url: str, validator: str)
     produtos de donos diferentes que citam a mesma URL compartilharem o objeto —
     e o segundo receberia a cópia que o primeiro preparou.
 
-    O validador entra pelo mesmo motivo no tempo: trocar o arquivo mantendo o
-    endereço passa a gerar uma chave nova, e o aluno recebe o vídeo atual em vez
-    da versão que alguém preparou meses atrás.
+    A versão não entra na chave: o objeto é sobrescrito quando a origem muda, e
+    quem guarda de qual versão ele veio é o metadado. Assim o endereço tem
+    sempre um derivado, e a origem fora do ar não apaga o que já existe.
     """
     digest = hashlib.sha256(
-        f"{seller_organization_id}\n{target_url}\n{validator}".encode()
+        f"{seller_organization_id}\n{target_url}".encode()
     ).hexdigest()
     return f"{DERIVATIVE_PREFIX}/{digest[:2]}/{digest}.mp4"
 
@@ -237,7 +248,9 @@ async def download_source(target_url: str, destination: Path) -> tuple[int, str]
             if trusted is None:
                 raise PdfLinkVideoRejected("video target is not an allowed origin")
             host = urlsplit(trusted).hostname or ""
-            address = public_address(host)
+            # `getaddrinfo` bloqueia, e bloquear o laço impede o próprio escopo
+            # de cancelamento de rodar: um resolvedor travado seguraria tudo.
+            address = await to_thread.run_sync(public_address, host)
             # Conecta no endereço que acabou de ser validado, e apresenta o
             # nome do host para o TLS: o certificado continua sendo conferido
             # contra o nome, e o DNS não tem uma segunda chance de responder.
@@ -339,27 +352,39 @@ def remux_in_sandbox(
             timeout=httpx.Timeout(TRANSCODE_TIMEOUT_SECONDS, connect=5.0),
             trust_env=False,
             follow_redirects=False,
-        ) as client:
-            with source.open("rb") as body:
-                response = client.post(
-                    f"{base_url}/prepare-video",
-                    headers={
-                        "content-type": "application/octet-stream",
-                        "x-appsell-byte-size": str(byte_size),
-                        "x-appsell-sha256": sha256_hex,
-                    },
-                    content=body,
-                )
+        ) as client, source.open("rb") as body, client.stream(
+            "POST",
+            f"{base_url}/prepare-video",
+            headers={
+                "content-type": "application/octet-stream",
+                "x-appsell-byte-size": str(byte_size),
+                "x-appsell-sha256": sha256_hex,
+            },
+            content=body,
+        ) as response:
+            if response.status_code in {413, 415, 422}:
+                raise PdfLinkVideoRejected("isolated media service refused the source")
+            if response.status_code != 200 or (
+                response.headers.get("content-type") != "video/mp4"
+            ):
+                raise PdfLinkVideoUnavailable("isolated media service is unavailable")
+            recoded = response.headers.get("x-appsell-recoded") == "true"
+            # O derivado chega em pedaços e vai direto para o disco: meio giga na
+            # memória do sandbox e de novo na da API derrubaria os dois.
+            written = 0
+            with destination.open("wb") as sink:
+                for chunk in response.iter_bytes(_MIB):
+                    written += len(chunk)
+                    if written > MAX_DERIVATIVE_BYTES:
+                        raise PdfLinkVideoRejected(
+                            "prepared video is outside the accepted size"
+                        )
+                    sink.write(chunk)
     except (httpx.HTTPError, OSError) as error:
         raise PdfLinkVideoUnavailable("isolated media service request failed") from error
-    if response.status_code in {413, 415, 422}:
-        raise PdfLinkVideoRejected("isolated media service refused the source")
-    if response.status_code != 200 or response.headers.get("content-type") != "video/mp4":
-        raise PdfLinkVideoUnavailable("isolated media service is unavailable")
-    if not 1 <= len(response.content) <= MAX_DERIVATIVE_BYTES:
-        raise PdfLinkVideoRejected("prepared video is outside the accepted size")
-    destination.write_bytes(response.content)
-    return response.headers.get("x-appsell-recoded") == "true"
+    if written < 1:
+        raise PdfLinkVideoRejected("isolated media service returned an empty body")
+    return recoded
 
 
 class PreparationRegistry:

@@ -13,7 +13,7 @@ from anyio import to_thread
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi import Path as PathParameter
 from fastapi.responses import FileResponse, JSONResponse, Response
-from starlette.background import BackgroundTasks
+from starlette.background import BackgroundTask, BackgroundTasks
 
 from .pdf_derivatives import (
     PDF_PAGE_ARCHIVE_MIME,
@@ -565,6 +565,7 @@ async def _prepare_video_request(request: Request) -> Response:
 
     job_directory = _private_job_directory("appsell-remux-job-")
     source_path: Path | None = None
+    entregue = False
     try:
         with tempfile.NamedTemporaryFile(
             prefix="source-", suffix=".bin", dir=job_directory, delete=False
@@ -585,10 +586,14 @@ async def _prepare_video_request(request: Request) -> Response:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT)
         prepared = job_directory / "prepared.mp4"
         recoded = await to_thread.run_sync(lambda: remux_to_mp4(source_path, prepared))
-        return Response(
-            prepared.read_bytes(),
+        entregue = True
+        # O arquivo sai do disco em pedaços. Le-lo inteiro para a memória seria
+        # meio giga de cada lado, e é o suficiente para derrubar os dois.
+        return FileResponse(
+            prepared,
             media_type="video/mp4",
             headers={"x-appsell-recoded": "true" if recoded else "false"},
+            background=BackgroundTask(shutil.rmtree, job_directory, ignore_errors=True),
         )
     except HTTPException:
         raise
@@ -599,7 +604,9 @@ async def _prepare_video_request(request: Request) -> Response:
     finally:
         if source_path is not None:
             source_path.unlink(missing_ok=True)
-        shutil.rmtree(job_directory, ignore_errors=True)
+        # Quando a resposta leva o arquivo, quem limpa é a tarefa de fundo.
+        if not entregue:
+            shutil.rmtree(job_directory, ignore_errors=True)
 
 
 async def _probe_video_request(request: Request) -> Response:
