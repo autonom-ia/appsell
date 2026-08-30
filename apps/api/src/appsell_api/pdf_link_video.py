@@ -44,7 +44,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 from urllib.parse import urlsplit
 
 import anyio
@@ -141,12 +141,15 @@ async def origin_validator(target_url: str) -> str:
     """
     seen = target_url
     metodo = "HEAD"
+    # Trocar de método não é um salto: contá-lo como redirecionamento faria o
+    # teto valer para outra coisa que não a corrente de endereços.
+    redirecionamentos = 0
     async with httpx.AsyncClient(
         follow_redirects=False,
         timeout=httpx.Timeout(20.0, connect=10.0),
         trust_env=False,
     ) as client:
-        for _ in range(2 * (MAX_REDIRECTS + 1)):
+        while redirecionamentos <= MAX_REDIRECTS:
             trusted = trusted_video_target(seen)
             if trusted is None:
                 raise PdfLinkVideoRejected("video target is not an allowed origin")
@@ -166,18 +169,14 @@ async def origin_validator(target_url: str) -> str:
                 ) as response:
                     status_code = response.status_code
                     location = response.headers.get("location", "")
-                    validator = (
-                        response.headers.get("etag")
-                        or response.headers.get("last-modified")
-                        or response.headers.get("content-length")
-                        or ""
-                    )
+                    validator = _origin_validator_header(response.headers)
             except (httpx.HTTPError, OSError) as error:
                 # Rede, TLS e tempo esgotado são falhas passageiras: quem chama
                 # trata como "não sei" e serve o que já existe.
                 raise PdfLinkVideoUnavailable("video origin did not answer") from error
 
             if status_code in (301, 302, 303, 307, 308):
+                redirecionamentos += 1
                 seen = str(httpx.URL(trusted).join(location))
                 continue
             if status_code == 405 and metodo == "HEAD":
@@ -194,8 +193,32 @@ async def origin_validator(target_url: str) -> str:
                 # Sobrecarga, erro do servidor, autenticação — nada disso é a
                 # origem dizendo que o arquivo sumiu.
                 raise PdfLinkVideoUnavailable("video origin did not answer usefully")
+            if not validator:
+                # Sem nada comparável, dizer qualquer coisa marcaria o derivado
+                # como velho para sempre e o remux se repetiria a cada acesso.
+                # "Não sei" serve o que já existe, que é o certo.
+                raise PdfLinkVideoUnavailable("video origin exposes no comparable version")
             return validator[:120]
     raise PdfLinkVideoRejected("video target redirects too many times")
+
+
+def _origin_validator_header(headers: Any) -> str:
+    """O que identifica a versão do arquivo, sem confundir tamanho de trecho.
+
+    O caminho alternativo pergunta pelo primeiro byte, e aí `content-length` é
+    `1` — não o tamanho do arquivo. Compará-lo com o tamanho gravado no download
+    marcaria o derivado como velho toda vez, e o remux se repetiria para sempre.
+    O total está no `content-range`, e é ele que serve.
+    """
+    marcado = headers.get("etag") or headers.get("last-modified")
+    if marcado:
+        return str(marcado)
+    faixa = str(headers.get("content-range") or "")
+    total = faixa.rpartition("/")[2].strip()
+    if total.isdigit():
+        return total
+    tamanho = str(headers.get("content-length") or "").strip()
+    return tamanho if tamanho.isdigit() and not faixa else ""
 
 
 #: Os status em que a origem afirma que o arquivo não está mais lá.

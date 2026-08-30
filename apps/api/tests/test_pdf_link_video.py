@@ -349,6 +349,14 @@ class TestRejectionWindow:
         assert registry.start("chave") is True
 
 
+class _Cabecalhos:
+    """Uma resposta com cabeçalhos escolhidos, para os casos sem `etag`."""
+
+    def __init__(self, status: int, headers: dict) -> None:
+        self.status = status
+        self.headers = headers
+
+
 class _Registro:
     """O que o dublê viu: os pedidos feitos e se alguém leu o corpo."""
 
@@ -372,7 +380,10 @@ class TestOriginValidator:
 
         class _Resposta:
             def __init__(self, item: object) -> None:
-                if isinstance(item, tuple):
+                if isinstance(item, _Cabecalhos):
+                    self.status_code = item.status
+                    self.headers = item.headers
+                elif isinstance(item, tuple):
                     self.status_code, destino = item
                     self.headers = {"location": destino}
                 else:
@@ -508,3 +519,58 @@ class TestOriginValidator:
         self._client(monkeypatch, [405, pdf_link_video.httpx.ConnectError("caiu")])
         with pytest.raises(pdf_link_video.PdfLinkVideoUnavailable):
             await origin_validator(f"{ALLOWED}/aula.mov")
+
+    async def test_a_range_answer_without_etag_uses_the_total_size(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # `content-length` num `206` é o tamanho do trecho — `1`. Compará-lo com
+        # o tamanho gravado no download marcaria o derivado como velho a cada
+        # acesso, e o remux se repetiria para sempre.
+        monkeypatch.setenv("APPSELL_PDF_VIDEO_ALLOWED_ORIGINS", ALLOWED)
+        self._dns(monkeypatch)
+        self._client(monkeypatch, [
+            _Cabecalhos(206, {"content-length": "1", "content-range": "bytes 0-0/50000000"})
+        ])
+        assert await origin_validator(f"{ALLOWED}/aula.mov") == "50000000"
+
+    async def test_a_whole_answer_without_etag_uses_the_length(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("APPSELL_PDF_VIDEO_ALLOWED_ORIGINS", ALLOWED)
+        self._dns(monkeypatch)
+        self._client(monkeypatch, [_Cabecalhos(200, {"content-length": "50000000"})])
+        assert await origin_validator(f"{ALLOWED}/aula.mov") == "50000000"
+
+    @pytest.mark.parametrize(
+        "cabecalhos",
+        [{}, {"content-range": "bytes 0-0/*"}, {"content-length": "muitos"}],
+    )
+    async def test_an_origin_without_a_comparable_version_serves_the_cache(
+        self, monkeypatch: pytest.MonkeyPatch, cabecalhos: dict
+    ) -> None:
+        # Sem nada comparável, dizer qualquer coisa marcaria o derivado como
+        # velho para sempre. "Não sei" serve o que já existe.
+        monkeypatch.setenv("APPSELL_PDF_VIDEO_ALLOWED_ORIGINS", ALLOWED)
+        self._dns(monkeypatch)
+        self._client(monkeypatch, [_Cabecalhos(200, cabecalhos)])
+        with pytest.raises(pdf_link_video.PdfLinkVideoUnavailable):
+            await origin_validator(f"{ALLOWED}/aula.mov")
+
+    async def test_four_redirects_stop(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("APPSELL_PDF_VIDEO_ALLOWED_ORIGINS", ALLOWED)
+        self._dns(monkeypatch)
+        self._client(monkeypatch, [(302, "/a.mov")] * 6)
+        with pytest.raises(pdf_link_video.PdfLinkVideoRejected):
+            await origin_validator(f"{ALLOWED}/aula.mov")
+
+    async def test_the_method_swap_does_not_spend_a_redirect(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Trocar de método não é um salto na corrente de endereços; contá-lo
+        # como tal faria o teto valer para outra coisa.
+        monkeypatch.setenv("APPSELL_PDF_VIDEO_ALLOWED_ORIGINS", ALLOWED)
+        self._dns(monkeypatch)
+        self._client(monkeypatch, [
+            (302, "/a.mov"), (302, "/b.mov"), (302, "/c.mov"), 405, 206
+        ])
+        assert await origin_validator(f"{ALLOWED}/aula.mov") == '"abc123"'
