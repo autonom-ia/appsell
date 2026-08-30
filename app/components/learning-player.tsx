@@ -500,10 +500,16 @@ function LessonSupportLinks({ materials }: { materials: readonly LessonMaterialL
         // uma política explícita aqui o vídeo carrega.
         //
         // `strict-origin-when-cross-origin` envia a origem e nada mais: o
-        // YouTube fica sabendo que a página é do sell, nunca qual aula nem
+        // provedor fica sabendo que a página é do sell, nunca qual aula nem
         // qual aluno. Não existe forma de incorporar sem dizer quem incorpora,
         // e o resto do site segue em `no-referrer`.
-        referrerPolicy="strict-origin-when-cross-origin"
+        //
+        // Só o YouTube abre a exceção, porque só nele o 153 foi reproduzido. O
+        // Vimeo continua fechado até haver a mesma prova: afrouxar por analogia
+        // é entregar a origem a um terceiro sem motivo demonstrado.
+        referrerPolicy={material.provider === "youtube"
+          ? "strict-origin-when-cross-origin"
+          : "no-referrer"}
         sandbox="allow-scripts allow-same-origin allow-presentation"
         allow="encrypted-media; picture-in-picture; fullscreen"
         allowFullScreen

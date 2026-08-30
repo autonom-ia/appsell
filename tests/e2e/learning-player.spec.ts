@@ -56,10 +56,7 @@ function playerEnvelope(selectedLessonId: string, version = 1, firstCompleted = 
       course: {
         id: courseId, title: "Codex na prática", description: "Curso", position: 0,
         modules: [{ id: moduleId, title: "Fundamentos", status: "active", position: 0, lessons: [
-          { id: lessonOne, title: "O que é Codex", kind: "text", content: "Conteúdo exclusivo da primeira aula.", status: "active", position: 0, materials: [
-            { id: "5c1f3f2a-9c1c-5b7e-9d4a-1f2b3c4d5e6f", kind: "external", title: "Documentação oficial", url: "https://exemplo.test/docs", provider: null, video_id: null, position: 1 },
-            { id: "6d2a4a3b-ad2d-5c8f-8e5b-2a3c4d5e6f70", kind: "embed", title: "Aula em vídeo", url: null, provider: "youtube", video_id: "Exemplo_1-A", position: 2 }
-          ] },
+          { id: lessonOne, title: "O que é Codex", kind: "text", content: "Conteúdo exclusivo da primeira aula.", status: "active", position: 0 },
           { id: lessonTwo, title: "Preparando o contexto", kind: "text", content: "Conteúdo exclusivo da segunda aula.", status: "active", position: 1 }
         ] }]
       },
@@ -74,6 +71,24 @@ function playerEnvelope(selectedLessonId: string, version = 1, firstCompleted = 
     },
     csrf: { progress: "progress-token", complete: "complete-token" }
   };
+}
+
+/**
+ * A aula com os links do vendedor, isolada dos demais testes.
+ *
+ * Fica fora do envelope compartilhado de proposito: colocar um `<iframe>` do
+ * YouTube na fixture de todo mundo faria dezenas de testes sem relacao nenhuma
+ * abrirem uma conexao externa real, com o trafego e a instabilidade que vem
+ * junto.
+ */
+function lessonMaterialsEnvelope(provider: "youtube" | "vimeo" = "youtube") {
+  const response = playerEnvelope(lessonOne);
+  const aula = response.player.course.modules[0].lessons[0] as Record<string, unknown>;
+  aula.materials = [
+    { id: "5c1f3f2a-9c1c-5b7e-9d4a-1f2b3c4d5e6f", kind: "external", title: "Documentação oficial", url: "https://exemplo.test/docs", provider: null, video_id: null, position: 1 },
+    { id: "6d2a4a3b-ad2d-5c8f-8e5b-2a3c4d5e6f70", kind: "embed", title: "Aula em vídeo", url: null, provider, video_id: provider === "youtube" ? "Exemplo_1-A" : "123456789", position: 2 }
+  ];
+  return response;
 }
 
 function secondCourseEnvelope() {
@@ -1071,6 +1086,7 @@ test("revalidates revocation after completing the final lesson", async ({ page }
 test("o video incorporado declara uma politica de referrer que o provedor aceita", async ({ page }) => {
   await login(page);
   await mockLearningApi(page);
+  await mockLessonMaterials(page);
   await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
 
   const frame = page.locator(".lesson-embed iframe");
@@ -1081,9 +1097,23 @@ test("o video incorporado declara uma politica de referrer que o provedor aceita
   await expect(frame).toHaveAttribute("title", "Aula em vídeo");
 });
 
+test("o Vimeo continua sem referrer: a excecao vale onde foi provada", async ({ page }) => {
+  // O 153 foi reproduzido no YouTube, e so nele. Entregar a origem ao Vimeo
+  // por analogia seria afrouxar sem motivo demonstrado.
+  await login(page);
+  await mockLearningApi(page);
+  await mockLessonMaterials(page, "vimeo");
+  await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
+
+  const frame = page.locator(".lesson-embed iframe");
+  await expect(frame).toHaveAttribute("referrerpolicy", "no-referrer");
+  await expect(frame).toHaveAttribute("src", "https://player.vimeo.com/video/123456789");
+});
+
 test("o link externo da aula chega ao aluno com o destino intacto", async ({ page }) => {
   await login(page);
   await mockLearningApi(page);
+  await mockLessonMaterials(page);
   await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
 
   const link = page.getByRole("link", { name: "Documentação oficial" });
@@ -1091,3 +1121,13 @@ test("o link externo da aula chega ao aluno com o destino intacto", async ({ pag
   await expect(link).toHaveAttribute("rel", "noopener noreferrer");
   await expect(page.getByText("exemplo.test")).toBeVisible();
 });
+
+/** Sobrepoe a aula do envelope compartilhado pela versao com links. */
+async function mockLessonMaterials(page: Page, provider: "youtube" | "vimeo" = "youtube") {
+  await page.route(`**/api/library/items/${entitlementId}/lessons/${lessonOne}`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(lessonMaterialsEnvelope(provider))
+    }));
+}
