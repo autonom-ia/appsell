@@ -42,6 +42,11 @@ EXECUTAM_BINARIO = {
     "video_verifier.py",
     "pdf_raster.py",
     "pdf_derivatives.py",
+    # Rasteriza a pagina para ler o QR de um botao sem destino. Roda num
+    # processo proprio, lancado de dentro do sandbox, para que o prazo possa
+    # mata-lo — e a varredura acusou os dois arquivos assim que apareceram, que
+    # e o que ela existe para fazer.
+    "pdf_link_qr_decode.py",
 }
 
 #: Por onde uma requisição de usuário entra na API.

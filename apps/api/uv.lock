@@ -65,6 +65,7 @@ dependencies = [
     { name = "sqlalchemy" },
     { name = "structlog" },
     { name = "uvicorn", extra = ["standard"] },
+    { name = "zxing-cpp" },
 ]
 
 [package.dev-dependencies]
@@ -93,6 +94,7 @@ requires-dist = [
     { name = "sqlalchemy", specifier = ">=2.0.40,<3" },
     { name = "structlog", specifier = ">=25.4,<26" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.35,<1" },
+    { name = "zxing-cpp", specifier = ">=2.2,<3" },
 ]
 
 [package.metadata.requires-dev]
@@ -1173,4 +1175,17 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/00/13/56840cf62c8859af6ba22b9529da937332468c80f32b598753e8a66d3990/websockets-16.1-cp312-cp312-win32.whl", hash = "sha256:b9f5d83f80f4d7c4bba6d97f3755ac05850c784dce0fd2ab371c4e41172f53ff", size = 180161, upload-time = "2026-07-10T06:31:30.316Z" },
     { url = "https://files.pythonhosted.org/packages/d6/ff/87eb9eb44cb62424a8d729834f2b0515a47e2669fabec29820268f4d50a1/websockets-16.1-cp312-cp312-win_amd64.whl", hash = "sha256:6852c9f653966c16109d3b6f31181fd734f7914927e3f0fa1117af7a18c9aa21", size = 180462, upload-time = "2026-07-10T06:31:31.708Z" },
     { url = "https://files.pythonhosted.org/packages/66/58/bd83247f39ddc26ffc2c24eb05087a3b749e00cb4509fc6d19daa23c8495/websockets-16.1-py3-none-any.whl", hash = "sha256:c5149dfe490ec7e5ee5dbf624c642fb725f93a5575c7f00ab594ca9eddb8dd81", size = 174031, upload-time = "2026-07-10T06:32:56.079Z" },
+]
+
+[[package]]
+name = "zxing-cpp"
+version = "2.3.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d9/f2/b781bf6119abe665069777e3c0f154752cf924fe8a55fca027243abbc555/zxing_cpp-2.3.0.tar.gz", hash = "sha256:3babedb67a4c15c9de2c2b4c42d70af83a6c85780c1b2d9803ac64c6ae69f14e", size = 1172666, upload-time = "2025-01-01T21:54:05.856Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/94/d2/e4552dc7d341ccf6242410a13bf95cbd37d7bf194a482d400729b5934b87/zxing_cpp-2.3.0-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:2f457c0aa53c1de263e34cac9917ef647bfb9adcc9e3d4f42a8a1fc02558e1a6", size = 1698659, upload-time = "2025-01-01T21:53:36.692Z" },
+    { url = "https://files.pythonhosted.org/packages/0e/6c/00252c1b3545c13d68922b67cb7c555f739b3a1755cc2a694fd8705ecae2/zxing_cpp-2.3.0-cp312-cp312-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:899955e0091fa0e159b9eb429e43d0a23e2be4a5347c9629c858844f02024b4b", size = 992014, upload-time = "2025-01-01T21:53:39.621Z" },
+    { url = "https://files.pythonhosted.org/packages/95/30/3143bf75944d65c9432349a79b97f9414965a44875ec9eeb5745592b4ecd/zxing_cpp-2.3.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:dec2805c0e9dec0d7707c97ca5196f98d2730d2dfcea80442807123b9f8ec850", size = 984542, upload-time = "2025-01-01T21:53:41.01Z" },
+    { url = "https://files.pythonhosted.org/packages/4d/3a/e4ba18f793484466f4033502acf10e7b078bb00fb48174a8e27aa50018cf/zxing_cpp-2.3.0-cp312-cp312-win32.whl", hash = "sha256:5469bc83ac137a211f54cc650c71af62435cb9b7235e32664f4d35bfd3ce68d0", size = 759857, upload-time = "2025-01-01T21:53:42.506Z" },
+    { url = "https://files.pythonhosted.org/packages/48/6d/a0c3a690963159788b98d947d8a97f55fb0d998ca1f58534618cc96c7c6d/zxing_cpp-2.3.0-cp312-cp312-win_amd64.whl", hash = "sha256:3771e5b0255d8b3bd457573fb6d57d29a346b6c45682320509d8e1ecb49d07ea", size = 843107, upload-time = "2025-01-01T21:53:45.316Z" },
 ]

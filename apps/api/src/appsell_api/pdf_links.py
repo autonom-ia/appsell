@@ -13,6 +13,14 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 import pikepdf
 
+from .pdf_link_qr import (
+    PdfLinkQrUnavailable,
+    QrBudget,
+    assign_targets,
+    read_page_qr_targets,
+)
+from .pdf_link_qr_decode import QrTarget
+from .pdf_link_url import safe_plain_https_url as _safe_plain_https_url
 from .pdf_verifier import MAX_PDF_BYTES, _validate_pdf_structure
 
 #: O que o leitor abre no player, em vez de mandar o aluno para outra aba.
@@ -148,7 +156,7 @@ def extract_pdf_link_manifest(
         with pikepdf.Pdf.open(path, attempt_recovery=False) as document:
             if len(document.pages) != page_count:
                 raise PdfLinksRejected("PDF link page count drifted")
-            links = _document_links(document)
+            links = _document_links(document, path)
     except PdfLinksRejected:
         raise
     except (OSError, pikepdf.PdfError, TypeError, ValueError) as error:
@@ -167,10 +175,14 @@ def valid_pdf_link_manifest(value: object, *, expected_page_count: int) -> bool:
     return all(_valid_link(link, expected_page_count) for link in links)
 
 
-def _document_links(document: pikepdf.Pdf) -> list[dict[str, Any]]:
+def _document_links(document: pikepdf.Pdf, path: Path) -> list[dict[str, Any]]:
     page_map = {page.obj.objgen: number for number, page in enumerate(document.pages, start=1)}
     named_destinations = _named_destinations(document)
     candidates: list[_Candidate] = []
+    qr_cache: dict[int, list[QrTarget]] = {}
+    # O orçamento é do documento inteiro: um PDF com um botão sem destino por
+    # página não pode segurar o serviço por dezenas de minutos.
+    qr_budget = QrBudget()
     annotations_seen = 0
     for page_number, page in enumerate(document.pages, start=1):
         page_box = _page_box(page.obj)
@@ -180,6 +192,7 @@ def _document_links(document: pikepdf.Pdf) -> list[dict[str, Any]]:
             continue
         if not isinstance(annotations, pikepdf.Array):
             raise PdfLinksRejected("PDF page annotations are invalid")
+        pendentes: list[tuple[float, float, float, float]] = []
         for annotation in annotations:
             if not isinstance(annotation, pikepdf.Dictionary):
                 raise PdfLinksRejected("PDF link annotation is invalid")
@@ -199,12 +212,45 @@ def _document_links(document: pikepdf.Pdf) -> list[dict[str, Any]]:
             if target_page is not None:
                 candidates.append(_Candidate(page_number, "page", target_page, *rect))
                 continue
-            target_url = _safe_https_url(annotation.get("/Contents"))
-            if target_url is None:
+            conteudo = annotation.get("/Contents")
+            target_url = _safe_https_url(conteudo)
+            # `/Dest` e `/A` presentes mas nao resolvidos chegam aqui como
+            # destino ausente. Sao destino recusado, e trocar um destino
+            # recusado pelo QR ao lado apaga o motivo de a recusa existir.
+            tem_destino = (
+                conteudo is not None
+                or annotation.get("/Dest") is not None
+                or annotation.get("/A") is not None
+            )
+            if target_url is None and tem_destino:
+                # A anotação tem destino e ele foi recusado. Substituí-lo pelo
+                # QR ao lado entregaria ao aluno um endereço diferente do que o
+                # PDF manda — e o motivo de a recusa existir some junto.
                 continue
-            path = urlsplit(target_url).path.lower()
-            kind = "video" if path.endswith(VIDEO_EXTENSIONS) else "external"
-            candidates.append(_Candidate(page_number, kind, target_url, *rect))
+            if target_url is None:
+                # O botão foi desenhado e o destino não foi gravado. Se há um QR
+                # ao lado, o endereço existe — está em pixels, e é o mesmo que
+                # quem lê no papel usa. Ler de volta é o que faz o clique na
+                # tela valer tanto quanto a câmera do celular. A atribuição é
+                # feita depois, de uma vez, para que um QR sirva a um botão só.
+                pendentes.append(rect)
+                continue
+            candidates.append(_Candidate(page_number, _kind_of(target_url), target_url, *rect))
+
+        for rect, endereco in zip(
+            pendentes,
+            _qr_urls_for_page(
+                path,
+                page_number,
+                [((r[1] + r[3] / 2.0) / 100.0, (r[0] + r[2] / 2.0) / 100.0) for r in pendentes],
+                qr_cache,
+                qr_budget,
+            ),
+            strict=True,
+        ):
+            if endereco is None:
+                continue
+            candidates.append(_Candidate(page_number, _kind_of(endereco), endereco, *rect))
 
     links: list[dict[str, Any]] = []
     grouped: dict[tuple[int, str, str | int], list[_Candidate]] = defaultdict(list)
@@ -395,6 +441,31 @@ def _contains(outer: _Candidate, inner: _Candidate) -> bool:
     )
 
 
+def _kind_of(target_url: str) -> str:
+    caminho = urlsplit(target_url).path.lower()
+    return "video" if caminho.endswith(VIDEO_EXTENSIONS) else "external"
+
+
+def _qr_urls_for_page(
+    path: Path,
+    page_number: int,
+    retangulos: list[tuple[float, float]],
+    cache: dict[int, list[QrTarget]],
+    budget: QrBudget,
+) -> list[str | None]:
+    """Os endereços dos QR desta página, um para cada botão sem destino.
+
+    A página só é rasterizada quando algum botão chega aqui — um PDF bem gerado
+    não paga nada por isto.
+    """
+    if page_number not in cache:
+        try:
+            cache[page_number] = read_page_qr_targets(path, page_number, budget)
+        except PdfLinkQrUnavailable:
+            cache[page_number] = []
+    return assign_targets(cache[page_number], retangulos)
+
+
 def _safe_https_url(value: object) -> str | None:
     if not isinstance(value, pikepdf.String):
         return None
@@ -414,7 +485,11 @@ def _safe_https_url(value: object) -> str | None:
         or port not in {None, 443}
     ):
         return None
-    return urlunsplit(("https", parsed.netloc.lower(), parsed.path, parsed.query, parsed.fragment))
+    # Termina no mesmo validador do manifesto: um endereço que passasse
+    # aqui e fosse recusado depois derrubaria os links do PDF inteiro.
+    return _safe_plain_https_url(
+        urlunsplit(("https", parsed.netloc.lower(), parsed.path, parsed.query, parsed.fragment))
+    )
 
 
 def _valid_link(value: object, page_count: int) -> bool:
@@ -457,25 +532,6 @@ def _valid_link(value: object, page_count: int) -> bool:
             and float(rect["top"]) + float(rect["height"]) <= 100.01
         )
     )
-
-
-def _safe_plain_https_url(value: str) -> str | None:
-    if not 1 <= len(value) <= MAX_PDF_LINK_URL_CHARACTERS:
-        return None
-    try:
-        parsed = urlsplit(value)
-        port = parsed.port
-    except ValueError:
-        return None
-    if (
-        parsed.scheme != "https"
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or port not in {None, 443}
-    ):
-        return None
-    return value
 
 
 def _percent(value: float, total: float) -> float:
