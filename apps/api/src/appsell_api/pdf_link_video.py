@@ -163,11 +163,24 @@ async def origin_validator(target_url: str) -> str:
             if response.status_code in (301, 302, 303, 307, 308):
                 seen = str(httpx.URL(trusted).join(response.headers.get("location", "")))
                 continue
-            if response.status_code != 200:
-                # Resposta definitiva: a origem existe e disse que este arquivo
-                # não. Diferente de não conseguir perguntar — aqui servir a
-                # cópia antiga seria manter no ar algo que foi retirado.
-                raise PdfLinkVideoRejected("video origin refused the request")
+            if response.status_code == 405:
+                # A origem atende `GET` e recusa `HEAD` — comum, e não diz nada
+                # sobre o arquivo existir. Pergunta de novo pelo primeiro byte.
+                response = await client.get(
+                    _pinned(trusted, address),
+                    headers={"host": host, "range": "bytes=0-0"},
+                    extensions={"sni_hostname": host},
+                )
+            if response.status_code in DEFINITIVE_ABSENCE:
+                # A origem existe e disse que este arquivo não. Diferente de não
+                # conseguir perguntar: aqui servir a cópia antiga manteria no ar
+                # algo que foi retirado.
+                raise PdfLinkVideoRejected("video origin says the file is gone")
+            if response.status_code not in {200, 206}:
+                # Sobrecarga, erro do servidor, autenticação — nada disso é a
+                # origem dizendo que o arquivo sumiu. Quem chama serve o que já
+                # tem em vez de tirar o vídeo do aluno por um 503 alheio.
+                raise PdfLinkVideoUnavailable("video origin did not answer usefully")
             validator = (
                 response.headers.get("etag")
                 or response.headers.get("last-modified")
@@ -177,6 +190,12 @@ async def origin_validator(target_url: str) -> str:
             return validator[:120]
     raise PdfLinkVideoRejected("video target redirects too many times")
 
+
+#: Os status em que a origem afirma que o arquivo não está mais lá.
+#:
+#: Só estes autorizam tirar do ar um derivado já preparado. Qualquer outra
+#: resposta ruim é a origem com problema, não o arquivo tendo sido retirado.
+DEFINITIVE_ABSENCE: Final = frozenset({404, 410})
 
 #: Quantos preparos podem estar pendentes ao mesmo tempo.
 #:

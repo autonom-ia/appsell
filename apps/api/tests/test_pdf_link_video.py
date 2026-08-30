@@ -15,6 +15,7 @@ from appsell_api.pdf_link_video import (
     PreparationRegistry,
     derivative_key,
     download_source,
+    origin_validator,
     trusted_video_target,
 )
 from appsell_api.pdf_links import VIDEO_EXTENSIONS
@@ -346,3 +347,90 @@ class TestRejectionWindow:
         )
         assert registry.rejected("chave") is False
         assert registry.start("chave") is True
+
+
+class TestOriginValidator:
+    """Nem toda resposta ruim da origem significa que o arquivo sumiu.
+
+    A distinção decide se o aluno continua vendo o vídeo já preparado ou fica
+    sem nada: só uma ausência declarada pela origem autoriza tirá-lo do ar.
+    """
+
+    @staticmethod
+    def _client(monkeypatch: pytest.MonkeyPatch, respostas: list[object]) -> list[str]:
+        pedidos: list[str] = []
+
+        class _Resposta:
+            def __init__(self, status: int) -> None:
+                self.status_code = status
+                self.headers = {"etag": '"abc123"'} if status in (200, 206) else {}
+
+        class _Cliente:
+            def __init__(self, **_: object) -> None:
+                self._restantes = list(respostas)
+
+            async def __aenter__(self) -> _Cliente:
+                return self
+
+            async def __aexit__(self, *_: object) -> None:
+                return None
+
+            async def head(self, url: str, **_: object) -> _Resposta:
+                pedidos.append(f"HEAD {url}")
+                return _Resposta(self._restantes.pop(0))
+
+            async def get(self, url: str, **_: object) -> _Resposta:
+                pedidos.append(f"GET {url}")
+                return _Resposta(self._restantes.pop(0))
+
+        monkeypatch.setattr(pdf_link_video.httpx, "AsyncClient", _Cliente)
+        return pedidos
+
+    @staticmethod
+    def _dns(monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            pdf_link_video.socket,
+            "getaddrinfo",
+            lambda *_a, **_k: [(2, 1, 6, "", ("93.184.216.34", 443))],
+        )
+
+    async def test_reads_the_validator_from_a_healthy_origin(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("APPSELL_PDF_VIDEO_ALLOWED_ORIGINS", ALLOWED)
+        self._dns(monkeypatch)
+        self._client(monkeypatch, [200])
+        assert await origin_validator(f"{ALLOWED}/aula.mov") == '"abc123"'
+
+    @pytest.mark.parametrize("status", [404, 410])
+    async def test_a_declared_absence_takes_the_video_down(
+        self, monkeypatch: pytest.MonkeyPatch, status: int
+    ) -> None:
+        monkeypatch.setenv("APPSELL_PDF_VIDEO_ALLOWED_ORIGINS", ALLOWED)
+        self._dns(monkeypatch)
+        self._client(monkeypatch, [status])
+        with pytest.raises(pdf_link_video.PdfLinkVideoRejected):
+            await origin_validator(f"{ALLOWED}/aula.mov")
+
+    @pytest.mark.parametrize("status", [429, 500, 503, 403, 401])
+    async def test_an_origin_with_problems_does_not_take_the_video_down(
+        self, monkeypatch: pytest.MonkeyPatch, status: int
+    ) -> None:
+        # Sobrecarga, erro do servidor ou autenticação não dizem que o arquivo
+        # sumiu. Tratá-los como ausência tiraria o vídeo do aluno por um
+        # problema alheio e passageiro.
+        monkeypatch.setenv("APPSELL_PDF_VIDEO_ALLOWED_ORIGINS", ALLOWED)
+        self._dns(monkeypatch)
+        self._client(monkeypatch, [status])
+        with pytest.raises(pdf_link_video.PdfLinkVideoUnavailable):
+            await origin_validator(f"{ALLOWED}/aula.mov")
+
+    async def test_an_origin_that_refuses_head_is_asked_with_get(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Recusar `HEAD` é comum e não diz nada sobre o arquivo existir.
+        monkeypatch.setenv("APPSELL_PDF_VIDEO_ALLOWED_ORIGINS", ALLOWED)
+        self._dns(monkeypatch)
+        pedidos = self._client(monkeypatch, [405, 206])
+        assert await origin_validator(f"{ALLOWED}/aula.mov") == '"abc123"'
+        assert [p.split()[0] for p in pedidos] == ["HEAD", "GET"]
