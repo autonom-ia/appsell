@@ -17,9 +17,8 @@ from .pdf_link_qr import (
     PdfLinkQrUnavailable,
     QrBudget,
     assign_targets,
-    read_page_qr_targets,
+    read_qr_targets,
 )
-from .pdf_link_qr_decode import QrTarget
 from .pdf_link_url import safe_plain_https_url as _safe_plain_https_url
 from .pdf_verifier import MAX_PDF_BYTES, _validate_pdf_structure
 
@@ -179,10 +178,7 @@ def _document_links(document: pikepdf.Pdf, path: Path) -> list[dict[str, Any]]:
     page_map = {page.obj.objgen: number for number, page in enumerate(document.pages, start=1)}
     named_destinations = _named_destinations(document)
     candidates: list[_Candidate] = []
-    qr_cache: dict[int, list[QrTarget]] = {}
-    # O orçamento é do documento inteiro: um PDF com um botão sem destino por
-    # página não pode segurar o serviço por dezenas de minutos.
-    qr_budget = QrBudget()
+    pendentes_por_pagina: dict[int, list[tuple[float, float, float, float]]] = {}
     annotations_seen = 0
     for page_number, page in enumerate(document.pages, start=1):
         page_box = _page_box(page.obj)
@@ -192,7 +188,6 @@ def _document_links(document: pikepdf.Pdf, path: Path) -> list[dict[str, Any]]:
             continue
         if not isinstance(annotations, pikepdf.Array):
             raise PdfLinksRejected("PDF page annotations are invalid")
-        pendentes: list[tuple[float, float, float, float]] = []
         for annotation in annotations:
             if not isinstance(annotation, pikepdf.Dictionary):
                 raise PdfLinksRejected("PDF link annotation is invalid")
@@ -233,24 +228,27 @@ def _document_links(document: pikepdf.Pdf, path: Path) -> list[dict[str, Any]]:
                 # quem lê no papel usa. Ler de volta é o que faz o clique na
                 # tela valer tanto quanto a câmera do celular. A atribuição é
                 # feita depois, de uma vez, para que um QR sirva a um botão só.
-                pendentes.append(rect)
+                pendentes_por_pagina.setdefault(page_number, []).append(rect)
                 continue
             candidates.append(_Candidate(page_number, _kind_of(target_url), target_url, *rect))
 
-        for rect, endereco in zip(
-            pendentes,
-            _qr_urls_for_page(
-                path,
-                page_number,
-                [((r[1] + r[3] / 2.0) / 100.0, (r[0] + r[2] / 2.0) / 100.0) for r in pendentes],
-                qr_cache,
-                qr_budget,
-            ),
-            strict=True,
-        ):
-            if endereco is None:
-                continue
-            candidates.append(_Candidate(page_number, _kind_of(endereco), endereco, *rect))
+    # A leitura dos QR acontece depois do documento inteiro percorrido, numa
+    # chamada só. Uma por página gastava o tempo de partida do processo vezes o
+    # número de páginas, e o orçamento acabava antes de o leitor terminar.
+    if pendentes_por_pagina:
+        try:
+            lidos = read_qr_targets(path, list(pendentes_por_pagina), QrBudget())
+        except PdfLinkQrUnavailable:
+            lidos = {}
+        for page_number, retangulos in pendentes_por_pagina.items():
+            enderecos = assign_targets(
+                lidos.get(page_number, []),
+                [((r[1] + r[3] / 2.0) / 100.0, (r[0] + r[2] / 2.0) / 100.0) for r in retangulos],
+            )
+            for rect, endereco in zip(retangulos, enderecos, strict=True):
+                if endereco is None:
+                    continue
+                candidates.append(_Candidate(page_number, _kind_of(endereco), endereco, *rect))
 
     links: list[dict[str, Any]] = []
     grouped: dict[tuple[int, str, str | int], list[_Candidate]] = defaultdict(list)
@@ -444,26 +442,6 @@ def _contains(outer: _Candidate, inner: _Candidate) -> bool:
 def _kind_of(target_url: str) -> str:
     caminho = urlsplit(target_url).path.lower()
     return "video" if caminho.endswith(VIDEO_EXTENSIONS) else "external"
-
-
-def _qr_urls_for_page(
-    path: Path,
-    page_number: int,
-    retangulos: list[tuple[float, float]],
-    cache: dict[int, list[QrTarget]],
-    budget: QrBudget,
-) -> list[str | None]:
-    """Os endereços dos QR desta página, um para cada botão sem destino.
-
-    A página só é rasterizada quando algum botão chega aqui — um PDF bem gerado
-    não paga nada por isto.
-    """
-    if page_number not in cache:
-        try:
-            cache[page_number] = read_page_qr_targets(path, page_number, budget)
-        except PdfLinkQrUnavailable:
-            cache[page_number] = []
-    return assign_targets(cache[page_number], retangulos)
 
 
 def _safe_https_url(value: object) -> str | None:

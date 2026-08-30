@@ -17,12 +17,16 @@ from PIL import Image
 
 from .pdf_link_url import safe_plain_https_url
 
-#: Resolução da rasterização. Abaixo disto um QR pequeno deixa de ser lido; bem
-#: acima, o custo cresce sem melhorar a leitura.
-RENDER_DPI: Final = 150
+#: Resolução da rasterização.
+#:
+#: Medido no servidor com o PDF do vendedor: a 150 dpi cada página custa 0,91 s
+#: e a 100 dpi custa 0,39 s, **com a mesma leitura** — o QR é grande e não
+#: precisa de tanto detalhe. A 75 dpi ele deixa de ser lido, então este é o
+#: ponto: o mais barato que ainda enxerga.
+RENDER_DPI: Final = 100
 #: Lado maior da imagem. Sem isto, uma página de dimensão absurda vira uma
 #: imagem absurda antes de qualquer leitura.
-MAX_RENDER_PIXELS: Final = 2500
+MAX_RENDER_PIXELS: Final = 1600
 
 
 @dataclass(frozen=True)

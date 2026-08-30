@@ -12,7 +12,7 @@ from appsell_api.pdf_link_qr import (
     MAX_VERTICAL_DISTANCE,
     QrBudget,
     assign_targets,
-    read_page_qr_targets,
+    read_qr_targets,
 )
 from appsell_api.pdf_link_qr_decode import (
     MAX_RENDER_PIXELS,
@@ -138,17 +138,15 @@ class TestRenderArguments:
 class TestBudget:
     """O orçamento é do documento, e não de cada página."""
 
-    def test_an_exhausted_budget_renders_nothing(self, tmp_path: Path) -> None:
-        # Sem isto, um PDF com um botão sem destino por página dispararia uma
-        # rasterização por página e seguraria o serviço por dezenas de minutos.
+    def test_an_exhausted_budget_reads_nothing(self, tmp_path: Path) -> None:
         pdf = tmp_path / "a.pdf"
         pdf.write_bytes(b"%PDF-1.4\n")
-        assert read_page_qr_targets(pdf, 1, QrBudget(0.0)) == []
+        assert read_qr_targets(pdf, [1, 2], QrBudget(0.0)) == {}
 
-    def test_a_page_outside_the_ceiling_is_not_rendered(self, tmp_path: Path) -> None:
+    def test_pages_outside_the_ceiling_are_not_read(self, tmp_path: Path) -> None:
         pdf = tmp_path / "a.pdf"
         pdf.write_bytes(b"%PDF-1.4\n")
-        assert read_page_qr_targets(pdf, 100_000, QrBudget(30.0)) == []
+        assert read_qr_targets(pdf, [100_000], QrBudget(30.0)) == {}
 
 
 def _pagina_com_qr(caminho: Path, texto: str, topo_fracao: float) -> None:
