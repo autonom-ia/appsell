@@ -725,7 +725,7 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
           <p className="pdf-reader-feedback" aria-live="polite">{policyFeedback}</p>
           {study.panel}
           {activeVideoLink
-            ? <PdfVideoDialog link={activeVideoLink} onClose={() => setActiveVideoLink(null)}/>
+            ? <PdfVideoDialog key={activeVideoLink.media_href} link={activeVideoLink} onClose={() => setActiveVideoLink(null)}/>
             : null}
         </section>
       : null}
@@ -785,11 +785,65 @@ function PdfLinkLayer({ links, onPage, onVideo }: {
   </div>;
 }
 
+/** Quantas vezes vale perguntar se o vídeo já ficou pronto antes de desistir. */
+const VIDEO_PREPARATION_ATTEMPTS = 60;
+
+/**
+ * O vídeo do PDF, que o servidor prepara antes de entregar.
+ *
+ * Pôr o endereço direto no `<video>` não serve mais: enquanto o MP4 está sendo
+ * preparado a rota responde `202`, e o elemento trata qualquer resposta que não
+ * seja mídia como erro — o aluno via "não foi possível" no exato momento em que
+ * bastava esperar.
+ *
+ * Então o diálogo pergunta primeiro, e só entrega o endereço ao `<video>`
+ * quando há vídeo do outro lado.
+ */
 function PdfVideoDialog({ link, onClose }: {
   link: Extract<PdfLink, { kind: "video" }>;
   onClose: () => void;
 }) {
-  const [failed, setFailed] = useState(false);
+  const [state, setState] = useState<"checking" | "preparing" | "ready" | "failed">("checking");
+  const [attempt, setAttempt] = useState(0);
+
+  // Sem efeito de reinício: o diálogo é remontado por `key={media_href}`, então
+  // trocar de vídeo já começa do zero. Reiniciar estado dentro de um efeito
+  // renderiza uma vez com o estado do vídeo anterior antes de corrigir.
+  useEffect(() => {
+    if (state === "ready" || state === "failed") return;
+    let cancelled = false;
+    let timer: number | null = null;
+    (async () => {
+      try {
+        const response = await fetch(link.media_href, { method: "HEAD", cache: "no-store" });
+        if (cancelled) return;
+        if (response.status === 200 || response.status === 206) {
+          setState("ready");
+          return;
+        }
+        if (response.status !== 202 || attempt >= VIDEO_PREPARATION_ATTEMPTS) {
+          setState("failed");
+          return;
+        }
+        const retry = Number(response.headers.get("retry-after"));
+        const seconds = Number.isSafeInteger(retry) && retry >= 1 && retry <= 60 ? retry : 3;
+        setState("preparing");
+        timer = window.setTimeout(() => {
+          if (!cancelled) setAttempt((current) => current + 1);
+        }, seconds * 1_000);
+      } catch {
+        if (!cancelled) setState("failed");
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+    // `attempt` é o que reagenda a pergunta; `state` não entra para não
+    // reiniciar o ciclo a cada transição.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attempt]);
+
   return <section
     className="pdf-video-dialog"
     role="dialog"
@@ -809,12 +863,24 @@ function PdfVideoDialog({ link, onClose }: {
           Fechar
         </button>
       </header>
-      {failed
+      {state === "failed"
         ? <div className="pdf-video-state" role="alert">
             <p>Não foi possível reproduzir este vídeo.</p>
-            <button type="button" className="secondary-button" onClick={() => setFailed(false)}>
+            <button
+              type="button"
+              className="secondary-button"
+              // Somar em vez de zerar: o efeito depende de `attempt`, e voltar
+              // ao mesmo número não dispara nada — a tela ficava em "preparando"
+              // para sempre quando a primeira sondagem falhava.
+              onClick={() => { setAttempt((current) => current + 1); setState("checking"); }}
+            >
               Tentar novamente
             </button>
+          </div>
+        : state !== "ready"
+        ? <div className="pdf-video-state" role="status" aria-live="polite">
+            <p>Preparando o vídeo para tocar no seu navegador…</p>
+            <p className="pdf-video-hint">Isto acontece uma vez por vídeo.</p>
           </div>
         : <video
             key={link.media_href}
@@ -827,7 +893,7 @@ function PdfVideoDialog({ link, onClose }: {
             src={link.media_href}
             aria-label={`Vídeo complementar da página ${link.page}`}
             onContextMenu={(event) => event.preventDefault()}
-            onError={() => setFailed(true)}
+            onError={() => setState("failed")}
           >Seu navegador não consegue reproduzir este vídeo.</video>}
       <p className="pdf-video-policy">Reprodução autenticada dentro do Sell. Download não é disponibilizado.</p>
     </div>

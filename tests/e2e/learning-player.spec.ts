@@ -126,6 +126,14 @@ async function mockLearningApi(
     onSecondLesson?: (route: Route, requestNumber: number) => Promise<void>;
     onFirstLesson?: (route: Route, requestNumber: number) => Promise<void>;
     beforeProgressResponse?: () => Promise<void>;
+    /**
+     * Quantas vezes a rota do video responde 202 antes de ficar pronta.
+     *
+     * O servidor prepara um MP4 a partir do arquivo do vendedor, que costuma
+     * ser QuickTime. Enquanto isso nao termina a resposta e 202, e a tela tem
+     * de mostrar "preparando" em vez de tratar como erro.
+     */
+    videoPreparingResponses?: number;
     beforeCompleteResponse?: (lessonId: string) => Promise<void>;
     onFirstProgress?: (route: Route, requestNumber: number, requestedPercent: number) => Promise<void>;
     onPdfPage?: (route: Route, pageNumber: number, requestNumber: number) => Promise<void>;
@@ -141,6 +149,7 @@ async function mockLearningApi(
 ) {
   const mutations: string[] = [];
   let firstLessonReads = 0;
+  let videoMediaRequests = 0;
   let secondLessonReads = 0;
   let firstProgressWrites = 0;
   const pdfPageReads = new Map<number, number>();
@@ -215,7 +224,20 @@ async function mockLearningApi(
         })
       });
     }
-    if (request.method() === "GET" && /\/pages\/links\/[0-9a-f]{16}\/media$/.test(url.pathname)) {
+    if (/\/pages\/links\/[0-9a-f]{16}\/media$/.test(url.pathname)) {
+      videoMediaRequests += 1;
+      // O servidor prepara um MP4 a partir do arquivo do vendedor. Enquanto
+      // isso nao termina a resposta e 202, e a tela mostra "preparando".
+      if (videoMediaRequests <= (options.videoPreparingResponses ?? 0)) {
+        return route.fulfill({
+          status: 202,
+          contentType: "application/json",
+          // Dois segundos, e nao um: com um a nova tentativa podia chegar
+          // antes da verificacao e o teste passava ou falhava por sorte.
+          headers: { "retry-after": "2" },
+          body: JSON.stringify({ error: "protected_video_preparing", retryAfterSeconds: 2 })
+        });
+      }
       return route.fulfill({ status: 200, contentType: "video/mp4", path: protectedVideoPath });
     }
     const pdfPage = /\/pages\/([1-9][0-9]*)$/.exec(url.pathname);
@@ -1131,3 +1153,58 @@ async function mockLessonMaterials(page: Page, provider: "youtube" | "vimeo" = "
       body: JSON.stringify(lessonMaterialsEnvelope(provider))
     }));
 }
+
+/**
+ * O vídeo do PDF, enquanto o servidor o prepara.
+ *
+ * Os vídeos que o vendedor referencia dentro do PDF são QuickTime, e o Chrome
+ * recusa esse container — `canPlayType("video/quicktime")` devolve string
+ * vazia. Agora o servidor prepara um MP4 equivalente, e enquanto isso a rota
+ * responde 202.
+ *
+ * Pôr o endereço direto no `<video>` nesse intervalo faria o elemento tratar a
+ * resposta como erro, e o aluno leria "não foi possível" no exato momento em
+ * que bastava esperar. Este teste cobre a espera e a chegada.
+ */
+test("o vídeo do PDF diz que está sendo preparado, e depois toca", async ({ page }) => {
+  const internalLinkId = "0123456789abcdef";
+  const videoLinkId = "fedcba9876543210";
+  await mockLearningApi(page, {
+    pdfPageCount: 6,
+    videoPreparingResponses: 2,
+    pdfLinks: [
+      {
+        id: internalLinkId,
+        page: 1,
+        kind: "page",
+        target_page: 4,
+        rect: { left: 8, top: 12, width: 70, height: 7 }
+      },
+      {
+        id: videoLinkId,
+        page: 4,
+        kind: "video",
+        media_href: `/api/library/items/${entitlementId}/assets/${assetId}/pages/links/${videoLinkId}/media`,
+        rect: { left: 12, top: 28, width: 76, height: 26 }
+      }
+    ]
+  });
+  await login(page);
+  await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
+  await page.getByRole("button", { name: "Abrir leitor" }).click();
+  const reader = page.getByRole("dialog", { name: "Leitor de Guia da aula" });
+  await reader.getByRole("button", { name: "Ir para a página 4" }).click();
+  await reader.getByRole("button", { name: "Reproduzir vídeo complementar da página 4" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Vídeo complementar da página 4" });
+  await expect(dialog.getByText("Preparando o vídeo para tocar no seu navegador…")).toBeVisible();
+  // Nada de erro enquanto há o que esperar.
+  await expect(dialog.getByText("Não foi possível reproduzir este vídeo.")).toHaveCount(0);
+
+  const video = dialog.locator("video");
+  await expect(video).toHaveAttribute(
+    "src",
+    `/api/library/items/${entitlementId}/assets/${assetId}/pages/links/${videoLinkId}/media`
+  );
+  await expect(dialog.getByText("Preparando o vídeo para tocar no seu navegador…")).toHaveCount(0);
+});

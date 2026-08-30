@@ -1,5 +1,12 @@
 const LINK_ID = /^[0-9a-f]{16}$/;
-const VIDEO_PATH = /\.(?:mov|mp4)$/i;
+/**
+ * Os containers que o leitor abre no player.
+ *
+ * Espelha `VIDEO_EXTENSIONS` em `pdf_links.py`, que é quem classifica o link na
+ * extração. Divergir aqui faz o BFF recusar um alvo que o domínio já marcou
+ * como vídeo, e o aluno recebe 503 sem explicação.
+ */
+const VIDEO_PATH = /\.(?:mov|mp4|m4v|webm|mkv|avi|mpg|mpeg|wmv|flv|3gp|ogv|mts|m2ts|ts)$/i;
 
 export interface PdfLinkRect {
   left: number;

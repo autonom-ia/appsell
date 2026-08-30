@@ -15,6 +15,30 @@ import pikepdf
 
 from .pdf_verifier import MAX_PDF_BYTES, _validate_pdf_structure
 
+#: O que o leitor abre no player, em vez de mandar o aluno para outra aba.
+#:
+#: Eram `.mov` e `.mp4`. Qualquer outro container caia como link externo e
+#: abria fora da area do aluno — um `.mkv` gravado pelo vendedor virava um
+#: download bruto. O servidor prepara um MP4 apresentavel a partir de qualquer
+#: um destes, entao a lista pode ser a dos containers que o `ffmpeg` le.
+VIDEO_EXTENSIONS = (
+    ".mov",
+    ".mp4",
+    ".m4v",
+    ".webm",
+    ".mkv",
+    ".avi",
+    ".mpg",
+    ".mpeg",
+    ".wmv",
+    ".flv",
+    ".3gp",
+    ".ogv",
+    ".mts",
+    ".m2ts",
+    ".ts",
+)
+
 MAX_PDF_LINKS = 512
 MAX_PDF_LINK_ANNOTATIONS = 2_048
 MAX_PDF_LINK_URL_CHARACTERS = 2_048
@@ -179,7 +203,7 @@ def _document_links(document: pikepdf.Pdf) -> list[dict[str, Any]]:
             if target_url is None:
                 continue
             path = urlsplit(target_url).path.lower()
-            kind = "video" if path.endswith((".mov", ".mp4")) else "external"
+            kind = "video" if path.endswith(VIDEO_EXTENSIONS) else "external"
             candidates.append(_Candidate(page_number, kind, target_url, *rect))
 
     links: list[dict[str, Any]] = []

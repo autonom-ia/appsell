@@ -7,12 +7,13 @@ import re
 import shutil
 import tempfile
 import time
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 
 from anyio import to_thread
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi import Path as PathParameter
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from starlette.background import BackgroundTasks
 
 from .pdf_derivatives import (
@@ -28,6 +29,14 @@ from .pdf_raster import (
     render_pdf_page,
 )
 from .pdf_verifier import MAX_PDF_BYTES, PDF_MIME, PdfRejected, verified_pdf_file
+from .video_remux import (
+    MAX_DERIVATIVE_BYTES as MAX_REMUX_BYTES,
+)
+from .video_remux import (
+    VideoRemuxRejected,
+    VideoRemuxUnavailable,
+    remux_to_mp4,
+)
 from .video_verifier import (
     MAX_VIDEO_BYTES,
     VIDEO_MP4_MIME,
@@ -36,6 +45,31 @@ from .video_verifier import (
     _validate_mp4_container,
     probe_mp4_file,
 )
+
+
+class _CleanupStreamingResponse(StreamingResponse):
+    """Uma resposta em fluxo que sempre limpa, mesmo se o cliente sumir.
+
+    O `finally` dentro do gerador não basta: quando o envio falha por
+    desconexão, o Starlette não fecha o gerador sozinho, e se a desconexão
+    acontece antes da primeira iteração o corpo dele nunca roda. Uma
+    `BackgroundTask` também não serve — ela só executa se a resposta terminar.
+
+    Isso importava mais do que o diretório deixado para trás: a reciclagem
+    também ficava sem rodar, e com `_DRAINING` já ligado o serviço passaria a
+    responder 503 para sempre.
+    """
+
+    def __init__(self, *args: object, cleanup: Callable[[], None], **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+        self._cleanup = cleanup
+
+    async def __call__(self, scope, receive, send) -> None:  # type: ignore[no-untyped-def]
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._cleanup()
+
 
 app = FastAPI(title="AppSell isolated PDF parser", docs_url=None, redoc_url=None)
 _MEDIA_SLOT = asyncio.Semaphore(1)
@@ -157,6 +191,17 @@ async def rasterize(request: Request) -> Response:
         _reject_if_draining()
         try:
             return await _rasterize_request(request)
+        finally:
+            _begin_draining_after_job(request)
+
+
+@app.post("/prepare-video")
+async def prepare_video(request: Request) -> Response:
+    _reject_busy_or_draining()
+    async with _MEDIA_SLOT:
+        _reject_if_draining()
+        try:
+            return await _prepare_video_request(request)
         finally:
             _begin_draining_after_job(request)
 
@@ -524,6 +569,83 @@ def _render_page_file(
             watermark=watermark,
             temporary_directory=str(job_directory),
         )
+
+
+async def _prepare_video_request(request: Request) -> Response:
+    """O vídeo do vendedor, convertido para um MP4 que o navegador toca.
+
+    O arquivo chega inteiro pelo socket, é gravado num diretório privado do
+    trabalho e some quando ele termina. O processo é reciclado depois de cada
+    job de mídia, então um parser que fique num estado ruim não atende o
+    próximo aluno.
+    """
+    try:
+        expected_size = int(request.headers["x-appsell-byte-size"])
+        expected_sha256 = request.headers["x-appsell-sha256"]
+    except (KeyError, ValueError) as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT) from error
+    if not 1 <= expected_size <= MAX_REMUX_BYTES or not re.fullmatch(
+        r"[0-9a-f]{64}", expected_sha256
+    ):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT)
+
+    job_directory = _private_job_directory("appsell-remux-job-")
+    source_path: Path | None = None
+    entregue = False
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix="source-", suffix=".bin", dir=job_directory, delete=False
+        ) as source:
+            source_path = Path(source.name)
+            digest = hashlib.sha256()
+            received = 0
+            async for chunk in request.stream():
+                received += len(chunk)
+                if received > expected_size or received > MAX_REMUX_BYTES:
+                    raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE)
+                digest.update(chunk)
+                source.write(chunk)
+            source.flush()
+            os.fsync(source.fileno())
+        os.chmod(source_path, 0o600)
+        if received != expected_size or digest.hexdigest() != expected_sha256:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT)
+        prepared = job_directory / "prepared.mp4"
+        recoded = await to_thread.run_sync(lambda: remux_to_mp4(source_path, prepared))
+        entregue = True
+
+        # O arquivo sai do disco em pedaços — lê-lo inteiro seria meio giga de
+        # cada lado. A limpeza fica no `finally` do próprio gerador: uma tarefa
+        # de fundo só roda se a resposta terminar, e um cliente que aborta
+        # deixaria o diretório para trás e o serviço drenando para sempre.
+        async def _entregar() -> AsyncIterator[bytes]:
+            with prepared.open("rb") as handle:
+                while chunk := handle.read(1024 * 1024):
+                    yield chunk
+
+        def _encerrar() -> None:
+            shutil.rmtree(job_directory, ignore_errors=True)
+            if _recycle_enabled() and bool(getattr(request.state, "recycle_owner", False)):
+                _terminate_sandbox_process()
+
+        return _CleanupStreamingResponse(
+            _entregar(),
+            media_type="video/mp4",
+            headers={"x-appsell-recoded": "true" if recoded else "false"},
+            cleanup=_encerrar,
+        )
+    except HTTPException:
+        raise
+    except VideoRemuxRejected as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT) from error
+    except VideoRemuxUnavailable as error:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE) from error
+    finally:
+        if source_path is not None:
+            source_path.unlink(missing_ok=True)
+        # Quando a resposta leva o arquivo, quem limpa é a tarefa de fundo.
+        if not entregue:
+            shutil.rmtree(job_directory, ignore_errors=True)
 
 
 async def _probe_video_request(request: Request) -> Response:
