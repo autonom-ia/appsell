@@ -22,7 +22,8 @@ const CAMINHO = fileURLToPath(new URL("../next-env.d.ts", import.meta.url));
 describe("next-env.d.ts fica no caminho de build", () => {
   it("não aponta para a pasta de desenvolvimento", () => {
     const conteudo = readFileSync(CAMINHO, "utf-8");
-    expect(conteudo).toContain('import "./.next/types/routes.d.ts";');
+    // Esta asserção vem primeiro de propósito: é a que carrega a instrução de
+    // restauro, e uma asserção que falha antes impediria a mensagem de aparecer.
     expect(
       conteudo.includes(".next/dev/"),
       [
@@ -32,5 +33,6 @@ describe("next-env.d.ts fica no caminho de build", () => {
         "  git checkout origin/main -- next-env.d.ts"
       ].join("\n")
     ).toBe(false);
+    expect(conteudo).toContain('import "./.next/types/routes.d.ts";');
   });
 });
