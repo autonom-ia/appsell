@@ -488,9 +488,7 @@ async def inspect_asset_pages(
     }
 
 
-@router.get(
-    "/me/learning/items/{entitlement_id}/assets/{asset_id}/pdf-links/{link_id}/video"
-)
+@router.get("/me/learning/items/{entitlement_id}/assets/{asset_id}/pdf-links/{link_id}/video")
 async def prepare_pdf_link_video(
     request: Request, entitlement_id: UUID, asset_id: UUID, link_id: str, response: Response
 ) -> dict[str, Any]:
@@ -511,9 +509,7 @@ async def prepare_pdf_link_video(
         links = await _protected_pdf_links(request, manifest, source)
     except DBAPIError as error:
         raise _learning_domain_error(error) from error
-    link = next(
-        (item for item in links if item["id"] == link_id and item["kind"] == "video"), None
-    )
+    link = next((item for item in links if item["id"] == link_id and item["kind"] == "video"), None)
     if link is None:
         raise _learning_not_found()
     target = trusted_video_target(link["target_url"])
@@ -533,9 +529,7 @@ async def prepare_pdf_link_video(
     bucket = settings.storage_ready_bucket
     key = derivative_key(str(manifest["seller_organization_id"]), target)
 
-    ready = await to_thread.run_sync(
-        lambda: _pdf_link_video_ready(storage, bucket, key)
-    )
+    ready = await to_thread.run_sync(lambda: _pdf_link_video_ready(storage, bucket, key))
     estado = await _pdf_link_video_state(ready, target)
     if estado == "gone":
         # A origem existe e disse que este arquivo não. Servir a cópia guardada
@@ -637,9 +631,11 @@ async def _run_pdf_link_video_preparation(
             # quando o trabalho existe justamente porque o objeto guardado está
             # velho, encontrá-lo não é motivo para desistir — era assim que a
             # troca do vídeo na origem nunca chegava ao aluno.
-            if not replace and await to_thread.run_sync(
-                lambda: _pdf_link_video_ready(storage, bucket, key)
-            ) is not None:
+            if (
+                not replace
+                and await to_thread.run_sync(lambda: _pdf_link_video_ready(storage, bucket, key))
+                is not None
+            ):
                 return
             await _store_pdf_link_video(storage, bucket, key, target)
         logger.info("pdf_link_video_prepared", key=key)
@@ -657,24 +653,24 @@ async def _run_pdf_link_video_preparation(
         _PDF_LINK_VIDEO_PREPARATIONS.finish(key)
 
 
-async def _store_pdf_link_video(
-    storage: S3Storage, bucket: str, key: str, target: str
-) -> None:
+async def _store_pdf_link_video(storage: S3Storage, bucket: str, key: str, target: str) -> None:
     with temporary_workspace() as workspace:
         prepared = await prepare_video(target, Path(workspace))
-        await to_thread.run_sync(lambda: storage.put_verified(
-            destination_bucket=bucket,
-            destination_key=key,
-            source_path=prepared.path,
-            byte_size=prepared.byte_size,
-            sha256_hex=prepared.sha256_hex,
-            content_type=DERIVATIVE_MEDIA_TYPE,
-            # O metadado guarda de qual versão da origem este derivado veio, e
-            # é o validador do próprio download — não o de um `HEAD` anterior,
-            # que a origem pode ter mudado entre uma coisa e outra.
-            upload_id=prepared.validator,
-            file_name="video-protegido.mp4",
-        ))
+        await to_thread.run_sync(
+            lambda: storage.put_verified(
+                destination_bucket=bucket,
+                destination_key=key,
+                source_path=prepared.path,
+                byte_size=prepared.byte_size,
+                sha256_hex=prepared.sha256_hex,
+                content_type=DERIVATIVE_MEDIA_TYPE,
+                # O metadado guarda de qual versão da origem este derivado veio, e
+                # é o validador do próprio download — não o de um `HEAD` anterior,
+                # que a origem pode ter mudado entre uma coisa e outra.
+                upload_id=prepared.validator,
+                file_name="video-protegido.mp4",
+            )
+        )
 
 
 @router.get("/me/learning/items/{entitlement_id}/assets/{asset_id}/study")

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import time
+from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import NamedTuple
 
 import anyio
 import anyio.lowlevel
+import httpx as httpx_real
 import pytest
 
 from appsell_api import pdf_link_video
@@ -35,9 +38,7 @@ class TestTrustedTarget:
         url = f"{ALLOWED}/aula.mov"
         assert trusted_video_target(url) == url
 
-    def test_refuses_an_origin_outside_the_allowlist(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_refuses_an_origin_outside_the_allowlist(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("APPSELL_PDF_VIDEO_ALLOWED_ORIGINS", ALLOWED)
         assert trusted_video_target("https://outro.example.test/aula.mov") is None
 
@@ -67,9 +68,7 @@ class TestTrustedTarget:
         monkeypatch.setenv("APPSELL_PDF_VIDEO_ALLOWED_ORIGINS", ALLOWED)
         assert trusted_video_target(url) is None
 
-    def test_refuses_a_value_that_is_not_a_string(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_refuses_a_value_that_is_not_a_string(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("APPSELL_PDF_VIDEO_ALLOWED_ORIGINS", ALLOWED)
         assert trusted_video_target(None) is None
         assert trusted_video_target(b"https://midia.example.test/a.mov") is None
@@ -152,7 +151,6 @@ class TestRecognisedContainers:
             assert extension not in VIDEO_EXTENSIONS
 
 
-
 class TestDownloadSource:
     """O único ponto que fala com a rede, e onde o SSRF seria explorado.
 
@@ -175,7 +173,7 @@ class TestDownloadSource:
                 else:
                     self.status_code = 200
                     self.headers = {"etag": '"abc123"'}
-                    self._corpo = [bytes(item)]
+                    self._corpo = [bytes(item)]  # type: ignore[call-overload]
 
             async def __aenter__(self) -> _Resposta:
                 return self
@@ -183,7 +181,7 @@ class TestDownloadSource:
             async def __aexit__(self, *_: object) -> None:
                 return None
 
-            async def aiter_bytes(self, _size: int):
+            async def aiter_bytes(self, _size: int) -> AsyncIterator[bytes]:
                 for chunk in self._corpo:
                     # Cede o controle: é o que permite a um escopo de
                     # cancelamento externo interromper um download em curso.
@@ -220,14 +218,13 @@ class TestDownloadSource:
                 pedidos.append(url)
                 return _Resposta(self._restantes.pop(0))
 
-        monkeypatch.setattr(pdf_link_video.httpx, "AsyncClient", _Cliente)
+        monkeypatch.setattr("appsell_api.pdf_link_video.httpx.AsyncClient", _Cliente)
         return pedidos
 
     @staticmethod
     def _dns(monkeypatch: pytest.MonkeyPatch, endereco: str = "93.184.216.34") -> None:
         monkeypatch.setattr(
-            pdf_link_video.socket,
-            "getaddrinfo",
+            "appsell_api.pdf_link_video.socket.getaddrinfo",
             lambda *_a, **_k: [(2, 1, 6, "", (endereco, 443))],
         )
 
@@ -341,8 +338,7 @@ class TestRejectionWindow:
         # teste seria trocar uma espera do aluno por uma espera do CI.
         agora = time.monotonic()
         monkeypatch.setattr(
-            pdf_link_video.time,
-            "monotonic",
+            "appsell_api.pdf_link_video.time.monotonic",
             lambda: agora + PreparationRegistry.REJECTION_SECONDS + 1,
         )
         assert registry.rejected("chave") is False
@@ -352,16 +348,24 @@ class TestRejectionWindow:
 class _Cabecalhos:
     """Uma resposta com cabeçalhos escolhidos, para os casos sem `etag`."""
 
-    def __init__(self, status: int, headers: dict) -> None:
+    def __init__(self, status: int, headers: dict[str, str]) -> None:
         self.status = status
         self.headers = headers
+
+
+class _Pedido(NamedTuple):
+    """Um pedido que o dublê recebeu."""
+
+    metodo: str
+    url: str
+    headers: dict[str, str]
 
 
 class _Registro:
     """O que o dublê viu: os pedidos feitos e se alguém leu o corpo."""
 
     def __init__(self) -> None:
-        self.pedidos: list[dict] = []
+        self.pedidos: list[_Pedido] = []
         self.lido = {"corpo": False}
 
 
@@ -387,10 +391,8 @@ class TestOriginValidator:
                     self.status_code, destino = item
                     self.headers = {"location": destino}
                 else:
-                    self.status_code = int(item)
-                    self.headers = (
-                        {"etag": '"abc123"'} if self.status_code in (200, 206) else {}
-                    )
+                    self.status_code = int(item)  # type: ignore[call-overload]
+                    self.headers = {"etag": '"abc123"'} if self.status_code in (200, 206) else {}
 
             async def __aenter__(self) -> _Resposta:
                 return self
@@ -398,7 +400,7 @@ class TestOriginValidator:
             async def __aexit__(self, *_: object) -> None:
                 return None
 
-            async def aiter_bytes(self, _size: int):
+            async def aiter_bytes(self, _size: int) -> AsyncIterator[bytes]:
                 # Uma origem que ignora o `Range` devolve o arquivo inteiro.
                 # Se a pergunta de metadado ler isto, são centenas de megabytes
                 # para saber um `etag`.
@@ -427,20 +429,19 @@ class TestOriginValidator:
             ) -> _Resposta:
                 assert headers["host"] == "midia.example.test"
                 assert extensions["sni_hostname"] == "midia.example.test"
-                pedidos.append({"metodo": metodo, "url": url, "headers": dict(headers)})
+                pedidos.append(_Pedido(metodo, url, dict(headers)))
                 item = self._restantes.pop(0)
                 if isinstance(item, Exception):
                     raise item
                 return _Resposta(item)
 
-        monkeypatch.setattr(pdf_link_video.httpx, "AsyncClient", _Cliente)
+        monkeypatch.setattr("appsell_api.pdf_link_video.httpx.AsyncClient", _Cliente)
         return registro
 
     @staticmethod
     def _dns(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            pdf_link_video.socket,
-            "getaddrinfo",
+            "appsell_api.pdf_link_video.socket.getaddrinfo",
             lambda *_a, **_k: [(2, 1, 6, "", ("93.184.216.34", 443))],
         )
 
@@ -451,8 +452,8 @@ class TestOriginValidator:
         self._dns(monkeypatch)
         pedidos = self._client(monkeypatch, [200])
         assert await origin_validator(f"{ALLOWED}/aula.mov") == '"abc123"'
-        assert pedidos.pedidos[0]["metodo"] == "HEAD"
-        assert pedidos.pedidos[0]["url"] == "https://93.184.216.34/aula.mov"
+        assert pedidos.pedidos[0].metodo == "HEAD"
+        assert pedidos.pedidos[0].url == "https://93.184.216.34/aula.mov"
         assert pedidos.lido["corpo"] is False
 
     @pytest.mark.parametrize("status", [404, 410])
@@ -486,8 +487,8 @@ class TestOriginValidator:
         self._dns(monkeypatch)
         pedidos = self._client(monkeypatch, [405, 206])
         assert await origin_validator(f"{ALLOWED}/aula.mov") == '"abc123"'
-        assert [p["metodo"] for p in pedidos.pedidos] == ["HEAD", "GET"]
-        assert pedidos.pedidos[1]["headers"]["range"] == "bytes=0-0"
+        assert [p.metodo for p in pedidos.pedidos] == ["HEAD", "GET"]
+        assert pedidos.pedidos[1].headers["range"] == "bytes=0-0"
         assert pedidos.lido["corpo"] is False
 
     async def test_a_redirect_after_the_fallback_is_revalidated(
@@ -500,7 +501,7 @@ class TestOriginValidator:
         self._dns(monkeypatch)
         pedidos = self._client(monkeypatch, [405, (302, "/outra.mov"), 206])
         assert await origin_validator(f"{ALLOWED}/aula.mov") == '"abc123"'
-        assert pedidos.pedidos[-1]["url"] == "https://93.184.216.34/outra.mov"
+        assert pedidos.pedidos[-1].url == "https://93.184.216.34/outra.mov"
 
     async def test_a_redirect_out_of_the_allowlist_is_refused(
         self, monkeypatch: pytest.MonkeyPatch
@@ -516,7 +517,7 @@ class TestOriginValidator:
     ) -> None:
         monkeypatch.setenv("APPSELL_PDF_VIDEO_ALLOWED_ORIGINS", ALLOWED)
         self._dns(monkeypatch)
-        self._client(monkeypatch, [405, pdf_link_video.httpx.ConnectError("caiu")])
+        self._client(monkeypatch, [405, httpx_real.ConnectError("caiu")])
         with pytest.raises(pdf_link_video.PdfLinkVideoUnavailable):
             await origin_validator(f"{ALLOWED}/aula.mov")
 
@@ -528,9 +529,10 @@ class TestOriginValidator:
         # acesso, e o remux se repetiria para sempre.
         monkeypatch.setenv("APPSELL_PDF_VIDEO_ALLOWED_ORIGINS", ALLOWED)
         self._dns(monkeypatch)
-        self._client(monkeypatch, [
-            _Cabecalhos(206, {"content-length": "1", "content-range": "bytes 0-0/50000000"})
-        ])
+        self._client(
+            monkeypatch,
+            [_Cabecalhos(206, {"content-length": "1", "content-range": "bytes 0-0/50000000"})],
+        )
         assert await origin_validator(f"{ALLOWED}/aula.mov") == "50000000"
 
     async def test_a_whole_answer_without_etag_uses_the_length(
@@ -546,7 +548,7 @@ class TestOriginValidator:
         [{}, {"content-range": "bytes 0-0/*"}, {"content-length": "muitos"}],
     )
     async def test_an_origin_without_a_comparable_version_serves_the_cache(
-        self, monkeypatch: pytest.MonkeyPatch, cabecalhos: dict
+        self, monkeypatch: pytest.MonkeyPatch, cabecalhos: dict[str, str]
     ) -> None:
         # Sem nada comparável, dizer qualquer coisa marcaria o derivado como
         # velho para sempre. "Não sei" serve o que já existe.
@@ -570,9 +572,7 @@ class TestOriginValidator:
         # como tal faria o teto valer para outra coisa.
         monkeypatch.setenv("APPSELL_PDF_VIDEO_ALLOWED_ORIGINS", ALLOWED)
         self._dns(monkeypatch)
-        self._client(monkeypatch, [
-            (302, "/a.mov"), (302, "/b.mov"), (302, "/c.mov"), 405, 206
-        ])
+        self._client(monkeypatch, [(302, "/a.mov"), (302, "/b.mov"), (302, "/c.mov"), 405, 206])
         assert await origin_validator(f"{ALLOWED}/aula.mov") == '"abc123"'
 
     async def test_the_fallback_without_etag_uses_the_total_from_the_range(
@@ -583,10 +583,13 @@ class TestOriginValidator:
         # do arquivo faria o remux se repetir a cada acesso.
         monkeypatch.setenv("APPSELL_PDF_VIDEO_ALLOWED_ORIGINS", ALLOWED)
         self._dns(monkeypatch)
-        self._client(monkeypatch, [
-            405,
-            _Cabecalhos(206, {"content-length": "1", "content-range": "bytes 0-0/50000000"}),
-        ])
+        self._client(
+            monkeypatch,
+            [
+                405,
+                _Cabecalhos(206, {"content-length": "1", "content-range": "bytes 0-0/50000000"}),
+            ],
+        )
         assert await origin_validator(f"{ALLOWED}/aula.mov") == "50000000"
 
     @pytest.mark.parametrize(
@@ -599,7 +602,7 @@ class TestOriginValidator:
         ],
     )
     async def test_a_partial_answer_never_falls_back_to_the_length(
-        self, monkeypatch: pytest.MonkeyPatch, cabecalhos: dict
+        self, monkeypatch: pytest.MonkeyPatch, cabecalhos: dict[str, str]
     ) -> None:
         monkeypatch.setenv("APPSELL_PDF_VIDEO_ALLOWED_ORIGINS", ALLOWED)
         self._dns(monkeypatch)
@@ -614,8 +617,9 @@ class TestOriginValidator:
         # seria adivinhar sobre uma origem que não está se explicando.
         monkeypatch.setenv("APPSELL_PDF_VIDEO_ALLOWED_ORIGINS", ALLOWED)
         self._dns(monkeypatch)
-        self._client(monkeypatch, [
-            _Cabecalhos(200, {"content-length": "1", "content-range": "bytes 0-0/50000000"})
-        ])
+        self._client(
+            monkeypatch,
+            [_Cabecalhos(200, {"content-length": "1", "content-range": "bytes 0-0/50000000"})],
+        )
         with pytest.raises(pdf_link_video.PdfLinkVideoUnavailable):
             await origin_validator(f"{ALLOWED}/aula.mov")

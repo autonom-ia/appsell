@@ -22,8 +22,21 @@ from .pdf_verifier import MAX_PDF_BYTES, _validate_pdf_structure
 #: download bruto. O servidor prepara um MP4 apresentavel a partir de qualquer
 #: um destes, entao a lista pode ser a dos containers que o `ffmpeg` le.
 VIDEO_EXTENSIONS = (
-    ".mov", ".mp4", ".m4v", ".webm", ".mkv", ".avi", ".mpg", ".mpeg",
-    ".wmv", ".flv", ".3gp", ".ogv", ".mts", ".m2ts", ".ts",
+    ".mov",
+    ".mp4",
+    ".m4v",
+    ".webm",
+    ".mkv",
+    ".avi",
+    ".mpg",
+    ".mpeg",
+    ".wmv",
+    ".flv",
+    ".3gp",
+    ".ogv",
+    ".mts",
+    ".m2ts",
+    ".ts",
 )
 
 MAX_PDF_LINKS = 512

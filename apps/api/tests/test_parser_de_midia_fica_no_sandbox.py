@@ -100,9 +100,7 @@ def test_nenhum_modulo_novo_executa_binario_de_midia() -> None:
     um executor novo?
     """
     encontrados = {
-        arquivo.name
-        for arquivo in sorted(FONTE.glob("*.py"))
-        if _executa_binario_de_midia(arquivo)
+        arquivo.name for arquivo in sorted(FONTE.glob("*.py")) if _executa_binario_de_midia(arquivo)
     }
     novos = sorted(encontrados - EXECUTAM_BINARIO)
     assert not novos, "\n".join(

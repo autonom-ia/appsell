@@ -56,9 +56,7 @@ _COPYABLE_PIXEL_FORMATS: Final = frozenset({"yuv420p", "yuvj420p"})
 #: `hls`, `dash` e `concat` ficam de fora de propósito: são formatos que apontam
 #: para outros recursos, e é por eles que um parser de mídia vira um cliente de
 #: rede. A restrição vale para a inspeção e para a conversão.
-ALLOWED_FORMATS: Final = (
-    "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,avi,mpegts,mpeg,asf,flv,ogg"
-)
+ALLOWED_FORMATS: Final = "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,avi,mpegts,mpeg,asf,flv,ogg"
 
 
 class VideoRemuxRejected(RuntimeError):
@@ -79,12 +77,19 @@ def _binary(name: str) -> str:
 def probe_video(source: Path) -> dict[str, Any]:
     """Container, duração, codecs e dimensões do arquivo local."""
     arguments = [
-        _binary("ffprobe"), "-v", "error",
-        "-protocol_whitelist", "file",
-        "-format_whitelist", ALLOWED_FORMATS,
+        _binary("ffprobe"),
+        "-v",
+        "error",
+        "-protocol_whitelist",
+        "file",
+        "-format_whitelist",
+        ALLOWED_FORMATS,
         "-show_entries",
         "format=duration:stream=codec_type,codec_name,pix_fmt,width,height,r_frame_rate",
-        "-of", "json", "-i", str(source),
+        "-of",
+        "json",
+        "-i",
+        str(source),
     ]
     try:
         # `capture_output` leria a saída inteira para a memória e só depois
@@ -108,7 +113,7 @@ def probe_video(source: Path) -> dict[str, Any]:
     if len(output) > MAX_PROBE_BYTES:
         raise VideoRemuxRejected("video metadata is larger than expected")
     try:
-        return json.loads(output)
+        return dict(json.loads(output))
     except json.JSONDecodeError as error:
         raise VideoRemuxRejected("video probe returned no usable metadata") from error
 
@@ -172,14 +177,25 @@ def remux_to_mp4(source: Path, destination: Path) -> bool:
     copyable = copyable_streams(probe_video(source))
     common = [
         # O `ffmpeg` não fala com a rede em momento nenhum.
-        "-protocol_whitelist", "file",
-        "-format_whitelist", ALLOWED_FORMATS,
-        "-i", str(source), "-map", "0:v:0", "-map", "0:a:0?",
-        "-movflags", "+faststart",
+        "-protocol_whitelist",
+        "file",
+        "-format_whitelist",
+        ALLOWED_FORMATS,
+        "-i",
+        str(source),
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a:0?",
+        "-movflags",
+        "+faststart",
         # Teto de bytes na própria escrita, e não só depois que o arquivo existe.
-        "-fs", str(MAX_DERIVATIVE_BYTES),
-        "-threads", "2",
-        "-f", "mp4",
+        "-fs",
+        str(MAX_DERIVATIVE_BYTES),
+        "-threads",
+        "2",
+        "-f",
+        "mp4",
     ]
     if copyable:
         arguments = [*common, "-c", "copy", str(destination)]
@@ -187,11 +203,23 @@ def remux_to_mp4(source: Path, destination: Path) -> bool:
     else:
         arguments = [
             *common,
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-            "-pix_fmt", "yuv420p",
-            "-vf", "scale='min(1920,trunc(iw/2)*2)':'min(1080,trunc(ih/2)*2)'"
-                   ":force_original_aspect_ratio=decrease",
-            "-c:a", "aac", "-b:a", "128k", "-ac", "2",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "23",
+            "-pix_fmt",
+            "yuv420p",
+            "-vf",
+            "scale='min(1920,trunc(iw/2)*2)':'min(1080,trunc(ih/2)*2)'"
+            ":force_original_aspect_ratio=decrease",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-ac",
+            "2",
             str(destination),
         ]
         timeout = TRANSCODE_TIMEOUT_SECONDS

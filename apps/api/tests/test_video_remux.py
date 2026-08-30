@@ -32,15 +32,27 @@ def _probe(
 ) -> dict[str, object]:
     streams: list[dict[str, object]] = []
     if video_codec is not None:
-        streams.append({
-            "codec_type": "video", "codec_name": video_codec, "pix_fmt": pix_fmt,
-            "width": width, "height": height, "r_frame_rate": frame_rate,
-        })
+        streams.append(
+            {
+                "codec_type": "video",
+                "codec_name": video_codec,
+                "pix_fmt": pix_fmt,
+                "width": width,
+                "height": height,
+                "r_frame_rate": frame_rate,
+            }
+        )
     if extra_video:
-        streams.append({
-            "codec_type": "video", "codec_name": "h264", "pix_fmt": pix_fmt,
-            "width": width, "height": height, "r_frame_rate": frame_rate,
-        })
+        streams.append(
+            {
+                "codec_type": "video",
+                "codec_name": "h264",
+                "pix_fmt": pix_fmt,
+                "width": width,
+                "height": height,
+                "r_frame_rate": frame_rate,
+            }
+        )
     if audio_codec is not None:
         streams.append({"codec_type": "audio", "codec_name": audio_codec})
     return {"format": {"duration": str(duration)}, "streams": streams}

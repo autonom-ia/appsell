@@ -155,9 +155,7 @@ async def origin_validator(target_url: str) -> str:
             if trusted is None:
                 raise PdfLinkVideoRejected("video target is not an allowed origin")
             host = urlsplit(trusted).hostname or ""
-            address = await to_thread.run_sync(
-                public_address, host, abandon_on_cancel=True
-            )
+            address = await to_thread.run_sync(public_address, host, abandon_on_cancel=True)
             cabecalhos = {"host": host}
             if metodo == "GET":
                 cabecalhos["range"] = "bytes=0-0"
@@ -259,9 +257,7 @@ def derivative_key(seller_organization_id: str, target_url: str) -> str:
     quem guarda de qual versão ele veio é o metadado. Assim o endereço tem
     sempre um derivado, e a origem fora do ar não apaga o que já existe.
     """
-    digest = hashlib.sha256(
-        f"{seller_organization_id}\n{target_url}".encode()
-    ).hexdigest()
+    digest = hashlib.sha256(f"{seller_organization_id}\n{target_url}".encode()).hexdigest()
     return f"{DERIVATIVE_PREFIX}/{digest[:2]}/{digest}.mp4"
 
 
@@ -320,9 +316,7 @@ async def download_source(target_url: str, destination: Path) -> tuple[int, str]
             host = urlsplit(trusted).hostname or ""
             # `getaddrinfo` bloqueia, e bloquear o laço impede o próprio escopo
             # de cancelamento de rodar: um resolvedor travado seguraria tudo.
-            address = await to_thread.run_sync(
-                public_address, host, abandon_on_cancel=True
-            )
+            address = await to_thread.run_sync(public_address, host, abandon_on_cancel=True)
             # Conecta no endereço que acabou de ser validado, e apresenta o
             # nome do host para o TLS: o certificado continua sendo conferido
             # contra o nome, e o DNS não tem uma segunda chance de responder.
@@ -413,32 +407,32 @@ def _sandbox_client() -> tuple[httpx.BaseTransport | None, str]:
     raise PdfLinkVideoUnavailable("isolated media service is not configured")
 
 
-def remux_in_sandbox(
-    source: Path, byte_size: int, sha256_hex: str, destination: Path
-) -> bool:
+def remux_in_sandbox(source: Path, byte_size: int, sha256_hex: str, destination: Path) -> bool:
     """Manda o arquivo ao serviço isolado e grava o MP4 que ele devolve."""
     transport, base_url = _sandbox_client()
     try:
-        with httpx.Client(
-            transport=transport,
-            timeout=httpx.Timeout(TRANSCODE_TIMEOUT_SECONDS, connect=5.0),
-            trust_env=False,
-            follow_redirects=False,
-        ) as client, source.open("rb") as body, client.stream(
-            "POST",
-            f"{base_url}/prepare-video",
-            headers={
-                "content-type": "application/octet-stream",
-                "x-appsell-byte-size": str(byte_size),
-                "x-appsell-sha256": sha256_hex,
-            },
-            content=body,
-        ) as response:
+        with (
+            httpx.Client(
+                transport=transport,
+                timeout=httpx.Timeout(TRANSCODE_TIMEOUT_SECONDS, connect=5.0),
+                trust_env=False,
+                follow_redirects=False,
+            ) as client,
+            source.open("rb") as body,
+            client.stream(
+                "POST",
+                f"{base_url}/prepare-video",
+                headers={
+                    "content-type": "application/octet-stream",
+                    "x-appsell-byte-size": str(byte_size),
+                    "x-appsell-sha256": sha256_hex,
+                },
+                content=body,
+            ) as response,
+        ):
             if response.status_code in {413, 415, 422}:
                 raise PdfLinkVideoRejected("isolated media service refused the source")
-            if response.status_code != 200 or (
-                response.headers.get("content-type") != "video/mp4"
-            ):
+            if response.status_code != 200 or (response.headers.get("content-type") != "video/mp4"):
                 raise PdfLinkVideoUnavailable("isolated media service is unavailable")
             recoded = response.headers.get("x-appsell-recoded") == "true"
             # O derivado chega em pedaços e vai direto para o disco: meio giga na
@@ -448,15 +442,13 @@ def remux_in_sandbox(
                 for chunk in response.iter_bytes(_MIB):
                     written += len(chunk)
                     if written > MAX_DERIVATIVE_BYTES:
-                        raise PdfLinkVideoRejected(
-                            "prepared video is outside the accepted size"
-                        )
+                        raise PdfLinkVideoRejected("prepared video is outside the accepted size")
                     sink.write(chunk)
     except (httpx.HTTPError, OSError) as error:
         raise PdfLinkVideoUnavailable("isolated media service request failed") from error
     if written < 1:
         raise PdfLinkVideoRejected("isolated media service returned an empty body")
-    return recoded
+    return bool(recoded)
 
 
 class PreparationRegistry:
