@@ -10,6 +10,8 @@ import {
   assetMediaSpec,
   assetMediaTypeForFile,
   isDownloadableMedia,
+  mediaDemonstrative,
+  mediaLabel,
   type AssetMediaType
 } from "../../lib/asset-media";
 import { AccessibleDialog } from "./accessible-dialog";
@@ -48,8 +50,8 @@ export interface LessonAssetsChangedDetail {
  *
  * Dizia "PDF" em todo card, inclusive num markdown de 10 KiB.
  */
-export function downloadToggleLabel(mediaType: string): string {
-  return `Permitir que o aluno baixe este ${mediaLabel(mediaType)}`;
+export function downloadToggleLabel(mediaType: unknown): string {
+  return `Permitir que o aluno baixe ${mediaDemonstrative(mediaType)} ${mediaLabel(mediaType)}`;
 }
 
 export interface AssetDiscardRequestDetail {
@@ -1001,12 +1003,6 @@ function uploadRefusalMessage(file: File): string {
 
 function selectedMediaType(file: File): AssetMediaType | null {
   return assetMediaTypeForFile(file.name, file.type);
-}
-
-function mediaLabel(mediaType: AssetMediaType) {
-  if (mediaType === "video/mp4") return "vídeo";
-  if (mediaType === "application/pdf") return "PDF";
-  return "documento";
 }
 
 export function validIntent(

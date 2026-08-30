@@ -26,11 +26,24 @@ import { describe, expect, it } from "vitest";
  *
  * O SQL continua coberto pelo teste em `pg_proc`, que alcança o que já está
  * gravado no banco. Este arquivo cobre o código-fonte das três.
+ *
+ * ## O que esta varredura NÃO pega
+ *
+ * Uma lista fechada de **um** literal só. A rota de download do aluno restringia
+ * tudo a `application/pdf`, sem citar `video/mp4`, e passou aqui na primeira
+ * versão deste arquivo. Texto não distingue "esta rota trata PDF" de "esta rota
+ * só aceita PDF".
+ *
+ * Quem pega isso é `aluno-abre-todo-formato-do-catalogo.test.ts`, que percorre o
+ * catálogo inteiro pela rota. Os dois são necessários: este barra a cópia da
+ * lista, aquele barra o efeito dela.
  */
 
 const RAIZ = fileURLToPath(new URL("..", import.meta.url));
 const PASTAS = ["app", "lib", "apps/api/src", "apps/api/migrations/versions"];
 const EXTENSOES = [".ts", ".tsx", ".py", ".sql"];
+/** Quantas linhas uma lista fechada pode ocupar antes de deixar de parecer uma. */
+const JANELA = 6;
 
 /**
  * Onde o par é legítimo, e por quê. Qualquer outro lugar é uma cópia.
@@ -44,6 +57,27 @@ const PERMITIDOS = new Map([
   // do banco é verificado pelo teste que varre `pg_proc`.
   ["apps/api/migrations/", "histórico; o estado atual é verificado em pg_proc"]
 ]);
+
+/**
+ * Onde o par aparece perto o bastante para ser uma lista fechada.
+ *
+ * Uma lista fechada quebrada em linhas continua sendo uma lista fechada —
+ * `["application/pdf",⏎ "video/mp4"]` passava quando a regra era "os dois na
+ * mesma linha". A janela alcança a forma em array, em união de tipos e no
+ * `in (...)` do SQL.
+ */
+export function copiasEm(linhas: readonly string[]): { linha: number; trecho: string }[] {
+  const achados: { linha: number; trecho: string }[] = [];
+  linhas.forEach((linha, indice) => {
+    if (!linha.includes("application/pdf")) return;
+    const janela = linhas.slice(indice, indice + JANELA);
+    const parceira = janela.findIndex((vizinha) => vizinha.includes("video/mp4"));
+    if (parceira < 0) return;
+    const trecho = janela.slice(0, parceira + 1).map((l) => l.trim()).join(" ⏎ ");
+    achados.push({ linha: indice + 1, trecho: trecho.slice(0, 140) });
+  });
+  return achados;
+}
 
 function arquivos(pasta: string): string[] {
   const alvo = join(RAIZ, pasta);
@@ -74,13 +108,9 @@ describe("o catálogo de mídia tem uma fonte por linguagem", () => {
       for (const caminho of arquivos(pasta)) {
         if (permitido(caminho)) continue;
         const linhas = readFileSync(join(RAIZ, caminho), "utf-8").split("\n");
-        linhas.forEach((linha, indice) => {
-          // Os dois literais na mesma linha: é assim que a lista fechada se
-          // escreve, em qualquer das três linguagens.
-          if (linha.includes("application/pdf") && linha.includes("video/mp4")) {
-            culpados.push(`${relative(".", caminho)}:${indice + 1}  ${linha.trim().slice(0, 100)}`);
-          }
-        });
+        for (const copia of copiasEm(linhas)) {
+          culpados.push(`${relative(".", caminho)}:${copia.linha}  ${copia.trecho}`);
+        }
       }
     }
     expect(culpados, [
@@ -91,6 +121,33 @@ describe("o catálogo de mídia tem uma fonte por linguagem", () => {
       "com o motivo.",
       ...culpados
     ].join("\n")).toEqual([]);
+  });
+
+  it("a varredura enxerga a lista fechada quebrada em linhas", () => {
+    // O instrumento também precisa de teste. A primeira versão exigia os dois
+    // literais na mesma linha, e esta forma passava batido.
+    const emArray = [
+      "const PERMITIDOS = [",
+      "  \"application/pdf\",",
+      "  \"video/mp4\"",
+      "];"
+    ];
+    expect(copiasEm(emArray).map((c) => c.linha)).toEqual([2]);
+
+    const emUniao = [
+      "type Midia =",
+      "  | \"application/pdf\"",
+      "  | \"video/mp4\";"
+    ];
+    expect(copiasEm(emUniao)).toHaveLength(1);
+
+    // Longe demais para ser a mesma lista: não acusa.
+    const distantes = ["\"application/pdf\"", ...Array(JANELA).fill(""), "\"video/mp4\""];
+    expect(copiasEm(distantes)).toEqual([]);
+
+    // Um literal sozinho não é lista fechada — e é justamente o que esta
+    // varredura não alcança, por isso o teste do caminho do aluno existe.
+    expect(copiasEm(["media_type === \"application/pdf\""])).toEqual([]);
   });
 
   it("a varredura enxerga o que deveria enxergar", () => {

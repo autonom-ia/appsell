@@ -1,7 +1,7 @@
 import { Readable } from "node:stream";
 import { NextRequest, NextResponse } from "next/server";
 
-import { assetMediaSpec, type AssetMediaType } from "@/lib/asset-media";
+import { assetMediaSpec, assetSeedKey, type AssetMediaType } from "@/lib/asset-media";
 import { authorizeDomainLearningAsset } from "@/lib/internal-api-client.server";
 import {
   configuredPrivateLearningAssetRoot,
@@ -276,10 +276,8 @@ function maxAssetBytes(mediaType: unknown) {
 }
 
 function seedKey(fileName: unknown, mediaType: unknown) {
-  if (typeof fileName !== "string") return null;
-  if (mediaType === "application/pdf") return fileName.slice(0, -4);
-  if (mediaType === "video/mp4") return fileName.slice(0, -4);
-  return null;
+  // Só o que o catálogo conhece, e a chave espelha `learning_routes.py`.
+  return assetMediaSpec(mediaType) === null ? null : assetSeedKey(fileName);
 }
 
 function validDownloadUrl(value: unknown, expires: unknown) {

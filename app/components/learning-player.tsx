@@ -5,7 +5,14 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 
-import { assetMediaSpec, isDownloadableMedia, type AssetMediaType } from "../../lib/asset-media";
+import {
+  assetMediaSpec,
+  isDownloadableMedia,
+  mediaLabel,
+  PDF_MEDIA_TYPE,
+  VIDEO_MEDIA_TYPE,
+  type AssetMediaType
+} from "../../lib/asset-media";
 import { embedSource } from "@/lib/lesson-embed";
 import { safeLessonLink } from "@/lib/lesson-markup";
 
@@ -330,7 +337,7 @@ export function LearningPlayer({ entitlementId, lessonId }: { entitlementId: str
   }
 
   useEffect(() => {
-    if (!payload || !selected || payload.selected_assets.some((asset) => asset.media_type === "video/mp4") ||
+    if (!payload || !selected || payload.selected_assets.some((asset) => asset.media_type === VIDEO_MEDIA_TYPE) ||
       selectedProgress?.completed || (selectedProgress?.progress_percent ?? 0) > 0) return;
     const start = window.setTimeout(() => void saveProgress(payload, selected.lesson.id, 1), 0);
     return () => window.clearTimeout(start);
@@ -569,7 +576,7 @@ function isLearningAsset(value: unknown, entitlementId: unknown): value is Learn
     !["course_content", "support_material"].includes(String(value.content_role)) ||
     typeof value.download_allowed !== "boolean" ||
     (value.download_href !== null && typeof value.download_href !== "string")) return false;
-  const assetHref = String(value.view_href).match(value.media_type === "application/pdf"
+  const assetHref = String(value.view_href).match(value.media_type === PDF_MEDIA_TYPE
     ? TENANT_PDF_VIEW_HREF
     : TENANT_WHOLE_FILE_HREF);
   if (assetHref === null || assetHref[1] !== entitlementId) return false;
@@ -592,7 +599,7 @@ function selectedAssetMatches(value: unknown, firstAsset: LearningAsset | null) 
 }
 
 function assetEntitlementId(asset: LearningAsset) {
-  return asset.view_href.match(asset.media_type === "application/pdf"
+  return asset.view_href.match(asset.media_type === PDF_MEDIA_TYPE
     ? TENANT_PDF_VIEW_HREF
     : TENANT_WHOLE_FILE_HREF)?.[1];
 }
@@ -604,23 +611,76 @@ function LessonMaterial({ asset, index, initialProgress, busy, onVideoProgress }
   busy: boolean;
   onVideoProgress: (percent: number) => Promise<boolean>;
 }) {
-  const video = asset.media_type === "video/mp4";
+  const renderer = lessonRenderer(asset.media_type);
   const support = asset.content_role === "support_material";
   const titleId = `lesson-material-title-${index}`;
-  return <aside className={`lesson-material ${video ? "lesson-video" : ""}`} aria-labelledby={titleId}>
+  return <aside
+    className={`lesson-material ${renderer === "video" ? "lesson-video" : ""}`}
+    aria-labelledby={titleId}
+  >
     <div>
-      <p className="eyebrow">{video ? "Vídeo da aula" : support ? "Material de apoio" : "Conteúdo do curso"}</p>
+      <p className="eyebrow">
+        {renderer === "video" ? "Vídeo da aula" : support ? "Material de apoio" : "Conteúdo do curso"}
+      </p>
       <h2 id={titleId}>{asset.title}</h2>
-      {video
-        ? <p>Vídeo privado. O progresso é salvo em etapas enquanto você assiste.</p>
-        : asset.download_allowed
-          ? <p>O administrador permitiu o download deste PDF de apoio.</p>
-          : <p>PDF protegido para consulta dentro da área do aluno. Download oficial e impressão não são disponibilizados.</p>}
+      <MaterialNote asset={asset} renderer={renderer}/>
     </div>
-    {video
+    {renderer === "video"
       ? <ProtectedVideo asset={asset} initialProgress={initialProgress} busy={busy} onProgress={onVideoProgress}/>
-      : <ProtectedPdfReader asset={asset}/>}
+      : renderer === "reader"
+        ? <ProtectedPdfReader asset={asset}/>
+        : <DocumentAttachment asset={asset}/>}
   </aside>;
+}
+
+/**
+ * Qual componente sabe apresentar este formato.
+ *
+ * A mesma pergunta que `app_private.player_renders_media` responde no banco: o
+ * leitor desenha PDF, o player desenha MP4, e o resto o aluno baixa. Sem esta
+ * terceira resposta, todo documento caía no leitor de PDF — que pede um `href`
+ * terminado em `/pages` e um manifesto — e o anexo `.md` do vendedor virava
+ * "Não foi possível preparar este PDF".
+ */
+export function lessonRenderer(mediaType: AssetMediaType): "video" | "reader" | "download" {
+  if (mediaType === VIDEO_MEDIA_TYPE) return "video";
+  if (mediaType === PDF_MEDIA_TYPE) return "reader";
+  return "download";
+}
+
+function MaterialNote({ asset, renderer }: {
+  asset: LearningAsset;
+  renderer: "video" | "reader" | "download";
+}) {
+  if (renderer === "video") {
+    return <p>Vídeo privado. O progresso é salvo em etapas enquanto você assiste.</p>;
+  }
+  if (renderer === "download") {
+    return asset.download_href
+      ? <p>Material de apoio para baixar e abrir no seu computador.</p>
+      : <p>Material de apoio. O administrador não liberou o download deste arquivo.</p>;
+  }
+  return asset.download_allowed
+    ? <p>O administrador permitiu o download deste PDF de apoio.</p>
+    : <p>PDF protegido para consulta dentro da área do aluno. Download oficial e impressão não são disponibilizados.</p>;
+}
+
+/**
+ * O documento não é aberto na página: é entregue.
+ *
+ * O `view_href` existe no payload por uniformidade, mas a rota que ele aponta
+ * recusa documento de propósito — quem confere `download_allowed` é a rota de
+ * download. Então aqui não há visualização a oferecer, só o arquivo.
+ */
+function DocumentAttachment({ asset }: { asset: LearningAsset }) {
+  if (!asset.download_href) {
+    return <p className="asset-policy-note" role="note">Download desativado pelo administrador.</p>;
+  }
+  return <p>
+    <a className="secondary-button" href={asset.download_href}>
+      Baixar {mediaLabel(asset.media_type)}
+    </a>
+  </p>;
 }
 
 function ProtectedVideo({ asset, initialProgress, busy, onProgress }: {

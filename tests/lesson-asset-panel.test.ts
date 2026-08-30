@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { boundedAssetFetch, discardPendingAssetUpload, downloadToggleLabel, formatBytes, MAX_VERIFICATION_WAIT_MS, validIntent, verificationPhaseForElapsed, verificationStatusTimeoutForElapsed, type UploadIntentPayload } from "../app/components/lesson-asset-panel";
+import { ASSET_MEDIA_TYPES, SUPPORTED_ASSET_MEDIA, mediaLabel } from "../lib/asset-media";
 
 const valid: UploadIntentPayload = {
   upload_id: "55000000-0000-4000-8000-000000000001",
@@ -120,8 +121,17 @@ describe("o rotulo de download fala do formato certo", () => {
    * num `.md` de 10 KiB. O vendedor lia "PDF" olhando para um markdown.
    */
   it("nomeia o formato do material, nao PDF sempre", () => {
+    // O rotulo vem do catalogo, um por formato — a planilha deixa de ser
+    // chamada de "documento" so porque nao e PDF.
     expect(downloadToggleLabel("text/markdown")).toBe("Permitir que o aluno baixe este documento");
     expect(downloadToggleLabel("application/pdf")).toBe("Permitir que o aluno baixe este PDF");
-    expect(downloadToggleLabel("text/csv")).toBe("Permitir que o aluno baixe este documento");
+    expect(downloadToggleLabel("text/csv")).toBe("Permitir que o aluno baixe esta planilha");
+  });
+
+  it("todo formato do catalogo tem rotulo proprio, e nada cai num generico", () => {
+    for (const mediaType of ASSET_MEDIA_TYPES) {
+      expect(SUPPORTED_ASSET_MEDIA[mediaType].label.length, mediaType).toBeGreaterThan(2);
+    }
+    expect(mediaLabel("application/vnd.ms-word.document.macroEnabled.12")).toBe("arquivo");
   });
 });
