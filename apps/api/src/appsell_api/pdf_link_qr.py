@@ -60,9 +60,16 @@ MAX_RENDER_PIXELS: Final = 2500
 #: Distância vertical máxima, em fração da altura da página, entre o botão e o
 #: QR do mesmo cartão.
 MAX_VERTICAL_DISTANCE: Final = 0.12
-#: Quanto o segundo candidato precisa estar mais longe para o primeiro valer.
-#: Abaixo disto o layout é ambíguo, e ambiguidade não vira palpite.
+#: Quanto o segundo candidato precisa estar mais longe, na largura, para o
+#: primeiro valer. Abaixo disto o layout é ambíguo, e ambiguidade não vira
+#: palpite.
 AMBIGUITY_MARGIN: Final = 0.05
+#: Diferença de altura abaixo da qual dois QR contam como na mesma faixa.
+#:
+#: Pequeno de propósito: com uma folga larga, um QR mais distante na vertical
+#: poderia ganhar por estar mais perto na horizontal, e a altura deixaria de ser
+#: o que decide.
+VERTICAL_EPSILON: Final = 0.01
 RENDER_TIMEOUT_SECONDS: Final = 30
 
 _HTTPS = re.compile(r"^https://[^\s<>\"']{4,2000}$")
@@ -110,46 +117,73 @@ def read_page_qr_targets(
         return []
     with tempfile.TemporaryDirectory(prefix="appsell-qr-") as workspace:
         prefix = Path(workspace) / "page"
-        try:
-            completed = subprocess.run(  # noqa: S603 - argv only; local path, no shell
-                [
-                    _binary("pdftoppm"),
-                    "-png",
-                    "-r",
-                    str(RENDER_DPI),
-                    "-f",
-                    str(page_number),
-                    "-l",
-                    str(page_number),
-                    str(source),
-                    str(prefix),
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=RENDER_TIMEOUT_SECONDS,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as error:
-            _kill_group(error)
-            raise PdfLinkQrUnavailable("page rendering exceeded its budget") from error
-        except OSError as error:
-            raise PdfLinkQrUnavailable("page rendering could not start") from error
-        if completed.returncode != 0:
-            return []
+        _render(source, page_number, prefix, min(RENDER_TIMEOUT_SECONDS, restante))
         rendered = sorted(Path(workspace).glob("page*.png"))
         if not rendered:
+            return []
+        if budget is not None and budget.remaining() <= 0:
+            # A leitura em si é rápida, mas não começa fora do orçamento: o que
+            # sobra do prazo pertence às páginas que ainda faltam.
             return []
         return _decode(rendered[0])
 
 
-def _kill_group(error: subprocess.TimeoutExpired) -> None:
-    """Mata o grupo do processo que estourou, e não só ele."""
-    pid = getattr(getattr(error, "cmd", None), "pid", None) or 0
+def render_arguments(source: Path, page_number: int, prefix: Path) -> list[str]:
+    """O comando da rasterização, separado para poder ser conferido em teste."""
+    return [
+        _binary("pdftoppm"),
+        "-png",
+        "-r",
+        str(RENDER_DPI),
+        # A caixa cujas coordenadas a anotação usa. Sem isto, um `CropBox`
+        # diferente do `MediaBox` desloca tudo e o botão casa com o QR errado.
+        "-cropbox",
+        # Teto do lado maior: sem ele, uma página de dimensão absurda vira uma
+        # imagem absurda antes de qualquer leitura.
+        "-scale-to",
+        str(MAX_RENDER_PIXELS),
+        "-f",
+        str(page_number),
+        "-l",
+        str(page_number),
+        str(source),
+        str(prefix),
+    ]
+
+
+def _render(source: Path, page_number: int, prefix: Path, timeout: float) -> None:
+    """Rasteriza uma página, e no estouro mata o grupo inteiro.
+
+    `subprocess.run` mata só o filho direto. O `pdftoppm` pode ter deixado
+    descendentes, e eles seguiriam consumindo a máquina depois de já ninguém
+    estar esperando pelo resultado.
+    """
     try:
-        if pid:
-            os.killpg(os.getpgid(pid), signal.SIGKILL)
+        processo = subprocess.Popen(  # noqa: S603 - argv only; local path, no shell
+            render_arguments(source, page_number, prefix),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as error:
+        raise PdfLinkQrUnavailable("page rendering could not start") from error
+    try:
+        processo.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        _kill_group(processo)
+        raise PdfLinkQrUnavailable("page rendering exceeded its budget") from error
+
+
+def _kill_group(processo: subprocess.Popen[bytes]) -> None:
+    try:
+        os.killpg(os.getpgid(processo.pid), signal.SIGKILL)
     except (ProcessLookupError, PermissionError, OSError):
-        return
+        processo.kill()
+    finally:
+        try:
+            processo.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            return
 
 
 def _decode(image_path: Path) -> list[QrTarget]:
@@ -195,51 +229,49 @@ def _center(posicao: object, tamanho: int, eixo: str) -> float | None:
     return min(max(sum(validos) / len(validos) / tamanho, 0.0), 1.0)
 
 
-def target_for_rectangle(
-    alvos: list[QrTarget], rect_center: float, rect_center_x: float
-) -> str | None:
-    """O endereço do QR do mesmo cartão que este botão.
+def assign_targets(
+    alvos: list[QrTarget], retangulos: list[tuple[float, float]]
+) -> list[str | None]:
+    """Distribui os QR entre os botões da página, um para cada.
 
-    Botão e QR são desenhados lado a lado, então quem decide é a **altura**: o
-    cartão ocupa uma faixa da página, e o QR está na mesma faixa que o botão.
+    Um QR pertence a um cartão. Deixar dois botões receberem o mesmo endereço
+    manda um dos dois alunos para o vídeo errado — e errado em silêncio, que é
+    pior do que o botão não abrir.
 
-    A largura entra só para desempatar. Somá-la à altura não funciona — o botão
-    fica à esquerda e o QR à direita, e essa distância horizontal, igual para
-    todos os candidatos, abafaria a diferença vertical que de fato distingue os
-    cartões.
-
-    Ambiguidade não vira palpite. Se dois QR estão à mesma altura e à mesma
-    distância lateral, ninguém ganha: mandar o aluno para o vídeo errado é pior
-    do que o botão não abrir.
+    A altura decide, porque o cartão ocupa uma faixa da página e o QR está na
+    mesma faixa do botão. A largura só desempata quando as alturas empatam, que
+    é o caso de layout em colunas: somar os dois eixos não funciona, porque a
+    distância horizontal entre botão e QR é a mesma para todos os candidatos e
+    abafaria a diferença vertical que de fato distingue os cartões.
     """
-    perto = [alvo for alvo in alvos if abs(alvo.center - rect_center) <= MAX_VERTICAL_DISTANCE]
+    disponiveis = list(alvos)
+    resultado: list[str | None] = []
+    for centro_y, centro_x in retangulos:
+        escolhido = _pick(disponiveis, centro_y, centro_x)
+        resultado.append(escolhido.url if escolhido else None)
+        if escolhido is not None:
+            disponiveis.remove(escolhido)
+    return resultado
+
+
+def _pick(alvos: list[QrTarget], centro_y: float, centro_x: float) -> QrTarget | None:
+    perto = [alvo for alvo in alvos if abs(alvo.center - centro_y) <= MAX_VERTICAL_DISTANCE]
     if not perto:
         return None
-    por_altura = sorted(perto, key=lambda alvo: abs(alvo.center - rect_center))
+    por_altura = sorted(perto, key=lambda alvo: abs(alvo.center - centro_y))
     if len(por_altura) == 1:
-        return por_altura[0].url
+        return por_altura[0]
 
-    primeiro = abs(por_altura[0].center - rect_center)
-    segundo = abs(por_altura[1].center - rect_center)
-    if segundo - primeiro >= AMBIGUITY_MARGIN:
-        return por_altura[0].url
+    primeiro = abs(por_altura[0].center - centro_y)
+    if abs(por_altura[1].center - centro_y) - primeiro >= VERTICAL_EPSILON:
+        return por_altura[0]
 
-    # Mesma faixa vertical: layout em colunas. Aí a largura decide, e precisa
-    # decidir com folga.
+    # Mesma faixa vertical: layout em colunas, e aí a largura decide — com folga.
     empatados = [
         alvo
         for alvo in por_altura
-        if abs(abs(alvo.center - rect_center) - primeiro) < AMBIGUITY_MARGIN
+        if abs(abs(alvo.center - centro_y) - primeiro) < VERTICAL_EPSILON
     ]
-    por_lado = sorted(empatados, key=lambda alvo: abs(alvo.center_x - rect_center_x))
-    if len(por_lado) > 1:
-        folga = abs(por_lado[1].center_x - rect_center_x) - abs(
-            por_lado[0].center_x - rect_center_x
-        )
-        if folga < AMBIGUITY_MARGIN:
-            return None
-    return por_lado[0].url
-
-
-def _distancia(alvo: QrTarget, centro_y: float, centro_x: float) -> float:
-    return float(((alvo.center - centro_y) ** 2 + (alvo.center_x - centro_x) ** 2) ** 0.5)
+    por_lado = sorted(empatados, key=lambda alvo: abs(alvo.center_x - centro_x))
+    folga = abs(por_lado[1].center_x - centro_x) - abs(por_lado[0].center_x - centro_x)
+    return por_lado[0] if folga >= AMBIGUITY_MARGIN else None

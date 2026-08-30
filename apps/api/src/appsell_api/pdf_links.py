@@ -17,8 +17,8 @@ from .pdf_link_qr import (
     PdfLinkQrUnavailable,
     QrBudget,
     QrTarget,
+    assign_targets,
     read_page_qr_targets,
-    target_for_rectangle,
 )
 from .pdf_link_url import safe_plain_https_url as _safe_plain_https_url
 from .pdf_verifier import MAX_PDF_BYTES, _validate_pdf_structure
@@ -192,6 +192,7 @@ def _document_links(document: pikepdf.Pdf, path: Path) -> list[dict[str, Any]]:
             continue
         if not isinstance(annotations, pikepdf.Array):
             raise PdfLinksRejected("PDF page annotations are invalid")
+        pendentes: list[tuple[float, float, float, float]] = []
         for annotation in annotations:
             if not isinstance(annotation, pikepdf.Dictionary):
                 raise PdfLinksRejected("PDF link annotation is invalid")
@@ -216,13 +217,26 @@ def _document_links(document: pikepdf.Pdf, path: Path) -> list[dict[str, Any]]:
                 # O botão foi desenhado e o destino não foi gravado. Se há um QR
                 # ao lado, o endereço existe — está em pixels, e é o mesmo que
                 # quem lê no papel usa. Ler de volta é o que faz o clique na
-                # tela valer tanto quanto a câmera do celular.
-                target_url = _qr_url_for(path, page_number, rect, qr_cache, qr_budget)
-            if target_url is None:
+                # tela valer tanto quanto a câmera do celular. A atribuição é
+                # feita depois, de uma vez, para que um QR sirva a um botão só.
+                pendentes.append(rect)
                 continue
-            caminho = urlsplit(target_url).path.lower()
-            kind = "video" if caminho.endswith(VIDEO_EXTENSIONS) else "external"
-            candidates.append(_Candidate(page_number, kind, target_url, *rect))
+            candidates.append(_Candidate(page_number, _kind_of(target_url), target_url, *rect))
+
+        for rect, endereco in zip(
+            pendentes,
+            _qr_urls_for_page(
+                path,
+                page_number,
+                [((r[1] + r[3] / 2.0) / 100.0, (r[0] + r[2] / 2.0) / 100.0) for r in pendentes],
+                qr_cache,
+                qr_budget,
+            ),
+            strict=True,
+        ):
+            if endereco is None:
+                continue
+            candidates.append(_Candidate(page_number, _kind_of(endereco), endereco, *rect))
 
     links: list[dict[str, Any]] = []
     grouped: dict[tuple[int, str, str | int], list[_Candidate]] = defaultdict(list)
@@ -413,27 +427,29 @@ def _contains(outer: _Candidate, inner: _Candidate) -> bool:
     )
 
 
-def _qr_url_for(
+def _kind_of(target_url: str) -> str:
+    caminho = urlsplit(target_url).path.lower()
+    return "video" if caminho.endswith(VIDEO_EXTENSIONS) else "external"
+
+
+def _qr_urls_for_page(
     path: Path,
     page_number: int,
-    rect: tuple[float, float, float, float],
+    retangulos: list[tuple[float, float]],
     cache: dict[int, list[QrTarget]],
     budget: QrBudget,
-) -> str | None:
-    """O endereço do QR do mesmo cartão que este botão sem destino.
+) -> list[str | None]:
+    """Os endereços dos QR desta página, um para cada botão sem destino.
 
-    A página só é rasterizada quando alguma anotação chega aqui — um PDF bem
-    gerado não paga nada por isto.
+    A página só é rasterizada quando algum botão chega aqui — um PDF bem gerado
+    não paga nada por isto.
     """
     if page_number not in cache:
         try:
             cache[page_number] = read_page_qr_targets(path, page_number, budget)
         except PdfLinkQrUnavailable:
             cache[page_number] = []
-    # `rect` é (left, top, width, height) em porcentagem da página.
-    centro_y = (rect[1] + rect[3] / 2.0) / 100.0
-    centro_x = (rect[0] + rect[2] / 2.0) / 100.0
-    return target_for_rectangle(cache[page_number], centro_y, centro_x)
+    return assign_targets(cache[page_number], retangulos)
 
 
 def _safe_https_url(value: object) -> str | None:
@@ -455,7 +471,11 @@ def _safe_https_url(value: object) -> str | None:
         or port not in {None, 443}
     ):
         return None
-    return urlunsplit(("https", parsed.netloc.lower(), parsed.path, parsed.query, parsed.fragment))
+    # Termina no mesmo validador do manifesto: um endereço que passasse
+    # aqui e fosse recusado depois derrubaria os links do PDF inteiro.
+    return _safe_plain_https_url(
+        urlunsplit(("https", parsed.netloc.lower(), parsed.path, parsed.query, parsed.fragment))
+    )
 
 
 def _valid_link(value: object, page_count: int) -> bool:

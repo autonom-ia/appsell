@@ -9,11 +9,15 @@ import zxingcpp
 from PIL import Image
 
 from appsell_api.pdf_link_qr import (
+    MAX_RENDER_PIXELS,
     MAX_VERTICAL_DISTANCE,
+    QrBudget,
     QrTarget,
     _center,
     _decode,
-    target_for_rectangle,
+    assign_targets,
+    read_page_qr_targets,
+    render_arguments,
 )
 
 ALVO = "https://midia.example.test/aula.mov"
@@ -22,6 +26,7 @@ ALVO = "https://midia.example.test/aula.mov"
 class _Canto:
     def __init__(self, y: float) -> None:
         self.y = y
+        self.x = 0.0
 
 
 class _Posicao:
@@ -36,6 +41,12 @@ class TestCenter:
     def test_reads_the_middle_of_the_code(self) -> None:
         assert _center(_Posicao(100, 300), 1000, "y") == pytest.approx(0.2)
 
+    def test_reads_the_horizontal_middle_too(self) -> None:
+        posicao = _Posicao(0, 0)
+        for canto in ("top_left", "top_right", "bottom_right", "bottom_left"):
+            getattr(posicao, canto).x = 400.0
+        assert _center(posicao, 800, "x") == pytest.approx(0.5)
+
     def test_a_position_without_corners_is_ignored(self) -> None:
         assert _center(None, 1000, "y") is None
         assert _center(_Posicao(float("nan"), float("nan")), 1000, "y") is None
@@ -45,13 +56,14 @@ class TestMatching:
     """Qual QR pertence a qual botão."""
 
     def test_the_nearest_code_on_the_page_wins(self) -> None:
-        # Página com dois cartões: o botão de cima pega o QR de cima.
         alvos = [
             QrTarget("https://a.test/um.mov", 0.30, 0.8),
             QrTarget("https://a.test/dois.mov", 0.60, 0.8),
         ]
-        assert target_for_rectangle(alvos, 0.31, 0.2) == "https://a.test/um.mov"
-        assert target_for_rectangle(alvos, 0.58, 0.2) == "https://a.test/dois.mov"
+        assert assign_targets(alvos, [(0.31, 0.2), (0.58, 0.2)]) == [
+            "https://a.test/um.mov",
+            "https://a.test/dois.mov",
+        ]
 
     def test_two_columns_on_the_same_row_are_told_apart(self) -> None:
         # Dois cartões lado a lado, na mesma altura. Só a vertical daria o mesmo
@@ -60,25 +72,69 @@ class TestMatching:
             QrTarget("https://a.test/esquerda.mov", 0.40, 0.30),
             QrTarget("https://a.test/direita.mov", 0.40, 0.80),
         ]
-        assert target_for_rectangle(alvos, 0.40, 0.10) == "https://a.test/esquerda.mov"
-        assert target_for_rectangle(alvos, 0.40, 0.60) == "https://a.test/direita.mov"
+        assert assign_targets(alvos, [(0.40, 0.10), (0.40, 0.60)]) == [
+            "https://a.test/esquerda.mov",
+            "https://a.test/direita.mov",
+        ]
+
+    def test_one_code_is_never_given_to_two_buttons(self) -> None:
+        # Dois botões, um QR só decodificado. O segundo fica sem destino: dar o
+        # mesmo endereço aos dois mandaria um dos alunos para o vídeo errado, e
+        # errado em silêncio.
+        alvos = [QrTarget(ALVO, 0.40, 0.85)]
+        assert assign_targets(alvos, [(0.40, 0.2), (0.42, 0.2)]) == [ALVO, None]
+
+    def test_height_decides_even_when_width_disagrees(self) -> None:
+        # Um QR 4% mais distante na vertical não pode ganhar por estar mais
+        # perto na horizontal: a altura é o que separa os cartões.
+        alvos = [
+            QrTarget("https://a.test/certo.mov", 0.40, 0.85),
+            QrTarget("https://a.test/errado.mov", 0.44, 0.20),
+        ]
+        assert assign_targets(alvos, [(0.40, 0.20)]) == ["https://a.test/certo.mov"]
 
     def test_an_ambiguous_layout_gets_no_target(self) -> None:
-        # Dois candidatos praticamente à mesma distância: ninguém ganha.
         alvos = [
-            QrTarget("https://a.test/um.mov", 0.40, 0.45),
-            QrTarget("https://a.test/dois.mov", 0.40, 0.55),
+            QrTarget("https://a.test/um.mov", 0.40, 0.48),
+            QrTarget("https://a.test/dois.mov", 0.40, 0.52),
         ]
-        assert target_for_rectangle(alvos, 0.40, 0.50) is None
+        assert assign_targets(alvos, [(0.40, 0.50)]) == [None]
 
     def test_a_distant_code_is_not_borrowed(self) -> None:
-        # Sem QR perto o bastante, o botão continua sem destino. Emprestar o de
-        # outro cartão mandaria o aluno para o vídeo errado — pior que não abrir.
         alvos = [QrTarget(ALVO, 0.10, 0.5)]
-        assert target_for_rectangle(alvos, 0.10 + MAX_VERTICAL_DISTANCE + 0.01, 0.5) is None
+        assert assign_targets(alvos, [(0.10 + MAX_VERTICAL_DISTANCE + 0.01, 0.5)]) == [None]
 
     def test_a_page_without_codes_gives_nothing(self) -> None:
-        assert target_for_rectangle([], 0.5, 0.5) is None
+        assert assign_targets([], [(0.5, 0.5)]) == [None]
+
+
+class TestRenderArguments:
+    """O comando da rasterização carrega os limites que dizemos ter."""
+
+    def test_limits_the_image_and_uses_the_displayed_box(self, tmp_path: Path) -> None:
+        argv = render_arguments(tmp_path / "a.pdf", 3, tmp_path / "p")
+        assert "-scale-to" in argv and str(MAX_RENDER_PIXELS) in argv
+        # Sem `-cropbox`, um `CropBox` diferente do `MediaBox` desloca tudo e o
+        # botão casa com o QR errado.
+        assert "-cropbox" in argv
+        assert argv[argv.index("-f") + 1] == "3"
+        assert argv[argv.index("-l") + 1] == "3"
+
+
+class TestBudget:
+    """O orçamento é do documento, e não de cada página."""
+
+    def test_an_exhausted_budget_renders_nothing(self, tmp_path: Path) -> None:
+        # Sem isto, um PDF com um botão sem destino por página dispararia uma
+        # rasterização por página e seguraria o serviço por dezenas de minutos.
+        pdf = tmp_path / "a.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+        assert read_page_qr_targets(pdf, 1, QrBudget(0.0)) == []
+
+    def test_a_page_outside_the_ceiling_is_not_rendered(self, tmp_path: Path) -> None:
+        pdf = tmp_path / "a.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+        assert read_page_qr_targets(pdf, 100_000, QrBudget(30.0)) == []
 
 
 def _pagina_com_qr(caminho: Path, texto: str, topo_fracao: float) -> None:
