@@ -407,8 +407,29 @@ def _sandbox_client() -> tuple[httpx.BaseTransport | None, str]:
     raise PdfLinkVideoUnavailable("isolated media service is not configured")
 
 
+#: Quantas vezes insistir quando o serviço isolado não atende.
+#:
+#: Ele se recicla depois de cada vídeo — é assim que um arquivo ruim não
+#: contamina o próximo. Enquanto reinicia, quem chega recebe conexão recusada.
+#: Isso não é falha: é o serviço fazendo o que deve, e quem pede só precisa
+#: esperar. Sem isto, preparar vários vídeos seguidos falhava um sim, um não.
+SANDBOX_ATTEMPTS: Final = 4
+SANDBOX_RETRY_SECONDS: Final = 3.0
+
+
 def remux_in_sandbox(source: Path, byte_size: int, sha256_hex: str, destination: Path) -> bool:
     """Manda o arquivo ao serviço isolado e grava o MP4 que ele devolve."""
+    for tentativa in range(SANDBOX_ATTEMPTS):
+        try:
+            return _remux_once(source, byte_size, sha256_hex, destination)
+        except PdfLinkVideoUnavailable:
+            if tentativa == SANDBOX_ATTEMPTS - 1:
+                raise
+            time.sleep(SANDBOX_RETRY_SECONDS)
+    raise PdfLinkVideoUnavailable("isolated media service did not answer")
+
+
+def _remux_once(source: Path, byte_size: int, sha256_hex: str, destination: Path) -> bool:
     transport, base_url = _sandbox_client()
     try:
         with (

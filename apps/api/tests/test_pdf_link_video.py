@@ -14,6 +14,7 @@ import pytest
 
 from appsell_api import pdf_link_video
 from appsell_api.pdf_link_video import (
+    SANDBOX_ATTEMPTS,
     PdfLinkVideoRejected,
     PreparationRegistry,
     derivative_key,
@@ -623,3 +624,55 @@ class TestOriginValidator:
         )
         with pytest.raises(pdf_link_video.PdfLinkVideoUnavailable):
             await origin_validator(f"{ALLOWED}/aula.mov")
+
+
+class TestSandboxRecycling:
+    """O serviço isolado reiniciando não é falha — é ele fazendo o que deve."""
+
+    @staticmethod
+    def _sandbox(monkeypatch: pytest.MonkeyPatch, falhas: int) -> dict[str, int]:
+        contagem = {"tentativas": 0}
+
+        def _uma_vez(*_a: object, **_k: object) -> bool:
+            contagem["tentativas"] += 1
+            if contagem["tentativas"] <= falhas:
+                raise pdf_link_video.PdfLinkVideoUnavailable("conexão recusada")
+            return False
+
+        monkeypatch.setattr("appsell_api.pdf_link_video._remux_once", _uma_vez)
+        monkeypatch.setattr("appsell_api.pdf_link_video.time.sleep", lambda _s: None)
+        return contagem
+
+    def test_insists_while_the_service_comes_back(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Medido em produção: preparar vários vídeos seguidos falhava um sim, um
+        # não, porque o serviço se recicla depois de cada um.
+        contagem = self._sandbox(monkeypatch, falhas=2)
+        assert pdf_link_video.remux_in_sandbox(tmp_path / "s", 1, "a" * 64, tmp_path / "d") is False
+        assert contagem["tentativas"] == 3
+
+    def test_gives_up_when_the_service_never_comes_back(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Insistir sem fim seguraria o único slot de preparo para sempre.
+        contagem = self._sandbox(monkeypatch, falhas=99)
+        with pytest.raises(pdf_link_video.PdfLinkVideoUnavailable):
+            pdf_link_video.remux_in_sandbox(tmp_path / "s", 1, "a" * 64, tmp_path / "d")
+        assert contagem["tentativas"] == SANDBOX_ATTEMPTS
+
+    def test_a_refusal_is_not_retried(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # O serviço recusar o arquivo é resposta, não ausência: repetir só
+        # gastaria a máquina para ouvir o mesmo não.
+        contagem = {"tentativas": 0}
+
+        def _recusa(*_a: object, **_k: object) -> bool:
+            contagem["tentativas"] += 1
+            raise pdf_link_video.PdfLinkVideoRejected("arquivo inválido")
+
+        monkeypatch.setattr("appsell_api.pdf_link_video._remux_once", _recusa)
+        with pytest.raises(pdf_link_video.PdfLinkVideoRejected):
+            pdf_link_video.remux_in_sandbox(tmp_path / "s", 1, "a" * 64, tmp_path / "d")
+        assert contagem["tentativas"] == 1
