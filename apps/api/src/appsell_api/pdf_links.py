@@ -214,7 +214,15 @@ def _document_links(document: pikepdf.Pdf, path: Path) -> list[dict[str, Any]]:
                 continue
             conteudo = annotation.get("/Contents")
             target_url = _safe_https_url(conteudo)
-            if target_url is None and conteudo is not None:
+            # `/Dest` e `/A` presentes mas nao resolvidos chegam aqui como
+            # destino ausente. Sao destino recusado, e trocar um destino
+            # recusado pelo QR ao lado apaga o motivo de a recusa existir.
+            tem_destino = (
+                conteudo is not None
+                or annotation.get("/Dest") is not None
+                or annotation.get("/A") is not None
+            )
+            if target_url is None and tem_destino:
                 # A anotação tem destino e ele foi recusado. Substituí-lo pelo
                 # QR ao lado entregaria ao aluno um endereço diferente do que o
                 # PDF manda — e o motivo de a recusa existir some junto.
