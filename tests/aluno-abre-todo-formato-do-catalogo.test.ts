@@ -194,7 +194,10 @@ describe("o BFF e o player concordam sobre o catálogo inteiro", () => {
   const MODULE_ID = "5b2f4d61-2b7f-4d6b-9c45-7a1e3c9d4b22";
   const COURSE_ID = "7c3a5e72-3c8a-4e7c-ad56-8b2f4dae5c33";
 
-  function dominioPara(assets: readonly { mediaType: AssetMediaType; suporte: boolean }[]) {
+  function dominioPara(
+    assets: readonly { mediaType: AssetMediaType; suporte: boolean }[],
+    { legadoVazio = false }: { legadoVazio?: boolean } = {}
+  ) {
     const selecionados = assets.map((asset, indice) => ({
       id: `3b42248${indice}-ffa7-4d2f-ade9-0d4402c2625a`,
       title: "Material",
@@ -210,7 +213,11 @@ describe("o BFF e o player concordam sobre o catálogo inteiro", () => {
         // Sem o `schema_version`, o BFF entrava no ramo de compatibilidade e o
         // teste provava um caminho que a produção não percorre.
         schema_version: 3,
-        selected_asset: selecionados[0]
+        // `legadoVazio` é a forma que a produção devolve para material de
+        // vendedor: `read_learning_player_v3` monta `selected_assets` de
+        // `publication_asset`, e herda da v2 um `selected_asset` lido de
+        // `learning_asset` — tabela legada, sem linha nenhuma fora da demo.
+        selected_asset: selecionados[0] && !legadoVazio
           ? {
               id: selecionados[0].id,
               title: selecionados[0].title,
@@ -257,8 +264,15 @@ describe("o BFF e o player concordam sobre o catálogo inteiro", () => {
     };
   }
 
-  async function playerDoBff(assets: readonly { mediaType: AssetMediaType; suporte: boolean }[]) {
-    const response = learningPlayerResponse(dominioPara(assets), "session-1", { subject: "aluno" });
+  async function playerDoBff(
+    assets: readonly { mediaType: AssetMediaType; suporte: boolean }[],
+    opcoes: { legadoVazio?: boolean } = {}
+  ) {
+    const response = learningPlayerResponse(
+      dominioPara(assets, opcoes),
+      "session-1",
+      { subject: "aluno" }
+    );
     expect(response.status, "o BFF recusou o payload antes de o navegador ver").toBe(200);
     const body = await response.json();
     return { ...body.player, csrf: body.csrf };
@@ -275,6 +289,34 @@ describe("o BFF e o player concordam sobre o catálogo inteiro", () => {
   it.each(ASSET_MEDIA_TYPES)("atravessa %s do BFF até o validador do player", async (mediaType) => {
     const suporte = SUPPORTED_ASSET_MEDIA[mediaType].supportMaterialOnly;
     const player = await playerDoBff([{ mediaType, suporte }]);
+    expect(isLearningPlayerPayload(player)).toBe(true);
+  });
+
+  it("a aula do vendedor abre com o `selected_asset` legado vazio — o caso real", async () => {
+    // O que o banco de produção devolve de fato: 6 materiais em
+    // `publication_asset` e nenhuma linha em `learning_asset`. O BFF exigia que
+    // os dois campos coincidissem e recusava a aula inteira com 503, apesar de
+    // descartar o campo legado logo em seguida.
+    const player = await playerDoBff([
+      { mediaType: "application/pdf", suporte: false },
+      { mediaType: "text/markdown", suporte: true },
+      { mediaType: "text/markdown", suporte: true },
+      { mediaType: "text/markdown", suporte: true },
+      { mediaType: "text/plain", suporte: true },
+      { mediaType: "text/markdown", suporte: true }
+    ], { legadoVazio: true });
+    expect(player.selected_assets).toHaveLength(6);
+    // O BFF reescreve o campo legado a partir da lista, então o navegador
+    // recebe os dois coerentes mesmo quando o domínio mandou `null`.
+    expect(player.selected_asset.media_type).toBe("application/pdf");
+    expect(isLearningPlayerPayload(player)).toBe(true);
+  });
+
+  it("um material só, com o legado vazio, também abre", async () => {
+    const player = await playerDoBff(
+      [{ mediaType: "text/markdown", suporte: true }],
+      { legadoVazio: true }
+    );
     expect(isLearningPlayerPayload(player)).toBe(true);
   });
 
