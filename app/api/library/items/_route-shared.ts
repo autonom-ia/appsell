@@ -375,7 +375,7 @@ function isLearningPlayerEnvelope(value: unknown): value is LearningPlayerEnvelo
     : playerKeys)) return false;
   if (hasPolicyContract && player.schema_version !== 3) return false;
   if (!isSelectedAsset(player.selected_asset)) return false;
-  if (hasMultiAssetContract && !isSelectedAssets(player.selected_assets, player.selected_asset)) {
+  if (hasMultiAssetContract && !isSelectedAssets(player.selected_assets)) {
     return false;
   }
   return isUuidRecord(player.seller, ["id"]) &&
@@ -448,26 +448,34 @@ function isSelectedAsset(value: unknown): value is DomainSelectedAsset | null {
   );
 }
 
-function isSelectedAssets(
-  value: unknown,
-  legacySelection: DomainSelectedAsset | null
-): value is DomainSelectedAsset[] {
+/**
+ * A lista do contrato v3, validada por si só.
+ *
+ * A versão anterior exigia que `selected_assets[0]` coincidisse com o
+ * `selected_asset` do domínio, e recusava o payload inteiro quando não
+ * coincidisse. Essa invariante é falsa: `read_learning_player_v3` monta os dois
+ * campos de **tabelas diferentes** — `selected_assets` de `publication_asset`,
+ * e o `selected_asset` que ele herda da v2 de `learning_asset`, que é legada e
+ * só tem linhas das aulas de demonstração.
+ *
+ * Material que o vendedor sobe vai para `lesson_asset_draft` e depois
+ * `publication_asset`, e nunca encosta em `learning_asset`. Resultado: em toda
+ * aula real com pelo menos um material, `selected_asset` vinha `null` enquanto
+ * `selected_assets` vinha cheio, e o aluno recebia 503 na aula inteira.
+ *
+ * A exigência também não protegia nada: `learningPlayerResponse` **descarta** o
+ * `selected_asset` do domínio e o reescreve a partir desta lista. O payload era
+ * reprovado por causa de um campo que a própria função joga fora.
+ */
+function isSelectedAssets(value: unknown): value is DomainSelectedAsset[] {
   if (!Array.isArray(value) || value.length > 100 || !value.every(isSelectedAssetRecord)) {
     return false;
   }
-  if (new Set(value.map((asset) => asset.id)).size !== value.length) return false;
-  const first = value[0] ?? null;
-  return first === null
-    ? legacySelection === null
-    : legacySelection !== null && selectedAssetsEqual(first, legacySelection);
+  return new Set(value.map((asset) => asset.id)).size === value.length;
 }
 
 function isSelectedAssetRecord(value: unknown): value is DomainSelectedAsset {
   return isSelectedAsset(value) && value !== null;
-}
-
-function selectedAssetsEqual(left: DomainSelectedAsset, right: DomainSelectedAsset) {
-  return left.id === right.id && left.title === right.title && left.media_type === right.media_type;
 }
 
 function learningAssetLinks(entitlementId: string, asset: DomainSelectedAsset) {
