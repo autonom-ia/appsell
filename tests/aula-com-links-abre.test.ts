@@ -24,6 +24,8 @@ vi.mock("server-only", () => ({}));
 
 import { learningPlayerResponse } from "../app/api/library/items/_route-shared";
 import { isLearningPlayerPayload } from "../app/components/learning-player";
+import { embedSource } from "../lib/lesson-embed";
+import { safeLessonLink } from "../lib/lesson-markup";
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/player-v3-aula-com-links.json", import.meta.url));
 
@@ -64,7 +66,16 @@ describe("a aula com links do vendedor abre", () => {
     const materiais = body.player.course.modules[0].lessons[0].materials;
     expect(materiais).toHaveLength(2);
     expect(materiais[0].kind).toBe("external");
-    expect(materiais[1].video_id).toBe("video-de-exemplo");
+    expect(materiais[1].video_id).toBe("Exemplo_1-A");
+  });
+
+  it("os dois links são de fato apresentáveis, não só válidos", () => {
+    // Sem isto, a fixture podia carregar um `video_id` que o player descarta na
+    // hora de montar o `src` — o teste passaria e o aluno não veria o vídeo.
+    const player = payloadDeProducao();
+    const [externo, embutido] = player.course.modules[0].lessons[0].materials;
+    expect(safeLessonLink(externo.url)).not.toBeNull();
+    expect(embedSource(embutido.provider, embutido.video_id)).toContain(embutido.video_id);
   });
 
   it("uma aula sem links continua válida", async () => {
@@ -94,6 +105,20 @@ describe("a aula com links do vendedor abre", () => {
       player.course.modules[0].lessons[0].materials = [material];
       expect(peloBff(player).status, nome).toBe(503);
     }
+  });
+
+  it("uma aula com muitos links continua válida", async () => {
+    // Nada no domínio limita a quantidade: nem a tabela, nem
+    // `create_lesson_material_link`, nem a tela. Um teto inventado no BFF
+    // recusaria uma aula que o produto deixa criar.
+    const player = payloadDeProducao();
+    const [modelo] = player.course.modules[0].lessons[0].materials;
+    player.course.modules[0].lessons[0].materials = Array.from({ length: 250 }, (_, indice) => ({
+      ...modelo,
+      id: `493e79d2-06bd-40f2-8c09-${String(indice).padStart(12, "0")}`,
+      position: indice + 1
+    }));
+    expect(peloBff(player).status).toBe(200);
   });
 
   it("recusa dois links com o mesmo id", async () => {

@@ -526,7 +526,12 @@ function isLesson(value: unknown) {
     value.kind === "text" && typeof value.content === "string" &&
     value.status === "active" && isPosition(value.position) &&
     (!comMateriais || (
-      Array.isArray(value.materials) && value.materials.length <= 100 &&
+      Array.isArray(value.materials) &&
+      // Sem teto de quantidade: nem a tabela, nem `create_lesson_material_link`,
+      // nem a tela do vendedor limitam quantos links uma aula tem, e a projecao
+      // em `0036` agrega todos sem `limit`. Um numero inventado aqui recusaria
+      // uma aula que o produto deixa criar — que e exatamente o defeito que
+      // esta correcao existe para fechar.
       new Set(value.materials.map((material) => isRecord(material) ? material.id : null)).size
         === value.materials.length &&
       value.materials.every(isLessonMaterial)
