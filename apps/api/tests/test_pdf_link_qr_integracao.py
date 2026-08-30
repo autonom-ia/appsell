@@ -149,3 +149,69 @@ class TestWorkerTerminavel:
             read_qr_targets(pdf, [1], QrBudget(0.5))
         # Sessão própria é o que permite matar o grupo, e não só o filho direto.
         assert visto["start_new_session"] is True
+
+
+class TestLeituraEmLote:
+    """Todas as páginas do documento numa leitura só.
+
+    Um processo por página gastava o tempo de partida do Python vezes o número
+    de páginas — no PDF do vendedor, com vinte e um botões sem destino, isso
+    sozinho consumia o orçamento e o documento voltava sem nenhum link novo.
+    Foi o defeito que só apareceu em produção.
+    """
+
+    def test_two_pages_are_read_in_a_single_process(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        pdf = tmp_path / "duas.pdf"
+        _pdf_de_duas_paginas(pdf, [(ALVO, 400), (OUTRO, 400)])
+        _com_botoes_em(pdf, {0: [(300, 360)], 1: [(300, 360)]})
+
+        chamadas: list[list[str]] = []
+        real = subprocess.Popen
+
+        def _contando(argv: list[str], **kwargs: object) -> subprocess.Popen[bytes]:
+            chamadas.append(list(argv))
+            processo: subprocess.Popen[bytes] = real(argv, **kwargs)  # type: ignore[arg-type,call-overload]
+            return processo
+
+        monkeypatch.setattr("appsell_api.pdf_link_qr.subprocess.Popen", _contando)
+        links = _manifesto(pdf)
+
+        # Um processo para o documento inteiro, com as duas páginas no argv.
+        assert len(chamadas) == 1
+        assert chamadas[0][-1] == "1,2"
+        # E cada página com o seu próprio endereço, não o da outra.
+        por_pagina = {int(link["page"]): str(link["target_url"]) for link in links}
+        assert por_pagina == {1: ALVO, 2: OUTRO}
+
+
+def _pdf_de_duas_paginas(caminho: Path, enderecos: list[tuple[str, int]]) -> None:
+    paginas = []
+    for endereco, topo in enderecos:
+        pagina = Image.new("RGB", (800, 1000), "white")
+        codigo = zxingcpp.write_barcode(
+            zxingcpp.BarcodeFormat.QRCode, endereco, width=160, height=160
+        )
+        pagina.paste(Image.fromarray(codigo).convert("RGB"), (600, topo))
+        paginas.append(pagina)
+    paginas[0].save(caminho, "PDF", resolution=100.0, save_all=True, append_images=paginas[1:])
+
+
+def _com_botoes_em(caminho: Path, por_pagina: dict[int, list[tuple[float, float]]]) -> None:
+    with pikepdf.open(caminho, allow_overwriting_input=True) as pdf:
+        for indice, retangulos in por_pagina.items():
+            anotacoes = [
+                pdf.make_indirect(
+                    pikepdf.Dictionary(
+                        {
+                            "/Type": pikepdf.Name("/Annot"),
+                            "/Subtype": pikepdf.Name("/Link"),
+                            "/Rect": pikepdf.Array([50, baixo, 300, cima]),
+                        }
+                    )
+                )
+                for baixo, cima in retangulos
+            ]
+            pdf.pages[indice].Annots = pdf.make_indirect(pikepdf.Array(anotacoes))
+        pdf.save()
