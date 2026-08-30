@@ -34,14 +34,34 @@ describe("a falha na área do aluno deixa rastro", () => {
     return linhas;
   }
 
-  it("registra o status recebido da API quando o erro não é mapeado", async () => {
+  it("registra o status e o código quando o código é conhecido", async () => {
     const linhas = capturar();
-    const resposta = learningError(new DomainApiError(500, "upstream_boom"));
+    const resposta = learningError(new DomainApiError(500, "learning_unavailable"));
     expect(resposta.status).toBe(503);
     const registro = JSON.parse(linhas[0]);
     expect(registro.event).toBe("learning_request_failed");
     expect(registro.upstream_status).toBe(500);
-    expect(registro.reason).toContain("upstream_boom");
+    expect(registro.reason).toBe("domain_api_learning_unavailable");
+  });
+
+  it("não copia para o log um código que não reconhece", async () => {
+    // `DomainApiError.code` é o `detail` da resposta, repassado sem validação.
+    // Hoje são códigos fixos, mas uma rota nova ou um proxy poderiam pôr texto
+    // livre ali — e a primeira versão deste teste **exigia** que ele fosse
+    // gravado, consolidando o vazamento em vez de impedi-lo.
+    const linhas = capturar();
+    learningError(new DomainApiError(500, "usuario joao@exemplo.com nao encontrado"));
+    const registro = JSON.parse(linhas[0]);
+    expect(registro.reason).toBe("domain_api_codigo_desconhecido");
+    expect(registro.upstream_status).toBe(500);
+    expect(linhas[0]).not.toContain("joao@exemplo.com");
+  });
+
+  it("o 403 é silencioso, como o 404: não revela existência", async () => {
+    const linhas = capturar();
+    const resposta = learningError(new DomainApiError(403, "forbidden"));
+    expect(resposta.status).toBe(404);
+    expect(linhas).toHaveLength(0);
   });
 
   it("separa envelope recusado de indisponibilidade", async () => {

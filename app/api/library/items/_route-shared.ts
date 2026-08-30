@@ -275,6 +275,26 @@ export function learningForbiddenMutation() {
  *
  * Só a classe do erro e o status recebido da API entram. Nenhum valor.
  */
+// `DomainApiError.code` e o `detail` da resposta, repassado sem validacao. Hoje
+// os detalhes sao codigos fixos, mas nada obriga isso a continuar: uma rota nova,
+// um proxy ou uma mensagem de erro do driver colocariam texto livre ali, e o log
+// gravaria por inteiro. Registrar so o que reconhecemos mantem a promessa de
+// "classe e status, nenhum valor" independente do que chegue.
+const CODIGOS_CONHECIDOS = new Set([
+  "learning_unavailable",
+  "learning_item_unavailable",
+  "invalid_internal_request",
+  "invalid_domain_request",
+  "offer_requires_checkout",
+  "access_link_exhausted",
+  "access_link_unavailable",
+  "idempotency_conflict",
+  "progress_version_conflict",
+  "pdf_study_revision_conflict",
+  "payload_too_large",
+  "rate_limited"
+]);
+
 function reportLearningFailure(reason: string, status?: number): void {
   console.error(JSON.stringify({
     event: "learning_request_failed",
@@ -309,10 +329,15 @@ export function learningError(error: unknown) {
     if (error.status === 422) return learningJsonError("invalid_request_body", 422);
     if (error.status === 429) return learningJsonError("rate_limited", 429);
   }
-  reportLearningFailure(
-    error instanceof DomainApiError ? `domain_api_${error.code || "sem_codigo"}` : "erro_nao_classificado",
-    error instanceof DomainApiError ? error.status : undefined
-  );
+  if (error instanceof DomainApiError) {
+    const conhecido = typeof error.code === "string" && CODIGOS_CONHECIDOS.has(error.code);
+    reportLearningFailure(
+      conhecido ? `domain_api_${error.code}` : "domain_api_codigo_desconhecido",
+      error.status
+    );
+  } else {
+    reportLearningFailure("erro_nao_classificado");
+  }
   return learningJsonError("learning_unavailable", 503);
 }
 
