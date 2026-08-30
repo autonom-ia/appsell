@@ -2,6 +2,7 @@ import { Readable } from "node:stream";
 import { NextRequest, NextResponse } from "next/server";
 
 import { authorizeDomainLearningAssetDownload } from "@/lib/internal-api-client.server";
+import { assetMediaSpec, assetSeedKey, type AssetMediaType } from "@/lib/asset-media";
 import {
   configuredPrivateLearningAssetRoot,
   prepareVerifiedPrivateLearningAsset
@@ -22,7 +23,6 @@ import {
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const MAX_PDF_BYTES = 10 * 1024 * 1024;
 
 interface DownloadMetadata {
   id: string;
@@ -30,7 +30,7 @@ interface DownloadMetadata {
   seed_key: string;
   file_name: string;
   title: string;
-  media_type: "application/pdf";
+  media_type: AssetMediaType;
   byte_size: number;
   sha256: string;
 }
@@ -42,7 +42,7 @@ interface RedirectDownloadMetadata {
   expires_in_seconds: number;
   file_name: string;
   title: string;
-  media_type: "application/pdf";
+  media_type: AssetMediaType;
   byte_size: number;
   sha256: string;
 }
@@ -69,7 +69,7 @@ export async function GET(request: NextRequest, context: LearningAssetRouteConte
     if (!asset) return downloadUnavailable("asset_integrity_failure");
     return new NextResponse(
       Readable.toWeb(asset.handle.createReadStream({ autoClose: true })) as ReadableStream<Uint8Array>,
-      { status: 200, headers: downloadHeaders(metadata.file_name, asset.size) }
+      { status: 200, headers: downloadHeaders(metadata, asset.size) }
     );
   } catch (error) {
     return learningError(error);
@@ -84,17 +84,22 @@ function authorizedDownloadMetadata(
     return null;
   }
   const asset = value.asset;
+  // O download entrega o arquivo inteiro, então o formato tem de ser baixável —
+  // é o que mantém o MP4 fora desta rota. O teto vem do catálogo, por formato:
+  // o número fixo de 10 MiB que estava aqui ficou para trás quando a #287 levou
+  // o PDF para 100 MiB, e passou a recusar PDF legítimo.
+  const spec = assetMediaSpec(asset.media_type);
   const commonValid = asset.id === expectedAssetId && typeof asset.id === "string"
-    && UUID.test(asset.id) && validPdfFile(asset.file_name)
+    && UUID.test(asset.id) && spec !== null && spec.downloadable
+    && validDownloadFile(asset.file_name, spec.extension)
     && typeof asset.title === "string" && asset.title.length >= 2
-    && asset.media_type === "application/pdf"
     && Number.isInteger(asset.byte_size) && Number(asset.byte_size) >= 1
-    && Number(asset.byte_size) <= MAX_PDF_BYTES
+    && Number(asset.byte_size) <= spec.maxBytes
     && typeof asset.sha256 === "string" && SHA256.test(asset.sha256);
   if (!commonValid) return null;
   if (asset.delivery === "legacy_bundle" && hasExactKeys(asset, [
     "byte_size", "delivery", "file_name", "id", "media_type", "seed_key", "sha256", "title"
-  ]) && asset.seed_key === String(asset.file_name).slice(0, -4)) {
+  ]) && asset.seed_key === assetSeedKey(asset.file_name)) {
     return asset as unknown as DownloadMetadata;
   }
   if (asset.delivery === "redirect" && hasExactKeys(asset, [
@@ -112,14 +117,14 @@ function redirectDownload(url: string) {
   return response;
 }
 
-function downloadHeaders(fileName: string, size: number) {
+function downloadHeaders(metadata: DownloadMetadata, size: number) {
   return {
     ...noStoreHeaders(),
     "accept-ranges": "none",
-    "content-disposition": attachmentContentDisposition(fileName),
+    "content-disposition": attachmentContentDisposition(metadata.file_name),
     "content-length": String(size),
     "content-security-policy": "sandbox",
-    "content-type": "application/pdf",
+    "content-type": metadata.media_type,
     "cross-origin-resource-policy": "same-origin"
   };
 }
@@ -144,9 +149,9 @@ function attachmentContentDisposition(fileName: string) {
   return `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encoded}`;
 }
 
-function validPdfFile(value: unknown) {
+function validDownloadFile(value: unknown, extension: string) {
   return typeof value === "string" && Buffer.byteLength(value) <= 160
-    && value === value.trim() && value.toLowerCase().endsWith(".pdf")
+    && value === value.trim() && value.toLowerCase().endsWith(`.${extension}`)
     && !/[\\/\u0000-\u001f\u007f]/.test(value);
 }
 
