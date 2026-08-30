@@ -125,24 +125,28 @@ def trusted_video_target(value: object) -> str | None:
 async def origin_validator(target_url: str) -> str:
     """O que a origem diz sobre a versão atual do arquivo.
 
-    Um `HEAD` barato, pelo mesmo caminho conferido do download: allowlist,
-    endereço público e conexão no IP validado, com cada redirecionamento
-    revalidado.
+    Uma pergunta, pelo mesmo caminho conferido do download: allowlist, endereço
+    público e conexão no IP validado, com cada redirecionamento revalidado.
 
     Existe para saber se o derivado guardado ainda corresponde à origem. Sem
     isto, trocar o vídeo mantendo o mesmo endereço deixaria o aluno recebendo a
     versão antiga para sempre — e o vendedor sem nenhuma forma de corrigir.
 
+    **Nunca lê o corpo.** A resposta é aberta em fluxo e fechada sem consumir:
+    `Range` é um pedido, não uma garantia, e uma origem que o ignore devolveria
+    centenas de megabytes para responder uma pergunta de metadado.
+
     Quem chama trata a falha como "não sei": a origem fora do ar não pode
     invalidar um vídeo que já está pronto.
     """
     seen = target_url
+    metodo = "HEAD"
     async with httpx.AsyncClient(
         follow_redirects=False,
         timeout=httpx.Timeout(20.0, connect=10.0),
         trust_env=False,
     ) as client:
-        for _ in range(MAX_REDIRECTS + 1):
+        for _ in range(2 * (MAX_REDIRECTS + 1)):
             trusted = trusted_video_target(seen)
             if trusted is None:
                 raise PdfLinkVideoRejected("video target is not an allowed origin")
@@ -150,43 +154,46 @@ async def origin_validator(target_url: str) -> str:
             address = await to_thread.run_sync(
                 public_address, host, abandon_on_cancel=True
             )
+            cabecalhos = {"host": host}
+            if metodo == "GET":
+                cabecalhos["range"] = "bytes=0-0"
             try:
-                response = await client.head(
+                async with client.stream(
+                    metodo,
                     _pinned(trusted, address),
-                    headers={"host": host},
+                    headers=cabecalhos,
                     extensions={"sni_hostname": host},
-                )
+                ) as response:
+                    status_code = response.status_code
+                    location = response.headers.get("location", "")
+                    validator = (
+                        response.headers.get("etag")
+                        or response.headers.get("last-modified")
+                        or response.headers.get("content-length")
+                        or ""
+                    )
             except (httpx.HTTPError, OSError) as error:
                 # Rede, TLS e tempo esgotado são falhas passageiras: quem chama
                 # trata como "não sei" e serve o que já existe.
                 raise PdfLinkVideoUnavailable("video origin did not answer") from error
-            if response.status_code in (301, 302, 303, 307, 308):
-                seen = str(httpx.URL(trusted).join(response.headers.get("location", "")))
+
+            if status_code in (301, 302, 303, 307, 308):
+                seen = str(httpx.URL(trusted).join(location))
                 continue
-            if response.status_code == 405:
+            if status_code == 405 and metodo == "HEAD":
                 # A origem atende `GET` e recusa `HEAD` — comum, e não diz nada
                 # sobre o arquivo existir. Pergunta de novo pelo primeiro byte.
-                response = await client.get(
-                    _pinned(trusted, address),
-                    headers={"host": host, "range": "bytes=0-0"},
-                    extensions={"sni_hostname": host},
-                )
-            if response.status_code in DEFINITIVE_ABSENCE:
+                metodo = "GET"
+                continue
+            if status_code in DEFINITIVE_ABSENCE:
                 # A origem existe e disse que este arquivo não. Diferente de não
                 # conseguir perguntar: aqui servir a cópia antiga manteria no ar
                 # algo que foi retirado.
                 raise PdfLinkVideoRejected("video origin says the file is gone")
-            if response.status_code not in {200, 206}:
+            if status_code not in {200, 206}:
                 # Sobrecarga, erro do servidor, autenticação — nada disso é a
-                # origem dizendo que o arquivo sumiu. Quem chama serve o que já
-                # tem em vez de tirar o vídeo do aluno por um 503 alheio.
+                # origem dizendo que o arquivo sumiu.
                 raise PdfLinkVideoUnavailable("video origin did not answer usefully")
-            validator = (
-                response.headers.get("etag")
-                or response.headers.get("last-modified")
-                or response.headers.get("content-length")
-                or ""
-            )
             return validator[:120]
     raise PdfLinkVideoRejected("video target redirects too many times")
 
