@@ -506,11 +506,56 @@ function isModule(value: unknown) {
     Array.isArray(value.lessons) && value.lessons.every(isLesson);
 }
 
+const LESSON_KEYS = ["content", "id", "kind", "position", "status", "title"];
+
+/**
+ * A aula, com os links que o vendedor cadastrou.
+ *
+ * `materials` chega do dominio sempre que a aula tem link — e `hasExactKeys` e
+ * exato, entao a sétima chave reprovava a aula, o curso e o envelope inteiro.
+ * O aluno recebia 503 na aula, sem nada indicar que a causa era um link.
+ *
+ * O player ja declara `materials` no tipo de `CourseLesson` e o valida de forma
+ * tolerante. Era so o BFF que proibia o campo que o navegador espera.
+ */
 function isLesson(value: unknown) {
-  return hasExactKeys(value, ["content", "id", "kind", "position", "status", "title"]) &&
+  if (!isRecord(value)) return false;
+  const comMateriais = Object.hasOwn(value, "materials");
+  return hasExactKeys(value, comMateriais ? [...LESSON_KEYS, "materials"] : LESSON_KEYS) &&
     UUID.test(String(value.id)) && typeof value.title === "string" &&
     value.kind === "text" && typeof value.content === "string" &&
-    value.status === "active" && isPosition(value.position);
+    value.status === "active" && isPosition(value.position) &&
+    (!comMateriais || (
+      Array.isArray(value.materials) && value.materials.length <= 100 &&
+      new Set(value.materials.map((material) => isRecord(material) ? material.id : null)).size
+        === value.materials.length &&
+      value.materials.every(isLessonMaterial)
+    ));
+}
+
+/**
+ * Um link da aula: endereco externo, ou video incorporado.
+ *
+ * Valida o que a tela usa e nada alem disso. Ser mais exigente aqui e o que
+ * causou o defeito acima: `url` continua aceitando `null` nos dois formatos,
+ * porque o embed nao precisa dele e recusar por causa disso derrubaria a aula
+ * inteira de novo.
+ */
+function isLessonMaterial(value: unknown) {
+  if (!hasExactKeys(value, [
+    "id", "kind", "position", "provider", "title", "url", "video_id"
+  ])) return false;
+  if (!UUID.test(String(value.id)) || typeof value.title !== "string"
+    || value.title.trim().length === 0 || !isPosition(value.position)) return false;
+  if (value.url !== null && (typeof value.url !== "string" || value.url.length === 0)) return false;
+  if (value.kind === "external") {
+    return typeof value.url === "string" && value.provider === null && value.video_id === null;
+  }
+  if (value.kind === "embed") {
+    return (value.provider === "youtube" || value.provider === "vimeo")
+      && typeof value.video_id === "string" && value.video_id.length > 0;
+  }
+  return false;
 }
 
 function isLessonProgress(value: unknown) {

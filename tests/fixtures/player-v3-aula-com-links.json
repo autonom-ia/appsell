@@ -1,0 +1,117 @@
+{
+  "course": {
+    "id": "fa0aa940-0024-4272-8bf4-576447a0cce7",
+    "title": "Curso de exemplo",
+    "modules": [
+      {
+        "id": "6eb2dc5b-3142-4cf6-8f7f-cb08edfd5828",
+        "title": "Curso de exemplo",
+        "status": "active",
+        "lessons": [
+          {
+            "id": "de087cd5-70ba-44f1-8676-844bc15be5bb",
+            "kind": "text",
+            "title": "Curso de exemplo",
+            "status": "active",
+            "content": "",
+            "position": 0,
+            "materials": [
+              {
+                "id": "493e79d2-06bd-40f2-8c09-d50495f12560",
+                "url": "https://exemplo.test/material",
+                "kind": "external",
+                "title": "Curso de exemplo",
+                "position": 1,
+                "provider": null,
+                "video_id": null
+              },
+              {
+                "id": "71163b8c-77cf-478b-83cc-5e496e3c1fe7",
+                "url": null,
+                "kind": "embed",
+                "title": "Curso de exemplo",
+                "position": 2,
+                "provider": "youtube",
+                "video_id": "video-de-exemplo"
+              }
+            ]
+          }
+        ],
+        "position": 0
+      }
+    ],
+    "position": 0,
+    "description": ""
+  },
+  "seller": {
+    "id": "1f1366d1-fead-47aa-875b-934a884a8bbc"
+  },
+  "product": {
+    "id": "eb3e8e22-c50b-40a3-8c7a-e56ce1376574",
+    "slug": "curso-de-exemplo",
+    "title": "Curso de exemplo",
+    "description": ""
+  },
+  "publication": {
+    "id": "648dd120-ea75-4ec0-826e-79e7249242f4",
+    "version": 1,
+    "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "enrollment_id": "fb48332d-955a-4fe3-89a7-cb9278d53b70",
+  "state_version": 0,
+  "entitlement_id": "8980be46-1937-46cc-8a8a-7a0ce5e2a3e1",
+  "schema_version": 3,
+  "selected_asset": {
+    "id": "9159618d-50ba-4364-8506-471b8e2f73e2",
+    "title": "Curso de exemplo",
+    "media_type": "application/pdf"
+  },
+  "lesson_progress": [],
+  "selected_assets": [
+    {
+      "id": "9159618d-50ba-4364-8506-471b8e2f73e2",
+      "title": "Curso de exemplo",
+      "media_type": "application/pdf",
+      "content_role": "course_content",
+      "download_allowed": false
+    },
+    {
+      "id": "c85068d9-1884-425c-80e5-acd8fa99f547",
+      "title": "Curso de exemplo",
+      "media_type": "text/markdown",
+      "content_role": "support_material",
+      "download_allowed": true
+    },
+    {
+      "id": "46b12e0c-ceb2-4b68-8026-643412d9c409",
+      "title": "Curso de exemplo",
+      "media_type": "text/markdown",
+      "content_role": "support_material",
+      "download_allowed": true
+    },
+    {
+      "id": "1c632d5e-fead-4d33-8636-b7a6b7c5068d",
+      "title": "Curso de exemplo",
+      "media_type": "text/markdown",
+      "content_role": "support_material",
+      "download_allowed": true
+    },
+    {
+      "id": "57032281-3966-4e1f-890f-6981ad170391",
+      "title": "Curso de exemplo",
+      "media_type": "text/plain",
+      "content_role": "support_material",
+      "download_allowed": true
+    },
+    {
+      "id": "f341acd4-f39b-4289-899d-686ebec362de",
+      "title": "Curso de exemplo",
+      "media_type": "text/markdown",
+      "content_role": "support_material",
+      "download_allowed": true
+    }
+  ],
+  "resume_lesson_id": "de087cd5-70ba-44f1-8676-844bc15be5bb",
+  "selected_lesson_id": "de087cd5-70ba-44f1-8676-844bc15be5bb",
+  "course_progress_percent": 0
+}
