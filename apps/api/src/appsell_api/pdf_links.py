@@ -13,6 +13,12 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 import pikepdf
 
+from .pdf_link_qr import (
+    PdfLinkQrUnavailable,
+    QrTarget,
+    read_page_qr_targets,
+    target_for_rectangle,
+)
 from .pdf_verifier import MAX_PDF_BYTES, _validate_pdf_structure
 
 #: O que o leitor abre no player, em vez de mandar o aluno para outra aba.
@@ -148,7 +154,7 @@ def extract_pdf_link_manifest(
         with pikepdf.Pdf.open(path, attempt_recovery=False) as document:
             if len(document.pages) != page_count:
                 raise PdfLinksRejected("PDF link page count drifted")
-            links = _document_links(document)
+            links = _document_links(document, path)
     except PdfLinksRejected:
         raise
     except (OSError, pikepdf.PdfError, TypeError, ValueError) as error:
@@ -167,10 +173,11 @@ def valid_pdf_link_manifest(value: object, *, expected_page_count: int) -> bool:
     return all(_valid_link(link, expected_page_count) for link in links)
 
 
-def _document_links(document: pikepdf.Pdf) -> list[dict[str, Any]]:
+def _document_links(document: pikepdf.Pdf, path: Path) -> list[dict[str, Any]]:
     page_map = {page.obj.objgen: number for number, page in enumerate(document.pages, start=1)}
     named_destinations = _named_destinations(document)
     candidates: list[_Candidate] = []
+    qr_cache: dict[int, list[QrTarget]] = {}
     annotations_seen = 0
     for page_number, page in enumerate(document.pages, start=1):
         page_box = _page_box(page.obj)
@@ -201,9 +208,15 @@ def _document_links(document: pikepdf.Pdf) -> list[dict[str, Any]]:
                 continue
             target_url = _safe_https_url(annotation.get("/Contents"))
             if target_url is None:
+                # O botão foi desenhado e o destino não foi gravado. Se há um QR
+                # ao lado, o endereço existe — está em pixels, e é o mesmo que
+                # quem lê no papel usa. Ler de volta é o que faz o clique na
+                # tela valer tanto quanto a câmera do celular.
+                target_url = _qr_url_for(path, page_number, rect, qr_cache)
+            if target_url is None:
                 continue
-            path = urlsplit(target_url).path.lower()
-            kind = "video" if path.endswith(VIDEO_EXTENSIONS) else "external"
+            caminho = urlsplit(target_url).path.lower()
+            kind = "video" if caminho.endswith(VIDEO_EXTENSIONS) else "external"
             candidates.append(_Candidate(page_number, kind, target_url, *rect))
 
     links: list[dict[str, Any]] = []
@@ -393,6 +406,27 @@ def _contains(outer: _Candidate, inner: _Candidate) -> bool:
         and outer.left + outer.width + tolerance >= inner.left + inner.width
         and outer.top + outer.height + tolerance >= inner.top + inner.height
     )
+
+
+def _qr_url_for(
+    path: Path,
+    page_number: int,
+    rect: tuple[float, float, float, float],
+    cache: dict[int, list[QrTarget]],
+) -> str | None:
+    """O endereço do QR do mesmo cartão que este botão sem destino.
+
+    A página só é rasterizada quando alguma anotação chega aqui — um PDF bem
+    gerado não paga nada por isto.
+    """
+    if page_number not in cache:
+        try:
+            cache[page_number] = read_page_qr_targets(path, page_number)
+        except PdfLinkQrUnavailable:
+            cache[page_number] = []
+    # `rect` é (left, top, width, height) em porcentagem da página.
+    centro = (rect[1] + rect[3] / 2.0) / 100.0
+    return target_for_rectangle(cache[page_number], centro)
 
 
 def _safe_https_url(value: object) -> str | None:

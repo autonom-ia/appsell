@@ -17,6 +17,7 @@ dependencies = [
   "sqlalchemy>=2.0.40,<3",
   "structlog>=25.4,<26",
   "uvicorn[standard]>=0.35,<1",
+  "zxing-cpp>=2.2,<3",
 ]
 
 [dependency-groups]
@@ -57,3 +58,10 @@ select = ["E", "F", "I", "UP", "B", "S", "ASYNC"]
 python_version = "3.12"
 strict = true
 packages = ["appsell_api"]
+
+# O decodificador de QR nao publica stubs. O que vem dele e tratado como dado
+# de terceiro no proprio codigo: so `https` vira link, e a allowlist decide se
+# o servidor busca alguma coisa.
+[[tool.mypy.overrides]]
+module = ["zxingcpp"]
+ignore_missing_imports = true
