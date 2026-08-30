@@ -7,7 +7,7 @@ import json
 import re
 from collections import OrderedDict
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Final, Literal
 from uuid import UUID
 
 import structlog
@@ -59,9 +59,22 @@ _PDF_LINK_VIDEO_PREPARATIONS = PreparationRegistry()
 #: pode recolher a tarefa no meio do preparo — o `asyncio` só guarda referência
 #: fraca, e a documentação pede que quem cria mantenha a sua.
 _PDF_LINK_VIDEO_TASKS: set[asyncio.Task[None]] = set()
-#: Um preparo por vez na maquina. Recodificar e caro, e a fila protege o resto
-#: da API de ficar sem CPU porque tres alunos abriram videos diferentes.
-_PDF_LINK_VIDEO_SLOTS = asyncio.Semaphore(1)
+#: Quanto da fila o adiantamento pode ocupar.
+#:
+#: Metade. Quem clicou num botão está esperando na frente da tela; quem foi
+#: adiantado ainda nem chegou na página. A reserva garante que o primeiro nunca
+#: perca a vez para o segundo.
+_WARM_PREPARATION_BUDGET: Final = MAX_PENDING_PREPARATIONS // 2
+#: Quantos preparos correm ao mesmo tempo.
+#:
+#: Medido no vídeo do vendedor: 1,3 s de download e 0,6 s de conversão. O que
+#: domina é a rede, e ela é da API — a conversão acontece no serviço isolado,
+#: que atende um por vez de propósito e se recicla depois de cada arquivo.
+#:
+#: Então três aqui deixam três downloads correrem juntos enquanto as conversões
+#: se enfileiram no serviço, que é rápido. Subir mais não ajudaria: passaria a
+#: esperar na fila do isolamento, que não se abre mãos.
+_PDF_LINK_VIDEO_SLOTS = asyncio.Semaphore(3)
 _PROTECTED_PDF_SLOTS = asyncio.Semaphore(4)
 _PROTECTED_PDF_SLOT_TIMEOUT_SECONDS = 8.0
 _PDF_LINK_CACHE_LOCK = asyncio.Lock()
@@ -479,6 +492,14 @@ async def inspect_asset_pages(
         links = await _protected_pdf_links(request, manifest, source)
     except DBAPIError as error:
         raise _learning_domain_error(error) from error
+    # O aluno abriu o PDF. Os vídeos que ele cita começam a ser preparados
+    # agora, enquanto ele lê — quando chegar na página do botão, o arquivo já
+    # está pronto e ele não espera nada.
+    #
+    # É a mesma preparação do clique, só que antes. Quem já está pronto não
+    # refaz nada, e quem falhar não atrapalha a leitura: a resposta desta rota
+    # sai igual de qualquer jeito.
+    _warm_pdf_link_videos(request, manifest, links)
     return {
         "asset": {
             "id": str(manifest["asset_id"]),
@@ -486,6 +507,38 @@ async def inspect_asset_pages(
             "links": links,
         }
     }
+
+
+def _warm_pdf_link_videos(request: Request, manifest: Any, links: list[dict[str, Any]]) -> None:
+    """Começa a preparar os vídeos do PDF, sem segurar a resposta."""
+    storage: S3Storage | None = getattr(request.app.state, "storage", None)
+    settings = request.app.state.settings
+    if storage is None or not settings.storage_configured:
+        return
+    bucket = settings.storage_ready_bucket
+    seller = str(manifest["seller_organization_id"])
+    for link in links:
+        if link.get("kind") != "video":
+            continue
+        if len(_PDF_LINK_VIDEO_TASKS) >= _WARM_PREPARATION_BUDGET:
+            # O adiantamento fica com metade da fila, não com ela toda. Sem esta
+            # reserva, abrir um PDF com oito vídeos encheria o teto e o próximo
+            # aluno que clicasse num botão receberia o prazo longo de fila cheia
+            # — mais lento do que antes de existir adiantamento.
+            return
+        target = trusted_video_target(link.get("target_url"))
+        if target is None:
+            continue
+        key = derivative_key(seller, target)
+        if _PDF_LINK_VIDEO_PREPARATIONS.rejected(key):
+            continue
+        if not _PDF_LINK_VIDEO_PREPARATIONS.start(key):
+            continue
+        task = asyncio.create_task(
+            _run_pdf_link_video_preparation(storage, bucket, key, target, replace=False)
+        )
+        _PDF_LINK_VIDEO_TASKS.add(task)
+        task.add_done_callback(_PDF_LINK_VIDEO_TASKS.discard)
 
 
 @router.get("/me/learning/items/{entitlement_id}/assets/{asset_id}/pdf-links/{link_id}/video")

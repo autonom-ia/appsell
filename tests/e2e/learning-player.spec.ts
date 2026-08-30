@@ -1208,3 +1208,39 @@ test("o vídeo do PDF diz que está sendo preparado, e depois toca", async ({ pa
   );
   await expect(dialog.getByText("Preparando o vídeo para tocar no seu navegador…")).toHaveCount(0);
 });
+
+/**
+ * A próxima página chega antes de o aluno pedir.
+ *
+ * O leitor adianta as páginas em segundo plano, na ordem da distância até a que
+ * está aberta. Sem isso, virar a página começaria a busca no clique e o aluno
+ * esperaria olhando para um vazio — no meio de um documento de oitenta páginas,
+ * é o que ele mais faz.
+ *
+ * Este teste existe porque o adiantamento não aparece em tela: quem mexer no
+ * laço e o transformar em busca sob demanda não veria nada quebrar.
+ */
+test("o leitor busca a próxima página enquanto o aluno lê a atual", async ({ page }) => {
+  const pedidas: number[] = [];
+  await mockLearningApi(page, { pdfPageCount: 6 });
+  page.on("request", (pedido) => {
+    const encontrado = /\/pages\/([1-9][0-9]*)$/.exec(new URL(pedido.url()).pathname);
+    if (encontrado) pedidas.push(Number(encontrado[1]));
+  });
+  await login(page);
+  await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
+  await page.getByRole("button", { name: "Abrir leitor" }).click();
+  const reader = page.getByRole("dialog", { name: "Leitor de Guia da aula" });
+  await expect(reader.locator('.pdf-reader-page[data-page="1"] img')).toBeVisible();
+
+  // Sem o aluno pedir nada, a segunda página já foi buscada.
+  await expect.poll(() => pedidas.includes(2), { timeout: 5_000 }).toBe(true);
+  // E a primeira veio antes dela: quem o aluno está esperando não fica na fila
+  // atrás do adiantamento.
+  expect(pedidas.indexOf(1)).toBeLessThan(pedidas.indexOf(2));
+
+  // Ao virar, a página aparece — vinda do cache que o adiantamento encheu.
+  await reader.getByRole("button", { name: "Próxima" }).click();
+  await expect(reader.getByLabel("Ir para página")).toHaveValue("2");
+  await expect(reader.locator('.pdf-reader-page[data-page="2"] img')).toBeVisible();
+});
