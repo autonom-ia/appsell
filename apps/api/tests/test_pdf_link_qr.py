@@ -9,15 +9,21 @@ import zxingcpp
 from PIL import Image
 
 from appsell_api.pdf_link_qr import (
-    MAX_RENDER_PIXELS,
     MAX_VERTICAL_DISTANCE,
     QrBudget,
-    QrTarget,
-    _center,
-    _decode,
     assign_targets,
     read_page_qr_targets,
+)
+from appsell_api.pdf_link_qr_decode import (
+    MAX_RENDER_PIXELS,
+    QrTarget,
     render_arguments,
+)
+from appsell_api.pdf_link_qr_decode import (
+    center as _center,
+)
+from appsell_api.pdf_link_qr_decode import (
+    decode_image as _decode,
 )
 
 ALVO = "https://midia.example.test/aula.mov"
@@ -76,6 +82,14 @@ class TestMatching:
             "https://a.test/esquerda.mov",
             "https://a.test/direita.mov",
         ]
+
+    def test_the_order_of_the_annotations_does_not_decide(self) -> None:
+        # O QR está exatamente na altura do segundo botão. Uma distribuição
+        # gulosa daria a ele o primeiro que passasse, e o botão alinhado ficaria
+        # sem destino — trocando os dois de vídeo conforme a ordem do PDF.
+        alvos = [QrTarget(ALVO, 0.40, 0.85)]
+        assert assign_targets(alvos, [(0.44, 0.2), (0.40, 0.2)]) == [None, ALVO]
+        assert assign_targets(alvos, [(0.40, 0.2), (0.44, 0.2)]) == [ALVO, None]
 
     def test_one_code_is_never_given_to_two_buttons(self) -> None:
         # Dois botões, um QR só decodificado. O segundo fica sem destino: dar o

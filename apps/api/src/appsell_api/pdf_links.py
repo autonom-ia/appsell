@@ -16,10 +16,10 @@ import pikepdf
 from .pdf_link_qr import (
     PdfLinkQrUnavailable,
     QrBudget,
-    QrTarget,
     assign_targets,
     read_page_qr_targets,
 )
+from .pdf_link_qr_decode import QrTarget
 from .pdf_link_url import safe_plain_https_url as _safe_plain_https_url
 from .pdf_verifier import MAX_PDF_BYTES, _validate_pdf_structure
 
@@ -212,7 +212,13 @@ def _document_links(document: pikepdf.Pdf, path: Path) -> list[dict[str, Any]]:
             if target_page is not None:
                 candidates.append(_Candidate(page_number, "page", target_page, *rect))
                 continue
-            target_url = _safe_https_url(annotation.get("/Contents"))
+            conteudo = annotation.get("/Contents")
+            target_url = _safe_https_url(conteudo)
+            if target_url is None and conteudo is not None:
+                # A anotação tem destino e ele foi recusado. Substituí-lo pelo
+                # QR ao lado entregaria ao aluno um endereço diferente do que o
+                # PDF manda — e o motivo de a recusa existir some junto.
+                continue
             if target_url is None:
                 # O botão foi desenhado e o destino não foi gravado. Se há um QR
                 # ao lado, o endereço existe — está em pixels, e é o mesmo que
