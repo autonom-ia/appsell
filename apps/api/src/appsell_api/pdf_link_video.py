@@ -259,33 +259,42 @@ def probe_video(source: Path) -> dict[str, Any]:
     Ler do arquivo local, e não do endereço, elimina a janela em que a origem
     entregava um arquivo pequeno para a inspeção e outro para a conversão.
     """
+    argumentos = [
+        _binary("ffprobe"), "-v", "error",
+        # O parser de mídia é o outro caminho pelo qual isto viraria um cliente
+        # de rede: um container que aponta para outro recurso faria o `ffprobe`
+        # buscá-lo. Nada de rede, nada de playlist.
+        "-protocol_whitelist", "file",
+        "-format_whitelist", _ALLOWED_FORMATS,
+        # Só os campos que a decisão usa.
+        "-show_entries", "format=duration:stream=codec_type,codec_name,pix_fmt",
+        "-of", "json", "-i", str(source),
+    ]
     try:
-        completed = subprocess.run(  # noqa: S603 - argv only; local path, no shell
-            [
-                _binary("ffprobe"), "-v", "error",
-                # O parser de mídia é o outro caminho pelo qual isto viraria um
-                # cliente de rede: um container que aponta para outro recurso
-                # faria o `ffprobe` buscá-lo. Nada de rede, nada de playlist.
-                "-protocol_whitelist", "file",
-                "-format_whitelist", _ALLOWED_FORMATS,
-                # Só os campos que a decisão usa: a saída vai para a memória.
-                "-show_entries", "format=duration:stream=codec_type,codec_name,pix_fmt",
-                "-of", "json", "-i", str(source),
-            ],
-            capture_output=True,
-            timeout=60,
-            check=False,
-        )
+        # `capture_output` leria a saída inteira para a memória e só depois
+        # deixaria conferir o tamanho — o teto chegaria tarde demais. Aqui a
+        # leitura para no teto, e o erro do processo vai para o vazio.
+        with subprocess.Popen(  # noqa: S603 - argv only; local path, no shell
+            argumentos,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        ) as processo:
+            saida = processo.stdout.read(MAX_PROBE_BYTES + 1) if processo.stdout else b""
+            try:
+                codigo = processo.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                processo.kill()
+                raise
     except subprocess.TimeoutExpired as error:
         raise PdfLinkVideoUnavailable("video probe exceeded its budget") from error
     except OSError as error:
         raise PdfLinkVideoUnavailable("video probe could not start") from error
-    if completed.returncode != 0:
+    if codigo != 0:
         raise PdfLinkVideoRejected("source is not a readable video")
-    if len(completed.stdout) > MAX_PROBE_BYTES:
+    if len(saida) > MAX_PROBE_BYTES:
         raise PdfLinkVideoRejected("video metadata is larger than expected")
     try:
-        return json.loads(completed.stdout)
+        return json.loads(saida)
     except json.JSONDecodeError as error:
         raise PdfLinkVideoRejected("video probe returned no usable metadata") from error
 
@@ -324,7 +333,10 @@ def _run_ffmpeg(arguments: list[str], *, timeout: int) -> None:
     try:
         completed = subprocess.run(  # noqa: S603 - argv only; target checked against the allowlist
             [_binary("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y", *arguments],
-            capture_output=True,
+            # Nada da saída é lido, e uma hora de erros prolixos acumulados na
+            # memória da API seria um jeito barato de derrubá-la.
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             timeout=timeout,
             check=False,
         )
