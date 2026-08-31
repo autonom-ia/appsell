@@ -10,6 +10,8 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 import psycopg
 import pytest
 
+from appsell_api.reset_demo_tenant import EXPECTED_MIGRATION
+
 ADMIN_URL = os.environ.get("APPSELL_TEST_POSTGRES_ADMIN_URL")
 RUNTIME_URL = os.environ.get("APPSELL_TEST_POSTGRES_RUNTIME_URL")
 CONTEXT_KEY_HEX = os.environ.get("APPSELL_TEST_CONTEXT_KEY_HEX")
@@ -140,7 +142,7 @@ def test_schema_ready_targets_head_and_runtime_has_only_function_access() -> Non
               )
             """
         ).fetchone()
-    assert state == ("0044_pdf_de_trezentas_paginas", False, False, True, True, True)
+    assert state == (EXPECTED_MIGRATION, False, False, True, True, True)
 
 
 def test_schema_ready_fails_when_cumulative_or_multi_asset_dependency_is_missing() -> None:

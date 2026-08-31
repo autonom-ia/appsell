@@ -12,7 +12,12 @@ import psycopg
 import pytest
 from psycopg.types.json import Jsonb
 
-from appsell_api.reset_demo_tenant import load_manifest, reset_demo, snapshot_for
+from appsell_api.reset_demo_tenant import (
+    EXPECTED_MIGRATION,
+    load_manifest,
+    reset_demo,
+    snapshot_for,
+)
 
 ADMIN_URL = os.environ.get("APPSELL_TEST_POSTGRES_ADMIN_URL")
 RUNTIME_URL = os.environ.get("APPSELL_TEST_POSTGRES_RUNTIME_URL")
@@ -104,7 +109,7 @@ def test_projection_pin_rls_and_player_are_bound_to_the_buyer() -> None:
             (entitlement, publication, publication),
         ).fetchone()
     assert state == (
-        "0044_pdf_de_trezentas_paginas",
+        EXPECTED_MIGRATION,
         publication,
         1,
         5,

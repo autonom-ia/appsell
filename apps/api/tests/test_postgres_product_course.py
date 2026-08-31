@@ -16,6 +16,8 @@ from psycopg import sql
 from psycopg.conninfo import make_conninfo
 from sqlalchemy.engine import make_url
 
+from appsell_api.reset_demo_tenant import EXPECTED_MIGRATION
+
 ADMIN_URL = os.environ.get("APPSELL_TEST_POSTGRES_ADMIN_URL")
 RUNTIME_URL = os.environ.get("APPSELL_TEST_POSTGRES_RUNTIME_URL")
 MIGRATOR_URL = os.environ.get("APPSELL_MIGRATOR_DATABASE_URL")
@@ -292,7 +294,7 @@ def test_schema_roles_rls_and_runtime_privileges_are_minimal() -> None:
         ("product_course", "appsell_owner", True, True),
     ]
     assert privileges == (
-        "0044_pdf_de_trezentas_paginas",
+        EXPECTED_MIGRATION,
         True,
         False,
         False,
@@ -976,7 +978,7 @@ def test_upgrade_from_0002_preserves_existing_tenant() -> None:
                 """,
                 (preserved_seller,),
             ).fetchone()
-        assert state == ("0044_pdf_de_trezentas_paginas", 1, True, True)
+        assert state == (EXPECTED_MIGRATION, 1, True, True)
     finally:
         with psycopg.connect(maintenance_url, autocommit=True) as connection:
             connection.execute(

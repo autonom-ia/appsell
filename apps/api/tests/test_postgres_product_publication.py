@@ -17,6 +17,8 @@ from psycopg.conninfo import make_conninfo
 from psycopg.types.json import Jsonb
 from sqlalchemy.engine import make_url
 
+from appsell_api.reset_demo_tenant import EXPECTED_MIGRATION
+
 ADMIN_URL = os.environ.get("APPSELL_TEST_POSTGRES_ADMIN_URL")
 RUNTIME_URL = os.environ.get("APPSELL_TEST_POSTGRES_RUNTIME_URL")
 MIGRATOR_URL = os.environ.get("APPSELL_MIGRATOR_DATABASE_URL")
@@ -710,7 +712,7 @@ def test_schema_rls_and_runtime_privileges_are_minimal() -> None:
         ("publication", "appsell_owner", True, True),
     ]
     assert privileges == (
-        "0044_pdf_de_trezentas_paginas",
+        EXPECTED_MIGRATION,
         True,
         False,
         True,
@@ -1320,7 +1322,7 @@ def test_upgrade_from_0003_preserves_existing_draft() -> None:
                 """,
                 (seller_id, product_id),
             ).fetchone() == (
-                "0044_pdf_de_trezentas_paginas",
+                EXPECTED_MIGRATION,
                 "draft",
                 None,
                 True,
@@ -1509,7 +1511,7 @@ def test_offer_status_migration_preserves_history_and_allows_clean_downgrade() -
                 """,
                 (offer_id,),
             ).fetchone() == (
-                "0044_pdf_de_trezentas_paginas",
+                EXPECTED_MIGRATION,
                 "archived",
                 3,
                 2,
@@ -1537,7 +1539,7 @@ def test_offer_status_migration_preserves_history_and_allows_clean_downgrade() -
                 from offer where id = %s
                 """,
                 (offer_id,),
-            ).fetchone() == ("0044_pdf_de_trezentas_paginas", "draft", 3, 2, True)
+            ).fetchone() == (EXPECTED_MIGRATION, "draft", 3, 2, True)
 
         run_migration(clean_database, "upgrade", "head")
         run_migration(clean_database, "downgrade", "0018_offer_pricing")

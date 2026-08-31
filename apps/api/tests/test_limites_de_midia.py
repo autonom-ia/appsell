@@ -255,16 +255,29 @@ class TestPrazoDaRasterizacao:
         assert pdf_derivatives._PDFTOPPM_TIMEOUT_SECONDS >= pior_caso * 1.5
 
 
-def _carrega_migration() -> Any:
+def _versoes() -> list[Path]:
+    """Os arquivos de migration, em ordem de número."""
+    return sorted((_RAIZ / "apps/api/migrations/versions").glob("0*.py"))
+
+
+def _carrega_migration(prefixo: str = "0044_") -> Any:
     """A migration como módulo, para ler as estruturas dela e não o texto."""
-    caminho = next(
-        p for p in (_RAIZ / "apps/api/migrations/versions").iterdir() if p.name.startswith("0044_")
-    )
-    especificacao = importlib.util.spec_from_file_location("migracao_0044", caminho)
+    caminho = next(p for p in _versoes() if p.name.startswith(prefixo))
+    especificacao = importlib.util.spec_from_file_location(f"migracao_{prefixo}", caminho)
     assert especificacao is not None and especificacao.loader is not None
     modulo = importlib.util.module_from_spec(especificacao)
     especificacao.loader.exec_module(modulo)
     return modulo
+
+
+def _migration_do_topo() -> Any:
+    """A migration mais nova, seja ela qual for.
+
+    Fixar o nome aqui é o que fez este arquivo prender seis testes na versão
+    anterior. Quem quer falar de uma migration específica passa o prefixo;
+    quem quer falar do topo pergunta ao diretório.
+    """
+    return _carrega_migration(_versoes()[-1].name.split("_")[0] + "_")
 
 
 class _OsComMuitosNucleos:
@@ -732,15 +745,33 @@ class TestAMigrationNaoQuebraOReadiness:
         # As duas cópias da função carregam a lista, e as duas precisam mudar.
         assert len(migration._BASES_DO_READY) == 2
 
-    def test_o_reset_do_demo_espera_a_versao_nova(self) -> None:
+    def test_o_reset_do_demo_espera_a_versao_do_topo(self) -> None:
+        """O reset recusa um banco que não esteja na última migration.
+
+        Compara com o topo do diretório, e não com um nome escrito aqui: uma
+        migration nova que esquecesse de subir `EXPECTED_MIGRATION` deixaria o
+        reset recusando um banco correto, e este teste passaria.
+        """
         from appsell_api.reset_demo_tenant import EXPECTED_MIGRATION
 
-        migration = _carrega_migration()
-        assert EXPECTED_MIGRATION == migration.revision
+        assert EXPECTED_MIGRATION == _migration_do_topo().revision
+
+    def test_cada_migration_encadeia_na_anterior(self) -> None:
+        """A corrente inteira, e não só o último elo.
+
+        Uma migration com `down_revision` errado passa no lint e quebra o
+        `upgrade` de um banco limpo, que é onde ninguém tenta antes do deploy.
+        """
+        versoes = [_carrega_migration(caminho.name.split("_")[0] + "_") for caminho in _versoes()]
+        for anterior, atual in zip(versoes, versoes[1:], strict=False):
+            assert atual.down_revision == anterior.revision, (
+                f"{atual.revision} diz vir de {atual.down_revision}, "
+                f"e a anterior no diretório é {anterior.revision}"
+            )
 
     def test_nenhum_teste_ficou_preso_na_versao_anterior(self) -> None:
         # Seis testes fixavam `0043` e passariam a falhar depois do upgrade.
-        anterior = "0043_material_role_by_media"
+        anterior = _versoes()[-2].stem
         presos = [
             f"{caminho.relative_to(_RAIZ)}:{numero}"
             for caminho in sorted((_RAIZ / "apps/api/tests").glob("*.py"))
