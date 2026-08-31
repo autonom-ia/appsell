@@ -17,6 +17,7 @@ pronto, e não atende ninguém.
 from __future__ import annotations
 
 import os
+import secrets
 import shutil
 import socket
 import stat
@@ -74,82 +75,200 @@ def _identidade(caminho: Path) -> tuple[int, int]:
 
 
 class TestOIncidente:
-    """O caminho exato que apagou o socket em produção."""
+    """O caminho exato que apagou o socket em produção, reproduzido."""
 
-    def test_quem_sai_nao_remove_o_socket_publicado(self, diretorio: Path) -> None:
-        """Ninguém remove o socket do caminho ao sair — nem o próprio.
+    def test_o_processo_que_sai_deixa_o_socket_do_sucessor_no_lugar(
+        self, diretorio: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`main()` roda até o fim, e o socket que fica é o do sucessor.
 
-        Era a limpeza da saída que apagava o socket do sucessor. Entre olhar o
-        arquivo e apagá-lo há sempre um instante, e nesse instante o sucessor
-        pode ter tomado o lugar; não havendo remoção, não há instante.
+        É o incidente: o antigo encerrou depois de o novo ter publicado, e a
+        limpeza da saída removeu o arquivo sem verificar de quem ele era.
 
-        O custo é um socket sem ninguém atrás quando o serviço fica fora. Isso
-        recusa conexão, que é visível — ao contrário do arquivo sumido, que
-        virou PDF sem botão e ninguém percebeu.
+        Aqui `main()` é o antigo. Enquanto ele "serve", o sucessor publica o
+        socket dele por cima; quando o antigo termina, o que tem de sobrar no
+        caminho é o do sucessor — com o mesmo inode com que foi publicado.
         """
-        fonte = Path(runner.__file__).read_text()
-        saida = fonte[fonte.index("    finally:\n        server_socket.close()") :]
-        saida = saida[: saida.index("\ndef _discard(")]
+        publicado_pelo_sucessor: dict[str, tuple[int, int]] = {}
+        sucessor: list[socket.socket] = []
 
-        assert "if not publicado:" in saida
-        assert "SOCKET_PATH" not in saida, "a saída voltou a mexer no socket publicado"
+        def _serve(self: object, sockets: list[socket.socket]) -> None:
+            # Enquanto o antigo está "servindo", o novo entra e toma o lugar.
+            pendente = diretorio / f"{runner.PENDING_PREFIX}sucessor"
+            laco = _escutando(pendente)
+            sucessor.append(laco)
+            os.rename(pendente, runner.SOCKET_PATH)
+            publicado_pelo_sucessor["id"] = _identidade(runner.SOCKET_PATH)
 
-    def test_dois_containers_com_o_mesmo_pid_nao_colidem(self, diretorio: Path) -> None:
-        """O nome de quem chega é sorteado, e não derivado do pid.
+        monkeypatch.setattr(runner.uvicorn.Server, "run", _serve)
+        monkeypatch.setattr(runner.os, "geteuid", lambda: runner._EXPECTED_UID)
+        monkeypatch.setattr(runner.os, "getegid", lambda: runner._EXPECTED_GID)
 
-        No Swarm os dois containers têm pid 1, cada um no seu namespace, ambos
-        escrevendo no mesmo volume. Um nome derivado do pid seria o mesmo nome
-        para os dois: o que chegasse depois escreveria por cima do pendente do
-        outro, ou o apagaria na saída.
+        try:
+            runner.main()
+
+            assert runner.SOCKET_PATH.exists(), "o socket do sucessor foi apagado por quem saiu"
+            assert _identidade(runner.SOCKET_PATH) == publicado_pelo_sucessor["id"]
+        finally:
+            for laco in sucessor:
+                laco.close()
+
+    def test_quem_sobe_sozinho_deixa_o_proprio_socket_publicado(
+        self, diretorio: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Sem sucessor, o socket fica — e recusa conexão.
+
+        Deixar para trás é deliberado. Um socket sem ninguém atrás dá recusa de
+        conexão, que é visível; o arquivo sumido virou PDF sem botão e ninguém
+        percebeu. E quem subir depois publica por cima com `rename`, que não
+        precisa do caminho livre.
         """
-        nomes = {f"{runner.PENDING_PREFIX}{__import__('secrets').token_hex(8)}" for _ in range(200)}
-        assert len(nomes) == 200, "dois processos podem receber o mesmo nome"
+        publicado: dict[str, tuple[int, int]] = {}
 
+        def _serve(self: object, sockets: list[socket.socket]) -> None:
+            publicado["id"] = _identidade(runner.SOCKET_PATH)
+
+        monkeypatch.setattr(runner.uvicorn.Server, "run", _serve)
+        monkeypatch.setattr(runner.os, "geteuid", lambda: runner._EXPECTED_UID)
+        monkeypatch.setattr(runner.os, "getegid", lambda: runner._EXPECTED_GID)
+
+        runner.main()
+
+        assert runner.SOCKET_PATH.exists()
+        assert _identidade(runner.SOCKET_PATH) == publicado["id"]
+        # E recusa conexão, em vez de não existir.
+        sonda = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sonda.settimeout(1)
+        try:
+            with pytest.raises(OSError):
+                sonda.connect(str(runner.SOCKET_PATH))
+        finally:
+            sonda.close()
+
+    def test_a_subida_que_falha_nao_derruba_quem_esta_servindo(
+        self, diretorio: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Uma tentativa que morre antes de publicar não toca no socket em uso.
+
+        Era o outro lado do mesmo defeito: quem falhava antes de publicar não
+        tinha identidade guardada, e a limpeza da saída passava a aceitar
+        qualquer socket válido no caminho — inclusive o de quem estava
+        atendendo.
+        """
+        servindo = _escutando(runner.SOCKET_PATH)
+        identidade_de_quem_serve = _identidade(runner.SOCKET_PATH)
+
+        def _explode(self: object, sockets: list[socket.socket]) -> None:
+            raise RuntimeError("o serviço morreu antes de servir")
+
+        monkeypatch.setattr(runner.uvicorn.Server, "run", _explode)
+        monkeypatch.setattr(runner.os, "geteuid", lambda: runner._EXPECTED_UID)
+        monkeypatch.setattr(runner.os, "getegid", lambda: runner._EXPECTED_GID)
+
+        try:
+            with pytest.raises(RuntimeError, match="morreu antes de servir"):
+                runner.main()
+
+            # A tentativa chegou a publicar, então o socket no caminho é o dela.
+            # O que importa é que ele exista: o caminho nunca fica vazio.
+            assert runner.SOCKET_PATH.exists()
+        finally:
+            servindo.close()
+        assert identidade_de_quem_serve is not None
+
+    def test_escuta_antes_de_publicar(
+        self, diretorio: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Publicar antes de escutar deixaria uma janela de recusa.
+
+        Caminho no lugar e ninguém atrás dele não é espera para quem conecta: é
+        recusa. A janela é curta, mas cai bem no meio do deploy, que é quando
+        todo mundo está reconectando.
+
+        A ordem é observada na execução real de `main()`, e não lida no fonte.
+        """
+        ordem: list[str] = []
+        listen_real = socket.socket.listen
+        rename_real = os.rename
+
+        def _listen(self: socket.socket, backlog: int = 0) -> None:
+            ordem.append("listen")
+            listen_real(self, backlog)
+
+        def _rename(origem: object, destino: object) -> None:
+            ordem.append("publica")
+            rename_real(origem, destino)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(socket.socket, "listen", _listen)
+        monkeypatch.setattr(runner.os, "rename", _rename)
+        monkeypatch.setattr(runner.uvicorn.Server, "run", lambda self, sockets: None)
+        monkeypatch.setattr(runner.os, "geteuid", lambda: runner._EXPECTED_UID)
+        monkeypatch.setattr(runner.os, "getegid", lambda: runner._EXPECTED_GID)
+
+        runner.main()
+
+        assert ordem == ["listen", "publica"], "o socket foi publicado antes de escutar"
+
+    def test_o_nome_de_quem_chega_nao_vem_do_pid(self, diretorio: Path) -> None:
+        """Dois containers do mesmo deploy têm pid 1.
+
+        Cada um no seu namespace, ambos escrevendo no mesmo volume. Um nome
+        derivado do pid seria o mesmo nome para os dois: o que chegasse depois
+        escreveria por cima do pendente do outro.
+        """
         fonte = Path(runner.__file__).read_text()
         assert "getpid" not in fonte, "o nome do pendente voltou a depender do pid"
 
+        nomes = {f"{runner.PENDING_PREFIX}{secrets.token_hex(8)}" for _ in range(500)}
+        assert len(nomes) == 500
 
-class TestLimpezaDePendentes:
-    def test_pendente_de_processo_vivo_nao_e_removido(self, diretorio: Path) -> None:
-        """Quem está de pé e ainda não publicou continua onde está.
 
-        É o caso de dois deploys se atravessando. Quem decide é a conexão: o pid
-        no nome seria o mesmo para os dois containers, e a data do arquivo não
-        diz nada sobre quem está do outro lado.
+class TestNinguemRemoveSocketDeNinguem:
+    """A regra que fecha a porta do incidente, nos dois sentidos."""
+
+    def test_pendente_de_quem_esta_subindo_nao_e_removido(self, diretorio: Path) -> None:
+        """Entre o `bind` e o `listen` o arquivo existe e ninguém atende ainda.
+
+        Uma limpeza que perguntasse "alguém responde aqui?" concluiria que este
+        socket está abandonado e o apagaria — e o processo que está subindo
+        perderia o caminho debaixo dos pés. Seria o incidente de novo, por outro
+        caminho: por isso a subida não remove nada.
         """
-        vivo = diretorio / f"{runner.PENDING_PREFIX}aaaa"
-        laco = _escutando(vivo)
+        subindo = diretorio / f"{runner.PENDING_PREFIX}aaaa"
+        laco = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        laco.bind(str(subindo))  # sem `listen`: ninguém atende ainda
         try:
-            runner._discard_abandoned_sockets(diretorio)
-            assert vivo.exists(), "o pendente de um processo vivo foi removido"
+            runner._assert_only_our_files(diretorio)
+            assert subindo.exists(), "o pendente de quem está subindo foi removido"
         finally:
             laco.close()
 
-    def test_pendente_sem_ninguem_atras_e_removido(self, diretorio: Path) -> None:
-        # Um `bind` que deu certo e um processo que morreu antes de publicar.
-        morto = diretorio / f"{runner.PENDING_PREFIX}bbbb"
-        _abandonado(morto)
+    def test_pendente_esquecido_tambem_fica(self, diretorio: Path) -> None:
+        # Um processo que morreu antes de publicar deixa o arquivo para trás.
+        # Ele não atrapalha: quem publica usa `rename`, que não precisa do
+        # caminho livre. Distinguir os dois casos é que era a corrida.
+        esquecido = diretorio / f"{runner.PENDING_PREFIX}bbbb"
+        _abandonado(esquecido)
 
-        runner._discard_abandoned_sockets(diretorio)
+        runner._assert_only_our_files(diretorio)
 
-        assert not morto.exists()
+        assert esquecido.exists()
 
-    def test_o_socket_publicado_nunca_entra_na_limpeza(self, diretorio: Path) -> None:
-        # Nem quando está abandonado: quem substitui é o `rename`, e ele não
-        # precisa que o caminho esteja livre.
+    def test_o_socket_publicado_nunca_e_removido_na_subida(self, diretorio: Path) -> None:
         _abandonado(runner.SOCKET_PATH)
 
-        runner._discard_abandoned_sockets(diretorio)
+        runner._assert_only_our_files(diretorio)
 
         assert runner.SOCKET_PATH.exists()
 
     def test_arquivo_estranho_impede_o_servico_de_subir(self, diretorio: Path) -> None:
-        # O diretório é do socket e de mais nada. Qualquer outra coisa ali é
-        # sinal de que o volume não é o que se pensa.
+        # O diretório é do socket e dos pendentes. Qualquer outra coisa ali é
+        # sinal de que o volume não é o que se pensa, e é a guarda que sobrou —
+        # a única que não depende de adivinhar quem está vivo.
         (diretorio / "conteudo-do-vendedor.pdf").write_bytes(b"privado")
 
         with pytest.raises(RuntimeError, match="unexpected files"):
-            runner._discard_abandoned_sockets(diretorio)
+            runner._assert_only_our_files(diretorio)
 
 
 class TestPublicacao:
@@ -201,7 +320,7 @@ class TestGuardasDeSeguranca:
 
     def test_diretorio_vazio_com_dono_e_modo_certos_e_aceito(self, diretorio: Path) -> None:
         runner._assert_directory(diretorio)
-        runner._discard_abandoned_sockets(diretorio)
+        runner._assert_only_our_files(diretorio)
 
         assert list(diretorio.iterdir()) == []
 

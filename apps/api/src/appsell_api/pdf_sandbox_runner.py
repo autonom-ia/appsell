@@ -21,12 +21,22 @@ combinarem alguma coisa entre si:
 2. **`listen` acontece antes de publicar.** Publicar primeiro deixaria uma
    janela com caminho no lugar e ninguém escutando, que para quem conecta é uma
    recusa — não uma espera.
-3. **Ninguém remove o socket publicado.** Esta é a que fecha a porta do
-   incidente: entre olhar o arquivo e apagá-lo há sempre um instante, e nesse
-   instante o sucessor pode ter tomado o lugar. Não havendo remoção, não há
-   instante. O `rename` do próximo processo substitui o que estiver lá, de forma
-   atômica, e um socket sem ninguém atrás recusa conexão em vez de sumir — o que
-   é visível, ao contrário do que aconteceu.
+3. **Ninguém remove socket de ninguém.** Esta é a que fecha a porta do
+   incidente. Entre olhar um arquivo e apagá-lo há sempre um instante, e nesse
+   instante o dono pode ter mudado: quem sai pode apagar o socket do sucessor, e
+   quem entra pode apagar o pendente de quem está no meio do próprio arranque —
+   entre o `bind` e o `listen` o arquivo existe e ninguém atende ainda.
+
+   Não havendo remoção, não há instante. Quem publica usa `rename`, que
+   substitui de forma atômica e não precisa do caminho livre. O que sobra é um
+   pendente esquecido por subida que falhou, alguns bytes, e um socket sem
+   ninguém atrás quando o serviço cai — que recusa conexão em vez de sumir.
+
+Nada disto dispensa derrubar o antigo antes de subir o novo, que é como o deploy
+deve ser feito. Duas publicações quase simultâneas continuam tendo um perdedor:
+o processo fica vivo, com o socket aberto, e sem caminho pelo qual ser
+alcançado. O desenho aqui garante que ninguém fique *sem* socket; não garante
+que dois processos concorrentes façam sentido juntos.
 """
 
 from __future__ import annotations
@@ -45,15 +55,13 @@ PENDING_PREFIX = ".pdf.sock."
 
 _EXPECTED_UID = 10001
 _EXPECTED_GID = 10001
-#: Quanto tempo esperar ao perguntar se um socket abandonado ainda atende.
-_LIVENESS_TIMEOUT_SECONDS = 0.5
 
 
 def main() -> None:
     if os.geteuid() != _EXPECTED_UID or os.getegid() != _EXPECTED_GID:
         raise RuntimeError("PDF sandbox must run as the dedicated 10001:10001 user")
     _assert_directory(SOCKET_PATH.parent)
-    _discard_abandoned_sockets(SOCKET_PATH.parent)
+    _assert_only_our_files(SOCKET_PATH.parent)
     os.umask(0o007)
 
     # Sorteado, e não derivado do pid: os dois containers de um deploy têm pid 1,
@@ -111,36 +119,25 @@ def _assert_replaceable(path: Path) -> None:
         raise RuntimeError("PDF sandbox socket path holds something that is not a socket")
 
 
-def _discard_abandoned_sockets(parent: Path) -> None:
-    """Remove sockets pendentes que já não atendem ninguém.
+def _assert_only_our_files(parent: Path) -> None:
+    """O diretório é do socket e dos pendentes, e de mais nada.
 
-    Quem decide é a própria conexão, e não o nome do arquivo: um pendente de um
-    processo vivo — que fez `listen` e ainda não publicou — aceita conexão e
-    fica onde está. Perguntar é o único jeito honesto: o pid no nome seria o
-    mesmo para os dois containers, e a data do arquivo não diz nada sobre quem
-    está do outro lado.
+    Não remove nada, de propósito. Tentar decidir se um pendente ainda serve
+    era uma corrida: entre o `bind` e o `listen` de quem está subindo, o arquivo
+    existe e ninguém atende — quem perguntasse por conexão concluiria que está
+    abandonado e apagaria o socket de um processo vivo. Era o incidente de novo,
+    por outro caminho.
+
+    Órfãos não atrapalham: quem publica usa `rename`, que não precisa do caminho
+    livre. O que sobra é um punhado de bytes por subida que falhou, e o
+    diretório continua recusando qualquer coisa que não seja nossa — que é a
+    parte que protege de verdade.
     """
     for entrada in sorted(parent.iterdir()):
         if entrada.name == SOCKET_PATH.name:
             continue
         if not entrada.name.startswith(PENDING_PREFIX):
             raise RuntimeError("PDF sandbox socket directory contains unexpected files")
-        if not _answers(entrada):
-            _discard(entrada)
-
-
-def _answers(path: Path) -> bool:
-    """Se há alguém escutando do outro lado deste socket."""
-    sonda = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sonda.settimeout(_LIVENESS_TIMEOUT_SECONDS)
-    try:
-        sonda.connect(str(path))
-    except OSError:
-        return False
-    else:
-        return True
-    finally:
-        sonda.close()
 
 
 def _assert_directory(parent: Path) -> None:
