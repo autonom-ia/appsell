@@ -64,6 +64,46 @@ Não apagar/recriar tenant, produto, PDF ou membership para corrigir fluxo.
 Migrations são forward-only; rollback de aplicação usa imagem anterior e
 rollback de dados usa restore ensaiado em banco separado.
 
+## Decisão 010 — os limites de mídia vivem no catálogo, e mudam em todas as camadas
+
+Cada limite aparece em várias camadas: Python, TypeScript, restrições do banco,
+funções PL/pgSQL. **Alargar parte delas não deixa o limite valendo pela metade —
+muda a porta em que o vendedor bate**, do envio, onde a mensagem é clara, para o
+`INSERT`, onde ele vê um erro de banco.
+
+Uma mudança de limite só está pronta quando passa por todas. `test_limites_de_midia.py`
+varre `lib/`, `app/`, `apps/api/src`, `deploy/` e `scripts/` procurando número
+cru — três versões desse teste foram furadas por olhar só um padrão, só uma
+linguagem, ou só a lista de arquivos de que alguém se lembrou.
+
+O catálogo (`asset_media.py` / `lib/asset-media.ts` / `app_private.asset_media_*`)
+é a fonte única de tamanho por tipo. Um módulo que precise de um teto próprio
+tem de justificar por que não é o do catálogo — foi assim que o vídeo do PDF
+ficou com 512 MiB enquanto o catálogo dizia 100.
+
+## Decisão 011 — número de limite vem de medição, não de estimativa
+
+O teto de 300 páginas veio de medir a rasterização de um documento real de 300
+páginas dentro do serviço isolado, não de arredondar para cima. A medição mudou o
+desenho duas vezes: mostrou que paralelizar sem núcleo é **mais lento**, e que a
+duração máxima de vídeo de 4 h nunca poderia ser entregue, porque recodificar
+custa mais tempo do que o próprio vídeo.
+
+Antes de subir um teto, medir o caminho inteiro e cruzar com os prazos que já
+existem — o prazo do `pdftoppm` dava 164 páginas enquanto o código declarava 300.
+
+## Decisão 012 — toda migration ensina o banco a se reconhecer
+
+`app_private.schema_ready()` guarda a lista das versões conhecidas, e o
+`/health/ready` consulta ela. Como esse endpoint alimenta o `HEALTHCHECK` do
+contêiner, uma migration que sobe a versão sem estender a lista não devolve um
+número errado: **derruba a API em laço de reinício**.
+
+Toda migration nova estende as duas cópias da função e acompanha
+`EXPECTED_MIGRATION`. A 0043 e a 0044 mostram o formato, com `raise` quando a
+substituição não encontra o texto — uma troca silenciosa que não troca nada é
+como um limite sobrevive a quem pensou tê-lo mudado.
+
 ## Decisões ainda pendentes
 
 - staging separado e DNS próprio;

@@ -1,12 +1,29 @@
 # PROGRESS — Appsell
 
-Última atualização documental: 2026-08-24.
+Última atualização documental: 2026-08-31.
 
 ## Fase atual
 
-O Appsell saiu do estado de protótipo Local/CI e possui uma operação real
-multitenant em produção no domínio `sell.autonomia.site`. A release comprovada
-está no SHA `2c8a36897eadf624955810ffdaee7b33c6239334`.
+**PDF de 300 páginas em produção desde 31/08** (`712e5bb`). O playbook do
+vendedor, com 83 páginas, deixou de estar a 83% do teto.
+
+### O que ficou aberto, em ordem de valor
+
+1. **[#320](https://github.com/autonom-ia/appsell/issues/320) — o serviço isolado
+   tem um lugar só.** Leitura de links, rasterização e conversão de vídeo
+   disputam. É o que impede o adiantamento dos vídeos (o aluno espera ~2 s no
+   primeiro clique) e o que limita o teto de páginas a 300.
+2. **[#325](https://github.com/autonom-ia/appsell/issues/325) — vídeo longo é
+   impossível hoje.** A duração de 4 h é aceita e nunca fica pronta; o envio é
+   limitado a 100 MiB, o que dá ~4 min de aula em 1080p. Subir de verdade exige
+   **envio em pedaços** — hoje é um PUT único com 5 min de prazo.
+3. **[#312](https://github.com/autonom-ia/appsell/issues/312) — a API não grava
+   log.** Enquanto isso, "0 linhas de erro" não é evidência de nada, e todo
+   diagnóstico depende de reproduzir o processo real.
+4. **[#266](https://github.com/autonom-ia/appsell/issues/266) — cinco suítes fora
+   do CI**, incluindo a de isolamento entre lojas.
+5. **[#321](https://github.com/autonom-ia/appsell/issues/321)** — os limites de
+   preparo são locais ao processo e não sobrevivem a mais de um worker.
 
 ## Entregue
 
