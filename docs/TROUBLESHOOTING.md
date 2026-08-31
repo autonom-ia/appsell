@@ -195,10 +195,19 @@ sudo docker service logs --since 1h sell-autonomia_api | grep '"request_id":"<id
   | credencial de URL de conexão | `postgresql://<REDACTED>@db.internal/prod` |
   | cartão: prefixo de bandeira **e** Luhn | `4111 1111 1111 1111` |
 
+  As bandeiras cobrem Visa, Mastercard, Amex, Diners, Discover (inclusive as
+  faixas `644-649` e `62`), JCB e UnionPay. Cobrir só o prefixo mais conhecido
+  de cada uma deixava `6445641386133871` passar inteiro.
+
   **O que ele preserva de propósito**, porque é diagnóstico e não segredo: UUID
   canônico, slug de produto e de seller, caminho de arquivo do traceback,
   carimbo de tempo, e identificador numérico. Cada um deles já foi apagado por
   alguma versão anterior do redator.
+
+  O que separa slug de token são dois critérios, e os dois são necessários:
+  nenhum trecho entre `-`/`_` acima de 16 caracteres, **e** nenhuma maiúscula.
+  Só o primeiro deixava passar 5% dos `secrets.token_urlsafe(32)` que o próprio
+  sistema gera — medido em 100.000 tokens, 5.027 escapavam.
 
   **O que ele não apaga:** senha curta solta num campo, CPF, e-mail, número de
   telefone, e base64 sem padding. O redator é rede de segurança para o descuido

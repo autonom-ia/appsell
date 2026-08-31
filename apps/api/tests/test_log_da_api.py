@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import secrets
 import warnings
 from collections.abc import AsyncIterator, Iterator
 from io import StringIO
@@ -31,6 +32,7 @@ from httpx import ASGITransport, AsyncClient
 from appsell_api import logging_setup
 
 _ESPERA_DA_ROTA_LENTA = 0.05
+_TOKENS_DA_AMOSTRA = 20_000
 
 
 @pytest.fixture(autouse=True)
@@ -692,7 +694,7 @@ def test_o_uvicorn_nao_guarda_tratador_proprio_depois_da_configuracao() -> None:
         ("uuid", "550e8400-e29b-41d4-a716-446655440000"),
         ("chave com uuid", "derivatives/pdf-link-video/550e8400-e29b-41d4-a716-446655440000.mp4"),
         ("slug de produto", "curso-de-inteligencia-artificial-na-pratica-2026"),
-        ("slug com sublinhado", "autonomia_solutions-brasil-ltda-2026-edicao"),
+        ("nome de banco com sublinhado", "appsell_native_90-backup-2026-08-31"),
         ("query com e-mail", "http://api.internal:8080?notify=ops@autonomia.site"),
         ("igual no meio", "correlation=abcdefghijklmnop"),
         ("caminho com C++", "/Users/alguem/dev/C++/worktrees/appsell_api/main.py"),
@@ -727,6 +729,11 @@ def test_dado_de_diagnostico_sobrevive_ao_redator(nome: str, valor: str) -> None
         ("cartao Visa", "4111 1111 1111 1111"),
         ("cartao Amex", "378282246310005"),
         ("cartao Mastercard", "5555555555554444"),
+        ("cartao Discover na faixa 644", "6445641386133871"),
+        ("cartao UnionPay", "6221260000000000"),
+        ("cartao JCB", "3530111333300000"),
+        ("cartao Diners", "30569309025904"),
+        ("token urlsafe sem trecho longo", "nB2iJc4dJ-x_z6VZwp2OQ9G_gjOyE-FwiLg9LsbHBzY"),
     ],
 )
 def test_o_que_parece_segredo_nao_sobrevive_ao_redator(nome: str, valor: str) -> None:
@@ -794,3 +801,24 @@ def test_numero_com_prefixo_de_bandeira_que_falha_no_luhn_e_preservado() -> None
     logging_setup.get_logger("teste").info("evento_de_prova", campo=quase_cartao)
 
     assert json.loads(_linhas(fluxo)[0])["campo"] == quase_cartao
+
+
+def test_nenhum_token_gerado_pelo_sistema_escapa_do_redator() -> None:
+    """O sistema gera `secrets.token_urlsafe(32)` em `platform_routes`.
+
+    A primeira versão do discriminante de identificador olhava só o tamanho do
+    maior trecho entre `-` e `_`. Medido sobre 100.000 tokens reais, **5.027**
+    passavam intactos — 5% — porque por acaso não tinham nenhum trecho longo.
+    Exemplo que escapava: `nB2iJc4dJ-x_z6VZwp2OQ9G_gjOyE-FwiLg9LsbHBzY`.
+
+    O segundo critério é a ausência de maiúscula: o `_SLUG` de `routes.py` só
+    aceita minúscula, dígito e hífen, e um token só escaparia agora se sorteasse
+    43 caracteres sem uma única maiúscula.
+    """
+    escaparam = [
+        token
+        for token in (secrets.token_urlsafe(32) for _ in range(_TOKENS_DA_AMOSTRA))
+        if logging_setup._redigir_texto(token) == token
+    ]
+
+    assert escaparam == []

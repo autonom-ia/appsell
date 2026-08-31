@@ -58,9 +58,14 @@ _SEGREDO = re.compile(r"[A-Za-z0-9_\-]{32,}")
 # TROUBLESHOOTING manda registrar, e o `curso-de-...-na-pratica-2026` que diz de
 # qual produto o erro fala.
 #
-# O que separa os dois casos e o **tamanho do maior trecho sem separador**: um
-# token carrega uma corrida longa de caracteres sem `-` nem `_`; um slug e feito
-# de palavras curtas, e um UUID de grupos de no maximo 12.
+# Dois criterios, e os dois sao necessarios. O **tamanho do maior trecho sem
+# separador** — um token carrega uma corrida longa, um slug e feito de palavras
+# curtas, um UUID de grupos de no maximo 12. E a **ausencia de maiuscula**: o
+# `_SLUG` de `routes.py` so aceita minuscula, digito e hifen, e sem este segundo
+# criterio 5% dos `secrets.token_urlsafe(32)` que o proprio sistema gera em
+# `platform_routes.py` passavam intactos, porque por acaso nao tinham nenhum
+# trecho longo. Um token so escaparia agora se sorteasse 43 caracteres sem uma
+# unica maiuscula, o que nao acontece na pratica.
 _UUID_CANONICO = re.compile(
     r"\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\Z"
 )
@@ -101,6 +106,19 @@ _CREDENCIAL_EM_URL = re.compile(r"(?<=://)[^/\s?#]*:[^/\s?#]*(?=@)")
 # 4. Numero de cartao. Redigir por tamanho apagaria identificador de pedido e de
 #    asset; o digito verificador de Luhn separa os dois casos sem chute.
 _CARTAO_CANDIDATO = re.compile(r"\b(?:\d[ -]?){12,18}\d\b")
+
+# Visa, Amex, Diners e Discover no que tem prefixo fixo.
+_PREFIXOS_LITERAIS_DE_BANDEIRA = ("4", "34", "37", "36", "38", "6011", "65")
+# (quantos digitos olhar, inicio, fim) — Mastercard, Diners, Discover, JCB e
+# UnionPay, que sao definidas por faixa e nao por prefixo literal.
+_FAIXAS_DE_BANDEIRA = (
+    (2, 51, 55),
+    (2, 62, 62),
+    (3, 300, 305),
+    (3, 644, 649),
+    (4, 2221, 2720),
+    (4, 3528, 3589),
+)
 
 # Cabecalho e dado de terceiro: so um identificador estreito e aceito e ecoado.
 # Sem isso, um valor com quebra de linha injeta um evento falso no log.
@@ -417,6 +435,8 @@ def _redigir_se_nao_for_identificador(casamento: re.Match[str]) -> str:
 def _parece_identificador(texto: str) -> bool:
     if _UUID_CANONICO.fullmatch(texto):
         return True
+    if texto != texto.lower():
+        return False
     trechos = _SEPARADORES_DE_IDENTIFICADOR.split(texto)
     return all(len(trecho) <= _TRECHO_MAXIMO_DE_IDENTIFICADOR for trecho in trechos)
 
@@ -431,19 +451,23 @@ def _redigir_se_for_cartao(casamento: re.Match[str]) -> str:
 def _comeca_como_cartao(digitos: list[str]) -> bool:
     """Luhn sozinho não separa cartão de identificador.
 
-    Cerca de um em cada dez números arbitrários passa no dígito verificador —
-    o carimbo Unix `1788134400000` passa, e `0000000000000` também. Exigir
-    também um prefixo de bandeira emissora derruba o falso positivo sem perder
-    cartão real.
+    Cerca de um em cada dez números arbitrários passa no dígito verificador — o
+    carimbo Unix `1788134400000` passa, e `0000000000000` também. Exigir também
+    um prefixo de bandeira emissora derruba o falso positivo sem perder cartão
+    real.
+
+    A lista precisa cobrir a bandeira inteira, não o exemplo mais conhecido
+    dela: `6011` e `65` deixavam de fora os intervalos `644-649` e
+    `622126-622925` da Discover, e `6445641386133871` passava por Luhn e saía
+    inteiro no log.
     """
     numero = "".join(digitos)
-    if numero.startswith(("4", "34", "37", "6011", "65", "36", "38")):
+    if numero.startswith(_PREFIXOS_LITERAIS_DE_BANDEIRA):
         return True
-    if numero[:2].isdigit() and 51 <= int(numero[:2]) <= 55:
-        return True
-    if numero[:4].isdigit() and 2221 <= int(numero[:4]) <= 2720:
-        return True
-    return numero[:3].isdigit() and 300 <= int(numero[:3]) <= 305
+    return any(
+        numero[:tamanho].isdigit() and inicio <= int(numero[:tamanho]) <= fim
+        for tamanho, inicio, fim in _FAIXAS_DE_BANDEIRA
+    )
 
 
 def _passa_por_luhn(digitos: list[str]) -> bool:
