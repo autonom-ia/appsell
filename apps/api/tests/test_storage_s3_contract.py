@@ -13,6 +13,7 @@ from appsell_api.asset_media import max_bytes as asset_max_bytes
 from appsell_api.config import Settings
 from appsell_api.pdf_verifier import verified_pdf_file as _verified_pdf_file
 from appsell_api.storage_s3 import (
+    MULTIPART_EXPIRY_DAYS,
     MULTIPART_PART_BYTES,
     S3Storage,
     StorageError,
@@ -327,3 +328,15 @@ def test_real_s3_multipart_round_trip_resume_and_abort() -> None:
     # Depois de fechado o envio deixa de existir como envio, e a busca não pode
     # devolver o de um vizinho de prefixo.
     assert storage.find_multipart_upload(bucket=storage.quarantine_bucket, key=key) is None
+
+
+def test_real_s3_expires_abandoned_multipart_uploads() -> None:
+    """A rede embaixo do cancelamento, conferida no storage de verdade.
+
+    Um vendedor que fecha a aba no meio do envio não cancela nada, e as partes
+    ficam gravadas ocupando disco sem aparecer em listagem de objeto nenhuma:
+    não dá para descobrir olhando o bucket, só o disco cheio.
+    """
+    storage = storage_client()
+    storage.ensure_local_ci_controls(allowed_origin="http://localhost:3000")
+    assert storage.multipart_expiry_days() == MULTIPART_EXPIRY_DAYS

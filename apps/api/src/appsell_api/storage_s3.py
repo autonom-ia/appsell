@@ -76,6 +76,10 @@ MULTIPART_PART_BYTES: Final = 16 * 1024 * 1024
 #: ele cobre 16 GiB, muito acima de qualquer teto de mídia do catálogo.
 MULTIPART_MAX_PARTS: Final = 1_000
 
+#: A regra que apaga envios em partes abandonados, e por quantos dias ela espera.
+MULTIPART_EXPIRY_RULE_ID: Final = "appsell-abort-incomplete-multipart"
+MULTIPART_EXPIRY_DAYS: Final = 1
+
 
 @dataclass(frozen=True)
 class UploadedPart:
@@ -767,6 +771,49 @@ class S3Storage:
                 Bucket=bucket,
                 CORSConfiguration={"CORSRules": [rule]},
             )
+        self.ensure_multipart_expiry()
+
+    def ensure_multipart_expiry(self) -> None:
+        """A regra que apaga partes de envios que ninguém fechou nem cancelou.
+
+        O cancelamento já aborta o envio, e é ele a defesa principal. Esta é a
+        rede embaixo dela: o vendedor que fecha a aba no meio do envio não
+        cancela nada, e as partes ficam gravadas ocupando disco **sem aparecer
+        em listagem de objeto nenhuma** — não dá para descobrir o problema
+        olhando o bucket, só a fatura ou o disco cheio.
+
+        Um dia é o mínimo que o protocolo aceita, e é folga enorme: a intenção
+        de upload dura quinze minutos.
+        """
+        self._control.put_bucket_lifecycle_configuration(
+            Bucket=self.quarantine_bucket,
+            LifecycleConfiguration={
+                "Rules": [
+                    {
+                        "ID": MULTIPART_EXPIRY_RULE_ID,
+                        "Status": "Enabled",
+                        "Filter": {"Prefix": ""},
+                        "AbortIncompleteMultipartUpload": {
+                            "DaysAfterInitiation": MULTIPART_EXPIRY_DAYS
+                        },
+                    }
+                ]
+            },
+        )
+
+    def multipart_expiry_days(self) -> int | None:
+        """Quantos dias a regra concede, ou `None` se ela não existe."""
+        try:
+            configuracao = self._control.get_bucket_lifecycle_configuration(
+                Bucket=self.quarantine_bucket
+            )
+        except ClientError:
+            return None
+        for regra in configuracao.get("Rules", []):
+            aborta = regra.get("AbortIncompleteMultipartUpload")
+            if regra.get("Status") == "Enabled" and aborta:
+                return int(aborta["DaysAfterInitiation"])
+        return None
 
     def probe_availability(self) -> None:
         for bucket in (self.quarantine_bucket, self.ready_bucket):

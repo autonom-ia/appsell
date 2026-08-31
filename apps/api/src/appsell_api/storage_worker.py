@@ -630,6 +630,20 @@ def assert_storage_worker_ready(
                 f"{tool} is unavailable: the asset worker cannot process media without it"
             )
 
+    # Aplicada na subida, e não exigida: um ambiente cuja credencial não pode
+    # escrever política de bucket não deve ficar sem worker por causa disso. O
+    # cancelamento continua abortando os envios, e o que esta regra cobre é só o
+    # vendedor que fechou a aba. Falhar aqui é registrado com o que fazer.
+    try:
+        storage.ensure_multipart_expiry()
+    except Exception as error:  # noqa: BLE001 - qualquer falha aqui é a mesma decisão
+        _logger.warning(
+            "appsell_multipart_expiry_not_applied",
+            bucket=storage.quarantine_bucket,
+            reason=type(error).__name__,
+            remediation="aplicar AbortIncompleteMultipartUpload no bucket de quarentena",
+        )
+
 
 def _validate_storage_key(key: str) -> None:
     invalid_part = any(part in {"", ".", ".."} for part in key.split("/"))
