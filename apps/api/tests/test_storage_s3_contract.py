@@ -9,6 +9,7 @@ import httpx
 import pytest
 from reportlab.pdfgen.canvas import Canvas  # type: ignore[import-untyped]
 
+from appsell_api.asset_media import max_bytes as asset_max_bytes
 from appsell_api.config import Settings
 from appsell_api.pdf_verifier import verified_pdf_file as _verified_pdf_file
 from appsell_api.storage_s3 import S3Storage, object_sha256_matches
@@ -154,15 +155,31 @@ def test_real_presign_rejects_wrong_length_and_local_limit() -> None:
     )
     assert foreign_preflight.headers.get("access-control-allow-origin") is None
     assert not storage.object_exists(bucket=storage.quarantine_bucket, key=upload_key(upload.url))
+    # O tamanho vem de `asset_media`, nao de um numero escrito aqui. Ele ja
+    # esteve fixo em 10 MiB, e desde `19dc049` — "PDF de ate 100 MiB" — o teste
+    # passou a mandar um valor **dentro** do permitido e nao provava mais nada.
+    # Ninguem percebeu porque a certificacao de storage so roda quando o diff
+    # toca em storage, e ela ficou `skipped` por varios releases.
+    limite_do_pdf = asset_max_bytes("application/pdf")
     with pytest.raises(ValueError, match="outside"):
         storage.presign_put(
             bucket=storage.quarantine_bucket,
             key="contract/too-large.pdf",
             content_type="application/pdf",
             sha256_hex="0" * 64,
-            byte_size=10 * 1024 * 1024 + 1,
+            byte_size=limite_do_pdf + 1,
             upload_request_id=str(uuid4()),
         )
+    # E o limite exato precisa ser aceito, senao "rejeita acima" viraria
+    # "rejeita perto", e o teste passaria com o limite errado.
+    storage.presign_put(
+        bucket=storage.quarantine_bucket,
+        key="contract/at-the-limit.pdf",
+        content_type="application/pdf",
+        sha256_hex="0" * 64,
+        byte_size=limite_do_pdf,
+        upload_request_id=str(uuid4()),
+    )
 
 
 def storage_client() -> S3Storage:
