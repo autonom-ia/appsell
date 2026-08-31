@@ -22,9 +22,11 @@ import logging
 import os
 import re
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Iterable, Mapping, MutableMapping
+from types import TracebackType
 from typing import Any, TextIO, cast
 
 import structlog
@@ -140,6 +142,10 @@ _AMBIENTES_ESTRUTURADOS = frozenset({"staging", "production"})
 # O uvicorn instala tratadores proprios nestes loggers no arranque do servidor.
 _LOGGERS_COM_TRATADOR_PROPRIO = ("uvicorn", "uvicorn.error", "uvicorn.access")
 
+# Guardado no import, antes de qualquer substituicao, para que reconfigurar o
+# log varias vezes nao encadeie um hook dentro do outro.
+_EXCEPTHOOK_ORIGINAL = sys.excepthook
+
 # Capturar a raiz em INFO traz junto o log de cliente destas bibliotecas. O
 # `httpx` registra `HTTP Request: GET <url completa>` a cada chamada — e a API
 # fala com o sandbox e com o identity por `httpx`, de modo que a URL inteira,
@@ -213,6 +219,7 @@ def configure_logging(
     _capturar_o_logging_da_biblioteca_padrao(
         saida=saida, nivel=nivel, estruturado=estruturado, renderizador=renderizador
     )
+    _capturar_a_excecao_terminal()
 
 
 def _capturar_o_logging_da_biblioteca_padrao(
@@ -265,6 +272,45 @@ def _capturar_o_logging_da_biblioteca_padrao(
 
     for nome in _LOGGERS_RUIDOSOS:
         logging.getLogger(nome).setLevel(max(nivel, logging.WARNING))
+
+
+def _capturar_a_excecao_terminal() -> None:
+    """Faz a exceção que derruba o processo passar pela cadeia redigida.
+
+    O `sys.excepthook` padrão escreve o traceback direto no `stderr`, sem passar
+    por structlog, pelo tratador da raiz nem pelas duas passadas do redator. É o
+    caminho de uma falha de arranque — `asset_worker_service.main()` chama
+    `asyncio.run(run())` sem rede, e `ensure-asset-worker.sh` roda isso em
+    produção. Reproduzido com
+    `RuntimeError("postgresql://alice:p@ssw0rd@db.internal/prod")`: usuário e
+    senha apareciam inteiros.
+
+    O interpretador continua saindo com código diferente de zero: o hook apenas
+    registra, não interfere no encerramento. `KeyboardInterrupt` segue pelo
+    caminho padrão, porque interromper no terminal não é uma falha para
+    registrar.
+    """
+    logger = get_logger("appsell_api.terminal")
+
+    def registrar_e_encerrar(
+        tipo: type[BaseException], valor: BaseException, tb: TracebackType | None
+    ) -> None:
+        if issubclass(tipo, KeyboardInterrupt):
+            _EXCEPTHOOK_ORIGINAL(tipo, valor, tb)
+            return
+        logger.critical("uncaught_exception", exc_info=(tipo, valor, tb))
+
+    def registrar_da_thread(args: threading.ExceptHookArgs) -> None:
+        if issubclass(args.exc_type, KeyboardInterrupt):
+            return
+        logger.critical(
+            "uncaught_thread_exception",
+            thread=getattr(args.thread, "name", None),
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        )
+
+    sys.excepthook = registrar_e_encerrar
+    threading.excepthook = registrar_da_thread
 
 
 def configure_logging_from_environment() -> None:

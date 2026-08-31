@@ -238,6 +238,12 @@ sudo docker service logs --since 1h sell-autonomia_api | grep '"request_id":"<id
   `exception_type`.
 - **Nada de `print()` para diagnóstico.** O `stdout` é protocolo. Use
   `logging_setup.get_logger(__name__)`.
+- **Handler de logging próprio contorna a redação.** Quem instalar um
+  `logging.Formatter` de terceiro, ou escrever direto no `stderr`, sai fora da
+  cadeia. A exceção que derruba o processo já está coberta: `configure_logging`
+  instala um `sys.excepthook` e um `threading.excepthook` que registram pela
+  cadeia redigida — sem isso, uma falha de arranque do `asset-worker` imprimia o
+  traceback cru.
 - **A cobertura ainda é pequena.** A fundação registra requisição e exceção; a
   instrumentação dos caminhos de mídia, catálogo e verificação é trabalho
   separado. Não conclua "não aconteceu" a partir de "não está no log".

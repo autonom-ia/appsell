@@ -18,7 +18,10 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import secrets
+import subprocess
+import sys
 import warnings
 from collections.abc import AsyncIterator, Iterator
 from io import StringIO
@@ -863,3 +866,45 @@ def test_a_credencial_do_logging_da_biblioteca_padrao_e_redigida_em_todo_ambient
     saida = fluxo.getvalue()
     assert "alice" not in saida
     assert "p@ssw0rd" not in saida
+
+
+@pytest.mark.parametrize("ambiente", ["production", "local"])
+def test_a_excecao_que_derruba_o_processo_passa_pelo_redator(ambiente: str) -> None:
+    """O `sys.excepthook` padrão escreve direto no `stderr`.
+
+    Sem passar por structlog, sem o tratador da raiz e sem nenhuma das duas
+    passadas do redator. É o caminho de uma falha de arranque:
+    `asset_worker_service.main()` chama `asyncio.run(run())` sem rede, e
+    `ensure-asset-worker.sh` roda isso em produção. Este teste roda um processo
+    de verdade, porque o defeito só existe no encerramento do interpretador.
+    """
+    programa = (
+        "import appsell_api;raise RuntimeError('postgresql://alice:p@ssw0rd@db.internal/prod')"
+    )
+    resultado = subprocess.run(  # noqa: S603 - comando montado localmente
+        [sys.executable, "-c", programa],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "APPSELL_API_ENVIRONMENT": ambiente},
+    )
+
+    assert resultado.returncode != 0
+    assert "alice" not in resultado.stderr
+    assert "p@ssw0rd" not in resultado.stderr
+    assert "uncaught_exception" in resultado.stderr
+    assert "<REDACTED>" in resultado.stderr
+    assert resultado.stdout == ""
+
+
+def test_interrupcao_pelo_teclado_nao_vira_evento_de_falha() -> None:
+    """Interromper no terminal não é uma falha para registrar."""
+    programa = (
+        "import appsell_api, sys;sys.excepthook(KeyboardInterrupt, KeyboardInterrupt(), None)"
+    )
+    resultado = subprocess.run(  # noqa: S603 - comando montado localmente
+        [sys.executable, "-c", programa], capture_output=True, text=True, check=False
+    )
+
+    assert "uncaught_exception" not in resultado.stderr
+    assert "KeyboardInterrupt" in resultado.stderr
