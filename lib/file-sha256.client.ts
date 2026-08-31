@@ -3,8 +3,9 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 
 const YIELD_EVERY_BYTES = 4 * 1024 * 1024;
 
+/** Aceita `Blob` porque uma parte do envio fatiado é uma fatia, não um arquivo. */
 export async function sha256File(
-  file: File,
+  file: Blob,
   signal?: AbortSignal,
   onProgress?: (percent: number) => void
 ) {

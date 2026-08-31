@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { boundedAssetFetch, discardPendingAssetUpload, downloadToggleLabel, formatBytes, MAX_VERIFICATION_WAIT_MS, validIntent, verificationPhaseForElapsed, verificationStatusTimeoutForElapsed, type UploadIntentPayload } from "../app/components/lesson-asset-panel";
+import { boundedAssetFetch, discardPendingAssetUpload, downloadToggleLabel, formatBytes, MAX_VERIFICATION_WAIT_MS, validIntent, validPart, verificationPhaseForElapsed, verificationStatusTimeoutForElapsed, type UploadIntentPayload } from "../app/components/lesson-asset-panel";
 import { ASSET_MEDIA_TYPES, SUPPORTED_ASSET_MEDIA, mediaLabel } from "../lib/asset-media";
 
 const valid: UploadIntentPayload = {
@@ -133,5 +133,64 @@ describe("o rotulo de download fala do formato certo", () => {
       expect(SUPPORTED_ASSET_MEDIA[mediaType].label.length, mediaType).toBeGreaterThan(2);
     }
     expect(mediaLabel("application/vnd.ms-word.document.macroEnabled.12")).toBe("arquivo");
+  });
+});
+
+const PART_BYTES = 16 * 1024 * 1024;
+const intencaoFatiada: UploadIntentPayload = {
+  upload_id: "55000000-0000-4000-8000-000000000001",
+  asset_id: "55000000-0000-4000-8000-000000000002",
+  expires_at: "2026-07-11T20:05:00.000Z",
+  multipart: { part_bytes: PART_BYTES, part_count: 50 }
+};
+const parteValida = {
+  part_number: 7,
+  upload_url: "http://127.0.0.1:8333/appsell-quarantine/object?partNumber=7&X-Amz-Signature=signed",
+  upload_origin: "http://127.0.0.1:8333",
+  expires_at: "2026-07-11T20:05:00.000Z",
+  required_headers: { "x-amz-checksum-sha256": "checksum-da-parte" },
+  required_content_length: PART_BYTES
+};
+
+describe("envio em partes no navegador", () => {
+  it("aceita a intenção fatiada, que não tem endereço para conferir", () => {
+    expect(validIntent(intencaoFatiada, APP_ORIGIN, NOW)).toBe(true);
+  });
+
+  it("recusa uma intenção fatiada que também traz URL", () => {
+    expect(validIntent({ ...intencaoFatiada, upload_url: valid.upload_url }, APP_ORIGIN, NOW)).toBe(false);
+  });
+
+  it("recusa um plano de uma parte só", () => {
+    // Uma parte só é envio único, e devia ter vindo com URL.
+    expect(
+      validIntent({ ...intencaoFatiada, multipart: { part_bytes: PART_BYTES, part_count: 1 } }, APP_ORIGIN, NOW)
+    ).toBe(false);
+  });
+
+  it("aceita a parte assinada no armazenamento", () => {
+    expect(validPart(parteValida, APP_ORIGIN, NOW)).toBe(true);
+  });
+
+  it("recusa a parte apontada para a própria aplicação", () => {
+    // Mandar o arquivo do vendedor para a nossa origem faria o BFF receber
+    // bytes que ele nunca deveria ver.
+    expect(
+      validPart({ ...parteValida, upload_url: `${APP_ORIGIN}/x?X-Amz-Signature=s`, upload_origin: APP_ORIGIN }, APP_ORIGIN, NOW)
+    ).toBe(false);
+  });
+
+  it("recusa a parte com cabeçalho a mais", () => {
+    expect(
+      validPart(
+        { ...parteValida, required_headers: { ...parteValida.required_headers, "content-type": "video/mp4" } },
+        APP_ORIGIN,
+        NOW
+      )
+    ).toBe(false);
+  });
+
+  it("recusa a parte vencida", () => {
+    expect(validPart(parteValida, APP_ORIGIN, Date.parse("2026-07-11T20:06:00Z"))).toBe(false);
   });
 });

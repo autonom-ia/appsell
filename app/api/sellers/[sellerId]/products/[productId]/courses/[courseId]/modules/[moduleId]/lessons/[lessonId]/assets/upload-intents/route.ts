@@ -4,6 +4,7 @@ import { createDomainAssetUploadIntent } from "@/lib/internal-api-client.server"
 import { configuredPublicOrigin } from "@/lib/public-origin";
 import {
   StorageUploadConfigurationError,
+  browserMultipartUploadIntent,
   browserUploadIntent,
   configuredStorageUploadOrigin
 } from "@/lib/storage-upload-policy.server";
@@ -36,11 +37,12 @@ export async function POST(request: NextRequest, context: LessonAssetRouteContex
       { ...ids, ...parsed }
     );
     if (!isRecord(payload)) return NextResponse.json({ error: "invalid_asset_response" }, { status: 502, headers: { "cache-control": "no-store" } });
-    const safeIntent = browserUploadIntent(
-      payload,
-      appOrigin,
-      storageOrigin
-    );
+    // Um envio fatiado não traz URL, e por isso passa por outro saneador. Deixar
+    // o mesmo aceitar os dois formatos faria uma resposta sem URL atravessar a
+    // prova de endereço sem ninguém notar.
+    const safeIntent = payload.multipart === undefined
+      ? browserUploadIntent(payload, appOrigin, storageOrigin)
+      : browserMultipartUploadIntent(payload);
     if (!safeIntent) return NextResponse.json({ error: "invalid_asset_response" }, { status: 502, headers: { "cache-control": "no-store" } });
     return NextResponse.json(safeIntent, { status: payload.created === false ? 200 : 201, headers: { "cache-control": "no-store" } });
   } catch (error) {

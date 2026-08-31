@@ -5,6 +5,7 @@ import { sessionCookieName } from "@/lib/cookies";
 import {
   ARCHIVE_ASSET_CSRF_ACTION,
   CANCEL_ASSET_UPLOAD_CSRF_ACTION,
+  SIGN_ASSET_UPLOAD_PART_CSRF_ACTION,
   CONFIRM_ASSET_UPLOAD_CSRF_ACTION,
   CREATE_ASSET_UPLOAD_CSRF_ACTION,
   UPDATE_ASSET_POLICY_CSRF_ACTION,
@@ -107,6 +108,7 @@ export function assetCsrf(sessionId: string) {
     intent: csrfTokenForSession(sessionId, CREATE_ASSET_UPLOAD_CSRF_ACTION),
     confirm: csrfTokenForSession(sessionId, CONFIRM_ASSET_UPLOAD_CSRF_ACTION),
     cancel: csrfTokenForSession(sessionId, CANCEL_ASSET_UPLOAD_CSRF_ACTION),
+    signPart: csrfTokenForSession(sessionId, SIGN_ASSET_UPLOAD_PART_CSRF_ACTION),
     archive: csrfTokenForSession(sessionId, ARCHIVE_ASSET_CSRF_ACTION),
     policy: csrfTokenForSession(sessionId, UPDATE_ASSET_POLICY_CSRF_ACTION)
   };
@@ -179,6 +181,7 @@ export const assetActions = {
   intent: CREATE_ASSET_UPLOAD_CSRF_ACTION,
   confirm: CONFIRM_ASSET_UPLOAD_CSRF_ACTION,
   cancel: CANCEL_ASSET_UPLOAD_CSRF_ACTION,
+  signPart: SIGN_ASSET_UPLOAD_PART_CSRF_ACTION,
   archive: ARCHIVE_ASSET_CSRF_ACTION,
   policy: UPDATE_ASSET_POLICY_CSRF_ACTION
 } as const;

@@ -16,6 +16,7 @@ export const ARCHIVE_CURRICULUM_CSRF_ACTION = "POST:/api/curriculum/archive";
 export const CREATE_ASSET_UPLOAD_CSRF_ACTION = "POST:/api/assets/upload-intents";
 export const CONFIRM_ASSET_UPLOAD_CSRF_ACTION = "POST:/api/assets/uploads/confirm";
 export const CANCEL_ASSET_UPLOAD_CSRF_ACTION = "POST:/api/assets/uploads/cancel";
+export const SIGN_ASSET_UPLOAD_PART_CSRF_ACTION = "POST:/api/assets/uploads/parts";
 export const ARCHIVE_ASSET_CSRF_ACTION = "POST:/api/assets/archive";
 export const UPDATE_ASSET_POLICY_CSRF_ACTION = "PATCH:/api/assets/policy";
 export const CREATE_COVER_UPLOAD_CSRF_ACTION = "POST:/api/products/cover/upload-intents";

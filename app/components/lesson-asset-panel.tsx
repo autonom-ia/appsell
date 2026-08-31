@@ -26,6 +26,8 @@ const ALLOWED_UPLOAD_HEADERS = new Set([
   "x-amz-checksum-sha256",
   "x-amz-meta-appsell-upload-id"
 ]);
+/** Uma parte leva só o hash dela: tipo e identificação pertencem ao objeto. */
+const ALLOWED_PART_HEADERS = new Set(["x-amz-checksum-sha256"]);
 
 export const ASSET_DISCARD_REQUEST_EVENT = "appsell:asset-discard-request";
 
@@ -85,17 +87,42 @@ interface UploadView {
 interface AssetListPayload {
   assets: AssetView[];
   uploads: UploadView[];
-  csrf: { intent: string; confirm: string; cancel: string; archive: string; policy: string };
+  csrf: { intent: string; confirm: string; cancel: string; archive: string; policy: string; signPart: string };
 }
 
 export interface UploadIntentPayload {
   upload_id: string;
   asset_id: string;
+  upload_url?: string;
+  upload_origin?: string;
+  expires_at: string;
+  required_headers?: Record<string, string>;
+  /** Presente só no envio fatiado, e então `upload_url` não existe. */
+  multipart?: { part_bytes: number; part_count: number };
+}
+
+interface UploadPartPayload {
+  part_number: number;
   upload_url: string;
   upload_origin: string;
   expires_at: string;
   required_headers: Record<string, string>;
+  required_content_length: number;
 }
+
+/** Quantas partes sobem ao mesmo tempo.
+ *
+ * Três, e não mais: o ganho vem de não deixar a linha ociosa entre requisições,
+ * não de abrir conexões. Acima disso elas competem pela mesma banda e a barra
+ * de progresso passa a andar em solavancos. */
+const PART_CONCURRENCY = 3;
+
+/** Quantas vezes uma parte insiste antes de derrubar o envio.
+ *
+ * A parte é a unidade de falha: uma queda de rede custa uma parte, e repetir
+ * uma parte é barato. É isto que substitui perder o arquivo inteiro. */
+const PART_ATTEMPTS = 4;
+const PART_RETRY_BASE_MS = 800;
 
 interface UploadStatusPayload {
   upload_id: string;
@@ -719,13 +746,172 @@ export function LessonAssetPanel({
       return;
     }
     dispatch({ type: "phase", phase: "uploading", message: `Enviando ${mediaLabel(mediaType)} — 0%`, uploadId: intent.upload_id });
+    if (intent.multipart) {
+      await uploadInParts(file, intent, intent.multipart, mediaType, generation);
+      return;
+    }
     await uploadDirect(file, intent, generation);
+  }
+
+  /**
+   * O envio fatiado: o arquivo sobe em partes e continua de onde parou.
+   *
+   * O `PUT` único não serve para uma aula longa. A URL assinada dura 300 s, e
+   * numa linha de 10 Mbit/s uma aula de 45 min leva mais de 600 s: ela vencia no
+   * meio e o vendedor perdia tudo, sem ter de onde recomeçar. Aqui nenhuma
+   * requisição precisa durar mais que uns segundos, e uma queda custa uma parte.
+   */
+  async function uploadInParts(
+    file: File,
+    intent: UploadIntentPayload,
+    plano: { part_bytes: number; part_count: number },
+    mediaType: AssetMediaType,
+    generation: number
+  ) {
+    const tamanhoDaParte = (numero: number) =>
+      Math.min(plano.part_bytes, file.size - (numero - 1) * plano.part_bytes);
+    const jaEnviadas = await partesJaEnviadas(intent.upload_id);
+    const pendentes = Array.from({ length: plano.part_count }, (_, indice) => indice + 1)
+      .filter((numero) => !jaEnviadas.has(numero));
+    let enviados = [...jaEnviadas].reduce((total, numero) => total + tamanhoDaParte(numero), 0);
+
+    const relatar = () => {
+      if (generation !== generationRef.current) return;
+      const progresso = Math.max(0, Math.min(100, Math.floor((enviados / file.size) * 100)));
+      dispatch({ type: "progress", progress: progresso });
+      dispatch({
+        type: "phase",
+        phase: "uploading",
+        message: `Enviando ${mediaLabel(mediaType)} — ${progresso}%`,
+        uploadId: intent.upload_id
+      });
+    };
+    relatar();
+
+    let proxima = 0;
+    const trabalhador = async () => {
+      while (true) {
+        const indice = proxima;
+        proxima += 1;
+        if (indice >= pendentes.length) return;
+        const numero = pendentes[indice];
+        const inicio = (numero - 1) * plano.part_bytes;
+        await enviarParte(intent.upload_id, numero, file.slice(inicio, inicio + tamanhoDaParte(numero)), generation);
+        enviados += tamanhoDaParte(numero);
+        relatar();
+      }
+    };
+    try {
+      await Promise.all(
+        Array.from({ length: Math.min(PART_CONCURRENCY, Math.max(pendentes.length, 1)) }, trabalhador)
+      );
+    } catch (error) {
+      // O mesmo desfecho do envio único: cancela a intenção e diz ao vendedor
+      // que o curso não mudou. As partes já enviadas somem com o cancelamento.
+      if (await falhaDoEnvio(intent.upload_id, generation, error)) throw error;
+      return;
+    }
+    if (generation !== generationRef.current) return;
+    await confirmUpload(intent.upload_id, generation);
+  }
+
+  /** O que já chegou. Falhar aqui só significa mandar tudo de novo, e não
+   * derrubar o envio: retomar é um ganho, não um pré-requisito. */
+  async function partesJaEnviadas(uploadId: string): Promise<Set<number>> {
+    try {
+      const response = await boundedFetch(`${base}/uploads/${uploadId}/parts`, {}, 15_000, false);
+      if (!response.ok) return new Set();
+      const payload = await response.json() as { uploaded_parts?: { part_number: number }[] };
+      return new Set((payload.uploaded_parts ?? []).map((parte) => parte.part_number));
+    } catch {
+      return new Set();
+    }
+  }
+
+  async function enviarParte(uploadId: string, numero: number, pedaco: Blob, generation: number) {
+    const hash = await sha256File(pedaco);
+    for (let tentativa = 1; ; tentativa += 1) {
+      if (generation !== generationRef.current) throw new DOMException("Upload cancelled", "AbortError");
+      try {
+        const assinada = await assinarParte(uploadId, numero, hash);
+        await enviarPedaco(assinada, pedaco);
+        return;
+      } catch (error) {
+        // Recusa é definitiva: repetir daria no mesmo, quatro vezes. Só a falha
+        // de transporte merece insistência.
+        const definitiva = error instanceof DOMException || (error instanceof Error && /^part_(4\d\d|invalid)/.test(error.message));
+        if (definitiva || tentativa >= PART_ATTEMPTS) throw error;
+        dispatch({ type: "phase", phase: "uploading", message: "Conexão instável. Retomando o envio…", uploadId });
+        await new Promise<void>((resolve) => window.setTimeout(resolve, PART_RETRY_BASE_MS * tentativa));
+      }
+    }
+  }
+
+  async function assinarParte(uploadId: string, numero: number, sha256: string): Promise<UploadPartPayload> {
+    if (!csrf) throw new Error("missing_csrf");
+    const body = new FormData();
+    body.set("_csrf", csrf.signPart);
+    body.set("sha256", sha256);
+    const response = await boundedFetch(`${base}/uploads/${uploadId}/parts/${numero}`, { method: "POST", body }, 15_000, false);
+    if (!response.ok) throw new Error(`part_${response.status}`);
+    const payload = await response.json() as UploadPartPayload;
+    if (!validPart(payload, window.location.origin)) throw new Error("part_invalid");
+    return payload;
+  }
+
+  function enviarPedaco(assinada: UploadPartPayload, pedaco: Blob) {
+    return new Promise<void>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("PUT", assinada.upload_url, true);
+      xhr.withCredentials = false;
+      xhr.timeout = 290_000;
+      for (const [name, value] of Object.entries(assinada.required_headers)) {
+        if (!ALLOWED_PART_HEADERS.has(name.toLowerCase())) {
+          reject(new Error("part_invalid_header"));
+          return;
+        }
+        xhr.setRequestHeader(name, value);
+      }
+      xhr.onerror = () => reject(new Error("part_network"));
+      xhr.ontimeout = () => reject(new Error("part_timeout"));
+      xhr.onabort = () => reject(new DOMException("Upload cancelled", "AbortError"));
+      xhr.onload = () => {
+        if (xhr.status < 200 || xhr.status >= 300) return reject(new Error(`part_${xhr.status}`));
+        resolve();
+      };
+      xhr.send(pedaco);
+    });
+  }
+
+  /**
+   * O desfecho de um envio que não terminou, igual nos dois caminhos.
+   *
+   * Devolve `false` quando não há o que fazer — o envio foi cancelado pelo
+   * vendedor, ou pertence a uma tentativa anterior — e `true` quando a falha foi
+   * comunicada e cabe ao chamador propagá-la.
+   */
+  async function falhaDoEnvio(uploadId: string, generation: number, error: unknown) {
+    if (generation !== generationRef.current || (error instanceof DOMException && error.name === "AbortError")) return false;
+    try {
+      await cancelIntent(uploadId);
+      activeUploadIdRef.current = null;
+      onCommitted();
+    } catch {
+      dispatch({ type: "phase", phase: "failed", message: "O envio falhou e ainda não foi possível cancelá-lo com segurança. Tente novamente antes de enviar outro arquivo.", uploadId });
+      return true;
+    }
+    dispatch({ type: "phase", phase: "failed", message: "O envio foi interrompido. Seu curso não foi alterado.", uploadId });
+    return true;
   }
 
   function uploadDirect(file: File, intent: UploadIntentPayload, generation: number) {
     return new Promise<void>((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhrRef.current = xhr;
+      if (!intent.upload_url || !intent.required_headers) {
+        reject(new Error("upload_intent_without_url"));
+        return;
+      }
       xhr.open("PUT", intent.upload_url, true);
       xhr.withCredentials = false;
       xhr.timeout = 290_000;
@@ -758,17 +944,7 @@ export function LessonAssetPanel({
       };
       xhr.send(file);
     }).catch(async (error) => {
-      if (generation !== generationRef.current || (error instanceof DOMException && error.name === "AbortError")) return;
-      try {
-        await cancelIntent(intent.upload_id);
-        activeUploadIdRef.current = null;
-        onCommitted();
-      } catch {
-        dispatch({ type: "phase", phase: "failed", message: "O envio falhou e ainda não foi possível cancelá-lo com segurança. Tente novamente antes de enviar outro arquivo.", uploadId: intent.upload_id });
-        throw error;
-      }
-      dispatch({ type: "phase", phase: "failed", message: "O envio foi interrompido. Seu curso não foi alterado.", uploadId: intent.upload_id });
-      throw error;
+      if (await falhaDoEnvio(intent.upload_id, generation, error)) throw error;
     });
   }
 
@@ -1006,13 +1182,55 @@ function selectedMediaType(file: File): AssetMediaType | null {
   return assetMediaTypeForFile(file.name, file.type);
 }
 
+/**
+ * A assinatura de uma parte, conferida com a mesma régua da intenção única.
+ *
+ * O servidor já saneou, e esta é a segunda barreira: o navegador não manda
+ * bytes para um endereço que não seja o do armazenamento, assinado e sem
+ * validade longa. Duas barreiras porque o custo de errar aqui é o arquivo do
+ * vendedor sair para fora.
+ */
+export function validPart(
+  value: UploadPartPayload,
+  appOrigin = "",
+  nowMs = Date.now()
+): boolean {
+  if (!value || !Number.isInteger(value.part_number) || value.part_number < 1
+    || typeof value.upload_url !== "string" || typeof value.upload_origin !== "string"
+    || !Number.isInteger(value.required_content_length) || value.required_content_length < 1) return false;
+  let url: URL;
+  let uploadOrigin: URL;
+  try { url = new URL(value.upload_url); uploadOrigin = new URL(value.upload_origin); } catch { return false; }
+  const expiresMs = Date.parse(value.expires_at);
+  if (value.upload_origin !== uploadOrigin.origin || url.origin !== uploadOrigin.origin || url.origin === appOrigin
+    || (appOrigin.startsWith("https://") && url.protocol !== "https:") || !/^https?:$/.test(url.protocol)
+    || url.username || url.password || url.hash || !url.searchParams.has("X-Amz-Signature")
+    || !Number.isFinite(expiresMs) || expiresMs <= nowMs || expiresMs > nowMs + 330_000
+    || !value.required_headers || typeof value.required_headers !== "object") return false;
+  const headers = Object.keys(value.required_headers).map((name) => name.toLowerCase());
+  return headers.length === ALLOWED_PART_HEADERS.size
+    && [...ALLOWED_PART_HEADERS].every((name) => headers.includes(name));
+}
+
 export function validIntent(
   value: UploadIntentPayload,
   appOrigin = "",
   nowMs = Date.now()
 ): boolean {
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-  if (!value || !uuid.test(value.upload_id) || !uuid.test(value.asset_id) || typeof value.upload_url !== "string" || typeof value.upload_origin !== "string") return false;
+  if (!value || !uuid.test(value.upload_id) || !uuid.test(value.asset_id)) return false;
+  if (value.multipart) {
+    // Uma intenção fatiada não tem endereço para conferir: cada parte traz o
+    // dela, e é lá que a prova acontece. Aceitar as duas coisas na mesma
+    // resposta deixaria uma intenção sem URL passar como se tivesse sido
+    // conferida.
+    const expiresMs = Date.parse(value.expires_at);
+    return value.upload_url === undefined
+      && Number.isInteger(value.multipart.part_bytes) && value.multipart.part_bytes > 0
+      && Number.isInteger(value.multipart.part_count) && value.multipart.part_count >= 2
+      && Number.isFinite(expiresMs) && expiresMs > nowMs && expiresMs <= nowMs + 330_000;
+  }
+  if (typeof value.upload_url !== "string" || typeof value.upload_origin !== "string") return false;
   let url: URL;
   let uploadOrigin: URL;
   try { url = new URL(value.upload_url); uploadOrigin = new URL(value.upload_origin); } catch { return false; }
