@@ -61,6 +61,17 @@ _MAX_RASTER_WORKERS = 4
 #: o serviço tiver só dois núcleos de verdade. Duzentos e quarenta dão folga para
 #: as duas situações sem esconder um documento travado.
 _PDFTOPPM_TIMEOUT_SECONDS = 240
+#: Prazo de quem espera o serviço isolado responder.
+#:
+#: Tem de ser maior que o do trabalho que ele espera, ou o prazo de dentro nunca
+#: chega a valer: o serviço só manda o primeiro byte depois de verificar,
+#: normalizar, rasterizar, higienizar e montar o pacote. Com 180 s aqui e 240
+#: lá, os 240 eram decoração — quem decidia era o cliente, e o documento
+#: voltava como "serviço indisponível" em vez de "documento grande demais".
+#:
+#: Medido: 149 s de rasterização com um núcleo. O resto do caminho — download,
+#: antivírus, normalização, pacote — precisa caber na diferença.
+_SANDBOX_TIMEOUT_SECONDS = 420.0
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
@@ -138,7 +149,7 @@ def prepared_pdf_file(
             with (
                 httpx.Client(
                     transport=transport,
-                    timeout=httpx.Timeout(180.0, connect=3.0),
+                    timeout=httpx.Timeout(_SANDBOX_TIMEOUT_SECONDS, connect=3.0),
                     trust_env=False,
                     follow_redirects=False,
                 ) as client,

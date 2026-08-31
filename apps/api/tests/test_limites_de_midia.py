@@ -15,7 +15,7 @@ from __future__ import annotations
 import importlib.util
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 
@@ -60,34 +60,36 @@ class TestTetoDePaginas:
         assert encontrado is not None, "a camada web perdeu a constante"
         assert int(encontrado.group(1)) == learning_pdf.MAX_PDF_PAGES
 
-    def test_nenhum_arquivo_da_web_escreve_o_numero_a_mao(self) -> None:
-        """Varre a web inteira, e não a lista de arquivos de que eu me lembrei.
+    def test_nenhum_arquivo_escreve_o_teto_de_pagina_a_mao(self) -> None:
+        """Varre o código inteiro, e não a lista de arquivos de que eu lembrei.
 
-        A versão anterior deste teste citava três arquivos e procurava por
-        `page_count`. O ponto que escapou foi um quarto arquivo, com outro
-        formato: `safeInteger(page, 1, 100)` no BFF — que recusava a página 101
-        antes mesmo de perguntar à API.
+        Esta é a terceira versão deste teste, e cada versão foi furada pelo
+        arquivo que ela não olhava:
 
-        Listar onde procurar é procurar o que já se sabe. Aqui a busca é por
-        qualquer número cru ao lado de uma página, em qualquer arquivo.
+        - a primeira citava três arquivos e procurava `page_count`; escapou o
+          BFF, com `safeInteger(page, 1, 100)`;
+        - a segunda varria `lib/` e `app/`, mas só TypeScript; escapou o
+          `reset_demo_tenant.py`, com o teto do pacote em bytes.
+
+        Listar onde procurar é procurar o que já se sabe.
         """
-        suspeito = re.compile(r"\bpage(?:_count|Count|_number|Number)?\b[^\n]{0,40}?\b(\d{2,4})\b")
-        achados: list[str] = []
-        for pasta in ("lib", "app"):
-            for caminho in sorted((_RAIZ / pasta).rglob("*.ts*")):
-                if "node_modules" in caminho.parts or caminho.name.endswith(".d.ts"):
-                    continue
-                for numero, linha in enumerate(caminho.read_text().splitlines(), 1):
-                    if "MAX_PDF_PAGES" in linha or linha.lstrip().startswith(("*", "//")):
-                        continue
-                    for encontrado in suspeito.finditer(linha):
-                        # Só interessa o número que poderia ser um teto de
-                        # página: os pequenos são índices, os grandes são bytes.
-                        if 50 <= int(encontrado.group(1)) <= 2000:
-                            achados.append(
-                                f"{caminho.relative_to(_RAIZ)}:{numero}: {linha.strip()}"
-                            )
+        achados = _numeros_crus_de_pagina()
         assert not achados, "teto de página escrito à mão:\n" + "\n".join(achados)
+
+    def test_nenhum_arquivo_escreve_o_teto_do_pacote_a_mao(self) -> None:
+        # 128 MiB e 512 MiB foram os dois valores que conviviam com o do banco.
+        antigos = ("128 * 1024 * 1024", "134217728", "512 * 1024 * 1024", "536870912")
+        # Só onde o número pode ser o teto do pacote: 512 MiB também aparece
+        # como cache de leitura e como teto de vídeo, que são outra coisa.
+        contexto = re.compile(r"(raster|pdf_page|page_bytes|total_bytes|derivative)", re.IGNORECASE)
+        achados: list[str] = []
+        for caminho in _arquivos_de_codigo():
+            for numero, linha in enumerate(caminho.read_text().splitlines(), 1):
+                if linha.lstrip().startswith(("#", "*", "//")) or not contexto.search(linha):
+                    continue
+                if any(antigo in linha for antigo in antigos):
+                    achados.append(f"{caminho.relative_to(_RAIZ)}:{numero}: {linha.strip()}")
+        assert not achados, "teto de pacote escrito à mão:\n" + "\n".join(achados)
 
     def test_a_migration_cobre_todas_as_marcas_do_banco(self) -> None:
         """Onze pontos: seis restrições, duas de tamanho e três funções.
@@ -214,6 +216,28 @@ class TestRasterizacaoEmFaixas:
 
 
 class TestPrazoDaRasterizacao:
+    def test_quem_espera_da_mais_prazo_do_que_quem_trabalha(self) -> None:
+        """O prazo de fora tem de ser maior que o de dentro.
+
+        O serviço isolado só manda o primeiro byte depois de verificar,
+        normalizar, rasterizar, higienizar e montar o pacote. Com 180 s no
+        cliente e 240 no rasterizador, os 240 eram decoração: quem decidia era
+        o cliente, e o documento voltava como "serviço indisponível" em vez de
+        "documento grande demais" — a mensagem errada, sobre a causa errada.
+        """
+        assert pdf_derivatives._SANDBOX_TIMEOUT_SECONDS > pdf_derivatives._PDFTOPPM_TIMEOUT_SECONDS
+        # E com margem para o resto do caminho, que não é pouco: download,
+        # antivírus, normalização e a montagem do pacote.
+        sobra = pdf_derivatives._SANDBOX_TIMEOUT_SECONDS - pdf_derivatives._PDFTOPPM_TIMEOUT_SECONDS
+        assert sobra >= 120
+
+    def test_o_prazo_do_cliente_e_o_que_o_cliente_usa(self) -> None:
+        # Um número declarado e outro escrito na chamada é como os 240 s viraram
+        # decoração da primeira vez.
+        fonte = Path(pdf_derivatives.__file__).read_text()
+        assert "httpx.Timeout(_SANDBOX_TIMEOUT_SECONDS" in fonte
+        assert not re.search(r"httpx\.Timeout\(\d", fonte)
+
     def test_o_prazo_cobre_o_documento_cheio_no_pior_caso_medido(self) -> None:
         """O prazo antigo dava 164 páginas, abaixo do teto que o código dizia.
 
@@ -264,3 +288,89 @@ class _PathQueApontaPara:
 
     def __call__(self, _caminho: str) -> Path:
         return self._destino
+
+
+def _arquivos_de_codigo() -> list[Path]:
+    """Todo o código vivo do repositório, em qualquer linguagem."""
+    arquivos: list[Path] = []
+    for pasta, padroes in (
+        ("lib", ("*.ts", "*.tsx")),
+        ("app", ("*.ts", "*.tsx")),
+        ("apps/api/src", ("*.py",)),
+    ):
+        for padrao in padroes:
+            arquivos.extend(
+                caminho
+                for caminho in sorted((_RAIZ / pasta).rglob(padrao))
+                if "node_modules" not in caminho.parts and not caminho.name.endswith(".d.ts")
+            )
+    return arquivos
+
+
+def _numeros_crus_de_pagina() -> list[str]:
+    suspeito = re.compile(r"\bpage(?:_count|Count|_number|Number|s)?\b[^\n]{0,40}?\b(\d{2,4})\b")
+    achados: list[str] = []
+    for caminho in _arquivos_de_codigo():
+        for numero, linha in enumerate(caminho.read_text().splitlines(), 1):
+            if "MAX_PDF_PAGES" in linha or linha.lstrip().startswith(("#", "*", "//")):
+                continue
+            # Bytes e graus não são contagem de página.
+            if re.search(r"(1024|byte|360|_size)", linha, re.IGNORECASE):
+                continue
+            for encontrado in suspeito.finditer(linha):
+                # Só interessa o que poderia ser um teto: os pequenos são
+                # índices, os grandes são bytes.
+                if 50 <= int(encontrado.group(1)) <= 2000:
+                    achados.append(f"{caminho.relative_to(_RAIZ)}:{numero}: {linha.strip()}")
+    return achados
+
+
+class TestOrcamentoDoLease:
+    """O trabalho todo cabe nos 600 s que o banco concede ao worker.
+
+    O lease não se renova: passado o prazo, outro worker pode pegar o mesmo
+    trabalho. Um documento que não termina a tempo não falha com uma mensagem —
+    ele é refeito, e refeito de novo.
+
+    Medido de ponta a ponta, com um documento real de 300 páginas montado a
+    partir do playbook do vendedor, numa cópia do serviço de produção:
+
+        download do PDF (12 MiB)                0,2 s
+        antivírus                               3,0 s
+        raster + higienização + pacote (1 CPU) 208,0 s
+        upload das 300 páginas, uma a uma        9,5 s
+        banco: registro e finalização            5,0 s
+        ------------------------------------------------
+        total                                  225,7 s   de 600 s
+
+    Com quatro núcleos no serviço isolado, 107 s. O caminho lento é o que vale
+    como garantia, e ele sobra 374 s.
+    """
+
+    #: O que cada fase custou, em segundos, com um núcleo — o pior caminho.
+    CUSTO_MEDIDO: Final = {
+        "download": 0.2,
+        "antivirus": 3.0,
+        "raster_e_pacote": 208.0,
+        "upload_das_paginas": 9.5,
+        "banco": 5.0,
+    }
+    LEASE_SEGUNDOS: Final = 600
+
+    def test_o_trabalho_cabe_no_lease_com_folga(self) -> None:
+        total = sum(self.CUSTO_MEDIDO.values())
+        assert total < self.LEASE_SEGUNDOS
+        # Duas vezes, não por gosto: a medição é de uma máquina ociosa, e o
+        # documento chega quando ela não está.
+        assert self.LEASE_SEGUNDOS / total >= 2.0
+
+    def test_o_prazo_do_cliente_cobre_a_fase_mais_cara(self) -> None:
+        # O serviço isolado só responde depois de rasterizar, higienizar e
+        # montar o pacote: 208 s no pior caminho. Quem espera precisa esperar
+        # mais que isso.
+        assert pdf_derivatives._SANDBOX_TIMEOUT_SECONDS > self.CUSTO_MEDIDO["raster_e_pacote"]
+
+    def test_o_lease_do_worker_e_o_que_este_orcamento_assume(self) -> None:
+        """Se o lease encolher, esta conta deixa de valer sem avisar."""
+        fonte = (Path(pdf_derivatives.__file__).parent / "asset_worker_runner.py").read_text()
+        assert re.search(r"\b600\b", fonte), "o lease mudou e o orçamento não acompanhou"

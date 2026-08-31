@@ -152,9 +152,28 @@ create_args=(
   --label "com.autonomia.source-api=$api_service"
   --no-resolve-image
   --replicas 1
+  # Memória e `/tmp` andam juntos: o `tmpfs` conta contra o cgroup, então o
+  # limite de memória precisa cobrir os arquivos e os processos ao mesmo tempo.
+  #
+  # Pior caso de um PDF de 300 páginas, medido e somado:
+  #
+  #     PDF de origem                     100 MiB
+  #     pacote recebido                   486 MiB
+  #     cópia do pacote na verificação    486 MiB
+  #     páginas extraídas                 384 MiB
+  #     PDF extraído do pacote            100 MiB
+  #     ------------------------------------------
+  #     em disco                        1.556 MiB   + ~200 MiB do processo
+  #
+  # Eram 384 MiB de `/tmp` e 1 GiB de memória: um documento grande falhava com
+  # disco cheio, e a mensagem não dizia isso.
+  #
+  # Nota: produção estava com 4 GiB de memória, ajustados à mão em algum
+  # momento, enquanto este arquivo dizia 1 GiB — um redeploy pelo script teria
+  # reduzido o serviço sem ninguém perceber.
   --limit-cpu 1.0
   --reserve-cpu 0.10
-  --limit-memory 1G
+  --limit-memory 3G
   --reserve-memory 256M
   --limit-pids 64
   --restart-condition on-failure
@@ -176,7 +195,7 @@ create_args=(
   --cap-drop ALL
   --mount "type=volume,source=$clamav_socket_volume,destination=/run/appsell-clamav,readonly=true"
   --mount "type=volume,source=$pdf_socket_volume,destination=/run/appsell-pdf,readonly=true"
-  --mount "type=tmpfs,destination=/tmp,tmpfs-size=402653184,tmpfs-mode=1777"
+  --mount "type=tmpfs,destination=/tmp,tmpfs-size=2147483648,tmpfs-mode=1777"
   --health-cmd 'python -c "from appsell_api.config import get_settings; s=get_settings(); assert s.environment == \"production\" and s.storage_provider == \"s3\" and s.malware_scanner_provider == \"clamav\" and s.pdf_sandbox_socket"'
   --health-interval 15s
   --health-timeout 5s

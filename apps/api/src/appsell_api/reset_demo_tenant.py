@@ -14,6 +14,7 @@ from psycopg.conninfo import conninfo_to_dict
 from psycopg.types.json import Jsonb
 
 from .learning_pdf import MAX_PDF_PAGES
+from .pdf_derivatives import MAX_PDF_DERIVATIVE_BYTES
 
 DEMO_KEY = "autonomia-demo-v1"
 DEMO_DATABASE_MARKER = "appsell-demo-reset-target-v1"
@@ -159,7 +160,10 @@ def load_manifest() -> tuple[dict[str, Any], str]:
             if hashlib.sha256(page_payload).hexdigest() != page["sha256"]:
                 raise RuntimeError(f"demo PDF raster hash mismatch: {expected_key}")
             total_page_bytes += page["byte_size"]
-        if total_page_bytes != raster.get("total_bytes") or total_page_bytes > 128 * 1024 * 1024:
+        if (
+            total_page_bytes != raster.get("total_bytes")
+            or total_page_bytes > MAX_PDF_DERIVATIVE_BYTES
+        ):
             raise RuntimeError(f"demo PDF raster total mismatch: {file_name}")
     video = manifest.get("video")
     expected_video_name = f"{video.get('slug')}.mp4" if isinstance(video, dict) else ""
