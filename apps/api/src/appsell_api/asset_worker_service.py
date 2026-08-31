@@ -10,6 +10,7 @@ from .asset_worker_runner import run_asset_worker_loop
 from .config import get_settings
 from .db import create_engine, create_session_factory
 from .internal_requests import InternalRequestAuthenticator
+from .logging_setup import configure_logging
 from .main import _pdf_sandbox_ready
 from .storage_s3 import S3Storage
 from .storage_worker import (
@@ -22,6 +23,12 @@ from .storage_worker import (
 
 async def run() -> None:
     settings = get_settings()
+    # O pacote ja configurou o log lendo o ambiente cru no import. Esta chamada
+    # refina com os `Settings` validados, exatamente como o `lifespan` da API —
+    # sem ela o worker e a API poderiam renderizar formatos diferentes para o
+    # mesmo incidente, e o worker e justamente onde foram medidas 0 linhas em
+    # 24 horas.
+    configure_logging(environment=settings.environment, log_level=settings.log_level)
     if not settings.storage_configured or not settings.internal_auth_configured:
         raise RuntimeError("asset worker requires storage and internal authentication")
 

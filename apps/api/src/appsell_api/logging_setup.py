@@ -57,6 +57,8 @@ _ID_DE_CORRELACAO = re.compile(rf"^[A-Za-z0-9._-]{{1,{_TAMANHO_MAXIMO_DO_ID}}}$"
 _DIGITOS_DO_ID_GERADO = 16
 
 _ROTA_NAO_CASADA = "<unmatched>"
+_PROFUNDIDADE_MAXIMA = 8
+_PROFUNDO_DEMAIS = "<too-deep>"
 _PREFIXO_DE_HEALTH = "/health/"
 
 _AMBIENTES_ESTRUTURADOS = frozenset({"staging", "production"})
@@ -166,7 +168,10 @@ class RequestLoggingMiddleware:
             await self._app(scope, receive, send)
             return
 
-        silencioso = str(scope.get("path", "")).startswith(_PREFIXO_DE_HEALTH)
+        # O silencio vale para a linha de rotina, nunca para a excecao: o
+        # `/health/ready` e o endpoint que decide se o Swarm mata a task, e um
+        # 500 mudo ali e o mesmo defeito do incidente do socket em `ee194bf`.
+        rotina_silenciosa = str(scope.get("path", "")).startswith(_PREFIXO_DE_HEALTH)
         correlacao = _identificador_de_correlacao(scope)
         inicio = time.perf_counter()
         status_visto = 0
@@ -186,15 +191,14 @@ class RequestLoggingMiddleware:
                 await self._app(scope, receive, enviar)
             except Exception:
                 status_visto = 500
-                if not silencioso:
-                    self._logger.exception(
-                        "unhandled_exception",
-                        method=str(scope.get("method", "")),
-                        route=_template_da_rota(scope),
-                    )
+                self._logger.exception(
+                    "unhandled_exception",
+                    method=str(scope.get("method", "")),
+                    route=_template_da_rota(scope),
+                )
                 if not resposta_iniciada:
                     await _responder_erro_generico(enviar)
-            if not silencioso:
+            if not rotina_silenciosa:
                 self._logger.info(
                     "http_request",
                     method=str(scope.get("method", "")),
@@ -212,15 +216,20 @@ def _redigir_segredos(
     return {chave: _redigir(valor) for chave, valor in event_dict.items()}
 
 
-def _redigir(valor: Any) -> Any:
+def _redigir(valor: Any, profundidade: int = 0) -> Any:
     if isinstance(valor, str):
         return _SEGREDO.sub(_REDIGIDO, valor)
+    if profundidade >= _PROFUNDIDADE_MAXIMA:
+        # Registrar um evento nao pode derrubar quem o registrou. Uma estrutura
+        # ciclica levava o redator a `RecursionError`, e a excecao escapava da
+        # chamada de log para o handler.
+        return _PROFUNDO_DEMAIS
     if isinstance(valor, dict):
-        return {chave: _redigir(item) for chave, item in valor.items()}
+        return {chave: _redigir(item, profundidade + 1) for chave, item in valor.items()}
     if isinstance(valor, list):
-        return [_redigir(item) for item in valor]
+        return [_redigir(item, profundidade + 1) for item in valor]
     if isinstance(valor, tuple):
-        return tuple(_redigir(item) for item in valor)
+        return tuple(_redigir(item, profundidade + 1) for item in valor)
     return valor
 
 

@@ -19,6 +19,7 @@ import contextlib
 import json
 import warnings
 from io import StringIO
+from typing import Any
 
 import pytest
 from fastapi import FastAPI
@@ -284,6 +285,10 @@ def _app_de_prova() -> FastAPI:
     async def ready() -> dict[str, str]:
         return {"status": "ok"}
 
+    @app.get("/health/explode")
+    async def health_explode() -> dict[str, str]:
+        raise RuntimeError("o banco caiu")
+
     return app
 
 
@@ -401,3 +406,61 @@ async def test_o_identificador_de_correlacao_sobrevive_ao_redator() -> None:
     assert len(gerado["request_id"]) < 32
     assert recebido["request_id"] == "c" * 31
     assert longo_demais["request_id"] not in {"<REDACTED>", "d" * 32}
+
+
+@pytest.mark.asyncio
+async def test_excecao_no_health_check_e_registrada_apesar_do_silencio_de_rotina() -> None:
+    """O silêncio dos health checks vale para a rotina, não para a falha.
+
+    A primeira versão desta fundação calava os dois: `/health/ready` levantando
+    exceção devolvia 500 sem uma única linha de log — pior que antes, quando o
+    `ServerErrorMiddleware` do Starlette ao menos imprimia o traceback no
+    stderr. É o endpoint que decide se o Swarm mata a task, e é o mesmo defeito
+    do incidente em que o `healthz` respondeu `pdf_sandbox: true` com o socket
+    fora.
+    """
+    fluxo = _configura("production")
+    app = _app_de_prova()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.get("/health/live")
+        resposta = await client.get("/health/explode")
+
+    assert resposta.status_code == 500
+    eventos = [json.loads(linha) for linha in _linhas(fluxo)]
+    assert [evento["event"] for evento in eventos] == ["unhandled_exception"]
+    assert eventos[0]["route"] == "/health/explode"
+    assert eventos[0]["request_id"]
+
+
+def test_estrutura_ciclica_nao_derruba_quem_registrou_o_evento() -> None:
+    """Registrar um evento não pode quebrar quem o registrou.
+
+    O redator descia em dict/list/tuple sem limite, e uma estrutura cíclica
+    levava a `RecursionError` — que escapava da chamada de log direto para o
+    handler da requisição.
+    """
+    fluxo = _configura("production")
+    ciclico: dict[str, Any] = {}
+    ciclico["eu"] = ciclico
+
+    logging_setup.get_logger("teste").info("evento_de_prova", ciclo=ciclico)
+
+    registro = json.loads(_linhas(fluxo)[0])
+    assert registro["event"] == "evento_de_prova"
+    assert "<too-deep>" in json.dumps(registro["ciclo"])
+
+
+def test_estrutura_aninhada_dentro_do_limite_continua_inteira() -> None:
+    """Cortar fundo demais esconde o dado; o limite existe só contra o ciclo."""
+    fluxo = _configura("production")
+    segredo = "Z" * 40
+    aninhado = {"a": {"b": {"c": {"d": {"e": [segredo, "visivel"]}}}}}
+
+    logging_setup.get_logger("teste").info("evento_de_prova", contexto=aninhado)
+
+    linha = _linhas(fluxo)[0]
+    assert segredo not in linha
+    assert "visivel" in linha
+    assert "<too-deep>" not in linha
