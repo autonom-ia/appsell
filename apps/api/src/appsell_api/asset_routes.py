@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import re
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -9,6 +10,7 @@ from uuid import UUID
 
 from anyio import to_thread
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
+from fastapi import Path as PathParameter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import text
@@ -35,9 +37,17 @@ from .catalog_routes import (
     _require_seller,
 )
 from .internal_requests import AuthenticatedInternalRequest
-from .storage_s3 import S3Storage, StorageError
+from .logging_setup import get_logger
+from .storage_s3 import (
+    MULTIPART_MAX_PARTS,
+    S3Storage,
+    StorageError,
+    multipart_plan,
+    needs_multipart,
+)
 
 router = APIRouter(prefix="/v1")
+_logger = get_logger(__name__)
 _MAX_SAFE_INTEGER = (1 << 53) - 1
 _MAX_PDF_BYTES = _catalogue_max_bytes(PDF_MEDIA_TYPE)
 _MAX_VIDEO_BYTES = _catalogue_max_bytes(VIDEO_MEDIA_TYPE)
@@ -120,6 +130,20 @@ class AssetUploadIntentBody(BaseModel):
     def validate_sha256(cls, value: str) -> str:
         if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
             raise ValueError("invalid SHA-256")
+        return value
+
+
+class AssetUploadPartBody(BaseModel):
+    """O hash da parte, que entra na assinatura e vira recusa no storage."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    sha256: str
+
+    @field_validator("sha256")
+    @classmethod
+    def validate_sha256(cls, value: str) -> str:
+        if not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise ValueError("sha256 must be lowercase hexadecimal")
         return value
 
 
@@ -264,19 +288,44 @@ async def create_asset_upload_intent(
             lesson_id=lesson_id,
             upload_id=upload_id,
         )
-        signed = await to_thread.run_sync(
-            lambda: storage.presign_put(
-                bucket=str(signing["bucket"]),
-                key=str(signing["object_key"]),
-                content_type=str(signing["content_type"]),
-                sha256_hex=str(signing["sha256"]),
-                byte_size=int(signing["byte_size"]),
-                upload_request_id=str(upload_id),
+        if needs_multipart(int(signing["byte_size"])):
+            plan = multipart_plan(int(signing["byte_size"]))
+            # Uma intenção repetida não pode abrir um segundo envio para a mesma
+            # chave: dois envios abertos são estado que ninguém sabe explicar, e
+            # fechar o errado montaria o arquivo com as partes de outra
+            # tentativa.
+            storage_upload_id = await to_thread.run_sync(
+                lambda: storage.find_multipart_upload(
+                    bucket=str(signing["bucket"]), key=str(signing["object_key"])
+                )
             )
-        )
-        signed_expires_at = _bounded_presigned_expiry(
-            signing["expires_at"], signed.expires_in_seconds
-        )
+            if storage_upload_id is None:
+                await to_thread.run_sync(
+                    lambda: storage.create_multipart_upload(
+                        bucket=str(signing["bucket"]),
+                        key=str(signing["object_key"]),
+                        content_type=str(signing["content_type"]),
+                        byte_size=int(signing["byte_size"]),
+                        upload_request_id=str(upload_id),
+                    )
+                )
+            signed = None
+            signed_expires_at = _bounded_presigned_expiry(signing["expires_at"], storage.put_ttl)
+        else:
+            plan = None
+            signed = await to_thread.run_sync(
+                lambda: storage.presign_put(
+                    bucket=str(signing["bucket"]),
+                    key=str(signing["object_key"]),
+                    content_type=str(signing["content_type"]),
+                    sha256_hex=str(signing["sha256"]),
+                    byte_size=int(signing["byte_size"]),
+                    upload_request_id=str(upload_id),
+                )
+            )
+            signed_expires_at = _bounded_presigned_expiry(
+                signing["expires_at"], signed.expires_in_seconds
+            )
     except IntegrityError as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="asset_conflict"
@@ -289,19 +338,26 @@ async def create_asset_upload_intent(
             detail="asset_storage_unavailable",
         ) from error
     result_object = _json_object(result)
+    content: dict[str, Any] = {
+        "upload_id": str(upload_id),
+        "asset_id": str(result_object["asset_id"]),
+        # The browser must receive the shorter presigned-request lifetime,
+        # not the 15-minute durable intent lifetime stored in Postgres.
+        "expires_at": _iso_datetime(signed_expires_at),
+        "created": result_object.get("created", True),
+    }
+    if plan is not None:
+        # Sem `upload_url`: o envio fatiado pede uma URL por parte, e cada uma
+        # dura pouco de propósito. Mandar uma aqui seria oferecer um caminho que
+        # não fecha para este arquivo.
+        content["multipart"] = {"part_bytes": plan.part_bytes, "part_count": plan.part_count}
+    elif signed is not None:
+        content["upload_url"] = signed.url
+        content["required_headers"] = signed.headers
+        content["required_content_length"] = signed.required_content_length
     return JSONResponse(
         status_code=status.HTTP_201_CREATED if result_object.get("created") is not False else 200,
-        content={
-            "upload_id": str(upload_id),
-            "asset_id": str(result_object["asset_id"]),
-            "upload_url": signed.url,
-            # The browser must receive the shorter presigned-request lifetime,
-            # not the 15-minute durable intent lifetime stored in Postgres.
-            "expires_at": _iso_datetime(signed_expires_at),
-            "required_headers": signed.headers,
-            "required_content_length": signed.required_content_length,
-            "created": result_object.get("created", True),
-        },
+        content=content,
         headers={"cache-control": "no-store", "referrer-policy": "no-referrer"},
     )
 
@@ -343,6 +399,144 @@ async def read_asset_upload_status(
     except DBAPIError as error:
         raise _domain_error(error) from error
     return _status_view(_json_object(value))
+
+
+@router.get(
+    "/me/sellers/{seller_id}/products/{product_id}/courses/{course_id}"
+    "/modules/{module_id}/lessons/{lesson_id}/assets/uploads/{upload_id}/parts"
+)
+async def read_asset_upload_parts(
+    request: Request,
+    seller_id: UUID,
+    product_id: UUID,
+    course_id: UUID,
+    module_id: UUID,
+    lesson_id: UUID,
+    upload_id: UUID,
+) -> dict[str, Any]:
+    """O que já chegou, que é o que permite retomar em vez de recomeçar.
+
+    Sem esta resposta o navegador não teria como saber o que sobreviveu a uma
+    queda de rede, e a única saída honesta seria mandar tudo de novo.
+    """
+    auth, internal = await _authenticate(request, "catalog.asset.read")
+    await _require_seller(internal, seller_id)
+    storage = await _storage(request, internal)
+    signing, plan = await _multipart_context(
+        auth=auth,
+        envelope=internal.envelope,
+        seller_id=seller_id,
+        product_id=product_id,
+        course_id=course_id,
+        module_id=module_id,
+        lesson_id=lesson_id,
+        upload_id=upload_id,
+    )
+    try:
+        storage_upload_id = await to_thread.run_sync(
+            lambda: storage.find_multipart_upload(
+                bucket=str(signing["bucket"]), key=str(signing["object_key"])
+            )
+        )
+        enviadas = (
+            ()
+            if storage_upload_id is None
+            else await to_thread.run_sync(
+                lambda: storage.list_multipart_parts(
+                    bucket=str(signing["bucket"]),
+                    key=str(signing["object_key"]),
+                    storage_upload_id=str(storage_upload_id),
+                )
+            )
+        )
+    except StorageError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="asset_storage_unavailable",
+        ) from error
+    return {
+        "part_bytes": plan.part_bytes,
+        "part_count": plan.part_count,
+        "uploaded_parts": [
+            {"part_number": parte.part_number, "byte_size": parte.byte_size} for parte in enviadas
+        ],
+    }
+
+
+@router.post(
+    "/me/sellers/{seller_id}/products/{product_id}/courses/{course_id}"
+    "/modules/{module_id}/lessons/{lesson_id}/assets/uploads/{upload_id}"
+    "/parts/{part_number}",
+    response_model=None,
+)
+async def sign_asset_upload_part(
+    request: Request,
+    seller_id: UUID,
+    product_id: UUID,
+    course_id: UUID,
+    module_id: UUID,
+    lesson_id: UUID,
+    upload_id: UUID,
+    part_number: int = PathParameter(ge=1, le=MULTIPART_MAX_PARTS),
+) -> JSONResponse:
+    """A URL de uma parte, com o tamanho e o hash dela presos na assinatura.
+
+    Uma URL por parte, e não uma para o arquivo todo: cada uma dura pouco, e é
+    isso que permite um envio longo sobreviver ao prazo da assinatura.
+    """
+    auth, internal = await _authenticate(request, "catalog.asset.upload.sign")
+    await _require_seller(internal, seller_id)
+    body = await _model_from_body(AssetUploadPartBody, internal)
+    storage = await _storage(request, internal)
+    signing, plan = await _multipart_context(
+        auth=auth,
+        envelope=internal.envelope,
+        seller_id=seller_id,
+        product_id=product_id,
+        course_id=course_id,
+        module_id=module_id,
+        lesson_id=lesson_id,
+        upload_id=upload_id,
+    )
+    try:
+        storage_upload_id = await to_thread.run_sync(
+            lambda: storage.find_multipart_upload(
+                bucket=str(signing["bucket"]), key=str(signing["object_key"])
+            )
+        )
+        if storage_upload_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail="asset_upload_not_open"
+            )
+        signed = await to_thread.run_sync(
+            lambda: storage.presign_upload_part(
+                bucket=str(signing["bucket"]),
+                key=str(signing["object_key"]),
+                storage_upload_id=str(storage_upload_id),
+                part_number=part_number,
+                plan=plan,
+                sha256_hex=body.sha256,
+            )
+        )
+    except HTTPException:
+        raise
+    except StorageError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="asset_storage_unavailable",
+        ) from error
+    return JSONResponse(
+        content={
+            "part_number": part_number,
+            "upload_url": signed.url,
+            "required_headers": signed.headers,
+            "required_content_length": signed.required_content_length,
+            "expires_at": _iso_datetime(
+                _bounded_presigned_expiry(signing["expires_at"], signed.expires_in_seconds)
+            ),
+        },
+        headers={"cache-control": "no-store", "referrer-policy": "no-referrer"},
+    )
 
 
 @router.post(
@@ -402,6 +596,9 @@ async def confirm_asset_upload(
             lesson_id=lesson_id,
             upload_id=upload_id,
         )
+        fatiado = needs_multipart(int(signing["byte_size"]))
+        if fatiado:
+            await _fecha_envio_em_partes(storage, signing)
         observed = await to_thread.run_sync(
             lambda: storage.head(bucket=str(signing["bucket"]), key=str(signing["object_key"]))
         )
@@ -410,7 +607,11 @@ async def confirm_asset_upload(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="asset_upload_metadata_mismatch",
             )
-        checksum_hex = _checksum_hex(observed.checksum_sha256_b64)
+        # Um envio fatiado não carrega hash do arquivo inteiro: o storage guarda
+        # um hash composto das partes. O banco sabe disso pelo tamanho declarado
+        # e adia a conferência de conteúdo para a verificação, que relê todos os
+        # bytes contra o mesmo hash da intenção.
+        checksum_hex = None if fatiado else _checksum_hex(observed.checksum_sha256_b64)
         async with auth.continuation_domain_session(internal.envelope) as session:
             value = await session.scalar(
                 text(
@@ -474,6 +675,19 @@ async def cancel_asset_upload(
     auth, internal = await _authenticate(request, "catalog.asset.upload.cancel")
     await _require_seller(internal, seller_id)
     body = await _model_from_body(AssetMutationBody, internal)
+    # Lido antes do cancelamento, enquanto a intenção ainda existe para ser
+    # lida. A ordem importa: o banco é quem autoriza, então ele decide primeiro
+    # e só depois as partes são apagadas.
+    signing = await _read_upload_for_signing(
+        auth=auth,
+        envelope=internal.envelope,
+        seller_id=seller_id,
+        product_id=product_id,
+        course_id=course_id,
+        module_id=module_id,
+        lesson_id=lesson_id,
+        upload_id=upload_id,
+    )
     try:
         async with auth.domain_session(internal.envelope) as session:
             value = await session.scalar(
@@ -503,6 +717,32 @@ async def cancel_asset_upload(
         ) from error
     except DBAPIError as error:
         raise _domain_error(error) from error
+    if needs_multipart(int(signing["byte_size"])):
+        # Cancelar sem abortar deixaria as partes gravadas ocupando disco sem
+        # aparecer em listagem de objeto nenhuma. Falhar aqui não desfaz o
+        # cancelamento, que já está gravado: a regra de expiração do bucket é a
+        # rede embaixo desta.
+        try:
+            storage = await _storage(request, internal)
+            storage_upload_id = await to_thread.run_sync(
+                lambda: storage.find_multipart_upload(
+                    bucket=str(signing["bucket"]), key=str(signing["object_key"])
+                )
+            )
+            if storage_upload_id is not None:
+                await to_thread.run_sync(
+                    lambda: storage.abort_multipart_upload(
+                        bucket=str(signing["bucket"]),
+                        key=str(signing["object_key"]),
+                        storage_upload_id=str(storage_upload_id),
+                    )
+                )
+        except (StorageError, HTTPException) as error:
+            _logger.warning(
+                "appsell_multipart_abort_failed",
+                upload_id=str(upload_id),
+                reason=type(error).__name__,
+            )
     return _json_object(value)
 
 
@@ -605,6 +845,78 @@ async def update_lesson_asset_policy(
     except DBAPIError as error:
         raise _domain_error(error) from error
     return _json_object(value)
+
+
+async def _fecha_envio_em_partes(storage: S3Storage, signing: dict[str, Any]) -> None:
+    """Monta o objeto a partir das partes, se ainda houver envio aberto.
+
+    Não achar envio aberto não é erro: uma confirmação repetida chega depois de
+    o envio já ter fechado. Quem diz se o objeto existe é o `HEAD` logo abaixo,
+    e é ele que precisa continuar sendo a resposta.
+    """
+    storage_upload_id = await to_thread.run_sync(
+        lambda: storage.find_multipart_upload(
+            bucket=str(signing["bucket"]), key=str(signing["object_key"])
+        )
+    )
+    if storage_upload_id is None:
+        return
+    plan = multipart_plan(int(signing["byte_size"]))
+    partes = await to_thread.run_sync(
+        lambda: storage.list_multipart_parts(
+            bucket=str(signing["bucket"]),
+            key=str(signing["object_key"]),
+            storage_upload_id=str(storage_upload_id),
+        )
+    )
+    await to_thread.run_sync(
+        lambda: storage.complete_multipart_upload(
+            bucket=str(signing["bucket"]),
+            key=str(signing["object_key"]),
+            storage_upload_id=str(storage_upload_id),
+            plan=plan,
+            parts=partes,
+        )
+    )
+
+
+async def _multipart_context(
+    *,
+    auth: Any,
+    envelope: Any,
+    seller_id: UUID,
+    product_id: UUID,
+    course_id: UUID,
+    module_id: UUID,
+    lesson_id: UUID,
+    upload_id: UUID,
+) -> tuple[dict[str, Any], Any]:
+    """A intenção e o plano de partes dela, recusando quem não é fatiado.
+
+    O plano é derivado do tamanho gravado na intenção, e não de nada que venha
+    no pedido: é o mesmo número dos dois lados, e não dá para pedir um plano
+    diferente do que foi declarado.
+    """
+    signing = await _read_upload_for_signing(
+        auth=auth,
+        envelope=envelope,
+        seller_id=seller_id,
+        product_id=product_id,
+        course_id=course_id,
+        module_id=module_id,
+        lesson_id=lesson_id,
+        upload_id=upload_id,
+    )
+    if not needs_multipart(int(signing["byte_size"])):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="asset_upload_is_not_multipart"
+        )
+    try:
+        return signing, multipart_plan(int(signing["byte_size"]))
+    except StorageError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="asset_storage_unavailable"
+        ) from error
 
 
 async def _read_upload_for_signing(
