@@ -151,9 +151,11 @@ _EXCEPTHOOK_ORIGINAL = sys.excepthook
 _UNRAISABLEHOOK_ORIGINAL = sys.unraisablehook
 _EXCEPTHOOK_DE_THREAD_ORIGINAL = threading.__excepthook__
 
-# Controle de fluxo, nao falha: o hook padrao de thread ignora os dois, e
-# transformar `sys.exit(0)` numa thread em incidente critico seria um alarme
-# falso.
+# Controle de fluxo, nao falha. O hook padrao de thread ignora `SystemExit` em
+# silencio e imprime `KeyboardInterrupt`; os dois sao delegados a ele para
+# preservar esse comportamento. Transformar `sys.exit(0)` numa thread em
+# incidente critico seria alarme falso, e alarme falso e como um log volta a ser
+# ignorado.
 _CONTROLES_DE_FLUXO = (KeyboardInterrupt, SystemExit)
 
 # Capturar a raiz em INFO traz junto o log de cliente destas bibliotecas. O

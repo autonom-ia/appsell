@@ -240,10 +240,21 @@ sudo docker service logs --since 1h sell-autonomia_api | grep '"request_id":"<id
   `logging_setup.get_logger(__name__)`.
 - **Handler de logging próprio contorna a redação.** Quem instalar um
   `logging.Formatter` de terceiro, ou escrever direto no `stderr`, sai fora da
-  cadeia. A exceção que derruba o processo já está coberta: `configure_logging`
-  instala um `sys.excepthook` e um `threading.excepthook` que registram pela
-  cadeia redigida — sem isso, uma falha de arranque do `asset-worker` imprimia o
-  traceback cru.
+  cadeia. A exceção que derruba o processo já está coberta por **três** hooks
+  que `configure_logging` instala, cada um para um caminho que os outros não
+  veem:
+
+  | Hook | Cobre | Evento |
+  |---|---|---|
+  | `sys.excepthook` | thread principal | `uncaught_exception` |
+  | `threading.excepthook` | demais threads | `uncaught_thread_exception` |
+  | `sys.unraisablehook` | `atexit`, `__del__`, `weakref` | `unraisable_exception` |
+
+  Sem o primeiro, uma falha de arranque do `asset-worker` imprimia o traceback
+  cru. Sem o terceiro, o processo terminava com código **0** e a credencial
+  inteira no `stderr` — vazamento silencioso num encerramento que parece
+  bem-sucedido. `KeyboardInterrupt` e `SystemExit` seguem pelos hooks originais:
+  são controle de fluxo, não falha.
 - **A cobertura ainda é pequena.** A fundação registra requisição e exceção; a
   instrumentação dos caminhos de mídia, catálogo e verificação é trabalho
   separado. Não conclua "não aconteceu" a partir de "não está no log".
