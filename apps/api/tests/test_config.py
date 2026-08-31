@@ -300,3 +300,48 @@ def test_webhook_env_keyring_flag_unlocks_non_local_environments() -> None:
             **INTERNAL_AUTH,
             **REMOTE_STORAGE,
         )
+
+
+def test_apontar_para_o_sandbox_e_dizer_que_ele_e_requisito() -> None:
+    """Quem monta o soquete do sandbox passa a depender dele para subir.
+
+    O critério antigo era "sou eu quem parseia o que foi enviado", que em
+    produção é o worker — então a API dizia que o sandbox não era requisito, e
+    o `healthz` respondia `pdf_sandbox: true` sem sondar coisa alguma.
+
+    Deixou de ser verdade quando a API passou a ler os links do PDF e a preparar
+    os vídeos, no caminho da leitura do aluno. Em 30/08/2026 o soquete sumiu num
+    deploy e todo PDF passou a abrir sem botão; o `healthz` disse que estava tudo
+    bem o tempo inteiro.
+    """
+    # Soquete no lugar do endereço: os dois transportes juntos são proibidos,
+    # e é pelo soquete que a produção fala com o serviço.
+    remoto = {**REMOTE_STORAGE, "pdf_sandbox_url": ""}
+    settings = Settings(
+        environment="production",
+        database_url="postgresql+asyncpg://runtime@db.example.test:5432/appsell?ssl=require",
+        pdf_sandbox_socket="/run/appsell-pdf/pdf.sock",
+        **INTERNAL_AUTH,
+        **remoto,
+    )
+
+    assert settings.storage_configured is True
+    # Em produção quem parseia continua sendo o worker...
+    assert settings.verifies_uploads is False
+    # ...e ainda assim o sandbox é requisito, porque esta API fala com ele.
+    assert settings.pdf_sandbox_required is True
+
+
+def test_sem_apontar_para_o_sandbox_ele_nao_e_exigido() -> None:
+    # Um processo que não foi apontado para o serviço não o usa, e não deve
+    # deixar de subir por causa dele.
+    remoto = {**REMOTE_STORAGE, "pdf_sandbox_url": "", "pdf_sandbox_socket": ""}
+    settings = Settings(
+        environment="production",
+        database_url="postgresql+asyncpg://runtime@db.example.test:5432/appsell?ssl=require",
+        **INTERNAL_AUTH,
+        **remoto,
+    )
+
+    assert settings.storage_configured is True
+    assert settings.pdf_sandbox_required is False
