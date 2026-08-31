@@ -36,11 +36,17 @@ SANDBOX_RETRY_SECONDS: Final = 3.0
 #: Prazo do cliente para o preparo no serviço isolado.
 #:
 #: Carrega o mesmo valor de `video_remux.REMUX_TIMEOUT_SECONDS`, que é o prazo
-#: do próprio `ffmpeg`, e não pode ser a mesma constante: `video_remux` executa
-#: binário de mídia e não pode ser importado de dentro da API
-#: (`test_parser_de_midia_fica_no_sandbox.py`). Desistir antes do `ffmpeg` faria
-#: a API declarar falha enquanto o trabalho continua, ocupando o único lugar do
-#: sandbox sem ninguém mais esperando por ele.
+#: do `ffmpeg` **quando ele só troca o invólucro**, e não pode ser a mesma
+#: constante: `video_remux` executa binário de mídia e não pode ser importado de
+#: dentro da API (`test_parser_de_midia_fica_no_sandbox.py`). Desistir antes do
+#: `ffmpeg` faria a API declarar falha enquanto o trabalho continua, ocupando o
+#: único lugar do sandbox sem ninguém mais esperando por ele.
+#:
+#: **Cinco minutos só bastam porque o modo catálogo recusa recodificar.** O
+#: prazo do `ffmpeg` recodificando é de uma hora, doze vezes maior. Se um dia o
+#: modo catálogo passar a aceitar recodificação sem este número subir junto, a
+#: API desiste aos cinco minutos e o `ffmpeg` segue rodando lá dentro, segurando
+#: o lugar de todo mundo. `test_video_verifier.py` amarra as duas coisas.
 PREPARE_TIMEOUT_SECONDS: Final = 5 * 60
 _CHUNK_BYTES = 1024 * 1024
 _MAX_TOP_LEVEL_BOXES = 10_000
