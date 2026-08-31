@@ -69,16 +69,18 @@ MAX_REDIRECTS: Final = 3
 #: sempre. Este prazo é sobre o relógio, do começo ao fim.
 DOWNLOAD_DEADLINE_SECONDS: Final = 15 * 60
 
-#: Prazo da conversão no serviço isolado.
+#: Prazo do cliente HTTP para a conversão no serviço isolado.
 #:
-#: Era uma hora. O serviço tem um lugar só, e nele cabem também a leitura dos
-#: links do PDF e a rasterização das páginas: uma conversão travada segurava a
-#: leitura de todo mundo por uma hora, e quem chegasse nesse tempo abria o guia
-#: sem botão nenhum.
+#: Igual ao `TRANSCODE_TIMEOUT_SECONDS` de `video_remux`, que é o prazo do
+#: próprio `ffmpeg`. Não são a mesma constante, e é de propósito que carreguem o
+#: mesmo valor: baixar só este faria a API declarar falha enquanto o `ffmpeg`
+#: continua rodando — `subprocess.run` numa thread não é cancelado quando o
+#: cliente desiste. O lugar do serviço isolado seguiria ocupado, e a leitura de
+#: links de todo mundo seguiria atrás dele, sem ninguém mais esperando o vídeo.
 #:
-#: Dez minutos ainda são muito para o que se mede — 0,6 s no vídeo do vendedor.
-#: O que muda é o teto do estrago quando algo dá errado.
-TRANSCODE_TIMEOUT_SECONDS: Final = 10 * 60
+#: Encurtar isto de verdade depende de o serviço saber abandonar o trabalho
+#: quando o pedido some. Está na #320.
+TRANSCODE_TIMEOUT_SECONDS: Final = 60 * 60
 
 
 DERIVATIVE_MEDIA_TYPE: Final = "video/mp4"
