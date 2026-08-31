@@ -15,11 +15,34 @@
 |---|---|
 | Domínio | `https://sell.autonomia.site` |
 | Ambiente | VPS EasyPanel nativo, Docker Swarm |
-| SHA do **api** | `712e5bb` |
-| SHA do **asset-worker** | `712e5bb` — mesma imagem da api |
-| SHA do **pdf-sandbox** | `712e5bb` — mesma imagem da api |
+| SHA do **api** | `12d8763` |
+| SHA do **asset-worker** | `12d8763` — mesma imagem da api |
+| SHA do **pdf-sandbox** | `712e5bb` — **não** acompanhou o release de 31/08 |
 | SHA do **web** | `8930313` |
 | Banco | head **`0044_pdf_de_trezentas_paginas`**, `schema_ready() = true` |
+
+**Os serviços não andam no mesmo SHA, e isso é intencional.** O release de 31/08
+(`12d8763`, fundação de log) tocou só a API e o worker, que compartilham a
+imagem `api`. Reconstruir `pdf-sandbox` sem necessidade é risco sem ganho — ele
+tem a armadilha do `--update-order start-first`, que já apagou os botões de todo
+PDF em produção.
+
+### O log da API
+
+Desde `12d8763` a API grava log estruturado: uma linha JSON por requisição, com
+o template da rota, duração e identificador de correlação. Antes eram **22
+linhas em 24 horas**, vinte delas ciclo de vida do uvicorn. O contrato, o que o
+redator apaga e as armadilhas estão em [TROUBLESHOOTING](TROUBLESHOOTING.md).
+
+**Validar a API pelo `https://sell.autonomia.site/api/health/ready` não prova
+nada sobre a API.** Esse caminho é o BFF Next: o healthz dele devolve `redis` e
+`storage_upload`. O da API Python devolve `database` e `pdf_sandbox`, e só é
+alcançável de dentro do container:
+
+```sh
+CID=$(sudo docker ps --filter name=sell-autonomia_api --format '{{.ID}}' | head -1)
+sudo docker exec $CID python -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8000/health/ready',timeout=8).read().decode())"
+```
 | API health | `{"status":"ok","database":true,"storage":true,"pdf_sandbox":true}` |
 
 ### Recursos dos serviços, como estão no host
