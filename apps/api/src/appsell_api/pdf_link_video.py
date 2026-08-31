@@ -57,9 +57,9 @@ _MIB: Final = 1024 * 1024
 
 #: Teto do arquivo de origem. Acima disto o preparo é recusado em vez de ocupar
 #: a máquina por tempo indefinido com um arquivo que ninguém dimensionou.
-MAX_SOURCE_BYTES: Final = 100 * _MIB
+MAX_SOURCE_BYTES: Final = 512 * _MIB
 #: Teto do derivado gerado, pelo mesmo motivo.
-MAX_DERIVATIVE_BYTES: Final = 100 * _MIB
+MAX_DERIVATIVE_BYTES: Final = 512 * _MIB
 #: Quantos redirecionamentos o download aceita. Cada um é revalidado.
 MAX_REDIRECTS: Final = 3
 #: Prazo total do download, em segundos.

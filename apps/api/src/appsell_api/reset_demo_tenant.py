@@ -13,6 +13,8 @@ import psycopg
 from psycopg.conninfo import conninfo_to_dict
 from psycopg.types.json import Jsonb
 
+from .learning_pdf import MAX_PDF_PAGES
+
 DEMO_KEY = "autonomia-demo-v1"
 DEMO_DATABASE_MARKER = "appsell-demo-reset-target-v1"
 ASSET_WORKER_SUBJECT = "asset-worker-v1"
@@ -123,7 +125,7 @@ def load_manifest() -> tuple[dict[str, Any], str]:
             not isinstance(raster, dict)
             or raster.get("profile") != "png-1600-v1"
             or not isinstance(pages, list)
-            or not 1 <= len(pages) <= 100
+            or not 1 <= len(pages) <= MAX_PDF_PAGES
             or raster.get("page_count") != len(pages)
             or not isinstance(raster.get("manifest_sha256"), str)
             or not re.fullmatch(r"[0-9a-f]{64}", raster["manifest_sha256"])

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { assetMediaSpec, isDownloadableMedia, PDF_MEDIA_TYPE, type AssetMediaType } from "@/lib/asset-media";
 import { sessionCookieName } from "@/lib/cookies";
+import { MAX_PDF_PAGES } from "@/lib/pdf-study";
 import { DomainApiError } from "@/lib/internal-api-client.server";
 import { learningLicenseLabel } from "@/lib/learning-license.server";
 import { PayloadTooLargeError, readLimitedForm } from "@/lib/limited-form.server";
@@ -89,7 +90,7 @@ export async function learningAssetPageIds(context: LearningAssetPageRouteContex
   const { entitlementId, assetId, page } = await context.params;
   const canonicalEntitlement = canonicalUuid(entitlementId);
   const canonicalAsset = canonicalUuid(assetId);
-  const canonicalPage = safeInteger(page, 1, 100);
+  const canonicalPage = safeInteger(page, 1, MAX_PDF_PAGES);
   return canonicalEntitlement && canonicalAsset && canonicalPage !== null
     ? { entitlementId: canonicalEntitlement, assetId: canonicalAsset, page: canonicalPage }
     : null;

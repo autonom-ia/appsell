@@ -1,4 +1,3 @@
-import { MAX_VIDEO_BYTES as MAX_ASSET_VIDEO_BYTES } from "@/lib/asset-media";
 import { NextRequest, NextResponse } from "next/server";
 
 import { readDomainPdfLinkVideo } from "@/lib/internal-api-client.server";
@@ -30,11 +29,7 @@ import {
  * o BFF deixou de fazer requisições para fora, e o que ele serve vem do nosso
  * próprio storage, com `Range` de verdade — a barra de progresso funciona.
  */
-// O mesmo teto do catálogo de mídia, onde `video/mp4` sempre valeu 100 MiB.
-// Eram 512 aqui, número que nasceu no trabalho de vídeo do PDF sem olhar o
-// catálogo: o mesmo conteúdo tinha dois tetos, cinco vezes distantes,
-// dependendo de ter sido enviado pelo vendedor ou citado dentro do PDF.
-const MAX_VIDEO_BYTES = MAX_ASSET_VIDEO_BYTES;
+const MAX_VIDEO_BYTES = 512 * 1024 * 1024;
 const DERIVATIVE_MEDIA_TYPE = "video/mp4";
 
 export async function GET(request: NextRequest, context: LearningAssetLinkRouteContext) {
