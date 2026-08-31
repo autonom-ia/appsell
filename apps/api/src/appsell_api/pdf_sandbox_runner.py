@@ -1,28 +1,38 @@
 """Sobe o serviço isolado escutando num socket unix.
 
-## Por que a troca do socket é feita com cuidado
+## Por que a troca do socket é feita com tanto cuidado
 
 Dois processos deste serviço convivem por alguns segundos em todo deploy que não
-derruba o antigo antes de subir o novo, e ambos enxergam o mesmo diretório. O
-desenho anterior não previa isso: quem entrava apagava o socket de quem já
-estava servindo, e quem saía apagava o socket de quem tinha acabado de chegar.
+derruba o antigo antes de subir o novo, e ambos enxergam o mesmo diretório
+através de um volume compartilhado.
 
-O segundo caso derrubou a produção em 30/08/2026. O container antigo encerrou
-depois do novo ter criado o seu socket, executou a limpeza, e o diretório ficou
-vazio. A API passou a receber "arquivo não encontrado" ao falar com o serviço, a
-leitura de links virou `PdfLinksUnavailable`, e **todo PDF passou a abrir sem
-botão nenhum** — sem erro na tela e sem nada nos logs. `healthz` continuou
-dizendo que estava tudo bem, porque ele não prova o socket.
+Em 30/08/2026 isso apagou o socket em produção. O antigo encerrou depois de o
+novo ter criado o seu, e a limpeza da saída removeu o arquivo sem verificar de
+quem ele era. O diretório ficou vazio; a API passou a receber "arquivo não
+encontrado"; a leitura de links virou indisponibilidade; e **todo PDF passou a
+abrir sem botão nenhum** — sem erro na tela e sem nada nos logs.
 
-Agora cada processo cria o seu socket com um nome próprio e o coloca no lugar
-com `rename`, que é atômico: quem já estava servindo continua atendendo pelo
-descritor que tem na mão, e quem chega passa a receber as conexões novas. Na
-saída, o processo só remove o socket se o que está no caminho ainda for o dele.
+Três decisões evitam a repetição, e nenhuma delas depende de os dois processos
+combinarem alguma coisa entre si:
+
+1. **O nome de quem está chegando é sorteado**, não derivado do pid. Os dois
+   containers têm pid 1: cada um no seu namespace, ambos escrevendo no mesmo
+   volume. Um nome derivado do pid seria o mesmo nome para os dois.
+2. **`listen` acontece antes de publicar.** Publicar primeiro deixaria uma
+   janela com caminho no lugar e ninguém escutando, que para quem conecta é uma
+   recusa — não uma espera.
+3. **Ninguém remove o socket publicado.** Esta é a que fecha a porta do
+   incidente: entre olhar o arquivo e apagá-lo há sempre um instante, e nesse
+   instante o sucessor pode ter tomado o lugar. Não havendo remoção, não há
+   instante. O `rename` do próximo processo substitui o que estiver lá, de forma
+   atômica, e um socket sem ninguém atrás recusa conexão em vez de sumir — o que
+   é visível, ao contrário do que aconteceu.
 """
 
 from __future__ import annotations
 
 import os
+import secrets
 import socket
 import stat
 from pathlib import Path
@@ -30,15 +40,13 @@ from pathlib import Path
 import uvicorn
 
 SOCKET_PATH = Path("/run/appsell-pdf/pdf.sock")
-#: Prefixo do socket antes de ele tomar o lugar do anterior.
-#:
-#: Começa com ponto e carrega o pid: é o que permite distinguir o socket em uso
-#: de um temporário que ficou para trás, e limpar o segundo sem tocar no
-#: primeiro.
+#: Prefixo do socket enquanto ele ainda não tomou o lugar do anterior.
 PENDING_PREFIX = ".pdf.sock."
 
 _EXPECTED_UID = 10001
 _EXPECTED_GID = 10001
+#: Quanto tempo esperar ao perguntar se um socket abandonado ainda atende.
+_LIVENESS_TIMEOUT_SECONDS = 0.5
 
 
 def main() -> None:
@@ -48,19 +56,21 @@ def main() -> None:
     _discard_abandoned_sockets(SOCKET_PATH.parent)
     os.umask(0o007)
 
-    pendente = SOCKET_PATH.parent / f"{PENDING_PREFIX}{os.getpid()}"
+    # Sorteado, e não derivado do pid: os dois containers de um deploy têm pid 1,
+    # cada um no seu namespace, e escrevem no mesmo volume.
+    pendente = SOCKET_PATH.parent / f"{PENDING_PREFIX}{secrets.token_hex(8)}"
     server_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    identidade: tuple[int, int] | None = None
+    publicado = False
     try:
         server_socket.bind(str(pendente))
         os.chmod(pendente, 0o660)
         _assert_socket(pendente)
-        # Atômico, e é o que torna a troca segura nos dois sentidos: quem já
-        # estava servindo continua atendendo pelo descritor que tem na mão, e
-        # nenhum instante existe sem socket no caminho.
-        os.rename(pendente, SOCKET_PATH)
-        identidade = _identity(SOCKET_PATH)
+        # Escutar antes de publicar: entre uma coisa e outra, quem conectasse
+        # encontraria o caminho no lugar e ninguém atrás dele.
         server_socket.listen(8)
+        _assert_replaceable(SOCKET_PATH)
+        os.rename(pendente, SOCKET_PATH)
+        publicado = True
         config = uvicorn.Config(
             "appsell_api.pdf_sandbox_service:app",
             workers=1,
@@ -72,53 +82,65 @@ def main() -> None:
         uvicorn.Server(config).run(sockets=[server_socket])
     finally:
         server_socket.close()
-        _discard_if_mine(pendente, identidade=None)
-        _discard_if_mine(SOCKET_PATH, identidade=identidade)
+        if not publicado:
+            # Só o que ficou pelo caminho, e só quando nunca chegou a ser
+            # publicado. O socket que está no lugar nunca é removido daqui: se
+            # for o do sucessor, removê-lo é o incidente de novo.
+            _discard(pendente)
 
 
-def _identity(path: Path) -> tuple[int, int] | None:
-    """Quem é este arquivo, e não apenas onde ele está.
+def _discard(path: Path) -> None:
+    try:
+        path.unlink()
+    except OSError:
+        return
 
-    O caminho é o mesmo para todos os processos; o par dispositivo e inode é de
-    um arquivo só. É a diferença entre remover o próprio socket e remover o de
-    quem chegou depois.
+
+def _assert_replaceable(path: Path) -> None:
+    """O que está no caminho tem de ser um socket nosso, ou nada.
+
+    `rename` substitui em silêncio o que encontrar. Se ali estiver um arquivo
+    comum ou um link, alguém pôs coisa que não é nossa num diretório que devia
+    ter só o socket — e o serviço para em vez de escrever por cima.
     """
     try:
         marca = os.lstat(path)
-    except OSError:
-        return None
-    return (marca.st_dev, marca.st_ino)
-
-
-def _discard_if_mine(path: Path, *, identidade: tuple[int, int] | None) -> None:
-    """Remove o socket só quando ele ainda é este, e não o do sucessor."""
-    atual = _identity(path)
-    if atual is None:
+    except FileNotFoundError:
         return
-    if identidade is not None and atual != identidade:
-        return
-    try:
-        _assert_socket(path)
-        path.unlink()
-    except (OSError, RuntimeError):
-        return
+    if not stat.S_ISSOCK(marca.st_mode):
+        raise RuntimeError("PDF sandbox socket path holds something that is not a socket")
 
 
 def _discard_abandoned_sockets(parent: Path) -> None:
-    """Limpa temporários de processos que morreram antes de tomar o lugar.
+    """Remove sockets pendentes que já não atendem ninguém.
 
-    Nunca toca no socket em uso: um `bind` que falhou deixa para trás um arquivo
-    com o pid de quem tentou, e é só esse que sai daqui.
+    Quem decide é a própria conexão, e não o nome do arquivo: um pendente de um
+    processo vivo — que fez `listen` e ainda não publicou — aceita conexão e
+    fica onde está. Perguntar é o único jeito honesto: o pid no nome seria o
+    mesmo para os dois containers, e a data do arquivo não diz nada sobre quem
+    está do outro lado.
     """
-    for entrada in parent.iterdir():
+    for entrada in sorted(parent.iterdir()):
+        if entrada.name == SOCKET_PATH.name:
+            continue
         if not entrada.name.startswith(PENDING_PREFIX):
-            if entrada.name != SOCKET_PATH.name:
-                raise RuntimeError("PDF sandbox socket directory contains unexpected files")
-            continue
-        try:
-            entrada.unlink()
-        except OSError:
-            continue
+            raise RuntimeError("PDF sandbox socket directory contains unexpected files")
+        if not _answers(entrada):
+            _discard(entrada)
+
+
+def _answers(path: Path) -> bool:
+    """Se há alguém escutando do outro lado deste socket."""
+    sonda = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sonda.settimeout(_LIVENESS_TIMEOUT_SECONDS)
+    try:
+        sonda.connect(str(path))
+    except OSError:
+        return False
+    else:
+        return True
+    finally:
+        sonda.close()
 
 
 def _assert_directory(parent: Path) -> None:

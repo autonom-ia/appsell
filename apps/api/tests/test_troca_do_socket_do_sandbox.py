@@ -1,18 +1,16 @@
 """A troca do socket quando dois processos do serviço isolado convivem.
 
 Todo deploy que sobe o novo antes de derrubar o antigo tem alguns segundos com
-dois processos enxergando o mesmo diretório. O desenho anterior não previa isso:
-quem entrava apagava o socket de quem já estava servindo, e quem saía apagava o
-socket de quem tinha acabado de chegar.
+dois processos enxergando o mesmo diretório, através de um volume compartilhado.
 
-O segundo caso derrubou a produção em 30/08/2026, com um único flag num comando
-de deploy (`--update-order start-first`). O diretório ficou vazio, a API passou a
-receber "arquivo não encontrado", a leitura de links virou `PdfLinksUnavailable`
-e **todo PDF passou a abrir sem botão nenhum** — sem erro na tela e sem nada nos
-logs. O `healthz` continuou dizendo que estava tudo bem, porque ele não prova o
-socket.
+Em 30/08/2026 isso apagou o socket em produção. O antigo encerrou depois de o
+novo ter criado o seu, e a limpeza da saída removeu o arquivo sem verificar de
+quem ele era. O diretório ficou vazio; a API passou a receber "arquivo não
+encontrado"; a leitura de links virou indisponibilidade; e **todo PDF passou a
+abrir sem botão nenhum** — sem erro na tela e sem nada nos logs. O `healthz`
+respondeu que estava tudo bem o tempo inteiro.
 
-Estes testes existem porque nada mais acusa: o serviço sobe, responde que está
+Estes testes existem porque nada mais acusa: o serviço sobe, diz que está
 pronto, e não atende ninguém.
 """
 
@@ -53,12 +51,21 @@ def diretorio(monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
         shutil.rmtree(alvo, ignore_errors=True)
 
 
-def _abre(caminho: Path) -> socket.socket:
-    """Cria um socket no caminho, como o serviço faz."""
+def _escutando(caminho: Path) -> socket.socket:
+    """Um socket com alguém atrás dele, como o de um processo em pé."""
     laco = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     laco.bind(str(caminho))
     os.chmod(caminho, 0o660)
+    laco.listen(8)
     return laco
+
+
+def _abandonado(caminho: Path) -> None:
+    """Um socket que ficou para trás: o arquivo existe, ninguém atende."""
+    laco = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    laco.bind(str(caminho))
+    os.chmod(caminho, 0o660)
+    laco.close()
 
 
 def _identidade(caminho: Path) -> tuple[int, int]:
@@ -66,150 +73,145 @@ def _identidade(caminho: Path) -> tuple[int, int]:
     return (marca.st_dev, marca.st_ino)
 
 
-def test_o_processo_que_sai_nao_apaga_o_socket_do_sucessor(diretorio: Path) -> None:
-    """O incidente, reproduzido.
+class TestOIncidente:
+    """O caminho exato que apagou o socket em produção."""
 
-    O antigo criou o socket; o novo tomou o lugar com o dele. Quando o antigo
-    encerra, o socket que fica no caminho é do novo — e tem de continuar lá.
-    """
-    caminho = runner.SOCKET_PATH
-    antigo = _abre(caminho)
-    identidade_do_antigo = _identidade(caminho)
+    def test_quem_sai_nao_remove_o_socket_publicado(self, diretorio: Path) -> None:
+        """Ninguém remove o socket do caminho ao sair — nem o próprio.
 
-    # O novo entra: cria o seu com nome próprio e o põe no lugar.
-    pendente = diretorio / f"{runner.PENDING_PREFIX}999"
-    novo = _abre(pendente)
-    os.chmod(pendente, 0o660)
-    os.rename(pendente, caminho)
-    identidade_do_novo = _identidade(caminho)
-    assert identidade_do_novo != identidade_do_antigo
+        Era a limpeza da saída que apagava o socket do sucessor. Entre olhar o
+        arquivo e apagá-lo há sempre um instante, e nesse instante o sucessor
+        pode ter tomado o lugar; não havendo remoção, não há instante.
 
-    # E agora o antigo encerra.
-    antigo.close()
-    runner._discard_if_mine(caminho, identidade=identidade_do_antigo)
+        O custo é um socket sem ninguém atrás quando o serviço fica fora. Isso
+        recusa conexão, que é visível — ao contrário do arquivo sumido, que
+        virou PDF sem botão e ninguém percebeu.
+        """
+        fonte = Path(runner.__file__).read_text()
+        saida = fonte[fonte.index("    finally:\n        server_socket.close()") :]
+        saida = saida[: saida.index("\ndef _discard(")]
 
-    assert caminho.exists(), "o socket do sucessor foi apagado por quem saiu"
-    assert _identidade(caminho) == identidade_do_novo
-    novo.close()
+        assert "if not publicado:" in saida
+        assert "SOCKET_PATH" not in saida, "a saída voltou a mexer no socket publicado"
 
+    def test_dois_containers_com_o_mesmo_pid_nao_colidem(self, diretorio: Path) -> None:
+        """O nome de quem chega é sorteado, e não derivado do pid.
 
-def test_o_processo_que_sai_apaga_o_proprio_socket(diretorio: Path) -> None:
-    # O outro lado: quando ninguém tomou o lugar, o socket sai junto com quem o
-    # criou. Deixá-lo para trás faria a API tentar falar com um endereço morto.
-    caminho = runner.SOCKET_PATH
-    meu = _abre(caminho)
-    identidade = _identidade(caminho)
-    meu.close()
+        No Swarm os dois containers têm pid 1, cada um no seu namespace, ambos
+        escrevendo no mesmo volume. Um nome derivado do pid seria o mesmo nome
+        para os dois: o que chegasse depois escreveria por cima do pendente do
+        outro, ou o apagaria na saída.
+        """
+        nomes = {f"{runner.PENDING_PREFIX}{__import__('secrets').token_hex(8)}" for _ in range(200)}
+        assert len(nomes) == 200, "dois processos podem receber o mesmo nome"
 
-    runner._discard_if_mine(caminho, identidade=identidade)
-
-    assert not caminho.exists()
+        fonte = Path(runner.__file__).read_text()
+        assert "getpid" not in fonte, "o nome do pendente voltou a depender do pid"
 
 
-def test_a_entrada_nao_derruba_quem_esta_servindo(diretorio: Path) -> None:
-    """Quem chega não apaga o socket de quem está atendendo.
+class TestLimpezaDePendentes:
+    def test_pendente_de_processo_vivo_nao_e_removido(self, diretorio: Path) -> None:
+        """Quem está de pé e ainda não publicou continua onde está.
 
-    Antes, a preparação removia o socket existente antes de criar o seu — e
-    entre uma coisa e outra não havia socket nenhum no caminho. Com `rename`, o
-    caminho nunca fica vazio.
-    """
-    caminho = runner.SOCKET_PATH
-    servindo = _abre(caminho)
-    identidade_de_quem_serve = _identidade(caminho)
+        É o caso de dois deploys se atravessando. Quem decide é a conexão: o pid
+        no nome seria o mesmo para os dois containers, e a data do arquivo não
+        diz nada sobre quem está do outro lado.
+        """
+        vivo = diretorio / f"{runner.PENDING_PREFIX}aaaa"
+        laco = _escutando(vivo)
+        try:
+            runner._discard_abandoned_sockets(diretorio)
+            assert vivo.exists(), "o pendente de um processo vivo foi removido"
+        finally:
+            laco.close()
 
-    runner._discard_abandoned_sockets(diretorio)
+    def test_pendente_sem_ninguem_atras_e_removido(self, diretorio: Path) -> None:
+        # Um `bind` que deu certo e um processo que morreu antes de publicar.
+        morto = diretorio / f"{runner.PENDING_PREFIX}bbbb"
+        _abandonado(morto)
 
-    assert caminho.exists()
-    assert _identidade(caminho) == identidade_de_quem_serve
-    servindo.close()
-
-
-def test_temporario_orfao_e_limpo_sem_tocar_no_socket(diretorio: Path) -> None:
-    # Um `bind` que falhou deixa para trás o arquivo com o pid de quem tentou.
-    # Ele sai; o socket em uso fica.
-    caminho = runner.SOCKET_PATH
-    servindo = _abre(caminho)
-    orfao = diretorio / f"{runner.PENDING_PREFIX}4242"
-    perdido = _abre(orfao)
-    perdido.close()
-
-    runner._discard_abandoned_sockets(diretorio)
-
-    assert not orfao.exists()
-    assert caminho.exists()
-    servindo.close()
-
-
-def test_arquivo_estranho_no_diretorio_e_recusado(diretorio: Path) -> None:
-    # O diretório é do socket e de mais nada. Qualquer outra coisa ali é sinal
-    # de que o volume não é o que se pensa, e o serviço não sobe em cima disso.
-    (diretorio / "intruso").write_text("x")
-
-    with pytest.raises(RuntimeError, match="unexpected files"):
         runner._discard_abandoned_sockets(diretorio)
 
+        assert not morto.exists()
 
-def test_socket_com_permissao_larga_nao_e_apagado_as_cegas(diretorio: Path) -> None:
-    """A remoção confere o que está removendo.
+    def test_o_socket_publicado_nunca_entra_na_limpeza(self, diretorio: Path) -> None:
+        # Nem quando está abandonado: quem substitui é o `rename`, e ele não
+        # precisa que o caminho esteja livre.
+        _abandonado(runner.SOCKET_PATH)
 
-    Se o que está no caminho não é um socket nosso, com o dono e o modo certos,
-    o serviço não o apaga: seria remover um arquivo de origem desconhecida num
-    diretório compartilhado.
-    """
-    caminho = runner.SOCKET_PATH
-    meu = _abre(caminho)
-    identidade = _identidade(caminho)
-    os.chmod(caminho, 0o666)  # noqa: S103 - o teste existe para exercitar isto.
-    meu.close()
+        runner._discard_abandoned_sockets(diretorio)
 
-    runner._discard_if_mine(caminho, identidade=identidade)
+        assert runner.SOCKET_PATH.exists()
 
-    assert caminho.exists()
-    assert stat.S_IMODE(os.lstat(caminho).st_mode) == 0o666
+    def test_arquivo_estranho_impede_o_servico_de_subir(self, diretorio: Path) -> None:
+        # O diretório é do socket e de mais nada. Qualquer outra coisa ali é
+        # sinal de que o volume não é o que se pensa.
+        (diretorio / "conteudo-do-vendedor.pdf").write_bytes(b"privado")
+
+        with pytest.raises(RuntimeError, match="unexpected files"):
+            runner._discard_abandoned_sockets(diretorio)
 
 
-def test_diretorio_com_permissao_larga_impede_o_servico_de_subir(diretorio: Path) -> None:
-    # Um diretório aberto a mais gente é um socket que mais gente pode
-    # substituir. O serviço recusa em vez de servir de um lugar assim.
-    os.chmod(diretorio, 0o755)  # noqa: S103 - o teste existe para exercitar isto.
+class TestPublicacao:
+    def test_o_caminho_nunca_fica_vazio_na_troca(self, diretorio: Path) -> None:
+        """`rename` troca por cima, sem passar por um estado sem socket.
 
-    with pytest.raises(RuntimeError, match="directory ownership or mode"):
+        Antes, quem subia removia o socket que encontrasse antes de criar o seu
+        — e entre uma coisa e outra não havia socket nenhum no caminho.
+        """
+        caminho = runner.SOCKET_PATH
+        anterior = _escutando(caminho)
+        identidade_anterior = _identidade(caminho)
+
+        pendente = diretorio / f"{runner.PENDING_PREFIX}cccc"
+        novo = _escutando(pendente)
+        try:
+            runner._assert_replaceable(caminho)
+            os.rename(pendente, caminho)
+            assert caminho.exists()
+            assert _identidade(caminho) != identidade_anterior
+        finally:
+            novo.close()
+            anterior.close()
+
+    def test_nao_publica_por_cima_do_que_nao_e_socket(self, diretorio: Path) -> None:
+        """`rename` substitui em silêncio o que encontrar.
+
+        Se no caminho estiver um arquivo comum, alguém pôs coisa que não é nossa
+        num diretório que devia ter só o socket. O serviço para em vez de
+        escrever por cima.
+        """
+        runner.SOCKET_PATH.write_bytes(b"nao sou um socket")
+
+        with pytest.raises(RuntimeError, match="not a socket"):
+            runner._assert_replaceable(runner.SOCKET_PATH)
+
+    def test_publicar_sobre_o_caminho_vazio_e_permitido(self, diretorio: Path) -> None:
+        runner._assert_replaceable(runner.SOCKET_PATH)
+
+
+class TestGuardasDeSeguranca:
+    def test_diretorio_com_permissao_larga_impede_o_servico_de_subir(self, diretorio: Path) -> None:
+        # Um diretório aberto a mais gente é um socket que mais gente pode
+        # substituir.
+        os.chmod(diretorio, 0o755)  # noqa: S103 - o teste existe para exercitar isto.
+
+        with pytest.raises(RuntimeError, match="directory ownership or mode"):
+            runner._assert_directory(diretorio)
+
+    def test_diretorio_vazio_com_dono_e_modo_certos_e_aceito(self, diretorio: Path) -> None:
         runner._assert_directory(diretorio)
+        runner._discard_abandoned_sockets(diretorio)
 
+        assert list(diretorio.iterdir()) == []
 
-def test_diretorio_vazio_com_dono_e_modo_certos_e_aceito(diretorio: Path) -> None:
-    # Vindo de `test_pdf_sandbox_runner.py`: o caso normal da primeira subida,
-    # com o volume ainda vazio.
-    runner._assert_directory(diretorio)
-    runner._discard_abandoned_sockets(diretorio)
-
-    assert list(diretorio.iterdir()) == []
-
-
-def test_o_socket_anterior_nao_e_removido_na_entrada(diretorio: Path) -> None:
-    """O contrato mudou aqui, e de propósito.
-
-    Antes, quem subia removia o socket que encontrasse — inclusive o de um
-    processo que ainda estava atendendo, e entre a remoção e a criação do novo
-    não havia socket nenhum no caminho. Agora quem sobe cria o seu com nome
-    próprio e o coloca no lugar com `rename`, que troca sem deixar buraco.
-
-    Este teste substitui `test_prepare_removes_only_a_valid_stale_socket`, que
-    guardava o comportamento antigo.
-    """
-    caminho = runner.SOCKET_PATH
-    anterior = _abre(caminho)
-    anterior.close()
-    identidade_anterior = _identidade(caminho)
-
-    runner._discard_abandoned_sockets(diretorio)
-    assert caminho.exists(), "a entrada não pode remover o socket que encontrou"
-
-    # E a troca acontece por cima, sem o caminho ficar vazio em momento nenhum.
-    pendente = diretorio / f"{runner.PENDING_PREFIX}{os.getpid()}"
-    novo = _abre(pendente)
-    os.rename(pendente, caminho)
-    try:
-        assert _identidade(caminho) != identidade_anterior
-    finally:
-        novo.close()
+    def test_socket_com_permissao_larga_e_recusado(self, diretorio: Path) -> None:
+        caminho = runner.SOCKET_PATH
+        laco = _escutando(caminho)
+        os.chmod(caminho, 0o666)  # noqa: S103 - o teste existe para exercitar isto.
+        try:
+            with pytest.raises(RuntimeError, match="ownership, type or mode"):
+                runner._assert_socket(caminho)
+            assert stat.S_IMODE(os.lstat(caminho).st_mode) == 0o666
+        finally:
+            laco.close()
