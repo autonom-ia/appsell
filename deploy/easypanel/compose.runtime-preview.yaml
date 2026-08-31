@@ -137,11 +137,14 @@ services:
       retries: 40
       start_period: 5s
     restart: unless-stopped
-    mem_limit: 1g
+    # O `/tmp` conta contra o cgroup: 3 GiB declarados dentro de 1 GiB de
+    # memória eram espaço que não existia. A API guarda o pacote de páginas
+    # enquanto o verifica, e o pior caso do próprio código é de 1.170 MiB.
+    mem_limit: 4g
     cpus: 0.40
     pids_limit: 192
     read_only: true
-    tmpfs: ["/tmp:size=3221225472,mode=1777,noexec,nosuid"]
+    tmpfs: ["/tmp:size=2147483648,mode=1777,noexec,nosuid"]
     volumes: ["runtime_pdf_socket:/run/appsell-pdf:ro"]
     <<: *runtime-security
     logging: *runtime-logging
