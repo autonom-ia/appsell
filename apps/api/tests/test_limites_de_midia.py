@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib.util
 import re
+import time
 from pathlib import Path
 from typing import Any, Final
 
@@ -297,6 +298,10 @@ def _arquivos_de_codigo() -> list[Path]:
         ("lib", ("*.ts", "*.tsx")),
         ("app", ("*.ts", "*.tsx")),
         ("apps/api/src", ("*.py",)),
+        # Fora do código da aplicação, mas com os mesmos números dentro: foi por
+        # aqui que o `tmpfs` de 384 MiB sobreviveu à conta que dizia 1,5 GiB.
+        ("deploy", ("*.sh", "*.yaml", "*.yml")),
+        ("scripts", ("*.sh", "*.mjs")),
     ):
         for padrao in padroes:
             arquivos.extend(
@@ -371,6 +376,188 @@ class TestOrcamentoDoLease:
         assert pdf_derivatives._SANDBOX_TIMEOUT_SECONDS > self.CUSTO_MEDIDO["raster_e_pacote"]
 
     def test_o_lease_do_worker_e_o_que_este_orcamento_assume(self) -> None:
-        """Se o lease encolher, esta conta deixa de valer sem avisar."""
-        fonte = (Path(pdf_derivatives.__file__).parent / "asset_worker_runner.py").read_text()
-        assert re.search(r"\b600\b", fonte), "o lease mudou e o orçamento não acompanhou"
+        """Se o lease encolher, esta conta deixa de valer sem avisar.
+
+        Lendo a constante, e não procurando o número no arquivo: `600` também
+        aparece nos comentários que explicam a faixa que o banco aceita, então a
+        busca textual passaria com a constante já trocada.
+        """
+        from appsell_api.asset_worker_runner import _ASSET_LEASE_SECONDS
+
+        assert _ASSET_LEASE_SECONDS == self.LEASE_SEGUNDOS
+
+
+class TestRasterizarQuatroProcessos:
+    """O laço de faixas, executado — não só a matemática das faixas.
+
+    Um `pdftoppm` de mentira, que dorme e fala pelo `stderr`, é o suficiente
+    para provar as duas coisas que a revisão apontou e que nenhum teste
+    exercitava: o prazo é do conjunto, e um processo que fala muito não trava os
+    outros.
+    """
+
+    def _falso_pdftoppm(self, diretorio: Path, *, dorme: float, ruido: int = 0) -> str:
+        """Um rasterizador que demora e escreve no `stderr`, sem desenhar nada."""
+        atalho = diretorio / "pdftoppm-falso"
+        atalho.write_text(
+            "#!/bin/sh\n"
+            f"[ {ruido} -gt 0 ] && head -c {ruido} /dev/zero | tr '\\0' 'x' >&2\n"
+            f"sleep {dorme}\n"
+            "exit 0\n"
+        )
+        atalho.chmod(0o700)
+        return str(atalho)
+
+    def _falso_escalonado(self, diretorio: Path) -> str:
+        """Cada faixa demora mais que a anterior, pela página em que começa.
+
+        É o que distingue um prazo do conjunto de um prazo por faixa: com
+        faixas iguais, esperar uma de cada vez dá no mesmo, porque a segunda já
+        terminou quando chega a vez dela. Com tempos crescentes, o prazo por
+        faixa vai sendo renovado e a última escapa.
+        """
+        atalho = diretorio / "pdftoppm-escalonado"
+        atalho.write_text(
+            "#!/bin/sh\n"
+            "primeira=1\n"
+            "while [ $# -gt 0 ]; do\n"
+            '  [ "$1" = "-f" ] && primeira=$2\n'
+            "  shift\n"
+            "done\n"
+            # 1ª faixa dorme 1 s, 2ª dorme 2 s, e assim por diante.
+            "faixa=$(( (primeira - 1) / 75 + 1 ))\n"
+            "sleep $faixa\n"
+            "exit 0\n"
+        )
+        atalho.chmod(0o700)
+        return str(atalho)
+
+    def test_o_prazo_conta_do_lancamento_e_nao_de_cada_espera(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Quatro faixas com 1, 2, 3 e 4 s, e um prazo de 3 s: tem de estourar.
+
+        Esperando uma de cada vez com prazo próprio, a conta era outra: a
+        primeira volta em 1 s, a segunda em mais 1 s, a terceira em mais 1 s, e
+        a quarta ganha 3 s inteiros a partir daí — termina em 4 s e passa. O
+        prazo virava a soma, e o cliente desistia antes com uma mensagem que não
+        dizia nada disso.
+        """
+        monkeypatch.setattr(pdf_derivatives, "raster_workers", lambda: 4)
+        monkeypatch.setattr(pdf_derivatives, "_PDFTOPPM_TIMEOUT_SECONDS", 3)
+        falso = self._falso_escalonado(tmp_path)
+
+        with pytest.raises(pdf_derivatives.PdfDerivativeRejected, match="timed out"):
+            pdf_derivatives._rasterize_in_ranges(
+                falso, source=tmp_path / "x.pdf", output_prefix=tmp_path / "page", page_count=300
+            )
+
+    def test_o_prazo_e_do_conjunto_e_nao_de_cada_faixa(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Quatro faixas de 2 s não podem levar quatro prazos de 3 s.
+
+        Esperar uma de cada vez, com um prazo próprio para cada, somava os
+        prazos: quatro faixas podiam gastar quatro vezes o limite, e o cliente
+        desistia antes com uma mensagem que não dizia nada disso.
+
+        Aqui o limite é 3 s e cada faixa dorme 2 s. Correndo juntas, terminam em
+        ~2 s. Se o prazo voltasse a ser de cada uma, isto passaria mesmo com as
+        faixas em série — por isso o teste também mede o relógio.
+        """
+        monkeypatch.setattr(pdf_derivatives, "raster_workers", lambda: 4)
+        monkeypatch.setattr(pdf_derivatives, "_PDFTOPPM_TIMEOUT_SECONDS", 3)
+        falso = self._falso_pdftoppm(tmp_path, dorme=2)
+
+        comecou = time.monotonic()
+        pdf_derivatives._rasterize_in_ranges(
+            falso, source=tmp_path / "x.pdf", output_prefix=tmp_path / "page", page_count=300
+        )
+        gasto = time.monotonic() - comecou
+
+        # Em paralelo: perto de 2 s. Em série seriam 8 s, e o prazo de 3 s teria
+        # de ter estourado — de um jeito ou de outro, isto não passa.
+        assert gasto < 4, f"as faixas não correram juntas: {gasto:.1f} s"
+
+    def test_uma_faixa_lenta_estoura_o_prazo_do_conjunto(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(pdf_derivatives, "raster_workers", lambda: 4)
+        monkeypatch.setattr(pdf_derivatives, "_PDFTOPPM_TIMEOUT_SECONDS", 1)
+        falso = self._falso_pdftoppm(tmp_path, dorme=5)
+
+        with pytest.raises(pdf_derivatives.PdfDerivativeRejected, match="timed out"):
+            pdf_derivatives._rasterize_in_ranges(
+                falso, source=tmp_path / "x.pdf", output_prefix=tmp_path / "page", page_count=300
+            )
+
+    def test_faixa_que_fala_muito_nao_trava_as_outras(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Um `stderr` que ninguém lê enche e trava quem está do outro lado.
+
+        Com `stderr=PIPE` e a espera feita uma faixa de cada vez, as faixas
+        ainda não esperadas ficavam paradas com o cano cheio — sem ninguém
+        saber, e sem contar o tempo delas. O erro vai para arquivo.
+        """
+        monkeypatch.setattr(pdf_derivatives, "raster_workers", lambda: 4)
+        monkeypatch.setattr(pdf_derivatives, "_PDFTOPPM_TIMEOUT_SECONDS", 10)
+        # 256 KiB por faixa: muito acima do cano do sistema, que trava em 64 KiB.
+        falso = self._falso_pdftoppm(tmp_path, dorme=0.2, ruido=256 * 1024)
+
+        comecou = time.monotonic()
+        with pytest.raises(pdf_derivatives.PdfDerivativeRejected, match="failed"):
+            # Fala demais é documento recusado — mas depressa, e não travado.
+            pdf_derivatives._rasterize_in_ranges(
+                falso, source=tmp_path / "x.pdf", output_prefix=tmp_path / "page", page_count=300
+            )
+        assert time.monotonic() - comecou < 5, "uma faixa falante travou as outras"
+
+    def test_nao_sobra_processo_nem_arquivo_de_erro(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Um documento recusado não pode deixar o serviço isolado ocupado, nem
+        # lixo no diretório que a coleta das páginas depois vai varrer.
+        monkeypatch.setattr(pdf_derivatives, "raster_workers", lambda: 4)
+        monkeypatch.setattr(pdf_derivatives, "_PDFTOPPM_TIMEOUT_SECONDS", 1)
+        falso = self._falso_pdftoppm(tmp_path, dorme=5)
+
+        with pytest.raises(pdf_derivatives.PdfDerivativeRejected):
+            pdf_derivatives._rasterize_in_ranges(
+                falso, source=tmp_path / "x.pdf", output_prefix=tmp_path / "page", page_count=300
+            )
+
+        assert not list(tmp_path.glob(".erro-*")), "ficou arquivo de erro para trás"
+
+
+class TestEnvelopeDoWorker:
+    def test_o_tmpfs_cobre_o_pior_caso_do_pipeline(self) -> None:
+        """O `/tmp` do worker precisa caber o que o pipeline segura junto.
+
+        Com 300 páginas o worker mantém, ao mesmo tempo, o PDF de origem, o
+        pacote recebido, a cópia do pacote feita na verificação, as páginas
+        extraídas e o PDF extraído — 1.556 MiB no pior caso. Eram 384 MiB, e o
+        documento grande falhava com disco cheio.
+        """
+        script = (_RAIZ / "deploy/easypanel-native/ensure-asset-worker.sh").read_text()
+        tamanho = re.search(r"tmpfs-size=(\d+)", script)
+        assert tamanho is not None, "o worker perdeu o `/tmp` dedicado"
+
+        pior_caso = (
+            pdf_derivatives.MAX_PDF_PAGE_ARCHIVE_BYTES  # pacote recebido
+            + pdf_derivatives.MAX_PDF_PAGE_ARCHIVE_BYTES  # cópia na verificação
+            + pdf_derivatives.MAX_PDF_DERIVATIVE_BYTES  # páginas extraídas
+        )
+        assert int(tamanho.group(1)) >= pior_caso, (
+            f"`/tmp` de {int(tamanho.group(1)) / _MIB:.0f} MiB não cobre "
+            f"{pior_caso / _MIB:.0f} MiB de pior caso"
+        )
+
+    def test_a_memoria_cobre_o_tmpfs_mais_o_processo(self) -> None:
+        # O `tmpfs` conta contra o cgroup: o limite de memória precisa cobrir os
+        # arquivos e os processos ao mesmo tempo.
+        script = (_RAIZ / "deploy/easypanel-native/ensure-asset-worker.sh").read_text()
+        tmpfs = int(re.search(r"tmpfs-size=(\d+)", script).group(1))  # type: ignore[union-attr]
+        memoria = re.search(r"--limit-memory (\d+)G", script)
+        assert memoria is not None, "o worker perdeu o limite de memória"
+        assert int(memoria.group(1)) * 1024 * _MIB > tmpfs

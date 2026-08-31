@@ -159,22 +159,44 @@ def upgrade() -> None:
     )
 
 
+#: Tudo que impede voltar ao teto antigo, e a conta que denuncia cada caso.
+#:
+#: A primeira versão desta guarda olhava duas tabelas. As outras cinco condições
+#: passavam por ela e quebravam no `ADD CONSTRAINT`, com um erro genérico de
+#: restrição — a transação desfazia tudo, mas quem estivesse revertendo não
+#: sabia por quê. Uma guarda que não cobre o que promete é pior que nenhuma.
+_IMPEDEM_A_VOLTA: tuple[tuple[str, str], ...] = (
+    ("public.asset_pdf_page", "page_number > 100"),
+    ("public.asset_pdf_raster", "page_count > 100"),
+    ("public.asset_pdf_raster", "total_byte_size > 134217728"),
+    ("app_private.asset_pdf_page_candidate", "page_number > 100"),
+    ("app_private.asset_pdf_raster_candidate", "page_count > 100"),
+    ("app_private.asset_pdf_raster_candidate", "total_byte_size > 134217728"),
+    ("app_private.learning_pdf_annotation", "page_number > 100"),
+    ("app_private.learning_pdf_bookmark", "page_number > 100"),
+)
+
+
 def downgrade() -> None:
-    # Só volta se nada tiver passado do teto antigo — descer com um documento de
+    # Só volta se nada tiver passado do teto antigo. Descer com um documento de
     # 200 páginas gravado deixaria a tabela inconsistente com a própria regra.
-    op.execute(
-        """
-        do $$
-        begin
-          if exists (select 1 from public.asset_pdf_page where page_number > 100)
-             or exists (select 1 from public.asset_pdf_raster where page_count > 100)
-          then
-            raise exception 'existem PDFs acima de 100 páginas: descer o teto os deixaria fora da regra';
-          end if;
-        end
-        $$;
-        """
-    )
+    for tabela, condicao in _IMPEDEM_A_VOLTA:
+        op.execute(
+            f"""
+            do $$
+            declare
+              quantos bigint;
+            begin
+              select count(*) into quantos from {tabela} where {condicao};
+              if quantos > 0 then
+                raise exception
+                  'não dá para voltar ao teto antigo: % linhas em {tabela} com {condicao}',
+                  quantos;
+              end if;
+            end
+            $$;
+            """  # noqa: S608 - nomes e condições são literais deste módulo
+        )
     _troca_teto_de_pagina(100)
     _troca_teto_do_pacote(_PACOTE_ANTIGO)
     _troca_nas_funcoes(

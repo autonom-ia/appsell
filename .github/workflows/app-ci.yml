@@ -171,7 +171,9 @@ jobs:
             apps/api/tests/test_db_pool_budget.py \
             apps/api/tests/test_troca_do_socket_do_sandbox.py \
             apps/api/tests/test_links_do_pdf_com_o_sandbox_ocupado.py \
-            apps/api/tests/test_preparo_de_video_do_pdf.py
+            apps/api/tests/test_preparo_de_video_do_pdf.py \
+            apps/api/tests/test_limites_de_midia.py \
+            apps/api/tests/test_pdf_derivatives.py
 
       - name: Fast backup contract checks for pull requests
         id: fast-backup

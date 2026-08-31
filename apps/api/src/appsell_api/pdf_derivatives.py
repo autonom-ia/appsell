@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import time
 import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -303,58 +304,73 @@ def page_ranges(page_count: int, workers: int) -> list[tuple[int, int]]:
 def _rasterize_in_ranges(
     pdftoppm: str, *, source: Path, output_prefix: Path, page_count: int
 ) -> None:
-    """Desenha o documento em faixas, em paralelo.
+    """Desenha o documento em faixas, em paralelo, com um prazo só.
 
     O `pdftoppm` desenha uma página por vez e não sabe usar mais de um núcleo:
-    num documento longo, o tempo era só a soma das páginas. Quatro processos
-    sobre faixas diferentes escrevem no mesmo diretório, cada um com o número da
-    página no nome do arquivo, e nenhum toca o arquivo do outro.
+    num documento longo, o tempo era a soma das páginas. Faixas diferentes
+    escrevem no mesmo diretório, cada uma com o número da página no nome, e
+    nenhuma toca o arquivo da outra. A numeração vem do total do documento, não
+    da faixa, então os nomes coincidem com os de uma passada única.
 
-    O prazo é de cada faixa, não do documento: uma faixa que trava não fica
-    escondida atrás das outras que terminaram.
+    **O prazo é do conjunto, contado do lançamento.** Esperar uma faixa de cada
+    vez com um prazo próprio somava os prazos: quatro faixas podiam levar quatro
+    vezes o limite, e o cliente desistia antes com uma mensagem que não dizia
+    nada disso.
+
+    **E o erro vai para arquivo, não para um cano.** Um `stderr=PIPE` que
+    ninguém lê enche e trava o processo do outro lado — justamente as faixas
+    ainda não esperadas, que ficariam paradas sem ninguém saber.
     """
     faixas = page_ranges(page_count, raster_workers())
-    processos: list[tuple[subprocess.Popen[bytes], tuple[int, int]]] = []
+    limite = time.monotonic() + _PDFTOPPM_TIMEOUT_SECONDS
+    processos: list[tuple[subprocess.Popen[bytes], Path]] = []
     try:
-        for primeira, ultima in faixas:
+        for indice, (primeira, ultima) in enumerate(faixas):
+            queixa = output_prefix.parent / f".erro-{indice}"
             try:
-                processo = subprocess.Popen(  # noqa: S603 - fixed binary, bounded arguments
-                    [
-                        pdftoppm,
-                        "-png",
-                        "-scale-to",
-                        str(MAX_RASTER_DIMENSION),
-                        "-f",
-                        str(primeira),
-                        "-l",
-                        str(ultima),
-                        str(source),
-                        str(output_prefix),
-                    ],
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE,
-                    close_fds=True,
-                    env=_raster_environment(),
-                )
+                with queixa.open("wb") as destino:
+                    processo = subprocess.Popen(  # noqa: S603 - fixed binary, bounded arguments
+                        [
+                            pdftoppm,
+                            "-png",
+                            "-scale-to",
+                            str(MAX_RASTER_DIMENSION),
+                            "-f",
+                            str(primeira),
+                            "-l",
+                            str(ultima),
+                            str(source),
+                            str(output_prefix),
+                        ],
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=destino,
+                        close_fds=True,
+                        env=_raster_environment(),
+                    )
             except OSError as error:
                 raise PdfDerivativeUnavailable("PDF rasterizer could not start") from error
-            processos.append((processo, (primeira, ultima)))
+            processos.append((processo, queixa))
 
-        for processo, _faixa in processos:
+        for processo, queixa in processos:
+            restante = limite - time.monotonic()
+            if restante <= 0:
+                raise PdfDerivativeRejected("PDF derivative rasterization timed out")
             try:
-                _saida, erro = processo.communicate(timeout=_PDFTOPPM_TIMEOUT_SECONDS)
+                processo.wait(timeout=restante)
             except subprocess.TimeoutExpired as error:
                 raise PdfDerivativeRejected("PDF derivative rasterization timed out") from error
-            if processo.returncode != 0 or len(erro) > 4_096:
+            if processo.returncode != 0 or queixa.stat().st_size > 4_096:
                 raise PdfDerivativeRejected("PDF derivative rasterization failed")
     finally:
-        # Uma faixa que falha não deixa as outras desenhando para um documento
-        # que já foi recusado.
-        for processo, _faixa in processos:
+        # Uma faixa que falha ou estoura o prazo não deixa as outras desenhando
+        # para um documento que já foi recusado — nem o serviço isolado ocupado
+        # depois de o cliente ter desistido.
+        for processo, queixa in processos:
             if processo.poll() is None:
                 processo.kill()
                 processo.wait()
+            queixa.unlink(missing_ok=True)
 
 
 def build_pdf_page_archive(
