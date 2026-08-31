@@ -330,6 +330,89 @@ def _numeros_crus_de_pagina() -> list[str]:
     return achados
 
 
+class TestTetoDeVideo:
+    """Dois tetos de vídeo, e a razão de serem dois.
+
+    O material de aula sobe do navegador do vendedor, num `PUT` único com URL
+    assinada de 300 s. O vídeo citado dentro do PDF é baixado por nós, com
+    prazo nosso de 15 min. São caminhos diferentes, e a Decisão 010 exige que um
+    teto próprio justifique por que não é o do catálogo.
+
+    O que não se justifica é o mesmo número escrito à mão em cinco lugares.
+    """
+
+    def test_o_verificador_do_catalogo_nao_reescreve_o_numero_do_catalogo(self) -> None:
+        from appsell_api import asset_media, video_verifier
+
+        assert video_verifier.MAX_VIDEO_BYTES == asset_media.max_bytes(asset_media.VIDEO_MEDIA_TYPE)
+        fonte = Path(video_verifier.__file__).read_text()
+        assert "MAX_VIDEO_BYTES = 100" not in fonte
+
+    def test_os_dois_lados_do_socket_concordam_sobre_o_derivado(self) -> None:
+        """Um teto no cliente e outro no serviço isolado cortam em lugares diferentes."""
+        from appsell_api import asset_media, pdf_link_video, video_remux
+
+        assert (
+            video_remux.MAX_DERIVATIVE_BYTES
+            == pdf_link_video.MAX_DERIVATIVE_BYTES
+            == asset_media.PDF_LINK_VIDEO_MAX_DERIVATIVE_BYTES
+        )
+        assert pdf_link_video.MAX_SOURCE_BYTES == asset_media.PDF_LINK_VIDEO_MAX_SOURCE_BYTES
+
+    def test_a_camada_web_carrega_o_mesmo_teto_do_video_do_pdf(self) -> None:
+        from appsell_api import asset_media
+
+        web = (_RAIZ / "lib/asset-media.ts").read_text()
+        encontrado = re.search(
+            r"export const PDF_LINK_VIDEO_MAX_DERIVATIVE_BYTES = (\d+) \* MIB;", web
+        )
+        assert encontrado is not None, "a camada web perdeu a constante do vídeo do PDF"
+        assert int(encontrado.group(1)) * _MIB == asset_media.PDF_LINK_VIDEO_MAX_DERIVATIVE_BYTES
+
+    def test_o_mesmo_nome_nao_carrega_numeros_diferentes(self) -> None:
+        """`MAX_VIDEO_BYTES` valia 100 MiB no catálogo e 512 MiB dentro de uma rota.
+
+        Dois nomes iguais com números diferentes no mesmo repositório. Quem
+        importasse o do catálogo achando que era o da rota passaria a recusar
+        vídeo bom, e nada acusaria.
+
+        A regra não é onde o nome pode existir, é o que ele pode receber: fora
+        do catálogo, uma constante de teto deriva de outra, nunca de um número.
+        """
+        declara = re.compile(
+            r"^\s*(?:export\s+)?(?:const\s+)?"
+            # Os nomes desta família: os de vídeo, e os dois sem qualificador,
+            # que existem só nos módulos de vídeo. `MAX_PDF_DERIVATIVE_BYTES` é
+            # o pacote de páginas, outro fato, com teste próprio acima.
+            r"(MAX_\w*VIDEO\w*BYTES|MAX_DERIVATIVE_BYTES|MAX_SOURCE_BYTES)"
+            r"\s*(?::[^=]+)?=\s*(.+?);?$"
+        )
+        literal = re.compile(r"^\s*\d[\d_]*\s*(\*\s*(1024|MIB|_MIB)\b.*)?$")
+        achados: list[str] = []
+        for caminho in _arquivos_de_codigo():
+            if caminho.name in {"asset_media.py", "asset-media.ts"}:
+                continue
+            for numero, linha in enumerate(caminho.read_text().splitlines(), 1):
+                encontrado = declara.match(linha)
+                if encontrado and literal.match(encontrado.group(2)):
+                    achados.append(f"{caminho.relative_to(_RAIZ)}:{numero}: {linha.strip()}")
+        assert not achados, "teto de mídia declarado com número fora do catálogo:\n" + "\n".join(
+            achados
+        )
+
+    def test_nenhum_arquivo_escreve_o_teto_de_video_a_mao(self) -> None:
+        crus = re.compile(r"\b\d+\s*\*\s*1024\s*\*\s*1024\b|\b(?:104857600|536870912)\b")
+        contexto = re.compile(r"(video|remux|faststart)", re.IGNORECASE)
+        achados: list[str] = []
+        for caminho in _arquivos_de_codigo():
+            for numero, linha in enumerate(caminho.read_text().splitlines(), 1):
+                if linha.lstrip().startswith(("#", "*", "//")) or not contexto.search(linha):
+                    continue
+                if crus.search(linha):
+                    achados.append(f"{caminho.relative_to(_RAIZ)}:{numero}: {linha.strip()}")
+        assert not achados, "teto de vídeo escrito à mão:\n" + "\n".join(achados)
+
+
 class TestOrcamentoDoLease:
     """O trabalho todo cabe nos 600 s que o banco concede ao worker.
 

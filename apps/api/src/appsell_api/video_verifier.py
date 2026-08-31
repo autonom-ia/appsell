@@ -16,8 +16,13 @@ from typing import BinaryIO, Final
 
 import httpx
 
-MAX_VIDEO_BYTES = 100 * 1024 * 1024
-VIDEO_MP4_MIME = "video/mp4"
+from .asset_media import VIDEO_MEDIA_TYPE, max_bytes
+
+#: O teto do material de aula vem do catálogo, que é quem o banco e a tela
+#: também consultam. Escrito à mão aqui, ele sobrevivia a quem pensasse tê-lo
+#: mudado.
+MAX_VIDEO_BYTES = max_bytes(VIDEO_MEDIA_TYPE)
+VIDEO_MP4_MIME = VIDEO_MEDIA_TYPE
 
 #: Quantas vezes insistir quando o serviço isolado não atende.
 #:

@@ -31,9 +31,12 @@ import subprocess
 from pathlib import Path
 from typing import Any, Final
 
+from .asset_media import PDF_LINK_VIDEO_MAX_DERIVATIVE_BYTES
+
 _MIB: Final = 1024 * 1024
 
-MAX_DERIVATIVE_BYTES: Final = 512 * _MIB
+#: O teto do derivado, o mesmo dos dois lados do socket. Ver `asset_media`.
+MAX_DERIVATIVE_BYTES: Final = PDF_LINK_VIDEO_MAX_DERIVATIVE_BYTES
 #: Duração máxima aceita, em segundos. Uma aula não é um filme.
 MAX_DURATION_SECONDS: Final = 4 * 60 * 60
 #: Acima disto o decodificador aloca quadros enormes antes de qualquer redução.

@@ -81,6 +81,15 @@ O catálogo (`asset_media.py` / `lib/asset-media.ts` / `app_private.asset_media_
 tem de justificar por que não é o do catálogo — foi assim que o vídeo do PDF
 ficou com 512 MiB enquanto o catálogo dizia 100.
 
+Desde 31/08/2026 esse teto próprio também mora no catálogo, como
+`PDF_LINK_VIDEO_MAX_SOURCE_BYTES` e `PDF_LINK_VIDEO_MAX_DERIVATIVE_BYTES`, com a
+justificativa escrita ao lado: são caminhos diferentes (envio do vendedor num
+`PUT` único de 300 s contra download nosso de 15 min), e não o mesmo número em
+lugares diferentes. Antes disso o valor estava escrito à mão em cinco pontos, e
+`MAX_VIDEO_BYTES` chegou a existir com dois valores distintos — 100 MiB no
+catálogo e 512 MiB dentro de uma rota do BFF. `TestTetoDeVideo` fecha as duas
+portas: número cru e nome repetido com valor diferente.
+
 ## Decisão 011 — número de limite vem de medição, não de estimativa
 
 O teto de 300 páginas veio de medir a rasterização de um documento real de 300

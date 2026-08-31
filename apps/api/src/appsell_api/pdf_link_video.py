@@ -53,13 +53,22 @@ import anyio
 import httpx
 from anyio import to_thread
 
+from .asset_media import (
+    PDF_LINK_VIDEO_MAX_DERIVATIVE_BYTES,
+    PDF_LINK_VIDEO_MAX_SOURCE_BYTES,
+)
+
 _MIB: Final = 1024 * 1024
 
 #: Teto do arquivo de origem. Acima disto o preparo é recusado em vez de ocupar
-#: a máquina por tempo indefinido com um arquivo que ninguém dimensionou.
-MAX_SOURCE_BYTES: Final = 512 * _MIB
-#: Teto do derivado gerado, pelo mesmo motivo.
-MAX_DERIVATIVE_BYTES: Final = 512 * _MIB
+#: a máquina por tempo indefinido com um arquivo que ninguém dimensionou. O
+#: número mora no catálogo, junto do teto do material de aula, para que subir um
+#: seja uma decisão tomada com o outro à vista.
+MAX_SOURCE_BYTES: Final = PDF_LINK_VIDEO_MAX_SOURCE_BYTES
+#: Teto do derivado gerado, pelo mesmo motivo. É o mesmo que o serviço isolado
+#: aplica em `video_remux`, e precisa ser: um teto no cliente e outro no serviço
+#: cortariam em lugares diferentes.
+MAX_DERIVATIVE_BYTES: Final = PDF_LINK_VIDEO_MAX_DERIVATIVE_BYTES
 #: Quantos redirecionamentos o download aceita. Cada um é revalidado.
 MAX_REDIRECTS: Final = 3
 #: Prazo total do download, em segundos.

@@ -63,6 +63,19 @@ export const MAX_ASSET_BYTES = Math.max(
   ...Object.values(SUPPORTED_ASSET_MEDIA).map((spec) => spec.maxBytes)
 );
 
+/**
+ * Os tetos do vídeo referenciado de dentro de um PDF.
+ *
+ * Não são o teto do catálogo, e a diferença é de caminho: o material de aula
+ * sobe do navegador do vendedor, num PUT único com URL assinada de 300 s, e o
+ * teto ali é o que ele consegue entregar. Este é baixado pelo servidor, com
+ * prazo dele.
+ *
+ * Espelham `asset_media.py`, e `test_limites_de_midia.py` compara os dois.
+ */
+export const PDF_LINK_VIDEO_MAX_SOURCE_BYTES = 512 * MIB;
+export const PDF_LINK_VIDEO_MAX_DERIVATIVE_BYTES = 512 * MIB;
+
 export const ASSET_UPLOAD_ACCEPT = Object.entries(SUPPORTED_ASSET_MEDIA)
   .flatMap(([mediaType, spec]) => [mediaType, `.${spec.extension}`])
   .join(",");
