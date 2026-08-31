@@ -685,10 +685,40 @@ def test_o_uvicorn_nao_guarda_tratador_proprio_depois_da_configuracao() -> None:
 
     _configura("production")
 
-    for nome in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+    for nome in ("uvicorn", "uvicorn.error"):
         logger_da_biblioteca = logging.getLogger(nome)
         assert logger_da_biblioteca.handlers == []
         assert logger_da_biblioteca.propagate is True
+
+
+def test_o_access_log_do_uvicorn_continua_calado() -> None:
+    """Este teste existe porque a versão anterior dele guardava o defeito.
+
+    Ele afirmava que `uvicorn.access` devia propagar como os outros dois. Em
+    produção isso ressuscitou o access log: uma linha por requisição com o
+    **caminho concreto** — `"GET /health/ready HTTP/1.1" 200` —, que é o oposto
+    do que esta fundação promete. Com outra rota, sairiam identificador e query
+    string. Custou um rollback, e nenhuma das sete rodadas de review pegou: só o
+    deploy real pegou.
+
+    O `--no-access-log` cala esse logger por `propagate = False`. Calá-lo aqui
+    também não depende de a flag continuar no CMD — e o teste só prova isso se
+    partir do logger **contaminado**: sem o tratador que o `LOGGING_CONFIG` do
+    uvicorn instala quando a flag não está presente, remover `handlers = []` da
+    correção passaria despercebido.
+    """
+    acesso = logging.getLogger("uvicorn.access")
+    contaminacao = logging.StreamHandler()
+    acesso.addHandler(contaminacao)
+    acesso.propagate = True
+
+    fluxo = _configura("production")
+
+    acesso.info('127.0.0.1:33522 - "GET /v1/itens/42?token=abc HTTP/1.1" 200')
+
+    assert _linhas(fluxo) == []
+    assert acesso.handlers == []
+    assert acesso.propagate is False
 
 
 @pytest.mark.parametrize(
