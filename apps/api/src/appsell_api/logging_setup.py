@@ -143,7 +143,19 @@ _PREFIXO_DE_HEALTH = "/health/"
 _AMBIENTES_ESTRUTURADOS = frozenset({"staging", "production"})
 
 # O uvicorn instala tratadores proprios nestes loggers no arranque do servidor.
-_LOGGERS_COM_TRATADOR_PROPRIO = ("uvicorn", "uvicorn.error", "uvicorn.access")
+# Esvaziar e deixar propagar para a raiz e o que faz a captura valer.
+_LOGGERS_COM_TRATADOR_PROPRIO = ("uvicorn", "uvicorn.error")
+
+# `uvicorn.access` NAO entra na lista acima, e a diferenca custou um rollback em
+# producao. O `--no-access-log` cala o access log justamente por `propagate =
+# False`; forcar `True` ali ressuscitou uma linha por requisicao com o **caminho
+# concreto** — `"GET /health/ready HTTP/1.1" 200` —, que e o oposto do que esta
+# fundacao promete: com outra rota, sairiam identificador e query string.
+#
+# Quem registra requisicao aqui e o middleware, que grava o template da rota.
+# Calar por `handlers=[]` e `propagate=False` nao depende do `--no-access-log`
+# continuar no CMD.
+_LOGGER_DE_ACESSO_DO_UVICORN = "uvicorn.access"
 
 # Guardados no import, antes de qualquer substituicao, para que reconfigurar o
 # log varias vezes nao encadeie um hook dentro do outro.
@@ -281,6 +293,10 @@ def _capturar_o_logging_da_biblioteca_padrao(
         logger_da_biblioteca = logging.getLogger(nome)
         logger_da_biblioteca.handlers = []
         logger_da_biblioteca.propagate = True
+
+    acesso = logging.getLogger(_LOGGER_DE_ACESSO_DO_UVICORN)
+    acesso.handlers = []
+    acesso.propagate = False
 
     for nome in _LOGGERS_RUIDOSOS:
         logging.getLogger(nome).setLevel(max(nivel, logging.WARNING))
