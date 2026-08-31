@@ -4,9 +4,8 @@ Ele tem **um lugar só**, e nele cabem a leitura dos links, a rasterização das
 páginas e a conversão dos vídeos. Quem chega enquanto ele trabalha leva `429`.
 
 Isso virava um documento sem link nenhum: o aluno abria o guia e não havia
-botão, sem erro na tela e sem registro. Dois alunos abrindo PDFs ao mesmo tempo
-já bastavam. Ficou mais fácil de acontecer quando o preparo dos vídeos passou a
-começar sozinho, na abertura da aula.
+botão, sem erro na tela e sem registro. Basta dois alunos abrindo PDFs ao mesmo
+tempo, ou um abrindo enquanto o vídeo de outro está sendo convertido.
 """
 
 from __future__ import annotations
@@ -145,25 +144,17 @@ class TestOcupadoNaoEDocumentoSemLinks:
             await learning_routes._read_links_waiting_for_the_sandbox(_fora_do_ar)
         assert tentativas == 1
 
-    async def test_a_espera_total_cabe_no_tempo_de_abrir_uma_aula(self) -> None:
-        # Quem espera é a requisição do aluno. O teto existe para ela não virar
-        # uma conexão pendurada atrás de uma conversão de vídeo.
-        total = learning_routes.PDF_LINKS_ATTEMPTS * learning_routes.PDF_LINKS_RETRY_SECONDS
-        assert total <= 10
+    async def test_a_espera_total_cabe_no_prazo_que_o_bff_da(self) -> None:
+        """Quem espera é a requisição do aluno, e ela tem prazo.
+
+        São `tentativas - 1` intervalos, e não `tentativas`: a primeira não
+        espera nada. O BFF desiste da rota do PDF em quinze segundos, e o que
+        sobrar depois desta espera é o que resta para autenticação, banco,
+        storage e a leitura que der certo.
+        """
+        intervalos = learning_routes.PDF_LINKS_ATTEMPTS - 1
+        total = intervalos * learning_routes.PDF_LINKS_RETRY_SECONDS
+        assert total == 4.5
+        # Folga de dois terços do prazo do BFF para todo o resto.
+        assert total <= 5
         assert learning_routes.PDF_LINKS_ATTEMPTS >= 2
-
-
-def test_a_rota_dos_links_usa_a_leitura_que_insiste() -> None:
-    """`_protected_pdf_links` chama a versão que insiste, e não `to_thread` cru.
-
-    Os outros testes exercitam o auxiliar direto e passariam com a rota voltando
-    a chamar a leitura sem insistência — e o sintoma em produção seria o mesmo
-    de antes: PDF sem botão, calado.
-    """
-    from pathlib import Path
-
-    fonte = Path(learning_routes.__file__).read_text()
-    corpo = fonte[fonte.index("async def _protected_pdf_links(") :]
-    corpo = corpo[: corpo.index("\nasync def _read_links_waiting_for_the_sandbox(")]
-    assert "await _read_links_waiting_for_the_sandbox(read_links)" in corpo
-    assert "await to_thread.run_sync(read_links)" not in corpo

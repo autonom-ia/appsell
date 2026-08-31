@@ -138,8 +138,7 @@ def trusted_video_target(value: object) -> str | None:
     # entra na chave do derivado, e a chave é o registro do que já foi
     # preparado. Um PDF citando `video.mov#1` até `video.mov#4` fazia a
     # plataforma baixar o mesmo arquivo quatro vezes e guardar quatro cópias
-    # idênticas, com quatro nomes. Sem clique nenhum, agora que o preparo começa
-    # na abertura da aula.
+    # idênticas, com quatro nomes — e o teto por arquivo é de 512 MiB.
     return urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, ""))
 
 

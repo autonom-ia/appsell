@@ -61,16 +61,19 @@ _PDF_LINK_VIDEO_PREPARATIONS = PreparationRegistry()
 #: pode recolher a tarefa no meio do preparo — o `asyncio` só guarda referência
 #: fraca, e a documentação pede que quem cria mantenha a sua.
 _PDF_LINK_VIDEO_TASKS: set[asyncio.Task[None]] = set()
-#: Quantos preparos ficam vivos ao mesmo tempo.
+#: Quantos preparos ficam vivos ao mesmo tempo. Um.
 #:
-#: Cada um ocupa o disco com a origem e com o derivado enquanto trabalha. O teto
-#: por arquivo é de 512 MiB e o `/tmp` do serviço é de 3 GiB, que precisa caber
-#: também as páginas protegidas — dois é o que sobra com folga.
+#: Cada preparo mantém no disco a origem e o derivado até terminar o hash e a
+#: subida — até 1 GiB, com o teto de 512 MiB por arquivo. Dois preparos seriam
+#: 2 GiB, e no ambiente de prévia o `/tmp` é `tmpfs`: esses bytes contam contra
+#: o `mem_limit` de 1 GiB do serviço. Em produção o `/tmp` é disco, mas a
+#: memória do serviço é menor ainda, 768 MiB.
 #:
-#: Dois em vez de um porque o que domina é o download, que é da API: medido no
-#: vídeo do vendedor, 1,3 s de rede contra 0,6 s de conversão. Com um só, o
-#: segundo aluno esperava o download inteiro do primeiro sem motivo.
-PDF_LINK_VIDEO_CONCURRENCY: Final = 2
+#: Dois dobrariam a vazão quando dois alunos clicam junto, e o que domina é o
+#: download — 1,3 s de rede contra 0,6 s de conversão. Mas não dá para
+#: demonstrar que cabe nos dois ambientes, e o preço de errar é a API inteira
+#: cair por falta de memória. Fica em um até os limites serem revistos: #320.
+PDF_LINK_VIDEO_CONCURRENCY: Final = 1
 _PDF_LINK_VIDEO_SLOTS = asyncio.Semaphore(PDF_LINK_VIDEO_CONCURRENCY)
 #: Quantas conversões correm ao mesmo tempo. Uma.
 #:
@@ -80,8 +83,10 @@ _PDF_LINK_VIDEO_SLOTS = asyncio.Semaphore(PDF_LINK_VIDEO_CONCURRENCY)
 #: à conversão não formariam fila: o segundo teria nove segundos para o primeiro
 #: terminar, e um vídeo grande passa disso — o aluno ficaria sem vídeo nenhum.
 #:
-#: A fila é aqui, onde esperar não custa nada. Assim o `429` volta a significar
-#: só o que significava: o serviço reciclando depois do arquivo anterior.
+#: A fila é aqui, onde esperar não custa nada. Hoje o limite de preparos vivos
+#: já é um, e este portão é redundante; fica porque é ele que carrega a razão, e
+#: porque o dia em que aquele número subir não pode ser o dia em que a conversão
+#: volta a competir consigo mesma.
 PDF_LINK_VIDEO_TRANSCODE_CONCURRENCY: Final = 1
 _PDF_LINK_VIDEO_TRANSCODE_SLOT = asyncio.Semaphore(PDF_LINK_VIDEO_TRANSCODE_CONCURRENCY)
 _PROTECTED_PDF_SLOTS = asyncio.Semaphore(4)
@@ -986,8 +991,8 @@ async def _read_links_waiting_for_the_sandbox(read_links: Callable[[], dict[str,
     de vídeo. Quem chega junto leva `429` — e aqui isso virava um documento sem
     link nenhum, sem erro, sem registro. O aluno abria o guia e não via botão.
 
-    Dois alunos abrindo PDFs ao mesmo tempo já bastavam. Ficou mais fácil de
-    acontecer quando o preparo dos vídeos passou a começar sozinho.
+    Basta dois alunos abrindo PDFs ao mesmo tempo, ou um abrindo enquanto o
+    vídeo de outro está sendo convertido.
     """
     for tentativa in range(PDF_LINKS_ATTEMPTS):
         try:

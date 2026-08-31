@@ -191,17 +191,23 @@ async def test_duas_conversoes_nunca_se_sobrepoem(monkeypatch: pytest.MonkeyPatc
     assert maximo_convertendo == 1
 
 
-async def test_dois_downloads_correm_juntos(monkeypatch: pytest.MonkeyPatch) -> None:
-    """O download não fica na fila da conversão.
+async def test_um_preparo_por_vez(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Um preparo vivo de cada vez, e não dois.
 
-    São coisas diferentes: o download é da API e domina o tempo — 1,3 s contra
-    0,6 s no vídeo do vendedor. Com um slot só, o segundo aluno esperava o
-    download inteiro do primeiro antes de o dele começar.
+    Cada preparo mantém no disco a origem e o derivado até terminar o hash e a
+    subida — até 1 GiB, com o teto de 512 MiB por arquivo. Dois seriam 2 GiB, e
+    no ambiente de prévia o `/tmp` é `tmpfs`: esses bytes contam contra o
+    `mem_limit` de 1 GiB. Em produção o `/tmp` é disco, mas a memória do serviço
+    é menor ainda, 768 MiB.
+
+    Dois dobrariam a vazão quando dois alunos clicam junto. O preço de errar é a
+    API inteira cair por falta de memória, e por isso o número só sobe junto com
+    os limites — #320.
     """
     vivos = 0
     maximo_vivo = 0
+    entrou = asyncio.Event()
     solta = asyncio.Event()
-    dois_dentro = asyncio.Event()
 
     monkeypatch.setattr(learning_routes, "_pdf_link_video_ready", lambda *_: None)
 
@@ -209,8 +215,7 @@ async def test_dois_downloads_correm_juntos(monkeypatch: pytest.MonkeyPatch) -> 
         nonlocal vivos, maximo_vivo
         vivos += 1
         maximo_vivo = max(maximo_vivo, vivos)
-        if maximo_vivo >= 2:
-            dois_dentro.set()
+        entrou.set()
         try:
             await solta.wait()
         finally:
@@ -231,14 +236,15 @@ async def test_dois_downloads_correm_juntos(monkeypatch: pytest.MonkeyPatch) -> 
         for indice in range(4)
     ]
     try:
-        await asyncio.wait_for(dois_dentro.wait(), timeout=5)
-        assert maximo_vivo == 2
-        # E não mais que dois: cada um ocupa o disco com a origem e o derivado.
-        await asyncio.sleep(0.1)
-        assert maximo_vivo == 2
+        await asyncio.wait_for(entrou.wait(), timeout=5)
+        # Quanto mais se espera, mais chance os outros teriam de entrar se
+        # pudessem.
+        await asyncio.sleep(0.2)
+        assert maximo_vivo == 1
     finally:
         solta.set()
         await asyncio.gather(*tarefas, return_exceptions=True)
+    assert maximo_vivo == 1
 
 
 def test_o_prazo_do_cliente_acompanha_o_do_ffmpeg() -> None:
