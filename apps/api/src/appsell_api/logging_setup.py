@@ -11,13 +11,13 @@ reproduzir o processo real dentro do contêiner:
 - uma linha por requisição, com o **template** da rota — nunca o caminho
   concreto, a query string ou cabeçalhos;
 - identificador de correlação por requisição, ecoado no `X-Request-Id`;
-- exceção não tratada gravada com contexto e respondida como 500 genérico;
+- exceção não tratada gravada com contexto e **re-levantada**, para o
+  Starlette seguir respondendo o 500 como sempre respondeu;
 - silêncio nos health checks, que o Swarm sonda a cada poucos segundos.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -39,12 +39,47 @@ __all__ = [
     "request_id",
 ]
 
-# Qualquer sequência longa de caracteres de token é tratada como segredo. O
-# redator não sabe distinguir um token de um hash de conteúdo, e trata os dois
-# como segredo de propósito: perder o hash de um material custa uma consulta a
-# mais no diagnóstico, imprimir um token custa uma rotação de credencial.
-_SEGREDO = re.compile(r"[A-Za-z0-9_\-]{32,}")
+# O redator e uma rede de seguranca, **nao uma garantia**. Ele pega o que se
+# parece com segredo; ele nao sabe o que e segredo. A regra continua sendo nao
+# colocar credencial nem dado pessoal em campo de log — os padroes abaixo
+# existem para o caso em que alguem errar, e para o traceback, que ninguem
+# escolhe o conteudo.
 _REDIGIDO = "<REDACTED>"
+
+# 1. Sequencia longa de caracteres de token. Nao distingue um token de um hash
+#    de conteudo, e trata os dois como segredo de proposito: perder o hash de um
+#    material custa uma consulta a mais no diagnostico, imprimir um token custa
+#    uma rotacao de credencial.
+_SEGREDO = re.compile(r"[A-Za-z0-9_\-]{32,}")
+
+# 2. Segredo em base64 padrao. `+`, `/` e `=` quebram a corrida do padrao acima
+#    em pedacos curtos, e o valor inteiro passava.
+#
+#    O casamento exige `+` ou `=` — nao basta `/`. Caminho de arquivo e cheio de
+#    `/` e aparece em todo traceback: `/Users/alguem/dev/worktrees` tem 27
+#    caracteres do alfabeto base64 e viraria `<REDACTED>`, apagando justamente a
+#    parte do traceback que diz onde o erro aconteceu. Um segredo base64 que nao
+#    tenha nem `+` nem `=` escapa deste padrao; e um limite conhecido, nao um
+#    descuido.
+_BASE64 = re.compile(r"[A-Za-z0-9+/=]{24,}")
+_MARCAS_DE_BASE64 = ("+", "=")
+
+# 3. Credencial embutida em URL de conexao. Este e o caso que mais dooi e o que
+#    o padrao de tamanho nunca pegaria: em
+#    `postgresql://alice:p@ssw0rd@db.internal/prod` a senha e curta e os
+#    separadores quebram qualquer corrida. E e exatamente o texto que aparece no
+#    traceback de uma falha de driver. So a credencial e apagada; host, porta e
+#    banco sobrevivem, senao a linha deixa de dizer a qual conexao o erro se
+#    refere.
+#    Os dois `[^/\s]*` sao gulosos de proposito: uma senha pode conter `@`, e
+#    parar no primeiro deixava o resto dela visivel — `p@ssw0rd` virava
+#    `<REDACTED>@ssw0rd`. Guloso, o casamento vai ate o ultimo `@` da
+#    autoridade, e um usuario vazio (`redis://:senha@cache`) tambem entra.
+_CREDENCIAL_EM_URL = re.compile(r"(?<=://)[^/\s]*:[^/\s]*(?=@)")
+
+# 4. Numero de cartao. Redigir por tamanho apagaria identificador de pedido e de
+#    asset; o digito verificador de Luhn separa os dois casos sem chute.
+_CARTAO_CANDIDATO = re.compile(r"\b(?:\d[ -]?){12,18}\d\b")
 
 # Cabecalho e dado de terceiro: so um identificador estreito e aceito e ecoado.
 # Sem isso, um valor com quebra de linha injeta um evento falso no log.
@@ -190,24 +225,40 @@ class RequestLoggingMiddleware:
             try:
                 await self._app(scope, receive, enviar)
             except Exception:
-                status_visto = 500
+                # A excecao e registrada e **re-levantada**. Responder o 500
+                # aqui parecia mais limpo e custava tres coisas: o
+                # `ServerErrorMiddleware` do Starlette deixava de ver a falha,
+                # um handler registrado com `add_exception_handler(Exception,
+                # ...)` nunca rodava, e uma falha depois do inicio da resposta
+                # deixava o ciclo ASGI sem o `http.response.body` final. O
+                # corpo do 500 tambem mudava de texto para JSON, e o BFF le
+                # `detail` como codigo de erro — o codigo exposto viraria
+                # "internal server error", com espacos, no lugar de
+                # `domain_api_error`.
                 self._logger.exception(
                     "unhandled_exception",
                     method=str(scope.get("method", "")),
                     route=_template_da_rota(scope),
+                    response_started=resposta_iniciada,
                 )
-                if not resposta_iniciada:
-                    await _responder_erro_generico(enviar)
-            if not rotina_silenciosa:
-                self._logger.info(
-                    "http_request",
-                    method=str(scope.get("method", "")),
-                    route=_template_da_rota(scope),
-                    status=status_visto,
-                    duration_ms=round((time.perf_counter() - inicio) * 1000, 2),
-                )
+                self._registrar_requisicao(scope, rotina_silenciosa, 500, inicio)
+                raise
+            self._registrar_requisicao(scope, rotina_silenciosa, status_visto, inicio)
         finally:
             structlog.contextvars.reset_contextvars(**tokens)
+
+    def _registrar_requisicao(
+        self, scope: Scope, rotina_silenciosa: bool, status: int, inicio: float
+    ) -> None:
+        if rotina_silenciosa:
+            return
+        self._logger.info(
+            "http_request",
+            method=str(scope.get("method", "")),
+            route=_template_da_rota(scope),
+            status=status,
+            duration_ms=round((time.perf_counter() - inicio) * 1000, 2),
+        )
 
 
 def _redigir_segredos(
@@ -218,7 +269,7 @@ def _redigir_segredos(
 
 def _redigir(valor: Any, profundidade: int = 0) -> Any:
     if isinstance(valor, str):
-        return _SEGREDO.sub(_REDIGIDO, valor)
+        return _redigir_texto(valor)
     if profundidade >= _PROFUNDIDADE_MAXIMA:
         # Registrar um evento nao pode derrubar quem o registrou. Uma estrutura
         # ciclica levava o redator a `RecursionError`, e a excecao escapava da
@@ -231,6 +282,41 @@ def _redigir(valor: Any, profundidade: int = 0) -> Any:
     if isinstance(valor, tuple):
         return tuple(_redigir(item, profundidade + 1) for item in valor)
     return valor
+
+
+def _redigir_texto(texto: str) -> str:
+    # A ordem importa: a credencial de URL e apagada antes dos padroes por
+    # tamanho, para que `<REDACTED>` nao ocupe o lugar de onde a credencial
+    # comecava e impeca o casamento do `(?<=://)`.
+    texto = _CREDENCIAL_EM_URL.sub(_REDIGIDO, texto)
+    texto = _CARTAO_CANDIDATO.sub(_redigir_se_for_cartao, texto)
+    texto = _BASE64.sub(_redigir_se_for_base64, texto)
+    return _SEGREDO.sub(_REDIGIDO, texto)
+
+
+def _redigir_se_for_base64(casamento: re.Match[str]) -> str:
+    achado = casamento.group(0)
+    tem_marca = any(marca in achado for marca in _MARCAS_DE_BASE64)
+    return _REDIGIDO if tem_marca else achado
+
+
+def _redigir_se_for_cartao(casamento: re.Match[str]) -> str:
+    digitos = [caractere for caractere in casamento.group(0) if caractere.isdigit()]
+    return _REDIGIDO if _passa_por_luhn(digitos) else casamento.group(0)
+
+
+def _passa_por_luhn(digitos: list[str]) -> bool:
+    if not 13 <= len(digitos) <= 19:
+        return False
+    total = 0
+    for posicao, caractere in enumerate(reversed(digitos)):
+        valor = int(caractere)
+        if posicao % 2 == 1:
+            valor *= 2
+            if valor > 9:
+                valor -= 9
+        total += valor
+    return total % 10 == 0
 
 
 def _identificador_de_correlacao(scope: Scope) -> str:
@@ -260,21 +346,6 @@ def _template_da_rota(scope: Scope) -> str:
     if isinstance(caminho, str):
         return caminho
     return _ROTA_NAO_CASADA
-
-
-async def _responder_erro_generico(send: Send) -> None:
-    corpo = json.dumps({"detail": "internal server error"}).encode("utf-8")
-    await send(
-        {
-            "type": "http.response.start",
-            "status": 500,
-            "headers": [
-                (b"content-type", b"application/json"),
-                (b"content-length", str(len(corpo)).encode("ascii")),
-            ],
-        }
-    )
-    await send({"type": "http.response.body", "body": corpo})
 
 
 def _nivel(log_level: str) -> int:

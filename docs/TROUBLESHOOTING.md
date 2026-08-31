@@ -163,10 +163,20 @@ sudo docker service logs --since 1h sell-autonomia_api | grep '"request_id":"<id
 
 ### O que o log nunca vai mostrar
 
-- **Valor com 32 caracteres ou mais** de `[A-Za-z0-9_-]` sai como `<REDACTED>`.
-  O redator não sabe distinguir um token de um hash de conteúdo e trata os dois
-  como segredo. Perder o hash de um material custa uma consulta a mais; imprimir
-  um token custa uma rotação de credencial.
+- **O que o redator apaga**, e só isto: sequência de 32+ caracteres de
+  `[A-Za-z0-9_-]`; base64 contendo `+` ou `=`; a credencial de uma URL de
+  conexão (`postgresql://user:senha@host` vira `postgresql://<REDACTED>@host`,
+  preservando host e banco); número de cartão que passa por Luhn.
+
+  **O que ele não apaga:** senha curta solta num campo, CPF, e-mail, número de
+  telefone, e segredo base64 sem `+` nem `=`. O redator é rede de segurança para
+  o descuido e para o traceback — cujo conteúdo ninguém escolhe. **A regra
+  continua sendo não colocar credencial nem dado pessoal em campo de log.**
+  Tratar o redator como garantia é o mesmo que não ter redator.
+
+  Ele também não distingue um token de um hash de conteúdo, e trata os dois como
+  segredo: perder o hash de um material custa uma consulta a mais no
+  diagnóstico. Prefira registrar `asset_id` a registrar `key`.
 - **Health check.** `/health/live` e `/health/ready` são silenciosos. O Swarm os
   sonda a cada poucos segundos, e sem isso o log seria milhares de linhas por dia
   de uma rota que não diz nada.

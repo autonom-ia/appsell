@@ -18,11 +18,13 @@ import asyncio
 import contextlib
 import json
 import warnings
+from collections.abc import AsyncIterator, Iterator
 from io import StringIO
 from typing import Any
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 from httpx import ASGITransport, AsyncClient
 
 from appsell_api import logging_setup
@@ -30,10 +32,35 @@ from appsell_api import logging_setup
 _ESPERA_DA_ROTA_LENTA = 0.05
 
 
+@pytest.fixture(autouse=True)
+def _devolve_a_configuracao_da_aplicacao() -> Iterator[None]:
+    """Nenhum teste deste arquivo pode vazar a própria configuração.
+
+    Cada caso aponta o structlog para um `StringIO` privado. Sem esta devolução,
+    todo log emitido depois deste arquivo — no mesmo processo do pytest — iria
+    para um buffer morto e sumiria do stdout. É o mesmo defeito que motivou
+    trocar `structlog.reset_defaults()` nos testes de `learning_routes`.
+    """
+    try:
+        yield
+    finally:
+        logging_setup.configure_logging_from_environment()
+
+
 def _configura(ambiente: str) -> StringIO:
     fluxo = StringIO()
     logging_setup.configure_logging(environment=ambiente, log_level="INFO", stream=fluxo)
     return fluxo
+
+
+def _cliente(app: FastAPI) -> AsyncClient:
+    """Cliente que reage à exceção como um servidor ASGI reagiria.
+
+    `raise_app_exceptions=True` — o padrão do httpx — faria a exceção subir para
+    o teste, escondendo o que o Starlette de fato responde ao usuário.
+    """
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    return AsyncClient(transport=transport, base_url="http://test")
 
 
 def _linhas(fluxo: StringIO) -> list[str]:
@@ -73,12 +100,18 @@ def test_local_renderiza_console_legivel_em_vez_de_json() -> None:
 
 
 def test_valor_longo_o_bastante_para_ser_segredo_nao_chega_ao_log() -> None:
-    """Regra que não cede: token, chave e senha nunca são impressos.
+    """O redator pega o que **se parece** com segredo — não o que é segredo.
 
-    O redator não sabe distinguir um token de um hash de conteúdo, e por isso
-    trata os dois como segredo. É uma troca consciente: perder o hash exato de
-    um material custa uma consulta a mais no diagnóstico; imprimir um token
-    custa uma rotação de credencial.
+    Esta docstring já afirmou que "token, chave e senha nunca são impressos", e
+    era falso: uma senha curta, um CPF ou um e-mail passam inteiros. O redator é
+    rede de segurança para o descuido e para o traceback, cujo conteúdo ninguém
+    escolhe. A regra continua sendo não colocar credencial nem dado pessoal em
+    campo de log.
+
+    O que ele cobre está em `logging_setup`: sequência longa de caracteres de
+    token, base64 com `+`/`=`, credencial embutida em URL e número de cartão por
+    Luhn. Perder o hash exato de um material custa uma consulta a mais no
+    diagnóstico; imprimir um token custa uma rotação de credencial.
     """
     fluxo = _configura("production")
     token = "sk-" + "a1B2c3D4" * 5
@@ -122,8 +155,7 @@ async def test_cada_requisicao_deixa_uma_linha_com_rota_status_e_duracao() -> No
     fluxo = _configura("production")
     app = _app_de_prova()
 
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with _cliente(app) as client:
         resposta = await client.get("/v1/itens/42")
 
     assert resposta.status_code == 200
@@ -146,8 +178,7 @@ async def test_a_linha_da_requisicao_nao_carrega_query_nem_cabecalho_de_autoriza
     fluxo = _configura("production")
     app = _app_de_prova()
 
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with _cliente(app) as client:
         await client.get(
             "/v1/itens/42",
             params={"token": "T" * 40},
@@ -167,8 +198,7 @@ async def test_o_identificador_de_correlacao_vem_do_cabecalho_quando_ele_e_valid
     fluxo = _configura("production")
     app = _app_de_prova()
 
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with _cliente(app) as client:
         resposta = await client.get("/v1/itens/42", headers={"X-Request-Id": "abc-123"})
 
     registro = json.loads(_linhas(fluxo)[0])
@@ -182,8 +212,7 @@ async def test_identificador_de_correlacao_malformado_e_descartado_e_nao_ecoado(
     fluxo = _configura("production")
     app = _app_de_prova()
 
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with _cliente(app) as client:
         resposta = await client.get(
             "/v1/itens/42", headers={"X-Request-Id": 'evento" injetado\n outra linha'}
         )
@@ -206,12 +235,16 @@ async def test_excecao_nao_tratada_grava_contexto_da_rota_e_responde_500_generic
     fluxo = _configura("production")
     app = _app_de_prova()
 
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with _cliente(app) as client:
         resposta = await client.get("/v1/explode")
 
     assert resposta.status_code == 500
     assert "boom" not in resposta.text
+    # O corpo continua sendo o do Starlette. Responder um JSON com `detail`
+    # daqui mudava o codigo de erro que o BFF expoe: ele le `payload.detail`
+    # como codigo, e "internal server error" — com espacos — tomaria o lugar de
+    # `domain_api_error`.
+    assert resposta.text == "Internal Server Error"
 
     eventos = [json.loads(linha) for linha in _linhas(fluxo)]
     falha = next(evento for evento in eventos if evento["event"] == "unhandled_exception")
@@ -236,8 +269,7 @@ async def test_health_check_nao_polui_o_log() -> None:
     fluxo = _configura("production")
     app = _app_de_prova()
 
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with _cliente(app) as client:
         await client.get("/health/live")
         await client.get("/health/ready")
 
@@ -250,8 +282,7 @@ async def test_rota_desconhecida_e_registrada_sem_ecoar_o_caminho_pedido() -> No
     fluxo = _configura("production")
     app = _app_de_prova()
 
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with _cliente(app) as client:
         await client.get("/wp-admin/../etc/passwd")
 
     registro = json.loads(_linhas(fluxo)[0])
@@ -337,8 +368,7 @@ async def test_a_duracao_registrada_e_a_duracao_real_da_requisicao() -> None:
     fluxo = _configura("production")
     app = _app_de_prova()
 
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with _cliente(app) as client:
         await client.get("/v1/lento")
 
     registro = json.loads(_linhas(fluxo)[0])
@@ -395,8 +425,7 @@ async def test_o_identificador_de_correlacao_sobrevive_ao_redator() -> None:
     fluxo = _configura("production")
     app = _app_de_prova()
 
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with _cliente(app) as client:
         await client.get("/v1/itens/42")
         await client.get("/v1/itens/42", headers={"X-Request-Id": "c" * 31})
         await client.get("/v1/itens/42", headers={"X-Request-Id": "d" * 32})
@@ -422,8 +451,7 @@ async def test_excecao_no_health_check_e_registrada_apesar_do_silencio_de_rotina
     fluxo = _configura("production")
     app = _app_de_prova()
 
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with _cliente(app) as client:
         await client.get("/health/live")
         resposta = await client.get("/health/explode")
 
@@ -464,3 +492,142 @@ def test_estrutura_aninhada_dentro_do_limite_continua_inteira() -> None:
     assert segredo not in linha
     assert "visivel" in linha
     assert "<too-deep>" not in linha
+
+
+@pytest.mark.asyncio
+async def test_handler_global_de_excecao_registrado_pela_aplicacao_continua_rodando() -> None:
+    """Registrar a exceção não pode ser o mesmo que consumi-la.
+
+    A primeira versão respondia o 500 de dentro do middleware. Como ele fica
+    *dentro* do `ServerErrorMiddleware`, a exceção nunca chegava ao Starlette:
+    um handler registrado com `add_exception_handler(Exception, ...)` era
+    ignorado em silêncio, e o modo debug parava de mostrar o traceback.
+    """
+    fluxo = _configura("production")
+    app = FastAPI()
+    logging_setup.install_request_logging(app)
+
+    async def tratador(_request: Request, _exc: Exception) -> JSONResponse:
+        return JSONResponse({"error": "tratado_pela_aplicacao"}, status_code=503)
+
+    app.add_exception_handler(Exception, tratador)
+
+    @app.get("/v1/explode")
+    async def explode() -> dict[str, str]:
+        raise RuntimeError("boom")
+
+    async with _cliente(app) as client:
+        resposta = await client.get("/v1/explode")
+
+    assert resposta.status_code == 503
+    assert resposta.json() == {"error": "tratado_pela_aplicacao"}
+    eventos = [json.loads(linha) for linha in _linhas(fluxo)]
+    assert any(evento["event"] == "unhandled_exception" for evento in eventos)
+
+
+@pytest.mark.asyncio
+async def test_falha_depois_do_inicio_da_resposta_nao_deixa_o_ciclo_asgi_pela_metade() -> None:
+    """Uma resposta em fluxo que quebra no meio precisa continuar quebrando.
+
+    Engolir a exceção depois de `http.response.start` deixava o servidor sem o
+    `http.response.body` final — o transporte ASGI falhava com `AssertionError`
+    em vez de propagar o erro real. Esta API entrega PDF e vídeo, então o
+    caminho de fluxo não é hipotético.
+    """
+    fluxo = _configura("production")
+    app = FastAPI()
+    logging_setup.install_request_logging(app)
+
+    async def pedacos() -> AsyncIterator[bytes]:
+        yield b"comeco"
+        raise RuntimeError("quebrou no meio")
+
+    @app.get("/v1/fluxo")
+    async def fluxo_de_bytes() -> StreamingResponse:
+        return StreamingResponse(pedacos(), media_type="application/octet-stream")
+
+    transport = ASGITransport(app=app, raise_app_exceptions=True)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        with pytest.raises(RuntimeError, match="quebrou no meio"):
+            await client.get("/v1/fluxo")
+
+    eventos = [json.loads(linha) for linha in _linhas(fluxo)]
+    falha = next(evento for evento in eventos if evento["event"] == "unhandled_exception")
+    assert falha["response_started"] is True
+    assert falha["route"] == "/v1/fluxo"
+
+
+def test_credencial_embutida_em_url_de_conexao_nao_chega_ao_log() -> None:
+    """O caso que o `[A-Za-z0-9_-]{32,}` não pegava, e que mais dói.
+
+    `postgresql://alice:p@ssw0rd@db.internal/prod` não tem nenhuma sequência
+    longa: a senha é curta e o `@` e o `:` quebram qualquer corrida. E este é
+    justamente o texto que aparece no traceback de uma falha de driver — que
+    agora vai para o log, porque a exceção passou a ser registrada.
+    """
+    fluxo = _configura("production")
+
+    logging_setup.get_logger("teste").info(
+        "evento_de_prova",
+        dsn="postgresql://alice:p@ssw0rd@db.internal:5432/prod",
+        cache="redis://:outra_senha@cache.internal:6379/0",
+    )
+
+    linha = _linhas(fluxo)[0]
+    assert "alice" not in linha
+    # A senha contém `@`. Parar no primeiro deixava `ssw0rd` visível, e um
+    # usuário vazio como o do Redis não era reconhecido como credencial.
+    assert "p@ssw0rd" not in linha
+    assert "ssw0rd" not in linha
+    assert "outra_senha" not in linha
+    assert "cache.internal" in linha
+    # O host e o banco sobrevivem: sem eles a linha nao diz a qual conexao o
+    # erro se refere, e o redator teria trocado um problema por outro.
+    assert "db.internal" in linha
+    assert "prod" in linha
+
+
+def test_segredo_em_base64_nao_chega_ao_log_e_caminho_de_traceback_sobrevive() -> None:
+    """`+`, `/` e `=` quebram a corrida de `[A-Za-z0-9_-]` em pedaços curtos.
+
+    O casamento exige `+` ou `=`, não basta `/`: caminho de arquivo é cheio de
+    barra e aparece em todo traceback. Redigi-lo apagaria exatamente a parte que
+    diz onde o erro aconteceu.
+    """
+    fluxo = _configura("production")
+    segredo = "aB3+cD4/eF5=gH6+iJ7/kL8=mN9+oP0/qR1=sT2+uV3/wX4="
+
+    logging_setup.get_logger("teste").info("evento_de_prova", chave=segredo)
+
+    assert segredo not in _linhas(fluxo)[0]
+    assert "<REDACTED>" in _linhas(fluxo)[0]
+
+
+def test_caminho_de_arquivo_do_traceback_nao_e_confundido_com_base64() -> None:
+    fluxo = _configura("production")
+    caminho = "/Users/alguem/dev/worktrees/appsell/apps/api/src/appsell_api/main.py"
+
+    logging_setup.get_logger("teste").info("evento_de_prova", arquivo=caminho)
+
+    assert caminho in _linhas(fluxo)[0]
+
+
+def test_numero_de_cartao_nao_chega_ao_log_e_identificador_numerico_sobrevive() -> None:
+    """Cartão é redigido por Luhn, não por tamanho.
+
+    Redigir todo número comprido apagaria identificador de pedido e de asset —
+    e um log sem identificador não serve para nada. O dígito verificador separa
+    os dois casos sem chute.
+    """
+    fluxo = _configura("production")
+
+    logging_setup.get_logger("teste").info(
+        "evento_de_prova",
+        cartao="4111 1111 1111 1111",
+        outro_cartao="4111111111111111",
+        pedido="1234567890123456789",
+    )
+
+    linha = _linhas(fluxo)[0]
+    assert "4111" not in linha
+    assert "1234567890123456789" in linha
