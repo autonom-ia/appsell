@@ -52,6 +52,21 @@ _REDIGIDO = "<REDACTED>"
 #    uma rotacao de credencial.
 _SEGREDO = re.compile(r"[A-Za-z0-9_\-]{32,}")
 
+# Nem tudo que e comprido e segredo. UUID e slug sao **identificadores**, e este
+# dominio identifica asset, entitlement e publicacao por UUID e produto e seller
+# por slug. Redigi-los apagava exatamente o `asset_id` que o proprio
+# TROUBLESHOOTING manda registrar, e o `curso-de-...-na-pratica-2026` que diz de
+# qual produto o erro fala.
+#
+# O que separa os dois casos e o **tamanho do maior trecho sem separador**: um
+# token carrega uma corrida longa de caracteres sem `-` nem `_`; um slug e feito
+# de palavras curtas, e um UUID de grupos de no maximo 12.
+_UUID_CANONICO = re.compile(
+    r"\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\Z"
+)
+_SEPARADORES_DE_IDENTIFICADOR = re.compile(r"[-_]")
+_TRECHO_MAXIMO_DE_IDENTIFICADOR = 16
+
 # 2. Segredo em base64 padrao. `+`, `/` e `=` quebram a corrida do padrao acima
 #    em pedacos curtos, e o valor inteiro passava.
 #
@@ -61,8 +76,10 @@ _SEGREDO = re.compile(r"[A-Za-z0-9_\-]{32,}")
 #    parte do traceback que diz onde o erro aconteceu. Um segredo base64 que nao
 #    tenha nem `+` nem `=` escapa deste padrao; e um limite conhecido, nao um
 #    descuido.
-_BASE64 = re.compile(r"[A-Za-z0-9+/=]{24,}")
-_MARCAS_DE_BASE64 = ("+", "=")
+#    O `=` so conta como padding **no fim**. Aceitar `=` em qualquer posicao
+#    fazia `correlation=abcdefghijklmnop` desaparecer inteiro, e exigir apenas
+#    `+` fazia um caminho com diretorio `C++` perder o comeco.
+_BASE64 = re.compile(r"[A-Za-z0-9+/]{24,}={1,2}")
 
 # 3. Credencial embutida em URL de conexao. Este e o caso que mais dooi e o que
 #    o padrao de tamanho nunca pegaria: em
@@ -75,7 +92,11 @@ _MARCAS_DE_BASE64 = ("+", "=")
 #    parar no primeiro deixava o resto dela visivel — `p@ssw0rd` virava
 #    `<REDACTED>@ssw0rd`. Guloso, o casamento vai ate o ultimo `@` da
 #    autoridade, e um usuario vazio (`redis://:senha@cache`) tambem entra.
-_CREDENCIAL_EM_URL = re.compile(r"(?<=://)[^/\s]*:[^/\s]*(?=@)")
+#    `?` e `#` encerram a autoridade: sem exclui-los,
+#    `http://api.internal:8080?notify=ops@autonomia.site` virava
+#    `http://<REDACTED>@autonomia.site` — a porta era confundida com usuario e o
+#    host desaparecia.
+_CREDENCIAL_EM_URL = re.compile(r"(?<=://)[^/\s?#]*:[^/\s?#]*(?=@)")
 
 # 4. Numero de cartao. Redigir por tamanho apagaria identificador de pedido e de
 #    asset; o digito verificador de Luhn separa os dois casos sem chute.
@@ -98,6 +119,24 @@ _PREFIXO_DE_HEALTH = "/health/"
 
 _AMBIENTES_ESTRUTURADOS = frozenset({"staging", "production"})
 
+# O uvicorn instala tratadores proprios nestes loggers no arranque do servidor.
+_LOGGERS_COM_TRATADOR_PROPRIO = ("uvicorn", "uvicorn.error", "uvicorn.access")
+
+# Capturar a raiz em INFO traz junto o log de cliente destas bibliotecas. O
+# `httpx` registra `HTTP Request: GET <url completa>` a cada chamada — e a API
+# fala com o sandbox e com o identity por `httpx`, de modo que a URL inteira,
+# com a query, iria para o log a cada requisicao interna. Ruido e risco ao mesmo
+# tempo. Em `WARNING` elas so falam quando ha o que dizer.
+_LOGGERS_RUIDOSOS = (
+    "asyncio",
+    "boto3",
+    "botocore",
+    "httpcore",
+    "httpx",
+    "s3transfer",
+    "urllib3",
+)
+
 
 def configure_logging(
     *,
@@ -111,6 +150,8 @@ def configure_logging(
     em vez de confiar no que o structlog diz que teria renderizado.
     """
     estruturado = environment in _AMBIENTES_ESTRUTURADOS
+    nivel = _nivel(log_level)
+    saida = stream or _saida_de_diagnostico_corrente()
     renderizador: Any = (
         structlog.processors.JSONRenderer()
         if estruturado
@@ -130,10 +171,64 @@ def configure_logging(
     processadores += [_redigir_segredos, renderizador]
     structlog.configure(
         processors=processadores,
-        logger_factory=structlog.WriteLoggerFactory(file=stream or _saida_padrao_corrente()),
-        wrapper_class=structlog.make_filtering_bound_logger(_nivel(log_level)),
+        logger_factory=structlog.WriteLoggerFactory(file=saida),
+        wrapper_class=structlog.make_filtering_bound_logger(nivel),
         cache_logger_on_first_use=False,
     )
+    _capturar_o_logging_da_biblioteca_padrao(
+        saida=saida, nivel=nivel, estruturado=estruturado, renderizador=renderizador
+    )
+
+
+def _capturar_o_logging_da_biblioteca_padrao(
+    *, saida: TextIO, nivel: int, estruturado: bool, renderizador: Any
+) -> None:
+    """Faz o `logging` da biblioteca padrão passar pelos mesmos processadores.
+
+    Sem isto o redator é contornado exatamente no caso mais perigoso. Medido
+    contra o uvicorn real: uma exceção não tratada saía **duas vezes** — a linha
+    estruturada, com a credencial redigida, e logo abaixo o traceback que o
+    uvicorn imprime pelo `logging` padrão, com
+    `postgresql://alice:p@ss@db.internal/prod` em claro.
+
+    Como efeito colateral desejado, tudo o que uvicorn, SQLAlchemy e boto3
+    registram passa a sair no mesmo formato e com a mesma redação.
+    """
+    pre_cadeia: list[Any] = [
+        structlog.contextvars.merge_contextvars,
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.ExtraAdder(),
+        structlog.processors.TimeStamper(fmt="iso", utc=True),
+    ]
+    if estruturado:
+        pre_cadeia.append(structlog.processors.format_exc_info)
+    formatador = structlog.stdlib.ProcessorFormatter(
+        foreign_pre_chain=pre_cadeia,
+        processors=[
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            _redigir_segredos,
+            renderizador,
+        ],
+    )
+    tratador = logging.StreamHandler(saida)
+    tratador.setFormatter(formatador)
+
+    raiz = logging.getLogger()
+    for anterior in list(raiz.handlers):
+        raiz.removeHandler(anterior)
+    raiz.addHandler(tratador)
+    raiz.setLevel(nivel)
+
+    # O uvicorn instala tratadores proprios nestes tres, e um tratador proprio
+    # significa uma copia crua ao lado da linha redigida. Esvaziar e deixar
+    # propagar para a raiz e o que faz a captura valer.
+    for nome in _LOGGERS_COM_TRATADOR_PROPRIO:
+        logger_da_biblioteca = logging.getLogger(nome)
+        logger_da_biblioteca.handlers = []
+        logger_da_biblioteca.propagate = True
+
+    for nome in _LOGGERS_RUIDOSOS:
+        logging.getLogger(nome).setLevel(max(nivel, logging.WARNING))
 
 
 def configure_logging_from_environment() -> None:
@@ -151,25 +246,37 @@ def configure_logging_from_environment() -> None:
     )
 
 
-class _SaidaPadraoCorrente:
-    """Escreve no `sys.stdout` **do momento da escrita**.
+class _SaidaDeDiagnosticoCorrente:
+    """Escreve no `sys.stderr` **do momento da escrita**.
 
-    Guardar `sys.stdout` na configuração congela o destino: quem trocar a saída
-    depois — um teste com `capsys`, um script que redireciona — deixa de ver o
-    log, e o log parece ter sumido sem nada ter quebrado.
+    Duas decisões aqui, e as duas foram aprendidas quebrando coisa.
+
+    **Por que `stderr`.** O `stdout` é canal de protocolo em pelo menos um
+    caminho crítico: `pdf_verifier` roda o parser num subprocesso e faz
+    `json.loads(completed.stdout)`, com um teto de 1.024 bytes. Uma única linha
+    de log naquele processo quebra a leitura de **todo** PDF — e a captura do
+    `logging` da biblioteca padrão torna isso provável, porque basta um
+    `WARNING` de qualquer dependência. `pdf_runtime_probe` e
+    `capacity_telemetry` também imprimem JSON puro no `stdout`. O Swarm captura
+    os dois fluxos, então nada se perde no `docker service logs`.
+
+    **Por que resolver na hora da escrita.** Guardar o fluxo na configuração
+    congela o destino: quem trocar a saída depois — um teste com `capsys`, um
+    script que redireciona — deixa de ver o log, e o log parece ter sumido sem
+    nada ter quebrado.
     """
 
     def write(self, texto: str) -> int:
-        return sys.stdout.write(texto)
+        return sys.stderr.write(texto)
 
     def flush(self) -> None:
-        sys.stdout.flush()
+        sys.stderr.flush()
 
 
-def _saida_padrao_corrente() -> TextIO:
+def _saida_de_diagnostico_corrente() -> TextIO:
     # O `WriteLogger` do structlog so chama `write` e `flush`. O `cast` declara
     # esse contrato estreito em vez de fingir um `TextIO` inteiro.
-    return cast(TextIO, _SaidaPadraoCorrente())
+    return cast(TextIO, _SaidaDeDiagnosticoCorrente())
 
 
 def get_logger(name: str) -> Any:
@@ -235,13 +342,21 @@ class RequestLoggingMiddleware:
                 # `detail` como codigo de erro — o codigo exposto viraria
                 # "internal server error", com espacos, no lugar de
                 # `domain_api_error`.
+                # Nao existe `http_request` aqui, e isso e deliberado. Quem
+                # decide o status final e o `ServerErrorMiddleware` — ou um
+                # handler global, que pode responder 503 — e os dois ficam
+                # **fora** deste middleware. Registrar 500 por conta propria
+                # fazia a linha mentir em dois casos medidos: resposta em fluxo
+                # que ja tinha comecado com 200, e handler global respondendo
+                # 503. O evento abaixo carrega tudo o que a linha carregaria.
                 self._logger.exception(
                     "unhandled_exception",
                     method=str(scope.get("method", "")),
                     route=_template_da_rota(scope),
                     response_started=resposta_iniciada,
+                    status_started=status_visto or None,
+                    duration_ms=round((time.perf_counter() - inicio) * 1000, 2),
                 )
-                self._registrar_requisicao(scope, rotina_silenciosa, 500, inicio)
                 raise
             self._registrar_requisicao(scope, rotina_silenciosa, status_visto, inicio)
         finally:
@@ -290,19 +405,45 @@ def _redigir_texto(texto: str) -> str:
     # comecava e impeca o casamento do `(?<=://)`.
     texto = _CREDENCIAL_EM_URL.sub(_REDIGIDO, texto)
     texto = _CARTAO_CANDIDATO.sub(_redigir_se_for_cartao, texto)
-    texto = _BASE64.sub(_redigir_se_for_base64, texto)
-    return _SEGREDO.sub(_REDIGIDO, texto)
+    texto = _BASE64.sub(_REDIGIDO, texto)
+    return _SEGREDO.sub(_redigir_se_nao_for_identificador, texto)
 
 
-def _redigir_se_for_base64(casamento: re.Match[str]) -> str:
+def _redigir_se_nao_for_identificador(casamento: re.Match[str]) -> str:
     achado = casamento.group(0)
-    tem_marca = any(marca in achado for marca in _MARCAS_DE_BASE64)
-    return _REDIGIDO if tem_marca else achado
+    return achado if _parece_identificador(achado) else _REDIGIDO
+
+
+def _parece_identificador(texto: str) -> bool:
+    if _UUID_CANONICO.fullmatch(texto):
+        return True
+    trechos = _SEPARADORES_DE_IDENTIFICADOR.split(texto)
+    return all(len(trecho) <= _TRECHO_MAXIMO_DE_IDENTIFICADOR for trecho in trechos)
 
 
 def _redigir_se_for_cartao(casamento: re.Match[str]) -> str:
     digitos = [caractere for caractere in casamento.group(0) if caractere.isdigit()]
+    if not _comeca_como_cartao(digitos):
+        return casamento.group(0)
     return _REDIGIDO if _passa_por_luhn(digitos) else casamento.group(0)
+
+
+def _comeca_como_cartao(digitos: list[str]) -> bool:
+    """Luhn sozinho não separa cartão de identificador.
+
+    Cerca de um em cada dez números arbitrários passa no dígito verificador —
+    o carimbo Unix `1788134400000` passa, e `0000000000000` também. Exigir
+    também um prefixo de bandeira emissora derruba o falso positivo sem perder
+    cartão real.
+    """
+    numero = "".join(digitos)
+    if numero.startswith(("4", "34", "37", "6011", "65", "36", "38")):
+        return True
+    if numero[:2].isdigit() and 51 <= int(numero[:2]) <= 55:
+        return True
+    if numero[:4].isdigit() and 2221 <= int(numero[:4]) <= 2720:
+        return True
+    return numero[:3].isdigit() and 300 <= int(numero[:3]) <= 305
 
 
 def _passa_por_luhn(digitos: list[str]) -> bool:

@@ -17,6 +17,7 @@ sem exclusão, afogariam o log em milhares de linhas por dia.
 import asyncio
 import contextlib
 import json
+import logging
 import warnings
 from collections.abc import AsyncIterator, Iterator
 from io import StringIO
@@ -247,15 +248,14 @@ async def test_excecao_nao_tratada_grava_contexto_da_rota_e_responde_500_generic
     assert resposta.text == "Internal Server Error"
 
     eventos = [json.loads(linha) for linha in _linhas(fluxo)]
-    falha = next(evento for evento in eventos if evento["event"] == "unhandled_exception")
+    assert [evento["event"] for evento in eventos] == ["unhandled_exception"]
+    falha = eventos[0]
     assert falha["route"] == "/v1/explode"
     assert falha["method"] == "GET"
     assert falha["request_id"]
     assert falha["level"] == "error"
-
-    requisicao = next(evento for evento in eventos if evento["event"] == "http_request")
-    assert requisicao["status"] == 500
-    assert requisicao["request_id"] == falha["request_id"]
+    assert isinstance(falha["duration_ms"], float)
+    assert falha["response_started"] is False
 
 
 @pytest.mark.asyncio
@@ -376,20 +376,29 @@ async def test_a_duracao_registrada_e_a_duracao_real_da_requisicao() -> None:
     assert registro["duration_ms"] >= _ESPERA_DA_ROTA_LENTA * 1000 * 0.8
 
 
-def test_o_log_segue_a_saida_corrente_e_nao_a_do_momento_da_configuracao() -> None:
-    """Guardar `sys.stdout` na configuração congela o destino do log.
+def test_o_log_sai_no_stderr_e_segue_a_saida_corrente() -> None:
+    """Duas coisas de uma vez, e as duas quebraram algo real.
 
-    O sintoma é o pior possível: nada quebra, nada avisa, e o log simplesmente
-    não está onde deveria estar.
+    O `stdout` é canal de protocolo: `pdf_verifier` roda o parser num
+    subprocesso e faz `json.loads(completed.stdout)`, com teto de 1.024 bytes.
+    Uma linha de log naquele processo quebrava a leitura de **todo** PDF — e a
+    captura do `logging` da biblioteca padrão torna isso provável, porque basta
+    um `WARNING` de qualquer dependência.
+
+    E guardar o fluxo na configuração congela o destino: quem trocar a saída
+    depois deixa de ver o log, sem que nada quebre nem avise.
     """
     logging_setup.configure_logging(environment="production", log_level="INFO")
-    fluxo = StringIO()
+    saida_de_erro = StringIO()
+    saida_padrao = StringIO()
 
-    with contextlib.redirect_stdout(fluxo):
+    with contextlib.redirect_stderr(saida_de_erro), contextlib.redirect_stdout(saida_padrao):
         logging_setup.get_logger("teste").info("evento_de_prova")
+        logging.getLogger("uvicorn.error").warning("aviso da biblioteca")
 
-    registro = json.loads(_linhas(fluxo)[0])
-    assert registro["event"] == "evento_de_prova"
+    assert saida_padrao.getvalue() == ""
+    eventos = [json.loads(linha) for linha in _linhas(saida_de_erro)]
+    assert [evento["event"] for evento in eventos] == ["evento_de_prova", "aviso da biblioteca"]
 
 
 def test_o_campo_exception_pertence_ao_traceback_e_nao_a_dado_de_negocio() -> None:
@@ -590,12 +599,17 @@ def test_credencial_embutida_em_url_de_conexao_nao_chega_ao_log() -> None:
 def test_segredo_em_base64_nao_chega_ao_log_e_caminho_de_traceback_sobrevive() -> None:
     """`+`, `/` e `=` quebram a corrida de `[A-Za-z0-9_-]` em pedaços curtos.
 
-    O casamento exige `+` ou `=`, não basta `/`: caminho de arquivo é cheio de
-    barra e aparece em todo traceback. Redigi-lo apagaria exatamente a parte que
-    diz onde o erro aconteceu.
+    O `=` só conta como padding **no fim**. Aceitá-lo em qualquer posição fazia
+    `correlation=abcdefghijklmnop` desaparecer inteiro; exigir apenas `+` fazia
+    um caminho com diretório `C++` perder o começo. Caminho de arquivo aparece
+    em todo traceback, e redigi-lo apagaria a parte que diz onde o erro
+    aconteceu.
     """
     fluxo = _configura("production")
-    segredo = "aB3+cD4/eF5=gH6+iJ7/kL8=mN9+oP0/qR1=sT2+uV3/wX4="
+    # Os `+` e `/` quebram este valor em trechos de quatro caracteres, e nenhum
+    # deles chega perto dos 32 que o padrao de tamanho exige. Sem o padrao de
+    # base64, o segredo inteiro saía no log.
+    segredo = "YWJj+ZGVm/Z2hp+amts/bW5v+cHFy/c3R1+dnd4/eXow+MTIz/NDU2="
 
     logging_setup.get_logger("teste").info("evento_de_prova", chave=segredo)
 
@@ -631,3 +645,152 @@ def test_numero_de_cartao_nao_chega_ao_log_e_identificador_numerico_sobrevive() 
     linha = _linhas(fluxo)[0]
     assert "4111" not in linha
     assert "1234567890123456789" in linha
+
+
+def test_o_log_da_biblioteca_padrao_passa_pelos_mesmos_processadores() -> None:
+    """Sem isto o redator é contornado no caso mais perigoso.
+
+    Medido contra o uvicorn real: uma exceção não tratada saía **duas vezes** —
+    a linha estruturada, com a credencial redigida, e logo abaixo o traceback
+    que o uvicorn imprime pelo `logging` padrão, com
+    `postgresql://alice:p@ss@db.internal/prod` em claro. Registrar a exceção e
+    re-levantá-la só é seguro se o que o servidor registra depois também passar
+    pelo redator.
+
+    De quebra, uvicorn, SQLAlchemy e boto3 passam a sair no mesmo formato.
+    """
+    fluxo = _configura("production")
+
+    try:
+        raise RuntimeError("postgresql://alice:p@ss@db.internal/prod")
+    except RuntimeError:
+        logging.getLogger("uvicorn.error").exception("erro no servidor")
+
+    linha = _linhas(fluxo)[0]
+    assert "alice:p@ss" not in linha
+    registro = json.loads(linha)
+    assert registro["event"] == "erro no servidor"
+    assert registro["level"] == "error"
+    assert "<REDACTED>" in registro["exception"]
+
+
+def test_o_uvicorn_nao_guarda_tratador_proprio_depois_da_configuracao() -> None:
+    """Tratador próprio significa uma cópia crua ao lado da linha redigida."""
+    logging.getLogger("uvicorn.error").addHandler(logging.StreamHandler())
+
+    _configura("production")
+
+    for nome in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        logger_da_biblioteca = logging.getLogger(nome)
+        assert logger_da_biblioteca.handlers == []
+        assert logger_da_biblioteca.propagate is True
+
+
+@pytest.mark.parametrize(
+    ("nome", "valor"),
+    [
+        ("uuid", "550e8400-e29b-41d4-a716-446655440000"),
+        ("chave com uuid", "derivatives/pdf-link-video/550e8400-e29b-41d4-a716-446655440000.mp4"),
+        ("slug de produto", "curso-de-inteligencia-artificial-na-pratica-2026"),
+        ("slug com sublinhado", "autonomia_solutions-brasil-ltda-2026-edicao"),
+        ("query com e-mail", "http://api.internal:8080?notify=ops@autonomia.site"),
+        ("igual no meio", "correlation=abcdefghijklmnop"),
+        ("caminho com C++", "/Users/alguem/dev/C++/worktrees/appsell_api/main.py"),
+        ("carimbo unix", "1788134400000"),
+        ("zeros que passam por Luhn", "0000000000000"),
+        ("identificador de pedido", "1234567890123456789"),
+        ("carimbo ISO", "2026-08-31T16:15:36.303059Z"),
+    ],
+)
+def test_dado_de_diagnostico_sobrevive_ao_redator(nome: str, valor: str) -> None:
+    """Redigir demais é a outra forma de não ter log.
+
+    Cada caso aqui foi apagado por alguma versão anterior do redator: o UUID e o
+    slug pelo padrão de tamanho, `correlation=abcdefghijklmnop` e o caminho com
+    `C++` pelo padrão de base64, o carimbo Unix e a sequência de zeros por Luhn
+    sozinho, e o host da URL por um casamento que atravessava o `?`.
+    """
+    fluxo = _configura("production")
+
+    logging_setup.get_logger("teste").info("evento_de_prova", campo=valor)
+
+    assert json.loads(_linhas(fluxo)[0])["campo"] == valor, nome
+
+
+@pytest.mark.parametrize(
+    ("nome", "valor"),
+    [
+        ("token com prefixo", "sk-a1B2c3D4a1B2c3D4a1B2c3D4a1B2c3D4a1B2c3D4"),
+        ("hex de 40", "a3f5b8c92d1e4f7a6b0c3d8e5f2a9b4c7d1e6f3a"),
+        ("base64url com separador", "eyJhbGciOiJIUzI1NiJ9-QWxndW1Db2lzYUxvbmdhQXF1aQ_MaisUmPouco"),
+        ("base64 com padding", "U2VjcmV0VG9rZW5EZUV4ZW1wbG9NdWl0b0xvbmdvQXF1aQ=="),
+        ("cartao Visa", "4111 1111 1111 1111"),
+        ("cartao Amex", "378282246310005"),
+        ("cartao Mastercard", "5555555555554444"),
+    ],
+)
+def test_o_que_parece_segredo_nao_sobrevive_ao_redator(nome: str, valor: str) -> None:
+    fluxo = _configura("production")
+
+    logging_setup.get_logger("teste").info("evento_de_prova", campo=valor)
+
+    assert valor not in _linhas(fluxo)[0], nome
+
+
+def test_o_cliente_http_interno_nao_registra_a_url_de_cada_chamada() -> None:
+    """Capturar a raiz em INFO trouxe junto o log de cliente do `httpx`.
+
+    Ele registra `HTTP Request: GET <url completa>` a cada chamada, e a API fala
+    com o sandbox e com o identity por `httpx` — a URL inteira, com a query,
+    iria para o log a cada requisição interna. Ruído e risco ao mesmo tempo.
+    """
+    fluxo = _configura("production")
+
+    logging.getLogger("httpx").info("HTTP Request: GET http://interno/v1/x?token=abc")
+    logging.getLogger("botocore").info("assinando requisicao")
+    logging.getLogger("httpx").warning("o cliente falhou")
+
+    eventos = [json.loads(linha) for linha in _linhas(fluxo)]
+    assert [evento["event"] for evento in eventos] == ["o cliente falhou"]
+
+
+@pytest.mark.asyncio
+async def test_a_duracao_do_evento_de_excecao_e_a_duracao_real() -> None:
+    """A exceção não emite `http_request`, então ela carrega a própria duração.
+
+    Sem esta asserção, `duration_ms=0.0` no caminho de falha passaria por
+    qualquer verificação de tipo — e é justamente na falha que a pergunta "a
+    rota estava lenta?" costuma importar.
+    """
+    fluxo = _configura("production")
+    app = FastAPI()
+    logging_setup.install_request_logging(app)
+
+    @app.get("/v1/lento_e_explode")
+    async def lento_e_explode() -> dict[str, str]:
+        await asyncio.sleep(_ESPERA_DA_ROTA_LENTA)
+        raise RuntimeError("boom")
+
+    async with _cliente(app) as client:
+        await client.get("/v1/lento_e_explode")
+
+    falha = json.loads(_linhas(fluxo)[0])
+    assert falha["event"] == "unhandled_exception"
+    assert falha["duration_ms"] >= _ESPERA_DA_ROTA_LENTA * 1000 * 0.8
+
+
+def test_numero_com_prefixo_de_bandeira_que_falha_no_luhn_e_preservado() -> None:
+    """O dígito verificador ainda decide, e a escolha é consciente.
+
+    Exigir só o prefixo apagaria qualquer identificador de 13 a 19 dígitos que
+    por acaso comece com `4`. Exigir só Luhn apagaria cerca de um em cada dez
+    identificadores numéricos — o carimbo Unix `1788134400000` passa no
+    checksum. Os dois juntos: cartão real sempre passa por Luhn, e um número que
+    tem a cara de cartão mas falha no dígito não é um cartão válido vazando.
+    """
+    fluxo = _configura("production")
+    quase_cartao = "4111111111111112"
+
+    logging_setup.get_logger("teste").info("evento_de_prova", campo=quase_cartao)
+
+    assert json.loads(_linhas(fluxo)[0])["campo"] == quase_cartao
