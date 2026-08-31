@@ -99,7 +99,10 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         app.state.asset_scanner = scanner
         app.state.storage_runtime_ready = True
         app.state.storage_controls_ready = True
-        app.state.pdf_sandbox_runtime_ready = True
+        # O sandbox não entra aqui. Ter storage e ter parser de PDF são coisas
+        # diferentes, e esta linha desfazia a sonda de alguns parágrafos acima:
+        # o serviço isolado podia estar fora e a API respondia pronta até a
+        # primeira passagem do monitor.
         app.state.storage_checked_at = time.monotonic()
         app.state.storage_controls_checked_at = time.monotonic()
         app.state.pdf_sandbox_checked_at = time.monotonic()
