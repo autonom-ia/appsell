@@ -277,11 +277,19 @@ class S3Storage:
             response = self._control.list_multipart_uploads(
                 Bucket=bucket, Prefix=key, MaxUploads=10
             )
+            # Resposta cortada é resposta que não responde: se o storage diz que
+            # há mais, esta função não pode afirmar "no máximo um" — e é essa
+            # afirmação que autoriza fechar o envio. Recusar alto, em vez de
+            # devolver o primeiro que coube na página.
+            if response.get("IsTruncated"):
+                raise StorageError("S3 returned a truncated multipart upload listing")
             abertos = [
                 str(item["UploadId"])
                 for item in response.get("Uploads", [])
                 if str(item.get("Key")) == key
             ]
+        except StorageError:
+            raise
         except (BotoCoreError, ClientError, KeyError) as error:
             raise StorageError("S3 multipart uploads could not be listed") from error
         if len(abertos) > 1:

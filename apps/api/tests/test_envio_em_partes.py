@@ -212,3 +212,37 @@ class TestAbertura:
                 byte_size=asset_max_bytes("video/mp4") + 1,
                 upload_request_id="envio-1",
             )
+
+
+class TestListagemCortada:
+    """Resposta cortada é resposta que não responde.
+
+    `find_multipart_upload` existe para afirmar "há no máximo um envio aberto
+    para esta chave", e é essa afirmação que autoriza fechar o envio. Se o
+    storage devolve a listagem cortada, a afirmação não pode ser feita: devolver
+    o primeiro que coube na página seria fechar o envio errado e montar o
+    arquivo com as partes de outra tentativa.
+    """
+
+    class _StorageQueCorta:
+        def list_multipart_uploads(self, **_kwargs: object) -> dict[str, object]:
+            return {"Uploads": [{"UploadId": "um", "Key": "k"}], "IsTruncated": True}
+
+    def test_uma_listagem_cortada_e_recusada_em_vez_de_adivinhada(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        storage = _storage_local()
+        monkeypatch.setattr(storage, "_control", self._StorageQueCorta())
+        with pytest.raises(StorageError, match="truncated"):
+            storage.find_multipart_upload(bucket="appsell-quarantine", key="k")
+
+    def test_uma_listagem_inteira_continua_respondendo(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class _Inteira:
+            def list_multipart_uploads(self, **_kwargs: object) -> dict[str, object]:
+                return {"Uploads": [{"UploadId": "um", "Key": "k"}], "IsTruncated": False}
+
+        storage = _storage_local()
+        monkeypatch.setattr(storage, "_control", _Inteira())
+        assert storage.find_multipart_upload(bucket="appsell-quarantine", key="k") == "um"
