@@ -13,6 +13,9 @@ import psycopg
 from psycopg.conninfo import conninfo_to_dict
 from psycopg.types.json import Jsonb
 
+from .learning_pdf import MAX_PDF_PAGES
+from .pdf_derivatives import MAX_PDF_DERIVATIVE_BYTES
+
 DEMO_KEY = "autonomia-demo-v1"
 DEMO_DATABASE_MARKER = "appsell-demo-reset-target-v1"
 ASSET_WORKER_SUBJECT = "asset-worker-v1"
@@ -21,7 +24,7 @@ CHECKOUT_WORKER_SUBJECT = "demo-checkout-worker-v1"
 CHECKOUT_WORKER_EMAIL = "checkout.worker@autonomia.site"
 DEMO_SUPERADMIN_SUBJECT = "demo-superadmin"
 DEMO_SUPERADMIN_EMAIL = "comercial@autonomia.site"
-EXPECTED_MIGRATION = "0043_material_role_by_media"
+EXPECTED_MIGRATION = "0044_pdf_de_trezentas_paginas"
 
 
 class RemoteResetTarget(TypedDict):
@@ -123,7 +126,7 @@ def load_manifest() -> tuple[dict[str, Any], str]:
             not isinstance(raster, dict)
             or raster.get("profile") != "png-1600-v1"
             or not isinstance(pages, list)
-            or not 1 <= len(pages) <= 100
+            or not 1 <= len(pages) <= MAX_PDF_PAGES
             or raster.get("page_count") != len(pages)
             or not isinstance(raster.get("manifest_sha256"), str)
             or not re.fullmatch(r"[0-9a-f]{64}", raster["manifest_sha256"])
@@ -157,7 +160,10 @@ def load_manifest() -> tuple[dict[str, Any], str]:
             if hashlib.sha256(page_payload).hexdigest() != page["sha256"]:
                 raise RuntimeError(f"demo PDF raster hash mismatch: {expected_key}")
             total_page_bytes += page["byte_size"]
-        if total_page_bytes != raster.get("total_bytes") or total_page_bytes > 128 * 1024 * 1024:
+        if (
+            total_page_bytes != raster.get("total_bytes")
+            or total_page_bytes > MAX_PDF_DERIVATIVE_BYTES
+        ):
             raise RuntimeError(f"demo PDF raster total mismatch: {file_name}")
     video = manifest.get("video")
     expected_video_name = f"{video.get('slug')}.mp4" if isinstance(video, dict) else ""

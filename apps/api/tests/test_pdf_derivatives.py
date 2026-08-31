@@ -138,17 +138,27 @@ def test_pdf_temp_contract_covers_near_limit_archive_and_runtime_tmpfs() -> None
     assert MAX_PDF_JOB_TEMP_BYTES == (
         MAX_PDF_PAGE_ARCHIVE_BYTES + MAX_PDF_DERIVATIVE_BYTES + (3 * MAX_PDF_BYTES)
     )
-    # 3 GiB. O tmpfs aloca sob demanda: o teto nao reserva RAM, so permite.
-    # Precisa caber o pior caso de MAX_PDF_JOB_TEMP_BYTES, senao o job fica sem
-    # espaco no meio da rasterizacao — e este teste existe para isso.
-    configured_tmpfs = 3_221_225_472
+    # 2 GiB, e o número desceu de 3 de propósito. O `tmpfs` aloca sob demanda,
+    # mas o que ele aloca **conta contra o cgroup**: declarar 3 GiB de disco
+    # dentro de 1 GiB de memória era prometer espaço que não existia, e um
+    # documento dentro dos limites aceitos morria por falta de memória antes de
+    # ser recusado com uma mensagem.
+    #
+    # Precisa caber o pior caso de MAX_PDF_JOB_TEMP_BYTES, e caber dentro da
+    # memória do serviço — as duas coisas, não uma.
+    configured_tmpfs = 2_147_483_648
     assert configured_tmpfs > MAX_PDF_JOB_TEMP_BYTES
     root = Path(__file__).parents[3]
     tmpfs_contract = f"{'/' + 'tmp'}:size={configured_tmpfs}"
-    assert tmpfs_contract in (root / "compose.yaml").read_text()
-    assert (root / "deploy/easypanel/compose.runtime-preview.yaml").read_text().count(
-        tmpfs_contract
-    ) >= 2
+    for arquivo, minimo in (
+        ("compose.yaml", 1),
+        ("deploy/easypanel/compose.runtime-preview.yaml", 2),
+    ):
+        conteudo = (root / arquivo).read_text()
+        assert conteudo.count(tmpfs_contract) >= minimo, arquivo
+    # Que cada serviço tenha memória para o `/tmp` que declarou é conferido em
+    # `test_limites_de_midia.py`, por serviço — aqui interessa o contrato do
+    # tamanho, que é o que este módulo calcula.
 
 
 def test_builds_and_revalidates_complete_deterministic_pdf_derivatives(

@@ -39,7 +39,7 @@ from typing import Final
 from .pdf_link_qr_decode import QrTarget
 
 #: Teto de páginas que aceitamos rasterizar atrás de QR.
-MAX_QR_PAGES: Final = 200
+MAX_QR_PAGES: Final = 300
 #: Orçamento do documento inteiro, em segundos.
 #:
 #: O teto por página não bastava: um PDF com uma anotação sem destino em cada

@@ -13,6 +13,7 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 import pikepdf
 
+from .learning_pdf import MAX_PDF_PAGES
 from .pdf_link_qr import (
     PdfLinkQrUnavailable,
     QrBudget,
@@ -95,7 +96,7 @@ def read_remote_pdf_link_manifest(
     if (
         not 1 <= expected_size <= MAX_PDF_BYTES
         or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256_hex)
-        or not 1 <= expected_page_count <= 100
+        or not 1 <= expected_page_count <= MAX_PDF_PAGES
     ):
         raise PdfLinksRejected("PDF link request metadata is invalid")
     remote_url = os.environ.get("APPSELL_API_PDF_SANDBOX_URL", "").strip()

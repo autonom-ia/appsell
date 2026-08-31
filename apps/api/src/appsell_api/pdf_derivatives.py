@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import time
 import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -30,17 +31,48 @@ PDF_PAGE_ARCHIVE_MIME = "application/vnd.autonomia.pdf-pages-v1+tar"
 # download, antivirus e arquivamento, sobram ~300 s de rasterizacao.
 MAX_PDF_PAGES = 300
 MAX_PDF_PAGE_BYTES = 8 * 1024 * 1024
-# Precisa acompanhar MAX_PDF_PAGES. Medido: 0,25 MiB por pagina num documento
-# com muitas capturas de tela. 300 paginas dao ~75 MiB no caso tipico; 512 MiB
-# cobre um documento tres vezes mais pesado sem virar teto ilimitado.
-MAX_PDF_DERIVATIVE_BYTES = 512 * 1024 * 1024
+#: Teto do pacote de páginas rasterizadas, e o mesmo em todas as camadas.
+#:
+#: Este número estava em três valores ao mesmo tempo: 512 MiB aqui, 128 MiB nas
+#: restrições e no gatilho do banco, e a migration ia colocar um terceiro. Quem
+#: recusa primeiro decide, e era o banco — um pacote de 200 MiB passava por aqui
+#: e morria no `INSERT`, com o vendedor vendo erro de banco.
+#:
+#: 384 MiB vem da medição: 243 KiB por página em média e 642 KiB na página mais
+#: pesada do playbook real. Trezentas páginas do pior caso são 188 MiB, e o teto
+#: é o dobro disso.
+MAX_PDF_DERIVATIVE_BYTES = 384 * 1024 * 1024
 MAX_PDF_PAGE_PIXELS = MAX_RASTER_DIMENSION**2
 _ARCHIVE_OVERHEAD_BYTES = 2 * 1024 * 1024
 MAX_PDF_PAGE_ARCHIVE_BYTES = MAX_PDF_DERIVATIVE_BYTES + MAX_PDF_BYTES + _ARCHIVE_OVERHEAD_BYTES
 # Worst-case sandbox disk while constructing the attested TAR: source,
 # normalized source, ready copy, raster pages and the archive itself.
 MAX_PDF_JOB_TEMP_BYTES = MAX_PDF_PAGE_ARCHIVE_BYTES + MAX_PDF_DERIVATIVE_BYTES + (3 * MAX_PDF_BYTES)
-_PDFTOPPM_TIMEOUT_SECONDS = 120
+#: Teto de `pdftoppm` simultâneos, quando há núcleo para eles.
+#:
+#: Ele desenha uma página por vez e não sabe usar mais de um núcleo. Quantos
+#: correm de verdade sai de `raster_workers()`, que olha a cota do processo —
+#: paralelizar sem núcleo é mais lento, não mais rápido, e isso foi medido.
+_MAX_RASTER_WORKERS = 4
+#: Prazo de cada faixa.
+#:
+#: Eram 120 s para o documento inteiro, o que dava 164 páginas — abaixo do teto
+#: que o código já declarava. Agora o prazo é por faixa, e cada faixa é um quarto
+#: do documento: 300 páginas em quatro faixas são 55 s no melhor caso e 110 s se
+#: o serviço tiver só dois núcleos de verdade. Duzentos e quarenta dão folga para
+#: as duas situações sem esconder um documento travado.
+_PDFTOPPM_TIMEOUT_SECONDS = 240
+#: Prazo de quem espera o serviço isolado responder.
+#:
+#: Tem de ser maior que o do trabalho que ele espera, ou o prazo de dentro nunca
+#: chega a valer: o serviço só manda o primeiro byte depois de verificar,
+#: normalizar, rasterizar, higienizar e montar o pacote. Com 180 s aqui e 240
+#: lá, os 240 eram decoração — quem decidia era o cliente, e o documento
+#: voltava como "serviço indisponível" em vez de "documento grande demais".
+#:
+#: Medido: 149 s de rasterização com um núcleo. O resto do caminho — download,
+#: antivírus, normalização, pacote — precisa caber na diferença.
+_SANDBOX_TIMEOUT_SECONDS = 420.0
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
@@ -118,7 +150,7 @@ def prepared_pdf_file(
             with (
                 httpx.Client(
                     transport=transport,
-                    timeout=httpx.Timeout(180.0, connect=3.0),
+                    timeout=httpx.Timeout(_SANDBOX_TIMEOUT_SECONDS, connect=3.0),
                     trust_env=False,
                     follow_redirects=False,
                 ) as client,
@@ -202,6 +234,145 @@ def prepared_pdf_file(
             shutil.rmtree(temporary_root, ignore_errors=True)
 
 
+def raster_workers() -> int:
+    """Quantos rasterizadores cabem no que este processo pode usar.
+
+    Medido no serviço isolado, com um documento real de 300 páginas:
+
+        1 núcleo, 1 processo   → 149 s
+        1 núcleo, 4 processos  → 207 s   ← paralelizar sem núcleo é mais lento
+        4 núcleos, 1 processo  → 143 s
+        4 núcleos, 4 processos →  38 s
+
+    Cada processo abre o PDF inteiro para chegar à sua faixa, então dividir sem
+    ter onde correr paga o custo duas vezes. Um número fixo aqui melhoraria o
+    serviço num tamanho e pioraria no outro; quem responde é a cota.
+
+    `os.cpu_count()` não serve: dentro do contêiner ele conta os núcleos da
+    máquina, não os que o cgroup concede. O que vale é a cota.
+    """
+    return max(1, min(_MAX_RASTER_WORKERS, _cpu_quota()))
+
+
+def _cpu_quota() -> int:
+    """Núcleos que o cgroup concede a este processo, arredondados para baixo.
+
+    Lê o cgroup v2 e cai para v1; sem nenhum dos dois — fora de contêiner — usa
+    a máquina inteira. Qualquer leitura estranha vale como um núcleo: subestimar
+    deixa o documento mais lento, superestimar o deixa mais lento ainda.
+    """
+    try:
+        bruto = Path("/sys/fs/cgroup/cpu.max").read_text().split()
+        if bruto[0] != "max":
+            return max(1, int(int(bruto[0]) / int(bruto[1])))
+        return os.cpu_count() or 1
+    except (OSError, ValueError, IndexError, ZeroDivisionError):
+        pass
+    try:
+        cota = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us").read_text())
+        periodo = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us").read_text())
+        if cota > 0 and periodo > 0:
+            return max(1, cota // periodo)
+    except (OSError, ValueError, ZeroDivisionError):
+        pass
+    return os.cpu_count() or 1
+
+
+def page_ranges(page_count: int, workers: int) -> list[tuple[int, int]]:
+    """Divide o documento em faixas contíguas, uma por processo.
+
+    Contíguas e sem sobreposição: cada página é desenhada exatamente uma vez, e
+    o conjunto cobre o documento inteiro. Um documento menor que o número de
+    processos gera menos faixas, em vez de faixas vazias.
+    """
+    if page_count < 1 or workers < 1:
+        raise ValueError("page count and worker count must be positive")
+    faixas: list[tuple[int, int]] = []
+    tamanho, resto = divmod(page_count, workers)
+    inicio = 1
+    for indice in range(workers):
+        # O resto vai para as primeiras faixas, uma página cada, para nenhuma
+        # ficar com duas páginas a mais que outra.
+        comprimento = tamanho + (1 if indice < resto else 0)
+        if comprimento == 0:
+            break
+        faixas.append((inicio, inicio + comprimento - 1))
+        inicio += comprimento
+    return faixas
+
+
+def _rasterize_in_ranges(
+    pdftoppm: str, *, source: Path, output_prefix: Path, page_count: int
+) -> None:
+    """Desenha o documento em faixas, em paralelo, com um prazo só.
+
+    O `pdftoppm` desenha uma página por vez e não sabe usar mais de um núcleo:
+    num documento longo, o tempo era a soma das páginas. Faixas diferentes
+    escrevem no mesmo diretório, cada uma com o número da página no nome, e
+    nenhuma toca o arquivo da outra. A numeração vem do total do documento, não
+    da faixa, então os nomes coincidem com os de uma passada única.
+
+    **O prazo é do conjunto, contado do lançamento.** Esperar uma faixa de cada
+    vez com um prazo próprio somava os prazos: quatro faixas podiam levar quatro
+    vezes o limite, e o cliente desistia antes com uma mensagem que não dizia
+    nada disso.
+
+    **E o erro vai para arquivo, não para um cano.** Um `stderr=PIPE` que
+    ninguém lê enche e trava o processo do outro lado — justamente as faixas
+    ainda não esperadas, que ficariam paradas sem ninguém saber.
+    """
+    faixas = page_ranges(page_count, raster_workers())
+    limite = time.monotonic() + _PDFTOPPM_TIMEOUT_SECONDS
+    processos: list[tuple[subprocess.Popen[bytes], Path]] = []
+    try:
+        for indice, (primeira, ultima) in enumerate(faixas):
+            queixa = output_prefix.parent / f".erro-{indice}"
+            try:
+                with queixa.open("wb") as destino:
+                    processo = subprocess.Popen(  # noqa: S603 - fixed binary, bounded arguments
+                        [
+                            pdftoppm,
+                            "-png",
+                            "-scale-to",
+                            str(MAX_RASTER_DIMENSION),
+                            "-f",
+                            str(primeira),
+                            "-l",
+                            str(ultima),
+                            str(source),
+                            str(output_prefix),
+                        ],
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=destino,
+                        close_fds=True,
+                        env=_raster_environment(),
+                    )
+            except OSError as error:
+                raise PdfDerivativeUnavailable("PDF rasterizer could not start") from error
+            processos.append((processo, queixa))
+
+        for processo, queixa in processos:
+            restante = limite - time.monotonic()
+            if restante <= 0:
+                raise PdfDerivativeRejected("PDF derivative rasterization timed out")
+            try:
+                processo.wait(timeout=restante)
+            except subprocess.TimeoutExpired as error:
+                raise PdfDerivativeRejected("PDF derivative rasterization timed out") from error
+            if processo.returncode != 0 or queixa.stat().st_size > 4_096:
+                raise PdfDerivativeRejected("PDF derivative rasterization failed")
+    finally:
+        # Uma faixa que falha ou estoura o prazo não deixa as outras desenhando
+        # para um documento que já foi recusado — nem o serviço isolado ocupado
+        # depois de o cliente ter desistido.
+        for processo, queixa in processos:
+            if processo.poll() is None:
+                processo.kill()
+                processo.wait()
+            queixa.unlink(missing_ok=True)
+
+
 def build_pdf_page_archive(
     source_path: Path,
     *,
@@ -231,30 +402,12 @@ def build_pdf_page_archive(
             raster_directory = job_directory / "raster"
             raster_directory.mkdir(mode=0o700)
             output_prefix = raster_directory / "page"
-            try:
-                completed = subprocess.run(  # noqa: S603 - fixed binary and bounded arguments
-                    [
-                        pdftoppm,
-                        "-png",
-                        "-scale-to",
-                        str(MAX_RASTER_DIMENSION),
-                        str(verified.ready_path),
-                        str(output_prefix),
-                    ],
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE,
-                    check=False,
-                    timeout=_PDFTOPPM_TIMEOUT_SECONDS,
-                    close_fds=True,
-                    env=_raster_environment(),
-                )
-            except subprocess.TimeoutExpired as error:
-                raise PdfDerivativeRejected("PDF derivative rasterization timed out") from error
-            except OSError as error:
-                raise PdfDerivativeUnavailable("PDF rasterizer could not start") from error
-            if completed.returncode != 0 or len(completed.stderr) > 4_096:
-                raise PdfDerivativeRejected("PDF derivative rasterization failed")
+            _rasterize_in_ranges(
+                pdftoppm,
+                source=verified.ready_path,
+                output_prefix=output_prefix,
+                page_count=verified.page_count,
+            )
 
             pages: list[PdfPage] = []
             total_bytes = 0

@@ -23,6 +23,7 @@ from .catalog_routes import _domain_error
 from .config import Settings
 from .internal_requests import AuthenticatedInternalRequest, InternalRequestAuthenticator
 from .learning_pdf import (
+    MAX_PDF_PAGES,
     LearningPdfRejected,
     LearningPdfUnavailable,
     authorized_pdf_page,
@@ -189,7 +190,7 @@ class PdfStudyAnnotation(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     id: str
-    page: int = Field(ge=1, le=100)
+    page: int = Field(ge=1, le=MAX_PDF_PAGES)
     tool: Literal["pen", "highlight"]
     color: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")
     width: float = Field(ge=0.0005, le=0.05)
@@ -224,7 +225,7 @@ class PdfStudyBookmarkSet(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     action: Literal["bookmark.set"]
-    page: int = Field(ge=1, le=100)
+    page: int = Field(ge=1, le=MAX_PDF_PAGES)
     active: bool
 
 
@@ -774,7 +775,7 @@ async def render_asset_page(
     asset_id: UUID,
     page_number: int,
 ) -> Response:
-    if not 1 <= page_number <= 100:
+    if not 1 <= page_number <= MAX_PDF_PAGES:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="protected_pdf_unavailable",

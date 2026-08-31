@@ -23,7 +23,19 @@ from .storage_s3 import S3Storage, StorageError
 
 PNG_MIME = "image/png"
 MAX_PDF_PAGE_BYTES = 8 * 1024 * 1024
-MAX_PDF_PAGES = 100
+#: Teto de páginas de um PDF, e o mesmo de `pdf_derivatives`.
+#:
+#: Trezentas porque é o que o serviço isolado aguenta sem prender a fila: medido
+#: em produção, 0,73 s por página a 150 dpi, ocupando 83 MiB fixos — o
+#: `pdftoppm` desenha uma de cada vez, então a memória não cresce com o
+#: documento. Trezentas páginas são 3,7 minutos de rasterização, uma vez, no
+#: envio.
+#:
+#: O que impede subir mais não é memória nem disco: é que enquanto isso corre,
+#: o mesmo lugar do serviço isolado atende a leitura de links de todo mundo, e
+#: quem abrir um PDF nesse meio tempo o vê sem botão nenhum. Passa de trezentas
+#: quando a #320 der capacidade separada.
+MAX_PDF_PAGES = 300
 MAX_PDF_PAGE_DIMENSION = 1_600
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 

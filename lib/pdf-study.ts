@@ -1,3 +1,15 @@
+/**
+ * Teto de páginas de um PDF, e o mesmo que a API aplica em `learning_pdf.py`.
+ *
+ * Trezentas porque é o que o serviço isolado rasteriza sem prender a fila:
+ * medido em produção, 0,73 s por página a 150 dpi, com memória constante — o
+ * `pdftoppm` desenha uma de cada vez. O que impede subir mais não é memória nem
+ * disco: é que enquanto a rasterização corre, o mesmo lugar do serviço atende a
+ * leitura de links de todo mundo, e quem abrir um PDF nesse meio tempo o vê sem
+ * botão nenhum (#320).
+ */
+export const MAX_PDF_PAGES = 300;
+
 export type PdfStudyTool = "pen" | "highlight";
 
 export interface PdfStudyPoint {
@@ -43,7 +55,7 @@ export function parsePdfStudyState(value: unknown, assetId: string, expectedPage
     "revision", "updated_at"
   ])) return null;
   if (value.asset_id !== assetId || !positiveInteger(value.asset_version) ||
-    !boundedInteger(value.page_count, 1, 100) ||
+    !boundedInteger(value.page_count, 1, MAX_PDF_PAGES) ||
     (expectedPageCount !== undefined && value.page_count !== expectedPageCount) ||
     !boundedInteger(value.revision, 0, Number.MAX_SAFE_INTEGER) ||
     !(value.updated_at === null || typeof value.updated_at === "string") ||
@@ -55,7 +67,10 @@ export function parsePdfStudyState(value: unknown, assetId: string, expectedPage
   return value as unknown as PdfStudyState;
 }
 
-export function validPdfStudyMutation(value: unknown, pageCount = 100): value is PdfStudyMutation {
+export function validPdfStudyMutation(
+  value: unknown,
+  pageCount = MAX_PDF_PAGES
+): value is PdfStudyMutation {
   if (!record(value) || typeof value.action !== "string") return false;
   if (value.action === "annotation.upsert") {
     return exactRecord(value, ["action", "annotation"]) &&

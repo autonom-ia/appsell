@@ -1,3 +1,4 @@
+import { MAX_PDF_PAGES } from "@/lib/pdf-study";
 const LINK_ID = /^[0-9a-f]{16}$/;
 /**
  * Os containers que o leitor abre no player.
@@ -41,7 +42,7 @@ export function parseDomainPdfManifest(
   if (Object.keys(asset).sort().join(",") !== "id,links,page_count" ||
     asset.id !== expectedAssetId || !Array.isArray(asset.links) || asset.links.length > 512 ||
     !Number.isSafeInteger(asset.page_count) || Number(asset.page_count) < 1 ||
-    Number(asset.page_count) > 100) return null;
+    Number(asset.page_count) > MAX_PDF_PAGES) return null;
   const pageCount = Number(asset.page_count);
   if (!asset.links.every((link) => validDomainPdfLink(link, pageCount))) return null;
   return { asset: asset as unknown as DomainPdfManifest["asset"] };
