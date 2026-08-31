@@ -68,19 +68,27 @@ class Settings(BaseSettings):
     @property
     def pdf_sandbox_required(self) -> bool:
         """
-        Se ESTE processo precisa de um parser de PDF isolado para subir.
+        Se ESTE processo precisa do parser de PDF isolado para subir.
 
-        Nao e "tem storage". Ter storage significa assinar URL de envio e
-        consultar objeto; abrir PDF e outra coisa. Quem abre e o worker, que
-        exige o sandbox VIVO no proprio boot (asset_worker_service.py) — uma
-        checagem mais forte do que esta, e que continua valendo.
+        O critério é ter sido apontado para ele. Montar o soquete ou o endereço
+        do serviço é a decisão de que esta API fala com ele — e um processo que
+        fala com o sandbox não deve subir dizendo que está pronto quando o
+        sandbox não está.
 
-        Enquanto isto dizia "tem storage", a API so podia ter storage se
-        tambem montasse o sandbox. Sem storage ela nao consegue nem assinar o
-        envio, e foi por isso que o upload de material de aula parou em 22/08 e
-        a capa nunca funcionou em producao (#268).
+        Antes o critério era `verifies_uploads`, isto é, "sou eu quem parseia o
+        que foi enviado". Em produção quem faz isso é o worker, então isto valia
+        `False` — e o `healthz` respondia `pdf_sandbox: true` sem sondar nada.
+
+        Deixou de ser verdade quando a API passou a ler os links do PDF e a
+        preparar os vídeos que ele cita, no caminho da leitura do aluno. Em
+        30/08/2026 o soquete sumiu num deploy e todo PDF passou a abrir sem
+        botão nenhum; o `healthz` disse que estava tudo bem o tempo inteiro,
+        porque para ele o sandbox não era requisito. Levou uma reversão inútil e
+        o aluno vendo a falha antes de alguém olhar o lugar certo.
         """
-        return self.storage_configured and self.verifies_uploads
+        return self.storage_configured and (
+            self.verifies_uploads or bool(self.pdf_sandbox_socket or self.pdf_sandbox_url)
+        )
 
     @property
     def verifies_uploads(self) -> bool:

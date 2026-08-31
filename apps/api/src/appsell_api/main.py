@@ -60,9 +60,16 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     app.state.storage_controls_checked_at = 0.0
     app.state.pdf_sandbox_checked_at = time.monotonic()
     if settings.pdf_sandbox_required:
-        if not await _pdf_sandbox_ready(settings):
-            raise RuntimeError("isolated PDF parser service is unavailable")
-        app.state.pdf_sandbox_runtime_ready = True
+        # Sem parar de subir por causa disto. A API atende muita coisa que não
+        # passa pelo serviço isolado, e não há ordem garantida entre os dois no
+        # arranque: morrer aqui trocaria "o leitor de PDF está fora" por "a API
+        # inteira está fora", e mais um laço de reinício até o outro aparecer.
+        #
+        # Quem responde pela verdade é o `ready`, que devolve 503 enquanto o
+        # serviço não atende, e o monitor periódico, que recupera sozinho quando
+        # ele volta. Quem precisa mesmo do sandbox para existir é o worker, e é
+        # ele quem recusa subir sem — decisão dele, no boot dele.
+        app.state.pdf_sandbox_runtime_ready = await _pdf_sandbox_ready(settings)
         app.state.pdf_sandbox_checked_at = time.monotonic()
     if settings.storage_configured:
         storage = S3Storage(settings)
@@ -92,7 +99,10 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         app.state.asset_scanner = scanner
         app.state.storage_runtime_ready = True
         app.state.storage_controls_ready = True
-        app.state.pdf_sandbox_runtime_ready = True
+        # O sandbox não entra aqui. Ter storage e ter parser de PDF são coisas
+        # diferentes, e esta linha desfazia a sonda de alguns parágrafos acima:
+        # o serviço isolado podia estar fora e a API respondia pronta até a
+        # primeira passagem do monitor.
         app.state.storage_checked_at = time.monotonic()
         app.state.storage_controls_checked_at = time.monotonic()
         app.state.pdf_sandbox_checked_at = time.monotonic()
