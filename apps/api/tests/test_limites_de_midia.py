@@ -670,6 +670,68 @@ class TestEnvelopeDoWorker:
 _TMPFS = re.compile(r"/tmp:size=(\d+)")  # noqa: S108
 
 
+class TestOrcamentoDoVideo:
+    """As medições que sustentam o teto de 512 MiB (Decisão 011).
+
+    Feitas em 31/08/2026 sobre um MP4 real de 408 MiB e 36 min de duração,
+    dentro do próprio `remux_to_mp4`. Ficam escritas aqui porque a próxima
+    pessoa que quiser mexer no teto precisa saber o que foi medido, e com o quê.
+    """
+
+    #: Trocar o invólucro com `+faststart`: 408 MiB em 0,6 s.
+    REMUX_MIB_POR_SEGUNDO: Final = 729
+    #: SHA-256 do arquivo inteiro: 408 MiB em 0,16 s.
+    HASH_MIB_POR_SEGUNDO: Final = 2552
+
+    def _teto_do_video(self) -> int:
+        from appsell_api.asset_media import VIDEO_MEDIA_TYPE, max_bytes
+
+        return max_bytes(VIDEO_MEDIA_TYPE)
+
+    def test_o_teto_do_video_e_o_que_esta_migration_gravou(self) -> None:
+        assert self._teto_do_video() == 512 * _MIB
+
+    def test_converter_e_conferir_nao_ameacam_o_lease(self) -> None:
+        """O que custa CPU no caminho do vídeo cabe em segundos, não minutos.
+
+        O lease do worker é de 600 s e não pode subir — o banco recusa. O que
+        ele precisa cobrir são as transferências; a conversão nunca foi o
+        gargalo, e agora isso está medido em vez de suposto.
+        """
+        mib = self._teto_do_video() / _MIB
+        segundos = mib / self.REMUX_MIB_POR_SEGUNDO + mib / self.HASH_MIB_POR_SEGUNDO
+        from appsell_api.asset_worker_runner import _ASSET_LEASE_SECONDS
+
+        assert segundos < _ASSET_LEASE_SECONDS / 100, (
+            f"converter e conferir custam {segundos:.1f} s de um lease de {_ASSET_LEASE_SECONDS} s"
+        )
+
+    def test_o_tmp_do_worker_cobre_a_origem_e_o_derivado(self) -> None:
+        """O worker segura os dois arquivos ao mesmo tempo.
+
+        E o `/tmp` dele é `tmpfs`: encher significa memória, não disco.
+        """
+        from appsell_api.video_verifier import MAX_VIDEO_JOB_TEMP_BYTES
+
+        script = (_RAIZ / "deploy/easypanel-native/ensure-asset-worker.sh").read_text()
+        tamanho = re.search(r"tmpfs-size=(\d+)", script)
+        assert tamanho is not None, "o worker perdeu o `/tmp` dedicado"
+        assert int(tamanho.group(1)) >= MAX_VIDEO_JOB_TEMP_BYTES, (
+            f"`/tmp` de {int(tamanho.group(1)) / _MIB:.0f} MiB não cobre "
+            f"{MAX_VIDEO_JOB_TEMP_BYTES / _MIB:.0f} MiB de vídeo"
+        )
+
+    def test_o_tmp_do_sandbox_cobre_a_origem_e_o_derivado(self) -> None:
+        """O serviço isolado segura o mesmo par, do outro lado do socket."""
+        from appsell_api.video_verifier import MAX_VIDEO_JOB_TEMP_BYTES
+
+        for caminho in TestOEnvelopeDoSandbox.ARQUIVOS:
+            bloco = TestOEnvelopeDoSandbox()._bloco_do_sandbox(caminho)
+            tmpfs = re.search(_TMPFS, bloco)
+            assert tmpfs is not None, caminho
+            assert int(tmpfs.group(1)) >= MAX_VIDEO_JOB_TEMP_BYTES, caminho
+
+
 class TestOEnvelopeDoSandbox:
     """Quem rasteriza precisa caber no que declarou que vai usar.
 

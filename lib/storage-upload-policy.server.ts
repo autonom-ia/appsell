@@ -16,6 +16,13 @@ const ALLOWED_PART_HEADERS = new Set(["x-amz-checksum-sha256"]);
 const PART_BYTES = 16 * 1024 * 1024;
 const MAX_PARTS = 1000;
 
+/** Quanto tempo uma intenção fatiada pode declarar.
+ *
+ * Duas horas mais folga de relógio. É o prazo que o banco concede para um envio
+ * grande: numa linha de 2 Mbit/s meio giga leva trinta e seis minutos, e cortar
+ * em cinco seria dizer ao vendedor que ele tem cinco. */
+const MAX_MULTIPART_WINDOW_MS = 2 * 60 * 60 * 1000 + 300_000;
+
 export interface BrowserMultipartUploadIntent {
   upload_id: string;
   asset_id: string;
@@ -62,7 +69,7 @@ export function browserMultipartUploadIntent(
     !Number.isInteger(multipart.part_count) ||
     Number(multipart.part_count) < 2 ||
     Number(multipart.part_count) > MAX_PARTS ||
-    !freshEnough(expiresAt, nowMs)
+    !freshEnough(expiresAt, nowMs, MAX_MULTIPART_WINDOW_MS)
   ) return null;
   return {
     upload_id: uploadId,
@@ -327,9 +334,9 @@ function signedStorageUrl(value: unknown, storageOrigin: string): URL | null {
   return url;
 }
 
-function freshEnough(expiresAt: string, nowMs: number): boolean {
+function freshEnough(expiresAt: string, nowMs: number, janelaMs = 330_000): boolean {
   const expiresMs = Date.parse(expiresAt);
-  return Number.isFinite(expiresMs) && expiresMs > nowMs && expiresMs <= nowMs + 330_000;
+  return Number.isFinite(expiresMs) && expiresMs > nowMs && expiresMs <= nowMs + janelaMs;
 }
 
 function exactUploadHeaders(value: unknown): Record<string, string> | null {

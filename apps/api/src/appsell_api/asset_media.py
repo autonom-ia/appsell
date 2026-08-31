@@ -37,7 +37,11 @@ _MIB: Final = 1024 * 1024
 
 SUPPORTED_MEDIA: Final[dict[str, AssetMediaSpec]] = {
     PDF_MEDIA_TYPE: AssetMediaSpec("pdf", 100 * _MIB, False, True),
-    VIDEO_MEDIA_TYPE: AssetMediaSpec("mp4", 100 * _MIB, False, False),
+    # 512 MiB, e não 100: uma aula de 45 min em 1080p passa de 800 MB, e uma de
+    # 30 min fica perto de 500. Com o teto antigo o vendedor não publicava aula
+    # de duração real. Só foi possível subir depois do envio em partes, porque
+    # antes o `PUT` único não entregava o arquivo dentro do prazo da assinatura.
+    VIDEO_MEDIA_TYPE: AssetMediaSpec("mp4", 512 * _MIB, False, False),
     DOCX_MEDIA_TYPE: AssetMediaSpec("docx", 20 * _MIB, True, True),
     XLSX_MEDIA_TYPE: AssetMediaSpec("xlsx", 20 * _MIB, True, True),
     PPTX_MEDIA_TYPE: AssetMediaSpec("pptx", 40 * _MIB, True, True),

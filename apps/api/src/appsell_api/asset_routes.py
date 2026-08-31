@@ -310,7 +310,11 @@ async def create_asset_upload_intent(
                     )
                 )
             signed = None
-            signed_expires_at = _bounded_presigned_expiry(signing["expires_at"], storage.put_ttl)
+            # A validade que o navegador recebe é a **durável**, e não a de uma
+            # assinatura: no envio fatiado ele não recebe URL nenhuma aqui, e
+            # cada parte traz o próprio prazo curto. Cortar em 300 s diria ao
+            # vendedor que ele tem cinco minutos para mandar meio giga.
+            signed_expires_at = _durable_expiry(signing["expires_at"])
         else:
             plan = None
             signed = await to_thread.run_sync(
@@ -1055,6 +1059,19 @@ def _iso_datetime(value: Any) -> str:
     if isinstance(value, datetime):
         return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
     return str(value)
+
+
+def _durable_expiry(intent_expiry: Any) -> datetime:
+    """A validade da intenção como o banco a gravou, sem cortar."""
+    if isinstance(intent_expiry, datetime):
+        durable = intent_expiry
+    elif isinstance(intent_expiry, str):
+        durable = datetime.fromisoformat(intent_expiry.replace("Z", "+00:00"))
+    else:
+        raise ValueError("asset intent expiry is invalid")
+    if durable.tzinfo is None:
+        raise ValueError("asset intent expiry must be timezone-aware")
+    return durable.astimezone(UTC)
 
 
 def _bounded_presigned_expiry(intent_expiry: Any, ttl_seconds: int) -> datetime:

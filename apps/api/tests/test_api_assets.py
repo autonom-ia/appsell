@@ -15,7 +15,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from appsell_api.asset_media import PDF_MEDIA_TYPE, max_bytes
+from appsell_api.asset_media import PDF_MEDIA_TYPE, VIDEO_MEDIA_TYPE, max_bytes
 from appsell_api.asset_routes import router
 from appsell_api.internal_requests import AuthenticatedInternalRequest
 from appsell_api.service_auth import ServiceEnvelope, ServiceIdentity
@@ -546,7 +546,9 @@ async def test_storage_unavailable_consumes_authenticated_request() -> None:
         intent_body(
             media_type="video/mp4",
             file_name="material.mp4",
-            byte_size=100 * 1024 * 1024 + 1,
+            # Derivado do catálogo, e não escrito à mão: com o número cru este
+            # caso passou a testar um tamanho válido quando o teto subiu.
+            byte_size=max_bytes(VIDEO_MEDIA_TYPE) + 1,
         ),
         intent_body(sha256="AB" * 32),
         intent_body(object_key="attacker/chosen"),
@@ -879,3 +881,40 @@ async def test_cancelar_envio_pequeno_nao_procura_partes() -> None:
 
     assert response.status_code == 200
     assert storage.multipart_calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_intencao_fatiada_diz_o_prazo_de_verdade() -> None:
+    """Cortar em cinco minutos diria ao vendedor que ele tem cinco.
+
+    No envio fatiado o navegador não recebe URL nenhuma na intenção — cada parte
+    traz o próprio prazo curto — então o que este campo precisa dizer é até
+    quando o envio inteiro pode acontecer.
+    """
+    upload_id = uuid4()
+    duravel = datetime.now(UTC) + timedelta(hours=2)
+    auth = FakeAuth(
+        seller=SELLER,
+        scalar_values=[
+            {"upload_id": upload_id, "asset_id": uuid4(), "blob_id": uuid4(), "created": True},
+            {
+                "upload_id": upload_id,
+                "bucket": "appsell-quarantine",
+                "object_key": f"tenants/{SELLER}/quarantine/{upload_id}",
+                "content_type": "video/mp4",
+                "byte_size": VIDEO_GRANDE,
+                "sha256": "ab" * 32,
+                "expires_at": duravel,
+            },
+        ],
+    )
+    async with client_for(auth, FakeStorage(upload_id), video_upload_enabled=True) as client:
+        response = await client.post(
+            asset_path("/upload-intents"),
+            content=_corpo_de_video_grande(),
+            headers={"content-type": "application/json"},
+        )
+
+    prazo = datetime.fromisoformat(response.json()["expires_at"].replace("Z", "+00:00"))
+    restante = (prazo - datetime.now(UTC)).total_seconds()
+    assert restante > 3_600, f"prazo de {restante:.0f} s não cobre um envio grande"

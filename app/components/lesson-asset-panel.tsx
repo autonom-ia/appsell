@@ -123,6 +123,8 @@ const PART_CONCURRENCY = 3;
  * uma parte é barato. É isto que substitui perder o arquivo inteiro. */
 const PART_ATTEMPTS = 4;
 const PART_RETRY_BASE_MS = 800;
+/** A janela que uma intenção fatiada pode declarar: o prazo do banco mais folga. */
+const MAX_MULTIPART_WINDOW_MS = 2 * 60 * 60 * 1000 + 300_000;
 
 interface UploadStatusPayload {
   upload_id: string;
@@ -1228,7 +1230,7 @@ export function validIntent(
     return value.upload_url === undefined
       && Number.isInteger(value.multipart.part_bytes) && value.multipart.part_bytes > 0
       && Number.isInteger(value.multipart.part_count) && value.multipart.part_count >= 2
-      && Number.isFinite(expiresMs) && expiresMs > nowMs && expiresMs <= nowMs + 330_000;
+      && Number.isFinite(expiresMs) && expiresMs > nowMs && expiresMs <= nowMs + MAX_MULTIPART_WINDOW_MS;
   }
   if (typeof value.upload_url !== "string" || typeof value.upload_origin !== "string") return false;
   let url: URL;
