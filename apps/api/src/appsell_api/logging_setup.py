@@ -286,9 +286,10 @@ def _capturar_o_logging_da_biblioteca_padrao(
     raiz.addHandler(tratador)
     raiz.setLevel(nivel)
 
-    # O uvicorn instala tratadores proprios nestes tres, e um tratador proprio
+    # O uvicorn instala tratador proprio nestes dois, e um tratador proprio
     # significa uma copia crua ao lado da linha redigida. Esvaziar e deixar
-    # propagar para a raiz e o que faz a captura valer.
+    # propagar para a raiz e o que faz a captura valer. O `uvicorn.access` e
+    # tratado logo abaixo, e de forma oposta.
     for nome in _LOGGERS_COM_TRATADOR_PROPRIO:
         logger_da_biblioteca = logging.getLogger(nome)
         logger_da_biblioteca.handlers = []

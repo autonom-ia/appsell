@@ -702,16 +702,21 @@ def test_o_access_log_do_uvicorn_continua_calado() -> None:
     deploy real pegou.
 
     O `--no-access-log` cala esse logger por `propagate = False`. Calá-lo aqui
-    também não depende de a flag continuar no CMD.
+    também não depende de a flag continuar no CMD — e o teste só prova isso se
+    partir do logger **contaminado**: sem o tratador que o `LOGGING_CONFIG` do
+    uvicorn instala quando a flag não está presente, remover `handlers = []` da
+    correção passaria despercebido.
     """
+    acesso = logging.getLogger("uvicorn.access")
+    contaminacao = logging.StreamHandler()
+    acesso.addHandler(contaminacao)
+    acesso.propagate = True
+
     fluxo = _configura("production")
 
-    logging.getLogger("uvicorn.access").info(
-        '127.0.0.1:33522 - "GET /v1/itens/42?token=abc HTTP/1.1" 200'
-    )
+    acesso.info('127.0.0.1:33522 - "GET /v1/itens/42?token=abc HTTP/1.1" 200')
 
     assert _linhas(fluxo) == []
-    acesso = logging.getLogger("uvicorn.access")
     assert acesso.handlers == []
     assert acesso.propagate is False
 
