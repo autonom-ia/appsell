@@ -1,5 +1,6 @@
 "use client";
 
+import { MAX_PDF_PAGES } from "@/lib/pdf-study";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 
@@ -931,7 +932,7 @@ function validPdfManifest(
   return Object.keys(record).sort().join(",") === "asset_id,links,page_count" &&
     typeof expectedAssetId === "string" && record.asset_id === expectedAssetId &&
     Number.isSafeInteger(record.page_count) && Number(record.page_count) >= 1 &&
-    Number(record.page_count) <= 100 && Array.isArray(record.links) &&
+    Number(record.page_count) <= MAX_PDF_PAGES && Array.isArray(record.links) &&
     record.links.length <= 512 && record.links.every((link) =>
       validPdfLink(link, Number(record.page_count), expectedBaseHref)
     );

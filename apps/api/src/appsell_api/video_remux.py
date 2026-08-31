@@ -33,9 +33,28 @@ from typing import Any, Final
 
 _MIB: Final = 1024 * 1024
 
-MAX_DERIVATIVE_BYTES: Final = 512 * _MIB
-#: Duração máxima aceita, em segundos. Uma aula não é um filme.
-MAX_DURATION_SECONDS: Final = 4 * 60 * 60
+#: Teto do MP4 que sai daqui. O mesmo do catálogo de mídia.
+#:
+#: Eram 512 MiB, número que nasceu neste módulo sem olhar o catálogo — onde
+#: `video/mp4` sempre valeu 100 MiB. O mesmo conteúdo tinha dois tetos, cinco
+#: vezes distantes, dependendo de ter sido enviado pelo vendedor ou citado
+#: dentro do PDF.
+MAX_DERIVATIVE_BYTES: Final = 100 * _MIB
+#: Duração máxima aceita, em segundos.
+#:
+#: Vinte minutos, e o número desceu de quatro horas de propósito. Quando o
+#: arquivo precisa ser recodificado, a conversão é **mais lenta que o próprio
+#: vídeo**: medido no serviço isolado, 66 segundos para cada minuto de 1080p,
+#: com as duas threads que ele tem. Quatro horas levariam quatro horas e meia, e
+#: o prazo da conversão é de uma — o vídeo era aceito no envio e nunca ficava
+#: pronto, com o aluno esperando por algo que não ia chegar.
+#:
+#: Vinte minutos convertem em vinte e dois, dentro do prazo, e recusar no envio
+#: é melhor do que aceitar e falhar depois.
+#:
+#: Nada disso vale para quem manda MP4/H.264: aí o container só troca de nome, a
+#: 0,15 s por minuto de vídeo, e este teto nunca é o que atrapalha.
+MAX_DURATION_SECONDS: Final = 20 * 60
 #: Acima disto o decodificador aloca quadros enormes antes de qualquer redução.
 MAX_SOURCE_PIXELS: Final = 7680 * 4320
 MAX_SOURCE_FPS: Final = 120
