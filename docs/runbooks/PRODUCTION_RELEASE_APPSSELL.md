@@ -6,7 +6,10 @@ não autoriza por si só novo deploy, mudança de secrets, banco ou cobrança.
 ## Ambiente atual
 
 - Domínio: `https://sell.autonomia.site`
-- Host: VPS EasyPanel nativo / Docker Swarm
+- Host: VPS EasyPanel nativo / Docker Swarm. **Resolva o DNS antes de operar**
+  (`dig +short sell.autonomia.site`): em 31/08/2026 o alias de SSH usado em
+  sessões anteriores apontava para uma máquina desativada, e a operação começou
+  procurando os serviços no host errado.
 - Serviços: `sell-autonomia_web`, `sell-autonomia_api`,
   `sell-autonomia_asset-worker`
 - Banco: `appsell_native_90` no serviço Postgres nativo
@@ -26,7 +29,10 @@ ambiente AWS sem uma nova decisão de infraestrutura.
 6. Construir tags imutáveis de web e API com o SHA curto.
 7. Atualizar API e worker de forma controlada; depois atualizar web.
 8. Aguardar convergência dos serviços e executar healthcheck.
-9. Validar logs recentes sem `ERROR`, `Traceback`, `FATAL` ou `panic`.
+9. Validar logs recentes sem `ERROR`, `Traceback`, `FATAL` ou `panic`. O log
+   da API é JSON em produção e traz uma linha `http_request` por requisição —
+   ver [TROUBLESHOOTING](../TROUBLESHOOTING.md). Ausência de linha **não** é
+   ausência de erro: a instrumentação por caminho ainda é parcial.
 
 Não imprimir DSNs, chaves, tokens, senhas ou o ambiente completo dos serviços.
 

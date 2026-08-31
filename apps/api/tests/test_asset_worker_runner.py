@@ -510,7 +510,9 @@ async def test_a_recusa_do_banco_no_registro_chega_ao_log(
 
     await asset_worker_runner.process_asset_upload(app, SELLER, UPLOAD)
 
-    saida = capsys.readouterr().out
+    # O log de diagnostico sai no `stderr`: o `stdout` e canal de protocolo
+    # — `pdf_verifier` le JSON puro do subprocesso do parser.
+    saida = capsys.readouterr().err
     assert "asset_worker_register_retry" in saida
     assert "asset_worker_register_failed" in saida
     assert "invalid ready asset candidate" in saida, "o log nao diz o que o banco recusou"

@@ -24,4 +24,9 @@ COPY pyproject.toml ./
 RUN chown -R appsell:appsell /opt/app
 USER appsell
 EXPOSE 8000
+# `--no-access-log` continua ligado de proposito. O access log do uvicorn
+# imprime o caminho concreto e a query string, que carregam identificador e
+# token, e nao sabe calar nos health checks que o Swarm sonda a cada poucos
+# segundos. Quem registra requisicao agora e o middleware de
+# `logging_setup`, que grava o template da rota e nada mais.
 CMD ["uvicorn", "appsell_api.main:app", "--app-dir", "src", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]

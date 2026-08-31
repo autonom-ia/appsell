@@ -19,6 +19,7 @@ from .demo_checkout_worker import run_demo_checkout_worker_loop
 from .fulfillment_worker import run_fulfillment_worker_loop
 from .internal_requests import InternalRequestAuthenticator
 from .learning_routes import router as learning_router
+from .logging_setup import configure_logging, install_request_logging
 from .payout_routes import router as payout_router
 from .payout_sync_routes import router as payout_sync_router
 from .platform_bootstrap_routes import router as platform_bootstrap_router
@@ -39,6 +40,10 @@ from .webhook_secrets import WebhookSecretResolver
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     settings = get_settings()
+    # O pacote ja configurou o log lendo o ambiente cru no import, para que uma
+    # falha aqui dentro tambem saia formatada. Esta chamada refina com os
+    # `Settings` validados, que sao a fonte de verdade e leem tambem o `.env`.
+    configure_logging(environment=settings.environment, log_level=settings.log_level)
     app.state.settings = settings
     engine = create_engine(settings)
     app.state.db_engine = engine
@@ -165,6 +170,7 @@ app = FastAPI(
     redoc_url=None,
     lifespan=lifespan,
 )
+install_request_logging(app)
 app.include_router(router)
 app.include_router(catalog_router)
 app.include_router(checkout_router)
