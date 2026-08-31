@@ -104,11 +104,13 @@ O dump lógico pré-migration é a rede embaixo dessa rede.
 
 ### O que este release NÃO resolveu
 
-- **PDF acima de 100 páginas era recusado** — resolvido em 31/08, com o teto
-  passando a 300 nas cinco camadas de uma vez: Python, TypeScript, seis
-  restrições do banco, duas funções PL/pgSQL e o pacote rasterizado (128 → 384
-  MiB). Uma tentativa anterior alargava parte delas e o review pegou que estava
-  pela metade — alargar parte só muda a porta em que o vendedor bate. Fecha a
+- **PDF acima de 100 páginas era recusado** — corrigido na #324, **ainda não em
+  produção**. O teto passa para 300 nas nove camadas de uma vez: Python, TypeScript,
+  seis restrições do banco, três funções PL/pgSQL, o pacote rasterizado (128 →
+  384 MiB) e a lista de versões que o banco reconhece.
+
+  Uma tentativa anterior alargava parte delas e o review pegou que estava pela
+  metade — alargar parte só muda a porta em que o vendedor bate. Fecha a
   [#293](https://github.com/autonom-ia/appsell/issues/293).
 
   O 300 vem de medição em produção, não de estimativa: 0,73 s por página a 150

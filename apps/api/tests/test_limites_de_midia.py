@@ -543,10 +543,14 @@ class TestEnvelopeDoWorker:
         tamanho = re.search(r"tmpfs-size=(\d+)", script)
         assert tamanho is not None, "o worker perdeu o `/tmp` dedicado"
 
+        from appsell_api.pdf_verifier import MAX_PDF_BYTES
+
         pior_caso = (
             pdf_derivatives.MAX_PDF_PAGE_ARCHIVE_BYTES  # pacote recebido
             + pdf_derivatives.MAX_PDF_PAGE_ARCHIVE_BYTES  # cópia na verificação
             + pdf_derivatives.MAX_PDF_DERIVATIVE_BYTES  # páginas extraídas
+            + MAX_PDF_BYTES  # o PDF de origem
+            + MAX_PDF_BYTES  # e o que sai de dentro do pacote
         )
         assert int(tamanho.group(1)) >= pior_caso, (
             f"`/tmp` de {int(tamanho.group(1)) / _MIB:.0f} MiB não cobre "
@@ -560,7 +564,10 @@ class TestEnvelopeDoWorker:
         tmpfs = int(re.search(r"tmpfs-size=(\d+)", script).group(1))  # type: ignore[union-attr]
         memoria = re.search(r"--limit-memory (\d+)G", script)
         assert memoria is not None, "o worker perdeu o limite de memória"
-        assert int(memoria.group(1)) * 1024 * _MIB > tmpfs
+        # Maior que o `/tmp` **mais** o processo: o `tmpfs` sozinho encostando no
+        # limite deixa o worker sem onde existir.
+        pico_do_processo = 200 * _MIB
+        assert int(memoria.group(1)) * 1024 * _MIB > tmpfs + pico_do_processo
 
 
 #: O  declarado no compose — do serviço, não deste teste.
