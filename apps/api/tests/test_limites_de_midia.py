@@ -561,3 +561,102 @@ class TestEnvelopeDoWorker:
         memoria = re.search(r"--limit-memory (\d+)G", script)
         assert memoria is not None, "o worker perdeu o limite de memória"
         assert int(memoria.group(1)) * 1024 * _MIB > tmpfs
+
+
+#: O  declarado no compose — do serviço, não deste teste.
+_TMPFS = re.compile(r"/tmp:size=(\d+)")  # noqa: S108
+
+
+class TestOEnvelopeDoSandbox:
+    """Quem rasteriza precisa caber no que declarou que vai usar.
+
+    O `/tmp` do serviço é `tmpfs`, e `tmpfs` conta contra o cgroup: declarar 3
+    GiB de disco dentro de 1 GiB de memória é prometer espaço que não existe.
+    Um documento dentro dos limites aceitos morria por falta de memória antes de
+    ser recusado com uma mensagem.
+    """
+
+    ARQUIVOS: Final = (
+        "compose.yaml",
+        "deploy/easypanel/compose.runtime-preview.yaml",
+    )
+
+    def _bloco_do_sandbox(self, caminho: str) -> str:
+        conteudo = (_RAIZ / caminho).read_text()
+        inicio = conteudo.index("\n  pdf-sandbox:")
+        seguinte = conteudo.find("\n  ", conteudo.index("mem_limit", inicio))
+        fim = conteudo.find("\n  sell-web:", inicio)
+        return conteudo[inicio : fim if fim > 0 else seguinte + 4000]
+
+    def test_a_memoria_cobre_o_tmpfs_e_o_processo(self) -> None:
+        for caminho in self.ARQUIVOS:
+            bloco = self._bloco_do_sandbox(caminho)
+            memoria = re.search(r"mem_limit:\s*(\d+)g", bloco)
+            tmpfs = re.search(_TMPFS, bloco)
+            assert memoria and tmpfs, caminho
+            cabe = int(memoria.group(1)) * 1024 * _MIB
+            assert int(tmpfs.group(1)) < cabe, (
+                f"{caminho}: `/tmp` de {int(tmpfs.group(1)) / _MIB:.0f} MiB não cabe em "
+                f"{memoria.group(1)} GiB de memória"
+            )
+
+    def test_o_tmpfs_cobre_o_pior_caso_que_o_codigo_declara(self) -> None:
+        # `MAX_PDF_JOB_TEMP_BYTES` é a conta do próprio módulo: pacote, cópia,
+        # páginas e as cópias do PDF que o trabalho segura ao mesmo tempo.
+        for caminho in self.ARQUIVOS:
+            tmpfs = re.search(_TMPFS, self._bloco_do_sandbox(caminho))
+            assert tmpfs is not None, caminho
+            assert int(tmpfs.group(1)) >= pdf_derivatives.MAX_PDF_JOB_TEMP_BYTES, caminho
+
+    def test_tem_nucleo_para_a_divisao_em_faixas_valer(self) -> None:
+        """Medido: 208 s com um núcleo, 89 s com quatro.
+
+        Com um só, o código roda sequencial de propósito — dividir sem ter onde
+        correr é mais lento. O número de núcleos aqui é o que decide qual dos
+        dois caminhos o serviço toma.
+        """
+        for caminho in self.ARQUIVOS:
+            nucleos = re.search(r"cpus:\s*([\d.]+)", self._bloco_do_sandbox(caminho))
+            assert nucleos is not None, caminho
+            assert float(nucleos.group(1)) >= pdf_derivatives._MAX_RASTER_WORKERS, caminho
+
+
+class TestAMigrationNaoQuebraOReadiness:
+    """Uma migration que sobe a versão precisa ensinar o banco a reconhecê-la.
+
+    `schema_ready()` guarda a lista das migrations conhecidas, e o `/health/ready`
+    da API consulta ela. Subir a versão sem estender a lista deixa o banco "não
+    pronto" para sempre — e, desde que o sandbox passou a contar no `ready`,
+    isso não é um número errado numa resposta: o healthcheck do contêiner
+    derruba a task, e o serviço entra em laço de reinício.
+
+    Seria o deploy desta PR derrubando a API inteira.
+    """
+
+    def test_a_migration_estende_a_lista_de_versoes_conhecidas(self) -> None:
+        migration = _carrega_migration()
+        assert migration._READY_ATE_0044.endswith("'0044_pdf_de_trezentas_paginas'))")
+        # A versão nova entra ao lado da anterior, e não no lugar dela: a lista
+        # é de tudo que o banco reconhece, não só do último degrau.
+        assert "'0043_material_role_by_media'" in migration._READY_ATE_0044
+        # As duas cópias da função carregam a lista, e as duas precisam mudar.
+        assert len(migration._BASES_DO_READY) == 2
+
+    def test_o_reset_do_demo_espera_a_versao_nova(self) -> None:
+        from appsell_api.reset_demo_tenant import EXPECTED_MIGRATION
+
+        migration = _carrega_migration()
+        assert EXPECTED_MIGRATION == migration.revision
+
+    def test_nenhum_teste_ficou_preso_na_versao_anterior(self) -> None:
+        # Seis testes fixavam `0043` e passariam a falhar depois do upgrade.
+        anterior = "0043_material_role_by_media"
+        presos = [
+            f"{caminho.relative_to(_RAIZ)}:{numero}"
+            for caminho in sorted((_RAIZ / "apps/api/tests").glob("*.py"))
+            # Este arquivo cita a versão anterior para poder procurá-la.
+            if caminho.name != Path(__file__).name
+            for numero, linha in enumerate(caminho.read_text().splitlines(), 1)
+            if anterior in linha
+        ]
+        assert not presos, "testes presos na versão anterior:\n" + "\n".join(presos)

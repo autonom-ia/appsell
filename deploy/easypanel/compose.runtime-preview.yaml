@@ -199,12 +199,23 @@ services:
       retries: 30
       start_period: 3s
     restart: unless-stopped
-    mem_limit: 1g
-    cpus: 1.0
+    # O `/tmp` é `tmpfs` e conta contra o cgroup: declarar 3 GiB de disco dentro
+    # de 1 GiB de memória é prometer espaço que não existe. O próprio código
+    # calcula o pior caso de um trabalho em `MAX_PDF_JOB_TEMP_BYTES` — 1.170 MiB
+    # de arquivos — e o processo mede 83 MiB. Um documento dentro dos limites
+    # declarados morria por falta de memória antes de ser recusado com uma
+    # mensagem.
+    #
+    # Quatro núcleos porque é o que faz a divisão em faixas valer a pena: medido
+    # com um documento real de 300 páginas, 208 s com um núcleo e 89 s com
+    # quatro. Com um só, o código roda sequencial de propósito — dividir sem ter
+    # onde correr é mais lento.
+    mem_limit: 4g
+    cpus: 4.0
     pids_limit: 96
     read_only: true
     tmpfs:
-      - "/tmp:size=3221225472,mode=1777,noexec,nosuid"
+      - "/tmp:size=2147483648,mode=1777,noexec,nosuid"
       - "/workspace/sell/output/pdf:size=1048576,mode=000,noexec,nosuid"
     <<: *runtime-security
     logging: *runtime-logging

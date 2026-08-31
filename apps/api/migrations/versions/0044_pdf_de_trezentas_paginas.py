@@ -146,6 +146,52 @@ def _troca_nas_funcoes(*, paginas: tuple[str, str], pacote: tuple[str, str]) -> 
             )
 
 
+#: O fim da lista de versões que `schema_ready()` aceita, antes e depois.
+#:
+#: A função guarda a lista das migrations conhecidas, e o `/health/ready` da API
+#: consulta ela. Uma migration que sobe a versão e não estende a lista deixa o
+#: banco "não pronto" para sempre — e, desde que o sandbox passou a contar no
+#: `ready`, isso não é só um número errado numa resposta: o healthcheck do
+#: contêiner derruba a task e o serviço entra em laço de reinício.
+#:
+#: A 0043 faz o mesmo, e é dela que este formato veio.
+_READY_ATE_0043 = "'0043_material_role_by_media'))"
+_READY_ATE_0044 = "'0043_material_role_by_media','0044_pdf_de_trezentas_paginas'))"
+
+#: As duas cópias da função que carregam a lista.
+_BASES_DO_READY: tuple[str, ...] = (
+    "app_private.schema_ready_base_0016()",
+    "app_private.schema_ready_base_0017()",
+)
+
+_ESTENDE_O_READY = """
+do $migration$
+declare
+  definicao text;
+  reescrita text;
+begin
+  definicao := pg_get_functiondef('ALVO'::regprocedure);
+  reescrita := replace(definicao, $de$DE$de$, $para$PARA$para$);
+  if reescrita = definicao then
+    raise exception 'ALVO não continha a lista esperada de versões' using errcode='55000';
+  end if;
+  execute reescrita;
+end $migration$;
+"""
+
+
+def _troca_no_readiness(de: str, para: str) -> None:
+    """Ensina `schema_ready()` a reconhecer esta migration.
+
+    Sem isto o banco fica "não pronto" depois do upgrade: a versão avança e a
+    lista não. Falha alto quando o texto não é encontrado, pelo mesmo motivo das
+    outras substituições desta migration — uma troca silenciosa que não troca
+    nada é como um limite sobrevive a quem pensou tê-lo mudado.
+    """
+    for alvo in _BASES_DO_READY:
+        op.execute(_ESTENDE_O_READY.replace("ALVO", alvo).replace("DE", de).replace("PARA", para))
+
+
 def upgrade() -> None:
     _troca_teto_de_pagina(300)
     _troca_teto_do_pacote(_PACOTE_NOVO)
@@ -157,6 +203,7 @@ def upgrade() -> None:
         paginas=(_PAGINAS_DE, _PAGINAS_PARA),
         pacote=(str(_PACOTE_ANTIGO), str(_PACOTE_NOVO)),
     )
+    _troca_no_readiness(_READY_ATE_0043, _READY_ATE_0044)
 
 
 #: Tudo que impede voltar ao teto antigo, e a conta que denuncia cada caso.
@@ -199,6 +246,7 @@ def downgrade() -> None:
         )
     _troca_teto_de_pagina(100)
     _troca_teto_do_pacote(_PACOTE_ANTIGO)
+    _troca_no_readiness(_READY_ATE_0044, _READY_ATE_0043)
     _troca_nas_funcoes(
         paginas=(_PAGINAS_PARA, _PAGINAS_DE),
         pacote=(str(_PACOTE_NOVO), str(_PACOTE_ANTIGO)),
