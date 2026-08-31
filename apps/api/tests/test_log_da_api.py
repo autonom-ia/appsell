@@ -908,3 +908,90 @@ def test_interrupcao_pelo_teclado_nao_vira_evento_de_falha() -> None:
 
     assert "uncaught_exception" not in resultado.stderr
     assert "KeyboardInterrupt" in resultado.stderr
+
+
+def _processo(programa: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(  # noqa: S603 - comando montado localmente
+        [sys.executable, "-c", programa],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "APPSELL_API_ENVIRONMENT": "production"},
+    )
+
+
+def test_excecao_de_atexit_passa_pelo_redator() -> None:
+    """`atexit`, `__del__` e finalizador de `weakref` não passam pelo `excepthook`.
+
+    Eles passam pelo `sys.unraisablehook`, e sem ele o processo terminava com
+    código **0** e a credencial inteira no `stderr` — a pior combinação
+    possível: vazamento silencioso num encerramento que parece bem-sucedido.
+    """
+    resultado = _processo(
+        "import atexit, appsell_api;"
+        "atexit.register("
+        "  lambda: (_ for _ in ()).throw("
+        "    RuntimeError('postgresql://alice:p@ssw0rd@db.internal/prod')))"
+    )
+
+    assert "alice" not in resultado.stderr
+    assert "p@ssw0rd" not in resultado.stderr
+    assert "unraisable_exception" in resultado.stderr
+    assert "<REDACTED>" in resultado.stderr
+
+
+def test_excecao_em_thread_passa_pelo_redator() -> None:
+    resultado = _processo(
+        "import threading, appsell_api;"
+        "t = threading.Thread("
+        "  target=lambda: (_ for _ in ()).throw("
+        "    RuntimeError('postgresql://alice:p@ssw0rd@db.internal/prod')),"
+        "  name='trabalhadora');"
+        "t.start(); t.join()"
+    )
+
+    assert "alice" not in resultado.stderr
+    assert "uncaught_thread_exception" in resultado.stderr
+    assert "trabalhadora" in resultado.stderr
+
+
+def test_saida_intencional_de_thread_nao_vira_incidente_critico() -> None:
+    """O hook padrão de thread ignora `SystemExit`, e por bom motivo.
+
+    Uma thread que encerra com `sys.exit(0)` é controle de fluxo. Tratá-la como
+    falha crítica enche o log de alarme falso — e alarme falso é como um log
+    volta a ser ignorado.
+    """
+    resultado = _processo(
+        "import threading, sys, appsell_api;"
+        "t = threading.Thread(target=lambda: sys.exit(0));"
+        "t.start(); t.join();"
+        "print('fim', file=sys.stderr)"
+    )
+
+    assert "uncaught_thread_exception" not in resultado.stderr
+    assert "fim" in resultado.stderr
+
+
+def test_falha_dentro_do_hook_nao_devolve_o_traceback_cru_ao_cpython() -> None:
+    """Se o canal de registro quebra, o CPython imprime a exceção original crua.
+
+    Medido: com o fluxo de saída fechado, `logger.critical()` levantava
+    `ValueError`, e o interpretador imprimia `Error in sys.excepthook` seguido
+    de usuário e senha em claro. O último recurso escreve a linha mínima, já
+    redigida.
+    """
+    resultado = _processo(
+        "import io, appsell_api;"
+        "from appsell_api import logging_setup;"
+        "fluxo = io.StringIO();"
+        "logging_setup.configure_logging("
+        "  environment='production', log_level='INFO', stream=fluxo);"
+        "fluxo.close();"
+        "raise RuntimeError('postgresql://alice:p@ssw0rd@db.internal/prod')"
+    )
+
+    assert resultado.returncode != 0
+    assert "alice" not in resultado.stderr
+    assert "p@ssw0rd" not in resultado.stderr
+    assert "<REDACTED>" in resultado.stderr

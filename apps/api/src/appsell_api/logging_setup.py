@@ -24,6 +24,7 @@ import re
 import sys
 import threading
 import time
+import traceback
 import uuid
 from collections.abc import Iterable, Mapping, MutableMapping
 from types import TracebackType
@@ -32,6 +33,8 @@ from typing import Any, TextIO, cast
 import structlog
 from fastapi import FastAPI
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+_InformacaoDeExcecao = tuple[type[BaseException], BaseException, TracebackType | None]
 
 __all__ = [
     "configure_logging",
@@ -142,9 +145,16 @@ _AMBIENTES_ESTRUTURADOS = frozenset({"staging", "production"})
 # O uvicorn instala tratadores proprios nestes loggers no arranque do servidor.
 _LOGGERS_COM_TRATADOR_PROPRIO = ("uvicorn", "uvicorn.error", "uvicorn.access")
 
-# Guardado no import, antes de qualquer substituicao, para que reconfigurar o
+# Guardados no import, antes de qualquer substituicao, para que reconfigurar o
 # log varias vezes nao encadeie um hook dentro do outro.
 _EXCEPTHOOK_ORIGINAL = sys.excepthook
+_UNRAISABLEHOOK_ORIGINAL = sys.unraisablehook
+_EXCEPTHOOK_DE_THREAD_ORIGINAL = threading.__excepthook__
+
+# Controle de fluxo, nao falha: o hook padrao de thread ignora os dois, e
+# transformar `sys.exit(0)` numa thread em incidente critico seria um alarme
+# falso.
+_CONTROLES_DE_FLUXO = (KeyboardInterrupt, SystemExit)
 
 # Capturar a raiz em INFO traz junto o log de cliente destas bibliotecas. O
 # `httpx` registra `HTTP Request: GET <url completa>` a cada chamada — e a API
@@ -285,32 +295,76 @@ def _capturar_a_excecao_terminal() -> None:
     `RuntimeError("postgresql://alice:p@ssw0rd@db.internal/prod")`: usuário e
     senha apareciam inteiros.
 
-    O interpretador continua saindo com código diferente de zero: o hook apenas
-    registra, não interfere no encerramento. `KeyboardInterrupt` segue pelo
-    caminho padrão, porque interromper no terminal não é uma falha para
-    registrar.
+    São **três** hooks, e cada um cobre um caminho que os outros não veem:
+    `sys.excepthook` para a thread principal, `threading.excepthook` para as
+    demais, e `sys.unraisablehook` para o que acontece fora de qualquer pilha —
+    `atexit`, `__del__`, finalizador de `weakref`. Esse último processo terminava
+    com código 0 e a credencial inteira no `stderr`.
+
+    O interpretador continua saindo com código diferente de zero: os hooks
+    apenas registram. `KeyboardInterrupt` e `SystemExit` seguem pelos hooks
+    originais — são controle de fluxo, não falha.
     """
     logger = get_logger("appsell_api.terminal")
 
-    def registrar_e_encerrar(
+    def registrar(evento: str, informacao: _InformacaoDeExcecao, **extra: Any) -> None:
+        try:
+            logger.critical(evento, exc_info=informacao, **extra)
+        except Exception:  # noqa: BLE001 - ver `_ultimo_recurso`
+            _ultimo_recurso(evento, informacao)
+
+    def na_thread_principal(
         tipo: type[BaseException], valor: BaseException, tb: TracebackType | None
     ) -> None:
-        if issubclass(tipo, KeyboardInterrupt):
+        if issubclass(tipo, _CONTROLES_DE_FLUXO):
             _EXCEPTHOOK_ORIGINAL(tipo, valor, tb)
             return
-        logger.critical("uncaught_exception", exc_info=(tipo, valor, tb))
+        registrar("uncaught_exception", (tipo, valor, tb))
 
-    def registrar_da_thread(args: threading.ExceptHookArgs) -> None:
-        if issubclass(args.exc_type, KeyboardInterrupt):
+    def nas_outras_threads(args: threading.ExceptHookArgs) -> None:
+        if args.exc_value is None or issubclass(args.exc_type, _CONTROLES_DE_FLUXO):
+            _EXCEPTHOOK_DE_THREAD_ORIGINAL(args)
             return
-        logger.critical(
+        registrar(
             "uncaught_thread_exception",
+            (args.exc_type, args.exc_value, args.exc_traceback),
             thread=getattr(args.thread, "name", None),
-            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
         )
 
-    sys.excepthook = registrar_e_encerrar
-    threading.excepthook = registrar_da_thread
+    def fora_de_qualquer_pilha(args: Any) -> None:
+        tipo = getattr(args, "exc_type", None)
+        valor = getattr(args, "exc_value", None)
+        if tipo is None or valor is None:
+            _UNRAISABLEHOOK_ORIGINAL(args)
+            return
+        registrar(
+            "unraisable_exception",
+            (tipo, valor, getattr(args, "exc_traceback", None)),
+            context=_redigir_texto(str(getattr(args, "err_msg", "") or "")),
+        )
+
+    sys.excepthook = na_thread_principal
+    threading.excepthook = nas_outras_threads
+    sys.unraisablehook = fora_de_qualquer_pilha
+
+
+def _ultimo_recurso(evento: str, informacao: _InformacaoDeExcecao) -> None:
+    """Escreve a linha mínima quando o próprio canal de registro falhou.
+
+    Sem isto, uma falha dentro do hook — fluxo de saída fechado, renderizador
+    quebrado — faz o CPython imprimir `Error in sys.excepthook` seguido da
+    exceção **original e crua**, com credencial e tudo. Medido.
+
+    Este é o único ponto do módulo onde uma exceção é engolida, e é onde engolir
+    é a única saída: quem falhou foi o canal de registro, então não há para onde
+    registrar o motivo, e deixar escapar devolve o problema ao hook padrão do
+    CPython — que é exatamente o vazamento a evitar.
+    """
+    try:
+        texto = "".join(traceback.format_exception(*informacao))
+        sys.stderr.write(f"{evento} {_redigir_texto(texto)}\n")
+    except Exception:  # noqa: BLE001, S110 - nao ha canal restante para registrar isto
+        pass
 
 
 def configure_logging_from_environment() -> None:
