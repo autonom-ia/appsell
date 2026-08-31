@@ -135,6 +135,22 @@ def test_o_modulo_que_converte_video_nao_e_alcancavel_pela_api() -> None:
     assert "video_remux" in _alcancaveis("pdf_sandbox_service")
 
 
+def test_a_rota_do_aluno_nao_alcanca_quem_executa_ffprobe() -> None:
+    """A rota que serve o aluno não precisa enxergar o verificador de mídia.
+
+    `video_verifier` executa `ffprobe`. Quem o alcança legitimamente é
+    `asset_routes`, por causa do worker que verifica o que o vendedor enviou. A
+    rota do aluno só entrega o que já foi verificado.
+
+    Esta linha existe porque em 31/08/2026 eu quase a cruzei: importei duas
+    constantes de `video_verifier` dentro de `pdf_link_video`, que a rota do
+    aluno alcança, e com isso alarguei o que a API enxerga em troca de dois
+    números. Nada teria reclamado.
+    """
+    assert "video_verifier" not in _alcancaveis("learning_routes")
+    assert "video_verifier" in _alcancaveis("asset_routes")
+
+
 def test_a_varredura_enxerga_o_que_deveria_enxergar() -> None:
     # Sem isto, um erro no caminho ou no analisador faria o teste passar por não
     # ler módulo nenhum — o pior desfecho possível para uma varredura.

@@ -7,18 +7,21 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from time import monotonic
 from typing import Literal, Protocol
 from uuid import UUID
 
 from .asset_media import is_document
 from .document_verifier import spooled_document_file
 from .image_verifier import ImageRejected, spooled_cover_file
+from .logging_setup import get_logger
 from .pdf_derivatives import prepared_pdf_file
 from .pdf_verifier import PDF_MIME, spooled_pdf_file
 from .storage_s3 import S3Storage, StorageCapabilityError, StoredObject, object_sha256_matches
-from .video_verifier import VIDEO_MP4_MIME, probe_video_safely, spooled_video_file
+from .video_verifier import VIDEO_MP4_MIME, prepared_catalogue_video, spooled_video_file
 
 _EICAR = b"EICAR-STANDARD-ANTIVIRUS-TEST-FILE"
+_logger = get_logger(__name__)
 
 
 class ScanRejected(RuntimeError):
@@ -346,6 +349,16 @@ class PdfStorageWorker:
                 )
 
     def _process_video(self, job: VerifyPdfJob, source: StoredObject) -> VerifiedAssetResult:
+        """Promove a aula depois de trocar o invólucro por um que o aluno navega.
+
+        O que é guardado não são os bytes que chegaram: é o derivado com
+        `+faststart`, o índice do MP4 no começo do arquivo. Sem ele o navegador
+        precisa achar o índice no fim antes de desenhar o primeiro quadro, e a
+        barra de progresso não responde.
+
+        A conversão é feita pelo serviço isolado, e os dois arquivos passam pelo
+        scanner, como já acontece no ramo do PDF.
+        """
         ready: StoredObject | None = None
         try:
             with self.storage.open_download(
@@ -359,28 +372,39 @@ class PdfStorageWorker:
                 ) as source_video:
                     if not self.scanner.scan(source_video.path):
                         raise ScanRejected("scanner rejected the quarantined video")
-                    probe_video_safely(source_video.path)
-                    ready = self.storage.put_verified(
-                        destination_bucket=job.ready_bucket,
-                        destination_key=job.ready_key,
-                        source_path=source_video.path,
-                        byte_size=source_video.byte_size,
-                        sha256_hex=source_video.sha256_hex,
-                        content_type=VIDEO_MP4_MIME,
-                        upload_id=str(job.upload_id),
-                        file_name=job.file_name,
-                    )
-                    return VerifiedAssetResult(
-                        source=source,
-                        ready=ready,
-                        source_byte_size=source_video.byte_size,
-                        source_sha256_hex=source_video.sha256_hex,
-                        ready_byte_size=source_video.byte_size,
-                        ready_sha256_hex=source_video.sha256_hex,
-                        pdf_page_count=0,
-                        pdf_pages=(),
-                        scanner_provider=self.scanner.provider_name,
-                    )
+                    started = monotonic()
+                    with prepared_catalogue_video(source_video.path) as prepared:
+                        if not self.scanner.scan(prepared.path):
+                            raise ScanRejected("scanner rejected the prepared video")
+                        _logger.info(
+                            "appsell_catalogue_video_prepared",
+                            upload_id=str(job.upload_id),
+                            source_byte_size=source_video.byte_size,
+                            ready_byte_size=prepared.byte_size,
+                            sandbox_attempts=prepared.attempts,
+                            elapsed_ms=round((monotonic() - started) * 1000),
+                        )
+                        ready = self.storage.put_verified(
+                            destination_bucket=job.ready_bucket,
+                            destination_key=job.ready_key,
+                            source_path=prepared.path,
+                            byte_size=prepared.byte_size,
+                            sha256_hex=prepared.sha256_hex,
+                            content_type=VIDEO_MP4_MIME,
+                            upload_id=str(job.upload_id),
+                            file_name=job.file_name,
+                        )
+                        return VerifiedAssetResult(
+                            source=source,
+                            ready=ready,
+                            source_byte_size=source_video.byte_size,
+                            source_sha256_hex=source_video.sha256_hex,
+                            ready_byte_size=prepared.byte_size,
+                            ready_sha256_hex=prepared.sha256_hex,
+                            pdf_page_count=0,
+                            pdf_pages=(),
+                            scanner_provider=self.scanner.provider_name,
+                        )
         except Exception as processing_error:
             if ready is None:
                 raise

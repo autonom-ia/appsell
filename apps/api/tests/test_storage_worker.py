@@ -4,6 +4,7 @@ import base64
 import hashlib
 import io
 import struct
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,6 +25,7 @@ from appsell_api.storage_worker import (
     VerifyPdfJob,
     assert_storage_worker_ready,
 )
+from appsell_api.video_verifier import PreparedCatalogueVideo
 
 
 def local_worker(storage: Any, scanner: Any) -> PdfStorageWorker:
@@ -50,23 +52,72 @@ def test_worker_normalizes_to_distinct_db_key_and_preserves_source_until_commit(
     assert storage.deleted == [("quarantine", job.source_key, "source-v1")]
 
 
-def test_worker_verifies_and_promotes_mp4_without_mutating_bytes(
+PREPARADO = b"MP4-COM-O-INDICE-NO-COMECO"
+
+
+def _preparo_falso(events: list[str]) -> Any:
+    """O sandbox, encenado: devolve um derivado diferente da origem."""
+
+    @contextmanager
+    def preparar(source: Path) -> Any:
+        events.append("prepare")
+        destino = source.parent / "preparado.mp4"
+        destino.write_bytes(PREPARADO)
+        try:
+            yield PreparedCatalogueVideo(
+                path=destino,
+                byte_size=len(PREPARADO),
+                sha256_hex=hashlib.sha256(PREPARADO).hexdigest(),
+                attempts=1,
+            )
+        finally:
+            destino.unlink(missing_ok=True)
+
+    return preparar
+
+
+def test_worker_promotes_the_prepared_video_and_scans_original_and_derivative(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """O que vai para o aluno é o derivado, e ele é escaneado como o do PDF.
+
+    Antes de 31/08/2026 o vídeo do catálogo era guardado byte a byte como
+    chegou, sem `+faststart`: o índice do MP4 ficava no fim e o aluno não
+    conseguia arrastar a barra.
+    """
     events: list[str] = []
     monkeypatch.setattr(
-        "appsell_api.storage_worker.probe_video_safely", lambda _path: events.append("probe")
+        "appsell_api.storage_worker.prepared_catalogue_video", _preparo_falso(events)
     )
     payload = valid_mp4()
     job = make_job(payload, media_type="video/mp4", file_name="aula.mp4")
     storage = FakeStorage(stored("quarantine", job.source_key, "source-v1", payload, job), payload)
     scanner = RecordingScanner(reject_call=99, events=events)
     result = local_worker(storage, scanner).process(job)
-    assert events == ["scan", "probe"]
-    assert storage.ready_payload == payload
+    assert events == ["scan", "prepare", "scan"]
+    assert scanner.payloads == [payload, PREPARADO]
+    assert storage.ready_payload == PREPARADO
     assert result.ready.content_type == "video/mp4"
-    assert result.source_sha256_hex == result.ready_sha256_hex
+    assert result.source_sha256_hex == hashlib.sha256(payload).hexdigest()
+    assert result.ready_sha256_hex == hashlib.sha256(PREPARADO).hexdigest()
+    assert result.source_byte_size == len(payload)
+    assert result.ready_byte_size == len(PREPARADO)
     assert result.pdf_page_count == 0
+
+
+def test_worker_never_promotes_a_prepared_video_the_scanner_rejects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(
+        "appsell_api.storage_worker.prepared_catalogue_video", _preparo_falso(events)
+    )
+    payload = valid_mp4()
+    job = make_job(payload, media_type="video/mp4", file_name="aula.mp4")
+    storage = FakeStorage(stored("quarantine", job.source_key, "source-v1", payload, job), payload)
+    with pytest.raises(ScanRejected, match="prepared"):
+        local_worker(storage, RecordingScanner(reject_call=2, events=events)).process(job)
+    assert storage.put_key is None and storage.deleted == []
 
 
 def test_worker_rejects_before_ready_put_on_hash_or_metadata_mismatch() -> None:

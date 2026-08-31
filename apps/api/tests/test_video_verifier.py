@@ -8,13 +8,18 @@ import struct
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
+import httpx
 import pytest
 
+from appsell_api import video_verifier
 from appsell_api.video_verifier import (
     VIDEO_MP4_MIME,
     VideoProbeUnavailable,
     VideoRejected,
+    VideoSandboxUnavailable,
+    prepared_catalogue_video,
     probe_mp4_file,
     spooled_video_file,
 )
@@ -194,3 +199,118 @@ def test_missing_ffprobe_is_infrastructure_unavailable(
 
     with pytest.raises(VideoProbeUnavailable):
         probe_mp4_file(source)
+
+
+def _sandbox(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, handler: Any) -> None:
+    """O serviço isolado, encenado, sem deixar de exercitar o cliente real."""
+    monkeypatch.setenv("APPSELL_API_PDF_SANDBOX_SOCKET", str(tmp_path / "pdf.sock"))
+    monkeypatch.delenv("APPSELL_API_PDF_SANDBOX_URL", raising=False)
+    monkeypatch.setattr(
+        "appsell_api.video_verifier.httpx.HTTPTransport",
+        lambda **_kwargs: httpx.MockTransport(handler),
+    )
+    monkeypatch.setattr("appsell_api.video_verifier.time.sleep", lambda _segundos: None)
+
+
+def _origem(tmp_path: Path) -> Path:
+    caminho = tmp_path / "origem.mp4"
+    caminho.write_bytes(minimal_mp4())
+    return caminho
+
+
+def test_o_derivado_volta_do_sandbox_gravado_em_disco(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    preparado = b"MP4-COM-O-INDICE-NO-COMECO"
+    pedidos: list[httpx.Request] = []
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        pedidos.append(request)
+        return httpx.Response(200, content=preparado, headers={"content-type": VIDEO_MP4_MIME})
+
+    _sandbox(monkeypatch, tmp_path, responder)
+    origem = _origem(tmp_path)
+    with prepared_catalogue_video(origem) as resultado:
+        assert resultado.path.read_bytes() == preparado
+        assert resultado.byte_size == len(preparado)
+        assert resultado.sha256_hex == hashlib.sha256(preparado).hexdigest()
+        assert resultado.attempts == 1
+        guardado = resultado.path
+
+    # O modo é o que faz o sandbox recusar recodificar e conferir a saída.
+    assert pedidos[0].headers["x-appsell-mode"] == "catalogue"
+    assert pedidos[0].headers["x-appsell-sha256"] == hashlib.sha256(minimal_mp4()).hexdigest()
+    assert pedidos[0].headers["x-appsell-byte-size"] == str(len(minimal_mp4()))
+    assert not guardado.exists()
+
+
+def test_o_sandbox_reciclando_e_esperado_e_a_chamada_se_repete(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Conexão recusada é o isolamento funcionando, não defeito.
+
+    O serviço mata o próprio processo depois de cada trabalho de mídia. Quem
+    chega no meio do reinício leva recusa e só precisa esperar.
+    """
+    tentativas = 0
+
+    def responder(_request: httpx.Request) -> httpx.Response:
+        nonlocal tentativas
+        tentativas += 1
+        if tentativas < 3:
+            raise httpx.ConnectError("connection refused")
+        return httpx.Response(200, content=b"MP4", headers={"content-type": VIDEO_MP4_MIME})
+
+    _sandbox(monkeypatch, tmp_path, responder)
+    with prepared_catalogue_video(_origem(tmp_path)) as resultado:
+        assert resultado.attempts == 3
+
+
+def test_uma_recusa_do_sandbox_nao_vira_nova_tentativa(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Repetir um vídeo que o sandbox reprovou daria no mesmo, quatro vezes."""
+    tentativas = 0
+
+    def responder(_request: httpx.Request) -> httpx.Response:
+        nonlocal tentativas
+        tentativas += 1
+        return httpx.Response(422)
+
+    _sandbox(monkeypatch, tmp_path, responder)
+    with pytest.raises(VideoRejected), prepared_catalogue_video(_origem(tmp_path)):
+        pass
+    assert tentativas == 1
+
+
+def test_o_sandbox_indisponivel_ate_o_fim_e_erro_de_infra(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def responder(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    _sandbox(monkeypatch, tmp_path, responder)
+    with pytest.raises(VideoSandboxUnavailable), prepared_catalogue_video(_origem(tmp_path)):
+        pass
+
+
+def test_endereco_de_rede_nao_serve_para_preparar_video(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """O isolamento depende do socket: contêiner sem rede e sem credenciais."""
+    monkeypatch.setenv("APPSELL_API_PDF_SANDBOX_SOCKET", str(tmp_path / "pdf.sock"))
+    monkeypatch.setenv("APPSELL_API_PDF_SANDBOX_URL", "http://pdf-sandbox.interno")
+    with pytest.raises(VideoSandboxUnavailable), prepared_catalogue_video(_origem(tmp_path)):
+        pass
+
+
+def test_o_prazo_do_cliente_acompanha_o_do_ffmpeg() -> None:
+    """Desistir antes do `ffmpeg` deixaria o único lugar do sandbox ocupado.
+
+    `subprocess.run` numa thread não é cancelado quando o cliente desiste: a API
+    declararia falha e o trabalho continuaria rodando lá dentro, segurando o
+    próximo vídeo de todo mundo.
+    """
+    from appsell_api.video_remux import REMUX_TIMEOUT_SECONDS
+
+    assert video_verifier.PREPARE_TIMEOUT_SECONDS == REMUX_TIMEOUT_SECONDS

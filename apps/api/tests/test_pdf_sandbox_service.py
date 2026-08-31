@@ -16,7 +16,8 @@ from reportlab.pdfgen.canvas import Canvas  # type: ignore[import-untyped]
 from appsell_api import pdf_sandbox_service
 from appsell_api.pdf_raster import PdfRasterRejected, normalize_watermark
 from appsell_api.pdf_sandbox_service import app
-from appsell_api.video_verifier import VideoProbeUnavailable
+from appsell_api.video_remux import MAX_DERIVATIVE_BYTES as MAX_REMUX_BYTES
+from appsell_api.video_verifier import MAX_VIDEO_BYTES, VideoProbeUnavailable, VideoRejected
 
 
 @pytest.mark.asyncio
@@ -465,6 +466,132 @@ async def test_video_probe_allows_only_one_maximum_sized_tempfile_slot(
     assert completed.status_code == 204
     assert overloaded.status_code == 429
     assert overloaded.headers["retry-after"] == "2"
+
+
+@pytest.mark.asyncio
+async def test_o_modo_catalogo_recusa_recodificar_e_confere_a_saida(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """O catálogo troca o invólucro e confere o que sai, não o que entra.
+
+    Recodificar estoura o lease de 600 s do worker. E a garantia que interessa
+    é sobre o arquivo que o aluno recebe, que é o derivado.
+    """
+    payload = valid_mp4()
+    preparado = b"MP4-PREPARADO"
+    pedido: dict[str, object] = {}
+    conferidos: list[bytes] = []
+
+    def falso_remux(source: Path, destination: Path, *, allow_transcode: bool = True) -> bool:
+        pedido["allow_transcode"] = allow_transcode
+        pedido["origem"] = source.read_bytes()
+        destination.write_bytes(preparado)
+        return False
+
+    monkeypatch.setattr(pdf_sandbox_service, "remux_to_mp4", falso_remux)
+    monkeypatch.setattr(
+        pdf_sandbox_service,
+        "_probe_video_file",
+        lambda caminho, _tamanho: conferidos.append(caminho.read_bytes()),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://parser.test"
+    ) as client:
+        response = await client.post(
+            "/prepare-video",
+            content=payload,
+            headers={
+                "x-appsell-byte-size": str(len(payload)),
+                "x-appsell-sha256": hashlib.sha256(payload).hexdigest(),
+                "x-appsell-mode": "catalogue",
+            },
+        )
+        corpo = response.read()
+
+    assert response.status_code == 200
+    assert corpo == preparado
+    assert pedido["allow_transcode"] is False
+    assert pedido["origem"] == payload
+    assert conferidos == [preparado]
+
+
+@pytest.mark.asyncio
+async def test_o_video_do_pdf_continua_podendo_recodificar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sem o cabeçalho, nada muda para o caminho que já estava em produção."""
+    payload = valid_mp4()
+    pedido: dict[str, object] = {}
+    conferidos: list[bytes] = []
+
+    def falso_remux(source: Path, destination: Path, *, allow_transcode: bool = True) -> bool:
+        pedido["allow_transcode"] = allow_transcode
+        destination.write_bytes(b"MP4")
+        return True
+
+    monkeypatch.setattr(pdf_sandbox_service, "remux_to_mp4", falso_remux)
+    monkeypatch.setattr(
+        pdf_sandbox_service,
+        "_probe_video_file",
+        lambda caminho, _tamanho: conferidos.append(caminho.read_bytes()),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://parser.test"
+    ) as client:
+        response = await client.post(
+            "/prepare-video",
+            content=payload,
+            headers={
+                "x-appsell-byte-size": str(len(payload)),
+                "x-appsell-sha256": hashlib.sha256(payload).hexdigest(),
+            },
+        )
+        response.read()
+
+    assert response.status_code == 200
+    assert response.headers["x-appsell-recoded"] == "true"
+    assert pedido["allow_transcode"] is True
+    # A conferência do catálogo é do catálogo: o vídeo do PDF aceita o que o
+    # navegador toca, que é mais largo do que o material de aula aceita.
+    assert conferidos == []
+
+
+@pytest.mark.asyncio
+async def test_o_modo_catalogo_recusa_o_derivado_que_nao_passa_na_conferencia(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = valid_mp4()
+
+    def falso_remux(source: Path, destination: Path, *, allow_transcode: bool = True) -> bool:
+        destination.write_bytes(b"MP4")
+        return False
+
+    def recusa(_caminho: Path, _tamanho: int) -> None:
+        raise VideoRejected("audio codec must be AAC")
+
+    monkeypatch.setattr(pdf_sandbox_service, "remux_to_mp4", falso_remux)
+    monkeypatch.setattr(pdf_sandbox_service, "_probe_video_file", recusa)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://parser.test"
+    ) as client:
+        response = await client.post(
+            "/prepare-video",
+            content=payload,
+            headers={
+                "x-appsell-byte-size": str(len(payload)),
+                "x-appsell-sha256": hashlib.sha256(payload).hexdigest(),
+                "x-appsell-mode": "catalogue",
+            },
+        )
+
+    assert response.status_code == 422
+
+
+def test_cada_modo_carrega_o_proprio_teto() -> None:
+    """O catálogo é enviado pelo vendedor; o vídeo do PDF é baixado por nós."""
+    assert pdf_sandbox_service._prepare_ceiling("catalogue") == MAX_VIDEO_BYTES
+    assert pdf_sandbox_service._prepare_ceiling(None) == MAX_REMUX_BYTES
+    assert pdf_sandbox_service._prepare_ceiling("qualquer-outra-coisa") == MAX_REMUX_BYTES
 
 
 def valid_pdf(*, page_count: int = 1) -> bytes:

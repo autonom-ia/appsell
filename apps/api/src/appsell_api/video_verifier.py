@@ -7,16 +7,36 @@ import re
 import struct
 import subprocess
 import tempfile
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Final
 
 import httpx
 
 MAX_VIDEO_BYTES = 100 * 1024 * 1024
 VIDEO_MP4_MIME = "video/mp4"
+
+#: Quantas vezes insistir quando o serviço isolado não atende.
+#:
+#: Ele se recicla depois de cada trabalho de mídia: é assim que um arquivo ruim
+#: não contamina o próximo aluno. Enquanto reinicia, quem chega leva conexão
+#: recusada, e isso não é falha, é o isolamento funcionando. Sem insistir,
+#: preparar vários vídeos seguidos falhava um sim, um não.
+SANDBOX_ATTEMPTS: Final = 4
+SANDBOX_RETRY_SECONDS: Final = 3.0
+
+#: Prazo do cliente para o preparo no serviço isolado.
+#:
+#: Carrega o mesmo valor de `video_remux.REMUX_TIMEOUT_SECONDS`, que é o prazo
+#: do próprio `ffmpeg`, e não pode ser a mesma constante: `video_remux` executa
+#: binário de mídia e não pode ser importado de dentro da API
+#: (`test_parser_de_midia_fica_no_sandbox.py`). Desistir antes do `ffmpeg` faria
+#: a API declarar falha enquanto o trabalho continua, ocupando o único lugar do
+#: sandbox sem ninguém mais esperando por ele.
+PREPARE_TIMEOUT_SECONDS: Final = 5 * 60
 _CHUNK_BYTES = 1024 * 1024
 _MAX_TOP_LEVEL_BOXES = 10_000
 _ALLOWED_BRANDS = frozenset(
@@ -34,6 +54,16 @@ class VideoSandboxUnavailable(RuntimeError):
 
 class VideoProbeUnavailable(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class PreparedCatalogueVideo:
+    """O derivado que vai para o aluno, e quantas tentativas custou obtê-lo."""
+
+    path: Path
+    byte_size: int
+    sha256_hex: str
+    attempts: int
 
 
 @dataclass(frozen=True)
@@ -221,41 +251,126 @@ def probe_mp4_file(path: Path, binary: str = "ffprobe", timeout_seconds: float =
         raise VideoRejected("video dimensions are outside the allowed range")
 
 
-def probe_video_safely(path: Path) -> None:
+def _sandbox_socket() -> str:
+    """O socket do serviço isolado, e a recusa de qualquer outro transporte.
+
+    Endereço de rede não serve: o isolamento depende de o parser rodar num
+    contêiner sem rede e sem as credenciais da API.
+    """
     remote_url = os.environ.get("APPSELL_API_PDF_SANDBOX_URL", "").strip()
     remote_socket = os.environ.get("APPSELL_API_PDF_SANDBOX_SOCKET", "").strip()
     if remote_url or not remote_socket:
-        raise VideoSandboxUnavailable("video probe requires an isolated Unix socket")
+        raise VideoSandboxUnavailable("video preparation requires an isolated Unix socket")
+    return remote_socket
+
+
+@contextmanager
+def prepared_catalogue_video(source: Path) -> Iterator[PreparedCatalogueVideo]:
+    """O MP4 que o aluno recebe: mesmo conteúdo, índice do container no começo.
+
+    O `+faststart` é o ponto. Sem ele o índice do MP4 fica no fim do arquivo, o
+    navegador precisa buscá-lo antes de desenhar o primeiro quadro, e o aluno
+    não consegue arrastar a barra de progresso. Editores de vídeo exportam sem
+    faststart por padrão, então isso valia para praticamente toda aula enviada.
+
+    A conversão acontece no serviço isolado, nunca aqui: o arquivo é do
+    vendedor, e um parser de mídia não tem o que fazer no processo que carrega
+    as credenciais do banco.
+
+    Conhecido e aceito: o derivado sai com tamanho praticamente igual ao da
+    origem, mas mover o índice pode acrescentar alguns bytes. Um envio exatamente
+    no teto pode passar no envio e ser recusado aqui. É uma recusa clara, e não
+    um erro de banco no `INSERT`.
+    """
+    remote_socket = _sandbox_socket()
+    byte_size = source.stat().st_size
+    if not 1 <= byte_size <= MAX_VIDEO_BYTES:
+        raise VideoRejected("video size is outside the allowed range")
+    digest = hashlib.sha256()
+    with source.open("rb") as handle:
+        while chunk := handle.read(_CHUNK_BYTES):
+            digest.update(chunk)
+
+    destination: Path | None = None
     try:
-        endpoint = "http://pdf-sandbox/probe-video"
-        byte_size = path.stat().st_size
-        if not 1 <= byte_size <= MAX_VIDEO_BYTES:
-            raise VideoRejected("video size is outside the allowed range")
-        digest = hashlib.sha256()
-        with path.open("rb") as source:
-            while chunk := source.read(_CHUNK_BYTES):
-                digest.update(chunk)
-        headers = {
-            "content-type": VIDEO_MP4_MIME,
-            "x-appsell-byte-size": str(byte_size),
-            "x-appsell-sha256": digest.hexdigest(),
-        }
-        transport = httpx.HTTPTransport(uds=remote_socket, retries=0)
+        with tempfile.NamedTemporaryFile(
+            mode="w+b", prefix="appsell-prepared-", suffix=".mp4", delete=False
+        ) as sink:
+            destination = Path(sink.name)
+        os.chmod(destination, 0o600)
+        for attempt in range(1, SANDBOX_ATTEMPTS + 1):
+            try:
+                prepared_size, prepared_sha = _prepare_once(
+                    source, byte_size, digest.hexdigest(), destination, remote_socket
+                )
+            except VideoSandboxUnavailable:
+                if attempt == SANDBOX_ATTEMPTS:
+                    raise
+                time.sleep(SANDBOX_RETRY_SECONDS)
+                continue
+            yield PreparedCatalogueVideo(
+                path=destination,
+                byte_size=prepared_size,
+                sha256_hex=prepared_sha,
+                attempts=attempt,
+            )
+            return
+        raise VideoSandboxUnavailable("video preparation service did not answer")
+    finally:
+        if destination is not None:
+            destination.unlink(missing_ok=True)
+
+
+def _prepare_once(
+    source: Path,
+    byte_size: int,
+    sha256_hex: str,
+    destination: Path,
+    remote_socket: str,
+) -> tuple[int, str]:
+    """Uma ida ao serviço isolado, com o derivado gravado em disco."""
+    headers = {
+        "content-type": "application/octet-stream",
+        "x-appsell-byte-size": str(byte_size),
+        "x-appsell-sha256": sha256_hex,
+        "x-appsell-mode": "catalogue",
+    }
+    transport = httpx.HTTPTransport(uds=remote_socket, retries=0)
+    written = 0
+    digest = hashlib.sha256()
+    try:
         with (
-            path.open("rb") as payload,
             httpx.Client(
                 transport=transport,
-                timeout=httpx.Timeout(20.0, connect=3.0),
+                timeout=httpx.Timeout(PREPARE_TIMEOUT_SECONDS, connect=5.0),
                 trust_env=False,
                 follow_redirects=False,
             ) as client,
+            source.open("rb") as payload,
+            client.stream(
+                "POST", "http://pdf-sandbox/prepare-video", content=payload, headers=headers
+            ) as response,
         ):
-            response = client.post(endpoint, content=payload, headers=headers)
+            if response.status_code in {413, 415, 422}:
+                raise VideoRejected("video preparation service rejected the video")
+            if (
+                response.status_code != 200
+                or response.headers.get("content-type") != VIDEO_MP4_MIME
+            ):
+                raise VideoSandboxUnavailable("video preparation service is unavailable")
+            # O derivado vai direto para o disco: cem megabytes na memória do
+            # sandbox e de novo na da API derrubaria os dois.
+            with destination.open("wb") as sink:
+                for chunk in response.iter_bytes(_CHUNK_BYTES):
+                    written += len(chunk)
+                    if written > MAX_VIDEO_BYTES:
+                        raise VideoRejected("prepared video is outside the allowed range")
+                    digest.update(chunk)
+                    sink.write(chunk)
     except (VideoRejected, VideoSandboxUnavailable):
         raise
     except (httpx.HTTPError, OSError, ValueError) as error:
-        raise VideoSandboxUnavailable("video probe isolation service is unavailable") from error
-    if response.status_code in {413, 415, 422}:
-        raise VideoRejected("video probe isolation service rejected the video")
-    if response.status_code != 204 or response.content:
-        raise VideoSandboxUnavailable("video probe isolation service returned an invalid response")
+        raise VideoSandboxUnavailable("video preparation service request failed") from error
+    if written < 1:
+        raise VideoRejected("video preparation service returned an empty body")
+    return written, digest.hexdigest()

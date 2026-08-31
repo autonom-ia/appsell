@@ -444,10 +444,17 @@ def _sandbox_client() -> tuple[httpx.BaseTransport | None, str]:
 
 #: Quantas vezes insistir quando o serviço isolado não atende.
 #:
-#: Ele se recicla depois de cada vídeo — é assim que um arquivo ruim não
+#: Quantas vezes insistir quando o serviço isolado não atende.
+#:
+#: Ele se recicla depois de cada vídeo, e é assim que um arquivo ruim não
 #: contamina o próximo. Enquanto reinicia, quem chega recebe conexão recusada.
 #: Isso não é falha: é o serviço fazendo o que deve, e quem pede só precisa
 #: esperar. Sem isto, preparar vários vídeos seguidos falhava um sim, um não.
+#:
+#: `video_verifier` carrega os mesmos dois números para o vídeo do catálogo, e
+#: **não** importa daqui: este módulo é alcançável a partir das rotas, e trazer
+#: `video_verifier` para dentro dele alargaria o que a API alcança em troca de
+#: duas constantes. `test_pdf_link_video.py` compara os dois pares.
 SANDBOX_ATTEMPTS: Final = 4
 SANDBOX_RETRY_SECONDS: Final = 3.0
 

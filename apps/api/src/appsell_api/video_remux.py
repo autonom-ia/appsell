@@ -45,6 +45,18 @@ MAX_PROBE_BYTES: Final = 256 * 1024
 REMUX_TIMEOUT_SECONDS: Final = 5 * 60
 TRANSCODE_TIMEOUT_SECONDS: Final = 60 * 60
 
+#: Quanto a duração da saída pode ficar abaixo da origem antes de ser recusada.
+#:
+#: `ffmpeg -fs` para de escrever ao alcançar o teto de bytes e **sai com código
+#: zero**. O arquivo curto tem tamanho válido, código de sucesso e índice no
+#: lugar: nada no caminho normal acusa, e o aluno recebe a aula pela metade.
+#: Conferir tamanho não serve, porque o tamanho é exatamente o teto. O que serve
+#: é a duração.
+#:
+#: A folga cobre o corte no limite do quadro ou do pacote de áudio, que muda o
+#: último décimo de segundo. Ela não cobre um vídeo truncado, que perde minutos.
+DURATION_TOLERANCE_SECONDS: Final = 1.0
+
 #: O que o navegador toca dentro de um MP4, sem recodificar.
 _COPYABLE_VIDEO: Final = frozenset({"h264"})
 _COPYABLE_AUDIO: Final = frozenset({"aac", "mp3"})
@@ -130,8 +142,8 @@ def _frame_rate(value: object) -> float:
         return 0.0
 
 
-def copyable_streams(probed: dict[str, Any]) -> bool:
-    """`True` quando basta trocar o container; `False` quando precisa recodificar."""
+def duration_of(probed: dict[str, Any]) -> float:
+    """A duração declarada, já dentro da faixa aceita."""
     fmt = probed.get("format") or {}
     try:
         duration = float(fmt.get("duration") or 0.0)
@@ -141,6 +153,14 @@ def copyable_streams(probed: dict[str, Any]) -> bool:
     # visto. Exigir número finito é o que fecha isso.
     if not math.isfinite(duration) or duration <= 0 or duration > MAX_DURATION_SECONDS:
         raise VideoRemuxRejected("video duration is outside the accepted range")
+    return duration
+
+
+def copyable_streams(probed: dict[str, Any]) -> bool:
+    """`True` quando basta trocar o container; `False` quando precisa recodificar."""
+    # Chamada pela recusa que ela faz: duração ausente, negativa, `NaN` ou acima
+    # do teto não chega a virar decisão de copiar ou recodificar.
+    duration_of(probed)
 
     streams = probed.get("streams") or []
     video = [s for s in streams if s.get("codec_type") == "video"]
@@ -172,9 +192,20 @@ def copyable_streams(probed: dict[str, Any]) -> bool:
     return True
 
 
-def remux_to_mp4(source: Path, destination: Path) -> bool:
-    """Grava o MP4 apresentável. Devolve `True` quando precisou recodificar."""
-    copyable = copyable_streams(probe_video(source))
+def remux_to_mp4(source: Path, destination: Path, *, allow_transcode: bool = True) -> bool:
+    """Grava o MP4 apresentável. Devolve `True` quando precisou recodificar.
+
+    `allow_transcode=False` troca só o invólucro e recusa o que exigiria
+    recodificar. Quem chama com prazo curto precisa disso: recodificar foi
+    medido em 66 s por minuto de vídeo, e o worker do catálogo tem lease de
+    600 s — uma aula de dez minutos estoura. Trocar o invólucro custa 0,155 s
+    por minuto.
+    """
+    probed = probe_video(source)
+    source_duration = duration_of(probed)
+    copyable = copyable_streams(probed)
+    if not copyable and not allow_transcode:
+        raise VideoRemuxRejected("source would need transcoding and this caller refuses it")
     common = [
         # O `ffmpeg` não fala com a rede em momento nenhum.
         "-protocol_whitelist",
@@ -244,4 +275,6 @@ def remux_to_mp4(source: Path, destination: Path) -> bool:
     size = destination.stat().st_size
     if size < 1 or size > MAX_DERIVATIVE_BYTES:
         raise VideoRemuxRejected("prepared video is outside the accepted size")
+    if duration_of(probe_video(destination)) < source_duration - DURATION_TOLERANCE_SECONDS:
+        raise VideoRemuxRejected("prepared video is shorter than its source")
     return not copyable

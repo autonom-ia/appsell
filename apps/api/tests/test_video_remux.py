@@ -7,8 +7,13 @@ continue lá.
 
 from __future__ import annotations
 
+import shutil
+import subprocess
+from pathlib import Path
+
 import pytest
 
+from appsell_api import video_remux
 from appsell_api.video_remux import (
     ALLOWED_FORMATS,
     MAX_DURATION_SECONDS,
@@ -16,6 +21,7 @@ from appsell_api.video_remux import (
     MAX_SOURCE_PIXELS,
     VideoRemuxRejected,
     copyable_streams,
+    remux_to_mp4,
 )
 
 
@@ -153,3 +159,117 @@ class TestNonFiniteMetadata:
         # deixaria passar exatamente o que o teto existe para barrar.
         with pytest.raises(VideoRemuxRejected):
             copyable_streams(_probe(frame_rate=taxa))
+
+
+def _ffmpeg() -> str:
+    caminho = shutil.which("ffmpeg")
+    assert caminho is not None, "ffmpeg é dependência destes testes; o CI o instala"
+    return caminho
+
+
+def _fonte(tmp_path: Path, *, segundos: int = 10, codec: str = "libx264") -> Path:
+    """Um vídeo de verdade, gerado pelo próprio ffmpeg.
+
+    Metadado inventado não serve aqui: o que se quer provar é o comportamento do
+    `ffmpeg` sobre um arquivo, não o do nosso parser sobre um dicionário.
+    """
+    destino = tmp_path / f"origem-{codec}.mp4"
+    subprocess.run(  # noqa: S603 - argv fixo, gerado pelo próprio teste
+        [
+            _ffmpeg(),
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"testsrc=duration={segundos}:size=320x240:rate=30",
+            "-c:v",
+            codec,
+            "-pix_fmt",
+            "yuv420p",
+            str(destino),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return destino
+
+
+class TestSaidaTruncada:
+    """`ffmpeg -fs` corta a saída no teto de bytes e **sai com código zero**.
+
+    O arquivo curto tem tamanho válido e código de saída de sucesso, então nada
+    no caminho normal acusa. O aluno recebe a aula pela metade. Quem acusa é a
+    duração.
+    """
+
+    def test_uma_saida_mais_curta_que_a_origem_e_recusada(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A guarda isolada: a saída dura menos que a origem, e isso basta.
+
+        A origem declara dez minutos e o arquivo tem dois segundos. É a forma
+        exata do defeito que o `-fs` produz, sem depender de o teto de bytes
+        cair no lugar certo para provocá-lo.
+        """
+        origem = _fonte(tmp_path, segundos=2)
+        real = video_remux.probe_video
+
+        def alongando_a_origem(caminho: Path) -> dict[str, object]:
+            lido = real(caminho)
+            if caminho == origem:
+                lido["format"]["duration"] = "600.0"
+            return lido
+
+        monkeypatch.setattr(video_remux, "probe_video", alongando_a_origem)
+        with pytest.raises(VideoRemuxRejected, match="shorter"):
+            remux_to_mp4(origem, tmp_path / "curto.mp4")
+
+    def test_o_corte_por_teto_de_bytes_nao_vira_arquivo_aceito(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """O caso de ponta a ponta: com o teto apertado, nada sai aprovado.
+
+        Qual das duas guardas dispara depende de o `ffmpeg` parar um pouco antes
+        ou um pouco depois do teto, e isso não é nosso para controlar. O que
+        importa é que nenhum dos dois desfechos entrega um vídeo cortado.
+        """
+        origem = _fonte(tmp_path, segundos=10)
+        monkeypatch.setattr(video_remux, "MAX_DERIVATIVE_BYTES", 20_000)
+        with pytest.raises(VideoRemuxRejected):
+            remux_to_mp4(origem, tmp_path / "curto.mp4")
+
+    def test_a_saida_inteira_passa(self, tmp_path: Path) -> None:
+        origem = _fonte(tmp_path, segundos=2)
+        destino = tmp_path / "inteiro.mp4"
+        assert remux_to_mp4(origem, destino) is False
+        assert destino.stat().st_size > 0
+
+
+class TestModoSemRecodificar:
+    """Quem tem prazo curto pede a troca de invólucro, e recusa o resto.
+
+    Recodificar custa 66 s por minuto de vídeo. O worker do catálogo tem lease
+    de 600 s: uma aula de 10 minutos estoura. Trocar o invólucro custa 0,155 s
+    por minuto, e é a única coisa que cabe.
+    """
+
+    def test_uma_origem_que_precisa_recodificar_e_recusada(self, tmp_path: Path) -> None:
+        origem = _fonte(tmp_path, segundos=2, codec="mpeg4")
+        with pytest.raises(VideoRemuxRejected, match="transcod"):
+            remux_to_mp4(origem, tmp_path / "saida.mp4", allow_transcode=False)
+
+    def test_uma_origem_copiavel_passa_sem_recodificar(self, tmp_path: Path) -> None:
+        origem = _fonte(tmp_path, segundos=2)
+        destino = tmp_path / "saida.mp4"
+        assert remux_to_mp4(origem, destino, allow_transcode=False) is False
+
+    def test_o_indice_do_mp4_fica_no_comeco(self, tmp_path: Path) -> None:
+        """`+faststart` é o ponto de tudo isto: sem ele o aluno não arrasta a barra."""
+        origem = _fonte(tmp_path, segundos=2)
+        destino = tmp_path / "saida.mp4"
+        remux_to_mp4(origem, destino, allow_transcode=False)
+        conteudo = destino.read_bytes()
+        assert conteudo.index(b"moov") < conteudo.index(b"mdat")
