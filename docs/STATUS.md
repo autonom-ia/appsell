@@ -1,6 +1,6 @@
 # STATUS — Appsell
 
-Última atualização documental: 2026-08-24.
+Última atualização documental: **2026-08-31**.
 
 Este é o snapshot operacional atual. Para detalhes da release e dos aceites,
 consulte [PRODUCTION_CURRENT.md](PRODUCTION_CURRENT.md). Auditorias antigas em
@@ -10,15 +10,15 @@ consulte [PRODUCTION_CURRENT.md](PRODUCTION_CURRENT.md). Auditorias antigas em
 
 | Indicador | Estado | Evidência |
 |---|:---:|---|
-| Build e CI | 🟢 | [CI pós-merge](https://github.com/autonom-ia/appsell/actions/runs/32656218821), SHA `2c8a3689` |
-| Merge | 🟢 | [PR #201](https://github.com/autonom-ia/appsell/pull/201) |
-| Deploy | 🟢 | VPS EasyPanel nativo, web/API/worker em `2c8a3689` |
+| Deploy | 🟢 | api, worker e sandbox em `712e5bb`; web em `8930313` |
+| Banco | 🟢 | head `0044_pdf_de_trezentas_paginas`, `schema_ready() = true` |
 | API | 🟢 | `/health/ready`: database, storage e pdf sandbox `true` |
-| Multi-tenant | 🟢 | superadmin global; owners isolados por tenant |
-| Acesso gratuito | 🟢 | login/cadastro → entitlement idempotente → biblioteca |
-| Acesso pago | 🟢 | checkout obrigatório; sem conteúdo antes da confirmação |
-| Upload privado | 🟢 | worker/verificação; material pronto vinculado à publicação |
-| Demo em produção | 🔴 não usar | produção não usa reset/seed/personas demo |
+| PDF do vendedor | 🟢 | playbook de 83 páginas, 32 links lidos (20 índice, 12 vídeo) |
+| Teto de páginas | 🟢 | 300, em nove camadas — medido com documento real |
+| Vídeo do PDF | 🟡 | toca, mas o aluno espera ~2 s no primeiro clique de cada vídeo |
+| Vídeo longo | 🔴 | duração de 4 h é aceita e nunca fica pronta; envio limitado a 100 MiB |
+| Logs da API | 🔴 | não gravam nada ([#312](https://github.com/autonom-ia/appsell/issues/312)) — "0 erros" não é evidência |
+| Suítes fora do CI | 🟡 | 5 arquivos `bff-*`, inclusive o de isolamento entre lojas ([#266](https://github.com/autonom-ia/appsell/issues/266)) |
 
 ## Produção comprovada
 

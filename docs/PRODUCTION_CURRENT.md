@@ -2,28 +2,207 @@
 
 > Fonte operacional para retomar o projeto sem depender do histórico da conversa.
 >
-> Última verificação documentada: 2026-08-26. Esta página separa o que foi
+> Última verificação documentada: **2026-08-31**. Esta página separa o que foi
 > comprovado na produção do que continua sendo plano ou laboratório Local/CI.
 
 ## Release em produção
 
-> Última verificação: **2026-08-26**, lendo o host — não a memória desta página.
-> Esta página já divergiu da realidade duas vezes; o que vale é o label
-> `org.opencontainers.image.revision` da imagem em execução.
+> Última verificação: **2026-08-31**, lendo o host — não a memória desta página.
+> Esta página já divergiu da realidade três vezes; o que vale é o que
+> `docker service ls` responde.
 
 | Item | Estado |
 |---|---|
 | Domínio | `https://sell.autonomia.site` |
 | Ambiente | VPS EasyPanel nativo, Docker Swarm |
-| SHA do **web** | `bfeb14b` |
-| SHA do **api** | `3524e2a` — subiu em 2026-08-27, ver abaixo |
-| SHA do **asset-worker** | `3524e2a` — mesma imagem da api |
-| SHA do **pdf-sandbox** | `f8738e4` |
-| Imagens | `web:bfeb14b`, `api:3524e2a`, `asset-worker` em `api:3524e2a`, `pdf-sandbox:f8738e4` |
-| Banco | head `0042_ready_candidate_media` |
-| Web health | `{"status":"ok","redis":true,"api":true,"storage_upload":true}` |
+| SHA do **api** | `712e5bb` |
+| SHA do **asset-worker** | `712e5bb` — mesma imagem da api |
+| SHA do **pdf-sandbox** | `712e5bb` — mesma imagem da api |
+| SHA do **web** | `8930313` |
+| Banco | head **`0044_pdf_de_trezentas_paginas`**, `schema_ready() = true` |
 | API health | `{"status":"ok","database":true,"storage":true,"pdf_sandbox":true}` |
-| Épico | [#252](https://github.com/autonom-ia/appsell/issues/252) — 6/6 fechado |
+
+### Recursos dos serviços, como estão no host
+
+| Serviço | CPU | Memória | `/tmp` |
+|---|---|---|---|
+| `api` | 0,75 | 768 MiB | — |
+| `pdf-sandbox` | **4,0** | **4 GiB** | 2 GiB |
+| `asset-worker` | 1,0 | **4 GiB** | 3 GiB |
+| `web` | 0,75 | 768 MiB | — |
+
+**Duas divergências entre o script e o host**, encontradas no deploy de 31/08 e
+que continuam valendo como alerta:
+
+- `ensure-asset-worker.sh` declarava 1 GiB de memória enquanto o host tinha 4.
+  Ao atualizar o worker eu apliquei o valor do script e **reduzi produção sem
+  querer**; devolvi em seguida. Antes de passar `--limit-memory`, leia o valor
+  atual.
+- O `/tmp` do worker no host já era 3 GiB, não os 384 MiB do script.
+
+E `ensure-asset-worker.sh` **aborta quando o serviço já existe** — ele não
+atualiza o worker sozinho.
+
+## Limites de conteúdo em produção
+
+| O quê | Limite | Onde vive |
+|---|---|---|
+| Páginas por PDF | **300** | 9 lugares: Python, TypeScript, 6 restrições, 3 funções, `schema_ready()` |
+| Tamanho do PDF | 100 MiB | catálogo de mídia (`asset_media`) |
+| Página rasterizada | 8 MiB | restrição do banco |
+| Pacote rasterizado | 384 MiB | Python + 2 restrições + gatilho + função |
+| Vídeo enviado | 100 MiB | catálogo |
+| Vídeo citado no PDF | 512 MiB | `pdf_link_video` — **incoerente com o catálogo**, ver abaixo |
+| Duração de vídeo | 4 h | `video_remux` — **promete o que não entrega**, ver abaixo |
+| Capa do produto | 5 MiB, 64–4000 px | restrição do banco |
+
+### O que foi medido, e não estimado
+
+Com o playbook real do vendedor, dentro do serviço isolado em produção:
+
+```
+rasterizar 1 página a 150 dpi    0,73 s   pico de 83 MiB — constante
+página rasterizada               243 KiB média, 642 KiB a maior
+300 páginas, 1 núcleo, 1 proc    208 s
+300 páginas, 1 núcleo, 4 procs   207 s   ← paralelizar sem núcleo não adianta
+300 páginas, 4 núcleos, 4 procs   89 s
+subir 300 páginas ao storage      9,5 s  (32 ms cada)
+
+converter vídeo 1080p            66 s por minuto de vídeo  ← mais lento que o vídeo
+trocar container (MP4/H.264)     0,155 s por minuto        ← 400× mais rápido
+```
+
+A memória **não cresce com o documento** — o `pdftoppm` desenha uma página por
+vez. O que cresce é o tempo, e é por isso que a rasterização corre em faixas
+quando há núcleo: `raster_workers()` lê a cota do cgroup e decide. `os.cpu_count()`
+não serve, porque dentro do contêiner ele conta a máquina.
+
+Orçamento do lease do worker, medido de ponta a ponta com 300 páginas:
+
+```
+download 0,2 s · antivírus 3,0 s · raster+pacote 208 s · upload 9,5 s · banco 5 s
+= 226 s de 600 s   (folga 2,7×)
+```
+
+### Dois limites que ainda não fecham
+
+**Vídeo tem dois tetos.** O enviado pelo vendedor vale 100 MiB, pelo catálogo; o
+citado dentro do PDF vale 512, número que nasceu no módulo de vídeo sem olhar o
+catálogo. Unificar exige decidir o valor, e o valor certo depende do item
+seguinte.
+
+**A duração de 4 h é ficção.** Recodificar 4 h leva 4,4 h e o prazo da conversão
+é de 1 h: o vídeo é aceito no envio e nunca fica pronto. Uma aula de 60 min em
+1080p decente ocupa 1,3–2,2 GiB, e subir o teto para isso exige **envio em
+pedaços** — hoje o upload é um PUT único com 5 min de prazo, o que exigiria 74
+Mbit/s constantes do vendedor.
+
+O ganho real para quem publica não é o número desses tetos: é **exportar em
+MP4/H.264**, que troca só o container e entra em segundos.
+
+### Por que 300 e não 1000
+
+Não é memória nem disco. É que o serviço isolado atende **um arquivo por vez**, e
+enquanto rasteriza ninguém consegue ler os links de PDF nenhum — quem abrir um
+guia nesse intervalo o vê sem botões ([#320](https://github.com/autonom-ia/appsell/issues/320)).
+Com 4 núcleos, 300 páginas são 89 s de janela.
+
+Mil páginas exigem, além da #320: virtualizar o leitor (hoje cria um nó por
+página), paralelizar o upload das páginas, e refazer gatilhos que recontam todas
+as páginas a cada inserção. Cinco mil é outra geração do pipeline.
+
+## Release `712e5bb` — PDF de 300 páginas (2026-08-31)
+
+O teto era 100, e o playbook do vendedor tem 83 — o próximo documento um pouco
+maior não passaria. O número subiu em **nove camadas de uma vez**, e o pipeline
+foi ajustado para aguentar o documento que o número promete.
+
+### Como foi aplicado
+
+```bash
+# 1. backup das specs
+mkdir -p /tmp/backup-specs-<data>
+for s in api pdf-sandbox asset-worker web; do
+  docker service inspect sell-autonomia_$s > /tmp/backup-specs-<data>/$s.json
+done
+
+# 2. migration — a imagem tem só `src/`, então o alembic roda do fonte extraído
+docker run --rm --network container:<api> -v /tmp/b712/apps/api:/work -w /work \
+  -e APPSELL_MIGRATOR_DATABASE_URL="postgresql+psycopg://appsell_native_admin:<senha>@sell-autonomia_postgres-native-90:5432/appsell_native_90" \
+  --entrypoint sh easypanel/sell-autonomia/api:712e5bb -c 'cd /work && python -m alembic upgrade head'
+
+# 3. serviços, nesta ordem, sempre stop-first
+docker service update --image .../api:712e5bb --update-order stop-first sell-autonomia_asset-worker
+docker service update --image .../pdf-sandbox:712e5bb --limit-cpu 4.0 --limit-memory 4G \
+  --no-healthcheck --update-order stop-first sell-autonomia_pdf-sandbox
+docker service update --image .../api:712e5bb --update-order stop-first sell-autonomia_api
+```
+
+Três detalhes que custam tempo se esquecidos: a variável do alembic é
+`APPSELL_MIGRATOR_DATABASE_URL` (não a da API), a senha de admin vem do env do
+serviço `bootstrap-native-90`, e o `pdf-sandbox` **sempre** com
+`--no-healthcheck` (ele escuta num socket unix) e **nunca** com `start-first`.
+
+### Validação executada em produção
+
+- `alembic_version = 0044_pdf_de_trezentas_paginas` e `schema_ready() = true`
+- os onze pontos do banco em 300 páginas / 384 MiB — seis restrições, duas de
+  tamanho, três funções
+- dentro do processo: `paginas: 300 | pacote: 384 MiB | prazo: 420 s`
+- no sandbox: `cota de 4 núcleos -> 4 rasterizadores`
+- o playbook real, pelo extrator de produção: **32 links, 20 de índice e 12 de
+  vídeo**, com os dois vídeos da página 27
+
+### Rollback deste release
+
+```bash
+docker service update --image .../api:ee194bf sell-autonomia_api
+docker service update --image .../pdf-sandbox:ee194bf \
+  --limit-cpu 1.0 --limit-memory 1G --no-healthcheck sell-autonomia_pdf-sandbox
+```
+
+A migration **não precisa voltar**: é uma expansão compatível com as imagens
+antigas. E depois que existir um PDF acima de 100 páginas publicado, voltar as
+imagens antigas deixa esse documento inacessível *mesmo com health verde* — o
+caminho certo aí é corrigir para frente, não descer. A guarda do `downgrade`
+recusa descer se houver dado que não caiba, cobrindo oito estados.
+
+## Release `ee194bf` — o socket do sandbox, e o alarme que mentia (2026-08-30)
+
+Nasceu de um incidente que eu mesma causei: um deploy do `pdf-sandbox` com
+`--update-order start-first` apagou o socket unix do serviço, e **todo PDF passou
+a abrir sem botão nenhum** — sem erro na tela e sem nada nos logs.
+
+A causa: o `finally` do runner removia o socket **sem verificar se era o dele**.
+Com dois containers convivendo, o antigo encerrou depois de o novo ter publicado
+o seu, e apagou o do sucessor.
+
+Três decisões consertaram, e nenhuma depende de os processos combinarem algo:
+nome sorteado (os dois containers têm pid 1), `listen` antes de publicar, e
+**ninguém remove socket de ninguém** — o `rename` do próximo substitui, de forma
+atômica.
+
+**E o alarme mentia por construção.** `pdf_sandbox_required` valia
+`storage_configured and environment in {local, ci}`, ou seja, `False` em
+produção — e a sonda retornava `True` na primeira linha sem sondar nada. O
+`healthz` respondeu `pdf_sandbox: true` durante todo o incidente, e foi por isso
+que eu reverti a imagem, vi tudo verde e anunciei que estava resolvido com o
+produto quebrado.
+
+Agora o critério é ter sido apontado para o serviço, e o `ready` tem
+consequência: o `HEALTHCHECK` do contêiner consome esse endpoint, com
+`interval=10s` e `retries=6`. Sandbox fora por mais de um minuto derruba a task
+— deliberado, porque foi a promoção silenciosa de uma task quebrada que causou o
+incidente.
+
+### O que aprendi, e está registrado
+
+- **Nunca `--update-order start-first` no `pdf-sandbox`.**
+- **Rollback não é prova; verificação é.** O problema nunca esteve na imagem, e
+  eu anunciei "revertido" sem abrir um PDF.
+- **A verificação depois de qualquer deploy é abrir um PDF com botão de vídeo**
+  — não `healthz`, e não "0 linhas de erro", porque a API não escreve log
+  ([#312](https://github.com/autonom-ia/appsell/issues/312)).
 
 ## Release `3524e2a` — o documento chega ao fim do caminho (2026-08-27)
 
