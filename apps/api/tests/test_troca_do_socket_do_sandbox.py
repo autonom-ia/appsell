@@ -26,6 +26,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+import uvicorn
 
 from appsell_api import pdf_sandbox_runner as runner
 
@@ -100,9 +101,9 @@ class TestOIncidente:
             os.rename(pendente, runner.SOCKET_PATH)
             publicado_pelo_sucessor["id"] = _identidade(runner.SOCKET_PATH)
 
-        monkeypatch.setattr(runner.uvicorn.Server, "run", _serve)
-        monkeypatch.setattr(runner.os, "geteuid", lambda: runner._EXPECTED_UID)
-        monkeypatch.setattr(runner.os, "getegid", lambda: runner._EXPECTED_GID)
+        monkeypatch.setattr(uvicorn.Server, "run", _serve)
+        monkeypatch.setattr(os, "geteuid", lambda: runner._EXPECTED_UID)
+        monkeypatch.setattr(os, "getegid", lambda: runner._EXPECTED_GID)
 
         try:
             runner.main()
@@ -128,9 +129,9 @@ class TestOIncidente:
         def _serve(self: object, sockets: list[socket.socket]) -> None:
             publicado["id"] = _identidade(runner.SOCKET_PATH)
 
-        monkeypatch.setattr(runner.uvicorn.Server, "run", _serve)
-        monkeypatch.setattr(runner.os, "geteuid", lambda: runner._EXPECTED_UID)
-        monkeypatch.setattr(runner.os, "getegid", lambda: runner._EXPECTED_GID)
+        monkeypatch.setattr(uvicorn.Server, "run", _serve)
+        monkeypatch.setattr(os, "geteuid", lambda: runner._EXPECTED_UID)
+        monkeypatch.setattr(os, "getegid", lambda: runner._EXPECTED_GID)
 
         runner.main()
 
@@ -161,9 +162,9 @@ class TestOIncidente:
         def _explode(self: object, sockets: list[socket.socket]) -> None:
             raise RuntimeError("o serviço morreu antes de servir")
 
-        monkeypatch.setattr(runner.uvicorn.Server, "run", _explode)
-        monkeypatch.setattr(runner.os, "geteuid", lambda: runner._EXPECTED_UID)
-        monkeypatch.setattr(runner.os, "getegid", lambda: runner._EXPECTED_GID)
+        monkeypatch.setattr(uvicorn.Server, "run", _explode)
+        monkeypatch.setattr(os, "geteuid", lambda: runner._EXPECTED_UID)
+        monkeypatch.setattr(os, "getegid", lambda: runner._EXPECTED_GID)
 
         try:
             with pytest.raises(RuntimeError, match="morreu antes de servir"):
@@ -200,10 +201,10 @@ class TestOIncidente:
             rename_real(origem, destino)  # type: ignore[arg-type]
 
         monkeypatch.setattr(socket.socket, "listen", _listen)
-        monkeypatch.setattr(runner.os, "rename", _rename)
-        monkeypatch.setattr(runner.uvicorn.Server, "run", lambda self, sockets: None)
-        monkeypatch.setattr(runner.os, "geteuid", lambda: runner._EXPECTED_UID)
-        monkeypatch.setattr(runner.os, "getegid", lambda: runner._EXPECTED_GID)
+        monkeypatch.setattr(os, "rename", _rename)
+        monkeypatch.setattr(uvicorn.Server, "run", lambda self, sockets: None)
+        monkeypatch.setattr(os, "geteuid", lambda: runner._EXPECTED_UID)
+        monkeypatch.setattr(os, "getegid", lambda: runner._EXPECTED_GID)
 
         runner.main()
 
