@@ -60,6 +60,16 @@ class PdfLinksUnavailable(RuntimeError):
     pass
 
 
+class PdfLinksBusy(PdfLinksUnavailable):
+    """O serviço isolado está com o único slot ocupado, e vale perguntar de novo.
+
+    Ele atende um arquivo por vez — leitura de links, rasterização e conversão
+    de vídeo disputam o mesmo lugar — e responde `429` para quem chega junto.
+    Tratar essa recusa como indisponibilidade fazia o documento voltar sem
+    links, silenciosamente, enquanto o serviço estava sadio e ocupado.
+    """
+
+
 @dataclass(frozen=True)
 class _Candidate:
     page: int
@@ -122,6 +132,11 @@ def read_remote_pdf_link_manifest(
         raise PdfLinksUnavailable("isolated PDF link service request failed") from error
     if response.status_code in {413, 415, 422}:
         raise PdfLinksRejected("isolated PDF link service rejected the document")
+    if response.status_code == 429:
+        # O serviço isolado atende um arquivo por vez e recusa quem chega junto.
+        # Isso não é "este PDF não tem links": é "pergunte de novo". Quem
+        # confundir as duas coisas abre o documento sem botão nenhum.
+        raise PdfLinksBusy("isolated PDF link service is busy")
     if response.status_code != 200 or response.headers.get("content-type") != "application/json":
         raise PdfLinksUnavailable("isolated PDF link service is unavailable")
     if len(response.content) > 256 * 1024:

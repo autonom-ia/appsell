@@ -37,8 +37,11 @@ OUTRA = f"{RAIZ}/dois.mov"
 VENDEDOR = "9f1c2f3e-4d5a-4b6c-8d7e-0a1b2c3d4e5f"
 
 
-def _manifest() -> dict[str, Any]:
-    return {"seller_organization_id": VENDEDOR}
+ASSET = "3a2b1c0d-9e8f-4a7b-8c6d-5e4f3a2b1c0d"
+
+
+def _manifest(asset: str = ASSET) -> dict[str, Any]:
+    return {"seller_organization_id": VENDEDOR, "asset_id": asset}
 
 
 def _request(*, storage: object | None = object()) -> Any:
@@ -56,6 +59,7 @@ def _fila_limpa(monkeypatch: pytest.MonkeyPatch) -> Any:
     )
     learning_routes._PDF_LINK_VIDEO_TASKS.clear()
     learning_routes._WARM_TASKS.clear()
+    learning_routes._WARM_IN_FLIGHT.clear()
     monkeypatch.setattr(learning_routes, "_PDF_LINK_VIDEO_PREPARATIONS", PreparationRegistry())
     # Os semáforos são globais do módulo. Um teste que segura um slot e é
     # interrompido no meio deixaria o próximo esperando para sempre — e o
@@ -73,11 +77,13 @@ def _fila_limpa(monkeypatch: pytest.MonkeyPatch) -> Any:
         "_PDF_LINK_VIDEO_TRANSCODE_SLOT",
         asyncio.Semaphore(learning_routes.PDF_LINK_VIDEO_TRANSCODE_CONCURRENCY),
     )
+    monkeypatch.setattr(learning_routes, "_WARM_SLOTS", asyncio.Semaphore(1))
     yield
     for tarefa in [*learning_routes._PDF_LINK_VIDEO_TASKS, *learning_routes._WARM_TASKS]:
         tarefa.cancel()
     learning_routes._PDF_LINK_VIDEO_TASKS.clear()
     learning_routes._WARM_TASKS.clear()
+    learning_routes._WARM_IN_FLIGHT.clear()
 
 
 @pytest.fixture
@@ -103,8 +109,8 @@ def preparos(monkeypatch: pytest.MonkeyPatch, guardados: set[str]) -> list[dict[
     return chamadas
 
 
-async def _rodar(request: Any, links: list[dict[str, Any]]) -> None:
-    learning_routes._warm_pdf_link_videos(request, _manifest(), links)
+async def _rodar(request: Any, links: list[dict[str, Any]], asset: str = ASSET) -> None:
+    learning_routes._warm_pdf_link_videos(request, _manifest(asset), links)
     await asyncio.gather(*list(learning_routes._WARM_TASKS))
     await asyncio.gather(*list(learning_routes._PDF_LINK_VIDEO_TASKS))
 
@@ -345,6 +351,64 @@ async def test_duas_conversoes_nunca_se_sobrepoem(
     assert [erro for erro in erros if isinstance(erro, BaseException)] == []
     assert sorted(guardado) == ["chave-0", "chave-1"]
     assert maximo_convertendo == 1
+
+
+async def test_varias_aberturas_juntas_nao_estouram_a_fila(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Três PDFs abertos ao mesmo tempo não viram doze preparos.
+
+    Contar só o que cada abertura criou não bastava: três chamadas de quatro
+    passavam de doze numa fila cujo teto é oito, e o clique seguinte caía no
+    prazo longo de fila cheia. O limite tem de valer entre as aberturas, e não
+    dentro de cada uma.
+    """
+    vivos = 0
+    maximo_vivo = 0
+    solta = asyncio.Event()
+
+    monkeypatch.setattr(learning_routes, "_pdf_link_video_ready", lambda *_: None)
+
+    async def _preso(
+        _storage: Any, _bucket: str, _key: str, _target: str, *, replace: bool
+    ) -> None:
+        nonlocal vivos, maximo_vivo
+        vivos += 1
+        maximo_vivo = max(maximo_vivo, vivos)
+        try:
+            await solta.wait()
+        finally:
+            vivos -= 1
+
+    monkeypatch.setattr(learning_routes, "_run_pdf_link_video_preparation", _preso)
+
+    for indice in range(3):
+        learning_routes._warm_pdf_link_videos(
+            _request(),
+            _manifest(f"asset-{indice}"),
+            _videos(*[f"{RAIZ}/a{indice}-{n}.mov" for n in range(4)]),
+        )
+    try:
+        await asyncio.sleep(0.05)
+        # Um preparo adiantado por vez, em toda a máquina. O outro slot fica
+        # livre para quem clicou.
+        assert maximo_vivo == 1
+        assert len(learning_routes._PDF_LINK_VIDEO_TASKS) == 1
+    finally:
+        solta.set()
+        await asyncio.gather(*list(learning_routes._WARM_TASKS), return_exceptions=True)
+
+
+async def test_o_mesmo_pdf_aberto_por_varios_alunos_e_um_adiantamento_so(
+    preparos: list[dict[str, Any]],
+) -> None:
+    # Sem isto, cada aluno que abrisse a mesma aula repetiria a varredura
+    # inteira do storage para descobrir a mesma coisa.
+    for _ in range(3):
+        learning_routes._warm_pdf_link_videos(_request(), _manifest(), _videos(ORIGEM))
+    assert len(learning_routes._WARM_TASKS) == 1
+    await asyncio.gather(*list(learning_routes._WARM_TASKS))
+    assert len(preparos) == 1
 
 
 def test_a_rota_do_pdf_adianta_os_videos() -> None:

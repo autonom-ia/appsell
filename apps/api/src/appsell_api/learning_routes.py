@@ -6,6 +6,7 @@ import binascii
 import json
 import re
 from collections import OrderedDict
+from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 from typing import Annotated, Any, Final, Literal
@@ -41,6 +42,7 @@ from .pdf_link_video import (
     trusted_video_target,
 )
 from .pdf_links import (
+    PdfLinksBusy,
     PdfLinksRejected,
     PdfLinksUnavailable,
     read_remote_pdf_link_manifest,
@@ -66,6 +68,16 @@ _PDF_LINK_VIDEO_TASKS: set[asyncio.Task[None]] = set()
 #: e não podem contar contra o teto da fila que existe para limitar download e
 #: conversão.
 _WARM_TASKS: set[asyncio.Task[None]] = set()
+#: Quantos adiantamentos correm ao mesmo tempo. Um.
+#:
+#: Junto com a espera de um preparo por vez lá dentro, é isto que mantém um dos
+#: dois slots sempre livre para quem clicou. A reserva por contagem de tarefas
+#: não bastava: ela dizia quantos preparos podiam ser criados, não quantos
+#: podiam estar rodando ao mesmo tempo.
+_WARM_SLOTS = asyncio.Semaphore(1)
+#: Os documentos com adiantamento em curso, para o mesmo PDF aberto por vários
+#: alunos ao mesmo tempo não virar uma varredura do storage por aluno.
+_WARM_IN_FLIGHT: set[str] = set()
 #: Quanto da fila o adiantamento pode ocupar.
 #:
 #: Metade. Quem clicou num botão está esperando na frente da tela; quem foi
@@ -98,6 +110,14 @@ _PDF_LINK_VIDEO_TRANSCODE_SLOT = asyncio.Semaphore(PDF_LINK_VIDEO_TRANSCODE_CONC
 _PROTECTED_PDF_SLOTS = asyncio.Semaphore(4)
 _PROTECTED_PDF_SLOT_TIMEOUT_SECONDS = 8.0
 _PDF_LINK_CACHE_LOCK = asyncio.Lock()
+#: Quantas vezes insistir quando o serviço isolado está ocupado, e o intervalo.
+#:
+#: A leitura em si leva menos de um segundo. O que se espera aqui é o trabalho
+#: de outra pessoa terminar, e o teto existe para a espera não virar uma
+#: requisição pendurada: passado isso, o documento volta sem links, como voltava
+#: antes — mas só depois de tentar.
+PDF_LINKS_ATTEMPTS: Final = 4
+PDF_LINKS_RETRY_SECONDS: Final = 1.5
 _PDF_LINK_CACHE: OrderedDict[str, tuple[dict[str, Any], ...]] = OrderedDict()
 _PDF_LINK_CACHE_SIZE = 32
 
@@ -557,43 +577,62 @@ def _warm_pdf_link_videos(request: Request, manifest: Any, links: list[dict[str,
             alvos.append(target)
     if not alvos:
         return
+    documento = f"{seller}\n{manifest['asset_id']}"
+    if documento in _WARM_IN_FLIGHT:
+        # O mesmo PDF aberto por vários alunos ao mesmo tempo é um adiantamento
+        # só. Sem isto, cada abertura repetia a varredura inteira do storage
+        # para descobrir a mesma coisa.
+        return
+    _WARM_IN_FLIGHT.add(documento)
     task = asyncio.create_task(
-        _warm_missing_videos(storage, settings.storage_ready_bucket, seller, alvos)
+        _warm_missing_videos(storage, settings.storage_ready_bucket, seller, alvos, documento)
     )
     _WARM_TASKS.add(task)
     task.add_done_callback(_WARM_TASKS.discard)
 
 
 async def _warm_missing_videos(
-    storage: S3Storage, bucket: str, seller: str, targets: list[str]
+    storage: S3Storage, bucket: str, seller: str, targets: list[str], documento: str
 ) -> None:
     """Prepara o que falta, e só o que falta."""
-    preparados = 0
-    for target in targets:
-        if preparados >= _WARM_PREPARATION_BUDGET:
-            # O adiantamento fica com metade da fila, não com ela toda. Sem esta
-            # reserva, abrir um PDF com oito vídeos encheria o teto e o próximo
-            # aluno que clicasse num botão receberia o prazo longo de fila cheia
-            # — mais lento do que antes de existir adiantamento.
-            return
-        key = derivative_key(seller, target)
-        if _PDF_LINK_VIDEO_PREPARATIONS.rejected(key):
-            continue
-        guardado = await to_thread.run_sync(partial(_pdf_link_video_ready, storage, bucket, key))
-        if guardado is not None:
-            # Já existe. Se está velho, quem decide isso é o clique, que
-            # consultou a origem — o adiantamento nunca substitui, e por isso
-            # também não pode segurar a chave enquanto descobre que não tem o
-            # que fazer.
-            continue
-        if not _PDF_LINK_VIDEO_PREPARATIONS.start(key):
-            continue
-        preparados += 1
-        task = asyncio.create_task(
-            _run_pdf_link_video_preparation(storage, bucket, key, target, replace=False)
-        )
-        _PDF_LINK_VIDEO_TASKS.add(task)
-        task.add_done_callback(_PDF_LINK_VIDEO_TASKS.discard)
+    try:
+        async with _WARM_SLOTS:
+            preparados = 0
+            for target in targets:
+                if preparados >= _WARM_PREPARATION_BUDGET:
+                    # Teto de quantidade, que é outro problema da simultaneidade:
+                    # um PDF pode citar centenas de endereços, e abrir a aula
+                    # não pode virar centenas de downloads. Quem quiser o vídeo
+                    # de número dez clica no botão dele, como sempre foi.
+                    return
+                key = derivative_key(seller, target)
+                if _PDF_LINK_VIDEO_PREPARATIONS.rejected(key):
+                    continue
+                guardado = await to_thread.run_sync(
+                    partial(_pdf_link_video_ready, storage, bucket, key)
+                )
+                if guardado is not None:
+                    # Já existe. Se está velho, quem decide isso é o clique, que
+                    # consultou a origem — o adiantamento nunca substitui, e por
+                    # isso também não segura a chave para descobrir que não tem
+                    # o que fazer.
+                    continue
+                if not _PDF_LINK_VIDEO_PREPARATIONS.start(key):
+                    continue
+                task = asyncio.create_task(
+                    _run_pdf_link_video_preparation(storage, bucket, key, target, replace=False)
+                )
+                _PDF_LINK_VIDEO_TASKS.add(task)
+                task.add_done_callback(_PDF_LINK_VIDEO_TASKS.discard)
+                preparados += 1
+                # Um de cada vez, esperando terminar. São dois slots de preparo:
+                # se o adiantamento disparasse os quatro de uma vez, eles
+                # tomariam os dois e o aluno que apertasse o botão esperaria
+                # atrás de downloads que ninguém pediu — cada um com prazo de
+                # quinze minutos. Esperando aqui, um slot fica sempre livre.
+                await asyncio.shield(task)
+    finally:
+        _WARM_IN_FLIGHT.discard(documento)
 
 
 @router.get("/me/learning/items/{entitlement_id}/assets/{asset_id}/pdf-links/{link_id}/video")
@@ -1038,7 +1077,7 @@ async def _protected_pdf_links(
             )
 
     try:
-        extracted = await to_thread.run_sync(read_links)
+        extracted = await _read_links_waiting_for_the_sandbox(read_links)
         adjusted = tuple(_adjust_pdf_link_rectangles(extracted["links"], manifest["pages"]))
     except (
         PdfLinksRejected,
@@ -1055,6 +1094,26 @@ async def _protected_pdf_links(
         while len(_PDF_LINK_CACHE) > _PDF_LINK_CACHE_SIZE:
             _PDF_LINK_CACHE.popitem(last=False)
     return [dict(link) for link in adjusted]
+
+
+async def _read_links_waiting_for_the_sandbox(read_links: Callable[[], dict[str, Any]]) -> Any:
+    """Lê os links do PDF, insistindo enquanto o serviço isolado estiver ocupado.
+
+    Ele tem um lugar só, e nele cabem leitura de links, rasterização e conversão
+    de vídeo. Quem chega junto leva `429` — e aqui isso virava um documento sem
+    link nenhum, sem erro, sem registro. O aluno abria o guia e não via botão.
+
+    Dois alunos abrindo PDFs ao mesmo tempo já bastavam. Ficou mais fácil de
+    acontecer quando o preparo dos vídeos passou a começar sozinho.
+    """
+    for tentativa in range(PDF_LINKS_ATTEMPTS):
+        try:
+            return await to_thread.run_sync(read_links)
+        except PdfLinksBusy:
+            if tentativa == PDF_LINKS_ATTEMPTS - 1:
+                raise
+            await asyncio.sleep(PDF_LINKS_RETRY_SECONDS)
+    raise PdfLinksBusy("isolated PDF link service stayed busy")
 
 
 def _adjust_pdf_link_rectangles(

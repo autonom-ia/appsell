@@ -69,7 +69,16 @@ MAX_REDIRECTS: Final = 3
 #: sempre. Este prazo é sobre o relógio, do começo ao fim.
 DOWNLOAD_DEADLINE_SECONDS: Final = 15 * 60
 
-TRANSCODE_TIMEOUT_SECONDS: Final = 60 * 60
+#: Prazo da conversão no serviço isolado.
+#:
+#: Era uma hora. O serviço tem um lugar só, e nele cabem também a leitura dos
+#: links do PDF e a rasterização das páginas: uma conversão travada segurava a
+#: leitura de todo mundo por uma hora, e quem chegasse nesse tempo abria o guia
+#: sem botão nenhum.
+#:
+#: Dez minutos ainda são muito para o que se mede — 0,6 s no vídeo do vendedor.
+#: O que muda é o teto do estrago quando algo dá errado.
+TRANSCODE_TIMEOUT_SECONDS: Final = 10 * 60
 
 
 DERIVATIVE_MEDIA_TYPE: Final = "video/mp4"
