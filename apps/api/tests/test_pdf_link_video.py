@@ -676,3 +676,17 @@ class TestSandboxRecycling:
         with pytest.raises(pdf_link_video.PdfLinkVideoRejected):
             pdf_link_video.remux_in_sandbox(tmp_path / "s", 1, "a" * 64, tmp_path / "d")
         assert contagem["tentativas"] == 1
+
+
+def test_os_dois_caminhos_insistem_do_mesmo_jeito_com_o_sandbox() -> None:
+    """O vídeo do PDF e o do catálogo falam com o mesmo serviço isolado.
+
+    Ele se recicla depois de cada trabalho, então insistir é a mesma decisão nos
+    dois. São constantes separadas de propósito: `video_verifier` não pode ser
+    importado por este módulo, que é alcançável a partir das rotas da API. O que
+    não pode é uma delas mudar sozinha.
+    """
+    from appsell_api import video_verifier
+
+    assert SANDBOX_ATTEMPTS == video_verifier.SANDBOX_ATTEMPTS
+    assert pdf_link_video.SANDBOX_RETRY_SECONDS == video_verifier.SANDBOX_RETRY_SECONDS

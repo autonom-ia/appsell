@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { PDF_LINK_VIDEO_MAX_DERIVATIVE_BYTES } from "@/lib/asset-media";
 import { readDomainPdfLinkVideo } from "@/lib/internal-api-client.server";
 import { safeVideoRange } from "@/lib/protected-pdf-links.server";
 import {
@@ -29,7 +30,6 @@ import {
  * o BFF deixou de fazer requisições para fora, e o que ele serve vem do nosso
  * próprio storage, com `Range` de verdade — a barra de progresso funciona.
  */
-const MAX_VIDEO_BYTES = 512 * 1024 * 1024;
 const DERIVATIVE_MEDIA_TYPE = "video/mp4";
 
 export async function GET(request: NextRequest, context: LearningAssetLinkRouteContext) {
@@ -82,7 +82,7 @@ async function proxyPdfVideo(request: NextRequest, context: LearningAssetLinkRou
     const usable = [200, 206].includes(upstream.status)
       && validContentRange(upstream.status, contentRange)
       && Number.isSafeInteger(contentLength) && contentLength !== null
-      && contentLength >= 1 && contentLength <= MAX_VIDEO_BYTES;
+      && contentLength >= 1 && contentLength <= PDF_LINK_VIDEO_MAX_DERIVATIVE_BYTES;
     // A sonda leu um byte e o descarta; uma resposta inutil tambem e descartada,
     // em vez de deixar a conexao com o storage aberta ate o coletor agir.
     if (probing || !usable) await upstream.body?.cancel().catch(() => undefined);
@@ -133,7 +133,7 @@ function preparedVideo(payload: unknown): PreparedVideo | null {
   ])) return null;
   if (video.media_type !== DERIVATIVE_MEDIA_TYPE) return null;
   const byteSize = Number(video.byte_size);
-  if (!Number.isSafeInteger(byteSize) || byteSize < 1 || byteSize > MAX_VIDEO_BYTES) return null;
+  if (!Number.isSafeInteger(byteSize) || byteSize < 1 || byteSize > PDF_LINK_VIDEO_MAX_DERIVATIVE_BYTES) return null;
   if (typeof video.download_url !== "string") return null;
   const expires = Number(video.expires_in_seconds);
   if (!Number.isSafeInteger(expires) || expires < 1) return null;
@@ -177,7 +177,7 @@ function validContentRange(status: number, value: string | null) {
   const end = Number(match[2]);
   const total = Number(match[3]);
   return Number.isSafeInteger(start) && Number.isSafeInteger(end) && Number.isSafeInteger(total) &&
-    start >= 0 && end >= start && end < total && total <= MAX_VIDEO_BYTES;
+    start >= 0 && end >= start && end < total && total <= PDF_LINK_VIDEO_MAX_DERIVATIVE_BYTES;
 }
 
 function invalidRange() {

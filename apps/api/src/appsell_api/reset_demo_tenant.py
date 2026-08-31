@@ -13,6 +13,7 @@ import psycopg
 from psycopg.conninfo import conninfo_to_dict
 from psycopg.types.json import Jsonb
 
+from .asset_media import VIDEO_MEDIA_TYPE, max_bytes
 from .learning_pdf import MAX_PDF_PAGES
 from .pdf_derivatives import MAX_PDF_DERIVATIVE_BYTES
 
@@ -173,7 +174,7 @@ def load_manifest() -> tuple[dict[str, Any], str]:
         or video.get("file_name") != expected_video_name
         or video.get("position") != 0
         or not isinstance(video.get("bytes"), int)
-        or not 1 <= video["bytes"] <= 100 * 1024 * 1024
+        or not 1 <= video["bytes"] <= max_bytes(VIDEO_MEDIA_TYPE)
         or not isinstance(video.get("sha256"), str)
         or not re.fullmatch(r"[0-9a-f]{64}", video["sha256"])
     ):

@@ -9,6 +9,7 @@ import tempfile
 import time
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
+from typing import Final
 
 from anyio import to_thread
 from fastapi import FastAPI, HTTPException, Request, status
@@ -45,6 +46,24 @@ from .video_verifier import (
     _validate_mp4_container,
     probe_mp4_file,
 )
+
+#: O cabeçalho que diz de onde o vídeo veio, e portanto que regras valem.
+#:
+#: `catalogue` é o material de aula, enviado pelo vendedor e servido ao aluno.
+#: A ausência do cabeçalho é o vídeo citado dentro do PDF, que é o caminho que
+#: já existia.
+PREPARE_MODE_HEADER: Final = "x-appsell-mode"
+CATALOGUE_MODE: Final = "catalogue"
+
+
+def _prepare_ceiling(mode: str | None) -> int:
+    """O teto de entrada de cada modo.
+
+    São números diferentes porque são caminhos diferentes: o material de aula
+    sobe do navegador do vendedor, e o vídeo do PDF é baixado por nós, com
+    prazo nosso.
+    """
+    return MAX_VIDEO_BYTES if mode == CATALOGUE_MODE else MAX_REMUX_BYTES
 
 
 class _CleanupStreamingResponse(StreamingResponse):
@@ -579,14 +598,15 @@ async def _prepare_video_request(request: Request) -> Response:
     job de mídia, então um parser que fique num estado ruim não atende o
     próximo aluno.
     """
+    mode = request.headers.get(PREPARE_MODE_HEADER)
+    catalogue = mode == CATALOGUE_MODE
+    ceiling = _prepare_ceiling(mode)
     try:
         expected_size = int(request.headers["x-appsell-byte-size"])
         expected_sha256 = request.headers["x-appsell-sha256"]
     except (KeyError, ValueError) as error:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT) from error
-    if not 1 <= expected_size <= MAX_REMUX_BYTES or not re.fullmatch(
-        r"[0-9a-f]{64}", expected_sha256
-    ):
+    if not 1 <= expected_size <= ceiling or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT)
 
     job_directory = _private_job_directory("appsell-remux-job-")
@@ -601,7 +621,7 @@ async def _prepare_video_request(request: Request) -> Response:
             received = 0
             async for chunk in request.stream():
                 received += len(chunk)
-                if received > expected_size or received > MAX_REMUX_BYTES:
+                if received > expected_size or received > ceiling:
                     raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE)
                 digest.update(chunk)
                 source.write(chunk)
@@ -611,7 +631,13 @@ async def _prepare_video_request(request: Request) -> Response:
         if received != expected_size or digest.hexdigest() != expected_sha256:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT)
         prepared = job_directory / "prepared.mp4"
-        recoded = await to_thread.run_sync(lambda: remux_to_mp4(source_path, prepared))
+        recoded = await to_thread.run_sync(
+            lambda: remux_to_mp4(source_path, prepared, allow_transcode=not catalogue)
+        )
+        # A conferência do catálogo vale sobre o **derivado**, que é o arquivo
+        # que o aluno recebe. Conferir a origem provava o que ia embora.
+        if catalogue:
+            await to_thread.run_sync(lambda: _probe_video_file(prepared, prepared.stat().st_size))
         entregue = True
 
         # O arquivo sai do disco em pedaços — lê-lo inteiro seria meio giga de
@@ -639,9 +665,9 @@ async def _prepare_video_request(request: Request) -> Response:
         )
     except HTTPException:
         raise
-    except VideoRemuxRejected as error:
+    except (VideoRemuxRejected, VideoRejected) as error:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT) from error
-    except VideoRemuxUnavailable as error:
+    except (VideoRemuxUnavailable, VideoProbeUnavailable) as error:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE) from error
     finally:
         if source_path is not None:

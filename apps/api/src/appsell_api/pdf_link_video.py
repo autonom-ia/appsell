@@ -53,13 +53,22 @@ import anyio
 import httpx
 from anyio import to_thread
 
+from .asset_media import (
+    PDF_LINK_VIDEO_MAX_DERIVATIVE_BYTES,
+    PDF_LINK_VIDEO_MAX_SOURCE_BYTES,
+)
+
 _MIB: Final = 1024 * 1024
 
 #: Teto do arquivo de origem. Acima disto o preparo é recusado em vez de ocupar
-#: a máquina por tempo indefinido com um arquivo que ninguém dimensionou.
-MAX_SOURCE_BYTES: Final = 512 * _MIB
-#: Teto do derivado gerado, pelo mesmo motivo.
-MAX_DERIVATIVE_BYTES: Final = 512 * _MIB
+#: a máquina por tempo indefinido com um arquivo que ninguém dimensionou. O
+#: número mora no catálogo, junto do teto do material de aula, para que subir um
+#: seja uma decisão tomada com o outro à vista.
+MAX_SOURCE_BYTES: Final = PDF_LINK_VIDEO_MAX_SOURCE_BYTES
+#: Teto do derivado gerado, pelo mesmo motivo. É o mesmo que o serviço isolado
+#: aplica em `video_remux`, e precisa ser: um teto no cliente e outro no serviço
+#: cortariam em lugares diferentes.
+MAX_DERIVATIVE_BYTES: Final = PDF_LINK_VIDEO_MAX_DERIVATIVE_BYTES
 #: Quantos redirecionamentos o download aceita. Cada um é revalidado.
 MAX_REDIRECTS: Final = 3
 #: Prazo total do download, em segundos.
@@ -444,10 +453,17 @@ def _sandbox_client() -> tuple[httpx.BaseTransport | None, str]:
 
 #: Quantas vezes insistir quando o serviço isolado não atende.
 #:
-#: Ele se recicla depois de cada vídeo — é assim que um arquivo ruim não
+#: Quantas vezes insistir quando o serviço isolado não atende.
+#:
+#: Ele se recicla depois de cada vídeo, e é assim que um arquivo ruim não
 #: contamina o próximo. Enquanto reinicia, quem chega recebe conexão recusada.
 #: Isso não é falha: é o serviço fazendo o que deve, e quem pede só precisa
 #: esperar. Sem isto, preparar vários vídeos seguidos falhava um sim, um não.
+#:
+#: `video_verifier` carrega os mesmos dois números para o vídeo do catálogo, e
+#: **não** importa daqui: este módulo é alcançável a partir das rotas, e trazer
+#: `video_verifier` para dentro dele alargaria o que a API alcança em troca de
+#: duas constantes. `test_pdf_link_video.py` compara os dois pares.
 SANDBOX_ATTEMPTS: Final = 4
 SANDBOX_RETRY_SECONDS: Final = 3.0
 

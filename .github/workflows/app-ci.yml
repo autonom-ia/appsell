@@ -139,8 +139,13 @@ jobs:
           # que tocasse so a api e nao storage reprovava com
           # `pdftoppm is unavailable`, por falta de dependencia de sistema e nao
           # por defeito.
+          # `ffmpeg` na mesma condicao: `test_video_remux.py` e
+          # `test_faststart_no_video_do_catalogo.py` rodam o binario de verdade
+          # sobre um arquivo gerado na hora. Sem ele o CI reprovaria por
+          # dependencia de sistema, e um `skipif` esconderia justamente o teste
+          # que prova o `+faststart` do material de aula.
           if [[ "${{ steps.route.outputs.storage }}" == true || "${{ steps.route.outputs.api }}" == true ]]; then
-            packages+=(poppler-utils)
+            packages+=(poppler-utils ffmpeg)
           fi
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends "${packages[@]}"
@@ -179,7 +184,13 @@ jobs:
             apps/api/tests/test_links_do_pdf_com_o_sandbox_ocupado.py \
             apps/api/tests/test_preparo_de_video_do_pdf.py \
             apps/api/tests/test_limites_de_midia.py \
-            apps/api/tests/test_pdf_derivatives.py
+            apps/api/tests/test_pdf_derivatives.py \
+            apps/api/tests/test_parser_de_midia_fica_no_sandbox.py \
+            apps/api/tests/test_pdf_sandbox_service.py \
+            apps/api/tests/test_storage_worker.py \
+            apps/api/tests/test_video_remux.py \
+            apps/api/tests/test_video_verifier.py \
+            apps/api/tests/test_faststart_no_video_do_catalogo.py
 
       - name: Fast backup contract checks for pull requests
         id: fast-backup

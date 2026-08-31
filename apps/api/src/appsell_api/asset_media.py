@@ -55,6 +55,22 @@ DOWNLOADABLE_MEDIA_TYPES: Final = frozenset(
 )
 MAX_ASSET_BYTES: Final = max(spec.max_bytes for spec in SUPPORTED_MEDIA.values())
 
+#: Os tetos do vídeo referenciado de dentro de um PDF.
+#:
+#: Não são o teto do catálogo, e a Decisão 010 exige a justificativa: são
+#: caminhos diferentes. O material de aula sobe do navegador do vendedor, num
+#: `PUT` único com URL assinada de 300 s, e o teto ali é o que o vendedor
+#: consegue entregar, não o que aceitaríamos guardar. Este é baixado por nós,
+#: com prazo nosso de 15 min.
+#:
+#: São dois números e não um: a origem é o que aceitamos baixar, o derivado é o
+#: que aceitamos guardar e servir. Coincidem hoje e não são o mesmo fato. Moram
+#: aqui, e não em `video_remux`, porque `pdf_link_video` precisa do mesmo número
+#: e não pode importar aquele módulo: ele executa `ffmpeg` e é alcançável só a
+#: partir do serviço isolado.
+PDF_LINK_VIDEO_MAX_SOURCE_BYTES: Final = 512 * _MIB
+PDF_LINK_VIDEO_MAX_DERIVATIVE_BYTES: Final = 512 * _MIB
+
 
 def spec_for(media_type: str) -> AssetMediaSpec | None:
     return SUPPORTED_MEDIA.get(media_type)
