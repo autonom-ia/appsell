@@ -4,10 +4,11 @@ O vídeo que o PDF cita é baixado da origem e convertido para MP4 num serviço
 isolado, que fica guardado no storage. Duas coisas separam esse trabalho em duas
 filas diferentes, e é isso que estes testes guardam:
 
-- o **download** é da API e domina o tempo — dois de cada vez, porque
-  serializá-lo fazia o segundo aluno esperar o download inteiro do primeiro;
+- o **preparo** é um por vez, porque cada um mantém no disco a origem e o
+  derivado — até 1 GiB, num serviço com 768 MiB de memória em produção;
 - a **conversão** é do serviço isolado, que atende um arquivo por vez e recusa
-  quem chega junto, com `429`. A fila fica aqui, onde esperar não custa nada.
+  quem chega junto, com `429`. A fila fica aqui, onde esperar não custa nada, e
+  continua guardada mesmo sendo hoje redundante com o limite acima.
 """
 
 from __future__ import annotations
@@ -129,9 +130,12 @@ async def test_duas_conversoes_nunca_se_sobrepoem(monkeypatch: pytest.MonkeyPatc
     Só o download e o próprio serviço são dublados.
 
     Um teste que segurasse o semáforo por fora provaria que semáforos funcionam
-    e nada sobre este código usar o dele. Sem o portão, o que acontece em
-    produção é o serviço isolado responder `429` ao segundo, que insiste quatro
-    vezes, de três em três segundos, e desiste: o aluno fica sem vídeo.
+    e nada sobre este código usar o dele.
+
+    Hoje o limite de preparos vivos já é um, e o portão é redundante. Ele existe
+    para o dia em que aquele número subir: sem ele, o serviço isolado responderia
+    `429` ao segundo, que insiste quatro vezes, de três em três segundos, e
+    desiste — e o aluno fica sem vídeo.
     """
     tranca = threading.Lock()
     convertendo = 0
