@@ -256,6 +256,34 @@ class S3Storage:
         except (BotoCoreError, ClientError, KeyError) as error:
             raise StorageError("S3 multipart upload could not be created") from error
 
+    def find_multipart_upload(self, *, bucket: str, key: str) -> str | None:
+        """Descobre o envio em partes aberto para esta chave, se houver.
+
+        O identificador do envio é do storage, não nosso, e a alternativa seria
+        guardá-lo no banco — coluna nova, função nova e uma migration
+        forward-only para carregar um dado que já dá para perguntar.
+
+        A chave de quarentena é `tenants/{vendedor}/quarantine/{upload}`, uma por
+        intenção de upload, então existe no máximo um envio aberto por chave.
+        Mais de um significa estado que não sabemos explicar, e aí a resposta é
+        recusar, nunca escolher: fechar o envio errado montaria um arquivo com
+        as partes de outra tentativa.
+        """
+        try:
+            response = self._control.list_multipart_uploads(
+                Bucket=bucket, Prefix=key, MaxUploads=10
+            )
+            abertos = [
+                str(item["UploadId"])
+                for item in response.get("Uploads", [])
+                if str(item.get("Key")) == key
+            ]
+        except (BotoCoreError, ClientError, KeyError) as error:
+            raise StorageError("S3 multipart uploads could not be listed") from error
+        if len(abertos) > 1:
+            raise StorageError("more than one multipart upload is open for this key")
+        return abertos[0] if abertos else None
+
     def presign_upload_part(
         self,
         *,

@@ -268,6 +268,12 @@ def test_real_s3_multipart_round_trip_resume_and_abort() -> None:
         )
         assert [parte.part_number for parte in parciais] == enviadas
 
+    # Retomar depende de achar o envio pela chave: o identificador é do storage
+    # e não fica guardado em lugar nenhum nosso.
+    assert (
+        storage.find_multipart_upload(bucket=storage.quarantine_bucket, key=key)
+        == storage_upload_id
+    )
     partes = storage.list_multipart_parts(
         bucket=storage.quarantine_bucket, key=key, storage_upload_id=storage_upload_id
     )
@@ -317,3 +323,7 @@ def test_real_s3_multipart_round_trip_resume_and_abort() -> None:
         storage.list_multipart_parts(
             bucket=storage.quarantine_bucket, key=abandonado, storage_upload_id=outro
         )
+    assert storage.find_multipart_upload(bucket=storage.quarantine_bucket, key=abandonado) is None
+    # Depois de fechado o envio deixa de existir como envio, e a busca não pode
+    # devolver o de um vizinho de prefixo.
+    assert storage.find_multipart_upload(bucket=storage.quarantine_bucket, key=key) is None
