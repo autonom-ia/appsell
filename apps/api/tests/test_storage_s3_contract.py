@@ -12,7 +12,13 @@ from reportlab.pdfgen.canvas import Canvas  # type: ignore[import-untyped]
 from appsell_api.asset_media import max_bytes as asset_max_bytes
 from appsell_api.config import Settings
 from appsell_api.pdf_verifier import verified_pdf_file as _verified_pdf_file
-from appsell_api.storage_s3 import S3Storage, object_sha256_matches
+from appsell_api.storage_s3 import (
+    MULTIPART_PART_BYTES,
+    S3Storage,
+    StorageError,
+    multipart_plan,
+    object_sha256_matches,
+)
 
 ENDPOINT = os.environ.get("APPSELL_TEST_S3_ENDPOINT")
 ACCESS_KEY = os.environ.get("APPSELL_TEST_S3_ACCESS_KEY")
@@ -213,3 +219,101 @@ def valid_pdf() -> bytes:
     canvas.showPage()
     canvas.save()
     return output.getvalue()
+
+
+def test_real_s3_multipart_round_trip_resume_and_abort() -> None:
+    """O envio em partes, contra o storage de verdade, do início ao fim.
+
+    O que este teste prova e nenhum outro prova: que o objeto montado a partir
+    das partes chega com o tipo e o cabeçalho de identificação que o worker
+    exige, que a listagem enxerga o que já subiu (é isso que permite retomar), e
+    que cancelar apaga as partes em vez de deixá-las ocupando disco.
+    """
+    storage = storage_client()
+    payload = b"\xa5" * (MULTIPART_PART_BYTES + 1024 * 1024)
+    plano = multipart_plan(len(payload))
+    assert plano.part_count == 2
+    key = f"contract/{uuid4()}/aula.mp4"
+    upload_request_id = str(uuid4())
+
+    storage_upload_id = storage.create_multipart_upload(
+        bucket=storage.quarantine_bucket,
+        key=key,
+        content_type="video/mp4",
+        byte_size=len(payload),
+        upload_request_id=upload_request_id,
+    )
+
+    enviadas = []
+    inicio = 0
+    for numero in range(1, plano.part_count + 1):
+        tamanho = plano.bytes_for_part(numero)
+        pedaco = payload[inicio : inicio + tamanho]
+        inicio += tamanho
+        assinada = storage.presign_upload_part(
+            bucket=storage.quarantine_bucket,
+            key=key,
+            storage_upload_id=storage_upload_id,
+            part_number=numero,
+            plan=plano,
+            sha256_hex=hashlib.sha256(pedaco).hexdigest(),
+        )
+        resposta = httpx.put(assinada.url, content=pedaco, headers=assinada.headers, timeout=60)
+        assert resposta.status_code == 200, resposta.text
+        enviadas.append(numero)
+        # A listagem é o que permite retomar: sem ela o navegador teria de
+        # recomeçar do zero depois de qualquer interrupção.
+        parciais = storage.list_multipart_parts(
+            bucket=storage.quarantine_bucket, key=key, storage_upload_id=storage_upload_id
+        )
+        assert [parte.part_number for parte in parciais] == enviadas
+
+    partes = storage.list_multipart_parts(
+        bucket=storage.quarantine_bucket, key=key, storage_upload_id=storage_upload_id
+    )
+    storage.complete_multipart_upload(
+        bucket=storage.quarantine_bucket,
+        key=key,
+        storage_upload_id=storage_upload_id,
+        plan=plano,
+        parts=partes,
+    )
+
+    montado = storage.head(bucket=storage.quarantine_bucket, key=key)
+    assert montado.size == len(payload)
+    assert montado.content_type == "video/mp4"
+    # O worker recusa o objeto se este cabeçalho não bater com a intenção, e no
+    # envio em partes ele é gravado na abertura, não nas partes.
+    assert montado.appsell_upload_id == upload_request_id
+
+    abandonado = f"contract/{uuid4()}/abandonada.mp4"
+    outro = storage.create_multipart_upload(
+        bucket=storage.quarantine_bucket,
+        key=abandonado,
+        content_type="video/mp4",
+        byte_size=len(payload),
+        upload_request_id=str(uuid4()),
+    )
+    primeira = storage.presign_upload_part(
+        bucket=storage.quarantine_bucket,
+        key=abandonado,
+        storage_upload_id=outro,
+        part_number=1,
+        plan=plano,
+        sha256_hex=hashlib.sha256(payload[: plano.bytes_for_part(1)]).hexdigest(),
+    )
+    httpx.put(
+        primeira.url,
+        content=payload[: plano.bytes_for_part(1)],
+        headers=primeira.headers,
+        timeout=60,
+    )
+    storage.abort_multipart_upload(
+        bucket=storage.quarantine_bucket, key=abandonado, storage_upload_id=outro
+    )
+    # Cancelar tem de apagar as partes. Sem isto elas ficam ocupando disco sem
+    # aparecer em listagem de objeto nenhuma.
+    with pytest.raises(StorageError):
+        storage.list_multipart_parts(
+            bucket=storage.quarantine_bucket, key=abandonado, storage_upload_id=outro
+        )
