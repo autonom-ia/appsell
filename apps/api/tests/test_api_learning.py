@@ -1087,13 +1087,17 @@ def test_o_sqlstate_nao_mapeado_deixa_rastro_antes_do_503() -> None:
     """
     import structlog
 
+    from appsell_api.logging_setup import configure_logging_from_environment
+
     captura = structlog.testing.LogCapture()
     structlog.configure(processors=[captura])
     try:
         error = SimpleNamespace(orig=SimpleNamespace(sqlstate="XX000"))
         mapped = _learning_domain_error(error)  # type: ignore[arg-type]
     finally:
-        structlog.reset_defaults()
+        # `reset_defaults` restaura o padrao do structlog, nao o desta
+        # aplicacao: ele desligaria o renderizador JSON e o redator.
+        configure_logging_from_environment()
 
     assert mapped.status_code == 503
     assert mapped.detail == "learning_unavailable"
@@ -1106,13 +1110,17 @@ def test_um_sqlstate_ja_mapeado_nao_vira_ruido_no_log() -> None:
     """Só o desconhecido merece aviso; o mapeado já tem resposta própria."""
     import structlog
 
+    from appsell_api.logging_setup import configure_logging_from_environment
+
     captura = structlog.testing.LogCapture()
     structlog.configure(processors=[captura])
     try:
         error = SimpleNamespace(orig=SimpleNamespace(sqlstate="28000"))
         mapped = _learning_domain_error(error)  # type: ignore[arg-type]
     finally:
-        structlog.reset_defaults()
+        # `reset_defaults` restaura o padrao do structlog, nao o desta
+        # aplicacao: ele desligaria o renderizador JSON e o redator.
+        configure_logging_from_environment()
 
     assert mapped.status_code == 404
     assert not [e for e in captura.entries if e.get("event") == "learning_domain_error_unmapped"]

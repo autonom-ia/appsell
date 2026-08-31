@@ -1438,10 +1438,13 @@ def _learning_domain_error(error: DBAPIError) -> HTTPException:
     #
     # Cinco caracteres de codigo, nenhum valor: o sqlstate nomeia a classe do
     # erro, nao o dado que o causou.
+    # `exception` e nome reservado do structlog para o traceback formatado.
+    # Usa-lo para um dado de negocio fazia o renderizador tratar o nome da
+    # classe como traceback e avisar a cada chamada.
     logger.warning(
         "learning_domain_error_unmapped",
         sqlstate=_safe_sqlstate(sqlstate),
-        exception=_safe_identifier(type(getattr(error, "orig", error)).__name__),
+        exception_type=_safe_identifier(type(getattr(error, "orig", error)).__name__),
     )
     return HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

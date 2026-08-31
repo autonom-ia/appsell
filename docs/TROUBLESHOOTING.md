@@ -113,3 +113,73 @@ docker service inspect sell-autonomia_asset-worker \
 `ensure-asset-worker.sh` **aborta quando o serviço já existe**, então ele não
 atualiza nada sozinho — e o valor declarado nele já esteve abaixo do que o host
 tinha. Ao passar `--limit-memory`, leia o valor atual antes.
+
+## Problema: preciso saber o que a API fez, e o log não conta nada
+
+Em 31/08/2026 a API de produção gravou **22 linhas em 24 horas** — vinte delas
+`Started server process` e `Shutting down` do uvicorn. Não havia
+`structlog.configure` em lugar nenhum do repositório, o `CMD` passava
+`--no-access-log` e não existia handler de exceção global. Toda requisição, todo
+500 e todo erro de negócio saíam do processo sem deixar rastro.
+
+Desde a fundação da issue #312 o log tem contrato:
+
+| Ambiente | Renderizador |
+|---|---|
+| `production`, `staging` | JSON, uma linha por evento |
+| `local`, `ci` | console legível |
+
+**Uma linha por requisição**, com o *template* da rota:
+
+```json
+{"method":"GET","route":"/v1/me/learning/items/{entitlement_id}/lessons/{lesson_id}/progress",
+ "status":405,"duration_ms":0.1,"event":"http_request","request_id":"prova-001",
+ "level":"info","timestamp":"2026-08-31T16:15:36.303059Z"}
+```
+
+O que **não** entra na linha, de propósito: o caminho concreto, a query string e
+qualquer cabeçalho. Os três carregam identificador e token.
+
+### Como ler
+
+O host é o que responde por `sell.autonomia.site` — resolva o DNS antes, porque
+o alias de SSH já apontou para uma máquina desativada:
+
+```bash
+dig +short sell.autonomia.site
+```
+
+```bash
+sudo docker service logs --since 1h sell-autonomia_api
+```
+
+Para cruzar uma requisição com o erro que ela causou, use o `request_id`. Ele
+vai e volta no cabeçalho `X-Request-Id`, então o valor visto no browser é o
+mesmo que aparece no log:
+
+```bash
+sudo docker service logs --since 1h sell-autonomia_api | grep '"request_id":"<id>"'
+```
+
+### O que o log nunca vai mostrar
+
+- **Valor com 32 caracteres ou mais** de `[A-Za-z0-9_-]` sai como `<REDACTED>`.
+  O redator não sabe distinguir um token de um hash de conteúdo e trata os dois
+  como segredo. Perder o hash de um material custa uma consulta a mais; imprimir
+  um token custa uma rotação de credencial.
+- **Health check.** `/health/live` e `/health/ready` são silenciosos. O Swarm os
+  sonda a cada poucos segundos, e sem isso o log seria milhares de linhas por dia
+  de uma rota que não diz nada.
+
+### Armadilhas
+
+- **`structlog.reset_defaults()` desliga a fundação inteira**, em silêncio: ele
+  restaura o padrão da biblioteca, não o desta aplicação — sem JSON e sem
+  redator. Quem precisa trocar a configuração por um instante deve devolvê-la com
+  `configure_logging_from_environment()`.
+- **`exception` é nome reservado** do structlog para o traceback formatado. Um
+  dado de negócio nesse campo faz o renderizador tratá-lo como traceback. Use
+  `exception_type`.
+- **A cobertura ainda é pequena.** A fundação registra requisição e exceção; a
+  instrumentação dos caminhos de mídia, catálogo e verificação é trabalho
+  separado. Não conclua "não aconteceu" a partir de "não está no log".
