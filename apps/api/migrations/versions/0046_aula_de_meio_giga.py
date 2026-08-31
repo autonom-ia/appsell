@@ -29,12 +29,28 @@ isolado segura os mesmos dois, e o `/tmp` dele também tem 2 GiB. Os dois já
 carregavam pior caso maior por causa do PDF de 300 páginas (1.556 MiB no
 worker), então o vídeo entra por baixo do que já estava dimensionado.
 
-## Onde o número morava
+## Onde o número morava, e o que exatamente muda
 
 Cinco lugares neste banco, e nenhum derivado do outro: o catálogo, a validação
 do `confirm`, as duas funções `v1_legacy` (que continuam sendo chamadas pelas
 atuais) e a restrição da fila de limpeza. Alargar parte deles não deixaria o
 limite valendo pela metade — mudaria a porta em que o vendedor bate.
+
+**Só um desses cinco é o teto por tipo.** É o catálogo, e nele muda apenas a
+linha do vídeo: o PDF continua em 100 MiB, e é essa linha que o
+`asset_blob_media_contract_check` consulta para aceitar ou recusar o material
+gravado.
+
+Os outros quatro nunca foram teto por tipo: são a mesma faixa genérica, "cabe no
+maior arquivo que a plataforma aceita", escrita à mão em cada função. Esse maior
+arquivo passa de 100 para 512 MiB porque o vídeo passou, e por isso os quatro
+sobem junto — inclusive para PDF e documento. Não é afrouxamento do teto do PDF:
+o PDF continua sendo recusado em 100 MiB na criação da intenção e na restrição
+do `asset_blob`. O que muda para ele é só onde uma violação impossível seria
+pega, se chegasse até lá.
+
+`test_limites_de_midia.py` amarra essa faixa genérica ao maior tipo do catálogo,
+para que os dois não voltem a divergir em silêncio.
 
 Revision ID: 0046_aula_de_meio_giga
 Revises: 0045_envio_em_partes
@@ -180,6 +196,17 @@ def downgrade() -> None:
           if quantos > 0 then
             raise exception
               'não dá para voltar ao teto antigo: % envios acima dele', quantos
+              using errcode='55000';
+          end if;
+          -- A fila de limpeza tem restrição própria, e ela também é apertada de
+          -- volta logo abaixo. Sem esta guarda, um derivado maior que a origem
+          -- faria o `ADD CONSTRAINT` estourar com erro cru de restrição em vez
+          -- da mensagem que explica o que aconteceu.
+          select count(*) into quantos from app_private.asset_storage_cleanup_job
+            where byte_size > {_ANTIGO};
+          if quantos > 0 then
+            raise exception
+              'não dá para voltar: % limpezas pendentes acima do teto antigo', quantos
               using errcode='55000';
           end if;
         end $$;

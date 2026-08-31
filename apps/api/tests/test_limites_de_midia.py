@@ -706,6 +706,27 @@ class TestOrcamentoDoVideo:
             f"converter e conferir custam {segundos:.1f} s de um lease de {_ASSET_LEASE_SECONDS} s"
         )
 
+    def test_a_faixa_generica_do_banco_segue_o_maior_tipo_do_catalogo(self) -> None:
+        """Quatro checagens no banco não são teto por tipo, e é fácil confundir.
+
+        Elas dizem "cabe no maior arquivo que a plataforma aceita", e por isso
+        sobem quando o maior tipo sobe — inclusive nas funções que também veem
+        PDF e documento. O teto **por tipo** é outro, mora no catálogo, e é ele
+        que o `asset_blob_media_contract_check` consulta.
+
+        Este teste amarra a faixa genérica ao catálogo. Sem ele, subir um tipo e
+        esquecer a faixa deixaria a recusa acontecer com erro cru de restrição,
+        em vez da mensagem que explica o que houve.
+        """
+        from appsell_api.asset_media import MAX_ASSET_BYTES
+
+        migration = _carrega_migration("0046_")
+        assert migration._NOVO == MAX_ASSET_BYTES, (
+            f"a faixa genérica do banco é {migration._NOVO} e o maior tipo do "
+            f"catálogo é {MAX_ASSET_BYTES}"
+        )
+        assert self._teto_do_video() == MAX_ASSET_BYTES
+
     def test_o_tmp_do_worker_cobre_a_origem_e_o_derivado(self) -> None:
         """O worker segura os dois arquivos ao mesmo tempo.
 

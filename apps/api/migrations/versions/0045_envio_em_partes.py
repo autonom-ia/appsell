@@ -92,7 +92,13 @@ _TAMANHO_DA_PARTE = f"""
 create or replace function app_private.asset_multipart_part_bytes()
 returns bigint language sql immutable
 set search_path=pg_catalog as $$ select {_PART_BYTES}::bigint $$;
-"""
+-- O mesmo bloco que toda função desta série carrega. Sem ele vale o padrão do
+-- PostgreSQL, que concede execução a `public`: esta seria a única função do
+-- schema chamável por qualquer role do banco.
+alter function app_private.asset_multipart_part_bytes() owner to appsell_owner;
+revoke all on function app_private.asset_multipart_part_bytes() from public;
+grant execute on function app_private.asset_multipart_part_bytes() to appsell_runtime;
+"""  # noqa: S608 - o único valor interpolado é a constante deste módulo
 
 
 def _confirm(*, aceita_hash_nulo: bool) -> str:
@@ -120,6 +126,16 @@ def _confirm(*, aceita_hash_nulo: bool) -> str:
         """
         if aceita_hash_nulo
         else "          fatiado := false;\n"
+    )
+    # O `content_check` só existe a partir desta migration. Deixá-lo no corpo
+    # antigo faria o `downgrade` devolver uma função que ainda grava um campo
+    # que nunca existiu antes — e o downgrade promete devolver o que era.
+    registro_do_audit = (
+        "jsonb_build_object('upload_id',p_upload,"
+        "'content_check',case when fatiado then 'deferred_to_verification'"
+        " else 'head_checksum' end)"
+        if aceita_hash_nulo
+        else "jsonb_build_object('upload_id',p_upload)"
     )
     compara_hash = (
         "(p_observed_checksum is not null and p_observed_checksum<>candidate.expected_sha256)"
@@ -195,9 +211,7 @@ def _confirm(*, aceita_hash_nulo: bool) -> str:
           insert into audit_event(seller_organization_id,actor_identity_user_id,action,
             target_type,target_id,result,request_id,metadata)
           values(p_seller,p_actor,'catalog.asset_upload_confirmed','asset',candidate.asset_id,
-            'succeeded',p_request,jsonb_build_object('upload_id',p_upload,
-              'content_check',case when fatiado then 'deferred_to_verification'
-                                   else 'head_checksum' end));
+            'succeeded',p_request,{registro_do_audit});
           return result;
         end $$
         """  # noqa: S608 - o corpo é literal deste módulo; só os dois trechos variam
