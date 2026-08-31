@@ -314,3 +314,27 @@ def test_o_prazo_do_cliente_acompanha_o_do_ffmpeg() -> None:
     from appsell_api.video_remux import REMUX_TIMEOUT_SECONDS
 
     assert video_verifier.PREPARE_TIMEOUT_SECONDS == REMUX_TIMEOUT_SECONDS
+
+
+def test_o_prazo_curto_depende_de_o_catalogo_nunca_recodificar() -> None:
+    """A amarração que faltava, e que nada guardava.
+
+    Cinco minutos cobrem trocar o invólucro. Recodificar tem prazo de uma hora,
+    doze vezes maior. Se o modo catálogo passar a aceitar recodificação sem este
+    número subir junto, a API desiste aos cinco minutos e o `ffmpeg` continua
+    rodando lá dentro — o único lugar do serviço isolado fica ocupado por um
+    trabalho que ninguém mais espera, e todo mundo atrás dele leva 429.
+
+    Este teste falha nos dois sentidos: se o modo catálogo deixar de recusar
+    recodificação, e se os prazos deixarem de corresponder.
+    """
+    from appsell_api import pdf_sandbox_service
+    from appsell_api.video_remux import REMUX_TIMEOUT_SECONDS, TRANSCODE_TIMEOUT_SECONDS
+
+    assert TRANSCODE_TIMEOUT_SECONDS > REMUX_TIMEOUT_SECONDS
+    assert video_verifier.PREPARE_TIMEOUT_SECONDS < TRANSCODE_TIMEOUT_SECONDS
+    fonte = Path(pdf_sandbox_service.__file__).read_text(encoding="utf-8")
+    assert "allow_transcode=not catalogue" in fonte, (
+        "o modo catálogo deixou de recusar recodificação; ou volte a recusar, "
+        "ou suba PREPARE_TIMEOUT_SECONDS para o prazo da recodificação"
+    )
