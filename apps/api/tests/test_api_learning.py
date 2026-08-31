@@ -20,6 +20,7 @@ from appsell_api import learning_routes
 from appsell_api.config import Settings
 from appsell_api.learning_pdf import RenderedLearningPdfPage
 from appsell_api.learning_routes import _learning_domain_error, router
+from appsell_api.pdf_links import PdfLinksBusy
 from appsell_api.storage_s3 import PresignedRequest
 
 IDENTITY_ID = UUID("81000000-0000-4000-8000-000000000001")
@@ -458,6 +459,117 @@ async def test_pdf_manifest_extracts_links_from_the_pinned_ready_version(
         "width": 80.0,
         "height": 19.4175,
     }
+
+
+@pytest.mark.asyncio
+async def test_pdf_manifest_insiste_quando_o_servico_isolado_esta_ocupado(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rota entrega os links depois de o serviço isolado se desocupar.
+
+    Ele tem um lugar só, e nele cabem a leitura dos links, a rasterização das
+    páginas e a conversão dos vídeos. Quem chega junto leva `429` — e isso caía
+    no `return []`: o aluno abria o guia sem botão nenhum, sem erro na tela e
+    sem registro. Bastava outro aluno abrindo um PDF ao mesmo tempo.
+
+    Este teste passa pela rota inteira porque o sintoma era da rota: o que
+    importa não é o auxiliar saber insistir, é o documento chegar com links.
+    """
+    manifest = pdf_manifest_row(page_count=2)
+    source = {
+        **asset_row(),
+        "storage_driver": "s3",
+        "storage_bucket": "appsell-ready",
+        "object_key": "tenants/seller/assets/asset/v2/blob",
+        "storage_version_id": "ready-v2",
+        "storage_etag": "etag-v2",
+    }
+    auth = FakeAuth(manifest, execute_results=[manifest, source])
+
+    class Storage:
+        @contextmanager
+        def open_download(self, **kwargs: Any):  # type: ignore[no-untyped-def]
+            yield io.BytesIO(b"pdf")
+
+    tentativas = 0
+
+    def ocupado_e_depois_livre(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        nonlocal tentativas
+        tentativas += 1
+        if tentativas < 3:
+            raise PdfLinksBusy("isolated PDF link service is busy")
+        return {
+            "schema_version": 1,
+            "page_count": 2,
+            "links": [
+                {
+                    "id": "0123456789abcdef",
+                    "page": 1,
+                    "kind": "page",
+                    "target_page": 2,
+                    "rect": {"left": 10.0, "top": 10.0, "width": 80.0, "height": 20.0},
+                }
+            ],
+        }
+
+    learning_routes._PDF_LINK_CACHE.clear()
+    monkeypatch.setattr(learning_routes, "PDF_LINKS_RETRY_SECONDS", 0.01)
+    monkeypatch.setattr(learning_routes, "read_remote_pdf_link_manifest", ocupado_e_depois_livre)
+    async with client_for(auth, Storage(), isolated_viewer_settings()) as client:
+        response = await client.get(
+            f"/v1/me/learning/items/{ENTITLEMENT_ID}/assets/{ASSET_ID}/pages"
+        )
+
+    assert response.status_code == 200
+    assert tentativas == 3
+    # O que importa: o documento chegou com o botão, e não vazio.
+    assert response.json()["asset"]["links"][0]["id"] == "0123456789abcdef"
+
+
+@pytest.mark.asyncio
+async def test_pdf_manifest_volta_sem_links_se_o_servico_nao_desocupar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Insistir tem fim, e o fim é o comportamento antigo.
+
+    Uma conversão de vídeo longa não desocupa em quatro tentativas. Aí o
+    documento volta sem links — como voltava antes —, mas só depois de tentar, e
+    a rota não fica pendurada além do prazo que o BFF dá a ela.
+    """
+    manifest = pdf_manifest_row(page_count=2)
+    source = {
+        **asset_row(),
+        "storage_driver": "s3",
+        "storage_bucket": "appsell-ready",
+        "object_key": "tenants/seller/assets/asset/v2/blob",
+        "storage_version_id": "ready-v2",
+        "storage_etag": "etag-v2",
+    }
+    auth = FakeAuth(manifest, execute_results=[manifest, source])
+
+    class Storage:
+        @contextmanager
+        def open_download(self, **kwargs: Any):  # type: ignore[no-untyped-def]
+            yield io.BytesIO(b"pdf")
+
+    tentativas = 0
+
+    def sempre_ocupado(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        nonlocal tentativas
+        tentativas += 1
+        raise PdfLinksBusy("isolated PDF link service is busy")
+
+    learning_routes._PDF_LINK_CACHE.clear()
+    monkeypatch.setattr(learning_routes, "PDF_LINKS_RETRY_SECONDS", 0.01)
+    monkeypatch.setattr(learning_routes, "read_remote_pdf_link_manifest", sempre_ocupado)
+    async with client_for(auth, Storage(), isolated_viewer_settings()) as client:
+        response = await client.get(
+            f"/v1/me/learning/items/{ENTITLEMENT_ID}/assets/{ASSET_ID}/pages"
+        )
+
+    assert response.status_code == 200
+    assert tentativas == learning_routes.PDF_LINKS_ATTEMPTS
+    assert response.json()["asset"]["links"] == []
 
 
 @pytest.mark.asyncio

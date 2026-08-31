@@ -43,10 +43,11 @@ import socket
 import tempfile
 import threading
 import time
+from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 import anyio
 import httpx
@@ -68,6 +69,17 @@ MAX_REDIRECTS: Final = 3
 #: sempre. Este prazo é sobre o relógio, do começo ao fim.
 DOWNLOAD_DEADLINE_SECONDS: Final = 15 * 60
 
+#: Prazo do cliente HTTP para a conversão no serviço isolado.
+#:
+#: Igual ao `TRANSCODE_TIMEOUT_SECONDS` de `video_remux`, que é o prazo do
+#: próprio `ffmpeg`. Não são a mesma constante, e é de propósito que carreguem o
+#: mesmo valor: baixar só este faria a API declarar falha enquanto o `ffmpeg`
+#: continua rodando — `subprocess.run` numa thread não é cancelado quando o
+#: cliente desiste. O lugar do serviço isolado seguiria ocupado, e a leitura de
+#: links de todo mundo seguiria atrás dele, sem ninguém mais esperando o vídeo.
+#:
+#: Encurtar isto de verdade depende de o serviço saber abandonar o trabalho
+#: quando o pedido some. Está na #320.
 TRANSCODE_TIMEOUT_SECONDS: Final = 60 * 60
 
 
@@ -120,7 +132,14 @@ def trusted_video_target(value: object) -> str | None:
     if not origins:
         return None
     origin = f"https://{parts.hostname}"
-    return value if origin in origins else None
+    if origin not in origins:
+        return None
+    # O fragmento sai. Ele nunca chega ao servidor HTTP — é do navegador — mas
+    # entra na chave do derivado, e a chave é o registro do que já foi
+    # preparado. Um PDF citando `video.mov#1` até `video.mov#4` fazia a
+    # plataforma baixar o mesmo arquivo quatro vezes e guardar quatro cópias
+    # idênticas, com quatro nomes — e o teto por arquivo é de 512 MiB.
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, ""))
 
 
 async def origin_validator(target_url: str) -> str:
@@ -356,12 +375,22 @@ async def download_source(target_url: str, destination: Path) -> tuple[int, str]
     raise PdfLinkVideoRejected("video target redirects too many times")
 
 
-async def prepare_video(target_url: str, workspace: Path) -> PreparedVideo:
+async def prepare_video(
+    target_url: str,
+    workspace: Path,
+    *,
+    transcode_gate: AbstractAsyncContextManager[Any] | None = None,
+) -> PreparedVideo:
     """Baixa a origem e devolve um MP4 que o navegador toca.
 
     O download acontece aqui, porque a API é quem tem rede. A conversão
     acontece no serviço isolado, porque o arquivo é do vendedor e um parser de
     mídia não tem o que fazer no processo que carrega as credenciais.
+
+    `transcode_gate` é onde a fila de conversão acontece, quando quem chama tem
+    uma. O serviço isolado atende um arquivo por vez e recusa quem chega junto —
+    ele não enfileira. Esperar aqui custa nada; levar a recusa custa o vídeo.
+    Quem chama decide a política; este módulo não conhece semáforo nenhum.
     """
     source = workspace / "source.bin"
     # Prazo absoluto sobre tudo — conexão, cabeçalhos e corpo. O timeout do
@@ -369,27 +398,33 @@ async def prepare_video(target_url: str, workspace: Path) -> PreparedVideo:
     # nunca o dispara: seguraria o único slot de preparo para sempre.
     with anyio.fail_after(DOWNLOAD_DEADLINE_SECONDS):
         size, validator = await download_source(target_url, source)
-    digest = hashlib.sha256()
-    with source.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(_MIB), b""):
-            digest.update(chunk)
+    # Em thread: o arquivo vai a 512 MiB, e lê-lo inteiro aqui pararia todas as
+    # outras respostas da API enquanto o hash corre.
+    source_digest = await to_thread.run_sync(lambda: _file_sha256(source))
 
     destination = workspace / "derivative.mp4"
-    recoded = await to_thread.run_sync(
-        lambda: remux_in_sandbox(source, size, digest.hexdigest(), destination)
-    )
+    async with transcode_gate or nullcontext():
+        recoded = await to_thread.run_sync(
+            lambda: remux_in_sandbox(source, size, source_digest, destination)
+        )
     byte_size = destination.stat().st_size
-    prepared_digest = hashlib.sha256()
-    with destination.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(_MIB), b""):
-            prepared_digest.update(chunk)
+    prepared_sha = await to_thread.run_sync(lambda: _file_sha256(destination))
     return PreparedVideo(
         path=destination,
         byte_size=byte_size,
-        sha256_hex=prepared_digest.hexdigest(),
+        sha256_hex=prepared_sha,
         recoded=recoded,
         validator=validator,
     )
+
+
+def _file_sha256(path: Path) -> str:
+    """O hash do arquivo, lido em pedaços. Feito para rodar fora do event loop."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(_MIB), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _sandbox_client() -> tuple[httpx.BaseTransport | None, str]:

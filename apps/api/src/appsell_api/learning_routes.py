@@ -6,8 +6,9 @@ import binascii
 import json
 import re
 from collections import OrderedDict
+from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Final, Literal
 from uuid import UUID
 
 import structlog
@@ -40,6 +41,7 @@ from .pdf_link_video import (
     trusted_video_target,
 )
 from .pdf_links import (
+    PdfLinksBusy,
     PdfLinksRejected,
     PdfLinksUnavailable,
     read_remote_pdf_link_manifest,
@@ -59,12 +61,45 @@ _PDF_LINK_VIDEO_PREPARATIONS = PreparationRegistry()
 #: pode recolher a tarefa no meio do preparo — o `asyncio` só guarda referência
 #: fraca, e a documentação pede que quem cria mantenha a sua.
 _PDF_LINK_VIDEO_TASKS: set[asyncio.Task[None]] = set()
-#: Um preparo por vez na maquina. Recodificar e caro, e a fila protege o resto
-#: da API de ficar sem CPU porque tres alunos abriram videos diferentes.
-_PDF_LINK_VIDEO_SLOTS = asyncio.Semaphore(1)
+#: Quantos preparos ficam vivos ao mesmo tempo. Um.
+#:
+#: Cada preparo mantém no disco a origem e o derivado até terminar o hash e a
+#: subida — até 1 GiB, com o teto de 512 MiB por arquivo. Dois preparos seriam
+#: 2 GiB, e no ambiente de prévia o `/tmp` é `tmpfs`: esses bytes contam contra
+#: o `mem_limit` de 1 GiB do serviço. Em produção o `/tmp` é disco, mas a
+#: memória do serviço é menor ainda, 768 MiB.
+#:
+#: Dois dobrariam a vazão quando dois alunos clicam junto, e o que domina é o
+#: download — 1,3 s de rede contra 0,6 s de conversão. Mas não dá para
+#: demonstrar que cabe nos dois ambientes, e o preço de errar é a API inteira
+#: cair por falta de memória. Fica em um até os limites serem revistos: #320.
+PDF_LINK_VIDEO_CONCURRENCY: Final = 1
+_PDF_LINK_VIDEO_SLOTS = asyncio.Semaphore(PDF_LINK_VIDEO_CONCURRENCY)
+#: Quantas conversões correm ao mesmo tempo. Uma.
+#:
+#: O serviço isolado atende um arquivo por vez e **recusa** quem chega junto,
+#: com `429` — ele não enfileira. Quem recebe a recusa insiste quatro vezes, de
+#: três em três segundos, e então desiste de vez. Dois preparos chegando juntos
+#: à conversão não formariam fila: o segundo teria nove segundos para o primeiro
+#: terminar, e um vídeo grande passa disso — o aluno ficaria sem vídeo nenhum.
+#:
+#: A fila é aqui, onde esperar não custa nada. Hoje o limite de preparos vivos
+#: já é um, e este portão é redundante; fica porque é ele que carrega a razão, e
+#: porque o dia em que aquele número subir não pode ser o dia em que a conversão
+#: volta a competir consigo mesma.
+PDF_LINK_VIDEO_TRANSCODE_CONCURRENCY: Final = 1
+_PDF_LINK_VIDEO_TRANSCODE_SLOT = asyncio.Semaphore(PDF_LINK_VIDEO_TRANSCODE_CONCURRENCY)
 _PROTECTED_PDF_SLOTS = asyncio.Semaphore(4)
 _PROTECTED_PDF_SLOT_TIMEOUT_SECONDS = 8.0
 _PDF_LINK_CACHE_LOCK = asyncio.Lock()
+#: Quantas vezes insistir quando o serviço isolado está ocupado, e o intervalo.
+#:
+#: A leitura em si leva menos de um segundo. O que se espera aqui é o trabalho
+#: de outra pessoa terminar, e o teto existe para a espera não virar uma
+#: requisição pendurada: passado isso, o documento volta sem links, como voltava
+#: antes — mas só depois de tentar.
+PDF_LINKS_ATTEMPTS: Final = 4
+PDF_LINKS_RETRY_SECONDS: Final = 1.5
 _PDF_LINK_CACHE: OrderedDict[str, tuple[dict[str, Any], ...]] = OrderedDict()
 _PDF_LINK_CACHE_SIZE = 32
 
@@ -655,7 +690,9 @@ async def _run_pdf_link_video_preparation(
 
 async def _store_pdf_link_video(storage: S3Storage, bucket: str, key: str, target: str) -> None:
     with temporary_workspace() as workspace:
-        prepared = await prepare_video(target, Path(workspace))
+        prepared = await prepare_video(
+            target, Path(workspace), transcode_gate=_PDF_LINK_VIDEO_TRANSCODE_SLOT
+        )
         await to_thread.run_sync(
             lambda: storage.put_verified(
                 destination_bucket=bucket,
@@ -928,7 +965,7 @@ async def _protected_pdf_links(
             )
 
     try:
-        extracted = await to_thread.run_sync(read_links)
+        extracted = await _read_links_waiting_for_the_sandbox(read_links)
         adjusted = tuple(_adjust_pdf_link_rectangles(extracted["links"], manifest["pages"]))
     except (
         PdfLinksRejected,
@@ -945,6 +982,26 @@ async def _protected_pdf_links(
         while len(_PDF_LINK_CACHE) > _PDF_LINK_CACHE_SIZE:
             _PDF_LINK_CACHE.popitem(last=False)
     return [dict(link) for link in adjusted]
+
+
+async def _read_links_waiting_for_the_sandbox(read_links: Callable[[], dict[str, Any]]) -> Any:
+    """Lê os links do PDF, insistindo enquanto o serviço isolado estiver ocupado.
+
+    Ele tem um lugar só, e nele cabem leitura de links, rasterização e conversão
+    de vídeo. Quem chega junto leva `429` — e aqui isso virava um documento sem
+    link nenhum, sem erro, sem registro. O aluno abria o guia e não via botão.
+
+    Basta dois alunos abrindo PDFs ao mesmo tempo, ou um abrindo enquanto o
+    vídeo de outro está sendo convertido.
+    """
+    for tentativa in range(PDF_LINKS_ATTEMPTS):
+        try:
+            return await to_thread.run_sync(read_links)
+        except PdfLinksBusy:
+            if tentativa == PDF_LINKS_ATTEMPTS - 1:
+                raise
+            await asyncio.sleep(PDF_LINKS_RETRY_SECONDS)
+    raise PdfLinksBusy("isolated PDF link service stayed busy")
 
 
 def _adjust_pdf_link_rectangles(
