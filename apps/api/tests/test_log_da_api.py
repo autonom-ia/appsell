@@ -822,3 +822,44 @@ def test_nenhum_token_gerado_pelo_sistema_escapa_do_redator() -> None:
     ]
 
     assert escaparam == []
+
+
+@pytest.mark.parametrize("ambiente", ["production", "local", "ci", "staging"])
+def test_a_credencial_do_traceback_e_redigida_em_todo_ambiente(ambiente: str) -> None:
+    """Em `local`/`ci` o traceback era montado depois do redator.
+
+    O `ConsoleRenderer` formata a exceção sozinho, então `format_exc_info` fica
+    fora da cadeia nesses ambientes e o redator estrutural só via
+    `exc_info=True`. Resultado: `RuntimeError("postgresql://alice:p@ssw0rd@…")`
+    saía com usuário e senha inteiros — e num run de CI isso fica gravado no log
+    público do GitHub. A redação passa a ter uma passada final sobre a linha já
+    montada.
+    """
+    fluxo = _configura(ambiente)
+
+    try:
+        raise RuntimeError("postgresql://alice:p@ssw0rd@db.internal/prod")
+    except RuntimeError:
+        logging_setup.get_logger("teste").exception("falhou")
+
+    saida = fluxo.getvalue()
+    assert "alice" not in saida
+    assert "p@ssw0rd" not in saida
+    assert "<REDACTED>" in saida
+    assert "db.internal" in saida
+
+
+@pytest.mark.parametrize("ambiente", ["production", "local"])
+def test_a_credencial_do_logging_da_biblioteca_padrao_e_redigida_em_todo_ambiente(
+    ambiente: str,
+) -> None:
+    fluxo = _configura(ambiente)
+
+    try:
+        raise RuntimeError("postgresql://alice:p@ssw0rd@db.internal/prod")
+    except RuntimeError:
+        logging.getLogger("uvicorn.error").exception("erro no servidor")
+
+    saida = fluxo.getvalue()
+    assert "alice" not in saida
+    assert "p@ssw0rd" not in saida

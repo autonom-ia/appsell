@@ -218,6 +218,11 @@ sudo docker service logs --since 1h sell-autonomia_api | grep '"request_id":"<id
   Ele também não distingue um token de um hash de conteúdo, e trata os dois como
   segredo: perder o hash de um material custa uma consulta a mais no
   diagnóstico. Prefira registrar `asset_id` a registrar `key`.
+
+  A redação roda **duas vezes**: sobre os campos e sobre a linha já montada. Em
+  `local`/`ci` o traceback é formatado pelo `ConsoleRenderer` depois da primeira
+  passada, e sem a segunda uma credencial no texto da exceção saía inteira — num
+  run de CI, gravada no log público do GitHub.
 - **Health check.** `/health/live` e `/health/ready` são silenciosos. O Swarm os
   sonda a cada poucos segundos, e sem isso o log seria milhares de linhas por dia
   de uma rota que não diz nada.

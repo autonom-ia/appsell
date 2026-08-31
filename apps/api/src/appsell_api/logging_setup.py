@@ -173,7 +173,13 @@ def configure_logging(
     renderizador: Any = (
         structlog.processors.JSONRenderer()
         if estruturado
-        else structlog.dev.ConsoleRenderer(colors=False)
+        # `colors=False` nao alcanca o formatador de excecao: ele continua
+        # colorindo o traceback, e os codigos ANSI no meio do texto quebram os
+        # padroes do redator — `alice` saia inteiro entre dois escapes. O
+        # `plain_traceback` e o mesmo traceback sem cor nenhuma.
+        else structlog.dev.ConsoleRenderer(
+            colors=False, exception_formatter=structlog.dev.plain_traceback
+        )
     )
     processadores: list[Any] = [
         structlog.contextvars.merge_contextvars,
@@ -186,7 +192,18 @@ def configure_logging(
         # o traceback ja transformado em texto. So o renderizador JSON precisa
         # desta etapa.
         processadores.append(structlog.processors.format_exc_info)
-    processadores += [_redigir_segredos, renderizador]
+    # O redator roda duas vezes, e a segunda nao e zelo excessivo. Em
+    # `local`/`ci` o `format_exc_info` fica fora da cadeia — o `ConsoleRenderer`
+    # formata a excecao sozinho —, entao o redator estrutural so ve
+    # `exc_info=True` e o traceback e montado **depois** dele. Sem a passada
+    # final, `RuntimeError("postgresql://alice:p@ssw0rd@db.internal/prod")`
+    # saia com usuario e senha inteiros, e num run de CI isso fica gravado no
+    # log publico do GitHub.
+    #
+    # As duas passadas sao redundantes de proposito, e a redundancia foi medida:
+    # desligar qualquer uma delas isoladamente nao faz nenhum teste de vazamento
+    # reprovar. Cada uma cobre a outra.
+    processadores += [_redigir_segredos, renderizador, _redigir_a_linha_pronta]
     structlog.configure(
         processors=processadores,
         logger_factory=structlog.WriteLoggerFactory(file=saida),
@@ -226,6 +243,7 @@ def _capturar_o_logging_da_biblioteca_padrao(
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
             _redigir_segredos,
             renderizador,
+            _redigir_a_linha_pronta,
         ],
     )
     tratador = logging.StreamHandler(saida)
@@ -392,6 +410,16 @@ class RequestLoggingMiddleware:
             status=status,
             duration_ms=round((time.perf_counter() - inicio) * 1000, 2),
         )
+
+
+def _redigir_a_linha_pronta(_logger: Any, _method_name: str, linha: Any) -> Any:
+    """Última passada, sobre o texto que o renderizador acabou de montar.
+
+    O redator estrutural vê os campos; este vê o que de fato vai sair. É o que
+    alcança o traceback formatado pelo `ConsoleRenderer`, que é montado depois
+    do outro.
+    """
+    return _redigir_texto(linha) if isinstance(linha, str) else linha
 
 
 def _redigir_segredos(
