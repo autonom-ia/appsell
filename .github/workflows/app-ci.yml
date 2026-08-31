@@ -129,12 +129,17 @@ jobs:
         run: uv sync --project apps/api --frozen
 
       - name: Install shared system test dependencies once
-        if: ${{ !cancelled() && steps.policy.outputs.product_checks == 'true' && (steps.route.outputs.web == 'true' || steps.route.outputs.postgres == 'true' || steps.route.outputs.openbao == 'true' || steps.route.outputs.storage == 'true') }}
+        if: ${{ !cancelled() && steps.policy.outputs.product_checks == 'true' && (steps.route.outputs.api == 'true' || steps.route.outputs.web == 'true' || steps.route.outputs.postgres == 'true' || steps.route.outputs.openbao == 'true' || steps.route.outputs.storage == 'true') }}
         shell: bash
         run: |
           set -euo pipefail
           packages=(redis-server)
-          if [[ "${{ steps.route.outputs.storage }}" == true ]]; then
+          # `poppler-utils` seguia so a rota `storage`, mas quem precisa dele e
+          # `test_pdf_derivatives.py`, que roda no bloco da **api**. Qualquer PR
+          # que tocasse so a api e nao storage reprovava com
+          # `pdftoppm is unavailable`, por falta de dependencia de sistema e nao
+          # por defeito.
+          if [[ "${{ steps.route.outputs.storage }}" == true || "${{ steps.route.outputs.api }}" == true ]]; then
             packages+=(poppler-utils)
           fi
           sudo apt-get update
