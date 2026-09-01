@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { demoModeEnabled } from "@/lib/demo-config";
 import { LpContato } from "./lp-contato";
+import { LpDados } from "./lp-dados";
 import { LpMotion } from "./lp-motion";
 import { LpPreco } from "./lp-preco";
 import "./lp.css";
@@ -18,8 +19,16 @@ export const metadata: Metadata = {
     title: "Autonom.ia Sell, sua loja de cursos com a sua marca",
     description: "Sem mensalidade: 6,99% mais R$ 1,99 por venda. O aluno assiste pelo navegador do celular.",
     url: "https://sell.autonomia.site/",
-    locale: "pt_BR"
-  }
+    locale: "pt_BR",
+    images: [{ url: "/lp/og.jpg", width: 1200, height: 630, alt: "Autonom.ia Sell, loja de cursos com a sua marca" }]
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Autonom.ia Sell, sua loja de cursos com a sua marca",
+    description: "Sem mensalidade: 6,99% mais R$ 1,99 por venda. O aluno assiste pelo navegador do celular.",
+    images: ["/lp/og.jpg"]
+  },
+  robots: { index: true, follow: true, googleBot: { index: true, follow: true, "max-image-preview": "large", "max-snippet": -1 } }
 };
 
 const NOS = [
@@ -96,6 +105,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ e
 
         <section className="abertura" id="topo">
           <div className="pin">
+            <link rel="preload" href="/lp/hero.webp" as="image" fetchPriority="high" />
             <div className="foto" id="foto" aria-hidden="true">
               {/* O video e um bonus: nasce ausente e so e criado pelo cliente
                   quando a tela, a conexao e a preferencia de movimento
@@ -105,7 +115,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ e
             <div className="in palco-grid">
               <div className="atos">
                 <article className="ato" data-ato="0">
-                  <span className="eb">Loja de cursos com a sua marca</span>
+                  <span className="eb">Para vender cursos online</span>
                   <h1>
                     <span className="linha"><span>A pessoa comprou.</span></span>{" "}
                     <span className="linha"><span><b>O acesso já é dela.</b></span></span>
@@ -338,6 +348,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ e
         </div>
       </footer>
 
+      <LpDados perguntas={PERGUNTAS} />
       <LpMotion />
     </div>
   );
