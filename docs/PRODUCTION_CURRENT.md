@@ -18,7 +18,7 @@
 | SHA do **api** | `d5e00ec` |
 | SHA do **asset-worker** | `d5e00ec` — mesma imagem da api |
 | SHA do **pdf-sandbox** | `d5e00ec` — mesma imagem da api, com outra tag |
-| SHA do **web** | `a139d86` |
+| SHA do **web** | `3bcae6e` |
 | Banco | head **`0047_cota_de_armazenamento`**, `schema_ready() = true` |
 
 **Os quatro andaram no mesmo SHA por algumas horas, em `d5e00ec`.** O release do
@@ -170,6 +170,89 @@ docker service update --image easypanel/sell-autonomia/web:9ebb93f \
 ```
 
 Spec anterior em `/tmp/sell-release-346/spec_web_antes.json` no host.
+
+## Release `3bcae6e` — a navegação passa a saber quem está logado (2026-09-01)
+
+Só o `web` mudou. Nenhuma alteração de API, worker, sandbox ou schema: a head
+do banco continua `0047_cota_de_armazenamento` e não há migration para reverter.
+
+Entrega a #350 e fecha a #305. A navegação do shell era uma lista fixa e
+`/api/session` não devolvia papel algum, então em produção real todo mundo via
+Visão geral, Produtos e Recebimentos — inclusive quem só tinha comprado um
+curso. Agora a sessão resolve o papel no servidor, a partir de `GET /v1/me` e
+`GET /v1/me/sellers`, e a navegação deriva disso.
+
+### O que observar nos próximos dias
+
+Esta é a primeira versão em que `/api/session` faz **duas chamadas à API
+interna a cada carga do shell**. A API roda com pool de cinco conexões, sem
+overflow, e esse efeito nunca foi medido sob carga real — é o risco que sobrou
+depois do review. Se aparecer lentidão no shell ou saturação de conexão na API,
+esse é o primeiro lugar a olhar.
+
+A resolução falha **fechada**: quando a API de domínio não responde, o shell
+mostra recuperação em vez de adivinhar o papel. Isso é deliberado, mas troca
+"menu errado" por "tela de acesso indisponível" durante uma indisponibilidade
+da API. O comportamento é novo em produção.
+
+### Como foi aplicado
+
+```bash
+# 1. backup antes de tocar em qualquer coisa
+mkdir -p /tmp/sell-release-350
+docker service inspect sell-autonomia_web > /tmp/sell-release-350/spec_web_antes.json
+docker service inspect sell-autonomia_web \
+  --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}' > /tmp/sell-release-350/imagem_anterior.txt
+
+# 2. fonte no host
+git archive --format=tar origin/main | ssh <host> \
+  'mkdir -p /home/claudete/appsell-src-3bcae6e && tar -x -C /home/claudete/appsell-src-3bcae6e'
+
+# 3. build
+cd /home/claudete/appsell-src-3bcae6e
+docker build -f deploy/easypanel-native/Dockerfile.web \
+  --build-arg GIT_SHA=3bcae6e -t easypanel/sell-autonomia/web:3bcae6e .
+
+# 4. troca
+docker service update --image easypanel/sell-autonomia/web:3bcae6e \
+  --update-order stop-first sell-autonomia_web
+```
+
+### Validação executada em produção
+
+| O quê | Resultado |
+|---|---|
+| home | `200` em 0,36 s |
+| healthz do BFF | `redis`, `api` e `storage_upload` todos `true` |
+| `/auth/signup` | `307` para `auth.autonomia.site/register` |
+| `/auth/login` | `307` para `auth.autonomia.site/login/`, destino diferente |
+| `/api/session` sem sessão | `401` |
+| `/settings/store/new` sem sessão | `307` para a home — a rota nova entrou no matcher do proxy |
+| "Vender agora" na página pública | leva `next=%2Fsettings%2Fstore%2Fnew` nas quatro ocorrências |
+| logs do `web` | zero `error`, `traceback`, `fatal` ou `panic` em 5 minutos |
+| variáveis de ambiente | 51 nomes antes, 51 depois, comparados **nome a nome**: nenhuma perdida, nenhuma nova |
+| demais serviços | api, worker e sandbox intactos em `d5e00ec` |
+
+### O que não foi validado
+
+A suíte de identidade real não rodou: exige chaves que não estão no
+`credential.env` e os dois repositórios de identity montados. O
+`tests/bff-api-onboarding.test.ts`, que cobre login sem loja → criar loja →
+primeiro produto, **não roda em lugar nenhum** — depende de
+`APPSELL_TEST_DOMAIN_API_URL`, ausente localmente e no workflow. É a #266.
+
+O Playwright local dá 20 falhas por ambiente, **idênticas no commit anterior ao
+merge**, o que prova ausência de regressão mas não prova funcionamento.
+
+### Rollback deste release
+
+```bash
+docker service update --image easypanel/sell-autonomia/web:a139d86 \
+  --update-order stop-first sell-autonomia_web
+```
+
+A imagem `a139d86` está no host, ao lado de `9ebb93f`, `d5e00ec` e `8930313`.
+Spec anterior em `/tmp/sell-release-350/spec_web_antes.json`.
 
 ## Release `9ebb93f` — página pública nova (2026-09-01)
 
