@@ -1,0 +1,40 @@
+/* Paginas de Termos, Privacidade e Cookies. Mesma paleta da pagina publica,
+   sem nenhuma animacao: sao documentos para ler, nao para percorrer. */
+
+.legal {
+  --navy: #001b43; --ink: #071321; --blue: #00367d; --cream: #f7f8f4;
+  --cyan: #53d9f9; --texto: #1a2433; --suave: rgba(7,19,33,.72); --regua: rgba(7,19,33,.16);
+  background: var(--cream); color: var(--texto); min-height: 100vh;
+  font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif; font-size: 16px; line-height: 1.72;
+}
+.legal :focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+.legal a { color: var(--blue); text-underline-offset: 3px; }
+.legal .legal-voltar, .legal .legal-marca { color: #fff; }
+
+.legal-topo { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px clamp(20px, 4vw, 56px); background: var(--navy); }
+.legal-marca { display: flex; align-items: center; gap: 12px; min-height: 44px; text-decoration: none; }
+.legal-marca .ico { width: 30px; height: 30px; background: url("/lp/icone.png") center/contain no-repeat; }
+.legal-marca b { font-family: var(--font-montserrat), Montserrat, sans-serif; font-size: 16px; font-weight: 900; letter-spacing: -.02em; line-height: 1; color: #fff; }
+.legal-marca small { display: block; margin-top: 3px; font-family: var(--font-montserrat), Montserrat, sans-serif; font-size: 10px; font-weight: 900; letter-spacing: 1.6px; text-transform: uppercase; color: rgba(255,255,255,.66); }
+.legal-voltar { display: inline-flex; align-items: center; min-height: 44px; padding: 0 6px; color: #fff; font-family: var(--font-montserrat), Montserrat, sans-serif; font-size: 12px; font-weight: 900; letter-spacing: .5px; text-transform: uppercase; text-decoration: none; box-shadow: inset 0 -2px 0 var(--cyan); }
+
+.legal-corpo { max-width: 940px; margin: 0 auto; padding: clamp(48px, 7vw, 88px) max(clamp(20px, 4vw, 56px), env(safe-area-inset-right)) clamp(56px, 7vw, 96px) max(clamp(20px, 4vw, 56px), env(safe-area-inset-left)); }
+.legal-eyebrow { display: inline-flex; align-items: center; gap: 12px; margin: 0; font-family: var(--font-montserrat), Montserrat, sans-serif; font-size: 11px; font-weight: 900; letter-spacing: 1.6px; text-transform: uppercase; color: var(--blue); }
+.legal-eyebrow::before { content: ""; width: 34px; height: 1px; background: currentColor; }
+.legal-corpo h1 { margin: 16px 0 0; font-family: var(--font-montserrat), Montserrat, sans-serif; font-size: clamp(1.9rem, 4vw, 2.9rem); font-weight: 900; letter-spacing: -.05em; line-height: 1; color: var(--ink); }
+.legal-data { margin: 12px 0 0; font-family: var(--font-montserrat), Montserrat, sans-serif; font-size: 12px; font-weight: 900; letter-spacing: 1.2px; text-transform: uppercase; color: var(--suave); }
+
+.legal-texto h2 { display: flex; gap: 16px; margin: 44px 0 14px; padding-top: 22px; border-top: 1px solid var(--regua); font-family: var(--font-montserrat), Montserrat, sans-serif; font-size: clamp(1.15rem, 2.2vw, 1.5rem); font-weight: 800; letter-spacing: -.03em; line-height: 1.2; color: var(--ink); }
+.legal-texto h2 i { flex: 0 0 auto; width: 2.2ch; font-style: normal; font-weight: 900; color: var(--blue); }
+.legal-texto h3 { margin: 28px 0 10px; font-family: var(--font-montserrat), Montserrat, sans-serif; font-size: 1rem; font-weight: 800; color: var(--ink); }
+.legal-texto p { margin: 0 0 16px; max-width: 72ch; color: var(--suave); }
+.legal-texto ul, .legal-texto ol { margin: 0 0 18px; padding-left: 1.3em; max-width: 72ch; color: var(--suave); }
+.legal-texto li { margin-bottom: 8px; }
+.legal-texto strong { color: var(--ink); font-weight: 700; }
+.legal-texto code { padding: 2px 6px; background: #e9f2f5; font-family: var(--font-plex-mono), ui-monospace, monospace; font-size: .88em; color: var(--ink); }
+
+.legal-rodape { display: flex; flex-wrap: wrap; gap: 14px; justify-content: space-between; max-width: 940px; margin: 0 auto; padding: 30px clamp(20px, 4vw, 56px) 44px; border-top: 1px solid var(--regua); color: var(--suave); font-size: .9rem; }
+
+/* O e-mail do rodape e o unico contato das paginas legais: precisa do mesmo
+   alvo de toque dos demais links. */
+.legal-rodape a { display: inline-flex; align-items: center; min-height: 44px; }

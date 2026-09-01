@@ -1,5 +1,7 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { cache } from "react";
 
 import { demoModeEnabled } from "@/lib/demo-config";
 import {
@@ -8,8 +10,28 @@ import {
 } from "@/lib/internal-api-client.server";
 import { billingPeriodLabel, formatOfferPrice } from "@/lib/offer-price";
 import { parsePublicStorefront } from "@/lib/public-storefront";
+import { SITE } from "@/lib/site";
 
 export const dynamic = "force-dynamic";
+
+export async function generateMetadata({
+  params
+}: {
+  params: Promise<{ sellerSlug: string }>;
+}): Promise<Metadata> {
+  const { sellerSlug } = await params;
+  const { seller } = await loadStorefront(sellerSlug);
+  const url = `${SITE.origem}/s/${seller.slug}`;
+  const titulo = `${seller.name}, cursos online`;
+  const descricao = `Cursos de ${seller.name} para assistir pelo navegador do celular. Compra pela loja oficial na Autonom.ia Sell, com acesso no nome de quem paga.`;
+
+  return {
+    title: titulo,
+    description: descricao,
+    alternates: { canonical: url },
+    openGraph: { type: "website", title: titulo, description: descricao, url, siteName: SITE.nome, locale: "pt_BR" }
+  };
+}
 
 export default async function SellerStorefront({
   params
@@ -90,7 +112,7 @@ export default async function SellerStorefront({
   </div>;
 }
 
-async function loadStorefront(sellerSlug: string) {
+const loadStorefront = cache(async function loadStorefront(sellerSlug: string) {
   try {
     const parsed = parsePublicStorefront(await readPublicStorefront(sellerSlug));
     if (!parsed) throw new DomainApiError(503, "invalid_public_storefront");
@@ -99,7 +121,7 @@ async function loadStorefront(sellerSlug: string) {
     if (error instanceof DomainApiError && error.status === 404) notFound();
     throw error;
   }
-}
+});
 
 function initials(value: string) {
   return value.split(/\s+/u).slice(0, 2).map((part) => part.slice(0, 1)).join("").toUpperCase();
