@@ -63,6 +63,7 @@ type Environment = Partial<Record<string, string | undefined>>;
 export interface IdentityOAuthConfig {
   readonly issuer: string;
   readonly authorizationEndpoint: URL;
+  readonly registrationEndpoint: URL;
   readonly tokenEndpoint: URL;
   readonly jwksEndpoint: URL;
   readonly logicalOAuthClientId: string;
@@ -118,6 +119,13 @@ export function parseIdentityOAuthConfig(environment: Environment = process.env)
     required(environment.APPSELL_IDENTITY_AUTHORIZATION_URL, "APPSELL_IDENTITY_AUTHORIZATION_URL"),
     "APPSELL_IDENTITY_AUTHORIZATION_URL"
   );
+  // A tela de cadastro do Identity vive ao lado da de autorizacao. Deriva-se dela
+  // para nao exigir uma variavel nova em todo ambiente, e a variavel explicita
+  // continua disponivel para quando os dois caminhos divergirem.
+  const registrationEndpoint = strictEndpoint(
+    environment.APPSELL_IDENTITY_REGISTRATION_URL ?? siblingPath(authorizationEndpoint, "register"),
+    "APPSELL_IDENTITY_REGISTRATION_URL"
+  );
   const tokenEndpoint = strictEndpoint(
     required(environment.APPSELL_IDENTITY_TOKEN_URL, "APPSELL_IDENTITY_TOKEN_URL"),
     "APPSELL_IDENTITY_TOKEN_URL"
@@ -143,6 +151,7 @@ export function parseIdentityOAuthConfig(environment: Environment = process.env)
   for (const [label, url] of [
     ["issuer", new URL(issuer)],
     ["authorization endpoint", authorizationEndpoint],
+    ["registration endpoint", registrationEndpoint],
     ["token endpoint", tokenEndpoint],
     ["JWKS endpoint", jwksEndpoint]
   ] as const) {
@@ -161,6 +170,7 @@ export function parseIdentityOAuthConfig(environment: Environment = process.env)
   return {
     issuer,
     authorizationEndpoint,
+    registrationEndpoint,
     tokenEndpoint,
     jwksEndpoint,
     logicalOAuthClientId,
@@ -255,6 +265,15 @@ export class IdentityOAuthClient implements OAuthTokenRefresher {
     }
     const url = new URL(this.config.authorizationEndpoint);
     url.search = new URLSearchParams(parameters).toString();
+    return url;
+  }
+
+  // Mesma carga do authorize, apontada para a tela de cadastro. O Identity le
+  // client_id, redirect_uri, state e code_challenge da propria query string,
+  // entao o pedido sobrevive a criacao da conta.
+  registrationUrl(input: { state: string; nonce?: string; codeChallenge: string }) {
+    const url = new URL(this.config.registrationEndpoint);
+    url.search = this.authorizationUrl(input).search;
     return url;
   }
 
@@ -649,6 +668,16 @@ function strictIssuer(raw: string) {
     throw new IdentityOAuthConfigurationError("APPSELL_IDENTITY_ISSUER must not end with a slash.");
   }
   return url.toString().replace(/\/$/, "");
+}
+
+// Troca o ultimo segmento do caminho, preservando origem e prefixo: um issuer em
+// https://id.exemplo/oauth/authorize vira https://id.exemplo/oauth/register.
+function siblingPath(base: URL, segment: string) {
+  const url = new URL(base);
+  const parts = url.pathname.split("/");
+  parts[parts.length - 1] = segment;
+  url.pathname = parts.join("/");
+  return url.toString();
 }
 
 function strictEndpoint(raw: string, label: string) {
