@@ -123,12 +123,19 @@ export function DashboardOverview() {
   // The CTA is plain navigation to /products (which owns onboarding), so it
   // renders whenever the session view is resolved — including while the
   // catalog request is still in flight or unavailable.
-  const showCta = view === "demo" || view === "real";
+  const hasStore = profile.status === "ready" && (profile.identity?.sellers.length ?? 0) > 0;
+  // Sem loja não há catálogo para criar produto em cima: o botão levaria a um
+  // erro, e o título prometeria um negócio que ainda não existe.
+  const showCta = hasStore && (view === "demo" || view === "real");
 
   return (
     <>
       <header className="page-header">
-        <div><p className="eyebrow">Visão geral</p><h1>Seu negócio em um só lugar.</h1><p>Acompanhe o catálogo e continue de onde parou.</p></div>
+        {hasStore || view === "demo" ? (
+          <div><p className="eyebrow">Visão geral</p><h1>Seu negócio em um só lugar.</h1><p>Acompanhe o catálogo e continue de onde parou.</p></div>
+        ) : (
+          <div><p className="eyebrow">Ativação do produtor</p><h1>Comece criando sua loja.</h1><p>A loja é onde seus produtos ficam e onde seus alunos compram.</p></div>
+        )}
         {showCta ? <Link className="primary-button" href="/products">Criar produto</Link> : null}
       </header>
       {view === "loading" ? <p className="empty-state" role="status">Carregando sua visão geral…</p> : null}
@@ -162,7 +169,7 @@ function RealDashboard({ catalog }: { catalog: CatalogState }) {
           <Link className="primary-button" href="/products">Criar meu primeiro produto</Link>
         </section>
       ) : null}
-      {ready && !(hasSeller && metrics.total === 0) ? (
+      {ready && hasSeller && metrics.total > 0 ? (
         <section className="metric-grid" aria-label="Resumo do negócio">
           <article><span>Produtos</span><strong>{formatProductCount(metrics)}</strong><small>{metrics.published} publicados</small></article>
           <article><span>Alunos</span><strong>—</strong><small>Sem matrículas registradas ainda</small></article>

@@ -14,8 +14,19 @@ function profile(persona: DemoProfile["persona"], home: DemoProfile["home"]): De
 }
 
 describe("OAuth callback home", () => {
-  it("keeps every real identity, including a platform superadmin, on the real dashboard", () => {
-    expect(oauthCallbackHome(null)).toBe("/dashboard");
+  it("keeps a real identity that already has a store on the real dashboard", () => {
+    // O superadmin de plataforma entra aqui: desde a 0032 ele recebe as lojas
+    // ativas projetadas, então chega com loja.
+    expect(oauthCallbackHome(null, true)).toBe("/dashboard");
+  });
+
+  it("sends a real identity without a store to the library", () => {
+    // Mudou com a #363. O painel do vendedor prometia "Seu negócio em um só
+    // lugar" a quem só tinha comprado um curso, com um botão "Criar produto"
+    // que daria erro. Quem entra para vender chega com destino explícito no
+    // `next`, então este padrão não atrapalha o cadastro.
+    expect(oauthCallbackHome(null, false)).toBe("/library");
+    expect(oauthCallbackHome(null)).toBe("/library");
   });
 
   it("preserves the isolated demo persona destinations", () => {

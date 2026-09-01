@@ -117,7 +117,7 @@ export async function GET(request: NextRequest) {
     const destination = safePostLoginPath(
       request.cookies.get(postLoginCookieName())?.value,
       configuredPublicOrigin()
-    ) ?? oauthCallbackHome(demoProfile);
+    ) ?? oauthCallbackHome(demoProfile, hasSellerMembership);
     const response = NextResponse.redirect(new URL(destination, configuredPublicOrigin()));
     expireTransactionCookie(response);
     response.cookies.set(postLoginCookieName(), "", { ...postLoginCookieOptions(), maxAge: 0 });

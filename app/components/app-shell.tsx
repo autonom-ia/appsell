@@ -89,7 +89,10 @@ function defaultHome(audience: ReturnType<typeof shellAudience>, platformGrant: 
   // Grant de plataforma não cria membership, então o superadmin cai em
   // "sem loja" — mas convidá-lo a abrir uma loja seria ler mal o que ele veio
   // fazer aqui.
-  if (audience === "without-store" && !platformGrant) return NEW_STORE_PATH;
+  // Sem loja, a casa é a biblioteca — inclusive para quem só comprou um curso,
+  // que é indistinguível daqui de quem ainda não criou a loja. Criar a loja
+  // continua a um clique, pelo item do menu.
+  if (audience === "without-store" && !platformGrant) return "/library";
   return "/dashboard";
 }
 
