@@ -5,7 +5,7 @@ import {
   listDomainSellers,
   readDomainIdentity
 } from "@/lib/internal-api-client.server";
-import { PLATFORM_ROLES, SELLER_ROLES } from "@/lib/rbac-roles";
+import { ACCESSIBLE_SELLER_ROLES, PLATFORM_ROLES } from "@/lib/rbac-roles";
 
 // ServerSession não é exportado pelo cliente interno; derivar o tipo do próprio
 // consumidor evita duplicar a forma da sessão em dois lugares que divergiriam.
@@ -75,7 +75,7 @@ function parseSellers(payload: unknown): SessionIdentitySeller[] | null {
     if (typeof id !== "string" || id.length === 0 ||
         typeof slug !== "string" || slug.length === 0 ||
         typeof displayName !== "string" || displayName.length === 0 ||
-        typeof role !== "string" || !SELLER_ROLES.has(role)) {
+        typeof role !== "string" || !ACCESSIBLE_SELLER_ROLES.has(role)) {
       return null;
     }
     parsed.push({ id, slug, displayName, role });

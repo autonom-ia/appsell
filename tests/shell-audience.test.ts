@@ -75,9 +75,22 @@ describe("audiência do shell", () => {
 });
 
 describe("superadmin real", () => {
-  it("não é convidado a abrir loja, e não recebe o menu do vendedor", () => {
-    // O grant global não cria membership — a matriz é explícita. Ele cai em
-    // "sem loja", mas convidá-lo a criar uma leria mal o que ele veio fazer.
+  it("recebe o menu do vendedor pelas lojas que a projeção lhe dá", () => {
+    // Desde 0032_platform_superadmin_catalog, GET /v1/me/sellers devolve ao
+    // superadmin todas as lojas ativas com role='platform_superadmin'. Não é
+    // membership, mas é acesso real de catálogo — recusá-lo aqui o travaria
+    // para fora do produto.
+    const state = ready({
+      identity: identity({
+        platformRoles: ["platform_superadmin"],
+        sellers: [{ id: "s1", slug: "hub2you", displayName: "Hub2you", role: "platform_superadmin" }]
+      })
+    });
+    expect(shellAudience(state)).toBe("seller");
+    expect(hasPlatformGrant(state)).toBe(true);
+  });
+
+  it("sem nenhuma loja ativa na plataforma, não é convidado a abrir a sua", () => {
     // O acesso à área de plataforma em si é entrega da onda A4: hoje a rota é
     // travada em local/CI e um link no menu seria um botão para o 403.
     const state = ready({ identity: identity({ platformRoles: ["platform_superadmin"] }) });

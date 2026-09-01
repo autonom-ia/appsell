@@ -5,6 +5,18 @@ import { isOAuthStoreUnavailable } from "@/lib/redis-oauth-service";
 import { demoProfileForSubject } from "@/lib/demo-config";
 import { publicDemoRuntimeEnabled } from "@/lib/public-demo-runtime";
 import { resolveSessionIdentity } from "@/lib/session-identity.server";
+import {
+  csrfCookieOptions,
+  productCsrfCookieName,
+  productPublishCsrfCookieName,
+  productUpdateCsrfCookieName
+} from "@/lib/cookies";
+import {
+  CREATE_PRODUCT_DRAFT_CSRF_ACTION,
+  PUBLISH_PRODUCT_DRAFT_CSRF_ACTION,
+  UPDATE_PRODUCT_DRAFT_CSRF_ACTION,
+  csrfTokenForSession
+} from "@/lib/mutation-protection.server";
 
 export const dynamic = "force-dynamic";
 
@@ -46,7 +58,7 @@ export async function GET(request: NextRequest) {
     // demo o papel já está na persona, e consultar a API de domínio ali
     // quebraria o runtime local que roda sem ela.
     const identity = demoProfile ? null : await safeIdentity(sessionId, session);
-    return NextResponse.json({
+    const response = NextResponse.json({
       authenticated: true,
       expiresAt: session.expiresAt,
       runtime: process.env.APPSELL_OAUTH_MODE === "identity" ? "identity" : "local",
@@ -71,11 +83,38 @@ export async function GET(request: NextRequest) {
       status: 200,
       headers: { "cache-control": "no-store" }
     });
+    // A sessão reconcilia as permissões de produto a cada carga do shell.
+    // Sem isto, um vendedor que entrou enquanto a listagem estava fora ficava
+    // sem elas pela sessão inteira: nada as reemitiria, e criar a loja de novo
+    // não é caminho — o banco recusa um segundo onboarding para quem já é
+    // owner ativo. A recíproca também vale: membership revogada perde as
+    // permissões na carga seguinte, sem esperar o próximo login.
+    if (identity) syncProductMutationCookies(response, sessionId, identity.sellers.length > 0);
+    return response;
   } catch (error) {
     if (!isOAuthStoreUnavailable(error)) throw error;
     return NextResponse.json({ authenticated: false, error: "oauth_store_unavailable" }, {
       status: 503,
       headers: { "cache-control": "no-store" }
     });
+  }
+}
+
+function syncProductMutationCookies(
+  response: NextResponse,
+  sessionId: string,
+  allowed: boolean
+) {
+  const grants = [
+    [productCsrfCookieName(), CREATE_PRODUCT_DRAFT_CSRF_ACTION],
+    [productUpdateCsrfCookieName(), UPDATE_PRODUCT_DRAFT_CSRF_ACTION],
+    [productPublishCsrfCookieName(), PUBLISH_PRODUCT_DRAFT_CSRF_ACTION]
+  ] as const;
+  for (const [name, action] of grants) {
+    if (allowed) {
+      response.cookies.set(name, csrfTokenForSession(sessionId, action), csrfCookieOptions());
+    } else {
+      response.cookies.set(name, "", { ...csrfCookieOptions(), maxAge: 0 });
+    }
   }
 }

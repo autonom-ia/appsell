@@ -5,7 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, MouseEvent, ReactNode } from "react";
 import { AccessibleDialog } from "./accessible-dialog";
-import { PLATFORM_ROLES, SELLER_ROLES } from "../../lib/rbac-roles";
+import { ACCESSIBLE_SELLER_ROLES, PLATFORM_ROLES } from "../../lib/rbac-roles";
 import { SellBrand } from "./sell-brand";
 import { allowUnsavedNavigation, DIRTY_HISTORY_BLOCKED_EVENT, DIRTY_HISTORY_CONTINUE_EVENT, DIRTY_NAVIGATION_REQUEST_EVENT, DIRTY_STATE_EVENT } from "./use-unsaved-changes";
 import {
@@ -455,7 +455,7 @@ function parseIdentity(value: unknown): ShellIdentity | null | undefined {
     if (typeof item.id !== "string" || item.id.length === 0 ||
         typeof item.slug !== "string" || item.slug.length === 0 ||
         typeof item.displayName !== "string" || item.displayName.length === 0 ||
-        typeof item.role !== "string" || !SELLER_ROLES.has(item.role)) {
+        typeof item.role !== "string" || !ACCESSIBLE_SELLER_ROLES.has(item.role)) {
       return undefined;
     }
     parsed.push({ id: item.id, slug: item.slug, displayName: item.displayName, role: item.role });

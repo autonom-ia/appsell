@@ -53,7 +53,7 @@ import { demoProfileForSubject } from "@/lib/demo-config";
 import { oauthCallbackHome } from "@/lib/oauth-callback-home";
 import { safePostLoginPath } from "@/lib/post-login-redirect";
 import { sellerCookiePlan } from "@/lib/seller-cookie-plan";
-import { SELLER_ROLES } from "@/lib/rbac-roles";
+import { ACCESSIBLE_SELLER_ROLES } from "@/lib/rbac-roles";
 
 export const dynamic = "force-dynamic";
 
@@ -256,7 +256,10 @@ function sellerCount(payload: unknown) {
   if (!Array.isArray(sellers)) return 0;
   return sellers.filter((seller) => {
     if (!seller || typeof seller !== "object" || Array.isArray(seller)) return false;
-    const role = (seller as Record<string, unknown>).role;
-    return typeof role === "string" && SELLER_ROLES.has(role);
+    const item = seller as Record<string, unknown>;
+    const textual = ["id", "slug", "display_name"].every(
+      (field) => typeof item[field] === "string" && (item[field] as string).length > 0
+    );
+    return textual && typeof item.role === "string" && ACCESSIBLE_SELLER_ROLES.has(item.role);
   }).length;
 }
