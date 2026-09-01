@@ -1,6 +1,8 @@
 "use client";
 
 import Link from "next/link";
+import { NEW_STORE_PATH } from "./app-shell";
+import { canOpenFirstStore, useShellProfile } from "./shell-profile-context";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   parseBuyerProductsPayload,
@@ -22,6 +24,10 @@ const stateMessages: Record<Exclude<State, "ready">, string> = {
 };
 
 export function LibraryWorkspace({ demoCheckoutEnabled = false }: { demoCheckoutEnabled?: boolean }) {
+  const profile = useShellProfile();
+  // Só oferece criar loja a quem já poderia: identidade real resolvida e ainda
+  // sem nenhuma. Persona demo e sessão não resolvida ficam de fora.
+  const showStoreInvite = canOpenFirstStore(profile);
   const [state, setState] = useState<State>("loading");
   const [items, setItems] = useState<LibraryItem[]>([]);
   const requestRef = useRef<AbortController | null>(null);
@@ -78,7 +84,9 @@ export function LibraryWorkspace({ demoCheckoutEnabled = false }: { demoCheckout
   }
 
   if (!items.length) {
-    return <section className="empty-state library-empty" aria-labelledby="library-empty-title"><h2 id="library-empty-title">Sua biblioteca está vazia</h2><p>Nenhum produto ativo está disponível para esta conta.{demoCheckoutEnabled ? " Conclua a compra demo para liberar o curso." : ""}</p>{demoCheckoutEnabled ? <Link className="primary-button commercial-button" href="/checkout">Comprar com cupom demo</Link> : null}<button type="button" className="secondary-button" onClick={() => void load()}>Atualizar biblioteca</button></section>;
+    // Biblioteca vazia e sem loja é, quase sempre, quem entrou para vender e
+    // parou no meio. A saída precisa estar aqui: é a tela em que ele cai.
+    return <section className="empty-state library-empty" aria-labelledby="library-empty-title"><h2 id="library-empty-title">Sua biblioteca está vazia</h2><p>Nenhum produto ativo está disponível para esta conta.{demoCheckoutEnabled ? " Conclua a compra demo para liberar o curso." : ""}</p>{demoCheckoutEnabled ? <Link className="primary-button commercial-button" href="/checkout">Comprar com cupom demo</Link> : null}{showStoreInvite ? <Link className="primary-button" href={NEW_STORE_PATH}>Criar minha loja</Link> : null}<button type="button" className="secondary-button" onClick={() => void load()}>Atualizar biblioteca</button></section>;
   }
 
   return <div className="learner-library">{items.map((item) => {

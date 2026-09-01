@@ -5,6 +5,8 @@ import { productArt } from "@/lib/product-art";
 import { useCallback, useEffect, useState } from "react";
 import { ProductCard } from "./product-card";
 import { SellerOnboardingCard } from "./seller-onboarding-card";
+import { dashboardHeader } from "../../lib/dashboard-audience";
+import { canOpenFirstStore } from "./shell-profile-context";
 import { useShellProfile } from "./shell-profile-context";
 import { DEMO_SELLER_ID, demoProducts } from "../../lib/demo-catalog";
 import { listSellerProducts } from "../../lib/catalog-projection";
@@ -123,23 +125,36 @@ export function DashboardOverview() {
   // The CTA is plain navigation to /products (which owns onboarding), so it
   // renders whenever the session view is resolved — including while the
   // catalog request is still in flight or unavailable.
-  const showCta = view === "demo" || view === "real";
+  // null enquanto a sessão não resolveu: não sabemos se há loja, e o painel
+  // não pode afirmar que não há.
+  // O superadmin sem nenhuma loja ativa não é um produtor por ativar: o
+  // callback já o manda para cá, e o painel precisa concordar com ele.
+  const hasStore = profile.status === "ready"
+    ? (profile.identity
+        ? profile.identity.sellers.length > 0 || profile.identity.platformRoles.length > 0
+        : null)
+    : null;
+  const header = dashboardHeader(view, hasStore);
 
   return (
     <>
       <header className="page-header">
-        <div><p className="eyebrow">Visão geral</p><h1>Seu negócio em um só lugar.</h1><p>Acompanhe o catálogo e continue de onde parou.</p></div>
-        {showCta ? <Link className="primary-button" href="/products">Criar produto</Link> : null}
+        {header.activation ? (
+          <div><p className="eyebrow">Ativação do produtor</p><h1>Comece criando sua loja.</h1><p>A loja é onde seus produtos ficam e onde seus alunos compram.</p></div>
+        ) : (
+          <div><p className="eyebrow">Visão geral</p><h1>Seu negócio em um só lugar.</h1><p>Acompanhe o catálogo e continue de onde parou.</p></div>
+        )}
+        {header.cta ? <Link className="primary-button" href="/products">Criar produto</Link> : null}
       </header>
       {view === "loading" ? <p className="empty-state" role="status">Carregando sua visão geral…</p> : null}
       {view === "failed" ? <p className="empty-state" role="alert">Não foi possível validar sua sessão. <a href="/auth/login">Entre novamente</a>.</p> : null}
       {view === "demo" ? <DemoDashboard/> : null}
-      {view === "real" ? <RealDashboard catalog={catalog}/> : null}
+      {view === "real" ? <RealDashboard catalog={catalog} canOpenStore={canOpenFirstStore(profile)}/> : null}
     </>
   );
 }
 
-function RealDashboard({ catalog }: { catalog: CatalogState }) {
+function RealDashboard({ catalog, canOpenStore }: { catalog: CatalogState; canOpenStore: boolean }) {
   const ready = catalog.status === "ready" ? catalog : null;
   const hasSeller = (ready?.sellers.length ?? 0) > 0;
   const metrics = dashboardCatalogMetrics(ready?.drafts ?? [], ready?.truncated ?? false);
@@ -151,7 +166,7 @@ function RealDashboard({ catalog }: { catalog: CatalogState }) {
       {catalog.status === "unauthorized" ? <p className="empty-state" role="alert">Sua sessão expirou. <a href="/auth/login">Entre novamente</a>.</p> : null}
       {catalog.status === "unavailable" ? <p className="empty-state" role="alert">A API está indisponível no momento. Tente novamente em instantes.</p> : null}
       {catalog.status === "error" ? <p className="empty-state" role="alert">Não foi possível carregar seu catálogo. Recarregue a página.</p> : null}
-      {ready && !hasSeller ? <SellerOnboardingCard/> : null}
+      {ready && !hasSeller && canOpenStore ? <SellerOnboardingCard/> : null}
       {ready && hasSeller && metrics.total === 0 ? (
         <section className="empty-state next-step" aria-label="Próximo passo">
           <h2>Sua loja está pronta. Falta o primeiro produto.</h2>
@@ -162,7 +177,7 @@ function RealDashboard({ catalog }: { catalog: CatalogState }) {
           <Link className="primary-button" href="/products">Criar meu primeiro produto</Link>
         </section>
       ) : null}
-      {ready && !(hasSeller && metrics.total === 0) ? (
+      {ready && hasSeller && metrics.total > 0 ? (
         <section className="metric-grid" aria-label="Resumo do negócio">
           <article><span>Produtos</span><strong>{formatProductCount(metrics)}</strong><small>{metrics.published} publicados</small></article>
           <article><span>Alunos</span><strong>—</strong><small>Sem matrículas registradas ainda</small></article>

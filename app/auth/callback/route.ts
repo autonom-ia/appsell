@@ -61,6 +61,9 @@ export async function GET(request: NextRequest) {
   let issuedSessionId: string | undefined;
   let demoSuperadmin = false;
   let hasSellerMembership = false;
+  // null = a listagem não respondeu. Distinguir isso de "zero lojas" evita
+  // mandar um vendedor existente para a biblioteca por causa de um 503.
+  let storeState: boolean | null = null;
   const callbackInput = {
     transactionId: request.cookies.get(transactionCookieName())?.value,
     code: request.nextUrl.searchParams.get("code") ?? undefined,
@@ -99,7 +102,13 @@ export async function GET(request: NextRequest) {
           // ao criar a loja ou no próximo login. Deixar esta consulta
           // bloquear o callback transformaria uma indisponibilidade de leitura
           // em impossibilidade de entrar.
-          hasSellerMembership = await countSellersOrZero(sessionId, session) > 0;
+          const sellers = await countSellersOrNull(sessionId, session);
+          hasSellerMembership = (sellers ?? 0) > 0;
+          // O superadmin de plataforma não é candidato a abrir loja, mesmo num
+          // ambiente onde ainda não exista nenhuma loja ativa para projetar.
+          storeState = sellers === null
+            ? null
+            : sellers > 0 || await hasPlatformGrantOrNull(sessionId, session);
         }
         if (demoProfile?.persona === "superadmin") {
           const platformSuperadmin = hasPlatformSuperadminGrant(
@@ -117,7 +126,7 @@ export async function GET(request: NextRequest) {
     const destination = safePostLoginPath(
       request.cookies.get(postLoginCookieName())?.value,
       configuredPublicOrigin()
-    ) ?? oauthCallbackHome(demoProfile);
+    ) ?? oauthCallbackHome(demoProfile, storeState);
     const response = NextResponse.redirect(new URL(destination, configuredPublicOrigin()));
     expireTransactionCookie(response);
     response.cookies.set(postLoginCookieName(), "", { ...postLoginCookieOptions(), maxAge: 0 });
@@ -236,14 +245,14 @@ function expireTransactionCookie(response: NextResponse) {
   });
 }
 
-async function countSellersOrZero(
+async function countSellersOrNull(
   sessionId: string,
   session: Parameters<typeof listDomainSellers>[1]
 ) {
   try {
     return sellerCount(await listDomainSellers(sessionId, session));
   } catch {
-    return 0;
+    return null;
   }
 }
 
@@ -251,9 +260,12 @@ async function countSellersOrZero(
 // parcial não prova membership, e tratá-la como prova devolveria ao comprador
 // as permissões de produto que esta mudança tirou dele.
 function sellerCount(payload: unknown) {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return 0;
+  // null quando o payload não é reconhecível: durante um rollout com versões
+  // incompatíveis, ler isso como "zero lojas" mandaria um vendedor existente
+  // para a biblioteca como se ele nunca tivesse criado nada.
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
   const sellers = (payload as Record<string, unknown>).sellers;
-  if (!Array.isArray(sellers)) return 0;
+  if (!Array.isArray(sellers)) return null;
   return sellers.filter((seller) => {
     if (!seller || typeof seller !== "object" || Array.isArray(seller)) return false;
     const item = seller as Record<string, unknown>;
@@ -262,4 +274,18 @@ function sellerCount(payload: unknown) {
     );
     return textual && typeof item.role === "string" && ACCESSIBLE_SELLER_ROLES.has(item.role);
   }).length;
+}
+
+// O grant é consulta auxiliar: serve para não convidar um superadmin a abrir
+// loja. Uma falha aqui não pode desfazer um login que já deu certo — antes
+// desta guarda ela caía no catch que faz logout e relança.
+async function hasPlatformGrantOrNull(
+  sessionId: string,
+  session: Parameters<typeof readDomainIdentity>[1]
+) {
+  try {
+    return hasPlatformSuperadminGrant(await readDomainIdentity(sessionId, session));
+  } catch {
+    return false;
+  }
 }

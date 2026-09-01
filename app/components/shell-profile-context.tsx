@@ -42,6 +42,17 @@ export function shellAudience(state: ProfileState): ShellAudience | null {
   return state.identity.sellers.length > 0 ? "seller" : "without-store";
 }
 
+// Quem é candidato a abrir a primeira loja. Uma identidade com grant de
+// plataforma não é: ela opera a plataforma, e a matriz trata "criar tenant
+// próprio" como fluxo de quem ainda não tem papel nenhum. Três telas fazem
+// essa pergunta — menu, biblioteca e painel — e elas não podem discordar.
+export function canOpenFirstStore(state: ProfileState): boolean {
+  if (state.status !== "ready" || state.profile) return false;
+  const identity = state.identity;
+  if (!identity) return false;
+  return identity.sellers.length === 0 && identity.platformRoles.length === 0;
+}
+
 export function hasPlatformGrant(state: ProfileState): boolean {
   if (state.status !== "ready") return false;
   if (state.profile) return state.profile.persona === "superadmin";
