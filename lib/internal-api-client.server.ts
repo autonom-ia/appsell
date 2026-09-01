@@ -116,14 +116,22 @@ export async function readPublicStorefront(sellerSlug: string) {
   }
 }
 
-export async function syncDomainIdentity(sessionId: string, session: ServerSession) {
+export async function syncDomainIdentity(
+  sessionId: string,
+  session: ServerSession,
+  displayName?: string
+) {
   return domainRequest(sessionId, session, {
     method: "PUT",
     path: "/v1/me",
     capability: "identity.sync",
     body: {
       email: identityEmail(session),
-      email_verified: true
+      email_verified: true,
+      // O nome viaja no mesmo sync que já acontece a cada login. Quando o
+      // provedor não emite o claim, o campo vai ausente e o banco preserva o
+      // nome que já conhecia.
+      ...(displayName === undefined ? {} : { display_name: displayName })
     }
   });
 }

@@ -79,11 +79,11 @@ describe("Redis OAuth store", () => {
       }
     };
     const code = "c".repeat(43);
-    const sessionId = await store.callbackIdentity({
+    const sessionId = (await store.callbackIdentity({
       transactionId: login.transactionId,
       code,
       state: login.state
-    }, exchanger);
+    }, exchanger)).sessionId;
 
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({ code, expectedNonce: login.nonce });
@@ -97,11 +97,11 @@ describe("Redis OAuth store", () => {
         emailVerified: true
       }
     });
-    expect(await store.callbackIdentity({
+    expect((await store.callbackIdentity({
       transactionId: login.transactionId,
       code,
       state: login.state
-    }, exchanger)).toBe(sessionId);
+    }, exchanger)).sessionId).toBe(sessionId);
     expect(calls).toHaveLength(1);
 
     const keys = await isolated.client.keys(`appsell:test:${suffix}:{appsell:test:${suffix}}:*`);
@@ -190,7 +190,7 @@ describe("Redis OAuth store", () => {
       (index % 2 ? first : second).callbackIdentity(callback, exchanger)
     ));
     expect(attempts.filter((attempt) => attempt.status === "fulfilled")).toHaveLength(20);
-    const sessionIds = attempts.flatMap((attempt) => attempt.status === "fulfilled" ? [attempt.value] : []);
+    const sessionIds = attempts.flatMap((attempt) => attempt.status === "fulfilled" ? [attempt.value.sessionId] : []);
     expect(new Set(sessionIds)).toHaveLength(1);
     expect(exchangeCalls).toBe(1);
     expect(await first.getSession(sessionIds[0])).toMatchObject({

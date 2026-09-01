@@ -15,6 +15,7 @@ export interface ShellSeller {
 
 export interface ShellIdentity {
   readonly email: string;
+  readonly displayName: string | null;
   readonly emailVerified: boolean;
   readonly platformRoles: readonly string[];
   readonly sellers: readonly ShellSeller[];

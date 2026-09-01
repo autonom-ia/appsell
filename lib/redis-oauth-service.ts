@@ -57,6 +57,7 @@ export interface IdentityAuthorizationCodeExchanger {
       sub: string;
       email: string;
       emailVerified: true;
+      displayName?: string;
     };
   }>;
 }
@@ -624,10 +625,20 @@ export class RedisOAuthService {
     });
   }
 
+  // Devolve o sessionId e, quando o provedor o emitiu, o nome lido do ID
+  // token. O nome NÃO entra no cofre: ele viaja apenas até o `PUT /v1/me` do
+  // callback e passa a viver no banco. O cofre valida suas chaves por lista
+  // exata, e abrir essa fronteira para exibir um rótulo não se justifica.
+  //
+  // Nos caminhos de retry e replay o nome vem ausente, e isso é inofensivo: a
+  // gravação preserva o nome já conhecido quando o campo não vem.
   async callbackIdentity(
     input: { transactionId?: string; code?: string; state?: string },
     exchanger: IdentityAuthorizationCodeExchanger
-  ) {
+  ): Promise<{ sessionId: string; displayName?: string }> {
+    // Só o caminho que troca o código pelo token conhece o nome. Retry e
+    // replay reaproveitam a sessão e devolvem o campo ausente de propósito.
+    let displayName: string | undefined;
     if (!input.transactionId || !input.code || !input.state) {
       // Provider params present but no transaction: the cookie expired or was
       // dropped, which restarting the login fixes. Missing provider params is a
@@ -641,13 +652,13 @@ export class RedisOAuthService {
     const transactionId = input.transactionId;
     const code = input.code;
     const state = input.state;
-    return this.withRedis(async () => {
+    return this.withRedis<{ sessionId: string; displayName?: string }>(async () => {
       const sessionId = hmacSha256(this.sessionHmacKey, transactionId);
       const callbackFingerprint = sha256(`${code}\0${state}`);
       const rawTransaction = await this.redis.get(this.key("tx", transactionId));
       if (!rawTransaction) {
         if (await this.isValidIdentityCallbackRetry(transactionId, sessionId, callbackFingerprint)) {
-          return sessionId;
+          return { sessionId, ...(displayName === undefined ? {} : { displayName }) };
         }
         throw new OAuthFlowError("Login transaction expired.", "recoverable");
       }
@@ -671,12 +682,14 @@ export class RedisOAuthService {
       switch (acquisition) {
         case "RETRY_OK": {
           if (await this.isValidIdentityCallbackRetry(transactionId, sessionId, callbackFingerprint)) {
-            return sessionId;
+            return { sessionId, ...(displayName === undefined ? {} : { displayName }) };
           }
           throw new OAuthVaultIntegrityError("OAuth session vault integrity failure.");
         }
         case "BUSY":
-          return this.waitForIdentityCallbackWinner(transactionId, sessionId, callbackFingerprint);
+          // O vencedor da corrida já gravou a sessão; quem esperou não trocou
+          // código nenhum e por isso não tem nome para devolver.
+          return { sessionId: await this.waitForIdentityCallbackWinner(transactionId, sessionId, callbackFingerprint) };
         case "AMBIGUOUS":
           throw new OAuthIdentityCallbackUnavailableError("Identity callback outcome is ambiguous.");
         case "TRANSACTION_MISSING": throw new OAuthFlowError("Login transaction expired.", "recoverable");
@@ -731,6 +744,7 @@ export class RedisOAuthService {
             emailVerified: true
           }
         };
+        displayName = verified.identity.displayName;
         const vaultEnvelope = await this.tokenVault.seal(
           tokenBundle,
           this.vaultContext(sessionId, session.subject, session.tokenRevision)
@@ -753,10 +767,10 @@ export class RedisOAuthService {
           vaultEnvelope
         );
         switch (result) {
-          case "OK": return sessionId;
+          case "OK": return { sessionId, ...(displayName === undefined ? {} : { displayName }) };
           case "RETRY_OK": {
             if (await this.isValidIdentityCallbackRetry(transactionId, sessionId, callbackFingerprint)) {
-              return sessionId;
+              return { sessionId, ...(displayName === undefined ? {} : { displayName }) };
             }
             throw new OAuthVaultIntegrityError("OAuth session vault integrity failure.");
           }

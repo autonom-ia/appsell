@@ -30,6 +30,7 @@ describe("resolução do papel no servidor", () => {
     const resolved = await call();
     expect(resolved).toEqual({
       email: "pessoa@exemplo.test",
+      displayName: null,
       emailVerified: true,
       platformRoles: ["platform_superadmin"],
       sellers: [{ id: "s1", slug: "hub2you", displayName: "Hub2you", role: "seller_owner" }]
