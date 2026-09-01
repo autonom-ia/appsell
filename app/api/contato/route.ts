@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { enviarContatoComercial } from "@/lib/email/contato-comercial";
 
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const LIMITES = { nome: 120, email: 200, loja: 160, mensagem: 4_000 } as const;
@@ -47,25 +49,21 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "campo_invalido", campo: "email" }, { status: 422, headers: { "cache-control": "no-store" } });
   }
 
-  // Sem destino configurado a mensagem se perderia. Responder 200 aqui seria
-  // mentir para quem escreveu: a pagina mostra o e-mail como alternativa
-  // quando esta rota falha.
-  const destino = process.env.APPSELL_CONTACT_WEBHOOK_URL;
-  if (!destino) {
-    return NextResponse.json({ error: "contato_nao_configurado" }, { status: 503, headers: { "cache-control": "no-store" } });
-  }
-
-  try {
-    const resposta = await fetch(destino, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ origem: "lp-sell", recebidoEm: new Date().toISOString(), ...campos }),
-      signal: AbortSignal.timeout(8_000)
-    });
-    if (!resposta.ok) throw new Error(String(resposta.status));
-  } catch {
+  // Envio direto por SMTP, com as mesmas variaveis do google-saas. Sem destino
+  // configurado a mensagem se perderia, e responder 200 seria mentir para quem
+  // escreveu: a pagina mostra o e-mail como alternativa quando isto falha.
+  const enviado = await enviarContatoComercial({
+    nome: campos.nome as string,
+    email: campos.email as string,
+    loja: campos.loja as string,
+    mensagem: campos.mensagem as string,
+    origem: request.headers.get("origin"),
+    agente: request.headers.get("user-agent"),
+    ip: request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? request.headers.get("x-real-ip")
+  });
+  if (!enviado) {
     return NextResponse.json({ error: "contato_indisponivel" }, { status: 503, headers: { "cache-control": "no-store" } });
   }
 
-  return NextResponse.json({ ok: true }, { status: 202, headers: { "cache-control": "no-store" } });
+  return NextResponse.json({ ok: true }, { status: 200, headers: { "cache-control": "no-store" } });
 }
