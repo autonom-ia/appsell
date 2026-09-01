@@ -20,7 +20,7 @@ consulte [PRODUCTION_CURRENT.md](PRODUCTION_CURRENT.md). Auditorias antigas em
 | Logs da API | 🔴 | não gravam nada ([#312](https://github.com/autonom-ia/appsell/issues/312)) — "0 erros" não é evidência |
 | Página pública | 🟢 | `9ebb93f`: hero em três atos, contraste medido sob os glifos, `robots.txt` e `sitemap.xml` no ar |
 | Contato da página | 🟢 | SMTP comercial configurado no `web`; envio real confirmado recebido em 01/09 |
-| Navegação no celular | 🟡 | a página pública não tem menu: para chegar a Preço ou FAQ, só rolando ou pelo rodapé |
+| Navegação no celular | 🟢 | sem menu por decisão ([#347](https://github.com/autonom-ia/appsell/issues/347)): em 320px não cabe, e a página tem CTA fixo o tempo todo |
 | Suítes fora do CI | 🟡 | 5 arquivos `bff-*`, inclusive o de isolamento entre lojas ([#266](https://github.com/autonom-ia/appsell/issues/266)) |
 
 ## Produção comprovada

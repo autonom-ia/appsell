@@ -156,6 +156,22 @@ nomes, e o `docker service update` deduplicou. **Comparar nomes contra a spec
 salva, não contar entradas.** O número sozinho teria provocado um rollback
 desnecessário.
 
+## Decisão 016 — a página pública não tem menu no celular, e é de propósito
+
+Medido em 01/09: em 320px sobram **16px** entre a marca e os botões da barra do
+topo. Um botão de menu de 44px reintroduziria o corte que #343 acabara de
+corrigir, quando o "VENDER" era partido no meio da palavra.
+
+A alternativa, uma faixa horizontal de âncoras abaixo da barra, cabe, mas custa
+~40px fixos no topo de todo celular e altera `--topo-h`, que governa o
+`scroll-margin` das âncoras e o respiro do hero.
+
+A página tem um objetivo único, cadastrar, e ele está a um toque em qualquer
+ponto da rolagem pelo botão fixo. Preço, FAQ e contato têm link no rodapé.
+
+Reabrir só com evidência de comportamento real, não por suposição. Registro em
+[#347](https://github.com/autonom-ia/appsell/issues/347).
+
 ## Pendências que bloqueiam ampliação
 
 - staging separado e DNS próprio;
