@@ -31,8 +31,8 @@
 .cta { --foco: var(--ink); }
 .lp :where(h1, h2) { font-family: var(--font-montserrat), Montserrat, Inter, sans-serif; font-weight: 400; letter-spacing: -.062em; line-height: .95; margin: 0; color: inherit; text-wrap: balance; }
 .lp :where(h1 b, h2 b), .lp .act-title b { font-weight: 900; }
-#topo, #funciona, #loja, #preco, #contato { scroll-margin-top: calc(var(--topo-h) + 16px); }
-.in { max-width: 1240px; margin: 0 auto; padding: 0 clamp(20px, 4vw, 56px); }
+#conteudo, #topo, #funciona, #loja, #preco, #contato { scroll-margin-top: calc(var(--topo-h) + 16px); }
+.in { max-width: 1240px; margin: 0 auto; padding-left: max(clamp(20px, 4vw, 56px), env(safe-area-inset-left)); padding-right: max(clamp(20px, 4vw, 56px), env(safe-area-inset-right)); }
 .qb { display: inline; }
 @media (min-width: 900px) { .qb { display: block; } }
 .pular { position: fixed; top: 10px; left: 10px; z-index: 60; padding: 12px 18px; background: #fff; color: var(--navy); font-weight: 700; transform: translateY(-180%); }
@@ -44,7 +44,10 @@
 
 /* o laranja tem um significado so: o momento em que o dinheiro entra */
 .cta { display: inline-flex; align-items: center; justify-content: center; gap: 14px; min-height: 60px; padding: 17px 26px; border: 0; background: var(--orange-cta); color: #fff; font-family: var(--font-montserrat), Montserrat, sans-serif; font-size: 12px; font-weight: 900; letter-spacing: .5px; text-transform: uppercase; cursor: pointer; transition: background .2s ease, transform .2s ease; }
-.cta:hover { background: #b83d0e; transform: translateY(-2px); }
+@media (hover: hover) and (pointer: fine) {
+  .cta:hover { background: #b83d0e; transform: translateY(-2px); }
+    .indice a:hover { background: rgba(255,255,255,.1); }
+}
 .cta-vender { display: inline-flex; align-items: center; justify-content: center; gap: 12px; min-height: 60px; padding: 17px 26px; background: var(--orange-cta); color: #fff; font-family: var(--font-montserrat), Montserrat, sans-serif; font-size: 12px; font-weight: 900; letter-spacing: .5px; text-transform: uppercase; transition: background .2s ease, transform .2s ease; }
 .cta-vender:hover { background: #b83d0e; transform: translateY(-2px); }
 .cta-vender .i { width: 18px; height: 18px; }
@@ -53,8 +56,9 @@
 .cta-2.escuro { border-bottom-color: rgba(7,19,33,.5); color: var(--ink); }
 .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 26px; margin-top: 36px; }
 
-.top { position: fixed; inset: 0 0 auto; z-index: var(--z-topo); display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px clamp(20px, 4vw, 56px); background: rgba(0,27,67,.86); backdrop-filter: blur(14px); border-bottom: 1px solid rgba(255,255,255,.16); }
-.mark { display: flex; align-items: center; gap: 12px; min-height: 44px; }
+.top { position: fixed; inset: 0 0 auto; z-index: var(--z-topo); display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px max(clamp(20px, 4vw, 56px), env(safe-area-inset-right)) 18px max(clamp(20px, 4vw, 56px), env(safe-area-inset-left)); background: rgba(0,27,67,.86); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); border-bottom: 1px solid rgba(255,255,255,.16); }
+.mark { display: flex; align-items: center; gap: 12px; min-height: 44px; min-width: 0; flex-shrink: 1; }
+@media (max-width: 359px) { .mark small { display: none; } .mark b { font-size: 15px; } }
 .mark .ico { width: 34px; height: 34px; background: var(--icon) center/contain no-repeat; }
 .mark b { font-family: var(--font-montserrat), Montserrat, sans-serif; font-size: 17px; font-weight: 900; letter-spacing: -.02em; line-height: 1; color: #fff; }
 .mark small { display: block; margin-top: 4px; font-family: var(--font-montserrat), Montserrat, sans-serif; font-size: 10px; font-weight: 900; letter-spacing: 1.6px; text-transform: uppercase; color: rgba(255,255,255,.66); }
@@ -70,7 +74,7 @@
 .topo-mob { display: inline-flex; align-items: center; gap: 6px; }
 .topo-mob a:first-child { display: inline-flex; align-items: center; min-height: 44px; padding: 0 12px; font-family: var(--font-montserrat), Montserrat, sans-serif; font-size: 11px; font-weight: 900; letter-spacing: .5px; text-transform: uppercase; color: rgba(255,255,255,.9); }
 @media (min-width: 900px) { .topo-mob { display: none; } }
-.cta-mob { display: inline-flex; align-items: center; min-height: 44px; padding: 0 16px; background: transparent; box-shadow: inset 0 0 0 1px rgba(255,255,255,.45); color: #fff; font-family: var(--font-montserrat), Montserrat, sans-serif; font-size: 11px; font-weight: 900; letter-spacing: .5px; text-transform: uppercase; }
+.cta-mob { display: inline-flex; align-items: center; min-height: 44px; padding: 0 14px; background: transparent; box-shadow: inset 0 0 0 1px rgba(255,255,255,.45); color: #fff; font-family: var(--font-montserrat), Montserrat, sans-serif; font-size: 11px; font-weight: 900; letter-spacing: .5px; text-transform: uppercase; }
 @media (min-width: 900px) { .cta-mob { display: none; } }
 
 /* O APARELHO: tres planos no mesmo espaco 3D, e a barra de endereco nunca e cortada */
@@ -88,6 +92,10 @@
 /* 1. ABERTURA */
 .abertura { position: relative; background: var(--navy); }
 .abertura .pin { position: relative; height: 100vh; height: 100svh; min-height: 660px; overflow: hidden; }
+@media (max-height: 500px), (max-width: 420px) {
+  .abertura .pin { min-height: 0; height: auto; padding-bottom: 40px; }
+  .palco-grid { height: auto; align-content: start; }
+}
 .foto { position: absolute; inset: 0; background: var(--hero-photo) 100% center/cover no-repeat, var(--navy); will-change: transform, opacity; }
 /* o scrim e calibrado por medicao de pixel: nenhum ponto sob texto pode ficar abaixo de 4,5:1 */
 #video-foto { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: 100% center; opacity: 0; transition: opacity .4s ease; pointer-events: none; }
@@ -107,7 +115,7 @@
 .ato .preco-linha { margin-top: 18px; font-family: var(--font-plex-mono), ui-monospace, monospace; font-variant-numeric: tabular-nums; font-size: .95rem; color: var(--cyan); }
 .ato .nota { margin-top: 14px; max-width: 34ch; color: rgba(255,255,255,.62); font-size: .84rem; line-height: 1.5; }
 .palco { position: absolute; right: 5vw; top: 50%; z-index: var(--z-palco); width: 296px; transform: translateY(-50%); perspective: 1600px; perspective-origin: 60% 45%; pointer-events: none; }
-@media (max-width: 1199px) { .palco { right: 2vw; width: 248px; } .palco .peca { display: none; } }
+@media (max-width: 1359px) { .palco { right: 2vw; width: 248px; } .peca { display: none; } }
 @media (max-width: 999px) { .palco { right: 0; width: 208px; } .atos { max-width: 58%; } }
 @media (max-width: 680px) { .palco { display: none; } .atos { max-width: none; } }
 .progresso { position: absolute; left: clamp(20px, 4vw, 56px); bottom: 30px; display: flex; gap: 22px; z-index: var(--z-hud); font-family: var(--font-montserrat), Montserrat, sans-serif; font-size: 10px; font-weight: 900; letter-spacing: 1.6px; text-transform: uppercase; }
@@ -254,7 +262,7 @@ html:not(.js-anim) #peca-painel { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .lp, .lp * { animation-duration: .001ms !important; transition-duration: .001ms !important; }
 }
-@media (min-width: 1000px) and (max-width: 1199px) {
+@media (min-width: 1000px) and (max-width: 1359px) {
   .palco-grid { grid-template-columns: minmax(0, 560px) 1fr; }
   .foto::after { background: linear-gradient(90deg, rgba(0,27,67,.97) 0%, rgba(0,27,67,.95) 58%, rgba(0,27,67,.66) 71%, rgba(0,27,67,.2) 86%, rgba(0,27,67,.42) 100%); }
 }
@@ -276,3 +284,24 @@ html:not(.js-anim) #peca-painel { display: none; }
 .lp-alerta { background: #7a2411; }
 .lp-alerta strong { font-weight: 700; }
 .lp-demo a { text-decoration: underline; text-underline-offset: 3px; }
+
+/* Ajustes de aparelho, medidos um a um. Ficam no fim para nao competir com as
+   regras de composicao acima. */
+
+/* Em tela alta e estreita (iPad em pe, celular grande) o rodape fixo do bloco
+   deixava de 250 a 500px de fundo vazio acima do texto. */
+@media (max-width: 999px) and (min-height: 900px) {
+  .palco-grid { align-content: center; }
+}
+
+/* Os tres atos dividem a mesma celula, entao a caixa tem a altura do maior. Os
+   dois curtos colavam no topo e deixavam o resto morto embaixo. */
+@media (max-width: 999px) {
+  .ato { align-self: center; }
+}
+
+/* A sombra do aparelho e um borrao decorativo e passava 9px da borda em
+   tablet e celular deitado. */
+@media (max-width: 1359px) {
+  .palco { overflow: hidden; }
+}
