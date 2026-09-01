@@ -13,13 +13,22 @@ import {
   DEMO_SUPERADMIN_EMAIL
 } from "../../lib/demo-config";
 import {
+  hasPlatformGrant,
+  shellAudience,
   ShellProfileContext,
   type DemoShellProfile,
   type ProfileState,
-  type SessionRuntime
+  type SessionRuntime,
+  type ShellIdentity,
+  type ShellSeller
 } from "./shell-profile-context";
 
 const ASSET_DISCARD_REQUEST_EVENT = "appsell:asset-discard-request";
+
+// A criação da loja tem rota própria porque o cartão que a oferecia vivia
+// dentro de /dashboard e /products — as duas telas que esta navegação esconde
+// de quem ainda não tem loja.
+export const NEW_STORE_PATH = "/settings/store/new";
 
 interface AssetDiscardRequestDetail {
   register(task: Promise<void>): void;
@@ -31,11 +40,23 @@ interface AppShellProps {
   children: ReactNode;
 }
 
-const navigation = [
+// A navegação era uma lista fixa e todo mundo via tudo: o aluno era recebido
+// por "Recebimentos" e concluía que o produto que comprou estava quebrado
+// (#305). Agora cada audiência tem a sua, e "sem loja" é uma audiência
+// própria — é por ali que o cadastro do "Vender agora" (#341) segue para
+// criar a loja, então ela nunca pode ficar sem saída.
+const sellerNavigation = [
   { href: "/dashboard", label: "Visão geral", mark: "home" },
   { href: "/products", label: "Produtos", mark: "products" },
   { href: "/payouts", label: "Recebimentos", mark: "payouts" },
   { href: "/library", label: "Minha biblioteca", mark: "library" },
+] as const;
+const buyerNavigation = [
+  { href: "/library", label: "Minha biblioteca", mark: "library" },
+] as const;
+const withoutStoreNavigation = [
+  { href: "/library", label: "Minha biblioteca", mark: "library" },
+  { href: NEW_STORE_PATH, label: "Criar minha loja", mark: "store" },
 ] as const;
 const recoveryNavigation = [{ href: "/", label: "Entrada", mark: "home" }] as const;
 
@@ -43,7 +64,10 @@ const platformNavigation = [
   { href: "/platform/demo-inspection", label: "Inspeção demo", mark: "inspection" }
 ] as const;
 
-type NavigationMark = (typeof navigation)[number]["mark"] | (typeof platformNavigation)[number]["mark"];
+type NavigationMark =
+  | (typeof sellerNavigation)[number]["mark"]
+  | (typeof withoutStoreNavigation)[number]["mark"]
+  | (typeof platformNavigation)[number]["mark"];
 
 function NavIcon({ name }: { name: NavigationMark }) {
   const paths = {
@@ -51,9 +75,38 @@ function NavIcon({ name }: { name: NavigationMark }) {
     products: <><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M8 4v16M8 9h13"/></>,
     library: <><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/></>,
     payouts: <><rect x="2.5" y="6" width="19" height="12.5" rx="2.5"/><path d="M2.5 10h19"/><path d="M6.5 15h4"/></>,
-    inspection: <><path d="M12 3 4.5 6v5.5c0 4.8 3.1 8 7.5 9.5 4.4-1.5 7.5-4.7 7.5-9.5V6L12 3Z"/><path d="M9.5 12.2 11.2 14l3.6-4"/></>
+    inspection: <><path d="M12 3 4.5 6v5.5c0 4.8 3.1 8 7.5 9.5 4.4-1.5 7.5-4.7 7.5-9.5V6L12 3Z"/><path d="M9.5 12.2 11.2 14l3.6-4"/></>,
+    store: <><path d="M4 9.5 5.5 4.5h13L20 9.5"/><path d="M4 9.5h16v10H4Z"/><path d="M9.5 19.5v-5h5v5"/></>
   };
   return <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
+}
+
+// Quem não tem loja e não comprou nada chega pela porta do vendedor: mandá-lo
+// para uma biblioteca vazia faria parecer que ele entrou no lugar errado.
+function defaultHome(audience: ReturnType<typeof shellAudience>, platformGrant: boolean) {
+  if (audience === "demo-buyer") return "/library";
+  // Grant de plataforma não cria membership, então o superadmin cai em
+  // "sem loja" — mas convidá-lo a abrir uma loja seria ler mal o que ele veio
+  // fazer aqui.
+  if (audience === "without-store" && !platformGrant) return NEW_STORE_PATH;
+  return "/dashboard";
+}
+
+// O nome da loja é o que o vendedor reconhece como "onde eu estou"; sem loja,
+// o rótulo não pode fingir que existe uma.
+function storeLabel(identity: ShellIdentity) {
+  const [first, ...rest] = identity.sellers as readonly ShellSeller[];
+  if (!first) return "Sua conta";
+  return rest.length ? `${first.displayName} +${rest.length}` : first.displayName;
+}
+
+function accountInitials(email: string) {
+  const local = email.split("@")[0] ?? "";
+  const parts = local.split(/[._-]+/).filter(Boolean);
+  const letters = parts.length > 1
+    ? `${parts[0][0]}${parts[1][0]}`
+    : local.slice(0, 2);
+  return letters.toUpperCase() || "??";
 }
 
 function readCsrfCookie() {
@@ -127,20 +180,39 @@ export function AppShell({ children }: AppShellProps) {
   const realIdentity = profileState.status === "ready" && !profileState.profile &&
     profileState.runtime === "identity";
   const platformMode = pathname.startsWith("/platform/");
-  const visibleNavigation = profileState.status === "failed"
+  const audience = shellAudience(profileState);
+  const platformGrant = hasPlatformGrant(profileState);
+  // Sessão pronta mas sem audiência resolvida é sessão que não sabemos ler:
+  // falha fechada, com o caminho de recuperação, em vez de adivinhar o papel.
+  const unresolved = profileState.status === "ready" && audience === null;
+  const visibleNavigation = profileState.status === "failed" || unresolved
     ? recoveryNavigation
     : profileState.status !== "ready"
       ? []
       : platformMode
         ? platformNavigation
-        : demoProfile?.persona === "buyer"
-          ? navigation.filter((item) => item.href === "/library")
-          : navigation;
-  const home = profileState.status === "failed"
+        : audience === "demo-buyer"
+          ? buyerNavigation
+          : audience === "without-store"
+            ? (platformGrant ? buyerNavigation : withoutStoreNavigation)
+            : sellerNavigation;
+  const identity = profileState.status === "ready" ? profileState.identity : null;
+  // O rodapé mostrava "Sua conta / Sessão protegida" e as iniciais AU fixas no
+  // código para toda identidade real: o shell não sabia sequer o e-mail.
+  const accountLabel = profileState.status === "failed" || unresolved
+    ? { initials: "—", title: "Perfil indisponível", detail: "Sessão não validada" }
+    : demoProfile
+      ? { initials: accountInitials(demoProfile.email), title: `${demoProfile.label} demo`, detail: demoProfile.email }
+      : identity
+        ? { initials: accountInitials(identity.email), title: storeLabel(identity), detail: identity.email }
+        : { initials: "AU", title: "Ambiente demo", detail: "Sessão protegida" };
+  const home = profileState.status === "failed" || unresolved
     ? "/"
     : platformMode
       ? "/platform/demo-inspection"
-      : profileState.status === "ready" ? demoProfile?.home ?? "/dashboard" : pathname;
+      : profileState.status === "ready"
+        ? demoProfile?.home ?? defaultHome(audience, platformGrant)
+        : pathname;
 
   const loadProfile = useCallback(async (signal?: AbortSignal) => {
     const controller = new AbortController();
@@ -266,16 +338,16 @@ export function AppShell({ children }: AppShellProps) {
           <SellBrand />
         </Link>
         <nav>
-          <p className="nav-eyebrow">{profileState.status === "loading" ? "Carregando acesso" : profileState.status === "failed" ? "Acesso indisponível" : platformMode ? "Operação de plataforma" : demoProfile?.persona === "buyer" ? "Área do aluno" : "Seu negócio"}</p>
+          <p className="nav-eyebrow">{profileState.status === "loading" ? "Carregando acesso" : profileState.status === "failed" || unresolved ? "Acesso indisponível" : platformMode ? "Operação de plataforma" : audience === "demo-buyer" ? "Área do aluno" : audience === "without-store" ? (platformGrant ? "Operação de plataforma" : "Comece por aqui") : "Seu negócio"}</p>
           {visibleNavigation.map((item) => {
             const active = pathname === item.href;
             return <Link key={item.href} href={item.href} onClick={(event) => guardLink(event, item.href)} className={active ? "nav-link active" : "nav-link"} aria-current={active ? "page" : undefined}><NavIcon name={item.mark}/><span>{item.label}</span></Link>;
           })}
-          {profileState.status === "failed" ? <div className="session-recovery" role="alert"><p>Não foi possível validar seu acesso.</p><button type="button" className="secondary-button" onClick={retryProfile}>Tentar novamente</button><Link href="/">Voltar para a entrada</Link></div> : null}
+          {profileState.status === "failed" || unresolved ? <div className="session-recovery" role="alert"><p>Não foi possível validar seu acesso.</p><button type="button" className="secondary-button" onClick={retryProfile}>Tentar novamente</button><Link href="/">Voltar para a entrada</Link></div> : null}
         </nav>
         <div className="sidebar-footer">
-          <span className="avatar" aria-hidden="true">AU</span>
-          <span><strong>{demoProfile ? `${demoProfile.label} demo` : profileState.status === "failed" ? "Perfil indisponível" : realIdentity ? "Sua conta" : "Ambiente demo"}</strong><small>{demoProfile?.email ?? "Sessão protegida"}</small></span>
+          <span className="avatar" aria-hidden="true">{accountLabel.initials}</span>
+          <span><strong>{accountLabel.title}</strong><small>{accountLabel.detail}</small></span>
         </div>
         <LogoutForm onAttempt={guardLogout}/>
       </aside>
@@ -287,7 +359,7 @@ export function AppShell({ children }: AppShellProps) {
         {platformMode || (profileState.status === "ready" && !realIdentity) ? (
           <div className="environment-banner" role="note"><strong>{platformMode ? "INSPEÇÃO SUPERADMIN · LOCAL/CI · READ-ONLY" : demoProfile ? `DEMO · ${demoProfile.label} · ${demoProfile.email} · Autonom.ia Demo` : "Ambiente local, não é grant."}</strong> {platformMode ? "Sem impersonação, membership ou acesso a PII/secret." : "Cobrança, checkout e Identity real continuam desativados."}</div>
         ) : null}
-        {profileState.status === "failed" ? <div className="mobile-session-recovery" role="alert"><p>Não foi possível validar seu acesso.</p><button type="button" className="secondary-button" onClick={retryProfile}>Tentar novamente</button><Link href="/">Voltar para a entrada</Link></div> : null}
+        {profileState.status === "failed" || unresolved ? <div className="mobile-session-recovery" role="alert"><p>Não foi possível validar seu acesso.</p><button type="button" className="secondary-button" onClick={retryProfile}>Tentar novamente</button><Link href="/">Voltar para a entrada</Link></div> : null}
         <main id="conteudo" className="app-main" tabIndex={-1}>{children}</main>
         <nav
           className="bottom-nav"
@@ -335,7 +407,7 @@ export async function continueConfirmedExit(
   continuations[type]();
 }
 
-function parseProfileState(payload: unknown): ProfileState {
+export function parseProfileState(payload: unknown): ProfileState {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return { status: "failed" };
   const session = payload as Record<string, unknown>;
   if (session.authenticated !== true) return { status: "failed" };
@@ -343,7 +415,12 @@ function parseProfileState(payload: unknown): ProfileState {
   // banner keeps rendering instead of silently claiming real production.
   const runtime: SessionRuntime = session.runtime === "identity" ? "identity" : "local";
   const profile = session.demoProfile;
-  if (profile === null) return { status: "ready", profile: null, runtime };
+  if (profile === null) {
+    const identity = parseIdentity(session.identity);
+    return identity === undefined
+      ? { status: "failed" }
+      : { status: "ready", profile: null, identity, runtime };
+  }
   if (!profile || typeof profile !== "object" || Array.isArray(profile)) return { status: "failed" };
   const record = profile as Record<string, unknown>;
   const admin = record.persona === "admin" && record.email === DEMO_ADMIN_EMAIL &&
@@ -353,6 +430,37 @@ function parseProfileState(payload: unknown): ProfileState {
   const superadmin = record.persona === "superadmin" && record.email === DEMO_SUPERADMIN_EMAIL &&
     record.label === "Superadmin simulado" && record.home === "/platform/demo-inspection";
   return admin || buyer || superadmin
-    ? { status: "ready", profile: record as unknown as DemoShellProfile, runtime }
+    ? { status: "ready", profile: record as unknown as DemoShellProfile, identity: null, runtime }
     : { status: "failed" };
+}
+
+// undefined = payload malformado (sessão inválida). null = servidor não
+// conseguiu resolver o papel; o shell trata como não validada em vez de
+// adivinhar, porque adivinhar aqui é mostrar o menu do vendedor a um aluno.
+function parseIdentity(value: unknown): ShellIdentity | null | undefined {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const email = record.email;
+  const roles = record.platformRoles;
+  const sellers = record.sellers;
+  if (typeof email !== "string" || email.length === 0) return undefined;
+  if (!Array.isArray(roles) || roles.some((role) => typeof role !== "string")) return undefined;
+  if (!Array.isArray(sellers)) return undefined;
+  const parsed: ShellSeller[] = [];
+  for (const seller of sellers) {
+    if (!seller || typeof seller !== "object" || Array.isArray(seller)) return undefined;
+    const item = seller as Record<string, unknown>;
+    if (typeof item.id !== "string" || typeof item.slug !== "string" ||
+        typeof item.displayName !== "string" || typeof item.role !== "string") {
+      return undefined;
+    }
+    parsed.push({ id: item.id, slug: item.slug, displayName: item.displayName, role: item.role });
+  }
+  return {
+    email,
+    emailVerified: record.emailVerified === true,
+    platformRoles: roles as string[],
+    sellers: parsed
+  };
 }

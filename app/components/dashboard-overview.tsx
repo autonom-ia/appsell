@@ -148,7 +148,17 @@ function RealDashboard({ catalog }: { catalog: CatalogState }) {
       {catalog.status === "unavailable" ? <p className="empty-state" role="alert">A API está indisponível no momento. Tente novamente em instantes.</p> : null}
       {catalog.status === "error" ? <p className="empty-state" role="alert">Não foi possível carregar seu catálogo. Recarregue a página.</p> : null}
       {ready && !hasSeller ? <SellerOnboardingCard/> : null}
-      {ready ? (
+      {ready && hasSeller && metrics.total === 0 ? (
+        <section className="empty-state next-step" aria-label="Próximo passo">
+          <h2>Sua loja está pronta. Falta o primeiro produto.</h2>
+          <p>
+            Enquanto não houver um produto publicado, não há o que vender nem
+            o que um aluno possa abrir.
+          </p>
+          <Link className="primary-button" href="/products">Criar meu primeiro produto</Link>
+        </section>
+      ) : null}
+      {ready && !(hasSeller && metrics.total === 0) ? (
         <section className="metric-grid" aria-label="Resumo do negócio">
           <article><span>Produtos</span><strong>{formatProductCount(metrics)}</strong><small>{metrics.published} publicados</small></article>
           <article><span>Alunos</span><strong>—</strong><small>Sem matrículas registradas ainda</small></article>

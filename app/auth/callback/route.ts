@@ -44,6 +44,7 @@ import { describeCallbackFailure, reportOAuthCallbackFailure } from "@/lib/oauth
 import {
   DomainApiError,
   isDomainApiConfigured,
+  listDomainSellers,
   readDomainIdentity,
   syncDomainIdentity
 } from "@/lib/internal-api-client.server";
@@ -51,12 +52,14 @@ import { ONBOARD_SELLER_CSRF_ACTION } from "@/lib/mutation-protection.server";
 import { demoProfileForSubject } from "@/lib/demo-config";
 import { oauthCallbackHome } from "@/lib/oauth-callback-home";
 import { safePostLoginPath } from "@/lib/post-login-redirect";
+import { sellerCookiePlan } from "@/lib/seller-cookie-plan";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
   let issuedSessionId: string | undefined;
   let demoSuperadmin = false;
+  let hasSellerMembership = false;
   const callbackInput = {
     transactionId: request.cookies.get(transactionCookieName())?.value,
     code: request.nextUrl.searchParams.get("code") ?? undefined,
@@ -89,6 +92,10 @@ export async function GET(request: NextRequest) {
     if (isDomainApiConfigured()) {
       try {
         await syncDomainIdentity(sessionId, session);
+        if (!demoProfile) {
+          const sellers = await listDomainSellers(sessionId, session);
+          hasSellerMembership = sellerCount(sellers) > 0;
+        }
         if (demoProfile?.persona === "superadmin") {
           const platformSuperadmin = hasPlatformSuperadminGrant(
             await readDomainIdentity(sessionId, session)
@@ -113,13 +120,25 @@ export async function GET(request: NextRequest) {
     response.cookies.set(recoveryCookieName(), "", { ...recoveryCookieOptions(), maxAge: 0 });
     response.cookies.set(sessionCookieName(), sessionId, sessionCookieOptions());
     response.cookies.set(csrfCookieName(), csrfTokenForSession(sessionId, LOGOUT_CSRF_ACTION), csrfCookieOptions());
-    if (demoProfile?.persona === "buyer" || demoSuperadmin) {
+    // Quem só comprou recebia permissão de criar e publicar produto. As duas
+    // permissões não são a mesma coisa: onboarding é o que permite criar a
+    // PRIMEIRA loja, e precisa existir para quem ainda não tem nenhuma; as de
+    // produto exigem membership provada, senão o comprador sai do login com
+    // poder de publicar catálogo.
+    const cookiePlan = sellerCookiePlan({
+      demoPersona: demoProfile?.persona ?? null,
+      demoSuperadmin,
+      hasSellerMembership
+    });
+    if (!cookiePlan.onboarding) {
       expireSellerCookies(response);
     } else {
       response.cookies.set(sellerCsrfCookieName(), csrfTokenForSession(sessionId, ONBOARD_SELLER_CSRF_ACTION), csrfCookieOptions());
-      response.cookies.set(productCsrfCookieName(), csrfTokenForSession(sessionId, CREATE_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
-      response.cookies.set(productUpdateCsrfCookieName(), csrfTokenForSession(sessionId, UPDATE_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
-      response.cookies.set(productPublishCsrfCookieName(), csrfTokenForSession(sessionId, PUBLISH_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
+      if (cookiePlan.product) {
+        response.cookies.set(productCsrfCookieName(), csrfTokenForSession(sessionId, CREATE_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
+        response.cookies.set(productUpdateCsrfCookieName(), csrfTokenForSession(sessionId, UPDATE_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
+        response.cookies.set(productPublishCsrfCookieName(), csrfTokenForSession(sessionId, PUBLISH_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
+      }
     }
     response.headers.set("cache-control", "no-store");
     return response;
@@ -210,4 +229,10 @@ function expireTransactionCookie(response: NextResponse) {
     ...transactionCookieOptions(),
     maxAge: 0
   });
+}
+
+function sellerCount(payload: unknown) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return 0;
+  const sellers = (payload as Record<string, unknown>).sellers;
+  return Array.isArray(sellers) ? sellers.length : 0;
 }
