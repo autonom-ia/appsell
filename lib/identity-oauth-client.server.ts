@@ -674,7 +674,9 @@ function strictIssuer(raw: string) {
 // https://id.exemplo/oauth/authorize vira https://id.exemplo/oauth/register.
 function siblingPath(base: URL, segment: string) {
   const url = new URL(base);
-  const parts = url.pathname.split("/");
+  // Producao serve o endpoint com barra final ("/login/"). Sem descartar a
+  // barra, o ultimo segmento seria vazio e o caminho viraria "/login/register".
+  const parts = url.pathname.replace(/\/+$/, "").split("/");
   parts[parts.length - 1] = segment;
   url.pathname = parts.join("/");
   return url.toString();

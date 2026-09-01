@@ -47,6 +47,15 @@ describe("entrada de cadastro no Identity", () => {
     expect(config.registrationEndpoint.toString()).toBe(`${ORIGIN}/oauth/register`);
   });
 
+  // Producao serve "/login/" com barra final; sem trata-la o caminho derivado
+  // viraria "/login/register" e o botao cairia num 404.
+  test("descarta a barra final ao derivar", () => {
+    const config = parseIdentityOAuthConfig(environment({
+      APPSELL_IDENTITY_AUTHORIZATION_URL: `${ORIGIN}/login/`
+    }));
+    expect(config.registrationEndpoint.toString()).toBe(`${ORIGIN}/register`);
+  });
+
   test("aceita a tela de cadastro declarada explicitamente", () => {
     const config = parseIdentityOAuthConfig(environment({
       APPSELL_IDENTITY_REGISTRATION_URL: `${ORIGIN}/criar-conta`
