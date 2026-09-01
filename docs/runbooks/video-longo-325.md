@@ -128,6 +128,9 @@ O serviço mais delicado do conjunto, e o que este release obriga a mover.
 > nada no log (release `ee194bf`).
 
 ```bash
+# a imagem do sandbox é a da api com outra tag; ver a seção do fim
+docker tag easypanel/sell-autonomia/api:<sha> easypanel/sell-autonomia/pdf-sandbox:<sha>
+
 docker service update --image .../pdf-sandbox:<sha> \
   --limit-cpu 4.0 --limit-memory 4G \
   --no-healthcheck --update-order stop-first sell-autonomia_pdf-sandbox
@@ -216,17 +219,31 @@ Nenhum destes itens sozinho prova que o release funcionou. O que prova é o
 - [ ] o audit do `confirm` registra `content_check = deferred_to_verification`
 - [ ] o aluno abre a aula e arrasta a barra
 
-## O que ainda não se sabe
+## A receita do `pdf-sandbox`, respondida
 
-**Não existe `Dockerfile` do `pdf-sandbox` neste repositório**, e o workflow
-`easypanel-native-images.yml` só valida que `web`, `api` e `bootstrap`
-constroem: ele tem `push: false` e não publica nada. Os releases anteriores
-mostram a imagem `pdf-sandbox` existindo com SHA próprio, então ela é construída
-no host de alguma forma que não está versionada aqui.
+Não existe `Dockerfile` do `pdf-sandbox`, e nunca existiu: **a imagem do sandbox
+é a imagem da `api` com outra tag.** Quem faz o serviço virar sandbox é o
+comando, que a spec dele sobrescreve para
+`python -m appsell_api.pdf_sandbox_runner`.
 
-Como este release **obriga** o sandbox a subir, isso precisa ser resolvido antes
-do passo 2: descobrir como aquela imagem é construída, e de preferência
-versionar a receita neste repositório.
+Verificado no host em 01/09/2026, elo por elo:
+
+| verificação | resultado |
+|---|---|
+| comando do serviço | `args=[python -m appsell_api.pdf_sandbox_runner]`, sobrescrevendo o `CMD` da imagem |
+| a imagem da `api` importa o app do sandbox | sim: `AppSell isolated PDF parser` |
+| `ffmpeg`, `ffprobe`, `pdftoppm` | presentes nas duas imagens, nos mesmos caminhos |
+| `entrypoint` | vazio nas duas, então o comando do serviço substitui o padrão |
+| uid/gid | 10001 nas duas, que é o que a checagem de dono do socket exige |
+| `Dockerfile` removido do git em algum momento | nenhum |
+
+A imagem em produção hoje (`712e5bb`) foi construída de um contexto diferente
+(`--app-dir src`, contra `--app-dir apps/api/src` da atual). Isso não muda nada
+aqui: o serviço troca o comando, e o `PYTHONPATH` da imagem nova já deixa o
+módulo importável.
+
+**Consequência para o passo 2:** não há imagem nova para construir. Basta marcar
+a imagem da `api` com a tag do sandbox antes de atualizar o serviço.
 
 ## O que fica pendente depois do deploy
 
