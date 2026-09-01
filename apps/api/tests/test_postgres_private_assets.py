@@ -2193,3 +2193,98 @@ def test_envio_fatiado_com_tamanho_diferente_continua_sendo_recusado() -> None:
         )
     assert resultado["status"] == "rejected"
     assert resultado["safe_reason"] == "upload_mismatch"
+
+
+def test_a_cota_do_vendedor_cabe_um_curso_e_nao_uma_aula() -> None:
+    """20 GiB, cerca de dezoito horas de curso.
+
+    Antes eram 1 GiB. Vídeo de aula em 1080p ocupa perto de 1 GB por hora, então
+    a regra antiga dizia, em linguagem de produto, que cada vendedor guardava
+    **uma hora de aula no total**. Com o teto por arquivo em 512 MiB isso são
+    duas aulas, e a terceira era recusada.
+    """
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        linha = connection.execute(
+            "select app_private.seller_storage_quota_bytes(),"
+            " app_private.seller_open_upload_quota_bytes()"
+        ).fetchone()
+    assert linha is not None
+    assert linha[0] == 20 * 1024 * 1024 * 1024
+    assert linha[1] == 4 * 1024 * 1024 * 1024
+
+
+def test_a_cota_nao_e_executavel_por_qualquer_role() -> None:
+    """O mesmo cuidado que faltou na `asset_multipart_part_bytes` da 0045."""
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        linha = connection.execute(
+            """
+            select has_function_privilege('public',
+                     'app_private.seller_storage_quota_bytes()','execute'),
+                   has_function_privilege('appsell_runtime',
+                     'app_private.seller_open_upload_quota_bytes()','execute')
+            """
+        ).fetchone()
+    assert linha == (False, True)
+
+
+def test_os_bytes_em_voo_tem_teto_proprio() -> None:
+    """A cota de envios abertos contava quantidade, e quantidade era a coisa errada.
+
+    Cem envios eram cem envios, com o arquivo em 100 MiB ou em 512 MiB. O que
+    dava para estacionar em quarentena cresceu cinco vezes sem ninguém decidir.
+    As contagens ficam, e agora existe também um teto de bytes.
+    """
+    assert ADMIN_URL and RUNTIME_URL
+    admin, seller, product, course, module, lesson = _personas()
+    manifest, _ = load_manifest()
+    # O `asset_id` precisa existir em `asset_record`: reaproveita o da aula do
+    # manifesto, como o teste de cota por unidade já faz.
+    asset = UUID(manifest["lessons"][0]["asset_id"])
+    meio_giga = 512 * 1024 * 1024
+    with psycopg.connect(ADMIN_URL) as connection:
+        # Oito envios no tamanho máximo enchem os 4 GiB em voo, e ainda ficam
+        # bem abaixo das cem unidades que a outra cota permite.
+        connection.execute(
+            """
+            insert into app_private.asset_upload(
+              seller_organization_id,id,identity_user_id,catalog_product_id,course_id,
+              module_id,lesson_id,asset_id,blob_id,reserved_version,title,file_name,
+              expected_media_type,expected_byte_size,expected_sha256,storage_driver,
+              quarantine_bucket,ready_bucket,quarantine_key,ready_key,status,expires_at
+            ) select %s,gen_random_uuid(),%s,%s,%s,%s,%s,%s,
+              gen_random_uuid(),ordinality+500,'Em voo','aula-em-voo.mp4','video/mp4',%s,
+              encode(digest('voo'||ordinality::text,'sha256'),'hex'),'s3',
+              'appsell-quarantine','appsell-ready','voo-quarantine-'||ordinality,
+              'voo-ready-'||ordinality,'pending',clock_timestamp()+interval '30 minutes'
+            from generate_series(1,8) input(ordinality)
+            """,
+            (seller, admin, product, course, module, lesson, asset, meio_giga),
+        )
+        connection.execute(
+            """
+            insert into app_private.asset_storage_cleanup_job(
+              seller_organization_id,upload_id,kind,storage_driver,bucket,object_key,
+              storage_version_id,status,available_at
+            ) select seller_organization_id,id,'quarantine_reconcile','s3',
+              quarantine_bucket,quarantine_key,null,'queued',expires_at
+            from app_private.asset_upload
+            where seller_organization_id=%s and title='Em voo'
+            """,
+            (seller,),
+        )
+        connection.commit()
+
+    with psycopg.connect(RUNTIME_URL) as connection, pytest.raises(psycopg.DatabaseError) as recusa:
+        _intencao_de_envio(
+            connection,
+            admin=admin,
+            seller=seller,
+            product=product,
+            course=course,
+            module=module,
+            lesson=lesson,
+            byte_size=1024,
+        )
+    assert "open asset upload byte quota" in str(recusa.value)
