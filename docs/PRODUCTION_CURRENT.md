@@ -18,7 +18,7 @@
 | SHA do **api** | `d5e00ec` |
 | SHA do **asset-worker** | `d5e00ec` — mesma imagem da api |
 | SHA do **pdf-sandbox** | `d5e00ec` — mesma imagem da api, com outra tag |
-| SHA do **web** | `3bcae6e` |
+| SHA do **web** | `982d46e` |
 | Banco | head **`0047_cota_de_armazenamento`**, `schema_ready() = true` |
 
 **Os quatro andaram no mesmo SHA por algumas horas, em `d5e00ec`.** O release do
@@ -170,6 +170,102 @@ docker service update --image easypanel/sell-autonomia/web:9ebb93f \
 ```
 
 Spec anterior em `/tmp/sell-release-346/spec_web_antes.json` no host.
+
+## Release `982d46e` — o painel parou de falar com quem não tem loja (2026-09-01)
+
+Só o `web` mudou. Head do banco segue `0047_cota_de_armazenamento`.
+
+Hotfix do release anterior, encontrado no **primeiro acesso real** depois dele.
+Um comprador com curso ativo e nenhuma loja foi recebido pelo painel do
+vendedor: título "Seu negócio em um só lugar", botão **Criar produto** que
+daria erro por falta de loja e de permissão, e três métricas zeradas. O menu,
+correto quanto aos itens, oferecia "Criar minha loja" como primeira ação a
+quem tinha comprado um curso.
+
+### A causa foi um critério de aceite declarado verde sem estar
+
+O critério da #350 dizia que quem não tem loja **nem acesso comprado** abriria
+na criação da loja. `/api/session` nunca soube nada sobre entitlement, então
+todo mundo sem loja virava aspirante a vendedor. O item foi marcado como
+cumprido na PR e no fechamento da issue. Não estava.
+
+Fica o registro: nenhum teste automatizado pegaria isso, porque os testes
+cobriam a audiência derivada de `sellers`, que era o que eu tinha implementado
+— não o critério que eu tinha escrito. O defeito apareceu quando uma pessoa
+entrou com uma conta real.
+
+### O que mudou
+
+A correção **não ampliou o `/api/session`**, que já faz duas chamadas por carga
+de shell e continua sendo o risco em observação. Cada tela decide com o dado
+que já tem: o callback já resolvia a membership, o painel já conhece as lojas
+da sessão, e a biblioteca já sabe se está vazia.
+
+- Sem loja, a casa passa a ser a biblioteca. Quem entra para vender continua
+  chegando à criação pelo `next` do "Vender agora"; quem parou no meio encontra
+  o convite na biblioteca vazia, que é onde cai.
+- O painel só promete um negócio a quem tem loja, e só oferece "Criar produto"
+  onde existe catálogo.
+- Passou a existir uma regra única — `canOpenFirstStore` — consultada pelo
+  menu, pela biblioteca e pelo painel. Antes as três perguntavam a mesma coisa
+  de jeitos diferentes e discordavam.
+- Estado de loja virou **tri-state**: tem, comprovadamente não tem, e não sei.
+  Ler indisponibilidade como "não tem" mandava vendedor existente para a
+  biblioteca.
+
+### Defeitos encontrados nas próprias correções
+
+O revisor de segunda opinião rodou três vezes neste hotfix. Cada rodada achou
+defeito novo introduzido pela correção da rodada anterior:
+
+| Severidade | O que era |
+|---|---|
+| MÉDIO | A consulta de grant acrescentada ao callback ficava dentro do bloco que faz logout: um timeout no `GET /v1/me` desfazia a sessão e derrubava o login inteiro |
+| MÉDIO | Menu, biblioteca e painel discordavam sobre quem pode abrir loja; superadmin sem lojas recebia o formulário de criação no painel |
+| MÉDIO | A persona demo de admin perdeu o botão "Criar produto", porque `identity` é null no demo |
+| BAIXO | Payload irreconhecível contava como "zero lojas comprovadas" e reclassificava vendedor durante rollout |
+| BAIXO | Loading e falha eram tratados como ausência de loja: vendedor com sessão lenta via "Comece criando sua loja" |
+| BAIXO | `platform_support` e `platform_auditor` recebiam o convite de criar loja |
+| BAIXO | Os testes liam o texto do arquivo e passariam com a condição invertida |
+
+### Como foi aplicado
+
+```bash
+mkdir -p /tmp/sell-release-982d46e
+docker service inspect sell-autonomia_web > /tmp/sell-release-982d46e/spec_web_antes.json
+
+git archive --format=tar origin/main | ssh <host> \
+  'mkdir -p /home/claudete/appsell-src-982d46e && tar -x -C /home/claudete/appsell-src-982d46e'
+
+cd /home/claudete/appsell-src-982d46e
+docker build -f deploy/easypanel-native/Dockerfile.web \
+  --build-arg GIT_SHA=982d46e -t easypanel/sell-autonomia/web:982d46e .
+
+docker service update --image easypanel/sell-autonomia/web:982d46e \
+  --update-order stop-first sell-autonomia_web
+```
+
+### Validação executada em produção
+
+| O quê | Resultado |
+|---|---|
+| home | `200` |
+| healthz do BFF | `redis`, `api` e `storage_upload` todos `true` |
+| `/auth/signup` | `307` |
+| `/settings/store/new` sem sessão | `307` |
+| logs do `web` | zero `error`, `fatal` ou `panic` em 3 minutos |
+| variáveis de ambiente | 51 antes, 51 depois, nome a nome: nenhuma perdida, nenhuma nova |
+| demais serviços | api, worker e sandbox intactos em `d5e00ec` |
+| suíte | 1048 passando no `test:fast` |
+
+### Rollback deste release
+
+```bash
+docker service update --image easypanel/sell-autonomia/web:3bcae6e \
+  --update-order stop-first sell-autonomia_web
+```
+
+Spec anterior em `/tmp/sell-release-982d46e/spec_web_antes.json`.
 
 ## Release `3bcae6e` — a navegação passa a saber quem está logado (2026-09-01)
 
