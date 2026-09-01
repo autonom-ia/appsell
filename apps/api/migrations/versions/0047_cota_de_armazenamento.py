@@ -163,14 +163,26 @@ def downgrade() -> None:
     # Descer só é seguro se ninguém tiver passado da cota antiga. Voltar com um
     # vendedor guardando 5 GB deixaria a tabela inconsistente com a própria
     # regra, e o material dele irrecuperável pela porta normal.
+    #
+    # A conta soma as duas tabelas, e não só `asset_blob`, porque é assim que
+    # `finalize_asset_verification_v2` mede: material mais páginas rasterizadas.
+    # Uma guarda que soma menos do que a regra que ela protege deixa passar
+    # exatamente o vendedor que quebraria no próximo PDF.
     op.execute(
         f"""
         do $$
         declare maior bigint;
         begin
-          select coalesce(max(total),0) into maior from (
-            select sum(byte_size) as total from public.asset_blob
-             where storage_driver='s3' group by seller_organization_id) por_vendedor;
+          select coalesce(max(coalesce(blob.total,0)+coalesce(pagina.total,0)),0)
+            into maior from
+              (select seller_organization_id as vendedor, sum(byte_size) as total
+                 from public.asset_blob where storage_driver='s3'
+                group by seller_organization_id) blob
+              full join
+              (select seller_organization_id as vendedor, sum(byte_size) as total
+                 from public.asset_pdf_page where storage_driver='s3'
+                group by seller_organization_id) pagina
+              on blob.vendedor = pagina.vendedor;
           if maior > {_COTA_ANTIGA} then
             raise exception
               'não dá para voltar: um vendedor guarda % bytes, acima da cota antiga', maior
