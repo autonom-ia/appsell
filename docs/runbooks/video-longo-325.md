@@ -1,14 +1,18 @@
-# Runbook — deploy do vídeo longo (#325): migrations 0045+0046 e os quatro serviços
+# Runbook — deploy do vídeo longo (#325): migrations 0045 a 0047 e os quatro serviços
 
 > **Status:** plano preparado em 2026-09-01, **ainda não executado**. O release
 > em produção continua sendo o registrado em
 > [PRODUCTION_CURRENT.md](../PRODUCTION_CURRENT.md). Não executar sem aprovação
 > explícita do Rodrigo, backup e o rollback abaixo à mão.
 >
-> Escopo: subir `d47599d` em `sell.autonomia.site` (EasyPanel nativo, Docker
-> Swarm, VPS compartilhada — cross-project safety vale).
-> Pré-requisitos: PRs [#332](https://github.com/autonom-ia/appsell/pull/332) e
-> [#334](https://github.com/autonom-ia/appsell/pull/334) mergeadas em `main`
+> Escopo: subir em `sell.autonomia.site` (EasyPanel nativo, Docker Swarm, VPS
+> compartilhada — cross-project safety vale) o SHA da `main` no momento da
+> execução. Os comandos abaixo escrevem `<sha>`: substituir uma vez, no começo,
+> e conferir que é o mesmo em todos. SHA embutido em oito comandos envelhece
+> mal, e este repositório já foi mordido por isso.
+> Pré-requisitos: PRs [#332](https://github.com/autonom-ia/appsell/pull/332),
+> [#334](https://github.com/autonom-ia/appsell/pull/334) e a da cota
+> ([#335](https://github.com/autonom-ia/appsell/issues/335)) mergeadas em `main`
 > com CI verde e três revisões independentes aplicadas.
 
 ## O que este release entrega
@@ -19,8 +23,9 @@ partes, com retomada, então uma queda de rede custa uma parte e não o arquivo
 inteiro. E o teto sobe de 100 MiB para 512 MiB, o que faz a aula de 30 a 45
 minutos caber.
 
-Em `main`, sem deploy: `07176d3` (faststart e tetos) e `d47599d` (envio em
-partes e teto novo).
+Em `main`, sem deploy: `07176d3` (faststart e tetos), `d47599d` (envio em
+partes e teto novo) e a da cota do vendedor
+([#335](https://github.com/autonom-ia/appsell/issues/335)).
 
 > **Porta de mão única.** Depois que o primeiro vídeo acima de 100 MiB for
 > publicado, voltar as imagens antigas deixa essa aula **inacessível, mesmo com
@@ -51,7 +56,7 @@ foi conferido, e só uma sequência não tem janela quebrada.
 | api nova + web velho | **Quebra.** A api oferece plano de partes acima de 16 MiB, e a tela velha não sabe lê-lo: o envio falha. |
 | sandbox novo + worker velho | Compatível. O `/probe-video` continua existindo, e sem o cabeçalho o comportamento é o de antes. |
 | web novo + api velha | Compatível. A api velha nunca devolve plano de partes, e a tela nova cai no envio direto. |
-| migrations novas + tudo velho | Compatível. É expansão: o código velho nunca manda hash nulo, e continua limitado a 100 MiB do lado dele. |
+| migrations novas + tudo velho | Compatível. O código velho nunca manda hash nulo e continua limitado a 100 MiB do lado dele. **Uma ressalva:** o teto de bytes em voo da 0047 aperta em vez de alargar, e recusaria um vendedor com mais de 4 GiB parados em quarentena. Com o teto antigo de 100 MiB isso exigiria mais de quarenta envios abandonados do mesmo vendedor. |
 
 Daí a sequência: **migrations → pdf-sandbox → asset-worker → web → api**.
 
@@ -81,7 +86,7 @@ done
 pg_dump -Fc ... > appsell_native_90_pre0045_20260901T<hora>Z.dump
 ```
 
-## Passo 1 — migrations 0045 e 0046
+## Passo 1 — migrations 0045, 0046 e 0047
 
 A imagem da `api` tem o Alembic mas **não tem as migrations**: só
 `apps/api/src` entra no `Dockerfile.api`. Por isso o Alembic roda num contêiner
@@ -89,9 +94,9 @@ descartável, com o fonte montado do host.
 
 ```bash
 docker run --rm --network container:<api> \
-  -v /home/claudete/appsell-src-d47599d/apps/api:/work -w /work \
+  -v /home/claudete/appsell-src-<sha>/apps/api:/work -w /work \
   -e APPSELL_MIGRATOR_DATABASE_URL="postgresql+psycopg://appsell_native_admin:<senha>@sell-autonomia_postgres-native-90:5432/appsell_native_90" \
-  --entrypoint sh easypanel/sell-autonomia/api:d47599d \
+  --entrypoint sh easypanel/sell-autonomia/api:<sha> \
   -c 'cd /work && python -m alembic upgrade head'
 ```
 
@@ -108,6 +113,10 @@ O que cada migration faz:
   chama.
 - **0046** sobe o teto do vídeo em cinco pontos do banco e estende a validade da
   intenção de upload para duas horas quando o envio é fatiado.
+- **0047** sobe a cota do vendedor de 1 GiB para 20 GiB, cerca de dezoito horas
+  de curso, e passa a limitar também os **bytes em voo** e não só a quantidade
+  de envios abertos. A cota vira função única em vez de número repetido em três
+  lugares.
 
 ## Passo 2 — pdf-sandbox
 
@@ -119,7 +128,7 @@ O serviço mais delicado do conjunto, e o que este release obriga a mover.
 > nada no log (release `ee194bf`).
 
 ```bash
-docker service update --image .../pdf-sandbox:d47599d \
+docker service update --image .../pdf-sandbox:<sha> \
   --limit-cpu 4.0 --limit-memory 4G \
   --no-healthcheck --update-order stop-first sell-autonomia_pdf-sandbox
 ```
@@ -131,7 +140,7 @@ contêiner** que `ffmpeg` e `pdftoppm` continuam presentes e que o `/tmp` tem os
 3 GiB.
 
 ```bash
-docker service update --image .../api:d47599d \
+docker service update --image .../api:<sha> \
   --update-order stop-first sell-autonomia_asset-worker
 ```
 
@@ -141,8 +150,8 @@ Nesta ordem, e não na inversa: a tela nova funciona com a api velha, mas a api
 nova quebra com a tela velha.
 
 ```bash
-docker service update --image .../web:d47599d --update-order stop-first sell-autonomia_web
-docker service update --image .../api:d47599d --update-order stop-first sell-autonomia_api
+docker service update --image .../web:<sha> --update-order stop-first sell-autonomia_web
+docker service update --image .../api:<sha> --update-order stop-first sell-autonomia_api
 ```
 
 ## Abortar e restaurar
@@ -164,8 +173,10 @@ docker service update --image .../pdf-sandbox:<sha-anterior> \
   --limit-cpu 4.0 --limit-memory 4G --no-healthcheck sell-autonomia_pdf-sandbox
 ```
 
-**As migrations não precisam voltar.** São expansão compatível com as imagens
-antigas, e a guarda do `downgrade` recusa descer se houver dado que não caiba.
+**As migrations não precisam voltar.** São compatíveis com as imagens antigas, e a
+guarda do `downgrade` recusa descer se houver dado que não caiba. A única parte que
+aperta em vez de alargar é o teto de bytes em voo da 0047, e ele só morde um
+vendedor com mais de 4 GiB parados em quarentena.
 
 ## Validação
 
@@ -174,12 +185,14 @@ Nenhum destes itens sozinho prova que o release funcionou. O que prova é o
 
 ### Banco
 
-- [ ] `alembic current` responde `0046_aula_de_meio_giga`
+- [ ] `alembic current` responde `0047_cota_de_armazenamento`
 - [ ] `schema_ready()` responde `true`
 - [ ] `asset_media_max_bytes('video/mp4')` = `536870912`
 - [ ] `asset_media_max_bytes('application/pdf')` = `104857600`, inalterado
-- [ ] `public` **não** pode executar `asset_multipart_part_bytes()`, e
-      `appsell_runtime` pode
+- [ ] `public` **não** pode executar `asset_multipart_part_bytes()` nem
+      `seller_storage_quota_bytes()`, e `appsell_runtime` pode
+- [ ] `seller_storage_quota_bytes()` = `21474836480` (20 GiB) e
+      `seller_open_upload_quota_bytes()` = `4294967296` (4 GiB)
 
 ### Serviços
 
@@ -217,11 +230,10 @@ versionar a receita neste repositório.
 
 ## O que fica pendente depois do deploy
 
-- **As cotas não acompanharam o teto**
-  ([#335](https://github.com/autonom-ia/appsell/issues/335)). São 1 GiB de
-  material publicado por vendedor: com aula de 512 MiB, ele publica duas e a
-  terceira é recusada. Sem decidir isso, o release entrega duas aulas longas,
-  não aulas longas.
+- **Acompanhar o disco da VPS.** A cota subiu de 1 GiB para 20 GiB por vendedor
+  ([#335](https://github.com/autonom-ia/appsell/issues/335)), com o custo aceito
+  de forma explícita. O disco é compartilhado com Manu, Lili e n8n: disco cheio
+  não derruba só o Appsell. Vale medir o consumo antes que ele avise sozinho.
 - **O buraco de CI**
   ([#333](https://github.com/autonom-ia/appsell/issues/333)): não existe passo de
   certificação da api no merge group, e o passo do PR ainda enumera arquivos à
