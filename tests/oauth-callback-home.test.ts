@@ -26,7 +26,13 @@ describe("OAuth callback home", () => {
     // que daria erro. Quem entra para vender chega com destino explícito no
     // `next`, então este padrão não atrapalha o cadastro.
     expect(oauthCallbackHome(null, false)).toBe("/library");
-    expect(oauthCallbackHome(null)).toBe("/library");
+  });
+
+  it("mantém o dashboard quando a ausência de loja não foi comprovada", () => {
+    // Sem argumento, ou com null, o estado é "não sei": uma falha transitória
+    // da listagem não pode reclassificar um vendedor existente.
+    expect(oauthCallbackHome(null)).toBe("/dashboard");
+    expect(oauthCallbackHome(null, null)).toBe("/dashboard");
   });
 
   it("preserves the isolated demo persona destinations", () => {

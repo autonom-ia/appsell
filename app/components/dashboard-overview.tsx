@@ -5,6 +5,7 @@ import { productArt } from "@/lib/product-art";
 import { useCallback, useEffect, useState } from "react";
 import { ProductCard } from "./product-card";
 import { SellerOnboardingCard } from "./seller-onboarding-card";
+import { dashboardHeader } from "../../lib/dashboard-audience";
 import { useShellProfile } from "./shell-profile-context";
 import { DEMO_SELLER_ID, demoProducts } from "../../lib/demo-catalog";
 import { listSellerProducts } from "../../lib/catalog-projection";
@@ -123,20 +124,22 @@ export function DashboardOverview() {
   // The CTA is plain navigation to /products (which owns onboarding), so it
   // renders whenever the session view is resolved — including while the
   // catalog request is still in flight or unavailable.
-  const hasStore = profile.status === "ready" && (profile.identity?.sellers.length ?? 0) > 0;
-  // Sem loja não há catálogo para criar produto em cima: o botão levaria a um
-  // erro, e o título prometeria um negócio que ainda não existe.
-  const showCta = hasStore && (view === "demo" || view === "real");
+  // null enquanto a sessão não resolveu: não sabemos se há loja, e o painel
+  // não pode afirmar que não há.
+  const hasStore = profile.status === "ready"
+    ? (profile.identity ? profile.identity.sellers.length > 0 : null)
+    : null;
+  const header = dashboardHeader(view, hasStore);
 
   return (
     <>
       <header className="page-header">
-        {hasStore || view === "demo" ? (
-          <div><p className="eyebrow">Visão geral</p><h1>Seu negócio em um só lugar.</h1><p>Acompanhe o catálogo e continue de onde parou.</p></div>
-        ) : (
+        {header.activation ? (
           <div><p className="eyebrow">Ativação do produtor</p><h1>Comece criando sua loja.</h1><p>A loja é onde seus produtos ficam e onde seus alunos compram.</p></div>
+        ) : (
+          <div><p className="eyebrow">Visão geral</p><h1>Seu negócio em um só lugar.</h1><p>Acompanhe o catálogo e continue de onde parou.</p></div>
         )}
-        {showCta ? <Link className="primary-button" href="/products">Criar produto</Link> : null}
+        {header.cta ? <Link className="primary-button" href="/products">Criar produto</Link> : null}
       </header>
       {view === "loading" ? <p className="empty-state" role="status">Carregando sua visão geral…</p> : null}
       {view === "failed" ? <p className="empty-state" role="alert">Não foi possível validar sua sessão. <a href="/auth/login">Entre novamente</a>.</p> : null}

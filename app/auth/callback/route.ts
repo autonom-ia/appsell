@@ -61,6 +61,9 @@ export async function GET(request: NextRequest) {
   let issuedSessionId: string | undefined;
   let demoSuperadmin = false;
   let hasSellerMembership = false;
+  // null = a listagem não respondeu. Distinguir isso de "zero lojas" evita
+  // mandar um vendedor existente para a biblioteca por causa de um 503.
+  let storeState: boolean | null = null;
   const callbackInput = {
     transactionId: request.cookies.get(transactionCookieName())?.value,
     code: request.nextUrl.searchParams.get("code") ?? undefined,
@@ -99,7 +102,13 @@ export async function GET(request: NextRequest) {
           // ao criar a loja ou no próximo login. Deixar esta consulta
           // bloquear o callback transformaria uma indisponibilidade de leitura
           // em impossibilidade de entrar.
-          hasSellerMembership = await countSellersOrZero(sessionId, session) > 0;
+          const sellers = await countSellersOrNull(sessionId, session);
+          hasSellerMembership = (sellers ?? 0) > 0;
+          // O superadmin de plataforma não é candidato a abrir loja, mesmo num
+          // ambiente onde ainda não exista nenhuma loja ativa para projetar.
+          storeState = sellers === null
+            ? null
+            : sellers > 0 || hasPlatformSuperadminGrant(await readDomainIdentity(sessionId, session));
         }
         if (demoProfile?.persona === "superadmin") {
           const platformSuperadmin = hasPlatformSuperadminGrant(
@@ -117,7 +126,7 @@ export async function GET(request: NextRequest) {
     const destination = safePostLoginPath(
       request.cookies.get(postLoginCookieName())?.value,
       configuredPublicOrigin()
-    ) ?? oauthCallbackHome(demoProfile, hasSellerMembership);
+    ) ?? oauthCallbackHome(demoProfile, storeState);
     const response = NextResponse.redirect(new URL(destination, configuredPublicOrigin()));
     expireTransactionCookie(response);
     response.cookies.set(postLoginCookieName(), "", { ...postLoginCookieOptions(), maxAge: 0 });
@@ -236,14 +245,14 @@ function expireTransactionCookie(response: NextResponse) {
   });
 }
 
-async function countSellersOrZero(
+async function countSellersOrNull(
   sessionId: string,
   session: Parameters<typeof listDomainSellers>[1]
 ) {
   try {
     return sellerCount(await listDomainSellers(sessionId, session));
   } catch {
-    return 0;
+    return null;
   }
 }
 
