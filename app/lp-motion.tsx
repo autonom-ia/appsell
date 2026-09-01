@@ -23,14 +23,13 @@ export function LpMotion() {
 
       gsap.registerPlugin(ScrollTrigger);
       ScrollTrigger.config({ ignoreMobileResize: true });
-      document.documentElement.classList.add("js-anim");
+      document.documentElement.dataset.motion = "on";
 
-      const lenis = new Lenis({ duration: 1.1, smoothWheel: true });
+      const lenis = new Lenis({ duration: 0.9, smoothWheel: true });
       lenis.on("scroll", ScrollTrigger.update);
       const tick = (t: number) => lenis.raf(t * 1000);
       gsap.ticker.add(tick);
       gsap.ticker.lagSmoothing(0);
-      if ("scrollRestoration" in history) history.scrollRestoration = "manual";
 
       const atos = gsap.utils.toArray<HTMLElement>(".ato");
       const barras = gsap.utils.toArray<HTMLElement>(".progresso i");
@@ -58,16 +57,35 @@ export function LpMotion() {
       gsap.set(["#t-painel", "#t-recebe"], { clipPath: "inset(0 0 0 100%)" });
       gsap.set("#peca-painel", { autoAlpha: 0, z: 40 });
 
+      // O curso pinado tem cerca de 1260px. Como as duracoes sao normalizadas,
+      // 0.01 de duracao vale ~13px de rolagem: a saida antiga, de 0.02, se
+      // resolvia em dois cliques de roda enquanto a entrada levava cinco vezes
+      // mais. Era essa assimetria que fazia a troca parecer corte. Agora a
+      // saida tem folga, e a entrada comeca antes de ela terminar. O cruzamento
+      // e seguro porque .linha tem overflow hidden: o titulo que sai ja esta
+      // fora da mascara quando o que entra aparece.
+      const SAIDA = 0.075;
+      const ENTRADA = 0.13;
+      const CRUZE = 0.032;
+      const TROCA = SAIDA - CRUZE + ENTRADA;
+      const LEITURA = (1 - 2 * TROCA) / 3;
+      const MOMENTO1 = LEITURA;
+      const MOMENTO2 = 2 * LEITURA + TROCA;
+      // O ponto em que o ato novo assume a tela: e ele que rege o indicador e
+      // as trocas de tela do aparelho, nao o inicio da saida do ato anterior.
+      const CRUZA1 = MOMENTO1 + SAIDA - CRUZE;
+      const CRUZA2 = MOMENTO2 + SAIDA - CRUZE;
+
       const tl = gsap.timeline({
         scrollTrigger: {
           trigger: ".abertura .pin",
           start: "top top",
-          end: estreito.matches ? "+=100%" : "+=140%",
+          end: estreito.matches ? "+=180%" : "+=300%",
           pin: true,
-          scrub: 0.7,
+          scrub: 0.45,
           anticipatePin: 1,
           onUpdate: (self) => {
-            const i = self.progress < 0.3 ? 0 : self.progress < 0.64 ? 1 : 2;
+            const i = self.progress < CRUZA1 ? 0 : self.progress < CRUZA2 ? 1 : 2;
             barras.forEach((b, k) => b.classList.toggle("on", k === i));
             // O estado de acessibilidade sai do mesmo indice que move o
             // indicador: o ato na tela e o unico anunciado.
@@ -80,30 +98,55 @@ export function LpMotion() {
       // em keystone e para de ser legivel.
       gsap.set("#corpo-hero", { rotateY: -13, rotateX: 6, rotateZ: -1.5 });
       tl.to("#corpo-hero", { rotateY: -4, rotateX: 2, rotateZ: 0, ease: "none", duration: 0.66 }, 0)
-        .to("#foto", { yPercent: -8, scale: 1.1, ease: "none", duration: 1 }, 0)
+        .to("#foto", { yPercent: -14, scale: 1.16, ease: "none", duration: 1 }, 0)
         .to("#foto", { opacity: 0.22, ease: "none", duration: 0.28 }, 0.14);
 
       const troca = (saiu: HTMLElement, entrou: HTMLElement, momento: number) => {
-        tl.to(saiu.querySelectorAll(".linha > span"), { yPercent: -110, duration: 0.02, stagger: 0.006, ease: "power2.in" }, momento)
-          .to([saiu.querySelector(".eb"), saiu.querySelector(".sub"), saiu.querySelector(".actions"), saiu.querySelector(".preco-linha"), saiu.querySelector(".nota")].filter(Boolean),
-            { autoAlpha: 0, y: -14, duration: 0.02 }, momento)
-          .set(saiu, { autoAlpha: 0 }, momento + 0.027)
-          .set(entrou, { autoAlpha: 1 }, momento + 0.028)
-          .fromTo(entrou.querySelectorAll(".linha > span"), { yPercent: 110 }, { yPercent: 0, duration: 0.06, stagger: 0.016, ease: "power3.out" }, momento + 0.028)
-          .fromTo(entrou.querySelector(".eb"), { autoAlpha: 0, y: 10 }, { autoAlpha: 1, y: 0, duration: 0.04 }, momento + 0.038)
-          .fromTo(entrou.querySelector(".sub"), { autoAlpha: 0, y: 18 }, { autoAlpha: 1, y: 0, duration: 0.05 }, momento + 0.05);
+        const secundarios = (alvo: HTMLElement) =>
+          [alvo.querySelector(".eb"), alvo.querySelector(".sub"), alvo.querySelector(".actions"),
+           alvo.querySelector(".preco-linha"), alvo.querySelector(".nota")].filter(Boolean);
+        const entra = momento + SAIDA - CRUZE;
+
+        tl.to(saiu.querySelectorAll(".linha > span"),
+            { yPercent: -110, duration: SAIDA, stagger: 0.016, ease: "power2.inOut" }, momento)
+          .to(secundarios(saiu),
+            { autoAlpha: 0, y: -14, duration: SAIDA * 0.7, ease: "power2.in" }, momento)
+          // Antes o container trocava por .set, um corte de um quadro so. A
+          // rampa curta cobre o mesmo intervalo sem a descontinuidade.
+          .to(saiu, { autoAlpha: 0, duration: 0.022, ease: "none" }, momento + SAIDA - 0.012)
+          .to(entrou, { autoAlpha: 1, duration: 0.022, ease: "none" }, entra)
+          .fromTo(entrou.querySelectorAll(".linha > span"), { yPercent: 110 },
+            { yPercent: 0, duration: ENTRADA, stagger: 0.028, ease: "power3.out" }, entra)
+          .fromTo(entrou.querySelector(".eb"), { autoAlpha: 0, y: 10 },
+            { autoAlpha: 1, y: 0, duration: 0.075, ease: "power2.out" }, entra + 0.024)
+          .fromTo(entrou.querySelector(".sub"), { autoAlpha: 0, y: 18 },
+            { autoAlpha: 1, y: 0, duration: 0.095, ease: "power2.out" }, entra + 0.045);
       };
-      troca(atos[0], atos[1], 0.3);
-      troca(atos[1], atos[2], 0.64);
+      troca(atos[0], atos[1], MOMENTO1);
+      troca(atos[1], atos[2], MOMENTO2);
+
+      // Entre uma troca e outra a tela ficava imovel por cerca de 540px de
+      // rolagem: filmado, dois tercos dos quadros nao mudavam nada. A deriva
+      // abaixo e pequena de proposito, o suficiente para a camera parecer viva
+      // durante a leitura sem competir com a troca em si.
+      const janela: ReadonlyArray<readonly [number, number]> = [
+        [0, MOMENTO1 + SAIDA],
+        [CRUZA1, MOMENTO2 + SAIDA],
+        [CRUZA2, 1]
+      ];
+      atos.forEach((ato, i) => {
+        const [abre, fecha] = janela[i];
+        tl.fromTo(ato, { y: 10 }, { y: -10, ease: "none", duration: fecha - abre }, abre);
+      });
 
       // A tela troca por cortina. Fade cruzado deixaria duas interfaces
       // legiveis no mesmo aparelho.
-      tl.to("#t-painel", { clipPath: "inset(0 0 0 0%)", ease: "power2.inOut", duration: 0.022 }, 0.315)
-        .fromTo("#peca-painel", { autoAlpha: 0, z: 40 }, { autoAlpha: 1, z: 90, duration: 0.05, ease: "power3.out" }, 0.39)
-        .to("#peca-painel", { autoAlpha: 0, z: 40, duration: 0.032, ease: "power2.in" }, 0.615)
-        .to("#t-recebe", { clipPath: "inset(0 0 0 0%)", ease: "power2.inOut", duration: 0.022 }, 0.655)
+      tl.to("#t-painel", { clipPath: "inset(0 0 0 0%)", ease: "power2.inOut", duration: 0.03 }, CRUZA1 - 0.012)
+        .fromTo("#peca-painel", { autoAlpha: 0, z: 40 }, { autoAlpha: 1, z: 90, duration: 0.07, ease: "power3.out" }, CRUZA1 + ENTRADA * 0.55)
+        .to("#peca-painel", { autoAlpha: 0, z: 40, duration: 0.045, ease: "power2.in" }, MOMENTO2 - 0.05)
+        .to("#t-recebe", { clipPath: "inset(0 0 0 0%)", ease: "power2.inOut", duration: 0.03 }, CRUZA2 - 0.012)
         // No ato do dinheiro o aparelho para de girar.
-        .to("#corpo-hero", { rotateY: 0, rotateX: 0, ease: "power2.out", duration: 0.14, overwrite: "auto" }, 0.66);
+        .to("#corpo-hero", { rotateY: 0, rotateX: 0, ease: "power2.out", duration: 0.16, overwrite: "auto" }, CRUZA2);
 
       tl.to(".palco", { autoAlpha: 0, y: "-5vh", ease: "power1.in", duration: 0.08 }, 0.92)
         .to(".progresso", { autoAlpha: 0, duration: 0.05 }, 0.94);
@@ -150,7 +193,7 @@ export function LpMotion() {
         connection?: { saveData?: boolean; effectiveType?: string };
       }).connection;
       const querVideo =
-        window.matchMedia("(min-width: 1000px)").matches &&
+        window.matchMedia("(min-width: 1000px) and (pointer: fine)").matches &&
         conexao?.saveData !== true &&
         (conexao?.effectiveType === undefined || conexao.effectiveType === "4g");
 
@@ -165,7 +208,10 @@ export function LpMotion() {
           video.playsInline = true;
           video.preload = "none";
           video.setAttribute("aria-hidden", "true");
-          for (const [src, type] of [["/lp/hero.webm", "video/webm"], ["/lp/hero.mp4", "video/mp4"]]) {
+          for (const [src, type] of [
+            ["/lp/hero.webm", 'video/webm; codecs="av01.0.05M.08"'],
+            ["/lp/hero.mp4", 'video/mp4; codecs="avc1.64001f"']
+          ]) {
             const fonte = document.createElement("source");
             fonte.src = src;
             fonte.type = type;
@@ -186,18 +232,39 @@ export function LpMotion() {
         }
       }
 
+      // Com a restauracao do navegador desligada, voltar de /termos ou do
+      // cadastro devolveria a pagina no topo. A posicao e guardada na saida e
+      // reaplicada depois que o ScrollTrigger ja mediu: antes disso o pin
+      // recalcularia por cima e o salto voltaria.
+      const CHAVE = "lp:scroll";
+      const guardar = () => {
+        try { sessionStorage.setItem(CHAVE, String(Math.round(window.scrollY))); } catch { /* sessao indisponivel */ }
+      };
+      window.addEventListener("pagehide", guardar);
+      try {
+        const salvo = Number(sessionStorage.getItem(CHAVE));
+        const nav = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
+        if (salvo > 0 && nav?.type === "back_forward") lenis.scrollTo(salvo, { immediate: true });
+      } catch { /* sessao indisponivel */ }
+
       const refrescar = () => ScrollTrigger.refresh();
+      const refrescarDepois = () =>
+        requestAnimationFrame(() => requestAnimationFrame(refrescar));
       void document.fonts?.ready.then(refrescar);
-      window.addEventListener("orientationchange", refrescar);
+      window.addEventListener("orientationchange", refrescarDepois);
+      screen.orientation?.addEventListener("change", refrescarDepois);
 
       limpar = () => {
         links.forEach((a) => a.removeEventListener("click", ancoras));
-        window.removeEventListener("orientationchange", refrescar);
+        window.removeEventListener("pagehide", guardar);
+        window.removeEventListener("orientationchange", refrescarDepois);
+        screen.orientation?.removeEventListener("change", refrescarDepois);
         document.getElementById("video-foto")?.remove();
         gsap.ticker.remove(tick);
         ScrollTrigger.getAll().forEach((s) => s.kill());
         lenis.destroy();
         document.documentElement.classList.remove("js-anim");
+        delete document.documentElement.dataset.motion;
       };
     })();
 
