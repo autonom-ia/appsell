@@ -59,21 +59,16 @@ test.skipIf(!domainApiUrl)("two BFFs persist seller onboarding through the real 
     const setCookie = callback.headers.get("set-cookie");
     const session = cookiePair(setCookie, "appsell_session");
     const sellerCsrf = cookiePair(setCookie, "appsell_seller_csrf");
-    const productCsrf = cookiePair(setCookie, "appsell_product_csrf");
-    const productUpdateCsrf = cookiePair(setCookie, "appsell_product_update_csrf");
-    const productPublishCsrf = cookiePair(setCookie, "appsell_product_publish_csrf");
     const sessionId = session.slice(session.indexOf("=") + 1);
     const sellerCsrfToken = sellerCsrf.slice(sellerCsrf.indexOf("=") + 1);
     expect(sellerCsrfToken).toBe(deriveCsrfToken(sessionId, "POST:/api/sellers", csrfKey));
-    const productCsrfToken = productCsrf.slice(productCsrf.indexOf("=") + 1);
-    expect(productCsrfToken).toBe(deriveCsrfToken(sessionId, "POST:/api/products", csrfKey));
-    const productUpdateCsrfToken = productUpdateCsrf.slice(productUpdateCsrf.indexOf("=") + 1);
-    expect(productUpdateCsrfToken).toBe(deriveCsrfToken(sessionId, "PATCH:/api/products", csrfKey));
-    const productPublishCsrfToken = productPublishCsrf.slice(productPublishCsrf.indexOf("=") + 1);
-    expect(productPublishCsrfToken).toBe(
-      deriveCsrfToken(sessionId, "POST:/api/products/publications", csrfKey)
-    );
-    const cookie = `${session}; ${sellerCsrf}; ${productCsrf}; ${productUpdateCsrf}; ${productPublishCsrf}`;
+    // Identidade nova, sem nenhuma membership: o login entrega apenas a
+    // permissão de criar a primeira loja. As de produto viajavam junto e davam
+    // a um comprador real o poder de publicar catálogo (#350).
+    for (const ausente of ["appsell_product_csrf", "appsell_product_update_csrf", "appsell_product_publish_csrf"]) {
+      expect(setCookie ?? "").not.toContain(`${ausente}=`);
+    }
+    const cookie = `${session}; ${sellerCsrf}`;
 
     const empty = await fetch(`http://127.0.0.1:${firstPort}/api/sellers`, {
       headers: { cookie: session }
@@ -96,6 +91,25 @@ test.skipIf(!domainApiUrl)("two BFFs persist seller onboarding through the real 
       })
     });
     expect(onboarded.status, await onboarded.clone().text()).toBe(201);
+    // A membership acabou de nascer e as permissões de produto chegam com ela.
+    // Sem isto, o primeiro produto levaria 403 e recarregar não resolveria:
+    // nenhuma outra rota emite cookie, e o banco recusa um segundo onboarding
+    // para quem já é owner ativo.
+    const onboardedCookies = onboarded.headers.get("set-cookie") ?? "";
+    const productCsrf = cookiePair(onboardedCookies, "appsell_product_csrf");
+    const productUpdateCsrf = cookiePair(onboardedCookies, "appsell_product_update_csrf");
+    const productPublishCsrf = cookiePair(onboardedCookies, "appsell_product_publish_csrf");
+    const productCsrfToken = productCsrf.slice(productCsrf.indexOf("=") + 1);
+    expect(productCsrfToken).toBe(deriveCsrfToken(sessionId, "POST:/api/products", csrfKey));
+    const productUpdateCsrfToken = productUpdateCsrf.slice(productUpdateCsrf.indexOf("=") + 1);
+    expect(productUpdateCsrfToken).toBe(deriveCsrfToken(sessionId, "PATCH:/api/products", csrfKey));
+    const productPublishCsrfToken = productPublishCsrf.slice(productPublishCsrf.indexOf("=") + 1);
+    expect(productPublishCsrfToken).toBe(
+      deriveCsrfToken(sessionId, "POST:/api/products/publications", csrfKey)
+    );
+    // A partir daqui a sessão carrega o que a loja lhe deu: é assim que o
+    // browser segue do onboarding para o primeiro produto sem novo login.
+    const cookieComLoja = `${cookie}; ${productCsrf}; ${productUpdateCsrf}; ${productPublishCsrf}`;
 
     const persisted = await fetch(`http://127.0.0.1:${firstPort}/api/sellers`, {
       headers: { cookie: session }
@@ -118,7 +132,7 @@ test.skipIf(!domainApiUrl)("two BFFs persist seller onboarding through the real 
     });
     const created = await fetch(`http://127.0.0.1:${secondPort}/api/sellers/${sellerId}/products`, {
       method: "POST",
-      headers: { cookie, origin: `http://localhost:${firstPort}` },
+      headers: { cookie: cookieComLoja, origin: `http://localhost:${firstPort}` },
       body: productBody
     });
     expect(created.status, await created.clone().text()).toBe(201);
@@ -129,7 +143,7 @@ test.skipIf(!domainApiUrl)("two BFFs persist seller onboarding through the real 
 
     const replayed = await fetch(`http://127.0.0.1:${firstPort}/api/sellers/${sellerId}/products`, {
       method: "POST",
-      headers: { cookie, origin: `http://localhost:${firstPort}` },
+      headers: { cookie: cookieComLoja, origin: `http://localhost:${firstPort}` },
       body: productBody
     });
     expect(replayed.status, await replayed.clone().text()).toBe(200);
@@ -185,7 +199,7 @@ test.skipIf(!domainApiUrl)("two BFFs persist seller onboarding through the real 
     });
     const updated = await fetch(detailUrl.replace(`:${firstPort}`, `:${secondPort}`), {
       method: "PATCH",
-      headers: { cookie, origin: `http://localhost:${firstPort}` },
+      headers: { cookie: cookieComLoja, origin: `http://localhost:${firstPort}` },
       body: updateBody
     });
     expect(updated.status, await updated.clone().text()).toBe(200);
@@ -195,7 +209,7 @@ test.skipIf(!domainApiUrl)("two BFFs persist seller onboarding through the real 
     duplicate.append("product_title", "Duplicado ambiguo");
     const duplicateResponse = await fetch(detailUrl, {
       method: "PATCH",
-      headers: { cookie, origin: `http://localhost:${firstPort}` },
+      headers: { cookie: cookieComLoja, origin: `http://localhost:${firstPort}` },
       body: duplicate
     });
     expect(duplicateResponse.status).toBe(422);
@@ -235,7 +249,7 @@ test.skipIf(!domainApiUrl)("two BFFs persist seller onboarding through the real 
     });
     const moduleCreated = await fetch(`${curriculumUrl.replace("/curriculum", "")}/modules`, {
       method: "POST",
-      headers: { cookie, origin: `http://localhost:${firstPort}` },
+      headers: { cookie: cookieComLoja, origin: `http://localhost:${firstPort}` },
       body: moduleBody
     });
     expect(moduleCreated.status, await moduleCreated.clone().text()).toBe(201);
@@ -247,7 +261,7 @@ test.skipIf(!domainApiUrl)("two BFFs persist seller onboarding through the real 
       `${curriculumUrl.replace(`:${firstPort}`, `:${secondPort}`).replace("/curriculum", "")}/modules`,
       {
         method: "POST",
-        headers: { cookie, origin: `http://localhost:${firstPort}` },
+        headers: { cookie: cookieComLoja, origin: `http://localhost:${firstPort}` },
         body: moduleBody
       }
     );
@@ -266,7 +280,7 @@ test.skipIf(!domainApiUrl)("two BFFs persist seller onboarding through the real 
       `${curriculumUrl.replace("/curriculum", "")}/modules/${createdModule.module_id}/lessons`,
       {
         method: "POST",
-        headers: { cookie, origin: `http://localhost:${firstPort}` },
+        headers: { cookie: cookieComLoja, origin: `http://localhost:${firstPort}` },
         body: lessonBody
       }
     );
@@ -280,7 +294,7 @@ test.skipIf(!domainApiUrl)("two BFFs persist seller onboarding through the real 
       `${curriculumUrl.replace("/curriculum", "")}/modules/${createdModule.module_id}/lessons/${lesson.lesson_id}`,
       {
         method: "PATCH",
-        headers: { cookie, origin: `http://localhost:${firstPort}` },
+        headers: { cookie: cookieComLoja, origin: `http://localhost:${firstPort}` },
         body: new URLSearchParams({
           _csrf: curriculum.csrf.update,
           idempotency_key: randomUUID(),
@@ -298,7 +312,7 @@ test.skipIf(!domainApiUrl)("two BFFs persist seller onboarding through the real 
       `${curriculumUrl.replace("/curriculum", "")}/modules/${createdModule.module_id}/lessons/${lesson.lesson_id}`,
       {
         method: "PATCH",
-        headers: { cookie, origin: `http://localhost:${firstPort}` },
+        headers: { cookie: cookieComLoja, origin: `http://localhost:${firstPort}` },
         body: new URLSearchParams({
           _csrf: curriculum.csrf.update,
           idempotency_key: randomUUID(),
@@ -315,7 +329,7 @@ test.skipIf(!domainApiUrl)("two BFFs persist seller onboarding through the real 
       `${curriculumUrl.replace("/curriculum", "")}/modules/${createdModule.module_id}/lessons`,
       {
         method: "POST",
-        headers: { cookie, origin: `http://localhost:${firstPort}` },
+        headers: { cookie: cookieComLoja, origin: `http://localhost:${firstPort}` },
         body: new URLSearchParams({
           _csrf: curriculum.csrf.create,
           idempotency_key: randomUUID(),
@@ -333,7 +347,7 @@ test.skipIf(!domainApiUrl)("two BFFs persist seller onboarding through the real 
       `${curriculumUrl.replace("/curriculum", "")}/modules/${createdModule.module_id}/lessons/order`,
       {
         method: "PUT",
-        headers: { cookie, origin: `http://localhost:${firstPort}` },
+        headers: { cookie: cookieComLoja, origin: `http://localhost:${firstPort}` },
         body: new URLSearchParams({
           _csrf: curriculum.csrf.reorder,
           idempotency_key: randomUUID(),
@@ -349,7 +363,7 @@ test.skipIf(!domainApiUrl)("two BFFs persist seller onboarding through the real 
       `${curriculumUrl.replace("/curriculum", "")}/modules/${createdModule.module_id}/lessons/${lesson.lesson_id}/archive`,
       {
         method: "POST",
-        headers: { cookie, origin: `http://localhost:${firstPort}` },
+        headers: { cookie: cookieComLoja, origin: `http://localhost:${firstPort}` },
         body: new URLSearchParams({
           _csrf: curriculum.csrf.archive,
           idempotency_key: randomUUID(),
@@ -395,7 +409,7 @@ test.skipIf(!domainApiUrl)("two BFFs persist seller onboarding through the real 
       publicationUrl,
       {
         method: "POST",
-        headers: { cookie, origin: `http://localhost:${firstPort}` },
+        headers: { cookie: cookieComLoja, origin: `http://localhost:${firstPort}` },
         body: publicationBody
       }
     );
@@ -407,7 +421,7 @@ test.skipIf(!domainApiUrl)("two BFFs persist seller onboarding through the real 
 
     const retriedPublication = await fetch(publicationUrl, {
       method: "POST",
-      headers: { cookie, origin: `http://localhost:${firstPort}` },
+      headers: { cookie: cookieComLoja, origin: `http://localhost:${firstPort}` },
       body: publicationBody
     });
     expect(retriedPublication.status, await retriedPublication.clone().text()).toBe(200);
@@ -431,7 +445,7 @@ test.skipIf(!domainApiUrl)("two BFFs persist seller onboarding through the real 
 
     const duplicateSnapshot = await fetch(publicationUrl, {
       method: "POST",
-      headers: { cookie, origin: `http://localhost:${firstPort}` },
+      headers: { cookie: cookieComLoja, origin: `http://localhost:${firstPort}` },
       body: new URLSearchParams({
         _csrf: productPublishCsrfToken,
         idempotency_key: randomUUID(),

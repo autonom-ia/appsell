@@ -44,6 +44,7 @@ import { describeCallbackFailure, reportOAuthCallbackFailure } from "@/lib/oauth
 import {
   DomainApiError,
   isDomainApiConfigured,
+  listDomainSellers,
   readDomainIdentity,
   syncDomainIdentity
 } from "@/lib/internal-api-client.server";
@@ -51,12 +52,15 @@ import { ONBOARD_SELLER_CSRF_ACTION } from "@/lib/mutation-protection.server";
 import { demoProfileForSubject } from "@/lib/demo-config";
 import { oauthCallbackHome } from "@/lib/oauth-callback-home";
 import { safePostLoginPath } from "@/lib/post-login-redirect";
+import { sellerCookiePlan } from "@/lib/seller-cookie-plan";
+import { ACCESSIBLE_SELLER_ROLES } from "@/lib/rbac-roles";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
   let issuedSessionId: string | undefined;
   let demoSuperadmin = false;
+  let hasSellerMembership = false;
   const callbackInput = {
     transactionId: request.cookies.get(transactionCookieName())?.value,
     code: request.nextUrl.searchParams.get("code") ?? undefined,
@@ -89,6 +93,14 @@ export async function GET(request: NextRequest) {
     if (isDomainApiConfigured()) {
       try {
         await syncDomainIdentity(sessionId, session);
+        if (!demoProfile) {
+          // Falha fechada, mas sem derrubar o login: se a listagem não
+          // responder, a sessão entra sem as permissões de produto e as recebe
+          // ao criar a loja ou no próximo login. Deixar esta consulta
+          // bloquear o callback transformaria uma indisponibilidade de leitura
+          // em impossibilidade de entrar.
+          hasSellerMembership = await countSellersOrZero(sessionId, session) > 0;
+        }
         if (demoProfile?.persona === "superadmin") {
           const platformSuperadmin = hasPlatformSuperadminGrant(
             await readDomainIdentity(sessionId, session)
@@ -113,13 +125,25 @@ export async function GET(request: NextRequest) {
     response.cookies.set(recoveryCookieName(), "", { ...recoveryCookieOptions(), maxAge: 0 });
     response.cookies.set(sessionCookieName(), sessionId, sessionCookieOptions());
     response.cookies.set(csrfCookieName(), csrfTokenForSession(sessionId, LOGOUT_CSRF_ACTION), csrfCookieOptions());
-    if (demoProfile?.persona === "buyer" || demoSuperadmin) {
+    // Quem só comprou recebia permissão de criar e publicar produto. As duas
+    // permissões não são a mesma coisa: onboarding é o que permite criar a
+    // PRIMEIRA loja, e precisa existir para quem ainda não tem nenhuma; as de
+    // produto exigem membership provada, senão o comprador sai do login com
+    // poder de publicar catálogo.
+    const cookiePlan = sellerCookiePlan({
+      demoPersona: demoProfile?.persona ?? null,
+      demoSuperadmin,
+      hasSellerMembership
+    });
+    if (!cookiePlan.onboarding) {
       expireSellerCookies(response);
     } else {
       response.cookies.set(sellerCsrfCookieName(), csrfTokenForSession(sessionId, ONBOARD_SELLER_CSRF_ACTION), csrfCookieOptions());
-      response.cookies.set(productCsrfCookieName(), csrfTokenForSession(sessionId, CREATE_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
-      response.cookies.set(productUpdateCsrfCookieName(), csrfTokenForSession(sessionId, UPDATE_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
-      response.cookies.set(productPublishCsrfCookieName(), csrfTokenForSession(sessionId, PUBLISH_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
+      if (cookiePlan.product) {
+        response.cookies.set(productCsrfCookieName(), csrfTokenForSession(sessionId, CREATE_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
+        response.cookies.set(productUpdateCsrfCookieName(), csrfTokenForSession(sessionId, UPDATE_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
+        response.cookies.set(productPublishCsrfCookieName(), csrfTokenForSession(sessionId, PUBLISH_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
+      }
     }
     response.headers.set("cache-control", "no-store");
     return response;
@@ -210,4 +234,32 @@ function expireTransactionCookie(response: NextResponse) {
     ...transactionCookieOptions(),
     maxAge: 0
   });
+}
+
+async function countSellersOrZero(
+  sessionId: string,
+  session: Parameters<typeof listDomainSellers>[1]
+) {
+  try {
+    return sellerCount(await listDomainSellers(sessionId, session));
+  } catch {
+    return 0;
+  }
+}
+
+// Conta apenas memberships que a API descreveu por inteiro. Uma entrada
+// parcial não prova membership, e tratá-la como prova devolveria ao comprador
+// as permissões de produto que esta mudança tirou dele.
+function sellerCount(payload: unknown) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return 0;
+  const sellers = (payload as Record<string, unknown>).sellers;
+  if (!Array.isArray(sellers)) return 0;
+  return sellers.filter((seller) => {
+    if (!seller || typeof seller !== "object" || Array.isArray(seller)) return false;
+    const item = seller as Record<string, unknown>;
+    const textual = ["id", "slug", "display_name"].every(
+      (field) => typeof item[field] === "string" && (item[field] as string).length > 0
+    );
+    return textual && typeof item.role === "string" && ACCESSIBLE_SELLER_ROLES.has(item.role);
+  }).length;
 }

@@ -80,11 +80,11 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ e
           <a href="#preco">Preço</a>
           <a href="#contato">Falar com a equipe</a>
           <a href="/auth/login">Entrar</a>
-          <a href="/auth/signup" className="cta-topo">Vender agora</a>
+          <a href="/auth/signup?next=%2Fsettings%2Fstore%2Fnew" className="cta-topo">Vender agora</a>
         </nav>
         <span className="topo-mob">
           <a href="/auth/login">Entrar</a>
-          <a className="cta-mob" href="/auth/signup">Vender</a>
+          <a className="cta-mob" href="/auth/signup?next=%2Fsettings%2Fstore%2Fnew">Vender</a>
         </span>
       </header>
 
@@ -125,7 +125,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ e
                   </p>
                   <p className="preco-linha">Sem mensalidade: 6,99% + R$ 1,99 por venda.</p>
                   <div className="actions">
-                    <a className="cta" href="/auth/signup">Vender agora {SETA}</a>
+                    <a className="cta" href="/auth/signup?next=%2Fsettings%2Fstore%2Fnew">Vender agora {SETA}</a>
                     <a className="cta-2" href="#contato">Falar com a equipe</a>
                   </div>
                   <p className="nota">Você cria a conta agora mesmo. Se preferir, a gente monta a loja junto com você.</p>
@@ -282,7 +282,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ e
           <div className="in">
             <LpPreco />
             <div className="actions">
-              <a className="cta-vender" href="/auth/signup">Vender agora {SETA}</a>
+              <a className="cta-vender" href="/auth/signup?next=%2Fsettings%2Fstore%2Fnew">Vender agora {SETA}</a>
               <a className="cta-2 escuro" href="#contato">Falar com a equipe</a>
             </div>
             <p className="conta-nota">Criar a conta não custa nada. A taxa só existe quando alguém compra de você.</p>
