@@ -108,7 +108,7 @@ export async function GET(request: NextRequest) {
           // ambiente onde ainda não exista nenhuma loja ativa para projetar.
           storeState = sellers === null
             ? null
-            : sellers > 0 || hasPlatformSuperadminGrant(await readDomainIdentity(sessionId, session));
+            : sellers > 0 || await hasPlatformGrantOrNull(sessionId, session);
         }
         if (demoProfile?.persona === "superadmin") {
           const platformSuperadmin = hasPlatformSuperadminGrant(
@@ -260,9 +260,12 @@ async function countSellersOrNull(
 // parcial não prova membership, e tratá-la como prova devolveria ao comprador
 // as permissões de produto que esta mudança tirou dele.
 function sellerCount(payload: unknown) {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return 0;
+  // null quando o payload não é reconhecível: durante um rollout com versões
+  // incompatíveis, ler isso como "zero lojas" mandaria um vendedor existente
+  // para a biblioteca como se ele nunca tivesse criado nada.
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
   const sellers = (payload as Record<string, unknown>).sellers;
-  if (!Array.isArray(sellers)) return 0;
+  if (!Array.isArray(sellers)) return null;
   return sellers.filter((seller) => {
     if (!seller || typeof seller !== "object" || Array.isArray(seller)) return false;
     const item = seller as Record<string, unknown>;
@@ -271,4 +274,18 @@ function sellerCount(payload: unknown) {
     );
     return textual && typeof item.role === "string" && ACCESSIBLE_SELLER_ROLES.has(item.role);
   }).length;
+}
+
+// O grant é consulta auxiliar: serve para não convidar um superadmin a abrir
+// loja. Uma falha aqui não pode desfazer um login que já deu certo — antes
+// desta guarda ela caía no catch que faz logout e relança.
+async function hasPlatformGrantOrNull(
+  sessionId: string,
+  session: Parameters<typeof readDomainIdentity>[1]
+) {
+  try {
+    return hasPlatformSuperadminGrant(await readDomainIdentity(sessionId, session));
+  } catch {
+    return false;
+  }
 }

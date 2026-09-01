@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { NEW_STORE_PATH } from "./app-shell";
-import { useShellProfile } from "./shell-profile-context";
+import { canOpenFirstStore, useShellProfile } from "./shell-profile-context";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   parseBuyerProductsPayload,
@@ -27,11 +27,7 @@ export function LibraryWorkspace({ demoCheckoutEnabled = false }: { demoCheckout
   const profile = useShellProfile();
   // Só oferece criar loja a quem já poderia: identidade real resolvida e ainda
   // sem nenhuma. Persona demo e sessão não resolvida ficam de fora.
-  // O superadmin de plataforma fica de fora: o shell já não lhe oferece essa
-  // ação, e a biblioteca não pode discordar do menu.
-  const showStoreInvite = profile.status === "ready" && !profile.profile &&
-    profile.identity !== null && profile.identity.sellers.length === 0 &&
-    !profile.identity.platformRoles.includes("platform_superadmin");
+  const showStoreInvite = canOpenFirstStore(profile);
   const [state, setState] = useState<State>("loading");
   const [items, setItems] = useState<LibraryItem[]>([]);
   const requestRef = useRef<AbortController | null>(null);

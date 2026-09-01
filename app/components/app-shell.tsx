@@ -14,6 +14,7 @@ import {
   DEMO_SUPERADMIN_EMAIL
 } from "../../lib/demo-config";
 import {
+  canOpenFirstStore,
   hasPlatformGrant,
   shellAudience,
   ShellProfileContext,
@@ -84,7 +85,7 @@ function NavIcon({ name }: { name: NavigationMark }) {
 
 // Quem não tem loja e não comprou nada chega pela porta do vendedor: mandá-lo
 // para uma biblioteca vazia faria parecer que ele entrou no lugar errado.
-function defaultHome(audience: ReturnType<typeof shellAudience>, platformGrant: boolean) {
+function defaultHome(audience: ReturnType<typeof shellAudience>) {
   if (audience === "demo-buyer") return "/library";
   // Grant de plataforma não cria membership, então o superadmin cai em
   // "sem loja" — mas convidá-lo a abrir uma loja seria ler mal o que ele veio
@@ -92,7 +93,7 @@ function defaultHome(audience: ReturnType<typeof shellAudience>, platformGrant: 
   // Sem loja, a casa é a biblioteca — inclusive para quem só comprou um curso,
   // que é indistinguível daqui de quem ainda não criou a loja. Criar a loja
   // continua a um clique, pelo item do menu.
-  if (audience === "without-store" && !platformGrant) return "/library";
+  if (audience === "without-store") return "/library";
   return "/dashboard";
 }
 
@@ -186,6 +187,7 @@ export function AppShell({ children }: AppShellProps) {
   const platformMode = pathname.startsWith("/platform/");
   const audience = shellAudience(profileState);
   const platformGrant = hasPlatformGrant(profileState);
+  const canOpenStore = canOpenFirstStore(profileState);
   // Sessão pronta mas sem audiência resolvida é sessão que não sabemos ler:
   // falha fechada, com o caminho de recuperação, em vez de adivinhar o papel.
   const unresolved = profileState.status === "ready" && audience === null;
@@ -198,7 +200,7 @@ export function AppShell({ children }: AppShellProps) {
         : audience === "demo-buyer"
           ? buyerNavigation
           : audience === "without-store"
-            ? (platformGrant ? buyerNavigation : withoutStoreNavigation)
+            ? (canOpenStore ? withoutStoreNavigation : buyerNavigation)
             : sellerNavigation;
   const identity = profileState.status === "ready" ? profileState.identity : null;
   // O rodapé mostrava "Sua conta / Sessão protegida" e as iniciais AU fixas no
@@ -215,7 +217,7 @@ export function AppShell({ children }: AppShellProps) {
     : platformMode
       ? "/platform/demo-inspection"
       : profileState.status === "ready"
-        ? demoProfile?.home ?? defaultHome(audience, platformGrant)
+        ? demoProfile?.home ?? defaultHome(audience)
         : pathname;
 
   const loadProfile = useCallback(async (signal?: AbortSignal) => {

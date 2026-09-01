@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { oauthCallbackHome } from "../lib/oauth-callback-home";
+import { canOpenFirstStore, type ShellIdentity } from "../app/components/shell-profile-context";
 
 describe("para onde vai quem não tem loja", () => {
   it("leva à biblioteca quando a ausência de loja é comprovada", () => {
@@ -31,22 +32,39 @@ describe("para onde vai quem não tem loja", () => {
   });
 });
 
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-
-const root = resolve(__dirname, "..");
-
-describe("a biblioteca vazia não é um beco", () => {
-  const biblioteca = readFileSync(resolve(root, "app/components/library-workspace.tsx"), "utf8");
-
-  it("oferece criar loja a quem tem identidade real e nenhuma loja", () => {
-    expect(biblioteca).toContain("showStoreInvite");
-    expect(biblioteca).toContain("NEW_STORE_PATH");
+describe("quem pode abrir a primeira loja", () => {
+  const base = { status: "ready", profile: null, runtime: "identity" } as const;
+  const identidade = (over: Partial<ShellIdentity> = {}): ShellIdentity => ({
+    email: "p@exemplo.test", emailVerified: true, platformRoles: [], sellers: [], ...over
   });
 
-  it("não oferece à persona demo, à sessão não resolvida nem ao superadmin", () => {
-    expect(biblioteca).toContain("!profile.profile");
-    expect(biblioteca).toContain("profile.identity !== null");
-    expect(biblioteca).toContain("platform_superadmin");
+  it("oferece a quem tem identidade real, nenhuma loja e nenhum papel de plataforma", () => {
+    expect(canOpenFirstStore({ ...base, identity: identidade() })).toBe(true);
+  });
+
+  it("não oferece a quem já tem loja", () => {
+    const state = { ...base, identity: identidade({
+      sellers: [{ id: "s", slug: "l", displayName: "L", role: "seller_owner" }]
+    }) };
+    expect(canOpenFirstStore(state)).toBe(false);
+  });
+
+  it("não oferece a nenhum papel de plataforma, não só ao superadmin", () => {
+    // support e auditor também operam a plataforma; a matriz descreve criar
+    // tenant próprio como fluxo de quem ainda não tem papel nenhum.
+    for (const role of ["platform_superadmin", "platform_support", "platform_auditor"]) {
+      expect(canOpenFirstStore({ ...base, identity: identidade({ platformRoles: [role] }) }))
+        .toBe(false);
+    }
+  });
+
+  it("não oferece a persona demo nem a sessão não resolvida", () => {
+    expect(canOpenFirstStore({ ...base, identity: null })).toBe(false);
+    expect(canOpenFirstStore({ status: "loading" })).toBe(false);
+    expect(canOpenFirstStore({ status: "failed" })).toBe(false);
+    expect(canOpenFirstStore({
+      ...base, identity: null,
+      profile: { persona: "buyer", email: "b@d.test", label: "Aluno", home: "/library" }
+    })).toBe(false);
   });
 });
