@@ -59,3 +59,26 @@ describe("leitura do payload de sessão no shell", () => {
     expect(shellAudience(state)).toBe("demo-buyer");
   });
 });
+
+describe("payload semanticamente inválido", () => {
+  it("recusa loja com papel que não existe na constraint", () => {
+    const state = parseProfileState({
+      ...base,
+      identity: {
+        email: "a@b.test",
+        platformRoles: [],
+        sellers: [{ id: "s1", slug: "l", displayName: "L", role: "revoked" }]
+      }
+    });
+    expect(state.status).toBe("failed");
+  });
+
+  it("não promove papel de plataforma desconhecido a grant", () => {
+    const state = parseProfileState({
+      ...base,
+      identity: { email: "a@b.test", platformRoles: ["root"], sellers: [] }
+    });
+    expect(state.status).toBe("ready");
+    expect(state.status === "ready" ? state.identity?.platformRoles : null).toEqual([]);
+  });
+});

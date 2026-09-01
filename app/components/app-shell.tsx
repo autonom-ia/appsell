@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, MouseEvent, ReactNode } from "react";
 import { AccessibleDialog } from "./accessible-dialog";
+import { PLATFORM_ROLES, SELLER_ROLES } from "../../lib/rbac-roles";
 import { SellBrand } from "./sell-brand";
 import { allowUnsavedNavigation, DIRTY_HISTORY_BLOCKED_EVENT, DIRTY_HISTORY_CONTINUE_EVENT, DIRTY_NAVIGATION_REQUEST_EVENT, DIRTY_STATE_EVENT } from "./use-unsaved-changes";
 import {
@@ -451,8 +452,10 @@ function parseIdentity(value: unknown): ShellIdentity | null | undefined {
   for (const seller of sellers) {
     if (!seller || typeof seller !== "object" || Array.isArray(seller)) return undefined;
     const item = seller as Record<string, unknown>;
-    if (typeof item.id !== "string" || typeof item.slug !== "string" ||
-        typeof item.displayName !== "string" || typeof item.role !== "string") {
+    if (typeof item.id !== "string" || item.id.length === 0 ||
+        typeof item.slug !== "string" || item.slug.length === 0 ||
+        typeof item.displayName !== "string" || item.displayName.length === 0 ||
+        typeof item.role !== "string" || !SELLER_ROLES.has(item.role)) {
       return undefined;
     }
     parsed.push({ id: item.id, slug: item.slug, displayName: item.displayName, role: item.role });
@@ -460,7 +463,7 @@ function parseIdentity(value: unknown): ShellIdentity | null | undefined {
   return {
     email,
     emailVerified: record.emailVerified === true,
-    platformRoles: roles as string[],
+    platformRoles: (roles as string[]).filter((role) => PLATFORM_ROLES.has(role)),
     sellers: parsed
   };
 }

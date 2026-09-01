@@ -53,6 +53,7 @@ import { demoProfileForSubject } from "@/lib/demo-config";
 import { oauthCallbackHome } from "@/lib/oauth-callback-home";
 import { safePostLoginPath } from "@/lib/post-login-redirect";
 import { sellerCookiePlan } from "@/lib/seller-cookie-plan";
+import { SELLER_ROLES } from "@/lib/rbac-roles";
 
 export const dynamic = "force-dynamic";
 
@@ -93,8 +94,12 @@ export async function GET(request: NextRequest) {
       try {
         await syncDomainIdentity(sessionId, session);
         if (!demoProfile) {
-          const sellers = await listDomainSellers(sessionId, session);
-          hasSellerMembership = sellerCount(sellers) > 0;
+          // Falha fechada, mas sem derrubar o login: se a listagem não
+          // responder, a sessão entra sem as permissões de produto e as recebe
+          // ao criar a loja ou no próximo login. Deixar esta consulta
+          // bloquear o callback transformaria uma indisponibilidade de leitura
+          // em impossibilidade de entrar.
+          hasSellerMembership = await countSellersOrZero(sessionId, session) > 0;
         }
         if (demoProfile?.persona === "superadmin") {
           const platformSuperadmin = hasPlatformSuperadminGrant(
@@ -231,8 +236,27 @@ function expireTransactionCookie(response: NextResponse) {
   });
 }
 
+async function countSellersOrZero(
+  sessionId: string,
+  session: Parameters<typeof listDomainSellers>[1]
+) {
+  try {
+    return sellerCount(await listDomainSellers(sessionId, session));
+  } catch {
+    return 0;
+  }
+}
+
+// Conta apenas memberships que a API descreveu por inteiro. Uma entrada
+// parcial não prova membership, e tratá-la como prova devolveria ao comprador
+// as permissões de produto que esta mudança tirou dele.
 function sellerCount(payload: unknown) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return 0;
   const sellers = (payload as Record<string, unknown>).sellers;
-  return Array.isArray(sellers) ? sellers.length : 0;
+  if (!Array.isArray(sellers)) return 0;
+  return sellers.filter((seller) => {
+    if (!seller || typeof seller !== "object" || Array.isArray(seller)) return false;
+    const role = (seller as Record<string, unknown>).role;
+    return typeof role === "string" && SELLER_ROLES.has(role);
+  }).length;
 }

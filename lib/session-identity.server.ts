@@ -5,6 +5,7 @@ import {
   listDomainSellers,
   readDomainIdentity
 } from "@/lib/internal-api-client.server";
+import { PLATFORM_ROLES, SELLER_ROLES } from "@/lib/rbac-roles";
 
 // ServerSession não é exportado pelo cliente interno; derivar o tipo do próprio
 // consumidor evita duplicar a forma da sessão em dois lugares que divergiriam.
@@ -57,7 +58,9 @@ function parseIdentity(payload: unknown) {
   return {
     email,
     emailVerified: payload.email_verified === true,
-    platformRoles: roles as string[]
+    // Papel que a borda não reconhece não vira permissão: deny-by-default vale
+    // também para o que a própria API devolve.
+    platformRoles: (roles as string[]).filter((role) => PLATFORM_ROLES.has(role))
   };
 }
 
@@ -69,8 +72,10 @@ function parseSellers(payload: unknown): SessionIdentitySeller[] | null {
   for (const seller of sellers) {
     if (!isRecord(seller)) return null;
     const { id, slug, display_name: displayName, role } = seller;
-    if (typeof id !== "string" || typeof slug !== "string" ||
-        typeof displayName !== "string" || typeof role !== "string") {
+    if (typeof id !== "string" || id.length === 0 ||
+        typeof slug !== "string" || slug.length === 0 ||
+        typeof displayName !== "string" || displayName.length === 0 ||
+        typeof role !== "string" || !SELLER_ROLES.has(role)) {
       return null;
     }
     parsed.push({ id, slug, displayName, role });

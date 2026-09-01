@@ -48,8 +48,12 @@ type SessionView = "loading" | "failed" | "demo" | "real";
 export function DashboardOverview() {
   // The shell already resolved /api/session; reuse it instead of refetching.
   const profile = useShellProfile();
+  // Sessão pronta com papel não resolvido não é sessão real: o shell já mostra
+  // recuperação, e entrar em modo real aqui renderizaria o painel do vendedor
+  // e dispararia consultas de catálogo em cima de uma sessão que não sabemos
+  // ler. A falha fechada precisa valer também para o conteúdo.
   const view: SessionView = profile.status === "ready"
-    ? (profile.profile ? "demo" : "real")
+    ? (profile.profile ? "demo" : profile.identity ? "real" : "failed")
     : profile.status;
   const [catalog, setCatalog] = useState<CatalogState>({ status: "loading" });
 

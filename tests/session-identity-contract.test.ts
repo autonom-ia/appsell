@@ -71,3 +71,27 @@ describe("resolução do papel no servidor", () => {
     await expect(call()).rejects.toThrow();
   });
 });
+
+describe("validação semântica dos papéis", () => {
+  it("recusa membership com papel que o banco não reconhece", async () => {
+    readDomainIdentity.mockResolvedValueOnce(identityPayload());
+    listDomainSellers.mockResolvedValueOnce({
+      sellers: [{ id: "s1", slug: "loja", display_name: "Loja", role: "revoked" }]
+    });
+    expect(await call()).toBeNull();
+  });
+
+  it("recusa membership com campos vazios", async () => {
+    readDomainIdentity.mockResolvedValueOnce(identityPayload());
+    listDomainSellers.mockResolvedValueOnce({
+      sellers: [{ id: "", slug: "", display_name: "", role: "seller_owner" }]
+    });
+    expect(await call()).toBeNull();
+  });
+
+  it("descarta papel de plataforma desconhecido em vez de repassá-lo", async () => {
+    readDomainIdentity.mockResolvedValueOnce(identityPayload(["platform_superadmin", "root"]));
+    listDomainSellers.mockResolvedValueOnce({ sellers: [] });
+    expect((await call())?.platformRoles).toEqual(["platform_superadmin"]);
+  });
+});

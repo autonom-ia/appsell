@@ -7,9 +7,19 @@ import {
   onboardDomainSeller
 } from "@/lib/internal-api-client.server";
 import {
+  CREATE_PRODUCT_DRAFT_CSRF_ACTION,
   ONBOARD_SELLER_CSRF_ACTION,
+  PUBLISH_PRODUCT_DRAFT_CSRF_ACTION,
+  UPDATE_PRODUCT_DRAFT_CSRF_ACTION,
+  csrfTokenForSession,
   verifyMutation
 } from "@/lib/mutation-protection.server";
+import {
+  csrfCookieOptions,
+  productCsrfCookieName,
+  productPublishCsrfCookieName,
+  productUpdateCsrfCookieName
+} from "@/lib/cookies";
 import { oauthService } from "@/lib/oauth-service.server";
 import { isOAuthStoreUnavailable } from "@/lib/redis-oauth-service";
 import { configuredPublicOrigin, hasConfiguredOrigin } from "@/lib/public-origin";
@@ -81,10 +91,17 @@ export async function POST(request: NextRequest) {
       slug,
       displayName
     });
-    return NextResponse.json(payload, {
+    // A membership acabou de nascer. Sem emitir aqui as permissões de produto,
+    // quem criou a primeira loja só as receberia no próximo login: o formulário
+    // enviaria CSRF vazio e levaria 403, e recarregar não resolveria porque
+    // nenhuma outra rota emite cookie. Seria o beco sem saída de volta, um
+    // passo adiante.
+    const response = NextResponse.json(payload, {
       status: 201,
       headers: { "cache-control": "no-store" }
     });
+    grantProductMutationCookies(response, authenticated.sessionId);
+    return response;
   } catch (error) {
     return mappedError(error);
   }
@@ -135,4 +152,10 @@ function mappedError(error: unknown) {
     status: 503,
     headers: { "cache-control": "no-store" }
   });
+}
+
+function grantProductMutationCookies(response: NextResponse, sessionId: string) {
+  response.cookies.set(productCsrfCookieName(), csrfTokenForSession(sessionId, CREATE_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
+  response.cookies.set(productUpdateCsrfCookieName(), csrfTokenForSession(sessionId, UPDATE_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
+  response.cookies.set(productPublishCsrfCookieName(), csrfTokenForSession(sessionId, PUBLISH_PRODUCT_DRAFT_CSRF_ACTION), csrfCookieOptions());
 }
