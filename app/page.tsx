@@ -69,6 +69,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ e
           <a href="#funciona">Como funciona</a>
           <a href="#loja">O produto</a>
           <a href="#preco">Preço</a>
+          <a href="#contato">Falar com a equipe</a>
           <a href="/auth/login">Entrar</a>
           <a href="/auth/signup" className="cta-topo">Vender agora</a>
         </nav>
@@ -145,11 +146,11 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ e
                 <div className="corpo" id="corpo-hero">
                   <div className="vidro">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src="/lp/produtos.webp" alt="" width={1206} height={2210} fetchPriority="high" />
+                    <img src="/lp/produtos.webp" alt="" width={1000} height={1833} fetchPriority="high" />
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src="/lp/painel.webp" id="t-painel" alt="" width={1206} height={2210} loading="lazy" />
+                    <img src="/lp/painel.webp" id="t-painel" alt="" width={1000} height={1833} />
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src="/lp/recebimentos.webp" id="t-recebe" alt="" width={1206} height={2210} loading="lazy" />
+                    <img src="/lp/recebimentos.webp" id="t-recebe" alt="" width={1000} height={1833} />
                     <span className="reflexo" />
                   </div>
                   <span className="contorno" />
@@ -216,7 +217,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ e
                   <div className="corpo" id="corpo-loja">
                     <div className="vidro">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src="/lp/aula.webp" alt="" width={1206} height={2210} loading="lazy" />
+                      <img src="/lp/aula.webp" alt="" width={1000} height={1833} loading="lazy" />
                       <span className="reflexo" />
                     </div>
                     <span className="contorno" />

@@ -2,7 +2,7 @@
    O palco 3D, o scrim da foto e os pontos do trilho tem numeros medidos:
    ver docs/lp-publica.md antes de mexer em perspectiva, gradiente ou offset. */
 
-:root:has(.lp) { overflow-x: clip; }
+:root:has(.lp) { overflow-x: clip; scroll-behavior: auto; }
 :root {
   --icon: url("/lp/icone.png");
   --wordmark: url("/lp/marca.png");
@@ -16,19 +16,21 @@
   --orange: #e64f18;
   --orange-cta: #c9420d;
   --orange-ink: #b03809;
-  --topo-h: 81px;
+  --topo-h: 83px;
   --z-topo: 40; --z-palco: 30; --z-hud: 20; --z-conteudo: 10;
 }
 .lp, .lp * { box-sizing: border-box; }
+.lp :where(h3) { font-family: inherit; line-height: inherit; }
+:root:has(.lp) body { background: #001b43; }
 .lp { background: var(--navy); color: #fff; font-family: var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif; line-height: 1.6; -webkit-font-smoothing: antialiased; }
-.lp p { margin: 0; }
-.lp a { color: inherit; text-decoration: none; }
-.lp img { max-width: 100%; }
+.lp :where(p) { margin: 0; }
+.lp :where(a) { color: inherit; text-decoration: none; }
+.lp :where(img) { max-width: 100%; }
 .lp :focus-visible { outline: 3px solid var(--foco, var(--cyan)); outline-offset: 3px; }
 .tese, .trilho-sec, .preco, .perguntas { --foco: #00367d; }
 .cta { --foco: var(--ink); }
-.lp h1, .lp h2 { font-family: var(--font-montserrat), Montserrat, Inter, sans-serif; font-weight: 400; letter-spacing: -.062em; line-height: .95; margin: 0; color: inherit; text-wrap: balance; }
-.lp h1 b, .lp h2 b, .lp .act-title b { font-weight: 900; }
+.lp :where(h1, h2) { font-family: var(--font-montserrat), Montserrat, Inter, sans-serif; font-weight: 400; letter-spacing: -.062em; line-height: .95; margin: 0; color: inherit; text-wrap: balance; }
+.lp :where(h1 b, h2 b), .lp .act-title b { font-weight: 900; }
 #topo, #funciona, #loja, #preco, #contato { scroll-margin-top: calc(var(--topo-h) + 16px); }
 .in { max-width: 1240px; margin: 0 auto; padding: 0 clamp(20px, 4vw, 56px); }
 .qb { display: inline; }
@@ -245,7 +247,7 @@ html:not(.js-anim) .progresso { display: none; }
 html:not(.js-anim) .so-leitor { display: none; }
 html:not(.js-anim) .foto { opacity: .55; }
 html:not(.js-anim) .via i { width: 100%; height: 100%; }
-html:not(.js-anim) .vidro img + img { display: none; }
+html:not(.js-anim) .vidro img + img { opacity: 0; }
 html:not(.js-anim) #peca-painel { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .lp, .lp * { animation-duration: .001ms !important; transition-duration: .001ms !important; }
