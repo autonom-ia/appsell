@@ -2,12 +2,12 @@
 
 > Fonte operacional para retomar o projeto sem depender do histórico da conversa.
 >
-> Última verificação documentada: **2026-08-31**. Esta página separa o que foi
+> Última verificação documentada: **2026-09-01**. Esta página separa o que foi
 > comprovado na produção do que continua sendo plano ou laboratório Local/CI.
 
 ## Release em produção
 
-> Última verificação: **2026-08-31**, lendo o host — não a memória desta página.
+> Última verificação: **2026-09-01**, lendo o host — não a memória desta página.
 > Esta página já divergiu da realidade três vezes; o que vale é o que
 > `docker service ls` responde.
 
@@ -15,17 +15,21 @@
 |---|---|
 | Domínio | `https://sell.autonomia.site` |
 | Ambiente | VPS EasyPanel nativo, Docker Swarm |
-| SHA do **api** | `12d8763` |
-| SHA do **asset-worker** | `12d8763` — mesma imagem da api |
-| SHA do **pdf-sandbox** | `712e5bb` — **não** acompanhou o release de 31/08 |
-| SHA do **web** | `8930313` |
-| Banco | head **`0044_pdf_de_trezentas_paginas`**, `schema_ready() = true` |
+| SHA do **api** | `d5e00ec` |
+| SHA do **asset-worker** | `d5e00ec` — mesma imagem da api |
+| SHA do **pdf-sandbox** | `d5e00ec` — mesma imagem da api, com outra tag |
+| SHA do **web** | `d5e00ec` |
+| Banco | head **`0047_cota_de_armazenamento`**, `schema_ready() = true` |
 
-**Os serviços não andam no mesmo SHA, e isso é intencional.** O release de 31/08
-(`12d8763`, fundação de log) tocou só a API e o worker, que compartilham a
-imagem `api`. Reconstruir `pdf-sandbox` sem necessidade é risco sem ganho — ele
-tem a armadilha do `--update-order start-first`, que já apagou os botões de todo
-PDF em produção.
+**Pela primeira vez os quatro serviços andam no mesmo SHA.** O release do vídeo
+longo obrigou o `pdf-sandbox` a subir junto, porque o modo que recusa
+recodificar mora nele.
+
+Historicamente os serviços não andavam no mesmo SHA, e isso era intencional: o
+release de 31/08 tocou só a API e o worker. A partir de 01/09 eles convergiram,
+porque o vídeo longo mudou os quatro. A armadilha do `--update-order
+start-first` no `pdf-sandbox` continua valendo, e ele **sempre** sobe com
+`stop-first` e `--no-healthcheck`.
 
 ### O log da API
 
@@ -133,6 +137,76 @@ Com 4 núcleos, 300 páginas são 89 s de janela.
 Mil páginas exigem, além da #320: virtualizar o leitor (hoje cria um nó por
 página), paralelizar o upload das páginas, e refazer gatilhos que recontam todas
 as páginas a cada inserção. Cinco mil é outra geração do pipeline.
+
+## Release `d5e00ec` — o vídeo longo (2026-09-01)
+
+O vendedor não conseguia publicar aula de duração real: teto de 100 MiB, envio
+num `PUT` único que morria em cinco minutos, e o vídeo chegando ao aluno com o
+índice do MP4 no fim do arquivo, o que deixa a barra de progresso inútil.
+
+Depois deste release ele publica aula de 30 a 45 minutos, o arquivo sobe em
+partes e retoma sozinho, e o aluno arrasta a barra.
+
+### Como foi aplicado
+
+Ordem obrigatória, e o runbook explica por quê:
+**migrations → pdf-sandbox → asset-worker → web → api**. Duas combinações de
+versões quebram durante a janela, e essa sequência é a única que não as produz.
+
+O passo do `pdf-sandbox` **não constrói imagem**: ela é a imagem da `api` com
+outra tag, e quem faz o serviço virar sandbox é o comando que a spec sobrescreve.
+
+```bash
+docker tag easypanel/sell-autonomia/api:d5e00ec easypanel/sell-autonomia/pdf-sandbox:d5e00ec
+```
+
+O runbook completo está em
+[runbooks/video-longo-325.md](runbooks/video-longo-325.md).
+
+### Validação executada em produção
+
+- banco em `0047_cota_de_armazenamento`, `schema_ready() = true`
+- teto de vídeo `536870912`, teto de PDF `104857600` **inalterado**
+- cota do vendedor `21474836480` (20 GiB), cota em voo `4294967296` (4 GiB)
+- `public` **não** executa `seller_storage_quota_bytes()`
+- os quatro serviços em `1/1`, com a contagem de variáveis idêntica ao backup
+  (api 33, sandbox 1, worker 32, web 47)
+- `/health/ready` da api → `{"status":"ok","database":true,"storage":true,"pdf_sandbox":true}`
+- `https://sell.autonomia.site/api/health/ready` → `{"status":"ok","redis":true,"api":true,"storage_upload":true}`
+- socket do sandbox recriado, e ele saudável **depois** de um trabalho de mídia
+- zero erros no log dos quatro serviços nos dez minutos seguintes
+
+**A prova de verdade**, feita pelo socket real de produção: um MP4 gerado com o
+índice no fim, mandado ao `/prepare-video` em modo catálogo, voltou `200` com
+`x-appsell-recoded: false` e **com o índice no começo**. É exatamente o que o
+release existe para fazer.
+
+### O que ficou pendente
+
+A regra que expira partes órfãs **não foi aplicada**, e o aviso apareceu no log
+como projetado ([#339](https://github.com/autonom-ia/appsell/issues/339)). São
+dois problemas: a credencial do worker não escreve política de bucket, e o
+formato da regra é recusado por este MinIO mesmo com credencial root. Não
+bloqueia: cancelar um envio continua abortando as partes de verdade, que é a
+defesa principal.
+
+### Rollback deste release
+
+```bash
+docker service update --image .../api:12d8763 --update-order stop-first sell-autonomia_api
+docker service update --image .../api:12d8763 --update-order stop-first sell-autonomia_asset-worker
+docker service update --image .../web:8930313 --update-order stop-first sell-autonomia_web
+docker service update --image .../pdf-sandbox:712e5bb --limit-cpu 4.0 --limit-memory 4G \
+  --no-healthcheck --update-order stop-first sell-autonomia_pdf-sandbox
+```
+
+As migrations **não precisam voltar**: são compatíveis com as imagens antigas. A
+única parte que aperta é o teto de bytes em voo, e ele só morde um vendedor com
+mais de 4 GiB parados em quarentena.
+
+**Atenção:** depois que o primeiro vídeo acima de 100 MiB for publicado, voltar
+as imagens antigas deixa essa aula inacessível mesmo com health verde. A partir
+daí o caminho é corrigir para frente.
 
 ## Release `712e5bb` — PDF de 300 páginas (2026-08-31)
 
