@@ -18,7 +18,7 @@
 | SHA do **api** | `d5e00ec` |
 | SHA do **asset-worker** | `d5e00ec` — mesma imagem da api |
 | SHA do **pdf-sandbox** | `d5e00ec` — mesma imagem da api, com outra tag |
-| SHA do **web** | `9ebb93f` |
+| SHA do **web** | `a139d86` |
 | Banco | head **`0047_cota_de_armazenamento`**, `schema_ready() = true` |
 
 **Os quatro andaram no mesmo SHA por algumas horas, em `d5e00ec`.** O release do
@@ -139,6 +139,37 @@ Com 4 núcleos, 300 páginas são 89 s de janela.
 Mil páginas exigem, além da #320: virtualizar o leitor (hoje cria um nó por
 página), paralelizar o upload das páginas, e refazer gatilhos que recontam todas
 as páginas a cada inserção. Cinco mil é outra geração do pipeline.
+
+## Release `a139d86` — o celular para de baixar o que não desenha (2026-09-01)
+
+Só o `web`, sem migration. Segundo release do dia no mesmo serviço.
+
+As três telas do aparelho no hero são `display: none` abaixo de 680px e mesmo
+assim eram baixadas: 149 KB dos 237 KB que o celular puxava de `/lp/`. Dentro de
+`<picture>`, um `<img>` sem `src` não pede nada à rede quando nenhum `<source>`
+casa a condição.
+
+Dois seletores dependiam da ordem dos irmãos e impediam a mudança. Passaram a
+apontar para `#t-painel` e `#t-recebe`, ids que a coreografia já usava.
+
+### Validação em produção
+
+| O quê | Resultado |
+|---|---|
+| peso de `/lp/` no iPhone 13 | **88 KB**, contra 237 KB antes |
+| peso no desktop | inalterado, com as três telas, a peça e o vídeo |
+| home, `/auth/signup`, `robots.txt`, `sitemap.xml` | `200` nos quatro |
+| console do navegador | vazio em desktop e mobile |
+| variáveis do serviço | 51 antes, 51 depois |
+
+### Rollback
+
+```bash
+docker service update --image easypanel/sell-autonomia/web:9ebb93f \
+  --update-order stop-first sell-autonomia_web
+```
+
+Spec anterior em `/tmp/sell-release-346/spec_web_antes.json` no host.
 
 ## Release `9ebb93f` — página pública nova (2026-09-01)
 
