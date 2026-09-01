@@ -164,6 +164,23 @@ jobs:
           corepack pnpm@11.13.0 --pm-on-fail=ignore audit --prod
           pnpm build
 
+      - name: Exercise the migration chain when the schema moves
+        id: migration-chain
+        if: ${{ !cancelled() && steps.policy.outputs.product_checks == 'true' && steps.route.outputs.postgres == 'true' }}
+        shell: bash
+        env:
+          APPSELL_MIGRATION_ADMIN_DSN: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+          APPSELL_MIGRATION_MIGRATOR_DSN: postgresql+psycopg://appsell_migrator_check:check@127.0.0.1:5432/appsell_migration_check
+          APPSELL_MIGRATION_ROLE_PASSWORD: check
+        run: |
+          set -euo pipefail
+          sudo systemctl start postgresql
+          sudo -u postgres psql -v ON_ERROR_STOP=1 -q \
+            -c "alter role postgres password 'postgres'" \
+            -c "alter system set listen_addresses = '127.0.0.1'"
+          sudo systemctl restart postgresql
+          bash scripts/ci/exercita_migrations.sh
+
       - name: Fast API checks for pull requests
         id: fast-api
         if: ${{ !cancelled() && github.event_name == 'pull_request' && steps.route.outputs.api == 'true' }}
