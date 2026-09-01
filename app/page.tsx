@@ -96,7 +96,11 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ e
 
         <section className="abertura" id="topo">
           <div className="pin">
-            <div className="foto" id="foto" aria-hidden="true" />
+            <div className="foto" id="foto" aria-hidden="true">
+              {/* O video e um bonus: nasce ausente e so e criado pelo cliente
+                  quando a tela, a conexao e a preferencia de movimento
+                  permitem. Sem ele a foto continua sendo o fundo. */}
+            </div>
 
             <div className="in palco-grid">
               <div className="atos">

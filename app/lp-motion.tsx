@@ -142,6 +142,50 @@ export function LpMotion() {
           });
         });
 
+      // O video de fundo e bonus, nao requisito: entra depois que a pagina ja
+      // esta pronta, so onde ele e visto, e some sem deixar rastro se algo
+      // falhar. Em telas pequenas a foto vira textura atras do scrim, entao
+      // baixar 300 KB ali seria dado gasto por nada.
+      const conexao = (navigator as Navigator & {
+        connection?: { saveData?: boolean; effectiveType?: string };
+      }).connection;
+      const querVideo =
+        window.matchMedia("(min-width: 1000px)").matches &&
+        conexao?.saveData !== true &&
+        (conexao?.effectiveType === undefined || conexao.effectiveType === "4g");
+
+      if (querVideo) {
+        const entrar = () => {
+          const capa = document.getElementById("foto");
+          if (!capa || document.getElementById("video-foto")) return;
+          const video = document.createElement("video");
+          video.id = "video-foto";
+          video.muted = true;
+          video.loop = true;
+          video.playsInline = true;
+          video.preload = "none";
+          video.setAttribute("aria-hidden", "true");
+          for (const [src, type] of [["/lp/hero.webm", "video/webm"], ["/lp/hero.mp4", "video/mp4"]]) {
+            const fonte = document.createElement("source");
+            fonte.src = src;
+            fonte.type = type;
+            video.appendChild(fonte);
+          }
+          video.addEventListener("canplaythrough", () => {
+            void video.play().then(() => video.classList.add("pronto")).catch(() => video.remove());
+          }, { once: true });
+          video.addEventListener("error", () => video.remove(), { once: true });
+          capa.appendChild(video);
+          video.load();
+        };
+        if ("requestIdleCallback" in window) {
+          (window as Window & { requestIdleCallback: (cb: () => void, o?: { timeout: number }) => void })
+            .requestIdleCallback(entrar, { timeout: 3000 });
+        } else {
+          setTimeout(entrar, 1200);
+        }
+      }
+
       const refrescar = () => ScrollTrigger.refresh();
       void document.fonts?.ready.then(refrescar);
       window.addEventListener("orientationchange", refrescar);
@@ -149,6 +193,7 @@ export function LpMotion() {
       limpar = () => {
         links.forEach((a) => a.removeEventListener("click", ancoras));
         window.removeEventListener("orientationchange", refrescar);
+        document.getElementById("video-foto")?.remove();
         gsap.ticker.remove(tick);
         ScrollTrigger.getAll().forEach((s) => s.kill());
         lenis.destroy();

@@ -90,6 +90,8 @@
 .abertura .pin { position: relative; height: 100vh; height: 100svh; min-height: 660px; overflow: hidden; }
 .foto { position: absolute; inset: 0; background: var(--hero-photo) 100% center/cover no-repeat, var(--navy); will-change: transform, opacity; }
 /* o scrim e calibrado por medicao de pixel: nenhum ponto sob texto pode ficar abaixo de 4,5:1 */
+#video-foto { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: 100% center; opacity: 0; transition: opacity .4s ease; pointer-events: none; }
+#video-foto.pronto { opacity: 1; }
 .foto::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, rgba(0,27,67,.97) 0%, rgba(0,27,67,.93) 46%, rgba(0,27,67,.58) 57%, rgba(0,27,67,.14) 74%, rgba(0,27,67,.36) 100%); }
 .palco-grid { position: relative; z-index: var(--z-conteudo); height: 100%; display: grid; align-content: end; padding-top: calc(var(--topo-h) + 24px); padding-bottom: clamp(48px, 10vh, 150px); }
 @media (min-width: 1000px) { .palco-grid { grid-template-columns: minmax(0, 700px) 1fr; align-items: center; } }
