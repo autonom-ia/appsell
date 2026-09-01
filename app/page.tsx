@@ -159,12 +159,18 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ e
               <div className="fone">
                 <div className="corpo" id="corpo-hero">
                   <div className="vidro">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src="/lp/produtos.webp" alt="" width={1000} height={1833} fetchPriority="high" />
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src="/lp/painel.webp" id="t-painel" alt="" width={1000} height={1833} />
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src="/lp/recebimentos.webp" id="t-recebe" alt="" width={1000} height={1833} />
+                    <picture>
+                      <source media="(min-width: 681px)" srcSet="/lp/produtos.webp" />
+                      <img alt="" width={1000} height={1833} fetchPriority="high" />
+                    </picture>
+                    <picture>
+                      <source media="(min-width: 681px)" srcSet="/lp/painel.webp" />
+                      <img id="t-painel" alt="" width={1000} height={1833} />
+                    </picture>
+                    <picture>
+                      <source media="(min-width: 681px)" srcSet="/lp/recebimentos.webp" />
+                      <img id="t-recebe" alt="" width={1000} height={1833} />
+                    </picture>
                     <span className="reflexo" />
                   </div>
                   <span className="contorno" />
