@@ -13,7 +13,9 @@ não autoriza por si só novo deploy, mudança de secrets, banco ou cobrança.
 - Serviços: `sell-autonomia_web`, `sell-autonomia_api`,
   `sell-autonomia_asset-worker`
 - Banco: `appsell_native_90` no serviço Postgres nativo
-- Release comprovada: `2c8a36897eadf624955810ffdaee7b33c6239334`
+- Release comprovada: api, worker e `pdf-sandbox` em `d5e00ec`; `web` em
+  `9ebb93f`. Os serviços **não precisam andar no mesmo SHA**: um release que
+  toca só o Next sobe apenas o `web`.
 - Health interno da API: `/health/ready`
 
 AWS/EC2 não é o destino deste release do Appsell. Não substituir a VPS pelo
@@ -35,6 +37,32 @@ ambiente AWS sem uma nova decisão de infraestrutura.
    ausência de erro: a instrumentação por caminho ainda é parcial.
 
 Não imprimir DSNs, chaves, tokens, senhas ou o ambiente completo dos serviços.
+
+## Release que toca só o `web`
+
+Quando a mudança é apenas do Next (página pública, telas, rotas do BFF), não há
+migration, não há imagem de API e o caminho encurta:
+
+1. Confirmar CI verde no SHA exato e fazer merge.
+2. Salvar a spec do serviço e a tag da imagem atual como rollback.
+3. Enviar o fonte para `/home/claudete/appsell-src-<sha>` e construir com
+   `Dockerfile.web`, passando `--build-arg GIT_SHA=<sha>`.
+4. `docker service update --image ... --update-order stop-first sell-autonomia_web`.
+5. Se houver variável nova, adicioná-la **na mesma atualização**, com
+   `--env-add`, para um único `stop-first`. Nunca use o `updateEnv` do painel
+   sem o campo `env` completo: omitir apaga todas as variáveis.
+6. Conferir o contador de variáveis **comparando nomes**, não contando
+   entradas: uma variável duplicada na spec antiga faz o total encolher sem que
+   nada tenha sido perdido.
+7. Smoke da página: home, `/auth/signup`, `/auth/login`, `robots.txt`,
+   `sitemap.xml`, e o `POST /api/contato` se o formulário estiver no ar.
+
+O rollback é uma linha, e a imagem anterior continua no host:
+
+```bash
+docker service update --image easypanel/sell-autonomia/web:<sha-anterior> \
+  --update-order stop-first sell-autonomia_web
+```
 
 ## Smoke pós-deploy
 
