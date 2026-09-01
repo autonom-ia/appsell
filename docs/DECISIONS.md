@@ -1,6 +1,6 @@
 # DECISIONS — decisões operacionais atuais
 
-Última atualização: 2026-08-24.
+Última atualização: 2026-09-01.
 
 O registro arquitetural detalhado está em
 [DECISION_REGISTER.md](architecture/DECISION_REGISTER.md) e nos ADRs. Esta
@@ -114,6 +114,49 @@ substituição não encontra o texto — uma troca silenciosa que não troca nad
 como um limite sobrevive a quem pensou tê-lo mudado.
 
 ## Decisões ainda pendentes
+
+## Decisão 013 — a página pública é indexável, e as lojas dos vendedores também
+
+`robots.txt` libera a página e as lojas em `/s/<slug>`, e bloqueia área logada,
+fluxo de autenticação e link de convite. Cada loja passou a ter título,
+descrição e canonical próprios: antes todas serviam o mesmo
+`<title>Autonom.ia Sell</title>`, o que as fazia competir entre si e piorava a
+cada vendedor novo.
+
+A consequência que precisa ser dita: **o nome do vendedor pode aparecer no
+Google associado ao Sell.** Se algum contrato exigir o contrário, será preciso
+um controle por loja, que hoje não existe.
+
+As lojas ficam fora do `sitemap.xml` até existir listagem no backend. Endereço
+chutado em sitemap vira `404` no relatório do Search Console.
+
+## Decisão 014 — robôs de IA liberados, com a distinção registrada
+
+O `robots.txt` separa os robôs em dois grupos, porque o uso é diferente: os de
+**busca** (`OAI-SearchBot`, `PerplexityBot`, `Claude-SearchBot` e afins) leem a
+página na hora de responder alguém e podem devolver visita; os de
+**treinamento** (`GPTBot`, `ClaudeBot`, `CCBot`, `Google-Extended`) levam o
+texto para dentro do modelo sem citar a origem.
+
+Os dois estão liberados enquanto o objetivo for ser descoberto. É decisão de
+negócio, não técnica, e trocar o grupo de treinamento para `disallow` é uma
+linha em `app/robots.ts`.
+
+Vale registrar o que a auditoria mostrou: **não existe nenhuma menção ao
+Autonom.ia Sell na web.** Nenhuma configuração técnica faz um modelo citar o
+que não tem o que ler. O caminho é conteúdo e presença em fontes de terceiros.
+
+## Decisão 015 — contagem de variáveis não é prova; comparação de nomes é
+
+A trava de deploy manda abortar se o número de variáveis do serviço cair. Em
+01/09 ele foi de 47 para 51 depois de adicionar cinco, e 47 + 5 são 52.
+
+Não houve perda: `PORT` estava duplicada na spec anterior, 47 entradas para 46
+nomes, e o `docker service update` deduplicou. **Comparar nomes contra a spec
+salva, não contar entradas.** O número sozinho teria provocado um rollback
+desnecessário.
+
+## Pendências que bloqueiam ampliação
 
 - staging separado e DNS próprio;
 - RPO/RTO formal e operação de backup off-host;

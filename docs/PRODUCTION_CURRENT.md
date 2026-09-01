@@ -18,12 +18,14 @@
 | SHA do **api** | `d5e00ec` |
 | SHA do **asset-worker** | `d5e00ec` — mesma imagem da api |
 | SHA do **pdf-sandbox** | `d5e00ec` — mesma imagem da api, com outra tag |
-| SHA do **web** | `d5e00ec` |
+| SHA do **web** | `9ebb93f` |
 | Banco | head **`0047_cota_de_armazenamento`**, `schema_ready() = true` |
 
-**Pela primeira vez os quatro serviços andam no mesmo SHA.** O release do vídeo
-longo obrigou o `pdf-sandbox` a subir junto, porque o modo que recusa
-recodificar mora nele.
+**Os quatro andaram no mesmo SHA por algumas horas, em `d5e00ec`.** O release do
+vídeo longo obrigou o `pdf-sandbox` a subir junto, porque o modo que recusa
+recodificar mora nele. No mesmo dia o `web` seguiu sozinho para `9ebb93f`, com a
+página pública nova: nada além do Next mudou, então api, worker e sandbox
+continuam em `d5e00ec`.
 
 Historicamente os serviços não andavam no mesmo SHA, e isso era intencional: o
 release de 31/08 tocou só a API e o worker. A partir de 01/09 eles convergiram,
@@ -137,6 +139,84 @@ Com 4 núcleos, 300 páginas são 89 s de janela.
 Mil páginas exigem, além da #320: virtualizar o leitor (hoje cria um nó por
 página), paralelizar o upload das páginas, e refazer gatilhos que recontam todas
 as páginas a cada inserção. Cinco mil é outra geração do pipeline.
+
+## Release `9ebb93f` — página pública nova (2026-09-01)
+
+Só o `web` mudou. Nenhuma alteração de API, worker, sandbox ou schema, então o
+rollback é um comando e não há migration para reverter.
+
+### Como foi aplicado
+
+```bash
+# 1. backup da spec, antes de tocar em qualquer coisa
+mkdir -p /tmp/sell-release-lp
+docker service inspect sell-autonomia_web > /tmp/sell-release-lp/spec_web_antes.json
+docker service inspect sell-autonomia_web \
+  --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}' > /tmp/sell-release-lp/imagem_anterior.txt
+
+# 2. fonte no host, no padrao de sempre
+git archive --format=tar origin/main | ssh <host> \
+  'mkdir -p /home/claudete/appsell-src-9ebb93f && tar -x -C /home/claudete/appsell-src-9ebb93f'
+
+# 3. build
+cd /home/claudete/appsell-src-9ebb93f
+docker build -f deploy/easypanel-native/Dockerfile.web \
+  --build-arg GIT_SHA=9ebb93f -t easypanel/sell-autonomia/web:9ebb93f .
+
+# 4. imagem e SMTP na mesma atualizacao, para um unico stop-first
+docker service update --image easypanel/sell-autonomia/web:9ebb93f \
+  --env-add SMTP_HOST_COMERCIAL=... --env-add SMTP_PORT_COMERCIAL=... \
+  --env-add SMTP_SECURE_COMERCIAL=... --env-add SMTP_USER_COMERCIAL=sell.comercial@autonomia.site \
+  --env-add SMTP_PASS_COMERCIAL=... \
+  --update-order stop-first sell-autonomia_web
+```
+
+Os valores do SMTP vêm do `.env.local` do google-saas e nunca passaram por
+terminal, arquivo intermediário ou linha de comando no host: foram lidos para
+variáveis de shell e entregues pelo stdin do ssh.
+
+### A contagem de variáveis que parecia perda e não era
+
+A trava manda abortar se o número de variáveis cair. Ele foi de **47 para 51**,
+e cinco tinham sido adicionadas: 47 + 5 daria 52.
+
+A comparação nome a nome contra a spec salva mostrou **nenhuma perdida**. A
+causa é que `PORT` estava **duplicada** na spec anterior: 47 entradas para 46
+nomes distintos. O `docker service update` deduplicou.
+
+Fica a lição para a próxima leitura desse contador: **comparar nomes, não
+contar entradas.** O número sozinho teria provocado um rollback desnecessário.
+
+### Validação executada em produção
+
+| O quê | Resultado |
+|---|---|
+| home | `200` em 0,10 s, com título, canonical e og:image corretos |
+| `/auth/signup` | `307` para `auth.autonomia.site/register`, a tela de cadastro |
+| `/auth/login` | `307` para `auth.autonomia.site/login/`, destino diferente |
+| `robots.txt` e `sitemap.xml` | `200` nos dois; antes davam `404` |
+| `POST /api/contato` | `200 {"ok":true}` em 2,0 s, e o e-mail chegou |
+| console do navegador | vazio em desktop e iPhone |
+| logs do `web` | sem `error`, `traceback`, `fatal` ou `panic` |
+| demais serviços | api, worker e sandbox intactos em `d5e00ec` |
+
+### Rollback deste release
+
+```bash
+docker service update --image easypanel/sell-autonomia/web:d5e00ec \
+  --update-order stop-first sell-autonomia_web
+```
+
+A imagem `web:8930313` também continua no host, como segundo degrau. As
+variáveis de SMTP podem ficar: nenhum código anterior as lê.
+
+### O que ficou aberto
+
+- 149 KB de imagem do palco baixados no celular sem serem desenhados
+- a página não tem navegação no celular: para chegar a Preço ou FAQ, só rolando
+  ou pelos links do rodapé
+- as lojas públicas estão fora do `sitemap.xml` até existir listagem no backend
+- o sitemap ainda não foi submetido ao Search Console
 
 ## Release `d5e00ec` — o vídeo longo (2026-09-01)
 

@@ -1,8 +1,16 @@
 # PROGRESS — Appsell
 
-Última atualização documental: 2026-08-31.
+Última atualização documental: 2026-09-01.
 
 ## Fase atual
+
+**Página pública nova em produção desde 01/09** (`9ebb93f`), no lugar da
+anterior. Hero em três atos com o curso de rolagem calculado para dar tempo
+igual a cada um, contraste medido sob os glifos contra o quadro mais claro do
+vídeo de fundo, e a página finalmente encontrável: `robots.txt` e `sitemap.xml`
+existem, cada loja tem título próprio, e o formulário de contato envia por SMTP
+sem intermediário. Fora do escopo entregue: a página não tem menu no celular, e
+o sitemap ainda não foi submetido ao Search Console.
 
 **PDF de 300 páginas em produção desde 31/08** (`712e5bb`). O playbook do
 vendedor, com 83 páginas, deixou de estar a 83% do teto.

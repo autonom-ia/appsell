@@ -258,3 +258,60 @@ sudo docker service logs --since 1h sell-autonomia_api | grep '"request_id":"<id
 - **A cobertura ainda é pequena.** A fundação registra requisição e exceção; a
   instrumentação dos caminhos de mídia, catálogo e verificação é trabalho
   separado. Não conclua "não aconteceu" a partir de "não está no log".
+
+## Problema: o formulário da página pública responde 503
+
+O `POST /api/contato` devolve `503` quando o SMTP comercial não está
+configurado no serviço `web`. A rota é explícita nisso: sem `SMTP_HOST_COMERCIAL`,
+`SMTP_USER_COMERCIAL` e `SMTP_PASS_COMERCIAL`, ela não tenta enviar e não finge
+sucesso.
+
+Conferir só os nomes, nunca os valores:
+
+```sh
+docker service inspect sell-autonomia_web \
+  --format '{{range .Spec.TaskTemplate.ContainerSpec.Env}}{{println .}}{{end}}' \
+  | cut -d= -f1 | grep -i smtp
+```
+
+São cinco: `SMTP_HOST_COMERCIAL`, `SMTP_PORT_COMERCIAL`, `SMTP_SECURE_COMERCIAL`,
+`SMTP_USER_COMERCIAL` e `SMTP_PASS_COMERCIAL`. A conta é
+`sell.comercial@autonomia.site` e as credenciais vêm do mesmo SMTP que atende as
+outras landings. Adicione com `--env-add` em uma única atualização; nunca pelo
+`updateEnv` do painel sem o campo `env` completo, porque omiti-lo apaga todas as
+variáveis do serviço.
+
+## Problema: o contador de variáveis caiu depois de um deploy
+
+Não conclua perda pelo número. Em 01/09 o total foi de 47 para 51 depois de
+adicionar cinco, quando o esperado era 52, e **nada tinha sido perdido**: a
+variável `PORT` estava duplicada na spec anterior e o `docker service update`
+deduplicou.
+
+Compare os nomes contra a spec salva antes do deploy:
+
+```sh
+python3 -c "
+import json, subprocess
+antes = [e.split('=',1)[0] for e in json.load(open('spec_web_antes.json'))[0]['Spec']['TaskTemplate']['ContainerSpec']['Env']]
+d = json.loads(subprocess.check_output(['docker','service','inspect','sell-autonomia_web']))
+depois = [e.split('=',1)[0] for e in d[0]['Spec']['TaskTemplate']['ContainerSpec']['Env']]
+print('perdidas:', sorted(set(antes) - set(depois)) or 'nenhuma')
+"
+```
+
+## Problema: o ci-gate reprova sem que ninguém tenha mexido no código
+
+O `fast_web` roda `pnpm audit --prod`, que consulta o registro de advisories ao
+vivo. Um aviso publicado hoje reprova o PR de ontem. Foi o que aconteceu em
+01/09: a `main` estava verde às 11h15 e passou a falhar por `browserslist`,
+depois por `postcss` e `sharp`, todos em dependência transitiva do Next.
+
+Quando a versão vulnerável chega por transitividade, não há como subir pela
+árvore direta: o caminho é `pnpm.overrides` no `package.json`, com a versão
+corrigida que o próprio `audit` aponta. Depois da troca, rode typecheck, build e
+a suíte antes de confiar.
+
+Se o log do gate disser `ci-gate rejected fast_web=failure` sem teste vermelho,
+o erro está nos passos que vêm depois dos testes. Leia o fim do step, não só o
+resumo.
