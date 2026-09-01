@@ -20,7 +20,6 @@
   --z-topo: 40; --z-palco: 30; --z-hud: 20; --z-conteudo: 10;
 }
 .lp, .lp * { box-sizing: border-box; }
-.lp { overflow-x: clip; }
 .lp { background: var(--navy); color: #fff; font-family: var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif; line-height: 1.6; -webkit-font-smoothing: antialiased; }
 .lp p { margin: 0; }
 .lp a { color: inherit; text-decoration: none; }
@@ -82,7 +81,7 @@
 .fone .contorno { position: absolute; inset: 0; z-index: 4; border-radius: 38px; box-shadow: inset 0 0 0 1px rgba(255,255,255,.16), inset 0 0 0 10px rgba(6,12,22,.0); pointer-events: none; transform: translateZ(3px); }
 .fone .sombra-chao { position: absolute; left: 6%; right: 6%; bottom: -34px; height: 60px; background: rgba(0,6,20,.55); filter: blur(28px); opacity: .32; transform: translateZ(-120px); }
 .peca { position: absolute; z-index: 5; left: -58%; width: 88%; transform: translateZ(90px); filter: drop-shadow(0 30px 60px rgba(0,8,24,.75)); }
-.peca img { display: block; width: 100%; border-radius: 12px; }
+.peca img { display: block; width: 100%; height: auto; border-radius: 12px; }
 
 /* 1. ABERTURA */
 .abertura { position: relative; background: var(--navy); }

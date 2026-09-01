@@ -156,7 +156,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ e
                   <span className="sombra-chao" />
                   <span className="peca" id="peca-painel" style={{ top: "52%" }}>
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src="/lp/peca-turma.webp" alt="" width={570} height={174} loading="lazy" />
+                    <img src="/lp/peca-turma.webp" alt="" width={510} height={174} loading="lazy" />
                   </span>
                 </div>
               </div>
