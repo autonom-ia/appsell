@@ -21,6 +21,8 @@ from test_postgres_pdf_access_policy import (
     seed_legacy_publication,
 )
 
+from appsell_api.reset_demo_tenant import EXPECTED_MIGRATION
+
 ADMIN_URL = os.environ.get("APPSELL_TEST_POSTGRES_ADMIN_URL")
 RUNTIME_URL = os.environ.get("APPSELL_TEST_POSTGRES_RUNTIME_URL")
 CONTEXT_KEY_HEX = os.environ.get("APPSELL_TEST_CONTEXT_KEY_HEX")
@@ -95,7 +97,7 @@ def test_schema_contract_is_forced_rls_append_only_and_tenant_keyed() -> None:
               ) is not null
             """
         ).fetchone()
-        assert schema == (True, "0044_pdf_de_trezentas_paginas", True, True, True, True)
+        assert schema == (True, EXPECTED_MIGRATION, True, True, True, True)
         primary_keys = connection.execute(
             """
             select c.relname,pg_get_constraintdef(k.oid)

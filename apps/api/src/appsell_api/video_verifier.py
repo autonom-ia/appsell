@@ -22,6 +22,16 @@ from .asset_media import VIDEO_MEDIA_TYPE, max_bytes
 #: também consultam. Escrito à mão aqui, ele sobrevivia a quem pensasse tê-lo
 #: mudado.
 MAX_VIDEO_BYTES = max_bytes(VIDEO_MEDIA_TYPE)
+
+#: O que um trabalho de vídeo segura em disco ao mesmo tempo.
+#:
+#: A origem, baixada da quarentena, e o derivado que volta do serviço isolado. O
+#: mesmo par existe dos dois lados do socket: o worker segura os dois enquanto
+#: escaneia e promove, e o serviço isolado segura os dois enquanto converte.
+#:
+#: `/tmp` é `tmpfs` nos dois, e `tmpfs` conta contra o cgroup: declarar disco
+#: que não cabe na memória é prometer espaço que não existe.
+MAX_VIDEO_JOB_TEMP_BYTES = 2 * MAX_VIDEO_BYTES
 VIDEO_MP4_MIME = VIDEO_MEDIA_TYPE
 
 #: Quantas vezes insistir quando o serviço isolado não atende.

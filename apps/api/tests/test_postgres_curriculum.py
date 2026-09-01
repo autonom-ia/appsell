@@ -13,6 +13,8 @@ from uuid import UUID, uuid4
 import psycopg
 import pytest
 
+from appsell_api.reset_demo_tenant import EXPECTED_MIGRATION
+
 ADMIN_URL = os.environ.get("APPSELL_TEST_POSTGRES_ADMIN_URL")
 RUNTIME_URL = os.environ.get("APPSELL_TEST_POSTGRES_RUNTIME_URL")
 CONTEXT_KEY_HEX = os.environ.get("APPSELL_TEST_CONTEXT_KEY_HEX")
@@ -198,7 +200,7 @@ def test_schema_rls_privileges_and_composite_fks() -> None:
                 ") values(%s,%s,'Cross tenant',0)",
                 (SELLER_A, COURSE_B),
             )
-    assert state == ("0044_pdf_de_trezentas_paginas", True, False, False, False, True)
+    assert state == (EXPECTED_MIGRATION, True, False, False, False, True)
     assert tables == [("course_module", True, True), ("lesson", True, True)]
     with psycopg.connect(RUNTIME_URL) as connection:
         assert connection.execute("select count(*) from course_module").fetchone() == (0,)

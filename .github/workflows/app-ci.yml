@@ -190,7 +190,9 @@ jobs:
             apps/api/tests/test_storage_worker.py \
             apps/api/tests/test_video_remux.py \
             apps/api/tests/test_video_verifier.py \
-            apps/api/tests/test_faststart_no_video_do_catalogo.py
+            apps/api/tests/test_faststart_no_video_do_catalogo.py \
+            apps/api/tests/test_envio_em_partes.py \
+            apps/api/tests/test_api_assets.py
 
       - name: Fast backup contract checks for pull requests
         id: fast-backup

@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO, Literal
+from typing import Any, BinaryIO, Final, Literal
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -53,6 +53,85 @@ class PresignedRequest:
     headers: dict[str, str]
     expires_in_seconds: int
     required_content_length: int | None = None
+
+
+#: O tamanho de cada parte do envio retomável.
+#:
+#: O envio direto é um `PUT` único, com URL assinada de 300 s e o cliente
+#: desistindo aos 290 s. Uma aula de 45 min em 1080p tem por volta de 800 MB, e
+#: numa linha de 10 Mbit/s ela leva 640 s: a URL vence antes e o vendedor perde
+#: o envio inteiro, sem ter de onde retomar.
+#:
+#: Em partes de 16 MiB, nenhuma requisição isolada precisa durar mais que uns
+#: 13 s nessa mesma linha, e uma falha de rede custa 16 MiB em vez do arquivo
+#: todo. O protocolo exige no mínimo 5 MiB por parte, menos a última; 16 MiB
+#: mantém o número de partes baixo (800 MB dão 50) sem alongar a requisição.
+MULTIPART_PART_BYTES: Final = 16 * 1024 * 1024
+
+#: Teto de partes por envio.
+#:
+#: O protocolo aceita 10.000. Este teto é bem menor de propósito: ele existe
+#: para que um `byte_size` absurdo seja recusado antes de assinar qualquer
+#: coisa, e não para chegar perto do limite do protocolo. Com 16 MiB por parte
+#: ele cobre 16 GiB, muito acima de qualquer teto de mídia do catálogo.
+MULTIPART_MAX_PARTS: Final = 1_000
+
+#: A regra que apaga envios em partes abandonados, e por quantos dias ela espera.
+MULTIPART_EXPIRY_RULE_ID: Final = "appsell-abort-incomplete-multipart"
+MULTIPART_EXPIRY_DAYS: Final = 1
+
+
+@dataclass(frozen=True)
+class UploadedPart:
+    """Uma parte que já chegou ao storage, com o recibo que fecha o envio."""
+
+    part_number: int
+    byte_size: int
+    etag: str
+
+
+@dataclass(frozen=True)
+class MultipartPlan:
+    """Em quantas partes o arquivo declarado será enviado, e de que tamanho.
+
+    O plano é calculado uma vez e vale para as duas pontas: o navegador fatia
+    por ele, e o servidor assina cada parte com o tamanho que ele diz. Sem isso,
+    uma parte poderia chegar maior que o declarado e o objeto final passaria do
+    teto sem nada acusar.
+    """
+
+    part_bytes: int
+    part_count: int
+    last_part_bytes: int
+
+    def bytes_for_part(self, part_number: int) -> int:
+        if not 1 <= part_number <= self.part_count:
+            raise StorageError("part_number is outside the upload plan")
+        return self.last_part_bytes if part_number == self.part_count else self.part_bytes
+
+
+def needs_multipart(byte_size: int) -> bool:
+    """Se vale a pena fatiar.
+
+    Abaixo de uma parte o `PUT` único é melhor e continua valendo: ele leva o
+    hash do arquivo inteiro dentro da própria URL assinada, e o storage recusa
+    no ato se os bytes não baterem.
+    """
+    return byte_size > MULTIPART_PART_BYTES
+
+
+def multipart_plan(byte_size: int, *, part_bytes: int = MULTIPART_PART_BYTES) -> MultipartPlan:
+    if byte_size < 1:
+        raise StorageError("upload byte_size is outside the allowed range")
+    part_count = -(-byte_size // part_bytes)
+    if part_count > MULTIPART_MAX_PARTS:
+        raise StorageError("upload would need more parts than allowed")
+    resto = byte_size % part_bytes
+    return MultipartPlan(
+        part_bytes=part_bytes,
+        part_count=part_count,
+        last_part_bytes=resto or part_bytes,
+    )
 
 
 class S3Storage:
@@ -144,6 +223,206 @@ class S3Storage:
             expires_in_seconds=self.put_ttl,
             required_content_length=byte_size,
         )
+
+    def create_multipart_upload(
+        self,
+        *,
+        bucket: str,
+        key: str,
+        content_type: str,
+        byte_size: int,
+        upload_request_id: str,
+    ) -> str:
+        """Abre o envio em partes e devolve o identificador dele no storage.
+
+        O tipo e o cabeçalho de identificação do envio são gravados **aqui**, e
+        não nas partes: no protocolo eles pertencem ao objeto, que só passa a
+        existir quando o envio fecha. O worker confere os dois no `HEAD`, então
+        errar aqui é o objeto ser recusado depois de subir inteiro.
+        """
+        maximum = asset_max_bytes(content_type)
+        if byte_size < 1 or byte_size > maximum:
+            raise StorageError("upload byte_size is outside the allowed range")
+        if not needs_multipart(byte_size):
+            raise StorageError("upload fits in a single request and must not be split")
+        if not upload_request_id or len(upload_request_id) > 128:
+            raise StorageError("upload_request_id is invalid")
+        multipart_plan(byte_size)
+        try:
+            response = self._control.create_multipart_upload(
+                Bucket=bucket,
+                Key=key,
+                ContentType=content_type,
+                ChecksumAlgorithm="SHA256",
+                Metadata={"appsell-upload-id": upload_request_id},
+            )
+            return str(response["UploadId"])
+        except (BotoCoreError, ClientError, KeyError) as error:
+            raise StorageError("S3 multipart upload could not be created") from error
+
+    def find_multipart_upload(self, *, bucket: str, key: str) -> str | None:
+        """Descobre o envio em partes aberto para esta chave, se houver.
+
+        O identificador do envio é do storage, não nosso, e a alternativa seria
+        guardá-lo no banco — coluna nova, função nova e uma migration
+        forward-only para carregar um dado que já dá para perguntar.
+
+        A chave de quarentena é `tenants/{vendedor}/quarantine/{upload}`, uma por
+        intenção de upload, então existe no máximo um envio aberto por chave.
+        Mais de um significa estado que não sabemos explicar, e aí a resposta é
+        recusar, nunca escolher: fechar o envio errado montaria um arquivo com
+        as partes de outra tentativa.
+        """
+        try:
+            response = self._control.list_multipart_uploads(
+                Bucket=bucket, Prefix=key, MaxUploads=10
+            )
+            # Resposta cortada é resposta que não responde: se o storage diz que
+            # há mais, esta função não pode afirmar "no máximo um" — e é essa
+            # afirmação que autoriza fechar o envio. Recusar alto, em vez de
+            # devolver o primeiro que coube na página.
+            if response.get("IsTruncated"):
+                raise StorageError("S3 returned a truncated multipart upload listing")
+            abertos = [
+                str(item["UploadId"])
+                for item in response.get("Uploads", [])
+                if str(item.get("Key")) == key
+            ]
+        except StorageError:
+            raise
+        except (BotoCoreError, ClientError, KeyError) as error:
+            raise StorageError("S3 multipart uploads could not be listed") from error
+        if len(abertos) > 1:
+            raise StorageError("more than one multipart upload is open for this key")
+        return abertos[0] if abertos else None
+
+    def presign_upload_part(
+        self,
+        *,
+        bucket: str,
+        key: str,
+        storage_upload_id: str,
+        part_number: int,
+        plan: MultipartPlan,
+        sha256_hex: str,
+    ) -> PresignedRequest:
+        """Assina uma parte, com o tamanho e o hash dela presos na assinatura.
+
+        Prender o tamanho é o que impede o envio final de passar do declarado:
+        sem isso uma parte poderia chegar com qualquer número de bytes. Prender
+        o hash faz o storage recusar a parte alterada no ato, que é a mesma
+        garantia que o `PUT` único tem sobre o arquivo inteiro.
+        """
+        content_length = plan.bytes_for_part(part_number)
+        checksum = _checksum_b64(sha256_hex)
+        params = {
+            "Bucket": bucket,
+            "Key": key,
+            "UploadId": storage_upload_id,
+            "PartNumber": part_number,
+            "ContentLength": content_length,
+            "ChecksumSHA256": checksum,
+        }
+        try:
+            url = str(
+                self._public.generate_presigned_url(
+                    "upload_part", Params=params, ExpiresIn=self.put_ttl, HttpMethod="PUT"
+                )
+            )
+        except (BotoCoreError, ClientError) as error:
+            raise StorageError("S3 upload part could not be signed") from error
+        return PresignedRequest(
+            url=url,
+            headers={"x-amz-checksum-sha256": checksum},
+            expires_in_seconds=self.put_ttl,
+            required_content_length=content_length,
+        )
+
+    def list_multipart_parts(
+        self, *, bucket: str, key: str, storage_upload_id: str
+    ) -> tuple[UploadedPart, ...]:
+        """As partes que já chegaram, que é o que permite retomar.
+
+        Sem esta consulta, um envio interrompido só poderia recomeçar do zero:
+        o navegador não tem como saber o que sobreviveu.
+        """
+        partes: list[UploadedPart] = []
+        marcador = 0
+        try:
+            while True:
+                response = self._control.list_parts(
+                    Bucket=bucket,
+                    Key=key,
+                    UploadId=storage_upload_id,
+                    PartNumberMarker=marcador,
+                    MaxParts=1_000,
+                )
+                for parte in response.get("Parts", []):
+                    partes.append(
+                        UploadedPart(
+                            part_number=int(parte["PartNumber"]),
+                            byte_size=int(parte["Size"]),
+                            etag=str(parte["ETag"]).strip('"'),
+                        )
+                    )
+                if not response.get("IsTruncated"):
+                    break
+                marcador = int(response["NextPartNumberMarker"])
+                if len(partes) > MULTIPART_MAX_PARTS:
+                    raise StorageError("S3 reported more parts than the plan allows")
+        except (BotoCoreError, ClientError, KeyError, ValueError) as error:
+            raise StorageError("S3 multipart parts could not be listed") from error
+        return tuple(sorted(partes, key=lambda parte: parte.part_number))
+
+    def complete_multipart_upload(
+        self,
+        *,
+        bucket: str,
+        key: str,
+        storage_upload_id: str,
+        plan: MultipartPlan,
+        parts: tuple[UploadedPart, ...],
+    ) -> str:
+        """Fecha o envio e devolve a versão do objeto resultante.
+
+        Recusa antes de fechar se o conjunto não for exatamente o plano: uma
+        parte faltando produziria um arquivo menor, e uma parte a mais um
+        arquivo maior, e nos dois casos o objeto existiria antes de alguém
+        perceber.
+        """
+        esperado = [
+            (numero, plan.bytes_for_part(numero)) for numero in range(1, plan.part_count + 1)
+        ]
+        recebido = [(parte.part_number, parte.byte_size) for parte in parts]
+        if recebido != esperado:
+            raise StorageError("uploaded parts do not match the upload plan")
+        try:
+            response = self._control.complete_multipart_upload(
+                Bucket=bucket,
+                Key=key,
+                UploadId=storage_upload_id,
+                MultipartUpload={
+                    "Parts": [
+                        {"PartNumber": parte.part_number, "ETag": f'"{parte.etag}"'}
+                        for parte in parts
+                    ]
+                },
+            )
+            return str(response.get("VersionId") or "")
+        except (BotoCoreError, ClientError) as error:
+            raise StorageError("S3 multipart upload could not be completed") from error
+
+    def abort_multipart_upload(self, *, bucket: str, key: str, storage_upload_id: str) -> None:
+        """Apaga as partes de um envio que não vai fechar.
+
+        Sem isto elas ficam gravadas ocupando disco sem aparecer em listagem de
+        objeto nenhuma: o vendedor cancela, o catálogo não mostra nada, e o
+        espaço continua tomado.
+        """
+        try:
+            self._control.abort_multipart_upload(Bucket=bucket, Key=key, UploadId=storage_upload_id)
+        except (BotoCoreError, ClientError) as error:
+            raise StorageError("S3 multipart upload could not be aborted") from error
 
     def presign_cover_put(
         self,
@@ -500,6 +779,49 @@ class S3Storage:
                 Bucket=bucket,
                 CORSConfiguration={"CORSRules": [rule]},
             )
+        self.ensure_multipart_expiry()
+
+    def ensure_multipart_expiry(self) -> None:
+        """A regra que apaga partes de envios que ninguém fechou nem cancelou.
+
+        O cancelamento já aborta o envio, e é ele a defesa principal. Esta é a
+        rede embaixo dela: o vendedor que fecha a aba no meio do envio não
+        cancela nada, e as partes ficam gravadas ocupando disco **sem aparecer
+        em listagem de objeto nenhuma** — não dá para descobrir o problema
+        olhando o bucket, só a fatura ou o disco cheio.
+
+        Um dia é o mínimo que o protocolo aceita, e é folga enorme: a intenção
+        de upload dura quinze minutos.
+        """
+        self._control.put_bucket_lifecycle_configuration(
+            Bucket=self.quarantine_bucket,
+            LifecycleConfiguration={
+                "Rules": [
+                    {
+                        "ID": MULTIPART_EXPIRY_RULE_ID,
+                        "Status": "Enabled",
+                        "Filter": {"Prefix": ""},
+                        "AbortIncompleteMultipartUpload": {
+                            "DaysAfterInitiation": MULTIPART_EXPIRY_DAYS
+                        },
+                    }
+                ]
+            },
+        )
+
+    def multipart_expiry_days(self) -> int | None:
+        """Quantos dias a regra concede, ou `None` se ela não existe."""
+        try:
+            configuracao = self._control.get_bucket_lifecycle_configuration(
+                Bucket=self.quarantine_bucket
+            )
+        except ClientError:
+            return None
+        for regra in configuracao.get("Rules", []):
+            aborta = regra.get("AbortIncompleteMultipartUpload")
+            if regra.get("Status") == "Enabled" and aborta:
+                return int(aborta["DaysAfterInitiation"])
+        return None
 
     def probe_availability(self) -> None:
         for bucket in (self.quarantine_bucket, self.ready_bucket):

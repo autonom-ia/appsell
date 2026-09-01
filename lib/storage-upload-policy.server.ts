@@ -8,6 +8,116 @@ const ALLOWED_HEADERS = new Set([
 
 export class StorageUploadConfigurationError extends Error {}
 
+/** Os cabeçalhos de uma parte: só o hash dela. Tipo e identificação do envio
+ * pertencem ao objeto, e são gravados na abertura, não em cada parte. */
+const ALLOWED_PART_HEADERS = new Set(["x-amz-checksum-sha256"]);
+
+/** Espelha `MULTIPART_PART_BYTES` e `MULTIPART_MAX_PARTS` do domínio. */
+const PART_BYTES = 16 * 1024 * 1024;
+const MAX_PARTS = 1000;
+
+/** Quanto tempo uma intenção fatiada pode declarar.
+ *
+ * Duas horas mais folga de relógio. É o prazo que o banco concede para um envio
+ * grande: numa linha de 2 Mbit/s meio giga leva trinta e seis minutos, e cortar
+ * em cinco seria dizer ao vendedor que ele tem cinco. */
+const MAX_MULTIPART_WINDOW_MS = 2 * 60 * 60 * 1000 + 300_000;
+
+export interface BrowserMultipartUploadIntent {
+  upload_id: string;
+  asset_id: string;
+  expires_at: string;
+  multipart: { part_bytes: number; part_count: number };
+}
+
+export interface BrowserUploadPart {
+  part_number: number;
+  upload_url: string;
+  upload_origin: string;
+  expires_at: string;
+  required_headers: Record<string, string>;
+  required_content_length: number;
+}
+
+/**
+ * A intenção de um envio fatiado, que não carrega URL nenhuma.
+ *
+ * Não há endereço para provar aqui, e é justamente por isso que ela é separada:
+ * deixar a mesma função aceitar uma intenção com e sem URL abriria a porta para
+ * uma resposta sem URL passar pela prova de endereço sem ninguém notar.
+ */
+export function browserMultipartUploadIntent(
+  value: unknown,
+  nowMs = Date.now()
+): BrowserMultipartUploadIntent | null {
+  if (!isRecord(value)) return null;
+  const uploadId = value.upload_id;
+  const assetId = value.asset_id;
+  const expiresAt = value.expires_at;
+  const multipart = value.multipart;
+  if (
+    typeof uploadId !== "string" ||
+    typeof assetId !== "string" ||
+    typeof expiresAt !== "string" ||
+    !UUID.test(uploadId) ||
+    !UUID.test(assetId) ||
+    !isRecord(multipart) ||
+    // Uma URL numa intenção fatiada é resposta que não deveria existir, e
+    // aceitá-la em silêncio esconderia a divergência.
+    value.upload_url !== undefined ||
+    multipart.part_bytes !== PART_BYTES ||
+    !Number.isInteger(multipart.part_count) ||
+    Number(multipart.part_count) < 2 ||
+    Number(multipart.part_count) > MAX_PARTS ||
+    !freshEnough(expiresAt, nowMs, MAX_MULTIPART_WINDOW_MS)
+  ) return null;
+  return {
+    upload_id: uploadId,
+    asset_id: assetId,
+    expires_at: expiresAt,
+    multipart: { part_bytes: PART_BYTES, part_count: Number(multipart.part_count) }
+  };
+}
+
+/**
+ * A assinatura de uma parte, com a mesma prova de endereço da intenção única.
+ *
+ * O tamanho vem junto e é exato: o navegador precisa recusar antes de mandar
+ * bytes que o storage rejeitaria, e é ele que faz a barra de progresso
+ * significar alguma coisa.
+ */
+export function browserUploadPart(
+  value: unknown,
+  appOrigin: string,
+  storageOrigin: string,
+  nowMs = Date.now()
+): BrowserUploadPart | null {
+  if (!isRecord(value) || storageOrigin === appOrigin) return null;
+  const partNumber = value.part_number;
+  const expiresAt = value.expires_at;
+  const contentLength = value.required_content_length;
+  if (
+    !Number.isInteger(partNumber) ||
+    Number(partNumber) < 1 ||
+    Number(partNumber) > MAX_PARTS ||
+    typeof expiresAt !== "string" ||
+    !Number.isInteger(contentLength) ||
+    Number(contentLength) < 1 ||
+    Number(contentLength) > PART_BYTES
+  ) return null;
+  const url = signedStorageUrl(value.upload_url, storageOrigin);
+  const headers = exactHeaders(value.required_headers, ALLOWED_PART_HEADERS);
+  if (!url || !headers || !freshEnough(expiresAt, nowMs)) return null;
+  return {
+    part_number: Number(partNumber),
+    upload_url: url.toString(),
+    upload_origin: storageOrigin,
+    expires_at: expiresAt,
+    required_headers: headers,
+    required_content_length: Number(contentLength)
+  };
+}
+
 export interface BrowserUploadIntent {
   upload_id: string;
   asset_id: string;
@@ -224,19 +334,24 @@ function signedStorageUrl(value: unknown, storageOrigin: string): URL | null {
   return url;
 }
 
-function freshEnough(expiresAt: string, nowMs: number): boolean {
+function freshEnough(expiresAt: string, nowMs: number, janelaMs = 330_000): boolean {
   const expiresMs = Date.parse(expiresAt);
-  return Number.isFinite(expiresMs) && expiresMs > nowMs && expiresMs <= nowMs + 330_000;
+  return Number.isFinite(expiresMs) && expiresMs > nowMs && expiresMs <= nowMs + janelaMs;
 }
 
 function exactUploadHeaders(value: unknown): Record<string, string> | null {
+  return exactHeaders(value, ALLOWED_HEADERS);
+}
+
+/** Exatamente estes cabeçalhos, nem um a mais: um extra viajaria assinado. */
+function exactHeaders(value: unknown, permitidos: Set<string>): Record<string, string> | null {
   if (!isRecord(value)) return null;
   const entries = Object.entries(value);
   const names = entries.map(([name]) => name.toLowerCase());
   if (
-    entries.length !== ALLOWED_HEADERS.size ||
+    entries.length !== permitidos.size ||
     new Set(names).size !== names.length ||
-    ![...ALLOWED_HEADERS].every((name) => names.includes(name)) ||
+    ![...permitidos].every((name) => names.includes(name)) ||
     entries.some(([, header]) => typeof header !== "string" || header.length === 0)
   ) return null;
   return Object.fromEntries(entries) as Record<string, string>;

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   browserCoverUploadIntent,
+  browserMultipartUploadIntent,
   browserUploadIntent,
+  browserUploadPart,
   configuredStorageUploadOrigin,
   storageUploadConfigurationReady,
   trustedProductCover,
@@ -162,5 +164,90 @@ describe("cover image boundary", () => {
     // Sem capa a tela mostra a arte gerada. Um endereço de outra origem viraria
     // uma requisição do navegador do vendedor para um host que ninguém escolheu.
     expect(trustedProductCover(cover, STORAGE_ORIGIN)).toBeNull();
+  });
+});
+
+const PART_BYTES = 16 * 1024 * 1024;
+const INTENCAO_FATIADA = {
+  upload_id: "55000000-0000-4000-8000-000000000001",
+  asset_id: "55000000-0000-4000-8000-000000000002",
+  expires_at: "2026-07-11T20:05:00.000Z",
+  multipart: { part_bytes: PART_BYTES, part_count: 50 }
+};
+const PARTE = {
+  part_number: 7,
+  upload_url: `${STORAGE_ORIGIN}/appsell-quarantine/object?partNumber=7&X-Amz-Signature=signed`,
+  expires_at: "2026-07-11T20:05:00.000Z",
+  required_headers: { "x-amz-checksum-sha256": "checksum-da-parte" },
+  required_content_length: PART_BYTES
+};
+
+describe("envio em partes", () => {
+  it("aceita a intenção fatiada, que não carrega endereço nenhum", () => {
+    expect(browserMultipartUploadIntent(INTENCAO_FATIADA, NOW)).toMatchObject({
+      upload_id: INTENCAO_FATIADA.upload_id,
+      multipart: { part_bytes: PART_BYTES, part_count: 50 }
+    });
+  });
+
+  it("recusa uma intenção fatiada que também traz URL", () => {
+    // Resposta com os dois formatos é divergência, e aceitá-la em silêncio
+    // deixaria uma URL não conferida chegar ao navegador.
+    expect(
+      browserMultipartUploadIntent({ ...INTENCAO_FATIADA, upload_url: "https://exemplo.test/x" }, NOW)
+    ).toBeNull();
+  });
+
+  it("recusa um plano com tamanho de parte diferente do combinado", () => {
+    expect(
+      browserMultipartUploadIntent({ ...INTENCAO_FATIADA, multipart: { part_bytes: 1024, part_count: 50 } }, NOW)
+    ).toBeNull();
+  });
+
+  it("recusa um plano de uma parte só, que deveria ter sido envio único", () => {
+    expect(
+      browserMultipartUploadIntent({ ...INTENCAO_FATIADA, multipart: { part_bytes: PART_BYTES, part_count: 1 } }, NOW)
+    ).toBeNull();
+  });
+
+  it("recusa uma intenção fatiada vencida", () => {
+    expect(browserMultipartUploadIntent(INTENCAO_FATIADA, Date.parse("2026-07-11T20:06:00Z"))).toBeNull();
+  });
+
+  it("aceita a parte assinada no armazenamento configurado", () => {
+    expect(browserUploadPart(PARTE, APP_ORIGIN, STORAGE_ORIGIN, NOW)).toMatchObject({
+      part_number: 7,
+      upload_origin: STORAGE_ORIGIN,
+      required_content_length: PART_BYTES
+    });
+  });
+
+  it("recusa uma parte apontada para fora do armazenamento", () => {
+    expect(
+      browserUploadPart({ ...PARTE, upload_url: "https://exfiltra.test/x?X-Amz-Signature=signed" }, APP_ORIGIN, STORAGE_ORIGIN, NOW)
+    ).toBeNull();
+  });
+
+  it("recusa uma parte sem assinatura", () => {
+    expect(
+      browserUploadPart({ ...PARTE, upload_url: `${STORAGE_ORIGIN}/appsell-quarantine/object` }, APP_ORIGIN, STORAGE_ORIGIN, NOW)
+    ).toBeNull();
+  });
+
+  it("recusa cabeçalho a mais numa parte, que viajaria assinado", () => {
+    expect(
+      browserUploadPart(
+        { ...PARTE, required_headers: { ...PARTE.required_headers, "x-amz-meta-qualquer": "coisa" } },
+        APP_ORIGIN,
+        STORAGE_ORIGIN,
+        NOW
+      )
+    ).toBeNull();
+  });
+
+  it("recusa uma parte maior que o tamanho combinado", () => {
+    expect(
+      browserUploadPart({ ...PARTE, required_content_length: PART_BYTES + 1 }, APP_ORIGIN, STORAGE_ORIGIN, NOW)
+    ).toBeNull();
   });
 });

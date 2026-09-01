@@ -17,7 +17,13 @@ from .image_verifier import ImageRejected, spooled_cover_file
 from .logging_setup import get_logger
 from .pdf_derivatives import prepared_pdf_file
 from .pdf_verifier import PDF_MIME, spooled_pdf_file
-from .storage_s3 import S3Storage, StorageCapabilityError, StoredObject, object_sha256_matches
+from .storage_s3 import (
+    S3Storage,
+    StorageCapabilityError,
+    StoredObject,
+    needs_multipart,
+    object_sha256_matches,
+)
 from .video_verifier import VIDEO_MP4_MIME, prepared_catalogue_video, spooled_video_file
 
 _EICAR = b"EICAR-STANDARD-ANTIVIRUS-TEST-FILE"
@@ -214,7 +220,15 @@ class PdfStorageWorker:
             raise ScanRejected("quarantine object size differs from upload intent")
         if source.content_type != job.declared_content_type:
             raise ScanRejected("quarantine object MIME differs from upload intent")
-        if not object_sha256_matches(source, job.expected_sha256_hex):
+        # Um envio fatiado não carrega o hash do arquivo inteiro: o storage guarda
+        # um hash composto das partes, porque o protocolo só calcula hash de
+        # arquivo inteiro em envio fatiado com algoritmos CRC, e SHA-256 não é um
+        # deles. Para esses, a conferência é a releitura abaixo, que passa por
+        # todos os bytes e compara com este mesmo `expected_sha256_hex`. Nada é
+        # promovido sem o hash bater; muda onde a comparação acontece.
+        if not needs_multipart(job.expected_size) and not object_sha256_matches(
+            source, job.expected_sha256_hex
+        ):
             raise ScanRejected("quarantine object checksum differs from upload intent")
         if source.appsell_upload_id != str(job.upload_id):
             raise ScanRejected("quarantine upload metadata differs from upload intent")
@@ -615,6 +629,20 @@ def assert_storage_worker_ready(
             raise StorageCapabilityError(
                 f"{tool} is unavailable: the asset worker cannot process media without it"
             )
+
+    # Aplicada na subida, e não exigida: um ambiente cuja credencial não pode
+    # escrever política de bucket não deve ficar sem worker por causa disso. O
+    # cancelamento continua abortando os envios, e o que esta regra cobre é só o
+    # vendedor que fechou a aba. Falhar aqui é registrado com o que fazer.
+    try:
+        storage.ensure_multipart_expiry()
+    except Exception as error:  # noqa: BLE001 - qualquer falha aqui é a mesma decisão
+        _logger.warning(
+            "appsell_multipart_expiry_not_applied",
+            bucket=storage.quarantine_bucket,
+            reason=type(error).__name__,
+            remediation="aplicar AbortIncompleteMultipartUpload no bucket de quarentena",
+        )
 
 
 def _validate_storage_key(key: str) -> None:

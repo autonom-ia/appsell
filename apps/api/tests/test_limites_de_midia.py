@@ -255,16 +255,29 @@ class TestPrazoDaRasterizacao:
         assert pdf_derivatives._PDFTOPPM_TIMEOUT_SECONDS >= pior_caso * 1.5
 
 
-def _carrega_migration() -> Any:
+def _versoes() -> list[Path]:
+    """Os arquivos de migration, em ordem de número."""
+    return sorted((_RAIZ / "apps/api/migrations/versions").glob("0*.py"))
+
+
+def _carrega_migration(prefixo: str = "0044_") -> Any:
     """A migration como módulo, para ler as estruturas dela e não o texto."""
-    caminho = next(
-        p for p in (_RAIZ / "apps/api/migrations/versions").iterdir() if p.name.startswith("0044_")
-    )
-    especificacao = importlib.util.spec_from_file_location("migracao_0044", caminho)
+    caminho = next(p for p in _versoes() if p.name.startswith(prefixo))
+    especificacao = importlib.util.spec_from_file_location(f"migracao_{prefixo}", caminho)
     assert especificacao is not None and especificacao.loader is not None
     modulo = importlib.util.module_from_spec(especificacao)
     especificacao.loader.exec_module(modulo)
     return modulo
+
+
+def _migration_do_topo() -> Any:
+    """A migration mais nova, seja ela qual for.
+
+    Fixar o nome aqui é o que fez este arquivo prender seis testes na versão
+    anterior. Quem quer falar de uma migration específica passa o prefixo;
+    quem quer falar do topo pergunta ao diretório.
+    """
+    return _carrega_migration(_versoes()[-1].name.split("_")[0] + "_")
 
 
 class _OsComMuitosNucleos:
@@ -657,6 +670,89 @@ class TestEnvelopeDoWorker:
 _TMPFS = re.compile(r"/tmp:size=(\d+)")  # noqa: S108
 
 
+class TestOrcamentoDoVideo:
+    """As medições que sustentam o teto de 512 MiB (Decisão 011).
+
+    Feitas em 31/08/2026 sobre um MP4 real de 408 MiB e 36 min de duração,
+    dentro do próprio `remux_to_mp4`. Ficam escritas aqui porque a próxima
+    pessoa que quiser mexer no teto precisa saber o que foi medido, e com o quê.
+    """
+
+    #: Trocar o invólucro com `+faststart`: 408 MiB em 0,6 s.
+    REMUX_MIB_POR_SEGUNDO: Final = 729
+    #: SHA-256 do arquivo inteiro: 408 MiB em 0,16 s.
+    HASH_MIB_POR_SEGUNDO: Final = 2552
+
+    def _teto_do_video(self) -> int:
+        from appsell_api.asset_media import VIDEO_MEDIA_TYPE, max_bytes
+
+        return max_bytes(VIDEO_MEDIA_TYPE)
+
+    def test_o_teto_do_video_e_o_que_esta_migration_gravou(self) -> None:
+        assert self._teto_do_video() == 512 * _MIB
+
+    def test_converter_e_conferir_nao_ameacam_o_lease(self) -> None:
+        """O que custa CPU no caminho do vídeo cabe em segundos, não minutos.
+
+        O lease do worker é de 600 s e não pode subir — o banco recusa. O que
+        ele precisa cobrir são as transferências; a conversão nunca foi o
+        gargalo, e agora isso está medido em vez de suposto.
+        """
+        mib = self._teto_do_video() / _MIB
+        segundos = mib / self.REMUX_MIB_POR_SEGUNDO + mib / self.HASH_MIB_POR_SEGUNDO
+        from appsell_api.asset_worker_runner import _ASSET_LEASE_SECONDS
+
+        assert segundos < _ASSET_LEASE_SECONDS / 100, (
+            f"converter e conferir custam {segundos:.1f} s de um lease de {_ASSET_LEASE_SECONDS} s"
+        )
+
+    def test_a_faixa_generica_do_banco_segue_o_maior_tipo_do_catalogo(self) -> None:
+        """Quatro checagens no banco não são teto por tipo, e é fácil confundir.
+
+        Elas dizem "cabe no maior arquivo que a plataforma aceita", e por isso
+        sobem quando o maior tipo sobe — inclusive nas funções que também veem
+        PDF e documento. O teto **por tipo** é outro, mora no catálogo, e é ele
+        que o `asset_blob_media_contract_check` consulta.
+
+        Este teste amarra a faixa genérica ao catálogo. Sem ele, subir um tipo e
+        esquecer a faixa deixaria a recusa acontecer com erro cru de restrição,
+        em vez da mensagem que explica o que houve.
+        """
+        from appsell_api.asset_media import MAX_ASSET_BYTES
+
+        migration = _carrega_migration("0046_")
+        assert migration._NOVO == MAX_ASSET_BYTES, (
+            f"a faixa genérica do banco é {migration._NOVO} e o maior tipo do "
+            f"catálogo é {MAX_ASSET_BYTES}"
+        )
+        assert self._teto_do_video() == MAX_ASSET_BYTES
+
+    def test_o_tmp_do_worker_cobre_a_origem_e_o_derivado(self) -> None:
+        """O worker segura os dois arquivos ao mesmo tempo.
+
+        E o `/tmp` dele é `tmpfs`: encher significa memória, não disco.
+        """
+        from appsell_api.video_verifier import MAX_VIDEO_JOB_TEMP_BYTES
+
+        script = (_RAIZ / "deploy/easypanel-native/ensure-asset-worker.sh").read_text()
+        tamanho = re.search(r"tmpfs-size=(\d+)", script)
+        assert tamanho is not None, "o worker perdeu o `/tmp` dedicado"
+        assert int(tamanho.group(1)) >= MAX_VIDEO_JOB_TEMP_BYTES, (
+            f"`/tmp` de {int(tamanho.group(1)) / _MIB:.0f} MiB não cobre "
+            f"{MAX_VIDEO_JOB_TEMP_BYTES / _MIB:.0f} MiB de vídeo"
+        )
+
+    def test_o_tmp_do_sandbox_cobre_a_origem_e_o_derivado(self) -> None:
+        """O serviço isolado segura o mesmo par, do outro lado do socket."""
+        from appsell_api.video_verifier import MAX_VIDEO_JOB_TEMP_BYTES
+
+        for caminho in TestOEnvelopeDoSandbox.ARQUIVOS:
+            bloco = TestOEnvelopeDoSandbox()._bloco_do_sandbox(caminho)
+            tmpfs = re.search(_TMPFS, bloco)
+            assert tmpfs is not None, caminho
+            assert int(tmpfs.group(1)) >= MAX_VIDEO_JOB_TEMP_BYTES, caminho
+
+
 class TestOEnvelopeDoSandbox:
     """Quem rasteriza precisa caber no que declarou que vai usar.
 
@@ -732,15 +828,33 @@ class TestAMigrationNaoQuebraOReadiness:
         # As duas cópias da função carregam a lista, e as duas precisam mudar.
         assert len(migration._BASES_DO_READY) == 2
 
-    def test_o_reset_do_demo_espera_a_versao_nova(self) -> None:
+    def test_o_reset_do_demo_espera_a_versao_do_topo(self) -> None:
+        """O reset recusa um banco que não esteja na última migration.
+
+        Compara com o topo do diretório, e não com um nome escrito aqui: uma
+        migration nova que esquecesse de subir `EXPECTED_MIGRATION` deixaria o
+        reset recusando um banco correto, e este teste passaria.
+        """
         from appsell_api.reset_demo_tenant import EXPECTED_MIGRATION
 
-        migration = _carrega_migration()
-        assert EXPECTED_MIGRATION == migration.revision
+        assert EXPECTED_MIGRATION == _migration_do_topo().revision
+
+    def test_cada_migration_encadeia_na_anterior(self) -> None:
+        """A corrente inteira, e não só o último elo.
+
+        Uma migration com `down_revision` errado passa no lint e quebra o
+        `upgrade` de um banco limpo, que é onde ninguém tenta antes do deploy.
+        """
+        versoes = [_carrega_migration(caminho.name.split("_")[0] + "_") for caminho in _versoes()]
+        for anterior, atual in zip(versoes, versoes[1:], strict=False):
+            assert atual.down_revision == anterior.revision, (
+                f"{atual.revision} diz vir de {atual.down_revision}, "
+                f"e a anterior no diretório é {anterior.revision}"
+            )
 
     def test_nenhum_teste_ficou_preso_na_versao_anterior(self) -> None:
         # Seis testes fixavam `0043` e passariam a falhar depois do upgrade.
-        anterior = "0043_material_role_by_media"
+        anterior = _versoes()[-2].stem
         presos = [
             f"{caminho.relative_to(_RAIZ)}:{numero}"
             for caminho in sorted((_RAIZ / "apps/api/tests").glob("*.py"))

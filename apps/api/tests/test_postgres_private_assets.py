@@ -22,6 +22,7 @@ from appsell_api.reset_demo_tenant import (
     prepare_demo_storage_cleanup,
     reset_demo,
 )
+from appsell_api.storage_s3 import MULTIPART_PART_BYTES
 
 ADMIN_URL = os.environ.get("APPSELL_TEST_POSTGRES_ADMIN_URL")
 RUNTIME_URL = os.environ.get("APPSELL_TEST_POSTGRES_RUNTIME_URL")
@@ -1971,3 +1972,224 @@ def test_demo_storage_cleanup_prepare_makes_ready_assets_drainable_before_reset(
         )
         reset_demo(connection, manifest, manifest_sha, ISSUER)
         connection.commit()
+
+
+def _intencao_de_envio(
+    connection: Any,
+    *,
+    admin: UUID,
+    seller: UUID,
+    product: UUID,
+    course: UUID,
+    module: UUID,
+    lesson: UUID,
+    byte_size: int,
+) -> tuple[dict[str, Any], str]:
+    """Uma intenção de envio de vídeo do tamanho pedido."""
+    sha = digest(f"aula-{uuid4()}")
+    apply_context(connection, admin, seller, "catalog.asset.create")
+    linha = connection.execute(
+        """
+        select app_private.create_asset_upload_intent(
+          %s,%s,%s,%s,%s,%s,null,1,'Aula longa','aula-longa.mp4',
+          'video/mp4',%s,%s,'s3','appsell-quarantine','appsell-ready',%s,%s,%s)
+        """,
+        (
+            admin,
+            seller,
+            product,
+            course,
+            module,
+            lesson,
+            byte_size,
+            sha,
+            uuid4(),
+            digest(f"corpo-{uuid4()}"),
+            uuid4(),
+        ),
+    ).fetchone()
+    assert linha is not None
+    connection.commit()
+    return linha[0], sha
+
+
+def _confirma(
+    connection: Any,
+    *,
+    admin: UUID,
+    seller: UUID,
+    product: UUID,
+    course: UUID,
+    module: UUID,
+    lesson: UUID,
+    upload: str,
+    observed_size: int,
+    observed_checksum: str | None,
+) -> dict[str, Any]:
+    apply_context(connection, admin, seller, "catalog.asset.upload.confirm")
+    linha = connection.execute(
+        """
+        select app_private.confirm_asset_upload(
+          %s,%s,%s,%s,%s,%s,%s,'source-version-1',%s,%s,'source-etag',%s,%s,%s)
+        """,
+        (
+            admin,
+            seller,
+            product,
+            course,
+            module,
+            lesson,
+            upload,
+            observed_size,
+            observed_checksum,
+            uuid4(),
+            digest(f"confirma-{uuid4()}"),
+            uuid4(),
+        ),
+    ).fetchone()
+    assert linha is not None
+    connection.commit()
+    resultado: dict[str, Any] = linha[0]
+    return resultado
+
+
+def _personas() -> tuple[UUID, UUID, UUID, UUID, UUID, UUID]:
+    manifest, _ = load_manifest()
+    return (
+        identity_id(manifest["personas"]["admin"]["subject"]),
+        UUID(manifest["seller"]["id"]),
+        UUID(manifest["product"]["id"]),
+        UUID(manifest["course"]["id"]),
+        UUID(manifest["module"]["id"]),
+        UUID(manifest["lessons"][0]["lesson_id"]),
+    )
+
+
+def test_o_banco_e_o_codigo_concordam_sobre_o_tamanho_da_parte() -> None:
+    """Quem decide se um envio foi fatiado é o banco, pelo tamanho declarado.
+
+    Um sinalizador de quem chama poderia pedir para pular a conferência de um
+    arquivo pequeno; o tamanho não. Isso obriga o número a existir dos dois
+    lados, e obriga este teste a existir junto.
+    """
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        linha = connection.execute("select app_private.asset_multipart_part_bytes()").fetchone()
+    assert linha is not None
+    assert linha[0] == MULTIPART_PART_BYTES
+
+
+def test_envio_fatiado_confirma_sem_o_hash_do_arquivo_inteiro() -> None:
+    """O envio em partes não produz esse hash, e o `confirm` sabe disso.
+
+    A conferência de conteúdo dele é a da verificação, que relê todos os bytes
+    contra o mesmo `expected_sha256`. O audit registra qual caminho foi usado,
+    para que "adiada" nunca seja uma coisa que só o código sabe.
+    """
+    assert RUNTIME_URL
+    admin, seller, product, course, module, lesson = _personas()
+    tamanho = MULTIPART_PART_BYTES + 1024
+    with psycopg.connect(RUNTIME_URL) as connection:
+        criado, _ = _intencao_de_envio(
+            connection,
+            admin=admin,
+            seller=seller,
+            product=product,
+            course=course,
+            module=module,
+            lesson=lesson,
+            byte_size=tamanho,
+        )
+        resultado = _confirma(
+            connection,
+            admin=admin,
+            seller=seller,
+            product=product,
+            course=course,
+            module=module,
+            lesson=lesson,
+            upload=criado["upload_id"],
+            observed_size=tamanho,
+            observed_checksum=None,
+        )
+        assert resultado["status"] == "uploaded"
+    # O audit é lido pela conexão administrativa: a do runtime enxerga só o que
+    # a política do tenant deixa, e aqui o ponto é o registro existir.
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as administrativa:
+        registro = administrativa.execute(
+            """
+            select metadata->>'content_check' from audit_event
+             where action='catalog.asset_upload_confirmed'
+               and metadata->>'upload_id'=%s
+            """,
+            (str(criado["upload_id"]),),
+        ).fetchone()
+    assert registro is not None, "a confirmação não deixou registro no audit"
+    assert registro[0] == "deferred_to_verification"
+
+
+def test_envio_de_uma_parte_so_continua_exigindo_o_hash() -> None:
+    """A conferência adiada não pode virar uma porta para pular a conferência.
+
+    Se o hash pudesse faltar em qualquer envio, bastaria omiti-lo para promover
+    um arquivo que não é o declarado até a verificação perceber.
+    """
+    assert RUNTIME_URL
+    admin, seller, product, course, module, lesson = _personas()
+    with psycopg.connect(RUNTIME_URL) as connection:
+        criado, _ = _intencao_de_envio(
+            connection,
+            admin=admin,
+            seller=seller,
+            product=product,
+            course=course,
+            module=module,
+            lesson=lesson,
+            byte_size=1024,
+        )
+        with pytest.raises(psycopg.errors.InvalidParameterValue):
+            _confirma(
+                connection,
+                admin=admin,
+                seller=seller,
+                product=product,
+                course=course,
+                module=module,
+                lesson=lesson,
+                upload=criado["upload_id"],
+                observed_size=1024,
+                observed_checksum=None,
+            )
+
+
+def test_envio_fatiado_com_tamanho_diferente_continua_sendo_recusado() -> None:
+    """O tamanho continua conferido, exato, no `confirm`. Só o hash foi adiado."""
+    assert RUNTIME_URL
+    admin, seller, product, course, module, lesson = _personas()
+    tamanho = MULTIPART_PART_BYTES + 1024
+    with psycopg.connect(RUNTIME_URL) as connection:
+        criado, _ = _intencao_de_envio(
+            connection,
+            admin=admin,
+            seller=seller,
+            product=product,
+            course=course,
+            module=module,
+            lesson=lesson,
+            byte_size=tamanho,
+        )
+        resultado = _confirma(
+            connection,
+            admin=admin,
+            seller=seller,
+            product=product,
+            course=course,
+            module=module,
+            lesson=lesson,
+            upload=criado["upload_id"],
+            observed_size=tamanho - 1,
+            observed_checksum=None,
+        )
+    assert resultado["status"] == "rejected"
+    assert resultado["safe_reason"] == "upload_mismatch"

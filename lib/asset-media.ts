@@ -40,7 +40,7 @@ export const PPTX_MEDIA_TYPE =
  */
 const CATALOGUE = {
   [PDF_MEDIA_TYPE]: { extension: "pdf", maxBytes: 100 * MIB, supportMaterialOnly: false, downloadable: true, label: "PDF", feminine: false },
-  [VIDEO_MEDIA_TYPE]: { extension: "mp4", maxBytes: 100 * MIB, supportMaterialOnly: false, downloadable: false, label: "vídeo", feminine: false },
+  [VIDEO_MEDIA_TYPE]: { extension: "mp4", maxBytes: 512 * MIB, supportMaterialOnly: false, downloadable: false, label: "vídeo", feminine: false },
   [DOCX_MEDIA_TYPE]: { extension: "docx", maxBytes: 20 * MIB, supportMaterialOnly: true, downloadable: true, label: "documento", feminine: false },
   [XLSX_MEDIA_TYPE]: { extension: "xlsx", maxBytes: 20 * MIB, supportMaterialOnly: true, downloadable: true, label: "planilha", feminine: true },
   [PPTX_MEDIA_TYPE]: { extension: "pptx", maxBytes: 40 * MIB, supportMaterialOnly: true, downloadable: true, label: "apresentação", feminine: true },

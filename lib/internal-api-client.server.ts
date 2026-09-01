@@ -46,6 +46,7 @@ interface ApiRequest {
     "catalog.curriculum.update" | "catalog.curriculum.archive" |
     "catalog.curriculum.reorder" | "catalog.asset.read" | "catalog.asset.create" |
     "catalog.asset.upload.confirm" | "catalog.asset.upload.cancel" |
+    "catalog.asset.upload.sign" |
     "catalog.asset.archive" | "catalog.asset.policy.update" |
     "catalog.access_link.create" | "catalog.access_link.read" |
     "catalog.access_link.update" |
@@ -1115,6 +1116,33 @@ export async function readDomainAssetUploadStatus(
     path: `${lessonAssetPath(input)}/uploads/${input.uploadId}`,
     capability: "catalog.asset.read",
     sellerOrganizationId: input.sellerOrganizationId
+  });
+}
+
+export async function readDomainAssetUploadParts(
+  sessionId: string,
+  session: ServerSession,
+  input: LessonAssetPath & { uploadId: string }
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `${lessonAssetPath(input)}/uploads/${input.uploadId}/parts`,
+    capability: "catalog.asset.read",
+    sellerOrganizationId: input.sellerOrganizationId
+  });
+}
+
+export async function signDomainAssetUploadPart(
+  sessionId: string,
+  session: ServerSession,
+  input: LessonAssetPath & { uploadId: string; partNumber: number; sha256: string }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `${lessonAssetPath(input)}/uploads/${input.uploadId}/parts/${input.partNumber}`,
+    capability: "catalog.asset.upload.sign",
+    sellerOrganizationId: input.sellerOrganizationId,
+    body: { sha256: input.sha256 }
   });
 }
 
