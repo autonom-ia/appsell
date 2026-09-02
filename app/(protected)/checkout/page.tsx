@@ -3,11 +3,11 @@ import { redirect } from "next/navigation";
 
 import { DemoCheckoutWorkspace } from "../../components/demo-checkout-workspace";
 import { StripeCheckoutCard } from "../../components/stripe-checkout-card";
-import { resolveCheckoutProduct } from "@/lib/checkout-config";
 import { sessionCookieName } from "@/lib/cookies";
 import { demoProfileForSubject } from "@/lib/demo-config";
 import { readPublicStorefront } from "@/lib/internal-api-client.server";
 import { oauthService } from "@/lib/oauth-service.server";
+import { isProductCheckoutAvailable } from "@/lib/product-checkout-availability.server";
 import { parsePublicStorefront } from "@/lib/public-storefront";
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -96,7 +96,7 @@ async function realCheckoutOffer(
   sellerSlug: string,
   productSlug: string
 ): Promise<{ sellerName: string; productTitle: string; priceLabel: string } | null> {
-  if (!resolveCheckoutProduct(sellerSlug, productSlug)) return null;
+  if (!isProductCheckoutAvailable(sellerSlug, productSlug)) return null;
   let parsed: ReturnType<typeof parsePublicStorefront>;
   try {
     parsed = parsePublicStorefront(await readPublicStorefront(sellerSlug));
