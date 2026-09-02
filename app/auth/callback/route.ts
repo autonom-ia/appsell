@@ -81,9 +81,10 @@ export async function GET(request: NextRequest) {
   );
   try {
     const mode = oauthRuntimeMode();
-    const sessionId = mode === "identity"
+    const entrada = mode === "identity"
       ? await oauthService().callbackIdentity(callbackInput, identityOAuthClient())
-      : await oauthService().callback(callbackInput);
+      : { sessionId: await oauthService().callback(callbackInput) };
+    const sessionId = entrada.sessionId;
     issuedSessionId = sessionId;
     const session = await oauthService().getSession(sessionId);
     if (!session) throw new DomainApiError(503, "session_unavailable_after_callback");
@@ -95,7 +96,7 @@ export async function GET(request: NextRequest) {
     }
     if (isDomainApiConfigured()) {
       try {
-        await syncDomainIdentity(sessionId, session);
+        await syncDomainIdentity(sessionId, session, entrada.displayName);
         if (!demoProfile) {
           // Falha fechada, mas sem derrubar o login: se a listagem não
           // responder, a sessão entra sem as permissões de produto e as recebe

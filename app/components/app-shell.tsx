@@ -105,9 +105,17 @@ function storeLabel(identity: ShellIdentity) {
   return rest.length ? `${first.displayName} +${rest.length}` : first.displayName;
 }
 
-function accountInitials(email: string) {
-  const local = email.split("@")[0] ?? "";
-  const parts = local.split(/[._-]+/).filter(Boolean);
+// Com nome, o rodapé identifica a pessoa e usa a linha de baixo para dizer
+// onde ela está. Sem nome, a loja assume o topo e o e-mail identifica.
+function storeDetail(identity: ShellIdentity) {
+  const [first, ...rest] = identity.sellers as readonly ShellSeller[];
+  if (!first) return identity.email;
+  return rest.length ? `${first.displayName} +${rest.length}` : first.displayName;
+}
+
+function accountInitials(value: string) {
+  const local = value.includes("@") ? value.split("@")[0] ?? "" : value;
+  const parts = local.split(/[\s._-]+/).filter(Boolean);
   const letters = parts.length > 1
     ? `${parts[0][0]}${parts[1][0]}`
     : local.slice(0, 2);
@@ -210,7 +218,11 @@ export function AppShell({ children }: AppShellProps) {
     : demoProfile
       ? { initials: accountInitials(demoProfile.email), title: `${demoProfile.label} demo`, detail: demoProfile.email }
       : identity
-        ? { initials: accountInitials(identity.email), title: storeLabel(identity), detail: identity.email }
+        ? {
+            initials: accountInitials(identity.displayName ?? identity.email),
+            title: identity.displayName ?? storeLabel(identity),
+            detail: identity.displayName ? storeDetail(identity) : identity.email
+          }
         : { initials: "AU", title: "Ambiente demo", detail: "Sessão protegida" };
   const home = profileState.status === "failed" || unresolved
     ? "/"
@@ -465,8 +477,10 @@ function parseIdentity(value: unknown): ShellIdentity | null | undefined {
     }
     parsed.push({ id: item.id, slug: item.slug, displayName: item.displayName, role: item.role });
   }
+  const displayName = record.displayName;
   return {
     email,
+    displayName: typeof displayName === "string" && displayName.trim() ? displayName.trim() : null,
     emailVerified: record.emailVerified === true,
     platformRoles: (roles as string[]).filter((role) => PLATFORM_ROLES.has(role)),
     sellers: parsed

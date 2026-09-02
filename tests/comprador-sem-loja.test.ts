@@ -35,7 +35,7 @@ describe("para onde vai quem não tem loja", () => {
 describe("quem pode abrir a primeira loja", () => {
   const base = { status: "ready", profile: null, runtime: "identity" } as const;
   const identidade = (over: Partial<ShellIdentity> = {}): ShellIdentity => ({
-    email: "p@exemplo.test", emailVerified: true, platformRoles: [], sellers: [], ...over
+    email: "p@exemplo.test", displayName: null, emailVerified: true, platformRoles: [], sellers: [], ...over
   });
 
   it("oferece a quem tem identidade real, nenhuma loja e nenhum papel de plataforma", () => {

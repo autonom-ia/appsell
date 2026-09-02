@@ -9,6 +9,7 @@ import {
 function identity(partial: Partial<ShellIdentity> = {}): ShellIdentity {
   return {
     email: "pessoa@exemplo.test",
+    displayName: null,
     emailVerified: true,
     platformRoles: [],
     sellers: [],

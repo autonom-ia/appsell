@@ -70,6 +70,7 @@ export async function GET(request: NextRequest) {
       } : null,
       identity: identity ? {
         email: identity.email,
+        displayName: identity.displayName,
         emailVerified: identity.emailVerified,
         platformRoles: identity.platformRoles,
         sellers: identity.sellers.map((seller) => ({

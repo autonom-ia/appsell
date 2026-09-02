@@ -89,6 +89,7 @@ export interface VerifiedIdentityTokenBundle {
     readonly sub: string;
     readonly email: string;
     readonly emailVerified: true;
+    readonly displayName?: string;
   };
 }
 
@@ -453,6 +454,7 @@ export class IdentityOAuthClient implements OAuthTokenRefresher {
     }
     const sub = canonicalSubject(identity.sub);
     const email = canonicalEmail(identity.email);
+    const displayName = readableName(identity);
     if (identity.email_verified !== true) {
       // Três situações muito diferentes chegavam aqui com a mesma frase, e a
       // diferença entre elas é a diferença entre "o aluno precisa confirmar o
@@ -493,7 +495,8 @@ export class IdentityOAuthClient implements OAuthTokenRefresher {
         issuer: this.config.issuer,
         sub,
         email,
-        emailVerified: true
+        emailVerified: true,
+        ...(displayName === undefined ? {} : { displayName })
       }
     };
   }
@@ -620,6 +623,29 @@ function canonicalSubject(value: unknown) {
     throw new IdentityOAuthProtocolError("Identity subject is invalid.");
   }
   return value;
+}
+
+// O nome é acessório: ele melhora um rótulo e não decide nada. Um claim
+// ausente, vazio, gigante ou com caractere de controle vira "não informado",
+// nunca uma exceção — recusar a sessão por causa do nome trocaria um rótulo
+// bonito por uma porta fechada.
+//
+// A ordem prefere `name`, que é o nome como a pessoa o escreveu. Só quando ele
+// falta é que as partes são juntadas.
+function readableName(claims: Record<string, unknown>) {
+  const direct = usableName(claims.name);
+  if (direct) return direct;
+  const given = usableName(claims.given_name);
+  const family = usableName(claims.family_name);
+  const joined = [given, family].filter(Boolean).join(" ");
+  return usableName(joined);
+}
+
+function usableName(value: unknown) {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 200 || /[\u0000-\u001f\u007f]/.test(trimmed)) return undefined;
+  return trimmed;
 }
 
 function canonicalEmail(value: unknown) {

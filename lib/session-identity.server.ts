@@ -22,6 +22,7 @@ type DomainSession = Parameters<typeof readDomainIdentity>[1];
 // sem confirmar membership é exatamente o defeito que esta issue corrige.
 export interface SessionIdentity {
   readonly email: string;
+  readonly displayName: string | null;
   readonly emailVerified: boolean;
   readonly platformRoles: readonly string[];
   readonly sellers: readonly SessionIdentitySeller[];
@@ -55,8 +56,10 @@ function parseIdentity(payload: unknown) {
   if (typeof email !== "string" || email.length === 0) return null;
   const roles = payload.platform_roles;
   if (!Array.isArray(roles) || roles.some((role) => typeof role !== "string")) return null;
+  const displayName = payload.display_name;
   return {
     email,
+    displayName: typeof displayName === "string" && displayName.trim() ? displayName.trim() : null,
     emailVerified: payload.email_verified === true,
     // Papel que a borda não reconhece não vira permissão: deny-by-default vale
     // também para o que a própria API devolve.

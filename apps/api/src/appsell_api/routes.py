@@ -21,6 +21,19 @@ class IdentitySyncBody(BaseModel):
 
     email: str
     email_verified: bool
+    # O nome é acessório e opcional: nem todo caminho de login emite o claim,
+    # e a ausência dele não pode impedir a sincronização da identidade.
+    display_name: str | None = None
+
+    @field_validator("display_name")
+    @classmethod
+    def validate_display_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        if not trimmed or len(trimmed) > 200 or any(ord(c) < 32 or ord(c) == 127 for c in trimmed):
+            return None
+        return trimmed
 
     @field_validator("email")
     @classmethod
@@ -83,7 +96,7 @@ async def sync_me(request: Request) -> dict[str, Any]:
             identity_id = await session.scalar(
                 text(
                     "select app_private.sync_identity("
-                    ":identity_user_id,:issuer,:subject,:email,:verified)"
+                    ":identity_user_id,:issuer,:subject,:email,:verified,:display_name)"
                 ),
                 {
                     "identity_user_id": envelope.identity.user_id,
@@ -91,13 +104,19 @@ async def sync_me(request: Request) -> dict[str, Any]:
                     "subject": envelope.identity.sub,
                     "email": body.email,
                     "verified": body.email_verified,
+                    "display_name": body.display_name,
                 },
             )
     except DBAPIError as error:
         raise _domain_error(error) from error
     if identity_id != envelope.identity.user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
-    return {"id": str(identity_id), "email": body.email, "email_verified": body.email_verified}
+    return {
+        "id": str(identity_id),
+        "email": body.email,
+        "email_verified": body.email_verified,
+        "display_name": body.display_name,
+    }
 
 
 @router.get("/me")
@@ -110,7 +129,7 @@ async def read_me(request: Request) -> dict[str, Any]:
                 (
                     await session.execute(
                         text(
-                            "select id, email_normalized, email_verified "
+                            "select id, email_normalized, email_verified, display_name "
                             "from identity_user where id = :identity_user_id"
                         ),
                         {"identity_user_id": internal.envelope.identity.user_id},
@@ -141,6 +160,7 @@ async def read_me(request: Request) -> dict[str, Any]:
         "id": str(identity["id"]),
         "email": identity["email_normalized"],
         "email_verified": identity["email_verified"],
+        "display_name": identity["display_name"],
         "platform_roles": list(grants),
     }
 
