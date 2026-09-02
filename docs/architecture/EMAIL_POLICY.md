@@ -234,11 +234,24 @@ lease de 300 s mais folga —, senão o orquestrador mata o processo entre o
 `send` aceito e o registro, e o e-mail sai de novo na tentativa seguinte (com
 o mesmo `Message-ID`, que é a mitigação, não a garantia).
 
+Um comando só liga o canal e dá o tempo — imagem, variáveis e graça na mesma
+atualização, para um único `stop-first` (valores lidos do arquivo de segredos
+para o ambiente, nunca digitados):
+
 ```sh
-docker service update --stop-grace-period 330s sell-autonomia_api
+docker service update \
+  --image easypanel/sell-autonomia/api:<sha> \
+  --stop-grace-period 330s \
+  --env-add SMTP_HOST_TRANSACIONAL="$SMTP_HOST" \
+  --env-add SMTP_PORT_TRANSACIONAL=465 \
+  --env-add SMTP_SECURE_TRANSACIONAL=true \
+  --env-add SMTP_USER_TRANSACIONAL=sell@autonomia.site \
+  --env-add SMTP_PASS_TRANSACIONAL="$SMTP_PASS" \
+  --update-order stop-first sell-autonomia_api
 ```
 
-Confira antes de cada release do canal:
+Confira antes e depois — o backup da spec vem antes de tudo, e a comparação é
+nome a nome, não contagem:
 
 ```sh
 docker service inspect sell-autonomia_api --format '{{.Spec.TaskTemplate.ContainerSpec.StopGracePeriod}}'

@@ -676,6 +676,55 @@ def test_claim_complete_and_fail_respect_lease_fence_and_tenant(
     assert all(UUID(str(i["id"])) != UUID(str(falha["id"])) for i in _claim_tudo(worker))
 
 
+@pytest.mark.parametrize(
+    "erro_de_canal", ["smtp_auth", "smtp_unreachable", "smtp_no_starttls", "smtp_no_auth"]
+)
+def test_channel_failures_never_dead_letter_and_give_the_attempt_back(
+    fixture: dict[str, UUID | str], erro_de_canal: str
+) -> None:
+    # Servidor errado ou credencial recusada é falha do canal: dez quedas do
+    # provedor não podem matar um e-mail legítimo.
+    assert RUNTIME_URL and ADMIN_URL
+    worker = _register_email_worker(fixture)
+    buyer = f"canal-{erro_de_canal}.{RUN}@example.test"
+    purchase = f"{RUN}-compra-{erro_de_canal}"
+    _accept(event=f"{RUN}-evt-{erro_de_canal}", purchase=purchase, buyer_email=buyer)
+    _drain_fulfillment(fixture)
+    item = [i for i in _claim_tudo(worker) if str(i["recipient_email"]) == buyer][0]
+    outbox_id = UUID(str(item["id"]))
+    with psycopg.connect(ADMIN_URL) as connection:
+        # Na décima tentativa: sem a isenção, isto viraria dead_letter.
+        connection.execute(
+            "update app_private.email_outbox set attempt_count=10 "
+            "where seller_organization_id=%s and id=%s",
+            (SELLER, outbox_id),
+        )
+        connection.commit()
+    with psycopg.connect(RUNTIME_URL) as connection:
+        _context(connection, worker, WORKER_CAPABILITY, SELLER)
+        status = connection.execute(
+            "select app_private.fail_email_outbox(%s,%s,%s,%s,%s,%s,1,false,%s)",
+            (
+                worker,
+                EMAIL_LABEL,
+                SELLER,
+                outbox_id,
+                int(cast(int, item["lease_fence"])),
+                erro_de_canal,
+                uuid4(),
+            ),
+        ).fetchone()
+        connection.commit()
+    assert status == ("retry",)
+    with psycopg.connect(ADMIN_URL) as connection:
+        linha = connection.execute(
+            "select status,attempt_count,error_code from app_private.email_outbox "
+            "where seller_organization_id=%s and id=%s",
+            (SELLER, outbox_id),
+        ).fetchone()
+    assert linha == ("retry", 9, erro_de_canal)
+
+
 def test_claim_requires_the_worker_capability_and_the_lease_range(
     fixture: dict[str, UUID | str],
 ) -> None:
