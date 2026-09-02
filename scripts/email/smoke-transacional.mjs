@@ -62,13 +62,21 @@ function configuracao(env) {
   };
 }
 
-// Exatamente um mailbox, sem vírgula, ponto e vírgula, espaço ou "<>": o
-// parser de endereços do nodemailer reinterpretaria "a,b@x.co" como nome "a" e
-// endereço "b@x.co", e o teste iria para outro lugar.
-const UM_MAILBOX = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/;
+// Exatamente um addr-spec (RFC 5322 dot-atom, sem quoted-string): parte local
+// de átomos separados por ponto, sem ponto no início, no fim ou duplo; domínio
+// de labels de até 63 caracteres, sem hífen nas pontas, TLD alfabético. Sem
+// vírgula, ponto e vírgula, espaço ou "<>", porque o parser do nodemailer
+// reinterpretaria "a,b@x.co" como nome "a" e endereço "b@x.co".
+const ATOMO = "[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+";
+const LABEL = "[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?";
+const ADDR_SPEC = new RegExp(`^${ATOMO}(?:\\.${ATOMO})*@(?:${LABEL}\\.)+[A-Za-z]{2,63}$`);
+const LOCAL_MAX = 64;
+const ADDR_MAX = 254;
 
 function destinatarioValido(valor) {
-  return typeof valor === "string" && UM_MAILBOX.test(valor);
+  if (typeof valor !== "string" || valor.length > ADDR_MAX) return false;
+  if (!ADDR_SPEC.test(valor)) return false;
+  return valor.indexOf("@") <= LOCAL_MAX;
 }
 
 // Mensagens de erro do nodemailer podem carregar o comando SMTP inteiro,

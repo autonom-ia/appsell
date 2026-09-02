@@ -174,8 +174,8 @@ Reabrir só com evidência de comportamento real, não por suposição. Registro
 
 ## Decisão 017 — e-mail transacional sai de `sell@autonomia.site`, e só ele
 
-Decidida em 01/09 (#355, fecha a `D-029`). Tudo o que a plataforma envia a uma
-pessoa — confirmação de compra, convite de equipe, segurança de conta — sai do
+Decidida em 01/09 (#355, fecha a `D-029`). Todo e-mail transacional —
+confirmação de compra, convite de equipe, segurança de conta — sai do
 remetente transacional, com variáveis próprias `SMTP_*_TRANSACIONAL`. O
 comercial `sell.comercial@autonomia.site` só recebe o formulário da página
 pública. Um não é fallback do outro — requisito para o canal da #356: sem

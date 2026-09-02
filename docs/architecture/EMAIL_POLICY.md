@@ -51,11 +51,13 @@ do que aconteceu com a conta dela, ou sem um aviso que a lei nos obriga a dar.
 | E-mail | Destinatário | Gatilho | Base legal (LGPD) |
 |---|---|---|---|
 | Acesso liberado / confirmação de compra | comprador | entitlement concedido (checkout pago ou acesso gratuito) | execução de contrato, art. 7º, V |
-| Recibo ou comprovante da compra | comprador | pagamento confirmado | execução de contrato, art. 7º, V; guarda fiscal, art. 7º, II |
+| Recibo ou comprovante da compra | comprador | pagamento confirmado | execução de contrato, art. 7º, V — o recibo confirma a contratação; a guarda fiscal do documento é retenção, não envio |
 | Convite para a equipe da loja | pessoa convidada | convite emitido (`SPEC_CONVITES_MEMBROS.md`) | legítimo interesse, art. 7º, IX — o e-mail diz **quem** convidou e **para qual loja**, é enviado **uma vez** por convite e não é reenviado sem novo pedido do emissor |
-| Segurança da conta | titular | login novo, pedido de exclusão registrado, alteração de e-mail | legítimo interesse e prevenção à fraude, art. 7º, IX; execução de contrato para o pedido de exclusão |
+| Segurança da conta | titular | login novo, alteração de e-mail | legítimo interesse e prevenção à fraude, art. 7º, IX |
+| Confirmação de pedido de exclusão | titular | pedido registrado | atendimento a direito do titular, arts. 18 e 19 — obrigação legal, art. 7º, II |
 | Loja suspensa ou reativada | dono da loja | mudança de status pela plataforma | execução de contrato, art. 7º, V |
-| Alteração **relevante** de Termos ou Política de Privacidade | todos com conta | nova versão com mudança relevante — o critério é o dos próprios documentos (Termos §14, Privacidade §12); revisão de redação não gera e-mail | execução de contrato, art. 7º, V |
+| Alteração **relevante** dos Termos de Uso | todos com conta | nova versão com mudança relevante — o critério é o do próprio documento (Termos §14); revisão de redação não gera e-mail | execução de contrato, art. 7º, V |
+| Alteração **relevante** da Política de Privacidade | todos com conta | nova versão com mudança relevante (Privacidade §12) | transparência ao titular, arts. 6º, VI e 9º — obrigação legal, art. 7º, II |
 | Incidente de segurança com risco relevante | titulares afetados | dever do controlador, art. 48, no prazo e forma da ANPD (Privacidade §11); o encarregado executa, não decide se comunica | obrigação legal, art. 7º, II |
 
 ### Opcional — só com consentimento, e se descadastra em um clique
@@ -148,18 +150,24 @@ for n in "autonomia.site&type=TXT" "_dmarc.autonomia.site&type=TXT" \
 done
 ```
 
-Saída daquela consulta, sem a chave DKIM completa:
+Saída literal daquela consulta; a única edição é o corte da chave DKIM,
+marcado com `[...]`:
 
 ```
 ## autonomia.site&type=TXT
+google-site-verification=pWPDrMgJ6sdHiM-EliYh5mddAF4LB602mq11bhUeJQ8
 v=spf1 include:_spf.mail.hostinger.com include:amazonses.com ~all
 ## _dmarc.autonomia.site&type=TXT
 v=DMARC1; p=none
 ## hostingermail-a._domainkey.autonomia.site&type=TXT
 hostingermail-a.dkim.mail.hostinger.com.
-v=DKIM1;k=rsa;p=MIIBIjANBgkq...
+v=DKIM1;k=rsa;p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAs+RijpkYCOFcf5HdHXcwSJJdaqCIf9jyybiM8GFNhzhQMYKXmKGefVdmAIaqcKstjtkCMktZRl6uqrd+gnAsslRoEOtfBbWuqtL/1NRovLakhL[...]
 ## autonomia.site&type=MX
-1 ASPMX.L.GOOGLE.COM.  5 ALT1/ALT2  10 ALT3/ALT4
+10 ALT3.ASPMX.L.GOOGLE.COM.
+5 ALT2.ASPMX.L.GOOGLE.COM.
+1 ASPMX.L.GOOGLE.COM.
+10 ALT4.ASPMX.L.GOOGLE.COM.
+5 ALT1.ASPMX.L.GOOGLE.COM.
 ```
 
 Consequência para as próximas decisões, ambas mudanças de DNS que exigem OK
