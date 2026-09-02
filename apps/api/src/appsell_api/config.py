@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Literal, Self
 from urllib.parse import urlparse
 
-from pydantic import Field, model_validator
+from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
@@ -60,6 +60,39 @@ class Settings(BaseSettings):
     # fail-closed original permanece.
     webhook_env_keyring_allowed: bool = False
     webhook_forbidden_key_sha256_json: str = "[]"
+    # Remetente transacional (docs/architecture/EMAIL_POLICY.md). Os nomes são
+    # os da B0, sem o prefixo APPSELL_API_, porque são os mesmos que o smoke e o
+    # .env.example usam; o alias substitui o prefixo. Sem host, usuário e senha
+    # o worker de e-mail não inicia — e nunca cai no remetente comercial.
+    email_smtp_host: str = Field(
+        default="", validation_alias=AliasChoices("SMTP_HOST_TRANSACIONAL")
+    )
+    email_smtp_port: int = Field(
+        default=465, ge=1, le=65535, validation_alias=AliasChoices("SMTP_PORT_TRANSACIONAL")
+    )
+    email_smtp_secure: bool = Field(
+        default=True, validation_alias=AliasChoices("SMTP_SECURE_TRANSACIONAL")
+    )
+    email_smtp_user: str = Field(
+        default="", validation_alias=AliasChoices("SMTP_USER_TRANSACIONAL")
+    )
+    email_smtp_password: SecretStr = Field(
+        default=SecretStr(""), validation_alias=AliasChoices("SMTP_PASS_TRANSACIONAL")
+    )
+    # Mesma origem que o web usa em lib/site.ts: é para onde a marca e o botão
+    # do e-mail apontam.
+    email_public_origin: str = Field(
+        default="https://sell.autonomia.site",
+        validation_alias=AliasChoices("NEXT_PUBLIC_SITE_ORIGIN", "APPSELL_API_EMAIL_PUBLIC_ORIGIN"),
+    )
+
+    @property
+    def email_configured(self) -> bool:
+        return bool(
+            self.email_smtp_host
+            and self.email_smtp_user
+            and self.email_smtp_password.get_secret_value()
+        )
 
     @property
     def is_production(self) -> bool:
@@ -133,6 +166,16 @@ class Settings(BaseSettings):
             raise ValueError("internal request authentication must be configured completely")
         if self.environment in {"staging", "production"} and not all(internal_values):
             raise ValueError("internal request authentication is required outside local/CI")
+        email_values = (
+            self.email_smtp_host,
+            self.email_smtp_user,
+            self.email_smtp_password.get_secret_value(),
+        )
+        if any(email_values) and not all(email_values):
+            # Metade configurado é o pior estado: parece ligado e não envia.
+            raise ValueError("transactional email must be configured completely")
+        if self.email_smtp_user and "@" not in self.email_smtp_user:
+            raise ValueError("transactional email user must be an address")
         if self.storage_provider == "s3":
             storage_values = (
                 self.storage_internal_endpoint,

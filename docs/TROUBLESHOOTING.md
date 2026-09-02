@@ -284,15 +284,45 @@ variáveis do serviço.
 Há um segundo conjunto, `SMTP_*_TRANSACIONAL`, com os mesmos cinco nomes e a
 conta `sell@autonomia.site`. É o remetente de confirmação de compra, convite e
 segurança de conta, e é **separado de propósito** — nenhum envio transacional
-cai no comercial como fallback, e vice-versa. Se o comercial está configurado e
+cai no comercial como fallback, e vice-versa. Ele vive no serviço **`api`**,
+não no `web`: quem envia é o worker de e-mail, que roda dentro do processo da
+API (mesmo lugar do worker de fulfillment). Se o comercial está configurado e
 o transacional não, o formulário funciona e o canal transacional fica
-desligado; isso é o esperado, não um defeito. Regra completa em
+desligado — a API registra `email_worker_disabled reason=smtp_not_configured`
+uma vez ao subir, e as linhas de `app_private.email_outbox` ficam `pending`.
+Isso é o esperado, não um defeito. Regra completa em
 [EMAIL_POLICY.md](architecture/EMAIL_POLICY.md).
+
+```sh
+docker service inspect sell-autonomia_api \
+  --format '{{range .Spec.TaskTemplate.ContainerSpec.Env}}{{println .}}{{end}}' \
+  | cut -d= -f1 | grep -i smtp
+```
 
 ## Problema: o e-mail transacional não chega, ou chega como spam
 
-Primeiro confira os nomes das variáveis com o comando acima. Depois envie um
-teste com o smoke. Ele **não roda dentro do container do `web`**: a imagem é o
+Primeiro olhe a caixa de saída — ela diz se o e-mail nem foi enfileirado, se
+está esperando o worker, ou se o SMTP recusou. Nada de corpo aí, só o
+registro:
+
+```sql
+select kind,status,attempt_count,error_code,message_id,sent_at,created_at
+from app_private.email_outbox order by created_at desc limit 20;
+```
+
+- nenhuma linha para a compra → o grant não aconteceu (olhe `fulfillment_job`);
+- `pending` há minutos → o worker não está rodando: procure
+  `email_worker_disabled` no log da API (SMTP não configurado) ou
+  `email_worker_retry`;
+- `retry` com `smtp_auth` → senha errada, o worker espera 10 min entre tentativas;
+- `retry` com `smtp_unreachable`/`smtp_temporary` → host ou porta, ou o
+  provedor fora do ar; `dead_letter` com `recipient_refused` → o endereço não
+  existe, e a fila não insiste;
+- `sent` com `message_id` → saiu; o resto é entrega, e o cabeçalho recebido
+  decide (abaixo).
+
+Depois confira os nomes das variáveis no serviço `api` (comando acima) e envie
+um teste com o smoke. Ele **não roda dentro do container do `web`**: a imagem é o
 standalone do Next, sem `scripts/` e sem `nodemailer` fora do chunk da rota.
 Rode de um checkout com `pnpm install` feito, lendo as variáveis do arquivo de
 segredos para o ambiente do subshell — nunca na linha de comando, que fica no

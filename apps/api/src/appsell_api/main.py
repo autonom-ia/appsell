@@ -16,6 +16,7 @@ from .config import Settings, get_settings
 from .cover_routes import router as cover_router
 from .db import create_engine, create_session_factory, database_ready
 from .demo_checkout_worker import run_demo_checkout_worker_loop
+from .email_worker import run_email_worker_loop
 from .fulfillment_worker import run_fulfillment_worker_loop
 from .internal_requests import InternalRequestAuthenticator
 from .learning_routes import router as learning_router
@@ -132,9 +133,21 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         fulfillment_worker_task = asyncio.create_task(
             run_fulfillment_worker_loop(app, fulfillment_worker_stop)
         )
+    # O worker de e-mail decide sozinho se inicia: sem SMTP configurado ele
+    # registra e sai, e as linhas da caixa de saída ficam pendentes.
+    email_worker_stop = asyncio.Event()
+    email_worker_task: asyncio.Task[None] | None = None
+    if app.state.internal_auth is not None:
+        email_worker_task = asyncio.create_task(run_email_worker_loop(app, email_worker_stop))
     try:
         yield
     finally:
+        email_worker_stop.set()
+        if email_worker_task is not None:
+            try:
+                await asyncio.wait_for(email_worker_task, timeout=5)
+            except TimeoutError:
+                email_worker_task.cancel()
         dependency_stop.set()
         if dependency_task is not None:
             try:

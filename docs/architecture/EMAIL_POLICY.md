@@ -228,6 +228,8 @@ temporária (4xx) tenta com recuo. O detalhe é da `#358`; a regra é esta.
 
 ## 9. Rollback
 
-Remover as cinco variáveis `SMTP_*_TRANSACIONAL` do serviço desliga o canal:
-sem configuração, o canal não envia e registra que não enviou. Nenhum outro
-componente depende delas.
+Remover as cinco variáveis `SMTP_*_TRANSACIONAL` do serviço `api` desliga o
+canal: o worker não inicia, registra `email_worker_disabled`, e as linhas de
+`app_private.email_outbox` ficam pendentes — nada se perde, e voltam a sair
+quando as variáveis voltarem. O downgrade da migration `0049` só depois de ter
+certeza de que nada pendente precisa sair, porque ele apaga a caixa.
