@@ -37,12 +37,16 @@ interface ActionState {
 
 const CONTACT_EMAIL = "contato@autonomia.site";
 const REQUEST_TIMEOUT_MS = 8_000;
+// A exportação é o único pedido lento: o banco monta o documento (até 15 s
+// de statement_timeout) e o BFF espera 20 s. O navegador precisa esperar
+// mais que os dois, senão desiste com a resposta a caminho.
+const EXPORT_TIMEOUT_MS = 30_000;
 const IDLE: ActionState = { busy: false, message: "", error: false };
 
 function messageForStatus(status: number, fallback: string) {
   if (status === 401) return "Sua sessão expirou. Entre novamente.";
   if (status === 403) return "Esta ação não está disponível para esta conta.";
-  if (status === 413) return `Sua conta tem mais dados do que conseguimos exportar de uma vez. Escreva para ${CONTACT_EMAIL} e enviamos o arquivo.`;
+  if (status === 413) return `Sua conta tem mais dados do que conseguimos exportar de uma vez. Escreva para ${CONTACT_EMAIL} e combinamos a entrega.`;
   if (status === 429) return "Você já fez isso há pouco. Aguarde alguns minutos e tente de novo.";
   if (status === 503) return "O serviço não respondeu. Tente novamente.";
   return fallback;
@@ -61,9 +65,9 @@ function filenameFromDisposition(header: string | null) {
   return match?.[1] ?? accountExportFilename(new Date());
 }
 
-async function fetchWithTimeout(input: string, init: RequestInit = {}) {
+async function fetchWithTimeout(input: string, init: RequestInit = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(input, { ...init, cache: "no-store", credentials: "same-origin", signal: controller.signal });
   } finally {
@@ -132,7 +136,7 @@ export function AccountWorkspace({ csrfExport, csrfDeletion, passwordRecoveryHre
       const response = await fetchWithTimeout("/api/me/account/export", {
         method: "POST",
         body: new URLSearchParams({ _csrf: csrfExport })
-      });
+      }, EXPORT_TIMEOUT_MS);
       if (!response.ok) {
         setExportState({ busy: false, error: true, message: messageForStatus(response.status, "Não foi possível gerar o arquivo.") });
         return;

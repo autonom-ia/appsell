@@ -242,8 +242,18 @@ traços (`points`) — porque é conteúdo que a pessoa criou e o direito de
 portabilidade cobre o que ela escreveu, não só onde e com que cor (a primeira
 versão os deixava de fora "por volume", e a revisão derrubou o argumento). E
 sai sem `metadata` de auditoria, que pode carregar dado de terceiro. A
-exportação tem teto de 8 MiB, recusado pelo banco; acima disso é atendimento
-manual. E o que a issue pedia — "sem migration" — não cabia: a política
+exportação tem teto de 8 MiB, recusado pelo banco **antes** de agregar (por
+bytes e contagens); acima disso é atendimento manual, pelo runbook.
+
+O que esta onda **não** resolve, e está dito no runbook: a conta de login
+vive no Identity, e enquanto a pessoa conseguir entrar, o callback recria
+e-mail e nome (`sync_identity`, 0048) por cima de qualquer anonimização
+local. A exclusão de verdade começa lá; o runbook segue essa ordem. Uma
+marca por `issuer + sub` que `sync_identity` recuse, e revogação
+administrativa de sessões, são follow-ups com issue própria. A retenção
+final por tabela continua sendo a D-018, pendente de DPO/Jurídico.
+
+E o que a issue pedia — "sem migration" — não cabia: a política
 `audit_member_insert` só deixa o runtime escrever auditoria de quem tem
 membership numa loja, e o comprador puro não tem. Toda auditoria deste
 projeto nasce em função SECURITY DEFINER; as três da conta vivem na `0051`.
