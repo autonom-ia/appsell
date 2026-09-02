@@ -254,6 +254,35 @@ describe("a conta no produto", () => {
     }
   });
 
+  test("a exportação manual espelha a função: mesmas seções, um único sujeito, só leitura", () => {
+    // O caminho manual contorna as guardas do banco; o que o protege é a
+    // forma do script. Cada seção filtra pela MESMA variável, e o script não
+    // escreve nada.
+    const script = readFileSync(resolve(root, "scripts/ops/exporta-conta.sql"), "utf8");
+    const migration = readFileSync(
+      resolve(root, "apps/api/migrations/versions/0051_minha_conta_do_comprador.py"),
+      "utf8"
+    );
+    expect(script).toContain("begin read only;");
+    expect(script).not.toMatch(/\b(insert|update|delete|truncate|alter|drop)\b/i);
+    const sections = ["memberships", "accesses", "purchases", "learning", "pdf_bookmarks", "pdf_annotations", "emails_sent", "activity"];
+    for (const section of sections) {
+      expect(script).toContain(`'${section}',coalesce((`);
+      expect(migration).toContain(`'${section}',coalesce((`);
+    }
+    // Toda cláusula que filtra por pessoa usa a variável do psql — nenhum
+    // UUID literal, nenhum e-mail.
+    const subjectFilters = script.match(/(identity_user_id|buyer_identity_user_id|recipient_identity_user_id|actor_identity_user_id|subject\.id|id)=:'sujeito'::uuid/g) ?? [];
+    expect(subjectFilters.length).toBeGreaterThanOrEqual(10);
+    expect(script).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
+    expect(script).not.toMatch(/email_normalized=/);
+    for (const forbidden of ["identity_sub", "identity_issuer", "sha256", "metadata"]) {
+      // Aparecem só no comentário que diz o que NÃO sai, nunca numa seleção.
+      const inSelect = script.split("\n").filter((line) => !line.trimStart().startsWith("--") && line.includes(forbidden));
+      expect(inSelect).toEqual([]);
+    }
+  });
+
   test("a migration da conta está na cabeça fixada e no schema_ready", () => {
     const migration = readFileSync(
       resolve(root, "apps/api/migrations/versions/0051_minha_conta_do_comprador.py"),

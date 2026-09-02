@@ -83,6 +83,13 @@ quem fez) para o registro do passo 5.
 
 ## 4. Dados no Appsell
 
+**Antes de tocar em qualquer coisa: esperar o TTL da sessão** (60 min por
+padrão, `sessionTtlMs` em `lib/redis-oauth-service.ts`) contado da
+desativação no Identity. Uma sessão do Appsell já emitida continua válida até
+expirar, e nesse intervalo a pessoa ainda grava progresso, marcadores e
+anotações — limpar antes é limpar para ver reaparecer. Não há revogação
+administrativa de sessão hoje (follow-up, ver "Escopo").
+
 A regra final de retenção é a **D-018** (DECISION_REGISTER), ainda pendente
 de DPO/Jurídico. Até ela existir, a régua mínima é esta — e o que ela não
 cobre **não se toca sem OK do encarregado**:
@@ -127,15 +134,27 @@ conseguir abri-la — volta a mostrar o botão; um pedido novo é um pedido novo
 
 ## Exportação manual (acima do teto)
 
-A tela recusa exportar contas acima de 8 MiB (`413`). Nesse caso, com a
-identidade da pessoa confirmada pelo e-mail da conta, o superusuário monta o
-mesmo documento por seções, com as consultas da função
-`app_private.export_account_data` (migration `0051`), filtradas por
-`identity_user_id` — nunca por e-mail, que pode se repetir em identidades
-diferentes. Salvar em arquivo, entregar por canal combinado com a pessoa, e
-registrar como superusuário um `audit_event` `account.data.exported` com o
-operador como ator e a pessoa como alvo. O que **não** entra é o mesmo da
-função: `identity_sub`, `identity_issuer`, hashes, `metadata` de auditoria.
+A tela recusa exportar contas acima de 8 MiB (`413`). O caminho manual é o
+script [`scripts/ops/exporta-conta.sql`](../../scripts/ops/exporta-conta.sql):
+espelha as seções da função `app_private.export_account_data` (migration
+`0051`), recebe o `identity_user_id` **uma vez** pela variável do psql (nunca
+por e-mail, que pode se repetir entre identidades), roda numa transação
+somente leitura e aborta se o UUID não existir — um UUID errado não pode
+produzir um documento "vazio" que pareça legítimo.
+
+1. Confirmar a identidade da pessoa pelo e-mail da conta (não pelo pedido).
+2. No container do Postgres, como superusuário:
+   `psql -v ON_ERROR_STOP=1 -v sujeito='<identity_user_id>' -f exporta-conta.sql -At -o /tmp/conta-<uuid>.json`
+   e em seguida `chmod 600 /tmp/conta-<uuid>.json`.
+3. Cifrar (`gpg -c`), entregar pelo canal combinado com a pessoa (nunca
+   anexo em e-mail aberto), e apagar o arquivo local (`shred -u`) depois da
+   confirmação de recebimento.
+4. Só então registrar, como superusuário, um `audit_event`
+   `account.data.exported` com o **operador como ator** e a **pessoa como
+   alvo** (`target_type='identity_user'`).
+
+O que **não** sai é o mesmo da função: `identity_sub`, `identity_issuer`,
+hashes, `metadata` de auditoria, ids internos.
 
 ## O que a tela mostra
 
