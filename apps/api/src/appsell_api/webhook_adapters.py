@@ -10,9 +10,7 @@ from datetime import UTC, datetime
 _EVENT_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _REFERENCE = re.compile(r"^[^\x00-\x1f\x7f]{1,255}$")
 _SIGNATURE = re.compile(r"^v1=([0-9a-f]{64})$")
-_UUID = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-)
+_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 _EVENT_TYPES = frozenset({"purchase.approved", "purchase.refunded", "subscription.cancelled"})
 _LEGACY_PROTOCOL = "appsell.webhook.generic-hmac.v1"
 _EXTERNAL_CHECKOUT_PROTOCOL = "external-checkout.webhook.generic-hmac.v1"
@@ -125,8 +123,7 @@ def parse_generic_hmac_v1(body: bytes) -> NormalizedCheckoutEvent:
         raise WebhookRejectedError("webhook_payload_invalid")
     seller_id = payload.get("seller_id")
     if seller_id is not None and (
-        not isinstance(seller_id, str)
-        or _UUID.fullmatch(seller_id) is None
+        not isinstance(seller_id, str) or _UUID.fullmatch(seller_id) is None
     ):
         raise WebhookRejectedError("webhook_payload_invalid")
     return NormalizedCheckoutEvent(

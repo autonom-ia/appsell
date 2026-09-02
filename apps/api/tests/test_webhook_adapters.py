@@ -100,9 +100,7 @@ def test_verifies_external_checkout_signature_protocol() -> None:
 def test_parses_financial_checkout_seller_scope() -> None:
     payload = json.loads(_body())
     payload["seller_id"] = "11111111-1111-4111-8111-111111111111"
-    event = parse_generic_hmac_v1(
-        json.dumps(payload, separators=(",", ":")).encode()
-    )
+    event = parse_generic_hmac_v1(json.dumps(payload, separators=(",", ":")).encode())
 
     assert event.seller_id == "11111111-1111-4111-8111-111111111111"
 
