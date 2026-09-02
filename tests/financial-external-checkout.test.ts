@@ -6,7 +6,6 @@ import {
   checkoutProvider,
   checkoutWebhookEndpointKey,
   createFinancialExternalCheckoutIntent,
-  financialCheckoutOperatorId,
   FinancialExternalCheckoutConfigError,
   FinancialExternalCheckoutError
 } from "../lib/financial-external-checkout.server";
@@ -32,8 +31,6 @@ describe("Financial external checkout client", () => {
   });
 
   it("fails closed for missing production wiring", () => {
-    expect(() => financialCheckoutOperatorId({ APPSELL_FINANCIAL_OPERATOR_ID: "not-a-uuid" }))
-      .toThrow(FinancialExternalCheckoutConfigError);
     expect(() => checkoutWebhookEndpointKey({ APPSELL_CHECKOUT_WEBHOOK_ENDPOINT_KEY: "short" }))
       .toThrow(FinancialExternalCheckoutConfigError);
   });
@@ -48,7 +45,7 @@ describe("Financial external checkout client", () => {
     vi.stubGlobal("fetch", fetch);
 
     await expect(createFinancialExternalCheckoutIntent({
-      operatorId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      productCatalogItemId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       seller: { id: "seller-1", slug: "produtor", name: "Produtor" },
       buyer: { userId: "buyer-sub", email: "buyer@example.test", identitySub: "buyer-sub" },
       product: {
@@ -80,7 +77,7 @@ describe("Financial external checkout client", () => {
     });
     expect(JSON.parse(String(init.body))).toMatchObject({
       source_system: "external_checkout",
-      operator_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      product_catalog_item_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       product: {
         external_product_id: "product-1",
         external_offer_id: "offer-1",
@@ -99,7 +96,7 @@ describe("Financial external checkout client", () => {
     process.env.FINANCIAL_INTERNAL_API_KEY = "internal-key";
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "nope" }), { status: 409 })));
     await expect(createFinancialExternalCheckoutIntent({
-      operatorId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      productCatalogItemId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       seller: { id: "seller-1", slug: "produtor", name: "Produtor" },
       buyer: { userId: "buyer-sub", email: "buyer@example.test", identitySub: "buyer-sub" },
       product: {

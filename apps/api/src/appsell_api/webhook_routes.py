@@ -70,6 +70,11 @@ async def accept_checkout_webhook(endpoint_key: str, request: Request) -> dict[s
             if resolution["adapter"] != "generic_hmac_v1":
                 raise _unavailable()
             normalized = parse_generic_hmac_v1(internal.body)
+            if (
+                normalized.seller_id is not None
+                and normalized.seller_id != str(resolution["seller_organization_id"])
+            ):
+                raise _rejected()
             result = (
                 (
                     await session.execute(

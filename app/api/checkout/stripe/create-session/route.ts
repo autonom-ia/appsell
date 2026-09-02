@@ -8,7 +8,6 @@ import {
   checkoutProvider,
   checkoutWebhookEndpointKey,
   createFinancialExternalCheckoutIntent,
-  financialCheckoutOperatorId,
   FinancialExternalCheckoutConfigError,
   FinancialExternalCheckoutError
 } from "@/lib/financial-external-checkout.server";
@@ -123,7 +122,7 @@ export async function POST(request: NextRequest) {
     try {
       const endpointKey = checkoutWebhookEndpointKey();
       const result = await createFinancialExternalCheckoutIntent({
-        operatorId: financialCheckoutOperatorId(),
+        productCatalogItemId: product.id,
         seller: {
           id: parsed.seller.id,
           slug: parsed.seller.slug,

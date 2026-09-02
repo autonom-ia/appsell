@@ -70,7 +70,7 @@ Para o provider Financial hosted, o `web` também exige:
 | Serviço | Var | Formato | Papel |
 |---------|-----|---------|-------|
 | `web` | `APPSELL_CHECKOUT_PROVIDER` | `financial_checkout` | ativa o caminho Financial sem mudar a rota pública do AppSell. |
-| `web` | `APPSELL_FINANCIAL_OPERATOR_ID` | UUID | operador/empresa no Financial que recebe a fatura. |
+| `web` | `APPSELL_FINANCIAL_OPERATOR_ID` | legado, opcional | mantido apenas para rollback; o fluxo atual deriva o operador do produto financeiro. |
 | `web` | `FINANCIAL_API_URL` | HTTPS | base interna do Financial. |
 | `web` | `FINANCIAL_INTERNAL_API_KEY` | secret | chave server-to-server para `/financial/internal/external-checkout/checkout-intents`. |
 
@@ -99,7 +99,7 @@ No Financial PRD, o deploy gate exige:
 4. **Env do `web`**: `+APPSELL_STRIPE_PUBLISHABLE_KEY`,
    `+APPSELL_STRIPE_CONNECT_WEBHOOK_SECRET`,
    `APPSELL_CHECKOUT_PROVIDER=financial_checkout`,
-   `+APPSELL_FINANCIAL_OPERATOR_ID`. Conferir que a contagem de vars
+   Conferir que a contagem de vars
    não caiu; se cair, abortar e restaurar o backup.
 5. **Financial antes do AppSell**: publicar o Financial via PR/workflow,
    confirmar migration `042_appsell_external_checkout_invoices.sql` aplicada e

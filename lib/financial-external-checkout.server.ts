@@ -2,7 +2,6 @@ import "server-only";
 
 import { financialInternalConfig, trimTrailingSlash } from "./financial-internal-config.server";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ENDPOINT_KEY = /^[A-Za-z0-9_-]{32,64}$/;
 
 export class FinancialExternalCheckoutConfigError extends Error {}
@@ -23,14 +22,6 @@ export function checkoutProvider(
     : "local_stripe";
 }
 
-export function financialCheckoutOperatorId(
-  environment: Partial<Record<string, string | undefined>> = process.env
-) {
-  const value = environment.APPSELL_FINANCIAL_OPERATOR_ID ?? "";
-  if (!UUID.test(value)) throw new FinancialExternalCheckoutConfigError("invalid_financial_operator_id");
-  return value;
-}
-
 export function checkoutWebhookEndpointKey(
   environment: Partial<Record<string, string | undefined>> = process.env
 ) {
@@ -40,7 +31,7 @@ export function checkoutWebhookEndpointKey(
 }
 
 export interface CreateFinancialExternalCheckoutIntentInput {
-  operatorId: string;
+  productCatalogItemId: string;
   seller: { id: string; slug: string; name: string };
   buyer: { userId: string; email: string; identitySub: string };
   product: {
@@ -77,7 +68,7 @@ export async function createFinancialExternalCheckoutIntent(
     },
     body: JSON.stringify({
       source_system: "external_checkout",
-      operator_id: input.operatorId,
+      product_catalog_item_id: input.productCatalogItemId,
       seller: input.seller,
       buyer: {
         user_id: input.buyer.userId,

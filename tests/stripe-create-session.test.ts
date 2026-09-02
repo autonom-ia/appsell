@@ -69,7 +69,6 @@ vi.mock("@/lib/buyer-identity.server", () => ({
 
 vi.mock("@/lib/financial-external-checkout.server", () => ({
   checkoutProvider: () => process.env.APPSELL_CHECKOUT_PROVIDER === "financial_checkout" ? "financial_checkout" : "local_stripe",
-  financialCheckoutOperatorId: () => process.env.APPSELL_FINANCIAL_OPERATOR_ID ?? "",
   checkoutWebhookEndpointKey: () => process.env.APPSELL_CHECKOUT_WEBHOOK_ENDPOINT_KEY ?? "",
   createFinancialExternalCheckoutIntent,
   FinancialExternalCheckoutConfigError: FakeFinancialConfigError,
@@ -183,7 +182,6 @@ describe("POST /api/checkout/stripe/create-session", () => {
 
   it("uses Financial hosted checkout with Sell snapshot when the provider flag is enabled", async () => {
     process.env.APPSELL_CHECKOUT_PROVIDER = "financial_checkout";
-    process.env.APPSELL_FINANCIAL_OPERATOR_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     process.env.APPSELL_CHECKOUT_WEBHOOK_ENDPOINT_KEY = "endpointkeyendpointkeyendpointkey123456";
     process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON = "{}";
     readPublicStorefront.mockResolvedValue(storefrontWithPrice(4990));
@@ -196,7 +194,7 @@ describe("POST /api/checkout/stripe/create-session", () => {
     });
     expect(sessionsCreate).not.toHaveBeenCalled();
     expect(createFinancialExternalCheckoutIntent).toHaveBeenCalledWith(expect.objectContaining({
-      operatorId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      productCatalogItemId: "22222222-2222-4222-8222-222222222222",
       seller: expect.objectContaining({ slug: SELLER }),
       buyer: expect.objectContaining({ userId: "cognito-sub-default", email: "buyer@example.test" }),
       product: expect.objectContaining({
