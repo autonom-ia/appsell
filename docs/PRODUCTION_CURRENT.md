@@ -15,11 +15,16 @@
 |---|---|
 | Domínio | `https://sell.autonomia.site` |
 | Ambiente | VPS EasyPanel nativo, Docker Swarm |
-| SHA do **api** | `374c10b` — link de turma avisa, e o e-mail não confirmado diz o caminho (#357) |
+| SHA do **api** | `803fa82` — Minha conta do comprador: dados, acessos, exportação e pedido de exclusão (#351) |
 | SHA do **asset-worker** | `d5e00ec` — mesma imagem da api, um SHA atrás |
 | SHA do **pdf-sandbox** | `d5e00ec` — mesma imagem da api, com outra tag |
-| SHA do **web** | `9655a13` — só o Next; worker e sandbox em `d5e00ec` |
-| Banco | head **`0050_recibo_do_link_de_turma`**, `schema_ready() = true` |
+| SHA do **web** | `803fa82` — Minha conta (#351); worker e sandbox seguem em `d5e00ec` |
+| Banco | head **`0051_minha_conta_do_comprador`**, `schema_ready() = true` |
+
+**Release de 2026-09-02, `api` e `web`: `803fa82`, com a migration `0051`.** Toda
+identidade real ganha `/settings/account`: dados, verificação, senha via Identity,
+acessos, exportação dos próprios dados e pedido de exclusão (#351, PR #380).
+Detalhe na seção [Release `803fa82`](#release-803fa82--minha-conta-do-comprador-2026-09-02).
 
 **Release de 2026-09-02, só a `api`: `374c10b`, com a migration `0050`.** Quem
 entra por link de turma passa a receber o "acesso liberado", e a tela de quem
@@ -159,6 +164,99 @@ Com 4 núcleos, 300 páginas são 89 s de janela.
 Mil páginas exigem, além da #320: virtualizar o leitor (hoje cria um nó por
 página), paralelizar o upload das páginas, e refazer gatilhos que recontam todas
 as páginas a cada inserção. Cinco mil é outra geração do pipeline.
+
+## Release `803fa82` — Minha conta do comprador (2026-09-02)
+
+`api` e `web`, mais a migration `0051`. Fecha a A1 (#351) do trilho de
+configurações por papel. Merge por rebase da PR #380 (10 commits, 5 rodadas
+de review adversarial — as duas primeiras acharam defeito de escopo; as três
+seguintes refinaram o teto de exportação que a própria PR introduziu).
+
+### O que mudou para quem usa
+
+- **Minha conta** (`/settings/account`) no menu de toda identidade real —
+  aluno, vendedor ou quem ainda não tem loja. Persona demo de aluno não vê.
+- Mostra e-mail, status de verificação, nome e lojas; "Redefinir minha senha"
+  aponta para o `/forgot-password` do Identity (irmão do login). Passkeys e
+  segundo fator não têm tela — a página diz isso e manda escrever.
+- **Meus acessos**: o mesmo contrato da biblioteca (`/api/me/products`).
+- **Exportar meus dados**: arquivo `meus-dados-autonomia-sell-<data>.json`
+  com identidade, memberships, acessos, compras, progresso, marcadores,
+  anotações (com os traços), e-mails enviados e histórico de ações. Nunca:
+  `identity_sub`, issuer, hashes, `metadata` de auditoria, ids internos.
+  Três por dez minutos **por pessoa**; teto de 8 MiB recusado pelo banco
+  antes de agregar (`413` na tela, atendimento manual pelo runbook).
+- **Pedir exclusão da conta**: registra o pedido em `audit_event` (Decisão
+  019). Não apaga nada. Fica aberto até a operação registrar
+  `account.deletion.completed`; enquanto aberto, a tela mostra a data e
+  esconde o botão. Atendimento: [PEDIDO_DE_EXCLUSAO_DE_CONTA.md](runbooks/PEDIDO_DE_EXCLUSAO_DE_CONTA.md).
+
+### Por que teve migration, e por que ela foi ANTES da API
+
+A issue pedia "sem migration", mas a política `audit_member_insert` só deixa o
+runtime escrever auditoria de quem tem membership numa loja — comprador puro
+não grava nada. A `0051` cria três funções SECURITY DEFINER e nenhuma tabela
+(`export_account_data`, `request_account_deletion`, `read_account_status`),
+mais três índices por comprador. Função nova sem chamador é inofensiva; a API
+nova sem as funções responderia 503 — por isso a migration subiu primeiro, o
+inverso da `0050`.
+
+### Como foi aplicado
+
+```bash
+D=/tmp/sell-release-803fa82-20260902-201936      # specs api/web, nomes das vars, pg_dump -Fc
+# fonte via git archive → /home/claudete/appsell-src-803fa82; imagens api e web com --build-arg GIT_SHA=803fa82
+docker run --rm --network easypanel -e APPSELL_MIGRATOR_DATABASE_URL=<montada no host> \
+  -v /home/claudete/appsell-src-803fa82/apps/api:/mig -w /mig \
+  easypanel/sell-autonomia/api:803fa82 alembic upgrade head          # 1. migration
+docker service update --image easypanel/sell-autonomia/api:803fa82 \
+  --update-order stop-first sell-autonomia_api                        # 2. api
+docker service update --image easypanel/sell-autonomia/web:803fa82 \
+  --update-order stop-first sell-autonomia_web                        # 3. web
+```
+
+### Validação executada em produção
+
+| O quê | Resultado |
+|---|---|
+| migration | head `0051`, `schema_ready()=true`, 3 funções com dono `appsell_owner` e `secdef=true`, 3 índices |
+| api | convergiu em `803fa82`; graça `5m30s`; 39 variáveis iguais nome a nome; `ready` `{"database":true,"storage":true,"pdf_sandbox":true}`; zero erros no log |
+| web | convergiu em `803fa82`; 52 variáveis iguais nome a nome |
+| público | `/` 200 · `/api/health/ready` 200 · `/privacidade` 200 |
+| conta | `/settings/account` anônimo → 307 `/` · `GET /api/me/account` anônimo → 401 · `POST …/export` anônimo → 403 |
+
+### O que não foi validado
+
+A tela com sessão real (render, exportação e pedido) — o deploy não tem
+navegador logado. Uma exportação real aparece em
+`select action,created_at from audit_event where action in ('account.data.exported','account.deletion.requested') order by created_at desc`.
+
+### O que fica de fora, declarado
+
+A exclusão de verdade começa no Identity (Cognito): enquanto a pessoa
+conseguir entrar, `sync_identity` recria e-mail e nome. Tombstone por
+`issuer + sub` e revogação administrativa de sessão são follow-ups sem issue.
+Retenção por campo é a D-018, pendente.
+
+### O CI reprovou uma vez, e o motivo vale lembrar
+
+`permission denied for function read_account_status` no `downgrade`: as três
+funções nasceram com dono = migrador porque o `set local role` do `env.py` não
+vale na hora do `create`. Sete migrations já fazem `alter function … owner to
+appsell_owner`; a `0051` esqueceu. Reproduzido com
+`scripts/ci/exercita_migrations.sh` em banco limpo — o `alembic downgrade` no
+banco de testes local roda como outro papel e não vê o defeito.
+
+### Rollback deste release
+
+```bash
+docker service update --image easypanel/sell-autonomia/web:9655a13 --update-order stop-first sell-autonomia_web
+docker service update --image easypanel/sell-autonomia/api:374c10b --update-order stop-first sell-autonomia_api
+# só se precisar tirar as funções: alembic downgrade -1 (os audits ficam; os índices saem)
+```
+
+A `0051` é compatível com a imagem anterior (nada chama as funções). Dump
+íntegro em `$D/appsell_native_90_antes.dump`.
 
 ## Release `374c10b` — o link de turma avisa, e o e-mail não confirmado diz o caminho (2026-09-02)
 
