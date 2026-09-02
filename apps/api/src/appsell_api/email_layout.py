@@ -120,11 +120,15 @@ def escapar(valor: str) -> str:
 
 def origem_publica(origem: str) -> str:
     """Só https, sem credencial, sem caminho: a origem entra em src/href."""
-    partes = urlsplit(origem)
-    if partes.scheme != "https" or not partes.hostname or partes.username or partes.password:
+    try:
+        partes = urlsplit(origem)
+        hostname, porta_numero = partes.hostname, partes.port
+    except ValueError as erro:  # "https://host:abc" faz .port levantar
+        raise EmailInvalido("origem publica precisa ser https sem credencial") from erro
+    if partes.scheme != "https" or not hostname or partes.username or partes.password:
         raise EmailInvalido("origem publica precisa ser https sem credencial")
-    porta = f":{partes.port}" if partes.port and partes.port != 443 else ""
-    return f"https://{partes.hostname.lower()}{porta}"
+    porta = f":{porta_numero}" if porta_numero and porta_numero != 443 else ""
+    return f"https://{hostname.lower()}{porta}"
 
 
 def _uma_linha(campo: str, valor: str) -> str:
@@ -145,13 +149,17 @@ def _nome_proibido(nome: str) -> bool:
 
 def _url_de_acao(url: str, origem: str) -> str:
     erro = EmailInvalido("acao.url precisa ser uma URL https absoluta na origem publica")
-    partes = urlsplit(url)
-    if partes.scheme != "https" or not partes.hostname:
+    try:
+        partes = urlsplit(url)
+        hostname, porta_numero = partes.hostname, partes.port
+    except ValueError:
+        raise erro from None
+    if partes.scheme != "https" or not hostname:
         raise erro
     if partes.username or partes.password:
         raise erro
-    porta = f":{partes.port}" if partes.port and partes.port != 443 else ""
-    if f"https://{partes.hostname.lower()}{porta}" != origem:
+    porta = f":{porta_numero}" if porta_numero and porta_numero != 443 else ""
+    if f"https://{hostname.lower()}{porta}" != origem:
         raise erro
     chaves = list(parse_qs(partes.query, keep_blank_values=True).keys())
     if partes.fragment:

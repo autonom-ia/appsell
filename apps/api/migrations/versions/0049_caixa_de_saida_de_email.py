@@ -134,10 +134,11 @@ _TABELAS = (
         and position('@' in recipient_email) > 1
         and octet_length(recipient_email) between 6 and 320
         and recipient_email !~ '[[:cntrl:][:space:]]'
-        -- Um destinatário só: vírgula ou ponto e vírgula viraria dois no
-        -- envelope SMTP, e o segundo receberia a compra do primeiro.
-        and recipient_email !~ '[,;<>()"]' and recipient_email !~ '[][]'
-        and length(recipient_email) - length(replace(recipient_email, '@', '')) = 1
+        -- As MESMAS regras do ingresso e de identity_user, e nada mais: esta
+        -- linha nasce na transação que concede o acesso, e um check mais
+        -- estrito que o ingresso desfaria o grant de uma compra paga. Quem
+        -- decide se o endereço serve para enviar é o worker, que marca
+        -- dead_letter com recipient_invalid — visível, sem tocar no acesso.
       ),
       payload jsonb not null check (
         jsonb_typeof(payload)='object' and octet_length(payload::text) <= 4096
@@ -317,10 +318,14 @@ _FUNCOES_MOLDE = (
         raise exception 'email failure record is not authorized' using errcode='28000';
       end if;
       update app_private.email_outbox queued set
-        status=case when p_permanent or queued.attempt_count>=10
-          then 'dead_letter' else 'retry' end,
         -- Falha do canal (credencial, host fora) não é falha do item: devolve
-        -- a tentativa, senão dez quedas do provedor matam e-mails legítimos.
+        -- a tentativa e nunca vira dead_letter, senão dez quedas do provedor
+        -- matam e-mails legítimos.
+        status=case
+          when p_permanent then 'dead_letter'
+          when p_error in ('smtp_auth','smtp_unreachable') then 'retry'
+          when queued.attempt_count>=10 then 'dead_letter'
+          else 'retry' end,
         attempt_count=case when p_error in ('smtp_auth','smtp_unreachable')
           then greatest(queued.attempt_count-1,0) else queued.attempt_count end,
         available_at=clock_timestamp()+make_interval(secs=>p_delay_seconds),

@@ -144,11 +144,13 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     finally:
         email_worker_stop.set()
         if email_worker_task is not None:
-            # Um envio em curso é uma thread de SMTP com até três timeouts de
-            # 20 s; cancelar a task não fecha o socket. Espera o suficiente
-            # para o envio terminar e ser registrado, senão sai duplicado.
+            # Um envio em curso é uma thread de SMTP com até oito timeouts de
+            # 15 s; cancelar a task não fecha o socket. Espera o pior caso para
+            # o envio terminar e ser registrado — se o orquestrador matar o
+            # processo antes, o Message-ID estável é o que sobra para o
+            # destinatário reconhecer a duplicata.
             try:
-                await asyncio.wait_for(email_worker_task, timeout=65)
+                await asyncio.wait_for(email_worker_task, timeout=130)
             except TimeoutError:
                 email_worker_task.cancel()
         dependency_stop.set()

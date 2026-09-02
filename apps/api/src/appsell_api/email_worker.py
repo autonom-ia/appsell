@@ -42,22 +42,26 @@ WORKER_CAPABILITY = "notification.email.worker"
 _WORKER_EMAIL = "email-worker@system.appsell.internal"
 _WORKER_LABEL = f"api-email-{os.getpid()}"
 _IDLE_POLL_SECONDS = 2.0
-# Um item por claim e lease de 120 s: um envio tem conexão, login e DATA, cada
-# um com timeout de 20 s, e o lease precisa sobreviver ao pior caso — senão
-# outro worker reivindica no meio e o comprador recebe duas vezes. A faixa que
-# claim_email_outbox aceita é [5,300]; o teste confere.
-LEASE_SECONDS = 120
+# Um item por claim e o lease no teto da função (300 s). O timeout do smtplib
+# vale por comando — banner, EHLO, STARTTLS, AUTH, MAIL, RCPT, DATA, QUIT —,
+# então um envio travado pode custar até oito timeouts; com 15 s cada, 120 s,
+# folgado dentro do lease. Se o lease vencesse no meio, outro worker
+# reivindicaria e o comprador receberia duas vezes. O teste confere a faixa.
+LEASE_SECONDS = 300
 CLAIM_LIMIT = 1
-# Credencial recusada é falha do canal, não do item: o worker para por dez
-# minutos em vez de queimar tentativas de cada e-mail.
-_PAUSA_APOS_AUTH_SECONDS = 600
+_SMTP_TIMEOUT_SECONDS = 15
+# Falha do canal não é falha do item: o worker para em vez de percorrer a fila
+# inteira queimando conexões — dez minutos para credencial recusada, dois
+# para host fora.
+_PAUSA_POR_FALHA_DO_CANAL = {"smtp_auth": 600.0, "smtp_unreachable": 120.0}
 REMETENTE_NOME = "Autonom.ia Sell"
-_SMTP_TIMEOUT_SECONDS = 20
-# Exatamente um addr-spec (dot-atom). Uma vírgula aqui viraria dois
-# destinatários no smtplib — e o segundo receberia a compra do primeiro.
-_ATOMO = r"[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+"
+# Exatamente um mailbox: um só "@", nada que abra outro endereço (vírgula,
+# ponto e vírgula, "<>", aspas, parênteses, colchetes), nada de espaço ou
+# controle, e domínio com labels ASCII e um ponto. A parte local aceita
+# Unicode, como o ingresso — o SMTP decide se sabe entregar (SMTPUTF8).
+_LOCAL = r"[^\s@,;<>()\"\[\]\x00-\x1f\x7f]+"
 _LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
-_UM_DESTINATARIO = re.compile(rf"^{_ATOMO}(?:\.{_ATOMO})*@(?:{_LABEL}\.)+[A-Za-z]{{2,63}}$")
+_UM_DESTINATARIO = re.compile(rf"^{_LOCAL}@(?:{_LABEL}\.)+[A-Za-z]{{2,63}}$")
 
 logger = structlog.get_logger(__name__)
 
@@ -80,8 +84,9 @@ class Transporte:
 
     def __init__(self, settings: Settings) -> None:
         self._host = settings.email_smtp_host
-        self._port = settings.email_smtp_port
-        self._secure = settings.email_smtp_secure
+        # Settings garantem os dois antes de o worker iniciar (email_disabled_reason).
+        self._port = settings.email_smtp_port_number or 465
+        self._secure = settings.email_smtp_secure_flag is not False
         self._user = settings.email_smtp_user
         self._password = settings.email_smtp_password.get_secret_value()
 
@@ -117,6 +122,9 @@ def classificar_erro(erro: BaseException) -> FalhaDeEnvio:
             delay_seconds=1 if permanente else 300,
             smtp_code=codigos[0] if codigos else None,
         )
+    if isinstance(erro, smtplib.SMTPNotSupportedError):
+        # O servidor não fala SMTPUTF8 e o endereço precisa: não adianta insistir.
+        return FalhaDeEnvio("smtp_unsupported", permanent=True, delay_seconds=1)
     if isinstance(erro, smtplib.SMTPAuthenticationError):
         # Senha errada derruba todos os envios: recuo longo, sem dead-letter —
         # a correção é rotacionar a variável, e a fila espera.
@@ -195,12 +203,14 @@ async def run_email_worker_loop(app: FastAPI, stop: asyncio.Event) -> None:
                 registered = True
             itens = await _claim(auth, settings, worker_id)
             pausa = 0.0
+            motivo_pausa = ""
             for item in itens:
                 falha = await _entregar(auth, settings, worker_id, transporte, item)
-                if falha is not None and falha.error_code == "smtp_auth":
-                    pausa = _PAUSA_APOS_AUTH_SECONDS
+                if falha is not None and falha.error_code in _PAUSA_POR_FALHA_DO_CANAL:
+                    pausa = _PAUSA_POR_FALHA_DO_CANAL[falha.error_code]
+                    motivo_pausa = falha.error_code
             if pausa:
-                logger.warning("email_worker_paused", reason="smtp_auth", seconds=pausa)
+                logger.warning("email_worker_paused", reason=motivo_pausa, seconds=pausa)
                 try:
                     await asyncio.wait_for(stop.wait(), timeout=pausa)
                 except TimeoutError:

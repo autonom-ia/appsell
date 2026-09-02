@@ -49,7 +49,7 @@ def test_settings_leem_os_nomes_da_b0_sem_prefixo(monkeypatch: pytest.MonkeyPatc
         NEXT_PUBLIC_SITE_ORIGIN="https://preview.example.test/",
     )
     assert settings.email_configured
-    assert settings.email_smtp_port == 587 and settings.email_smtp_secure is False
+    assert settings.email_smtp_port_number == 587 and settings.email_smtp_secure_flag is False
     assert settings.email_smtp_password.get_secret_value() == SEGREDO
     assert SEGREDO not in repr(settings)
     assert settings.email_public_origin == "https://preview.example.test/"
@@ -64,7 +64,19 @@ def test_settings_nunca_derrubam_a_api_e_dizem_por_que_o_worker_nao_inicia(
     parcial = _settings(monkeypatch, SMTP_HOST_TRANSACIONAL="smtp.example.test")
     assert parcial.email_disabled_reason == "smtp_partial" and not parcial.email_configured
     outro = _configurado(monkeypatch, SMTP_USER_TRANSACIONAL="sell.comercial@autonomia.site")
-    assert outro.email_disabled_reason == "sender_mismatch"
+    assert outro.email_disabled_reason is None  # local: Mailpit sem conta
+    # Fora de local/ci a igualdade vale. model_copy troca só o ambiente, sem
+    # revalidar o resto (staging exige storage, auth interna etc.).
+    em_staging = outro.model_copy(update={"environment": "staging"})
+    assert em_staging.email_disabled_reason == "sender_mismatch"
+    porta = _configurado(monkeypatch, SMTP_PORT_TRANSACIONAL="abc")
+    assert porta.email_disabled_reason == "smtp_port_invalid"
+    tls = _configurado(monkeypatch, SMTP_SECURE_TRANSACIONAL="talvez")
+    assert tls.email_disabled_reason == "smtp_secure_invalid"
+    origem_porta = _configurado(
+        monkeypatch, NEXT_PUBLIC_SITE_ORIGIN="https://sell.autonomia.site:abc"
+    )
+    assert origem_porta.email_disabled_reason == "public_origin_invalid"
     origem = _configurado(monkeypatch, NEXT_PUBLIC_SITE_ORIGIN="http://sell.autonomia.site")
     assert origem.email_disabled_reason == "public_origin_invalid"
     assert _configurado(monkeypatch).email_disabled_reason is None
@@ -90,6 +102,9 @@ def test_classificacao_de_erro_nao_carrega_o_dialogo_smtp() -> None:
     )
     assert classificar_erro(smtplib.SMTPResponseException(552, b"too big")).permanent is True
     assert classificar_erro(OSError("conexao recusada")).error_code == "smtp_unreachable"
+    assert classificar_erro(smtplib.SMTPNotSupportedError("SMTPUTF8")).permanent is True
+    # Parte local Unicode passa (o ingresso aceita); o SMTP decide.
+    assert email_worker.destinatario_valido("josé.maría@exemplo.com.br")
     assert classificar_erro(RuntimeError("?")).error_code == "send_unexpected"
 
 
@@ -143,7 +158,14 @@ def test_monta_mensagem_classifica_entrada_impossivel_como_permanente(
         montar_mensagem(_item(payload={"schema_version": 9}), settings)
     assert erro.value.error_code == "render_failed" and erro.value.permanent
     # Dois endereços num campo só virariam dois destinatários no smtplib.
-    for ruim in ["a@b.test,c@d.test", "a@b.test;c@d.test", "Nome <a@b.test>", "a@b", ""]:
+    for ruim in [
+        "a@b.test,c@d.test",
+        "a@b.test;c@d.test",
+        "Nome <a@b.test>",
+        "a@b",
+        "",
+        "a@b@c.test",
+    ]:
         with pytest.raises(FalhaDeEnvio) as erro:
             montar_mensagem(_item(recipient_email=ruim), settings)
         assert erro.value.error_code == "recipient_invalid" and erro.value.permanent

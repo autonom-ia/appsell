@@ -74,11 +74,14 @@ class Settings(BaseSettings):
     email_smtp_host: str = Field(
         default="", validation_alias=AliasChoices("SMTP_HOST_TRANSACIONAL")
     )
-    email_smtp_port: int = Field(
-        default=465, ge=1, le=65535, validation_alias=AliasChoices("SMTP_PORT_TRANSACIONAL")
+    # Porta e TLS entram como texto e são interpretados em email_disabled_reason:
+    # um valor inválido desliga o worker com motivo, em vez de derrubar a API
+    # na carga das Settings.
+    email_smtp_port: str = Field(
+        default="465", validation_alias=AliasChoices("SMTP_PORT_TRANSACIONAL")
     )
-    email_smtp_secure: bool = Field(
-        default=True, validation_alias=AliasChoices("SMTP_SECURE_TRANSACIONAL")
+    email_smtp_secure: str = Field(
+        default="true", validation_alias=AliasChoices("SMTP_SECURE_TRANSACIONAL")
     )
     email_smtp_user: str = Field(
         default="", validation_alias=AliasChoices("SMTP_USER_TRANSACIONAL")
@@ -110,12 +113,35 @@ class Settings(BaseSettings):
             return "smtp_not_configured"
         if not all(values):
             return "smtp_partial"
-        if self.email_smtp_user != EMAIL_REMETENTE:
+        if self.email_smtp_port_number is None:
+            return "smtp_port_invalid"
+        if self.email_smtp_secure_flag is None:
+            return "smtp_secure_invalid"
+        # Fora de local/ci o usuário SMTP tem de ser o remetente: o From é
+        # fixo, e mandar em nome de sell@ com outra conta é falsificação. Em
+        # local/ci o SMTP é um Mailpit sem conta, e a igualdade só atrapalha.
+        if self.environment not in {"local", "ci"} and self.email_smtp_user != EMAIL_REMETENTE:
             return "sender_mismatch"
         try:
             origem_publica(self.email_public_origin)
         except EmailInvalido:
             return "public_origin_invalid"
+        return None
+
+    @property
+    def email_smtp_port_number(self) -> int | None:
+        valor = self.email_smtp_port.strip()
+        if not valor.isdigit() or not 1 <= int(valor) <= 65535:
+            return None
+        return int(valor)
+
+    @property
+    def email_smtp_secure_flag(self) -> bool | None:
+        valor = self.email_smtp_secure.strip().lower()
+        if valor in {"true", "1", "yes"}:
+            return True
+        if valor in {"false", "0", "no"}:
+            return False
         return None
 
     @property
