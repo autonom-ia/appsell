@@ -8,8 +8,8 @@
 -- aqui escreve; o audit da entrega é gravado depois, à mão, pelo runbook.
 --
 -- Uso (superusuário, no container do Postgres de produção):
---   psql -v ON_ERROR_STOP=1 -v sujeito='<identity_user_id>' \
---        -f exporta-conta.sql -At -o /tmp/conta-<uuid>.json
+--   psql -v sujeito='<identity_user_id>' -f exporta-conta.sql -o /tmp/conta-<uuid>.json
+--   (o próprio script liga ON_ERROR_STOP, QUIET e o formato só-JSON)
 --   chmod 600 /tmp/conta-<uuid>.json
 -- Depois: gpg -c, entregar pelo canal combinado com a pessoa, shred -u.
 --
@@ -17,14 +17,22 @@
 -- metadata de auditoria, ids internos.
 
 \set ON_ERROR_STOP on
+\set QUIET on
+\pset format unaligned
+\pset tuples_only on
 begin read only;
 
--- A pessoa tem de existir: sem esta linha, um UUID errado produziria um
--- documento "vazio" que parece um export legítimo de alguém sem dados.
--- 1/count(*): com a pessoa dá 1; sem ela, "division by zero" e o psql para
--- (ON_ERROR_STOP). Um `case ... 1/0` não serve — o planner dobra a constante.
-select 1/count(*) as sujeito_existe
-from public.identity_user where id=:'sujeito'::uuid;
+-- A pessoa tem de existir: sem esta guarda, um UUID errado produziria um
+-- documento "vazio" que parece um export legítimo de alguém sem dados. O
+-- \gset guarda o resultado numa variável sem imprimir nada — a saída do
+-- script tem de ser SÓ o JSON.
+select count(*)=1 as sujeito_existe
+from public.identity_user where id=:'sujeito'::uuid \gset
+\if :sujeito_existe
+\else
+  \warn sujeito inexistente
+  select 1/0;
+\endif
 
 select jsonb_pretty(jsonb_build_object(
   'schema_version',1,

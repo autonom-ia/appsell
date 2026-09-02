@@ -140,32 +140,34 @@ begin
   end if;
 
   -- Pré-verificação ANTES de agregar: uma estimativa POR LINHA de cada
-  -- seção, com o texto variável medido e um teto fixo por linha para as
+  -- seção, com o texto variável medido JÁ SERIALIZADO (to_jsonb conta as
+  -- aspas e o escape de aspas e barras) e um teto fixo por linha para as
   -- chaves e os carimbos de data (que são constantes). A estimativa é
   -- sempre >= ao documento real, então este é o corte que vale; a medição
   -- final abaixo fica de rede. Somar e contar é varredura barata; montar o
   -- jsonb inteiro para depois medir não é.
-  if 400
-     +(select coalesce(sum(160+octet_length(seller.display_name)+octet_length(seller.slug)),0)
+  if 400+octet_length(to_jsonb(subject.email_normalized)::text)
+     +octet_length(to_jsonb(subject.display_name)::text)
+     +(select coalesce(sum(160+octet_length(to_jsonb(seller.display_name)::text)+octet_length(to_jsonb(seller.slug)::text)),0)
         from public.seller_membership membership
         join public.seller_organization seller on seller.id=membership.seller_organization_id
         where membership.identity_user_id=p_identity_user_id)
-     +(select coalesce(sum(320+octet_length(product.title)+octet_length(product.slug)
-                          +octet_length(seller.display_name)+octet_length(seller.slug)),0)
+     +(select coalesce(sum(320+octet_length(to_jsonb(product.title)::text)+octet_length(to_jsonb(product.slug)::text)
+                          +octet_length(to_jsonb(seller.display_name)::text)+octet_length(to_jsonb(seller.slug)::text)),0)
         from public.buyer_entitlement entitlement
         join public.catalog_product product
           on product.seller_organization_id=entitlement.seller_organization_id
          and product.id=entitlement.catalog_product_id
         join public.seller_organization seller on seller.id=entitlement.seller_organization_id
         where entitlement.buyer_identity_user_id=p_identity_user_id)
-     +(select coalesce(sum(160+octet_length(product.title)+octet_length(seller.display_name)),0)
+     +(select coalesce(sum(160+octet_length(to_jsonb(product.title)::text)+octet_length(to_jsonb(seller.display_name)::text)),0)
         from app_private.entitlement_grant grant_row
         join public.catalog_product product
           on product.seller_organization_id=grant_row.seller_organization_id
          and product.id=grant_row.catalog_product_id
         join public.seller_organization seller on seller.id=grant_row.seller_organization_id
         where grant_row.buyer_identity_user_id=p_identity_user_id)
-     +(select coalesce(sum(320+octet_length(product.title)+octet_length(course.title)),0)
+     +(select coalesce(sum(320+octet_length(to_jsonb(product.title)::text)+octet_length(to_jsonb(course.title)::text)),0)
         from public.learning_enrollment enrollment
         join public.catalog_product product
           on product.seller_organization_id=enrollment.seller_organization_id
@@ -174,13 +176,13 @@ begin
           on course.seller_organization_id=enrollment.seller_organization_id
          and course.id=enrollment.course_id
         where enrollment.buyer_identity_user_id=p_identity_user_id)
-     +(select coalesce(sum(160+octet_length(lesson.title)),0)
+     +(select coalesce(sum(160+octet_length(to_jsonb(lesson.title)::text)),0)
         from public.lesson_progress progress
         join public.lesson
           on lesson.seller_organization_id=progress.seller_organization_id
          and lesson.id=progress.lesson_id
         where progress.buyer_identity_user_id=p_identity_user_id)
-     +(select coalesce(sum(120+octet_length(product.title)),0)
+     +(select coalesce(sum(120+octet_length(to_jsonb(product.title)::text)),0)
         from app_private.learning_pdf_bookmark bookmark
         join public.buyer_entitlement entitlement
           on entitlement.seller_organization_id=bookmark.seller_organization_id
@@ -189,7 +191,7 @@ begin
           on product.seller_organization_id=entitlement.seller_organization_id
          and product.id=entitlement.catalog_product_id
         where bookmark.buyer_identity_user_id=p_identity_user_id)
-     +(select coalesce(sum(200+octet_length(annotation.points::text)+octet_length(product.title)),0)
+     +(select coalesce(sum(200+octet_length(annotation.points::text)+octet_length(to_jsonb(product.title)::text)),0)
         from app_private.learning_pdf_annotation annotation
         join public.buyer_entitlement entitlement
           on entitlement.seller_organization_id=annotation.seller_organization_id
@@ -198,10 +200,10 @@ begin
           on product.seller_organization_id=entitlement.seller_organization_id
          and product.id=entitlement.catalog_product_id
         where annotation.buyer_identity_user_id=p_identity_user_id)
-     +(select coalesce(sum(160+octet_length(outbox.kind)),0)
+     +(select coalesce(sum(160+octet_length(to_jsonb(outbox.kind)::text)),0)
         from app_private.email_outbox outbox
         where outbox.recipient_identity_user_id=p_identity_user_id)
-     +(select coalesce(sum(120+octet_length(event.action)+octet_length(event.target_type)),0)
+     +(select coalesce(sum(120+octet_length(to_jsonb(event.action)::text)+octet_length(to_jsonb(event.target_type)::text)),0)
         from public.audit_event event
         where event.actor_identity_user_id=p_identity_user_id)
      >EXPORT_MAX_BYTES then
@@ -441,7 +443,7 @@ def upgrade() -> None:
         op.execute(f"revoke all on function {signature} from public")
         op.execute(f"grant execute on function {signature} to appsell_runtime")
     for nome, tabela, coluna in _INDICES_POR_SUJEITO:
-        op.execute(f"create index if not exists {nome} on {tabela} ({coluna})")
+        op.execute(f"create index {nome} on {tabela} ({coluna})")
     for alvo in _BASES_DO_READY:
         op.execute(
             _REESCREVE.replace("ALVO", alvo)
@@ -473,4 +475,6 @@ def downgrade() -> None:
         op.execute(f"revoke all on function {signature} from public")
         op.execute(f"drop function {signature}")
     for nome, _tabela, _coluna in _INDICES_POR_SUJEITO:
-        op.execute(f"drop index if exists {nome}")
+        # Os índices vivem no schema da tabela; sem qualificar, o `if exists`
+        # não acha nada e deixa os três no lugar.
+        op.execute(f"drop index if exists app_private.{nome}")
