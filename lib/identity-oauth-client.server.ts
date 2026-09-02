@@ -283,6 +283,13 @@ export class IdentityOAuthClient implements OAuthTokenRefresher {
     return url;
   }
 
+  // A troca de senha vive no Identity (Minha conta, #351): o Appsell nao
+  // reimplementa autenticacao, so aponta. A tela e irma do login, como a de
+  // cadastro; sem transacao OAuth, porque recuperar senha nao e entrar.
+  passwordRecoveryUrl() {
+    return new URL(siblingPath(this.config.authorizationEndpoint, "forgot-password"));
+  }
+
   async exchangeAuthorizationCode(input: {
     code: string;
     codeVerifier: string;

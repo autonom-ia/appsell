@@ -55,7 +55,8 @@ interface ApiRequest {
     "learning.pdf-study.read" | "learning.pdf-study.write" |
     "commerce.demo.checkout.read" | "commerce.demo.checkout.complete" |
     "commerce.payout.read" | "commerce.payout.manage" | "commerce.payout.sync" |
-    "commerce.checkout.destination";
+    "commerce.checkout.destination" |
+    "account.read" | "account.export" | "account.deletion.request";
   sellerOrganizationId?: string;
   inspectionToken?: string;
   body?: Record<string, unknown>;
@@ -1237,6 +1238,35 @@ export async function readDomainBuyerProducts(sessionId: string, session: Server
     method: "GET",
     path: "/v1/me/products",
     capability: "library.read"
+  });
+}
+
+// Minha conta (#351). Nenhuma das três leva id de usuário: o sujeito é o do
+// envelope, e a função do banco confere que o contexto é o mesmo. O corpo
+// vazio das duas mutações é deliberado — a API recusa qualquer campo.
+export async function readDomainAccountStatus(sessionId: string, session: ServerSession) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: "/v1/me/account",
+    capability: "account.read"
+  });
+}
+
+export async function exportDomainAccountData(sessionId: string, session: ServerSession) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: "/v1/me/account/export",
+    capability: "account.export",
+    body: {}
+  });
+}
+
+export async function requestDomainAccountDeletion(sessionId: string, session: ServerSession) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: "/v1/me/account/deletion-request",
+    capability: "account.deletion.request",
+    body: {}
   });
 }
 

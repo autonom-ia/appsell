@@ -80,6 +80,9 @@ de qualquer usuário autenticado.
 | Conceder entitlement manual | N | N | N | A | A | N | C | N | N | reason/source, produto do mesmo seller e auditoria |
 | Revogar entitlement | N | N | N | A | A | N | C | N | N | política aprovada, reason e sem efeito em outro seller |
 | Exportar buyers | N | N | C | C | C | N | N | C | N | finalidade, step-up, expiração; B exporta só os próprios dados |
+| Exportar os próprios dados da conta (#351) | C | C | C | C | C | C | C | A | N | qualquer identidade autenticada, só sobre si mesma e sem seller no contexto; `export_account_data` grava `account.data.exported`; taxa limitada no BFF |
+| Pedir exclusão da própria conta (#351) | C | C | C | C | C | C | C | A | N | registra `account.deletion.requested` no audit, execução manual (Decisão 019); repetido em 30 dias devolve o mesmo |
+| Ler status da própria conta (#351) | C | C | C | C | C | C | C | A | N | `read_account_status`: só o pedido de exclusão do próprio sujeito; fora do contexto devolve vazio |
 | Impersonar buyer/seller | N | N | N | N | N | N | N | N | N | fora do MVP; exige ADR/capability temporal futura |
 
 ## Catálogo, ofertas e conteúdo

@@ -996,6 +996,21 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .payout-skeleton { height: 132px; border-radius: var(--radius-sm); background: linear-gradient(100deg, rgba(100,116,139,.1) 40%, rgba(100,116,139,.18) 50%, rgba(100,116,139,.1) 60%); background-size: 200% 100%; animation: payout-shimmer 1.4s linear infinite; }
 @keyframes payout-shimmer { to { background-position: -200% 0; } }
 
+/* Minha conta (#351): quatro cartões, o mesmo material do de recebimentos. */
+.account-grid { display: grid; gap: 18px; max-width: 760px; }
+.account-card { min-width: 0; display: grid; gap: 12px; padding: 26px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); box-shadow: var(--shadow-sm); }
+.account-card h2 { margin: 0; }
+.account-card > p { margin: 0; color: var(--text); max-width: 62ch; }
+.account-card .primary-button, .account-card .secondary-button, .account-card .danger-button { justify-self: start; }
+.account-facts { margin: 0; display: grid; gap: 10px; }
+.account-facts div { display: grid; grid-template-columns: minmax(90px, 140px) minmax(0, 1fr); gap: 12px; align-items: baseline; }
+.account-facts dt { color: var(--soft); font-size: .72rem; font-weight: 750; letter-spacing: .06em; text-transform: uppercase; }
+.account-facts dd { margin: 0; overflow-wrap: anywhere; }
+.account-access-list { margin: 0; padding: 0; display: grid; gap: 8px; list-style: none; }
+.account-access-list li { display: grid; gap: 2px; padding: 12px; border: 1px solid var(--border); border-radius: 13px; overflow-wrap: anywhere; }
+.account-access-list small { color: var(--soft); }
+.account-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+
 /* Sell Glass Premium — shell translúcido e conteúdo operacional opaco. */
 .primary-button, .secondary-button, .danger-button, .nav-link, .bottom-nav a, .filter, .draft-card-action, .storefront-login {
   transition: transform 180ms ease, border-color 180ms ease, background-color 180ms ease, box-shadow 180ms ease, color 180ms ease, opacity 180ms ease;
