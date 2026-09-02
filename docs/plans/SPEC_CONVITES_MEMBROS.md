@@ -636,10 +636,11 @@ antes de "ready" (regras 4/9 globais).
    flag, dupla aprovação + step-up. Testes: AC-PL*. Depende do fluxo de grants
    globais e de D-005 (assurance/MFA, `Pending spike/Blocked`).
 5. **PR-5 · UI + envio** — tela de emissão (produtor), listagem/revogação e página
-   `/invite` (lê fragmento, dispara login, consome no callback). **Bloqueado por
-   D-029** (`DECISION_REGISTER.md:50`): **não enviar convites a usuários reais** até
-   a decisão de provedor de e-mail/legal ser resolvida. Testes E2E mobile das
-   jornadas com destinatários sintéticos.
+   `/invite` (lê fragmento, dispara login, consome no callback). D-029 está
+   **decidida** (#355, `docs/architecture/EMAIL_POLICY.md`: convite é
+   transacional, base legal legítimo interesse, um envio por convite); o envio
+   real **depende do canal transacional da #356** e, até ele existir, os testes
+   E2E mobile das jornadas usam destinatários sintéticos.
 
 Sequência obrigatória: PR-1 → PR-2 → PR-3 → (PR-4 gated) → PR-5, cada uma atrás do
 gate da anterior (regra 7 do §7 do TECHNICAL_PLAN).

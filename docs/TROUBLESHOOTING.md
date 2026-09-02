@@ -309,8 +309,9 @@ Nunca imprime credencial, nem em erro.
 O aceite é o cabeçalho **recebido**, não a resposta do SMTP. Na caixa de
 destino, "Mostrar original" e procure `Authentication-Results`:
 
-- `spf=pass dkim=pass dmarc=pass` — o canal está íntegro; se caiu em spam, o
-  problema é conteúdo ou reputação, não configuração;
+- `spf=pass dkim=pass dmarc=pass` — a autenticação passou. Não prova mais que
+  isso: se caiu em spam, ainda contam reputação do IP e do domínio, alinhamento
+  do envelope, PTR, TLS e a política do destinatário;
 - `dkim=fail` ou `dkim=none` — a Hostinger não assinou; a conta não está no
   mesmo plano de e-mail que a comercial, ou o seletor `hostingermail-a` mudou;
 - `spf=fail` — o envio não saiu pelo SMTP da Hostinger; confira

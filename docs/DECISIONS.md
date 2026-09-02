@@ -1,6 +1,6 @@
 # DECISIONS — decisões operacionais atuais
 
-Última atualização: 2026-09-02.
+Última atualização: 2026-09-01.
 
 O registro arquitetural detalhado está em
 [DECISION_REGISTER.md](architecture/DECISION_REGISTER.md) e nos ADRs. Esta
@@ -174,11 +174,12 @@ Reabrir só com evidência de comportamento real, não por suposição. Registro
 
 ## Decisão 017 — e-mail transacional sai de `sell@autonomia.site`, e só ele
 
-Decidida em 02/09 (#355, fecha a `D-029`). Tudo o que a plataforma envia a uma
+Decidida em 01/09 (#355, fecha a `D-029`). Tudo o que a plataforma envia a uma
 pessoa — confirmação de compra, convite de equipe, segurança de conta — sai do
 remetente transacional, com variáveis próprias `SMTP_*_TRANSACIONAL`. O
 comercial `sell.comercial@autonomia.site` só recebe o formulário da página
-pública. Um não é fallback do outro: sem variáveis, o canal não envia.
+pública. Um não é fallback do outro — requisito para o canal da #356: sem
+variáveis, ele não envia.
 
 Transacional é o e-mail sem o qual a pessoa perde acesso, dinheiro, segurança
 ou um direito; não tem descadastro. O resto é opcional, exige consentimento
@@ -188,8 +189,9 @@ consentimento. Rodapé, base legal e o que nunca vai no corpo estão em
 [EMAIL_POLICY.md](architecture/EMAIL_POLICY.md).
 
 Duas mudanças de DNS ficam fora e exigem OK na hora: acrescentar `rua=` ao
-DMARC (hoje `p=none` **sem** destinatário de relatório, ou seja, ninguém
-observa nada) e, semanas depois, subir para `p=quarantine`.
+DMARC (hoje `p=none` **sem** destinatário de relatório: os provedores avaliam,
+mas o domínio não recebe o relatório agregado) e, semanas depois, subir para
+`p=quarantine`.
 
 ## Pendências que bloqueiam ampliação
 

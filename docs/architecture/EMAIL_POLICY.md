@@ -1,6 +1,6 @@
 # Política de e-mail — remetentes, natureza e descadastro
 
-- Status: decidida em 2026-09-02 (issue [#355](https://github.com/autonom-ia/appsell/issues/355), fecha a `D-029`)
+- Status: decidida em 2026-09-01 (issue [#355](https://github.com/autonom-ia/appsell/issues/355), fecha a `D-029`)
 - Owner: Produto + Infra + LGPD
 - Escopo: todo e-mail que a plataforma envia a uma pessoa real. Não cobre o
   formulário de contato da página pública, que é e-mail **de entrada** e segue
@@ -14,8 +14,9 @@ está errado.
 
 | Remetente | Conta | Usa para | Variáveis |
 |---|---|---|---|
-| **Transacional** | `sell@autonomia.site` | tudo o que a plataforma envia a compradores, vendedores e membros de equipe | `SMTP_*_TRANSACIONAL` |
+| **Transacional** | `sell@autonomia.site` | todo e-mail transacional (§2) a compradores, vendedores e membros de equipe — hoje o único canal de saída | `SMTP_*_TRANSACIONAL` |
 | **Comercial** | `sell.comercial@autonomia.site` | receber o formulário da página pública (`POST /api/contato`) | `SMTP_*_COMERCIAL` |
+| **Opcional** | **sem remetente definido** | não existe nesta rodada; nasce junto da tela de preferência, com conta própria — nunca `sell@` nem a comercial | — |
 
 Separar não é organização: é reputação. Provedores pontuam **cada endereço**
 e o domínio. Um formulário comercial marcado como spam por um destinatário
@@ -23,8 +24,8 @@ derrubaria a entrega da confirmação de compra se os dois saíssem da mesma
 conta. Por isso:
 
 - nenhum envio transacional usa `SMTP_*_COMERCIAL`, nem como fallback quando
-  o transacional não está configurado — sem variáveis, o canal **não envia** e
-  registra que não enviou;
+  o transacional não está configurado. Requisito para o canal da `#356`: sem
+  variáveis, ele **não envia** e registra que não enviou;
 - nenhum e-mail de contato, prospecção ou marketing sai de `sell@autonomia.site`.
 
 Nome de exibição do remetente transacional: **Autonom.ia Sell**. `From` é
@@ -43,19 +44,19 @@ acesso, dinheiro, segurança ou um direito?** Se sim, é transacional.
 
 ### Transacional — não se descadastra
 
-Base legal: execução de contrato (LGPD art. 7º, V) e obrigação legal (art. 7º,
-II). Sem opção de saída, porque a saída deixaria a pessoa sem o que ela
-comprou ou sem aviso do que aconteceu com a conta dela.
+A base legal é **por evento**, e nenhuma delas é consentimento — por isso não
+há opção de saída: a saída deixaria a pessoa sem o que ela comprou, sem aviso
+do que aconteceu com a conta dela, ou sem um aviso que a lei nos obriga a dar.
 
-| E-mail | Destinatário | Gatilho |
-|---|---|---|
-| Acesso liberado / confirmação de compra | comprador | entitlement concedido (checkout pago ou acesso gratuito) |
-| Recibo ou comprovante da compra | comprador | pagamento confirmado |
-| Convite para a equipe da loja | pessoa convidada | convite emitido (`SPEC_CONVITES_MEMBROS.md`) |
-| Segurança da conta | titular | login novo, pedido de exclusão registrado, alteração de e-mail |
-| Loja suspensa ou reativada | dono da loja | mudança de status pela plataforma |
-| Alteração de Termos ou Política de Privacidade | todos com conta | publicação de nova versão (Política de Privacidade, §12) |
-| Incidente de segurança com risco relevante | titulares afetados | decisão do encarregado (Política de Privacidade, §10) |
+| E-mail | Destinatário | Gatilho | Base legal (LGPD) |
+|---|---|---|---|
+| Acesso liberado / confirmação de compra | comprador | entitlement concedido (checkout pago ou acesso gratuito) | execução de contrato, art. 7º, V |
+| Recibo ou comprovante da compra | comprador | pagamento confirmado | execução de contrato, art. 7º, V; guarda fiscal, art. 7º, II |
+| Convite para a equipe da loja | pessoa convidada | convite emitido (`SPEC_CONVITES_MEMBROS.md`) | legítimo interesse, art. 7º, IX — o e-mail diz **quem** convidou e **para qual loja**, é enviado **uma vez** por convite e não é reenviado sem novo pedido do emissor |
+| Segurança da conta | titular | login novo, pedido de exclusão registrado, alteração de e-mail | legítimo interesse e prevenção à fraude, art. 7º, IX; execução de contrato para o pedido de exclusão |
+| Loja suspensa ou reativada | dono da loja | mudança de status pela plataforma | execução de contrato, art. 7º, V |
+| Alteração **relevante** de Termos ou Política de Privacidade | todos com conta | nova versão com mudança relevante — o critério é o dos próprios documentos (Termos §14, Privacidade §12); revisão de redação não gera e-mail | execução de contrato, art. 7º, V |
+| Incidente de segurança com risco relevante | titulares afetados | dever do controlador, art. 48, no prazo e forma da ANPD (Privacidade §11); o encarregado executa, não decide se comunica | obrigação legal, art. 7º, II |
 
 ### Opcional — só com consentimento, e se descadastra em um clique
 
@@ -68,11 +69,14 @@ Base legal: consentimento (art. 7º, I), revogável a qualquer momento.
 | Comunicação da plataforma (novidades do produto Sell) | vendedor optou por receber |
 
 **Nesta rodada, nenhum e-mail opcional é enviado.** Não existe preferência de
-notificação no produto (decisão 3 do plano de configurações por papel: fora do
-escopo), logo não existe consentimento registrado, logo não existe base legal
-para enviar. O canal opcional só nasce junto da tela de preferência, e o
-descadastro é um link de um clique **sem login** mais o cabeçalho
-`List-Unsubscribe` com `List-Unsubscribe-Post: List-Unsubscribe=One-Click`.
+notificação no produto — ficou fora do escopo por decisão de 01/09, no plano
+de configurações por papel (épico `#349`) —, logo não existe consentimento
+registrado, logo não existe base legal para enviar. O canal opcional só nasce
+junto da tela de preferência, com remetente próprio, e obedece à RFC 8058:
+link de descadastro em um clique **sem login**; cabeçalho `List-Unsubscribe`
+com URI **HTTPS**; `List-Unsubscribe-Post: List-Unsubscribe=One-Click`, e o
+`POST` nessa URI descadastra sem pedir confirmação; os dois cabeçalhos cobertos
+pela assinatura DKIM.
 
 Uma comunicação que mistura as duas naturezas é opcional: um "seu acesso foi
 liberado, e veja também estes outros cursos" **não** pode sair como
@@ -125,21 +129,46 @@ Rotação: trocar a senha na Hostinger, atualizar a variável no serviço com
 `--env-add` numa única atualização (nunca `updateEnv` do painel sem o campo
 `env` completo), validar com o smoke da §7.
 
-## 6. Estado de entrega do domínio (verificado em 2026-09-02)
+## 6. Estado de entrega do domínio (verificado em 2026-09-01)
 
 | Registro | Valor encontrado | Situação |
 |---|---|---|
 | SPF `autonomia.site` | `v=spf1 include:_spf.mail.hostinger.com include:amazonses.com ~all` | passa para o SMTP da Hostinger; o include do SES é de outro sistema e não deste canal |
 | DKIM `hostingermail-a._domainkey` | CNAME para `hostingermail-a.dkim.mail.hostinger.com`, chave RSA publicada | assina |
-| DMARC `_dmarc` | `v=DMARC1; p=none` | observação apenas; **sem `rua=`, ninguém recebe os relatórios** |
+| DMARC `_dmarc` | `v=DMARC1; p=none` | observação apenas; **sem `rua=`, o domínio não recebe os relatórios agregados** — os destinatários seguem avaliando DMARC, mas nós não vemos o resultado |
 | MX | Google Workspace | recebe pelo Google, envia pela Hostinger — assimétrico e funcional |
+
+Consulta feita em 2026-09-01 23:40 -03 pelo resolvedor `dns.google` (DoH), e
+reproduzível assim:
+
+```sh
+for n in "autonomia.site&type=TXT" "_dmarc.autonomia.site&type=TXT" \
+         "hostingermail-a._domainkey.autonomia.site&type=TXT" "autonomia.site&type=MX"; do
+  echo "## $n"; curl -s "https://dns.google/resolve?name=$n" | jq -r '.Answer[]?.data'
+done
+```
+
+Saída daquela consulta, sem a chave DKIM completa:
+
+```
+## autonomia.site&type=TXT
+v=spf1 include:_spf.mail.hostinger.com include:amazonses.com ~all
+## _dmarc.autonomia.site&type=TXT
+v=DMARC1; p=none
+## hostingermail-a._domainkey.autonomia.site&type=TXT
+hostingermail-a.dkim.mail.hostinger.com.
+v=DKIM1;k=rsa;p=MIIBIjANBgkq...
+## autonomia.site&type=MX
+1 ASPMX.L.GOOGLE.COM.  5 ALT1/ALT2  10 ALT3/ALT4
+```
 
 Consequência para as próximas decisões, ambas mudanças de DNS que exigem OK
 explícito na hora:
 
 1. **Antes** de endurecer o DMARC, acrescentar `rua=mailto:<caixa de
-   relatórios>` ao registro. Hoje `p=none` não coleta nada, então "ler os
-   relatórios por algumas semanas" não é possível sem esse passo.
+   relatórios>` ao registro. Hoje o domínio não recebe relatório agregado
+   nenhum, então "ler os relatórios por algumas semanas" não é possível sem
+   esse passo.
 2. Só depois de semanas de relatório sem falha legítima, subir para
    `p=quarantine`. Endurecer antes de observar derruba e-mail legítimo.
 
@@ -170,9 +199,12 @@ se a conta está no mesmo plano de e-mail que a comercial.
 
 ## 8. Reputação e ritmo de entrada
 
-O domínio não tem histórico transacional. A ordem de ligação dos e-mails segue
-a taxa de abertura esperada, porque abertura constrói reputação e reclamação a
-destrói:
+Hipótese operacional, não medição: o domínio não tem histórico de envio
+transacional, e reputação se constrói pela ausência de reclamação e pelo
+engajamento do destinatário — que não medimos, porque não há rastreador no
+corpo (§4). O que se mede é o que o SMTP e a caixa `sell@` devolvem: aceites,
+rejeições 5xx e 4xx, devoluções e reclamações que chegam ao `postmaster`. A
+ordem de ligação segue a expectativa de engajamento:
 
 1. acesso liberado / confirmação de compra — aberto por quase todo destinatário;
 2. convite de equipe — pedido pela própria pessoa que convida;

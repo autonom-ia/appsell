@@ -20,30 +20,55 @@ const RODAPE = [
   "https://sell.autonomia.site/privacidade"
 ].join("\n");
 
+const PORTA_PADRAO = 465;
+const PORTA_MAXIMA = 65535;
+
+// Porta ausente vale 465; presente e inválida é erro, não 465 em silêncio —
+// senão o smoke testa um canal diferente do configurado e ninguém percebe.
+function porta(valor) {
+  if (valor === undefined || valor === "") return PORTA_PADRAO;
+  if (!/^\d{1,5}$/.test(valor)) return null;
+  const numero = Number(valor);
+  return numero >= 1 && numero <= PORTA_MAXIMA ? numero : null;
+}
+
+// Só "true" e "false" exatos; "0", "FALSE" ou lixo não viram TLS implícito por
+// acidente.
+function seguro(valor) {
+  if (valor === undefined || valor === "") return true;
+  if (valor === "true") return true;
+  if (valor === "false") return false;
+  return null;
+}
+
 function configuracao(env) {
   const host = env.SMTP_HOST_TRANSACIONAL;
   const user = env.SMTP_USER_TRANSACIONAL;
   const pass = env.SMTP_PASS_TRANSACIONAL;
-  const faltando = [
+  const port = porta(env.SMTP_PORT_TRANSACIONAL);
+  const secure = seguro(env.SMTP_SECURE_TRANSACIONAL);
+  const invalidas = [
     host ? null : "SMTP_HOST_TRANSACIONAL",
     user ? null : "SMTP_USER_TRANSACIONAL",
-    pass ? null : "SMTP_PASS_TRANSACIONAL"
+    pass ? null : "SMTP_PASS_TRANSACIONAL",
+    port === null ? "SMTP_PORT_TRANSACIONAL (inteiro entre 1 e 65535)" : null,
+    secure === null ? "SMTP_SECURE_TRANSACIONAL (true ou false)" : null
   ].filter(Boolean);
-  if (faltando.length > 0) return { faltando };
+  if (invalidas.length > 0) return { invalidas };
   return {
-    faltando: [],
+    invalidas: [],
     de: { name: REMETENTE_NOME, address: user },
-    transporte: {
-      host,
-      port: Number(env.SMTP_PORT_TRANSACIONAL) || 465,
-      secure: env.SMTP_SECURE_TRANSACIONAL !== "false",
-      auth: { user, pass }
-    }
+    transporte: { host, port, secure, auth: { user, pass } }
   };
 }
 
+// Exatamente um mailbox, sem vírgula, ponto e vírgula, espaço ou "<>": o
+// parser de endereços do nodemailer reinterpretaria "a,b@x.co" como nome "a" e
+// endereço "b@x.co", e o teste iria para outro lugar.
+const UM_MAILBOX = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/;
+
 function destinatarioValido(valor) {
-  return typeof valor === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(valor);
+  return typeof valor === "string" && UM_MAILBOX.test(valor);
 }
 
 // Mensagens de erro do nodemailer podem carregar o comando SMTP inteiro,
@@ -61,8 +86,8 @@ async function main() {
     return 2;
   }
   const config = configuracao(process.env);
-  if (config.faltando.length > 0) {
-    console.error(`faltam variáveis: ${config.faltando.join(", ")}`);
+  if (config.invalidas.length > 0) {
+    console.error(`variáveis ausentes ou inválidas: ${config.invalidas.join(", ")}`);
     return 2;
   }
 
@@ -82,7 +107,8 @@ async function main() {
     const transporte = nodemailer.createTransport(config.transporte);
     const resultado = await transporte.sendMail({
       from: config.de,
-      to: para,
+      // Objeto, não string: o nodemailer não reparseia o endereço.
+      to: [{ name: "", address: para }],
       replyTo: config.de.address,
       subject: `[teste] canal transacional do Autonom.ia Sell — ${agora}`,
       text: texto
