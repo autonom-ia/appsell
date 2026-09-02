@@ -11,14 +11,11 @@
 
 import nodemailer from "nodemailer";
 
+// Node 24 importa .ts sem transpilar (type stripping). O layout e o mesmo que
+// os templates da #357 usam, entao o teste mostra o e-mail como ele vai sair.
+import { renderizarEmailTransacional } from "../../lib/email/layout-transacional.ts";
+
 const REMETENTE_NOME = "Autonom.ia Sell";
-const RODAPE = [
-  "Autonom.ia Sell · enviado por Autonom.ia Tecnologia Ltda (CNPJ 59.303.298/0001-51)",
-  "Este é um e-mail transacional de verificação do canal; você o recebe porque",
-  "pediu um teste de entrega. Ele não depende de inscrição e não tem descadastro.",
-  "Dúvidas sobre seus dados: contato@autonomia.site · Política de Privacidade:",
-  "https://sell.autonomia.site/privacidade"
-].join("\n");
 
 const PORTA_PADRAO = 465;
 const PORTA_MAXIMA = 65535;
@@ -100,16 +97,23 @@ async function main() {
   }
 
   const agora = new Date().toISOString();
-  const texto = [
-    "Teste de entrega do remetente transacional do Autonom.ia Sell.",
-    "",
-    `Enviado em ${agora}.`,
-    "",
-    "Se você está lendo isto, confira em \"Mostrar original\" o cabeçalho",
-    "Authentication-Results: o aceite é spf=pass, dkim=pass e dmarc=pass.",
-    "",
-    RODAPE
-  ].join("\n");
+  const assunto = `[teste] canal transacional do Autonom.ia Sell — ${agora}`;
+  const { html, text } = renderizarEmailTransacional({
+    assunto,
+    eyebrow: "Verificação do canal",
+    titulo: "O remetente transacional está falando com você.",
+    paragrafos: [
+      "Este é um teste de entrega do Autonom.ia Sell. Se ele chegou na caixa de entrada com esta moldura, o canal por onde saem a confirmação de compra e o convite de equipe está inteiro.",
+      "Para fechar a verificação, abra \"Mostrar original\" e procure o cabeçalho Authentication-Results: o aceite é spf=pass, dkim=pass e dmarc=pass."
+    ],
+    detalhes: [
+      { rotulo: "Enviado em", valor: agora },
+      { rotulo: "Remetente", valor: config.de.address },
+      { rotulo: "Natureza", valor: "transacional — sem descadastro" }
+    ],
+    acao: { rotulo: "Abrir o Autonom.ia Sell", url: "https://sell.autonomia.site/" },
+    motivo: "pediu um teste de entrega do canal"
+  });
 
   try {
     const transporte = nodemailer.createTransport(config.transporte);
@@ -118,8 +122,9 @@ async function main() {
       // Objeto, não string: o nodemailer não reparseia o endereço.
       to: [{ name: "", address: para }],
       replyTo: config.de.address,
-      subject: `[teste] canal transacional do Autonom.ia Sell — ${agora}`,
-      text: texto
+      subject: assunto,
+      text,
+      html
     });
     console.log(`aceitos: ${resultado.accepted.length}`);
     console.log(`rejeitados: ${resultado.rejected.length}`);
