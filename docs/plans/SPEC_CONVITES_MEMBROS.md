@@ -15,7 +15,8 @@
     aberto (D-027); detalhado na §8.
   - Transferência de ownership (fluxo próprio com aceite do novo owner).
   - Bootstrap de superadmin (Bloco 1).
-  - UI final e **envio de e-mail** (bloqueado por D-029; ver §5 e §7).
+  - UI final e **envio de e-mail** (D-029 decidida em #355; o envio depende
+    do canal transacional da #356 — ver §5 e §7).
 - Molde de idempotência reutilizado: `app_private.onboard_seller`
   (`apps/api/migrations/versions/0002_bff_api_onboarding.py:178`) e a rota
   `POST /v1/me/sellers` (`apps/api/src/appsell_api/routes.py:186`).
@@ -531,11 +532,11 @@ Contrato análogo ao 4.1, sem `seller_organization_id`.
 10. **Enforcement em camadas** (matriz "Enforcement"): BFF (sessão+CSRF+origin) →
     API (capability+objeto) → função `SECURITY DEFINER` (papel do emissor) →
     RLS/constraints (tenant/uso único). Teste negativo obrigatório em cada camada.
-11. **Gate D-029 — envio bloqueado.** `DECISION_REGISTER.md:50` (D-029, "Provedor
-    de e-mail/convites", `Pending business/legal`, default "não enviar para
-    usuários reais"). O MVP entrega **emissão de link + consumo**; **envio de
-    e-mail a usuários reais fica bloqueado** até D-029 ser resolvida. PR-5 depende
-    dessa decisão (§7).
+11. **Gate D-029 — decidida, canal pendente.** D-029 foi decidida em #355
+    (`docs/architecture/EMAIL_POLICY.md`): o convite é e-mail **transacional**,
+    sai por `sell@autonomia.site` e não tem descadastro. O MVP entrega
+    **emissão de link + consumo**; o envio real espera o canal transacional da
+    #356. PR-5 depende desse canal (§7).
 
 ## 6. Critérios de aceite testáveis (hard-assert, por rota)
 
@@ -635,10 +636,11 @@ antes de "ready" (regras 4/9 globais).
    flag, dupla aprovação + step-up. Testes: AC-PL*. Depende do fluxo de grants
    globais e de D-005 (assurance/MFA, `Pending spike/Blocked`).
 5. **PR-5 · UI + envio** — tela de emissão (produtor), listagem/revogação e página
-   `/invite` (lê fragmento, dispara login, consome no callback). **Bloqueado por
-   D-029** (`DECISION_REGISTER.md:50`): **não enviar convites a usuários reais** até
-   a decisão de provedor de e-mail/legal ser resolvida. Testes E2E mobile das
-   jornadas com destinatários sintéticos.
+   `/invite` (lê fragmento, dispara login, consome no callback). D-029 está
+   **decidida** (#355, `docs/architecture/EMAIL_POLICY.md`: convite é
+   transacional, base legal legítimo interesse, um envio por convite); o envio
+   real **depende do canal transacional da #356** e, até ele existir, os testes
+   E2E mobile das jornadas usam destinatários sintéticos.
 
 Sequência obrigatória: PR-1 → PR-2 → PR-3 → (PR-4 gated) → PR-5, cada uma atrás do
 gate da anterior (regra 7 do §7 do TECHNICAL_PLAN).

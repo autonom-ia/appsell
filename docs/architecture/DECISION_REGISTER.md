@@ -1,7 +1,7 @@
 # Registro de decisões e pendências
 
 - Status: Active — approved direction; current catalog slice verified in production
-- Atualização: 2026-08-24
+- Atualização: 2026-09-01
 - Regra: ausência de decisão de segurança falha fechada
 
 ## Estados
@@ -47,7 +47,7 @@
 | D-026 | Contrato SaaS Admin/Financial | Pending spike | Admin + Financial | comércio SaaS | mock não habilita billing; nenhum billing real |
 | D-027 | Política de entitlement manual/importação | Pending business | Produto + Operação | buyer journey | somente dados sintéticos; ação real bloqueada |
 | D-028 | Métrica monotônica/reset de progresso | Pending business | Produto | player | update idempotente e sem reduzir progresso |
-| D-029 | Provedor de e-mail/convites | Pending business/legal | Produto + Infra + LGPD | convite | não enviar para usuários reais |
+| D-029 | Provedor de e-mail/convites | Decided 2026-09-01 (#355): SMTP Hostinger por `sell@autonomia.site`, separado do comercial; natureza, rodapé e descadastro em [EMAIL_POLICY.md](EMAIL_POLICY.md) | Produto + Infra + LGPD | convite | N/A — decidida; os requisitos do canal (só transacional sai; sem variáveis não envia e não cai no comercial; opcional exige consentimento, remetente próprio e descadastro em um clique) estão na política e na #356 |
 | D-030 | Analytics/cookies/consentimento | Pending business/legal | Produto + LGPD | instrumentação | somente telemetria operacional necessária, sem marketing tracker |
 | D-031 | Topologia de Postgres/Redis isolados | Production VPS topology verified for current release | Infra + Banco | future infra changes | não reutilizar banco/secret/rede sem inventário |
 | D-032 | Certificado/rota/capacidade de `sell.autonomia.site` | Verified for current release on VPS | Infra | future capacity/DNS changes | nova alteração exige smoke e rollback |

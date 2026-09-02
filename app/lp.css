@@ -1,6 +1,6 @@
 /* Landing page publica do Autonom.ia Sell.
    O palco 3D, o scrim da foto e os pontos do trilho tem numeros medidos: ver
-   as decisoes 013 a 017 em docs/DECISIONS.md antes de mexer em perspectiva,
+   as decisoes 013 a 018 em docs/DECISIONS.md antes de mexer em perspectiva,
    gradiente, offset ou no ritmo do hero. */
 
 :root:has(.lp) { overflow-x: clip; scroll-behavior: auto; }

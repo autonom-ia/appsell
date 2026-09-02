@@ -13,7 +13,7 @@ o sitemap ainda não foi submetido ao Search Console.
 
 **Em revisão, [#369](https://github.com/autonom-ia/appsell/issues/369):** a
 passagem entre os atos do hero deixou o scrub e passou a tocar no tempo
-(decisão 017). Filmada a 28 fps, a troca antiga cabia em 4 a 8 quadros e
+(decisão 018). Filmada a 28 fps, a troca antiga cabia em 4 a 8 quadros e
 deixava o título antigo por cima do novo; a nova dura ~0,9 s em qualquer
 velocidade de rolagem. O bloco de texto centra no aparelho, e no celular o
 eyebrow fica na mesma linha nos três atos.
