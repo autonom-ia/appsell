@@ -79,7 +79,9 @@ export function origemPublica(): string {
 
 // Texto de uma linha: assunto, titulo, eyebrow, rotulos, motivo. Quebra de
 // linha ou controle aqui e como se imita o rodape na versao em texto puro.
-const CONTROLE = /[\u0000-\u001f\u007f]/;
+// Alem de C0 e DEL: C1 (inclui NEL U+0085), os separadores Unicode de linha e
+// paragrafo, e os controles bidirecionais, que invertem o texto exibido.
+const CONTROLE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
 
 function umaLinha(campo: string, valor: string): string {
   if (CONTROLE.test(valor)) {
@@ -102,6 +104,21 @@ function escapar(valor: string): string {
     .replace(/'/g, "&#39;");
 }
 
+// Nomes de parametro que denunciam segredo de sessao ou de conta. A politica
+// (§4) permite link de uso unico com validade curta — convite, redefinicao —
+// e proibe token de sessao, senha e token permanente. O nome nao prova o
+// conteudo, mas barra o engano mais comum: colar a URL logada no template.
+const PARAMETRO_PROIBIDO =
+  /^(?:session|sessao|sid|sessionid|session_id|senha|password|pass|pwd|access_token|refresh_token|id_token|token|api_key|apikey|secret|cookie|auth|authorization|bearer)$/i;
+
+function parametrosProibidos(analisada: URL): string[] {
+  const chaves = [...analisada.searchParams.keys()];
+  if (analisada.hash.length > 1) {
+    chaves.push(...new URLSearchParams(analisada.hash.slice(1)).keys());
+  }
+  return chaves.filter((chave) => PARAMETRO_PROIBIDO.test(chave));
+}
+
 // O botao so leva para a nossa origem. "https://sell.autonomia.site@evil.com/"
 // e uma URL https valida cujo host e evil.com; "https://u:p@host/" carrega
 // credencial para dentro do HTML. Ambas caem aqui.
@@ -115,6 +132,10 @@ function urlDeAcao(url: string): string {
   }
   if (analisada.username !== "" || analisada.password !== "") throw erro;
   if (analisada.origin !== origemPublica()) throw erro;
+  const proibidos = parametrosProibidos(analisada);
+  if (proibidos.length > 0) {
+    throw new Error(`acao.url carrega parametro proibido pela politica: ${proibidos.join(", ")}`);
+  }
   return analisada.toString();
 }
 

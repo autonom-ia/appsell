@@ -33,8 +33,9 @@ const HOSTIL_ESCAPADO = "&amp;&lt;&gt;&quot;&#39; fim";
 // rastreador ou engano.
 function recursosRemotos(html: string): string[] {
   const achados = new Set<string>();
-  for (const m of html.matchAll(/\b(?:src|href)="([^"]+)"|url\(([^)]+)\)/g)) {
-    achados.add((m[1] ?? m[2]).replace(/&amp;/g, "&"));
+  const atributo = /\b(?:src|href|action|background|poster|data)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+))|url\(\s*["']?([^)"']+)["']?\s*\)/gi;
+  for (const m of html.matchAll(atributo)) {
+    achados.add((m[1] ?? m[2] ?? m[3] ?? m[4]).replace(/&amp;/g, "&"));
   }
   return [...achados];
 }
@@ -110,6 +111,11 @@ describe("renderizarEmailTransacional", () => {
       { assunto: "assunto\u0000nulo" },
       { titulo: "título\u001bescape" },
       { eyebrow: "eye\u007fbrow" },
+      { eyebrow: "nel\u0085aqui" },
+      { titulo: "separador\u2028de linha" },
+      { titulo: "paragrafo\u2029unicode" },
+      { motivo: "bidi\u202einvertido" },
+      { motivo: "isolado\u2066bidi\u2069" },
       { paragrafos: ["ok", "quebra\ndentro"] },
       { acao: { rotulo: "abrir\n", url: `${ORIGEM}/x` } }
     ];
@@ -142,6 +148,24 @@ describe("renderizarEmailTransacional", () => {
     });
     expect(html).toContain(`href="${ORIGEM}/library?x=1&amp;y=2"`);
     expect(text).toContain(`Abrir o curso: ${ORIGEM}/library?x=1&y=2`);
+  });
+
+  it("recusa botão cujo parâmetro denuncia segredo de sessão ou de conta", () => {
+    const recusadas = [
+      `${ORIGEM}/library?session_token=abc`,
+      `${ORIGEM}/library?token=abc`,
+      `${ORIGEM}/login?password=abc`,
+      `${ORIGEM}/x?Access_Token=abc`,
+      `${ORIGEM}/invite#access_token=abc`,
+      `${ORIGEM}/invite#sid=abc&ok=1`
+    ];
+    for (const url of recusadas) {
+      expect(() => renderizarEmailTransacional({ ...base, acao: { rotulo: "Abrir", url } })).toThrow(/proibido/);
+    }
+    // Link de uso unico com nome proprio passa: e o desenho do convite.
+    for (const url of [`${ORIGEM}/invite#convite=abc`, `${ORIGEM}/redefinir?codigo=abc`, `${ORIGEM}/c/loja?utm=x`]) {
+      expect(() => renderizarEmailTransacional({ ...base, acao: { rotulo: "Abrir", url } })).not.toThrow();
+    }
   });
 
   it("lê a origem pública com a mesma regra de lib/site.ts", () => {

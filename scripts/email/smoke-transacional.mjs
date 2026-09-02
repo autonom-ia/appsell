@@ -13,7 +13,7 @@ import nodemailer from "nodemailer";
 
 // Node 24 importa .ts sem transpilar (type stripping). O layout e o mesmo que
 // os templates da #357 usam, entao o teste mostra o e-mail como ele vai sair.
-import { renderizarEmailTransacional } from "../../lib/email/layout-transacional.ts";
+import { origemPublica, renderizarEmailTransacional } from "../../lib/email/layout-transacional.ts";
 
 const REMETENTE_NOME = "Autonom.ia Sell";
 
@@ -111,7 +111,7 @@ async function main() {
       { rotulo: "Remetente", valor: config.de.address },
       { rotulo: "Natureza", valor: "transacional — sem descadastro" }
     ],
-    acao: { rotulo: "Abrir o Autonom.ia Sell", url: "https://sell.autonomia.site/" },
+    acao: { rotulo: "Abrir o Autonom.ia Sell", url: `${origemPublica()}/` },
     motivo: "a operação do Autonom.ia Sell disparou um teste de entrega para este endereço"
   });
 
