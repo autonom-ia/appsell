@@ -1,6 +1,6 @@
 # PROGRESS — Appsell
 
-Última atualização documental: 2026-09-01.
+Última atualização documental: 2026-09-02.
 
 ## Fase atual
 
@@ -11,7 +11,7 @@ existem, cada loja tem título próprio, e o formulário de contato envia por SM
 sem intermediário. Fora do escopo entregue: a página não tem menu no celular, e
 o sitemap ainda não foi submetido ao Search Console.
 
-**Em revisão, [#369](https://github.com/autonom-ia/appsell/issues/369):** a
+**Em produção desde 02/09 (`9655a13`, só o `web`), [#369](https://github.com/autonom-ia/appsell/issues/369):** a
 passagem entre os atos do hero deixou o scrub e passou a tocar no tempo
 (decisão 018). Filmada a 28 fps, a troca antiga cabia em 4 a 8 quadros e
 deixava o título antigo por cima do novo; a nova dura ~0,9 s em qualquer

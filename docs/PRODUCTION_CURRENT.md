@@ -2,12 +2,12 @@
 
 > Fonte operacional para retomar o projeto sem depender do histórico da conversa.
 >
-> Última verificação documentada: **2026-09-01**. Esta página separa o que foi
+> Última verificação documentada: **2026-09-02**. Esta página separa o que foi
 > comprovado na produção do que continua sendo plano ou laboratório Local/CI.
 
 ## Release em produção
 
-> Última verificação: **2026-09-01**, lendo o host — não a memória desta página.
+> Última verificação: **2026-09-02**, lendo o host — não a memória desta página.
 > Esta página já divergiu da realidade três vezes; o que vale é o que
 > `docker service ls` responde.
 
@@ -18,8 +18,17 @@
 | SHA do **api** | `581a592` |
 | SHA do **asset-worker** | `d5e00ec` — mesma imagem da api, um SHA atrás |
 | SHA do **pdf-sandbox** | `d5e00ec` — mesma imagem da api, com outra tag |
-| SHA do **web** | `581a592` |
+| SHA do **web** | `9655a13` — só o Next mudou; api segue em `581a592`, worker e sandbox em `d5e00ec` |
 | Banco | head **`0048_nome_de_quem_entrou`**, `schema_ready() = true` |
+
+**Release de 2026-09-02, só o `web`: `9655a13`.** A passagem entre os atos do
+hero deixou o scrub e passou a tocar no tempo (Decisão 018, #369, PR #371). O
+caminho foi o do runbook: spec e nomes das 52 variáveis salvos em `/tmp` do
+host, imagem construída com `--build-arg GIT_SHA`, `service update` com
+`stop-first`, variáveis iguais por nome, páginas 200 e o CSS servido contendo
+`align-content:safe center` como prova do bundle novo. Rollback: `web:581a592`,
+ainda no host. O health do `web` responde em `/api/health/live` e
+`/api/health/ready`; não existe `/api/healthz` no Next.
 
 **Os quatro andaram no mesmo SHA por algumas horas, em `d5e00ec`.** O release do
 vídeo longo obrigou o `pdf-sandbox` a subir junto, porque o modo que recusa
