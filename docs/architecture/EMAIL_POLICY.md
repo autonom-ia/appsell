@@ -235,18 +235,20 @@ lease de 300 s mais folga —, senão o orquestrador mata o processo entre o
 o mesmo `Message-ID`, que é a mitigação, não a garantia).
 
 Um comando só liga o canal e dá o tempo — imagem, variáveis e graça na mesma
-atualização, para um único `stop-first` (valores lidos do arquivo de segredos
-para o ambiente, nunca digitados):
+atualização, para um único `stop-first`. Os valores vêm do arquivo de
+segredos para o ambiente do shell, com os **mesmos nomes** que o serviço usa;
+nada é digitado na linha de comando, que fica no histórico:
 
 ```sh
+set -a; . "$ARQUIVO_DE_SEGREDOS"; set +a   # define SMTP_*_TRANSACIONAL
 docker service update \
   --image easypanel/sell-autonomia/api:<sha> \
   --stop-grace-period 330s \
-  --env-add SMTP_HOST_TRANSACIONAL="$SMTP_HOST" \
-  --env-add SMTP_PORT_TRANSACIONAL=465 \
-  --env-add SMTP_SECURE_TRANSACIONAL=true \
+  --env-add SMTP_HOST_TRANSACIONAL="$SMTP_HOST_TRANSACIONAL" \
+  --env-add SMTP_PORT_TRANSACIONAL="${SMTP_PORT_TRANSACIONAL:-465}" \
+  --env-add SMTP_SECURE_TRANSACIONAL="${SMTP_SECURE_TRANSACIONAL:-true}" \
   --env-add SMTP_USER_TRANSACIONAL=sell@autonomia.site \
-  --env-add SMTP_PASS_TRANSACIONAL="$SMTP_PASS" \
+  --env-add SMTP_PASS_TRANSACIONAL="$SMTP_PASS_TRANSACIONAL" \
   --update-order stop-first sell-autonomia_api
 ```
 
