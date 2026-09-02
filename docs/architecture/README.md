@@ -36,6 +36,7 @@ dados de clientes sem o gate correspondente.
 - [Plano de migração e rollback](MIGRATION_AND_ROLLBACK.md)
 - [Auditoria de dependências e licenças](DEPENDENCY_AND_LICENSE_AUDIT.md)
 - [Registro de decisões pendentes](DECISION_REGISTER.md)
+- [Política de e-mail: remetentes, natureza e descadastro](EMAIL_POLICY.md)
 
 ## Regras não negociáveis
 

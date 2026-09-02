@@ -281,6 +281,43 @@ outras landings. Adicione com `--env-add` em uma única atualização; nunca pel
 `updateEnv` do painel sem o campo `env` completo, porque omiti-lo apaga todas as
 variáveis do serviço.
 
+Há um segundo conjunto, `SMTP_*_TRANSACIONAL`, com os mesmos cinco nomes e a
+conta `sell@autonomia.site`. É o remetente de confirmação de compra, convite e
+segurança de conta, e é **separado de propósito** — nenhum envio transacional
+cai no comercial como fallback, e vice-versa. Se o comercial está configurado e
+o transacional não, o formulário funciona e o canal transacional fica
+desligado; isso é o esperado, não um defeito. Regra completa em
+[EMAIL_POLICY.md](architecture/EMAIL_POLICY.md).
+
+## Problema: o e-mail transacional não chega, ou chega como spam
+
+Primeiro confira os nomes das variáveis com o comando acima. Depois envie um
+teste com o smoke. Ele **não roda dentro do container do `web`**: a imagem é o
+standalone do Next, sem `scripts/` e sem `nodemailer` fora do chunk da rota.
+Rode de um checkout com `pnpm install` feito, lendo as variáveis do arquivo de
+segredos para o ambiente do subshell — nunca na linha de comando, que fica no
+histórico:
+
+```sh
+( set -a; . "$ARQUIVO_DE_SEGREDOS"; set +a; \
+  node scripts/email/smoke-transacional.mjs voce@exemplo.com )
+```
+
+O script imprime só o que o SMTP devolveu: aceitos, rejeitados e `Message-ID`.
+Nunca imprime credencial, nem em erro.
+
+O aceite é o cabeçalho **recebido**, não a resposta do SMTP. Na caixa de
+destino, "Mostrar original" e procure `Authentication-Results`:
+
+- `spf=pass dkim=pass dmarc=pass` — o canal está íntegro; se caiu em spam, o
+  problema é conteúdo ou reputação, não configuração;
+- `dkim=fail` ou `dkim=none` — a Hostinger não assinou; a conta não está no
+  mesmo plano de e-mail que a comercial, ou o seletor `hostingermail-a` mudou;
+- `spf=fail` — o envio não saiu pelo SMTP da Hostinger; confira
+  `SMTP_HOST_TRANSACIONAL`;
+- `535` na resposta do SMTP — senha errada; rotacione pela Hostinger e
+  atualize a variável com `--env-add`, nunca pelo painel sem o `env` completo.
+
 ## Problema: o contador de variáveis caiu depois de um deploy
 
 Não conclua perda pelo número. Em 01/09 o total foi de 47 para 51 depois de

@@ -1,0 +1,190 @@
+# Política de e-mail — remetentes, natureza e descadastro
+
+- Status: decidida em 2026-09-02 (issue [#355](https://github.com/autonom-ia/appsell/issues/355), fecha a `D-029`)
+- Owner: Produto + Infra + LGPD
+- Escopo: todo e-mail que a plataforma envia a uma pessoa real. Não cobre o
+  formulário de contato da página pública, que é e-mail **de entrada** e segue
+  pelo remetente comercial.
+
+Esta página é a regra. O canal de envio (`#356`), os templates (`#357`) e a fila
+(`#358`) implementam o que está aqui; se divergirem, a página vence e o código
+está errado.
+
+## 1. Dois remetentes, nunca cruzados
+
+| Remetente | Conta | Usa para | Variáveis |
+|---|---|---|---|
+| **Transacional** | `sell@autonomia.site` | tudo o que a plataforma envia a compradores, vendedores e membros de equipe | `SMTP_*_TRANSACIONAL` |
+| **Comercial** | `sell.comercial@autonomia.site` | receber o formulário da página pública (`POST /api/contato`) | `SMTP_*_COMERCIAL` |
+
+Separar não é organização: é reputação. Provedores pontuam **cada endereço**
+e o domínio. Um formulário comercial marcado como spam por um destinatário
+derrubaria a entrega da confirmação de compra se os dois saíssem da mesma
+conta. Por isso:
+
+- nenhum envio transacional usa `SMTP_*_COMERCIAL`, nem como fallback quando
+  o transacional não está configurado — sem variáveis, o canal **não envia** e
+  registra que não enviou;
+- nenhum e-mail de contato, prospecção ou marketing sai de `sell@autonomia.site`.
+
+Nome de exibição do remetente transacional: **Autonom.ia Sell**. `From` é
+sempre `sell@autonomia.site`; o vendedor nunca aparece como remetente, porque o
+domínio dele não assina DKIM pelo nosso SMTP e o e-mail seria classificado como
+falsificação.
+
+`Reply-To` é o próprio `sell@autonomia.site`, cuja caixa é lida no Google
+Workspace. Quando o assunto é do vendedor (dúvida sobre o curso), o corpo traz o
+contato dele; a resposta ao e-mail não vai ao vendedor.
+
+## 2. Natureza: o que é transacional e o que é opcional
+
+A pergunta que classifica: **se a pessoa não receber este e-mail, ela perde
+acesso, dinheiro, segurança ou um direito?** Se sim, é transacional.
+
+### Transacional — não se descadastra
+
+Base legal: execução de contrato (LGPD art. 7º, V) e obrigação legal (art. 7º,
+II). Sem opção de saída, porque a saída deixaria a pessoa sem o que ela
+comprou ou sem aviso do que aconteceu com a conta dela.
+
+| E-mail | Destinatário | Gatilho |
+|---|---|---|
+| Acesso liberado / confirmação de compra | comprador | entitlement concedido (checkout pago ou acesso gratuito) |
+| Recibo ou comprovante da compra | comprador | pagamento confirmado |
+| Convite para a equipe da loja | pessoa convidada | convite emitido (`SPEC_CONVITES_MEMBROS.md`) |
+| Segurança da conta | titular | login novo, pedido de exclusão registrado, alteração de e-mail |
+| Loja suspensa ou reativada | dono da loja | mudança de status pela plataforma |
+| Alteração de Termos ou Política de Privacidade | todos com conta | publicação de nova versão (Política de Privacidade, §12) |
+| Incidente de segurança com risco relevante | titulares afetados | decisão do encarregado (Política de Privacidade, §10) |
+
+### Opcional — só com consentimento, e se descadastra em um clique
+
+Base legal: consentimento (art. 7º, I), revogável a qualquer momento.
+
+| E-mail | Condição |
+|---|---|
+| Lembrete de conteúdo não concluído | comprador optou por receber |
+| Novidades da loja (novo produto, novo módulo) | comprador optou por receber daquela loja |
+| Comunicação da plataforma (novidades do produto Sell) | vendedor optou por receber |
+
+**Nesta rodada, nenhum e-mail opcional é enviado.** Não existe preferência de
+notificação no produto (decisão 3 do plano de configurações por papel: fora do
+escopo), logo não existe consentimento registrado, logo não existe base legal
+para enviar. O canal opcional só nasce junto da tela de preferência, e o
+descadastro é um link de um clique **sem login** mais o cabeçalho
+`List-Unsubscribe` com `List-Unsubscribe-Post: List-Unsubscribe=One-Click`.
+
+Uma comunicação que mistura as duas naturezas é opcional: um "seu acesso foi
+liberado, e veja também estes outros cursos" **não** pode sair como
+transacional. Transacional diz uma coisa só.
+
+## 3. Rodapé obrigatório
+
+Todo e-mail transacional termina com o mesmo bloco, em texto e em HTML:
+
+```
+Autonom.ia Sell · enviado por Autonom.ia Tecnologia Ltda (CNPJ 59.303.298/0001-51)
+Este é um e-mail transacional sobre a sua conta ou a sua compra; você o recebe
+porque <motivo em uma linha, ex.: "comprou o curso X na loja Y">. Ele não
+depende de inscrição e não tem descadastro.
+Dúvidas sobre seus dados: contato@autonomia.site · Política de Privacidade:
+https://sell.autonomia.site/privacidade
+```
+
+O e-mail opcional troca a terceira frase por:
+
+```
+Você recebe porque optou por receber <o quê> em <data>. Para parar:
+<link de descadastro em um clique, sem login>.
+```
+
+O rodapé identifica **remetente**, **natureza** e **motivo**. Um destinatário
+que não entende por que recebeu marca como spam; o motivo em uma linha é a
+mitigação mais barata que existe.
+
+## 4. O que nunca vai no corpo
+
+- senha, código de acesso permanente ou token de sessão;
+- link de uso único com validade acima de 24 h para convite e acima de 1 h
+  para segurança de conta;
+- dados de terceiros: o comprador não vê dados de outro comprador, o convidado
+  não vê a lista da equipe;
+- dados de pagamento além dos quatro últimos dígitos e do valor;
+- qualquer rastreador de abertura ou clique. Telemetria de entrega é o que o
+  SMTP devolve, não pixel no corpo (`D-030`).
+
+## 5. Segredo do remetente
+
+A senha de `sell@autonomia.site` vive **apenas** em `SMTP_PASS_TRANSACIONAL`,
+no env do serviço que envia. Nunca em commit, em `.env.example`, em log, em
+mensagem de erro, em documento ou em chat. Erro de autenticação SMTP é
+registrado com host, porta e código da resposta — nunca com o usuário e a senha
+tentados.
+
+Rotação: trocar a senha na Hostinger, atualizar a variável no serviço com
+`--env-add` numa única atualização (nunca `updateEnv` do painel sem o campo
+`env` completo), validar com o smoke da §7.
+
+## 6. Estado de entrega do domínio (verificado em 2026-09-02)
+
+| Registro | Valor encontrado | Situação |
+|---|---|---|
+| SPF `autonomia.site` | `v=spf1 include:_spf.mail.hostinger.com include:amazonses.com ~all` | passa para o SMTP da Hostinger; o include do SES é de outro sistema e não deste canal |
+| DKIM `hostingermail-a._domainkey` | CNAME para `hostingermail-a.dkim.mail.hostinger.com`, chave RSA publicada | assina |
+| DMARC `_dmarc` | `v=DMARC1; p=none` | observação apenas; **sem `rua=`, ninguém recebe os relatórios** |
+| MX | Google Workspace | recebe pelo Google, envia pela Hostinger — assimétrico e funcional |
+
+Consequência para as próximas decisões, ambas mudanças de DNS que exigem OK
+explícito na hora:
+
+1. **Antes** de endurecer o DMARC, acrescentar `rua=mailto:<caixa de
+   relatórios>` ao registro. Hoje `p=none` não coleta nada, então "ler os
+   relatórios por algumas semanas" não é possível sem esse passo.
+2. Só depois de semanas de relatório sem falha legítima, subir para
+   `p=quarantine`. Endurecer antes de observar derruba e-mail legítimo.
+
+## 7. Verificação de aceite
+
+O smoke `scripts/email/smoke-transacional.mjs` envia um e-mail de teste pelo
+remetente transacional com as variáveis do ambiente onde roda, e imprime só o
+que o SMTP devolve (aceitos, rejeitados, `Message-ID`). Nunca imprime
+credencial, nem em erro. Roda de um checkout com dependências instaladas, não
+de dentro da imagem do `web` (standalone, sem `scripts/`). As variáveis entram
+pelo ambiente de um subshell, lidas do arquivo de segredos — nunca digitadas
+na linha de comando:
+
+```sh
+( set -a; . "$ARQUIVO_DE_SEGREDOS"; set +a; \
+  node scripts/email/smoke-transacional.mjs destinatario@exemplo.com )
+```
+
+O aceite não é "o SMTP aceitou"; é o cabeçalho **recebido** na caixa de
+destino mostrar:
+
+```
+Authentication-Results: ... spf=pass ... dkim=pass header.d=autonomia.site ... dmarc=pass
+```
+
+`spf=pass` sem `dkim=pass` quer dizer que a Hostinger não assinou — conferir
+se a conta está no mesmo plano de e-mail que a comercial.
+
+## 8. Reputação e ritmo de entrada
+
+O domínio não tem histórico transacional. A ordem de ligação dos e-mails segue
+a taxa de abertura esperada, porque abertura constrói reputação e reclamação a
+destrói:
+
+1. acesso liberado / confirmação de compra — aberto por quase todo destinatário;
+2. convite de equipe — pedido pela própria pessoa que convida;
+3. segurança de conta e avisos de status;
+4. alteração de termos, em lote, só depois de os três acima rodarem sem
+   reclamação por algumas semanas.
+
+Rejeição permanente (5xx) marca o endereço e a fila não tenta de novo; rejeição
+temporária (4xx) tenta com recuo. O detalhe é da `#358`; a regra é esta.
+
+## 9. Rollback
+
+Remover as cinco variáveis `SMTP_*_TRANSACIONAL` do serviço desliga o canal:
+sem configuração, o canal não envia e registra que não enviou. Nenhum outro
+componente depende delas.
