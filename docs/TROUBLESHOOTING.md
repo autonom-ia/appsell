@@ -288,8 +288,10 @@ cai no comercial como fallback, e vice-versa. Ele vive no serviço **`api`**,
 não no `web`: quem envia é o worker de e-mail, que roda dentro do processo da
 API (mesmo lugar do worker de fulfillment). Se o comercial está configurado e
 o transacional não, o formulário funciona e o canal transacional fica
-desligado — a API registra `email_worker_disabled reason=smtp_not_configured`
-uma vez ao subir, e as linhas de `app_private.email_outbox` ficam `pending`.
+desligado — a API registra `email_worker_disabled` uma vez ao subir, com o
+motivo (`smtp_not_configured`, `smtp_partial`, `sender_mismatch` quando o
+usuário não é `sell@autonomia.site`, `public_origin_invalid`), e as linhas de
+`app_private.email_outbox` ficam `pending`. Nada disso derruba a API.
 Isso é o esperado, não um defeito. Regra completa em
 [EMAIL_POLICY.md](architecture/EMAIL_POLICY.md).
 
@@ -314,7 +316,8 @@ from app_private.email_outbox order by created_at desc limit 20;
 - `pending` há minutos → o worker não está rodando: procure
   `email_worker_disabled` no log da API (SMTP não configurado) ou
   `email_worker_retry`;
-- `retry` com `smtp_auth` → senha errada, o worker espera 10 min entre tentativas;
+- `retry` com `smtp_auth` → credencial recusada: o worker pausa 10 min e a
+  tentativa não conta contra o item (`email_worker_paused` no log);
 - `retry` com `smtp_unreachable`/`smtp_temporary` → host ou porta, ou o
   provedor fora do ar; `dead_letter` com `recipient_refused` → o endereço não
   existe, e a fila não insiste;

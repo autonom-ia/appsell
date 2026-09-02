@@ -59,10 +59,12 @@ declare
   reescrita text;
 begin
   definicao := pg_get_functiondef('ALVO'::regprocedure);
-  reescrita := replace(definicao, $de$DE$de$, $para$PARA$para$);
-  if reescrita = definicao then
-    raise exception 'ALVO não continha o texto esperado' using errcode='55000';
+  -- A âncora tem de ocorrer exatamente uma vez: replace troca todas, e uma
+  -- segunda ocorrência inesperada inseriria o trecho em lugar errado.
+  if (length(definicao) - length(replace(definicao, $de$DE$de$, ''))) / length($de$DE$de$) <> 1 then
+    raise exception 'ALVO não continha a âncora exatamente uma vez' using errcode='55000';
   end if;
+  reescrita := replace(definicao, $de$DE$de$, $para$PARA$para$);
   execute reescrita;
 end $migration$;
 """
@@ -91,6 +93,16 @@ _TRECHO_INSERIDO = """            insert into app_private.email_outbox(
             join public.identity_user buyer on buyer.id=buyer_id
             where catalog.seller_organization_id=p_seller
               and catalog.id=mapped_product_id
+              -- Só quando ESTA compra sustenta o acesso: uma compra
+              -- reembolsada que chega aprovada de novo passa por aqui porque
+              -- outra compra ativa do mesmo par mantém a entitlement, e não
+              -- pode dizer ao comprador que o acesso foi liberado.
+              and exists(
+                select 1 from app_private.entitlement_grant ledger
+                where ledger.seller_organization_id=p_seller
+                  and ledger.checkout_integration_id=event.checkout_integration_id
+                  and ledger.external_purchase_id_sha256=job.external_purchase_id_sha256
+                  and ledger.status='active')
             on conflict on constraint email_outbox_dedupe_key do nothing;
 """
 _INSERCAO = _ANCORA + _TRECHO_INSERIDO
@@ -122,6 +134,10 @@ _TABELAS = (
         and position('@' in recipient_email) > 1
         and octet_length(recipient_email) between 6 and 320
         and recipient_email !~ '[[:cntrl:][:space:]]'
+        -- Um destinatário só: vírgula ou ponto e vírgula viraria dois no
+        -- envelope SMTP, e o segundo receberia a compra do primeiro.
+        and recipient_email !~ '[,;<>()"]' and recipient_email !~ '[][]'
+        and length(recipient_email) - length(replace(recipient_email, '@', '')) = 1
       ),
       payload jsonb not null check (
         jsonb_typeof(payload)='object' and octet_length(payload::text) <= 4096
@@ -303,6 +319,10 @@ _FUNCOES_MOLDE = (
       update app_private.email_outbox queued set
         status=case when p_permanent or queued.attempt_count>=10
           then 'dead_letter' else 'retry' end,
+        -- Falha do canal (credencial, host fora) não é falha do item: devolve
+        -- a tentativa, senão dez quedas do provedor matam e-mails legítimos.
+        attempt_count=case when p_error in ('smtp_auth','smtp_unreachable')
+          then greatest(queued.attempt_count-1,0) else queued.attempt_count end,
         available_at=clock_timestamp()+make_interval(secs=>p_delay_seconds),
         lease_owner=null,lease_expires_at=null,error_code=p_error,
         updated_at=clock_timestamp()

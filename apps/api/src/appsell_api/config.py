@@ -8,6 +8,13 @@ from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
+from .email_layout import EmailInvalido, origem_publica
+
+# O remetente transacional é fixo pela política (EMAIL_POLICY.md §1): o From
+# é sempre este endereço, e o usuário SMTP tem de ser ele — senão o worker
+# não inicia, em vez de mandar e-mail em nome de outra conta.
+EMAIL_REMETENTE = "sell@autonomia.site"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -87,12 +94,33 @@ class Settings(BaseSettings):
     )
 
     @property
-    def email_configured(self) -> bool:
-        return bool(
-            self.email_smtp_host
-            and self.email_smtp_user
-            and self.email_smtp_password.get_secret_value()
+    def email_disabled_reason(self) -> str | None:
+        """Por que o worker de e-mail não deve iniciar; None quando pode.
+
+        Nunca derruba a API: o canal de e-mail é acessório ao acesso, e uma
+        variável faltando não pode custar o site inteiro. O worker registra o
+        motivo uma vez e as linhas da caixa de saída ficam pendentes.
+        """
+        values = (
+            self.email_smtp_host,
+            self.email_smtp_user,
+            self.email_smtp_password.get_secret_value(),
         )
+        if not any(values):
+            return "smtp_not_configured"
+        if not all(values):
+            return "smtp_partial"
+        if self.email_smtp_user != EMAIL_REMETENTE:
+            return "sender_mismatch"
+        try:
+            origem_publica(self.email_public_origin)
+        except EmailInvalido:
+            return "public_origin_invalid"
+        return None
+
+    @property
+    def email_configured(self) -> bool:
+        return self.email_disabled_reason is None
 
     @property
     def is_production(self) -> bool:
@@ -166,16 +194,6 @@ class Settings(BaseSettings):
             raise ValueError("internal request authentication must be configured completely")
         if self.environment in {"staging", "production"} and not all(internal_values):
             raise ValueError("internal request authentication is required outside local/CI")
-        email_values = (
-            self.email_smtp_host,
-            self.email_smtp_user,
-            self.email_smtp_password.get_secret_value(),
-        )
-        if any(email_values) and not all(email_values):
-            # Metade configurado é o pior estado: parece ligado e não envia.
-            raise ValueError("transactional email must be configured completely")
-        if self.email_smtp_user and "@" not in self.email_smtp_user:
-            raise ValueError("transactional email user must be an address")
         if self.storage_provider == "s3":
             storage_values = (
                 self.storage_internal_endpoint,

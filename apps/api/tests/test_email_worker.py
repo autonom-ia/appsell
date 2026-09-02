@@ -32,13 +32,13 @@ def _settings(monkeypatch: pytest.MonkeyPatch, **env: str) -> Settings:
 
 
 def _configurado(monkeypatch: pytest.MonkeyPatch, **extra: str) -> Settings:
-    return _settings(
-        monkeypatch,
-        SMTP_HOST_TRANSACIONAL="smtp.example.test",
-        SMTP_USER_TRANSACIONAL="sell@autonomia.site",
-        SMTP_PASS_TRANSACIONAL=SEGREDO,
+    env = {
+        "SMTP_HOST_TRANSACIONAL": "smtp.example.test",
+        "SMTP_USER_TRANSACIONAL": "sell@autonomia.site",
+        "SMTP_PASS_TRANSACIONAL": SEGREDO,
         **extra,
-    )
+    }
+    return _settings(monkeypatch, **env)
 
 
 def test_settings_leem_os_nomes_da_b0_sem_prefixo(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -55,19 +55,19 @@ def test_settings_leem_os_nomes_da_b0_sem_prefixo(monkeypatch: pytest.MonkeyPatc
     assert settings.email_public_origin == "https://preview.example.test/"
 
 
-def test_settings_sem_smtp_ficam_desligadas_e_metade_e_erro(
+def test_settings_nunca_derrubam_a_api_e_dizem_por_que_o_worker_nao_inicia(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    assert _settings(monkeypatch).email_configured is False
-    with pytest.raises(ValueError, match="completely"):
-        _settings(monkeypatch, SMTP_HOST_TRANSACIONAL="smtp.example.test")
-    with pytest.raises(ValueError, match="address"):
-        _settings(
-            monkeypatch,
-            SMTP_HOST_TRANSACIONAL="smtp.example.test",
-            SMTP_USER_TRANSACIONAL="sem-arroba",
-            SMTP_PASS_TRANSACIONAL="x",  # noqa: S106 — valor de teste, não segredo
-        )
+    # Configuração errada desliga o canal com motivo; jamais levanta na carga
+    # das Settings, porque isso derrubaria a API inteira por causa de e-mail.
+    assert _settings(monkeypatch).email_disabled_reason == "smtp_not_configured"
+    parcial = _settings(monkeypatch, SMTP_HOST_TRANSACIONAL="smtp.example.test")
+    assert parcial.email_disabled_reason == "smtp_partial" and not parcial.email_configured
+    outro = _configurado(monkeypatch, SMTP_USER_TRANSACIONAL="sell.comercial@autonomia.site")
+    assert outro.email_disabled_reason == "sender_mismatch"
+    origem = _configurado(monkeypatch, NEXT_PUBLIC_SITE_ORIGIN="http://sell.autonomia.site")
+    assert origem.email_disabled_reason == "public_origin_invalid"
+    assert _configurado(monkeypatch).email_disabled_reason is None
 
 
 def test_classificacao_de_erro_nao_carrega_o_dialogo_smtp() -> None:
@@ -123,7 +123,9 @@ def test_monta_mensagem_com_texto_e_html_e_message_id(monkeypatch: pytest.Monkey
     assert mensagem["Reply-To"] == "sell@autonomia.site"
     assert mensagem["Subject"] == "Seu acesso a Fotografia com Luz Natural está liberado"
     assert mensagem["Message-ID"] == f"<{message_id}>"
-    assert message_id.endswith("@autonomia.site")
+    # Estável por item: a segunda tentativa de um envio que saiu sem registro
+    # leva o mesmo id, e o cliente de quem recebe reconhece a duplicata.
+    assert message_id == "ee000000-0000-4000-8000-000000000201@autonomia.site"
     partes = {parte.get_content_type(): parte.get_content() for parte in mensagem.iter_parts()}
     assert "Olá, Mariana." in partes["text/plain"]
     assert "Luz &amp; Sombra" in partes["text/html"]
@@ -140,6 +142,11 @@ def test_monta_mensagem_classifica_entrada_impossivel_como_permanente(
     with pytest.raises(FalhaDeEnvio) as erro:
         montar_mensagem(_item(payload={"schema_version": 9}), settings)
     assert erro.value.error_code == "render_failed" and erro.value.permanent
+    # Dois endereços num campo só virariam dois destinatários no smtplib.
+    for ruim in ["a@b.test,c@d.test", "a@b.test;c@d.test", "Nome <a@b.test>", "a@b", ""]:
+        with pytest.raises(FalhaDeEnvio) as erro:
+            montar_mensagem(_item(recipient_email=ruim), settings)
+        assert erro.value.error_code == "recipient_invalid" and erro.value.permanent
 
 
 @pytest.mark.asyncio
@@ -158,6 +165,14 @@ async def test_worker_nao_inicia_sem_smtp_e_registra(monkeypatch: pytest.MonkeyP
         timeout=1,
     )
     assert eventos == [("email_worker_disabled", {"reason": "smtp_not_configured"})]
+    eventos.clear()
+    parcial = _settings(monkeypatch, SMTP_HOST_TRANSACIONAL="smtp.example.test")
+    app = SimpleNamespace(state=SimpleNamespace(settings=parcial, internal_auth=object()))
+    await asyncio.wait_for(
+        email_worker.run_email_worker_loop(app, asyncio.Event()),  # type: ignore[arg-type]
+        timeout=1,
+    )
+    assert eventos == [("email_worker_disabled", {"reason": "smtp_partial"})]
 
 
 def test_transporte_nao_expoe_a_senha(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -203,7 +218,7 @@ class _Auth:
 class _TransporteFalso:
     def __init__(self, erro: BaseException | None = None) -> None:
         self.erro = erro
-        self.enviadas: list[object] = []
+        self.enviadas: list[Any] = []
 
     def enviar(self, mensagem: object) -> None:
         if self.erro is not None:
@@ -228,6 +243,8 @@ async def test_entregar_conclui_com_message_id_no_contexto_do_tenant(
         params["message_id"]
     )
     assert params["fence"] == 1 and str(params["seller"]) == "ee000000-0000-4000-8000-000000000200"
+    assert params["message_id"] == "ee000000-0000-4000-8000-000000000201@autonomia.site"
+    assert transporte.enviadas[0]["To"] == "mariana@example.test"
     assert cast(Any, auth.envelopes[0]).seller_organization_id is not None
 
 

@@ -16,12 +16,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import re
 import smtplib
 import ssl
 import time
 from dataclasses import dataclass
 from email.message import EmailMessage
-from email.utils import formataddr, make_msgid
+from email.utils import formataddr
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
@@ -32,7 +33,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 from . import email_layout
-from .config import Settings
+from .config import EMAIL_REMETENTE, Settings
 from .internal_requests import InternalRequestAuthenticator
 from .service_auth import ServiceEnvelope, ServiceIdentity
 
@@ -41,11 +42,22 @@ WORKER_CAPABILITY = "notification.email.worker"
 _WORKER_EMAIL = "email-worker@system.appsell.internal"
 _WORKER_LABEL = f"api-email-{os.getpid()}"
 _IDLE_POLL_SECONDS = 2.0
-# A faixa que claim_email_outbox aceita é [5,300]; o teste confere.
-LEASE_SECONDS = 60
-CLAIM_LIMIT = 4
+# Um item por claim e lease de 120 s: um envio tem conexão, login e DATA, cada
+# um com timeout de 20 s, e o lease precisa sobreviver ao pior caso — senão
+# outro worker reivindica no meio e o comprador recebe duas vezes. A faixa que
+# claim_email_outbox aceita é [5,300]; o teste confere.
+LEASE_SECONDS = 120
+CLAIM_LIMIT = 1
+# Credencial recusada é falha do canal, não do item: o worker para por dez
+# minutos em vez de queimar tentativas de cada e-mail.
+_PAUSA_APOS_AUTH_SECONDS = 600
 REMETENTE_NOME = "Autonom.ia Sell"
 _SMTP_TIMEOUT_SECONDS = 20
+# Exatamente um addr-spec (dot-atom). Uma vírgula aqui viraria dois
+# destinatários no smtplib — e o segundo receberia a compra do primeiro.
+_ATOMO = r"[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+"
+_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+_UM_DESTINATARIO = re.compile(rf"^{_ATOMO}(?:\.{_ATOMO})*@(?:{_LABEL}\.)+[A-Za-z]{{2,63}}$")
 
 logger = structlog.get_logger(__name__)
 
@@ -85,7 +97,9 @@ class Transporte:
             if not self._secure:
                 cliente.starttls(context=contexto)
             cliente.login(self._user, self._password)
-            cliente.send_message(mensagem)
+            # Envelope explícito: o From e o único To vêm dos cabeçalhos que
+            # montar_mensagem validou, não de um parse dos cabeçalhos.
+            cliente.send_message(mensagem, from_addr=EMAIL_REMETENTE, to_addrs=[mensagem["To"]])
 
 
 def classificar_erro(erro: BaseException) -> FalhaDeEnvio:
@@ -122,6 +136,10 @@ def classificar_erro(erro: BaseException) -> FalhaDeEnvio:
     return FalhaDeEnvio("send_unexpected", permanent=False, delay_seconds=300)
 
 
+def destinatario_valido(valor: object) -> bool:
+    return isinstance(valor, str) and len(valor) <= 254 and bool(_UM_DESTINATARIO.match(valor))
+
+
 def montar_mensagem(item: dict[str, Any], settings: Settings) -> tuple[EmailMessage, str]:
     """Renderiza o e-mail do item e devolve a mensagem pronta e o Message-ID."""
     kind = item.get("kind")
@@ -130,6 +148,9 @@ def montar_mensagem(item: dict[str, Any], settings: Settings) -> tuple[EmailMess
     payload = item.get("payload")
     if not isinstance(payload, dict):
         raise FalhaDeEnvio("payload_invalid", permanent=True, delay_seconds=1)
+    destinatario = item.get("recipient_email")
+    if not destinatario_valido(destinatario):
+        raise FalhaDeEnvio("recipient_invalid", permanent=True, delay_seconds=1)
     try:
         email = email_layout.compra_confirmada(
             payload, item.get("recipient_name"), settings.email_public_origin
@@ -138,12 +159,15 @@ def montar_mensagem(item: dict[str, Any], settings: Settings) -> tuple[EmailMess
     except email_layout.EmailInvalido as erro:
         raise FalhaDeEnvio("render_failed", permanent=True, delay_seconds=1) from erro
 
-    dominio = settings.email_smtp_user.rsplit("@", 1)[-1] or "autonomia.site"
-    message_id = make_msgid(domain=dominio)
+    # Message-ID estável por item: se o envio sair e o registro falhar, a
+    # segunda tentativa leva o mesmo id, e o cliente de e-mail de quem recebe
+    # reconhece a duplicata.
+    dominio = EMAIL_REMETENTE.rsplit("@", 1)[-1]
+    message_id = f"<{UUID(str(item['id']))}@{dominio}>"
     mensagem = EmailMessage()
-    mensagem["From"] = formataddr((REMETENTE_NOME, settings.email_smtp_user))
-    mensagem["To"] = str(item["recipient_email"])
-    mensagem["Reply-To"] = settings.email_smtp_user
+    mensagem["From"] = formataddr((REMETENTE_NOME, EMAIL_REMETENTE))
+    mensagem["To"] = str(destinatario)
+    mensagem["Reply-To"] = EMAIL_REMETENTE
     mensagem["Subject"] = email.assunto
     mensagem["Message-ID"] = message_id
     mensagem.set_content(renderizado.text)
@@ -156,9 +180,10 @@ async def run_email_worker_loop(app: FastAPI, stop: asyncio.Event) -> None:
     auth: InternalRequestAuthenticator | None = app.state.internal_auth
     if auth is None:
         return
-    if not settings.email_configured:
+    motivo = settings.email_disabled_reason
+    if motivo is not None:
         # Fail-closed com registro: nada sai, e o motivo fica no log uma vez.
-        logger.warning("email_worker_disabled", reason="smtp_not_configured")
+        logger.warning("email_worker_disabled", reason=motivo)
         return
     worker_id = worker_identity(settings)
     transporte = Transporte(settings)
@@ -169,8 +194,18 @@ async def run_email_worker_loop(app: FastAPI, stop: asyncio.Event) -> None:
                 await _ensure_identity(auth, settings, worker_id)
                 registered = True
             itens = await _claim(auth, settings, worker_id)
+            pausa = 0.0
             for item in itens:
-                await _entregar(auth, settings, worker_id, transporte, item)
+                falha = await _entregar(auth, settings, worker_id, transporte, item)
+                if falha is not None and falha.error_code == "smtp_auth":
+                    pausa = _PAUSA_APOS_AUTH_SECONDS
+            if pausa:
+                logger.warning("email_worker_paused", reason="smtp_auth", seconds=pausa)
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=pausa)
+                except TimeoutError:
+                    pass
+                continue
             if itens:
                 continue
         except (DBAPIError, RuntimeError, ValueError, KeyError, HTTPException) as error:
@@ -221,7 +256,8 @@ async def _entregar(
     worker_id: UUID,
     transporte: Transporte,
     item: dict[str, Any],
-) -> None:
+) -> FalhaDeEnvio | None:
+    """Envia um item e registra o resultado; devolve a falha, se houve."""
     seller_id = UUID(str(item["seller_organization_id"]))
     outbox_id = UUID(str(item["id"]))
     fence = int(item["lease_fence"])
@@ -230,11 +266,11 @@ async def _entregar(
         await to_thread.run_sync(transporte.enviar, mensagem)
     except FalhaDeEnvio as falha:
         await _registrar_falha(auth, settings, worker_id, seller_id, outbox_id, fence, falha)
-        return
+        return falha
     except Exception as erro:  # noqa: BLE001 — a classificação decide, e o log não vaza.
         classificada = classificar_erro(erro)
         await _registrar_falha(auth, settings, worker_id, seller_id, outbox_id, fence, classificada)
-        return
+        return classificada
     try:
         async with auth.trusted_domain_session(
             worker_envelope(settings, worker_id, seller_id)
@@ -256,9 +292,10 @@ async def _entregar(
             )
     except DBAPIError:
         # O e-mail saiu e o registro não. O lease expira e a fila tenta de
-        # novo: o destinatário pode receber duas vezes. Fica no log com o
-        # Message-ID para a reconciliação, porque é raro e é visível.
+        # novo com o MESMO Message-ID, que o cliente de quem recebe usa para
+        # reconhecer a duplicata. Fica no log para a reconciliação.
         logger.error("email_sent_but_not_recorded", outbox_id=str(outbox_id), message_id=message_id)
+    return None
 
 
 async def _registrar_falha(

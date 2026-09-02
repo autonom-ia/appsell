@@ -43,6 +43,19 @@ ENDPOINT_HASH = hashlib.sha256(ENDPOINT_KEY.encode()).hexdigest()
 KEY_REFERENCE = "checkout-email-outbox-v1"
 PRODUCT_REFERENCE = b"email-outbox-product-001"
 PRODUCT_HASH = hashlib.sha256(PRODUCT_REFERENCE).hexdigest()
+# A outra loja é completa — produto, integração, endpoint, mapeamento — para
+# o teste cruzado provar que cada fila carrega o conteúdo da sua loja.
+OUTRO_PRODUCT = UUID("ee000000-0000-4000-8000-000000000220")
+OUTRO_COURSE = UUID("ee000000-0000-4000-8000-000000000221")
+OUTRO_PUBLICATION = UUID("ee000000-0000-4000-8000-000000000222")
+OUTRO_INTEGRATION = UUID("ee000000-0000-4000-8000-000000000223")
+OUTRO_ENDPOINT = UUID("ee000000-0000-4000-8000-000000000224")
+OUTRO_ENDPOINT_KEY = "emailbox_outra_0123456789abcdefghijklmnop"
+# secret_reference é único por endpoint no banco; a outra loja tem o seu.
+OUTRO_KEY_REFERENCE = "checkout-email-outbox-outra-v1"
+OUTRO_ENDPOINT_HASH = hashlib.sha256(OUTRO_ENDPOINT_KEY.encode()).hexdigest()
+OUTRO_PRODUCT_REFERENCE = b"email-outbox-product-outra-001"
+OUTRO_PRODUCT_HASH = hashlib.sha256(OUTRO_PRODUCT_REFERENCE).hexdigest()
 FULFILLMENT_SUBJECT = "fulfillment-worker-v1"
 FULFILLMENT_CAPABILITY = "commerce.fulfillment.worker"
 FULFILLMENT_LABEL = "pytest-email-fulfillment"
@@ -144,6 +157,76 @@ def fixture() -> dict[str, UUID | str]:
             "values(%s,%s,%s,%s,%s) on conflict do nothing",
             (SELLER, INTEGRATION, PRODUCT_HASH, len(PRODUCT_REFERENCE), PRODUCT),
         )
+        connection.execute(
+            "insert into seller_membership(seller_organization_id,identity_user_id,role,status) "
+            "values(%s,%s,'seller_owner','active') on conflict do nothing",
+            (OUTRO_SELLER, OWNER),
+        )
+        connection.execute(
+            "insert into catalog_product(seller_organization_id,id,slug,title,description,status) "
+            "values(%s,%s,'curso-da-outra','Curso da Outra','Produto de teste','draft') "
+            "on conflict do nothing",
+            (OUTRO_SELLER, OUTRO_PRODUCT),
+        )
+        connection.execute(
+            "insert into course(seller_organization_id,id,title,description,status,draft_version) "
+            "values(%s,%s,'Curso da Outra','Curso','draft',1) on conflict do nothing",
+            (OUTRO_SELLER, OUTRO_COURSE),
+        )
+        connection.execute(
+            "insert into product_course(seller_organization_id,catalog_product_id,course_id,"
+            "position) values(%s,%s,%s,0) on conflict do nothing",
+            (OUTRO_SELLER, OUTRO_PRODUCT, OUTRO_COURSE),
+        )
+        connection.execute(
+            "with payload as (select %s::jsonb snapshot) "
+            "insert into publication(seller_organization_id,id,catalog_product_id,version,"
+            "schema_version,source_sha256,snapshot,actor_identity_user_id) "
+            "select %s,%s,%s,1,1,encode(digest(convert_to(snapshot::text,'UTF8'),'sha256'),'hex'),"
+            "snapshot,%s from payload on conflict do nothing",
+            (
+                '{"schema_version":1,"product":{"title":"Curso da Outra"}}',
+                OUTRO_SELLER,
+                OUTRO_PUBLICATION,
+                OUTRO_PRODUCT,
+                OWNER,
+            ),
+        )
+        connection.execute(
+            "update catalog_product set status='published',published_snapshot_id=%s "
+            "where seller_organization_id=%s and id=%s",
+            (OUTRO_PUBLICATION, OUTRO_SELLER, OUTRO_PRODUCT),
+        )
+        connection.execute(
+            "insert into checkout_integration(seller_organization_id,id,adapter,display_name,"
+            "status) values(%s,%s,'generic_hmac_v1','Checkout da outra','active') "
+            "on conflict do nothing",
+            (OUTRO_SELLER, OUTRO_INTEGRATION),
+        )
+        connection.execute(
+            "insert into webhook_endpoint(seller_organization_id,id,checkout_integration_id,"
+            "endpoint_key_sha256,secret_reference,status) values(%s,%s,%s,%s,%s,'active') "
+            "on conflict do nothing",
+            (
+                OUTRO_SELLER,
+                OUTRO_ENDPOINT,
+                OUTRO_INTEGRATION,
+                OUTRO_ENDPOINT_HASH,
+                OUTRO_KEY_REFERENCE,
+            ),
+        )
+        connection.execute(
+            "insert into external_product_mapping(seller_organization_id,checkout_integration_id,"
+            "external_product_id_sha256,external_product_id_octets,catalog_product_id) "
+            "values(%s,%s,%s,%s,%s) on conflict do nothing",
+            (
+                OUTRO_SELLER,
+                OUTRO_INTEGRATION,
+                OUTRO_PRODUCT_HASH,
+                len(OUTRO_PRODUCT_REFERENCE),
+                OUTRO_PRODUCT,
+            ),
+        )
         connection.commit()
     return {"fulfillment": fulfillment, "email_worker": email_worker}
 
@@ -165,9 +248,15 @@ def _context(
 
 
 def _accept(
-    *, event: str, purchase: str, buyer_email: str, event_type: str = "purchase.approved"
+    *,
+    event: str,
+    purchase: str,
+    buyer_email: str,
+    event_type: str = "purchase.approved",
+    seller: UUID = SELLER,
 ) -> None:
     assert RUNTIME_URL
+    outra = seller == OUTRO_SELLER
     with psycopg.connect(RUNTIME_URL) as connection:
         _context(connection, INGEST_IDENTITY, INGEST_CAPABILITY)
         connection.execute(
@@ -176,14 +265,14 @@ def _accept(
             "%s::text,20::integer,%s::text,%s::text,11::smallint,%s::text,12::smallint,"
             "%s::timestamptz,%s::bigint,%s::uuid,%s::text,%s::text)",
             (
-                SELLER,
-                ENDPOINT,
-                ENDPOINT_HASH,
-                KEY_REFERENCE,
+                seller,
+                OUTRO_ENDPOINT if outra else ENDPOINT,
+                OUTRO_ENDPOINT_HASH if outra else ENDPOINT_HASH,
+                OUTRO_KEY_REFERENCE if outra else KEY_REFERENCE,
                 hashlib.sha256(event.encode()).hexdigest(),
                 hashlib.sha256(f"payload:{event}".encode()).hexdigest(),
                 event_type,
-                PRODUCT_HASH,
+                OUTRO_PRODUCT_HASH if outra else PRODUCT_HASH,
                 hashlib.sha256(purchase.encode()).hexdigest(),
                 "2026-09-02T10:00:00Z",
                 int(time.time()),
@@ -236,14 +325,17 @@ def _drain_fulfillment(fixture: dict[str, UUID | str]) -> None:
     raise AssertionError("fulfillment queue did not drain")
 
 
-def _outbox(purchase: str) -> list[tuple[str, str, str, dict[str, object], UUID]]:
+def _outbox(
+    purchase: str, seller: UUID = SELLER
+) -> list[tuple[str, str, str, dict[str, object], UUID]]:
     assert ADMIN_URL
-    chave = f"purchase:{INTEGRATION}:{hashlib.sha256(purchase.encode()).hexdigest()}"
+    integration = OUTRO_INTEGRATION if seller == OUTRO_SELLER else INTEGRATION
+    chave = f"purchase:{integration}:{hashlib.sha256(purchase.encode()).hexdigest()}"
     with psycopg.connect(ADMIN_URL) as connection:
         rows = connection.execute(
             "select kind,recipient_email,status,payload,recipient_identity_user_id "
             "from app_private.email_outbox where seller_organization_id=%s and dedupe_key=%s",
-            (SELLER, chave),
+            (seller, chave),
         ).fetchall()
     return cast(list[tuple[str, str, str, dict[str, object], UUID]], rows)
 
@@ -274,6 +366,18 @@ def _claim(
         ).fetchone()
         connection.commit()
     return cast(list[dict[str, object]], row[0] if row else [])
+
+
+def _claim_tudo(worker: UUID) -> list[dict[str, object]]:
+    """Drena a fila inteira: outras suítes deixam linhas pendentes de outras
+    lojas, e um claim só devolveria as mais antigas antes das desta suíte."""
+    tudo: list[dict[str, object]] = []
+    for _ in range(64):
+        lote = _claim(worker, limit=8)
+        if not lote:
+            return tudo
+        tudo.extend(lote)
+    raise AssertionError("email outbox did not drain")
 
 
 def test_grant_enqueues_exactly_one_email_even_with_replay(fixture: dict[str, UUID | str]) -> None:
@@ -310,6 +414,105 @@ def test_grant_enqueues_exactly_one_email_even_with_replay(fixture: dict[str, UU
     _accept(event=f"{RUN}-evt-1-replay", purchase=purchase, buyer_email=buyer)
     _drain_fulfillment(fixture)
     assert len(_outbox(purchase)) == 1
+
+
+def test_each_store_gets_its_own_email_and_cannot_touch_the_other(
+    fixture: dict[str, UUID | str],
+) -> None:
+    assert RUNTIME_URL
+    worker = _register_email_worker(fixture)
+    buyer_a = f"loja-a.{RUN}@example.test"
+    buyer_b = f"loja-b.{RUN}@example.test"
+    _accept(event=f"{RUN}-evt-a", purchase=f"{RUN}-compra-a", buyer_email=buyer_a)
+    _accept(
+        event=f"{RUN}-evt-b", purchase=f"{RUN}-compra-b", buyer_email=buyer_b, seller=OUTRO_SELLER
+    )
+    _drain_fulfillment(fixture)
+    (_, recipient_a, _, payload_a, _) = _outbox(f"{RUN}-compra-a")[0]
+    (_, recipient_b, _, payload_b, _) = _outbox(f"{RUN}-compra-b", OUTRO_SELLER)[0]
+    assert (recipient_a, payload_a["product_title"], payload_a["seller_display_name"]) == (
+        buyer_a,
+        "Curso do E-mail",
+        "Loja do E-mail",
+    )
+    assert (recipient_b, payload_b["product_title"], payload_b["seller_display_name"]) == (
+        buyer_b,
+        "Curso da Outra",
+        "Outra Loja",
+    )
+    # O claim devolve as duas, cada uma com a sua loja, o seu comprador e o
+    # seu conteúdo — nunca cruzados.
+    claimed = {
+        str(item["recipient_email"]): item
+        for item in _claim_tudo(worker)
+        if str(item["recipient_email"]) in {buyer_a, buyer_b}
+    }
+    assert UUID(str(claimed[buyer_a]["seller_organization_id"])) == SELLER
+    assert UUID(str(claimed[buyer_b]["seller_organization_id"])) == OUTRO_SELLER
+    payload_claimed_b = cast(dict[str, object], claimed[buyer_b]["payload"])
+    assert payload_claimed_b["seller_slug"] == "outra-loja-do-email"
+    item_b = claimed[buyer_b]
+    # Contexto da loja A não conclui nem falha o item da loja B.
+    for chamada in (
+        "select app_private.complete_email_outbox(%s,%s,%s,%s,%s,%s,%s)",
+        "select app_private.fail_email_outbox(%s,%s,%s,%s,%s,'smtp_temporary',1,false,%s)",
+    ):
+        with psycopg.connect(RUNTIME_URL) as connection:
+            _context(connection, worker, WORKER_CAPABILITY, SELLER)
+            params: tuple[object, ...] = (
+                worker,
+                EMAIL_LABEL,
+                OUTRO_SELLER,
+                UUID(str(item_b["id"])),
+                int(cast(int, item_b["lease_fence"])),
+            )
+            if "complete" in chamada:
+                params += ("cruzado@autonomia.site", uuid4())
+            else:
+                params += (uuid4(),)
+            with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
+                connection.execute(chamada, params)
+    with psycopg.connect(RUNTIME_URL) as connection:
+        _context(connection, worker, WORKER_CAPABILITY, OUTRO_SELLER)
+        connection.execute(
+            "select app_private.complete_email_outbox(%s,%s,%s,%s,%s,%s,%s)",
+            (
+                worker,
+                EMAIL_LABEL,
+                OUTRO_SELLER,
+                UUID(str(item_b["id"])),
+                int(cast(int, item_b["lease_fence"])),
+                f"{RUN}.b@autonomia.site",
+                uuid4(),
+            ),
+        )
+        connection.commit()
+    assert _outbox(f"{RUN}-compra-b", OUTRO_SELLER)[0][2] == "sent"
+
+
+def test_reapproval_of_a_refunded_purchase_does_not_email(
+    fixture: dict[str, UUID | str],
+) -> None:
+    # Reembolso chega antes de qualquer aprovação (out-of-order), outra compra
+    # do mesmo comprador mantém o acesso, e a aprovação atrasada da compra
+    # reembolsada passa pelo upsert da entitlement — mas não pode dizer
+    # "acesso liberado" por uma compra que continua reembolsada.
+    buyer = f"reembolso.{RUN}@example.test"
+    reembolsada = f"{RUN}-compra-r"
+    ativa = f"{RUN}-compra-s"
+    _accept(
+        event=f"{RUN}-evt-r-refund",
+        purchase=reembolsada,
+        buyer_email=buyer,
+        event_type="purchase.refunded",
+    )
+    _drain_fulfillment(fixture)
+    _accept(event=f"{RUN}-evt-s", purchase=ativa, buyer_email=buyer)
+    _drain_fulfillment(fixture)
+    _accept(event=f"{RUN}-evt-r-approve", purchase=reembolsada, buyer_email=buyer)
+    _drain_fulfillment(fixture)
+    assert len(_outbox(ativa)) == 1
+    assert _outbox(reembolsada) == []
 
 
 def test_refund_does_not_enqueue(fixture: dict[str, UUID | str]) -> None:
@@ -349,7 +552,7 @@ def test_claim_complete_and_fail_respect_lease_fence_and_tenant(
     _accept(event=f"{RUN}-evt-claim", purchase=purchase, buyer_email=buyer)
     _drain_fulfillment(fixture)
 
-    claimed = [item for item in _claim(worker) if str(item["recipient_email"]) == buyer]
+    claimed = [item for item in _claim_tudo(worker) if str(item["recipient_email"]) == buyer]
     assert len(claimed) == 1
     item = claimed[0]
     assert item["kind"] == "purchase_confirmed" and item["recipient_name"] is None
@@ -397,15 +600,15 @@ def test_claim_complete_and_fail_respect_lease_fence_and_tenant(
     assert row == ("sent", f"{RUN}.claim@autonomia.site", True, None)
     assert audit == [("notification.email_sent", "succeeded", f"{RUN}.claim@autonomia.site")]
     # Enviado não volta a ser reivindicado.
-    assert all(UUID(str(other["id"])) != outbox_id for other in _claim(worker))
+    assert all(UUID(str(other["id"])) != outbox_id for other in _claim_tudo(worker))
 
     # Falha temporária volta para retry; permanente vai para dead_letter.
     purchase2 = f"{RUN}-compra-falha"
     _accept(event=f"{RUN}-evt-falha", purchase=purchase2, buyer_email=f"falha.{RUN}@example.test")
     _drain_fulfillment(fixture)
-    falha = [i for i in _claim(worker) if str(i["recipient_email"]) == f"falha.{RUN}@example.test"][
-        0
-    ]
+    falha = [
+        i for i in _claim_tudo(worker) if str(i["recipient_email"]) == f"falha.{RUN}@example.test"
+    ][0]
     with psycopg.connect(RUNTIME_URL) as connection:
         _context(connection, worker, WORKER_CAPABILITY, SELLER)
         status = connection.execute(
@@ -422,7 +625,7 @@ def test_claim_complete_and_fail_respect_lease_fence_and_tenant(
         connection.commit()
     assert status == ("retry",)
     time.sleep(1.1)
-    de_novo = [i for i in _claim(worker) if UUID(str(i["id"])) == UUID(str(falha["id"]))][0]
+    de_novo = [i for i in _claim_tudo(worker) if UUID(str(i["id"])) == UUID(str(falha["id"]))][0]
     assert de_novo["attempt_count"] == 2
     with psycopg.connect(RUNTIME_URL) as connection:
         _context(connection, worker, WORKER_CAPABILITY, SELLER)
@@ -439,7 +642,7 @@ def test_claim_complete_and_fail_respect_lease_fence_and_tenant(
         ).fetchone()
         connection.commit()
     assert status == ("dead_letter",)
-    assert all(UUID(str(i["id"])) != UUID(str(falha["id"])) for i in _claim(worker))
+    assert all(UUID(str(i["id"])) != UUID(str(falha["id"])) for i in _claim_tudo(worker))
 
 
 def test_claim_requires_the_worker_capability_and_the_lease_range(
