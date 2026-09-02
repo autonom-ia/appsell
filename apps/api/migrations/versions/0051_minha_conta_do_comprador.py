@@ -472,6 +472,11 @@ def upgrade() -> None:
             )
         )
     for signature in (_EXPORT, _DELETION, _STATUS):
+        # O `set local role` do env.py não vale na hora do create: a função nasce
+        # com dono = migrador, e o downgrade, sob outro papel, não conseguiria
+        # revogá-la (foi assim que o CI reprovou). Dono explícito, como nas
+        # outras sete migrations que criam função.
+        op.execute(f"alter function {signature} owner to appsell_owner")
         op.execute(f"revoke all on function {signature} from public")
         op.execute(f"grant execute on function {signature} to appsell_runtime")
     for nome, tabela, coluna in _INDICES_POR_SUJEITO:
