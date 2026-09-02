@@ -173,6 +173,17 @@ describe("renderizarEmailTransacional", () => {
     for (const url of recusadas) {
       expect(() => renderizarEmailTransacional({ ...base, acao: { rotulo: "Abrir", url } })).toThrow(/proibido/);
     }
+    // O erro nao pode repetir a chave: se o segredo vier como nome, iria
+    // parar no log de quem capturar a excecao.
+    let mensagem = "";
+    try {
+      renderizarEmailTransacional({ ...base, acao: { rotulo: "Abrir", url: `${ORIGEM}/x?Bearer%20eyJSEGREDO=1` } });
+    } catch (erro) {
+      mensagem = erro instanceof Error ? erro.message : String(erro);
+    }
+    expect(mensagem).toMatch(/proibido/);
+    expect(mensagem).not.toContain("SEGREDO");
+    expect(mensagem).not.toContain("Bearer");
     // Nome benigno que contem pedaco de palavra proibida passa; e link de uso
     // unico com nome proprio passa — inclusive o "#t=" do convite na SPEC.
     const permitidas = [

@@ -155,9 +155,10 @@ function urlDeAcao(url: string): string {
   }
   if (analisada.username !== "" || analisada.password !== "") throw erro;
   if (analisada.origin !== origemPublica()) throw erro;
-  const proibidos = parametrosProibidos(analisada);
-  if (proibidos.length > 0) {
-    throw new Error(`acao.url carrega parametro proibido pela politica: ${proibidos.join(", ")}`);
+  // A mensagem nao repete o nome: se o segredo vier como chave
+  // ("?Bearer%20eyJ..."), ele iria parar no log de quem capturar o erro.
+  if (parametrosProibidos(analisada).length > 0) {
+    throw new Error("acao.url carrega parametro proibido pela politica (segredo de sessao ou de conta)");
   }
   return analisada.toString();
 }
