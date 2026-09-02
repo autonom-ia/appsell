@@ -144,6 +144,12 @@ _LEITURA_ANTES_DO_GRANT = """  -- As MESMAS travas de grant_public_product_acces
   -- "Tinha acesso" é o mesmo que as políticas entendem por acesso: ativo,
   -- já começado e dentro da validade. Qualquer outro estado que o link torne
   -- ativo é liberação de acesso, e precisa avisar.
+  --
+  -- `for update` porque as travas acima só coordenam quem passa pelo
+  -- grant. O fulfillment do checkout (0020) escreve a MESMA linha por outro
+  -- caminho e com outras travas: sem o bloqueio de linha, um reembolso que
+  -- caísse entre esta leitura e o grant faria o link reativar o acesso sem
+  -- avisar ninguém. A trava de linha é o que todos os escritores disputam.
   select case
     when entitlement.status='active'
      and entitlement.starts_at<=clock_timestamp()
@@ -153,7 +159,8 @@ _LEITURA_ANTES_DO_GRANT = """  -- As MESMAS travas de grant_public_product_acces
   from public.buyer_entitlement entitlement
   where entitlement.seller_organization_id=locked_link.seller_organization_id
     and entitlement.buyer_identity_user_id=p_identity_user_id
-    and entitlement.catalog_product_id=locked_link.catalog_product_id;
+    and entitlement.catalog_product_id=locked_link.catalog_product_id
+  for update;
 
   select * into granted
   from app_private.grant_public_product_access("""
