@@ -112,7 +112,7 @@ async function main() {
       { rotulo: "Natureza", valor: "transacional — sem descadastro" }
     ],
     acao: { rotulo: "Abrir o Autonom.ia Sell", url: "https://sell.autonomia.site/" },
-    motivo: "pediu um teste de entrega do canal"
+    motivo: "a operação do Autonom.ia Sell disparou um teste de entrega para este endereço"
   });
 
   try {

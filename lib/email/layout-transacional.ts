@@ -53,12 +53,39 @@ const CORES = {
 const FONTE = "'Helvetica Neue', Helvetica, Arial, sans-serif";
 const LARGURA = 600;
 
-// Mesma regra de lib/site.ts (SITE.origem). Repetida aqui, e nao importada,
+const ORIGEM_PADRAO = "https://sell.autonomia.site";
+
+// Mesma fonte de lib/site.ts (SITE.origem). Lida aqui, e nao importada,
 // porque este arquivo tambem roda direto no Node (scripts/email/*.mjs), e o
 // ESM do Node exige extensao no import — que o tsc do projeto nao aceita. O
 // teste do layout confere que as duas leituras concordam.
+//
+// Normalizada para a origem pura (sem caminho, sem barra final, sem
+// credenciais) porque ela entra em atributos src/href: uma aspa ou uma barra
+// a mais aqui quebra todo e-mail que sair.
 export function origemPublica(): string {
-  return process.env.NEXT_PUBLIC_SITE_ORIGIN ?? "https://sell.autonomia.site";
+  const bruta = process.env.NEXT_PUBLIC_SITE_ORIGIN ?? ORIGEM_PADRAO;
+  let analisada: URL;
+  try {
+    analisada = new URL(bruta);
+  } catch {
+    throw new Error("NEXT_PUBLIC_SITE_ORIGIN precisa ser uma origem https valida");
+  }
+  if (analisada.protocol !== "https:" || analisada.username !== "" || analisada.password !== "") {
+    throw new Error("NEXT_PUBLIC_SITE_ORIGIN precisa ser uma origem https valida");
+  }
+  return analisada.origin;
+}
+
+// Texto de uma linha: assunto, titulo, eyebrow, rotulos, motivo. Quebra de
+// linha ou controle aqui e como se imita o rodape na versao em texto puro.
+const CONTROLE = /[\u0000-\u001f\u007f]/;
+
+function umaLinha(campo: string, valor: string): string {
+  if (CONTROLE.test(valor)) {
+    throw new Error(`${campo} nao pode conter quebra de linha nem caractere de controle`);
+  }
+  return valor;
 }
 
 export const TAGLINE =
@@ -75,17 +102,19 @@ function escapar(valor: string): string {
     .replace(/'/g, "&#39;");
 }
 
-// Um botao com javascript: ou data: no href e phishing pronto. So https.
+// O botao so leva para a nossa origem. "https://sell.autonomia.site@evil.com/"
+// e uma URL https valida cujo host e evil.com; "https://u:p@host/" carrega
+// credencial para dentro do HTML. Ambas caem aqui.
 function urlDeAcao(url: string): string {
+  const erro = new Error(`acao.url precisa ser uma URL https absoluta em ${origemPublica()}`);
   let analisada: URL;
   try {
     analisada = new URL(url);
   } catch {
-    throw new Error("acao.url precisa ser uma URL https absoluta");
+    throw erro;
   }
-  if (analisada.protocol !== "https:") {
-    throw new Error("acao.url precisa ser uma URL https absoluta");
-  }
+  if (analisada.username !== "" || analisada.password !== "") throw erro;
+  if (analisada.origin !== origemPublica()) throw erro;
   return analisada.toString();
 }
 
@@ -110,14 +139,18 @@ ${linhas}
 
 function botao(acao: AcaoEmail): string {
   const href = escapar(urlDeAcao(acao.url));
-  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:8px 0 28px;">
+  // Duas linhas da mesma tabela, sem margem negativa: o Outlook de Word
+  // ignora margem negativa e o texto de apoio cairia longe do botao.
+  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:8px 0 24px;">
 <tr>
   <td bgcolor="${CORES.laranja}" style="border-radius:8px;">
     <a href="${href}" style="display:inline-block;padding:15px 28px;font-family:${FONTE};font-size:16px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:8px;">${escapar(acao.rotulo)} &rarr;</a>
   </td>
 </tr>
-</table>
-<p style="margin:-16px 0 24px;font-size:12px;line-height:1.5;color:${CORES.cinza};">Se o botão não abrir, copie este endereço no navegador:<br><a href="${href}" style="color:${CORES.navy};word-break:break-all;">${href}</a></p>`;
+<tr>
+  <td style="padding-top:12px;font-family:${FONTE};font-size:12px;line-height:1.5;color:${CORES.cinza};">Se o botão não abrir, copie este endereço no navegador:<br><a href="${href}" style="color:${CORES.navy};word-break:break-all;">${href}</a></td>
+</tr>
+</table>`;
 }
 
 function cabecalho(): string {
@@ -176,7 +209,7 @@ function html(email: EmailTransacional): string {
 <title>${escapar(email.assunto)}</title>
 </head>
 <body style="margin:0;padding:0;background:${CORES.cream};" bgcolor="${CORES.cream}">
-<div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">${preheader}</div>
+<div style="display:none;max-height:0;max-width:0;overflow:hidden;opacity:0;font-size:1px;line-height:1px;color:transparent;mso-hide:all;">${preheader}</div>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="${CORES.cream}" style="background:${CORES.cream};">
 <tr>
   <td align="center" style="padding:32px 12px;">
@@ -223,9 +256,24 @@ function text(email: EmailTransacional): string {
     .join("\n");
 }
 
-export function renderizarEmailTransacional(email: EmailTransacional): EmailRenderizado {
+function validar(email: EmailTransacional): EmailTransacional {
   if (email.motivo.trim() === "") {
     throw new Error("motivo e obrigatorio: o rodape precisa dizer por que a pessoa recebe");
   }
-  return { html: html(email), text: text(email) };
+  umaLinha("assunto", email.assunto);
+  umaLinha("titulo", email.titulo);
+  umaLinha("motivo", email.motivo);
+  if (email.eyebrow !== undefined) umaLinha("eyebrow", email.eyebrow);
+  if (email.acao) umaLinha("acao.rotulo", email.acao.rotulo);
+  for (const p of email.paragrafos) umaLinha("paragrafo", p);
+  for (const { rotulo, valor } of email.detalhes ?? []) {
+    umaLinha("detalhe.rotulo", rotulo);
+    umaLinha("detalhe.valor", valor);
+  }
+  return email;
+}
+
+export function renderizarEmailTransacional(email: EmailTransacional): EmailRenderizado {
+  const valido = validar(email);
+  return { html: html(valido), text: text(valido) };
 }
