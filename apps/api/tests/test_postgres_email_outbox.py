@@ -677,7 +677,8 @@ def test_claim_complete_and_fail_respect_lease_fence_and_tenant(
 
 
 @pytest.mark.parametrize(
-    "erro_de_canal", ["smtp_auth", "smtp_unreachable", "smtp_no_starttls", "smtp_no_auth"]
+    "erro_de_canal",
+    ["smtp_auth", "smtp_unreachable", "smtp_no_starttls", "smtp_no_auth", "kind_unknown"],
 )
 def test_channel_failures_never_dead_letter_and_give_the_attempt_back(
     fixture: dict[str, UUID | str], erro_de_canal: str
@@ -703,7 +704,10 @@ def test_channel_failures_never_dead_letter_and_give_the_attempt_back(
     with psycopg.connect(RUNTIME_URL) as connection:
         _context(connection, worker, WORKER_CAPABILITY, SELLER)
         status = connection.execute(
-            "select app_private.fail_email_outbox(%s,%s,%s,%s,%s,%s,1,false,%s)",
+            # permanent=true quando o erro é kind_unknown: é o que um worker
+            # N-1 (rollback) manda para um tipo que não conhece, e o banco
+            # ainda assim recusa matar a linha.
+            "select app_private.fail_email_outbox(%s,%s,%s,%s,%s,%s,1,%s,%s)",
             (
                 worker,
                 EMAIL_LABEL,
@@ -711,6 +715,7 @@ def test_channel_failures_never_dead_letter_and_give_the_attempt_back(
                 outbox_id,
                 int(cast(int, item["lease_fence"])),
                 erro_de_canal,
+                erro_de_canal == "kind_unknown",
                 uuid4(),
             ),
         ).fetchone()
@@ -723,6 +728,20 @@ def test_channel_failures_never_dead_letter_and_give_the_attempt_back(
             (SELLER, outbox_id),
         ).fetchone()
     assert linha == ("retry", 9, erro_de_canal)
+    if erro_de_canal == "kind_unknown":
+        # O recuo de dez minutos é do banco, não do worker: o item não volta
+        # para a fila logo em seguida, e é isso que impede o laço no rollback.
+        # Uma chamada só: _claim_tudo reivindica, e chamá-lo duas vezes deixaria
+        # a segunda cega para o que a primeira pegou.
+        na_fila = _claim_tudo(worker)
+        assert all(UUID(str(i["id"])) != outbox_id for i in na_fila)
+        with psycopg.connect(ADMIN_URL) as connection:
+            espera = connection.execute(
+                "select available_at-clock_timestamp()>interval '9 minutes' "
+                "from app_private.email_outbox where seller_organization_id=%s and id=%s",
+                (SELLER, outbox_id),
+            ).fetchone()
+        assert espera == (True,)
 
 
 def test_claim_requires_the_worker_capability_and_the_lease_range(

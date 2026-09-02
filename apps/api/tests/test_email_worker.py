@@ -156,7 +156,8 @@ def test_monta_mensagem_classifica_entrada_impossivel_como_permanente(
     settings = _configurado(monkeypatch)
     with pytest.raises(FalhaDeEnvio) as erro:
         montar_mensagem(_item(kind="outro"), settings)
-    assert erro.value.error_code == "kind_unknown" and erro.value.permanent
+    # Tipo desconhecido é worker velho, não item errado: volta para a fila.
+    assert erro.value.error_code == "kind_unknown" and not erro.value.permanent
     with pytest.raises(FalhaDeEnvio) as erro:
         montar_mensagem(_item(payload={"schema_version": 9}), settings)
     assert erro.value.error_code == "render_failed" and erro.value.permanent
@@ -399,3 +400,15 @@ async def test_entregar_trata_render_impossivel_como_permanente(
     assert transporte.enviadas == []
     _, params = auth.chamadas[0]
     assert params["error"] == "render_failed" and params["permanent"] is True
+
+
+def test_monta_mensagem_despacha_pelo_kind(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _configurado(monkeypatch)
+    item = _item(kind="access_link_redeemed")
+    payload = cast(dict[str, object], item["payload"])
+    payload["access_link_id"] = "ee000000-0000-4000-8000-000000000204"
+    mensagem, _ = montar_mensagem(item, settings)
+    assert mensagem["Subject"] == "Seu acesso a Fotografia com Luz Natural está liberado"
+    partes = {parte.get_content_type(): parte.get_content() for parte in mensagem.iter_parts()}
+    assert "O link da turma de Fotografia com Luz Natural" in partes["text/plain"]
+    assert "DO LADO DE QUEM ENTROU" in partes["text/plain"]

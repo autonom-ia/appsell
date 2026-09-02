@@ -849,3 +849,135 @@ def test_a_seller_cannot_list_another_tenant_links() -> None:
             (SELLER_USER, other_seller, other_product),
         ).fetchall()
     assert rows == []
+
+
+def test_redeeming_a_class_link_enqueues_one_access_email_per_person() -> None:
+    # O link da turma é a outra porta de entrada: quem entra recebe o mesmo
+    # "acesso liberado" da compra, uma vez só — repetir o link não manda outro,
+    # e a segunda pessoa recebe o dela.
+    assert ADMIN_URL
+    seller_id, product_id = published_free_product()
+    token = uuid4().hex + uuid4().hex
+    link_id = create_link(seller_id, product_id, token=token, max_uses=5)
+    redeem(token, buyer_id(0))
+    redeem(token, buyer_id(0))
+    redeem(token, buyer_id(1))
+    with psycopg.connect(ADMIN_URL) as connection:
+        rows = connection.execute(
+            "select kind,recipient_identity_user_id,recipient_email,payload,status "
+            "from app_private.email_outbox where seller_organization_id=%s "
+            "and dedupe_key like %s order by created_at",
+            (seller_id, f"access_link:{link_id}:%"),
+        ).fetchall()
+        emails: dict[UUID, str] = dict(
+            connection.execute(
+                "select id,email_normalized from identity_user where id in (%s,%s)",
+                (buyer_id(0), buyer_id(1)),
+            ).fetchall()
+        )
+    assert [(r[0], r[1], r[4]) for r in rows] == [
+        ("access_link_redeemed", buyer_id(0), "pending"),
+        ("access_link_redeemed", buyer_id(1), "pending"),
+    ]
+    for _kind, buyer, recipient, payload, _status in rows:
+        assert recipient == emails[buyer]
+        assert payload["product_title"] == "Produto Editado"  # save_draft renomeia
+        assert UUID(str(payload["access_link_id"])) == link_id
+        assert UUID(str(payload["catalog_product_id"])) == product_id
+    # Quem já tinha o curso e entra por OUTRO link consome a vaga, mas não
+    # ouve que "o link liberou o curso" — não liberou.
+    outro_token = uuid4().hex + uuid4().hex
+    outro_link = create_link(seller_id, product_id, token=outro_token, max_uses=5)
+    assert redeem(outro_token, buyer_id(0))[3] is False  # created
+    with psycopg.connect(ADMIN_URL) as connection:
+        repetidos = connection.execute(
+            "select count(*) from app_private.email_outbox where seller_organization_id=%s "
+            "and dedupe_key=%s",
+            (seller_id, f"access_link:{outro_link}:{buyer_id(0)}"),
+        ).fetchone()
+    assert repetidos == (0,)
+
+
+def test_reactivating_a_revoked_entitlement_sends_the_email_again() -> None:
+    # Acesso revogado que o link devolve É liberação de acesso: a linha da
+    # entitlement já existe (created=false), mas a pessoa perdeu e reganhou o
+    # curso — e precisa ouvir onde ele está.
+    assert ADMIN_URL
+    seller_id, product_id = published_free_product()
+    primeiro = uuid4().hex + uuid4().hex
+    create_link(seller_id, product_id, token=primeiro, max_uses=5)
+    redeem(primeiro, buyer_id(2))
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "update buyer_entitlement set status='revoked' where seller_organization_id=%s "
+            "and buyer_identity_user_id=%s and catalog_product_id=%s",
+            (seller_id, buyer_id(2), product_id),
+        )
+        connection.commit()
+    segundo = uuid4().hex + uuid4().hex
+    outro_link = create_link(seller_id, product_id, token=segundo, max_uses=5)
+    assert redeem(segundo, buyer_id(2))[3] is False  # a linha não é nova
+    with psycopg.connect(ADMIN_URL) as connection:
+        linhas = connection.execute(
+            "select count(*) from app_private.email_outbox where seller_organization_id=%s "
+            "and dedupe_key=%s",
+            (seller_id, f"access_link:{outro_link}:{buyer_id(2)}"),
+        ).fetchone()
+    assert linhas == (1,)
+
+
+def test_expired_entitlement_still_active_by_status_gets_the_email_again() -> None:
+    # 'active' com validade vencida não dá acesso nenhum: as políticas olham a
+    # validade. Reativar por link é liberação de acesso e precisa avisar.
+    assert ADMIN_URL
+    seller_id, product_id = published_free_product()
+    primeiro = uuid4().hex + uuid4().hex
+    create_link(seller_id, product_id, token=primeiro, max_uses=5)
+    redeem(primeiro, buyer_id(3))
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "update buyer_entitlement set starts_at=clock_timestamp()-interval '2 days',"
+            "expires_at=clock_timestamp()-interval '1 day' "
+            "where seller_organization_id=%s and buyer_identity_user_id=%s "
+            "and catalog_product_id=%s",
+            (seller_id, buyer_id(3), product_id),
+        )
+        connection.commit()
+    segundo = uuid4().hex + uuid4().hex
+    outro_link = create_link(seller_id, product_id, token=segundo, max_uses=5)
+    redeem(segundo, buyer_id(3))
+    with psycopg.connect(ADMIN_URL) as connection:
+        linhas = connection.execute(
+            "select count(*) from app_private.email_outbox where seller_organization_id=%s "
+            "and dedupe_key=%s",
+            (seller_id, f"access_link:{outro_link}:{buyer_id(3)}"),
+        ).fetchone()
+    assert linhas == (1,)
+
+
+def test_entitlement_with_a_future_start_also_gets_the_email() -> None:
+    # 'active' que ainda não começou não dá acesso — as políticas exigem
+    # starts_at no passado. O link antecipa o início: é liberação de acesso.
+    assert ADMIN_URL
+    seller_id, product_id = published_free_product()
+    primeiro = uuid4().hex + uuid4().hex
+    create_link(seller_id, product_id, token=primeiro, max_uses=5)
+    redeem(primeiro, buyer_id(4))
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "update buyer_entitlement set starts_at=clock_timestamp()+interval '7 days' "
+            "where seller_organization_id=%s and buyer_identity_user_id=%s "
+            "and catalog_product_id=%s",
+            (seller_id, buyer_id(4), product_id),
+        )
+        connection.commit()
+    segundo = uuid4().hex + uuid4().hex
+    outro_link = create_link(seller_id, product_id, token=segundo, max_uses=5)
+    redeem(segundo, buyer_id(4))
+    with psycopg.connect(ADMIN_URL) as connection:
+        linhas = connection.execute(
+            "select count(*) from app_private.email_outbox where seller_organization_id=%s "
+            "and dedupe_key=%s",
+            (seller_id, f"access_link:{outro_link}:{buyer_id(4)}"),
+        ).fetchone()
+    assert linhas == (1,)

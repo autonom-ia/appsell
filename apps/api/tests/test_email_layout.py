@@ -174,3 +174,24 @@ def test_compra_confirmada_monta_o_email_a_partir_do_payload() -> None:
     assert sem_nome.paragrafos[0].startswith("Olá. O curso")
     with pytest.raises(EmailInvalido, match="versao"):
         email_layout.compra_confirmada({"schema_version": 2}, None, ORIGEM)
+
+
+def test_acesso_liberado_monta_o_email_do_link_de_turma() -> None:
+    payload = {
+        "schema_version": 1,
+        "entitlement_id": "x",
+        "access_link_id": "y",
+        "product_title": "Curso da Turma",
+        "seller_display_name": "Loja & Cia",
+    }
+    email = email_layout.acesso_liberado(payload, "Bia", ORIGEM)
+    assert email.assunto == "Seu acesso a Curso da Turma está liberado"
+    assert email.eyebrow == "Do lado de quem entrou"
+    assert email.paragrafos[0].startswith(
+        "Olá, Bia. O link da turma de Curso da Turma, da loja Loja & Cia,"
+    )
+    assert email.acao == Acao("Abrir o curso", f"{ORIGEM}/library")
+    assert email.motivo == "entrou pelo link da turma de Curso da Turma na loja Loja & Cia"
+    assert "Loja &amp; Cia" in renderizar(email, ORIGEM).html
+    with pytest.raises(EmailInvalido, match="versao"):
+        email_layout.acesso_liberado({"schema_version": 3}, None, ORIGEM)

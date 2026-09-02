@@ -12,17 +12,21 @@ vi.mock("server-only", () => ({}));
 
 const ORIGIN = "https://sell.test";
 
-type Scenario = "recoverable" | "final";
+type Scenario = "recoverable" | "final" | "unverified";
 
 function mockService(scenario: Scenario) {
   vi.doMock("@/lib/oauth-service.server", async () => {
     const { OAuthFlowError } = await import("../lib/oauth-service");
+    const { IdentityOAuthEmailUnverifiedError } = await import("../lib/identity-oauth-client.server");
     return {
       oauthRuntimeMode: () => "identity",
       isOAuthRuntimeConfigurationError: () => false,
       identityOAuthClient: () => ({ exchangeAuthorizationCode: () => undefined }),
       oauthService: () => ({
         callbackIdentity: () => {
+          if (scenario === "unverified") {
+            throw new IdentityOAuthEmailUnverifiedError("Identity email is not verified.");
+          }
           throw scenario === "recoverable"
             ? new OAuthFlowError("Login transaction expired.", "recoverable")
             : new OAuthFlowError("Invalid OAuth state.");
@@ -112,6 +116,25 @@ describe("final failures answer a person, not a JSON blob", () => {
     expect(body).toContain("Não foi possível concluir o acesso");
     expect(body).toContain('href="/auth/login"');
     expect(body).not.toContain('{"error"');
+  });
+
+  test("e-mail não confirmado diz o caminho, e não recomeça o login (#301)", async () => {
+    // Sem o cookie de recuperação: se o callback tratasse isto como
+    // recuperável, redirecionaria para /auth/login — e a pessoa voltaria ao
+    // mesmo lugar, que é o laço da #301.
+    const response = await callRoute("?code=abc&state=xyz", {
+      scenario: "unverified",
+      accept: "text/html,application/xhtml+xml"
+    });
+    expect(response.status).toBe(400);
+    expect(response.headers.get("location")).toBeNull();
+    const body = await response.text();
+    expect(body).toContain("Confirme seu e-mail");
+    expect(body).toContain("Já confirmei, entrar");
+    expect(body).not.toContain("Não foi possível concluir o acesso");
+    expect(body).toContain("<!-- identity_email_unverified -->");
+    const asJson = await callRoute("?code=abc&state=xyz", { scenario: "unverified", accept: "application/json" });
+    expect(await asJson.json()).toEqual({ error: "identity_email_unverified" });
   });
 
   test("an API client still gets the machine-readable body", async () => {

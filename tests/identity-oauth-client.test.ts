@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import {
+  IdentityOAuthEmailUnverifiedError,
   IdentityOAuthAmbiguousError,
   IdentityOAuthClient,
   IdentityOAuthConfigurationError,
@@ -294,6 +295,10 @@ describe("Identity OAuth server adapter", () => {
   test("a recusa por e-mail nomeia qual das três situações ocorreu", async () => {
     await expect(exchange("email-unverified")).rejects.toThrow(
       "Identity email is not verified."
+    );
+    // E a classe é a que o callback usa para dizer o caminho (#301).
+    await expect(exchange("email-unverified")).rejects.toBeInstanceOf(
+      IdentityOAuthEmailUnverifiedError
     );
     await expect(exchange("email-verified-absent")).rejects.toThrow(
       "Identity email verification claim is absent."

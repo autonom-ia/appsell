@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   IdentityOAuthAmbiguousError,
   IdentityOAuthConfigurationError,
+  IdentityOAuthEmailUnverifiedError,
   IdentityOAuthUnavailableError
 } from "@/lib/identity-oauth-client.server";
 import {
@@ -163,7 +164,9 @@ export async function GET(request: NextRequest) {
     const unavailable = error instanceof IdentityOAuthUnavailableError;
     const ambiguous = error instanceof IdentityOAuthAmbiguousError ||
       isOAuthIdentityCallbackUnavailable(error);
+    const emailUnverified = error instanceof IdentityOAuthEmailUnverifiedError;
     const outcome = configurationError ? "identity_not_configured" :
+      emailUnverified ? "identity_email_unverified" :
       ambiguous ? "identity_callback_ambiguous" :
       unavailable ? "identity_unavailable" :
       isOAuthStoreUnavailable(error) ? "oauth_store_unavailable" :

@@ -101,6 +101,11 @@ export class IdentityOAuthProtocolError extends Error {
   override readonly name = "IdentityOAuthProtocolError";
 }
 
+// A conta existe e o provedor autenticou a pessoa; só o e-mail não foi
+// confirmado. É estado da própria pessoa, não configuração — por isso o
+// callback pode nomear esse caso para ela, e só ele (#301).
+export class IdentityOAuthEmailUnverifiedError extends IdentityOAuthProtocolError {}
+
 export class IdentityOAuthUnavailableError extends Error {
   override readonly name = "IdentityOAuthUnavailableError";
 }
@@ -464,12 +469,13 @@ export class IdentityOAuthClient implements OAuthTokenRefresher {
       // e não pode virar oráculo de configuração. Nomear a **forma** do claim
       // não revela o que ele contém, e é o que separa um problema do aluno de
       // um problema de integração.
+      if (identity.email_verified === false) {
+        throw new IdentityOAuthEmailUnverifiedError("Identity email is not verified.");
+      }
       throw new IdentityOAuthProtocolError(
         identity.email_verified === undefined
           ? "Identity email verification claim is absent."
-          : typeof identity.email_verified !== "boolean"
-            ? "Identity email verification claim is not a boolean."
-            : "Identity email is not verified."
+          : "Identity email verification claim is not a boolean."
       );
     }
     const now = Date.now();

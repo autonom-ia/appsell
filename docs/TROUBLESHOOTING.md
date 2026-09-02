@@ -313,6 +313,8 @@ from app_private.email_outbox order by created_at desc limit 20;
 ```
 
 - nenhuma linha para a compra → o grant não aconteceu (olhe `fulfillment_job`);
+  para o link de turma, a linha (`kind=access_link_redeemed`) nasce no primeiro
+  resgate de cada pessoa — repetir o link não gera outra;
 - `pending` há minutos → o worker não está rodando: procure
   `email_worker_disabled` no log da API (SMTP não configurado) ou
   `email_worker_retry`;
