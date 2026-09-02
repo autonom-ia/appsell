@@ -186,8 +186,10 @@ def montar_mensagem(item: dict[str, Any], settings: Settings) -> tuple[EmailMess
     construtor = _CONSTRUTORES.get(str(kind))
     if construtor is None:
         # Um tipo que ESTE worker não conhece é sinal de deploy fora de ordem
-        # (migration antes da API): o item não está errado, o worker está
-        # velho. Volta para a fila e o worker novo o pega.
+        # (migration antes da API, ou rollback): o item não está errado, o
+        # worker está velho. Volta para a fila — e a 0050 isenta kind_unknown
+        # de dead_letter no próprio banco, para valer também quando quem
+        # chama é um binário antigo que manda permanent=true.
         raise FalhaDeEnvio("kind_unknown", permanent=False, delay_seconds=600)
     payload = item.get("payload")
     if not isinstance(payload, dict):

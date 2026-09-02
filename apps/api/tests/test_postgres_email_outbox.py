@@ -677,7 +677,8 @@ def test_claim_complete_and_fail_respect_lease_fence_and_tenant(
 
 
 @pytest.mark.parametrize(
-    "erro_de_canal", ["smtp_auth", "smtp_unreachable", "smtp_no_starttls", "smtp_no_auth"]
+    "erro_de_canal",
+    ["smtp_auth", "smtp_unreachable", "smtp_no_starttls", "smtp_no_auth", "kind_unknown"],
 )
 def test_channel_failures_never_dead_letter_and_give_the_attempt_back(
     fixture: dict[str, UUID | str], erro_de_canal: str
@@ -723,6 +724,27 @@ def test_channel_failures_never_dead_letter_and_give_the_attempt_back(
             (SELLER, outbox_id),
         ).fetchone()
     assert linha == ("retry", 9, erro_de_canal)
+    if erro_de_canal == "kind_unknown":
+        # Um worker N-1 (rollback) manda permanent=true para o kind que ele não
+        # conhece. O banco recusa matar a linha: quem está velho é o worker.
+        time.sleep(1.1)  # o retry pediu 1 s de espera
+        item2 = [i for i in _claim_tudo(worker) if UUID(str(i["id"])) == outbox_id]
+        assert item2, "a linha voltou para a fila"
+        with psycopg.connect(RUNTIME_URL) as connection:
+            _context(connection, worker, WORKER_CAPABILITY, SELLER)
+            status_antigo = connection.execute(
+                "select app_private.fail_email_outbox(%s,%s,%s,%s,%s,'kind_unknown',1,true,%s)",
+                (
+                    worker,
+                    EMAIL_LABEL,
+                    SELLER,
+                    outbox_id,
+                    int(cast(int, item2[0]["lease_fence"])),
+                    uuid4(),
+                ),
+            ).fetchone()
+            connection.commit()
+        assert status_antigo == ("retry",)
 
 
 def test_claim_requires_the_worker_capability_and_the_lease_range(

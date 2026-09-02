@@ -896,3 +896,31 @@ def test_redeeming_a_class_link_enqueues_one_access_email_per_person() -> None:
             (seller_id, f"access_link:{outro_link}:{buyer_id(0)}"),
         ).fetchone()
     assert repetidos == (0,)
+
+
+def test_reactivating_a_revoked_entitlement_sends_the_email_again() -> None:
+    # Acesso revogado que o link devolve É liberação de acesso: a linha da
+    # entitlement já existe (created=false), mas a pessoa perdeu e reganhou o
+    # curso — e precisa ouvir onde ele está.
+    assert ADMIN_URL
+    seller_id, product_id = published_free_product()
+    primeiro = uuid4().hex + uuid4().hex
+    create_link(seller_id, product_id, token=primeiro, max_uses=5)
+    redeem(primeiro, buyer_id(2))
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "update buyer_entitlement set status='revoked' where seller_organization_id=%s "
+            "and buyer_identity_user_id=%s and catalog_product_id=%s",
+            (seller_id, buyer_id(2), product_id),
+        )
+        connection.commit()
+    segundo = uuid4().hex + uuid4().hex
+    outro_link = create_link(seller_id, product_id, token=segundo, max_uses=5)
+    assert redeem(segundo, buyer_id(2))[3] is False  # a linha não é nova
+    with psycopg.connect(ADMIN_URL) as connection:
+        linhas = connection.execute(
+            "select count(*) from app_private.email_outbox where seller_organization_id=%s "
+            "and dedupe_key=%s",
+            (seller_id, f"access_link:{outro_link}:{buyer_id(2)}"),
+        ).fetchone()
+    assert linhas == (1,)
