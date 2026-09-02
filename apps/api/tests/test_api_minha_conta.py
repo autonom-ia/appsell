@@ -7,7 +7,6 @@ obrigatório, o sujeito vem do envelope, e o seller no contexto fecha a porta.
 from __future__ import annotations
 
 import json
-
 from types import SimpleNamespace
 
 import httpx
@@ -17,8 +16,6 @@ from sqlalchemy.exc import DBAPIError
 from test_api_onboarding import client, signed_headers  # noqa: F401 (fixture)
 
 from appsell_api.routes import _export_error
-
-pytestmark = pytest.mark.asyncio
 
 EMPTY = b"{}"
 
@@ -35,6 +32,7 @@ async def _sincroniza(api: httpx.AsyncClient) -> None:
     assert response.status_code == 200, response.text
 
 
+@pytest.mark.asyncio
 async def test_o_status_a_exportacao_e_o_pedido_seguem_o_envelope(
     client: httpx.AsyncClient,  # noqa: F811
 ) -> None:
@@ -94,6 +92,7 @@ async def test_o_status_a_exportacao_e_o_pedido_seguem_o_envelope(
     assert depois.json() == {"deletion_requested_at": quando}
 
 
+@pytest.mark.asyncio
 async def test_a_exportacao_recusa_corpo_com_campo_seller_e_capability_errada(
     client: httpx.AsyncClient,  # noqa: F811
 ) -> None:
