@@ -20,6 +20,7 @@ import re
 import smtplib
 import ssl
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from email.message import EmailMessage
 from email.utils import formataddr
@@ -164,6 +165,16 @@ def classificar_erro(erro: BaseException) -> FalhaDeEnvio:
     return FalhaDeEnvio("send_unexpected", permanent=False, delay_seconds=300)
 
 
+# Cada tipo da caixa de saída tem quem sabe montá-lo. Um tipo que o worker não
+# conhece vira dead_letter com kind_unknown — visível, sem tocar no acesso.
+_CONSTRUTORES: dict[
+    str, Callable[[dict[str, Any], object, str], email_layout.EmailTransacional]
+] = {
+    "purchase_confirmed": email_layout.compra_confirmada,
+    "access_link_redeemed": email_layout.acesso_liberado,
+}
+
+
 def destinatario_valido(valor: object) -> bool:
     return isinstance(valor, str) and len(valor) <= 254 and bool(_UM_DESTINATARIO.match(valor))
 
@@ -171,7 +182,8 @@ def destinatario_valido(valor: object) -> bool:
 def montar_mensagem(item: dict[str, Any], settings: Settings) -> tuple[EmailMessage, str]:
     """Renderiza o e-mail do item e devolve a mensagem pronta e o Message-ID."""
     kind = item.get("kind")
-    if kind != "purchase_confirmed":
+    construtor = _CONSTRUTORES.get(str(kind))
+    if construtor is None:
         raise FalhaDeEnvio("kind_unknown", permanent=True, delay_seconds=1)
     payload = item.get("payload")
     if not isinstance(payload, dict):
@@ -180,9 +192,7 @@ def montar_mensagem(item: dict[str, Any], settings: Settings) -> tuple[EmailMess
     if not destinatario_valido(destinatario):
         raise FalhaDeEnvio("recipient_invalid", permanent=True, delay_seconds=1)
     try:
-        email = email_layout.compra_confirmada(
-            payload, item.get("recipient_name"), settings.email_public_origin
-        )
+        email = construtor(payload, item.get("recipient_name"), settings.email_public_origin)
         renderizado = email_layout.renderizar(email, settings.email_public_origin)
     except email_layout.EmailInvalido as erro:
         raise FalhaDeEnvio("render_failed", permanent=True, delay_seconds=1) from erro

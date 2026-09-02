@@ -384,3 +384,29 @@ def compra_confirmada(
         acao=Acao("Abrir o curso", f"{origem_publica(origem)}/library"),
         motivo=f"comprou {curso} na loja {loja}",
     )
+
+
+def acesso_liberado(
+    payload: dict[str, object], recipient_name: object, origem: str
+) -> EmailTransacional:
+    """Quem entrou pelo link da turma: o curso já está na biblioteca."""
+    if payload.get("schema_version") != 1:
+        raise EmailInvalido("payload de acesso liberado em versao desconhecida")
+    curso = _limpo(payload.get("product_title"), 160) or "o curso"
+    loja = _limpo(payload.get("seller_display_name"), 120) or "a loja"
+    nome = _limpo(recipient_name, 80)
+    saudacao = f"Olá, {nome}. " if nome else "Olá. "
+    return EmailTransacional(
+        assunto=f"Seu acesso a {curso} está liberado",
+        eyebrow="Do lado de quem entrou",
+        titulo="Você entrou na turma. O curso já é seu.",
+        paragrafos=(
+            f"{saudacao}O link da turma de {curso}, da loja {loja}, liberou o curso no seu nome. "
+            "Ele está na sua biblioteca: entre com a mesma conta que usou agora e ele estará lá, "
+            "sem link nem senha.",
+            "Você assiste vídeo e PDF pelo navegador do celular, sem instalar nada.",
+        ),
+        detalhes=(Detalhe("Curso", curso), Detalhe("Loja", loja)),
+        acao=Acao("Abrir o curso", f"{origem_publica(origem)}/library"),
+        motivo=f"entrou pelo link da turma de {curso} na loja {loja}",
+    )

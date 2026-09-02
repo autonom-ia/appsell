@@ -849,3 +849,38 @@ def test_a_seller_cannot_list_another_tenant_links() -> None:
             (SELLER_USER, other_seller, other_product),
         ).fetchall()
     assert rows == []
+
+
+def test_redeeming_a_class_link_enqueues_one_access_email_per_person() -> None:
+    # O link da turma é a outra porta de entrada: quem entra recebe o mesmo
+    # "acesso liberado" da compra, uma vez só — repetir o link não manda outro,
+    # e a segunda pessoa recebe o dela.
+    assert ADMIN_URL
+    seller_id, product_id = published_free_product()
+    token = uuid4().hex + uuid4().hex
+    link_id = create_link(seller_id, product_id, token=token, max_uses=5)
+    redeem(token, buyer_id(0))
+    redeem(token, buyer_id(0))
+    redeem(token, buyer_id(1))
+    with psycopg.connect(ADMIN_URL) as connection:
+        rows = connection.execute(
+            "select kind,recipient_identity_user_id,recipient_email,payload,status "
+            "from app_private.email_outbox where seller_organization_id=%s "
+            "and dedupe_key like %s order by created_at",
+            (seller_id, f"access_link:{link_id}:%"),
+        ).fetchall()
+        emails: dict[UUID, str] = dict(
+            connection.execute(
+                "select id,email_normalized from identity_user where id in (%s,%s)",
+                (buyer_id(0), buyer_id(1)),
+            ).fetchall()
+        )
+    assert [(r[0], r[1], r[4]) for r in rows] == [
+        ("access_link_redeemed", buyer_id(0), "pending"),
+        ("access_link_redeemed", buyer_id(1), "pending"),
+    ]
+    for _kind, buyer, recipient, payload, _status in rows:
+        assert recipient == emails[buyer]
+        assert payload["product_title"] == "Produto Editado"  # save_draft renomeia
+        assert UUID(str(payload["access_link_id"])) == link_id
+        assert UUID(str(payload["catalog_product_id"])) == product_id
