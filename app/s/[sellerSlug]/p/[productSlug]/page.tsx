@@ -3,13 +3,13 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { StripeCheckoutCard } from "@/app/components/stripe-checkout-card";
-import { resolveCheckoutProduct } from "@/lib/checkout-config";
 import { sessionCookieName } from "@/lib/cookies";
 import {
   DomainApiError,
   readPublicStorefront
 } from "@/lib/internal-api-client.server";
 import { oauthService } from "@/lib/oauth-service.server";
+import { isProductCheckoutAvailable } from "@/lib/product-checkout-availability.server";
 import { parsePublicStorefront } from "@/lib/public-storefront";
 
 export const dynamic = "force-dynamic";
@@ -26,8 +26,9 @@ export default async function ProductCheckoutPage({
   const accessMode = product.access_mode ?? "paid";
   if (accessMode === "paid" && !product.price) notFound();
 
-  const checkoutProduct = accessMode === "paid" ? resolveCheckoutProduct(sellerSlug, productSlug) : null;
-  const buyer = accessMode === "paid" && checkoutProduct ? await authenticatedBuyer() : null;
+  const checkoutAvailable = accessMode === "paid" &&
+    isProductCheckoutAvailable(sellerSlug, productSlug);
+  const buyer = checkoutAvailable ? await authenticatedBuyer() : null;
   const priceLabel = product.price ? formatPrice(product.price.unit_amount_minor, product.price.currency) : "Acesso gratuito";
   const accessPath = `/s/${storefront.seller.slug}/p/${product.slug}/access`;
   const productPath = `/s/${storefront.seller.slug}/p/${product.slug}`;
@@ -55,7 +56,7 @@ export default async function ProductCheckoutPage({
               <p>Entre ou crie sua conta para receber acesso ao produto, sem cobrança.</p>
               <Link className="primary-button" href={accessPath}>Acessar gratuitamente</Link>
             </div>
-          : checkoutProduct && buyer
+          : checkoutAvailable && buyer
           ? <StripeCheckoutCard
               sellerSlug={storefront.seller.slug}
               productSlug={product.slug}
@@ -64,7 +65,7 @@ export default async function ProductCheckoutPage({
               priceLabel={priceLabel}
               accountEmail={buyer.email}
             />
-          : checkoutProduct
+          : checkoutAvailable
           ? <div className="checkout-card checkout-unavailable">
               <h2>Entre para comprar</h2>
               <p>O acesso ficará vinculado à conta usada no pagamento.</p>
