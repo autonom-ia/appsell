@@ -56,99 +56,126 @@ export function LpMotion() {
       gsap.set(atos[0].querySelectorAll(".linha > span"), { yPercent: 0 });
       gsap.set(["#t-painel", "#t-recebe"], { clipPath: "inset(0 0 0 100%)" });
       gsap.set("#peca-painel", { autoAlpha: 0, z: 40 });
+      // A inclinacao anda pouco: acima de 15 graus o texto da interface entra
+      // em keystone e para de ser legivel.
+      gsap.set("#corpo-hero", { rotateY: -13, rotateX: 6, rotateZ: -1.5 });
 
-      // O curso pinado tem cerca de 1260px. Como as duracoes sao normalizadas,
-      // 0.01 de duracao vale ~13px de rolagem: a saida antiga, de 0.02, se
-      // resolvia em dois cliques de roda enquanto a entrada levava cinco vezes
-      // mais. Era essa assimetria que fazia a troca parecer corte. Agora a
-      // saida tem folga, e a entrada comeca antes de ela terminar. O cruzamento
-      // e seguro porque .linha tem overflow hidden: o titulo que sai ja esta
-      // fora da mascara quando o que entra aparece.
-      const SAIDA = 0.075;
-      const ENTRADA = 0.13;
-      const CRUZE = 0.032;
-      const TROCA = SAIDA - CRUZE + ENTRADA;
-      const LEITURA = (1 - 2 * TROCA) / 3;
-      const MOMENTO1 = LEITURA;
-      const MOMENTO2 = 2 * LEITURA + TROCA;
-      // O ponto em que o ato novo assume a tela: e ele que rege o indicador e
-      // as trocas de tela do aparelho, nao o inicio da saida do ato anterior.
-      const CRUZA1 = MOMENTO1 + SAIDA - CRUZE;
-      const CRUZA2 = MOMENTO2 + SAIDA - CRUZE;
+      // A passagem entre atos toca no tempo, nao no scroll. Filmada a 28 fps,
+      // a versao presa ao scrub cabia em 4 a 8 quadros: quem rola a 1500 px/s
+      // atravessava a troca em 150 ms, e o olho lia corte. Aqui o scroll so
+      // decide qual ato esta na tela; a saida e a entrada duram o mesmo com
+      // roda lenta, flick de polegar ou trackpad. A entrada comeca quando a
+      // saida ja esta 96% fora da mascara: as mascaras dos atos nao coincidem
+      // em altura, entao qualquer sobra do titulo antigo aparece por cima do
+      // novo.
+      const T_SAIDA = 0.34;
+      const T_ENTRADA = 0.62;
+      const CRUZE = 0.04;
+      // O ultimo ato leva a maior fatia do curso: a entrada dura 0,9 s e num
+      // flick o unpin cortava o preco no meio. O primeiro ja foi lido antes
+      // de qualquer rolagem. A folga evita que um scroll parado em cima do
+      // limite fique trocando de ato.
+      // No celular o pin e menor e o polegar anda mais rapido: o ultimo ato
+      // precisa de metade do curso para a entrada terminar antes do unpin.
+      const LIMITES = estreito.matches ? [0.24, 0.48] : [0.28, 0.56];
+      const FOLGA = 0.03;
+      const inicio = performance.now();
+
+      const secundarios = (alvo: HTMLElement) =>
+        [".eb", ".sub", ".actions", ".preco-linha", ".nota"]
+          .map((s) => alvo.querySelector<HTMLElement>(s))
+          .filter((el): el is HTMLElement => el !== null);
+      const linhas = (alvo: HTMLElement) => alvo.querySelectorAll<HTMLElement>(".linha > span");
+
+      let atual = 0;
+      let passagem: gsap.core.Timeline | undefined;
+
+      const trocar = (para: number, sentido: 1 | -1, imediato: boolean) => {
+        const de = atual;
+        atual = para;
+        passagem?.kill();
+        const saiu = atos[de];
+        const entrou = atos[para];
+
+        // Indicador, leitor de tela, texto e aparelho saem do mesmo evento.
+        // Antes o indicador lia o scroll cru e o texto a timeline com scrub:
+        // 110 px de diferenca no celular, 220 no desktop.
+        atos.forEach((a, k) => {
+          if (k !== de && k !== para) gsap.set(a, { autoAlpha: 0 });
+          a.setAttribute("aria-hidden", String(k !== para));
+        });
+        barras.forEach((b, k) => b.classList.toggle("on", k === para));
+
+        // Se o ato que entra ainda estava saindo (quem inverteu o scroll no
+        // meio), ele continua de onde esta em vez de pular para fora.
+        const escondido = Number(gsap.getProperty(entrou, "opacity")) < 0.02;
+        if (escondido) {
+          gsap.set(linhas(entrou), { yPercent: 110 * sentido });
+          gsap.set(secundarios(entrou), { autoAlpha: 0, y: 14 * sentido });
+        }
+
+        const entra = T_SAIDA - CRUZE;
+        const tl = gsap.timeline();
+        tl.to(linhas(saiu), { yPercent: -110 * sentido, duration: T_SAIDA, stagger: 0.03, ease: "power2.inOut" }, 0)
+          .to(secundarios(saiu), { autoAlpha: 0, y: -12 * sentido, duration: T_SAIDA * 0.8, ease: "power2.in" }, 0)
+          .set(saiu, { autoAlpha: 0 }, T_SAIDA)
+          .set(entrou, { autoAlpha: 1 }, entra)
+          // Ordem de leitura: eyebrow, titulo, apoio. Uma .linha que quebra em
+          // duas linhas visuais entrega a segunda ~200 ms depois da primeira;
+          // o apoio espera por ela para nao chegar antes do fim do titulo.
+          .to(entrou.querySelector(".eb"), { autoAlpha: 1, y: 0, duration: 0.4, ease: "power2.out" }, entra)
+          .to(linhas(entrou), { yPercent: 0, duration: T_ENTRADA, stagger: 0.06, ease: "power3.out" }, entra + 0.05)
+          .to(entrou.querySelector(".sub"), { autoAlpha: 1, y: 0, duration: 0.45, ease: "power2.out" }, entra + 0.36)
+          .to(secundarios(entrou).filter((el) => !el.matches(".eb, .sub")),
+            { autoAlpha: 1, y: 0, duration: 0.45, stagger: 0.05, ease: "power2.out" }, entra + 0.46);
+
+        // A tela troca por cortina. Fade cruzado deixaria duas interfaces
+        // legiveis no mesmo aparelho.
+        tl.to("#t-painel", { clipPath: para >= 1 ? "inset(0 0 0 0%)" : "inset(0 0 0 100%)", duration: 0.5, ease: "power2.inOut" }, entra)
+          .to("#t-recebe", { clipPath: para >= 2 ? "inset(0 0 0 0%)" : "inset(0 0 0 100%)", duration: 0.5, ease: "power2.inOut" }, entra)
+          .to("#peca-painel",
+            para === 1
+              ? { autoAlpha: 1, z: 90, duration: 0.5, ease: "power3.out" }
+              : { autoAlpha: 0, z: 40, duration: 0.3, ease: "power2.in" },
+            para === 1 ? entra + 0.3 : 0)
+          // No ato do dinheiro o aparelho para de girar. O giro continuo vive
+          // no #corpo-hero, preso ao scroll; endireitar e no pai, para as duas
+          // animacoes nao disputarem a mesma propriedade.
+          .to(".palco .fone", { rotateY: para === 2 ? 4 : 0, rotateX: para === 2 ? -2 : 0, duration: 0.7, ease: "power2.out" }, entra);
+
+        if (imediato) tl.progress(1);
+        passagem = tl;
+      };
 
       const tl = gsap.timeline({
         scrollTrigger: {
           trigger: ".abertura .pin",
           start: "top top",
-          end: estreito.matches ? "+=180%" : "+=300%",
+          // No celular o pin era 180% da tela com 500 px de nada entre trocas:
+          // o polegar rolava e a pagina parecia presa.
+          end: estreito.matches ? "+=150%" : "+=300%",
           pin: true,
           scrub: 0.45,
           anticipatePin: 1,
           onUpdate: (self) => {
-            const i = self.progress < CRUZA1 ? 0 : self.progress < CRUZA2 ? 1 : 2;
-            barras.forEach((b, k) => b.classList.toggle("on", k === i));
-            // O estado de acessibilidade sai do mesmo indice que move o
-            // indicador: o ato na tela e o unico anunciado.
-            atos.forEach((a, k) => a.setAttribute("aria-hidden", String(k !== i)));
+            const p = self.progress;
+            let alvo = atual;
+            while (alvo < 2 && p > LIMITES[alvo] + FOLGA) alvo++;
+            while (alvo > 0 && p < LIMITES[alvo - 1] - FOLGA) alvo--;
+            if (alvo === atual) return;
+            // Chegar no meio do pin (voltar de /termos) nao e uma passagem.
+            trocar(alvo, alvo > atual ? 1 : -1, performance.now() - inicio < 600);
           }
         }
       });
 
-      // A inclinacao anda pouco: acima de 15 graus o texto da interface entra
-      // em keystone e para de ser legivel.
-      gsap.set("#corpo-hero", { rotateY: -13, rotateX: 6, rotateZ: -1.5 });
       tl.to("#corpo-hero", { rotateY: -4, rotateX: 2, rotateZ: 0, ease: "none", duration: 0.66 }, 0)
         .to("#foto", { yPercent: -14, scale: 1.16, ease: "none", duration: 1 }, 0)
-        .to("#foto", { opacity: 0.22, ease: "none", duration: 0.28 }, 0.14);
-
-      const troca = (saiu: HTMLElement, entrou: HTMLElement, momento: number) => {
-        const secundarios = (alvo: HTMLElement) =>
-          [alvo.querySelector(".eb"), alvo.querySelector(".sub"), alvo.querySelector(".actions"),
-           alvo.querySelector(".preco-linha"), alvo.querySelector(".nota")].filter(Boolean);
-        const entra = momento + SAIDA - CRUZE;
-
-        tl.to(saiu.querySelectorAll(".linha > span"),
-            { yPercent: -110, duration: SAIDA, stagger: 0.016, ease: "power2.inOut" }, momento)
-          .to(secundarios(saiu),
-            { autoAlpha: 0, y: -14, duration: SAIDA * 0.7, ease: "power2.in" }, momento)
-          // Antes o container trocava por .set, um corte de um quadro so. A
-          // rampa curta cobre o mesmo intervalo sem a descontinuidade.
-          .to(saiu, { autoAlpha: 0, duration: 0.022, ease: "none" }, momento + SAIDA - 0.012)
-          .to(entrou, { autoAlpha: 1, duration: 0.022, ease: "none" }, entra)
-          .fromTo(entrou.querySelectorAll(".linha > span"), { yPercent: 110 },
-            { yPercent: 0, duration: ENTRADA, stagger: 0.028, ease: "power3.out" }, entra)
-          .fromTo(entrou.querySelector(".eb"), { autoAlpha: 0, y: 10 },
-            { autoAlpha: 1, y: 0, duration: 0.075, ease: "power2.out" }, entra + 0.024)
-          .fromTo(entrou.querySelector(".sub"), { autoAlpha: 0, y: 18 },
-            { autoAlpha: 1, y: 0, duration: 0.095, ease: "power2.out" }, entra + 0.045);
-      };
-      troca(atos[0], atos[1], MOMENTO1);
-      troca(atos[1], atos[2], MOMENTO2);
-
-      // Entre uma troca e outra a tela ficava imovel por cerca de 540px de
-      // rolagem: filmado, dois tercos dos quadros nao mudavam nada. A deriva
-      // abaixo e pequena de proposito, o suficiente para a camera parecer viva
-      // durante a leitura sem competir com a troca em si.
-      const janela: ReadonlyArray<readonly [number, number]> = [
-        [0, MOMENTO1 + SAIDA],
-        [CRUZA1, MOMENTO2 + SAIDA],
-        [CRUZA2, 1]
-      ];
-      atos.forEach((ato, i) => {
-        const [abre, fecha] = janela[i];
-        tl.fromTo(ato, { y: 10 }, { y: -10, ease: "none", duration: fecha - abre }, abre);
-      });
-
-      // A tela troca por cortina. Fade cruzado deixaria duas interfaces
-      // legiveis no mesmo aparelho.
-      tl.to("#t-painel", { clipPath: "inset(0 0 0 0%)", ease: "power2.inOut", duration: 0.03 }, CRUZA1 - 0.012)
-        .fromTo("#peca-painel", { autoAlpha: 0, z: 40 }, { autoAlpha: 1, z: 90, duration: 0.07, ease: "power3.out" }, CRUZA1 + ENTRADA * 0.55)
-        .to("#peca-painel", { autoAlpha: 0, z: 40, duration: 0.045, ease: "power2.in" }, MOMENTO2 - 0.05)
-        .to("#t-recebe", { clipPath: "inset(0 0 0 0%)", ease: "power2.inOut", duration: 0.03 }, CRUZA2 - 0.012)
-        // No ato do dinheiro o aparelho para de girar.
-        .to("#corpo-hero", { rotateY: 0, rotateX: 0, ease: "power2.out", duration: 0.16, overwrite: "auto" }, CRUZA2);
-
-      tl.to(".palco", { autoAlpha: 0, y: "-5vh", ease: "power1.in", duration: 0.08 }, 0.92)
+        .to("#foto", { opacity: 0.22, ease: "none", duration: 0.28 }, 0.14)
+        // A deriva e pequena de proposito: a camera parece viva durante a
+        // leitura sem competir com a passagem.
+        .fromTo(".atos", { y: 12 }, { y: -12, ease: "none", duration: 1 }, 0)
+        .to(".palco", { autoAlpha: 0, y: "-5vh", ease: "power1.in", duration: 0.08 }, 0.92)
         .to(".progresso", { autoAlpha: 0, duration: 0.05 }, 0.94);
 
       // Um laranja por tela: o botao do topo so assume a cor depois do hero, e
@@ -261,6 +288,7 @@ export function LpMotion() {
         screen.orientation?.removeEventListener("change", refrescarDepois);
         document.getElementById("video-foto")?.remove();
         gsap.ticker.remove(tick);
+        passagem?.kill();
         ScrollTrigger.getAll().forEach((s) => s.kill());
         lenis.destroy();
         document.documentElement.classList.remove("js-anim");

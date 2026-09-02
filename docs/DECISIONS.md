@@ -172,6 +172,36 @@ ponto da rolagem pelo botão fixo. Preço, FAQ e contato têm link no rodapé.
 Reabrir só com evidência de comportamento real, não por suposição. Registro em
 [#347](https://github.com/autonom-ia/appsell/issues/347).
 
+## Decisão 017 — a passagem entre atos do hero toca no tempo, não no scroll
+
+Filmado em 01/09 a 28 fps com roda real: a troca de ato vivia dentro do scrub e
+ocupava 17% do curso pinado, ~170 px no desktop e ~120 px no celular. Quem rola
+a 1500 px/s atravessava tudo em 150–300 ms, 4 a 8 quadros. O olho lia corte.
+Somavam-se dois defeitos: as máscaras `.linha` de atos diferentes não coincidem
+em altura, e o título que saía ficava visível por cima do que entrava; e o
+indicador lia o scroll cru enquanto o texto seguia a timeline com `scrub`,
+110 px de atraso no celular e 220 no desktop.
+
+Agora o scroll só decide **qual** ato está na tela, com histerese de 3% para
+não oscilar em cima do limite. A passagem é um tween de duração fixa (saída
+0,34 s, entrada 0,62 s), igual com roda lenta, flick ou trackpad; a entrada
+começa quando a saída está 96% fora da máscara; indicador, `aria-hidden`,
+cortina do aparelho e texto saem do mesmo evento. Foto, parallax, giro do
+aparelho e deriva continuam no scrub, porque esses são contínuos por natureza.
+
+Junto: o bloco de texto passou a centrar na altura do aparelho
+(`align-content: safe center`). Ancorado no rodapé, toda altura extra da tela
+virava vão entre o header e o eyebrow, 418 px medidos a 2000×1090; centrado,
+238 px. No celular os atos ancoram no topo da célula: centrar cada um fazia o
+eyebrow pular 147 px entre atos. O pin do celular caiu de 180% para 150%, com
+limites próprios (24% e 48%) para o ato do preço terminar de entrar antes do
+unpin.
+
+O que **não** mudou, por medição: abrir o scrim do celular no terço superior
+para a foto voltar reprovou no gate de contraste (3,94:1 sob o eyebrow a
+390×844). A foto no celular só volta movendo o texto, não clareando o fundo.
+Registro em [#369](https://github.com/autonom-ia/appsell/issues/369).
+
 ## Pendências que bloqueiam ampliação
 
 - staging separado e DNS próprio;
