@@ -54,10 +54,10 @@ do que aconteceu com a conta dela, ou sem um aviso que a lei nos obriga a dar.
 | Recibo ou comprovante da compra | comprador | pagamento confirmado | execução de contrato, art. 7º, V — o recibo confirma a contratação; a guarda fiscal do documento é retenção, não envio |
 | Convite para a equipe da loja | pessoa convidada | convite emitido (`SPEC_CONVITES_MEMBROS.md`) | legítimo interesse, art. 7º, IX — o e-mail diz **quem** convidou e **para qual loja**, é enviado **uma vez** por convite e não é reenviado sem novo pedido do emissor |
 | Segurança da conta | titular | login novo, alteração de e-mail | legítimo interesse e prevenção à fraude, art. 7º, IX |
-| Confirmação de pedido de exclusão | titular | pedido registrado | atendimento a direito do titular, arts. 18 e 19 — obrigação legal, art. 7º, II |
+| Confirmação de pedido de exclusão | titular | pedido registrado | atendimento a direito do titular, art. 18, VI e §§ 3º e 4º — obrigação legal, art. 7º, II |
 | Loja suspensa ou reativada | dono da loja | mudança de status pela plataforma | execução de contrato, art. 7º, V |
-| Alteração **relevante** dos Termos de Uso | todos com conta | nova versão com mudança relevante — o critério é o do próprio documento (Termos §14); revisão de redação não gera e-mail | execução de contrato, art. 7º, V |
-| Alteração **relevante** da Política de Privacidade | todos com conta | nova versão com mudança relevante (Privacidade §12) | transparência ao titular, arts. 6º, VI e 9º — obrigação legal, art. 7º, II |
+| Alteração **relevante** dos Termos de Uso | contas que a mudança atinge: vendedores, compradores ou ambos | nova versão com mudança relevante — o critério é o do próprio documento (Termos §14); revisão de redação não gera e-mail | execução de contrato, art. 7º, V |
+| Alteração **relevante** da Política de Privacidade | **titulares afetados**: quem tem dados tratados na finalidade que mudou (mudança no tratamento de dados do Aluno vai a compradores; do Vendedor, a vendedores; das duas, a ambos) | nova versão com mudança relevante (Privacidade §12) | transparência ao titular, arts. 6º, VI e 9º — obrigação legal, art. 7º, II |
 | Incidente de segurança com risco relevante | titulares afetados | dever do controlador, art. 48, no prazo e forma da ANPD (Privacidade §11); o encarregado executa, não decide se comunica | obrigação legal, art. 7º, II |
 
 ### Opcional — só com consentimento, e se descadastra em um clique
