@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, IntegrityError
@@ -46,6 +47,12 @@ class IdentitySyncBody(BaseModel):
         ):
             raise ValueError("invalid normalized email")
         return value
+
+
+# As mutações da conta não levam dado nenhum: o corpo é `{}` e qualquer campo
+# a mais é recusado — inclusive um id de usuário que alguém tente enfiar.
+class EmptyBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class SellerOnboardingBody(BaseModel):
@@ -163,6 +170,92 @@ async def read_me(request: Request) -> dict[str, Any]:
         "display_name": identity["display_name"],
         "platform_roles": list(grants),
     }
+
+
+# Minha conta (#351). O sujeito NUNCA vem do corpo nem da query: é o do
+# envelope assinado, e a função do banco ainda confere que o contexto é o
+# mesmo. As três capabilities são exclusivas destas rotas.
+@router.get("/me/account")
+async def read_account(request: Request) -> dict[str, Any]:
+    auth, internal = await _authenticate(request, "account.read")
+    await _require_no_seller(internal)
+    try:
+        async with auth.domain_session(internal.envelope) as session:
+            requested_at = await session.scalar(
+                text(
+                    "select deletion_requested_at "
+                    "from app_private.read_account_status(:identity_user_id)"
+                ),
+                {"identity_user_id": internal.envelope.identity.user_id},
+            )
+    except DBAPIError as error:
+        raise _domain_error(error) from error
+    return {"deletion_requested_at": _iso(requested_at)}
+
+
+@router.post("/me/account/export")
+async def export_account(request: Request) -> dict[str, Any]:
+    auth, internal = await _authenticate(request, "account.export")
+    await _require_no_seller(internal)
+    await _model_from_body(EmptyBody, internal)
+    envelope = internal.envelope
+    try:
+        async with auth.domain_session(envelope) as session:
+            exported = await session.scalar(
+                text("select app_private.export_account_data(:identity_user_id,:request_id)"),
+                {
+                    "identity_user_id": envelope.identity.user_id,
+                    "request_id": envelope.request_id,
+                },
+            )
+    except DBAPIError as error:
+        raise _domain_error(error) from error
+    if not isinstance(exported, dict):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="domain_unavailable"
+        )
+    return exported
+
+
+@router.post("/me/account/deletion-request")
+async def request_account_deletion(request: Request) -> Response:
+    auth, internal = await _authenticate(request, "account.deletion.request")
+    await _require_no_seller(internal)
+    await _model_from_body(EmptyBody, internal)
+    envelope = internal.envelope
+    try:
+        async with auth.domain_session(envelope) as session:
+            row = (
+                (
+                    await session.execute(
+                        text(
+                            "select requested_at,already_requested "
+                            "from app_private.request_account_deletion("
+                            ":identity_user_id,:request_id)"
+                        ),
+                        {
+                            "identity_user_id": envelope.identity.user_id,
+                            "request_id": envelope.request_id,
+                        },
+                    )
+                )
+                .mappings()
+                .one()
+            )
+    except DBAPIError as error:
+        raise _domain_error(error) from error
+    already = bool(row["already_requested"])
+    return Response(
+        content=json.dumps(
+            {"requested_at": _iso(row["requested_at"]), "already_requested": already}
+        ),
+        status_code=status.HTTP_200_OK if already else status.HTTP_201_CREATED,
+        media_type="application/json",
+    )
+
+
+def _iso(value: Any) -> str | None:
+    return value.isoformat() if isinstance(value, datetime) else None
 
 
 @router.get("/me/sellers")

@@ -223,6 +223,24 @@ para a foto voltar reprovou no gate de contraste (3,94:1 sob o eyebrow a
 390×844). A foto no celular só volta movendo o texto, não clareando o fundo.
 Registro em [#369](https://github.com/autonom-ia/appsell/issues/369).
 
+## Decisão 019 — pedir a exclusão da conta registra o pedido; ninguém apaga na hora
+
+Decidida em 02/09 (#351). Apagar a identidade de quem comprou destrói a prova
+da compra, que tem retenção fiscal e contratual. O pedido vira um
+`audit_event` (`account.deletion.requested`, ator = a própria pessoa, sem
+loja) e a execução é manual, pelo runbook
+[PEDIDO_DE_EXCLUSAO_DE_CONTA.md](runbooks/PEDIDO_DE_EXCLUSAO_DE_CONTA.md).
+Repetir o pedido em 30 dias devolve o registro existente — um clique repetido
+não vira um pedido por clique.
+
+Junto, duas escolhas menores e reversíveis: a exportação sai sem os traços
+dos desenhos feitos nos PDFs (`points` — é volume, não dado pessoal; página,
+ferramenta e cor vão), e sem `metadata` de auditoria, que pode carregar dado
+de terceiro. E o que a issue pedia — "sem migration" — não cabia: a política
+`audit_member_insert` só deixa o runtime escrever auditoria de quem tem
+membership numa loja, e o comprador puro não tem. Toda auditoria deste
+projeto nasce em função SECURITY DEFINER; as três da conta vivem na `0051`.
+
 ## Pendências que bloqueiam ampliação
 
 - staging separado e DNS próprio;

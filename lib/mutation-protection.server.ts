@@ -34,6 +34,8 @@ export const CREATE_ACCESS_LINK_CSRF_ACTION = "POST:/api/products/access-links";
 export const REVOKE_ACCESS_LINK_CSRF_ACTION = "POST:/api/products/access-links/revoke";
 export const ROTATE_ACCESS_LINK_CSRF_ACTION = "POST:/api/products/access-links/rotate";
 export const REDEEM_ACCESS_LINK_CSRF_ACTION = "POST:/api/library/access-links/redeem";
+export const EXPORT_ACCOUNT_DATA_CSRF_ACTION = "POST:/api/me/account/export";
+export const REQUEST_ACCOUNT_DELETION_CSRF_ACTION = "POST:/api/me/account/deletion-request";
 
 export function csrfTokenForSession(sessionId: string, action: string) {
   return deriveCsrfToken(sessionId, action, csrfKey());
