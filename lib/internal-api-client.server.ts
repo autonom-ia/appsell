@@ -1257,7 +1257,10 @@ export async function exportDomainAccountData(sessionId: string, session: Server
     method: "POST",
     path: "/v1/me/account/export",
     capability: "account.export",
-    body: {}
+    body: {},
+    // O banco monta o documento inteiro; os 3 s padrão são para leituras
+    // pequenas. O teto de tamanho (8 MiB) vive na função, não aqui.
+    timeoutMs: 20_000
   });
 }
 

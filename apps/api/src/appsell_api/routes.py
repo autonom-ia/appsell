@@ -209,6 +209,13 @@ async def export_account(request: Request) -> dict[str, Any]:
                 },
             )
     except DBAPIError as error:
+        # Acima do teto o banco recusa montar o documento (54000). Não é
+        # indisponibilidade: é um caso para atendimento manual, e a tela diz isso.
+        if getattr(error.orig, "sqlstate", None) == "54000":
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail="account_export_too_large",
+            ) from error
         raise _domain_error(error) from error
     if not isinstance(exported, dict):
         raise HTTPException(

@@ -42,6 +42,7 @@ const IDLE: ActionState = { busy: false, message: "", error: false };
 function messageForStatus(status: number, fallback: string) {
   if (status === 401) return "Sua sessão expirou. Entre novamente.";
   if (status === 403) return "Esta ação não está disponível para esta conta.";
+  if (status === 413) return `Sua conta tem mais dados do que conseguimos exportar de uma vez. Escreva para ${CONTACT_EMAIL} e enviamos o arquivo.`;
   if (status === 429) return "Você já fez isso há pouco. Aguarde alguns minutos e tente de novo.";
   if (status === 503) return "O serviço não respondeu. Tente novamente.";
   return fallback;
@@ -277,8 +278,9 @@ export function AccountWorkspace({ csrfExport, csrfDeletion, passwordRecoveryHre
         <h2 id="conta-dados">Levar ou apagar</h2>
         <p>
           A exportação traz o que sabemos sobre você: identidade, acessos, compras,
-          progresso, marcadores e anotações, os e-mails que enviamos e o seu
-          histórico de ações. Sem senhas, sem tokens, sem dados de outras pessoas.
+          progresso, marcadores e anotações (com os traços que você desenhou), os
+          e-mails que enviamos e o seu histórico de ações. Sem senhas, sem tokens,
+          sem dados de outras pessoas.
         </p>
         <div className="account-actions">
           <button type="button" className="primary-button" onClick={() => void exportData()} disabled={exportState.busy || Boolean(demo)}>

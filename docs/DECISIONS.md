@@ -1,6 +1,6 @@
 # DECISIONS — decisões operacionais atuais
 
-Última atualização: 2026-09-01.
+Última atualização: 2026-09-02.
 
 O registro arquitetural detalhado está em
 [DECISION_REGISTER.md](architecture/DECISION_REGISTER.md) e nos ADRs. Esta
@@ -230,13 +230,20 @@ da compra, que tem retenção fiscal e contratual. O pedido vira um
 `audit_event` (`account.deletion.requested`, ator = a própria pessoa, sem
 loja) e a execução é manual, pelo runbook
 [PEDIDO_DE_EXCLUSAO_DE_CONTA.md](runbooks/PEDIDO_DE_EXCLUSAO_DE_CONTA.md).
-Repetir o pedido em 30 dias devolve o registro existente — um clique repetido
-não vira um pedido por clique.
+Um pedido fica **aberto** até a operação registrar `account.deletion.completed`
+sobre a pessoa; enquanto houver pedido aberto, pedir de novo devolve o
+existente. A primeira versão usava uma janela de 30 dias, e a revisão mostrou
+o defeito: pedido não atendido "expirava", a tela oferecia o botão de novo e a
+pessoa gerava um segundo registro em cima do primeiro. Não há prazo que
+expire um direito não atendido.
 
-Junto, duas escolhas menores e reversíveis: a exportação sai sem os traços
-dos desenhos feitos nos PDFs (`points` — é volume, não dado pessoal; página,
-ferramenta e cor vão), e sem `metadata` de auditoria, que pode carregar dado
-de terceiro. E o que a issue pedia — "sem migration" — não cabia: a política
+Junto, duas escolhas: a exportação leva a anotação inteira — inclusive os
+traços (`points`) — porque é conteúdo que a pessoa criou e o direito de
+portabilidade cobre o que ela escreveu, não só onde e com que cor (a primeira
+versão os deixava de fora "por volume", e a revisão derrubou o argumento). E
+sai sem `metadata` de auditoria, que pode carregar dado de terceiro. A
+exportação tem teto de 8 MiB, recusado pelo banco; acima disso é atendimento
+manual. E o que a issue pedia — "sem migration" — não cabia: a política
 `audit_member_insert` só deixa o runtime escrever auditoria de quem tem
 membership numa loja, e o comprador puro não tem. Toda auditoria deste
 projeto nasce em função SECURITY DEFINER; as três da conta vivem na `0051`.
