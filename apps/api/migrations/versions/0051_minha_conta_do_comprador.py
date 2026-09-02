@@ -58,6 +58,23 @@ _READY_ATE_0051 = (
     "'0051_minha_conta_do_comprador'))"
 )
 
+# A exportação filtra por comprador; os índices dessas tabelas começam por
+# seller (0033, 0049). Sem estes, cada exportação varre a tabela inteira —
+# duas vezes, com a pré-verificação.
+_INDICES_POR_SUJEITO: tuple[tuple[str, str, str], ...] = (
+    (
+        "learning_pdf_annotation_buyer_idx",
+        "app_private.learning_pdf_annotation",
+        "buyer_identity_user_id",
+    ),
+    (
+        "learning_pdf_bookmark_buyer_idx",
+        "app_private.learning_pdf_bookmark",
+        "buyer_identity_user_id",
+    ),
+    ("email_outbox_recipient_idx", "app_private.email_outbox", "recipient_identity_user_id"),
+)
+
 _BASES_DO_READY: tuple[str, ...] = (
     "app_private.schema_ready_base_0016()",
     "app_private.schema_ready_base_0017()",
@@ -122,17 +139,71 @@ begin
     raise exception 'account export subject not found' using errcode='42501';
   end if;
 
-  -- Pré-verificação ANTES de agregar. O que pode ser grande são os traços
-  -- das anotações e o histórico; somar bytes e contar linhas é uma varredura
-  -- barata, montar o jsonb inteiro para depois medir não é. A medição final
-  -- abaixo fica como rede — este é o corte que poupa o banco.
-  if (select coalesce(sum(octet_length(points::text)),0)
-        from app_private.learning_pdf_annotation
-        where buyer_identity_user_id=p_identity_user_id)
-     +(select count(*)*240 from public.audit_event
-        where actor_identity_user_id=p_identity_user_id)
-     +(select count(*)*320 from public.lesson_progress
-        where buyer_identity_user_id=p_identity_user_id)
+  -- Pré-verificação ANTES de agregar: uma estimativa POR LINHA de cada
+  -- seção, com o texto variável medido e um teto fixo por linha para as
+  -- chaves e os carimbos de data (que são constantes). A estimativa é
+  -- sempre >= ao documento real, então este é o corte que vale; a medição
+  -- final abaixo fica de rede. Somar e contar é varredura barata; montar o
+  -- jsonb inteiro para depois medir não é.
+  if 400
+     +(select coalesce(sum(160+octet_length(seller.display_name)+octet_length(seller.slug)),0)
+        from public.seller_membership membership
+        join public.seller_organization seller on seller.id=membership.seller_organization_id
+        where membership.identity_user_id=p_identity_user_id)
+     +(select coalesce(sum(320+octet_length(product.title)+octet_length(product.slug)
+                          +octet_length(seller.display_name)+octet_length(seller.slug)),0)
+        from public.buyer_entitlement entitlement
+        join public.catalog_product product
+          on product.seller_organization_id=entitlement.seller_organization_id
+         and product.id=entitlement.catalog_product_id
+        join public.seller_organization seller on seller.id=entitlement.seller_organization_id
+        where entitlement.buyer_identity_user_id=p_identity_user_id)
+     +(select coalesce(sum(160+octet_length(product.title)+octet_length(seller.display_name)),0)
+        from app_private.entitlement_grant grant_row
+        join public.catalog_product product
+          on product.seller_organization_id=grant_row.seller_organization_id
+         and product.id=grant_row.catalog_product_id
+        join public.seller_organization seller on seller.id=grant_row.seller_organization_id
+        where grant_row.buyer_identity_user_id=p_identity_user_id)
+     +(select coalesce(sum(320+octet_length(product.title)+octet_length(course.title)),0)
+        from public.learning_enrollment enrollment
+        join public.catalog_product product
+          on product.seller_organization_id=enrollment.seller_organization_id
+         and product.id=enrollment.catalog_product_id
+        join public.course
+          on course.seller_organization_id=enrollment.seller_organization_id
+         and course.id=enrollment.course_id
+        where enrollment.buyer_identity_user_id=p_identity_user_id)
+     +(select coalesce(sum(160+octet_length(lesson.title)),0)
+        from public.lesson_progress progress
+        join public.lesson
+          on lesson.seller_organization_id=progress.seller_organization_id
+         and lesson.id=progress.lesson_id
+        where progress.buyer_identity_user_id=p_identity_user_id)
+     +(select coalesce(sum(120+octet_length(product.title)),0)
+        from app_private.learning_pdf_bookmark bookmark
+        join public.buyer_entitlement entitlement
+          on entitlement.seller_organization_id=bookmark.seller_organization_id
+         and entitlement.id=bookmark.entitlement_id
+        join public.catalog_product product
+          on product.seller_organization_id=entitlement.seller_organization_id
+         and product.id=entitlement.catalog_product_id
+        where bookmark.buyer_identity_user_id=p_identity_user_id)
+     +(select coalesce(sum(200+octet_length(annotation.points::text)+octet_length(product.title)),0)
+        from app_private.learning_pdf_annotation annotation
+        join public.buyer_entitlement entitlement
+          on entitlement.seller_organization_id=annotation.seller_organization_id
+         and entitlement.id=annotation.entitlement_id
+        join public.catalog_product product
+          on product.seller_organization_id=entitlement.seller_organization_id
+         and product.id=entitlement.catalog_product_id
+        where annotation.buyer_identity_user_id=p_identity_user_id)
+     +(select coalesce(sum(160+octet_length(outbox.kind)),0)
+        from app_private.email_outbox outbox
+        where outbox.recipient_identity_user_id=p_identity_user_id)
+     +(select coalesce(sum(120+octet_length(event.action)+octet_length(event.target_type)),0)
+        from public.audit_event event
+        where event.actor_identity_user_id=p_identity_user_id)
      >EXPORT_MAX_BYTES then
     raise exception 'account export exceeds the size limit' using errcode='54000';
   end if;
@@ -369,6 +440,8 @@ def upgrade() -> None:
     for signature in (_EXPORT, _DELETION, _STATUS):
         op.execute(f"revoke all on function {signature} from public")
         op.execute(f"grant execute on function {signature} to appsell_runtime")
+    for nome, tabela, coluna in _INDICES_POR_SUJEITO:
+        op.execute(f"create index if not exists {nome} on {tabela} ({coluna})")
     for alvo in _BASES_DO_READY:
         op.execute(
             _REESCREVE.replace("ALVO", alvo)
@@ -399,3 +472,5 @@ def downgrade() -> None:
     for signature in (_STATUS, _DELETION, _EXPORT):
         op.execute(f"revoke all on function {signature} from public")
         op.execute(f"drop function {signature}")
+    for nome, _tabela, _coluna in _INDICES_POR_SUJEITO:
+        op.execute(f"drop index if exists {nome}")

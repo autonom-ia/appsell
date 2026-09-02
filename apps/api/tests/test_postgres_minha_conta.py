@@ -705,3 +705,43 @@ def test_a_exportacao_acima_do_teto_e_recusada_antes_de_montar_e_sem_audit(mundo
     with pytest.raises(ProgramLimitExceeded):
         exportar(dan, dan)
     assert audits(dan, "account.data.exported") == []
+
+
+def test_muitas_anotacoes_pequenas_tambem_batem_no_teto_antes_de_agregar(mundo: Mundo) -> None:
+    # Modo de falha (achado da revisão): somar só os traços deixaria passar
+    # uma conta com dezenas de milhares de anotações minúsculas, cujo
+    # documento estoura pelas chaves e datas repetidas. A estimativa por
+    # linha pega isso. 40 mil anotações de 2 pontos: os traços somam ~0,8 MiB;
+    # a estimativa passa de 8 MiB.
+    assert ADMIN_URL
+    ana = mundo.ana
+    eva, acesso = uuid4(), uuid4()
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "insert into identity_user(id,identity_issuer,identity_sub,email_normalized,"
+            "email_verified) values(%s,%s,%s,%s,true)",
+            (eva, ISSUER, f"eva-{ana.sufixo}", f"eva-{ana.sufixo}@example.test"),
+        )
+        connection.execute(
+            "insert into buyer_entitlement(seller_organization_id,id,buyer_identity_user_id,"
+            "catalog_product_id,publication_id,reference_key,source,status,progress_percent)"
+            " values(%s,%s,%s,%s,%s,'pytest-minha-conta-eva','manual','active',0)",
+            (ana.loja, acesso, eva, ana.produto, ana.publicacao),
+        )
+        connection.execute(
+            "insert into app_private.learning_pdf_study_state(seller_organization_id,"
+            "buyer_identity_user_id,entitlement_id,asset_id,asset_version) "
+            "values(%s,%s,%s,%s,1)",
+            (ana.loja, eva, acesso, ana.asset),
+        )
+        connection.execute(
+            "insert into app_private.learning_pdf_annotation(seller_organization_id,"
+            "buyer_identity_user_id,entitlement_id,asset_id,asset_version,id,page_number,"
+            "tool,color,width,points) select %s,%s,%s,%s,1,gen_random_uuid(),1,'pen',"
+            "'#0000FF',0.01,'[[0.1,0.2],[0.3,0.4]]'::jsonb from generate_series(1,40000)",
+            (ana.loja, eva, acesso, ana.asset),
+        )
+        connection.commit()
+    with pytest.raises(ProgramLimitExceeded):
+        exportar(eva, eva)
+    assert audits(eva, "account.data.exported") == []
