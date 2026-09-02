@@ -1,0 +1,18 @@
+{
+  "origem": "https://sell.autonomia.site",
+  "email": {
+    "assunto": "Seu acesso a Fotografia com Luz Natural está liberado",
+    "eyebrow": "Do lado de quem comprou",
+    "titulo": "A compra foi confirmada. O acesso já é seu.",
+    "paragrafos": [
+      "Olá, Mariana. O curso Fotografia com Luz Natural, da loja Luz & Sombra, foi liberado no seu nome. Não precisa de link nem de senha: entre com a mesma conta que usou na compra e o curso estará na sua biblioteca.",
+      "Você assiste vídeo e PDF pelo navegador do celular, sem instalar nada."
+    ],
+    "detalhes": [
+      { "rotulo": "Curso", "valor": "Fotografia com Luz Natural" },
+      { "rotulo": "Loja", "valor": "Luz & Sombra" }
+    ],
+    "acao": { "rotulo": "Abrir o curso", "url": "https://sell.autonomia.site/library" },
+    "motivo": "comprou Fotografia com Luz Natural na loja Luz & Sombra"
+  }
+}

@@ -183,6 +183,34 @@ async def test_trusted_session_accepts_fulfillment_worker_envelope() -> None:
 
 
 @pytest.mark.asyncio
+async def test_trusted_session_accepts_email_worker_envelope() -> None:
+    from types import SimpleNamespace
+
+    from appsell_api.email_worker import worker_envelope, worker_identity
+
+    auth = _auth_without_database()
+    settings = SimpleNamespace(
+        internal_issuer="appsell-bff",
+        internal_audience="appsell-api",
+        identity_issuer="https://identity.test.autonomia.site",
+    )
+    envelope = worker_envelope(settings, worker_identity(settings))  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        async with auth.trusted_domain_session(envelope):
+            pass
+    for tampered in (
+        replace(envelope, capability="commerce.fulfillment.worker"),
+        replace(envelope, session_ref="fulfillment-worker"),
+        replace(envelope, path="/v1/internal/fulfillment-worker"),
+        replace(envelope, identity=replace(envelope.identity, user_id=uuid4())),
+    ):
+        with pytest.raises(HTTPException) as error:
+            async with auth.trusted_domain_session(tampered):
+                pass
+        assert error.value.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_trusted_session_rejects_tampered_fulfillment_worker_envelope() -> None:
     auth = _auth_without_database()
     base = _fulfillment_worker_envelope()

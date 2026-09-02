@@ -215,6 +215,7 @@ class InternalRequestAuthenticator:
             _is_asset_worker_envelope(envelope, **worker_context)
             or _is_demo_checkout_worker_envelope(envelope, **worker_context)
             or _is_fulfillment_worker_envelope(envelope, **worker_context)
+            or _is_email_worker_envelope(envelope, **worker_context)
         ):
             raise _unauthorized()
         async with self._session_factory() as session, session.begin():
@@ -431,6 +432,34 @@ def _is_fulfillment_worker_envelope(
         and 1 <= envelope.iat <= now + 5
         and envelope.iat < envelope.exp <= envelope.iat + 60
         and envelope.exp >= now - 5
+    )
+
+
+def _is_email_worker_envelope(
+    envelope: ServiceEnvelope,
+    *,
+    internal_issuer: str,
+    internal_audience: str,
+    identity_issuer: str,
+) -> bool:
+    now = int(time.time())
+    return (
+        envelope.version == 1
+        and envelope.kid == "api-internal"
+        and envelope.issuer == internal_issuer
+        and envelope.audience == internal_audience
+        and envelope.session_ref == "email-worker"
+        and envelope.session_epoch == 1
+        and envelope.identity.issuer == identity_issuer
+        and envelope.identity.sub == "email-worker-v1"
+        and envelope.identity.user_id == uuid5(NAMESPACE_URL, f"{identity_issuer}\0email-worker-v1")
+        and envelope.capability == "notification.email.worker"
+        and envelope.method == "POST"
+        and envelope.path == "/v1/internal/email-worker"
+        and envelope.query_sha256 == hashlib.sha256(b"").hexdigest()
+        and envelope.body_sha256 == hashlib.sha256(b"").hexdigest()
+        and 1 <= envelope.iat <= now + 5
+        and envelope.iat < envelope.exp <= envelope.iat + 60
     )
 
 

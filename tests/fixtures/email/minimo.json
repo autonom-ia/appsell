@@ -1,0 +1,9 @@
+{
+  "origem": "https://preview.example.test",
+  "email": {
+    "assunto": "Assunto <cru> & \"aspas\"",
+    "titulo": "Título com 'apóstrofo' & <tag>",
+    "paragrafos": ["Só um parágrafo, com & e <b>."],
+    "motivo": "tem conta no Autonom.ia Sell"
+  }
+}

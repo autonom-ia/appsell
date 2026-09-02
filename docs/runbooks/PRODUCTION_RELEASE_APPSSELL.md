@@ -3,6 +3,22 @@
 Este runbook descreve o estado operacional comprovado na VPS do Appsell. Ele
 não autoriza por si só novo deploy, mudança de secrets, banco ou cobrança.
 
+## Serviço `api`: período de graça no encerramento
+
+O worker de e-mail pode estar no meio de um envio SMTP quando o deploy começa.
+O `api` **precisa** de `--stop-grace-period 330s` (lease de 300 s + folga),
+aplicado no mesmo `docker service update` que liga o canal — o comando
+completo, com imagem, variáveis e graça numa atualização só, está em
+`docs/architecture/EMAIL_POLICY.md` §8.1. Conferir antes de qualquer release
+que toque o serviço:
+
+```sh
+docker service inspect sell-autonomia_api --format '{{.Spec.TaskTemplate.ContainerSpec.StopGracePeriod}}'
+```
+
+Valor menor que isso troca "deploy" por "e-mail duplicado" na caixa de quem
+comprou. Detalhe em `docs/architecture/EMAIL_POLICY.md` §8.1.
+
 ## Ambiente atual
 
 - Domínio: `https://sell.autonomia.site`

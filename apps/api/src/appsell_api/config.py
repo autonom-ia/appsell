@@ -4,9 +4,16 @@ from pathlib import Path
 from typing import Literal, Self
 from urllib.parse import urlparse
 
-from pydantic import Field, model_validator
+from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
+
+from .email_layout import EmailInvalido, origem_publica
+
+# O remetente transacional é fixo pela política (EMAIL_POLICY.md §1): o From
+# é sempre este endereço, e o usuário SMTP tem de ser ele — senão o worker
+# não inicia, em vez de mandar e-mail em nome de outra conta.
+EMAIL_REMETENTE = "sell@autonomia.site"
 
 
 class Settings(BaseSettings):
@@ -60,6 +67,86 @@ class Settings(BaseSettings):
     # fail-closed original permanece.
     webhook_env_keyring_allowed: bool = False
     webhook_forbidden_key_sha256_json: str = "[]"
+    # Remetente transacional (docs/architecture/EMAIL_POLICY.md). Os nomes são
+    # os da B0, sem o prefixo APPSELL_API_, porque são os mesmos que o smoke e o
+    # .env.example usam; o alias substitui o prefixo. Sem host, usuário e senha
+    # o worker de e-mail não inicia — e nunca cai no remetente comercial.
+    email_smtp_host: str = Field(
+        default="", validation_alias=AliasChoices("SMTP_HOST_TRANSACIONAL")
+    )
+    # Porta e TLS entram como texto e são interpretados em email_disabled_reason:
+    # um valor inválido desliga o worker com motivo, em vez de derrubar a API
+    # na carga das Settings.
+    email_smtp_port: str = Field(
+        default="465", validation_alias=AliasChoices("SMTP_PORT_TRANSACIONAL")
+    )
+    email_smtp_secure: str = Field(
+        default="true", validation_alias=AliasChoices("SMTP_SECURE_TRANSACIONAL")
+    )
+    email_smtp_user: str = Field(
+        default="", validation_alias=AliasChoices("SMTP_USER_TRANSACIONAL")
+    )
+    email_smtp_password: SecretStr = Field(
+        default=SecretStr(""), validation_alias=AliasChoices("SMTP_PASS_TRANSACIONAL")
+    )
+    # Mesma origem que o web usa em lib/site.ts: é para onde a marca e o botão
+    # do e-mail apontam.
+    email_public_origin: str = Field(
+        default="https://sell.autonomia.site",
+        validation_alias=AliasChoices("NEXT_PUBLIC_SITE_ORIGIN", "APPSELL_API_EMAIL_PUBLIC_ORIGIN"),
+    )
+
+    @property
+    def email_disabled_reason(self) -> str | None:
+        """Por que o worker de e-mail não deve iniciar; None quando pode.
+
+        Nunca derruba a API: o canal de e-mail é acessório ao acesso, e uma
+        variável faltando não pode custar o site inteiro. O worker registra o
+        motivo uma vez e as linhas da caixa de saída ficam pendentes.
+        """
+        values = (
+            self.email_smtp_host,
+            self.email_smtp_user,
+            self.email_smtp_password.get_secret_value(),
+        )
+        if not any(values):
+            return "smtp_not_configured"
+        if not all(values):
+            return "smtp_partial"
+        if self.email_smtp_port_number is None:
+            return "smtp_port_invalid"
+        if self.email_smtp_secure_flag is None:
+            return "smtp_secure_invalid"
+        # Fora de local/ci o usuário SMTP tem de ser o remetente: o From é
+        # fixo, e mandar em nome de sell@ com outra conta é falsificação. Em
+        # local/ci o SMTP é um Mailpit sem conta, e a igualdade só atrapalha.
+        if self.environment not in {"local", "ci"} and self.email_smtp_user != EMAIL_REMETENTE:
+            return "sender_mismatch"
+        try:
+            origem_publica(self.email_public_origin)
+        except EmailInvalido:
+            return "public_origin_invalid"
+        return None
+
+    @property
+    def email_smtp_port_number(self) -> int | None:
+        valor = self.email_smtp_port.strip()
+        if not valor.isdigit() or not 1 <= int(valor) <= 65535:
+            return None
+        return int(valor)
+
+    @property
+    def email_smtp_secure_flag(self) -> bool | None:
+        valor = self.email_smtp_secure.strip().lower()
+        if valor in {"true", "1", "yes"}:
+            return True
+        if valor in {"false", "0", "no"}:
+            return False
+        return None
+
+    @property
+    def email_configured(self) -> bool:
+        return self.email_disabled_reason is None
 
     @property
     def is_production(self) -> bool:
