@@ -13,8 +13,11 @@ import hashlib
 import hmac
 import json
 import os
+import shutil
+import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -745,3 +748,125 @@ def test_muitas_anotacoes_pequenas_tambem_batem_no_teto_antes_de_agregar(mundo: 
     with pytest.raises(ProgramLimitExceeded):
         exportar(eva, eva)
     assert audits(eva, "account.data.exported") == []
+
+
+def test_titulos_com_aspas_contam_escapados_na_estimativa(mundo: Mundo) -> None:
+    # Modo de falha (achado da revisão): medir o texto cru deixaria passar o
+    # que o JSON dobra ao escapar. Título de 100 aspas: cru são 100 bytes,
+    # serializado são 202. Com 22 mil anotações, a estimativa crua daria
+    # ~7,1 MB (passa) e a serializada ~9,3 MB (recusa). Tem de recusar.
+    assert ADMIN_URL
+    ana = mundo.ana
+    fabio, produto, publicacao, acesso, asset, blob = (uuid4() for _ in range(6))
+    titulo = '"' * 100
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "insert into identity_user(id,identity_issuer,identity_sub,email_normalized,"
+            "email_verified) values(%s,%s,%s,%s,true)",
+            (fabio, ISSUER, f"fabio-{ana.sufixo}", f"fabio-{ana.sufixo}@example.test"),
+        )
+        connection.execute(
+            "insert into catalog_product(seller_organization_id,id,slug,title,description)"
+            " values(%s,%s,%s,%s,'')",
+            (ana.loja, produto, f"aspas-{ana.sufixo}", titulo),
+        )
+        connection.execute(
+            "insert into publication(seller_organization_id,id,catalog_product_id,version,"
+            "schema_version,source_sha256,snapshot,actor_identity_user_id) "
+            "values(%s,%s,%s,1,2,repeat('0',64),%s,%s)",
+            (ana.loja, publicacao, produto, Jsonb({}), ana.dona),
+        )
+        connection.execute(
+            "insert into buyer_entitlement(seller_organization_id,id,buyer_identity_user_id,"
+            "catalog_product_id,publication_id,reference_key,source,status,progress_percent)"
+            " values(%s,%s,%s,%s,%s,'pytest-minha-conta-fabio','manual','active',0)",
+            (ana.loja, acesso, fabio, produto, publicacao),
+        )
+        connection.execute(
+            "insert into asset_blob(seller_organization_id,id,storage_driver,storage_bucket,"
+            "object_key,file_name,media_type,byte_size,sha256,magic_type,scanner_result,"
+            "verified_at) values(%s,%s,'legacy_bundle','pytest-conta',%s,'aspas.pdf',%s,"
+            "1024,%s,%s,'legacy_trusted',clock_timestamp())",
+            (
+                ana.loja,
+                blob,
+                f"conta/aspas-{ana.sufixo}.pdf",
+                PDF,
+                hashlib.sha256(f"blob-aspas-{ana.sufixo}".encode()).hexdigest(),
+                PDF,
+            ),
+        )
+        connection.execute(
+            "insert into asset_record(seller_organization_id,id,catalog_product_id,title)"
+            " values(%s,%s,%s,'Apostila')",
+            (ana.loja, asset, produto),
+        )
+        connection.execute(
+            "insert into asset_version(seller_organization_id,asset_id,version,blob_id,"
+            "actor_identity_user_id) values(%s,%s,1,%s,%s)",
+            (ana.loja, asset, blob, ana.dona),
+        )
+        connection.execute(
+            "insert into app_private.learning_pdf_study_state(seller_organization_id,"
+            "buyer_identity_user_id,entitlement_id,asset_id,asset_version) "
+            "values(%s,%s,%s,%s,1)",
+            (ana.loja, fabio, acesso, asset),
+        )
+        connection.execute(
+            "insert into app_private.learning_pdf_annotation(seller_organization_id,"
+            "buyer_identity_user_id,entitlement_id,asset_id,asset_version,id,page_number,"
+            "tool,color,width,points) select %s,%s,%s,%s,1,gen_random_uuid(),1,'pen',"
+            "'#0000FF',0.01,'[[0.1,0.2],[0.3,0.4]]'::jsonb from generate_series(1,22000)",
+            (ana.loja, fabio, acesso, asset),
+        )
+        connection.commit()
+    with pytest.raises(ProgramLimitExceeded):
+        exportar(fabio, fabio)
+    assert audits(fabio, "account.data.exported") == []
+
+
+def test_os_indices_por_sujeito_existem() -> None:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        rows = connection.execute(
+            "select schemaname||'.'||indexname from pg_indexes where indexname in "
+            "('learning_pdf_annotation_buyer_idx','learning_pdf_bookmark_buyer_idx',"
+            "'email_outbox_recipient_idx') order by 1"
+        ).fetchall()
+    assert [row[0] for row in rows] == [
+        "app_private.email_outbox_recipient_idx",
+        "app_private.learning_pdf_annotation_buyer_idx",
+        "app_private.learning_pdf_bookmark_buyer_idx",
+    ]
+
+
+PSQL = shutil.which("psql")
+
+
+@pytest.mark.skipif(PSQL is None, reason="psql is required")
+def test_o_script_manual_produz_um_unico_json_do_sujeito(mundo: Mundo, tmp_path: Path) -> None:
+    # Exatamente o comando do runbook. A saída tem de ser UM documento JSON
+    # parseável — nada de `1`, `BEGIN` ou `COMMIT` no arquivo — e do sujeito
+    # certo; um UUID inexistente aborta com código de erro.
+    assert ADMIN_URL and PSQL
+    script = Path(__file__).resolve().parents[3] / "scripts" / "ops" / "exporta-conta.sql"
+    saida = tmp_path / "conta.json"
+    ana = mundo.ana
+    # É o comando do runbook, com argumentos deste teste — não há entrada
+    # externa aqui, e o binário é o caminho absoluto resolvido acima.
+    subprocess.run(  # noqa: S603
+        [PSQL, ADMIN_URL, "-v", f"sujeito={ana.id}", "-f", str(script), "-o", str(saida)],
+        check=True,
+        capture_output=True,
+    )
+    documento = json.loads(saida.read_text())
+    assert documento["exported_by"] == "manual"
+    assert documento["identity"]["email"] == ana.email
+    assert [a["product"] for a in documento["accesses"]] == [ana.titulo]
+    assert mundo.bia.email not in saida.read_text()
+    inexistente = subprocess.run(  # noqa: S603
+        [PSQL, ADMIN_URL, "-v", f"sujeito={uuid4()}", "-f", str(script), "-o", str(saida)],
+        capture_output=True,
+    )
+    assert inexistente.returncode != 0
+    assert "sujeito inexistente" in inexistente.stderr.decode()

@@ -144,7 +144,10 @@ produzir um documento "vazio" que pareça legítimo.
 
 1. Confirmar a identidade da pessoa pelo e-mail da conta (não pelo pedido).
 2. No container do Postgres, como superusuário:
-   `psql -v ON_ERROR_STOP=1 -v sujeito='<identity_user_id>' -f exporta-conta.sql -At -o /tmp/conta-<uuid>.json`
+   `psql -v sujeito='<identity_user_id>' -f exporta-conta.sql -o /tmp/conta-<uuid>.json`
+   (o script liga `ON_ERROR_STOP`, `QUIET` e o formato só-JSON; a saída é um
+   único documento, e o `json` da linha seguinte confirma:
+   `python3 -m json.tool /tmp/conta-<uuid>.json >/dev/null`)
    e em seguida `chmod 600 /tmp/conta-<uuid>.json`.
 3. Cifrar (`gpg -c`), entregar pelo canal combinado com a pessoa (nunca
    anexo em e-mail aberto), e apagar o arquivo local (`shred -u`) depois da
