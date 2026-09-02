@@ -49,6 +49,13 @@ _TENTATIVA_DEPOIS = _LISTA_COM_KIND + "\n            then greatest("
 # p_permanent é avaliado antes da lista, então um chamador antigo (que manda
 # permanent=true para um kind que não conhece) mataria a linha. Este ramo entra
 # na frente de todos.
+_ESPERA_ANTES = "available_at=clock_timestamp()+make_interval(secs=>p_delay_seconds),"
+# O worker que não conhece o kind pede 1 s e voltaria a cada segundo, gastando
+# conexão e auditoria durante todo o rollback. O banco impõe o recuo.
+_ESPERA_DEPOIS = (
+    "available_at=clock_timestamp()+make_interval(secs=>case when p_error='kind_unknown'\n"
+    "          then greatest(p_delay_seconds,600) else p_delay_seconds end),"
+)
 _PERMANENTE_ANTES = "when p_permanent then 'dead_letter'"
 _PERMANENTE_DEPOIS = (
     "when p_error='kind_unknown' then 'retry'\n          when p_permanent then 'dead_letter'"
@@ -124,7 +131,21 @@ _DECLARE_COM_ESTADO = """  consumed boolean;
 
 _ANCORA_ANTES_DO_GRANT = """  select * into granted
   from app_private.grant_public_product_access("""
-_LEITURA_ANTES_DO_GRANT = """  select entitlement.status into previous_access
+_LEITURA_ANTES_DO_GRANT = """  -- A MESMA trava que grant_public_product_access toma para este par
+  -- (pessoa, produto). Sem ela, dois resgates simultâneos leriam ambos
+  -- "não tinha acesso" e mandariam dois e-mails. Ela é de transação e
+  -- reentrante, então o grant a toma de novo sem custo.
+  perform pg_advisory_xact_lock(hashtextextended(
+    'appsell.free-access-subject:' || p_identity_user_id::text || '/' ||
+    locked_link.catalog_product_id::text, 0));
+  -- "Tinha acesso" é status ativo E dentro da validade: uma entitlement
+  -- 'active' com expires_at vencido não dá acesso nenhum, e reativá-la é
+  -- liberação de acesso como qualquer outra.
+  select case
+    when entitlement.status='active'
+     and (entitlement.expires_at is null or entitlement.expires_at>clock_timestamp())
+    then 'active' else 'sem_acesso' end
+  into previous_access
   from public.buyer_entitlement entitlement
   where entitlement.seller_organization_id=locked_link.seller_organization_id
     and entitlement.buyer_identity_user_id=p_identity_user_id
@@ -186,6 +207,11 @@ def upgrade() -> None:
         _REESCREVE_SE_PRECISAR.replace("ALVO", _FAIL)
         .replace("DE", _TENTATIVA_ANTES)
         .replace("PARA", _TENTATIVA_DEPOIS)
+    )
+    op.execute(
+        _REESCREVE_SE_PRECISAR.replace("ALVO", _FAIL)
+        .replace("DE", _ESPERA_ANTES)
+        .replace("PARA", _ESPERA_DEPOIS)
     )
     op.execute(
         _REESCREVE.replace("ALVO", _REDEEM)

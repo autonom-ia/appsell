@@ -704,7 +704,10 @@ def test_channel_failures_never_dead_letter_and_give_the_attempt_back(
     with psycopg.connect(RUNTIME_URL) as connection:
         _context(connection, worker, WORKER_CAPABILITY, SELLER)
         status = connection.execute(
-            "select app_private.fail_email_outbox(%s,%s,%s,%s,%s,%s,1,false,%s)",
+            # permanent=true quando o erro é kind_unknown: é o que um worker
+            # N-1 (rollback) manda para um tipo que não conhece, e o banco
+            # ainda assim recusa matar a linha.
+            "select app_private.fail_email_outbox(%s,%s,%s,%s,%s,%s,1,%s,%s)",
             (
                 worker,
                 EMAIL_LABEL,
@@ -712,6 +715,7 @@ def test_channel_failures_never_dead_letter_and_give_the_attempt_back(
                 outbox_id,
                 int(cast(int, item["lease_fence"])),
                 erro_de_canal,
+                erro_de_canal == "kind_unknown",
                 uuid4(),
             ),
         ).fetchone()
@@ -725,26 +729,18 @@ def test_channel_failures_never_dead_letter_and_give_the_attempt_back(
         ).fetchone()
     assert linha == ("retry", 9, erro_de_canal)
     if erro_de_canal == "kind_unknown":
-        # Um worker N-1 (rollback) manda permanent=true para o kind que ele não
-        # conhece. O banco recusa matar a linha: quem está velho é o worker.
-        time.sleep(1.1)  # o retry pediu 1 s de espera
-        item2 = [i for i in _claim_tudo(worker) if UUID(str(i["id"])) == outbox_id]
-        assert item2, "a linha voltou para a fila"
-        with psycopg.connect(RUNTIME_URL) as connection:
-            _context(connection, worker, WORKER_CAPABILITY, SELLER)
-            status_antigo = connection.execute(
-                "select app_private.fail_email_outbox(%s,%s,%s,%s,%s,'kind_unknown',1,true,%s)",
-                (
-                    worker,
-                    EMAIL_LABEL,
-                    SELLER,
-                    outbox_id,
-                    int(cast(int, item2[0]["lease_fence"])),
-                    uuid4(),
-                ),
+        # O recuo de dez minutos é do banco, não do worker: o item não volta
+        # para a fila logo em seguida, e é isso que impede o laço no rollback.
+        assert _claim_tudo(worker) == [] or all(
+            UUID(str(i["id"])) != outbox_id for i in _claim_tudo(worker)
+        )
+        with psycopg.connect(ADMIN_URL) as connection:
+            espera = connection.execute(
+                "select available_at-clock_timestamp()>interval '9 minutes' "
+                "from app_private.email_outbox where seller_organization_id=%s and id=%s",
+                (SELLER, outbox_id),
             ).fetchone()
-            connection.commit()
-        assert status_antigo == ("retry",)
+        assert espera == (True,)
 
 
 def test_claim_requires_the_worker_capability_and_the_lease_range(

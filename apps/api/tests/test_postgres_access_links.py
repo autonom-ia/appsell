@@ -924,3 +924,32 @@ def test_reactivating_a_revoked_entitlement_sends_the_email_again() -> None:
             (seller_id, f"access_link:{outro_link}:{buyer_id(2)}"),
         ).fetchone()
     assert linhas == (1,)
+
+
+def test_expired_entitlement_still_active_by_status_gets_the_email_again() -> None:
+    # 'active' com validade vencida não dá acesso nenhum: as políticas olham a
+    # validade. Reativar por link é liberação de acesso e precisa avisar.
+    assert ADMIN_URL
+    seller_id, product_id = published_free_product()
+    primeiro = uuid4().hex + uuid4().hex
+    create_link(seller_id, product_id, token=primeiro, max_uses=5)
+    redeem(primeiro, buyer_id(3))
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "update buyer_entitlement set starts_at=clock_timestamp()-interval '2 days',"
+            "expires_at=clock_timestamp()-interval '1 day' "
+            "where seller_organization_id=%s and buyer_identity_user_id=%s "
+            "and catalog_product_id=%s",
+            (seller_id, buyer_id(3), product_id),
+        )
+        connection.commit()
+    segundo = uuid4().hex + uuid4().hex
+    outro_link = create_link(seller_id, product_id, token=segundo, max_uses=5)
+    redeem(segundo, buyer_id(3))
+    with psycopg.connect(ADMIN_URL) as connection:
+        linhas = connection.execute(
+            "select count(*) from app_private.email_outbox where seller_organization_id=%s "
+            "and dedupe_key=%s",
+            (seller_id, f"access_link:{outro_link}:{buyer_id(3)}"),
+        ).fetchone()
+    assert linhas == (1,)
