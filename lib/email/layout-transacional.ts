@@ -108,8 +108,11 @@ function escapar(valor: string): string {
 // (§4) permite link de uso unico com validade curta — convite, redefinicao —
 // e proibe token de sessao, senha e token permanente. O nome nao prova o
 // conteudo, mas barra o engano mais comum: colar a URL logada no template.
+// Substring, nao lista exata: "session_token", "x-auth", "refreshToken" e
+// "senha_nova" tem de cair. "sid", "pass" e "pwd" sao curtos demais para
+// substring (cairiam em "inside", "passo") e ficam exatos.
 const PARAMETRO_PROIBIDO =
-  /^(?:session|sessao|sid|sessionid|session_id|senha|password|pass|pwd|access_token|refresh_token|id_token|token|api_key|apikey|secret|cookie|auth|authorization|bearer)$/i;
+  /^(?:sid|pass|pwd)$|token|sess|senha|password|passwd|secret|cookie|auth|api[_-]?key|bearer/i;
 
 function parametrosProibidos(analisada: URL): string[] {
   const chaves = [...analisada.searchParams.keys()];
