@@ -35,11 +35,17 @@ interface Scenario {
   domainError?: { status: number; code: string };
 }
 
+// A última chamada ao limitador: a chave tem de ser a pessoa, não a sessão.
+let lastRateLimit: { action: string; clientKey: string } | null = null;
+
 function mockModules(scenario: Scenario) {
   vi.doMock("@/lib/oauth-service.server", () => ({
     oauthService: () => ({
       getSession: async (id?: string) => (scenario.session !== false && id === "sid" ? SESSION : null),
-      consumeRateLimit: async () => scenario.allowed !== false
+      consumeRateLimit: async (action: string, clientKey: string) => {
+        lastRateLimit = { action, clientKey };
+        return scenario.allowed !== false;
+      }
     })
   }));
   vi.doMock("@/lib/internal-api-client.server", () => {
@@ -169,6 +175,14 @@ describe("a porta das rotas da conta", () => {
     expect(limited.status).toBe(429);
     expect(await limited.json()).toEqual({ error: "rate_limited" });
   });
+
+  test("a cota é da pessoa, não da sessão", async () => {
+    // Abrir dez sessões não pode comprar dez cotas: a chave é o sujeito.
+    await call("/export");
+    expect(lastRateLimit).toEqual({ action: "account-export", clientKey: SESSION.subject });
+    await call("/deletion-request");
+    expect(lastRateLimit).toEqual({ action: "account-deletion-request", clientKey: SESSION.subject });
+  });
 });
 
 describe("a exportação como arquivo", () => {
@@ -192,10 +206,14 @@ describe("a exportação como arquivo", () => {
     }
   });
 
-  test("o erro da API de domínio passa com o código dela", async () => {
+  test("o erro da API de domínio passa com o código dela — inclusive o teto de tamanho", async () => {
     const response = await call("/export", { scenario: { domainError: { status: 403, code: "forbidden" } } });
     expect(response.status).toBe(403);
     expect(await response.json()).toEqual({ error: "forbidden" });
+    // Acima de 8 MiB o banco recusa; a tela precisa distinguir isso de "fora do ar".
+    const tooLarge = await call("/export", { scenario: { domainError: { status: 413, code: "account_export_too_large" } } });
+    expect(tooLarge.status).toBe(413);
+    expect(await tooLarge.json()).toEqual({ error: "account_export_too_large" });
   });
 });
 

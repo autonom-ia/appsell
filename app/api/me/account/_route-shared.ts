@@ -68,7 +68,9 @@ export async function authorizeAccountMutation(
   if (!verifyMutation(request, sessionId, action, typeof token === "string" ? token : null)) {
     return { ok: false, response: accountError("forbidden_mutation", 403) };
   }
-  const allowed = await service.consumeRateLimit(rateLimit.name, sessionId, rateLimit);
+  // A chave é a PESSOA, não a sessão: abrir dez sessões não compra dez cotas.
+  // O sujeito é o identificador estável que a sessão carrega.
+  const allowed = await service.consumeRateLimit(rateLimit.name, session.subject, rateLimit);
   if (!allowed) return { ok: false, response: accountError("rate_limited", 429) };
   return { ok: true, sessionId, session };
 }
