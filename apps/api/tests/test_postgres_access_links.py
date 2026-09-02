@@ -884,3 +884,15 @@ def test_redeeming_a_class_link_enqueues_one_access_email_per_person() -> None:
         assert payload["product_title"] == "Produto Editado"  # save_draft renomeia
         assert UUID(str(payload["access_link_id"])) == link_id
         assert UUID(str(payload["catalog_product_id"])) == product_id
+    # Quem já tinha o curso e entra por OUTRO link consome a vaga, mas não
+    # ouve que "o link liberou o curso" — não liberou.
+    outro_token = uuid4().hex + uuid4().hex
+    outro_link = create_link(seller_id, product_id, token=outro_token, max_uses=5)
+    assert redeem(outro_token, buyer_id(0))[3] is False  # created
+    with psycopg.connect(ADMIN_URL) as connection:
+        repetidos = connection.execute(
+            "select count(*) from app_private.email_outbox where seller_organization_id=%s "
+            "and dedupe_key=%s",
+            (seller_id, f"access_link:{outro_link}:{buyer_id(0)}"),
+        ).fetchone()
+    assert repetidos == (0,)

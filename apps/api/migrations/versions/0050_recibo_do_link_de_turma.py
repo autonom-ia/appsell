@@ -12,6 +12,11 @@ A função é reescrita pelo padrão da 0048/0049 (`pg_get_functiondef` +
 O `check` de `kind` passa a aceitar o tipo novo; o worker que sabe montar
 esse e-mail sobe junto, e uma linha que ele não conhecesse cairia em
 `dead_letter` com `kind_unknown` — visível, sem tocar no acesso.
+
+Ordem de deploy: **a API nova antes desta migration.** O worker novo com o
+banco antigo é inofensivo (nenhuma linha do tipo novo existe); o contrário
+faria o worker antigo devolver cada resgate como `kind_unknown` — que desde
+esta versão é retentável, mas não precisa ser exercitado.
 """
 
 from __future__ import annotations
@@ -82,16 +87,22 @@ _TRECHO_INSERIDO = """    returning * into locked_link;
     join public.identity_user buyer on buyer.id=p_identity_user_id
     where catalog.seller_organization_id=locked_link.seller_organization_id
       and catalog.id=locked_link.catalog_product_id
+      -- Só quando o link CRIOU o acesso. Quem já tinha o curso (comprou, ou
+      -- entrou por outro link) consome a vaga, mas não pode ouvir que "o
+      -- link liberou o curso" — não liberou.
+      and granted.created
     on conflict on constraint email_outbox_dedupe_key do nothing;
     consumed:=true;
 """
 
-_KIND_ANTES = "check (kind in ('purchase_confirmed'))"
 _KIND_DEPOIS = "check (kind in ('purchase_confirmed','access_link_redeemed'))"
 
 
 def upgrade() -> None:
-    op.execute("alter table app_private.email_outbox drop constraint email_outbox_kind_check")
+    # Idempotente de propósito: um downgrade deixa o check já alargado.
+    op.execute(
+        "alter table app_private.email_outbox drop constraint if exists email_outbox_kind_check"
+    )
     op.execute(
         f"alter table app_private.email_outbox add constraint email_outbox_kind_check {_KIND_DEPOIS}"
     )
@@ -107,6 +118,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Desfaz a origem dos e-mails (a função) e o ready. O check de kind fica
+    # como está, aceitando o tipo novo: restaurá-lo exigiria apagar toda linha
+    # desse tipo — inclusive as enviadas, que são registro de entrega — e uma
+    # coluna mais permissiva não quebra nada; o worker antigo devolve um kind
+    # que não conhece como retry, sem tocar no acesso.
     for alvo in _BASES_DO_READY:
         op.execute(
             _REESCREVE.replace("ALVO", alvo)
@@ -115,11 +131,4 @@ def downgrade() -> None:
         )
     op.execute(
         _REESCREVE.replace("ALVO", _REDEEM).replace("DE", _TRECHO_INSERIDO).replace("PARA", _ANCORA)
-    )
-    # Linhas do tipo novo ainda pendentes impediriam o check antigo: elas
-    # deixam de existir junto com a capacidade de enviá-las.
-    op.execute("delete from app_private.email_outbox where kind='access_link_redeemed'")
-    op.execute("alter table app_private.email_outbox drop constraint email_outbox_kind_check")
-    op.execute(
-        f"alter table app_private.email_outbox add constraint email_outbox_kind_check {_KIND_ANTES}"
     )

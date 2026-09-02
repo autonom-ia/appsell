@@ -166,7 +166,8 @@ def classificar_erro(erro: BaseException) -> FalhaDeEnvio:
 
 
 # Cada tipo da caixa de saída tem quem sabe montá-lo. Um tipo que o worker não
-# conhece vira dead_letter com kind_unknown — visível, sem tocar no acesso.
+# conhece volta para a fila com kind_unknown (retentável): é um worker velho
+# diante de uma migration nova, e o deploy seguinte resolve.
 _CONSTRUTORES: dict[
     str, Callable[[dict[str, Any], object, str], email_layout.EmailTransacional]
 ] = {
@@ -184,7 +185,10 @@ def montar_mensagem(item: dict[str, Any], settings: Settings) -> tuple[EmailMess
     kind = item.get("kind")
     construtor = _CONSTRUTORES.get(str(kind))
     if construtor is None:
-        raise FalhaDeEnvio("kind_unknown", permanent=True, delay_seconds=1)
+        # Um tipo que ESTE worker não conhece é sinal de deploy fora de ordem
+        # (migration antes da API): o item não está errado, o worker está
+        # velho. Volta para a fila e o worker novo o pega.
+        raise FalhaDeEnvio("kind_unknown", permanent=False, delay_seconds=600)
     payload = item.get("payload")
     if not isinstance(payload, dict):
         raise FalhaDeEnvio("payload_invalid", permanent=True, delay_seconds=1)

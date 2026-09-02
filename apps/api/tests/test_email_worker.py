@@ -156,7 +156,8 @@ def test_monta_mensagem_classifica_entrada_impossivel_como_permanente(
     settings = _configurado(monkeypatch)
     with pytest.raises(FalhaDeEnvio) as erro:
         montar_mensagem(_item(kind="outro"), settings)
-    assert erro.value.error_code == "kind_unknown" and erro.value.permanent
+    # Tipo desconhecido é worker velho, não item errado: volta para a fila.
+    assert erro.value.error_code == "kind_unknown" and not erro.value.permanent
     with pytest.raises(FalhaDeEnvio) as erro:
         montar_mensagem(_item(payload={"schema_version": 9}), settings)
     assert erro.value.error_code == "render_failed" and erro.value.permanent
