@@ -129,16 +129,14 @@ _TABELAS = (
         dedupe_key ~ '^[a-z_]+:[A-Za-z0-9._:-]{8,200}$'
       ),
       recipient_identity_user_id uuid not null references public.identity_user(id),
+      -- EXATAMENTE o check de identity_user.email_normalized, de onde o valor
+      -- vem, e nada mais: esta linha nasce na transação que concede o acesso,
+      -- e qualquer regra a mais desfaria o grant de uma compra paga. Quem
+      -- decide se o endereço serve para enviar é o worker, que marca
+      -- dead_letter com recipient_invalid — visível, sem tocar no acesso.
       recipient_email text not null check (
         recipient_email = lower(btrim(recipient_email))
         and position('@' in recipient_email) > 1
-        and octet_length(recipient_email) between 6 and 320
-        and recipient_email !~ '[[:cntrl:][:space:]]'
-        -- As MESMAS regras do ingresso e de identity_user, e nada mais: esta
-        -- linha nasce na transação que concede o acesso, e um check mais
-        -- estrito que o ingresso desfaria o grant de uma compra paga. Quem
-        -- decide se o endereço serve para enviar é o worker, que marca
-        -- dead_letter com recipient_invalid — visível, sem tocar no acesso.
       ),
       payload jsonb not null check (
         jsonb_typeof(payload)='object' and octet_length(payload::text) <= 4096
@@ -229,7 +227,7 @@ _FUNCOES_MOLDE = (
         raise exception 'email worker is not authorized' using errcode='28000';
       end if;
       update app_private.email_outbox queued set status='dead_letter',
-        lease_owner=null,lease_expires_at=null,error_code='send_unexpected',
+        lease_owner=null,lease_expires_at=null,error_code='lease_expired',
         updated_at=clock_timestamp()
       where queued.status='leased' and queued.lease_expires_at<=clock_timestamp()
         and queued.attempt_count>=10;

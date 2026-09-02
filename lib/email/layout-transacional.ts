@@ -240,6 +240,9 @@ function html(email: EmailTransacional): string {
   const corpo = email.paragrafos.map(paragrafo).join("\n");
   const detalhes = tabelaDetalhes(email.detalhes ?? []);
   const acao = email.acao ? botao(email.acao) : "";
+  const titulo = `<h1 style="margin:0 0 20px;font-size:26px;line-height:1.25;font-weight:900;letter-spacing:-0.02em;color:${CORES.navy};">${escapar(email.titulo)}</h1>`;
+  // Só as peças presentes: uma peça vazia deixaria uma linha de espaços no HTML.
+  const pecas = [eyebrow, titulo, corpo, detalhes, acao].filter((peca) => peca !== "");
   // O preheader e o que o Gmail mostra ao lado do assunto. Sem ele, mostra o
   // inicio do HTML, que e o nome da marca repetido.
   const preheader = escapar(email.paragrafos[0] ?? email.titulo);
@@ -262,11 +265,7 @@ function html(email: EmailTransacional): string {
     <tr><td>${cabecalho()}</td></tr>
     <tr>
       <td style="padding:36px 32px 12px;">
-        ${eyebrow}
-        <h1 style="margin:0 0 20px;font-size:26px;line-height:1.25;font-weight:900;letter-spacing:-0.02em;color:${CORES.navy};">${escapar(email.titulo)}</h1>
-        ${corpo}
-        ${detalhes}
-        ${acao}
+        ${pecas.join("\n        ")}
       </td>
     </tr>
     <tr><td style="padding:0 32px;"><div style="height:1px;background:${CORES.linha};line-height:1px;font-size:1px;">&nbsp;</div></td></tr>

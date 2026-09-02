@@ -53,7 +53,11 @@ _SMTP_TIMEOUT_SECONDS = 15
 # Falha do canal não é falha do item: o worker para em vez de percorrer a fila
 # inteira queimando conexões — dez minutos para credencial recusada, dois
 # para host fora.
-_PAUSA_POR_FALHA_DO_CANAL = {"smtp_auth": 600.0, "smtp_unreachable": 120.0}
+_PAUSA_POR_FALHA_DO_CANAL = {
+    "smtp_auth": 600.0,
+    "smtp_unreachable": 120.0,
+    "smtp_unsupported": 300.0,
+}
 REMETENTE_NOME = "Autonom.ia Sell"
 # Exatamente um mailbox: um só "@", nada que abra outro endereço (vírgula,
 # ponto e vírgula, "<>", aspas, parênteses, colchetes), nada de espaço ou
@@ -61,7 +65,8 @@ REMETENTE_NOME = "Autonom.ia Sell"
 # Unicode, como o ingresso — o SMTP decide se sabe entregar (SMTPUTF8).
 _LOCAL = r"[^\s@,;<>()\"\[\]\x00-\x1f\x7f]+"
 _LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
-_UM_DESTINATARIO = re.compile(rf"^{_LOCAL}@(?:{_LABEL}\.)+[A-Za-z]{{2,63}}$")
+# O último label também é _LABEL, não "só letras": "xn--p1ai" é um TLD válido.
+_UM_DESTINATARIO = re.compile(rf"^{_LOCAL}@(?:{_LABEL}\.)+{_LABEL}$")
 
 logger = structlog.get_logger(__name__)
 
@@ -123,8 +128,11 @@ def classificar_erro(erro: BaseException) -> FalhaDeEnvio:
             smtp_code=codigos[0] if codigos else None,
         )
     if isinstance(erro, smtplib.SMTPNotSupportedError):
-        # O servidor não fala SMTPUTF8 e o endereço precisa: não adianta insistir.
-        return FalhaDeEnvio("smtp_unsupported", permanent=True, delay_seconds=1)
+        # STARTTLS, AUTH ou SMTPUTF8 recusados pelo servidor. Quase sempre é o
+        # canal inteiro (configuração), não este item: pausa e retenta; o item
+        # que exige SMTPUTF8 num servidor sem suporte cai em dead_letter na
+        # décima tentativa, e não leva a fila junto.
+        return FalhaDeEnvio("smtp_unsupported", permanent=False, delay_seconds=300)
     if isinstance(erro, smtplib.SMTPAuthenticationError):
         # Senha errada derruba todos os envios: recuo longo, sem dead-letter —
         # a correção é rotacionar a variável, e a fila espera.

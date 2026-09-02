@@ -271,6 +271,12 @@ def _html(email: EmailTransacional, origem: str) -> str:
     corpo = "\n".join(_paragrafo(p) for p in email.paragrafos)
     detalhes = _tabela_detalhes(email.detalhes)
     acao = _botao(email.acao, origem) if email.acao else ""
+    titulo = (
+        '<h1 style="margin:0 0 20px;font-size:26px;line-height:1.25;font-weight:900;'
+        f'letter-spacing:-0.02em;color:{_CORES["navy"]};">{escapar(email.titulo)}</h1>'
+    )
+    # Só as peças presentes: uma peça vazia deixaria uma linha de espaços no HTML.
+    pecas = "\n        ".join(p for p in (eyebrow, titulo, corpo, detalhes, acao) if p)
     preheader = escapar(email.paragrafos[0] if email.paragrafos else email.titulo)
     cream = _CORES["cream"]
     return (
@@ -291,10 +297,7 @@ def _html(email: EmailTransacional, origem: str) -> str:
         f'overflow:hidden;font-family:{FONTE};">\n'
         f"    <tr><td>{_cabecalho(origem)}</td></tr>\n    <tr>\n"
         '      <td style="padding:36px 32px 12px;">\n'
-        f"        {eyebrow}\n"
-        '        <h1 style="margin:0 0 20px;font-size:26px;line-height:1.25;font-weight:900;'
-        f'letter-spacing:-0.02em;color:{_CORES["navy"]};">{escapar(email.titulo)}</h1>\n'
-        f"        {corpo}\n        {detalhes}\n        {acao}\n      </td>\n    </tr>\n"
+        f"        {pecas}\n      </td>\n    </tr>\n"
         f'    <tr><td style="padding:0 32px;"><div style="height:1px;background:{_CORES["linha"]};'
         'line-height:1px;font-size:1px;">&nbsp;</div></td></tr>\n'
         f"    <tr><td>{_rodape(email.motivo, origem)}</td></tr>\n"

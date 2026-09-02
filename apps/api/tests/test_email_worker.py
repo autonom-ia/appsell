@@ -102,7 +102,9 @@ def test_classificacao_de_erro_nao_carrega_o_dialogo_smtp() -> None:
     )
     assert classificar_erro(smtplib.SMTPResponseException(552, b"too big")).permanent is True
     assert classificar_erro(OSError("conexao recusada")).error_code == "smtp_unreachable"
-    assert classificar_erro(smtplib.SMTPNotSupportedError("SMTPUTF8")).permanent is True
+    # STARTTLS/AUTH/SMTPUTF8 recusados: quase sempre é o canal, não o item — pausa e retenta.
+    nao_suportado = classificar_erro(smtplib.SMTPNotSupportedError("STARTTLS"))
+    assert nao_suportado.error_code == "smtp_unsupported" and nao_suportado.permanent is False
     # Parte local Unicode passa (o ingresso aceita); o SMTP decide.
     assert email_worker.destinatario_valido("josé.maría@exemplo.com.br")
     assert classificar_erro(RuntimeError("?")).error_code == "send_unexpected"

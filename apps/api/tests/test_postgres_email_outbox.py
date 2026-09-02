@@ -254,6 +254,7 @@ def _accept(
     buyer_email: str,
     event_type: str = "purchase.approved",
     seller: UUID = SELLER,
+    buyer_identity_sub: str | None = None,
 ) -> None:
     assert RUNTIME_URL
     outra = seller == OUTRO_SELLER
@@ -278,7 +279,7 @@ def _accept(
                 int(time.time()),
                 uuid4(),
                 buyer_email,
-                None,
+                buyer_identity_sub,
             ),
         )
         connection.commit()
@@ -513,6 +514,36 @@ def test_reapproval_of_a_refunded_purchase_does_not_email(
     _drain_fulfillment(fixture)
     assert len(_outbox(ativa)) == 1
     assert _outbox(reembolsada) == []
+
+
+def test_recipient_is_the_identity_email_not_the_checkout_email(
+    fixture: dict[str, UUID | str],
+) -> None:
+    # Quem tem conta recebe no e-mail da conta: é nele que o acesso aparece.
+    # O e-mail digitado no checkout é o que o Stripe conhece, não onde a
+    # pessoa entra.
+    assert ADMIN_URL
+    sub = f"cognito-{RUN}"
+    conta = f"conta.{RUN}@example.test"
+    checkout = f"checkout.{RUN}@example.test"
+    identidade = uuid5(NAMESPACE_URL, f"{ISSUER}\0{sub}")
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "insert into identity_user(id,identity_issuer,identity_sub,email_normalized,"
+            "email_verified) values(%s,%s,%s,%s,true) on conflict do nothing",
+            (identidade, ISSUER, sub, conta),
+        )
+        connection.commit()
+    _accept(
+        event=f"{RUN}-evt-conta",
+        purchase=f"{RUN}-compra-conta",
+        buyer_email=checkout,
+        buyer_identity_sub=sub,
+    )
+    _drain_fulfillment(fixture)
+    rows = _outbox(f"{RUN}-compra-conta")
+    assert len(rows) == 1
+    assert rows[0][1] == conta and rows[0][4] == identidade
 
 
 def test_refund_does_not_enqueue(fixture: dict[str, UUID | str]) -> None:
