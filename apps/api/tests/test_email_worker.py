@@ -102,9 +102,10 @@ def test_classificacao_de_erro_nao_carrega_o_dialogo_smtp() -> None:
     )
     assert classificar_erro(smtplib.SMTPResponseException(552, b"too big")).permanent is True
     assert classificar_erro(OSError("conexao recusada")).error_code == "smtp_unreachable"
-    # STARTTLS/AUTH/SMTPUTF8 recusados: quase sempre é o canal, não o item — pausa e retenta.
-    nao_suportado = classificar_erro(smtplib.SMTPNotSupportedError("STARTTLS"))
-    assert nao_suportado.error_code == "smtp_unsupported" and nao_suportado.permanent is False
+    # SMTPNotSupportedError é traduzido por fase dentro do Transporte; se
+    # chegar aqui, cai em falha de canal — retenta, não mata o item.
+    nao_suportado = classificar_erro(smtplib.SMTPNotSupportedError("?"))
+    assert nao_suportado.error_code == "smtp_unreachable" and nao_suportado.permanent is False
     # Parte local Unicode passa (o ingresso aceita); o SMTP decide.
     assert email_worker.destinatario_valido("josé.maría@exemplo.com.br")
     assert classificar_erro(RuntimeError("?")).error_code == "send_unexpected"
@@ -197,6 +198,82 @@ async def test_worker_nao_inicia_sem_smtp_e_registra(monkeypatch: pytest.MonkeyP
         timeout=1,
     )
     assert eventos == [("email_worker_disabled", {"reason": "smtp_partial"})]
+
+
+class _ClienteFalso:
+    """Servidor que recusa a extensão pedida, para cobrir cada fase."""
+
+    def __init__(self, falta: str) -> None:
+        self.falta = falta
+        self.enviou = False
+
+    def __enter__(self) -> _ClienteFalso:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def starttls(self, context: object) -> None:
+        if self.falta == "starttls":
+            raise smtplib.SMTPNotSupportedError("STARTTLS extension not supported by server.")
+
+    def login(self, user: str, password: str) -> None:
+        if self.falta == "auth":
+            raise smtplib.SMTPNotSupportedError("SMTP AUTH extension not supported by server.")
+
+    def send_message(self, mensagem: object, **_: object) -> None:
+        if self.falta == "utf8":
+            raise smtplib.SMTPNotSupportedError("SMTPUTF8 not supported by server")
+        self.enviou = True
+
+
+@pytest.mark.parametrize(
+    ("falta", "codigo", "permanente"),
+    [
+        ("starttls", "smtp_no_starttls", False),
+        ("auth", "smtp_no_auth", False),
+        ("utf8", "smtp_no_utf8", True),
+    ],
+)
+def test_extensao_ausente_e_classificada_pela_fase(
+    monkeypatch: pytest.MonkeyPatch, falta: str, codigo: str, permanente: bool
+) -> None:
+    # STARTTLS e AUTH ausentes são o canal inteiro: a fila espera. SMTPUTF8 é
+    # deste endereço: só ele morre, e a fila segue.
+    settings = _configurado(monkeypatch, SMTP_SECURE_TRANSACIONAL="false")
+    cliente = _ClienteFalso(falta)
+    monkeypatch.setattr(smtplib, "SMTP", lambda *a, **k: cliente)
+    transporte = email_worker.Transporte(settings)
+    mensagem, _ = montar_mensagem(_item(), settings)
+    with pytest.raises(FalhaDeEnvio) as erro:
+        transporte.enviar(mensagem)
+    assert erro.value.error_code == codigo and erro.value.permanent is permanente
+    assert (erro.value.error_code == "smtp_no_utf8") == (falta == "utf8")
+
+
+@pytest.mark.asyncio
+async def test_falha_registra_host_e_porta_e_nunca_credencial(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _configurado(monkeypatch)
+    eventos: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        email_worker,
+        "logger",
+        SimpleNamespace(
+            warning=lambda evento, **campos: eventos.append((evento, campos)),
+            error=lambda evento, **campos: eventos.append((evento, campos)),
+        ),
+    )
+    auth = _Auth()
+    erro = smtplib.SMTPAuthenticationError(535, f"pass={SEGREDO}".encode())
+    worker = email_worker.worker_identity(settings)
+    await email_worker._entregar(
+        cast(Any, auth), settings, worker, cast(Any, _TransporteFalso(erro)), _item()
+    )
+    campos = eventos[0][1]
+    assert campos["smtp_host"] == "smtp.example.test" and campos["smtp_port"] == 465
+    assert SEGREDO not in repr(eventos) and "sell@autonomia.site" not in repr(campos)
 
 
 def test_transporte_nao_expoe_a_senha(monkeypatch: pytest.MonkeyPatch) -> None:

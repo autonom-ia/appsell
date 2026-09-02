@@ -321,11 +321,13 @@ _FUNCOES_MOLDE = (
         -- matam e-mails legítimos.
         status=case
           when p_permanent then 'dead_letter'
-          when p_error in ('smtp_auth','smtp_unreachable') then 'retry'
+          when p_error in ('smtp_auth','smtp_unreachable','smtp_no_starttls','smtp_no_auth')
+            then 'retry'
           when queued.attempt_count>=10 then 'dead_letter'
           else 'retry' end,
-        attempt_count=case when p_error in ('smtp_auth','smtp_unreachable')
-          then greatest(queued.attempt_count-1,0) else queued.attempt_count end,
+        attempt_count=case
+          when p_error in ('smtp_auth','smtp_unreachable','smtp_no_starttls','smtp_no_auth')
+            then greatest(queued.attempt_count-1,0) else queued.attempt_count end,
         available_at=clock_timestamp()+make_interval(secs=>p_delay_seconds),
         lease_owner=null,lease_expires_at=null,error_code=p_error,
         updated_at=clock_timestamp()

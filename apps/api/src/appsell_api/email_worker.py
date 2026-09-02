@@ -56,7 +56,8 @@ _SMTP_TIMEOUT_SECONDS = 15
 _PAUSA_POR_FALHA_DO_CANAL = {
     "smtp_auth": 600.0,
     "smtp_unreachable": 120.0,
-    "smtp_unsupported": 300.0,
+    "smtp_no_starttls": 300.0,
+    "smtp_no_auth": 300.0,
 }
 REMETENTE_NOME = "Autonom.ia Sell"
 # Exatamente um mailbox: um só "@", nada que abra outro endereço (vírgula,
@@ -96,6 +97,10 @@ class Transporte:
         self._password = settings.email_smtp_password.get_secret_value()
 
     def enviar(self, mensagem: EmailMessage) -> None:
+        # SMTPNotSupportedError não diz por si só qual extensão faltou, e a
+        # diferença importa: STARTTLS e AUTH ausentes são o canal inteiro (o
+        # servidor está errado, e a fila espera), enquanto SMTPUTF8 é deste
+        # endereço (só ele morre). Por isso cada fase é traduzida aqui.
         contexto = ssl.create_default_context()
         if self._secure:
             cliente: smtplib.SMTP = smtplib.SMTP_SSL(
@@ -105,11 +110,24 @@ class Transporte:
             cliente = smtplib.SMTP(self._host, self._port, timeout=_SMTP_TIMEOUT_SECONDS)
         with cliente:
             if not self._secure:
-                cliente.starttls(context=contexto)
-            cliente.login(self._user, self._password)
-            # Envelope explícito: o From e o único To vêm dos cabeçalhos que
-            # montar_mensagem validou, não de um parse dos cabeçalhos.
-            cliente.send_message(mensagem, from_addr=EMAIL_REMETENTE, to_addrs=[mensagem["To"]])
+                try:
+                    cliente.starttls(context=contexto)
+                except smtplib.SMTPNotSupportedError as erro:
+                    raise FalhaDeEnvio(
+                        "smtp_no_starttls", permanent=False, delay_seconds=300
+                    ) from erro
+            try:
+                cliente.login(self._user, self._password)
+            except smtplib.SMTPNotSupportedError as erro:
+                raise FalhaDeEnvio("smtp_no_auth", permanent=False, delay_seconds=300) from erro
+            try:
+                # Envelope explícito: o From e o único To vêm dos cabeçalhos que
+                # montar_mensagem validou, não de um parse dos cabeçalhos.
+                cliente.send_message(mensagem, from_addr=EMAIL_REMETENTE, to_addrs=[mensagem["To"]])
+            except smtplib.SMTPNotSupportedError as erro:
+                # O endereço exige SMTPUTF8 e este servidor não fala: insistir
+                # não muda nada, e a fila não pode parar por causa dele.
+                raise FalhaDeEnvio("smtp_no_utf8", permanent=True, delay_seconds=1) from erro
 
 
 def classificar_erro(erro: BaseException) -> FalhaDeEnvio:
@@ -127,12 +145,6 @@ def classificar_erro(erro: BaseException) -> FalhaDeEnvio:
             delay_seconds=1 if permanente else 300,
             smtp_code=codigos[0] if codigos else None,
         )
-    if isinstance(erro, smtplib.SMTPNotSupportedError):
-        # STARTTLS, AUTH ou SMTPUTF8 recusados pelo servidor. Quase sempre é o
-        # canal inteiro (configuração), não este item: pausa e retenta; o item
-        # que exige SMTPUTF8 num servidor sem suporte cai em dead_letter na
-        # décima tentativa, e não leva a fila junto.
-        return FalhaDeEnvio("smtp_unsupported", permanent=False, delay_seconds=300)
     if isinstance(erro, smtplib.SMTPAuthenticationError):
         # Senha errada derruba todos os envios: recuo longo, sem dead-letter —
         # a correção é rotacionar a variável, e a fila espera.
@@ -331,6 +343,10 @@ async def _registrar_falha(
         error_code=falha.error_code,
         permanent=falha.permanent,
         smtp_code=falha.smtp_code,
+        # Host e porta, como manda a EMAIL_POLICY.md §5 — nunca usuário, senha
+        # ou o diálogo SMTP.
+        smtp_host=settings.email_smtp_host,
+        smtp_port=settings.email_smtp_port_number,
     )
     try:
         async with auth.trusted_domain_session(

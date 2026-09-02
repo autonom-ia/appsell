@@ -146,9 +146,14 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         if email_worker_task is not None:
             # Um envio em curso é uma thread de SMTP com vários timeouts de
             # 15 s; cancelar a task não fecha o socket. Espera o lease inteiro
-            # para o envio terminar e ser registrado — se o orquestrador matar
-            # o processo antes, o Message-ID estável é o que sobra para o
-            # destinatário reconhecer a duplicata.
+            # para o envio terminar e ser registrado.
+            #
+            # Isto só vale se o orquestrador der o tempo: o serviço `api`
+            # precisa de `--stop-grace-period 330s` (lease + folga), senão o
+            # Swarm mata o processo no meio do envio. Está no runbook de
+            # release e no passo de deploy da #356; se faltar, o pior caso é
+            # um reenvio com o mesmo Message-ID, que o cliente de quem recebe
+            # usa para reconhecer a duplicata.
             try:
                 await asyncio.wait_for(email_worker_task, timeout=300)
             except TimeoutError:

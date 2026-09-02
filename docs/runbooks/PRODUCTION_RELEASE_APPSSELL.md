@@ -3,6 +3,21 @@
 Este runbook descreve o estado operacional comprovado na VPS do Appsell. Ele
 não autoriza por si só novo deploy, mudança de secrets, banco ou cobrança.
 
+## Serviço `api`: período de graça no encerramento
+
+O worker de e-mail pode estar no meio de um envio SMTP quando o deploy começa.
+O `api` **precisa** de `--stop-grace-period 330s` (lease de 300 s + folga) —
+aplicado no mesmo `docker service update` que liga o canal (#356), junto das
+`SMTP_*_TRANSACIONAL`. Conferir antes de qualquer release que toque o
+serviço:
+
+```sh
+docker service inspect sell-autonomia_api --format '{{.Spec.TaskTemplate.ContainerSpec.StopGracePeriod}}'
+```
+
+Valor menor que isso troca "deploy" por "e-mail duplicado" na caixa de quem
+comprou. Detalhe em `docs/architecture/EMAIL_POLICY.md` §8.1.
+
 ## Ambiente atual
 
 - Domínio: `https://sell.autonomia.site`
@@ -21,6 +36,21 @@ não autoriza por si só novo deploy, mudança de secrets, banco ou cobrança.
 AWS/EC2 não é o destino deste release do Appsell. Não substituir a VPS pelo
 ambiente AWS sem uma nova decisão de infraestrutura.
 
+## Serviço `api`: período de graça no encerramento
+
+O worker de e-mail pode estar no meio de um envio SMTP quando o deploy começa.
+O `api` **precisa** de `--stop-grace-period 330s` (lease de 300 s + folga) —
+aplicado no mesmo `docker service update` que liga o canal (#356), junto das
+`SMTP_*_TRANSACIONAL`. Conferir antes de qualquer release que toque o
+serviço:
+
+```sh
+docker service inspect sell-autonomia_api --format '{{.Spec.TaskTemplate.ContainerSpec.StopGracePeriod}}'
+```
+
+Valor menor que isso troca "deploy" por "e-mail duplicado" na caixa de quem
+comprou. Detalhe em `docs/architecture/EMAIL_POLICY.md` §8.1.
+
 ## Pré-deploy obrigatório
 
 1. Confirmar Issue, PR aprovada e CI verde no SHA exato.
@@ -37,6 +67,21 @@ ambiente AWS sem uma nova decisão de infraestrutura.
    ausência de erro: a instrumentação por caminho ainda é parcial.
 
 Não imprimir DSNs, chaves, tokens, senhas ou o ambiente completo dos serviços.
+
+## Serviço `api`: período de graça no encerramento
+
+O worker de e-mail pode estar no meio de um envio SMTP quando o deploy começa.
+O `api` **precisa** de `--stop-grace-period 330s` (lease de 300 s + folga) —
+aplicado no mesmo `docker service update` que liga o canal (#356), junto das
+`SMTP_*_TRANSACIONAL`. Conferir antes de qualquer release que toque o
+serviço:
+
+```sh
+docker service inspect sell-autonomia_api --format '{{.Spec.TaskTemplate.ContainerSpec.StopGracePeriod}}'
+```
+
+Valor menor que isso troca "deploy" por "e-mail duplicado" na caixa de quem
+comprou. Detalhe em `docs/architecture/EMAIL_POLICY.md` §8.1.
 
 ## Release que toca só o `web`
 
@@ -68,6 +113,21 @@ docker service update --image easypanel/sell-autonomia/web:<sha-anterior> \
   --update-order stop-first sell-autonomia_web
 ```
 
+## Serviço `api`: período de graça no encerramento
+
+O worker de e-mail pode estar no meio de um envio SMTP quando o deploy começa.
+O `api` **precisa** de `--stop-grace-period 330s` (lease de 300 s + folga) —
+aplicado no mesmo `docker service update` que liga o canal (#356), junto das
+`SMTP_*_TRANSACIONAL`. Conferir antes de qualquer release que toque o
+serviço:
+
+```sh
+docker service inspect sell-autonomia_api --format '{{.Spec.TaskTemplate.ContainerSpec.StopGracePeriod}}'
+```
+
+Valor menor que isso troca "deploy" por "e-mail duplicado" na caixa de quem
+comprou. Detalhe em `docs/architecture/EMAIL_POLICY.md` §8.1.
+
 ## Smoke pós-deploy
 
 ### Catálogo e autorização
@@ -93,6 +153,21 @@ docker service update --image easypanel/sell-autonomia/web:<sha-anterior> \
 - nenhum entitlement de teste persistido;
 - nenhum seed/reset demo executado em produção.
 
+## Serviço `api`: período de graça no encerramento
+
+O worker de e-mail pode estar no meio de um envio SMTP quando o deploy começa.
+O `api` **precisa** de `--stop-grace-period 330s` (lease de 300 s + folga) —
+aplicado no mesmo `docker service update` que liga o canal (#356), junto das
+`SMTP_*_TRANSACIONAL`. Conferir antes de qualquer release que toque o
+serviço:
+
+```sh
+docker service inspect sell-autonomia_api --format '{{.Spec.TaskTemplate.ContainerSpec.StopGracePeriod}}'
+```
+
+Valor menor que isso troca "deploy" por "e-mail duplicado" na caixa de quem
+comprou. Detalhe em `docs/architecture/EMAIL_POLICY.md` §8.1.
+
 ## Rollback
 
 Acionar rollback se health, convergência, autorização, conteúdo ou dados falhar.
@@ -111,6 +186,21 @@ O rollback da entrega de 2026-08-23 tinha as tags anteriores do release
 nomes devem ser revalidados no host antes de uma nova operação; não reutilizar
 um caminho antigo sem confirmar que o arquivo existe e está íntegro.
 
+## Serviço `api`: período de graça no encerramento
+
+O worker de e-mail pode estar no meio de um envio SMTP quando o deploy começa.
+O `api` **precisa** de `--stop-grace-period 330s` (lease de 300 s + folga) —
+aplicado no mesmo `docker service update` que liga o canal (#356), junto das
+`SMTP_*_TRANSACIONAL`. Conferir antes de qualquer release que toque o
+serviço:
+
+```sh
+docker service inspect sell-autonomia_api --format '{{.Spec.TaskTemplate.ContainerSpec.StopGracePeriod}}'
+```
+
+Valor menor que isso troca "deploy" por "e-mail duplicado" na caixa de quem
+comprou. Detalhe em `docs/architecture/EMAIL_POLICY.md` §8.1.
+
 ## Backup e restore
 
 - Backup pré-cutover da entrega: `/home/claudete/backups/appsell/`.
@@ -119,6 +209,21 @@ um caminho antigo sem confirmar que o arquivo existe e está íntegro.
   rotina para apagar ou sobrescrever o banco atual.
 - Ver [runbook geral de backup/restore](BACKUP_RESTORE_SELL.md) e os scripts em
   [`deploy/easypanel-native/backup`](../../deploy/easypanel-native/backup/README.md).
+
+## Serviço `api`: período de graça no encerramento
+
+O worker de e-mail pode estar no meio de um envio SMTP quando o deploy começa.
+O `api` **precisa** de `--stop-grace-period 330s` (lease de 300 s + folga) —
+aplicado no mesmo `docker service update` que liga o canal (#356), junto das
+`SMTP_*_TRANSACIONAL`. Conferir antes de qualquer release que toque o
+serviço:
+
+```sh
+docker service inspect sell-autonomia_api --format '{{.Spec.TaskTemplate.ContainerSpec.StopGracePeriod}}'
+```
+
+Valor menor que isso troca "deploy" por "e-mail duplicado" na caixa de quem
+comprou. Detalhe em `docs/architecture/EMAIL_POLICY.md` §8.1.
 
 ## Evidência de uma release
 

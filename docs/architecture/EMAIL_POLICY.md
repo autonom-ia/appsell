@@ -226,6 +226,24 @@ ordem de ligação segue a expectativa de engajamento:
 Rejeição permanente (5xx) marca o endereço e a fila não tenta de novo; rejeição
 temporária (4xx) tenta com recuo. O detalhe é da `#358`; a regra é esta.
 
+## 8.1. Contrato de deploy do serviço que envia
+
+O worker vive no processo da API e pode estar no meio de um envio quando o
+deploy começa. O serviço `api` precisa de **`--stop-grace-period 330s`** — o
+lease de 300 s mais folga —, senão o orquestrador mata o processo entre o
+`send` aceito e o registro, e o e-mail sai de novo na tentativa seguinte (com
+o mesmo `Message-ID`, que é a mitigação, não a garantia).
+
+```sh
+docker service update --stop-grace-period 330s sell-autonomia_api
+```
+
+Confira antes de cada release do canal:
+
+```sh
+docker service inspect sell-autonomia_api --format '{{.Spec.TaskTemplate.ContainerSpec.StopGracePeriod}}'
+```
+
 ## 9. Rollback
 
 Remover as cinco variáveis `SMTP_*_TRANSACIONAL` do serviço `api` desliga o
