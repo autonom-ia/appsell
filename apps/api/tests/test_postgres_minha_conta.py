@@ -20,7 +20,7 @@ from uuid import UUID, uuid4
 
 import psycopg
 import pytest
-from psycopg.errors import InsufficientPrivilege
+from psycopg.errors import InsufficientPrivilege, ProgramLimitExceeded
 from psycopg.types.json import Jsonb
 
 ADMIN_URL = os.environ.get("APPSELL_TEST_POSTGRES_ADMIN_URL")
@@ -500,7 +500,8 @@ def test_as_funcoes_sao_security_definer_com_search_path_e_sem_execute_publico()
         rows = connection.execute(
             """
             select p.proname, p.prosecdef,
-                   coalesce(array_to_string(p.proconfig,','),'') like '%%search_path=%%',
+                   coalesce(array_to_string(p.proconfig,','),'')
+                     ='search_path=pg_catalog, app_private, public, pg_temp',
                    has_function_privilege('appsell_runtime',p.oid,'execute'),
                    exists(select 1 from aclexplode(p.proacl) a where a.grantee=0)
             from pg_proc p join pg_namespace n on n.oid=p.pronamespace
@@ -664,3 +665,43 @@ def test_pedidos_simultaneos_viram_um_so(mundo: Mundo) -> None:
     assert len(datas) == 1
     assert sum(1 for _, repetido in resultados if not repetido) == 1
     assert len(audits(caio, "account.deletion.requested")) == 1
+
+
+def test_a_exportacao_acima_do_teto_e_recusada_antes_de_montar_e_sem_audit(mundo: Mundo) -> None:
+    # Modo de falha (achado da revisão): uma conta com muitas anotações faria
+    # o banco montar um documento gigante para só então medi-lo. A
+    # pré-verificação soma os bytes dos traços antes de agregar. Aqui: ~720
+    # anotações de ~12 KiB cada, acima dos 8 MiB.
+    assert ADMIN_URL
+    ana = mundo.ana
+    dan, acesso = uuid4(), uuid4()
+    traco = [[0.123456, 0.654321]] * 1000
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "insert into identity_user(id,identity_issuer,identity_sub,email_normalized,"
+            "email_verified) values(%s,%s,%s,%s,true)",
+            (dan, ISSUER, f"dan-{ana.sufixo}", f"dan-{ana.sufixo}@example.test"),
+        )
+        connection.execute(
+            "insert into buyer_entitlement(seller_organization_id,id,buyer_identity_user_id,"
+            "catalog_product_id,publication_id,reference_key,source,status,progress_percent)"
+            " values(%s,%s,%s,%s,%s,'pytest-minha-conta-dan','manual','active',0)",
+            (ana.loja, acesso, dan, ana.produto, ana.publicacao),
+        )
+        connection.execute(
+            "insert into app_private.learning_pdf_study_state(seller_organization_id,"
+            "buyer_identity_user_id,entitlement_id,asset_id,asset_version) "
+            "values(%s,%s,%s,%s,1)",
+            (ana.loja, dan, acesso, ana.asset),
+        )
+        with connection.cursor() as cursor:
+            cursor.executemany(
+                "insert into app_private.learning_pdf_annotation(seller_organization_id,"
+                "buyer_identity_user_id,entitlement_id,asset_id,asset_version,id,page_number,"
+                "tool,color,width,points) values(%s,%s,%s,%s,1,%s,1,'pen','#00FF00',0.01,%s)",
+                [(ana.loja, dan, acesso, ana.asset, uuid4(), Jsonb(traco)) for _ in range(720)],
+            )
+        connection.commit()
+    with pytest.raises(ProgramLimitExceeded):
+        exportar(dan, dan)
+    assert audits(dan, "account.data.exported") == []

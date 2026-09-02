@@ -10,6 +10,20 @@
 - Um pedido fica **aberto** até existir um `account.deletion.completed`
   posterior com `target_id` = a pessoa. Não há prazo que o feche sozinho.
 
+## Escopo — leia antes
+
+Este runbook cobre **o que o Appsell guarda**. A conta de login vive no
+Identity (`autonomia-identity-foundation`, Cognito) e é outro sistema. A
+ordem importa: **se a pessoa continuar conseguindo entrar, o próximo login
+recria o e-mail e o nome** — `sync_identity` (0048) faz upsert a cada
+callback — e desfaz a anonimização feita aqui. Por isso o passo 3 vem antes
+do 4, e "concluído" só se registra depois dos dois.
+
+O que ainda não existe, e é follow-up com issue própria: uma marca
+(tombstone) por `issuer + sub` que `sync_identity` recuse, e revogação
+administrativa de sessões do Appsell (hoje elas expiram pelo prazo da
+sessão; não há comando para derrubá-las).
+
 ## 1. Listar pedidos em aberto
 
 No Postgres de produção (container `sell-autonomia_postgres-native-90`, ver
@@ -20,6 +34,7 @@ select pedido.created_at as pedido_em,
        pessoa.email_normalized as email,
        pessoa.display_name,
        pedido.actor_identity_user_id as identity_user_id,
+       pessoa.identity_issuer, pessoa.identity_sub,
        (select count(*) from buyer_entitlement e
          where e.buyer_identity_user_id=pedido.actor_identity_user_id
            and e.status='active') as acessos_ativos,
@@ -45,50 +60,86 @@ order by pedido.created_at;
 É a mesma regra que a função `read_account_status` usa para a tela — o que
 esta consulta lista é exatamente o que a pessoa vê como "pedido registrado".
 
-## 2. Antes de apagar qualquer coisa
+## 2. Confirmar e triar
 
-1. Responder à pessoa pelo e-mail da conta confirmando o recebimento. A
-   política de privacidade não promete prazo de eliminação, e a LGPD não fixa
-   um prazo geral para ela — os 15 dias do art. 19, II, valem para a
-   *declaração completa* sobre o tratamento, não para apagar. Não prometa
-   prazo sem combinar com o encarregado (contato@autonomia.site).
+1. Responder à pessoa pelo e-mail da conta confirmando o recebimento. Não
+   prometa prazo: a política de privacidade não fixa um, e a LGPD não fixa
+   prazo geral para eliminação — os 15 dias do art. 19, II, são para a
+   *declaração completa* sobre o tratamento. Prazo é decisão do encarregado
+   (contato@autonomia.site), não do operador.
 2. Se `tem_loja` for verdadeiro, parar: a exclusão de vendedor é o fluxo de
    "Excluir tenant" da matriz de autorização, com retenção e janela de
    reversão próprias. Este runbook cobre só o comprador.
-3. Se houver `compras`, a identidade **não é apagada**: a prova da compra
-   tem retenção fiscal e contratual. O que se faz é anonimizar o que não
-   precisa mais existir (nome, progresso, marcadores, anotações) e revogar os
-   acessos, mantendo `identity_user` com o e-mail até o fim do prazo legal.
-4. Sem compras e sem loja: pode-se revogar os acessos gratuitos e anonimizar
-   o nome. O e-mail permanece pelo prazo do Marco Civil (registros de acesso).
+3. Se a pessoa quiser os dados antes, a exportação está na tela dela
+   (`/settings/account`). Se a conta passar do teto (8 MiB), ver a seção
+   "Exportação manual" abaixo.
 
-Nenhuma dessas operações tem função pronta ainda. Cada uma é um `psql` de
+## 3. Identity primeiro
+
+Pedir à operação do Identity que **desative ou exclua o usuário** (`issuer` e
+`sub` da consulta acima) no Cognito. Sem isso, nada do passo 4 dura: a pessoa
+entra de novo e o callback recria e-mail e nome. Guardar a confirmação (data e
+quem fez) para o registro do passo 5.
+
+## 4. Dados no Appsell
+
+A regra final de retenção é a **D-018** (DECISION_REGISTER), ainda pendente
+de DPO/Jurídico. Até ela existir, a régua mínima é esta — e o que ela não
+cobre **não se toca sem OK do encarregado**:
+
+- **Não se apaga** o que é prova de compra e de operação: `entitlement_grant`,
+  `fulfillment_job`, `webhook_event`, `audit_event`. Têm retenção fiscal e
+  contratual, e a tabela de auditoria é append-only de propósito.
+- **Pode-se apagar** o que a pessoa criou e só a ela interessa: anotações e
+  marcadores de PDF, `learning_pdf_study_state`, progresso de aula e estado
+  de curso.
+- **Anonimizar**: `identity_user.display_name` → `null`.
+- **Revogar** acessos ativos: `buyer_entitlement.status` → `'revoked'`.
+- **`identity_user.email_normalized`**: decisão da D-018. Não alterar sem OK
+  do encarregado — nem apagar (pode ser exigido por registro de acesso) nem
+  manter por reflexo.
+
+Nenhuma dessas operações tem função pronta. Cada uma é um `psql` de
 superusuário, feito à mão, num único caso por vez, com backup antes
 (`pg_dump -Fc`), como qualquer escrita em produção.
 
-## 3. Registrar que foi feito
+## 5. Registrar que foi feito
 
 Como superusuário (a tabela é append-only e a política de runtime não deixa).
 O **ator é quem executou** — o `identity_user.id` do operador (o superadmin
 tem linha em `identity_user`; ache-a pelo e-mail) — e a **pessoa vai em
 `target_id`**. Gravar a pessoa como ator faria o registro afirmar que ela
 mesma concluiu a exclusão, e é justamente essa distinção que a auditoria
-existe para guardar.
+existe para guardar. O `metadata` diz o que foi feito e quando o Identity
+confirmou a desativação.
 
 ```sql
 insert into audit_event(seller_organization_id,actor_identity_user_id,action,
   target_type,target_id,result,request_id,metadata)
 values(null,'<identity_user_id do OPERADOR>','account.deletion.completed',
   'identity_user','<identity_user_id da PESSOA>','succeeded',gen_random_uuid(),
-  jsonb_build_object('o_que','<resumo curto do que foi anonimizado/revogado>'));
+  jsonb_build_object('o_que','<resumo curto do que foi apagado/anonimizado/revogado>',
+                     'identity_desativado_em','<data>','identity_por','<quem>'));
 ```
 
-Depois disso a pessoa some da lista do passo 1 e a tela volta a mostrar o
-botão — se ela pedir de novo, é um pedido novo, com data nova.
+Depois disso a pessoa some da lista do passo 1 e a tela — se ela ainda
+conseguir abri-la — volta a mostrar o botão; um pedido novo é um pedido novo.
 
-## 4. O que a tela mostra
+## Exportação manual (acima do teto)
+
+A tela recusa exportar contas acima de 8 MiB (`413`). Nesse caso, com a
+identidade da pessoa confirmada pelo e-mail da conta, o superusuário monta o
+mesmo documento por seções, com as consultas da função
+`app_private.export_account_data` (migration `0051`), filtradas por
+`identity_user_id` — nunca por e-mail, que pode se repetir em identidades
+diferentes. Salvar em arquivo, entregar por canal combinado com a pessoa, e
+registrar como superusuário um `audit_event` `account.data.exported` com o
+operador como ator e a pessoa como alvo. O que **não** entra é o mesmo da
+função: `identity_sub`, `identity_issuer`, hashes, `metadata` de auditoria.
+
+## O que a tela mostra
 
 Enquanto houver pedido aberto, `/settings/account` mostra "Pedido de exclusão
-registrado em …" e esconde o botão. O botão só volta depois do passo 3. Um
+registrado em …" e esconde o botão. O botão só volta depois do passo 5. Um
 pedido que ficou meses aberto continua aparecendo — para a pessoa e nesta
 lista — até alguém atendê-lo.

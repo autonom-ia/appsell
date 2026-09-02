@@ -8,9 +8,15 @@ from __future__ import annotations
 
 import json
 
+from types import SimpleNamespace
+
 import httpx
 import pytest
+from fastapi import HTTPException
+from sqlalchemy.exc import DBAPIError
 from test_api_onboarding import client, signed_headers  # noqa: F401 (fixture)
+
+from appsell_api.routes import _export_error
 
 pytestmark = pytest.mark.asyncio
 
@@ -127,3 +133,17 @@ async def test_a_exportacao_recusa_corpo_com_campo_seller_e_capability_errada(
         ),
     )
     assert outra.status_code == 401, outra.text
+
+
+def test_o_teto_do_banco_vira_413_e_o_resto_segue_o_mapa_comum() -> None:
+    # 54000 é "grande demais", não "fora do ar": a tela precisa distinguir.
+    def erro(sqlstate: str) -> DBAPIError:
+        return DBAPIError("select 1", {}, SimpleNamespace(sqlstate=sqlstate))
+
+    grande = _export_error(erro("54000"))
+    assert isinstance(grande, HTTPException)
+    assert (grande.status_code, grande.detail) == (413, "account_export_too_large")
+    negado = _export_error(erro("42501"))
+    assert (negado.status_code, negado.detail) == (403, "forbidden")
+    caiu = _export_error(erro("08006"))
+    assert (caiu.status_code, caiu.detail) == (503, "domain_unavailable")

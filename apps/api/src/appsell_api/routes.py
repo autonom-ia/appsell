@@ -201,6 +201,10 @@ async def export_account(request: Request) -> dict[str, Any]:
     envelope = internal.envelope
     try:
         async with auth.domain_session(envelope) as session:
+            # O banco monta o documento inteiro; um pedido que passe da
+            # pré-verificação mas demore demais não pode segurar a conexão.
+            # `set local` vale só para esta transação.
+            await session.execute(text("set local statement_timeout = '15s'"))
             exported = await session.scalar(
                 text("select app_private.export_account_data(:identity_user_id,:request_id)"),
                 {
@@ -209,14 +213,7 @@ async def export_account(request: Request) -> dict[str, Any]:
                 },
             )
     except DBAPIError as error:
-        # Acima do teto o banco recusa montar o documento (54000). Não é
-        # indisponibilidade: é um caso para atendimento manual, e a tela diz isso.
-        if getattr(error.orig, "sqlstate", None) == "54000":
-            raise HTTPException(
-                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-                detail="account_export_too_large",
-            ) from error
-        raise _domain_error(error) from error
+        raise _export_error(error) from error
     if not isinstance(exported, dict):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="domain_unavailable"
@@ -263,6 +260,16 @@ async def request_account_deletion(request: Request) -> Response:
 
 def _iso(value: Any) -> str | None:
     return value.isoformat() if isinstance(value, datetime) else None
+
+
+def _export_error(error: DBAPIError) -> HTTPException:
+    # Acima do teto a função recusa antes de agregar (54000). Não é
+    # indisponibilidade: é atendimento manual, e a tela diz isso.
+    if getattr(error.orig, "sqlstate", None) == "54000":
+        return HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail="account_export_too_large"
+        )
+    return _domain_error(error)
 
 
 @router.get("/me/sellers")

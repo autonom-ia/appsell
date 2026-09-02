@@ -17,8 +17,9 @@ const DELETION_RATE_LIMIT = {
   windowMs: 3_600_000
 } as const;
 
-// Registra o pedido; não apaga nada (Decisão 019). O banco devolve o mesmo
-// registro se já houver um nos últimos 30 dias — 200 em vez de 201.
+// Registra o pedido; não apaga nada (Decisão 019). Enquanto houver pedido
+// aberto — sem `account.deletion.completed` posterior — o banco devolve o
+// mesmo registro: 200 em vez de 201.
 export async function POST(request: NextRequest) {
   try {
     const gate = await authorizeAccountMutation(

@@ -21,8 +21,9 @@ compras, progresso, marcadores, anotações completas (inclusive os traços —
 são conteúdo que a pessoa criou), e-mails que mandamos e o que a pessoa fez.
 Nunca entra: `identity_sub`, `identity_issuer`, hash de id externo, metadata
 de auditoria (pode carregar dado de terceiro) nem id de outro sujeito. Tem
-teto de tamanho: acima dele a função recusa (`54000`) em vez de montar um
-documento que a API e o BFF não conseguiriam carregar.
+teto de tamanho: uma pré-verificação por bytes e contagens recusa (`54000`)
+ANTES de agregar — o banco não monta um documento que a API e o BFF não
+conseguiriam carregar — e a medição do resultado fica de rede.
 
 `schema_ready()` passa a exigir as três funções, como faz com as demais.
 
@@ -89,8 +90,8 @@ end $migration$;
 """
 
 # 8 MiB. O documento passa por jsonb no banco, JSON na API, JSON de novo no
-# BFF e um blob no navegador; acima disso é caso de atendimento manual, não
-# de tela.
+# BFF e um blob no navegador; acima disso é atendimento manual (runbook), não
+# tela. Vale para a pré-verificação e para a medição final.
 _EXPORT_MAX_BYTES = 8 * 1024 * 1024
 
 # A guarda é a mesma das outras funções do comprador (grant_public_product_access,
@@ -119,6 +120,21 @@ begin
   select * into subject from public.identity_user where id=p_identity_user_id;
   if not found then
     raise exception 'account export subject not found' using errcode='42501';
+  end if;
+
+  -- Pré-verificação ANTES de agregar. O que pode ser grande são os traços
+  -- das anotações e o histórico; somar bytes e contar linhas é uma varredura
+  -- barata, montar o jsonb inteiro para depois medir não é. A medição final
+  -- abaixo fica como rede — este é o corte que poupa o banco.
+  if (select coalesce(sum(octet_length(points::text)),0)
+        from app_private.learning_pdf_annotation
+        where buyer_identity_user_id=p_identity_user_id)
+     +(select count(*)*240 from public.audit_event
+        where actor_identity_user_id=p_identity_user_id)
+     +(select count(*)*320 from public.lesson_progress
+        where buyer_identity_user_id=p_identity_user_id)
+     >EXPORT_MAX_BYTES then
+    raise exception 'account export exceeds the size limit' using errcode='54000';
   end if;
 
   exported:=jsonb_build_object(
