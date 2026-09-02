@@ -15,11 +15,17 @@
 |---|---|
 | Domínio | `https://sell.autonomia.site` |
 | Ambiente | VPS EasyPanel nativo, Docker Swarm |
-| SHA do **api** | `70e6cb6` — canal de e-mail transacional (#356) |
+| SHA do **api** | `374c10b` — link de turma avisa, e o e-mail não confirmado diz o caminho (#357) |
 | SHA do **asset-worker** | `d5e00ec` — mesma imagem da api, um SHA atrás |
 | SHA do **pdf-sandbox** | `d5e00ec` — mesma imagem da api, com outra tag |
 | SHA do **web** | `9655a13` — só o Next; worker e sandbox em `d5e00ec` |
-| Banco | head **`0049_caixa_de_saida_de_email`**, `schema_ready() = true` |
+| Banco | head **`0050_recibo_do_link_de_turma`**, `schema_ready() = true` |
+
+**Release de 2026-09-02, só a `api`: `374c10b`, com a migration `0050`.** Quem
+entra por link de turma passa a receber o "acesso liberado", e a tela de quem
+não confirmou o e-mail deixa de oferecer o caminho que não funciona (#357,
+#301, PR #378). Detalhe na seção
+[Release `374c10b`](#release-374c10b--o-link-de-turma-avisa-e-o-e-mail-não-confirmado-diz-o-caminho-2026-09-02).
 
 **Release de 2026-09-02, só a `api`: `70e6cb6`, com a migration `0049`.** A
 caixa de saída de e-mail nasce na transação que libera o acesso, e o worker
@@ -153,6 +159,70 @@ Com 4 núcleos, 300 páginas são 89 s de janela.
 Mil páginas exigem, além da #320: virtualizar o leitor (hoje cria um nó por
 página), paralelizar o upload das páginas, e refazer gatilhos que recontam todas
 as páginas a cada inserção. Cinco mil é outra geração do pipeline.
+
+## Release `374c10b` — o link de turma avisa, e o e-mail não confirmado diz o caminho (2026-09-02)
+
+Só a `api`, mais a migration `0050`. Fecha o escopo combinado da #357 (2A + 3)
+e a #301.
+
+### O que mudou para quem usa
+
+- Quem resgata um **link de turma** recebe o "acesso liberado" — uma vez por
+  pessoa, e também quando o link **devolve** um acesso revogado, expirado ou
+  ainda não iniciado. Quem já tinha o curso consome a vaga e **não** recebe:
+  o link não liberou nada.
+- Quem cria conta e não confirma o e-mail via a tela dizer **"Confirme seu
+  e-mail"**, com o caminho de volta, em vez de "Entre novamente" — que
+  produzia exatamente a mesma recusa. Sem botão de reenviar: quem envia a
+  confirmação é o Identity, e a Sell não tem API para isso.
+
+### A ordem do deploy inverteu, e isso é a regra daqui em diante
+
+**API antes da migration.** O worker novo com o banco antigo é inofensivo
+(nenhuma linha do tipo novo existe); na ordem contrária, o worker em produção
+receberia um tipo que não conhece. A `0050` também blinda esse caso no banco:
+`kind_unknown` nunca vira `dead_letter`, devolve a tentativa e ganha recuo de
+dez minutos — o que protege igualmente um **rollback** para a imagem anterior.
+
+### Como foi aplicado
+
+```bash
+D=/tmp/sell-release-374c10b-20260902-181204          # specs, imagem anterior, pg_dump -Fc
+docker service update --image easypanel/sell-autonomia/api:374c10b \
+  --update-order stop-first sell-autonomia_api        # 1. serviço
+docker run --rm --network easypanel -e APPSELL_MIGRATOR_DATABASE_URL=<montada no host> \
+  -v /home/claudete/appsell-src-374c10b/apps/api:/mig -w /mig \
+  easypanel/sell-autonomia/api:374c10b alembic upgrade head   # 2. migration
+```
+
+### Validação executada em produção
+
+| O quê | Resultado |
+|---|---|
+| serviço | convergiu em `api:374c10b`; graça `5m30s` preservada |
+| variáveis | nome a nome contra a spec salva: **0 perdidas, 0 novas** |
+| migration com a API nova no ar | head `0050`, `schema_ready()=true`, trava de idempotência e recuo de 10 min presentes na função, `kind` aceita `access_link_redeemed` |
+| `ready` da API Python | `200` antes e depois da migration |
+| worker | `email_worker_identity` ativo; nenhum `email_worker_disabled`; zero erros no log |
+| público | `/` 200 · `/api/health/ready` 200 · `/privacidade` 200 |
+
+### O que não foi validado
+
+**Um resgate real gerando o e-mail** — depende de alguém entrar por um link de
+turma. A fila mostra: `select kind,status,error_code,message_id,sent_at from
+app_private.email_outbox order by created_at desc limit 20`.
+
+### Rollback deste release
+
+```bash
+docker service update --image easypanel/sell-autonomia/api:70e6cb6 \
+  --update-order stop-first sell-autonomia_api
+```
+
+A `0050` **fica**: ela é compatível com a imagem anterior — o worker antigo
+devolve o tipo que não conhece para a fila, sem matar nada — e descê-la exige
+`alembic downgrade -1`, que preserva as linhas já enviadas. Dump íntegro em
+`$D/appsell_native_90_antes.dump`.
 
 ## Release `70e6cb6` — a compra passa a avisar quem comprou (2026-09-02)
 
