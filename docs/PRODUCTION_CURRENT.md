@@ -15,11 +15,11 @@
 |---|---|
 | Domínio | `https://sell.autonomia.site` |
 | Ambiente | VPS EasyPanel nativo, Docker Swarm |
-| SHA do **api** | `d5e00ec` |
-| SHA do **asset-worker** | `d5e00ec` — mesma imagem da api |
+| SHA do **api** | `581a592` |
+| SHA do **asset-worker** | `d5e00ec` — mesma imagem da api, um SHA atrás |
 | SHA do **pdf-sandbox** | `d5e00ec` — mesma imagem da api, com outra tag |
-| SHA do **web** | `982d46e` |
-| Banco | head **`0047_cota_de_armazenamento`**, `schema_ready() = true` |
+| SHA do **web** | `581a592` |
+| Banco | head **`0048_nome_de_quem_entrou`**, `schema_ready() = true` |
 
 **Os quatro andaram no mesmo SHA por algumas horas, em `d5e00ec`.** O release do
 vídeo longo obrigou o `pdf-sandbox` a subir junto, porque o modo que recusa
@@ -170,6 +170,128 @@ docker service update --image easypanel/sell-autonomia/web:9ebb93f \
 ```
 
 Spec anterior em `/tmp/sell-release-346/spec_web_antes.json` no host.
+
+## Release `581a592` — o nome de quem entrou, e a primeira migration exercitada (2026-09-01)
+
+**Primeiro release desta sequência que sai do "só o `web`".** Migration em banco
+de produção, deploy da `api` e do `web`. `asset-worker` e `pdf-sandbox` ficaram
+em `d5e00ec` de propósito: a mudança não os alcança.
+
+### O que mudou para quem usa
+
+O rodapé do menu mostra o nome da pessoa no lugar de "Sua conta", e a linha de
+baixo passa a dizer a loja quando existe.
+
+O Identity sempre soube o nome — o Cognito guarda `name`, `given_name` e
+`family_name`, o client os declara legíveis, e o Appsell já pedia o escopo
+`profile`. O claim chegava em todo login e era descartado ali mesmo: o sync
+enviava só e-mail, e `identity_user` nunca teve coluna para guardá-lo.
+
+A lacuna sempre existiu. Ficou visível quando o rodapé passou a mostrar dado
+real, na #350 — antes ele dizia "Sua conta" para todo mundo, um texto fixo no
+código. **Substituir um placeholder por dado real não cria a lacuna, revela a
+que já estava lá.**
+
+### O nome não passa pelo cofre de tokens
+
+Foi a primeira ideia, e está descartada. A identidade selada valida suas chaves
+por lista exata, e abrir essa fronteira com sessões ativas em produção
+arriscaria derrubá-las para exibir um rótulo. Em vez disso o `callbackIdentity`
+devolve o nome junto do `sessionId`, e o callback o entrega ao `PUT /v1/me` que
+já acontece ali. Nenhuma chamada nova por carga de shell.
+
+### A compatibilidade que abriu a ordem segura
+
+A `0048` mantém `sync_identity` de **cinco** parâmetros viva ao lado da nova de
+seis. Isso permitiu aplicar o schema **antes** de trocar a API, com o rollback
+aberto o tempo todo — e foi verificado no meio do release: depois da migration
+e antes do deploy, a API `d5e00ec` continuou saudável contra o schema novo.
+
+A remoção da assinatura antiga fica para uma migration posterior, quando não
+houver mais chamador.
+
+### A primeira migration deste projeto exercitada por automação
+
+Antes deste release, **nenhuma migration era exercitada**: `alembic` não
+aparecia uma vez no workflow, e as suítes `test_postgres_*` não estão na lista
+que o passo completo executa. As 47 anteriores chegaram a produção validadas
+apenas por leitura.
+
+O gate entrou junto (`scripts/ci/exercita_migrations.sh`): sobe a cadeia, desce
+uma, sobe de novo, e confere que a cabeça aplicada é a declarada em
+`reset_demo_tenant.py`. Roda só quando a rota `postgres` é selecionada.
+
+O ciclo completo, e não só o `upgrade`, porque o defeito que interessa não é a
+migration que não sobe — essa falha barulhenta na hora. É a que sobe e **não
+desce**, descoberta durante um rollback.
+
+O pré-requisito que faltava saber: o esquema exige os papéis `appsell_owner` e
+`appsell_runtime` já existentes, com o migrador herdando o primeiro. Sem isso a
+cadeia para em `permission denied for schema public`.
+
+### Como foi aplicado
+
+```bash
+# 1. backups, antes de tocar em qualquer coisa
+D=/tmp/sell-release-581a592-20260901-231248
+mkdir -p $D
+for s in api web; do docker service inspect sell-autonomia_$s > $D/spec_${s}_antes.json; done
+docker exec <postgres-native-90> pg_dump -U $POSTGRES_USER -d appsell_native_90 -Fc > $D/appsell_native_90_antes.dump
+
+# 2. fonte e imagens
+git archive --format=tar origin/main | ssh <host> 'tar -x -C /home/claudete/appsell-src-581a592'
+docker build -f deploy/easypanel-native/Dockerfile.api --build-arg GIT_SHA=581a592 -t easypanel/sell-autonomia/api:581a592 .
+docker build -f deploy/easypanel-native/Dockerfile.web --build-arg GIT_SHA=581a592 -t easypanel/sell-autonomia/web:581a592 .
+
+# 3. migration, com a API antiga ainda no ar
+docker run --rm --network <rede> -v /home/claudete/appsell-src-581a592/apps/api:/mig -w /mig \
+  easypanel/sell-autonomia/api:581a592 alembic upgrade head
+
+# 4. serviços, nesta ordem
+docker service update --image easypanel/sell-autonomia/api:581a592 --update-order stop-first sell-autonomia_api
+docker service update --image easypanel/sell-autonomia/web:581a592 --update-order stop-first sell-autonomia_web
+```
+
+As credenciais do migrador nunca passaram pelo terminal: a DSN foi montada
+dentro do container, a partir das variáveis do serviço de bootstrap.
+
+### Validação executada em produção
+
+| O quê | Resultado |
+|---|---|
+| head do banco | `0048_nome_de_quem_entrou`, com as **duas** assinaturas de `sync_identity` |
+| coluna | `display_name` nullable, 14 identidades preservadas |
+| API antiga contra schema novo | saudável — verificado entre a migration e o deploy |
+| variáveis | api **33 → 33**, web **51 → 51**, nome a nome: nenhuma perdida |
+| logs | zero `error`, `traceback`, `fatal` ou `panic` em api e web |
+| home | `200` em 0,096 s |
+| healthz do BFF | `redis`, `api` e `storage_upload` todos `true` |
+| `/api/session` sem sessão | `401` |
+| `/auth/signup` e `/settings/store/new` | `307` |
+| worker e sandbox | intactos em `d5e00ec` |
+
+### O que não foi validado
+
+O nome só aparece **depois do primeiro login** de cada pessoa, porque é aí que
+o claim é gravado. Logo após o deploy, **1 das 14 identidades** já tinha nome —
+alguém entrou e o caminho funcionou de ponta a ponta. As outras 13 o ganham
+conforme entrarem, e nenhuma ação é necessária para isso.
+
+Se algum caminho de login não emitir o claim, o campo fica nulo e o rodapé
+volta ao rótulo neutro, sem erro. Só se saberá que um caminho não emite quando
+alguém entrar por ele e o nome não aparecer.
+
+### Rollback deste release
+
+```bash
+docker service update --image easypanel/sell-autonomia/web:982d46e --update-order stop-first sell-autonomia_web
+docker service update --image easypanel/sell-autonomia/api:d5e00ec --update-order stop-first sell-autonomia_api
+```
+
+A API `d5e00ec` volta a funcionar **sem** desfazer a migration, porque a
+assinatura antiga continua viva. Se ainda assim for preciso descer o schema:
+`alembic downgrade 0047_cota_de_armazenamento`, ciclo exercitado localmente e
+no CI. Dump e specs em `/tmp/sell-release-581a592-20260901-231248`.
 
 ## Release `982d46e` — o painel parou de falar com quem não tem loja (2026-09-01)
 
