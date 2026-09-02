@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 _EVENT_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _REFERENCE = re.compile(r"^[^\x00-\x1f\x7f]{1,255}$")
 _SIGNATURE = re.compile(r"^v1=([0-9a-f]{64})$")
+_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 _EVENT_TYPES = frozenset({"purchase.approved", "purchase.refunded", "subscription.cancelled"})
 _LEGACY_PROTOCOL = "appsell.webhook.generic-hmac.v1"
 _EXTERNAL_CHECKOUT_PROTOCOL = "external-checkout.webhook.generic-hmac.v1"
@@ -33,6 +34,7 @@ class NormalizedCheckoutEvent:
     # Payload v2 (fulfillment): buyer identity. Both stay None on payload v1.
     buyer_email: str | None = None
     buyer_identity_sub: str | None = None
+    seller_id: str | None = None
 
 
 def verify_generic_hmac_v1(
@@ -90,9 +92,10 @@ def parse_generic_hmac_v1(body: bytes) -> NormalizedCheckoutEvent:
         "occurred_at",
     }
     expected_v2 = expected_v1 | {"buyer_email", "buyer_identity_sub"}
-    if not isinstance(payload, dict) or set(payload) not in (expected_v1, expected_v2):
+    expected_v3 = expected_v2 | {"seller_id"}
+    if not isinstance(payload, dict) or set(payload) not in (expected_v1, expected_v2, expected_v3):
         raise WebhookRejectedError("webhook_payload_invalid")
-    is_v2 = set(payload) == expected_v2
+    has_buyer = set(payload) in (expected_v2, expected_v3)
     event_type = payload["event_type"]
     product = payload["external_product_id"]
     purchase = payload["external_purchase_id"]
@@ -107,7 +110,7 @@ def parse_generic_hmac_v1(body: bytes) -> NormalizedCheckoutEvent:
         raise WebhookRejectedError("webhook_payload_invalid")
     buyer_email: str | None = None
     buyer_identity_sub: str | None = None
-    if is_v2:
+    if has_buyer:
         buyer_email = payload["buyer_email"]
         buyer_identity_sub = payload["buyer_identity_sub"]
         if not _valid_buyer_email(buyer_email) or not _valid_buyer_sub(buyer_identity_sub):
@@ -118,8 +121,13 @@ def parse_generic_hmac_v1(body: bytes) -> NormalizedCheckoutEvent:
         raise WebhookRejectedError("webhook_payload_invalid") from error
     if occurred_at.tzinfo is None or occurred_at.utcoffset() != UTC.utcoffset(occurred_at):
         raise WebhookRejectedError("webhook_payload_invalid")
+    seller_id = payload.get("seller_id")
+    if seller_id is not None and (
+        not isinstance(seller_id, str) or _UUID.fullmatch(seller_id) is None
+    ):
+        raise WebhookRejectedError("webhook_payload_invalid")
     return NormalizedCheckoutEvent(
-        event_type, product, purchase, occurred_at, buyer_email, buyer_identity_sub
+        event_type, product, purchase, occurred_at, buyer_email, buyer_identity_sub, seller_id
     )
 
 
