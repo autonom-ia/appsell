@@ -1,6 +1,6 @@
 # STATUS — Appsell
 
-Última atualização documental: **2026-09-01**.
+Última atualização documental: **2026-09-02**.
 
 Este é o snapshot operacional atual. Para detalhes da release e dos aceites,
 consulte [PRODUCTION_CURRENT.md](PRODUCTION_CURRENT.md). Auditorias antigas em
@@ -10,7 +10,7 @@ consulte [PRODUCTION_CURRENT.md](PRODUCTION_CURRENT.md). Auditorias antigas em
 
 | Indicador | Estado | Evidência |
 |---|:---:|---|
-| Deploy | 🟢 | api, worker e sandbox em `d5e00ec`; web em `a139d86` |
+| Deploy | 🟢 | api em `581a592`, worker e sandbox em `d5e00ec`; web em `9655a13` (02/09, só o Next) |
 | Banco | 🟢 | head `0044_pdf_de_trezentas_paginas`, `schema_ready() = true` |
 | API | 🟢 | `/health/ready`: database, storage e pdf sandbox `true` |
 | PDF do vendedor | 🟢 | playbook de 83 páginas, 32 links lidos (20 índice, 12 vídeo) |
@@ -18,7 +18,7 @@ consulte [PRODUCTION_CURRENT.md](PRODUCTION_CURRENT.md). Auditorias antigas em
 | Vídeo do PDF | 🟡 | toca, mas o aluno espera ~2 s no primeiro clique de cada vídeo |
 | Vídeo longo | 🔴 | duração de 4 h é aceita e nunca fica pronta; envio limitado a 100 MiB |
 | Logs da API | 🔴 | não gravam nada ([#312](https://github.com/autonom-ia/appsell/issues/312)) — "0 erros" não é evidência |
-| Página pública | 🟢 | `a139d86`: hero em três atos, contraste medido sob os glifos, `robots.txt` e `sitemap.xml` no ar |
+| Página pública | 🟢 | `9655a13`: passagem entre atos por tempo (Decisão 018), contraste medido sob os glifos em 8 telas × 3 atos, `robots.txt` e `sitemap.xml` no ar |
 | Contato da página | 🟢 | SMTP comercial configurado no `web`; envio real confirmado recebido em 01/09 |
 | Navegação no celular | 🟢 | sem menu por decisão ([#347](https://github.com/autonom-ia/appsell/issues/347)): em 320px não cabe, e a página tem CTA fixo o tempo todo |
 | Suítes fora do CI | 🟡 | 5 arquivos `bff-*`, inclusive o de isolamento entre lojas ([#266](https://github.com/autonom-ia/appsell/issues/266)) |

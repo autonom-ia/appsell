@@ -55,7 +55,11 @@ migration, não há imagem de API e o caminho encurta:
    entradas: uma variável duplicada na spec antiga faz o total encolher sem que
    nada tenha sido perdido.
 7. Smoke da página: home, `/auth/signup`, `/auth/login`, `robots.txt`,
-   `sitemap.xml`, e o `POST /api/contato` se o formulário estiver no ar.
+   `sitemap.xml`, `/api/health/live` e `/api/health/ready` (não existe
+   `/api/healthz` no `web`), e o `POST /api/contato` se o formulário estiver
+   no ar. Prova do bundle novo: uma string que só existe depois da mudança,
+   buscada no CSS ou no HTML servido — health verde não prova nada sobre o
+   bundle.
 
 O rollback é uma linha, e a imagem anterior continua no host:
 
