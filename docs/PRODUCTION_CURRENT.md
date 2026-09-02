@@ -15,11 +15,16 @@
 |---|---|
 | Domínio | `https://sell.autonomia.site` |
 | Ambiente | VPS EasyPanel nativo, Docker Swarm |
-| SHA do **api** | `581a592` |
+| SHA do **api** | `70e6cb6` — canal de e-mail transacional (#356) |
 | SHA do **asset-worker** | `d5e00ec` — mesma imagem da api, um SHA atrás |
 | SHA do **pdf-sandbox** | `d5e00ec` — mesma imagem da api, com outra tag |
-| SHA do **web** | `9655a13` — só o Next mudou; api segue em `581a592`, worker e sandbox em `d5e00ec` |
-| Banco | head **`0048_nome_de_quem_entrou`**, `schema_ready() = true` |
+| SHA do **web** | `9655a13` — só o Next; worker e sandbox em `d5e00ec` |
+| Banco | head **`0049_caixa_de_saida_de_email`**, `schema_ready() = true` |
+
+**Release de 2026-09-02, só a `api`: `70e6cb6`, com a migration `0049`.** A
+caixa de saída de e-mail nasce na transação que libera o acesso, e o worker
+que envia roda dentro da API (#356, PR #374). Detalhe na seção
+[Release `70e6cb6`](#release-70e6cb6--a-compra-passa-a-avisar-quem-comprou-2026-09-02).
 
 **Release de 2026-09-02, só o `web`: `9655a13`.** A passagem entre os atos do
 hero deixou o scrub e passou a tocar no tempo (Decisão 018, #369, PR #371). O
@@ -148,6 +153,106 @@ Com 4 núcleos, 300 páginas são 89 s de janela.
 Mil páginas exigem, além da #320: virtualizar o leitor (hoje cria um nó por
 página), paralelizar o upload das páginas, e refazer gatilhos que recontam todas
 as páginas a cada inserção. Cinco mil é outra geração do pipeline.
+
+## Release `70e6cb6` — a compra passa a avisar quem comprou (2026-09-02)
+
+Só a `api` mudou, mais a migration `0049`. `web`, `asset-worker` e
+`pdf-sandbox` ficaram como estavam. Fecha a #356 (B1 do épico #349).
+
+### O que mudou para quem usa
+
+Uma compra aprovada passa a gerar **um** e-mail de "acesso liberado" para o
+comprador — um só, mesmo com o webhook reprocessado, e nenhum em reembolso.
+Ele sai de `sell@autonomia.site`, com a moldura da página pública, e vai para o
+e-mail da **conta** (o que a pessoa usa para entrar), não para o digitado no
+checkout quando os dois diferem.
+
+### Como é feito, em uma frase por peça
+
+- `app_private.email_outbox` é escrita **dentro** de `apply_checkout_fulfillment`,
+  logo após o `buyer_entitlement`: grant e intenção de enviar são a mesma
+  transação. Um SMTP fora do ar não bloqueia o acesso; a linha espera.
+- O worker (`email_worker.py`) vive no processo da API, como o de fulfillment:
+  claim com lease de 300 s e fence, um item por vez, `smtplib` em thread,
+  `complete`/`fail` por função SQL que exige o lease vivo, auditoria em
+  `audit_event` sem corpo.
+- Sem `SMTP_*_TRANSACIONAL` o worker **não inicia** e registra
+  `email_worker_disabled` com o motivo; nunca cai no remetente comercial.
+- Falha de canal (credencial, host, STARTTLS/AUTH ausentes) pausa o worker e
+  não consome tentativa do item; só falha do item vira `dead_letter`.
+- A moldura Python é uma porta da TS, com goldens comparados byte a byte nos
+  dois lados.
+
+### Como foi aplicado
+
+```bash
+# 1. backups
+D=/tmp/sell-release-70e6cb6-20260902-114346
+for s in api web asset-worker; do docker service inspect sell-autonomia_$s > $D/spec_${s}_antes.json; done
+docker exec <postgres-native-90> sh -c 'pg_dump -U "$POSTGRES_USER" -d appsell_native_90 -Fc' > $D/appsell_native_90_antes.dump
+
+# 2. fonte e imagem
+git archive --format=tar origin/main | ssh <host> 'tar -x -C /home/claudete/appsell-src-70e6cb6'
+docker build -f deploy/easypanel-native/Dockerfile.api --build-arg GIT_SHA=70e6cb6 -t easypanel/sell-autonomia/api:70e6cb6 .
+
+# 3. migration, com a API antiga no ar (compatível: só deixa linhas pendentes)
+docker run --rm --network easypanel -e APPSELL_MIGRATOR_DATABASE_URL=<montada no host a partir do env do bootstrap> \
+  -v /home/claudete/appsell-src-70e6cb6/apps/api:/mig -w /mig easypanel/sell-autonomia/api:581a592 alembic upgrade head
+
+# 4. api: imagem, graça e as cinco variáveis numa atualização só
+docker service update --image easypanel/sell-autonomia/api:70e6cb6 --stop-grace-period 330s \
+  --env-add SMTP_HOST_TRANSACIONAL=... --env-add SMTP_PORT_TRANSACIONAL=... --env-add SMTP_SECURE_TRANSACIONAL=... \
+  --env-add SMTP_USER_TRANSACIONAL=sell@autonomia.site --env-add SMTP_PASS_TRANSACIONAL=... \
+  --update-order stop-first sell-autonomia_api
+```
+
+Os valores do SMTP saíram do arquivo local para variáveis de shell e foram
+entregues pelo stdin do ssh; nunca passaram por argumento nem por arquivo no
+host.
+
+### O período de graça é parte do contrato
+
+`--stop-grace-period 330s` (era `10s`). O worker espera o lease inteiro no
+shutdown para um envio em curso terminar e ser registrado; com 10 s o Swarm
+mataria o processo entre o `send` aceito e o `complete`, e o comprador
+receberia duas vezes na tentativa seguinte. Conferir em todo release da api:
+
+```sh
+docker service inspect sell-autonomia_api --format '{{.Spec.TaskTemplate.ContainerSpec.StopGracePeriod}}'
+```
+
+### Validação executada em produção
+
+| O quê | Resultado |
+|---|---|
+| migration com a API antiga no ar | head `0049`, `schema_ready()=true`, 4 funções novas, função de fulfillment reescrita (âncora 1×); API antiga seguiu `ready=200` |
+| serviço | convergiu; `api:70e6cb6`, graça `5m30s`; task anterior `581a592` em Shutdown |
+| variáveis | nome a nome contra a spec salva: **0 perdidas, 5 novas** (34 → 39) |
+| `ready` da API Python (de dentro do container) | `200` |
+| worker | `email_worker_identity` = `active` (`api-email-7`); nenhum `email_worker_disabled`, nenhum erro no log |
+| fulfillment | continua `active` |
+| público | `/` 200, `/api/health/ready` 200 |
+
+### O que não foi validado
+
+**Um e-mail real de compra.** Exige uma compra paga de verdade; a primeira que
+acontecer gera a linha em `app_private.email_outbox` e o envio. O remetente em
+si — SPF, DKIM, DMARC `pass` no cabeçalho recebido — foi validado na #355. Para
+acompanhar: `select kind,status,attempt_count,error_code,message_id,sent_at
+from app_private.email_outbox order by created_at desc limit 20`.
+
+### Rollback deste release
+
+```bash
+docker service update --image easypanel/sell-autonomia/api:581a592 --stop-grace-period 10s \
+  --env-rm SMTP_HOST_TRANSACIONAL --env-rm SMTP_PORT_TRANSACIONAL --env-rm SMTP_SECURE_TRANSACIONAL \
+  --env-rm SMTP_USER_TRANSACIONAL --env-rm SMTP_PASS_TRANSACIONAL \
+  --update-order stop-first sell-autonomia_api
+```
+
+~40 s. A migration `0049` é compatível com a API antiga e **fica**: descê-la
+apaga a caixa de saída, e só se justifica com a fila vazia. Dump íntegro em
+`$D/appsell_native_90_antes.dump`.
 
 ## Release `a139d86` — o celular para de baixar o que não desenha (2026-09-01)
 
