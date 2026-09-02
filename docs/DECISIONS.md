@@ -172,6 +172,27 @@ ponto da rolagem pelo botão fixo. Preço, FAQ e contato têm link no rodapé.
 Reabrir só com evidência de comportamento real, não por suposição. Registro em
 [#347](https://github.com/autonom-ia/appsell/issues/347).
 
+## Decisão 017 — e-mail transacional sai de `sell@autonomia.site`, e só ele
+
+Decidida em 01/09 (#355, fecha a `D-029`). Todo e-mail transacional —
+confirmação de compra, convite de equipe, segurança de conta — sai do
+remetente transacional, com variáveis próprias `SMTP_*_TRANSACIONAL`. O
+comercial `sell.comercial@autonomia.site` só recebe o formulário da página
+pública. Um não é fallback do outro — requisito para o canal da #356: sem
+variáveis, ele não envia.
+
+Transacional é o e-mail sem o qual a pessoa perde acesso, dinheiro, segurança
+ou um direito; não tem descadastro. O resto é opcional, exige consentimento
+registrado e descadastro em um clique — e **nenhum opcional é enviado nesta
+rodada**, porque não existe preferência no produto para registrar o
+consentimento. Rodapé, base legal e o que nunca vai no corpo estão em
+[EMAIL_POLICY.md](architecture/EMAIL_POLICY.md).
+
+Duas mudanças de DNS ficam fora e exigem OK na hora: acrescentar `rua=` ao
+DMARC (hoje `p=none` **sem** destinatário de relatório: os provedores avaliam,
+mas o domínio não recebe o relatório agregado) e, semanas depois, subir para
+`p=quarantine`.
+
 ## Pendências que bloqueiam ampliação
 
 - staging separado e DNS próprio;
