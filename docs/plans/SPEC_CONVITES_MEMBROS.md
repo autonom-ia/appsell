@@ -404,7 +404,8 @@ Request (o `token_sha256` é calculado pelo BFF a partir do token gerado uma vez
 Validações (Pydantic, molde `SellerOnboardingBody`, `routes.py:38`): `idempotency_key`
 UUID canônico; `target_role` no enum permitido para o scope seller
 (`seller_admin|seller_editor|seller_support`); `invited_email_hint` opcional
-normalizado; `ttl_seconds` inteiro em faixa `[3600, 1209600]` (1h–14d);
+normalizado; `ttl_seconds` inteiro em faixa `[3600, 604800]` (1h–7d, teto
+  fixado pela `EMAIL_POLICY.md` §4 em 02/09; era 14d);
 `token_sha256` casando `^[0-9a-f]{64}$`.
 
 Response `201`:
@@ -557,7 +558,7 @@ em banco vazio + fluxo). Zero soft pass; timeout = FAIL.
   diferente (`token_sha256` divergente) → `409`.
 - AC-C5: segundo convite `pending` para mesmo (tenant, papel, e-mail) com **nova**
   `idempotency_key` → `409` dedup.
-- AC-C6: `ttl_seconds` fora de `[3600,1209600]` → `422`; `token_sha256` fora do
+- AC-C6: `ttl_seconds` fora de `[3600,604800]` → `422`; `token_sha256` fora do
   formato hex-64 → `422`.
 - AC-C7: emissor de outro tenant (envelope.seller = outro) → `403`/RLS nega.
 - AC-C8: **retry após "commit + resposta perdida" em nova instância** — a API commita
