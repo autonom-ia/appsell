@@ -81,7 +81,7 @@ export function origemPublica(): string {
 // linha ou controle aqui e como se imita o rodape na versao em texto puro.
 // Alem de C0 e DEL: C1 (inclui NEL U+0085), os separadores Unicode de linha e
 // paragrafo, e os controles bidirecionais, que invertem o texto exibido.
-const CONTROLE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
+const CONTROLE = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
 
 function umaLinha(campo: string, valor: string): string {
   if (CONTROLE.test(valor)) {
@@ -108,18 +108,38 @@ function escapar(valor: string): string {
 // (§4) permite link de uso unico com validade curta — convite, redefinicao —
 // e proibe token de sessao, senha e token permanente. O nome nao prova o
 // conteudo, mas barra o engano mais comum: colar a URL logada no template.
-// Substring, nao lista exata: "session_token", "x-auth", "refreshToken" e
-// "senha_nova" tem de cair. "sid", "pass" e "pwd" sao curtos demais para
-// substring (cairiam em "inside", "passo") e ficam exatos.
-const PARAMETRO_PROIBIDO =
-  /^(?:sid|pass|pwd)$|token|sess|senha|password|passwd|secret|cookie|auth|api[_-]?key|bearer/i;
+// E uma guarda contra o engano comum (colar a URL logada no template), nao a
+// garantia: quem garante e o template de cada evento, que sabe o que o link
+// carrega e por quanto tempo vale. O nome e quebrado em palavras (snake,
+// kebab, camelCase) e cada palavra e comparada inteira, para "author" e
+// "assessment_id" passarem e "x-auth", "refreshToken" e "senha_nova" cairem.
+// As palavras longas tambem sao procuradas coladas ("sessiontoken").
+const PALAVRA_PROIBIDA = new Set([
+  "token", "tokens", "jwt", "sess", "session", "sessao", "sid",
+  "senha", "password", "passwd", "pwd", "pass",
+  "secret", "secrets", "cookie", "cookies", "auth", "authorization", "bearer",
+  "key", "apikey", "accesskey", "credential", "credentials"
+]);
+const PALAVRA_LONGA_PROIBIDA = /token|session|password|secret|credential|cookie|bearer/i;
+
+function palavras(nome: string): string[] {
+  return nome
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .split(/[^A-Za-z0-9]+/)
+    .filter((p) => p !== "")
+    .map((p) => p.toLowerCase());
+}
+
+function nomeProibido(nome: string): boolean {
+  return palavras(nome).some((p) => PALAVRA_PROIBIDA.has(p)) || PALAVRA_LONGA_PROIBIDA.test(nome);
+}
 
 function parametrosProibidos(analisada: URL): string[] {
   const chaves = [...analisada.searchParams.keys()];
   if (analisada.hash.length > 1) {
     chaves.push(...new URLSearchParams(analisada.hash.slice(1)).keys());
   }
-  return chaves.filter((chave) => PARAMETRO_PROIBIDO.test(chave));
+  return chaves.filter(nomeProibido);
 }
 
 // O botao so leva para a nossa origem. "https://sell.autonomia.site@evil.com/"

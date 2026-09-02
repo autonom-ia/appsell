@@ -33,9 +33,10 @@ const HOSTIL_ESCAPADO = "&amp;&lt;&gt;&quot;&#39; fim";
 // rastreador ou engano.
 function recursosRemotos(html: string): string[] {
   const achados = new Set<string>();
-  const atributo = /\b(?:src|href|action|background|poster|data)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+))|url\(\s*["']?([^)"']+)["']?\s*\)/gi;
+  const atributo =
+    /\b(?:src|href|action|background|poster|data|srcset|imagesrcset|ping)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+))|url\(\s*["']?([^)"']+)["']?\s*\)|@import\s+(?:url\()?["']?([^"')\s;]+)/gi;
   for (const m of html.matchAll(atributo)) {
-    achados.add((m[1] ?? m[2] ?? m[3] ?? m[4]).replace(/&amp;/g, "&"));
+    achados.add((m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[5]).replace(/&amp;/g, "&"));
   }
   return [...achados];
 }
@@ -116,6 +117,9 @@ describe("renderizarEmailTransacional", () => {
       { titulo: "paragrafo\u2029unicode" },
       { motivo: "bidi\u202einvertido" },
       { motivo: "isolado\u2066bidi\u2069" },
+      { motivo: "marca\u200eesquerda" },
+      { motivo: "marca\u200fdireita" },
+      { motivo: "arabe\u061cmark" },
       { paragrafos: ["ok", "quebra\ndentro"] },
       { acao: { rotulo: "abrir\n", url: `${ORIGEM}/x` } }
     ];
@@ -157,13 +161,30 @@ describe("renderizarEmailTransacional", () => {
       `${ORIGEM}/login?password=abc`,
       `${ORIGEM}/x?Access_Token=abc`,
       `${ORIGEM}/invite#access_token=abc`,
-      `${ORIGEM}/invite#sid=abc&ok=1`
+      `${ORIGEM}/invite#sid=abc&ok=1`,
+      `${ORIGEM}/x?jwt=abc`,
+      `${ORIGEM}/x?credential=abc`,
+      `${ORIGEM}/x?accessKey=abc`,
+      `${ORIGEM}/x?refreshToken=abc`,
+      `${ORIGEM}/x?x-auth=abc`,
+      `${ORIGEM}/x?senha_nova=abc`,
+      `${ORIGEM}/x?sessiontoken=abc`
     ];
     for (const url of recusadas) {
       expect(() => renderizarEmailTransacional({ ...base, acao: { rotulo: "Abrir", url } })).toThrow(/proibido/);
     }
-    // Link de uso unico com nome proprio passa: e o desenho do convite.
-    for (const url of [`${ORIGEM}/invite#convite=abc`, `${ORIGEM}/redefinir?codigo=abc`, `${ORIGEM}/c/loja?utm=x`]) {
+    // Nome benigno que contem pedaco de palavra proibida passa; e link de uso
+    // unico com nome proprio passa — inclusive o "#t=" do convite na SPEC.
+    const permitidas = [
+      `${ORIGEM}/invite#t=abc`,
+      `${ORIGEM}/invite#convite=abc`,
+      `${ORIGEM}/redefinir?codigo=abc`,
+      `${ORIGEM}/c/loja?utm=x`,
+      `${ORIGEM}/avaliacao?assessment_id=1`,
+      `${ORIGEM}/blog?author=ana`,
+      `${ORIGEM}/x?passo=2`
+    ];
+    for (const url of permitidas) {
       expect(() => renderizarEmailTransacional({ ...base, acao: { rotulo: "Abrir", url } })).not.toThrow();
     }
   });
