@@ -111,8 +111,11 @@ mitigação mais barata que existe.
 ## 4. O que nunca vai no corpo
 
 - senha, código de acesso permanente ou token de sessão;
-- link de uso único com validade acima de 24 h para convite e acima de 1 h
-  para segurança de conta;
+- link de uso único com validade acima de **7 dias** para convite e acima de
+  1 h para segurança de conta. Sete e não 24 h porque convite de equipe é
+  aberto quando o convidado vê, não na hora, e 24 h gera reenvio; e não 14
+  dias porque é um link que concede papel na loja (decisão do Rodrigo em
+  02/09);
 - dados de terceiros: o comprador não vê dados de outro comprador, o convidado
   não vê a lista da equipe;
 - dados de pagamento além dos quatro últimos dígitos e do valor;
