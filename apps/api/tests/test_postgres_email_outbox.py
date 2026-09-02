@@ -731,9 +731,10 @@ def test_channel_failures_never_dead_letter_and_give_the_attempt_back(
     if erro_de_canal == "kind_unknown":
         # O recuo de dez minutos é do banco, não do worker: o item não volta
         # para a fila logo em seguida, e é isso que impede o laço no rollback.
-        assert _claim_tudo(worker) == [] or all(
-            UUID(str(i["id"])) != outbox_id for i in _claim_tudo(worker)
-        )
+        # Uma chamada só: _claim_tudo reivindica, e chamá-lo duas vezes deixaria
+        # a segunda cega para o que a primeira pegou.
+        na_fila = _claim_tudo(worker)
+        assert all(UUID(str(i["id"])) != outbox_id for i in na_fila)
         with psycopg.connect(ADMIN_URL) as connection:
             espera = connection.execute(
                 "select available_at-clock_timestamp()>interval '9 minutes' "

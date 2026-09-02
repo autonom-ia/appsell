@@ -953,3 +953,31 @@ def test_expired_entitlement_still_active_by_status_gets_the_email_again() -> No
             (seller_id, f"access_link:{outro_link}:{buyer_id(3)}"),
         ).fetchone()
     assert linhas == (1,)
+
+
+def test_entitlement_with_a_future_start_also_gets_the_email() -> None:
+    # 'active' que ainda não começou não dá acesso — as políticas exigem
+    # starts_at no passado. O link antecipa o início: é liberação de acesso.
+    assert ADMIN_URL
+    seller_id, product_id = published_free_product()
+    primeiro = uuid4().hex + uuid4().hex
+    create_link(seller_id, product_id, token=primeiro, max_uses=5)
+    redeem(primeiro, buyer_id(4))
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "update buyer_entitlement set starts_at=clock_timestamp()+interval '7 days' "
+            "where seller_organization_id=%s and buyer_identity_user_id=%s "
+            "and catalog_product_id=%s",
+            (seller_id, buyer_id(4), product_id),
+        )
+        connection.commit()
+    segundo = uuid4().hex + uuid4().hex
+    outro_link = create_link(seller_id, product_id, token=segundo, max_uses=5)
+    redeem(segundo, buyer_id(4))
+    with psycopg.connect(ADMIN_URL) as connection:
+        linhas = connection.execute(
+            "select count(*) from app_private.email_outbox where seller_organization_id=%s "
+            "and dedupe_key=%s",
+            (seller_id, f"access_link:{outro_link}:{buyer_id(4)}"),
+        ).fetchone()
+    assert linhas == (1,)

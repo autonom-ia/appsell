@@ -131,18 +131,22 @@ _DECLARE_COM_ESTADO = """  consumed boolean;
 
 _ANCORA_ANTES_DO_GRANT = """  select * into granted
   from app_private.grant_public_product_access("""
-_LEITURA_ANTES_DO_GRANT = """  -- A MESMA trava que grant_public_product_access toma para este par
-  -- (pessoa, produto). Sem ela, dois resgates simultâneos leriam ambos
-  -- "não tinha acesso" e mandariam dois e-mails. Ela é de transação e
-  -- reentrante, então o grant a toma de novo sem custo.
+_LEITURA_ANTES_DO_GRANT = """  -- As MESMAS travas de grant_public_product_access, NA MESMA ORDEM
+  -- (idempotência e depois pessoa/produto). Tomá-las fora de ordem abriria
+  -- deadlock com um enroll concorrente da mesma pessoa e chave. São de
+  -- transação e reentrantes, então o grant as retoma sem custo.
+  perform pg_advisory_xact_lock(hashtextextended(
+    'appsell.free-access:' || locked_link.seller_organization_id::text || '/' ||
+    p_idempotency_key::text, 0));
   perform pg_advisory_xact_lock(hashtextextended(
     'appsell.free-access-subject:' || p_identity_user_id::text || '/' ||
     locked_link.catalog_product_id::text, 0));
-  -- "Tinha acesso" é status ativo E dentro da validade: uma entitlement
-  -- 'active' com expires_at vencido não dá acesso nenhum, e reativá-la é
-  -- liberação de acesso como qualquer outra.
+  -- "Tinha acesso" é o mesmo que as políticas entendem por acesso: ativo,
+  -- já começado e dentro da validade. Qualquer outro estado que o link torne
+  -- ativo é liberação de acesso, e precisa avisar.
   select case
     when entitlement.status='active'
+     and entitlement.starts_at<=clock_timestamp()
      and (entitlement.expires_at is null or entitlement.expires_at>clock_timestamp())
     then 'active' else 'sem_acesso' end
   into previous_access
