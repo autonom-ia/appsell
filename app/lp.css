@@ -1,6 +1,7 @@
 /* Landing page publica do Autonom.ia Sell.
-   O palco 3D, o scrim da foto e os pontos do trilho tem numeros medidos:
-   ver docs/lp-publica.md antes de mexer em perspectiva, gradiente ou offset. */
+   O palco 3D, o scrim da foto e os pontos do trilho tem numeros medidos: ver
+   as decisoes 013 a 018 em docs/DECISIONS.md antes de mexer em perspectiva,
+   gradiente, offset ou no ritmo do hero. */
 
 :root:has(.lp) { overflow-x: clip; scroll-behavior: auto; }
 :root {
@@ -101,7 +102,10 @@
 #video-foto { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: 100% center; opacity: 0; transition: opacity .4s ease; pointer-events: none; }
 #video-foto.pronto { opacity: 1; }
 .foto::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, rgba(0,27,67,.97) 0%, rgba(0,27,67,.93) 46%, rgba(0,27,67,.58) 57%, rgba(0,27,67,.14) 74%, rgba(0,27,67,.36) 100%); }
-.palco-grid { position: relative; z-index: var(--z-conteudo); height: 100%; display: grid; align-content: end; padding-top: calc(var(--topo-h) + 24px); padding-bottom: clamp(48px, 10vh, 150px); }
+/* O bloco centra na altura do aparelho (que ja fica em top: 50%). Ancorado no
+   rodape, toda altura extra da tela virava vao entre o header e o eyebrow:
+   418px a 2000x1090. "safe" segura o topo sob o header quando nao ha folga. */
+.palco-grid { position: relative; z-index: var(--z-conteudo); height: 100%; display: grid; align-content: center; align-content: safe center; padding-top: calc(var(--topo-h) + 24px); padding-bottom: clamp(48px, 10vh, 150px); }
 @media (min-width: 1000px) { .palco-grid { grid-template-columns: minmax(0, 700px) 1fr; align-items: center; } }
 .atos { display: grid; grid-column: 1; }
 .ato { grid-area: 1 / 1; }
@@ -288,17 +292,9 @@ html:not(.js-anim) #peca-painel { display: none; }
 /* Ajustes de aparelho, medidos um a um. Ficam no fim para nao competir com as
    regras de composicao acima. */
 
-/* Em tela alta e estreita (iPad em pe, celular grande) o rodape fixo do bloco
-   deixava de 250 a 500px de fundo vazio acima do texto. */
-@media (max-width: 999px) and (min-height: 900px) {
-  .palco-grid { align-content: center; }
-}
-
-/* Os tres atos dividem a mesma celula, entao a caixa tem a altura do maior. Os
-   dois curtos colavam no topo e deixavam o resto morto embaixo. */
-@media (max-width: 999px) {
-  .ato { align-self: center; }
-}
+/* Os tres atos dividem a mesma celula e ancoram no topo dela de proposito: o
+   eyebrow fica na mesma linha em qualquer ato. Centrar cada ato na celula
+   fazia o eyebrow pular 147px entre um ato e outro no celular. */
 
 /* A sombra do aparelho e um borrao decorativo e passava 9px da borda em
    tablet e celular deitado. */
