@@ -705,8 +705,11 @@ def test_a_exportacao_acima_do_teto_e_recusada_antes_de_montar_e_sem_audit(mundo
                 [(ana.loja, dan, acesso, ana.asset, uuid4(), Jsonb(traco)) for _ in range(720)],
             )
         connection.commit()
-    with pytest.raises(ProgramLimitExceeded):
+    with pytest.raises(ProgramLimitExceeded) as erro:
         exportar(dan, dan)
+    # Recusado ANTES de agregar — não pela rede final, que só existe para
+    # o caso que a estimativa não previu.
+    assert "(preflight)" in str(erro.value)
     assert audits(dan, "account.data.exported") == []
 
 
@@ -745,8 +748,11 @@ def test_muitas_anotacoes_pequenas_tambem_batem_no_teto_antes_de_agregar(mundo: 
             (ana.loja, eva, acesso, ana.asset),
         )
         connection.commit()
-    with pytest.raises(ProgramLimitExceeded):
+    with pytest.raises(ProgramLimitExceeded) as erro:
         exportar(eva, eva)
+    # Recusado ANTES de agregar — não pela rede final, que só existe para
+    # o caso que a estimativa não previu.
+    assert "(preflight)" in str(erro.value)
     assert audits(eva, "account.data.exported") == []
 
 
@@ -820,8 +826,11 @@ def test_titulos_com_aspas_contam_escapados_na_estimativa(mundo: Mundo) -> None:
             (ana.loja, fabio, acesso, asset),
         )
         connection.commit()
-    with pytest.raises(ProgramLimitExceeded):
+    with pytest.raises(ProgramLimitExceeded) as erro:
         exportar(fabio, fabio)
+    # Recusado ANTES de agregar — não pela rede final, que só existe para
+    # o caso que a estimativa não previu.
+    assert "(preflight)" in str(erro.value)
     assert audits(fabio, "account.data.exported") == []
 
 

@@ -139,35 +139,51 @@ begin
     raise exception 'account export subject not found' using errcode='42501';
   end if;
 
-  -- Pré-verificação ANTES de agregar: uma estimativa POR LINHA de cada
-  -- seção, com o texto variável medido JÁ SERIALIZADO (to_jsonb conta as
-  -- aspas e o escape de aspas e barras) e um teto fixo por linha para as
-  -- chaves e os carimbos de data (que são constantes). A estimativa é
-  -- sempre >= ao documento real, então este é o corte que vale; a medição
-  -- final abaixo fica de rede. Somar e contar é varredura barata; montar o
-  -- jsonb inteiro para depois medir não é.
-  if 400+octet_length(to_jsonb(subject.email_normalized)::text)
-     +octet_length(to_jsonb(subject.display_name)::text)
-     +(select coalesce(sum(160+octet_length(to_jsonb(seller.display_name)::text)+octet_length(to_jsonb(seller.slug)::text)),0)
+  -- Pré-verificação ANTES de agregar: cada linha é medida com o MESMO
+  -- jsonb_build_object que a exportação usa (por isso não há número mágico:
+  -- aspas, escape, datas e `null` custam o que custam), e só a soma fica em
+  -- memória. É >= ao documento real a menos das vírgulas, cobertas pelos 4
+  -- bytes por linha e pelos 512 do envelope. A medição final abaixo é rede.
+  if 512+octet_length(jsonb_build_object(
+       'email',subject.email_normalized,'email_verified',subject.email_verified,
+       'display_name',subject.display_name,'created_at',subject.created_at)::text)
+     +(select coalesce(sum(4+octet_length(jsonb_build_object(
+        'store',seller.display_name,'store_slug',seller.slug,
+        'role',membership.role,'status',membership.status,
+        'since',membership.created_at)::text)),0)
         from public.seller_membership membership
         join public.seller_organization seller on seller.id=membership.seller_organization_id
         where membership.identity_user_id=p_identity_user_id)
-     +(select coalesce(sum(320+octet_length(to_jsonb(product.title)::text)+octet_length(to_jsonb(product.slug)::text)
-                          +octet_length(to_jsonb(seller.display_name)::text)+octet_length(to_jsonb(seller.slug)::text)),0)
+     +(select coalesce(sum(4+octet_length(jsonb_build_object(
+        'product',product.title,'product_slug',product.slug,
+        'store',seller.display_name,'store_slug',seller.slug,
+        'status',entitlement.status,'source',entitlement.source,
+        'starts_at',entitlement.starts_at,'expires_at',entitlement.expires_at,
+        'progress_percent',entitlement.progress_percent,
+        'created_at',entitlement.created_at)::text)),0)
         from public.buyer_entitlement entitlement
         join public.catalog_product product
           on product.seller_organization_id=entitlement.seller_organization_id
          and product.id=entitlement.catalog_product_id
         join public.seller_organization seller on seller.id=entitlement.seller_organization_id
         where entitlement.buyer_identity_user_id=p_identity_user_id)
-     +(select coalesce(sum(160+octet_length(to_jsonb(product.title)::text)+octet_length(to_jsonb(seller.display_name)::text)),0)
+     +(select coalesce(sum(4+octet_length(jsonb_build_object(
+        'product',product.title,'store',seller.display_name,
+        'status',grant_row.status,'occurred_at',grant_row.occurred_at)::text)),0)
         from app_private.entitlement_grant grant_row
         join public.catalog_product product
           on product.seller_organization_id=grant_row.seller_organization_id
          and product.id=grant_row.catalog_product_id
         join public.seller_organization seller on seller.id=grant_row.seller_organization_id
         where grant_row.buyer_identity_user_id=p_identity_user_id)
-     +(select coalesce(sum(320+octet_length(to_jsonb(product.title)::text)+octet_length(to_jsonb(course.title)::text)),0)
+     +(select coalesce(sum(4+octet_length(jsonb_build_object(
+        'product',product.title,'course',course.title,
+        'progress_percent',state.progress_percent,
+        'completed_lessons',state.completed_lessons,
+        'total_lessons',state.total_lessons,
+        'enrolled_at',enrollment.created_at,
+        'updated_at',state.updated_at,
+        'lessons','[]'::jsonb)::text)),0)
         from public.learning_enrollment enrollment
         join public.catalog_product product
           on product.seller_organization_id=enrollment.seller_organization_id
@@ -175,14 +191,21 @@ begin
         join public.course
           on course.seller_organization_id=enrollment.seller_organization_id
          and course.id=enrollment.course_id
+        left join public.course_learning_state state
+          on state.seller_organization_id=enrollment.seller_organization_id
+         and state.enrollment_id=enrollment.id
         where enrollment.buyer_identity_user_id=p_identity_user_id)
-     +(select coalesce(sum(160+octet_length(to_jsonb(lesson.title)::text)),0)
+     +(select coalesce(sum(4+octet_length(jsonb_build_object(
+        'lesson',lesson.title,'progress_percent',progress.progress_percent,
+        'started_at',progress.started_at,'completed_at',progress.completed_at)::text)),0)
         from public.lesson_progress progress
         join public.lesson
           on lesson.seller_organization_id=progress.seller_organization_id
          and lesson.id=progress.lesson_id
         where progress.buyer_identity_user_id=p_identity_user_id)
-     +(select coalesce(sum(120+octet_length(to_jsonb(product.title)::text)),0)
+     +(select coalesce(sum(4+octet_length(jsonb_build_object(
+        'product',product.title,'page_number',bookmark.page_number,
+        'created_at',bookmark.created_at)::text)),0)
         from app_private.learning_pdf_bookmark bookmark
         join public.buyer_entitlement entitlement
           on entitlement.seller_organization_id=bookmark.seller_organization_id
@@ -191,7 +214,11 @@ begin
           on product.seller_organization_id=entitlement.seller_organization_id
          and product.id=entitlement.catalog_product_id
         where bookmark.buyer_identity_user_id=p_identity_user_id)
-     +(select coalesce(sum(200+octet_length(annotation.points::text)+octet_length(to_jsonb(product.title)::text)),0)
+     +(select coalesce(sum(4+octet_length(jsonb_build_object(
+        'product',product.title,'page_number',annotation.page_number,
+        'tool',annotation.tool,'color',annotation.color,'width',annotation.width,
+        'points',annotation.points,
+        'created_at',annotation.created_at,'updated_at',annotation.updated_at)::text)),0)
         from app_private.learning_pdf_annotation annotation
         join public.buyer_entitlement entitlement
           on entitlement.seller_organization_id=annotation.seller_organization_id
@@ -200,14 +227,19 @@ begin
           on product.seller_organization_id=entitlement.seller_organization_id
          and product.id=entitlement.catalog_product_id
         where annotation.buyer_identity_user_id=p_identity_user_id)
-     +(select coalesce(sum(160+octet_length(to_jsonb(outbox.kind)::text)),0)
+     +(select coalesce(sum(4+octet_length(jsonb_build_object(
+        'kind',outbox.kind,'status',outbox.status,
+        'created_at',outbox.created_at,'sent_at',outbox.sent_at)::text)),0)
         from app_private.email_outbox outbox
         where outbox.recipient_identity_user_id=p_identity_user_id)
-     +(select coalesce(sum(120+octet_length(to_jsonb(event.action)::text)+octet_length(to_jsonb(event.target_type)::text)),0)
+     +(select coalesce(sum(4+octet_length(jsonb_build_object(
+        'action',event.action,'target_type',event.target_type,
+        'result',event.result,'created_at',event.created_at)::text)),0)
         from public.audit_event event
         where event.actor_identity_user_id=p_identity_user_id)
      >EXPORT_MAX_BYTES then
-    raise exception 'account export exceeds the size limit' using errcode='54000';
+    raise exception 'account export exceeds the size limit (preflight)'
+      using errcode='54000';
   end if;
 
   exported:=jsonb_build_object(
@@ -337,7 +369,7 @@ begin
   );
 
   if octet_length(exported::text)>EXPORT_MAX_BYTES then
-    raise exception 'account export exceeds the size limit' using errcode='54000';
+    raise exception 'account export exceeds the size limit (final)' using errcode='54000';
   end if;
 
   insert into public.audit_event(
