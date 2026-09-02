@@ -558,7 +558,7 @@ em banco vazio + fluxo). Zero soft pass; timeout = FAIL.
   diferente (`token_sha256` divergente) → `409`.
 - AC-C5: segundo convite `pending` para mesmo (tenant, papel, e-mail) com **nova**
   `idempotency_key` → `409` dedup.
-- AC-C6: `ttl_seconds` fora de `[3600,1209600]` → `422`; `token_sha256` fora do
+- AC-C6: `ttl_seconds` fora de `[3600,604800]` → `422`; `token_sha256` fora do
   formato hex-64 → `422`.
 - AC-C7: emissor de outro tenant (envelope.seller = outro) → `403`/RLS nega.
 - AC-C8: **retry após "commit + resposta perdida" em nova instância** — a API commita
