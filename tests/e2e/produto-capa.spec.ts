@@ -30,6 +30,15 @@ const BANNER = `data:image/svg+xml;base64,${Buffer.from(
 const PAGINA_DE_VENDAS = `<div class="storefront-page product-checkout-page"><main class="product-checkout-main lp-main">
   <section class="product-checkout-summary lp-hero">
     <div class="lp-banner"><img class="lp-banner-image" src="${BANNER}" alt="" width="1600" height="500"></div>
+    <p class="eyebrow">Hub2you</p>
+    <h1>IA na prática</h1>
+    <p class="product-checkout-price">R$ 47,00</p>
+  </section>
+</main></div>`;
+
+/** O mesmo produto antes de ter banner: aí a capa abre a página. */
+const PAGINA_SEM_BANNER = `<div class="storefront-page product-checkout-page"><main class="product-checkout-main lp-main">
+  <section class="product-checkout-summary lp-hero">
     <img class="lp-cover" src="${CAPA}" alt="" width="1600" height="900">
     <p class="eyebrow">Hub2you</p>
     <h1>IA na prática</h1>
@@ -76,11 +85,31 @@ test.describe("a capa do produto não é espremida", () => {
     expect(medida.daCaixa).toBeCloseTo(medida.daImagem, 1);
   });
 
-  test("na página de vendas", async ({ page }) => {
+  test("na página de vendas, quando ela abre a página", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
-    const medida = await proporcoes(page, PAGINA_DE_VENDAS, ".lp-cover");
+    const medida = await proporcoes(page, PAGINA_SEM_BANNER, ".lp-cover");
 
     expect(medida.daCaixa).toBeCloseTo(medida.daImagem, 1);
+  });
+});
+
+test.describe("o alto da página de vendas mostra uma imagem, nunca duas", () => {
+  test("com banner, a capa não aparece junto", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.setContent(`<!doctype html><html lang="pt-BR"><body>${PAGINA_DE_VENDAS}</body></html>`);
+    await page.addStyleTag({ content: CSS });
+
+    await expect(page.locator(".lp-banner")).toHaveCount(1);
+    await expect(page.locator(".lp-cover")).toHaveCount(0);
+  });
+
+  test("sem banner, a capa ocupa o lugar dele", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.setContent(`<!doctype html><html lang="pt-BR"><body>${PAGINA_SEM_BANNER}</body></html>`);
+    await page.addStyleTag({ content: CSS });
+
+    await expect(page.locator(".lp-banner")).toHaveCount(0);
+    await expect(page.locator(".lp-cover")).toHaveCount(1);
   });
 });
 
