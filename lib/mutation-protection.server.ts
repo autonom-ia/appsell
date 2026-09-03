@@ -36,6 +36,11 @@ export const ROTATE_ACCESS_LINK_CSRF_ACTION = "POST:/api/products/access-links/r
 export const REDEEM_ACCESS_LINK_CSRF_ACTION = "POST:/api/library/access-links/redeem";
 export const EXPORT_ACCOUNT_DATA_CSRF_ACTION = "POST:/api/me/account/export";
 export const REQUEST_ACCOUNT_DELETION_CSRF_ACTION = "POST:/api/me/account/deletion-request";
+export const UPDATE_SELLER_SETTINGS_CSRF_ACTION = "PATCH:/api/sellers/settings";
+export const CREATE_LOGO_UPLOAD_CSRF_ACTION = "POST:/api/sellers/settings/logo/upload-intents";
+export const CONFIRM_LOGO_UPLOAD_CSRF_ACTION = "POST:/api/sellers/settings/logo/uploads/confirm";
+export const CLEAR_SELLER_LOGO_CSRF_ACTION = "POST:/api/sellers/settings/logo/clear";
+export const UPDATE_PRODUCT_HEADLINE_CSRF_ACTION = "PATCH:/api/products/headline";
 
 export function csrfTokenForSession(sessionId: string, action: string) {
   return deriveCsrfToken(sessionId, action, csrfKey());

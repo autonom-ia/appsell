@@ -282,6 +282,8 @@ export function ProductDraftWorkspace() {
             <p className="tenant-locked-label">Sua loja</p>
             <strong>{lockedSpace.display_name}</strong>
             <span>@{lockedSpace.slug} · {sellerRoleLabel(lockedSpace.role)}</span>
+            {/* O link da loja não aparecia em lugar nenhum para o vendedor (#352). */}
+            <a className="tenant-locked-link" href={`/s/${encodeURIComponent(lockedSpace.slug)}`} target="_blank" rel="noreferrer">Ver minha loja</a>
           </div>
         ) : (
           <>

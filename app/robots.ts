@@ -8,7 +8,7 @@ import { SITE } from "@/lib/site";
 export default function robots(): MetadataRoute.Robots {
   // Area logada, fluxo de autenticacao e link de convite de uso unico. O
   // convite nem deveria sair da mao de quem recebeu.
-  const privado = ["/api/", "/auth/", "/checkout", "/dashboard", "/library", "/payouts", "/products", "/platform/", "/c/"];
+  const privado = ["/api/", "/auth/", "/checkout", "/dashboard", "/library", "/payouts", "/settings", "/products", "/platform/", "/c/"];
 
   // Os robos de IA se dividem em dois usos, e a escolha e diferente para cada
   // um. Os de busca leem a pagina na hora de responder alguem e podem mandar

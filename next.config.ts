@@ -21,6 +21,11 @@ const nextConfig: NextConfig = {
   experimental: {
     reactDebugChannel: false
   },
+  // Recebimentos viraram uma área de Configurações (#352). O endereço antigo
+  // está em links salvos e em e-mails já enviados; ele continua chegando.
+  async redirects() {
+    return [{ source: "/payouts", destination: "/settings/payouts", permanent: true }];
+  },
   async headers() {
     return [
       {

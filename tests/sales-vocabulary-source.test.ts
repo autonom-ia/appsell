@@ -22,7 +22,8 @@ import { findBannedTerms, sourceProse } from "../lib/sales-vocabulary";
 const SELLER_SURFACES = [
   "app/components",
   "app/(protected)/products",
-  "app/(protected)/payouts",
+  "app/(protected)/settings",
+  "app/s",
   "app/(protected)/dashboard"
 ];
 

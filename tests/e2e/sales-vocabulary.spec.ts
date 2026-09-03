@@ -115,7 +115,8 @@ test("nenhum termo de sistema aparece nas telas de venda", async ({ page }) => {
   const paths = [
     "/dashboard",
     "/products",
-    "/payouts",
+    "/settings/store",
+    "/settings/payouts",
     ...EDITOR_SECTIONS.map((section) => `/products/${SELLER_ID}/${PRODUCT_ID}?section=${section}`)
   ];
 

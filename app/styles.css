@@ -1412,3 +1412,54 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
   .draft-list-bare .draft-card-actions { grid-column: 2; grid-row: 1 / -1; margin: 0; }
 }
 .pdf-video-hint { margin: 4px 0 0; font-size: .82rem; opacity: .72; }
+
+/* A2 (#352): marca da loja nas páginas públicas */
+.storefront-brand strong { color: var(--ink); overflow-wrap: anywhere; }
+.storefront-identity-small { width: 42px; height: 42px; border-radius: 14px; font-size: .95rem; }
+.storefront-logo { object-fit: cover; background: var(--surface); }
+.storefront-branded .storefront-identity:not(.storefront-logo) { background: var(--store-accent); }
+.storefront-branded .primary-button.commercial-button { background: var(--store-accent); box-shadow: 0 12px 24px rgba(15,23,42,.18); }
+.storefront-branded .eyebrow { color: var(--store-accent); }
+.storefront-product-cover { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: cover; }
+
+/* A2 (#352): página de vendas do produto */
+.lp-main { gap: 20px; }
+.lp-hero { display: grid; gap: 12px; }
+.lp-cover { width: 100%; max-height: 420px; object-fit: cover; border-radius: var(--radius-lg); }
+.lp-title { margin: 0 !important; color: var(--soft); font-weight: 750; }
+.lp-cta { justify-self: start; }
+.lp-block { padding: 22px; display: grid; gap: 10px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); }
+.lp-block h2 { margin: 0; font-size: 1.35rem; }
+.lp-block p { margin: 0; color: var(--text); line-height: 1.6; }
+.lp-lessons { margin: 0; padding-left: 22px; display: grid; gap: 6px; color: var(--text); line-height: 1.5; }
+.lp-author { grid-template-columns: auto minmax(0,1fr); align-items: start; column-gap: 16px; }
+.lp-sticky { position: sticky; bottom: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px max(16px,env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left)); border-top: 1px solid var(--border); background: rgba(255,255,255,.94); backdrop-filter: blur(8px); }
+.lp-sticky strong { font-size: 1.1rem; color: var(--ink); }
+.lp-sticky .primary-button { min-height: 44px; }
+@media (min-width: 680px) { .lp-sticky { display: none; } }
+
+/* A2 (#352): configurações da loja */
+.settings-nav { display: flex; gap: 8px; margin: 0 0 18px; flex-wrap: wrap; }
+.settings-nav a { min-height: 40px; padding: 0 14px; display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text); font-weight: 750; }
+.settings-nav a.active { border-color: var(--sidebar); background: var(--sidebar); color: #fff; }
+.store-settings { display: grid; gap: 18px; }
+.store-settings-card { padding: 22px; display: grid; gap: 14px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); }
+.store-settings-card h2 { margin: 0; font-size: 1.25rem; }
+.store-slug { margin: 0; }
+.store-slug code { overflow-wrap: anywhere; }
+.store-accent-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.store-accent-row input[type="color"] { width: 48px; height: 40px; padding: 0; border: 1px solid var(--border); border-radius: 10px; background: none; }
+.store-accent-row input[name="accent_color"] { max-width: 140px; }
+.store-accent-swatch { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 10px; color: #fff; font-weight: 800; }
+.store-links { display: grid; gap: 14px; }
+.store-links strong { display: block; margin-bottom: 4px; }
+.store-links code { overflow-wrap: anywhere; }
+.store-logo-fallback { background: linear-gradient(135deg, var(--sidebar), var(--bright)); }
+.store-logo-preview { max-width: 200px; }
+
+/* A2 (#352): aviso de recebimentos no painel */
+.dashboard-notice { padding: 18px 20px; display: grid; gap: 8px; border: 1px solid rgba(230,79,24,.35); border-radius: var(--radius-lg); background: #fff4ec; }
+.dashboard-notice h2 { margin: 0; font-size: 1.1rem; }
+.dashboard-notice p { margin: 0; color: var(--text); line-height: 1.55; }
+.dashboard-notice a { justify-self: start; }
+.tenant-locked-link { margin-top: 6px; justify-self: start; color: var(--blue); font-weight: 750; }
