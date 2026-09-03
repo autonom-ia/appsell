@@ -23,8 +23,9 @@
 
 **Release de 2026-09-03, `web` e `api`: `89233e2`, com as migrations `0056`, `0057` e `0058` (PRs #395, #403, #406, #409, #410).**
 Fecho do épico #387. O produto ganha banner próprio (16:5) além da capa (16:9),
-e no alto da vitrine e da página de vendas aparece **uma** imagem, nunca duas
-(Decisão 021). Os cartões do painel viram 16:9, a Visão geral mostra a capa
+e no alto da página de vendas aparece **uma** imagem, nunca duas — banner do
+produto se houver, capa se não (Decisão 021). O alto da vitrine continua sendo
+do banner da **loja**. Os cartões do painel viram 16:9, a Visão geral mostra a capa
 já enviada, a tela de envio para de acusar erro quando o envio deu certo, e o
 cartão da biblioteca ganha a capa em faixa e um link que abre a loja do
 produtor em outra janela. Detalhe na seção
@@ -219,8 +220,9 @@ final conferido no host é `api` e `web` em `89233e2`, banco em
   larga do alto da página de vendas. O painel pede cada uma com a razão de
   existir escrita em português, e avisa quando a proporção enviada foge mais
   de 8% do esperado — avisa, não recusa.
-- **No alto, uma imagem só.** Havendo banner, é o banner; senão, a capa. Nunca
-  as duas empilhadas (Decisão 021).
+- **No alto da página de vendas, uma imagem só.** Havendo banner do produto, é
+  o banner; senão, a capa. Nunca as duas empilhadas (Decisão 021). O topo da
+  vitrine é outro lugar: quem manda lá é o banner da loja.
 - **Os cartões do painel são 16:9**, do mesmo formato da imagem que o vendedor
   enviou, e a Visão geral mostra a capa já enviada em vez de um espaço vazio.
 - **A tela de envio parou de mentir.** Quando a resposta da confirmação se
@@ -278,7 +280,9 @@ própria imagem da api, na rede `easypanel`.
 - `read_buyer_library` e `read_public_storefront` conferidas no host com dono
   `appsell_owner` — a armadilha que causou o 403 de Configurações não voltou;
 - localmente, antes do merge: `exercita_migrations.sh` em banco limpo
-  (sobe, desce, sobe), 1131 testes do web, `next build`, ruff e mypy.
+  (sobe, desce, sobe), a bateria do web (1131 testes na última PR da onda),
+  `next build`, ruff e mypy. Não há artefato dessas execuções no repositório:
+  com o App CI desligado, a evidência é a saída na máquina de quem rodou.
 
 ### O que não foi validado
 

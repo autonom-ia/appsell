@@ -13,9 +13,9 @@ funções de recebimento (`0053`), o refino da loja com banner (`a49e017`,
 (`89233e2`, `0056`–`0058`): banner do produto, cartões em 16:9, capa na Visão
 geral e capa em faixa na biblioteca.
 
-A regra que sobrou dessa onda está na Decisão 021: no alto da vitrine e da
-página de vendas aparece **uma** imagem, nunca duas — banner se houver, capa
-se não. E a ordem de deploy `web → api → migration` deixou de ser preferência:
+A regra que sobrou dessa onda está na Decisão 021: no alto da página de vendas
+aparece **uma** imagem, nunca duas — banner do produto se houver, capa se não.
+No alto da vitrine quem manda é o banner da loja, que é outra imagem. E a ordem de deploy `web → api → migration` deixou de ser preferência:
 o parser do web recusa chave desconhecida, então acender campo no banco antes
 do web derruba a tela de quem estiver com a versão anterior.
 
