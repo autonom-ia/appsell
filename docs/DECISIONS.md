@@ -301,13 +301,19 @@ FAQ, garantia e depoimentos ficam para a próxima; e, com a opção B escolhida
 pelo Rodrigo, a página do produto pago diz "as vendas abrem em breve" até a
 #382 fazer a venda de outra loja funcionar — não "Checkout indisponível".
 
-## Decisão 021 — no alto, banner ou capa, nunca as duas; e o produto tem dois formatos
+## Decisão 021 — no alto da página de vendas, banner ou capa, nunca as duas; e o produto tem dois formatos
 
 Decidida em 03/09 (#387, #398). Quando o produto ganhou banner, a página de
 vendas passou a mostrar banner **e** capa empilhados, e o Rodrigo cortou a
-dúvida em três palavras: "é uma ou outra". A regra vale para a vitrine e para
-a página de vendas: havendo banner, aparece o banner; não havendo, a capa
-ocupa o mesmo lugar. Nada de empilhar, nada de espaço vazio.
+dúvida em três palavras: "é uma ou outra". A regra é da **página de vendas**:
+havendo banner do produto, aparece o banner; não havendo, a capa ocupa o mesmo
+lugar, para nenhum produto abrir sem imagem. Nada de empilhar, nada de espaço
+vazio.
+
+Na **vitrine** o alto é outro lugar e outra imagem: quem manda ali é o banner
+da **loja** (Decisão 020 e o release `a49e017`). Sem banner da loja, o hero
+abre pela identidade, e a capa do produto aparece só nos cartões — não há, nem
+deve haver, fallback de banner do produto no topo da vitrine.
 
 Cinco escolhas, e por quê:
 
@@ -325,10 +331,15 @@ Cinco escolhas, e por quê:
 4. **A miniatura do painel é 16:9, igual à imagem enviada.** O recorte
    quadrado dos cartões era decisão de layout que contradizia o formato que o
    próprio painel pede.
-5. **`height: auto` é obrigatório em toda imagem com `width`/`height`.** Os
-   atributos entram como estilo do navegador e ignoram o `aspect-ratio`
-   declarado; sobrescrever só a largura mata a proporção. Foi o defeito real
-   por trás de mais de uma "imagem cortada" desta onda.
+5. **Quando a folha de estilo controla a largura de um `<img>` que carrega
+   `width`/`height` do arquivo, `height: auto` é obrigatório.** Os atributos
+   entram como estilo do navegador: sobrescrever só a largura deixa a altura
+   original de pé, e o `aspect-ratio` declarado é ignorado — uma capa de
+   1683x954 desenhava um quadro de 200x954. A regra não vale para quem define
+   as duas dimensões de propósito (`.lp-banner-image` e
+   `.storefront-product-cover` usam `height: 100%` dentro de um contêiner que
+   já tem a proporção). Foi o defeito real por trás de mais de uma "imagem
+   cortada" desta onda.
 
 E o que a onda **não** faz: não retoca imagem enviada (nada de corte
 automático nem geração de variantes), não guarda versão por dispositivo, e não
