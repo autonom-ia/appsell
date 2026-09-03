@@ -590,7 +590,7 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
                 // eslint-disable-next-line @next/next/no-img-element
                 : <img
                     src={pageHref(asset.view_href, pageNumber)}
-                    alt={`${asset.title} — página ${pageNumber} de ${pageCount}`}
+                    alt={`${asset.title}, página ${pageNumber} de ${pageCount}`}
                     draggable={false}
                     loading="eager"
                     referrerPolicy="no-referrer"
@@ -704,7 +704,7 @@ export function ProtectedPdfReader({ asset }: { asset: ProtectedPdfAsset }) {
                           {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img
                             src={cachedPages.get(page)}
-                            alt={`${asset.title} — página ${page} de ${manifest.pageCount}`}
+                            alt={`${asset.title}, página ${page} de ${manifest.pageCount}`}
                             draggable={false}
                             loading="eager"
                             referrerPolicy="no-referrer"

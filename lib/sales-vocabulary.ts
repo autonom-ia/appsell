@@ -26,7 +26,11 @@ export const BANNED_SALES_TERMS: readonly BannedTerm[] = [
   // Decidido: na tela do vendedor a etapa se chama Preço, e o que se liga e
   // desliga são as vendas. "Oferta" continua sendo o nome da coisa na API e no
   // banco — o contrato não muda, só para de vazar para quem vende.
-  { term: "oferta", instead: "preço, ou vendas" }
+  { term: "oferta", instead: "preço, ou vendas" },
+  // O travessão é a marca d'água do texto gerado por IA (revisão do Rodrigo,
+  // 03/09). Em frase de tela vira ponto, vírgula ou dois-pontos; como valor
+  // vazio, a meia-risca (–).
+  { term: "—", instead: "ponto, vírgula ou dois-pontos (ou – para valor vazio)" }
 ];
 
 function fold(value: string): string {

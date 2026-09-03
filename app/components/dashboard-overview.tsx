@@ -183,8 +183,8 @@ function RealDashboard({ catalog, canOpenStore }: { catalog: CatalogState; canOp
       {ready && hasSeller && metrics.total > 0 ? (
         <section className="metric-grid" aria-label="Resumo do negócio">
           <article><span>Produtos</span><strong>{formatProductCount(metrics)}</strong><small>{metrics.published} publicados</small></article>
-          <article><span>Alunos</span><strong>—</strong><small>Sem matrículas registradas ainda</small></article>
-          <article><span>Receita</span><strong>—</strong><small>Financeiro ainda não conectado</small></article>
+          <article><span>Alunos</span><strong>–</strong><small>Sem matrículas registradas ainda</small></article>
+          <article><span>Receita</span><strong>–</strong><small>Financeiro ainda não conectado</small></article>
         </section>
       ) : null}
       {ready && hasSeller ? <PayoutNotice seller={ready.sellers[0]} drafts={ready.drafts}/> : null}
@@ -284,7 +284,7 @@ function DemoDashboard() {
       <section className="metric-grid" aria-label="Resumo demonstrativo do negócio">
         <article><span>Produtos</span><strong>{String(products.length).padStart(2, "0")}</strong><small>{published} publicados</small></article>
         <article><span>Alunos</span><strong>128</strong><small>Dados demonstrativos</small></article>
-        <article><span>Receita</span><strong>—</strong><small>Financeiro ainda não conectado</small></article>
+        <article><span>Receita</span><strong>–</strong><small>Financeiro ainda não conectado</small></article>
       </section>
       <section className="section-heading"><div><p className="eyebrow">Catálogo demonstrativo</p><h2>Seus produtos</h2></div><Link href="/products">Ver todos <span aria-hidden="true">→</span></Link></section>
       {products.length ? <div className="product-grid">{products.slice(0, 2).map((product) => <ProductCard key={product.id} product={product}/>)}</div> : <p className="empty-state">Nenhum produto demonstrativo disponível.</p>}

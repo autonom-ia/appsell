@@ -676,13 +676,13 @@ export function LessonAssetPanel({
     }
     stopTransientWork();
     const generation = generationRef.current;
-    dispatch({ type: "phase", phase: "hashing", message: "Verificando o arquivo neste dispositivo — 0%", fileName: file.name });
+    dispatch({ type: "phase", phase: "hashing", message: "Verificando o arquivo neste dispositivo: 0%", fileName: file.name });
     const hashController = new AbortController();
     hashControllerRef.current = hashController;
     try {
       const sha256 = await sha256File(file, hashController.signal, (progress) => {
         if (generation === generationRef.current) {
-          dispatch({ type: "phase", phase: "hashing", message: `Verificando o arquivo neste dispositivo — ${progress}%` });
+          dispatch({ type: "phase", phase: "hashing", message: `Verificando o arquivo neste dispositivo: ${progress}%` });
         }
       });
       if (generation !== generationRef.current) return;
@@ -747,7 +747,7 @@ export function LessonAssetPanel({
       if (!discardTaskRef.current) onCommitted();
       return;
     }
-    dispatch({ type: "phase", phase: "uploading", message: `Enviando ${mediaLabel(mediaType)} — 0%`, uploadId: intent.upload_id });
+    dispatch({ type: "phase", phase: "uploading", message: `Enviando ${mediaLabel(mediaType)}: 0%`, uploadId: intent.upload_id });
     if (intent.multipart) {
       await uploadInParts(file, intent, intent.multipart, mediaType, generation);
       return;
@@ -784,7 +784,7 @@ export function LessonAssetPanel({
       dispatch({
         type: "phase",
         phase: "uploading",
-        message: `Enviando ${mediaLabel(mediaType)} — ${progresso}%`,
+        message: `Enviando ${mediaLabel(mediaType)}: ${progresso}%`,
         uploadId: intent.upload_id
       });
     };
@@ -932,7 +932,7 @@ export function LessonAssetPanel({
           progressFrameRef.current = null;
           const progress = pendingProgressRef.current;
           dispatch({ type: "progress", progress });
-          dispatch({ type: "phase", phase: "uploading", message: `Enviando arquivo — ${progress}%` });
+          dispatch({ type: "phase", phase: "uploading", message: `Enviando arquivo: ${progress}%` });
         });
       };
       xhr.onerror = () => reject(new Error("upload_network"));

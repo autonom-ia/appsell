@@ -239,7 +239,7 @@ export function AppShell({ children }: AppShellProps) {
   // O rodapé mostrava "Sua conta / Sessão protegida" e as iniciais AU fixas no
   // código para toda identidade real: o shell não sabia sequer o e-mail.
   const accountLabel = profileState.status === "failed" || unresolved
-    ? { initials: "—", title: "Perfil indisponível", detail: "Sessão não validada" }
+    ? { initials: "–", title: "Perfil indisponível", detail: "Sessão não validada" }
     : demoProfile
       ? { initials: accountInitials(demoProfile.email), title: `${demoProfile.label} demo`, detail: demoProfile.email }
       : identity
@@ -377,7 +377,7 @@ export function AppShell({ children }: AppShellProps) {
     <div className="app-shell">
       <a className="skip-link" href="#conteudo">Pular para o conteúdo</a>
       <aside className="app-sidebar" aria-label="Navegação principal">
-        <Link className="brand" href={home} aria-label="sell. by Autonom.ia — início" onClick={(event) => guardLink(event, home)}>
+        <Link className="brand" href={home} aria-label="sell. by Autonom.ia: início" onClick={(event) => guardLink(event, home)}>
           <SellBrand />
         </Link>
         <nav>
@@ -396,7 +396,7 @@ export function AppShell({ children }: AppShellProps) {
       </aside>
       <div className="app-content">
         <header className="mobile-topbar">
-          <Link className="mobile-brand" href={home} aria-label="sell. by Autonom.ia — início" onClick={(event) => guardLink(event, home)}><SellBrand onLight /></Link>
+          <Link className="mobile-brand" href={home} aria-label="sell. by Autonom.ia: início" onClick={(event) => guardLink(event, home)}><SellBrand onLight /></Link>
           <LogoutForm mobile onAttempt={guardLogout}/>
         </header>
         {platformMode || (profileState.status === "ready" && !realIdentity) ? (
