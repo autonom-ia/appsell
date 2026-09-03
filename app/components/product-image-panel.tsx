@@ -38,6 +38,7 @@ type CoverState =
   | "forbidden"
   | "unavailable"
   | "unconfirmed"
+  | "unconfirmed_stale"
   | "error";
 
 const INTENT_TIMEOUT_MS = 12_000;
@@ -380,9 +381,17 @@ export function ProductImagePanel({
       // O envio pode ter chegado ao fim no servidor mesmo com a resposta
       // perdida no caminho — foi o que aconteceu com o banner em 03/09, e a
       // tela dizia "nada foi alterado" sobre uma imagem já salva. Aqui ela
-      // recarrega e deixa quem enviou ver o resultado, em vez de afirmar.
-      await onCommitted();
-      settle("unconfirmed");
+      // recarrega e conta o que sabe, sem afirmar o que não sabe.
+      let recarregou = false;
+      try {
+        recarregou = await onCommitted();
+      } catch {
+        recarregou = false;
+      }
+      // Sem isto, escolher o mesmo arquivo de novo não dispara evento nenhum e
+      // o "tente de novo" da mensagem não funciona.
+      if (fileInput.current) fileInput.current.value = "";
+      settle(recarregou ? "unconfirmed" : "unconfirmed_stale");
       return;
     }
     if (!saved) return;
@@ -492,7 +501,8 @@ export function ProductImagePanel({
         {state === "conflict" ? <p className="form-error">O produto mudou em outra aba. Recarregue antes de tentar de novo.</p> : null}
         {state === "forbidden" ? <p className="form-error">Sua sessão ou permissão mudou. Entre novamente antes de tentar.</p> : null}
         {state === "unavailable" ? <p className="form-note">O envio não terminou. Tente novamente; nada foi alterado.</p> : null}
-        {state === "unconfirmed" ? <p className="form-note">Não consegui confirmar o envio. Recarreguei a tela: se a imagem aparece aqui em cima, ela foi salva. Se não, tente de novo.</p> : null}
+        {state === "unconfirmed" ? <p className="form-note">Não consegui confirmar o envio. Recarreguei a tela: se a nova imagem aparece aqui em cima, ela foi salva. Se não, envie outra vez.</p> : null}
+        {state === "unconfirmed_stale" ? <p className="form-note">Não consegui confirmar o envio nem recarregar a tela. Atualize a página para ver se a imagem foi salva antes de enviar de novo.</p> : null}
         {state === "error" ? <p className="form-error">Não foi possível concluir. Tente novamente.</p> : null}
       </div>
       {removing ? (

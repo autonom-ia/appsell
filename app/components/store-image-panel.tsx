@@ -79,6 +79,7 @@ type LogoState =
   | "forbidden"
   | "unavailable"
   | "unconfirmed"
+  | "unconfirmed_stale"
   | "error";
 
 const INTENT_TIMEOUT_MS = 12_000;
@@ -277,9 +278,16 @@ export function StoreImagePanel({
       });
     } catch {
       // Pode ter chegado ao fim no servidor com a resposta perdida: a tela
-      // recarrega e mostra, em vez de afirmar que nada mudou.
-      await onCommitted();
-      settle("unconfirmed");
+      // recarrega e conta o que sabe, em vez de afirmar que nada mudou.
+      let recarregou = false;
+      try {
+        recarregou = await onCommitted();
+      } catch {
+        recarregou = false;
+      }
+      // Sem isto, escolher o mesmo arquivo de novo não dispara evento nenhum.
+      if (fileInput.current) fileInput.current.value = "";
+      settle(recarregou ? "unconfirmed" : "unconfirmed_stale");
       return;
     }
     if (!saved) return;
@@ -364,7 +372,8 @@ export function StoreImagePanel({
         {state === "conflict" ? <p className="form-error">Outro envio está em andamento. Aguarde e tente de novo.</p> : null}
         {state === "forbidden" ? <p className="form-error">Só o dono ou um administrador da loja pode mudar as imagens.</p> : null}
         {state === "unavailable" ? <p className="form-note">O envio não terminou. Tente novamente; nada foi alterado.</p> : null}
-        {state === "unconfirmed" ? <p className="form-note">Não consegui confirmar o envio. Recarreguei a tela: se a imagem aparece aqui em cima, ela foi salva. Se não, tente de novo.</p> : null}
+        {state === "unconfirmed" ? <p className="form-note">Não consegui confirmar o envio. Recarreguei a tela: se a nova imagem aparece aqui em cima, ela foi salva. Se não, envie outra vez.</p> : null}
+        {state === "unconfirmed_stale" ? <p className="form-note">Não consegui confirmar o envio nem recarregar a tela. Atualize a página para ver se a imagem foi salva antes de enviar de novo.</p> : null}
         {state === "error" ? <p className="form-error">Não foi possível concluir. Tente novamente.</p> : null}
       </div>
       {removing ? (
