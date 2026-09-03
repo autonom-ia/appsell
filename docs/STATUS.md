@@ -1,6 +1,6 @@
 # STATUS — Appsell
 
-Última atualização documental: **2026-09-02**.
+Última atualização documental: **2026-09-03**.
 
 Este é o snapshot operacional atual. Para detalhes da release e dos aceites,
 consulte [PRODUCTION_CURRENT.md](PRODUCTION_CURRENT.md). Auditorias antigas em
@@ -10,23 +10,26 @@ consulte [PRODUCTION_CURRENT.md](PRODUCTION_CURRENT.md). Auditorias antigas em
 
 | Indicador | Estado | Evidência |
 |---|:---:|---|
-| Deploy | 🟢 | api em `581a592`, worker e sandbox em `d5e00ec`; web em `9655a13` (02/09, só o Next) |
-| Banco | 🟢 | head `0044_pdf_de_trezentas_paginas`, `schema_ready() = true` |
+| Deploy | 🟢 | api e web em `89233e2` (03/09), lidos do host; worker e sandbox seguem em `d5e00ec` |
+| Banco | 🟢 | head `0058_capa_na_biblioteca`, `schema_ready() = true` |
 | API | 🟢 | `/health/ready`: database, storage e pdf sandbox `true` |
 | PDF do vendedor | 🟢 | playbook de 83 páginas, 32 links lidos (20 índice, 12 vídeo) |
 | Teto de páginas | 🟢 | 300, em nove camadas — medido com documento real |
 | Vídeo do PDF | 🟡 | toca, mas o aluno espera ~2 s no primeiro clique de cada vídeo |
 | Vídeo longo | 🔴 | duração de 4 h é aceita e nunca fica pronta; envio limitado a 100 MiB |
 | Logs da API | 🔴 | não gravam nada ([#312](https://github.com/autonom-ia/appsell/issues/312)) — "0 erros" não é evidência |
-| Página pública | 🟢 | `9655a13`: passagem entre atos por tempo (Decisão 018), contraste medido sob os glifos em 8 telas × 3 atos, `robots.txt` e `sitemap.xml` no ar |
+| Página pública | 🟢 | passagem entre atos por tempo (entrou em `9655a13`, segue no web atual) (Decisão 018), contraste medido sob os glifos em 8 telas × 3 atos, `robots.txt` e `sitemap.xml` no ar |
 | Contato da página | 🟢 | SMTP comercial configurado no `web`; envio real confirmado recebido em 01/09 |
 | Navegação no celular | 🟢 | sem menu por decisão ([#347](https://github.com/autonom-ia/appsell/issues/347)): em 320px não cabe, e a página tem CTA fixo o tempo todo |
+| Loja e produto | 🟢 | marca própria, página de vendas, banner da loja e do produto; no alto, uma imagem só (Decisão 021) |
+| Envio de imagem | 🟡 | grava sempre; o navegador às vezes perde a resposta e a tela pede nova tentativa — causa não identificada |
+| App CI | 🔴 | workflow `disabled_manually`: nenhuma PR roda testes; a bateria corre na máquina |
 | Suítes fora do CI | 🟡 | 5 arquivos `bff-*`, inclusive o de isolamento entre lojas ([#266](https://github.com/autonom-ia/appsell/issues/266)) |
 
 ## Produção comprovada
 
 - Domínio: `https://sell.autonomia.site`.
-- Banco: `appsell_native_90`; migration head `0032_platform_superadmin_catalog`.
+- Banco: `appsell_native_90`; migration head `0058_capa_na_biblioteca`.
 - Tenant real: Autonom.ia (`autonomia`) e Hub2You (`hub2you`).
 - Hierarquia: `comercial@autonomia.site` como `platform_superadmin`; cada
   vendedor como `seller_owner` no próprio tenant; comprador como identidade

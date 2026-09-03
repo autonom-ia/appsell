@@ -15,11 +15,20 @@
 |---|---|
 | Domínio | `https://sell.autonomia.site` |
 | Ambiente | VPS EasyPanel nativo, Docker Swarm |
-| SHA do **api** | `41e0c44` — banner da loja (#387) mais o hotfix da confirmação de upload (#391) |
-| SHA do **asset-worker** | `d5e00ec` — mesma imagem da api, um SHA atrás |
+| SHA do **api** | `89233e2` — fecho do refino da loja (#387): banner do produto, cards e biblioteca |
+| SHA do **asset-worker** | `d5e00ec` — mesma imagem da api, vários SHAs atrás |
 | SHA do **pdf-sandbox** | `d5e00ec` — mesma imagem da api, com outra tag |
-| SHA do **web** | `0e71e46` — refino da loja e banner (#387), com o hero do desktop corrigido (#392); worker e sandbox seguem em `d5e00ec` |
-| Banco | head **`0054_banner_da_loja`**, `schema_ready() = true` |
+| SHA do **web** | `89233e2` — o mesmo da api; foi o primeiro dos três passos do deploy |
+| Banco | head **`0058_capa_na_biblioteca`**, `schema_ready() = true` |
+
+**Release de 2026-09-03, `web` e `api`: `89233e2`, com as migrations `0056`, `0057` e `0058` (PRs #395, #403, #406, #409, #410).**
+Fecho do épico #387. O produto ganha banner próprio (16:5) além da capa (16:9),
+e no alto da vitrine e da página de vendas aparece **uma** imagem, nunca duas
+(Decisão 021). Os cartões do painel viram 16:9, a Visão geral mostra a capa
+já enviada, a tela de envio para de acusar erro quando o envio deu certo, e o
+cartão da biblioteca ganha a capa em faixa e um link que abre a loja do
+produtor em outra janela. Detalhe na seção
+[Release `89233e2`](#release-89233e2--banner-do-produto-cards-e-biblioteca-2026-09-03).
 
 **Correção de 2026-09-03, `web` `0e71e46` (PR #392).** Com banner, a vitrine
 no desktop punha a capa e o conteúdo lado a lado: o nome da loja sumia e o
@@ -194,6 +203,110 @@ Com 4 núcleos, 300 páginas são 89 s de janela.
 Mil páginas exigem, além da #320: virtualizar o leitor (hoje cria um nó por
 página), paralelizar o upload das páginas, e refazer gatilhos que recontam todas
 as páginas a cada inserção. Cinco mil é outra geração do pipeline.
+
+## Release `89233e2` — Banner do produto, cards e biblioteca (2026-09-03)
+
+Fecho do épico [#387](https://github.com/autonom-ia/appsell/issues/387). Cinco
+PRs nossas (#395, #403, #406, #409, #410) e três migrations (`0056`, `0057`,
+`0058`). Entraram em produção no mesmo dia, em deploys separados; o estado
+final conferido no host é `api` e `web` em `89233e2`, banco em
+`0058_capa_na_biblioteca`.
+
+### O que mudou para quem usa
+
+- **O produto tem duas imagens, com papéis distintos.** A capa (16:9) é a
+  miniatura: cartão do painel, vitrine, biblioteca. O banner (16:5) é a faixa
+  larga do alto da página de vendas. O painel pede cada uma com a razão de
+  existir escrita em português, e avisa quando a proporção enviada foge mais
+  de 8% do esperado — avisa, não recusa.
+- **No alto, uma imagem só.** Havendo banner, é o banner; senão, a capa. Nunca
+  as duas empilhadas (Decisão 021).
+- **Os cartões do painel são 16:9**, do mesmo formato da imagem que o vendedor
+  enviou, e a Visão geral mostra a capa já enviada em vez de um espaço vazio.
+- **A tela de envio parou de mentir.** Quando a resposta da confirmação se
+  perde mas o servidor gravou, ela recarrega e diz que não conseguiu confirmar
+  em vez de afirmar que falhou.
+- **O cartão da biblioteca abre com a capa em faixa** e leva à loja do
+  produtor em outra janela, no lugar do acordeão "Ver outros produtos" que não
+  levava a lugar nenhum.
+
+### Banco: três migrations, e por que três
+
+| Migration | O que faz |
+|---|---|
+| `0056_banner_do_produto` | colunas `banner_*` em `catalog_product`, `kind` em `product_cover_upload`, e as cinco funções de imagem passam a receber `p_kind` |
+| `0057_banner_na_vitrine` | acende o `banner` do produto em `read_public_storefront` |
+| `0058_capa_na_biblioteca` | acende a capa em `read_buyer_library` |
+
+A `0056` foi escrita em expand/contract: as funções ganharam nome novo por
+tipo de imagem e ficaram **atalhos com os nomes antigos da capa**, para que a
+api anterior continuasse funcionando enquanto a nova não subia. Sem isso, a
+entrega não caberia num deploy sem janela de manutenção. Os atalhos são
+dívida registrada: saem numa migration futura, quando ninguém mais os chamar.
+
+A `0057` e a `0058` são separadas de propósito. Cada uma acende um campo novo
+em um JSON que o web lê, e **o parser do web recusa chave desconhecida**:
+acender no banco antes de o web novo estar no ar derruba a tela de quem
+estiver com a versão anterior carregada. É a mesma lição da `0052`.
+
+### Ordem de deploy: web → api → migration
+
+Obrigatória, pelo motivo acima. Em cada deploy do dia:
+
+1. `web` primeiro, que aceita o campo novo mas não depende dele;
+2. `api`, que troca chave de objeto por URL assinada antes de responder;
+3. `alembic upgrade head`, que finalmente expõe o campo.
+
+O rollback anda no sentido inverso: `alembic downgrade`, depois api e web.
+
+### Como foi aplicado
+
+Backup antes de cada passo, em `/tmp/sell-release-*-<timestamp>` no host:
+spec dos serviços, **nomes** das variáveis de ambiente (nunca a contagem) e
+`pg_dump -Fc` do `appsell_native_90`. As variáveis foram comparadas nome a
+nome antes e depois de cada `docker service update`, e bateram.
+
+A senha do migrador sai do spec do serviço `sell-autonomia_bootstrap-native-90`,
+que não tem container rodando; a migration corre num container efêmero da
+própria imagem da api, na rede `easypanel`.
+
+### Validação executada em produção
+
+- `/`, `/s/hub2you` e `/api/health/ready` em 200, com `storage_upload: true`;
+- `/library` em 307, o redirecionamento de login esperado para quem não está
+  autenticado;
+- `read_buyer_library` e `read_public_storefront` conferidas no host com dono
+  `appsell_owner` — a armadilha que causou o 403 de Configurações não voltou;
+- localmente, antes do merge: `exercita_migrations.sh` em banco limpo
+  (sobe, desce, sobe), 1131 testes do web, `next build`, ruff e mypy.
+
+### O que não foi validado
+
+- Não fizemos compra real nem envio real de banner em produção depois do
+  release: as telas foram exercitadas em Local/CI e por leitura das rotas.
+- A **intermitência do envio de imagem** continua aberta. O servidor registra
+  201/200 e grava, mas o navegador às vezes perde a resposta. O aviso honesto
+  da #406 trata o sintoma; a causa depende do console do navegador na próxima
+  ocorrência.
+
+### Achados alheios a este release, ainda abertos
+
+- [#390](https://github.com/autonom-ia/appsell/issues/390) — a quarentena de
+  imagem por (loja, tipo) tem corrida entre intents: capa, logo e banner.
+- [#405](https://github.com/autonom-ia/appsell/issues/405) —
+  `seller_payout_account` está com dono migrador, fora da convenção.
+- O endereço antigo `ia-na-pratica` responde 404 depois da renomeação do
+  produto, e não há redirecionamento.
+- O workflow **App CI está `disabled_manually`** no repositório: nenhuma PR
+  roda testes. A bateria desta entrega foi rodada na máquina, não no CI.
+
+### Rollback
+
+```bash
+alembic downgrade 0057_banner_na_vitrine   # depois 0056, depois 0055
+docker service update --image easypanel/sell-autonomia/api:15bce6b sell-autonomia_api
+docker service update --image easypanel/sell-autonomia/web:61f8363 sell-autonomia_web
+```
 
 ## Release `a49e017` — Refino da loja e banner (2026-09-03)
 

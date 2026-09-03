@@ -1,8 +1,27 @@
 # PROGRESS — Appsell
 
-Última atualização documental: 2026-09-02.
+Última atualização documental: 2026-09-03.
 
 ## Fase atual
+
+**Trilho A do épico [#349](https://github.com/autonom-ia/appsell/issues/349)
+fechado em 03/09**, com `api` e `web` em `89233e2` e o banco em
+`0058_capa_na_biblioteca`. Foram quatro entregas em produção no mesmo dia:
+Configurações da loja e página de vendas (`8a0eca0`, `0052`), o dono das
+funções de recebimento (`0053`), o refino da loja com banner (`a49e017`,
+`0054`) e o fecho do [#387](https://github.com/autonom-ia/appsell/issues/387)
+(`89233e2`, `0056`–`0058`): banner do produto, cartões em 16:9, capa na Visão
+geral e capa em faixa na biblioteca.
+
+A regra que sobrou dessa onda está na Decisão 021: no alto da vitrine e da
+página de vendas aparece **uma** imagem, nunca duas — banner se houver, capa
+se não. E a ordem de deploy `web → api → migration` deixou de ser preferência:
+o parser do web recusa chave desconhecida, então acender campo no banco antes
+do web derruba a tela de quem estiver com a versão anterior.
+
+Dois defeitos conhecidos ficaram de fora do fecho: a intermitência do envio de
+imagem (o servidor grava, o navegador perde a resposta) e o **App CI
+`disabled_manually`**, que faz toda PR passar sem rodar teste nenhum.
 
 **Página pública nova em produção desde 01/09** (`9ebb93f`), no lugar da
 anterior. Hero em três atos, contraste medido sob os glifos contra o quadro mais claro do

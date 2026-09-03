@@ -301,6 +301,41 @@ FAQ, garantia e depoimentos ficam para a próxima; e, com a opção B escolhida
 pelo Rodrigo, a página do produto pago diz "as vendas abrem em breve" até a
 #382 fazer a venda de outra loja funcionar — não "Checkout indisponível".
 
+## Decisão 021 — no alto, banner ou capa, nunca as duas; e o produto tem dois formatos
+
+Decidida em 03/09 (#387, #398). Quando o produto ganhou banner, a página de
+vendas passou a mostrar banner **e** capa empilhados, e o Rodrigo cortou a
+dúvida em três palavras: "é uma ou outra". A regra vale para a vitrine e para
+a página de vendas: havendo banner, aparece o banner; não havendo, a capa
+ocupa o mesmo lugar. Nada de empilhar, nada de espaço vazio.
+
+Cinco escolhas, e por quê:
+
+1. **Dois formatos, dois papéis.** Capa 16:9 é miniatura (cartão do painel,
+   vitrine, biblioteca); banner 16:5 é a faixa larga do alto. Antes disso a
+   mesma imagem servia aos dois lugares e era cortada em um deles. Pedir ao
+   vendedor duas versões é aceitável — o que não é aceitável é cortar a
+   imagem dele sem avisar.
+2. **O painel explica em português por que precisa de cada uma**, e avisa
+   quando a proporção enviada foge mais de 8% do esperado. Avisa, não recusa:
+   o vendedor decide se aquilo serve.
+3. **Sem versão quadrada para celular.** Foi cogitada e descartada: com "uma
+   imagem ou outra", o banner 16:5 já se comporta no celular, e uma terceira
+   versão só aumentaria o trabalho do vendedor.
+4. **A miniatura do painel é 16:9, igual à imagem enviada.** O recorte
+   quadrado dos cartões era decisão de layout que contradizia o formato que o
+   próprio painel pede.
+5. **`height: auto` é obrigatório em toda imagem com `width`/`height`.** Os
+   atributos entram como estilo do navegador e ignoram o `aspect-ratio`
+   declarado; sobrescrever só a largura mata a proporção. Foi o defeito real
+   por trás de mais de uma "imagem cortada" desta onda.
+
+E o que a onda **não** faz: não retoca imagem enviada (nada de corte
+automático nem geração de variantes), não guarda versão por dispositivo, e não
+remove os atalhos com os nomes antigos das funções de capa — eles seguem até
+uma migration futura, porque foram o que permitiu entregar sem janela de
+manutenção.
+
 ## Pendências que bloqueiam ampliação
 
 - staging separado e DNS próprio;
