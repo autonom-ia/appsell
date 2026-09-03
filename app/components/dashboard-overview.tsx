@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { productArt } from "@/lib/product-art";
 import { useCallback, useEffect, useState } from "react";
+
+import { payoutStageFrom, type PayoutAccountStatus, type PayoutStage } from "@/lib/payout-status";
 import { ProductCard } from "./product-card";
 import { SellerOnboardingCard } from "./seller-onboarding-card";
 import { dashboardHeader } from "../../lib/dashboard-audience";
@@ -29,6 +31,7 @@ interface ProductDraft {
   title: string;
   description: string;
   status: DashboardDraftStatus;
+  access_mode?: "free" | "paid";
   course?: { id: string; title: string } | null;
   course_title?: string;
 }
@@ -184,6 +187,7 @@ function RealDashboard({ catalog, canOpenStore }: { catalog: CatalogState; canOp
           <article><span>Receita</span><strong>—</strong><small>Financeiro ainda não conectado</small></article>
         </section>
       ) : null}
+      {ready && hasSeller ? <PayoutNotice seller={ready.sellers[0]} drafts={ready.drafts}/> : null}
       {ready && hasSeller ? (
         <>
           <section className="section-heading">
@@ -223,6 +227,51 @@ function RealDashboard({ catalog, canOpenStore }: { catalog: CatalogState; canOp
         </>
       ) : null}
     </>
+  );
+}
+
+// Loja com produto pago publicado e conta de recebimentos que não recebe:
+// o aviso vivia só dentro do editor, e quem publicou e foi embora não sabia
+// que o dinheiro não tinha para onde ir (#352). Aqui ele fica na cara.
+// A leitura do status é de dono e admin; para os outros papéis a rota nega e
+// o aviso simplesmente não aparece — eles não teriam como resolver.
+function PayoutNotice({ seller, drafts }: { seller: Seller; drafts: ProductDraft[] }) {
+  const [stage, setStage] = useState<PayoutStage | "unknown">("unknown");
+  const paidPublished = drafts.some((draft) => draft.status === "published" && draft.access_mode === "paid");
+
+  useEffect(() => {
+    if (!paidPublished) return;
+    let active = true;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    void fetch(`/api/sellers/${encodeURIComponent(seller.id)}/payout-account`, { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        if (!active || !response.ok) return;
+        const payload = await response.json() as { payout_account?: PayoutAccountStatus | null };
+        if (active) setStage(payoutStageFrom(payload.payout_account ?? null));
+      })
+      .catch(() => undefined)
+      .finally(() => window.clearTimeout(timeout));
+    return () => {
+      active = false;
+      controller.abort();
+      window.clearTimeout(timeout);
+    };
+  }, [seller.id, paidPublished]);
+
+  if (!paidPublished || stage === "unknown" || stage === "active") return null;
+  return (
+    <section className="dashboard-notice" role="alert" aria-labelledby="payout-notice-title">
+      <h2 id="payout-notice-title">Você tem produto pago publicado e a conta de recebimentos não está pronta.</h2>
+      <p>
+        {stage === "not_connected"
+          ? "Sem a conta conectada, nenhuma venda tem para onde ir. Leva uns dez minutos: documento e dados bancários de quem recebe."
+          : stage === "action_required"
+            ? "A verificação da conta apontou uma pendência. Revise os dados para voltar a receber."
+            : "A verificação da conta ainda não terminou. Enquanto isso, as vendas não são liberadas."}
+      </p>
+      <Link className="primary-button" href="/settings/payouts">Abrir Recebimentos</Link>
+    </section>
   );
 }
 

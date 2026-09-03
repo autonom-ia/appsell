@@ -226,6 +226,47 @@ export function browserCoverUploadIntent(
   };
 }
 
+export interface BrowserLogoUploadIntent {
+  upload_id: string;
+  upload_url: string;
+  upload_origin: string;
+  expires_at: string;
+  required_headers: Record<string, string>;
+  required_content_length: number;
+}
+
+/** O logo da loja: a prova da capa, sem a versão do produto. */
+export function browserLogoUploadIntent(
+  value: unknown,
+  appOrigin: string,
+  storageOrigin: string,
+  nowMs = Date.now()
+): BrowserLogoUploadIntent | null {
+  if (!isRecord(value) || storageOrigin === appOrigin) return null;
+  const uploadId = value.upload_id;
+  const expiresAt = value.expires_at;
+  const contentLength = value.required_content_length;
+  if (
+    typeof uploadId !== "string" ||
+    !UUID.test(uploadId) ||
+    typeof expiresAt !== "string" ||
+    !Number.isInteger(contentLength) ||
+    Number(contentLength) < 1 ||
+    Number(contentLength) > COVER_MAX_BYTES
+  ) return null;
+  const url = signedStorageUrl(value.upload_url, storageOrigin);
+  const headers = exactUploadHeaders(value.required_headers);
+  if (!url || !headers || !freshEnough(expiresAt, nowMs)) return null;
+  return {
+    upload_id: uploadId,
+    upload_url: url.toString(),
+    upload_origin: storageOrigin,
+    expires_at: expiresAt,
+    required_headers: headers,
+    required_content_length: Number(contentLength)
+  };
+}
+
 export function browserUploadIntent(
   value: unknown,
   appOrigin: string,

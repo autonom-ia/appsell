@@ -17,6 +17,7 @@ import {
   ROTATE_ACCESS_LINK_CSRF_ACTION,
   TRANSITION_OFFER_STATUS_CSRF_ACTION,
   UPDATE_PRODUCT_DRAFT_CSRF_ACTION,
+  UPDATE_PRODUCT_HEADLINE_CSRF_ACTION,
   verifyMutation
 } from "@/lib/mutation-protection.server";
 import { isOfferBillingPeriod, MAX_UNIT_AMOUNT_MINOR } from "@/lib/offer-price";
@@ -120,6 +121,10 @@ export async function GET(request: NextRequest, context: ProductRouteContext) {
         cover_clear: csrfTokenForSession(
           authenticated.sessionId,
           CLEAR_PRODUCT_COVER_CSRF_ACTION
+        ),
+        headline: csrfTokenForSession(
+          authenticated.sessionId,
+          UPDATE_PRODUCT_HEADLINE_CSRF_ACTION
         )
       }
     }, { headers: { "cache-control": "no-store" } });

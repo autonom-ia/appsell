@@ -7,6 +7,7 @@ import type { FormEvent, MouseEvent, ReactNode } from "react";
 import { AccessibleDialog } from "./accessible-dialog";
 import { ACCESSIBLE_SELLER_ROLES, PLATFORM_ROLES } from "../../lib/rbac-roles";
 import { SellBrand } from "./sell-brand";
+import { canConfigureStore } from "@/lib/shell-navigation";
 import { allowUnsavedNavigation, DIRTY_HISTORY_BLOCKED_EVENT, DIRTY_HISTORY_CONTINUE_EVENT, DIRTY_NAVIGATION_REQUEST_EVENT, DIRTY_STATE_EVENT } from "./use-unsaved-changes";
 import {
   DEMO_ADMIN_EMAIL,
@@ -55,10 +56,13 @@ const accountNavigation = { href: ACCOUNT_PATH, label: "Minha conta", mark: "acc
 const sellerNavigation = [
   { href: "/dashboard", label: "Visão geral", mark: "home" },
   { href: "/products", label: "Produtos", mark: "products" },
-  { href: "/payouts", label: "Recebimentos", mark: "payouts" },
+  { href: "/settings/store", label: "Configurações", mark: "settings" },
   { href: "/library", label: "Minha biblioteca", mark: "library" },
   accountNavigation,
 ] as const;
+// Editor de conteúdo e suporte não configuram a loja (#352): o item some do
+// menu, e a API recusa se chegarem pela URL.
+const sellerNavigationLimited = sellerNavigation.filter((item) => item.mark !== "settings");
 const buyerNavigation = [
   { href: "/library", label: "Minha biblioteca", mark: "library" },
   accountNavigation,
@@ -87,7 +91,7 @@ function NavIcon({ name }: { name: NavigationMark }) {
     home: <><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M9 21v-7h6v7"/></>,
     products: <><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M8 4v16M8 9h13"/></>,
     library: <><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/></>,
-    payouts: <><rect x="2.5" y="6" width="19" height="12.5" rx="2.5"/><path d="M2.5 10h19"/><path d="M6.5 15h4"/></>,
+    settings: <><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></>,
     inspection: <><path d="M12 3 4.5 6v5.5c0 4.8 3.1 8 7.5 9.5 4.4-1.5 7.5-4.7 7.5-9.5V6L12 3Z"/><path d="M9.5 12.2 11.2 14l3.6-4"/></>,
     store: <><path d="M4 9.5 5.5 4.5h13L20 9.5"/><path d="M4 9.5h16v10H4Z"/><path d="M9.5 19.5v-5h5v5"/></>,
     account: <><circle cx="12" cy="8.5" r="4"/><path d="M4.5 20.5c1.2-3.6 4-5.5 7.5-5.5s6.3 1.9 7.5 5.5"/></>
@@ -123,6 +127,13 @@ function storeDetail(identity: ShellIdentity) {
   const [first, ...rest] = identity.sellers as readonly ShellSeller[];
   if (!first) return identity.email;
   return rest.length ? `${first.displayName} +${rest.length}` : first.displayName;
+}
+
+// "Configurações" cobre as duas áreas de /settings, menos Minha conta, que é
+// item próprio.
+function navigationActive(pathname: string, href: string) {
+  if (pathname === href) return true;
+  return href === "/settings/store" && pathname.startsWith("/settings/") && !pathname.startsWith(ACCOUNT_PATH);
 }
 
 function accountInitials(value: string) {
@@ -221,7 +232,9 @@ export function AppShell({ children }: AppShellProps) {
           ? demoBuyerNavigation
           : audience === "without-store"
             ? (canOpenStore ? withoutStoreNavigation : buyerNavigation)
-            : sellerNavigation;
+            : (canConfigureStore(profileState.status === "ready" ? profileState.identity?.sellers : null)
+                ? sellerNavigation
+                : sellerNavigationLimited);
   const identity = profileState.status === "ready" ? profileState.identity : null;
   // O rodapé mostrava "Sua conta / Sessão protegida" e as iniciais AU fixas no
   // código para toda identidade real: o shell não sabia sequer o e-mail.
@@ -370,7 +383,7 @@ export function AppShell({ children }: AppShellProps) {
         <nav>
           <p className="nav-eyebrow">{profileState.status === "loading" ? "Carregando acesso" : profileState.status === "failed" || unresolved ? "Acesso indisponível" : platformMode ? "Operação de plataforma" : audience === "demo-buyer" ? "Área do aluno" : audience === "without-store" ? (platformGrant ? "Operação de plataforma" : "Comece por aqui") : "Seu negócio"}</p>
           {visibleNavigation.map((item) => {
-            const active = pathname === item.href;
+            const active = navigationActive(pathname, item.href);
             return <Link key={item.href} href={item.href} onClick={(event) => guardLink(event, item.href)} className={active ? "nav-link active" : "nav-link"} aria-current={active ? "page" : undefined}><NavIcon name={item.mark}/><span>{item.label}</span></Link>;
           })}
           {profileState.status === "failed" || unresolved ? <div className="session-recovery" role="alert"><p>Não foi possível validar seu acesso.</p><button type="button" className="secondary-button" onClick={retryProfile}>Tentar novamente</button><Link href="/">Voltar para a entrada</Link></div> : null}
@@ -397,7 +410,7 @@ export function AppShell({ children }: AppShellProps) {
           style={{ gridTemplateColumns: `repeat(${visibleNavigation.length}, minmax(0, 1fr))` }}
         >
           {visibleNavigation.map((item) => {
-            const active = pathname === item.href;
+            const active = navigationActive(pathname, item.href);
             return <Link key={item.href} href={item.href} onClick={(event) => guardLink(event, item.href)} className={active ? "active" : ""} aria-current={active ? "page" : undefined}><NavIcon name={item.mark}/><span>{item.label}</span></Link>;
           })}
         </nav>

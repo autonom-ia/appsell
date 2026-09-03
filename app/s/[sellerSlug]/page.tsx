@@ -3,12 +3,14 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { cache } from "react";
 
+import { StoreIdentity, StorefrontFooter, StorefrontTopbar, storefrontClassName, storefrontStyle } from "@/app/components/storefront-brand";
 import { demoModeEnabled } from "@/lib/demo-config";
 import {
   DomainApiError,
   readPublicStorefront
 } from "@/lib/internal-api-client.server";
 import { billingPeriodLabel, formatOfferPrice } from "@/lib/offer-price";
+import { productArt } from "@/lib/product-art";
 import { parsePublicStorefront } from "@/lib/public-storefront";
 import { SITE } from "@/lib/site";
 
@@ -23,7 +25,7 @@ export async function generateMetadata({
   const { seller } = await loadStorefront(sellerSlug);
   const url = `${SITE.origem}/s/${seller.slug}`;
   const titulo = `${seller.name}, cursos online`;
-  const descricao = `Cursos de ${seller.name} para assistir pelo navegador do celular. Compra pela loja oficial na Autonom.ia Sell, com acesso no nome de quem paga.`;
+  const descricao = seller.tagline ?? `Cursos de ${seller.name} para assistir pelo navegador do celular. Compra pela loja oficial na Autonom.ia Sell, com acesso no nome de quem paga.`;
 
   return {
     title: titulo,
@@ -33,6 +35,9 @@ export async function generateMetadata({
   };
 }
 
+// A vitrine da loja (#352). A marca é a do vendedor: logo ou iniciais, a
+// frase dele, a cor dele nos botões. O texto da plataforma sai da frente e vai
+// para o rodapé.
 export default async function SellerStorefront({
   params
 }: {
@@ -40,34 +45,20 @@ export default async function SellerStorefront({
 }) {
   const { sellerSlug } = await params;
   const storefront = await loadStorefront(sellerSlug);
-  const demoCheckoutEnabled = demoModeEnabled() && storefront.seller.slug === "autonomia-demo";
+  const seller = storefront.seller;
+  const demoCheckoutEnabled = demoModeEnabled() && seller.slug === "autonomia-demo";
   const loginHref = demoCheckoutEnabled ? "/auth/login?persona=buyer" : "/auth/login";
 
-  return <div className="storefront-page">
+  return <div className={storefrontClassName(seller)} style={storefrontStyle(seller)}>
     <a className="skip-link" href="#storefront-content">Pular para os produtos</a>
-    <header className="storefront-topbar">
-      <Link className="landing-brand" href="/" aria-label="Autonom.ia Sell — início">
-        <span className="brand-mark" aria-hidden="true">a</span>
-        <strong>Autonom.ia <span>Sell</span></strong>
-      </Link>
-      <Link className="storefront-login" href={loginHref}>Entrar</Link>
-    </header>
+    <StorefrontTopbar seller={seller} action={<Link className="storefront-login" href={loginHref}>Entrar</Link>}/>
     <main id="storefront-content" tabIndex={-1}>
       <section className="storefront-hero" aria-labelledby="storefront-title">
-        <div className="storefront-identity" aria-hidden="true">
-          {initials(storefront.seller.name)}
-        </div>
+        <StoreIdentity seller={seller} size="large"/>
         <div>
-          <p className="eyebrow">Loja oficial na Autonom.ia Sell</p>
-          <h1 id="storefront-title">{storefront.seller.name}</h1>
-          <p>Produtos digitais publicados por este produtor, em um catálogo isolado e verificável.</p>
+          <h1 id="storefront-title">{seller.name}</h1>
+          <p>{seller.tagline ?? `Cursos e materiais de ${seller.name}, para assistir pelo navegador, no celular ou no computador.`}</p>
         </div>
-      </section>
-
-      <section className="storefront-trust" aria-label="Garantias do catálogo">
-        <span>Catálogo publicado</span>
-        <span>Acesso protegido</span>
-        <span>Mobile-first</span>
       </section>
 
       <section className="storefront-catalog" aria-labelledby="catalog-title">
@@ -76,39 +67,41 @@ export default async function SellerStorefront({
           <h2 id="catalog-title">Produtos disponíveis</h2>
         </header>
         {storefront.products.length ? <div className="storefront-grid">
-          {storefront.products.map((product, index) => <article
-            className="storefront-product"
-            key={product.id}
-            aria-labelledby={`storefront-product-${product.id}`}
-          >
-            <div className="storefront-product-art" aria-hidden="true">
-              <span>{String(index + 1).padStart(2, "0")}</span>
-              <i/>
-            </div>
-            <div className="storefront-product-copy">
-              <p className="eyebrow">Produto digital</p>
-              <h3 id={`storefront-product-${product.id}`}>{product.title}</h3>
-              {product.description.trim() ? <p>{product.description}</p> : null}
-              {product.price ? <p className="storefront-product-price">
-                <strong>{formatOfferPrice(product.price.unit_amount_minor, product.price.currency)}</strong>
-                {product.price.billing_period === "one_time" ? null : <span> · {billingPeriodLabel(product.price.billing_period)}</span>}
-              </p> : null}
-            </div>
-            <div className="storefront-product-action">
-              <Link className={demoCheckoutEnabled || (product.access_mode ?? "paid") === "paid" ? "primary-button commercial-button" : "primary-button"} href={demoCheckoutEnabled ? loginHref : (product.access_mode ?? "paid") === "free" ? `/s/${storefront.seller.slug}/p/${product.slug}/access` : `/s/${storefront.seller.slug}/p/${product.slug}`}>{demoCheckoutEnabled ? "Comprar com cupom demo" : (product.access_mode ?? "paid") === "paid" ? "Comprar agora" : "Acessar gratuitamente"}</Link>
-              {demoCheckoutEnabled ? <small>Compra demonstrativa de valor zero, sem cobrança financeira.</small> : null}
-            </div>
-          </article>)}
+          {storefront.products.map((product) => {
+            const art = productArt(product.title);
+            return <article
+              className="storefront-product"
+              key={product.id}
+              aria-labelledby={`storefront-product-${product.id}`}
+            >
+              <div className="storefront-product-art" aria-hidden="true" style={product.cover ? undefined : { background: art.gradient }}>
+                {product.cover
+                  // eslint-disable-next-line @next/next/no-img-element
+                  ? <img className="storefront-product-cover" src={product.cover.url} alt="" width={product.cover.width} height={product.cover.height} decoding="async" loading="lazy"/>
+                  : <span>{art.initials}</span>}
+              </div>
+              <div className="storefront-product-copy">
+                <p className="eyebrow">{product.curriculum ? `${product.curriculum.lesson_count} ${product.curriculum.lesson_count === 1 ? "aula" : "aulas"}` : "Produto digital"}</p>
+                <h3 id={`storefront-product-${product.id}`}>{product.title}</h3>
+                {product.headline ? <p>{product.headline}</p> : product.description.trim() ? <p>{product.description}</p> : null}
+                {product.price ? <p className="storefront-product-price">
+                  <strong>{formatOfferPrice(product.price.unit_amount_minor, product.price.currency)}</strong>
+                  {product.price.billing_period === "one_time" ? null : <span> · {billingPeriodLabel(product.price.billing_period)}</span>}
+                </p> : null}
+              </div>
+              <div className="storefront-product-action">
+                <Link className={demoCheckoutEnabled || (product.access_mode ?? "paid") === "paid" ? "primary-button commercial-button" : "primary-button"} href={demoCheckoutEnabled ? loginHref : (product.access_mode ?? "paid") === "free" ? `/s/${seller.slug}/p/${product.slug}/access` : `/s/${seller.slug}/p/${product.slug}`}>{demoCheckoutEnabled ? "Comprar com cupom demo" : (product.access_mode ?? "paid") === "paid" ? "Ver e comprar" : "Acessar gratuitamente"}</Link>
+                {demoCheckoutEnabled ? <small>Compra demonstrativa de valor zero, sem cobrança financeira.</small> : null}
+              </div>
+            </article>;
+          })}
         </div> : <div className="storefront-empty">
           <h3>Nenhum produto publicado agora</h3>
-          <p>Este produtor ainda está preparando o catálogo.</p>
+          <p>{seller.name} ainda está preparando o catálogo.</p>
         </div>}
       </section>
     </main>
-    <footer className="storefront-footer">
-      <span>Autonom.ia Sell</span>
-      <small>Infraestrutura de produtos digitais para negócios independentes.</small>
-    </footer>
+    <StorefrontFooter/>
   </div>;
 }
 
@@ -122,7 +115,3 @@ const loadStorefront = cache(async function loadStorefront(sellerSlug: string) {
     throw error;
   }
 });
-
-function initials(value: string) {
-  return value.split(/\s+/u).slice(0, 2).map((part) => part.slice(0, 1)).join("").toUpperCase();
-}

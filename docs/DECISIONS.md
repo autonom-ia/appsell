@@ -258,6 +258,47 @@ E o que a issue pedia — "sem migration" — não cabia: a política
 membership numa loja, e o comprador puro não tem. Toda auditoria deste
 projeto nasce em função SECURITY DEFINER; as três da conta vivem na `0051`.
 
+## Decisão 020 — a loja tem marca própria; a página do produto vira página de vendas; só dono e admin mexem
+
+Decidida em 03/09 (#352). A vitrine falava a língua da plataforma ("catálogo
+isolado e verificável", "Loja oficial na Autonom.ia Sell") e a página do
+produto era um recibo. A `0052` dá à loja nome, frase, "sobre", cor de
+destaque e logo, e ao produto uma promessa; a vitrine pública passa a devolver
+isso, mais a capa e o resumo do conteúdo publicado (títulos de aula e contagem
+de materiais, lidos do snapshot vigente — nunca do rascunho).
+
+Cinco escolhas, e por quê:
+
+1. **Editor e suporte ficam fora de Configurações.** A matriz dizia "SE
+   condicional"; a issue fechou em negado. Quem escreve aula não troca o logo
+   da loja. `resolve_seller_membership_role` decide, e o `coalesce` na guarda
+   existe porque quem não tem membership recebe NULL — e `NULL not in (...)`
+   não dispara o `if`. O teste de papéis pegou isso na primeira execução.
+2. **Contraste é uma régua só: 4,5:1 contra branco.** A cor só aparece sob
+   texto branco (botão de compra, fundo da identidade). O BFF recusa ao
+   gravar, com a conta na mensagem; a página repete a conta ao pintar e cai no
+   tom da Autonom.ia se reprovar. O banco valida só o formato — luminância em
+   PL/pgSQL seria a mesma conta em dois lugares.
+3. **Os campos novos só entram no JSON da vitrine quando existem.** O parser
+   do web exige chaves exatas; `logo: null` para um web antigo derrubaria
+   toda vitrine em 503 no intervalo entre migration, api e web. Precedente:
+   `access_mode` (0031). Ordem de deploy: migration → api → web.
+4. **A promessa é campo "ao vivo" do produto, como a capa.** Trocar a frase
+   da página de vendas não exige republicar o curso. Segue `catalog.draft.update`
+   e a versão esperada; salva à parte do formulário grande para não disputar
+   com o autosave.
+5. **O logo reusa o verificador da capa, não a tabela dela.** Upload, antivírus,
+   reescrita e promoção são os mesmos; a tabela e as chaves são por loja
+   (`seller_logo_upload`, `tenants/<loja>/logo/…`), porque a da capa é presa ao
+   produto por FK e por chave. O worker ganhou a derivação de chave por tipo e
+   nada mais.
+
+E o que a onda **não** faz, por decisão: a área logada continua Autonom.ia (a
+biblioteca é multi-loja); nada de marca em e-mail (B3) nem em `og:image`;
+FAQ, garantia e depoimentos ficam para a próxima; e, com a opção B escolhida
+pelo Rodrigo, a página do produto pago diz "as vendas abrem em breve" até a
+#382 fazer a venda de outra loja funcionar — não "Checkout indisponível".
+
 ## Pendências que bloqueiam ampliação
 
 - staging separado e DNS próprio;

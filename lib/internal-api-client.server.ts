@@ -56,7 +56,8 @@ interface ApiRequest {
     "commerce.demo.checkout.read" | "commerce.demo.checkout.complete" |
     "commerce.payout.read" | "commerce.payout.manage" | "commerce.payout.sync" |
     "commerce.checkout.destination" |
-    "account.read" | "account.export" | "account.deletion.request";
+    "account.read" | "account.export" | "account.deletion.request" |
+    "seller.settings.read" | "seller.settings.update";
   sellerOrganizationId?: string;
   inspectionToken?: string;
   body?: Record<string, unknown>;
@@ -1113,6 +1114,147 @@ export async function clearDomainProductCover(
       expected_product_version: input.expectedProductVersion
     }
   });
+}
+
+export interface SellerSettingsLogo {
+  url: string;
+  media_type: string;
+  width: number;
+  height: number;
+  expires_in_seconds: number;
+}
+
+export interface SellerSettingsProjection {
+  id: string;
+  slug: string;
+  display_name: string;
+  status: string;
+  tagline: string | null;
+  about: string | null;
+  accent_color: string | null;
+  logo: SellerSettingsLogo | null;
+  changed?: boolean | null;
+}
+
+function settingsPath(sellerOrganizationId: string) {
+  return `/v1/me/sellers/${sellerOrganizationId}/settings`;
+}
+
+export async function readDomainSellerSettings(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: settingsPath(sellerOrganizationId),
+    capability: "seller.settings.read",
+    sellerOrganizationId
+  }) as Promise<SellerSettingsProjection>;
+}
+
+export async function updateDomainSellerSettings(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  input: {
+    displayName: string;
+    tagline: string | null;
+    about: string | null;
+    accentColor: string | null;
+  }
+) {
+  return domainRequest(sessionId, session, {
+    method: "PATCH",
+    path: settingsPath(sellerOrganizationId),
+    capability: "seller.settings.update",
+    sellerOrganizationId,
+    body: {
+      display_name: input.displayName,
+      tagline: input.tagline,
+      about: input.about,
+      accent_color: input.accentColor
+    }
+  }) as Promise<SellerSettingsProjection>;
+}
+
+export async function createDomainLogoUploadIntent(
+  sessionId: string,
+  session: ServerSession,
+  input: {
+    sellerOrganizationId: string;
+    idempotencyKey: string;
+    mediaType: string;
+    byteSize: number;
+    sha256: string;
+  }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `${settingsPath(input.sellerOrganizationId)}/logo/upload-intents`,
+    capability: "seller.settings.update",
+    sellerOrganizationId: input.sellerOrganizationId,
+    body: {
+      idempotency_key: input.idempotencyKey,
+      media_type: input.mediaType,
+      byte_size: input.byteSize,
+      sha256: input.sha256
+    }
+  });
+}
+
+export async function confirmDomainLogoUpload(
+  sessionId: string,
+  session: ServerSession,
+  input: { sellerOrganizationId: string; uploadId: string; idempotencyKey: string }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `${settingsPath(input.sellerOrganizationId)}/logo/uploads/${input.uploadId}/confirm`,
+    capability: "seller.settings.update",
+    sellerOrganizationId: input.sellerOrganizationId,
+    body: { idempotency_key: input.idempotencyKey },
+    // A confirmação baixa, verifica, reescreve e promove antes de responder.
+    timeoutMs: 45_000
+  });
+}
+
+export async function clearDomainSellerLogo(
+  sessionId: string,
+  session: ServerSession,
+  input: { sellerOrganizationId: string; idempotencyKey: string }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `${settingsPath(input.sellerOrganizationId)}/logo/clear`,
+    capability: "seller.settings.update",
+    sellerOrganizationId: input.sellerOrganizationId,
+    body: { idempotency_key: input.idempotencyKey }
+  }) as Promise<{ changed: boolean }>;
+}
+
+export async function updateDomainProductHeadline(
+  sessionId: string,
+  session: ServerSession,
+  input: {
+    sellerOrganizationId: string;
+    productId: string;
+    idempotencyKey: string;
+    expectedProductVersion: number;
+    headline: string | null;
+  }
+) {
+  return domainRequest(sessionId, session, {
+    method: "PATCH",
+    path: `/v1/me/sellers/${input.sellerOrganizationId}/products/${input.productId}/headline`,
+    capability: "catalog.draft.update",
+    sellerOrganizationId: input.sellerOrganizationId,
+    body: {
+      idempotency_key: input.idempotencyKey,
+      expected_product_version: input.expectedProductVersion,
+      headline: input.headline
+    }
+  }) as Promise<{ product_version: number; changed: boolean; headline: string | null }>;
 }
 
 export async function readDomainAssetUploadStatus(
