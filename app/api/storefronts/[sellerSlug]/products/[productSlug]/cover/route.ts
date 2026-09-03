@@ -36,6 +36,7 @@ export async function GET(_request: Request, context: CoverRouteContext) {
         "cache-control": "public, max-age=60, stale-while-revalidate=300",
         "content-length": String(body.byteLength),
         "content-type": contentType,
+        "cross-origin-resource-policy": "cross-origin",
         "x-content-type-options": "nosniff"
       }
     });

@@ -47,6 +47,7 @@ describe("GET public storefront product cover", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("image/png");
+    expect(response.headers.get("cross-origin-resource-policy")).toBe("cross-origin");
     expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
     expect(fetch).toHaveBeenCalledWith(
       "https://storage.test/cover?X-Amz-Signature=fresh",
