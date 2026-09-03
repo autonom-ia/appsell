@@ -1476,7 +1476,11 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 @media (min-width: 680px) { .storefront-identity.storefront-logo { height: 112px; } }
 
 /* A2.1 (#387): banner da loja */
-.storefront-hero-covered { padding: 0; overflow: hidden; }
+/* A capa some com o padding do hero e, principalmente, desfaz o grid de duas
+   colunas que a regra de cima aplica a partir de 680px: com a capa como novo
+   primeiro filho, ela e o conteúdo iam parar lado a lado, o nome da loja
+   sumia e o logo era cortado (incidente de 03/09). */
+.storefront-hero-covered { padding: 0; overflow: hidden; grid-template-columns: 1fr; align-items: stretch; gap: 0; }
 .storefront-cover { width: 100%; aspect-ratio: 16 / 5; max-height: 320px; overflow: hidden; background: var(--soft); }
 .storefront-cover-image { display: block; width: 100%; height: 100%; object-fit: cover; }
 .storefront-hero-body { display: grid; gap: 18px; }
@@ -1487,5 +1491,8 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .store-banner-preview { width: 100%; max-width: 520px; aspect-ratio: 16 / 5; object-fit: cover; border-radius: 12px; }
 .store-banner-fallback { width: 100%; max-width: 520px; aspect-ratio: 16 / 5; border-radius: 12px; background: linear-gradient(135deg, var(--soft), var(--border)); }
 @media (min-width: 680px) {
-  .storefront-hero-covered .storefront-hero-body { grid-template-columns: auto minmax(0,1fr); align-items: end; margin-top: -48px; }
+  /* O mesmo desenho do celular, que é o que funciona: logo sobre a capa, nome
+     e frase abaixo dela. Pôr o texto ao lado do logo o empurrava para dentro
+     da área escura da imagem. */
+  .storefront-hero-covered .storefront-hero-body { margin-top: -56px; }
 }
