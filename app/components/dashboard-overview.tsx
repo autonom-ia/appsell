@@ -32,6 +32,7 @@ interface ProductDraft {
   description: string;
   status: DashboardDraftStatus;
   access_mode?: "free" | "paid";
+  cover?: { url: string; media_type: string; width: number; height: number } | null;
   course?: { id: string; title: string } | null;
   course_title?: string;
 }
@@ -204,9 +205,14 @@ function RealDashboard({ catalog, canOpenStore }: { catalog: CatalogState; canOp
                    lá, e aqui a estrutura ficou para trás. */
                 <article className="draft-card" key={draft.id}>
                   <div className="draft-card-media">
-                    <div className="draft-card-art" aria-hidden="true" style={{ background: productArt(draft.title).gradient }}>
-                      <span>{productArt(draft.title).initials}</span>
-                    </div>
+                    {draft.cover
+                      // eslint-disable-next-line @next/next/no-img-element
+                      ? <img className="draft-card-art draft-card-cover" src={draft.cover.url} alt="" width={draft.cover.width} height={draft.cover.height} loading="lazy" decoding="async"/>
+                      : (
+                        <div className="draft-card-art" aria-hidden="true" style={{ background: productArt(draft.title).gradient }}>
+                          <span>{productArt(draft.title).initials}</span>
+                        </div>
+                      )}
                   </div>
                   <div className="draft-card-body">
                     <div className="draft-card-badges">
