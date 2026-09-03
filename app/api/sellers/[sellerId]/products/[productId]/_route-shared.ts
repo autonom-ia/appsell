@@ -138,9 +138,17 @@ export function withTrustedCovers(payload: unknown): unknown {
   const product = payload.product;
   return {
     ...payload,
+    // As duas imagens do produto passam pelo mesmo portão: as duas viram
+    // `img src` no navegador, e o banner não é menos perigoso que a capa.
     ...(Array.isArray(products)
-      ? { products: products.map((row) => isRecord(row) ? { ...row, cover: gate(row.cover) } : row) }
+      ? {
+          products: products.map((row) =>
+            isRecord(row) ? { ...row, cover: gate(row.cover), banner: gate(row.banner) } : row
+          )
+        }
       : {}),
-    ...(isRecord(product) ? { product: { ...product, cover: gate(product.cover) } } : {})
+    ...(isRecord(product)
+      ? { product: { ...product, cover: gate(product.cover), banner: gate(product.banner) } }
+      : {})
   };
 }
