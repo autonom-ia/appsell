@@ -55,6 +55,11 @@ def test_runtime_can_read_only_published_public_projection() -> None:
         ).fetchone()
     assert projection is not None
     payload = projection[0]
+    # 0052: o currículo publicado entra na vitrine, só com títulos e contagens.
+    curriculum = payload["products"][0].pop("curriculum")
+    assert curriculum["lesson_count"] == len(manifest["lessons"])
+    assert len(curriculum["lessons"]) == curriculum["lesson_count"]
+    assert "content" not in json.dumps(curriculum)
     assert payload == {
         "schema_version": 1,
         "seller": {
