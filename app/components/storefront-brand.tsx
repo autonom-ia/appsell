@@ -49,6 +49,17 @@ export function StorefrontTopbar({ seller, action }: { seller: PublicStorefrontS
   );
 }
 
+/** A capa larga no alto da vitrine, com o logo sobreposto (padrão LinkedIn). */
+export function StorefrontCover({ seller }: { seller: PublicStorefrontSeller }) {
+  if (!seller.banner) return null;
+  return (
+    <div className="storefront-cover" aria-hidden="true">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img className="storefront-cover-image" src={seller.banner.url} alt="" width={seller.banner.width} height={seller.banner.height} decoding="async" fetchPriority="high"/>
+    </div>
+  );
+}
+
 export function StorefrontFooter() {
   return (
     <footer className="storefront-footer">

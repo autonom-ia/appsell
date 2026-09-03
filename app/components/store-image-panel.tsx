@@ -10,14 +10,56 @@ import {
   describeCoverFile
 } from "@/lib/product-cover";
 import { storeInitials } from "@/lib/store-brand";
-import type { StoreLogo } from "@/lib/store-settings";
+import type { StoreImageKind, StoreLogo } from "@/lib/store-settings";
 
 import { AccessibleDialog } from "./accessible-dialog";
 import { failureState } from "./product-cover-panel";
 
-// O logo da loja, do lado do vendedor (#352). O mesmo caminho da capa do
-// produto — endereço assinado, envio direto, confirmação — com a loja como
-// dona. Sem versão de produto para carregar: a loja não tem trava otimista.
+// O logo e o banner da loja, do lado do vendedor (#352, #387). O mesmo
+// caminho da capa do produto (endereço assinado, envio direto, confirmação)
+// com a loja como dona. Sem versão de produto para carregar: a loja não tem
+// trava otimista. O tipo vai na rota; o resto é igual.
+
+const COPY: Record<StoreImageKind, {
+  title: string;
+  hint: string;
+  choose: string;
+  replace: string;
+  remove: string;
+  removeTitle: string;
+  removeBody: string;
+  keep: string;
+  fallbackNote: string;
+  alt: string;
+  stale: string;
+}> = {
+  logo: {
+    title: "Logo da loja",
+    hint: "JPEG, PNG ou WebP, até 5 MB. Quadrado ou horizontal, fundo transparente ou claro. Sem logo, a loja mostra as iniciais do nome.",
+    choose: "Escolher logo",
+    replace: "Trocar logo",
+    remove: "Remover logo",
+    removeTitle: "Remover o logo?",
+    removeBody: "A loja volta a mostrar as iniciais do nome. Nada mais muda.",
+    keep: "Manter logo",
+    fallbackNote: "Iniciais geradas a partir do nome da loja.",
+    alt: "Logo atual",
+    stale: "O logo foi salvo, mas não consegui recarregar a tela. Atualize a página para vê-lo."
+  },
+  banner: {
+    title: "Banner da loja",
+    hint: "A capa larga no alto da sua loja. JPEG, PNG ou WebP, até 5 MB; o ideal é 1600 por 500, com o que importa no centro: no celular as laterais são cortadas.",
+    choose: "Escolher banner",
+    replace: "Trocar banner",
+    remove: "Remover banner",
+    removeTitle: "Remover o banner?",
+    removeBody: "A loja volta a abrir sem capa, só com o logo e o nome. Nada mais muda.",
+    keep: "Manter banner",
+    fallbackNote: "Sem banner, a loja abre só com o logo e o nome.",
+    alt: "Banner atual",
+    stale: "O banner foi salvo, mas não consegui recarregar a tela. Atualize a página para vê-lo."
+  }
+};
 
 interface LogoCsrf {
   intent: string;
@@ -72,17 +114,19 @@ export function readLogoIntent(value: unknown): LogoIntent | null {
   };
 }
 
-export function StoreLogoPanel({
+export function StoreImagePanel({
   sellerId,
   storeName,
-  logo,
+  kind,
+  image: logo,
   csrf,
   onBusyChange,
   onCommitted
 }: {
   sellerId: string;
   storeName: string;
-  logo: StoreLogo | null;
+  kind: StoreImageKind;
+  image: StoreLogo | null;
   csrf: LogoCsrf;
   onBusyChange?: (busy: boolean) => void;
   onCommitted: () => Promise<boolean>;
@@ -95,7 +139,8 @@ export function StoreLogoPanel({
   const mounted = useRef(true);
   const inFlight = useRef(new Set<AbortController>());
 
-  const base = `/api/sellers/${encodeURIComponent(sellerId)}/settings/logo`;
+  const base = `/api/sellers/${encodeURIComponent(sellerId)}/settings/${kind}`;
+  const copy = COPY[kind];
   const busy = state === "hashing" || state === "uploading" || state === "verifying";
 
   useEffect(() => {
@@ -269,25 +314,25 @@ export function StoreLogoPanel({
   }
 
   return (
-    <section className="cover-panel" aria-labelledby="logo-heading">
-      <h3 id="logo-heading">Logo da loja</h3>
-      <p className="form-note">
-        JPEG, PNG ou WebP, até 5 MB. Quadrado fica melhor. Sem logo, a loja mostra as iniciais do nome.
-      </p>
+    <section className="cover-panel" aria-labelledby={`${kind}-heading`}>
+      <h3 id={`${kind}-heading`}>{copy.title}</h3>
+      <p className="form-note">{copy.hint}</p>
       <div className="cover-preview">
         {logo
           // eslint-disable-next-line @next/next/no-img-element
-          ? <img className="cover-image store-logo-preview" src={logo.url} alt={`Logo atual de ${storeName}`} width={logo.width} height={logo.height} decoding="async" />
-          : (
+          ? <img className={kind === "banner" ? "cover-image store-banner-preview" : "cover-image store-logo-preview"} src={logo.url} alt={`${copy.alt} de ${storeName}`} width={logo.width} height={logo.height} decoding="async" />
+          : kind === "logo" ? (
             <div className="cover-fallback store-logo-fallback" aria-hidden="true">
               <span>{storeInitials(storeName)}</span>
             </div>
+          ) : (
+            <div className="cover-fallback store-banner-fallback" aria-hidden="true"/>
           )}
-        {logo ? null : <p className="cover-fallback-note">Iniciais geradas a partir do nome da loja.</p>}
+        {logo ? null : <p className="cover-fallback-note">{copy.fallbackNote}</p>}
       </div>
       <div className="cover-actions">
         <label className="secondary-button cover-choose">
-          {logo ? "Trocar logo" : "Escolher logo"}
+          {logo ? copy.replace : copy.choose}
           <input
             ref={fileInput}
             type="file"
@@ -301,7 +346,7 @@ export function StoreLogoPanel({
         </label>
         {logo ? (
           <button type="button" className="secondary-button" disabled={busy} onClick={() => setRemoving(true)}>
-            Remover logo
+            {copy.remove}
           </button>
         ) : null}
       </div>
@@ -309,26 +354,26 @@ export function StoreLogoPanel({
         {state === "hashing" ? <p className="form-note">Preparando o arquivo…</p> : null}
         {state === "uploading" ? <p className="form-note">Enviando a imagem…</p> : null}
         {state === "verifying" ? <p className="form-note">Verificando a imagem…</p> : null}
-        {state === "saved_stale" ? <p className="form-note">O logo foi salvo, mas não consegui recarregar a tela. Atualize a página para vê-lo.</p> : null}
+        {state === "saved_stale" ? <p className="form-note">{copy.stale}</p> : null}
         {state === "invalid" ? <p className="form-error">{rejection}</p> : null}
         {state === "rejected" ? <p className="form-error">Este arquivo não passou na verificação. Escolha outra imagem.</p> : null}
-        {state === "conflict" ? <p className="form-error">Outro envio do logo está em andamento. Aguarde e tente de novo.</p> : null}
-        {state === "forbidden" ? <p className="form-error">Só o dono ou um administrador da loja pode mudar o logo.</p> : null}
+        {state === "conflict" ? <p className="form-error">Outro envio está em andamento. Aguarde e tente de novo.</p> : null}
+        {state === "forbidden" ? <p className="form-error">Só o dono ou um administrador da loja pode mudar as imagens.</p> : null}
         {state === "unavailable" ? <p className="form-note">O envio não terminou. Tente novamente; nada foi alterado.</p> : null}
         {state === "error" ? <p className="form-error">Não foi possível concluir. Tente novamente.</p> : null}
       </div>
       {removing ? (
         <AccessibleDialog
-          titleId="logo-remove-title"
-          descriptionId="logo-remove-body"
+          titleId={`${kind}-remove-title`}
+          descriptionId={`${kind}-remove-body`}
           onClose={() => { if (!busy) setRemoving(false); }}
           initialFocusRef={removeCancel}
         >
-          <h4 id="logo-remove-title">Remover o logo?</h4>
-          <p id="logo-remove-body">A loja volta a mostrar as iniciais do nome. Nada mais muda.</p>
+          <h4 id={`${kind}-remove-title`}>{copy.removeTitle}</h4>
+          <p id={`${kind}-remove-body`}>{copy.removeBody}</p>
           <div className="dialog-actions">
-            <button ref={removeCancel} type="button" className="secondary-button" disabled={busy} onClick={() => setRemoving(false)}>Manter logo</button>
-            <button type="button" className="primary-button" disabled={busy} onClick={() => void removeLogo()}>{busy ? "Removendo…" : "Remover logo"}</button>
+            <button ref={removeCancel} type="button" className="secondary-button" disabled={busy} onClick={() => setRemoving(false)}>{copy.keep}</button>
+            <button type="button" className="primary-button" disabled={busy} onClick={() => void removeLogo()}>{busy ? "Removendo…" : copy.remove}</button>
           </div>
         </AccessibleDialog>
       ) : null}

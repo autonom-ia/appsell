@@ -32,8 +32,20 @@ export interface SettingsRouteContext {
   params: Promise<{ sellerId: string }>;
 }
 
+export interface ImageRouteContext {
+  params: Promise<{ sellerId: string; kind: string }>;
+}
+
 export interface LogoUploadRouteContext {
-  params: Promise<{ sellerId: string; uploadId: string }>;
+  params: Promise<{ sellerId: string; kind: string; uploadId: string }>;
+}
+
+export type SellerImageKind = "logo" | "banner";
+
+// Só dois tipos de imagem da loja existem; qualquer outro é 404 antes de
+// tocar sessão ou API.
+export function imageKind(value: string): SellerImageKind | null {
+  return value === "logo" || value === "banner" ? value : null;
 }
 
 // Nome, tagline, sobre e cor: texto curto. Nada de imagem passa por aqui.
@@ -60,11 +72,19 @@ export async function settingsSellerId(context: SettingsRouteContext) {
   return canonicalUuid(sellerId);
 }
 
+export async function imageIds(context: ImageRouteContext) {
+  const values = await context.params;
+  const sellerId = canonicalUuid(values.sellerId);
+  const kind = imageKind(values.kind);
+  return sellerId && kind ? { sellerId, kind } : null;
+}
+
 export async function logoUploadIds(context: LogoUploadRouteContext) {
   const values = await context.params;
   const sellerId = canonicalUuid(values.sellerId);
+  const kind = imageKind(values.kind);
   const uploadId = canonicalUuid(values.uploadId);
-  return sellerId && uploadId ? { sellerId, uploadId } : null;
+  return sellerId && kind && uploadId ? { sellerId, kind, uploadId } : null;
 }
 
 export async function prepareSettingsMutation(
@@ -106,15 +126,19 @@ export function browserSettings(settings: SellerSettingsProjection) {
   } catch {
     storageOrigin = "";
   }
-  const trusted = storageOrigin && settings.logo ? trustedProductCover(settings.logo, storageOrigin) : null;
-  const logo = trusted && typeof trusted === "object"
-    ? {
-        url: (trusted as { url: string }).url,
-        media_type: (trusted as { media_type: string }).media_type,
-        width: (trusted as { width: number }).width,
-        height: (trusted as { height: number }).height
-      }
-    : null;
+  const trustedImage = (image: SellerSettingsProjection["logo"] | undefined) => {
+    const trusted = storageOrigin && image ? trustedProductCover(image, storageOrigin) : null;
+    return trusted && typeof trusted === "object"
+      ? {
+          url: (trusted as { url: string }).url,
+          media_type: (trusted as { media_type: string }).media_type,
+          width: (trusted as { width: number }).width,
+          height: (trusted as { height: number }).height
+        }
+      : null;
+  };
+  const logo = trustedImage(settings.logo);
+  const banner = trustedImage(settings.banner);
   return {
     id: settings.id,
     slug: settings.slug,
@@ -123,7 +147,8 @@ export function browserSettings(settings: SellerSettingsProjection) {
     tagline: settings.tagline ?? null,
     about: settings.about ?? null,
     accent_color: settings.accent_color ?? null,
-    logo
+    logo,
+    banner
   };
 }
 

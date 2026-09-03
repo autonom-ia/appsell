@@ -2,7 +2,7 @@ import { cookies } from "next/headers";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { StoreIdentity, StorefrontFooter, StorefrontTopbar, storefrontClassName, storefrontStyle } from "@/app/components/storefront-brand";
+import { StoreIdentity, StorefrontCover, StorefrontFooter, StorefrontTopbar, storefrontClassName, storefrontStyle } from "@/app/components/storefront-brand";
 import { StripeCheckoutCard } from "@/app/components/stripe-checkout-card";
 import { sessionCookieName } from "@/lib/cookies";
 import {
@@ -47,6 +47,7 @@ export default async function ProductCheckoutPage({
   return <div className={storefrontClassName(seller, "product-checkout-page")} style={storefrontStyle(seller)}>
     <a className="skip-link" href="#product-checkout-content">Pular para o produto</a>
     <StorefrontTopbar seller={seller} action={<Link className="storefront-login" href="/auth/login">Já sou aluno</Link>}/>
+    {seller.banner ? <div className="lp-banner"><StorefrontCover seller={seller}/></div> : null}
     <main id="product-checkout-content" tabIndex={-1} className="product-checkout-main lp-main">
       <section className="product-checkout-summary lp-hero" aria-labelledby="product-checkout-title">
         {product.cover

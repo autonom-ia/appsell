@@ -28,6 +28,7 @@ from appsell_api.storage_s3 import PresignedRequest, S3Storage, StorageError
 SELLER_ID = UUID("72000000-0000-4000-8000-000000000001")
 PRODUCT_ID = UUID("72000000-0000-4000-8000-000000000002")
 IDENTITY_ID = UUID("71000000-0000-4000-8000-000000000001")
+UPLOAD_ID = UUID("73000000-0000-4000-8000-000000000001")
 
 
 class Falha(Exception):
@@ -330,6 +331,85 @@ async def test_logo_intent_sem_armazenamento_e_503_e_nao_toca_o_banco() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tipo_de_imagem_desconhecido_e_404_antes_do_banco() -> None:
+    auth = FakeAuth(seller_id=SELLER_ID, script=[])
+    async with client_for(auth, FakeStorage()) as client:
+        response = await client.post(
+            f"/v1/me/sellers/{SELLER_ID}/settings/avatar/upload-intents",
+            content=body(
+                idempotency_key=str(uuid4()),
+                media_type="image/png",
+                byte_size=4096,
+                sha256="ab" * 32,
+            ),
+        )
+    assert response.status_code == 404
+    assert response.json()["detail"] == "unknown_image_kind"
+    assert auth.session.calls == []
+    assert auth.rejected_requests == 1
+
+
+@pytest.mark.asyncio
+async def test_banner_clear_passa_o_tipo_ao_banco_e_apaga_a_chave_do_banner() -> None:
+    class Storage(FakeStorage):
+        def __init__(self) -> None:
+            super().__init__()
+            self.deleted: list[tuple[str, str]] = []
+
+        def delete_all_versions(self, *, bucket: str, key: str) -> None:
+            self.deleted.append((bucket, key))
+
+    storage = Storage()
+    auth = FakeAuth(
+        seller_id=SELLER_ID,
+        script=[SimpleNamespace(changed=True, previous_object_key="tenants/x/banner/old")],
+    )
+    async with client_for(auth, storage) as client:
+        response = await client.post(
+            f"/v1/me/sellers/{SELLER_ID}/settings/banner/clear",
+            content=body(idempotency_key=str(uuid4())),
+        )
+    assert response.status_code == 200
+    assert response.json() == {"changed": True}
+    assert storage.deleted == [("ready", "tenants/x/banner/old")]
+    (statement, parameters) = auth.session.calls[0]
+    assert "clear_seller_image(" in statement
+    assert parameters["kind"] == "banner"
+
+
+@pytest.mark.asyncio
+async def test_confirm_com_id_de_outro_tipo_e_404_sem_tocar_o_storage() -> None:
+    # FakeStorage não tem `head` nem `delete_all_versions`: qualquer toque no
+    # storage antes da checagem do banco explode o teste.
+    auth = FakeAuth(seller_id=SELLER_ID, script=[db_error("P4041")])
+    async with client_for(auth, FakeStorage()) as client:
+        response = await client.post(
+            f"/v1/me/sellers/{SELLER_ID}/settings/banner/uploads/{UPLOAD_ID}/confirm",
+            content=body(idempotency_key=str(uuid4())),
+        )
+    assert response.status_code == 404, response.text
+    (statement, parameters) = auth.session.calls[0]
+    assert "read_seller_image_upload(" in statement
+    assert parameters["kind"] == "banner" and parameters["upload"] == UPLOAD_ID
+
+
+@pytest.mark.asyncio
+async def test_confirm_de_upload_ja_fechado_e_409_sem_tocar_o_storage() -> None:
+    auth = FakeAuth(
+        seller_id=SELLER_ID,
+        script=[{"upload_id": str(UPLOAD_ID), "kind": "banner", "status": "cancelled"}],
+    )
+    async with client_for(auth, FakeStorage()) as client:
+        response = await client.post(
+            f"/v1/me/sellers/{SELLER_ID}/settings/banner/uploads/{UPLOAD_ID}/confirm",
+            content=body(idempotency_key=str(uuid4())),
+        )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "logo_upload_not_pending"
+    assert auth.rejected_requests == 1
+
+
+@pytest.mark.asyncio
 async def test_logo_clear_apaga_a_chave_anterior_do_bucket() -> None:
     class Storage(FakeStorage):
         def __init__(self) -> None:
@@ -372,6 +452,13 @@ def test_vitrine_publica_troca_chave_por_url_e_some_sem_armazenamento() -> None:
                 "width": 300,
                 "height": 300,
             },
+            "banner": {
+                "object_key": "tenants/s/banner/2",
+                "storage_version_id": "v3",
+                "media_type": "image/jpeg",
+                "width": 1600,
+                "height": 500,
+            },
         },
         "products": [
             {
@@ -404,8 +491,12 @@ def test_vitrine_publica_troca_chave_por_url_e_some_sem_armazenamento() -> None:
     texto = json.dumps(signed)
     assert "object_key" not in texto and "storage_version_id" not in texto
 
+    assert signed["seller"]["banner"]["url"].startswith("https://cdn.test/tenants/s/banner/2")
+    assert signed["seller"]["banner"]["width"] == 1600
+
     sem_storage = public_images(projection, None)
     assert "logo" not in sem_storage["seller"]
+    assert "banner" not in sem_storage["seller"]
     assert "cover" not in sem_storage["products"][0]
     assert sem_storage["seller"]["name"] == "Hub2you"
 

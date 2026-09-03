@@ -27,7 +27,7 @@ export async function POST(request: NextRequest, context: LogoUploadRouteContext
     const payload = await confirmDomainLogoUpload(
       prepared.authenticated.sessionId,
       prepared.authenticated.session,
-      { sellerOrganizationId: ids.sellerId, uploadId: ids.uploadId, idempotencyKey }
+      { sellerOrganizationId: ids.sellerId, kind: ids.kind, uploadId: ids.uploadId, idempotencyKey }
     );
     return NextResponse.json(payload, { status: 200, headers: { "cache-control": "no-store" } });
   } catch (error) {

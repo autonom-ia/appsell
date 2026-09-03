@@ -54,12 +54,16 @@ def public_images(projection: dict[str, Any], storage: S3Storage | None) -> dict
     arte gerada, como faz para uma loja sem logo. Nunca uma URL quebrada.
     """
     seller = projection.get("seller")
-    if isinstance(seller, dict) and "logo" in seller:
-        signed = _signed_image(seller.get("logo"), storage)
-        seller = {key: value for key, value in seller.items() if key != "logo"}
-        if signed is not None:
-            seller["logo"] = signed
-        projection = {**projection, "seller": seller}
+    if isinstance(seller, dict) and ("logo" in seller or "banner" in seller):
+        rewritten_seller = {
+            key: value for key, value in seller.items() if key not in ("logo", "banner")
+        }
+        for field in ("logo", "banner"):
+            if field in seller:
+                signed = _signed_image(seller.get(field), storage)
+                if signed is not None:
+                    rewritten_seller[field] = signed
+        projection = {**projection, "seller": rewritten_seller}
     products = projection.get("products")
     if isinstance(products, list):
         rewritten = []

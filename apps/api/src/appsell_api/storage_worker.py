@@ -474,6 +474,8 @@ class VerifyCoverJob:
     expected_size: int
     expected_sha256_hex: str
     declared_content_type: str
+    # Só vale sem produto: qual imagem da loja é ("logo" ou "banner", 0054).
+    kind: str = "logo"
 
 
 @dataclass(frozen=True)
@@ -601,23 +603,26 @@ class ProductCoverWorker:
         except Exception as error:
             raise CleanupRetryableError("cover quarantine cleanup must be retried") from error
 
-    def discard_abandoned_logo(self, *, seller_id: UUID) -> None:
-        """Apaga a quarentena de uma tentativa que não virou logo."""
+    def discard_abandoned_image(self, *, seller_id: UUID, kind: str) -> None:
+        """Apaga a quarentena de uma tentativa que não virou logo nem banner."""
         try:
             self.storage.delete_all_versions(
                 bucket=self.storage.quarantine_bucket,
-                key=logo_quarantine_key(seller_id),
+                key=image_quarantine_key(seller_id, kind),
             )
         except Exception as error:
-            raise CleanupRetryableError("logo quarantine cleanup must be retried") from error
+            raise CleanupRetryableError("image quarantine cleanup must be retried") from error
+
+    def discard_abandoned_logo(self, *, seller_id: UUID) -> None:
+        self.discard_abandoned_image(seller_id=seller_id, kind="logo")
 
 
 def expected_image_keys(job: VerifyCoverJob) -> tuple[str, str]:
     """As chaves que este job tem o direito de tocar, e nenhuma outra."""
     if job.product_id is None:
         return (
-            logo_quarantine_key(job.seller_id),
-            logo_ready_key(job.seller_id, job.upload_id),
+            image_quarantine_key(job.seller_id, job.kind),
+            image_ready_key(job.seller_id, job.kind, job.upload_id),
         )
     return (
         cover_quarantine_key(job.seller_id, job.product_id),
@@ -625,12 +630,27 @@ def expected_image_keys(job: VerifyCoverJob) -> tuple[str, str]:
     )
 
 
+SELLER_IMAGE_KINDS = frozenset({"logo", "banner"})
+
+
+def image_quarantine_key(seller_id: UUID, kind: str) -> str:
+    if kind not in SELLER_IMAGE_KINDS:
+        raise ScanRejected("unknown seller image kind")
+    return f"tenants/{seller_id}/quarantine/{kind}"
+
+
+def image_ready_key(seller_id: UUID, kind: str, upload_id: UUID) -> str:
+    if kind not in SELLER_IMAGE_KINDS:
+        raise ScanRejected("unknown seller image kind")
+    return f"tenants/{seller_id}/{kind}/{upload_id}"
+
+
 def logo_quarantine_key(seller_id: UUID) -> str:
-    return f"tenants/{seller_id}/quarantine/logo"
+    return image_quarantine_key(seller_id, "logo")
 
 
 def logo_ready_key(seller_id: UUID, upload_id: UUID) -> str:
-    return f"tenants/{seller_id}/logo/{upload_id}"
+    return image_ready_key(seller_id, "logo", upload_id)
 
 
 def cover_quarantine_key(seller_id: UUID, product_id: UUID) -> str:
