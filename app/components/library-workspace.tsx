@@ -4,12 +4,7 @@ import Link from "next/link";
 import { NEW_STORE_PATH } from "./app-shell";
 import { canOpenFirstStore, useShellProfile } from "./shell-profile-context";
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  parseBuyerProductsPayload,
-  parseBuyerSellerProductsPayload,
-  type BuyerSellerProductItem,
-  type BuyerProductItem
-} from "../../lib/buyer-products";
+import { parseBuyerProductsPayload, type BuyerProductItem } from "../../lib/buyer-products";
 
 export type LibraryItem = BuyerProductItem;
 
@@ -110,64 +105,14 @@ export function LibraryWorkspace({ demoCheckoutEnabled = false }: { demoCheckout
           <span aria-hidden="true">→</span>
         </Link>
         : <div className="library-unavailable"><button className="primary-button" type="button" disabled>Conteúdo indisponível</button><p>Este produto ainda não possui uma aula publicada.</p></div>}
-      <SellerProducts item={item}/>
+      {/* Antes daqui saía um acordeão que listava os outros produtos como
+          texto morto, sem link nenhum: prometia navegação e entregava uma
+          lista de onde não se saía. A loja do produtor já é essa vitrine. */}
+      <Link className="secondary-button library-store-link" href={`/s/${encodeURIComponent(item.seller.slug)}`}>
+        Ver a loja de {item.seller.name}
+      </Link>
     </article>;
   })}</div>;
-}
-
-function SellerProducts({ item }: { item: LibraryItem }) {
-  const [open, setOpen] = useState(false);
-  const [state, setState] = useState<"idle" | "loading" | "ready" | "error">("idle");
-  const [products, setProducts] = useState<BuyerSellerProductItem[]>([]);
-  const panelId = `seller-products-${item.entitlement_id}`;
-
-  async function toggle() {
-    if (open) {
-      setOpen(false);
-      return;
-    }
-    setOpen(true);
-    if (state === "ready") return;
-    setState("loading");
-    try {
-      const response = await fetch(
-        `/api/me/products/${encodeURIComponent(item.entitlement_id)}/seller-products`,
-        { cache: "no-store" }
-      );
-      if (!response.ok) throw new Error("seller_products_unavailable");
-      const parsed = parseBuyerSellerProductsPayload(await response.json());
-      if (!parsed) throw new Error("seller_products_invalid");
-      setProducts(parsed.items);
-      setState("ready");
-    } catch {
-      setState("error");
-    }
-  }
-
-  return <section className="seller-products" aria-label={`Produtos de ${item.seller.name}`}>
-    <button
-      type="button"
-      className="secondary-button seller-products-toggle"
-      aria-expanded={open}
-      aria-controls={panelId}
-      onClick={() => void toggle()}
-    >
-      {open ? "Ocultar outros produtos" : `Ver outros produtos de ${item.seller.name}`}
-    </button>
-    {open ? <div id={panelId} className="seller-products-panel" aria-live="polite">
-      <h3 id={`${panelId}-title`}>Outros produtos de {item.seller.name}</h3>
-      {state === "loading" ? <p>Carregando produtos…</p> : null}
-      {state === "error" ? <p role="alert">Não foi possível carregar os outros produtos agora.</p> : null}
-      {state === "ready" && products.length === 0 ? <p>Este produtor ainda não publicou outros produtos.</p> : null}
-      {state === "ready" && products.length > 0 ? <ul className="seller-product-list">
-        {products.map(({ product }) => <li key={product.id}>
-          <strong>{product.title}</strong>
-          {product.description.trim() ? <span>{product.description}</span> : null}
-          <small>Produto publicado</small>
-        </li>)}
-      </ul> : null}
-    </div> : null}
-  </section>;
 }
 
 function LibrarySkeleton() {
