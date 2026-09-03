@@ -18,8 +18,13 @@
 | SHA do **api** | `41e0c44` — banner da loja (#387) mais o hotfix da confirmação de upload (#391) |
 | SHA do **asset-worker** | `d5e00ec` — mesma imagem da api, um SHA atrás |
 | SHA do **pdf-sandbox** | `d5e00ec` — mesma imagem da api, com outra tag |
-| SHA do **web** | `a49e017` — refino da loja (botão na cor, hero, cards, "Já sou aluno") e banner (#387); worker e sandbox seguem em `d5e00ec` |
+| SHA do **web** | `0e71e46` — refino da loja e banner (#387), com o hero do desktop corrigido (#392); worker e sandbox seguem em `d5e00ec` |
 | Banco | head **`0054_banner_da_loja`**, `schema_ready() = true` |
+
+**Correção de 2026-09-03, `web` `0e71e46` (PR #392).** Com banner, a vitrine
+no desktop punha a capa e o conteúdo lado a lado: o nome da loja sumia e o
+logo era cortado. Três defeitos numa tacada, todos de layout. Detalhe na seção
+[Release `a49e017`](#release-a49e017--refino-da-loja-e-banner-2026-09-03).
 
 **Hotfix de 2026-09-03, `api` `41e0c44` (PR #391).** Depois do release
 `a49e017`, nenhum logo ou banner podia ser confirmado: a rota abria duas
@@ -283,10 +288,38 @@ Fica aberto: 401 e 403 no mesmo estado do painel (`failureState` em
 `product-cover-panel.tsx`), que faz a tela culpar a permissão por qualquer
 falha de autenticação.
 
+### O layout do banner, e a correção `0e71e46` (PR #392)
+
+Com o banner no ar, a vitrine no desktop quebrou. Três defeitos, todos medidos
+na página em produção:
+
+1. **A capa dividia o hero com o conteúdo.** `.storefront-hero` é um grid de
+   duas colunas acima de 680px, desenhado para o logo e o bloco de texto. A
+   capa entrou como novo primeiro filho e o grid passou a distribuir capa e
+   conteúdo lado a lado: colunas de 1024px e 98px, título com largura zero,
+   logo transbordando 53px sob `overflow: hidden`. No celular nada disso
+   aparecia, porque a regra vive dentro do media query. A correção faz
+   `.storefront-hero-covered` desfazer o grid e adotar, no desktop, o mesmo
+   desenho do celular: logo sobre a capa, nome e frase abaixo.
+2. **A faixa do banner decapitava a imagem na página do produto**: caixa em
+   6,38 contra 3,00 da imagem, e o `object-fit: cover` cortava metade da
+   altura. A faixa saiu: ali a capa do produto é a imagem que vende, e duas
+   imagens grandes empurravam título e preço para baixo da dobra.
+3. **O teto de 320px cortava a capa em telas largas** (caixa em 4,49 contra
+   3,20). O conteúdo já para em 1180px, então sem teto a capa nunca passa de
+   359px.
+
+Defesa nova: `tests/e2e/vitrine-hero.spec.ts` monta o hero com o
+`app/styles.css` real e mede, sem servidor nem banco — uma coluna com capa,
+capa de borda a borda, título legível, nada transbordando, proporção da caixa
+igual à da imagem, e o hero de duas colunas intacto sem capa. Verificado que
+ele reprova o CSS anterior. O hero foi medido também em Chromium, Firefox e
+WebKit, a 1440, 1024, 768 e 390px.
+
 ### O que não foi validado
 
-Upload real de banner por um vendedor contra o S3 de produção, agora com o
-hotfix no ar (o logo foi exercitado de verdade às 09:57).
+Nada em aberto no caminho do banner: o upload real foi exercitado pelo
+vendedor e o resultado conferido em produção nos três motores.
 
 ### Rollback
 
