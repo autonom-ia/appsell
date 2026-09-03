@@ -8,6 +8,7 @@ import {
   checkoutProvider,
   checkoutWebhookEndpointKey,
   createFinancialExternalCheckoutIntent,
+  createFinancialExternalCheckoutSession,
   FinancialExternalCheckoutConfigError,
   FinancialExternalCheckoutError
 } from "@/lib/financial-external-checkout.server";
@@ -158,7 +159,8 @@ export async function POST(request: NextRequest) {
         fulfillmentEndpointKey: endpointKey,
         idempotencyKey: crypto.randomUUID()
       });
-      return NextResponse.json({ url: result.checkoutUrl }, { headers: noStore() });
+      const stripeCheckoutUrl = await createFinancialExternalCheckoutSession(result.checkoutUrl);
+      return NextResponse.json({ url: stripeCheckoutUrl }, { headers: noStore() });
     } catch (error) {
       if (error instanceof FinancialExternalCheckoutConfigError) return jsonError("financial_checkout_not_configured", 503);
       if (error instanceof FinancialExternalCheckoutError) {

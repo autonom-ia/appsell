@@ -6,6 +6,7 @@ import {
   checkoutProvider,
   checkoutWebhookEndpointKey,
   createFinancialExternalCheckoutIntent,
+  createFinancialExternalCheckoutSession,
   FinancialExternalCheckoutConfigError,
   FinancialExternalCheckoutError
 } from "../lib/financial-external-checkout.server";
@@ -118,5 +119,40 @@ describe("Financial external checkout client", () => {
       fulfillmentEndpointKey: endpointKey,
       idempotencyKey: "buyer-course-001"
     })).rejects.toMatchObject(new FinancialExternalCheckoutError("financial_checkout_rejected", 409));
+  });
+
+  it("creates the Stripe session in the background and accepts only the official redirect", async () => {
+    process.env.FINANCIAL_API_URL = "https://financial.test/";
+    process.env.FINANCIAL_INTERNAL_API_KEY = "internal-key";
+    const fetch = vi.fn(async () => new Response(null, {
+      status: 303,
+      headers: { location: "https://checkout.stripe.com/c/pay/cs_live_123" }
+    }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(createFinancialExternalCheckoutSession(
+      "https://financial.test/financial/public/external-checkout/0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c"
+    )).resolves.toBe("https://checkout.stripe.com/c/pay/cs_live_123");
+
+    const [url, init] = fetch.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(url.toString()).toBe("https://financial.test/financial/public/external-checkout/0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c/session");
+    expect(init).toMatchObject({
+      method: "POST",
+      redirect: "manual",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: ""
+    });
+  });
+
+  it("rejects a checkout URL outside the configured Financial origin", async () => {
+    process.env.FINANCIAL_API_URL = "https://financial.test/";
+    process.env.FINANCIAL_INTERNAL_API_KEY = "internal-key";
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(createFinancialExternalCheckoutSession(
+      "https://attacker.test/financial/public/external-checkout/0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c"
+    )).rejects.toMatchObject(new FinancialExternalCheckoutError("financial_checkout_invalid_url", 502));
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
