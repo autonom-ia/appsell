@@ -381,23 +381,37 @@ def _optional_storage(request: Request) -> S3Storage | None:
     return storage
 
 
+_SEGREDOS_DA_CAPA = ("object_key", "storage_version_id")
+
+
 def _library_images(items: Any, storage: S3Storage | None) -> Any:
     """Troca a chave de objeto da capa por um endereço temporário.
 
     Mesma disciplina da vitrine pública: chave e versão morrem aqui, e sem
     armazenamento configurado a capa some inteira em vez de virar um endereço
     quebrado — o cartão desenha a arte gerada a partir do nome.
+
+    A limpeza falha fechada. Uma resposta que não tenha a forma esperada não
+    passa intacta: o que não dá para reconhecer como capa assinada é removido,
+    porque o preço de esconder demais é uma arte que falta, e o de esconder de
+    menos é a chave do bucket na mão de quem abrir a página.
     """
     if not isinstance(items, list):
-        return items
+        return []
     rewritten = []
     for item in items:
-        product = item.get("product") if isinstance(item, dict) else None
-        if not isinstance(product, dict) or "cover" not in product:
+        if not isinstance(item, dict):
+            continue
+        product = item.get("product")
+        if not isinstance(product, dict):
             rewritten.append(item)
             continue
+        limpo = {
+            key: value
+            for key, value in product.items()
+            if key != "cover" and key not in _SEGREDOS_DA_CAPA
+        }
         signed = _signed_cover(product.get("cover"), storage)
-        limpo = {key: value for key, value in product.items() if key != "cover"}
         if signed is not None:
             limpo["cover"] = signed
         rewritten.append({**item, "product": limpo})

@@ -20,8 +20,6 @@ Revises: 0057_banner_na_vitrine
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from alembic import op
 
 revision = "0058_capa_na_biblioteca"
@@ -30,50 +28,164 @@ branch_labels = None
 depends_on = None
 
 
-_INICIO = "        create or replace function app_private.read_buyer_library"
-_FIM = '        """'
+# As duas definições ficam congeladas aqui, e não recortadas da 0007 em
+# tempo de execução: a migration precisa produzir sempre o mesmo SQL, hoje
+# e num banco criado do zero daqui a um ano, mesmo que alguém edite a 0007.
+# O downgrade devolve exatamente o texto que existia antes deste upgrade.
 
-
-def _texto_da_0007() -> str:
-    """O corpo da função como a 0007 o escreveu.
-
-    A 0007 guarda os comandos numa lista dentro de `upgrade()`, então não dá
-    para importar: o texto é recortado do arquivo, com as asserções abaixo
-    para falhar alto se ele sair do lugar.
-    """
-    fonte = Path(__file__).with_name("0007_learning_progress.py").read_text(encoding="utf-8")
-    if fonte.count(_INICIO) != 1:
-        raise RuntimeError("a função da biblioteca não está onde a 0007 a deixou")
-    inicio = fonte.index(_INICIO)
-    fim = fonte.index(_FIM, inicio)
-    texto = fonte[inicio:fim]
-    if "read_buyer_library" not in texto or "buyer_entitlement" not in texto:
-        raise RuntimeError("o recorte da 0007 não parece a função da biblioteca")
-    return texto
-
-
-_ANCORA = """            'product',(publication.snapshot->'product') || jsonb_build_object(
-              'publication_id',publication.id,'publication_version',publication.version
-            ),"""
-
-_COM_CAPA = """            'product',(publication.snapshot->'product') || jsonb_build_object(
+_COM_CAPA = r"""
+        create or replace function app_private.read_buyer_library(p_identity_user_id uuid)
+        returns jsonb language plpgsql security definer
+        set search_path=pg_catalog,app_private,public as $$
+        declare result jsonb;
+        begin
+          if not app_private.library_context_allowed(p_identity_user_id,'library.read') then
+            raise exception 'library context is not authorized' using errcode='28000';
+          end if;
+          select coalesce(jsonb_agg(jsonb_build_object(
+            'entitlement_id',entitlement.id,
+            'seller',jsonb_build_object('id',organization.id,'slug',organization.slug,'name',organization.display_name),
+            'product',(publication.snapshot->'product') || jsonb_build_object(
               'publication_id',publication.id,'publication_version',publication.version
             ) || case when product.cover_object_key is null then '{}'::jsonb
                  else jsonb_build_object('cover',jsonb_build_object(
                    'object_key',product.cover_object_key,
                    'storage_version_id',product.cover_storage_version_id,
                    'media_type',product.cover_media_type,
-                   'width',product.cover_width,'height',product.cover_height)) end,"""
+                   'width',product.cover_width,'height',product.cover_height)) end,
+            'progress_percent',coalesce(summary.progress_percent,0),
+            'resume_lesson_id',coalesce(
+              latest_partial.lesson_id,first_incomplete.lesson_id,first_lesson.lesson_id
+            )
+          ) order by entitlement.created_at,entitlement.id),'[]'::jsonb) into result
+          from buyer_entitlement entitlement
+          join seller_organization organization on organization.id=entitlement.seller_organization_id
+          join catalog_product product
+            on product.seller_organization_id=entitlement.seller_organization_id
+           and product.id=entitlement.catalog_product_id
+          join publication
+            on publication.seller_organization_id=entitlement.seller_organization_id
+           and publication.catalog_product_id=entitlement.catalog_product_id
+           and publication.id=entitlement.publication_id
+          left join lateral (
+            select case when sum(state.total_lessons)=0 then 0
+              else floor(sum(state.completed_lessons)*100.0/sum(state.total_lessons))::smallint end progress_percent
+            from course_learning_state state
+            where state.seller_organization_id=entitlement.seller_organization_id
+              and state.entitlement_id=entitlement.id
+          ) summary on true
+          left join lateral (
+            select progress.lesson_id from lesson_progress progress
+            where progress.seller_organization_id=entitlement.seller_organization_id
+              and progress.entitlement_id=entitlement.id
+              and progress.progress_percent between 1 and 99
+            order by progress.updated_at desc,progress.lesson_id limit 1
+          ) latest_partial on true
+          left join lateral (
+            select projected.lesson_id from publication_lesson projected
+            where projected.seller_organization_id=entitlement.seller_organization_id
+              and projected.publication_id=entitlement.publication_id
+              and not exists(
+                select 1 from lesson_progress progress
+                where progress.seller_organization_id=entitlement.seller_organization_id
+                  and progress.entitlement_id=entitlement.id
+                  and progress.lesson_id=projected.lesson_id
+                  and progress.progress_percent=100
+              )
+            order by projected.course_position,projected.module_position,
+              projected.lesson_position,projected.lesson_id limit 1
+          ) first_incomplete on true
+          left join lateral (
+            select projected.lesson_id from publication_lesson projected
+            where projected.seller_organization_id=entitlement.seller_organization_id
+              and projected.publication_id=entitlement.publication_id
+            order by projected.course_position,projected.module_position,
+              projected.lesson_position,projected.lesson_id limit 1
+          ) first_lesson on true
+          where entitlement.buyer_identity_user_id=p_identity_user_id
+            and entitlement.status='active' and entitlement.starts_at<=clock_timestamp()
+            and (entitlement.expires_at is null or entitlement.expires_at>clock_timestamp())
+            and organization.status='active' and product.status='published';
+          return result;
+        end $$
+"""
+
+_SEM_CAPA = r"""
+        create or replace function app_private.read_buyer_library(p_identity_user_id uuid)
+        returns jsonb language plpgsql security definer
+        set search_path=pg_catalog,app_private,public as $$
+        declare result jsonb;
+        begin
+          if not app_private.library_context_allowed(p_identity_user_id,'library.read') then
+            raise exception 'library context is not authorized' using errcode='28000';
+          end if;
+          select coalesce(jsonb_agg(jsonb_build_object(
+            'entitlement_id',entitlement.id,
+            'seller',jsonb_build_object('id',organization.id,'slug',organization.slug,'name',organization.display_name),
+            'product',(publication.snapshot->'product') || jsonb_build_object(
+              'publication_id',publication.id,'publication_version',publication.version
+            ),
+            'progress_percent',coalesce(summary.progress_percent,0),
+            'resume_lesson_id',coalesce(
+              latest_partial.lesson_id,first_incomplete.lesson_id,first_lesson.lesson_id
+            )
+          ) order by entitlement.created_at,entitlement.id),'[]'::jsonb) into result
+          from buyer_entitlement entitlement
+          join seller_organization organization on organization.id=entitlement.seller_organization_id
+          join catalog_product product
+            on product.seller_organization_id=entitlement.seller_organization_id
+           and product.id=entitlement.catalog_product_id
+          join publication
+            on publication.seller_organization_id=entitlement.seller_organization_id
+           and publication.catalog_product_id=entitlement.catalog_product_id
+           and publication.id=entitlement.publication_id
+          left join lateral (
+            select case when sum(state.total_lessons)=0 then 0
+              else floor(sum(state.completed_lessons)*100.0/sum(state.total_lessons))::smallint end progress_percent
+            from course_learning_state state
+            where state.seller_organization_id=entitlement.seller_organization_id
+              and state.entitlement_id=entitlement.id
+          ) summary on true
+          left join lateral (
+            select progress.lesson_id from lesson_progress progress
+            where progress.seller_organization_id=entitlement.seller_organization_id
+              and progress.entitlement_id=entitlement.id
+              and progress.progress_percent between 1 and 99
+            order by progress.updated_at desc,progress.lesson_id limit 1
+          ) latest_partial on true
+          left join lateral (
+            select projected.lesson_id from publication_lesson projected
+            where projected.seller_organization_id=entitlement.seller_organization_id
+              and projected.publication_id=entitlement.publication_id
+              and not exists(
+                select 1 from lesson_progress progress
+                where progress.seller_organization_id=entitlement.seller_organization_id
+                  and progress.entitlement_id=entitlement.id
+                  and progress.lesson_id=projected.lesson_id
+                  and progress.progress_percent=100
+              )
+            order by projected.course_position,projected.module_position,
+              projected.lesson_position,projected.lesson_id limit 1
+          ) first_incomplete on true
+          left join lateral (
+            select projected.lesson_id from publication_lesson projected
+            where projected.seller_organization_id=entitlement.seller_organization_id
+              and projected.publication_id=entitlement.publication_id
+            order by projected.course_position,projected.module_position,
+              projected.lesson_position,projected.lesson_id limit 1
+          ) first_lesson on true
+          where entitlement.buyer_identity_user_id=p_identity_user_id
+            and entitlement.status='active' and entitlement.starts_at<=clock_timestamp()
+            and (entitlement.expires_at is null or entitlement.expires_at>clock_timestamp())
+            and organization.status='active' and product.status='published';
+          return result;
+        end $$
+"""
 
 
 def _biblioteca(com_capa: bool) -> str:
-    """A função como a 0007 a deixou, com ou sem a capa."""
-    texto = _texto_da_0007()
-    if not com_capa:
-        return texto
-    if texto.count(_ANCORA) != 1:
-        raise RuntimeError("a âncora do produto não aparece exatamente uma vez")
-    return texto.replace(_ANCORA, _COM_CAPA, 1)
+    """A função da biblioteca, com ou sem a capa do produto."""
+    return _COM_CAPA if com_capa else _SEM_CAPA
 
 
 _READY = "app_private.schema_ready()"
