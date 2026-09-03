@@ -70,15 +70,19 @@ def main() -> None:
             _fail("seller organization not found, inactive, or could not be configured")
         connection.commit()
 
-    print(json.dumps({
-        "status": "configured",
-        "changed": changed,
-        "seller_organization_id": str(row[0]),
-        "financial_operator_id": str(arguments.financial_operator_id),
-        "financial_product_catalog_item_id": str(
-            arguments.financial_product_catalog_item_id
-        ),
-    }))
+    print(
+        json.dumps(
+            {
+                "status": "configured",
+                "changed": changed,
+                "seller_organization_id": str(row[0]),
+                "financial_operator_id": str(arguments.financial_operator_id),
+                "financial_product_catalog_item_id": str(
+                    arguments.financial_product_catalog_item_id
+                ),
+            }
+        )
+    )
 
 
 def _fail(message: str) -> NoReturn:
