@@ -688,6 +688,17 @@ def test_formato_invalido_e_22023(campos: dict[str, str]) -> None:
     assert sqlstate_de(excinfo.value) == "22023"
 
 
+def test_limites_sao_em_caracteres_nao_em_bytes() -> None:
+    # A tela promete 160 caracteres; "á" tem dois bytes. Uma frase em português
+    # no limite tem de entrar.
+    depois = atualizar(OWNER, tagline="á" * 160, about="ç" * 600)
+    assert depois["tagline"] == "á" * 160
+    atualizar(OWNER, tagline=None, about=None, accent_color="#1a6b52")
+    versao = versao_do_produto()
+    promessa(OWNER, "é" * 200, versao)
+    promessa(OWNER, None, versao + 1)
+
+
 # ------------------------------------------------------------------- logo
 
 
