@@ -450,7 +450,11 @@ async def list_product_drafts(
                             "current_offer.currency as offer_currency, "
                             "product.cover_object_key, product.cover_storage_version_id, "
                             "product.cover_media_type, product.cover_width, "
-                            "product.cover_height, product.headline, "
+                            "product.cover_height, "
+                            # A promessa nasce na 0052; a API nova sobe ANTES da
+                            # migration (web → api → migration). Projetada via
+                            # jsonb, a coluna ausente vira null em vez de 42703.
+                            "to_jsonb(product)->>'headline' as headline, "
                             "coalesce(counts.students, 0) as students "
                             "from catalog_product product "
                             "join product_course linked "
@@ -1709,7 +1713,8 @@ async def _read_product_draft(
                             "product.published_snapshot_id, "
                             "product.cover_object_key, product.cover_storage_version_id, "
                             "product.cover_media_type, product.cover_width, "
-                            "product.cover_height, product.headline, "
+                            "product.cover_height, "
+                            "to_jsonb(product)->>'headline' as headline, "
                             "course.id as course_id, course.title as course_title, "
                             "course.description as course_description, "
                             "course.status as course_status, "
