@@ -93,8 +93,8 @@ _FUNCOES_DO_LOGO: tuple[str, ...] = (
 )
 _FUNCOES_DA_IMAGEM: tuple[str, ...] = (
     "app_private.create_seller_image_upload_intent(uuid,uuid,text,text,bigint,text,text,text,uuid,text,uuid)",
-    "app_private.read_seller_image_upload(uuid,uuid,uuid)",
-    "app_private.close_seller_image_upload(uuid,uuid,uuid,text,text,uuid)",
+    "app_private.read_seller_image_upload(uuid,uuid,uuid,text)",
+    "app_private.close_seller_image_upload(uuid,uuid,uuid,text,text,text,uuid)",
     "app_private.set_seller_image(uuid,uuid,text,uuid,text,text,text,text,integer,integer,bigint,uuid,text,uuid)",
     "app_private.clear_seller_image(uuid,uuid,text,uuid,text,uuid)",
 )
@@ -257,16 +257,22 @@ end $$
 
 _LER_UPLOAD = r"""
 create function app_private.read_seller_image_upload(
-  p_identity_user_id uuid, p_seller_organization_id uuid, p_upload_id uuid
+  p_identity_user_id uuid, p_seller_organization_id uuid, p_upload_id uuid, p_kind text
 ) returns jsonb
 language plpgsql security definer
 set search_path=pg_catalog,app_private,public,pg_temp as $$
 declare found_upload app_private.seller_logo_upload%rowtype;
 begin
 GUARDA
+  if p_kind is null or p_kind not in ('logo','banner') then
+    raise exception 'invalid seller image kind' using errcode='22023';
+  end if;
+  -- O tipo faz parte da identidade do upload: um id de logo não é lido pela
+  -- rota do banner, nem o contrário.
   select * into found_upload from app_private.seller_logo_upload attempt
   where attempt.seller_organization_id = p_seller_organization_id
-    and attempt.id = p_upload_id;
+    and attempt.id = p_upload_id
+    and attempt.kind = p_kind;
   if not found then
     raise exception 'seller image upload not found' using errcode='P4041';
   end if;
@@ -286,14 +292,15 @@ end $$
 _FECHAR_UPLOAD = r"""
 create function app_private.close_seller_image_upload(
   p_identity_user_id uuid, p_seller_organization_id uuid,
-  p_upload_id uuid, p_status text, p_failure_code text, p_request_id uuid
+  p_upload_id uuid, p_kind text, p_status text, p_failure_code text, p_request_id uuid
 ) returns jsonb
 language plpgsql security definer
 set search_path=pg_catalog,app_private,public,pg_temp as $$
 declare closed app_private.seller_logo_upload%rowtype;
 begin
 GUARDA
-  if p_status is null or p_status not in ('rejected','cancelled','expired')
+  if p_kind is null or p_kind not in ('logo','banner')
+     or p_status is null or p_status not in ('rejected','cancelled','expired')
      or p_request_id is null
      or (p_failure_code is not null
          and octet_length(p_failure_code) not between 2 and 80) then
@@ -303,6 +310,7 @@ GUARDA
   select * into closed from app_private.seller_logo_upload attempt
   where attempt.seller_organization_id = p_seller_organization_id
     and attempt.id = p_upload_id
+    and attempt.kind = p_kind
   for update;
   if not found then
     raise exception 'seller image upload not found' using errcode='P4041';
@@ -314,7 +322,8 @@ GUARDA
   update app_private.seller_logo_upload attempt
   set status = p_status, failure_code = p_failure_code, updated_at = clock_timestamp()
   where attempt.seller_organization_id = p_seller_organization_id
-    and attempt.id = p_upload_id;
+    and attempt.id = p_upload_id
+    and attempt.kind = p_kind;
 
   insert into public.audit_event(
     seller_organization_id,actor_identity_user_id,action,target_type,target_id,

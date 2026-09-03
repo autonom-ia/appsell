@@ -71,8 +71,8 @@ FUNCOES_DO_RUNTIME = (
     "app_private.read_seller_settings(uuid,uuid)",
     "app_private.update_seller_settings(uuid,uuid,text,text,text,text,uuid)",
     "app_private.create_seller_image_upload_intent(uuid,uuid,text,text,bigint,text,text,text,uuid,text,uuid)",
-    "app_private.read_seller_image_upload(uuid,uuid,uuid)",
-    "app_private.close_seller_image_upload(uuid,uuid,uuid,text,text,uuid)",
+    "app_private.read_seller_image_upload(uuid,uuid,uuid,text)",
+    "app_private.close_seller_image_upload(uuid,uuid,uuid,text,text,text,uuid)",
     "app_private.set_seller_image(uuid,uuid,text,uuid,text,text,text,text,integer,integer,bigint,uuid,text,uuid)",
     "app_private.clear_seller_image(uuid,uuid,text,uuid,text,uuid)",
     "app_private.update_product_headline(uuid,uuid,uuid,text,bigint,uuid,text,uuid)",
@@ -1019,3 +1019,48 @@ def test_toda_tabela_do_esquema_tem_dono_appsell_owner() -> None:
             "and pg_get_userbyid(c.relowner) <> 'appsell_owner' order by 1"
         ).fetchall()
     assert fora == [], f"tabelas fora da convenção de dono: {fora}"
+
+
+def test_ler_e_fechar_upload_exigem_o_tipo_certo() -> None:
+    """Achado do review da PR #389: um id de upload de banner não pode ser lido
+    nem fechado pela rota do logo. O tipo faz parte da identidade do upload."""
+    assert RUNTIME_URL
+    banner = intent(kind="banner")
+    upload_id = UUID(banner["upload_id"])
+    with psycopg.connect(RUNTIME_URL) as connection:
+        contexto(connection, OWNER, LOJA, UPDATE)
+        with pytest.raises(psycopg.Error) as excinfo:
+            connection.execute(
+                "select app_private.read_seller_image_upload(%s,%s,%s,%s)",
+                (OWNER, LOJA, upload_id, "logo"),
+            )
+        assert sqlstate_de(excinfo.value) == "P4041"
+        connection.rollback()
+        contexto(connection, OWNER, LOJA, UPDATE)
+        with pytest.raises(psycopg.Error) as excinfo:
+            connection.execute(
+                "select app_private.close_seller_image_upload(%s,%s,%s,%s,%s,%s,%s)",
+                (OWNER, LOJA, upload_id, "logo", "rejected", "verification_failed", uuid4()),
+            )
+        assert sqlstate_de(excinfo.value) == "P4041"
+        connection.rollback()
+        contexto(connection, OWNER, LOJA, UPDATE)
+        with pytest.raises(psycopg.Error) as excinfo:
+            connection.execute(
+                "select app_private.read_seller_image_upload(%s,%s,%s,%s)",
+                (OWNER, LOJA, upload_id, "capa"),
+            )
+        assert sqlstate_de(excinfo.value) == "22023"
+        connection.rollback()
+        contexto(connection, OWNER, LOJA, UPDATE)
+        lido = connection.execute(
+            "select app_private.read_seller_image_upload(%s,%s,%s,%s)",
+            (OWNER, LOJA, upload_id, "banner"),
+        ).fetchone()
+        assert lido is not None and lido[0]["kind"] == "banner"
+        fechado = connection.execute(
+            "select app_private.close_seller_image_upload(%s,%s,%s,%s,%s,%s,%s)",
+            (OWNER, LOJA, upload_id, "banner", "cancelled", None, uuid4()),
+        ).fetchone()
+        assert fechado is not None and fechado[0]["changed"] is True
+        connection.commit()

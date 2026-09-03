@@ -309,6 +309,7 @@ async def confirm_logo_upload(
             auth=auth,
             internal=internal,
             seller_id=seller_id,
+            kind=kind,
             upload_id=upload_id,
             closure="rejected",
             failure_code="verification_failed",
@@ -514,6 +515,7 @@ async def _close_upload(
     auth: Any,
     internal: AuthenticatedInternalRequest,
     seller_id: UUID,
+    kind: str,
     upload_id: UUID,
     closure: str,
     failure_code: str,
@@ -523,12 +525,13 @@ async def _close_upload(
             await session.scalar(
                 text(
                     "select app_private.close_seller_image_upload("
-                    ":actor,:seller,:upload,:status,:failure_code,:request_id)"
+                    ":actor,:seller,:upload,:kind,:status,:failure_code,:request_id)"
                 ),
                 {
                     "actor": internal.envelope.identity.user_id,
                     "seller": seller_id,
                     "upload": upload_id,
+                    "kind": kind,
                     "status": closure,
                     "failure_code": failure_code,
                     "request_id": internal.envelope.request_id,
