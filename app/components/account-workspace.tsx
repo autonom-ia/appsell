@@ -232,7 +232,7 @@ export function AccountWorkspace({ csrfExport, csrfDeletion, passwordRecoveryHre
             <dt>Lojas</dt>
             <dd>
               {stores.length === 0
-                ? "Nenhuma — esta conta é de aluno."
+                ? "Nenhuma. Esta conta é de aluno."
                 : stores.map((store) => `${store.displayName} (${store.role.replace("seller_", "")})`).join(", ")}
             </dd>
           </div>

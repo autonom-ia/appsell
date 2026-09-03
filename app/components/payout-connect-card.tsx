@@ -283,7 +283,7 @@ export function PayoutConnectCard() {
         <h2 ref={headingRef} tabIndex={-1}>Verificação de identidade</h2>
         <p>
           Preencha os dados abaixo sem sair da Autonom.ia. Você pode parar e continuar
-          depois — nada se perde.
+          depois. Nada se perde.
         </p>
         <div className="payout-embedded">
           <ConnectComponentsProvider connectInstance={connectInstance}>

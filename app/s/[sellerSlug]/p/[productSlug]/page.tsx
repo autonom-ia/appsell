@@ -46,7 +46,7 @@ export default async function ProductCheckoutPage({
 
   return <div className={storefrontClassName(seller, "product-checkout-page")} style={storefrontStyle(seller)}>
     <a className="skip-link" href="#product-checkout-content">Pular para o produto</a>
-    <StorefrontTopbar seller={seller} action={<Link className="storefront-login" href="/auth/login">Entrar</Link>}/>
+    <StorefrontTopbar seller={seller} action={<Link className="storefront-login" href="/auth/login">Já sou aluno</Link>}/>
     <main id="product-checkout-content" tabIndex={-1} className="product-checkout-main lp-main">
       <section className="product-checkout-summary lp-hero" aria-labelledby="product-checkout-title">
         {product.cover
@@ -59,6 +59,11 @@ export default async function ProductCheckoutPage({
         {product.description.trim() ? <p>{product.description}</p> : null}
         <p className="product-checkout-price">{priceLabel}</p>
         {showCta ? <Link className={accessMode === "paid" ? "primary-button commercial-button lp-cta" : "primary-button lp-cta"} href={ctaHref}>{ctaLabel}</Link> : null}
+        <ul className="lp-trust" aria-label="O que você pode esperar">
+          <li>{accessMode === "paid" ? "Acesso imediato depois da compra" : "Acesso imediato"}</li>
+          <li>Assista no celular ou no computador</li>
+          {accessMode === "paid" ? <li>Pagamento seguro</li> : null}
+        </ul>
       </section>
 
       {curriculum ? <section className="lp-block" aria-labelledby="lp-contents-title">

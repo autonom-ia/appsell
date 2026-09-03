@@ -59,7 +59,7 @@ describe("cor de destaque", () => {
   it("gera as iniciais como a vitrine sempre fez", () => {
     expect(storeInitials("Hub2you")).toBe("HU");
     expect(storeInitials("Studio Marina")).toBe("SM");
-    expect(storeInitials("   ")).toBe("—");
+    expect(storeInitials("   ")).toBe("·");
   });
 });
 
