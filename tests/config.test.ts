@@ -26,4 +26,16 @@ describe("browser security headers", () => {
       { key: "X-Frame-Options", value: "DENY" }
     ]));
   });
+
+  it("allows the public product cover to render on the Financial checkout", async () => {
+    if (!nextConfig.headers) throw new Error("Next.js security headers are missing.");
+    const rules = await nextConfig.headers();
+    const cover = rules.find(
+      (rule) => rule.source === "/api/storefronts/:sellerSlug/products/:productSlug/cover"
+    );
+    expect(cover?.headers).toContainEqual({
+      key: "Cross-Origin-Resource-Policy",
+      value: "cross-origin"
+    });
+  });
 });
