@@ -55,7 +55,15 @@ async function medir(page: import("@playwright/test").Page, comCapa: boolean) {
       larguraDaSecao: Math.round(caixa.width),
       titulo: { largura: Math.round(titulo.width), transborda: titulo.right - caixa.right > 1 },
       logo: { largura: Math.round(logo.width), transborda: logo.right - caixa.right > 1 },
-      capa: capa ? { largura: Math.round(capa.width), altura: Math.round(capa.height) } : null
+      capa: capa ? { largura: Math.round(capa.width), altura: Math.round(capa.height) } : null,
+      imagem: (() => {
+        const img = document.querySelector(".storefront-cover-image") as HTMLImageElement | null;
+        if (!img || !capa) return null;
+        return {
+          proporcaoDaCaixa: Number((capa.width / capa.height).toFixed(2)),
+          proporcaoDaImagem: Number((img.naturalWidth / img.naturalHeight).toFixed(2))
+        };
+      })()
     };
   });
 }
@@ -71,6 +79,9 @@ test.describe("o alto da vitrine", () => {
     expect(medida.titulo.largura).toBeGreaterThan(100);
     expect(medida.titulo.transborda).toBe(false);
     expect(medida.logo.transborda).toBe(false);
+    // A capa mostra a imagem inteira: um teto de altura menor que a proporção
+    // cortava o alto do banner, justamente onde costuma ficar o logo.
+    expect(medida.imagem!.proporcaoDaCaixa).toBeCloseTo(medida.imagem!.proporcaoDaImagem, 1);
   });
 
   test("com capa no celular: o mesmo desenho, que é o que já funcionava", async ({ page }) => {
