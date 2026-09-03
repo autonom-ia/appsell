@@ -275,6 +275,12 @@ async def confirm_logo_upload(
     await _require_seller(internal, seller_id)
     await _require_kind(internal, kind)
     body = await _model_from_body(LogoMutationBody, internal)
+    # Antes de tocar o storage: o upload existe, é deste tipo e está pendente.
+    # Sem isso, um id de logo na rota do banner lia e apagava a quarentena do
+    # banner de um upload legítimo (review da PR #389).
+    await _require_pending_upload(
+        auth, internal, seller_id=seller_id, kind=kind, upload_id=upload_id
+    )
     storage = await _storage(request, internal)
     worker = ProductCoverWorker(storage, await _scanner(request, internal))
     settings = request.app.state.settings
@@ -508,6 +514,32 @@ async def _verify_within_budget(worker: ProductCoverWorker, job: VerifyCoverJob)
         detail="logo_verification_busy",
         headers={"retry-after": "5"},
     )
+
+
+async def _require_pending_upload(
+    auth: Any,
+    internal: AuthenticatedInternalRequest,
+    *,
+    seller_id: UUID,
+    kind: str,
+    upload_id: UUID,
+) -> None:
+    try:
+        async with auth.domain_session(internal.envelope) as session:
+            upload = await session.scalar(
+                text("select app_private.read_seller_image_upload(:actor,:seller,:upload,:kind)"),
+                {
+                    "actor": internal.envelope.identity.user_id,
+                    "seller": seller_id,
+                    "upload": upload_id,
+                    "kind": kind,
+                },
+            )
+    except DBAPIError as error:
+        raise _domain_error(error) from error
+    if not isinstance(upload, dict) or upload.get("status") != "pending":
+        await internal.consume_rejected_request()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="logo_upload_not_pending")
 
 
 async def _close_upload(
