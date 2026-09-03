@@ -78,6 +78,7 @@ type LogoState =
   | "conflict"
   | "forbidden"
   | "unavailable"
+  | "unconfirmed"
   | "error";
 
 const INTENT_TIMEOUT_MS = 12_000;
@@ -275,7 +276,10 @@ export function StoreImagePanel({
         return true;
       });
     } catch {
-      settle("unavailable");
+      // Pode ter chegado ao fim no servidor com a resposta perdida: a tela
+      // recarrega e mostra, em vez de afirmar que nada mudou.
+      await onCommitted();
+      settle("unconfirmed");
       return;
     }
     if (!saved) return;
@@ -360,6 +364,7 @@ export function StoreImagePanel({
         {state === "conflict" ? <p className="form-error">Outro envio está em andamento. Aguarde e tente de novo.</p> : null}
         {state === "forbidden" ? <p className="form-error">Só o dono ou um administrador da loja pode mudar as imagens.</p> : null}
         {state === "unavailable" ? <p className="form-note">O envio não terminou. Tente novamente; nada foi alterado.</p> : null}
+        {state === "unconfirmed" ? <p className="form-note">Não consegui confirmar o envio. Recarreguei a tela: se a imagem aparece aqui em cima, ela foi salva. Se não, tente de novo.</p> : null}
         {state === "error" ? <p className="form-error">Não foi possível concluir. Tente novamente.</p> : null}
       </div>
       {removing ? (

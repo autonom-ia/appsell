@@ -37,6 +37,7 @@ type CoverState =
   | "conflict"
   | "forbidden"
   | "unavailable"
+  | "unconfirmed"
   | "error";
 
 const INTENT_TIMEOUT_MS = 12_000;
@@ -376,7 +377,12 @@ export function ProductImagePanel({
         return true;
       });
     } catch {
-      settle("unavailable");
+      // O envio pode ter chegado ao fim no servidor mesmo com a resposta
+      // perdida no caminho — foi o que aconteceu com o banner em 03/09, e a
+      // tela dizia "nada foi alterado" sobre uma imagem já salva. Aqui ela
+      // recarrega e deixa quem enviou ver o resultado, em vez de afirmar.
+      await onCommitted();
+      settle("unconfirmed");
       return;
     }
     if (!saved) return;
@@ -486,6 +492,7 @@ export function ProductImagePanel({
         {state === "conflict" ? <p className="form-error">O produto mudou em outra aba. Recarregue antes de tentar de novo.</p> : null}
         {state === "forbidden" ? <p className="form-error">Sua sessão ou permissão mudou. Entre novamente antes de tentar.</p> : null}
         {state === "unavailable" ? <p className="form-note">O envio não terminou. Tente novamente; nada foi alterado.</p> : null}
+        {state === "unconfirmed" ? <p className="form-note">Não consegui confirmar o envio. Recarreguei a tela: se a imagem aparece aqui em cima, ela foi salva. Se não, tente de novo.</p> : null}
         {state === "error" ? <p className="form-error">Não foi possível concluir. Tente novamente.</p> : null}
       </div>
       {removing ? (
