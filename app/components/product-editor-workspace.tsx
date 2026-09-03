@@ -163,6 +163,17 @@ export function shouldFlushPendingDraft(state: { dirty: boolean; discarded: bool
   return state.dirty && !state.discarded;
 }
 
+export function publicationCheckoutPlan(
+  usesFinancialCheckout: boolean,
+  accessMode: "free" | "paid"
+): { publicationAccessMode: "free" | "paid"; activateAfterPublication: boolean } {
+  const activateAfterPublication = usesFinancialCheckout && accessMode === "paid";
+  return {
+    publicationAccessMode: activateAfterPublication ? "free" : accessMode,
+    activateAfterPublication
+  };
+}
+
 const editorSections: Array<{ id: EditorSection; label: string; hint: string }> = [
   { id: "produto", label: "Produto", hint: "Nome, endereço e descrição" },
   { id: "curriculo", label: "Conteúdo", hint: "Módulos e aulas" },
@@ -211,6 +222,7 @@ export function ProductEditorWorkspace({
   const section: EditorSection = editorSections.some((item) => item.id === requestedSection) ? requestedSection as EditorSection : "produto";
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [detail, setDetail] = useState<ProductDetail | null>(null);
+  const detailRef = useRef<ProductDetail | null>(null);
   const [csrf, setCsrf] = useState<{ update: string; publish: string; offerStatus: string; accessLinkCreate: string; accessLinkRevoke: string; accessLinkRotate: string; coverIntent: string; coverConfirm: string; coverClear: string; headline: string }>({ update: "", publish: "", offerStatus: "", accessLinkCreate: "", accessLinkRevoke: "", accessLinkRotate: "", coverIntent: "", coverConfirm: "", coverClear: "", headline: "" });
   const [fields, setFields] = useState<EditorFields>(emptyFields);
   const fieldsRef = useRef(fields);
@@ -370,7 +382,9 @@ export function ProductEditorWorkspace({
       if (!nextDetail) return fail("error");
       const nextFields = fieldsFromDetail(nextDetail);
       offerId.current = nextDetail.offer.id ?? crypto.randomUUID();
-      setDetail({ ...nextDetail, readiness: payload.readiness ?? nextDetail.readiness });
+      const loadedDetail = { ...nextDetail, readiness: payload.readiness ?? nextDetail.readiness };
+      detailRef.current = loadedDetail;
+      setDetail(loadedDetail);
       setCurriculumSummary(nextDetail.curriculum);
       setCsrf({ update: payload.csrf?.update ?? readActionCsrf("update"), publish: payload.csrf?.publish ?? readActionCsrf("publish"), offerStatus: payload.csrf?.offer_status ?? "", accessLinkCreate: payload.csrf?.access_link_create ?? "", accessLinkRevoke: payload.csrf?.access_link_revoke ?? "", accessLinkRotate: payload.csrf?.access_link_rotate ?? "", coverIntent: payload.csrf?.cover_intent ?? "", coverConfirm: payload.csrf?.cover_confirm ?? "", coverClear: payload.csrf?.cover_clear ?? "", headline: payload.csrf?.headline ?? "" });
       setFields(nextFields);
@@ -628,14 +642,27 @@ export function ProductEditorWorkspace({
     data.set("expected_offer_version", String(versions.offer));
     data.set("offer_id", offerId.current ?? crypto.randomUUID());
     data.set("course_versions", JSON.stringify(detail.courses.map((course) => ({ id: course.id, version: course.draft_version }))));
-    // Publishing carries the access decision, so the catalog and the sale can
-    // never disagree: either both land or neither does.
-    data.set("access_mode", accessMode);
+    const checkoutPlan = publicationCheckoutPlan(usesFinancialCheckout, accessMode);
+    // The legacy checkout keeps its atomic publish+payout validation contract.
+    // Financial checkout owns gateway readiness, so it publishes the catalog
+    // first and activates the already-versioned offer through its own command.
+    data.set("access_mode", checkoutPlan.publicationAccessMode);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 12_000);
     try {
       const response = await fetch(`/api/sellers/${sellerId}/products/${productId}/publications`, { method: "POST", body: data, signal: controller.signal });
       if (!response.ok) {
+        const errorPayload = await response.json().catch(() => null) as { error?: string } | null;
+        if (checkoutPlan.activateAfterPublication && errorPayload?.error === "no_unpublished_changes") {
+          publishIdempotencyKey.current = null;
+          const refreshedOk = await loadDetail();
+          const refreshed = refreshedOk ? detailRef.current : null;
+          if (refreshed?.publication && refreshed.offer.status === "draft") {
+            const activated = await transitionOffer("active", refreshed);
+            setPublishState(activated ? "published" : "error");
+            return;
+          }
+        }
         if (response.status === 401 || response.status === 403) setPublishState("forbidden");
         else if (response.status === 409 || response.status === 422) {
           publishIdempotencyKey.current = null;
@@ -647,20 +674,30 @@ export function ProductEditorWorkspace({
       }
       const payload = await response.json() as EditorPayload & ProductDetail;
       const updated = normalizeEditorPayload(payload);
+      let publishedDetail = updated;
       if (updated) {
-        setDetail({ ...updated, readiness: payload.readiness ?? updated.readiness });
+        publishedDetail = { ...updated, readiness: payload.readiness ?? updated.readiness };
+        detailRef.current = publishedDetail;
+        setDetail(publishedDetail);
         setCurriculumSummary(updated.curriculum);
         const serverFields = fieldsFromDetail(updated);
         setFields(serverFields);
         setSavedFields(serverFields);
       } else {
-        const refreshed = await loadDetail();
+        const refreshedOk = await loadDetail();
+        const refreshed = refreshedOk ? detailRef.current : null;
         if (!refreshed) {
           setPublishState("unavailable");
           return;
         }
+        publishedDetail = refreshed;
       }
       publishIdempotencyKey.current = null;
+      if (checkoutPlan.activateAfterPublication && publishedDetail) {
+        const activated = await transitionOffer("active", publishedDetail);
+        setPublishState(activated ? "published" : "error");
+        return;
+      }
       setPublishState("published");
     } catch {
       setPublishState("unavailable");
@@ -669,11 +706,14 @@ export function ProductEditorWorkspace({
     }
   }
 
-  async function transitionOffer(nextStatus: "draft" | "active" | "archived") {
-    const currentOffer = detail?.offer;
-    if (!currentOffer?.id || offerStatusLocked || editorDirty) return;
+  async function transitionOffer(
+    nextStatus: "draft" | "active" | "archived",
+    sourceDetail: ProductDetail | null = detail
+  ): Promise<boolean> {
+    const currentOffer = sourceDetail?.offer;
+    if (!currentOffer?.id || offerStatusLocked || editorDirty) return false;
     const expectedStatus = currentOffer.status;
-    if (expectedStatus === nextStatus) return;
+    if (expectedStatus === nextStatus) return true;
     setOfferStatusState("transitioning");
     // Reusa a chave enquanto for a MESMA transição (status+versão): retry após
     // resposta perdida vira replay idempotente em vez de novo comando.
@@ -701,7 +741,7 @@ export function ProductEditorWorkspace({
         else if (response.status === 422) setOfferStatusState("blocked");
         else if (response.status === 503) setOfferStatusState("unavailable");
         else setOfferStatusState("error");
-        return;
+        return false;
       }
       // Só descarta a chave APÓS reconciliar: se o PATCH aplicou mas o GET
       // falhar, preservar a chave faz o retry virar replay idempotente em vez
@@ -710,11 +750,14 @@ export function ProductEditorWorkspace({
       if (refreshed) {
         offerStatusIdempotencyKey.current = null;
         setOfferStatusState("done");
+        return true;
       } else {
         setOfferStatusState("unavailable");
+        return false;
       }
     } catch {
       setOfferStatusState("unavailable");
+      return false;
     } finally {
       clearTimeout(timeout);
     }
