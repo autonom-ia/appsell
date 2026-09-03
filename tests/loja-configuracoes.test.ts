@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
@@ -251,8 +251,15 @@ describe("a cabeça fixada", () => {
     expect(revision).toBe("0052_configuracoes_da_loja");
     expect(migration).toContain(`'${revision}'))`);
     expect(migration).toContain("alter function {signature} owner to appsell_owner");
+    // A cabeça fixada é a última migration do diretório: a 0053 (dono das
+    // funções de recebimento) veio logo depois e este teste não pode envelhecer.
+    const head = readdirSync(resolve(root, "apps/api/migrations/versions"))
+      .filter((name) => /^\d{4}_.*\.py$/.test(name))
+      .sort()
+      .at(-1)!
+      .replace(/\.py$/, "");
     const reset = readFileSync(resolve(root, "apps/api/src/appsell_api/reset_demo_tenant.py"), "utf8");
-    expect(reset).toContain(`EXPECTED_MIGRATION = "${revision}"`);
+    expect(reset).toContain(`EXPECTED_MIGRATION = "${head}"`);
     const script = readFileSync(resolve(root, "scripts/test-postgres-foundation.sh"), "utf8");
     expect(script).toContain("test_postgres_configuracoes_da_loja.py");
     expect(script).toContain("test_api_seller_settings.py");
