@@ -250,6 +250,9 @@ export function ProductImagePanel({
   }
 
   async function choose(file: File) {
+    // O aviso do arquivo anterior sai antes de qualquer coisa: mantê-lo aqui
+    // faria a tela falar de medidas que não são mais as do arquivo escolhido.
+    setCorte("");
     const choice = describeCoverFile(file);
     if (!choice.ok) {
       setRejection(
