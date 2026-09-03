@@ -1,6 +1,30 @@
 import { describe, expect, it } from "vitest";
 
-import { shouldFlushPendingDraft, workflowState } from "../app/components/product-editor-workspace";
+import {
+  publicationCheckoutPlan,
+  shouldFlushPendingDraft,
+  workflowState
+} from "../app/components/product-editor-workspace";
+
+describe("publicação com checkout", () => {
+  it("publica o snapshot e ativa a oferta separadamente no Financial", () => {
+    expect(publicationCheckoutPlan(true, "paid")).toEqual({
+      publicationAccessMode: "free",
+      activateAfterPublication: true
+    });
+  });
+
+  it("preserva o contrato atômico do checkout legado", () => {
+    expect(publicationCheckoutPlan(false, "paid")).toEqual({
+      publicationAccessMode: "paid",
+      activateAfterPublication: false
+    });
+    expect(publicationCheckoutPlan(false, "free")).toEqual({
+      publicationAccessMode: "free",
+      activateAfterPublication: false
+    });
+  });
+});
 
 /**
  * `workflowState` diz apenas se cada área já tem conteúdo, para a navegação
