@@ -451,6 +451,12 @@ async def list_product_drafts(
                             "product.cover_object_key, product.cover_storage_version_id, "
                             "product.cover_media_type, product.cover_width, "
                             "product.cover_height, "
+                            "to_jsonb(product)->>'banner_object_key' as banner_object_key, "
+                            "to_jsonb(product)->>'banner_storage_version_id' "
+                            "as banner_storage_version_id, "
+                            "to_jsonb(product)->>'banner_media_type' as banner_media_type, "
+                            "(to_jsonb(product)->>'banner_width')::int as banner_width, "
+                            "(to_jsonb(product)->>'banner_height')::int as banner_height, "
                             # A promessa nasce na 0052; a API nova sobe ANTES da
                             # migration (web → api → migration). Projetada via
                             # jsonb, a coluna ausente vira null em vez de 42703.
@@ -1627,6 +1633,7 @@ def _canonical_uuid(value: str, message: str) -> str:
 def _product_response(row: Any, storage: S3Storage | None) -> dict[str, Any]:
     return {
         "cover": _cover_response(row, storage),
+        "banner": _banner_response(row, storage),
         "headline": row.get("headline"),
         "students": int(row["students"]),
         "id": str(row["id"]),
@@ -1648,30 +1655,51 @@ def _product_response(row: Any, storage: S3Storage | None) -> dict[str, Any]:
 
 
 def _cover_response(row: Any, storage: S3Storage | None) -> dict[str, Any] | None:
-    """Endereço temporário da capa, ou nada.
+    """Endereço temporário da capa, ou nada."""
+    return _product_image_response(row, storage, "cover")
+
+
+def _banner_response(row: Any, storage: S3Storage | None) -> dict[str, Any] | None:
+    """Endereço temporário do banner (0056), ou nada."""
+    return _product_image_response(row, storage, "banner")
+
+
+def _product_image_response(
+    row: Any, storage: S3Storage | None, kind: str
+) -> dict[str, Any] | None:
+    """Endereço temporário de uma imagem do produto, ou nada.
 
     Nada é uma resposta legítima: um produto sem capa recebe a arte gerada a
-    partir do próprio nome, do lado do navegador. Devolver um endereço quebrado
-    faria a tela mostrar um retângulo cinza de imagem falhada em vez daquela
-    arte, que é pior do que não ter capa nenhuma.
+    partir do próprio nome, do lado do navegador, e um sem banner abre a página
+    de vendas pela promessa. Devolver um endereço quebrado faria a tela mostrar
+    um retângulo cinza de imagem falhada, que é pior do que não ter imagem.
     """
-    if row["cover_object_key"] is None or storage is None:
+    chave = _campo(row, f"{kind}_object_key")
+    if chave is None or storage is None:
         return None
     try:
         signed = storage.presign_cover(
-            key=str(row["cover_object_key"]),
-            version_id=str(row["cover_storage_version_id"]),
-            media_type=str(row["cover_media_type"]),
+            key=str(chave),
+            version_id=str(_campo(row, f"{kind}_storage_version_id")),
+            media_type=str(_campo(row, f"{kind}_media_type")),
         )
     except StorageError:
         return None
     return {
         "url": signed.url,
-        "media_type": str(row["cover_media_type"]),
-        "width": int(row["cover_width"]),
-        "height": int(row["cover_height"]),
+        "media_type": str(_campo(row, f"{kind}_media_type")),
+        "width": int(_campo(row, f"{kind}_width")),
+        "height": int(_campo(row, f"{kind}_height")),
         "expires_in_seconds": signed.expires_in_seconds,
     }
+
+
+def _campo(row: Any, nome: str) -> Any:
+    """A coluna, ou nada quando ela ainda não existe no banco desta linha."""
+    try:
+        return row[nome]
+    except (KeyError, IndexError, TypeError):
+        return None
 
 
 def _product_access_response(row: Any) -> dict[str, Any]:
@@ -1714,6 +1742,12 @@ async def _read_product_draft(
                             "product.cover_object_key, product.cover_storage_version_id, "
                             "product.cover_media_type, product.cover_width, "
                             "product.cover_height, "
+                            "to_jsonb(product)->>'banner_object_key' as banner_object_key, "
+                            "to_jsonb(product)->>'banner_storage_version_id' "
+                            "as banner_storage_version_id, "
+                            "to_jsonb(product)->>'banner_media_type' as banner_media_type, "
+                            "(to_jsonb(product)->>'banner_width')::int as banner_width, "
+                            "(to_jsonb(product)->>'banner_height')::int as banner_height, "
                             "to_jsonb(product)->>'headline' as headline, "
                             "course.id as course_id, course.title as course_title, "
                             "course.description as course_description, "
@@ -1859,6 +1893,7 @@ def _product_detail_response(rows: list[Any], storage: S3Storage | None) -> dict
     return {
         "product": {
             "cover": _cover_response(row, storage),
+            "banner": _banner_response(row, storage),
             "headline": row.get("headline"),
             "id": str(row["id"]),
             "seller_organization_id": str(row["seller_organization_id"]),

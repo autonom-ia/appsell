@@ -35,6 +35,7 @@ export interface PublicStorefrontProduct {
   // a forma antiga e continua válida.
   headline?: string;
   cover?: StorefrontImage;
+  banner?: StorefrontImage;
   curriculum?: StorefrontCurriculum;
 }
 
@@ -113,7 +114,7 @@ function isProduct(value: unknown): value is PublicStorefrontProduct {
     "publication_version",
     "price"
   ] as const;
-  if (!hasKeysWithin(value, required, ["access_mode", "headline", "cover", "curriculum"])) return false;
+  if (!hasKeysWithin(value, required, ["access_mode", "headline", "cover", "banner", "curriculum"])) return false;
   return isUuid(value.id) && isSlug(value.slug) && isTrimmedText(value.title, 2, 160) &&
     typeof value.description === "string" && value.description.length <= 2_000 &&
     isUuid(value.publication_id) && typeof value.publication_version === "number" &&
@@ -122,6 +123,7 @@ function isProduct(value: unknown): value is PublicStorefrontProduct {
     (value.price === null || isPrice(value.price)) &&
     (value.headline === undefined || isTrimmedText(value.headline, 2, 200)) &&
     (value.cover === undefined || isImage(value.cover)) &&
+    (value.banner === undefined || isImage(value.banner)) &&
     (value.curriculum === undefined || isCurriculum(value.curriculum));
 }
 

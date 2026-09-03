@@ -458,10 +458,11 @@ class PdfStorageWorker:
 class VerifyCoverJob:
     """Uma imagem a verificar: a capa de um produto ou o logo de uma loja.
 
-    ``product_id`` diz qual das duas. Com produto, as chaves esperadas são as
-    da capa; sem produto (``None``), as do logo da loja (0052). O resto do
-    trabalho — cabeçalho contra o intent, scanner, reescrita, promoção,
-    compensação — é idêntico, e é por isso que o job é um só.
+    ``product_id`` diz de quem é a imagem. Com produto, ``kind`` é "cover" ou
+    "banner" (0056); sem produto (``None``), é "logo" ou "banner" da loja
+    (0054). O resto do trabalho — cabeçalho contra o intent, scanner,
+    reescrita, promoção, compensação — é idêntico, e é por isso que o job é um
+    só.
     """
 
     seller_id: UUID
@@ -474,8 +475,10 @@ class VerifyCoverJob:
     expected_size: int
     expected_sha256_hex: str
     declared_content_type: str
-    # Só vale sem produto: qual imagem da loja é ("logo" ou "banner", 0054).
-    kind: str = "logo"
+    # Qual imagem é: da loja, "logo" ou "banner"; do produto, "cover" ou
+    # "banner". Sem valor padrão de propósito: um tipo errado escolhe a chave
+    # errada no bucket, e é melhor o chamador dizer do que o job adivinhar.
+    kind: str
 
 
 @dataclass(frozen=True)
@@ -593,12 +596,14 @@ class ProductCoverWorker:
         except Exception as error:
             raise CleanupRetryableError("cover quarantine cleanup must be retried") from error
 
-    def discard_abandoned_cover(self, *, seller_id: UUID, product_id: UUID) -> None:
-        """Apaga a quarentena de uma tentativa que não virou capa."""
+    def discard_abandoned_product_image(
+        self, *, seller_id: UUID, product_id: UUID, kind: str
+    ) -> None:
+        """Apaga a quarentena de uma tentativa que não virou imagem do produto."""
         try:
             self.storage.delete_all_versions(
                 bucket=self.storage.quarantine_bucket,
-                key=cover_quarantine_key(seller_id, product_id),
+                key=product_quarantine_key(seller_id, product_id, kind),
             )
         except Exception as error:
             raise CleanupRetryableError("cover quarantine cleanup must be retried") from error
@@ -625,8 +630,8 @@ def expected_image_keys(job: VerifyCoverJob) -> tuple[str, str]:
             image_ready_key(job.seller_id, job.kind, job.upload_id),
         )
     return (
-        cover_quarantine_key(job.seller_id, job.product_id),
-        cover_ready_key(job.seller_id, job.product_id, job.upload_id),
+        product_quarantine_key(job.seller_id, job.product_id, job.kind),
+        product_ready_key(job.seller_id, job.product_id, job.kind, job.upload_id),
     )
 
 
@@ -653,12 +658,30 @@ def logo_ready_key(seller_id: UUID, upload_id: UUID) -> str:
     return image_ready_key(seller_id, "logo", upload_id)
 
 
+PRODUCT_IMAGE_KINDS = frozenset({"cover", "banner"})
+# A pasta do bucket servido, por tipo. A da capa é a que a 0037 criou e não
+# pode mudar: há capas em produção nela.
+_PRODUCT_READY_FOLDER = {"cover": "covers", "banner": "banners"}
+
+
+def product_quarantine_key(seller_id: UUID, product_id: UUID, kind: str) -> str:
+    if kind not in PRODUCT_IMAGE_KINDS:
+        raise ScanRejected("unknown product image kind")
+    return f"tenants/{seller_id}/quarantine/{kind}/{product_id}"
+
+
+def product_ready_key(seller_id: UUID, product_id: UUID, kind: str, upload_id: UUID) -> str:
+    if kind not in PRODUCT_IMAGE_KINDS:
+        raise ScanRejected("unknown product image kind")
+    return f"tenants/{seller_id}/{_PRODUCT_READY_FOLDER[kind]}/{product_id}/{upload_id}"
+
+
 def cover_quarantine_key(seller_id: UUID, product_id: UUID) -> str:
-    return f"tenants/{seller_id}/quarantine/cover/{product_id}"
+    return product_quarantine_key(seller_id, product_id, "cover")
 
 
 def cover_ready_key(seller_id: UUID, product_id: UUID, upload_id: UUID) -> str:
-    return f"tenants/{seller_id}/covers/{product_id}/{upload_id}"
+    return product_ready_key(seller_id, product_id, "cover", upload_id)
 
 
 def assert_storage_worker_ready(

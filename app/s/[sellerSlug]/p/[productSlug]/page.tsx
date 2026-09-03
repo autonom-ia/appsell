@@ -40,8 +40,14 @@ export default async function ProductCheckoutPage({
   const productPath = `/s/${seller.slug}/p/${product.slug}`;
   const curriculum = product.curriculum;
   const hasAuthor = Boolean(seller.about || seller.logo);
+  const loginParaComprar = `/auth/login?next=${encodeURIComponent(productPath)}`;
+  // Quem ainda não entrou não precisa de um cartão no meio do caminho dizendo
+  // "entre para comprar": o botão já diz o que faz e leva direto ao login.
+  const mostraCartaoDeCompra = accessMode === "free" || !checkoutAvailable || Boolean(buyer);
   const ctaLabel = accessMode === "free" ? "Acessar gratuitamente" : "Comprar agora";
-  const ctaHref = accessMode === "free" ? accessPath : "#comprar";
+  const ctaHref = accessMode === "free"
+    ? accessPath
+    : mostraCartaoDeCompra ? "#comprar" : loginParaComprar;
   const showCta = accessMode === "free" || checkoutAvailable;
 
   return <div className={storefrontClassName(seller, "product-checkout-page")} style={storefrontStyle(seller)}>
@@ -49,9 +55,12 @@ export default async function ProductCheckoutPage({
     <StorefrontTopbar seller={seller} action={<Link className="storefront-login" href="/auth/login">Já sou aluno</Link>}/>
     <main id="product-checkout-content" tabIndex={-1} className="product-checkout-main lp-main">
       <section className="product-checkout-summary lp-hero" aria-labelledby="product-checkout-title">
-        {product.cover
+        {/* O banner, e só ele: a capa é 16:9 e vive no cartão da loja. Espremer
+            a capa nesta faixa foi o defeito que trouxe o banner (#387). Sem
+            banner, a página abre pela promessa, sem imagem cortada. */}
+        {product.banner
           // eslint-disable-next-line @next/next/no-img-element
-          ? <img className="lp-cover" src={product.cover.url} alt="" width={product.cover.width} height={product.cover.height} decoding="async"/>
+          ? <div className="lp-banner"><img className="lp-banner-image" src={product.banner.url} alt="" width={product.banner.width} height={product.banner.height} decoding="async" fetchPriority="high"/></div>
           : null}
         <p className="eyebrow">{seller.name}</p>
         <h1 id="product-checkout-title">{product.headline ?? product.title}</h1>
@@ -87,7 +96,7 @@ export default async function ProductCheckoutPage({
         </div>
       </section> : null}
 
-      <section id="comprar" className="product-checkout-action" aria-label={accessMode === "free" ? "Liberar acesso" : "Finalizar compra"}>
+      {mostraCartaoDeCompra ? <section id="comprar" className="product-checkout-action" aria-label={accessMode === "free" ? "Liberar acesso" : "Finalizar compra"}>
         {accessMode === "free"
           ? <div className="checkout-card checkout-unavailable">
               <h2>Acesso gratuito</h2>
@@ -113,11 +122,18 @@ export default async function ProductCheckoutPage({
               <h2>As vendas abrem em breve</h2>
               <p>{seller.name} ainda está ativando os pagamentos desta loja. Volte em breve para comprar este produto.</p>
             </div>}
-      </section>
+      </section> : null}
     </main>
-    {accessMode === "paid" && checkoutAvailable ? <div className="lp-sticky" aria-hidden="true">
+    {accessMode === "paid" && checkoutAvailable ? <div className="lp-sticky" aria-hidden={mostraCartaoDeCompra}>
       <strong>{priceLabel}</strong>
-      <a className="primary-button commercial-button" href="#comprar" tabIndex={-1}>Comprar agora</a>
+      {/* Enquanto ela apenas repete o cartão logo abaixo, é decoração e sai do
+          caminho do leitor de tela. Quando é o único caminho para a compra,
+          precisa ser alcançável pelo teclado. */}
+      <a
+        className="primary-button commercial-button"
+        href={ctaHref}
+        tabIndex={mostraCartaoDeCompra ? -1 : undefined}
+      >Comprar agora</a>
     </div> : null}
     <StorefrontFooter/>
   </div>;
