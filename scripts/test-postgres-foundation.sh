@@ -206,6 +206,8 @@ uv run --project apps/api pytest \
   apps/api/tests/test_postgres_email_outbox.py \
   apps/api/tests/test_postgres_minha_conta.py \
   apps/api/tests/test_api_minha_conta.py \
+  apps/api/tests/test_postgres_configuracoes_da_loja.py \
+  apps/api/tests/test_api_seller_settings.py \
   apps/api/tests/test_email_layout.py \
   apps/api/tests/test_email_worker.py \
   apps/api/tests/test_internal_request_body_limit.py \

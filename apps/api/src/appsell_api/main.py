@@ -27,6 +27,7 @@ from .platform_bootstrap_routes import router as platform_bootstrap_router
 from .platform_routes import router as platform_router
 from .public_routes import router as public_router
 from .routes import router
+from .seller_settings_routes import router as seller_settings_router
 from .storage_s3 import S3Storage
 from .storage_worker import (
     ClamAvScanner,
@@ -202,6 +203,7 @@ app.include_router(payout_sync_router)
 app.include_router(learning_router)
 app.include_router(asset_router)
 app.include_router(cover_router)
+app.include_router(seller_settings_router)
 app.include_router(platform_bootstrap_router)
 app.include_router(platform_router)
 app.include_router(public_router)

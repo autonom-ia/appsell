@@ -450,7 +450,7 @@ async def list_product_drafts(
                             "current_offer.currency as offer_currency, "
                             "product.cover_object_key, product.cover_storage_version_id, "
                             "product.cover_media_type, product.cover_width, "
-                            "product.cover_height, "
+                            "product.cover_height, product.headline, "
                             "coalesce(counts.students, 0) as students "
                             "from catalog_product product "
                             "join product_course linked "
@@ -1623,6 +1623,7 @@ def _canonical_uuid(value: str, message: str) -> str:
 def _product_response(row: Any, storage: S3Storage | None) -> dict[str, Any]:
     return {
         "cover": _cover_response(row, storage),
+        "headline": row.get("headline"),
         "students": int(row["students"]),
         "id": str(row["id"]),
         "slug": row["slug"],
@@ -1708,7 +1709,7 @@ async def _read_product_draft(
                             "product.published_snapshot_id, "
                             "product.cover_object_key, product.cover_storage_version_id, "
                             "product.cover_media_type, product.cover_width, "
-                            "product.cover_height, "
+                            "product.cover_height, product.headline, "
                             "course.id as course_id, course.title as course_title, "
                             "course.description as course_description, "
                             "course.status as course_status, "
@@ -1853,6 +1854,7 @@ def _product_detail_response(rows: list[Any], storage: S3Storage | None) -> dict
     return {
         "product": {
             "cover": _cover_response(row, storage),
+            "headline": row.get("headline"),
             "id": str(row["id"]),
             "seller_organization_id": str(row["seller_organization_id"]),
             "seller_slug": row.get("seller_slug"),

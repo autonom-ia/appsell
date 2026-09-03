@@ -456,8 +456,16 @@ class PdfStorageWorker:
 
 @dataclass(frozen=True)
 class VerifyCoverJob:
+    """Uma imagem a verificar: a capa de um produto ou o logo de uma loja.
+
+    ``product_id`` diz qual das duas. Com produto, as chaves esperadas são as
+    da capa; sem produto (``None``), as do logo da loja (0052). O resto do
+    trabalho — cabeçalho contra o intent, scanner, reescrita, promoção,
+    compensação — é idêntico, e é por isso que o job é um só.
+    """
+
     seller_id: UUID
-    product_id: UUID
+    product_id: UUID | None
     upload_id: UUID
     source_bucket: str
     ready_bucket: str
@@ -502,9 +510,10 @@ class ProductCoverWorker:
             or job.ready_bucket != self.storage.ready_bucket
         ):
             raise ScanRejected("job buckets do not match configured storage boundaries")
-        if job.source_key != cover_quarantine_key(job.seller_id, job.product_id):
+        expected_source, expected_ready = expected_image_keys(job)
+        if job.source_key != expected_source:
             raise ScanRejected("cover quarantine key is outside the job tenant scope")
-        if job.ready_key != cover_ready_key(job.seller_id, job.product_id, job.upload_id):
+        if job.ready_key != expected_ready:
             raise ScanRejected("cover ready key is outside the job tenant scope")
         if not self.scanner.healthy():
             raise ScannerUnavailable("malware scanner health check failed")
@@ -591,6 +600,37 @@ class ProductCoverWorker:
             )
         except Exception as error:
             raise CleanupRetryableError("cover quarantine cleanup must be retried") from error
+
+    def discard_abandoned_logo(self, *, seller_id: UUID) -> None:
+        """Apaga a quarentena de uma tentativa que não virou logo."""
+        try:
+            self.storage.delete_all_versions(
+                bucket=self.storage.quarantine_bucket,
+                key=logo_quarantine_key(seller_id),
+            )
+        except Exception as error:
+            raise CleanupRetryableError("logo quarantine cleanup must be retried") from error
+
+
+def expected_image_keys(job: VerifyCoverJob) -> tuple[str, str]:
+    """As chaves que este job tem o direito de tocar, e nenhuma outra."""
+    if job.product_id is None:
+        return (
+            logo_quarantine_key(job.seller_id),
+            logo_ready_key(job.seller_id, job.upload_id),
+        )
+    return (
+        cover_quarantine_key(job.seller_id, job.product_id),
+        cover_ready_key(job.seller_id, job.product_id, job.upload_id),
+    )
+
+
+def logo_quarantine_key(seller_id: UUID) -> str:
+    return f"tenants/{seller_id}/quarantine/logo"
+
+
+def logo_ready_key(seller_id: UUID, upload_id: UUID) -> str:
+    return f"tenants/{seller_id}/logo/{upload_id}"
 
 
 def cover_quarantine_key(seller_id: UUID, product_id: UUID) -> str:
