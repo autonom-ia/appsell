@@ -1,4 +1,6 @@
+import type { Metadata } from "next";
 import { cookies } from "next/headers";
+import { cache } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
@@ -12,8 +14,39 @@ import {
 import { oauthService } from "@/lib/oauth-service.server";
 import { isProductCheckoutAvailable } from "@/lib/product-checkout-availability.server";
 import { parsePublicStorefront } from "@/lib/public-storefront";
+import { productCardImage, twitterCardKind } from "@/lib/social-card";
+import { SITE } from "@/lib/site";
 
 export const dynamic = "force-dynamic";
+
+// O link do produto é o que mais circula, e vinha sem metadata nenhuma: o card
+// dizia "Autonom.ia Sell" e a descrição da plataforma, nem o nome do produto
+// (#412). Título e descrição são do produto; a imagem segue a ordem da página,
+// banner do produto, capa, e só então a marca da loja.
+export async function generateMetadata({
+  params
+}: {
+  params: Promise<{ sellerSlug: string; productSlug: string }>;
+}): Promise<Metadata> {
+  const { sellerSlug, productSlug } = await params;
+  const { seller, products } = await loadStorefront(sellerSlug);
+  const product = products.find((item) => item.slug === productSlug);
+  if (!product) return { title: seller.name };
+
+  const url = `${SITE.origem}/s/${seller.slug}/p/${product.slug}`;
+  const titulo = `${product.title}, por ${seller.name}`;
+  const descricao = product.headline ?? product.description;
+  const card = productCardImage(seller, product);
+  const images = card ? [card] : undefined;
+
+  return {
+    title: titulo,
+    description: descricao,
+    alternates: { canonical: url },
+    openGraph: { type: "website", title: titulo, description: descricao, url, siteName: SITE.nome, locale: "pt_BR", images },
+    twitter: { card: twitterCardKind(card), title: titulo, description: descricao, images }
+  };
+}
 
 // A página de vendas do produto (#352). Cinco blocos, nesta ordem: capa e
 // promessa, o que a pessoa recebe (lido da versão publicada), quem ensina,
@@ -167,7 +200,9 @@ async function authenticatedBuyer(): Promise<{ email: string } | null> {
   }
 }
 
-async function loadStorefront(sellerSlug: string) {
+// `cache` porque a página e o `generateMetadata` pedem a mesma vitrine na
+// mesma requisição: sem isso, todo acesso bateria duas vezes no BFF.
+const loadStorefront = cache(async function loadStorefront(sellerSlug: string) {
   try {
     const parsed = parsePublicStorefront(await readPublicStorefront(sellerSlug));
     if (!parsed) throw new DomainApiError(503, "invalid_public_storefront");
@@ -176,7 +211,7 @@ async function loadStorefront(sellerSlug: string) {
     if (error instanceof DomainApiError && error.status === 404) notFound();
     throw error;
   }
-}
+});
 
 function formatPrice(unitAmountMinor: number, currency: string): string {
   return new Intl.NumberFormat("pt-BR", { style: "currency", currency }).format(unitAmountMinor / 100);

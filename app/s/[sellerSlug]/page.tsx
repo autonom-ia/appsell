@@ -13,6 +13,7 @@ import { billingPeriodLabel, formatOfferPrice } from "@/lib/offer-price";
 import { productArt } from "@/lib/product-art";
 import { storeAccent } from "@/lib/store-brand";
 import { parsePublicStorefront } from "@/lib/public-storefront";
+import { storefrontCardImage, twitterCardKind } from "@/lib/social-card";
 import { SITE } from "@/lib/site";
 
 export const dynamic = "force-dynamic";
@@ -28,11 +29,18 @@ export async function generateMetadata({
   const titulo = `${seller.name}, cursos online`;
   const descricao = seller.tagline ?? `Cursos de ${seller.name} para assistir pelo navegador do celular. Compra pela loja oficial na Autonom.ia Sell, com acesso no nome de quem paga.`;
 
+  // Sem `images`, o mensageiro cai no favicon do site e o card da loja vem
+  // com o ícone da plataforma (#412). A marca de quem vende é o banner e,
+  // sem ele, o logo — a ordem da Decisão 021.
+  const card = storefrontCardImage(seller);
+  const images = card ? [card] : undefined;
+
   return {
     title: titulo,
     description: descricao,
     alternates: { canonical: url },
-    openGraph: { type: "website", title: titulo, description: descricao, url, siteName: SITE.nome, locale: "pt_BR" }
+    openGraph: { type: "website", title: titulo, description: descricao, url, siteName: SITE.nome, locale: "pt_BR", images },
+    twitter: { card: twitterCardKind(card), title: titulo, description: descricao, images }
   };
 }
 
