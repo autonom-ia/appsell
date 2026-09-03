@@ -100,6 +100,13 @@ function storefrontWithPrice(unitAmountMinor: number | null, billingPeriod = "on
         description: "Curso",
         publication_id: "33333333-3333-4333-8333-333333333333",
         publication_version: 1,
+        cover: {
+          url: "https://storage.test/appsell-ready/cover?X-Amz-Signature=fresh",
+          media_type: "image/png",
+          width: 1600,
+          height: 900,
+          expires_in_seconds: 60
+        },
         price: unitAmountMinor === null
           ? null
           : { unit_amount_minor: unitAmountMinor, currency, billing_period: billingPeriod }
@@ -209,7 +216,8 @@ describe("POST /api/checkout/stripe/create-session", () => {
       product: expect.objectContaining({
         externalProductId: "22222222-2222-4222-8222-222222222222",
         fulfillmentExternalProductId: "22222222-2222-4222-8222-222222222222",
-        title: "Codex na Prática"
+        title: "Codex na Prática",
+        imageUrl: `${ORIGIN}/api/storefronts/${SELLER}/products/${PRODUCT}/cover`
       }),
       pricing: { amountMinor: 4990, currency: "BRL", billingPeriod: "one_time" },
       connect: { accountId: null, applicationFeeAmountMinor: null },
