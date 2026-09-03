@@ -2,12 +2,12 @@
 
 > Fonte operacional para retomar o projeto sem depender do histórico da conversa.
 >
-> Última verificação documentada: **2026-09-02**. Esta página separa o que foi
+> Última verificação documentada: **2026-09-03**. Esta página separa o que foi
 > comprovado na produção do que continua sendo plano ou laboratório Local/CI.
 
 ## Release em produção
 
-> Última verificação: **2026-09-02**, lendo o host — não a memória desta página.
+> Última verificação: **2026-09-03**, lendo o host — não a memória desta página.
 > Esta página já divergiu da realidade três vezes; o que vale é o que
 > `docker service ls` responde.
 
@@ -15,11 +15,17 @@
 |---|---|
 | Domínio | `https://sell.autonomia.site` |
 | Ambiente | VPS EasyPanel nativo, Docker Swarm |
-| SHA do **api** | `803fa82` — Minha conta do comprador: dados, acessos, exportação e pedido de exclusão (#351) |
+| SHA do **api** | `8a0eca0` — Configurações da loja, logo, promessa e vitrine com marca (#352) |
 | SHA do **asset-worker** | `d5e00ec` — mesma imagem da api, um SHA atrás |
 | SHA do **pdf-sandbox** | `d5e00ec` — mesma imagem da api, com outra tag |
-| SHA do **web** | `803fa82` — Minha conta (#351); worker e sandbox seguem em `d5e00ec` |
-| Banco | head **`0051_minha_conta_do_comprador`**, `schema_ready() = true` |
+| SHA do **web** | `8a0eca0` — Configurações da loja e mini-LP do produto (#352); worker e sandbox seguem em `d5e00ec` |
+| Banco | head **`0052_configuracoes_da_loja`**, `schema_ready() = true` |
+
+**Release de 2026-09-03, `web` e `api`: `8a0eca0`, com a migration `0052`.** A
+loja ganha marca própria (nome, frase, sobre, cor, logo), a página do produto
+vira página de vendas, Recebimentos vão para dentro de Configurações e só
+dono e admin configuram (#352, PR #383). Detalhe na seção
+[Release `8a0eca0`](#release-8a0eca0--configurações-da-loja-e-página-de-vendas-2026-09-03).
 
 **Release de 2026-09-02, `api` e `web`: `803fa82`, com a migration `0051`.** Toda
 identidade real ganha `/settings/account`: dados, verificação, senha via Identity,
@@ -164,6 +170,88 @@ Com 4 núcleos, 300 páginas são 89 s de janela.
 Mil páginas exigem, além da #320: virtualizar o leitor (hoje cria um nó por
 página), paralelizar o upload das páginas, e refazer gatilhos que recontam todas
 as páginas a cada inserção. Cinco mil é outra geração do pipeline.
+
+## Release `8a0eca0` — Configurações da loja e página de vendas (2026-09-03)
+
+`web` e `api`, mais a migration `0052`. Fecha a A2 (#352) do trilho de
+configurações por papel. Merge por rebase da PR #383 (5 commits; review
+adversarial em 3 rodadas, APROVADO na terceira).
+
+### O que mudou para quem usa
+
+- **Configurações → Loja** (`/settings/store`): nome, frase de apresentação,
+  "sobre quem ensina", cor de destaque (recusada se não contrastar 4,5:1 com
+  texto branco), logo (mesmo verificador da capa), e o cartão "Seus links" com
+  o endereço da loja para copiar. O endereço público é fixo.
+- **Configurações → Recebimentos** (`/settings/payouts`): a tela de ontem, no
+  lugar novo. `/payouts` responde 308.
+- Menu "Configurações" só para dono e admin; editor e suporte não veem e a API
+  recusa (`42501`).
+- **Vitrine e páginas do produto/acesso** com a marca do vendedor: logo ou
+  iniciais, frase, cor nos botões; capa do produto passa a ser pública; a
+  página do produto ganha promessa, "o que você vai receber" (gerado da versão
+  publicada: títulos de aula e contagem de materiais), "sobre quem ensina" e o
+  botão repetido fixo no celular.
+- **Promessa** no editor do produto (área Produto), salva à parte do rascunho.
+- Painel: aviso quando há produto pago publicado e a conta de recebimentos não
+  está pronta, com link para Recebimentos.
+
+### Ordem de deploy: web → api → migration (o inverso da 0051)
+
+Capa e conteúdo já existem em produtos publicados, então o banco novo devolve
+campos que o parser do web antigo (chaves exatas) recusaria. O web novo aceita
+as duas formas; a API nova troca chave de objeto por URL antes de responder e
+lê a promessa via `to_jsonb(product)->>'headline'`, que é nulo enquanto a
+coluna não existe. O review pegou a ordem invertida na primeira versão da PR.
+
+### Como foi aplicado
+
+```bash
+D=/tmp/sell-release-8a0eca0-<ts>                    # specs api/web, nomes das vars, pg_dump -Fc
+# fonte via git archive → /home/claudete/appsell-src-8a0eca0
+# imagens: deploy/easypanel-native/Dockerfile.web e Dockerfile.api, --build-arg GIT_SHA=8a0eca0
+docker service update --image easypanel/sell-autonomia/web:8a0eca0 --update-order stop-first sell-autonomia_web   # 1
+docker service update --image easypanel/sell-autonomia/api:8a0eca0 --update-order stop-first sell-autonomia_api   # 2
+docker run --rm --network easypanel -e APPSELL_MIGRATOR_DATABASE_URL=<montada no host> \
+  -v /home/claudete/appsell-src-8a0eca0/apps/api:/mig -w /mig \
+  easypanel/sell-autonomia/api:8a0eca0 alembic upgrade head                                                       # 3
+```
+
+### Validação executada em produção
+
+| O quê | Resultado |
+|---|---|
+| web | convergiu em `8a0eca0`; 53 variáveis iguais nome a nome; bundle novo provado (`storefront-brand`, rodapé novo); `/payouts` → 308 `/settings/payouts` |
+| api | convergiu em `8a0eca0`; 39 variáveis iguais nome a nome; `ready` ok; zero erros no log; vitrine 200 contra o banco ainda em `0051` |
+| migration | head `0052`, `schema_ready()=true`; 10 funções com dono `appsell_owner`; as 8 do runtime com `secdef` e EXECUTE, as 2 auxiliares sem; 11 colunas na loja, `headline` no produto, `seller_logo_upload` |
+| vitrine | `/s/hub2you` devolve o resumo do conteúdo dos dois produtos e a capa do "IA na prática"; página do produto com "O que você vai receber", botão fixo e marca |
+| público | `/` `/api/health/ready` `/s/*` 200 · `/settings/store` anônimo 307 · `GET /api/sellers/<id>/settings` anônimo 401 |
+
+### O que não foi validado
+
+A tela `/settings/store` com sessão de dono (salvar nome/cor, subir logo real
+contra o S3). É o que o Rodrigo confere primeiro.
+
+### Achado alheio a este release
+
+`APPSELL_CHECKOUT_PROVIDER=financial_checkout` está no `web` desde algum
+momento entre o release de ontem (não estava no backup do `803fa82`) e o
+backup deste. Com ele, todo produto pago passa por `isProductCheckoutAvailable`
+e a página oferece "Entre para comprar" — inclusive o da Hub2you, que não tem
+conta de recebimentos. Este release não tocou nas variáveis (iguais nome a
+nome). O que isso significa está na #382.
+
+### Rollback deste release
+
+```bash
+docker service update --image easypanel/sell-autonomia/web:803fa82 --update-order stop-first sell-autonomia_web
+docker service update --image easypanel/sell-autonomia/api:803fa82 --update-order stop-first sell-autonomia_api
+# só se precisar tirar as colunas e funções: alembic downgrade -1 (apaga logos, cor, frase, sobre, promessa)
+```
+
+Atenção: com o banco em `0052`, o web `803fa82` recusa a vitrine de lojas
+com produto publicado (parser com chaves exatas). Rollback do web exige
+rollback do banco antes, ou o inverso da ordem de subida.
 
 ## Release `803fa82` — Minha conta do comprador (2026-09-02)
 
