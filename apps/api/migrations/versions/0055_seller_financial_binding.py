@@ -56,15 +56,14 @@ _SELLER_WITH_FINANCIAL = """  if seller.financial_operator_id is not null then
 """
 _READY_0054 = "'0053_dono_das_funcoes_payout','0054_banner_da_loja'))"
 _READY_0055 = (
-    "'0053_dono_das_funcoes_payout','0054_banner_da_loja',"
-    "'0055_seller_financial_binding'))"
+    "'0053_dono_das_funcoes_payout','0054_banner_da_loja','0055_seller_financial_binding'))"
 )
 _READY_ANCHOR = (
     "            and to_regprocedure("
     "'app_private.set_seller_image(uuid,uuid,text,uuid,text,text,text,text,integer,integer,bigint,uuid,text,uuid)'"
     ") is not null\n"
 )
-_READY_COLUMNS = _READY_ANCHOR + (
+_READY_COLUMNS = _READY_ANCHOR + (  # noqa: S608 - static schema readiness SQL
     "            and exists (select 1 from pg_attribute where attrelid="
     "'public.seller_organization'::regclass and attname='financial_operator_id' "
     "and not attisdropped)\n"
