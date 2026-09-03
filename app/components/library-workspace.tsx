@@ -92,6 +92,10 @@ export function LibraryWorkspace({ demoCheckoutEnabled = false }: { demoCheckout
       : null;
     return <article key={item.entitlement_id} className="library-product-card" aria-labelledby={`course-${item.entitlement_id}`}>
       <div className="library-product-copy">
+        {item.product.cover
+          // eslint-disable-next-line @next/next/no-img-element
+          ? <img className="library-cover" src={item.product.cover.url} alt="" width={item.product.cover.width} height={item.product.cover.height} loading="lazy" decoding="async"/>
+          : null}
         <p className="eyebrow">{item.seller.name}</p>
         <h2 id={`course-${item.entitlement_id}`}>{item.product.title}</h2>
         {item.product.description.trim() ? <p>{item.product.description}</p> : null}
@@ -108,9 +112,15 @@ export function LibraryWorkspace({ demoCheckoutEnabled = false }: { demoCheckout
       {/* Antes daqui saía um acordeão que listava os outros produtos como
           texto morto, sem link nenhum: prometia navegação e entregava uma
           lista de onde não se saía. A loja do produtor já é essa vitrine. */}
-      <Link className="secondary-button library-store-link" href={`/s/${encodeURIComponent(item.seller.slug)}`}>
+      <a
+        className="secondary-button library-store-link"
+        href={`/s/${encodeURIComponent(item.seller.slug)}`}
+        target="_blank"
+        rel="noopener noreferrer"
+      >
         Ver a loja de {item.seller.name}
-      </Link>
+        <span className="sr-only"> (abre em outra janela)</span>
+      </a>
     </article>;
   })}</div>;
 }

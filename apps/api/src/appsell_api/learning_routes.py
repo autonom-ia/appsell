@@ -373,7 +373,56 @@ async def _read_buyer_products(request: Request) -> dict[str, Any]:
             )
     except DBAPIError as error:
         raise _domain_error(error) from error
-    return {"items": products or []}
+    return {"items": _library_images(products or [], _optional_storage(request))}
+
+
+def _optional_storage(request: Request) -> S3Storage | None:
+    storage: S3Storage | None = getattr(request.app.state, "storage", None)
+    return storage
+
+
+def _library_images(items: Any, storage: S3Storage | None) -> Any:
+    """Troca a chave de objeto da capa por um endereço temporário.
+
+    Mesma disciplina da vitrine pública: chave e versão morrem aqui, e sem
+    armazenamento configurado a capa some inteira em vez de virar um endereço
+    quebrado — o cartão desenha a arte gerada a partir do nome.
+    """
+    if not isinstance(items, list):
+        return items
+    rewritten = []
+    for item in items:
+        product = item.get("product") if isinstance(item, dict) else None
+        if not isinstance(product, dict) or "cover" not in product:
+            rewritten.append(item)
+            continue
+        signed = _signed_cover(product.get("cover"), storage)
+        limpo = {key: value for key, value in product.items() if key != "cover"}
+        if signed is not None:
+            limpo["cover"] = signed
+        rewritten.append({**item, "product": limpo})
+    return rewritten
+
+
+def _signed_cover(cover: Any, storage: S3Storage | None) -> dict[str, Any] | None:
+    if storage is None or not isinstance(cover, dict):
+        return None
+    key = cover.get("object_key")
+    version = cover.get("storage_version_id")
+    media_type = cover.get("media_type")
+    if not isinstance(key, str) or not isinstance(version, str) or not isinstance(media_type, str):
+        return None
+    try:
+        signed = storage.presign_cover(key=key, version_id=version, media_type=media_type)
+    except (StorageError, ValueError):
+        return None
+    return {
+        "url": signed.url,
+        "media_type": media_type,
+        "width": cover.get("width"),
+        "height": cover.get("height"),
+        "expires_in_seconds": signed.expires_in_seconds,
+    }
 
 
 @router.get("/me/products/{entitlement_id}/seller-products")
