@@ -279,10 +279,12 @@ Cinco escolhas, e por quê:
    gravar, com a conta na mensagem; a página repete a conta ao pintar e cai no
    tom da Autonom.ia se reprovar. O banco valida só o formato — luminância em
    PL/pgSQL seria a mesma conta em dois lugares.
-3. **Os campos novos só entram no JSON da vitrine quando existem.** O parser
-   do web exige chaves exatas; `logo: null` para um web antigo derrubaria
-   toda vitrine em 503 no intervalo entre migration, api e web. Precedente:
-   `access_mode` (0031). Ordem de deploy: migration → api → web.
+3. **Os campos novos só entram no JSON da vitrine quando existem, e a ordem
+   de deploy é web → api → migration.** O parser do web exige chaves exatas,
+   e capa e currículo já existem em produtos publicados: com o banco na
+   frente, o web antigo cairia em 503. O web novo aceita as duas formas; a API
+   nova troca chave de objeto por URL antes de responder; o banco vai por
+   último. A revisão da PR pegou a ordem invertida na primeira versão.
 4. **A promessa é campo "ao vivo" do produto, como a capa.** Trocar a frase
    da página de vendas não exige republicar o curso. Segue `catalog.draft.update`
    e a versão esperada; salva à parte do formulário grande para não disputar

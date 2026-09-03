@@ -14,11 +14,12 @@ lugar da capa. Esta migration dá à loja o que ela precisa para parecer dela:
 - **vitrine pública reescrita**: devolve marca, capa, promessa e o currículo
   publicado (títulos de aulas e contagem de materiais, lidos do snapshot da
   publicação vigente — nunca do rascunho). Os campos novos só entram no JSON
-  **quando existem**: o parser do web exige chaves exatas, e um web antigo
-  diante de `logo: null` derrubaria toda vitrine em 503. Na hora desta
-  migration ninguém tem logo, e o primeiro só nasce pela tela nova, então
-  o web antigo sobrevive ao intervalo entre os três deploys. Precedente:
-  `access_mode` na 0031.
+  **quando existem** (precedente: `access_mode` na 0031). Isso NÃO basta para
+  o web antigo: capa e currículo já existem em produtos publicados, e o
+  parser antigo exige chaves exatas. Por isso a ordem de deploy é
+  **web → api → migration** — o web novo aceita as duas formas, a API nova
+  troca chave por URL antes de responder, e só então o banco passa a
+  devolver os campos. A revisão desta migration pegou a ordem invertida.
 
 Quem pode: só `seller_owner` e `seller_admin`, lidos por
 `resolve_seller_membership_role` (0025). `seller_editor` e `seller_support`
@@ -32,10 +33,12 @@ O que o banco NÃO valida: legibilidade da cor. O contraste é conta de
 luminância, feita no BFF ao gravar e na renderização ao pintar, com a mesma
 função. Aqui só o formato `#rrggbb` minúsculo.
 
-Ordem de deploy: **migration → api → web**. Função nova sem chamador é
-inofensiva; coluna nova é nula. Downgrade apaga logos, cor, tagline, sobre e
-promessa — os objetos de logo já promovidos ficam órfãos no bucket servido e
-precisam de limpeza manual (documentado no runbook do release).
+Ordem de deploy: **web → api → migration** (ver acima). Função nova sem
+chamador é inofensiva; coluna nova é nula. Downgrade apaga logos, cor,
+tagline, sobre e promessa — os objetos de logo já promovidos ficam órfãos no
+bucket servido e precisam de limpeza manual (documentado no runbook do
+release). Limites de texto são em caracteres (`length`), como o nome: a tela
+promete caracteres, e "á" tem dois bytes.
 """
 
 from __future__ import annotations
@@ -136,7 +139,7 @@ _CHECKS_DA_LOJA: tuple[str, ...] = (
     alter table public.seller_organization
       add constraint seller_organization_tagline_strict check (
         tagline is null or (
-          tagline = btrim(tagline) and octet_length(tagline) between 2 and 160
+          tagline = btrim(tagline) and length(tagline) between 2 and 160
           and tagline !~ '[[:cntrl:]]'
         )
       )
@@ -145,7 +148,7 @@ _CHECKS_DA_LOJA: tuple[str, ...] = (
     alter table public.seller_organization
       add constraint seller_organization_about_strict check (
         about is null or (
-          about = btrim(about) and octet_length(about) between 2 and 600
+          about = btrim(about) and length(about) between 2 and 600
           and about !~ '[[:cntrl:]]'
         )
       )
@@ -180,7 +183,7 @@ alter table public.catalog_product
   add column headline text,
   add constraint catalog_product_headline_strict check (
     headline is null or (
-      headline = btrim(headline) and octet_length(headline) between 2 and 200
+      headline = btrim(headline) and length(headline) between 2 and 200
       and headline !~ '[[:cntrl:]]'
     )
   )
@@ -318,9 +321,9 @@ begin
      or length(p_display_name) not between 2 and 120
      or p_display_name ~ '[[:cntrl:]]'
      or (p_tagline is not null and (p_tagline <> btrim(p_tagline)
-         or octet_length(p_tagline) not between 2 and 160 or p_tagline ~ '[[:cntrl:]]'))
+         or length(p_tagline) not between 2 and 160 or p_tagline ~ '[[:cntrl:]]'))
      or (p_about is not null and (p_about <> btrim(p_about)
-         or octet_length(p_about) not between 2 and 600 or p_about ~ '[[:cntrl:]]'))
+         or length(p_about) not between 2 and 600 or p_about ~ '[[:cntrl:]]'))
      or (p_accent_color is not null and p_accent_color !~ '^#[0-9a-f]{6}$') then
     raise exception 'invalid seller settings' using errcode='22023';
   end if;
@@ -728,7 +731,7 @@ begin
      or p_idempotency_key is null or p_request_id is null
      or p_body_sha256 is null or p_body_sha256 !~ '^[0-9a-f]{64}$'
      or (p_headline is not null and (p_headline <> btrim(p_headline)
-         or octet_length(p_headline) not between 2 and 200 or p_headline ~ '[[:cntrl:]]')) then
+         or length(p_headline) not between 2 and 200 or p_headline ~ '[[:cntrl:]]')) then
     raise exception 'invalid product headline request' using errcode='22023';
   end if;
 
