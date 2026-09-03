@@ -18,6 +18,9 @@ são as que ficaram fora dela:
   `sync_payout_account_status`, `upsert_seller_payout_account`.
 
 Esta migration alinha as seis à convenção e reafirma o EXECUTE do runtime.
+Ela precisa sair do `set local role appsell_owner` do `env.py` durante os
+`alter … owner` (só o dono atual pode transferir a posse), e volta a ele
+depois.
 O dono passa a ser o mesmo em todo ambiente, e o teste de classe
 (`test_postgres_configuracoes_da_loja`) passa a exigir `appsell_owner` em toda
 função de `app_private` — é o que impede a próxima.
@@ -81,8 +84,17 @@ _FUNCOES: tuple[str, ...] = (
 
 
 def _alinhar() -> None:
+    # O env.py abre a migration com `set local role appsell_owner`, e `alter
+    # function … owner` só é permitido ao dono atual — o migrador. `reset role`
+    # devolve a sessão a ele (dono das seis e membro de appsell_owner) só pelo
+    # tempo dos alters; depois o papel volta ao que o env.py espera. Em
+    # produção a primeira versão desta migration parou exatamente aqui:
+    # "must be owner of function record_payout_repoint_denied".
+    op.execute("reset role")
     for signature in _FUNCOES:
         op.execute(f"alter function {signature} owner to appsell_owner")
+    op.execute("set local role appsell_owner")
+    for signature in _FUNCOES:
         op.execute(f"revoke all on function {signature} from public")
         op.execute(f"grant execute on function {signature} to appsell_runtime")
 
