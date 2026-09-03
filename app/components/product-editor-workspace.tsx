@@ -1240,6 +1240,7 @@ function normalizeDetail(value: Partial<ProductDetail> | null | undefined): Prod
     },
     offer: { id: offer.id, title: offer.title ?? "", summary: offer.summary ?? "", status: offer.status ?? "draft", draft_version: offerVersion, unit_amount_minor: offer.unit_amount_minor, currency: offer.currency, billing_period: offer.billing_period },
     cover: normalizeCover(value.cover),
+    banner: normalizeCover(value.banner),
     publication: value.publication ?? null,
     has_unpublished_changes: value.has_unpublished_changes ?? value.readiness?.has_unpublished_changes,
     readiness: normalizeReadinessValue(value.readiness)
