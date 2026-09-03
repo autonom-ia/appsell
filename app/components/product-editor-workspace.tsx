@@ -196,7 +196,15 @@ export function workflowState(
   };
 }
 
-export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: string; productId: string }) {
+export function ProductEditorWorkspace({
+  sellerId,
+  productId,
+  usesFinancialCheckout
+}: {
+  sellerId: string;
+  productId: string;
+  usesFinancialCheckout: boolean;
+}) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const requestedSection = searchParams.get("section");
@@ -562,6 +570,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
   // showing "configure seus recebimentos" after it was already configured.
   useEffect(() => {
     if (!publishDialogOpen) return;
+    if (usesFinancialCheckout) return;
     let active = true;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8_000);
@@ -602,7 +611,7 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
       controller.abort();
       clearTimeout(timeout);
     };
-  }, [publishDialogOpen, sellerId]);
+  }, [publishDialogOpen, sellerId, usesFinancialCheckout]);
 
   async function publish(accessMode: "free" | "paid") {
     const hasChanges = detail?.has_unpublished_changes ?? detail?.readiness?.has_unpublished_changes;
@@ -802,7 +811,8 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
     (detail.offer.unit_amount_minor ?? 0) > 0 &&
     !editorDirty &&
     !offerStatusLocked;
-  const paidAvailable = payoutState === "ready" && (detail.offer.unit_amount_minor ?? 0) > 0;
+  const paymentReadiness = usesFinancialCheckout ? "ready" : payoutState;
+  const paidAvailable = paymentReadiness === "ready" && (detail.offer.unit_amount_minor ?? 0) > 0;
   const workflow = workflowState(detail, curriculumSummary);
   const summaries = stepSummaries({
     title: detail.title,
@@ -1030,18 +1040,18 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
                 <input type="radio" name="access_mode" value="paid" checked={publishAccessMode === "paid"} disabled={!paidAvailable} onChange={() => setPublishAccessMode("paid")}/>
                 <span>
                   <strong>Vender com checkout</strong>
-                  <span>{payoutState === "checking"
+                  <span>{paymentReadiness === "checking"
                     ? "Verificando seus recebimentos…"
-                    : payoutState === "unknown"
+                    : paymentReadiness === "unknown"
                       ? "Não conseguimos verificar seus recebimentos agora. Feche e abra de novo."
-                      : payoutState === "missing"
+                      : paymentReadiness === "missing"
                         ? "Indisponível: configure seus recebimentos para poder cobrar."
                         : (detail.offer.unit_amount_minor ?? 0) <= 0
                           ? "Indisponível: salve um preço maior que zero na etapa Preço."
                           : `O link leva ao pagamento de ${formatOfferPrice(detail.offer.unit_amount_minor ?? 0, detail.offer.currency)} antes de liberar o conteúdo.`}</span>
                 </span>
               </label>
-              {payoutState === "missing" ? <Link className="access-mode-fix" href="/settings/payouts">Configurar recebimentos</Link> : null}
+              {paymentReadiness === "missing" ? <Link className="access-mode-fix" href="/settings/payouts">Configurar recebimentos</Link> : null}
             </div>
             <div className="dialog-actions"><button ref={publishCancelButton} className="secondary-button" type="button" onClick={closePublishDialog}>Revisar novamente</button><button className="primary-button commercial-button" type="button" onClick={() => void publish(publishAccessMode)}>{publishAccessMode === "paid" ? "Colocar no ar e vender" : "Colocar no ar"}</button></div>
         </AccessibleDialog>
