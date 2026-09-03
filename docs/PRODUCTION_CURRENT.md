@@ -15,11 +15,17 @@
 |---|---|
 | Domínio | `https://sell.autonomia.site` |
 | Ambiente | VPS EasyPanel nativo, Docker Swarm |
-| SHA do **api** | `8a0eca0` — Configurações da loja, logo, promessa e vitrine com marca (#352) |
+| SHA do **api** | `b9e1c61` — Configurações da loja (#352) mais o pino da 0053 |
 | SHA do **asset-worker** | `d5e00ec` — mesma imagem da api, um SHA atrás |
 | SHA do **pdf-sandbox** | `d5e00ec` — mesma imagem da api, com outra tag |
 | SHA do **web** | `8a0eca0` — Configurações da loja e mini-LP do produto (#352); worker e sandbox seguem em `d5e00ec` |
-| Banco | head **`0052_configuracoes_da_loja`**, `schema_ready() = true` |
+| Banco | head **`0053_dono_das_funcoes_payout`**, `schema_ready() = true` |
+
+**Correção de 2026-09-03, `api` `b9e1c61` e migration `0053` (PRs #385, #386).**
+Configurações → Loja respondia 403 ao próprio dono: as seis funções de
+recebimento (0021–0025) tinham dono = migrador em produção e o `appsell_owner`
+não podia chamá-las de dentro das definer da 0052. A 0053 alinha o dono das
+seis à convenção. Detalhe na seção do release `8a0eca0`, abaixo.
 
 **Release de 2026-09-03, `web` e `api`: `8a0eca0`, com a migration `0052`.** A
 loja ganha marca própria (nome, frase, sobre, cor, logo), a página do produto
@@ -231,6 +237,27 @@ docker run --rm --network easypanel -e APPSELL_MIGRATOR_DATABASE_URL=<montada no
 
 A tela `/settings/store` com sessão de dono (salvar nome/cor, subir logo real
 contra o S3). É o que o Rodrigo confere primeiro.
+
+### O que quebrou depois, e a correção (mesmo dia)
+
+Com sessão de dono, `/settings/store` mostrava "só o dono ou um administrador
+pode alterar". Reproduzido de dentro do container da API com o mesmo contexto
+assinado: `42501 permission denied for function resolve_seller_membership_role`.
+Em produção, as seis funções de recebimento (0021–0025) nasceram com dono =
+migrador (antes da convenção `alter function … owner to appsell_owner`); no
+banco local e no de testes nasceram com dono `appsell_owner`, e nenhum teste
+viu. As sete definer da 0052 chamam uma delas.
+
+Migration `0053_dono_das_funcoes_payout` (nome com no máximo 32 caracteres:
+`alembic_version` é `varchar(32)`): `reset role` para sair do
+`set local role appsell_owner` do `env.py` — só o dono atual transfere a
+posse; a primeira versão parou em "must be owner of function" —, seis
+`alter … owner to appsell_owner`, grants reafirmados, listas do `schema_ready`
+estendidas. Teste de classe: toda função de `app_private` com dono
+`appsell_owner`. Aplicada com a `api:b9e1c61` (pino 0053) já no ar; depois:
+cabeça `0053`, `schema_ready()=true`, varredura sem função fora da convenção,
+e a chamada do dono devolvendo as configurações. Banco reaproveitado localmente
+**não** reproduz a posse de produção; o CI (`exercita_migrations.sh`) sim.
 
 ### Achado alheio a este release
 
