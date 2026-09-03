@@ -62,6 +62,17 @@ export default async function ProductCheckoutPage({
           // eslint-disable-next-line @next/next/no-img-element
           ? <div className="lp-banner"><img className="lp-banner-image" src={product.banner.url} alt="" width={product.banner.width} height={product.banner.height} decoding="async" fetchPriority="high"/></div>
           : null}
+        {product.cover
+          // eslint-disable-next-line @next/next/no-img-element
+          ? <img
+              className="lp-cover"
+              src={`/api/storefronts/${encodeURIComponent(seller.slug)}/products/${encodeURIComponent(product.slug)}/cover`}
+              alt=""
+              width={product.cover.width}
+              height={product.cover.height}
+              decoding="async"
+            />
+          : null}
         <p className="eyebrow">{seller.name}</p>
         <h1 id="product-checkout-title">{product.headline ?? product.title}</h1>
         {product.headline ? <p className="lp-title">{product.title}</p> : null}
