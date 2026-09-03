@@ -77,6 +77,11 @@ export async function POST(request: NextRequest) {
   const amount = purchasableOneTimeAmount(product);
   if (amount === null) return jsonError("product_not_purchasable", 409);
 
+  if (provider === "financial_checkout" &&
+      (!parsed.seller.financial_operator_id || !parsed.seller.financial_product_catalog_item_id)) {
+    return jsonError("seller_financial_not_configured", 409);
+  }
+
   // AUTHENTICATION IS REQUIRED TO CHARGE, and it is a money rule, not a UX one.
   //
   // Migration 0020's worker owns the entitlement as
@@ -96,24 +101,18 @@ export async function POST(request: NextRequest) {
   if (identity.status === "mismatch") return jsonError("buyer_email_mismatch", 409);
   const buyerIdentitySub = identity.subject;
 
-  // WHOSE account takes this charge. A seller with a connected account sells
-  // in DIRECT CHARGE: the session is created ON the connected account and the
-  // platform keeps only application_fee_amount. FAIL-CLOSED on lookup failure:
-  // charging without knowing the destination would silently settle a
-  // producer's sale into the platform's own account — the custody model #143
-  // forbids. The platform-direct branch below survives ONLY for sellers with
-  // no destination at all (the legacy platform-owned test product).
-  let destination: { provider_account_id: string; charges_enabled: boolean } | null;
-  try {
-    destination = (await resolveCheckoutPayoutDestination(parsed.seller.id)).payout_destination;
-  } catch {
-    return jsonError("payout_destination_unavailable", 503);
-  }
-  if (destination && !destination.charges_enabled) {
-    // Bound but not yet cleared to charge: the provider would refuse anyway;
-    // failing here gives the storefront an actionable error instead of a
-    // provider error mid-payment.
-    return jsonError("seller_not_ready_to_charge", 409);
+  // Financial owns gateway selection from the product's operator. The payout
+  // destination below belongs only to the legacy local direct-charge path.
+  let destination: { provider_account_id: string; charges_enabled: boolean } | null = null;
+  if (provider !== "financial_checkout") {
+    try {
+      destination = (await resolveCheckoutPayoutDestination(parsed.seller.id)).payout_destination;
+    } catch {
+      return jsonError("payout_destination_unavailable", 503);
+    }
+    if (destination && !destination.charges_enabled) {
+      return jsonError("seller_not_ready_to_charge", 409);
+    }
   }
 
   const origin = configuredPublicOrigin();
@@ -122,7 +121,8 @@ export async function POST(request: NextRequest) {
     try {
       const endpointKey = checkoutWebhookEndpointKey();
       const result = await createFinancialExternalCheckoutIntent({
-        productCatalogItemId: product.id,
+        operatorId: parsed.seller.financial_operator_id!,
+        productCatalogItemId: parsed.seller.financial_product_catalog_item_id!,
         seller: {
           id: parsed.seller.id,
           slug: parsed.seller.slug,

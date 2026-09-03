@@ -85,7 +85,13 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 function storefrontWithPrice(unitAmountMinor: number | null, billingPeriod = "one_time", currency = "BRL") {
   return {
     schema_version: 1,
-    seller: { id: "11111111-1111-4111-8111-111111111111", slug: SELLER, name: "Autonomia Demo" },
+    seller: {
+      id: "11111111-1111-4111-8111-111111111111",
+      slug: SELLER,
+      name: "Autonomia Demo",
+      financial_operator_id: "44444444-4444-4444-8444-444444444444",
+      financial_product_catalog_item_id: "55555555-5555-4555-8555-555555555555"
+    },
     products: [
       {
         id: "22222222-2222-4222-8222-222222222222",
@@ -124,6 +130,7 @@ describe("POST /api/checkout/stripe/create-session", () => {
     readPublicStorefront.mockReset();
     sessionsCreate.mockClear();
     createFinancialExternalCheckoutIntent.mockClear();
+    resolveCheckoutPayoutDestination.mockClear();
     resolveBuyerIdentityMock.mockReset();
     resolveBuyerIdentityMock.mockResolvedValue({ status: "authenticated", subject: "cognito-sub-default" });
   });
@@ -193,8 +200,10 @@ describe("POST /api/checkout/stripe/create-session", () => {
       url: "https://financial.test/financial/public/external-checkout/0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c"
     });
     expect(sessionsCreate).not.toHaveBeenCalled();
+    expect(resolveCheckoutPayoutDestination).not.toHaveBeenCalled();
     expect(createFinancialExternalCheckoutIntent).toHaveBeenCalledWith(expect.objectContaining({
-      productCatalogItemId: "22222222-2222-4222-8222-222222222222",
+      operatorId: "44444444-4444-4444-8444-444444444444",
+      productCatalogItemId: "55555555-5555-4555-8555-555555555555",
       seller: expect.objectContaining({ slug: SELLER }),
       buyer: expect.objectContaining({ userId: "cognito-sub-default", email: "buyer@example.test" }),
       product: expect.objectContaining({
@@ -203,8 +212,25 @@ describe("POST /api/checkout/stripe/create-session", () => {
         title: "Codex na Prática"
       }),
       pricing: { amountMinor: 4990, currency: "BRL", billingPeriod: "one_time" },
+      connect: { accountId: null, applicationFeeAmountMinor: null },
       fulfillmentWebhookUrl: `${ORIGIN}/api/webhooks/checkouts/endpointkeyendpointkeyendpointkey123456`
     }));
+  });
+
+  it("rejects a Financial checkout when the seller has no Financial binding", async () => {
+    process.env.APPSELL_CHECKOUT_PROVIDER = "financial_checkout";
+    const storefront = storefrontWithPrice(4990);
+    readPublicStorefront.mockResolvedValue({
+      ...storefront,
+      seller: { id: storefront.seller.id, slug: storefront.seller.slug, name: storefront.seller.name }
+    });
+
+    const response = await POST(request(validBody));
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "seller_financial_not_configured" });
+    expect(resolveBuyerIdentityMock).not.toHaveBeenCalled();
+    expect(createFinancialExternalCheckoutIntent).not.toHaveBeenCalled();
   });
 
   it("builds a one-time BRL session with the SERVER-SIDE amount and correct metadata", async () => {
