@@ -111,6 +111,27 @@ def test_storefront_exposes_live_offer_price_for_published_products() -> None:
     ]
 
 
+def test_storefront_exposes_complete_financial_seller_binding() -> None:
+    assert ADMIN_URL
+    manifest, _ = load_manifest()
+    operator_id = uuid4()
+    product_id = uuid4()
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "update seller_organization set financial_operator_id=%s, "
+            "financial_product_catalog_item_id=%s where id=%s",
+            (operator_id, product_id, manifest["seller"]["id"]),
+        )
+        projection = connection.execute(
+            "select app_private.read_public_storefront(%s)",
+            (manifest["seller"]["slug"],),
+        ).fetchone()
+        connection.rollback()
+    assert projection is not None
+    assert projection[0]["seller"]["financial_operator_id"] == str(operator_id)
+    assert projection[0]["seller"]["financial_product_catalog_item_id"] == str(product_id)
+
+
 def test_storefront_hides_drafts_and_unknown_or_invalid_sellers() -> None:
     assert ADMIN_URL
     manifest, _ = load_manifest()

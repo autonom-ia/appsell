@@ -31,6 +31,23 @@ describe("public storefront payload", () => {
     expect(parsePublicStorefront(value)).toEqual(value);
   });
 
+  it("accepts only a complete Financial seller binding", () => {
+    const value = fixture();
+    const bound = {
+      ...value,
+      seller: {
+        ...value.seller,
+        financial_operator_id: randomUUID(),
+        financial_product_catalog_item_id: randomUUID()
+      }
+    };
+    expect(parsePublicStorefront(bound)).toEqual(bound);
+    expect(parsePublicStorefront({
+      ...value,
+      seller: { ...value.seller, financial_operator_id: randomUUID() }
+    })).toBeNull();
+  });
+
   it("rejects duplicate products and extra fields", () => {
     const value = fixture();
     expect(parsePublicStorefront({ ...value, products: [value.products[0], value.products[0]] }))

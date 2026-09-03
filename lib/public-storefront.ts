@@ -42,6 +42,8 @@ export interface PublicStorefrontSeller {
   id: string;
   slug: string;
   name: string;
+  financial_operator_id?: string;
+  financial_product_catalog_item_id?: string;
   // A2 (#352): marca da loja, cada campo só quando existe.
   tagline?: string;
   about?: string;
@@ -76,10 +78,23 @@ export function parsePublicStorefront(value: unknown): PublicStorefront | null {
 }
 
 function isSeller(value: unknown): value is PublicStorefrontSeller {
-  if (!hasKeysWithin(value, ["id", "slug", "name"], ["tagline", "about", "accent_color", "logo", "banner"])) {
+  if (!hasKeysWithin(value, ["id", "slug", "name"], [
+    "financial_operator_id",
+    "financial_product_catalog_item_id",
+    "tagline",
+    "about",
+    "accent_color",
+    "logo",
+    "banner"
+  ])) {
     return false;
   }
+  const hasOperator = value.financial_operator_id !== undefined;
+  const hasProduct = value.financial_product_catalog_item_id !== undefined;
   return isUuid(value.id) && isSlug(value.slug) && isTrimmedText(value.name, 2, 120) &&
+    hasOperator === hasProduct &&
+    (!hasOperator || (isUuid(value.financial_operator_id) &&
+      isUuid(value.financial_product_catalog_item_id))) &&
     (value.tagline === undefined || isTrimmedText(value.tagline, 2, 160)) &&
     (value.about === undefined || isTrimmedText(value.about, 2, 600)) &&
     (value.accent_color === undefined ||

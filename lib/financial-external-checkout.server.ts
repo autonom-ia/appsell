@@ -31,6 +31,7 @@ export function checkoutWebhookEndpointKey(
 }
 
 export interface CreateFinancialExternalCheckoutIntentInput {
+  operatorId: string;
   productCatalogItemId: string;
   seller: { id: string; slug: string; name: string };
   buyer: { userId: string; email: string; identitySub: string };
@@ -68,6 +69,7 @@ export async function createFinancialExternalCheckoutIntent(
     },
     body: JSON.stringify({
       source_system: "external_checkout",
+      operator_id: input.operatorId,
       product_catalog_item_id: input.productCatalogItemId,
       seller: input.seller,
       buyer: {

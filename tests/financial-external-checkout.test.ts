@@ -45,6 +45,7 @@ describe("Financial external checkout client", () => {
     vi.stubGlobal("fetch", fetch);
 
     await expect(createFinancialExternalCheckoutIntent({
+      operatorId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
       productCatalogItemId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       seller: { id: "seller-1", slug: "produtor", name: "Produtor" },
       buyer: { userId: "buyer-sub", email: "buyer@example.test", identitySub: "buyer-sub" },
@@ -77,6 +78,7 @@ describe("Financial external checkout client", () => {
     });
     expect(JSON.parse(String(init.body))).toMatchObject({
       source_system: "external_checkout",
+      operator_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
       product_catalog_item_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       product: {
         external_product_id: "product-1",
@@ -96,6 +98,7 @@ describe("Financial external checkout client", () => {
     process.env.FINANCIAL_INTERNAL_API_KEY = "internal-key";
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "nope" }), { status: 409 })));
     await expect(createFinancialExternalCheckoutIntent({
+      operatorId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
       productCatalogItemId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       seller: { id: "seller-1", slug: "produtor", name: "Produtor" },
       buyer: { userId: "buyer-sub", email: "buyer@example.test", identitySub: "buyer-sub" },

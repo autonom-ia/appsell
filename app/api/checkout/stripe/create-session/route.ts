@@ -77,6 +77,11 @@ export async function POST(request: NextRequest) {
   const amount = purchasableOneTimeAmount(product);
   if (amount === null) return jsonError("product_not_purchasable", 409);
 
+  if (provider === "financial_checkout" &&
+      (!parsed.seller.financial_operator_id || !parsed.seller.financial_product_catalog_item_id)) {
+    return jsonError("seller_financial_not_configured", 409);
+  }
+
   // AUTHENTICATION IS REQUIRED TO CHARGE, and it is a money rule, not a UX one.
   //
   // Migration 0020's worker owns the entitlement as
@@ -116,7 +121,8 @@ export async function POST(request: NextRequest) {
     try {
       const endpointKey = checkoutWebhookEndpointKey();
       const result = await createFinancialExternalCheckoutIntent({
-        productCatalogItemId: product.id,
+        operatorId: parsed.seller.financial_operator_id!,
+        productCatalogItemId: parsed.seller.financial_product_catalog_item_id!,
         seller: {
           id: parsed.seller.id,
           slug: parsed.seller.slug,
