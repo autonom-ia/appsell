@@ -35,8 +35,8 @@ describe("A4.2 — produto sem capa nunca fica vazio", () => {
   it("sempre produz iniciais legíveis, inclusive no limite", () => {
     expect(productArt("IA na prática").initials).toBe("IN");
     expect(productArt("Codex").initials).toBe("CO");
-    expect(productArt("  ").initials).toBe("—");
-    expect(productArt("").initials).toBe("—");
+    expect(productArt("  ").initials).toBe("·");
+    expect(productArt("").initials).toBe("·");
   });
 
   it("nunca devolve gradiente vazio", () => {
