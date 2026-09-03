@@ -15,11 +15,17 @@
 |---|---|
 | Domínio | `https://sell.autonomia.site` |
 | Ambiente | VPS EasyPanel nativo, Docker Swarm |
-| SHA do **api** | `a49e017` — banner da loja e upload de imagem por tipo (#387) |
+| SHA do **api** | `41e0c44` — banner da loja (#387) mais o hotfix da confirmação de upload (#391) |
 | SHA do **asset-worker** | `d5e00ec` — mesma imagem da api, um SHA atrás |
 | SHA do **pdf-sandbox** | `d5e00ec` — mesma imagem da api, com outra tag |
 | SHA do **web** | `a49e017` — refino da loja (botão na cor, hero, cards, "Já sou aluno") e banner (#387); worker e sandbox seguem em `d5e00ec` |
 | Banco | head **`0054_banner_da_loja`**, `schema_ready() = true` |
+
+**Hotfix de 2026-09-03, `api` `41e0c44` (PR #391).** Depois do release
+`a49e017`, nenhum logo ou banner podia ser confirmado: a rota abria duas
+sessões de domínio na mesma requisição e o guarda de replay derrubava a
+segunda com 401. Detalhe na seção
+[Release `a49e017`](#release-a49e017--refino-da-loja-e-banner-2026-09-03).
 
 **Release de 2026-09-03, `web` e `api`: `a49e017`, com a migration `0054` (PRs #388, #389).**
 Refino visual da loja e banner (a capa larga no alto da vitrine), com o upload
@@ -250,10 +256,37 @@ docker run --rm --network easypanel -e APPSELL_MIGRATOR_DATABASE_URL=<montada no
 | migration | head `0054`, `schema_ready()=true`, 0 funções de `app_private` fora do dono, `seller_logo_upload` dono `appsell_owner` com coluna `kind`, 5 funções de imagem, 0 funções de logo, 8 colunas `banner_*` |
 | público | `/` 200 · `/s/hub2you` 200 · `/s/hub2you/p/ia-na-pratica` 200 |
 
+### O incidente logo depois, e o hotfix `41e0c44` (PR #391)
+
+A primeira tentativa real de subir um banner falhou: o intent respondia 201 e
+a confirmação, 401. A pré-checagem que entrou na terceira rodada do review da
+#389 abria uma **segunda sessão de domínio** na mesma requisição, e
+`domain_session` consome o `request_id` no guarda de replay
+(`app_private.consume_bff_request`); a segunda abertura vira 401. O painel
+dizia "só o dono ou um administrador pode mudar as imagens" porque 401 e 403
+caem no mesmo estado do componente, o que atrasou o diagnóstico.
+
+Evidência: no log da API, `POST .../upload-intents` 201 seguido de
+`POST .../confirm` 401 às 11:43 e 11:44; na auditoria, dois
+`seller.banner_upload_created` sem nenhum `banner_set`, enquanto o
+`seller.logo_set` de 09:57 é anterior ao release.
+
+A correção volta a uma sessão por requisição e usa o que o objeto já carrega:
+`storage.head` devolve `appsell_upload_id`, e uma confirmação com o id de
+outro upload para em 409 `logo_upload_superseded` antes de qualquer ação
+destrutiva. O falso autenticador dos testes passou a replicar o guarda, e há
+teste para os três desfechos da confirmação, cada um exigindo uma sessão só.
+Deploy só da `api`, sem migration; backup em
+`/tmp/sell-release-hotfix-20260903-115707`.
+
+Fica aberto: 401 e 403 no mesmo estado do painel (`failureState` em
+`product-cover-panel.tsx`), que faz a tela culpar a permissão por qualquer
+falha de autenticação.
+
 ### O que não foi validado
 
-Upload real de banner por um vendedor contra o S3 de produção (mesmo desenho
-do logo, que também nunca foi exercitado em produção por um vendedor real).
+Upload real de banner por um vendedor contra o S3 de produção, agora com o
+hotfix no ar (o logo foi exercitado de verdade às 09:57).
 
 ### Rollback
 
