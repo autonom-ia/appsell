@@ -33,9 +33,7 @@
     "**/*.ts",
     "**/*.tsx",
     ".next/types/**/*.ts",
-    ".next/dev/types/**/*.ts",
-    ".next-inspection-no-domain-74246-1788460352021/dev/types/**/*.ts",
-    ".next-inspection-no-domain-74246-1788460352021/dev/dev/types/**/*.ts"
+    ".next/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"
