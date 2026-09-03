@@ -139,7 +139,9 @@ export async function POST(request: NextRequest) {
           fulfillmentExternalProductId: mapping?.financialProductKey ?? product.id,
           title: product.title,
           description: product.description || null,
-          imageUrl: null
+          imageUrl: product.cover
+            ? `${origin}/api/storefronts/${encodeURIComponent(parsed.seller.slug)}/products/${encodeURIComponent(product.slug)}/cover`
+            : null
         },
         pricing: {
           amountMinor: amount,
