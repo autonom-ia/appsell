@@ -41,12 +41,20 @@ const nextConfig: NextConfig = {
           { key: "Cross-Origin-Resource-Policy", value: "same-site" }
         ]
       },
-      {
-        source: "/api/storefronts/:sellerSlug/products/:productSlug/cover",
+      // As imagens públicas da loja são carregadas por páginas de outro
+      // domínio (o checkout do Financial), então a regra acima, que é
+      // `same-site`, as bloquearia. A resposta de cada rota já pede
+      // `cross-origin`, mas a configuração do Next vence: sem a exceção aqui,
+      // o cabeçalho da rota não chega ao navegador. Vale para as três, não só
+      // para a capa (#412).
+      ...["/api/storefronts/:sellerSlug/brand/:kind",
+          "/api/storefronts/:sellerSlug/products/:productSlug/cover",
+          "/api/storefronts/:sellerSlug/products/:productSlug/banner"].map((source) => ({
+        source,
         headers: [
           { key: "Cross-Origin-Resource-Policy", value: "cross-origin" }
         ]
-      }
+      }))
     ];
   }
 };

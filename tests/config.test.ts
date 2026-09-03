@@ -27,13 +27,15 @@ describe("browser security headers", () => {
     ]));
   });
 
-  it("allows the public product cover to render on the Financial checkout", async () => {
+  it.each([
+    "/api/storefronts/:sellerSlug/products/:productSlug/cover",
+    "/api/storefronts/:sellerSlug/products/:productSlug/banner",
+    "/api/storefronts/:sellerSlug/brand/:kind"
+  ])("allows the public store image %s to render on another domain", async (source) => {
     if (!nextConfig.headers) throw new Error("Next.js security headers are missing.");
     const rules = await nextConfig.headers();
-    const cover = rules.find(
-      (rule) => rule.source === "/api/storefronts/:sellerSlug/products/:productSlug/cover"
-    );
-    expect(cover?.headers).toContainEqual({
+    const rule = rules.find((candidate) => candidate.source === source);
+    expect(rule?.headers).toContainEqual({
       key: "Cross-Origin-Resource-Policy",
       value: "cross-origin"
     });
