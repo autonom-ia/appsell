@@ -13,7 +13,7 @@ import { storeInitials } from "@/lib/store-brand";
 import type { StoreImageKind, StoreLogo } from "@/lib/store-settings";
 
 import { AccessibleDialog } from "./accessible-dialog";
-import { failureState } from "./product-cover-panel";
+import { failureState } from "./product-image-panel";
 
 // O logo e o banner da loja, do lado do vendedor (#352, #387). O mesmo
 // caminho da capa do produto (endereço assinado, envio direto, confirmação)

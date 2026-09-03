@@ -8,7 +8,7 @@ import {
   describeCoverFile
 } from "../lib/product-cover";
 import { studentCountLabel } from "../lib/product-art";
-import { failureState, nextClearKey, readCoverIntent } from "../app/components/product-cover-panel";
+import { failureState, nextClearKey, readCoverIntent } from "../app/components/product-image-panel";
 
 describe("#232 — o navegador recusa antes de subir", () => {
   it("aceita os três formatos que o servidor aceita", () => {

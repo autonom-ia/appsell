@@ -7,7 +7,7 @@ import { AccessibleDialog } from "./accessible-dialog";
 import { AccessLinksPanel } from "./access-links-panel";
 import { CurriculumWorkspace } from "./curriculum-workspace";
 import { ProductHeadlinePanel } from "./product-headline-panel";
-import { ProductCoverPanel, type ProductCover } from "./product-cover-panel";
+import { ProductImagePanel, type ProductCover } from "./product-image-panel";
 import { allowUnsavedNavigation, useUnsavedChanges } from "./use-unsaved-changes";
 import {
   formatOfferPrice,
@@ -65,6 +65,7 @@ interface ProductDetail {
   curriculum: CurriculumSummary;
   offer: OfferDetail;
   cover?: ProductCover | null;
+  banner?: ProductCover | null;
   headline?: string | null;
   publication?: { id?: string; version: number; published_at?: string } | null;
   has_unpublished_changes?: boolean;
@@ -873,17 +874,32 @@ export function ProductEditorWorkspace({ sellerId, productId }: { sellerId: stri
           dele, e não depois, porque a capa é identidade — e um painel solto no
           fim da página, atrás do rodapé de salvar, parecia coisa esquecida. */}
       {section === "produto" ? (
-        <ProductCoverPanel
-          sellerId={sellerId}
-          productId={productId}
-          productTitle={detail.title}
-          cover={detail.cover ?? null}
-          productVersion={detail.draft_version}
-          archived={detail.status === "archived"}
-          csrf={{ intent: csrf.coverIntent, confirm: csrf.coverConfirm, clear: csrf.coverClear }}
-          onBusyChange={handleCoverBusy}
-          onCommitted={handleCoverCommitted}
-        />
+        <>
+          <ProductImagePanel
+            sellerId={sellerId}
+            productId={productId}
+            productTitle={detail.title}
+            kind="cover"
+            image={detail.cover ?? null}
+            productVersion={detail.draft_version}
+            archived={detail.status === "archived"}
+            csrf={{ intent: csrf.coverIntent, confirm: csrf.coverConfirm, clear: csrf.coverClear }}
+            onBusyChange={handleCoverBusy}
+            onCommitted={handleCoverCommitted}
+          />
+          <ProductImagePanel
+            sellerId={sellerId}
+            productId={productId}
+            productTitle={detail.title}
+            kind="banner"
+            image={detail.banner ?? null}
+            productVersion={detail.draft_version}
+            archived={detail.status === "archived"}
+            csrf={{ intent: csrf.coverIntent, confirm: csrf.coverConfirm, clear: csrf.coverClear }}
+            onBusyChange={handleCoverBusy}
+            onCommitted={handleCoverCommitted}
+          />
+        </>
       ) : null}
       {section === "produto" ? (
         <ProductHeadlinePanel

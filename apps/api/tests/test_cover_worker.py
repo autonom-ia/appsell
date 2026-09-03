@@ -46,6 +46,7 @@ def make_job(payload: bytes, *, media_type: str = "image/png") -> VerifyCoverJob
         upload_id=UPLOAD,
         source_bucket="quarantine",
         ready_bucket="ready",
+        kind="cover",
         source_key=cover_quarantine_key(SELLER, PRODUCT),
         ready_key=cover_ready_key(SELLER, PRODUCT, UPLOAD),
         expected_size=len(payload),
@@ -262,7 +263,9 @@ def test_an_abandoned_attempt_can_be_swept_without_a_result() -> None:
     job = make_job(payload)
     storage = FakeStorage(quarantined(job, payload), payload)
 
-    worker(storage).discard_abandoned_cover(seller_id=SELLER, product_id=PRODUCT)
+    worker(storage).discard_abandoned_product_image(
+        seller_id=SELLER, product_id=PRODUCT, kind="cover"
+    )
 
     assert storage.deleted_keys == [("quarantine", cover_quarantine_key(SELLER, PRODUCT))]
 
@@ -278,7 +281,9 @@ def test_a_quarantine_that_will_not_die_is_reported_as_retryable() -> None:
     with pytest.raises(CleanupRetryableError):
         cover_worker.cleanup_source_after_commit(result)
     with pytest.raises(CleanupRetryableError):
-        cover_worker.discard_abandoned_cover(seller_id=SELLER, product_id=PRODUCT)
+        cover_worker.discard_abandoned_product_image(
+            seller_id=SELLER, product_id=PRODUCT, kind="cover"
+        )
 
 
 class SlowWorker:

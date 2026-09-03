@@ -45,7 +45,7 @@ async def read_public_storefront(seller_slug: str, request: Request) -> dict[str
 def public_images(projection: dict[str, Any], storage: S3Storage | None) -> dict[str, Any]:
     """Troca chave e versão de objeto por um endereço temporário.
 
-    O banco devolve `logo` e `cover` como o que ele sabe: chave e versão no
+    O banco devolve logo, banner e capa como o que ele sabe: chave e versão no
     bucket servido. Nada disso pode chegar ao BFF, muito menos ao navegador —
     a chave denuncia o layout do armazenamento e a versão permite pedir um
     objeto que já saiu do ar. Aqui elas morrem: o que sai é `url` presignada
@@ -68,11 +68,18 @@ def public_images(projection: dict[str, Any], storage: S3Storage | None) -> dict
     if isinstance(products, list):
         rewritten = []
         for product in products:
-            if isinstance(product, dict) and "cover" in product:
-                signed = _signed_image(product.get("cover"), storage)
-                product = {key: value for key, value in product.items() if key != "cover"}
-                if signed is not None:
-                    product["cover"] = signed
+            if isinstance(product, dict) and ("cover" in product or "banner" in product):
+                assinadas = {
+                    campo: _signed_image(product.get(campo), storage)
+                    for campo in ("cover", "banner")
+                    if campo in product
+                }
+                product = {
+                    key: value for key, value in product.items() if key not in ("cover", "banner")
+                }
+                for campo, assinada in assinadas.items():
+                    if assinada is not None:
+                        product[campo] = assinada
             rewritten.append(product)
         projection = {**projection, "products": rewritten}
     return projection

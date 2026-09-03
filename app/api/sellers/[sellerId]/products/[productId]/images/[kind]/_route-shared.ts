@@ -9,6 +9,7 @@ import {
   verifyMutation
 } from "@/lib/mutation-protection.server";
 import { configuredPublicOrigin, hasConfiguredOrigin } from "@/lib/public-origin";
+import type { ProductImageKind } from "@/lib/internal-api-client.server";
 import {
   authenticatedSession,
   canonicalUuid,
@@ -30,11 +31,18 @@ const COVER_MAX_BYTES = 5 * 1024 * 1024;
 const MAX_FORM_BYTES = 4_096;
 
 export interface CoverRouteContext {
-  params: Promise<{ sellerId: string; productId: string }>;
+  params: Promise<{ sellerId: string; productId: string; kind: string }>;
 }
 
 export interface CoverUploadRouteContext {
-  params: Promise<{ sellerId: string; productId: string; uploadId: string }>;
+  params: Promise<{ sellerId: string; productId: string; kind: string; uploadId: string }>;
+}
+
+/** As duas imagens do produto (0056). Qualquer outro tipo é rota inexistente. */
+const TIPOS = new Set<ProductImageKind>(["cover", "banner"]);
+
+function tipo(valor: string): ProductImageKind | null {
+  return TIPOS.has(valor as ProductImageKind) ? (valor as ProductImageKind) : null;
 }
 
 export const coverActions = {
@@ -55,7 +63,10 @@ export async function coverIds(context: CoverRouteContext) {
   const values = await context.params;
   const sellerOrganizationId = canonicalUuid(values.sellerId);
   const productId = canonicalUuid(values.productId);
-  return sellerOrganizationId && productId ? { sellerOrganizationId, productId } : null;
+  const kind = tipo(values.kind);
+  return sellerOrganizationId && productId && kind
+    ? { sellerOrganizationId, productId, kind }
+    : null;
 }
 
 export async function coverUploadIds(context: CoverUploadRouteContext) {

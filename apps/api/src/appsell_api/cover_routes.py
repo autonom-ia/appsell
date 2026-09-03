@@ -42,13 +42,14 @@ from .image_verifier import COVER_MAX_BYTES, is_cover_media
 from .internal_requests import AuthenticatedInternalRequest
 from .storage_s3 import S3Storage, StorageError
 from .storage_worker import (
+    PRODUCT_IMAGE_KINDS,
     MalwareScanner,
     ProductCoverWorker,
     ScannerUnavailable,
     ScanRejected,
     VerifyCoverJob,
-    cover_quarantine_key,
-    cover_ready_key,
+    product_quarantine_key,
+    product_ready_key,
 )
 
 router = APIRouter(prefix="/v1")
@@ -116,11 +117,24 @@ class CoverMutationBody(BaseModel):
     response_model=None,
     status_code=status.HTTP_201_CREATED,
 )
-async def create_cover_upload_intent(
+async def create_cover_upload_intent_legacy(
     request: Request, seller_id: UUID, product_id: UUID
+) -> JSONResponse:
+    """A rota da capa antes do banner (0056). Vive enquanto houver web antigo."""
+    return await create_product_image_upload_intent(request, seller_id, product_id, "cover")
+
+
+@router.post(
+    "/me/sellers/{seller_id}/products/{product_id}/images/{kind}/upload-intents",
+    response_model=None,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_product_image_upload_intent(
+    request: Request, seller_id: UUID, product_id: UUID, kind: str
 ) -> JSONResponse:
     auth, internal = await _authenticate(request, "catalog.draft.update")
     await _require_seller(internal, seller_id)
+    await _require_kind(internal, kind)
     body = await _model_from_body(CoverUploadIntentBody, internal)
     storage = await _storage(request, internal)
     settings = request.app.state.settings
@@ -128,8 +142,8 @@ async def create_cover_upload_intent(
         async with auth.domain_session(internal.envelope) as session:
             value = await session.scalar(
                 text(
-                    "select app_private.create_product_cover_upload_intent("
-                    ":actor,:seller,:product,:media_type,:byte_size,:sha256,"
+                    "select app_private.create_product_image_upload_intent("
+                    ":actor,:seller,:product,:kind,:media_type,:byte_size,:sha256,"
                     ":quarantine_bucket,:ready_bucket,"
                     ":idempotency_key,:body_sha256,:request_id)"
                 ),
@@ -137,6 +151,7 @@ async def create_cover_upload_intent(
                     "actor": internal.envelope.identity.user_id,
                     "seller": seller_id,
                     "product": product_id,
+                    "kind": kind,
                     "media_type": body.media_type,
                     "byte_size": body.byte_size,
                     "sha256": body.sha256,
@@ -189,16 +204,26 @@ async def create_cover_upload_intent(
 
 
 @router.post("/me/sellers/{seller_id}/products/{product_id}/cover/uploads/{upload_id}/confirm")
-async def confirm_cover_upload(
+async def confirm_cover_upload_legacy(
     request: Request, seller_id: UUID, product_id: UUID, upload_id: UUID
+) -> dict[str, Any]:
+    return await confirm_product_image_upload(request, seller_id, product_id, "cover", upload_id)
+
+
+@router.post(
+    "/me/sellers/{seller_id}/products/{product_id}/images/{kind}/uploads/{upload_id}/confirm"
+)
+async def confirm_product_image_upload(
+    request: Request, seller_id: UUID, product_id: UUID, kind: str, upload_id: UUID
 ) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "catalog.draft.update")
     await _require_seller(internal, seller_id)
+    await _require_kind(internal, kind)
     body = await _model_from_body(CoverMutationBody, internal)
     storage = await _storage(request, internal)
     worker = ProductCoverWorker(storage, await _scanner(request, internal))
     settings = request.app.state.settings
-    quarantine_key = cover_quarantine_key(seller_id, product_id)
+    quarantine_key = product_quarantine_key(seller_id, product_id, kind)
 
     try:
         observed = await to_thread.run_sync(
@@ -216,7 +241,8 @@ async def confirm_cover_upload(
         source_bucket=settings.storage_quarantine_bucket,
         ready_bucket=settings.storage_ready_bucket,
         source_key=quarantine_key,
-        ready_key=cover_ready_key(seller_id, product_id, upload_id),
+        ready_key=product_ready_key(seller_id, product_id, kind, upload_id),
+        kind=kind,
         expected_size=observed.size,
         expected_sha256_hex=_checksum_hex(observed.checksum_sha256_b64),
         declared_content_type=observed.content_type,
@@ -229,12 +255,15 @@ async def confirm_cover_upload(
             internal=internal,
             seller_id=seller_id,
             product_id=product_id,
+            kind=kind,
             upload_id=upload_id,
             closure="rejected",
             failure_code="verification_failed",
         )
         await to_thread.run_sync(
-            lambda: worker.discard_abandoned_cover(seller_id=seller_id, product_id=product_id)
+            lambda: worker.discard_abandoned_product_image(
+                seller_id=seller_id, product_id=product_id, kind=kind
+            )
         )
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="cover_rejected"
@@ -250,8 +279,8 @@ async def confirm_cover_upload(
                 await session.execute(
                     text(
                         "select product_version, previous_object_key"
-                        " from app_private.set_product_cover("
-                        ":actor,:seller,:product,:upload,:object_key,:storage_version_id,"
+                        " from app_private.set_product_image("
+                        ":actor,:seller,:product,:kind,:upload,:object_key,:storage_version_id,"
                         ":media_type,:sha256,:width,:height,:byte_size,"
                         ":expected_product_version,"
                         ":idempotency_key,:body_sha256,:request_id)"
@@ -260,6 +289,7 @@ async def confirm_cover_upload(
                         "actor": internal.envelope.identity.user_id,
                         "seller": seller_id,
                         "product": product_id,
+                        "kind": kind,
                         "upload": upload_id,
                         "object_key": job.ready_key,
                         "storage_version_id": verified.ready.version_id,
@@ -289,6 +319,7 @@ async def confirm_cover_upload(
         await _discard_replaced_cover(storage, str(row.previous_object_key))
     return {
         "product_version": int(row.product_version),
+        "kind": kind,
         "cover": {
             "media_type": verified.media_type,
             "byte_size": verified.byte_size,
@@ -299,9 +330,17 @@ async def confirm_cover_upload(
 
 
 @router.post("/me/sellers/{seller_id}/products/{product_id}/cover/clear")
-async def clear_cover(request: Request, seller_id: UUID, product_id: UUID) -> dict[str, Any]:
+async def clear_cover_legacy(request: Request, seller_id: UUID, product_id: UUID) -> dict[str, Any]:
+    return await clear_product_image(request, seller_id, product_id, "cover")
+
+
+@router.post("/me/sellers/{seller_id}/products/{product_id}/images/{kind}/clear")
+async def clear_product_image(
+    request: Request, seller_id: UUID, product_id: UUID, kind: str
+) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "catalog.draft.update")
     await _require_seller(internal, seller_id)
+    await _require_kind(internal, kind)
     body = await _model_from_body(CoverMutationBody, internal)
     storage = await _storage(request, internal)
     try:
@@ -310,14 +349,15 @@ async def clear_cover(request: Request, seller_id: UUID, product_id: UUID) -> di
                 await session.execute(
                     text(
                         "select product_version, changed, previous_object_key"
-                        " from app_private.clear_product_cover("
-                        ":actor,:seller,:product,:expected_product_version,"
+                        " from app_private.clear_product_image("
+                        ":actor,:seller,:product,:kind,:expected_product_version,"
                         ":idempotency_key,:body_sha256,:request_id)"
                     ),
                     {
                         "actor": internal.envelope.identity.user_id,
                         "seller": seller_id,
                         "product": product_id,
+                        "kind": kind,
                         "expected_product_version": body.expected_product_version,
                         "idempotency_key": UUID(body.idempotency_key),
                         "body_sha256": internal.envelope.body_sha256,
@@ -352,12 +392,19 @@ async def _verify_within_budget(worker: ProductCoverWorker, job: VerifyCoverJob)
     )
 
 
+async def _require_kind(internal: AuthenticatedInternalRequest, kind: str) -> None:
+    if kind not in PRODUCT_IMAGE_KINDS:
+        await internal.consume_rejected_request()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown_image_kind")
+
+
 async def _close_upload(
     *,
     auth: Any,
     internal: AuthenticatedInternalRequest,
     seller_id: UUID,
     product_id: UUID,
+    kind: str,
     upload_id: UUID,
     closure: str,
     failure_code: str,
@@ -366,13 +413,14 @@ async def _close_upload(
         async with auth.domain_session(internal.envelope) as session:
             await session.scalar(
                 text(
-                    "select app_private.close_product_cover_upload("
-                    ":actor,:seller,:product,:upload,:status,:failure_code,:request_id)"
+                    "select app_private.close_product_image_upload("
+                    ":actor,:seller,:product,:kind,:upload,:status,:failure_code,:request_id)"
                 ),
                 {
                     "actor": internal.envelope.identity.user_id,
                     "seller": seller_id,
                     "product": product_id,
+                    "kind": kind,
                     "upload": upload_id,
                     "status": closure,
                     "failure_code": failure_code,

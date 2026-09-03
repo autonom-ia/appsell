@@ -112,11 +112,53 @@ export function failureState(status: number): CoverState {
  * São três passos, e qualquer um pode falhar — por isso o painel diz em qual
  * deles parou, em vez de um "não foi possível" que não ajuda ninguém.
  */
-export function ProductCoverPanel({
+/** As duas imagens do produto (0056), cada uma com a sua conversa. */
+export type ProductImageKind = "cover" | "banner";
+
+const COPY: Record<ProductImageKind, {
+  titulo: string;
+  ajuda: string;
+  escolher: string;
+  trocar: string;
+  remover: string;
+  removerTitulo: string;
+  removerCorpo: string;
+  manter: string;
+  semImagem: string;
+  alt: string;
+}> = {
+  cover: {
+    titulo: "Capa do produto",
+    ajuda: "A imagem que representa o produto no catálogo, na sua loja e nos cartões. JPEG, PNG ou WebP, até 5 MB. Use 16:9, por exemplo 1600 por 900.",
+    escolher: "Escolher capa",
+    trocar: "Trocar capa",
+    remover: "Remover capa",
+    removerTitulo: "Remover a capa?",
+    removerCorpo: "O catálogo volta a usar a arte gerada a partir do nome. Nada mais muda.",
+    manter: "Manter capa",
+    semImagem: "Arte gerada a partir do nome do produto.",
+    alt: "Capa atual"
+  },
+  banner: {
+    titulo: "Banner do produto",
+    ajuda: "A faixa larga que abre sua página de vendas. JPEG, PNG ou WebP, até 5 MB; o ideal é 1600 por 500, com o que importa no centro: nas telas menores as pontas somem. Sem banner, a página abre pela promessa.",
+    escolher: "Escolher banner",
+    trocar: "Trocar banner",
+    remover: "Remover banner",
+    removerTitulo: "Remover o banner?",
+    removerCorpo: "A página de vendas volta a abrir pelo título e pela promessa, sem imagem no alto.",
+    manter: "Manter banner",
+    semImagem: "Sem banner, a página de vendas abre pela promessa.",
+    alt: "Banner atual"
+  }
+};
+
+export function ProductImagePanel({
   sellerId,
   productId,
   productTitle,
-  cover,
+  kind,
+  image: cover,
   productVersion,
   archived,
   csrf,
@@ -126,7 +168,8 @@ export function ProductCoverPanel({
   sellerId: string;
   productId: string;
   productTitle: string;
-  cover: ProductCover | null;
+  kind: ProductImageKind;
+  image: ProductCover | null;
   productVersion: number;
   archived: boolean;
   csrf: CoverCsrf;
@@ -145,7 +188,9 @@ export function ProductCoverPanel({
   const inFlight = useRef(new Set<AbortController>());
   const clearKey = useRef<{ key: string; productVersion: number } | null>(null);
 
-  const base = `/api/sellers/${encodeURIComponent(sellerId)}/products/${encodeURIComponent(productId)}/cover`;
+  const produto = `/api/sellers/${encodeURIComponent(sellerId)}/products/${encodeURIComponent(productId)}`;
+  const base = `${produto}/images/${kind}`;
+  const copy = COPY[kind];
   const busy = state === "hashing" || state === "uploading" || state === "verifying";
   const art = productArt(productTitle);
 
@@ -345,21 +390,21 @@ export function ProductCoverPanel({
   }
 
   return (
-    <section className="cover-panel" aria-labelledby="cover-heading">
-      <h3 id="cover-heading">Capa do produto</h3>
+    <section className="cover-panel" aria-labelledby={`${kind}-heading`}>
+      <h3 id={`${kind}-heading`}>{copy.titulo}</h3>
       <p className="form-note">
-        JPEG, PNG ou WebP, até 5 MB. Sem capa, o catálogo usa uma arte gerada a partir do nome.
+        {copy.ajuda}
       </p>
       <div className="cover-preview">
         {cover
           // eslint-disable-next-line @next/next/no-img-element
-          ? <img className="cover-image" src={cover.url} alt={`Capa atual de ${productTitle}`} width={cover.width} height={cover.height} decoding="async" />
+          ? <img className={kind === "banner" ? "cover-image store-banner-preview" : "cover-image"} src={cover.url} alt={`${copy.alt} de ${productTitle}`} width={cover.width} height={cover.height} decoding="async" />
           : (
-            <div className="cover-fallback" aria-hidden="true" style={{ background: art.gradient }}>
-              <span>{art.initials}</span>
+            <div className={kind === "banner" ? "cover-fallback store-banner-fallback" : "cover-fallback"} aria-hidden="true" style={kind === "banner" ? undefined : { background: art.gradient }}>
+              {kind === "banner" ? null : <span>{art.initials}</span>}
             </div>
           )}
-        {cover ? null : <p className="cover-fallback-note">Arte gerada a partir do nome do produto.</p>}
+        {cover ? null : <p className="cover-fallback-note">{copy.semImagem}</p>}
       </div>
       {/* Sem esta linha, os dois controles abaixo ficam desligados num produto
           arquivado sem nada na tela explicando o motivo. */}
@@ -370,7 +415,7 @@ export function ProductCoverPanel({
       ) : null}
       <div className="cover-actions">
         <label className="secondary-button cover-choose">
-          {cover ? "Trocar capa" : "Escolher capa"}
+          {cover ? copy.trocar : copy.escolher}
           <input
             ref={fileInput}
             type="file"
@@ -384,7 +429,7 @@ export function ProductCoverPanel({
         </label>
         {cover ? (
           <button type="button" className="secondary-button" disabled={busy || archived} onClick={() => setRemoving(true)}>
-            Remover capa
+            {copy.remover}
           </button>
         ) : null}
       </div>
@@ -402,16 +447,16 @@ export function ProductCoverPanel({
       </div>
       {removing ? (
         <AccessibleDialog
-          titleId="cover-remove-title"
-          descriptionId="cover-remove-body"
+          titleId={`${kind}-remove-title`}
+          descriptionId={`${kind}-remove-body`}
           onClose={() => { if (!busy) setRemoving(false); }}
           initialFocusRef={removeCancel}
         >
-          <h4 id="cover-remove-title">Remover a capa?</h4>
-          <p id="cover-remove-body">O catálogo volta a usar a arte gerada a partir do nome. Nada mais muda.</p>
+          <h4 id={`${kind}-remove-title`}>{copy.removerTitulo}</h4>
+          <p id={`${kind}-remove-body`}>{copy.removerCorpo}</p>
           <div className="dialog-actions">
-            <button ref={removeCancel} type="button" className="secondary-button" disabled={busy} onClick={() => setRemoving(false)}>Manter capa</button>
-            <button type="button" className="primary-button" disabled={busy} onClick={() => void removeCover()}>{busy ? "Removendo…" : "Remover capa"}</button>
+            <button ref={removeCancel} type="button" className="secondary-button" disabled={busy} onClick={() => setRemoving(false)}>{copy.manter}</button>
+            <button type="button" className="primary-button" disabled={busy} onClick={() => void removeCover()}>{busy ? "Removendo…" : copy.remover}</button>
           </div>
         </AccessibleDialog>
       ) : null}

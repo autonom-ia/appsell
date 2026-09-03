@@ -139,17 +139,19 @@ def create_intent(
     media_type: str = "image/png",
     byte_size: int = 4096,
     sha: str | None = None,
+    kind: str = "cover",
 ) -> dict[str, Any]:
     assert RUNTIME_URL
     with psycopg.connect(RUNTIME_URL) as connection:
         apply_context(connection, actor, seller, "catalog.draft.update")
         row = connection.execute(
-            "select app_private.create_product_cover_upload_intent("
-            "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            "select app_private.create_product_image_upload_intent("
+            "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (
                 actor,
                 seller,
                 product,
+                kind,
                 media_type,
                 byte_size,
                 sha or digest("cover"),
@@ -176,17 +178,19 @@ def set_cover(
     media_type: str = "image/png",
     width: int = 320,
     height: int = 180,
+    kind: str = "cover",
 ) -> tuple[Any, ...]:
     assert RUNTIME_URL
     with psycopg.connect(RUNTIME_URL) as connection:
         apply_context(connection, actor, seller, "catalog.draft.update")
         row = connection.execute(
-            "select * from app_private.set_product_cover("
-            "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            "select * from app_private.set_product_image("
+            "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (
                 actor,
                 seller,
                 product,
+                kind,
                 UUID(intent["upload_id"]),
                 object_key or intent["ready_key"],
                 "storage-version-1",
@@ -341,12 +345,13 @@ def test_a_read_capability_cannot_write_a_cover() -> None:
         apply_context(connection, USER_A, SELLER_A, "catalog.draft.read")
         with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
             connection.execute(
-                "select * from app_private.set_product_cover("
-                "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "select * from app_private.set_product_image("
+                "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (
                     USER_A,
                     SELLER_A,
                     PRODUCT_A,
+                    "cover",
                     UUID(intent["upload_id"]),
                     intent["ready_key"],
                     "storage-version-1",
@@ -372,8 +377,8 @@ def test_clearing_twice_reaches_the_same_place_as_clearing_once() -> None:
     with psycopg.connect(RUNTIME_URL) as connection:
         apply_context(connection, USER_A, SELLER_A, "catalog.draft.update")
         first = connection.execute(
-            "select * from app_private.clear_product_cover(%s,%s,%s,%s,%s,%s,%s)",
-            (USER_A, SELLER_A, PRODUCT_A, version, uuid4(), digest("body"), uuid4()),
+            "select * from app_private.clear_product_image(%s,%s,%s,%s,%s,%s,%s,%s)",
+            (USER_A, SELLER_A, PRODUCT_A, "cover", version, uuid4(), digest("body"), uuid4()),
         ).fetchone()
         connection.commit()
     assert first is not None
@@ -383,8 +388,8 @@ def test_clearing_twice_reaches_the_same_place_as_clearing_once() -> None:
     with psycopg.connect(RUNTIME_URL) as connection:
         apply_context(connection, USER_A, SELLER_A, "catalog.draft.update")
         second = connection.execute(
-            "select * from app_private.clear_product_cover(%s,%s,%s,%s,%s,%s,%s)",
-            (USER_A, SELLER_A, PRODUCT_A, first[0], uuid4(), digest("body"), uuid4()),
+            "select * from app_private.clear_product_image(%s,%s,%s,%s,%s,%s,%s,%s)",
+            (USER_A, SELLER_A, PRODUCT_A, "cover", first[0], uuid4(), digest("body"), uuid4()),
         ).fetchone()
         connection.commit()
     assert second is not None

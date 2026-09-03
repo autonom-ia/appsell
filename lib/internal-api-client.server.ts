@@ -1045,13 +1045,18 @@ export async function createDomainAssetUploadIntent(
   });
 }
 
+/** As duas imagens do produto (0056): a capa 16:9 e o banner 16:5. */
+export type ProductImageKind = "cover" | "banner";
+
 interface ProductCoverPath {
   sellerOrganizationId: string;
   productId: string;
+  kind: ProductImageKind;
 }
 
 function coverPath(input: ProductCoverPath) {
-  return `/v1/me/sellers/${input.sellerOrganizationId}/products/${input.productId}/cover`;
+  const produto = `/v1/me/sellers/${input.sellerOrganizationId}/products/${input.productId}`;
+  return `${produto}/images/${input.kind}`;
 }
 
 export async function createDomainCoverUploadIntent(

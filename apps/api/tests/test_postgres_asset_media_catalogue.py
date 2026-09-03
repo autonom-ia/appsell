@@ -141,6 +141,7 @@ def test_o_intent_nao_repete_mais_o_catalogo() -> None:
 IMAGENS_COM_TETO_PROPRIO = frozenset(
     {
         "catalog_product_cover_complete",
+        "catalog_product_banner_complete",
         "seller_organization_logo_complete",
         "seller_organization_banner_complete",
     }
