@@ -563,6 +563,26 @@ def test_schema_ready_e_os_donos_das_funcoes() -> None:
             assert row == (False,), signature
 
 
+def test_toda_funcao_de_app_private_pertence_ao_appsell_owner() -> None:
+    # Teste de classe (0053). Uma definer do appsell_owner que chama uma função
+    # de outro dono cai em 42501 — foi assim que Configurações → Loja respondeu
+    # 403 ao próprio dono em produção, porque a 0025 nasceu com dono = migrador
+    # lá (e não aqui). Dono igual em todo ambiente é o que fecha a classe.
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        alheias = connection.execute(
+            "select p.proname, r.rolname from pg_proc p "
+            "join pg_roles r on r.oid=p.proowner "
+            "join pg_namespace n on n.oid=p.pronamespace "
+            "where n.nspname='app_private' and r.rolname <> 'appsell_owner' order by 1"
+        ).fetchall()
+        assert alheias == []
+        assert connection.execute(
+            "select has_function_privilege('appsell_owner',"
+            "'app_private.resolve_seller_membership_role(uuid)','EXECUTE')"
+        ).fetchone() == (True,)
+
+
 def test_nenhuma_funcao_recebe_slug_e_o_runtime_nao_o_altera() -> None:
     # Slug imutável na v1: não há parâmetro para ele em função nenhuma, e o
     # runtime não tem UPDATE na tabela — nem por policy, nem por GRANT.
