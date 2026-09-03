@@ -138,6 +138,15 @@ def test_o_intent_nao_repete_mais_o_catalogo() -> None:
     )
 
 
+IMAGENS_COM_TETO_PROPRIO = frozenset(
+    {
+        "catalog_product_cover_complete",
+        "seller_organization_logo_complete",
+        "seller_organization_banner_complete",
+    }
+)
+
+
 def test_nenhuma_constraint_transcreve_o_catalogo() -> None:
     """CHECK CONSTRAINT também é lugar onde o catálogo pode se esconder.
 
@@ -167,8 +176,11 @@ def test_nenhuma_constraint_transcreve_o_catalogo() -> None:
             continue
         # A capa do produto tem catálogo próprio (5 MiB), que por coincidência
         # é o mesmo teto de CSV e JSON. É outro conceito e não pertence a esta
-        # varredura.
-        if "cover" in texto or "cover" in nome:
+        # varredura. O logo e o banner da loja (0052, 0054) usam o mesmo
+        # catálogo e o mesmo worker da capa. Isenção por nome exato: uma
+        # constraint nova que transcreva o catálogo não se esconde atrás
+        # de "logo" ou "banner" no texto.
+        if nome in IMAGENS_COM_TETO_PROPRIO:
             continue
         for limite in limites:
             # Fronteira de dígito: sem ela, 10485760 casa dentro de 104857600 e

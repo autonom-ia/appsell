@@ -22,7 +22,10 @@ export interface StoreSettings {
   about: string | null;
   accent_color: string | null;
   logo: StoreLogo | null;
+  banner: StoreLogo | null;
 }
+
+export type StoreImageKind = "logo" | "banner";
 
 export interface StoreSettingsCsrf {
   update: string;
@@ -44,7 +47,7 @@ const HEX = /^#[0-9a-f]{6}$/;
 
 export function parseStoreSettings(value: unknown): StoreSettings | null {
   if (!isRecord(value)) return null;
-  const { id, slug, display_name: displayName, status, tagline, about, accent_color: accent, logo } = value;
+  const { id, slug, display_name: displayName, status, tagline, about, accent_color: accent, logo, banner } = value;
   if (typeof id !== "string" || !UUID.test(id)) return null;
   if (typeof slug !== "string" || !SLUG.test(slug)) return null;
   if (!isText(displayName, STORE_LIMITS.displayName.min, STORE_LIMITS.displayName.max)) return null;
@@ -54,6 +57,8 @@ export function parseStoreSettings(value: unknown): StoreSettings | null {
   if (accent !== null && accent !== undefined && !(typeof accent === "string" && HEX.test(accent))) return null;
   const parsedLogo = logo === null || logo === undefined ? null : parseStoreLogo(logo);
   if (logo && !parsedLogo) return null;
+  const parsedBanner = banner === null || banner === undefined ? null : parseStoreLogo(banner);
+  if (banner && !parsedBanner) return null;
   return {
     id,
     slug,
@@ -62,7 +67,8 @@ export function parseStoreSettings(value: unknown): StoreSettings | null {
     tagline: (tagline as string | null | undefined) ?? null,
     about: (about as string | null | undefined) ?? null,
     accent_color: (accent as string | null | undefined) ?? null,
-    logo: parsedLogo
+    logo: parsedLogo,
+    banner: parsedBanner
   };
 }
 

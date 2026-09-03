@@ -15,10 +15,10 @@ import {
   safeVersion
 } from "@/app/api/sellers/[sellerId]/products/[productId]/_route-shared";
 import {
+  imageIds,
   prepareSettingsMutation,
   settingsActions,
-  settingsSellerId,
-  type SettingsRouteContext
+  type ImageRouteContext
 } from "../../_route-shared";
 
 const REQUIRED = ["_csrf", "idempotency_key", "media_type", "byte_size", "sha256"] as const;
@@ -27,9 +27,10 @@ const LOGO_MEDIA = new Set(["image/jpeg", "image/png", "image/webp"]);
 const LOGO_MAX_BYTES = 5 * 1024 * 1024;
 const NO_STORE = { "cache-control": "no-store" } as const;
 
-export async function POST(request: NextRequest, context: SettingsRouteContext) {
-  const sellerId = await settingsSellerId(context);
-  if (!sellerId) return notFound();
+export async function POST(request: NextRequest, context: ImageRouteContext) {
+  const ids = await imageIds(context);
+  if (!ids) return notFound();
+  const { sellerId, kind } = ids;
   const prepared = await prepareSettingsMutation(request, settingsActions.logoIntent, REQUIRED);
   if (!prepared.ok) return prepared.response;
   const idempotencyKey = canonicalUuid(prepared.fields.idempotency_key);
@@ -49,7 +50,7 @@ export async function POST(request: NextRequest, context: SettingsRouteContext) 
     const payload = await createDomainLogoUploadIntent(
       prepared.authenticated.sessionId,
       prepared.authenticated.session,
-      { sellerOrganizationId: sellerId, idempotencyKey, mediaType, byteSize, sha256 }
+      { sellerOrganizationId: sellerId, kind, idempotencyKey, mediaType, byteSize, sha256 }
     );
     const safeIntent = browserLogoUploadIntent(payload, appOrigin, storageOrigin);
     if (!safeIntent) {

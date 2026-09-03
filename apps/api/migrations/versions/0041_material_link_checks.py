@@ -110,7 +110,10 @@ _ARCHIVE_INVALID = """
         );
 
       alter table public.lesson_material_link force row level security;
-      reset role;
+      -- Sem `reset role` aqui: o env.py roda a cadeia inteira numa transação
+      -- como appsell_owner, e resetar deixaria cada migration seguinte
+      -- criando objetos como migrador (a 0049 e a 0052 pagaram esse preço;
+      -- corrigido em #387). O `set local` acima é o mesmo papel do env.py.
 
       if restantes > 0 then
         raise exception

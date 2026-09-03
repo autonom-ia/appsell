@@ -3,7 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { cache } from "react";
 
-import { StoreIdentity, StorefrontFooter, StorefrontTopbar, storefrontClassName, storefrontStyle } from "@/app/components/storefront-brand";
+import { StoreIdentity, StorefrontCover, StorefrontFooter, StorefrontTopbar, storefrontClassName, storefrontStyle } from "@/app/components/storefront-brand";
 import { demoModeEnabled } from "@/lib/demo-config";
 import {
   DomainApiError,
@@ -11,6 +11,7 @@ import {
 } from "@/lib/internal-api-client.server";
 import { billingPeriodLabel, formatOfferPrice } from "@/lib/offer-price";
 import { productArt } from "@/lib/product-art";
+import { storeAccent } from "@/lib/store-brand";
 import { parsePublicStorefront } from "@/lib/public-storefront";
 import { SITE } from "@/lib/site";
 
@@ -48,23 +49,34 @@ export default async function SellerStorefront({
   const seller = storefront.seller;
   const demoCheckoutEnabled = demoModeEnabled() && seller.slug === "autonomia-demo";
   const loginHref = demoCheckoutEnabled ? "/auth/login?persona=buyer" : "/auth/login";
+  const accent = storeAccent(seller.accent_color);
+  const hasPaid = storefront.products.some((product) => (product.access_mode ?? "paid") === "paid");
 
   return <div className={storefrontClassName(seller)} style={storefrontStyle(seller)}>
     <a className="skip-link" href="#storefront-content">Pular para os produtos</a>
-    <StorefrontTopbar seller={seller} action={<Link className="storefront-login" href={loginHref}>Entrar</Link>}/>
+    <StorefrontTopbar seller={seller} action={<Link className="storefront-login" href={loginHref}>Já sou aluno</Link>}/>
     <main id="storefront-content" tabIndex={-1}>
-      <section className="storefront-hero" aria-labelledby="storefront-title">
-        <StoreIdentity seller={seller} size="large"/>
-        <div>
-          <h1 id="storefront-title">{seller.name}</h1>
-          <p>{seller.tagline ?? `Cursos e materiais de ${seller.name}, para assistir pelo navegador, no celular ou no computador.`}</p>
+      <section className={seller.banner ? "storefront-hero storefront-hero-covered" : "storefront-hero"} aria-labelledby="storefront-title">
+        <StorefrontCover seller={seller}/>
+        <div className="storefront-hero-body">
+          <StoreIdentity seller={seller} size="large"/>
+          <div>
+            <h1 id="storefront-title">{seller.name}</h1>
+            <p>{seller.tagline ?? `Cursos e materiais de ${seller.name}, para assistir pelo navegador, no celular ou no computador.`}</p>
+          </div>
         </div>
       </section>
 
+      {storefront.products.length ? <ul className="storefront-trust" role="list" aria-label="O que você pode esperar">
+        <li>{hasPaid ? "Acesso imediato depois da compra" : "Acesso imediato"}</li>
+        {hasPaid ? <li>Pagamento seguro</li> : null}
+        <li>Assista no celular ou no computador</li>
+      </ul> : null}
+
       <section className="storefront-catalog" aria-labelledby="catalog-title">
         <header>
-          <p className="eyebrow">Aprenda no seu ritmo</p>
-          <h2 id="catalog-title">Produtos disponíveis</h2>
+          <p className="eyebrow">Produtos de {seller.name}</p>
+          <h2 id="catalog-title">Escolha por onde começar</h2>
         </header>
         {storefront.products.length ? <div className="storefront-grid">
           {storefront.products.map((product) => {
@@ -74,14 +86,15 @@ export default async function SellerStorefront({
               key={product.id}
               aria-labelledby={`storefront-product-${product.id}`}
             >
-              <div className="storefront-product-art" aria-hidden="true" style={product.cover ? undefined : { background: art.gradient }}>
+              <div className={product.cover ? "storefront-product-art" : "storefront-product-art art-fallback"} aria-hidden="true" style={product.cover || accent ? undefined : { background: art.gradient }}>
                 {product.cover
                   // eslint-disable-next-line @next/next/no-img-element
                   ? <img className="storefront-product-cover" src={product.cover.url} alt="" width={product.cover.width} height={product.cover.height} decoding="async" loading="lazy"/>
                   : <span>{art.initials}</span>}
               </div>
               <div className="storefront-product-copy">
-                <p className="eyebrow">{product.curriculum ? `${product.curriculum.lesson_count} ${product.curriculum.lesson_count === 1 ? "aula" : "aulas"}` : "Produto digital"}</p>
+                {/* Contar aulas só ajuda quando são muitas; "1 aula" avisa que o produto é raso. */}
+                <p className="eyebrow">{product.curriculum && product.curriculum.lesson_count >= 3 ? `${product.curriculum.lesson_count} aulas` : "Produto digital"}</p>
                 <h3 id={`storefront-product-${product.id}`}>{product.title}</h3>
                 {product.headline ? <p>{product.headline}</p> : product.description.trim() ? <p>{product.description}</p> : null}
                 {product.price ? <p className="storefront-product-price">
@@ -99,6 +112,16 @@ export default async function SellerStorefront({
           <h3>Nenhum produto publicado agora</h3>
           <p>{seller.name} ainda está preparando o catálogo.</p>
         </div>}
+      </section>
+
+      {/* Sempre: sem "sobre", ainda há nome e marca; a loja não pode parecer anônima. */}
+      <section className="lp-block lp-author storefront-author" aria-labelledby="storefront-author-title">
+        <StoreIdentity seller={seller}/>
+        <div>
+          <p className="eyebrow">Sobre quem ensina</p>
+          <h2 id="storefront-author-title">{seller.name}</h2>
+          <p>{seller.about ?? seller.tagline ?? `Os produtos desta loja são publicados por ${seller.name}.`}</p>
+        </div>
       </section>
     </main>
     <StorefrontFooter/>

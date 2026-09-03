@@ -63,7 +63,7 @@ de qualquer usuário autenticado.
 | Listar tenants operacionais | A | C | C | N | N | N | N | N | N | PS/PA recebem projeção mínima |
 | Suspender/reativar tenant | C | N | N | N | N | N | N | N | N | motivo, step-up e política de grace period |
 | Ler configuração do próprio tenant | N | N | N | A | A | C | C | N | N | SE/SS apenas campos necessários |
-| Alterar branding/configuração da loja (#352) | N | N | N | A | A | N | N | N | N | nome, frase, sobre, cor e logo via `update_seller_settings`/`set_seller_logo` (0052); SE e SS recebem `42501` — a issue fechou o "condicional" anterior em negado; slug imutável (nenhuma função o recebe) |
+| Alterar branding/configuração da loja (#352) | N | N | N | A | A | N | N | N | N | nome, frase, sobre, cor via `update_seller_settings` (0052); logo e banner via `set_seller_image`/`clear_seller_image` com o tipo como parâmetro (0054, #387); SE e SS recebem `42501` — a issue fechou o "condicional" anterior em negado; slug imutável (nenhuma função o recebe) |
 | Ler configurações da loja (#352) | N | N | N | A | A | N | N | N | N | `read_seller_settings`; o logo sai presignado (60 s), nunca chave nem versão de objeto |
 | Definir a promessa do produto (#352) | N | N | N | A | A | A | N | N | N | campo do produto (`update_product_headline`), regra de `catalog.draft.update` com versão esperada |
 | Acessar Recebimentos (#352) | N | N | N | A | A | N | N | N | N | leitura SO/SA, conexão só SO (0021/0025); o item some do menu para SE/SS e a API responde 403 |

@@ -40,12 +40,23 @@ export function StoreIdentity({ seller, size = "small" }: { seller: PublicStoref
 export function StorefrontTopbar({ seller, action }: { seller: PublicStorefrontSeller; action: ReactNode }) {
   return (
     <header className="storefront-topbar">
-      <Link className="landing-brand storefront-brand" href={`/s/${seller.slug}`} aria-label={`${seller.name} — início da loja`}>
+      <Link className="landing-brand storefront-brand" href={`/s/${seller.slug}`} aria-label={`${seller.name}: início da loja`}>
         <StoreIdentity seller={seller}/>
         <strong>{seller.name}</strong>
       </Link>
       {action}
     </header>
+  );
+}
+
+/** A capa larga no alto da vitrine, com o logo sobreposto (padrão LinkedIn). */
+export function StorefrontCover({ seller }: { seller: PublicStorefrontSeller }) {
+  if (!seller.banner) return null;
+  return (
+    <div className="storefront-cover" aria-hidden="true">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img className="storefront-cover-image" src={seller.banner.url} alt="" width={seller.banner.width} height={seller.banner.height} decoding="async" fetchPriority="high"/>
+    </div>
   );
 }
 

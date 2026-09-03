@@ -47,6 +47,7 @@ export interface PublicStorefrontSeller {
   about?: string;
   accent_color?: string;
   logo?: StorefrontImage;
+  banner?: StorefrontImage;
 }
 
 // Mirrors the offer table CHECK and API ceiling (999,999,999.99 in centavos).
@@ -75,7 +76,7 @@ export function parsePublicStorefront(value: unknown): PublicStorefront | null {
 }
 
 function isSeller(value: unknown): value is PublicStorefrontSeller {
-  if (!hasKeysWithin(value, ["id", "slug", "name"], ["tagline", "about", "accent_color", "logo"])) {
+  if (!hasKeysWithin(value, ["id", "slug", "name"], ["tagline", "about", "accent_color", "logo", "banner"])) {
     return false;
   }
   return isUuid(value.id) && isSlug(value.slug) && isTrimmedText(value.name, 2, 120) &&
@@ -83,7 +84,8 @@ function isSeller(value: unknown): value is PublicStorefrontSeller {
     (value.about === undefined || isTrimmedText(value.about, 2, 600)) &&
     (value.accent_color === undefined ||
       (typeof value.accent_color === "string" && HEX_COLOR.test(value.accent_color))) &&
-    (value.logo === undefined || isImage(value.logo));
+    (value.logo === undefined || isImage(value.logo)) &&
+    (value.banner === undefined || isImage(value.banner));
 }
 
 function isProduct(value: unknown): value is PublicStorefrontProduct {

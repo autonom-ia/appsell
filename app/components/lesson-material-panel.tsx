@@ -258,7 +258,7 @@ export function LessonMaterialPanel({
         <span className="lesson-material-title">{material.title}</span>
         <span className="lesson-material-detail">
           {material.kind === "embed"
-            ? `${material.provider ?? "—"} · ${material.video_id ?? "—"}`
+            ? `${material.provider ?? "–"} · ${material.video_id ?? "–"}`
             : hostOf(material.url)}
         </span>
         {!archived ? <button

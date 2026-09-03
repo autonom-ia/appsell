@@ -16,7 +16,7 @@ import {
   type StoreSettingsCsrf
 } from "@/lib/store-settings";
 
-import { StoreLogoPanel } from "./store-logo-panel";
+import { StoreImagePanel } from "./store-image-panel";
 
 // Configurações da loja (#352): o que a loja mostra para quem chega pelo link.
 // Dono e admin editam; os outros papéis não chegam aqui pelo menu, e a API
@@ -290,10 +290,23 @@ export function StoreSettingsWorkspace({ publicOrigin }: { publicOrigin: string 
       </form>
 
       <div className="store-settings-card">
-        <StoreLogoPanel
+        <StoreImagePanel
           sellerId={seller.id}
           storeName={settings.display_name}
-          logo={settings.logo}
+          kind="logo"
+          image={settings.logo}
+          csrf={{ intent: csrf.logo_intent, confirm: csrf.logo_confirm, clear: csrf.logo_clear }}
+          onBusyChange={setLogoBusy}
+          onCommitted={() => loadSettings(seller)}
+        />
+      </div>
+
+      <div className="store-settings-card">
+        <StoreImagePanel
+          sellerId={seller.id}
+          storeName={settings.display_name}
+          kind="banner"
+          image={settings.banner}
           csrf={{ intent: csrf.logo_intent, confirm: csrf.logo_confirm, clear: csrf.logo_clear }}
           onBusyChange={setLogoBusy}
           onCommitted={() => loadSettings(seller)}
@@ -320,7 +333,7 @@ export function StoreSettingsWorkspace({ publicOrigin }: { publicOrigin: string 
           <div>
             <strong>Cada produto</strong>
             <p className="form-note">
-              O botão <em>Compartilhar</em>, em Produtos, copia o endereço direto do produto — para pôr na sua
+              O botão <em>Compartilhar</em>, em Produtos, copia o endereço direto do produto, para pôr na sua
               própria página ou num anúncio.
             </p>
           </div>

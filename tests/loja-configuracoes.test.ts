@@ -59,7 +59,7 @@ describe("cor de destaque", () => {
   it("gera as iniciais como a vitrine sempre fez", () => {
     expect(storeInitials("Hub2you")).toBe("HU");
     expect(storeInitials("Studio Marina")).toBe("SM");
-    expect(storeInitials("   ")).toBe("—");
+    expect(storeInitials("   ")).toBe("·");
   });
 });
 
@@ -87,7 +87,7 @@ describe("vitrine com marca", () => {
   it("aceita marca, capa, promessa e o resumo do conteúdo", () => {
     const branded = {
       ...base,
-      seller: { ...base.seller, tagline: "IA para corretores", about: "Doze anos.", accent_color: "#1a6b52", logo: image },
+      seller: { ...base.seller, tagline: "IA para corretores", about: "Doze anos.", accent_color: "#1a6b52", logo: image, banner: { ...image, width: 1600, height: 500 } },
       products: [{
         ...base.products[0],
         headline: "Feche mais apólices",
@@ -101,6 +101,7 @@ describe("vitrine com marca", () => {
   it("recusa chave de objeto no lugar de URL, cor fora do formato e chave desconhecida", () => {
     expect(parsePublicStorefront({ ...base, seller: { ...base.seller, logo: { ...image, url: "tenants/x/logo/1" } } })).toBeNull();
     expect(parsePublicStorefront({ ...base, seller: { ...base.seller, logo: { object_key: "k", storage_version_id: "v", media_type: "image/png", width: 1, height: 1 } } })).toBeNull();
+    expect(parsePublicStorefront({ ...base, seller: { ...base.seller, banner: { ...image, url: "tenants/x/banner/1" } } })).toBeNull();
     expect(parsePublicStorefront({ ...base, seller: { ...base.seller, accent_color: "#1A6B52" } })).toBeNull();
     expect(parsePublicStorefront({ ...base, seller: { ...base.seller, storage_version_id: "v" } })).toBeNull();
     expect(parsePublicStorefront({ ...base, products: [{ ...base.products[0], curriculum: { lesson_count: 0, material_count: 0, lessons: [] } }] })).toBeNull();
@@ -117,16 +118,21 @@ describe("contrato das configurações", () => {
     tagline: null,
     about: null,
     accent_color: "#1a6b52",
-    logo: { url: "https://cdn.test/l", media_type: "image/png", width: 300, height: 300 }
+    logo: { url: "https://cdn.test/l", media_type: "image/png", width: 300, height: 300 },
+    banner: { url: "https://cdn.test/b", media_type: "image/jpeg", width: 1600, height: 500 }
   };
 
-  it("aceita a forma que o BFF devolve, com e sem logo", () => {
+  it("aceita a forma que o BFF devolve, com e sem logo ou banner", () => {
     expect(parseStoreSettings(settings)).toEqual(settings);
     expect(parseStoreSettings({ ...settings, logo: null })?.logo).toBeNull();
+    expect(parseStoreSettings({ ...settings, banner: null })?.banner).toBeNull();
+    const semBanner = { ...settings, banner: undefined };
+    expect(parseStoreSettings(semBanner)?.banner).toBeNull();
   });
 
-  it("recusa logo que não seja uma URL https, e nome fora da régua", () => {
+  it("recusa logo ou banner que não seja uma URL https, e nome fora da régua", () => {
     expect(parseStoreSettings({ ...settings, logo: { ...settings.logo, url: "http://x" } })).toBeNull();
+    expect(parseStoreSettings({ ...settings, banner: { ...settings.banner, url: "http://x" } })).toBeNull();
     expect(parseStoreSettings({ ...settings, display_name: "x" })).toBeNull();
     expect(parseStoreSettings({ ...settings, accent_color: "verde" })).toBeNull();
   });

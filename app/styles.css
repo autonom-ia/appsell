@@ -111,11 +111,11 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .storefront-page main { width: 100%; max-width: 1180px; margin: 0 auto; padding: 28px max(16px,env(safe-area-inset-right)) 72px max(16px,env(safe-area-inset-left)); }
 .storefront-hero { min-width: 0; padding: clamp(24px,7vw,64px); display: grid; gap: 24px; border: 1px solid rgba(30,58,138,.14); border-radius: clamp(24px,7vw,40px); background: linear-gradient(145deg, rgba(255,255,255,.96), rgba(231,242,255,.88)); box-shadow: var(--shadow-md); }
 .storefront-identity { width: 72px; height: 72px; display: grid; place-items: center; border-radius: 22px; background: linear-gradient(135deg, var(--sidebar), var(--bright)); color: var(--surface); font-size: 1.35rem; font-weight: 850; letter-spacing: -.04em; }
-.storefront-hero h1 { margin: 0 0 14px; font-size: clamp(2.65rem,12vw,5.8rem); overflow-wrap: anywhere; }
-.storefront-hero p:last-child { max-width: 62ch; margin: 0; color: var(--text); font-size: 1rem; line-height: 1.65; }
-.storefront-trust { margin: 18px 0 54px; display: grid; grid-template-columns: 1fr; gap: 8px; }
-.storefront-trust span { min-height: 44px; padding: 10px 14px; display: flex; align-items: center; gap: 9px; border: 1px solid var(--border); border-radius: 14px; background: rgba(255,255,255,.72); color: var(--text); font-size: .78rem; font-weight: 750; }
-.storefront-trust span::before { content: ""; width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 4px rgba(8,122,75,.1); }
+.storefront-hero h1 { margin: 0 0 10px; font-size: clamp(2rem,7vw,3.2rem); overflow-wrap: anywhere; }
+.storefront-hero p:last-child { max-width: 62ch; margin: 0; color: var(--ink); font-size: clamp(1.05rem,3.6vw,1.3rem); font-weight: 600; line-height: 1.5; }
+.storefront-trust { margin: 18px 0 54px; padding: 0; list-style: none; display: grid; grid-template-columns: 1fr; gap: 8px; }
+.storefront-trust span, .storefront-trust li { min-height: 44px; padding: 10px 14px; display: flex; align-items: center; gap: 9px; border: 1px solid var(--border); border-radius: 14px; background: rgba(255,255,255,.72); color: var(--text); font-size: .78rem; font-weight: 750; }
+.storefront-trust span::before, .storefront-trust li::before { content: ""; width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 4px rgba(8,122,75,.1); }
 .storefront-catalog > header { margin-bottom: 22px; }
 .storefront-catalog h2 { margin: 0; font-size: clamp(2rem,9vw,3.8rem); }
 .storefront-grid { display: grid; gap: 18px; }
@@ -1463,3 +1463,29 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .dashboard-notice p { margin: 0; color: var(--text); line-height: 1.55; }
 .dashboard-notice a { justify-self: start; }
 .tenant-locked-link { margin-top: 6px; justify-self: start; color: var(--blue); font-weight: 750; }
+
+/* A2.1 (#387): refino da loja */
+.storefront-branded .primary-button { background: var(--store-accent); box-shadow: 0 12px 24px rgba(15,23,42,.18); }
+.storefront-identity.storefront-logo { width: auto; max-width: 260px; height: 96px; border-radius: 12px; object-fit: contain; background: transparent; }
+.storefront-identity-small.storefront-logo { max-width: 160px; height: 40px; border-radius: 8px; }
+.storefront-branded .storefront-product-art.art-fallback { background: var(--store-accent); background: linear-gradient(135deg, var(--store-accent), color-mix(in srgb, var(--store-accent) 55%, #0f172a)); }
+.storefront-author { margin-top: 32px; }
+.lp-trust { margin: 4px 0 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 8px 16px; color: var(--soft); font-size: .85rem; font-weight: 700; }
+.lp-trust li { display: flex; align-items: center; gap: 6px; }
+.lp-trust li::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--success); }
+@media (min-width: 680px) { .storefront-identity.storefront-logo { height: 112px; } }
+
+/* A2.1 (#387): banner da loja */
+.storefront-hero-covered { padding: 0; overflow: hidden; }
+.storefront-cover { width: 100%; aspect-ratio: 16 / 5; max-height: 320px; overflow: hidden; background: var(--soft); }
+.storefront-cover-image { display: block; width: 100%; height: 100%; object-fit: cover; }
+.storefront-hero-body { display: grid; gap: 18px; }
+.storefront-hero-covered .storefront-hero-body { padding: 0 clamp(20px,5vw,40px) clamp(24px,5vw,40px); margin-top: -36px; }
+.storefront-hero-covered .storefront-identity { box-shadow: 0 8px 24px rgba(15,23,42,.18); border: 4px solid var(--surface); background: var(--surface); }
+.lp-banner { width: 100%; max-width: 1180px; margin: 0 auto; padding: 0 max(16px,env(safe-area-inset-right)) 0 max(16px,env(safe-area-inset-left)); }
+.lp-banner .storefront-cover { max-height: 180px; border-radius: var(--radius-lg); }
+.store-banner-preview { width: 100%; max-width: 520px; aspect-ratio: 16 / 5; object-fit: cover; border-radius: 12px; }
+.store-banner-fallback { width: 100%; max-width: 520px; aspect-ratio: 16 / 5; border-radius: 12px; background: linear-gradient(135deg, var(--soft), var(--border)); }
+@media (min-width: 680px) {
+  .storefront-hero-covered .storefront-hero-body { grid-template-columns: auto minmax(0,1fr); align-items: end; margin-top: -48px; }
+}
