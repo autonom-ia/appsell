@@ -59,7 +59,7 @@ export default async function ProductCheckoutPage({
         {product.description.trim() ? <p>{product.description}</p> : null}
         <p className="product-checkout-price">{priceLabel}</p>
         {showCta ? <Link className={accessMode === "paid" ? "primary-button commercial-button lp-cta" : "primary-button lp-cta"} href={ctaHref}>{ctaLabel}</Link> : null}
-        <ul className="lp-trust" aria-label="O que você pode esperar">
+        <ul className="lp-trust" role="list" aria-label="O que você pode esperar">
           <li>{accessMode === "paid" ? "Acesso imediato depois da compra" : "Acesso imediato"}</li>
           <li>Assista no celular ou no computador</li>
           {accessMode === "paid" ? <li>Pagamento seguro</li> : null}

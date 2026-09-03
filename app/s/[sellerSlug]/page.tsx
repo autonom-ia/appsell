@@ -50,7 +50,7 @@ export default async function SellerStorefront({
   const demoCheckoutEnabled = demoModeEnabled() && seller.slug === "autonomia-demo";
   const loginHref = demoCheckoutEnabled ? "/auth/login?persona=buyer" : "/auth/login";
   const accent = storeAccent(seller.accent_color);
-  const hasAuthor = Boolean(seller.about || seller.logo);
+  const hasPaid = storefront.products.some((product) => (product.access_mode ?? "paid") === "paid");
 
   return <div className={storefrontClassName(seller)} style={storefrontStyle(seller)}>
     <a className="skip-link" href="#storefront-content">Pular para os produtos</a>
@@ -64,11 +64,11 @@ export default async function SellerStorefront({
         </div>
       </section>
 
-      <ul className="storefront-trust" aria-label="O que você pode esperar">
-        <li>Acesso imediato depois da compra</li>
-        <li>Pagamento seguro</li>
+      {storefront.products.length ? <ul className="storefront-trust" role="list" aria-label="O que você pode esperar">
+        <li>{hasPaid ? "Acesso imediato depois da compra" : "Acesso imediato"}</li>
+        {hasPaid ? <li>Pagamento seguro</li> : null}
         <li>Assista no celular ou no computador</li>
-      </ul>
+      </ul> : null}
 
       <section className="storefront-catalog" aria-labelledby="catalog-title">
         <header>
@@ -111,14 +111,15 @@ export default async function SellerStorefront({
         </div>}
       </section>
 
-      {hasAuthor ? <section className="lp-block lp-author storefront-author" aria-labelledby="storefront-author-title">
+      {/* Sempre: sem "sobre", ainda há nome e marca; a loja não pode parecer anônima. */}
+      <section className="lp-block lp-author storefront-author" aria-labelledby="storefront-author-title">
         <StoreIdentity seller={seller}/>
         <div>
           <p className="eyebrow">Sobre quem ensina</p>
           <h2 id="storefront-author-title">{seller.name}</h2>
-          {seller.about ? <p>{seller.about}</p> : null}
+          <p>{seller.about ?? seller.tagline ?? `Os produtos desta loja são publicados por ${seller.name}.`}</p>
         </div>
-      </section> : null}
+      </section>
     </main>
     <StorefrontFooter/>
   </div>;

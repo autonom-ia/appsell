@@ -75,8 +75,8 @@ export function findBannedTerms(
  * termo banido por anos sem nunca aparecer num teste de caminho feliz. Foi
  * assim que "não tem acesso a este espaço" sobreviveu ao portão.
  *
- * A regra do que é frase: literal entre aspas duplas **com espaço dentro**, ou
- * texto solto entre tags. Isso deixa de fora justamente o que não é para ser
+ * A regra do que é frase: literal entre aspas (duplas, simples ou crase)
+ * **com espaço dentro**, ou texto solto entre tags. Isso deixa de fora justamente o que não é para ser
  * lido — `"oferta"` como identificador de área, `payload.snapshot` como nome de
  * campo da API — sem precisar de lista de exceção.
  */
@@ -84,7 +84,12 @@ export function sourceProse(source: string): string {
   return stripComments(source)
     .split("\n")
     .map((line) => {
-      const quoted = [...line.matchAll(/"([^"\\\n]{2,})"/g)]
+      // Aspas duplas, simples e crase: a mensagem de tela mora nas três.
+      const quoted = [
+        ...line.matchAll(/"([^"\\\n]{2,})"/g),
+        ...line.matchAll(/'([^'\\\n]{2,})'/g),
+        ...line.matchAll(/`([^`\\\n]{2,})`/g)
+      ]
         .map((match) => match[1]!)
         .filter((literal) => literal.includes(" "));
       const jsxText = [...line.matchAll(/>([^<>{}\n]*[a-zA-ZÀ-ÿ][^<>{}\n]*)</g)]

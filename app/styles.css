@@ -1468,7 +1468,7 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .storefront-branded .primary-button { background: var(--store-accent); box-shadow: 0 12px 24px rgba(15,23,42,.18); }
 .storefront-identity.storefront-logo { width: auto; max-width: 260px; height: 96px; border-radius: 12px; object-fit: contain; background: transparent; }
 .storefront-identity-small.storefront-logo { max-width: 160px; height: 40px; border-radius: 8px; }
-.storefront-branded .storefront-product-art.art-fallback { background: linear-gradient(135deg, var(--store-accent), color-mix(in srgb, var(--store-accent) 55%, #0f172a)); }
+.storefront-branded .storefront-product-art.art-fallback { background: var(--store-accent); background: linear-gradient(135deg, var(--store-accent), color-mix(in srgb, var(--store-accent) 55%, #0f172a)); }
 .storefront-author { margin-top: 32px; }
 .lp-trust { margin: 4px 0 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 8px 16px; color: var(--soft); font-size: .85rem; font-weight: 700; }
 .lp-trust li { display: flex; align-items: center; gap: 6px; }
