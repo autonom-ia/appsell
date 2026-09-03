@@ -26,7 +26,11 @@ export const BANNED_SALES_TERMS: readonly BannedTerm[] = [
   // Decidido: na tela do vendedor a etapa se chama Preço, e o que se liga e
   // desliga são as vendas. "Oferta" continua sendo o nome da coisa na API e no
   // banco — o contrato não muda, só para de vazar para quem vende.
-  { term: "oferta", instead: "preço, ou vendas" }
+  { term: "oferta", instead: "preço, ou vendas" },
+  // O travessão é a marca d'água do texto gerado por IA (revisão do Rodrigo,
+  // 03/09). Em frase de tela vira ponto, vírgula ou dois-pontos; como valor
+  // vazio, a meia-risca (–).
+  { term: "—", instead: "ponto, vírgula ou dois-pontos (ou – para valor vazio)" }
 ];
 
 function fold(value: string): string {
@@ -71,8 +75,8 @@ export function findBannedTerms(
  * termo banido por anos sem nunca aparecer num teste de caminho feliz. Foi
  * assim que "não tem acesso a este espaço" sobreviveu ao portão.
  *
- * A regra do que é frase: literal entre aspas duplas **com espaço dentro**, ou
- * texto solto entre tags. Isso deixa de fora justamente o que não é para ser
+ * A regra do que é frase: literal entre aspas (duplas, simples ou crase)
+ * **com espaço dentro**, ou texto solto entre tags. Isso deixa de fora justamente o que não é para ser
  * lido — `"oferta"` como identificador de área, `payload.snapshot` como nome de
  * campo da API — sem precisar de lista de exceção.
  */
@@ -80,7 +84,12 @@ export function sourceProse(source: string): string {
   return stripComments(source)
     .split("\n")
     .map((line) => {
-      const quoted = [...line.matchAll(/"([^"\\\n]{2,})"/g)]
+      // Aspas duplas, simples e crase: a mensagem de tela mora nas três.
+      const quoted = [
+        ...line.matchAll(/"([^"\\\n]{2,})"/g),
+        ...line.matchAll(/'([^'\\\n]{2,})'/g),
+        ...line.matchAll(/`([^`\\\n]{2,})`/g)
+      ]
         .map((match) => match[1]!)
         .filter((literal) => literal.includes(" "));
       const jsxText = [...line.matchAll(/>([^<>{}\n]*[a-zA-ZÀ-ÿ][^<>{}\n]*)</g)]

@@ -333,7 +333,7 @@ export function StoreSettingsWorkspace({ publicOrigin }: { publicOrigin: string 
           <div>
             <strong>Cada produto</strong>
             <p className="form-note">
-              O botão <em>Compartilhar</em>, em Produtos, copia o endereço direto do produto — para pôr na sua
+              O botão <em>Compartilhar</em>, em Produtos, copia o endereço direto do produto, para pôr na sua
               própria página ou num anúncio.
             </p>
           </div>

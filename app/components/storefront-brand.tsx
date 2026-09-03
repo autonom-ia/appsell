@@ -40,7 +40,7 @@ export function StoreIdentity({ seller, size = "small" }: { seller: PublicStoref
 export function StorefrontTopbar({ seller, action }: { seller: PublicStorefrontSeller; action: ReactNode }) {
   return (
     <header className="storefront-topbar">
-      <Link className="landing-brand storefront-brand" href={`/s/${seller.slug}`} aria-label={`${seller.name} — início da loja`}>
+      <Link className="landing-brand storefront-brand" href={`/s/${seller.slug}`} aria-label={`${seller.name}: início da loja`}>
         <StoreIdentity seller={seller}/>
         <strong>{seller.name}</strong>
       </Link>
