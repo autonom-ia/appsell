@@ -124,6 +124,7 @@ describe("POST /api/checkout/stripe/create-session", () => {
     readPublicStorefront.mockReset();
     sessionsCreate.mockClear();
     createFinancialExternalCheckoutIntent.mockClear();
+    resolveCheckoutPayoutDestination.mockClear();
     resolveBuyerIdentityMock.mockReset();
     resolveBuyerIdentityMock.mockResolvedValue({ status: "authenticated", subject: "cognito-sub-default" });
   });
@@ -193,6 +194,7 @@ describe("POST /api/checkout/stripe/create-session", () => {
       url: "https://financial.test/financial/public/external-checkout/0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c"
     });
     expect(sessionsCreate).not.toHaveBeenCalled();
+    expect(resolveCheckoutPayoutDestination).not.toHaveBeenCalled();
     expect(createFinancialExternalCheckoutIntent).toHaveBeenCalledWith(expect.objectContaining({
       productCatalogItemId: "22222222-2222-4222-8222-222222222222",
       seller: expect.objectContaining({ slug: SELLER }),
@@ -203,6 +205,7 @@ describe("POST /api/checkout/stripe/create-session", () => {
         title: "Codex na Prática"
       }),
       pricing: { amountMinor: 4990, currency: "BRL", billingPeriod: "one_time" },
+      connect: { accountId: null, applicationFeeAmountMinor: null },
       fulfillmentWebhookUrl: `${ORIGIN}/api/webhooks/checkouts/endpointkeyendpointkeyendpointkey123456`
     }));
   });
