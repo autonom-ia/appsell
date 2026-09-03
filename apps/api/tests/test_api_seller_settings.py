@@ -18,17 +18,23 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, status
 from sqlalchemy.exc import DBAPIError
 
+from appsell_api import seller_settings_routes
 from appsell_api.public_routes import public_images
 from appsell_api.seller_settings_routes import router
-from appsell_api.storage_s3 import PresignedRequest, S3Storage, StorageError
+from appsell_api.storage_s3 import PresignedRequest, S3Storage, StorageError, StoredObject
+from appsell_api.storage_worker import ScanRejected
 
 SELLER_ID = UUID("72000000-0000-4000-8000-000000000001")
 PRODUCT_ID = UUID("72000000-0000-4000-8000-000000000002")
 IDENTITY_ID = UUID("71000000-0000-4000-8000-000000000001")
 UPLOAD_ID = UUID("73000000-0000-4000-8000-000000000001")
+QUARANTINE = "appsell-quarantine"
+CHECKSUM_B64 = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
+READY = "ready"
+OUTRO_UPLOAD_ID = UUID("73000000-0000-4000-8000-000000000002")
 
 
 class Falha(Exception):
@@ -75,6 +81,7 @@ class FakeAuth:
         self.session = ScriptedSession(script)
         self.capabilities: list[str] = []
         self.rejected_requests = 0
+        self.consumed: list[UUID] = []
         self.request_id = uuid4()
         self.body_sha256 = "ab" * 32
 
@@ -94,9 +101,28 @@ class FakeAuth:
 
     async def consume_rejected_request(self) -> None:
         self.rejected_requests += 1
+        self._consume()
+
+    def _consume(self) -> None:
+        """O guarda de replay real, no falso.
+
+        `domain_session` e `consume_rejected_request` executam o mesmo
+        `app_private.consume_bff_request`: o segundo consumo do mesmo
+        `request_id` viola a unicidade e vira 401. Sem isto aqui, uma rota que
+        abre duas sessões passa no teste e quebra no ar — foi o que aconteceu
+        na PR #389 e o que a #391 conserta.
+        """
+        if self.request_id in self.consumed:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="replayed")
+        self.consumed.append(self.request_id)
+
+    @property
+    def domain_sessions(self) -> int:
+        return len(self.consumed)
 
     @asynccontextmanager
     async def domain_session(self, _envelope: Any) -> AsyncIterator[ScriptedSession]:
+        self._consume()
         yield self.session
 
 
@@ -123,6 +149,9 @@ async def client_for(
     app = FastAPI()
     app.include_router(router)
     app.state.internal_auth = auth
+    app.state.settings = SimpleNamespace(
+        storage_quarantine_bucket=QUARANTINE, storage_ready_bucket=READY
+    )
     if storage is not None:
         app.state.storage = storage
     async with httpx.AsyncClient(
@@ -378,35 +407,188 @@ async def test_banner_clear_passa_o_tipo_ao_banco_e_apaga_a_chave_do_banner() ->
 
 
 @pytest.mark.asyncio
-async def test_confirm_com_id_de_outro_tipo_e_404_sem_tocar_o_storage() -> None:
-    # FakeStorage não tem `head` nem `delete_all_versions`: qualquer toque no
-    # storage antes da checagem do banco explode o teste.
-    auth = FakeAuth(seller_id=SELLER_ID, script=[db_error("P4041")])
-    async with client_for(auth, FakeStorage()) as client:
+async def test_confirm_recusa_objeto_de_outro_upload_sem_tocar_em_nada() -> None:
+    """O objeto na quarentena carrega o id de quem o enviou. Confirmar com o id
+    de outro upload (outro tipo, ou um já substituído) para antes de qualquer
+    ação destrutiva: quem está enviando de verdade não perde o arquivo."""
+
+    class Storage(FakeStorage):
+        def __init__(self) -> None:
+            super().__init__()
+            self.deleted: list[tuple[str, str]] = []
+
+        def head(self, *, bucket: str, key: str, version_id: str | None = None) -> StoredObject:
+            return StoredObject(
+                bucket=bucket,
+                key=key,
+                version_id="v9",
+                size=4096,
+                content_type="image/png",
+                checksum_sha256_b64="",
+                etag="e",
+                appsell_upload_id=str(OUTRO_UPLOAD_ID),
+            )
+
+        def delete_all_versions(self, *, bucket: str, key: str) -> None:
+            self.deleted.append((bucket, key))
+
+    storage = Storage()
+    auth = FakeAuth(seller_id=SELLER_ID, script=[])
+    async with client_for(auth, storage) as client:
         response = await client.post(
             f"/v1/me/sellers/{SELLER_ID}/settings/banner/uploads/{UPLOAD_ID}/confirm",
             content=body(idempotency_key=str(uuid4())),
         )
-    assert response.status_code == 404, response.text
-    (statement, parameters) = auth.session.calls[0]
-    assert "read_seller_image_upload(" in statement
-    assert parameters["kind"] == "banner" and parameters["upload"] == UPLOAD_ID
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "logo_upload_superseded"
+    assert storage.deleted == []
+    assert auth.session.calls == []
+    assert auth.rejected_requests == 1
 
 
 @pytest.mark.asyncio
-async def test_confirm_de_upload_ja_fechado_e_409_sem_tocar_o_storage() -> None:
+class ImagemVerificada:
+    """O que a rota lê do resultado da verificação, e nada mais."""
+
+    media_type = "image/webp"
+    sha256_hex = "cd" * 32
+    width = 1600
+    height = 500
+    byte_size = 4096
+    ready = SimpleNamespace(version_id="ready-v1")
+
+
+class WorkerFalso:
+    """O verificador, sem baixar nem escanear nada.
+
+    A rota constrói o worker por dentro; o teste troca a classe no módulo. O
+    que importa aqui não é a verificação — é quantas sessões de domínio a rota
+    abre em cada desfecho, e qual limpeza ela chama.
+    """
+
+    ultimo: WorkerFalso | None = None
+
+    def __init__(self, storage: Any, scanner: Any, *, rejeita: bool = False) -> None:
+        self.rejeita = rejeita
+        self.limpou_origem = False
+        self.descartou_pronto = False
+        self.descartou_quarentena: list[str] = []
+        WorkerFalso.ultimo = self
+
+    def process(self, job: Any) -> Any:
+        if self.rejeita:
+            raise ScanRejected("recusado no teste")
+        return ImagemVerificada()
+
+    def cleanup_source_after_commit(self, verified: Any) -> None:
+        self.limpou_origem = True
+
+    def discard_ready_cover(self, verified: Any) -> None:
+        self.descartou_pronto = True
+
+    def discard_abandoned_image(self, *, seller_id: UUID, kind: str) -> None:
+        self.descartou_quarentena.append(kind)
+
+
+class StorageQueVe(FakeStorage):
+    """Quarentena com o objeto do upload que a rota está confirmando."""
+
+    def __init__(self, upload_id: UUID = UPLOAD_ID) -> None:
+        super().__init__()
+        self.upload_id = upload_id
+        self.deleted: list[tuple[str, str]] = []
+
+    def head(self, *, bucket: str, key: str, version_id: str | None = None) -> StoredObject:
+        return StoredObject(
+            bucket=bucket,
+            key=key,
+            version_id="quarantine-v1",
+            size=4096,
+            content_type="image/png",
+            checksum_sha256_b64=CHECKSUM_B64,
+            etag="e",
+            appsell_upload_id=str(self.upload_id),
+        )
+
+    def delete_all_versions(self, *, bucket: str, key: str) -> None:
+        self.deleted.append((bucket, key))
+
+
+def _troca_o_worker(monkeypatch: pytest.MonkeyPatch, *, rejeita: bool = False) -> None:
+    monkeypatch.setattr(
+        seller_settings_routes,
+        "ProductCoverWorker",
+        lambda storage, scanner: WorkerFalso(storage, scanner, rejeita=rejeita),
+    )
+    monkeypatch.setattr(
+        seller_settings_routes, "_scanner", lambda request, internal: _pronto(object())
+    )
+
+
+async def _pronto(value: Any) -> Any:
+    return value
+
+
+@pytest.mark.asyncio
+async def test_confirm_feliz_grava_e_abre_uma_unica_sessao(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """O caminho que o incidente derrubou: uma sessão, gravação, 200."""
+    _troca_o_worker(monkeypatch)
+    auth = FakeAuth(seller_id=SELLER_ID, script=[SimpleNamespace(previous_object_key=None)])
+    async with client_for(auth, StorageQueVe()) as client:
+        response = await client.post(
+            f"/v1/me/sellers/{SELLER_ID}/settings/banner/uploads/{UPLOAD_ID}/confirm",
+            content=body(idempotency_key=str(uuid4())),
+        )
+    assert response.status_code == 200, response.text
+    assert response.json()["kind"] == "banner"
+    assert auth.domain_sessions == 1
+    (statement, parameters) = auth.session.calls[0]
+    assert "set_seller_image(" in statement and parameters["kind"] == "banner"
+    assert WorkerFalso.ultimo is not None and WorkerFalso.ultimo.limpou_origem
+
+
+@pytest.mark.asyncio
+async def test_confirm_recusado_fecha_o_upload_em_uma_sessao(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rejeição do verificador: fecha o upload e limpa, ainda em uma sessão."""
+    _troca_o_worker(monkeypatch, rejeita=True)
     auth = FakeAuth(
         seller_id=SELLER_ID,
-        script=[{"upload_id": str(UPLOAD_ID), "kind": "banner", "status": "cancelled"}],
+        script=[SimpleNamespace(upload_id=str(UPLOAD_ID), status="rejected", changed=True)],
     )
-    async with client_for(auth, FakeStorage()) as client:
+    async with client_for(auth, StorageQueVe()) as client:
+        response = await client.post(
+            f"/v1/me/sellers/{SELLER_ID}/settings/banner/uploads/{UPLOAD_ID}/confirm",
+            content=body(idempotency_key=str(uuid4())),
+        )
+    assert response.status_code == 422
+    assert response.json()["detail"] == "logo_rejected"
+    assert auth.domain_sessions == 1
+    (statement, parameters) = auth.session.calls[0]
+    assert "close_seller_image_upload(" in statement and parameters["kind"] == "banner"
+    assert WorkerFalso.ultimo is not None
+    assert WorkerFalso.ultimo.descartou_quarentena == ["banner"]
+
+
+@pytest.mark.asyncio
+async def test_confirm_com_falha_na_gravacao_descarta_o_pronto_em_uma_sessao(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Se a gravação falha, o objeto promovido sai do bucket servido."""
+    _troca_o_worker(monkeypatch)
+    auth = FakeAuth(seller_id=SELLER_ID, script=[db_error("55000")])
+    async with client_for(auth, StorageQueVe()) as client:
         response = await client.post(
             f"/v1/me/sellers/{SELLER_ID}/settings/banner/uploads/{UPLOAD_ID}/confirm",
             content=body(idempotency_key=str(uuid4())),
         )
     assert response.status_code == 409
-    assert response.json()["detail"] == "logo_upload_not_pending"
-    assert auth.rejected_requests == 1
+    assert response.json()["detail"] == "seller_inactive"
+    assert auth.domain_sessions == 1
+    assert WorkerFalso.ultimo is not None and WorkerFalso.ultimo.descartou_pronto
 
 
 @pytest.mark.asyncio
