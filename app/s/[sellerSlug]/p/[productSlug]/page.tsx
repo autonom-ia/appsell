@@ -58,11 +58,15 @@ export default async function ProductCheckoutPage({
         {/* O banner, e só ele: a capa é 16:9 e vive no cartão da loja. Espremer
             a capa nesta faixa foi o defeito que trouxe o banner (#387). Sem
             banner, a página abre pela promessa, sem imagem cortada. */}
+        {/* Uma imagem no alto, nunca duas. O banner é a arte feita para esta
+            página; a capa entra no lugar dele quando o produto ainda não tem
+            banner, para nenhum produto abrir sem imagem (#398). Empilhar as
+            duas mostra a mesma arte em dois formatos e empurra preço e botão
+            para baixo da dobra. */}
         {product.banner
           // eslint-disable-next-line @next/next/no-img-element
           ? <div className="lp-banner"><img className="lp-banner-image" src={product.banner.url} alt="" width={product.banner.width} height={product.banner.height} decoding="async" fetchPriority="high"/></div>
-          : null}
-        {product.cover
+          : product.cover
           // eslint-disable-next-line @next/next/no-img-element
           ? <img
               className="lp-cover"
