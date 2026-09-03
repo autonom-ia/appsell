@@ -88,11 +88,16 @@ function isProduct(value: unknown): value is BuyerProductItem["product"] {
 }
 
 function isCover(value: unknown): value is NonNullable<BuyerProductItem["product"]["cover"]> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  // A chave e a versão de objeto morrem na API. Se aparecerem aqui, é sinal de
+  // que morreram menos do que deviam, e a capa inteira é recusada.
+  if (!hasKeysWithin(value, ["url", "media_type", "width", "height"], ["expires_in_seconds"])) {
+    return false;
+  }
   const cover = value as Record<string, unknown>;
   return typeof cover.url === "string" && cover.url.startsWith("https://") &&
     typeof cover.media_type === "string" && cover.media_type.startsWith("image/") &&
-    isDimension(cover.width) && isDimension(cover.height);
+    isDimension(cover.width) && isDimension(cover.height) &&
+    (cover.expires_in_seconds === undefined || isDimension(cover.expires_in_seconds));
 }
 
 function isDimension(value: unknown): value is number {

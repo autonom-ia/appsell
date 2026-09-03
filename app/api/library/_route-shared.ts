@@ -8,9 +8,11 @@ import {
 } from "@/lib/internal-api-client.server";
 import {
   parseBuyerProductsPayload,
-  parseBuyerSellerProductsPayload
+  parseBuyerSellerProductsPayload,
+  type BuyerProductItem
 } from "@/lib/buyer-products";
 import { oauthService } from "@/lib/oauth-service.server";
+import { configuredStorageUploadOrigin, trustedProductCover } from "@/lib/storage-upload-policy.server";
 import { isOAuthStoreUnavailable } from "@/lib/redis-oauth-service";
 
 export async function authenticatedLibrarySession(request: NextRequest) {
@@ -47,12 +49,38 @@ export async function buyerProductsResponse(request: NextRequest) {
     const raw = await readDomainBuyerProducts(authenticated.sessionId, authenticated.session);
     const payload = parseBuyerProductsPayload(raw);
     if (!payload) return invalidLibraryResponse();
-    return NextResponse.json(payload, {
+    return NextResponse.json(comCapaConfiavel(payload), {
       headers: { "cache-control": "private, no-store" }
     });
   } catch (error) {
     return libraryError(error);
   }
+}
+
+/**
+ * A capa só chega ao navegador se vier do armazenamento que configuramos.
+ *
+ * O mesmo portão do painel do vendedor: uma imagem que aponte para outro
+ * lugar vira requisição do navegador de quem estuda para um host qualquer.
+ * Uma capa recusada some, e o cartão desenha a arte gerada a partir do nome.
+ */
+function comCapaConfiavel(payload: { items: BuyerProductItem[] }) {
+  let origem: string;
+  try {
+    origem = configuredStorageUploadOrigin();
+  } catch {
+    origem = "";
+  }
+  return {
+    items: payload.items.map((item) => {
+      if (!item.product.cover) return item;
+      const confiavel = origem ? trustedProductCover(item.product.cover, origem) : null;
+      if (confiavel) return item;
+      const produto = { ...item.product };
+      delete produto.cover;
+      return { ...item, product: produto };
+    })
+  };
 }
 
 export async function buyerSellerProductsResponse(
