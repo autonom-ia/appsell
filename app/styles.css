@@ -1431,6 +1431,7 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
    do próprio navegador e, sem ele, o declarado aqui é ignorado. */
 .lp-banner { width: 100%; aspect-ratio: 16 / 5; overflow: hidden; border-radius: var(--radius-lg); background: var(--soft); }
 .lp-banner-image { display: block; width: 100%; height: 100%; object-fit: cover; }
+.lp-cover { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; border-radius: var(--radius-lg); background: var(--soft); }
 .lp-title { margin: 0 !important; color: var(--soft); font-weight: 750; }
 .lp-cta { justify-self: start; }
 .lp-block { padding: 22px; display: grid; gap: 10px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); }

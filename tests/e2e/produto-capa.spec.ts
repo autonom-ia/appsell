@@ -11,8 +11,8 @@ import { expect, test } from "@playwright/test";
  * 16:9 no painel e o cartão respeita essa proporção. O teste mede com o CSS de
  * verdade: se alguém voltar a espremer a capa, cai aqui.
  *
- * O alto da página de vendas não está aqui de propósito: ele passa a ser o
- * banner do produto, com proporção própria, e ganha o seu teste junto.
+ * A página de vendas mantém banner e capa em papéis separados, cada um na sua
+ * proporção, e ambos ganham testes abaixo.
  */
 
 const CSS = readFileSync(resolve(process.cwd(), "app/styles.css"), "utf8");
@@ -30,6 +30,7 @@ const BANNER = `data:image/svg+xml;base64,${Buffer.from(
 const PAGINA_DE_VENDAS = `<div class="storefront-page product-checkout-page"><main class="product-checkout-main lp-main">
   <section class="product-checkout-summary lp-hero">
     <div class="lp-banner"><img class="lp-banner-image" src="${BANNER}" alt="" width="1600" height="500"></div>
+    <img class="lp-cover" src="${CAPA}" alt="" width="1600" height="900">
     <p class="eyebrow">Hub2you</p>
     <h1>IA na prática</h1>
     <p class="product-checkout-price">R$ 47,00</p>
@@ -48,7 +49,7 @@ async function proporcoes(page: import("@playwright/test").Page, html: string, s
   await page.addStyleTag({ content: CSS });
   return page.evaluate((alvo) => {
     const caixa = document.querySelector(alvo)!.getBoundingClientRect();
-    const img = document.querySelector("img")! as HTMLImageElement;
+    const img = document.querySelector(`${alvo} img, img${alvo}`)! as HTMLImageElement;
     const titulo = document.querySelector("h1");
     return {
       daCaixa: Number((caixa.width / caixa.height).toFixed(2)),
@@ -71,6 +72,13 @@ test.describe("a capa do produto não é espremida", () => {
   test("no cartão da loja, no celular", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const medida = await proporcoes(page, CARTAO_DA_LOJA, ".storefront-product-art");
+
+    expect(medida.daCaixa).toBeCloseTo(medida.daImagem, 1);
+  });
+
+  test("na página de vendas", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const medida = await proporcoes(page, PAGINA_DE_VENDAS, ".lp-cover");
 
     expect(medida.daCaixa).toBeCloseTo(medida.daImagem, 1);
   });
