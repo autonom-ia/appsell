@@ -9,6 +9,7 @@ const {
   readPublicStorefront,
   resolveCheckoutPayoutDestination,
   createFinancialExternalCheckoutIntent,
+  createFinancialExternalCheckoutSession,
   FakeStripeConfigError,
   FakeFinancialConfigError,
   FakeFinancialCheckoutError,
@@ -37,6 +38,7 @@ const {
       checkoutIntentId: "0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c",
       checkoutUrl: "https://financial.test/financial/public/external-checkout/0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c"
     })),
+    createFinancialExternalCheckoutSession: vi.fn(async () => "https://checkout.stripe.com/c/pay/cs_test_123"),
     FakeStripeConfigError,
     FakeFinancialConfigError,
     FakeFinancialCheckoutError,
@@ -71,6 +73,7 @@ vi.mock("@/lib/financial-external-checkout.server", () => ({
   checkoutProvider: () => process.env.APPSELL_CHECKOUT_PROVIDER === "financial_checkout" ? "financial_checkout" : "local_stripe",
   checkoutWebhookEndpointKey: () => process.env.APPSELL_CHECKOUT_WEBHOOK_ENDPOINT_KEY ?? "",
   createFinancialExternalCheckoutIntent,
+  createFinancialExternalCheckoutSession,
   FinancialExternalCheckoutConfigError: FakeFinancialConfigError,
   FinancialExternalCheckoutError: FakeFinancialCheckoutError
 }));
@@ -204,7 +207,7 @@ describe("POST /api/checkout/stripe/create-session", () => {
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
-      url: "https://financial.test/financial/public/external-checkout/0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c"
+      url: "https://checkout.stripe.com/c/pay/cs_test_123"
     });
     expect(sessionsCreate).not.toHaveBeenCalled();
     expect(resolveCheckoutPayoutDestination).not.toHaveBeenCalled();
@@ -223,6 +226,9 @@ describe("POST /api/checkout/stripe/create-session", () => {
       connect: { accountId: null, applicationFeeAmountMinor: null },
       fulfillmentWebhookUrl: `${ORIGIN}/api/webhooks/checkouts/endpointkeyendpointkeyendpointkey123456`
     }));
+    expect(createFinancialExternalCheckoutSession).toHaveBeenCalledWith(
+      "https://financial.test/financial/public/external-checkout/0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c"
+    );
   });
 
   it("rejects a Financial checkout when the seller has no Financial binding", async () => {

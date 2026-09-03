@@ -57,6 +57,8 @@ export interface FinancialExternalCheckoutIntent {
   checkoutUrl: string;
 }
 
+const FINANCIAL_CHECKOUT_PATH = /^\/financial\/public\/external-checkout\/[0-9a-f-]{36}$/i;
+
 export async function createFinancialExternalCheckoutIntent(
   input: CreateFinancialExternalCheckoutIntentInput
 ): Promise<FinancialExternalCheckoutIntent> {
@@ -113,6 +115,32 @@ export async function createFinancialExternalCheckoutIntent(
     checkoutIntentId: payload.checkout_intent_id,
     checkoutUrl: payload.checkout_url
   };
+}
+
+export async function createFinancialExternalCheckoutSession(checkoutUrl: string): Promise<string> {
+  const config = financialInternalConfig();
+  const financialOrigin = new URL(trimTrailingSlash(config.apiUrl)).origin;
+  const checkout = new URL(checkoutUrl);
+  if (checkout.origin !== financialOrigin || checkout.search || checkout.hash || !FINANCIAL_CHECKOUT_PATH.test(checkout.pathname)) {
+    throw new FinancialExternalCheckoutError("financial_checkout_invalid_url", 502);
+  }
+
+  const response = await fetch(new URL(`${checkout.pathname}/session`, financialOrigin), {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: "",
+    redirect: "manual",
+    cache: "no-store"
+  });
+  const location = response.headers.get("location");
+  if (response.status !== 303 || !location) {
+    throw new FinancialExternalCheckoutError("financial_checkout_session_rejected", response.status);
+  }
+  const stripeUrl = new URL(location);
+  if (stripeUrl.protocol !== "https:" || stripeUrl.hostname !== "checkout.stripe.com") {
+    throw new FinancialExternalCheckoutError("financial_checkout_invalid_redirect", 502);
+  }
+  return stripeUrl.toString();
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
