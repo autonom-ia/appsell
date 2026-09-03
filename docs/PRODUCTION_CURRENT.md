@@ -15,11 +15,17 @@
 |---|---|
 | Domínio | `https://sell.autonomia.site` |
 | Ambiente | VPS EasyPanel nativo, Docker Swarm |
-| SHA do **api** | `41e0c44` — banner da loja (#387) mais o hotfix da confirmação de upload (#391) |
+| SHA do **api** | `15bce6b` — banner do produto e imagens do produto por tipo (#387, PR #395) |
 | SHA do **asset-worker** | `d5e00ec` — mesma imagem da api, um SHA atrás |
 | SHA do **pdf-sandbox** | `d5e00ec` — mesma imagem da api, com outra tag |
-| SHA do **web** | `0e71e46` — refino da loja e banner (#387), com o hero do desktop corrigido (#392); worker e sandbox seguem em `d5e00ec` |
-| Banco | head **`0054_banner_da_loja`**, `schema_ready() = true` |
+| SHA do **web** | `f1f43c8` — banner do produto (#395), capa e checkout do Financial (#398, #400, do Roberto) e uma imagem só no alto da página de vendas (#403); worker e sandbox seguem em `d5e00ec` |
+| Banco | head **`0057_banner_na_vitrine`**, `schema_ready() = true` |
+
+**Release de 2026-09-03, `web` `f1f43c8` e `api` `15bce6b`, com as migrations
+`0056` e `0057` (PR #395).** A capa e o banner do produto passam a ter papéis
+separados, cada um na sua medida, porque uma imagem só era cortada em três
+superfícies diferentes. Detalhe na seção
+[Release `15bce6b`](#release-15bce6b--banner-do-produto-2026-09-03).
 
 **Correção de 2026-09-03, `web` `0e71e46` (PR #392).** Com banner, a vitrine
 no desktop punha a capa e o conteúdo lado a lado: o nome da loja sumia e o
@@ -194,6 +200,110 @@ Com 4 núcleos, 300 páginas são 89 s de janela.
 Mil páginas exigem, além da #320: virtualizar o leitor (hoje cria um nó por
 página), paralelizar o upload das páginas, e refazer gatilhos que recontam todas
 as páginas a cada inserção. Cinco mil é outra geração do pipeline.
+
+## Release `15bce6b` — Banner do produto (2026-09-03)
+
+`web`, `api` e duas migrations. Fecha a segunda metade do #387: a loja já tinha
+banner desde `a49e017`; agora o produto também tem.
+
+### O problema, medido
+
+A capa era uma imagem só servindo três lugares de formatos diferentes, e era
+cortada em todos. Com a capa 16:9 que o vendedor havia enviado:
+
+| Onde | Proporção da caixa | O que acontecia |
+|---|---|---|
+| Página de vendas, computador | 2,73 | cortava 35% em cima e embaixo |
+| Página de vendas, celular | 0,85 | cortava 52% das laterais |
+| Cartão da loja | 2,12 | cortava cerca de 16% das laterais |
+
+Nenhuma dessas proporções estava anunciada ao vendedor: não existia arquivo que
+desse certo em todas.
+
+### O que mudou
+
+- **Capa 16:9** (1600 × 900): o retrato do produto, no cartão da loja, na lista
+  do painel e no checkout do Financial.
+- **Banner 16:5** (1600 × 500): a faixa que abre a página de vendas.
+- O editor do produto ganhou o bloco do banner ao lado do da capa, cada um
+  dizendo para que serve e qual medida usar, e a tela **avisa quando a imagem
+  escolhida vai aparecer cortada**, com as medidas dela e a pedida. Avisa, não
+  bloqueia.
+- Na página de vendas, o cartão "Entre para comprar" saiu para quem ainda não
+  entrou: o botão da barra continua sendo **Comprar agora** e leva direto ao
+  login. Para quem já entrou, o cartão fica, porque é ele que mostra a conta
+  que vai receber o acesso.
+
+### Banco: duas migrations, e o porquê
+
+`0056_banner_do_produto` é **aditiva**: colunas `banner_*` em `catalog_product`,
+coluna `kind` em `product_cover_upload` com um pendente por tipo, as cinco
+funções da capa viram funções de imagem com o tipo como parâmetro, e os nomes
+antigos ficam como atalhos delegando para `cover`. Os atalhos existem para que
+a API em produção continue funcionando no instante da migration; saem numa
+migration futura, quando não houver mais chamador.
+
+`0057_banner_na_vitrine` acende o campo `banner` em `read_public_storefront`.
+Ela é separada porque o parser da vitrine no navegador recusa chave que não
+conhece: expor o campo antes do web novo derrubaria toda loja com produto
+publicado.
+
+Ambas partem do texto da vitrine **como a 0055 a deixou**. A
+`0055_seller_financial_binding`, do Roberto, entrou no mesmo dia e reescreve a
+mesma função; recriar a partir da 0054 apagaria o vínculo com o Financial. Foi
+a validação em banco limpo que pegou isso.
+
+### Ordem de deploy: 0056 → api → web → 0057
+
+Foi executada nessa ordem, e é a única sem janela de erro. A migration aditiva
+não quebra a API antiga; a API nova encontra as funções que precisa; o web novo
+aceita a ausência do campo; e o campo só aparece quando o web já o entende.
+
+### Como foi aplicado
+
+```bash
+D=/tmp/sell-release-banner-produto-20260903-163903   # specs, nomes das vars, pg_dump -Fc, cabeça 0055
+docker run --rm --network easypanel -e APPSELL_MIGRATOR_DATABASE_URL=<montada no host> \
+  -v /home/claudete/appsell-src-15bce6b/apps/api:/mig -w /mig \
+  easypanel/sell-autonomia/api:15bce6b alembic upgrade 0056_banner_do_produto
+docker service update --image easypanel/sell-autonomia/api:15bce6b --update-order stop-first sell-autonomia_api
+docker service update --image easypanel/sell-autonomia/web:15bce6b --update-order stop-first sell-autonomia_web
+# … mesma linha do alembic, agora para head (0057)
+```
+
+### Validação executada em produção
+
+| O quê | Resultado |
+|---|---|
+| migrations | head `0057`, `schema_ready() = true`, 8 colunas de banner, `kind` no upload, 5 funções de imagem e 5 atalhos convivendo |
+| vínculo com o Financial | preservado na vitrine, conferido no corpo da função |
+| api e web | convergiram; variáveis iguais nome a nome; healthz com redis, api e storage `true` |
+| público | `/`, `/s/hub2you` e `/s/hub2you/p/ia-na-pratica` em 200 |
+
+### O que veio depois, no mesmo dia
+
+O Roberto abriu a #398 e restaurou a capa na página de vendas, com uma URL
+pública estável — produtos com capa e sem banner ficariam sem imagem. O
+resultado foi banner e capa empilhados, a mesma arte em dois formatos. A PR
+#403 (`web` `f1f43c8`) resolve escolhendo em vez de somar: **com banner, ele
+abre a página; sem banner, a capa ocupa o lugar dele**; sem nenhum dos dois, a
+página abre pela promessa. O trabalho da #398 continua de pé — é aquela capa
+que aparece quando não há banner.
+
+### Dívidas registradas
+
+- A tabela `public.seller_payout_account` está com dono `appsell_native_90_migrator`,
+  fora da convenção que a 0053 estabeleceu. Funciona por permissão explícita,
+  mas é a mesma classe de armadilha do 403 desta manhã.
+- Os atalhos das funções antigas da capa, para remover quando não houver
+  chamador.
+- A corrida na limpeza da quarentena (#390), que vale para capa, logo e banner.
+
+### Um acordo que faltou
+
+`api` e `web` ficaram, por algumas horas, com SHAs de dois deploys diferentes:
+o `api:15bce6b` deste release e o `web:09427ae` de um deploy do Roberto por
+cima. Nada quebrou, mas ninguém combinou. Vale acertar quem sobe o quê.
 
 ## Release `a49e017` — Refino da loja e banner (2026-09-03)
 
