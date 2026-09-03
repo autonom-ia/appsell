@@ -684,7 +684,13 @@ def test_atualizar_grava_campos_e_auditoria_com_antes_e_depois() -> None:
 )
 def test_formato_invalido_e_22023(campos: dict[str, str]) -> None:
     with pytest.raises(psycopg.Error) as excinfo:
-        atualizar(OWNER, **campos)
+        atualizar(
+            OWNER,
+            display_name=campos.get("display_name", "Loja de Teste"),
+            tagline=campos.get("tagline"),
+            about=campos.get("about"),
+            accent_color=campos.get("accent_color"),
+        )
     assert sqlstate_de(excinfo.value) == "22023"
 
 
@@ -709,7 +715,7 @@ def test_logo_intent_reserva_chave_por_loja_e_substitui_a_anterior() -> None:
     segundo = intent()
     assert ADMIN_URL
     with psycopg.connect(ADMIN_URL) as connection:
-        rows = dict(
+        rows: dict[str, str] = dict(
             connection.execute(
                 "select id::text,status from app_private.seller_logo_upload "
                 "where seller_organization_id=%s and id = any(%s::uuid[])",
