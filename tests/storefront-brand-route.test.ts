@@ -37,7 +37,7 @@ describe("GET marca pública da loja", () => {
     expect(response.headers.get("content-type")).toBe("image/jpeg");
     expect(response.headers.get("cross-origin-resource-policy")).toBe("cross-origin");
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
-    expect(fetch).toHaveBeenCalledWith(logo.url, { cache: "no-store", redirect: "error" });
+    expect(fetch).toHaveBeenCalledWith(logo.url, { cache: "no-store", redirect: "error", signal: expect.any(AbortSignal) });
   });
 
   it("recusa um tipo de imagem que não existe, sem consultar a vitrine", async () => {

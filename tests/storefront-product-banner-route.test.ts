@@ -42,7 +42,7 @@ describe("GET banner público do produto", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("image/jpeg");
-    expect(fetch).toHaveBeenCalledWith(banner.url, { cache: "no-store", redirect: "error" });
+    expect(fetch).toHaveBeenCalledWith(banner.url, { cache: "no-store", redirect: "error", signal: expect.any(AbortSignal) });
   });
 
   it("não confunde banner com capa: produto sem banner responde 404", async () => {

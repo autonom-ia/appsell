@@ -16,6 +16,12 @@ import { parsePublicStorefront, type PublicStorefront, type StorefrontImage } fr
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+/** A rota é pública e sem autenticação: sem prazo, uma lentidão do
+ *  armazenamento prenderia uma execução do servidor por minutos a cada
+ *  acesso. O cliente do BFF já corta em 3 s e o da API em 15 s; aqui o objeto
+ *  pode ter até 5 MiB, então o prazo é maior que o do BFF e menor que o da
+ *  API. */
+const TEMPO_LIMITE_MS = 8_000;
 
 export function isSlug(value: string): boolean {
   return SLUG.test(value);
@@ -35,7 +41,11 @@ export async function serveStorefrontImage(
     const image = storefront ? escolher(storefront) : undefined;
     if (!image) return notFound(recurso);
 
-    const response = await fetch(image.url, { cache: "no-store", redirect: "error" });
+    const response = await fetch(image.url, {
+      cache: "no-store",
+      redirect: "error",
+      signal: AbortSignal.timeout(TEMPO_LIMITE_MS)
+    });
     const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim() ?? "";
     const contentLength = Number(response.headers.get("content-length") ?? "0");
     if (!response.ok || contentType !== image.media_type || !contentType.startsWith("image/") ||

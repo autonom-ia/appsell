@@ -51,7 +51,7 @@ describe("GET public storefront product cover", () => {
     expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
     expect(fetch).toHaveBeenCalledWith(
       "https://storage.test/cover?X-Amz-Signature=fresh",
-      { cache: "no-store", redirect: "error" }
+      { cache: "no-store", redirect: "error", signal: expect.any(AbortSignal) }
     );
   });
 
