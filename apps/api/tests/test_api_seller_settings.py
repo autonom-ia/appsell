@@ -13,7 +13,7 @@ import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import httpx
@@ -23,7 +23,7 @@ from sqlalchemy.exc import DBAPIError
 
 from appsell_api.public_routes import public_images
 from appsell_api.seller_settings_routes import router
-from appsell_api.storage_s3 import PresignedRequest, StorageError
+from appsell_api.storage_s3 import PresignedRequest, S3Storage, StorageError
 
 SELLER_ID = UUID("72000000-0000-4000-8000-000000000001")
 PRODUCT_ID = UUID("72000000-0000-4000-8000-000000000002")
@@ -388,7 +388,7 @@ def test_vitrine_publica_troca_chave_por_url_e_some_sem_armazenamento() -> None:
         ],
     }
     storage = FakeStorage()
-    signed = public_images(projection, storage)
+    signed = public_images(projection, cast(S3Storage, storage))
     assert signed["seller"]["logo"] == {
         "url": "https://cdn.test/tenants/s/logo/1?v=v1",
         "media_type": "image/png",
@@ -409,9 +409,9 @@ def test_vitrine_publica_troca_chave_por_url_e_some_sem_armazenamento() -> None:
     assert "cover" not in sem_storage["products"][0]
     assert sem_storage["seller"]["name"] == "Hub2you"
 
-    falhando = public_images(projection, FakeStorage(fail=True))
+    falhando = public_images(projection, cast(S3Storage, FakeStorage(fail=True)))
     assert "logo" not in falhando["seller"]
 
     # Uma loja sem marca sai exatamente como entrou: é o contrato do web antigo.
     limpo = {"schema_version": 1, "seller": {"id": "x", "slug": "y", "name": "z"}, "products": []}
-    assert public_images(limpo, storage) == limpo
+    assert public_images(limpo, cast(S3Storage, storage)) == limpo
