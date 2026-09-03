@@ -9,6 +9,7 @@ export interface BuyerProductItem {
     description: string;
     publication_id: string;
     publication_version: number;
+    cover?: { url: string; media_type: string; width: number; height: number };
   };
   progress_percent: number;
 }
@@ -70,17 +71,45 @@ function isSeller(value: unknown): value is BuyerProductItem["seller"] {
 }
 
 function isProduct(value: unknown): value is BuyerProductItem["product"] {
-  return hasExactKeys(value, [
+  // A capa é opcional: produto sem ela desenha a arte gerada a partir do nome,
+  // e a chave só existe quando o vendedor enviou uma imagem (0058).
+  return hasKeysWithin(value, [
     "id",
     "slug",
     "title",
     "description",
     "publication_id",
     "publication_version"
-  ]) && isUuid(value.id) && isSlug(value.slug) && isTrimmedText(value.title) &&
+  ], ["cover"]) && isUuid(value.id) && isSlug(value.slug) && isTrimmedText(value.title) &&
     typeof value.description === "string" && value.description.length <= 2_000 &&
     isUuid(value.publication_id) && Number.isInteger(value.publication_version) &&
-    typeof value.publication_version === "number" && value.publication_version > 0;
+    typeof value.publication_version === "number" && value.publication_version > 0 &&
+    (value.cover === undefined || isCover(value.cover));
+}
+
+function isCover(value: unknown): value is NonNullable<BuyerProductItem["product"]["cover"]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const cover = value as Record<string, unknown>;
+  return typeof cover.url === "string" && cover.url.startsWith("https://") &&
+    typeof cover.media_type === "string" && cover.media_type.startsWith("image/") &&
+    isDimension(cover.width) && isDimension(cover.height);
+}
+
+function isDimension(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 4_000;
+}
+
+/** As chaves obrigatórias, mais as opcionais que conhecemos e nenhuma outra. */
+function hasKeysWithin<T extends string>(
+  value: unknown,
+  required: readonly T[],
+  optional: readonly string[]
+): value is Record<T, unknown> & Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const chaves = Object.keys(value);
+  const permitidas = new Set<string>([...required, ...optional]);
+  return required.every((chave) => chaves.includes(chave)) &&
+    chaves.every((chave) => permitidas.has(chave));
 }
 
 function hasExactKeys<T extends string>(
