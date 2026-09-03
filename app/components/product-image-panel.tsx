@@ -153,6 +153,30 @@ const COPY: Record<ProductImageKind, {
   }
 };
 
+/** A proporção que o painel pede, por tipo, e o quanto tolera antes de avisar. */
+const PROPORCAO: Record<ProductImageKind, { alvo: number; nome: string }> = {
+  cover: { alvo: 16 / 9, nome: "16:9" },
+  banner: { alvo: 16 / 5, nome: "16:5" }
+};
+const TOLERANCIA = 0.08;
+
+/** As medidas da imagem escolhida, ou nada se o navegador não conseguir lê-la. */
+async function medidas(file: File): Promise<{ largura: number; altura: number } | null> {
+  const endereco = URL.createObjectURL(file);
+  try {
+    const imagem = new Image();
+    const carregada = await new Promise<boolean>((resolve) => {
+      imagem.onload = () => resolve(true);
+      imagem.onerror = () => resolve(false);
+      imagem.src = endereco;
+    });
+    if (!carregada || !imagem.naturalWidth || !imagem.naturalHeight) return null;
+    return { largura: imagem.naturalWidth, altura: imagem.naturalHeight };
+  } finally {
+    URL.revokeObjectURL(endereco);
+  }
+}
+
 export function ProductImagePanel({
   sellerId,
   productId,
@@ -178,6 +202,7 @@ export function ProductImagePanel({
 }) {
   const [state, setState] = useState<CoverState>("idle");
   const [rejection, setRejection] = useState("");
+  const [corte, setCorte] = useState("");
   const [removing, setRemoving] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const removeCancel = useRef<HTMLButtonElement>(null);
@@ -236,6 +261,20 @@ export function ProductImagePanel({
       return;
     }
     setRejection("");
+    const dimensoes = await medidas(file);
+    if (dimensoes) {
+      const { alvo, nome } = PROPORCAO[kind];
+      const desta = dimensoes.largura / dimensoes.altura;
+      const fora = Math.abs(desta - alvo) / alvo > TOLERANCIA;
+      setCorte(
+        fora
+          ? `Esta imagem tem ${dimensoes.largura} por ${dimensoes.altura}, e aqui pedimos ${nome}. Ela vai aparecer cortada; o que estiver no centro sobrevive.`
+          : ""
+      );
+    } else {
+      setCorte("");
+    }
+    if (!mounted.current) return;
     setState("hashing");
     let bytes: ArrayBuffer;
     let sha256: string;
@@ -434,6 +473,7 @@ export function ProductImagePanel({
         ) : null}
       </div>
       <div className="form-feedback" aria-live="polite" aria-atomic="true">
+        {corte ? <p className="form-note">{corte}</p> : null}
         {state === "hashing" ? <p className="form-note">Preparando o arquivo…</p> : null}
         {state === "uploading" ? <p className="form-note">Enviando a imagem…</p> : null}
         {state === "verifying" ? <p className="form-note">Verificando a imagem…</p> : null}

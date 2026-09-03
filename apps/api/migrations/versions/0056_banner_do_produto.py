@@ -486,6 +486,67 @@ GUARDA
 end $$
 """
 
+_ATALHOS_DA_CAPA = r"""
+create function app_private.create_product_cover_upload_intent(
+  p_identity_user_id uuid, p_seller_organization_id uuid, p_catalog_product_id uuid,
+  p_media_type text, p_byte_size bigint, p_sha256 text,
+  p_quarantine_bucket text, p_ready_bucket text,
+  p_idempotency_key uuid, p_body_sha256 text, p_request_id uuid
+) returns jsonb
+language sql security definer set search_path = pg_catalog, app_private, public as $$
+  select app_private.create_product_image_upload_intent(
+    p_identity_user_id, p_seller_organization_id, p_catalog_product_id, 'cover',
+    p_media_type, p_byte_size, p_sha256, p_quarantine_bucket, p_ready_bucket,
+    p_idempotency_key, p_body_sha256, p_request_id)
+$$;
+
+create function app_private.read_product_cover_upload(
+  p_identity_user_id uuid, p_seller_organization_id uuid, p_catalog_product_id uuid,
+  p_upload_id uuid
+) returns jsonb
+language sql security definer set search_path = pg_catalog, app_private, public as $$
+  select app_private.read_product_image_upload(
+    p_identity_user_id, p_seller_organization_id, p_catalog_product_id, 'cover', p_upload_id)
+$$;
+
+create function app_private.close_product_cover_upload(
+  p_identity_user_id uuid, p_seller_organization_id uuid, p_catalog_product_id uuid,
+  p_upload_id uuid, p_status text, p_failure_code text, p_request_id uuid
+) returns jsonb
+language sql security definer set search_path = pg_catalog, app_private, public as $$
+  select app_private.close_product_image_upload(
+    p_identity_user_id, p_seller_organization_id, p_catalog_product_id, 'cover',
+    p_upload_id, p_status, p_failure_code, p_request_id)
+$$;
+
+create function app_private.set_product_cover(
+  p_identity_user_id uuid, p_seller_organization_id uuid, p_catalog_product_id uuid,
+  p_upload_id uuid, p_object_key text, p_storage_version_id text,
+  p_media_type text, p_sha256 text,
+  p_width integer, p_height integer, p_byte_size bigint,
+  p_expected_product_version bigint, p_idempotency_key uuid,
+  p_body_sha256 text, p_request_id uuid
+) returns table(product_version bigint, previous_object_key text)
+language sql security definer set search_path = pg_catalog, app_private, public as $$
+  select * from app_private.set_product_image(
+    p_identity_user_id, p_seller_organization_id, p_catalog_product_id, 'cover',
+    p_upload_id, p_object_key, p_storage_version_id, p_media_type, p_sha256,
+    p_width, p_height, p_byte_size, p_expected_product_version,
+    p_idempotency_key, p_body_sha256, p_request_id)
+$$;
+
+create function app_private.clear_product_cover(
+  p_identity_user_id uuid, p_seller_organization_id uuid, p_catalog_product_id uuid,
+  p_expected_product_version bigint, p_idempotency_key uuid,
+  p_body_sha256 text, p_request_id uuid
+) returns table(product_version bigint, changed boolean, previous_object_key text)
+language sql security definer set search_path = pg_catalog, app_private, public as $$
+  select * from app_private.clear_product_image(
+    p_identity_user_id, p_seller_organization_id, p_catalog_product_id, 'cover',
+    p_expected_product_version, p_idempotency_key, p_body_sha256, p_request_id)
+$$;
+"""
+
 _FUNCOES_DA_CAPA: tuple[str, ...] = (
     "app_private.create_product_cover_upload_intent"
     "(uuid,uuid,uuid,text,bigint,text,text,text,uuid,text,uuid)",
@@ -504,37 +565,6 @@ _FUNCOES_DA_IMAGEM: tuple[str, ...] = (
     "(uuid,uuid,uuid,text,uuid,text,text,text,text,integer,integer,bigint,bigint,uuid,text,uuid)",
     "app_private.clear_product_image(uuid,uuid,uuid,text,bigint,uuid,text,uuid)",
 )
-
-# ------------------------------------------------------------------ vitrine
-
-# O bloco do banner entra logo depois do da capa, antes do resumo do conteúdo.
-_ANCORA_DA_VITRINE = "    || app_private.published_curriculum_summary(publication.snapshot)"
-_VITRINE_BANNER = """    || case when product.banner_object_key is null then '{}'::jsonb
-         else jsonb_build_object('banner',jsonb_build_object(
-           'object_key',product.banner_object_key,
-           'storage_version_id',product.banner_storage_version_id,
-           'media_type',product.banner_media_type,
-           'width',product.banner_width,'height',product.banner_height)) end
-"""
-
-
-def _vitrine(com_banner_do_produto: bool) -> str:
-    """A vitrine como a 0055 a deixou, com ou sem o banner do produto.
-
-    O ponto de partida é a 0055 e não a 0054: ela acrescentou o vínculo com o
-    Financial à mesma função, e recriar a partir da 0054 apagaria esse bloco.
-    """
-    m55 = _modulo("0055_seller_financial_binding.py", "appsell_migration_0055")
-    texto = m55._storefront_0054()
-    if texto.count(m55._SELLER_ANCHOR) != 1:
-        raise RuntimeError("a âncora do vínculo com o Financial não está onde a 0055 a deixou")
-    texto = texto.replace(m55._SELLER_ANCHOR, m55._SELLER_WITH_FINANCIAL, 1)
-    if not com_banner_do_produto:
-        return texto
-    if texto.count(_ANCORA_DA_VITRINE) != 1:
-        raise RuntimeError("a âncora da vitrine não aparece exatamente uma vez")
-    return texto.replace(_ANCORA_DA_VITRINE, _VITRINE_BANNER + _ANCORA_DA_VITRINE, 1)
-
 
 # -------------------------------------------------------------- schema_ready
 
@@ -598,12 +628,14 @@ def upgrade() -> None:
         op.execute(f"drop function {assinatura}")
     for sql in (_CRIAR_INTENT, _LER_UPLOAD, _FECHAR_UPLOAD, _GRAVAR_IMAGEM, _APAGAR_IMAGEM):
         op.execute(_com_guarda(sql))
-    for assinatura in _FUNCOES_DA_IMAGEM:
+    # Os nomes antigos voltam como atalho para o tipo "cover": a API em
+    # produção continua chamando o que sempre chamou até o deploy seguinte.
+    # Eles saem numa migration futura, quando não houver mais chamador.
+    op.execute(_ATALHOS_DA_CAPA)
+    for assinatura in _FUNCOES_DA_IMAGEM + _FUNCOES_DA_CAPA:
         op.execute(f"alter function {assinatura} owner to appsell_owner")
         op.execute(f"revoke all on function {assinatura} from public")
         op.execute(f"grant execute on function {assinatura} to appsell_runtime")
-
-    op.execute(_vitrine(com_banner_do_produto=True))
 
     for alvo in _BASES_DO_READY:
         op.execute(
@@ -633,8 +665,9 @@ def downgrade() -> None:
             .replace("PARA", _READY_ATE_0055)
         )
 
-    op.execute(_vitrine(com_banner_do_produto=False))
-
+    for assinatura in _FUNCOES_DA_CAPA:
+        op.execute(f"revoke all on function {assinatura} from public")
+        op.execute(f"drop function {assinatura}")
     for assinatura in _FUNCOES_DA_IMAGEM:
         op.execute(f"revoke all on function {assinatura} from public")
         op.execute(f"drop function {assinatura}")
@@ -652,6 +685,15 @@ def downgrade() -> None:
         op.execute(f"grant execute on function {assinatura} to appsell_runtime")
 
     op.execute("reset role")
+    # Sem isto, um produto com capa e banner pendentes ao mesmo tempo — estado
+    # que o upgrade permite — impede o índice antigo de voltar, e o rollback
+    # trava no meio.
+    op.execute(
+        "update app_private.product_cover_upload"
+        " set status = 'cancelled', failure_code = 'downgraded',"
+        " updated_at = clock_timestamp()"
+        " where kind = 'banner' and status = 'pending'"
+    )
     op.execute("drop index app_private.product_cover_upload_one_pending_per_kind_idx")
     op.execute(
         "create unique index product_cover_upload_one_pending_idx"
