@@ -15,11 +15,18 @@
 |---|---|
 | Domínio | `https://sell.autonomia.site` |
 | Ambiente | VPS EasyPanel nativo, Docker Swarm |
-| SHA do **api** | `b9e1c61` — Configurações da loja (#352) mais o pino da 0053 |
+| SHA do **api** | `a49e017` — banner da loja e upload de imagem por tipo (#387) |
 | SHA do **asset-worker** | `d5e00ec` — mesma imagem da api, um SHA atrás |
 | SHA do **pdf-sandbox** | `d5e00ec` — mesma imagem da api, com outra tag |
-| SHA do **web** | `8a0eca0` — Configurações da loja e mini-LP do produto (#352); worker e sandbox seguem em `d5e00ec` |
-| Banco | head **`0053_dono_das_funcoes_payout`**, `schema_ready() = true` |
+| SHA do **web** | `a49e017` — refino da loja (botão na cor, hero, cards, "Já sou aluno") e banner (#387); worker e sandbox seguem em `d5e00ec` |
+| Banco | head **`0054_banner_da_loja`**, `schema_ready() = true` |
+
+**Release de 2026-09-03, `web` e `api`: `a49e017`, com a migration `0054` (PRs #388, #389).**
+Refino visual da loja e banner (a capa larga no alto da vitrine), com o upload
+de imagem da loja tipado por logo ou banner. A validação em banco limpo achou
+uma causa raiz antiga: a 0041 resetava o papel e, em cadeia que sobe numa
+transação só, a tabela `seller_logo_upload` nascia como migrador. Detalhe na
+seção [Release `a49e017`](#release-a49e017--refino-da-loja-e-banner-2026-09-03).
 
 **Correção de 2026-09-03, `api` `b9e1c61` e migration `0053` (PRs #385, #386).**
 Configurações → Loja respondia 403 ao próprio dono: as seis funções de
@@ -176,6 +183,84 @@ Com 4 núcleos, 300 páginas são 89 s de janela.
 Mil páginas exigem, além da #320: virtualizar o leitor (hoje cria um nó por
 página), paralelizar o upload das páginas, e refazer gatilhos que recontam todas
 as páginas a cada inserção. Cinco mil é outra geração do pipeline.
+
+## Release `a49e017` — Refino da loja e banner (2026-09-03)
+
+`web` e `api`, mais a migration `0054`. Segunda entrega do refino da loja
+(#387): PR #388 (só web, merge por rebase) e PR #389 (banco, api e web; merge
+com commit de merge porque a branch precisou absorver `main` depois da #388).
+Review adversarial em 3 rodadas, APROVADO na terceira.
+
+### O que mudou para quem usa
+
+- Vitrine: o botão de compra, inclusive o gratuito, usa a cor da loja; o hero
+  tem proporção nova e o logo aparece inteiro (`object-fit: contain`); cards
+  mostram as aulas só quando há três ou mais; "Sobre quem ensina" sempre
+  aparece; o botão do topo diz "Já sou aluno"; sem travessões de IA.
+- Banner: em Configurações → Loja, ao lado do logo, o vendedor sobe uma capa
+  larga (JPEG, PNG ou WebP, até 5 MB, ideal 1600×500). Ela abre a vitrine com
+  o logo sobreposto e aparece como faixa na página do produto.
+
+### Banco (`0054_banner_da_loja`) e a causa raiz na 0041
+
+- `seller_organization.banner_*` (8 colunas + check), `seller_logo_upload.kind`
+  (`logo` | `banner`, um pendente por tipo), e as cinco funções do logo viram
+  funções de imagem com o tipo como parâmetro (`create_seller_image_upload_intent`,
+  `read_seller_image_upload`, `close_seller_image_upload`, `set_seller_image`,
+  `clear_seller_image`). Projeção das configurações e vitrine ganham `banner`,
+  condicional como o logo.
+- A **0041** terminava o bloco `do $migration$` com `reset role`. O `env.py`
+  sobe a cadeia inteira numa transação só como `appsell_owner`; depois da 0041,
+  toda migration seguinte criava objetos como migrador. Em produção não
+  apareceu porque cada release sobe sozinho, mas em banco novo (CI, testes) a
+  tabela `seller_logo_upload` nascia como migrador e as funções definer davam
+  `permission denied`. A 0041 deixa de resetar o papel (só afeta cadeias
+  novas), a 0054 repara o dono da tabela (no-op em produção) e um teste de
+  classe cobre todas as tabelas.
+- Risco herdado registrado em #390: a chave de quarentena é única por (loja,
+  tipo), como na capa (0037) e no logo (0052); dois intents em corrida podem
+  apagar o objeto do upload novo. Corrigir os três fluxos juntos.
+
+### Ordem de deploy: web → api → migration
+
+Campos novos da vitrine só entram no JSON quando existem; o web novo aceita a
+vitrine antiga, e o api novo contra o banco 0053 só perde as rotas de imagem
+(que ninguém usava naquele minuto). O contrário quebraria: o api antigo chama
+as funções `*_seller_logo_*` que a 0054 dropa.
+
+### Como foi aplicado
+
+```bash
+D=/tmp/sell-release-banner-20260903-112420   # specs api/web/asset-worker, nomes das vars, pg_dump -Fc, cabeça 0053
+# fonte via git archive → /home/claudete/appsell-src-a49e017; imagens web e api com --build-arg GIT_SHA=a49e017
+docker service update --image easypanel/sell-autonomia/web:a49e017 --update-order stop-first sell-autonomia_web
+docker service update --image easypanel/sell-autonomia/api:a49e017 --update-order stop-first sell-autonomia_api
+# a senha do migrador sai do SPEC do serviço bootstrap-native-90 (ele não tem container rodando)
+docker run --rm --network easypanel -e APPSELL_MIGRATOR_DATABASE_URL=<montada no host> \
+  -v /home/claudete/appsell-src-a49e017/apps/api:/mig -w /mig \
+  easypanel/sell-autonomia/api:a49e017 alembic upgrade head
+```
+
+### Validação executada em produção
+
+| O quê | Resultado |
+|---|---|
+| web | convergiu em `a49e017`; 53 variáveis iguais nome a nome; `/api/health/ready` `{"redis":true,"api":true,"storage_upload":true}` |
+| api | convergiu em `a49e017`; 39 variáveis iguais nome a nome; zero erros no log; `/v1/public/sellers/{slug}` 200 |
+| migration | head `0054`, `schema_ready()=true`, 0 funções de `app_private` fora do dono, `seller_logo_upload` dono `appsell_owner` com coluna `kind`, 5 funções de imagem, 0 funções de logo, 8 colunas `banner_*` |
+| público | `/` 200 · `/s/hub2you` 200 · `/s/hub2you/p/ia-na-pratica` 200 |
+
+### O que não foi validado
+
+Upload real de banner por um vendedor contra o S3 de produção (mesmo desenho
+do logo, que também nunca foi exercitado em produção por um vendedor real).
+
+### Rollback
+
+`web:8a0eca0` e `api:b9e1c61`, nesta ordem, **só depois** de
+`alembic downgrade 0053_dono_das_funcoes_payout` (com a imagem `api:a49e017` e
+a fonte em `/home/claudete/appsell-src-a49e017`). Dump em
+`$D/appsell_native_90_antes.dump`.
 
 ## Release `8a0eca0` — Configurações da loja e página de vendas (2026-09-03)
 
