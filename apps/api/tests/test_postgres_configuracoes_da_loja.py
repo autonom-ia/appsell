@@ -70,11 +70,11 @@ FORBIDDEN = "42501"
 FUNCOES_DO_RUNTIME = (
     "app_private.read_seller_settings(uuid,uuid)",
     "app_private.update_seller_settings(uuid,uuid,text,text,text,text,uuid)",
-    "app_private.create_seller_logo_upload_intent(uuid,uuid,text,bigint,text,text,text,uuid,text,uuid)",
-    "app_private.read_seller_logo_upload(uuid,uuid,uuid)",
-    "app_private.close_seller_logo_upload(uuid,uuid,uuid,text,text,uuid)",
-    "app_private.set_seller_logo(uuid,uuid,uuid,text,text,text,text,integer,integer,bigint,uuid,text,uuid)",
-    "app_private.clear_seller_logo(uuid,uuid,uuid,text,uuid)",
+    "app_private.create_seller_image_upload_intent(uuid,uuid,text,text,bigint,text,text,text,uuid,text,uuid)",
+    "app_private.read_seller_image_upload(uuid,uuid,uuid)",
+    "app_private.close_seller_image_upload(uuid,uuid,uuid,text,text,uuid)",
+    "app_private.set_seller_image(uuid,uuid,text,uuid,text,text,text,text,integer,integer,bigint,uuid,text,uuid)",
+    "app_private.clear_seller_image(uuid,uuid,text,uuid,text,uuid)",
     "app_private.update_product_headline(uuid,uuid,uuid,text,bigint,uuid,text,uuid)",
 )
 FUNCOES_AUXILIARES = (
@@ -385,16 +385,22 @@ def atualizar(
 
 
 def intent(
-    actor: UUID = OWNER, *, media_type: str = "image/png", seller: UUID = LOJA
+    actor: UUID = OWNER,
+    *,
+    media_type: str = "image/png",
+    seller: UUID = LOJA,
+    kind: str = "logo",
 ) -> dict[str, Any]:
     assert RUNTIME_URL
     with psycopg.connect(RUNTIME_URL) as connection:
         contexto(connection, actor, seller, UPDATE)
         row = connection.execute(
-            "select app_private.create_seller_logo_upload_intent(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            "select app_private.create_seller_image_upload_intent("
+            "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (
                 actor,
                 seller,
+                kind,
                 media_type,
                 4096,
                 digest("logo"),
@@ -416,15 +422,17 @@ def gravar_logo(
     actor: UUID = OWNER,
     object_key: str | None = None,
     media_type: str = "image/png",
+    kind: str = "logo",
 ) -> tuple[Any, ...]:
     assert RUNTIME_URL
     with psycopg.connect(RUNTIME_URL) as connection:
         contexto(connection, actor, LOJA, UPDATE)
         row = connection.execute(
-            "select * from app_private.set_seller_logo(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            "select * from app_private.set_seller_image(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (
                 actor,
                 LOJA,
+                kind,
                 UUID(upload["upload_id"]),
                 object_key or upload["ready_key"],
                 "storage-version-1",
@@ -443,13 +451,13 @@ def gravar_logo(
     return row
 
 
-def apagar_logo(actor: UUID = OWNER) -> tuple[Any, ...]:
+def apagar_logo(actor: UUID = OWNER, *, kind: str = "logo") -> tuple[Any, ...]:
     assert RUNTIME_URL
     with psycopg.connect(RUNTIME_URL) as connection:
         contexto(connection, actor, LOJA, UPDATE)
         row = connection.execute(
-            "select * from app_private.clear_seller_logo(%s,%s,%s,%s,%s)",
-            (actor, LOJA, uuid4(), digest("body"), uuid4()),
+            "select * from app_private.clear_seller_image(%s,%s,%s,%s,%s,%s)",
+            (actor, LOJA, kind, uuid4(), digest("body"), uuid4()),
         ).fetchone()
         connection.commit()
     assert row is not None
@@ -526,7 +534,9 @@ def marcar(connection: psycopg.Connection[Any], seller: UUID, *, com_marca: bool
             "update seller_organization set tagline=null, about=null, accent_color=null, "
             "logo_object_key=null, logo_storage_version_id=null, logo_media_type=null, "
             "logo_sha256=null, logo_width=null, logo_height=null, logo_byte_size=null, "
-            "logo_updated_at=null where id=%s",
+            "logo_updated_at=null, banner_object_key=null, banner_storage_version_id=null, "
+            "banner_media_type=null, banner_sha256=null, banner_width=null, banner_height=null, "
+            "banner_byte_size=null, banner_updated_at=null where id=%s",
             (seller,),
         )
 
@@ -770,6 +780,60 @@ def test_logo_so_grava_na_chave_reservada_com_o_tipo_declarado_e_uma_vez() -> No
     ]
 
 
+def test_banner_e_logo_nao_se_misturam_e_o_banner_entra_na_vitrine() -> None:
+    # 0054: um upload de banner não grava como logo, e vice-versa; cada tipo
+    # tem a própria chave e o próprio pendente. Na vitrine, `banner` só existe
+    # quando existe, como o logo.
+    logo_antes = ler(OWNER)["logo"]
+    banner = intent(kind="banner")
+    assert banner["kind"] == "banner"
+    assert banner["quarantine_key"] == f"tenants/{LOJA}/quarantine/banner"
+    assert banner["ready_key"].startswith(f"tenants/{LOJA}/banner/")
+    with pytest.raises(psycopg.Error) as excinfo:
+        gravar_logo(banner, kind="logo")
+    assert sqlstate_de(excinfo.value) == "22023"
+    (anterior,) = gravar_logo(banner, kind="banner")
+    assert anterior is None
+    lidas = ler(OWNER)
+    assert lidas["banner"]["object_key"] == banner["ready_key"]
+    assert lidas["logo"] == logo_antes
+    with pytest.raises(psycopg.Error) as excinfo:
+        intent(kind="capa")
+    assert sqlstate_de(excinfo.value) == "22023"
+    for actor in (EDITOR, SUPPORT):
+        with pytest.raises(psycopg.Error) as excinfo:
+            intent(actor, kind="banner")
+        assert sqlstate_de(excinfo.value) == FORBIDDEN
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        marcar(connection, LOJA, com_marca=False)
+        connection.execute(
+            "update seller_organization set banner_object_key=%s, "
+            "banner_storage_version_id='v1', banner_media_type='image/png', banner_sha256=%s, "
+            "banner_width=1600, banner_height=500, banner_byte_size=4096, "
+            "banner_updated_at=clock_timestamp() where id=%s",
+            (banner["ready_key"], digest("banner"), LOJA),
+        )
+        connection.commit()
+    try:
+        publica = vitrine("loja-de-teste")["seller"]
+        assert publica["banner"]["width"] == 1600
+        assert "logo" not in publica
+        assert set(publica["banner"].keys()) == {
+            "object_key",
+            "storage_version_id",
+            "media_type",
+            "width",
+            "height",
+        }
+    finally:
+        changed, _anterior = apagar_logo(kind="banner")
+        assert changed is True
+    assert "banner" not in vitrine("loja-de-teste")["seller"]
+    assert eventos("seller.banner_set")[-1]["result"] == "succeeded"
+    assert eventos("seller.banner_cleared")[-1]["result"] == "succeeded"
+
+
 def test_apagar_logo_e_idempotente_e_a_loja_fica_inteira() -> None:
     if ler(OWNER)["logo"] is None:
         gravar_logo(intent())
@@ -940,3 +1004,18 @@ def test_comprador_de_duas_lojas_nao_ve_marca_na_biblioteca() -> None:
             for loja in (LOJA, OUTRA_LOJA):
                 marcar(connection, loja, com_marca=False)
             connection.commit()
+
+
+def test_toda_tabela_do_esquema_tem_dono_appsell_owner() -> None:
+    """A classe da 0053 vale para tabelas também: a 0041 resetava o papel e, em
+    cadeia que sobe numa transação só, a tabela da 0052 nascia como migrador e
+    as funções definer não conseguiam tocá-la (#387)."""
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        fora = connection.execute(
+            "select n.nspname||'.'||c.relname from pg_class c "
+            "join pg_namespace n on n.oid=c.relnamespace "
+            "where n.nspname in ('app_private','public') and c.relkind in ('r','p','S') "
+            "and pg_get_userbyid(c.relowner) <> 'appsell_owner' order by 1"
+        ).fetchall()
+    assert fora == [], f"tabelas fora da convenção de dono: {fora}"

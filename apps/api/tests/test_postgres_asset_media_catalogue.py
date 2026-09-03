@@ -167,8 +167,9 @@ def test_nenhuma_constraint_transcreve_o_catalogo() -> None:
             continue
         # A capa do produto tem catálogo próprio (5 MiB), que por coincidência
         # é o mesmo teto de CSV e JSON. É outro conceito e não pertence a esta
-        # varredura.
-        if "cover" in texto or "cover" in nome:
+        # varredura. O logo e o banner da loja (0052, 0054) usam o mesmo
+        # catálogo e o mesmo worker da capa.
+        if any(imagem in texto or imagem in nome for imagem in ("cover", "logo", "banner")):
             continue
         for limite in limites:
             # Fronteira de dígito: sem ela, 10485760 casa dentro de 104857600 e

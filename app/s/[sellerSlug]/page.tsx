@@ -3,7 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { cache } from "react";
 
-import { StoreIdentity, StorefrontFooter, StorefrontTopbar, storefrontClassName, storefrontStyle } from "@/app/components/storefront-brand";
+import { StoreIdentity, StorefrontCover, StorefrontFooter, StorefrontTopbar, storefrontClassName, storefrontStyle } from "@/app/components/storefront-brand";
 import { demoModeEnabled } from "@/lib/demo-config";
 import {
   DomainApiError,
@@ -53,11 +53,14 @@ export default async function SellerStorefront({
     <a className="skip-link" href="#storefront-content">Pular para os produtos</a>
     <StorefrontTopbar seller={seller} action={<Link className="storefront-login" href={loginHref}>Entrar</Link>}/>
     <main id="storefront-content" tabIndex={-1}>
-      <section className="storefront-hero" aria-labelledby="storefront-title">
-        <StoreIdentity seller={seller} size="large"/>
-        <div>
-          <h1 id="storefront-title">{seller.name}</h1>
-          <p>{seller.tagline ?? `Cursos e materiais de ${seller.name}, para assistir pelo navegador, no celular ou no computador.`}</p>
+      <section className={seller.banner ? "storefront-hero storefront-hero-covered" : "storefront-hero"} aria-labelledby="storefront-title">
+        <StorefrontCover seller={seller}/>
+        <div className="storefront-hero-body">
+          <StoreIdentity seller={seller} size="large"/>
+          <div>
+            <h1 id="storefront-title">{seller.name}</h1>
+            <p>{seller.tagline ?? `Cursos e materiais de ${seller.name}, para assistir pelo navegador, no celular ou no computador.`}</p>
+          </div>
         </div>
       </section>
 

@@ -1124,6 +1124,8 @@ export interface SellerSettingsLogo {
   expires_in_seconds: number;
 }
 
+export type SellerImageKind = "logo" | "banner";
+
 export interface SellerSettingsProjection {
   id: string;
   slug: string;
@@ -1133,6 +1135,7 @@ export interface SellerSettingsProjection {
   about: string | null;
   accent_color: string | null;
   logo: SellerSettingsLogo | null;
+  banner?: SellerSettingsLogo | null;
   changed?: boolean | null;
 }
 
@@ -1183,6 +1186,7 @@ export async function createDomainLogoUploadIntent(
   session: ServerSession,
   input: {
     sellerOrganizationId: string;
+    kind: SellerImageKind;
     idempotencyKey: string;
     mediaType: string;
     byteSize: number;
@@ -1191,7 +1195,7 @@ export async function createDomainLogoUploadIntent(
 ) {
   return domainRequest(sessionId, session, {
     method: "POST",
-    path: `${settingsPath(input.sellerOrganizationId)}/logo/upload-intents`,
+    path: `${settingsPath(input.sellerOrganizationId)}/${input.kind}/upload-intents`,
     capability: "seller.settings.update",
     sellerOrganizationId: input.sellerOrganizationId,
     body: {
@@ -1206,11 +1210,11 @@ export async function createDomainLogoUploadIntent(
 export async function confirmDomainLogoUpload(
   sessionId: string,
   session: ServerSession,
-  input: { sellerOrganizationId: string; uploadId: string; idempotencyKey: string }
+  input: { sellerOrganizationId: string; kind: SellerImageKind; uploadId: string; idempotencyKey: string }
 ) {
   return domainRequest(sessionId, session, {
     method: "POST",
-    path: `${settingsPath(input.sellerOrganizationId)}/logo/uploads/${input.uploadId}/confirm`,
+    path: `${settingsPath(input.sellerOrganizationId)}/${input.kind}/uploads/${input.uploadId}/confirm`,
     capability: "seller.settings.update",
     sellerOrganizationId: input.sellerOrganizationId,
     body: { idempotency_key: input.idempotencyKey },
@@ -1222,11 +1226,11 @@ export async function confirmDomainLogoUpload(
 export async function clearDomainSellerLogo(
   sessionId: string,
   session: ServerSession,
-  input: { sellerOrganizationId: string; idempotencyKey: string }
+  input: { sellerOrganizationId: string; kind: SellerImageKind; idempotencyKey: string }
 ) {
   return domainRequest(sessionId, session, {
     method: "POST",
-    path: `${settingsPath(input.sellerOrganizationId)}/logo/clear`,
+    path: `${settingsPath(input.sellerOrganizationId)}/${input.kind}/clear`,
     capability: "seller.settings.update",
     sellerOrganizationId: input.sellerOrganizationId,
     body: { idempotency_key: input.idempotencyKey }

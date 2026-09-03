@@ -5,11 +5,11 @@ Três coisas que o vendedor configura sobre a própria loja, num só lugar:
 1. **Texto e cor** — nome, tagline, "sobre" e cor de destaque. Uma leitura e
    uma escrita, ambas presas a ``seller.settings.*`` e ao papel de dono ou
    admin, que a função do banco confere de novo (0052).
-2. **Logo** — o mesmo caminho da capa do produto (``cover_routes``): o intent
-   reserva a chave, os bytes vão direto do navegador para a quarentena, e a
-   confirmação baixa, verifica, reescreve, escaneia e promove **antes** de abrir
-   qualquer transação, pelas mesmas razões daquela rota. Só muda quem é dono
-   da imagem: a loja, sem produto.
+2. **Logo e banner** (``{kind}`` na rota, 0054) — o mesmo caminho da capa do
+   produto (``cover_routes``): o intent reserva a chave, os bytes vão direto do
+   navegador para a quarentena, e a confirmação baixa, verifica, reescreve,
+   escaneia e promove **antes** de abrir qualquer transação, pelas mesmas
+   razões daquela rota. Só muda quem é dono da imagem: a loja, sem produto.
 3. **Promessa** — a frase da página de vendas, campo do produto. Segue a regra
    dos outros campos do produto: ``catalog.draft.update`` e versão esperada.
 
@@ -46,13 +46,14 @@ from .image_verifier import COVER_MAX_BYTES, is_cover_media
 from .internal_requests import AuthenticatedInternalRequest
 from .storage_s3 import S3Storage, StorageError
 from .storage_worker import (
+    SELLER_IMAGE_KINDS,
     MalwareScanner,
     ProductCoverWorker,
     ScannerUnavailable,
     ScanRejected,
     VerifyCoverJob,
-    logo_quarantine_key,
-    logo_ready_key,
+    image_quarantine_key,
+    image_ready_key,
 )
 
 router = APIRouter(prefix="/v1/me/sellers")
@@ -197,13 +198,14 @@ async def update_seller_settings(request: Request, seller_id: UUID) -> dict[str,
 
 
 @router.post(
-    "/{seller_id}/settings/logo/upload-intents",
+    "/{seller_id}/settings/{kind}/upload-intents",
     response_model=None,
     status_code=status.HTTP_201_CREATED,
 )
-async def create_logo_upload_intent(request: Request, seller_id: UUID) -> JSONResponse:
+async def create_logo_upload_intent(request: Request, seller_id: UUID, kind: str) -> JSONResponse:
     auth, internal = await _authenticate(request, _SETTINGS_UPDATE)
     await _require_seller(internal, seller_id)
+    await _require_kind(internal, kind)
     body = await _model_from_body(LogoUploadIntentBody, internal)
     storage = await _storage(request, internal)
     settings = request.app.state.settings
@@ -211,14 +213,15 @@ async def create_logo_upload_intent(request: Request, seller_id: UUID) -> JSONRe
         async with auth.domain_session(internal.envelope) as session:
             value = await session.scalar(
                 text(
-                    "select app_private.create_seller_logo_upload_intent("
-                    ":actor,:seller,:media_type,:byte_size,:sha256,"
+                    "select app_private.create_seller_image_upload_intent("
+                    ":actor,:seller,:kind,:media_type,:byte_size,:sha256,"
                     ":quarantine_bucket,:ready_bucket,"
                     ":idempotency_key,:body_sha256,:request_id)"
                 ),
                 {
                     "actor": internal.envelope.identity.user_id,
                     "seller": seller_id,
+                    "kind": kind,
                     "media_type": body.media_type,
                     "byte_size": body.byte_size,
                     "sha256": body.sha256,
@@ -264,15 +267,18 @@ async def create_logo_upload_intent(request: Request, seller_id: UUID) -> JSONRe
     )
 
 
-@router.post("/{seller_id}/settings/logo/uploads/{upload_id}/confirm")
-async def confirm_logo_upload(request: Request, seller_id: UUID, upload_id: UUID) -> dict[str, Any]:
+@router.post("/{seller_id}/settings/{kind}/uploads/{upload_id}/confirm")
+async def confirm_logo_upload(
+    request: Request, seller_id: UUID, kind: str, upload_id: UUID
+) -> dict[str, Any]:
     auth, internal = await _authenticate(request, _SETTINGS_UPDATE)
     await _require_seller(internal, seller_id)
+    await _require_kind(internal, kind)
     body = await _model_from_body(LogoMutationBody, internal)
     storage = await _storage(request, internal)
     worker = ProductCoverWorker(storage, await _scanner(request, internal))
     settings = request.app.state.settings
-    quarantine_key = logo_quarantine_key(seller_id)
+    quarantine_key = image_quarantine_key(seller_id, kind)
 
     try:
         observed = await to_thread.run_sync(
@@ -290,10 +296,11 @@ async def confirm_logo_upload(request: Request, seller_id: UUID, upload_id: UUID
         source_bucket=settings.storage_quarantine_bucket,
         ready_bucket=settings.storage_ready_bucket,
         source_key=quarantine_key,
-        ready_key=logo_ready_key(seller_id, upload_id),
+        ready_key=image_ready_key(seller_id, kind, upload_id),
         expected_size=observed.size,
         expected_sha256_hex=_checksum_hex(observed.checksum_sha256_b64),
         declared_content_type=observed.content_type,
+        kind=kind,
     )
     try:
         verified = await _verify_within_budget(worker, job)
@@ -306,7 +313,9 @@ async def confirm_logo_upload(request: Request, seller_id: UUID, upload_id: UUID
             closure="rejected",
             failure_code="verification_failed",
         )
-        await to_thread.run_sync(lambda: worker.discard_abandoned_logo(seller_id=seller_id))
+        await to_thread.run_sync(
+            lambda: worker.discard_abandoned_image(seller_id=seller_id, kind=kind)
+        )
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="logo_rejected"
         ) from rejection
@@ -320,14 +329,15 @@ async def confirm_logo_upload(request: Request, seller_id: UUID, upload_id: UUID
             row = (
                 await session.execute(
                     text(
-                        "select previous_object_key from app_private.set_seller_logo("
-                        ":actor,:seller,:upload,:object_key,:storage_version_id,"
+                        "select previous_object_key from app_private.set_seller_image("
+                        ":actor,:seller,:kind,:upload,:object_key,:storage_version_id,"
                         ":media_type,:sha256,:width,:height,:byte_size,"
                         ":idempotency_key,:body_sha256,:request_id)"
                     ),
                     {
                         "actor": internal.envelope.identity.user_id,
                         "seller": seller_id,
+                        "kind": kind,
                         "upload": upload_id,
                         "object_key": job.ready_key,
                         "storage_version_id": verified.ready.version_id,
@@ -353,19 +363,21 @@ async def confirm_logo_upload(request: Request, seller_id: UUID, upload_id: UUID
     if row.previous_object_key:
         await _discard_replaced(storage, str(row.previous_object_key))
     return {
-        "logo": {
+        "kind": kind,
+        "image": {
             "media_type": verified.media_type,
             "byte_size": verified.byte_size,
             "width": verified.width,
             "height": verified.height,
-        }
+        },
     }
 
 
-@router.post("/{seller_id}/settings/logo/clear")
-async def clear_logo(request: Request, seller_id: UUID) -> dict[str, Any]:
+@router.post("/{seller_id}/settings/{kind}/clear")
+async def clear_logo(request: Request, seller_id: UUID, kind: str) -> dict[str, Any]:
     auth, internal = await _authenticate(request, _SETTINGS_UPDATE)
     await _require_seller(internal, seller_id)
+    await _require_kind(internal, kind)
     body = await _model_from_body(LogoMutationBody, internal)
     storage = await _storage(request, internal)
     try:
@@ -373,12 +385,13 @@ async def clear_logo(request: Request, seller_id: UUID) -> dict[str, Any]:
             row = (
                 await session.execute(
                     text(
-                        "select changed, previous_object_key from app_private.clear_seller_logo("
-                        ":actor,:seller,:idempotency_key,:body_sha256,:request_id)"
+                        "select changed, previous_object_key from app_private.clear_seller_image("
+                        ":actor,:seller,:kind,:idempotency_key,:body_sha256,:request_id)"
                     ),
                     {
                         "actor": internal.envelope.identity.user_id,
                         "seller": seller_id,
+                        "kind": kind,
                         "idempotency_key": UUID(body.idempotency_key),
                         "body_sha256": internal.envelope.body_sha256,
                         "request_id": internal.envelope.request_id,
@@ -442,24 +455,6 @@ def _settings_response(settings: dict[str, Any], storage: S3Storage | None) -> d
     assinatura falhando, `logo` vira null e a tela mostra as iniciais — a
     mesma degradação da capa no editor.
     """
-    logo = settings.get("logo")
-    signed: dict[str, Any] | None = None
-    if isinstance(logo, dict) and storage is not None:
-        try:
-            request = storage.presign_cover(
-                key=str(logo["object_key"]),
-                version_id=str(logo["storage_version_id"]),
-                media_type=str(logo["media_type"]),
-            )
-            signed = {
-                "url": request.url,
-                "media_type": str(logo["media_type"]),
-                "width": int(logo["width"]),
-                "height": int(logo["height"]),
-                "expires_in_seconds": request.expires_in_seconds,
-            }
-        except (StorageError, KeyError, TypeError, ValueError):
-            signed = None
     return {
         "id": str(settings["id"]),
         "slug": str(settings["slug"]),
@@ -468,9 +463,36 @@ def _settings_response(settings: dict[str, Any], storage: S3Storage | None) -> d
         "tagline": settings.get("tagline"),
         "about": settings.get("about"),
         "accent_color": settings.get("accent_color"),
-        "logo": signed,
+        "logo": _signed_image(settings.get("logo"), storage),
+        "banner": _signed_image(settings.get("banner"), storage),
         "changed": settings.get("changed"),
     }
+
+
+def _signed_image(image: Any, storage: S3Storage | None) -> dict[str, Any] | None:
+    if not isinstance(image, dict) or storage is None:
+        return None
+    try:
+        request = storage.presign_cover(
+            key=str(image["object_key"]),
+            version_id=str(image["storage_version_id"]),
+            media_type=str(image["media_type"]),
+        )
+        return {
+            "url": request.url,
+            "media_type": str(image["media_type"]),
+            "width": int(image["width"]),
+            "height": int(image["height"]),
+            "expires_in_seconds": request.expires_in_seconds,
+        }
+    except (StorageError, KeyError, TypeError, ValueError):
+        return None
+
+
+async def _require_kind(internal: AuthenticatedInternalRequest, kind: str) -> None:
+    if kind not in SELLER_IMAGE_KINDS:
+        await internal.consume_rejected_request()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown_image_kind")
 
 
 async def _verify_within_budget(worker: ProductCoverWorker, job: VerifyCoverJob) -> Any:
@@ -500,7 +522,7 @@ async def _close_upload(
         async with auth.domain_session(internal.envelope) as session:
             await session.scalar(
                 text(
-                    "select app_private.close_seller_logo_upload("
+                    "select app_private.close_seller_image_upload("
                     ":actor,:seller,:upload,:status,:failure_code,:request_id)"
                 ),
                 {
