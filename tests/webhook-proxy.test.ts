@@ -10,7 +10,7 @@ import {
   validCheckoutWebhookEndpointKey
 } from "../lib/checkout-webhook-proxy.server";
 
-const endpointKey = "endpoint_0123456789abcdefghijklmnopqrstuv";
+const endpointKey = "Endpoint_0123456789abcdefghijklmnopQRSTuv";
 const key = (byte: number) => Buffer.alloc(32, byte).toString("base64");
 const originalEnvironment = { ...process.env };
 
@@ -79,6 +79,7 @@ describe("checkout webhook proxy", () => {
       const encodedPayload = token.split(".")[1]!;
       const payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8"));
       expect(payload.capability).toBe("commerce.webhook.ingest");
+      expect(payload.path).toBe(`/v1/webhooks/checkouts/${endpointKey}`);
       expect(payload.seller_organization_id).toBeNull();
       expect(payload.body_sha256).toBe(createHash("sha256").update(rawBody).digest("hex"));
       return Response.json({ status: "accepted" }, { status: 202 });

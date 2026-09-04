@@ -104,6 +104,20 @@ def test_accepts_canonical_selected_seller_uuid() -> None:
     assert envelope.seller_organization_id == UUID(seller_id)
 
 
+def test_accepts_public_webhook_endpoint_key_in_path() -> None:
+    endpoint_key = "AbCdEFghIjKlMNopQRstUVwxYZ0123456789-_aBc"
+    path = f"/v1/webhooks/checkouts/{endpoint_key}"
+    token = encode(payload(capability="commerce.webhook.ingest", path=path))
+
+    envelope = verify_token(
+        token,
+        expected_capability="commerce.webhook.ingest",
+        path=path,
+    )
+
+    assert envelope.path == path
+
+
 def test_treats_nbsp_as_exact_identity_data() -> None:
     subject = "\u00a0subject"
     identity = {
