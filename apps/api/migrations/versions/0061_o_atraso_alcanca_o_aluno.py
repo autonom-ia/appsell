@@ -114,7 +114,8 @@ create function app_private.advance_entitlements_to(
   p_actor_identity_user_id uuid, p_request_id uuid, p_reason text
 ) returns integer language plpgsql security definer
 set search_path=pg_catalog,app_private,public as $$
-declare avancando uuid[]; avancados integer:=0; progresso_salvo jsonb;
+declare avancando uuid[]; avancados integer:=0;
+  progresso_salvo jsonb; pedidos_salvos jsonb;
 begin
   if p_seller_organization_id is null or p_catalog_product_id is null
      or p_publication_id is null or p_request_id is null
@@ -168,6 +169,26 @@ begin
     from public.lesson_progress feito
    where feito.seller_organization_id=p_seller_organization_id
      and feito.entitlement_id=any(avancando);
+  -- `learning_progress_request` guarda o recibo de cada pedido de progresso, e
+  -- aponta para o progresso pela matrícula. A matrícula é recriada com
+  -- identidade nova, então o recibo precisa ser repontado junto. Sem isto o
+  -- `delete` abaixo bate na chave estrangeira e a publicação inteira falha.
+  --
+  -- Os testes não pegavam: a tabela nasce vazia em banco de teste, e só o
+  -- ensaio contra a cópia da produção revelou (04/09/2026, seis recibos).
+  select coalesce(jsonb_agg(jsonb_build_object(
+           'buyer_identity_user_id',recibo.buyer_identity_user_id,
+           'idempotency_key',recibo.idempotency_key,
+           'entitlement_id',recibo.entitlement_id,'lesson_id',recibo.lesson_id,
+           'body_sha256',recibo.body_sha256,'result',recibo.result,
+           'created_at',recibo.created_at)),'[]'::jsonb)
+    into pedidos_salvos
+    from app_private.learning_progress_request recibo
+   where recibo.seller_organization_id=p_seller_organization_id
+     and recibo.entitlement_id=any(avancando);
+  delete from app_private.learning_progress_request alvo
+   where alvo.seller_organization_id=p_seller_organization_id
+     and alvo.entitlement_id=any(avancando);
   -- A árvore é refeita em vez de movida: as chaves estrangeiras carregam o
   -- publication_id e nenhuma é adiável, então mover na ordem errada quebra e
   -- não existe ordem certa.
@@ -210,6 +231,23 @@ begin
    and aula.publication_id=p_publication_id
    and aula.course_id=salvo.course_id
    and aula.lesson_id=salvo.lesson_id;
+  -- O recibo volta apontando para a matrícula nova. O join com o progresso já
+  -- recriado é o que garante a chave estrangeira: recibo de aula que saiu não
+  -- tem para onde voltar, pelo mesmo motivo que o progresso dela não tem.
+  insert into app_private.learning_progress_request(
+    buyer_identity_user_id,idempotency_key,seller_organization_id,enrollment_id,
+    entitlement_id,lesson_id,body_sha256,result,created_at)
+  select salvo.buyer_identity_user_id,salvo.idempotency_key,p_seller_organization_id,
+    feito.enrollment_id,salvo.entitlement_id,salvo.lesson_id,salvo.body_sha256,
+    salvo.result,salvo.created_at
+  from jsonb_to_recordset(pedidos_salvos) as salvo(
+    buyer_identity_user_id uuid,idempotency_key uuid,entitlement_id uuid,
+    lesson_id uuid,body_sha256 text,result jsonb,created_at timestamptz)
+  join public.lesson_progress feito
+    on feito.seller_organization_id=p_seller_organization_id
+   and feito.entitlement_id=salvo.entitlement_id
+   and feito.lesson_id=salvo.lesson_id
+   and feito.publication_id=p_publication_id;
   -- O total de aulas mudou, então o percentual é refeito. A conta é a mesma de
   -- `record_lesson_progress`, de propósito: aula concluída é aula em 100%.
   update public.course_learning_state estado

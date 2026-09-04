@@ -1460,3 +1460,118 @@ def test_o_avanco_recusa_motivo_desconhecido() -> None:
                 "select app_private.advance_entitlements_to(%s,%s,%s,null,%s,'sei-la')",
                 (seller_id, product_id, uuid4(), uuid4()),
             )
+
+
+def _recibo_de_progresso(seller_id: UUID, comprador: UUID, lesson_id: UUID) -> UUID:
+    """Grava um recibo de pedido de progresso, como a rota do aluno faz.
+
+    Em banco de teste `learning_progress_request` nasce vazia, e foi por isso que
+    a 0060 subiu para producao com um `delete` que a chave estrangeira dessa
+    tabela recusa. Seis recibos existiam em producao em 04/09/2026, cobrindo os
+    dois unicos produtos com comprador: publicar qualquer um dos dois falhava.
+    """
+    assert ADMIN_URL
+    chave = uuid4()
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute("set role appsell_owner")
+        connection.execute(
+            """
+            insert into app_private.learning_progress_request(
+              buyer_identity_user_id, idempotency_key, seller_organization_id,
+              enrollment_id, entitlement_id, lesson_id, body_sha256, result)
+            select feito.buyer_identity_user_id, %s, feito.seller_organization_id,
+                   feito.enrollment_id, feito.entitlement_id, feito.lesson_id, %s,
+                   jsonb_build_object('lesson_progress_percent', feito.progress_percent)
+              from public.lesson_progress feito
+             where feito.seller_organization_id=%s
+               and feito.buyer_identity_user_id=%s
+               and feito.lesson_id=%s
+            """,
+            (chave, digest(f"recibo:{chave}"), seller_id, comprador, lesson_id),
+        )
+        connection.commit()
+    return chave
+
+
+def _recibos_do_comprador(seller_id: UUID, comprador: UUID) -> list[tuple[Any, ...]]:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute("set role appsell_owner")
+        return connection.execute(
+            "select recibo.idempotency_key, recibo.lesson_id, recibo.enrollment_id"
+            "  from app_private.learning_progress_request recibo"
+            " where recibo.seller_organization_id=%s and recibo.buyer_identity_user_id=%s"
+            " order by recibo.lesson_id",
+            (seller_id, comprador),
+        ).fetchall()
+
+
+def test_o_recibo_do_progresso_acompanha_a_matricula_nova() -> None:
+    """Regressao da 0060: publicar falhava quando havia recibo de progresso.
+
+    `learning_progress_request` aponta para o progresso **pela matricula**, e a
+    matricula e recriada com identidade nova. Sem repontar o recibo, o `delete`
+    do progresso bate na chave estrangeira e a publicacao inteira volta atras.
+
+    Este teste falha contra a 0060 sozinha. Foi escrito depois do defeito ter
+    ido para producao, e so o ensaio contra a copia do banco real o revelou.
+    """
+    seller_id, product_id, course_id = create_graph()
+    offer_id = save_draft(seller_id, product_id, course_id)
+    aula = _acrescenta_aula(seller_id, course_id, "Aula assistida")
+    publish_with_access(
+        seller_id, product_id, course_id, offer_id, access_mode="free", course_version=3
+    )
+
+    comprador = buyer_id(14)
+    _da_acesso(seller_id, product_id, comprador)
+    with psycopg.connect(ADMIN_URL or "") as connection:
+        connection.execute(
+            """
+            insert into public.lesson_progress(
+              seller_organization_id, enrollment_id, buyer_identity_user_id, entitlement_id,
+              catalog_product_id, publication_id, course_id, lesson_id, progress_percent,
+              completed_at)
+            select matricula.seller_organization_id, matricula.id,
+                   matricula.buyer_identity_user_id, matricula.entitlement_id,
+                   matricula.catalog_product_id, matricula.publication_id,
+                   matricula.course_id, %s, 100, clock_timestamp()
+              from public.learning_enrollment matricula
+             where matricula.seller_organization_id=%s
+               and matricula.buyer_identity_user_id=%s
+            """,
+            (aula, seller_id, comprador),
+        )
+        connection.commit()
+    chave = _recibo_de_progresso(seller_id, comprador, aula)
+    antes = _recibos_do_comprador(seller_id, comprador)
+    assert [linha[0] for linha in antes] == [chave]
+
+    _acrescenta_aula(seller_id, course_id, "Aula acrescentada depois")
+    publish_with_access(
+        seller_id,
+        product_id,
+        course_id,
+        offer_id,
+        access_mode="free",
+        product_version=3,
+        course_version=4,
+    )
+
+    depois = _recibos_do_comprador(seller_id, comprador)
+    assert [linha[0] for linha in depois] == [chave], "o recibo se perdeu no avanco"
+    assert depois[0][1] == aula
+    assert depois[0][2] != antes[0][2], "o recibo continuou preso a matricula antiga"
+
+    with psycopg.connect(ADMIN_URL or "") as connection:
+        connection.execute("set role appsell_owner")
+        casado = connection.execute(
+            "select count(*) from app_private.learning_progress_request recibo"
+            "  join public.lesson_progress feito"
+            "    on feito.seller_organization_id=recibo.seller_organization_id"
+            "   and feito.enrollment_id=recibo.enrollment_id"
+            "   and feito.lesson_id=recibo.lesson_id"
+            " where recibo.seller_organization_id=%s and recibo.buyer_identity_user_id=%s",
+            (seller_id, comprador),
+        ).fetchone()
+    assert casado == (1,), "o recibo nao aponta para o progresso recriado"
