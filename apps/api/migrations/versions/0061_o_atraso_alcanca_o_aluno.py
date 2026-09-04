@@ -89,7 +89,7 @@ end $migration$
 """
 
 
-def _migration_0060() -> ModuleType:
+def _migration_anterior() -> ModuleType:
     """Lê o texto que a `0060` colocou dentro do `publish_product`.
 
     Copiar o bloco para cá deixaria duas cópias que precisam continuar iguais.
@@ -323,11 +323,11 @@ def upgrade() -> None:
         "revoke all on function app_private.advance_entitlements_to("
         "uuid,uuid,uuid,uuid,uuid,text) from public"
     )
-    migration_0060 = _migration_0060()
+    migration_anterior = _migration_anterior()
     op.execute(
         _REESCREVE.replace("ALVO", _PUBLICAR)
-        .replace("DE", migration_0060._AVANCO)
-        .replace("PARA", migration_0060._ANCORA + _CHAMADA)
+        .replace("DE", migration_anterior._AVANCO)
+        .replace("PARA", migration_anterior._ANCORA + _CHAMADA)
     )
     op.execute(_REESCREVE.replace("ALVO", _PUBLICAR).replace("DE", _DECLARE_DE).replace("PARA", ""))
     op.execute(_BACKFILL)
@@ -345,4 +345,45 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise RuntimeError("AppSell migrations are forward-only")
+    """Desfaz a extração. O que o backfill moveu **não** volta, e nem deveria.
+
+    O avanço é a forma da função, e ela volta a morar dentro do
+    `publish_product`. Os acessos que o backfill alcançou continuam apontando
+    para publicações que existem, e a estrutura antiga os aceita: desfazer a
+    extração não é desfazer o avanço.
+
+    Isto desce porque dá para descer. A `0060` não desce, e o motivo é outro:
+    devolver o `publication_id` à chave da compra falharia por definição assim
+    que um acesso tivesse avançado. Declarar `forward-only` ali é honestidade;
+    declarar aqui seria preguiça, e deixaria a cabeça da cadeia sem prova de
+    que o ciclo fecha (#422).
+    """
+    op.execute("set local role appsell_owner")
+    migration_anterior = _migration_anterior()
+    # As variáveis voltam antes do corpo que as usa.
+    op.execute(
+        _REESCREVE.replace("ALVO", _PUBLICAR)
+        .replace("DE", "generated_snapshot jsonb; generated_source_sha256 text; response jsonb;\n")
+        .replace(
+            "PARA",
+            "generated_snapshot jsonb; generated_source_sha256 text; response jsonb;\n"
+            + _DECLARE_DE,
+        )
+    )
+    op.execute(
+        _REESCREVE.replace("ALVO", _PUBLICAR)
+        .replace("DE", migration_anterior._ANCORA + _CHAMADA)
+        .replace("PARA", migration_anterior._AVANCO)
+    )
+    op.execute(
+        _REESCREVE.replace("ALVO", _BASE_DO_ACESSO)
+        .replace("DE", _READY_FUNCAO_PARA)
+        .replace("PARA", _READY_FUNCAO_DE)
+    )
+    for alvo in _BASES_DO_READY:
+        op.execute(
+            _REESCREVE.replace("ALVO", alvo)
+            .replace("DE", _READY_ATE_0061)
+            .replace("PARA", _READY_ATE_0060)
+        )
+    op.execute("drop function app_private.advance_entitlements_to(uuid,uuid,uuid,uuid,uuid,text)")
