@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 
 const CAPABILITY = /^[a-z][a-z0-9_.:-]{0,79}$/;
-const PATH = /^\/[a-z0-9_-]+(?:\/[a-z0-9_-]+)*$/;
+const PATH = /^\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const IDENTITY_VALUE = /^[^\p{Cc}\p{Cs}]{1,255}$/u;
 const KEY_ID = /^[a-z0-9][a-z0-9._-]{0,39}$/;

@@ -28,7 +28,7 @@ _UUID_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 )
 _ALLOWED_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE"})
-_PATH_PATTERN = re.compile(r"^/[a-z0-9_-]+(?:/[a-z0-9_-]+)*$")
+_PATH_PATTERN = re.compile(r"^/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*$")
 _EXPECTED_FIELDS = frozenset(
     {
         "version",
