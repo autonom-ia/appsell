@@ -2,12 +2,12 @@
 
 > Fonte operacional para retomar o projeto sem depender do histórico da conversa.
 >
-> Última verificação documentada: **2026-09-03**. Esta página separa o que foi
+> Última verificação documentada: **2026-09-04**. Esta página separa o que foi
 > comprovado na produção do que continua sendo plano ou laboratório Local/CI.
 
 ## Release em produção
 
-> Última verificação: **2026-09-03**, lendo o host — não a memória desta página.
+> Última verificação: **2026-09-04**, lendo o host — não a memória desta página.
 > Esta página já divergiu da realidade três vezes; o que vale é o que
 > `docker service ls` responde.
 
@@ -15,11 +15,18 @@
 |---|---|
 | Domínio | `https://sell.autonomia.site` |
 | Ambiente | VPS EasyPanel nativo, Docker Swarm |
-| SHA do **api** | `89233e2` — fecho do refino da loja (#387): banner do produto, cards e biblioteca |
+| SHA do **api** | `68ffd7b` — lido do host em 04/09/2026; a página dizia `89233e2` e estava errada |
 | SHA do **asset-worker** | `d5e00ec` — mesma imagem da api, vários SHAs atrás |
 | SHA do **pdf-sandbox** | `d5e00ec` — mesma imagem da api, com outra tag |
-| SHA do **web** | `89233e2` — o mesmo da api; foi o primeiro dos três passos do deploy |
-| Banco | head **`0058_capa_na_biblioteca`**, `schema_ready() = true` |
+| SHA do **web** | `68ffd7b` — o mesmo da api |
+| Banco | head **`0060_atualizacao_chega_ao_aluno`**, `schema_ready() = true` |
+
+**Release de 2026-09-04, só a migration `0060` (PR #421, issue #420).** Quem já
+comprou passa a receber as atualizações do produto. Nenhuma imagem mudou: dentro
+de `apps/api/src` o único arquivo do diff é o `EXPECTED_MIGRATION` do
+`reset_demo_tenant`, usado só pelo reset do tenant demo, que é proibido em
+produção. Detalhe na seção
+[Release `0060`](#release-0060--a-atualização-chega-a-quem-comprou-2026-09-04).
 
 **Release de 2026-09-03, `web` e `api`: `89233e2`, com as migrations `0056`, `0057` e `0058` (PRs #395, #403, #406, #409, #410).**
 Fecho do épico #387. O produto ganha banner próprio (16:5) além da capa (16:9),
@@ -1743,3 +1750,81 @@ ser lidos com esse limite explícito. Nenhum reset demo deve ser executado contr
 - [Release, backup e rollback](runbooks/PRODUCTION_RELEASE_APPSSELL.md)
 - [Memória do projeto](memory/MEMORY_PROJECT.md)
 - [Memória da sessão](memory/MEMORY_SESSION.md)
+
+## Release `0060` — a atualização chega a quem comprou (2026-09-04)
+
+```text
+issue:             #420
+pr:                #421
+merge_sha:         e0f652b (squash)
+ci_run:            nenhum — o App CI do repo está `disabled_manually` (#422)
+previous_release:  api e web em 68ffd7b, banco em 0059_canal_financial_global
+backup:            /home/claudete/backups/appsell/appsell_native_90_pre_0060_20260904-182021.dump
+                   1,2 MB, 1004 objetos, validado com pg_restore --list
+                   /home/claudete/backups/appsell/publish_product_pre_0060_20260904-182021.sql
+                   186 linhas, a função sem o bloco de avanço
+migration_head:    0060_atualizacao_chega_ao_aluno
+web_image:         inalterada (68ffd7b)
+api_image:         inalterada (68ffd7b)
+worker_image:      inalterada (d5e00ec)
+health:            /api/health/ready = {"status":"ok","redis":true,"api":true,"storage_upload":true}
+                   11 serviços 1/1, zero ERROR/Traceback/FATAL/panic no log da api
+smoke:             head 0060, schema_ready() true, FK sem publication_id,
+                   demo_purchase_acesso_key presente, publish_product com o bloco,
+                   gatilho buyer_entitlement_learning_after_write ativo
+rollback_decision: não acionado
+```
+
+### O que mudou
+
+O acesso do comprador guarda um `publication_id` e a leitura do aluno usa
+exatamente aquela publicação. A compra ficava congelada na versão que existia no
+momento em que aconteceu, e material acrescentado depois nunca chegava a quem
+tinha pagado.
+
+A causa raiz estava no schema: `buyer_entitlement_demo_purchase_fkey` incluía o
+`publication_id` e exigia que o acesso continuasse apontando para a publicação
+do recibo da venda. Ela agora garante compra, comprador e produto, e para aí.
+
+Ao publicar, os acessos ativos avançam, **e só quando a publicação nova contém
+tudo o que a antiga tinha**, aula por aula e material por material.
+
+### O deploy foi só a migration
+
+Este é o primeiro release do Appsell em que **nenhum serviço foi reiniciado**. A
+mudança inteira vive no banco. Vale como precedente: antes de montar o
+`docker service update`, conferir com `git diff <sha-em-prod> origin/main --
+apps/api/src` se a imagem muda de fato. Um restart evitado é uma classe inteira
+de risco evitada, incluindo a de apagar variáveis no `updateEnv`.
+
+### O passado não foi corrigido
+
+A migration muda o comportamento **futuro** do `publish_product`. Ela não move
+ninguém retroativamente.
+
+Medido no host em 04/09/2026, antes e depois (idêntico):
+
+| Produto | Publicação atual | Compradores presos |
+|---|---|---|
+| `condicoes-gerais` | v3 | 2 na v1, 2 na v2 |
+| `gerador-de-cotacoes-comparativas` | v2 | 3 na v1 |
+
+**Sete acessos ativos continuam presos**, e só saem de lá quando o vendedor
+publicar de novo. Um backfill que aplique o avanço uma vez aos acessos
+existentes é decisão em aberto, registrada na #420.
+
+### Rollback
+
+Não foi acionado. O caminho, se precisar:
+
+```bash
+# desliga o avanço na hora, sem tocar em dado
+sudo docker exec <postgres-native-90> sh -lc \
+  'psql -U $POSTGRES_USER -d appsell_native_90 \
+     -f /tmp/publish_product_pre_0060_20260904-182021.sql'
+```
+
+A chave estrangeira **não** volta por esse caminho: re-adicionar o
+`publication_id` falharia assim que algum acesso tivesse avançado. Reverter a
+chave exige restaurar o dump em banco separado e decidir o cutover, como manda o
+[runbook](runbooks/PRODUCTION_RELEASE_APPSSELL.md#rollback).
