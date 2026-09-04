@@ -39,21 +39,24 @@ async def accept_checkout_webhook(endpoint_key: str, request: Request) -> dict[s
 
     endpoint_hash = hashlib.sha256(endpoint_key.encode()).hexdigest()
     try:
+        try:
+            normalized_hint = parse_generic_hmac_v1(internal.body)
+        except WebhookRejectedError:
+            normalized_hint = None
         async with auth.domain_session(internal.envelope) as session:
+            resolution_query, resolution_parameters = _endpoint_resolution(
+                endpoint_hash, normalized_hint.seller_id if normalized_hint is not None else None
+            )
             resolution = (
                 (
-                    await session.execute(
-                        text("select * from app_private.resolve_webhook_endpoint(:endpoint_hash)"),
-                        {"endpoint_hash": endpoint_hash},
-                    )
+                    await session.execute(resolution_query, resolution_parameters)
                 )
                 .mappings()
                 .one_or_none()
             )
             if resolution is None:
                 raise _rejected()
-            channel_secret_reference = str(resolution["secret_reference"])
-            secret = secrets.resolve(channel_secret_reference)
+            secret = secrets.resolve(str(resolution["secret_reference"]))
             if secret is None:
                 raise _unavailable()
             protocol, event_id, timestamp_header, signature = _provider_signature(request)
@@ -70,30 +73,7 @@ async def accept_checkout_webhook(endpoint_key: str, request: Request) -> dict[s
             )
             if resolution["adapter"] != "generic_hmac_v1":
                 raise _unavailable()
-            normalized = parse_generic_hmac_v1(internal.body)
-            if normalized.seller_id is not None:
-                resolution = (
-                    (
-                        await session.execute(
-                            text(
-                                "select * from app_private.resolve_webhook_endpoint("
-                                ":endpoint_hash,cast(:seller_id as uuid))"
-                            ),
-                            {
-                                "endpoint_hash": endpoint_hash,
-                                "seller_id": normalized.seller_id,
-                            },
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
-                if (
-                    resolution is None
-                    or resolution["adapter"] != "generic_hmac_v1"
-                    or resolution["secret_reference"] != channel_secret_reference
-                ):
-                    raise _rejected()
+            normalized = normalized_hint or parse_generic_hmac_v1(internal.body)
             result = (
                 (
                     await session.execute(
@@ -152,6 +132,21 @@ async def accept_checkout_webhook(endpoint_key: str, request: Request) -> dict[s
         "status": "accepted" if result["created"] else "replayed",
         "webhook_event_id": str(result["webhook_event_id"]),
     }
+
+
+def _endpoint_resolution(endpoint_hash: str, seller_id: str | None) -> tuple[Any, dict[str, Any]]:
+    if seller_id is None:
+        return (
+            text("select * from app_private.resolve_webhook_endpoint(:endpoint_hash)"),
+            {"endpoint_hash": endpoint_hash},
+        )
+    return (
+        text(
+            "select * from app_private.resolve_webhook_endpoint("
+            ":endpoint_hash,cast(:seller_id as uuid))"
+        ),
+        {"endpoint_hash": endpoint_hash, "seller_id": seller_id},
+    )
 
 
 def _sha256(value: str) -> str:
