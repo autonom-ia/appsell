@@ -92,8 +92,14 @@ def parse_generic_hmac_v1(body: bytes) -> NormalizedCheckoutEvent:
         "occurred_at",
     }
     expected_v2 = expected_v1 | {"buyer_email", "buyer_identity_sub"}
+    expected_seller_v2 = expected_v1 | {"seller_id"}
     expected_v3 = expected_v2 | {"seller_id"}
-    if not isinstance(payload, dict) or set(payload) not in (expected_v1, expected_v2, expected_v3):
+    if not isinstance(payload, dict) or set(payload) not in (
+        expected_v1,
+        expected_v2,
+        expected_seller_v2,
+        expected_v3,
+    ):
         raise WebhookRejectedError("webhook_payload_invalid")
     has_buyer = set(payload) in (expected_v2, expected_v3)
     event_type = payload["event_type"]
