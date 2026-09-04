@@ -1331,3 +1331,132 @@ def test_quem_pagou_avanca_e_o_recibo_da_venda_fica_como_estava() -> None:
             (seller_id, compra),
         ).fetchone()
     assert recibo == (publicacao_da_compra,), "o recibo da venda foi reescrito"
+
+
+def _prende_na_publicacao(seller_id: UUID, comprador: UUID, publicacao: UUID) -> None:
+    """Recria o estado legado: acesso parado numa publicacao anterior.
+
+    A `0060` impede que esse estado nasca de novo, entao ele e montado a mao. A
+    arvore sai antes porque as chaves estrangeiras carregam o `publication_id`;
+    sem filhos o acesso anda, e o gatilho
+    `buyer_entitlement_learning_after_write` recria matricula e estado.
+    """
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute("set role appsell_owner")
+        for tabela in ("lesson_progress", "course_learning_state", "learning_enrollment"):
+            connection.execute(
+                f"delete from public.{tabela} where seller_organization_id=%s"  # noqa: S608
+                " and buyer_identity_user_id=%s",
+                (seller_id, comprador),
+            )
+        connection.execute(
+            "update public.buyer_entitlement set publication_id=%s"
+            " where seller_organization_id=%s and buyer_identity_user_id=%s",
+            (publicacao, seller_id, comprador),
+        )
+        connection.commit()
+
+
+def _alcanca(seller_id: UUID, product_id: UUID, publicacao: UUID) -> int:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute("set role appsell_owner")
+        linha = connection.execute(
+            "select app_private.advance_entitlements_to(%s,%s,%s,null,%s,'backfill')",
+            (seller_id, product_id, publicacao, uuid4()),
+        ).fetchone()
+        connection.commit()
+    assert linha is not None
+    return int(linha[0])
+
+
+def test_o_backfill_alcanca_quem_ficou_para_tras() -> None:
+    """Sete acessos estavam presos em producao quando a 0060 subiu (#420).
+
+    A 0060 muda o publicar, nao o passado. Este e o caminho que a 0061 usa para
+    alcancar quem ja estava parado, sem esperar o vendedor publicar de novo.
+    """
+    seller_id, product_id, course_id = create_graph()
+    offer_id = save_draft(seller_id, product_id, course_id)
+    _acrescenta_aula(seller_id, course_id, "Aula do lancamento")
+    publish_with_access(
+        seller_id, product_id, course_id, offer_id, access_mode="free", course_version=3
+    )
+
+    comprador = buyer_id(11)
+    _da_acesso(seller_id, product_id, comprador)
+    _, publicacao_antiga, _ = _acesso_do_comprador(seller_id, product_id, comprador)
+
+    _acrescenta_aula(seller_id, course_id, "Aula acrescentada depois")
+    publish_with_access(
+        seller_id,
+        product_id,
+        course_id,
+        offer_id,
+        access_mode="free",
+        product_version=3,
+        course_version=4,
+    )
+    _, publicacao_nova, _ = _acesso_do_comprador(seller_id, product_id, comprador)
+
+    _prende_na_publicacao(seller_id, comprador, publicacao_antiga)
+    _, preso_em, _ = _acesso_do_comprador(seller_id, product_id, comprador)
+    assert preso_em == publicacao_antiga, "o estado legado nao foi montado"
+
+    assert _alcanca(seller_id, product_id, publicacao_nova) == 1
+    _, agora, _ = _acesso_do_comprador(seller_id, product_id, comprador)
+    assert agora == publicacao_nova
+
+
+def test_o_backfill_nao_alcanca_quem_perderia_conteudo() -> None:
+    """A guarda vale nos dois sentidos, inclusive para tras.
+
+    Chamar o avanco com destino numa publicacao **anterior** e a forma mais
+    direta de exercitar isso: a antiga nao contem a aula que a nova tem, entao
+    ninguem se move.
+    """
+    seller_id, product_id, course_id = create_graph()
+    offer_id = save_draft(seller_id, product_id, course_id)
+    _acrescenta_aula(seller_id, course_id, "Aula do lancamento")
+    publish_with_access(
+        seller_id, product_id, course_id, offer_id, access_mode="free", course_version=3
+    )
+
+    comprador = buyer_id(12)
+    _da_acesso(seller_id, product_id, comprador)
+    _, publicacao_antiga, _ = _acesso_do_comprador(seller_id, product_id, comprador)
+
+    _acrescenta_aula(seller_id, course_id, "Aula acrescentada depois")
+    publish_with_access(
+        seller_id,
+        product_id,
+        course_id,
+        offer_id,
+        access_mode="free",
+        product_version=3,
+        course_version=4,
+    )
+    _, publicacao_nova, _ = _acesso_do_comprador(seller_id, product_id, comprador)
+
+    assert _alcanca(seller_id, product_id, publicacao_antiga) == 0
+    _, agora, _ = _acesso_do_comprador(seller_id, product_id, comprador)
+    assert agora == publicacao_nova, "o acesso recuou para uma publicacao com menos conteudo"
+
+
+def test_o_avanco_recusa_motivo_desconhecido() -> None:
+    """`p_reason` separa publicar de backfill na auditoria, e nao aceita qualquer texto.
+
+    Sem isso a auditoria vira texto livre e para de responder *como* aquele
+    acesso se moveu, que e a unica pergunta que ela precisa responder aqui.
+    """
+    assert ADMIN_URL
+    seller_id, product_id, _ = create_graph()
+
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute("set role appsell_owner")
+        with pytest.raises(psycopg.errors.InvalidParameterValue):
+            connection.execute(
+                "select app_private.advance_entitlements_to(%s,%s,%s,null,%s,'sei-la')",
+                (seller_id, product_id, uuid4(), uuid4()),
+            )
