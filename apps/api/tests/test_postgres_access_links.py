@@ -981,3 +981,353 @@ def test_entitlement_with_a_future_start_also_gets_the_email() -> None:
             (seller_id, f"access_link:{outro_link}:{buyer_id(4)}"),
         ).fetchone()
     assert linhas == (1,)
+
+
+def _acrescenta_aula(seller_id: UUID, course_id: UUID, titulo: str) -> UUID:
+    """Acrescenta uma aula ao rascunho do curso e avanca a versao do rascunho."""
+    assert ADMIN_URL
+    lesson_id = uuid4()
+    with psycopg.connect(ADMIN_URL) as connection:
+        modulo = connection.execute(
+            "select id from public.course_module"
+            " where seller_organization_id=%s and course_id=%s order by position limit 1",
+            (seller_id, course_id),
+        ).fetchone()
+        if modulo is None:
+            module_id = uuid4()
+            connection.execute(
+                "insert into public.course_module"
+                " (seller_organization_id, id, course_id, title, status, position)"
+                " values (%s,%s,%s,'Modulo Base','active',0)",
+                (seller_id, module_id, course_id),
+            )
+        else:
+            module_id = UUID(str(modulo[0]))
+        connection.execute(
+            "insert into public.lesson"
+            " (seller_organization_id, id, course_id, module_id, title, position)"
+            " select %s,%s,%s,%s,%s,coalesce(max(existente.position),-1)+1"
+            "   from public.lesson existente"
+            "  where existente.seller_organization_id=%s and existente.module_id=%s",
+            (seller_id, lesson_id, course_id, module_id, titulo, seller_id, module_id),
+        )
+        _avanca_rascunho(connection, seller_id, course_id)
+        connection.commit()
+    return lesson_id
+
+
+def _arquiva_aula(seller_id: UUID, course_id: UUID, lesson_id: UUID) -> None:
+    """Tira a aula do rascunho do curso e avanca a versao do rascunho."""
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "update public.lesson set status='archived', updated_at=clock_timestamp()"
+            " where seller_organization_id=%s and id=%s",
+            (seller_id, lesson_id),
+        )
+        _avanca_rascunho(connection, seller_id, course_id)
+        connection.commit()
+
+
+def _avanca_rascunho(connection: Any, seller_id: UUID, course_id: UUID) -> None:
+    connection.execute(
+        "update public.course set draft_version=draft_version+1, updated_at=clock_timestamp()"
+        " where seller_organization_id=%s and id=%s",
+        (seller_id, course_id),
+    )
+
+
+def _acesso_do_comprador(seller_id: UUID, product_id: UUID, comprador: UUID) -> tuple[Any, ...]:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        linha = connection.execute(
+            """
+            select be.id, be.publication_id, p.version
+              from public.buyer_entitlement be
+              join public.publication p on p.id = be.publication_id
+             where be.seller_organization_id = %s
+               and be.catalog_product_id = %s
+               and be.buyer_identity_user_id = %s
+            """,
+            (seller_id, product_id, comprador),
+        ).fetchone()
+    assert linha is not None, "o comprador não tem acesso"
+    return linha
+
+
+def _da_acesso(seller_id: UUID, product_id: UUID, comprador: UUID) -> UUID:
+    assert RUNTIME_URL
+    with psycopg.connect(RUNTIME_URL) as connection:
+        apply_context(connection, comprador, None, "library.enroll")
+        linha = connection.execute(
+            "select entitlement_id from app_private.grant_public_product_access(%s,%s,%s,%s,%s,%s)",
+            (comprador, seller_id, product_id, uuid4(), digest(f"acesso:{comprador}"), uuid4()),
+        ).fetchone()
+        connection.commit()
+    assert linha is not None
+    return UUID(str(linha[0]))
+
+
+def test_quem_ja_comprou_recebe_a_publicacao_nova() -> None:
+    """O material acrescentado depois da compra chega a quem já pagou.
+
+    Antes disto o acesso ficava congelado na publicação que existia no momento
+    da compra. Medido em produção em 04/09/2026: o produto tinha três
+    publicações e **nenhum comprador na mais nova**.
+    """
+    seller_id, product_id, course_id = create_graph()
+    offer_id = save_draft(seller_id, product_id, course_id)
+    publish_with_access(seller_id, product_id, course_id, offer_id, access_mode="free")
+
+    comprador = buyer_id(7)
+    _da_acesso(seller_id, product_id, comprador)
+    _, publicacao_da_compra, versao_da_compra = _acesso_do_comprador(
+        seller_id, product_id, comprador
+    )
+
+    _acrescenta_aula(seller_id, course_id, "Aula nova")
+    publish_with_access(
+        seller_id,
+        product_id,
+        course_id,
+        offer_id,
+        access_mode="free",
+        product_version=3,
+        course_version=3,
+    )
+
+    _, publicacao_agora, versao_agora = _acesso_do_comprador(seller_id, product_id, comprador)
+    assert publicacao_agora != publicacao_da_compra, "o acesso não avançou"
+    assert versao_agora == versao_da_compra + 1
+
+
+def test_o_avanco_para_quando_a_publicacao_nova_tira_alguma_coisa() -> None:
+    """A trava que o congelamento existia para dar continua valendo.
+
+    O vendedor nao tira conteudo de quem pagou. Se a publicacao nova nao contem
+    tudo o que a anterior tinha, ninguem avanca, e a decisao passa a ser do
+    aluno em vez de um efeito colateral de publicar.
+    """
+    seller_id, product_id, course_id = create_graph()
+    offer_id = save_draft(seller_id, product_id, course_id)
+    _acrescenta_aula(seller_id, course_id, "Aula que fica")
+    aula_removida = _acrescenta_aula(seller_id, course_id, "Aula que sai")
+    publish_with_access(
+        seller_id,
+        product_id,
+        course_id,
+        offer_id,
+        access_mode="free",
+        course_version=4,
+    )
+
+    comprador = buyer_id(8)
+    _da_acesso(seller_id, product_id, comprador)
+    _, publicacao_da_compra, _ = _acesso_do_comprador(seller_id, product_id, comprador)
+
+    _arquiva_aula(seller_id, course_id, aula_removida)
+    publish_with_access(
+        seller_id,
+        product_id,
+        course_id,
+        offer_id,
+        access_mode="free",
+        product_version=3,
+        course_version=5,
+    )
+
+    _, publicacao_agora, _ = _acesso_do_comprador(seller_id, product_id, comprador)
+    assert publicacao_agora == publicacao_da_compra, (
+        "o acesso avancou para uma publicacao que perdeu conteudo"
+    )
+
+
+def _estado_do_curso(seller_id: UUID, comprador: UUID) -> tuple[Any, ...]:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        linha = connection.execute(
+            "select estado.publication_id, estado.total_lessons, estado.completed_lessons,"
+            "       estado.progress_percent"
+            "  from public.course_learning_state estado"
+            " where estado.seller_organization_id=%s and estado.buyer_identity_user_id=%s",
+            (seller_id, comprador),
+        ).fetchone()
+    assert linha is not None, "o comprador nao tem estado de curso"
+    return linha
+
+
+def test_o_progresso_do_aluno_sobrevive_ao_avanco() -> None:
+    """A aula ja assistida continua assistida, e o percentual e refeito.
+
+    A arvore de aprendizado e apagada e recriada, entao esta e a prova de que o
+    progresso volta. Ele volta pela **aula**, nao pela publicacao, que e como o
+    aluno pensa nele.
+
+    O percentual precisa ser refeito porque o total de aulas mudou: quem tinha
+    uma de duas (50%) passa a ter uma de tres (33%), e nao pode continuar em 50%.
+    """
+    assert ADMIN_URL
+    seller_id, product_id, course_id = create_graph()
+    offer_id = save_draft(seller_id, product_id, course_id)
+    aula_assistida = _acrescenta_aula(seller_id, course_id, "Aula assistida")
+    _acrescenta_aula(seller_id, course_id, "Aula pendente")
+    publish_with_access(
+        seller_id, product_id, course_id, offer_id, access_mode="free", course_version=4
+    )
+
+    comprador = buyer_id(9)
+    _da_acesso(seller_id, product_id, comprador)
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            """
+            insert into public.lesson_progress(
+              seller_organization_id, enrollment_id, buyer_identity_user_id, entitlement_id,
+              catalog_product_id, publication_id, course_id, lesson_id, progress_percent,
+              completed_at)
+            select matricula.seller_organization_id, matricula.id,
+                   matricula.buyer_identity_user_id, matricula.entitlement_id,
+                   matricula.catalog_product_id, matricula.publication_id,
+                   matricula.course_id, %s, 100, clock_timestamp()
+              from public.learning_enrollment matricula
+             where matricula.seller_organization_id=%s
+               and matricula.buyer_identity_user_id=%s
+            """,
+            (aula_assistida, seller_id, comprador),
+        )
+        connection.execute(
+            "update public.course_learning_state set completed_lessons=1, progress_percent=50"
+            " where seller_organization_id=%s and buyer_identity_user_id=%s",
+            (seller_id, comprador),
+        )
+        connection.commit()
+    _, total_antes, feitas_antes, percentual_antes = _estado_do_curso(seller_id, comprador)
+    assert (total_antes, feitas_antes, percentual_antes) == (2, 1, 50)
+
+    _acrescenta_aula(seller_id, course_id, "Aula nova")
+    publish_with_access(
+        seller_id,
+        product_id,
+        course_id,
+        offer_id,
+        access_mode="free",
+        product_version=3,
+        course_version=5,
+    )
+
+    _, publicacao_agora, _ = _acesso_do_comprador(seller_id, product_id, comprador)
+    publicacao_do_estado, total, feitas, percentual = _estado_do_curso(seller_id, comprador)
+    assert publicacao_do_estado == publicacao_agora, "o estado do curso ficou para tras"
+    assert (total, feitas, percentual) == (3, 1, 33)
+
+    with psycopg.connect(ADMIN_URL) as connection:
+        progresso = connection.execute(
+            "select feito.lesson_id, feito.progress_percent, feito.publication_id"
+            "  from public.lesson_progress feito"
+            " where feito.seller_organization_id=%s and feito.buyer_identity_user_id=%s",
+            (seller_id, comprador),
+        ).fetchall()
+    assert progresso == [(aula_assistida, 100, publicacao_agora)]
+
+
+def _cria_compra(
+    seller_id: UUID, product_id: UUID, offer_id: UUID, comprador: UUID, publicacao: UUID
+) -> UUID:
+    """Amarra uma compra paga ao acesso, que e o caso que exercita a chave nova.
+
+    O caminho gratuito nao passa pela `buyer_entitlement_demo_purchase_fkey`,
+    entao sem isto o teste nao provaria nada sobre ela.
+    """
+    assert ADMIN_URL
+    coupon_id, order_id, event_id, purchase_id = uuid4(), uuid4(), uuid4(), uuid4()
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute("set role appsell_owner")
+        connection.execute(
+            "insert into public.demo_coupon"
+            " (seller_organization_id, id, code_sha256, discount_bps, status)"
+            " values (%s,%s,%s,10000,'active')",
+            (seller_id, coupon_id, digest(f"cupom:{coupon_id}")),
+        )
+        connection.execute(
+            "insert into public.demo_checkout_offer"
+            " (seller_organization_id, offer_id, catalog_product_id, publication_id,"
+            "  entitlement_id, unit_amount_minor, currency, status)"
+            " values (%s,%s,%s,%s,%s,9900,'BRL','active')"
+            " on conflict do nothing",
+            (seller_id, offer_id, product_id, publicacao, uuid4()),
+        )
+        connection.execute(
+            "insert into public.demo_order"
+            " (seller_organization_id, id, buyer_identity_user_id, offer_id, catalog_product_id,"
+            "  publication_id, coupon_id, subtotal_amount_minor, discount_amount_minor,"
+            "  total_amount_minor, currency, status)"
+            " values (%s,%s,%s,%s,%s,%s,%s,9900,9900,0,'BRL','approved')",
+            (seller_id, order_id, comprador, offer_id, product_id, publicacao, coupon_id),
+        )
+        connection.execute(
+            "insert into public.demo_purchase_event"
+            " (seller_organization_id, id, order_id, event_type, event_key)"
+            " values (%s,%s,%s,'purchase.approved',%s)",
+            (seller_id, event_id, order_id, f"demo-order:{order_id}:approved"),
+        )
+        connection.execute(
+            "insert into public.demo_purchase"
+            " (seller_organization_id, id, order_id, event_id, buyer_identity_user_id,"
+            "  catalog_product_id, publication_id, status)"
+            " values (%s,%s,%s,%s,%s,%s,%s,'approved')",
+            (seller_id, purchase_id, order_id, event_id, comprador, product_id, publicacao),
+        )
+        connection.execute(
+            "update public.buyer_entitlement set commerce_purchase_id=%s,"
+            " source='demo_checkout'"
+            " where seller_organization_id=%s and buyer_identity_user_id=%s"
+            "   and catalog_product_id=%s",
+            (purchase_id, seller_id, comprador, product_id),
+        )
+        connection.commit()
+    return purchase_id
+
+
+def test_quem_pagou_avanca_e_o_recibo_da_venda_fica_como_estava() -> None:
+    """O caso do Rodrigo, medido em 04/09/2026, e a decisao que ele autorizou.
+
+    A `buyer_entitlement_demo_purchase_fkey` carregava o `publication_id` e
+    exigia, literalmente, que o acesso continuasse apontando para a publicacao
+    que estava no recibo. Era a causa raiz do congelamento.
+
+    Agora ela garante compra, comprador e produto, e para por ai. O recibo
+    continua guardando o que foi vendido; ele so nao decide mais o que o aluno ve.
+    """
+    assert ADMIN_URL
+    seller_id, product_id, course_id = create_graph()
+    offer_id = save_draft(seller_id, product_id, course_id)
+    _acrescenta_aula(seller_id, course_id, "Aula do lancamento")
+    publish_with_access(
+        seller_id, product_id, course_id, offer_id, access_mode="free", course_version=3
+    )
+
+    comprador = buyer_id(10)
+    _da_acesso(seller_id, product_id, comprador)
+    _, publicacao_da_compra, _ = _acesso_do_comprador(seller_id, product_id, comprador)
+    compra = _cria_compra(seller_id, product_id, offer_id, comprador, publicacao_da_compra)
+
+    _acrescenta_aula(seller_id, course_id, "Aula acrescentada depois")
+    publish_with_access(
+        seller_id,
+        product_id,
+        course_id,
+        offer_id,
+        access_mode="free",
+        product_version=3,
+        course_version=4,
+    )
+
+    _, publicacao_agora, _ = _acesso_do_comprador(seller_id, product_id, comprador)
+    assert publicacao_agora != publicacao_da_compra, "quem pagou nao recebeu a atualizacao"
+
+    with psycopg.connect(ADMIN_URL) as connection:
+        recibo = connection.execute(
+            "select publication_id from public.demo_purchase"
+            " where seller_organization_id=%s and id=%s",
+            (seller_id, compra),
+        ).fetchone()
+    assert recibo == (publicacao_da_compra,), "o recibo da venda foi reescrito"
