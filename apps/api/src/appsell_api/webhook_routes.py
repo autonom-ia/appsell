@@ -48,9 +48,7 @@ async def accept_checkout_webhook(endpoint_key: str, request: Request) -> dict[s
                 endpoint_hash, normalized_hint.seller_id if normalized_hint is not None else None
             )
             resolution = (
-                (
-                    await session.execute(resolution_query, resolution_parameters)
-                )
+                (await session.execute(resolution_query, resolution_parameters))
                 .mappings()
                 .one_or_none()
             )

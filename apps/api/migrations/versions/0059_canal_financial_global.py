@@ -181,7 +181,9 @@ def upgrade() -> None:
     op.execute(_RESOLVE_LEGACY)
     op.execute(_RESOLVE_SELLER)
     op.execute("revoke all on function app_private.resolve_webhook_endpoint(text,uuid) from public")
-    op.execute("grant execute on function app_private.resolve_webhook_endpoint(text,uuid) to appsell_runtime")
+    op.execute(
+        "grant execute on function app_private.resolve_webhook_endpoint(text,uuid) to appsell_runtime"
+    )
     for alvo in _BASES_DO_READY:
         op.execute(
             _REESCREVE.replace("ALVO", alvo)
