@@ -27,9 +27,7 @@ OTHER_SELLER = UUID("dd000000-0000-4000-8000-000000000005")
 OTHER_INTEGRATION = UUID("dd000000-0000-4000-8000-000000000006")
 ENDPOINT_KEY = "endpoint_0123456789abcdefghijklmnopqrstuv"
 ENDPOINT_HASH = hashlib.sha256(ENDPOINT_KEY.encode()).hexdigest()
-OTHER_ENDPOINT_HASH = hashlib.sha256(b"endpoint_other_0123456789abcdefghijklmnop").hexdigest()
 KEY_REFERENCE = "checkout-demo-v1"
-OTHER_KEY_REFERENCE = "checkout-other-v1"
 EVENT_HASH = hashlib.sha256(b"evt-001").hexdigest()
 PAYLOAD_HASH = hashlib.sha256(b'{"event":"approved"}').hexdigest()
 PRODUCT_HASH = hashlib.sha256(b"product-001").hexdigest()
@@ -71,8 +69,8 @@ def seed_webhook_endpoint() -> None:
         connection.execute(
             "insert into webhook_endpoint("
             "seller_organization_id,id,checkout_integration_id,endpoint_key_sha256,"
-            "secret_reference,status) values(%s,%s,%s,%s,'checkout-other-v1','active')",
-            (OTHER_SELLER, ENDPOINT, OTHER_INTEGRATION, OTHER_ENDPOINT_HASH),
+            "secret_reference,status) values(%s,%s,%s,%s,'checkout-demo-v1','active')",
+            (OTHER_SELLER, ENDPOINT, OTHER_INTEGRATION, ENDPOINT_HASH),
         )
         connection.commit()
 
@@ -122,7 +120,7 @@ def _accept(
     return row  # type: ignore[return-value]
 
 
-def test_resolve_is_context_bound_and_does_not_accept_seller_input() -> None:
+def test_resolve_is_context_bound_and_can_select_seller_on_shared_channel() -> None:
     assert RUNTIME_URL
     with psycopg.connect(RUNTIME_URL) as connection:
         assert (
@@ -138,6 +136,14 @@ def test_resolve_is_context_bound_and_does_not_accept_seller_input() -> None:
             (ENDPOINT_HASH,),
         ).fetchone()
     assert resolved == (SELLER, ENDPOINT, "checkout-demo-v1")
+    with psycopg.connect(RUNTIME_URL) as connection:
+        _apply_context(connection)
+        targeted = connection.execute(
+            "select seller_organization_id,webhook_endpoint_id,secret_reference "
+            "from app_private.resolve_webhook_endpoint(%s,%s)",
+            (ENDPOINT_HASH, OTHER_SELLER),
+        ).fetchone()
+    assert targeted == (OTHER_SELLER, ENDPOINT, "checkout-demo-v1")
 
 
 def test_concurrent_replay_creates_one_event_outbox_and_audit() -> None:
@@ -205,7 +211,7 @@ def test_accept_revalidates_exact_seller_endpoint_and_hash() -> None:
             _accept(
                 connection,
                 event_hash=hashlib.sha256(b"evt-cross-tenant").hexdigest(),
-                seller_id=OTHER_SELLER,
+                seller_id=uuid4(),
                 endpoint_hash=ENDPOINT_HASH,
             )
     with psycopg.connect(RUNTIME_URL) as connection:
@@ -213,7 +219,7 @@ def test_accept_revalidates_exact_seller_endpoint_and_hash() -> None:
             _accept(
                 connection,
                 event_hash=hashlib.sha256(b"evt-rotated-secret").hexdigest(),
-                key_reference=OTHER_KEY_REFERENCE,
+                key_reference="checkout-other-v1",
             )
 
 
@@ -237,9 +243,11 @@ def test_event_is_immutable_and_runtime_has_function_only_access() -> None:
             "has_table_privilege('appsell_runtime','webhook_event','INSERT'),"
             "has_table_privilege('appsell_runtime','app_private.outbox_event','SELECT'),"
             "has_function_privilege('appsell_runtime',"
-            "'app_private.resolve_webhook_endpoint(text)','EXECUTE')",
+            "'app_private.resolve_webhook_endpoint(text)','EXECUTE'),"
+            "has_function_privilege('appsell_runtime',"
+            "'app_private.resolve_webhook_endpoint(text,uuid)','EXECUTE')",
         ).fetchone()
-    assert privileges == (False, False, False, True)
+    assert privileges == (False, False, False, True, True)
     with psycopg.connect(RUNTIME_URL) as connection:
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             connection.execute("select count(*) from webhook_event")

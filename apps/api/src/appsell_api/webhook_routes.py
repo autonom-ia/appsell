@@ -52,7 +52,8 @@ async def accept_checkout_webhook(endpoint_key: str, request: Request) -> dict[s
             )
             if resolution is None:
                 raise _rejected()
-            secret = secrets.resolve(str(resolution["secret_reference"]))
+            channel_secret_reference = str(resolution["secret_reference"])
+            secret = secrets.resolve(channel_secret_reference)
             if secret is None:
                 raise _unavailable()
             protocol, event_id, timestamp_header, signature = _provider_signature(request)
@@ -70,10 +71,29 @@ async def accept_checkout_webhook(endpoint_key: str, request: Request) -> dict[s
             if resolution["adapter"] != "generic_hmac_v1":
                 raise _unavailable()
             normalized = parse_generic_hmac_v1(internal.body)
-            if normalized.seller_id is not None and normalized.seller_id != str(
-                resolution["seller_organization_id"]
-            ):
-                raise _rejected()
+            if normalized.seller_id is not None:
+                resolution = (
+                    (
+                        await session.execute(
+                            text(
+                                "select * from app_private.resolve_webhook_endpoint("
+                                ":endpoint_hash,cast(:seller_id as uuid))"
+                            ),
+                            {
+                                "endpoint_hash": endpoint_hash,
+                                "seller_id": normalized.seller_id,
+                            },
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if (
+                    resolution is None
+                    or resolution["adapter"] != "generic_hmac_v1"
+                    or resolution["secret_reference"] != channel_secret_reference
+                ):
+                    raise _rejected()
             result = (
                 (
                     await session.execute(
