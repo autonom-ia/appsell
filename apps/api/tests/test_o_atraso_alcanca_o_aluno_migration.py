@@ -8,6 +8,7 @@ o backfill chame a mesma funcao em vez de repetir a guarda (#420).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from importlib import util as importlib_util
 from pathlib import Path
 from types import ModuleType
@@ -30,15 +31,19 @@ def migration() -> ModuleType:
     return _migration("0061_o_atraso_alcanca_o_aluno.py", "appsell_migration_0061")
 
 
-def _comandos(migration: ModuleType) -> list[str]:
+def _comandos_de(migration: ModuleType, direcao: Callable[[], None]) -> list[str]:
     executados: list[str] = []
     original = migration.op.execute
     migration.op.execute = executados.append
     try:
-        migration.upgrade()
+        direcao()
     finally:
         migration.op.execute = original
     return executados
+
+
+def _comandos(migration: ModuleType) -> list[str]:
+    return _comandos_de(migration, migration.upgrade)
 
 
 def test_o_avanco_vira_uma_funcao_so(migration: ModuleType) -> None:
@@ -90,6 +95,26 @@ def test_o_readiness_aprende_a_funcao_e_a_versao(migration: ModuleType) -> None:
     assert "0061_o_atraso_alcanca_o_aluno" in migration._READY_ATE_0061
 
 
-def test_a_migration_e_so_de_ida(migration: ModuleType) -> None:
-    with pytest.raises(RuntimeError, match="forward-only"):
-        migration.downgrade()
+def test_a_cabeca_da_cadeia_desce(migration: ModuleType) -> None:
+    """O gate de migrations sobe, desce uma e sobe de novo (#422).
+
+    Uma cabeca que recusa descer deixa o ciclo sem prova, e foi assim que o
+    passo `Exercise the migration chain` ficou vermelho em 03/09/2026, no mesmo
+    dia em que o App CI foi desligado.
+
+    Esta desce porque da para descer: o avanco volta a morar dentro do
+    `publish_product`. O que o backfill moveu nao volta, e nao precisa: os
+    acessos alcancados apontam para publicacoes que existem, e a estrutura
+    antiga os aceita.
+    """
+    comandos = _comandos_de(migration, migration.downgrade)
+
+    assert any("drop function app_private.advance_entitlements_to" in c for c in comandos)
+    # O corpo volta para dentro do publish_product, e as variaveis voltam antes
+    # dele: repor o corpo primeiro deixa `avancando` sem declaracao.
+    anterior = _migration(f"{migration.down_revision}.py", "appsell_migration_anterior")
+    volta_do_corpo = next(i for i, c in enumerate(comandos) if anterior._AVANCO in c)
+    volta_das_variaveis = next(i for i, c in enumerate(comandos) if migration._DECLARE_DE in c)
+    assert volta_das_variaveis < volta_do_corpo, (
+        "as variaveis precisam voltar antes do corpo que as usa"
+    )
