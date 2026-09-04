@@ -19,7 +19,15 @@
 | SHA do **asset-worker** | `d5e00ec` — mesma imagem da api, vários SHAs atrás |
 | SHA do **pdf-sandbox** | `d5e00ec` — mesma imagem da api, com outra tag |
 | SHA do **web** | `68ffd7b` — o mesmo da api |
-| Banco | head **`0060_atualizacao_chega_ao_aluno`**, `schema_ready() = true` |
+| Banco | head **`0061_o_atraso_alcanca_o_aluno`**, `schema_ready() = true` |
+
+**Correção de 2026-09-04, migration `0061` (PR #424, issue #420).** A `0060`
+subiu com um defeito que **quebrou o publicar** dos dois únicos produtos com
+comprador. `app_private.learning_progress_request` guarda o recibo de cada
+pedido de progresso do aluno e aponta para ele **pela matrícula**, que é
+recriada com identidade nova. Havia seis recibos em produção. A `0061` conserta
+e, de quebra, alcança os sete acessos que estavam presos. Detalhe na seção
+[Release `0061`](#release-0061--o-atraso-alcança-o-aluno-2026-09-04).
 
 **Release de 2026-09-04, só a migration `0060` (PR #421, issue #420).** Quem já
 comprou passa a receber as atualizações do produto. Nenhuma imagem mudou: dentro
@@ -1828,3 +1836,81 @@ A chave estrangeira **não** volta por esse caminho: re-adicionar o
 `publication_id` falharia assim que algum acesso tivesse avançado. Reverter a
 chave exige restaurar o dump em banco separado e decidir o cutover, como manda o
 [runbook](runbooks/PRODUCTION_RELEASE_APPSSELL.md#rollback).
+
+## Release `0061` — o atraso alcança o aluno (2026-09-04)
+
+```text
+issue:             #420
+pr:                #424
+merge_sha:         d5d502b (squash)
+ci_run:            nenhum — o App CI do repo está `disabled_manually` (#422)
+previous_release:  banco em 0060_atualizacao_chega_ao_aluno
+backup:            /home/claudete/backups/appsell/appsell_native_90_pre_0061_20260904-184743.dump
+                   1,2 MB, validado com pg_restore --list
+                   /home/claudete/backups/appsell/publish_product_pre_0061_20260904-184743.sql
+                   317 linhas, a função com o bloco inline da 0060
+migration_head:    0061_o_atraso_alcanca_o_aluno
+web_image:         inalterada (68ffd7b)
+api_image:         inalterada (68ffd7b)
+worker_image:      inalterada (d5e00ec)
+health:            /api/health/ready = {"status":"ok","redis":true,"api":true,"storage_upload":true}
+                   11 serviços 1/1, zero ERROR/Traceback/FATAL/panic no log
+smoke:             head 0061, schema_ready() true, 0 acessos presos (eram 7),
+                   6 recibos preservados e casados com o progresso recriado,
+                   2 avanços auditados, um por produto
+rollback_decision: não acionado
+```
+
+### O ensaio pegou um defeito que já estava no ar
+
+A `0060` apaga o progresso para reconstruir a árvore.
+`app_private.learning_progress_request`, que guarda o recibo de cada pedido de
+progresso do aluno, aponta para o progresso **pela matrícula**. A matrícula é
+recriada com identidade nova, então o `delete` batia na chave estrangeira.
+
+**Publicar falhava** nos dois únicos produtos com comprador: `condicoes-gerais`
+(2 recibos) e `gerador-de-cotacoes-comparativas` (4). Transação inteira voltava
+atrás, sem perda de dado, mas com o botão inoperante.
+
+Os testes não podiam pegar: a tabela nasce vazia em banco de teste. Foi o ensaio
+restaurando o dump num banco separado no host, como o
+[runbook](runbooks/PRODUCTION_RELEASE_APPSSELL.md#backup-e-restore) manda, que
+revelou. **O ensaio deixa de ser opcional em migration que apaga linha.**
+
+### A varredura que faltou antes
+
+Achado é classe, não caso. Todas as tabelas que dependem das quatro que o avanço
+toca:
+
+| Depende de | Tabela | Quebra? |
+|---|---|---|
+| `lesson_progress` | `learning_progress_request` | **sim**, carrega `enrollment_id` |
+| `learning_enrollment` | `lesson_progress`, `course_learning_state` | não, já apagadas antes |
+| `buyer_entitlement` | `learning_enrollment` | não, já apagada antes |
+| `buyer_entitlement` | `demo_checkout_request`, `free_access_request`, `learning_pdf_study_state`, `product_access_link_redemption` | não, sem `publication_id` |
+
+Era a única esquecida.
+
+### O avanço virou uma função
+
+`app_private.advance_entitlements_to(seller, produto, publicação, ator, request,
+motivo)`. O `publish_product` chama em vez de carregar o corpo, e o backfill
+chama a mesma função. Duas cópias da mesma guarda divergiriam na primeira
+mudança. O `motivo` (`publication` ou `backfill`) separa as origens na
+auditoria e é validado.
+
+### O passado foi alcançado
+
+Sete acessos estavam presos. Depois da `0061`, zero:
+
+| Produto | Antes | Depois |
+|---|---|---|
+| `condicoes-gerais` | 2 na v1, 2 na v2, produto na v3 | 4 na v3 |
+| `gerador-de-cotacoes-comparativas` | 3 na v1, produto na v2 | 3 na v2 |
+
+Nada se perdeu. Produção contra o ensaio, antes de aplicar:
+
+```text
+appsell_native_90    -> progresso: 5 | concluídas: 1 | recibos: 6 | matrículas: 7
+appsell_ensaio_0061  -> progresso: 5 | concluídas: 1 | recibos: 6 | matrículas: 7
+```
