@@ -25,6 +25,7 @@ _BASES_DO_READY: tuple[str, ...] = (
     "app_private.schema_ready_base_0016()",
     "app_private.schema_ready_base_0017()",
 )
+_BASE_DO_CONTRATO_WEBHOOK = "app_private.schema_ready_base_0016()"
 _READY_FUNCTION_ANCHOR = (
     "            and to_regprocedure('app_private.resolve_webhook_endpoint(text)') is not null\n"
 )
@@ -188,7 +189,7 @@ def upgrade() -> None:
             .replace("PARA", _READY_ATE_0059)
         )
     op.execute(
-        _REESCREVE.replace("ALVO", "app_private.schema_ready()")
+        _REESCREVE.replace("ALVO", _BASE_DO_CONTRATO_WEBHOOK)
         .replace("DE", _READY_FUNCTION_ANCHOR)
         .replace("PARA", _READY_FUNCTIONS)
     )
