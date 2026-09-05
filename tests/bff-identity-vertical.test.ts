@@ -69,6 +69,20 @@ test("real Next routes complete the isolated Identity PKCE vertical without expo
 
   try {
     await waitForBff(bff, bffPort);
+    const productLogin = await fetch(
+      `http://127.0.0.1:${bffPort}/auth/login?next=%2Fs%2Fhub2you%2Fp%2Fcondicoes-gerais&new_user=true`,
+      { redirect: "manual" }
+    );
+    expect(productLogin.status).toBe(307);
+    const productAuthUrl = new URL(requiredHeader(productLogin, "location"));
+    expect(productAuthUrl.origin).toBe(identityOrigin);
+    expect(productAuthUrl.pathname).toBe("/authorize");
+    expect(productAuthUrl.searchParams.get("new_user")).toBe("true");
+    expect(productAuthUrl.searchParams.get("return_to")).toBe("/s/hub2you/p/condicoes-gerais");
+    expect(productAuthUrl.searchParams.get("client_id")).toBe("appsell-web");
+    expect(productAuthUrl.searchParams.get("redirect_uri")).toBe(`http://localhost:${bffPort}/auth/callback`);
+    expect(productAuthUrl.searchParams.get("code_challenge_method")).toBe("S256");
+
     const login = await fetch(`http://127.0.0.1:${bffPort}/auth/login`, { redirect: "manual" });
     expect(login.status).toBe(307);
     const transactionCookie = cookiePair(login.headers.get("set-cookie"), "appsell_oauth_tx");

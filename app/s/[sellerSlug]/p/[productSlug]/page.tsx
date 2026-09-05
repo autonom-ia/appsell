@@ -6,6 +6,7 @@ import { notFound } from "next/navigation";
 
 import { StoreIdentity, StorefrontFooter, StorefrontTopbar, storefrontClassName, storefrontStyle } from "@/app/components/storefront-brand";
 import { StripeCheckoutCard } from "@/app/components/stripe-checkout-card";
+import { productCheckoutLoginHref } from "@/lib/auth-navigation";
 import { sessionCookieName } from "@/lib/cookies";
 import {
   DomainApiError,
@@ -73,7 +74,7 @@ export default async function ProductCheckoutPage({
   const productPath = `/s/${seller.slug}/p/${product.slug}`;
   const curriculum = product.curriculum;
   const hasAuthor = Boolean(seller.about || seller.logo);
-  const loginParaComprar = `/auth/login?next=${encodeURIComponent(productPath)}`;
+  const loginParaComprar = productCheckoutLoginHref(productPath);
   // Quem ainda não entrou não precisa de um cartão no meio do caminho dizendo
   // "entre para comprar": o botão já diz o que faz e leva direto ao login.
   const mostraCartaoDeCompra = accessMode === "free" || !checkoutAvailable || Boolean(buyer);
@@ -164,7 +165,7 @@ export default async function ProductCheckoutPage({
           ? <div className="checkout-card checkout-unavailable">
               <h2>Entre para comprar</h2>
               <p>O acesso ficará vinculado à conta usada no pagamento.</p>
-              <Link className="primary-button commercial-button" href={`/auth/login?next=${encodeURIComponent(productPath)}`}>Entrar ou criar conta</Link>
+              <Link className="primary-button commercial-button" href={loginParaComprar}>Entrar ou criar conta</Link>
             </div>
           : <div className="checkout-card checkout-unavailable" role="status">
               <h2>As vendas abrem em breve</h2>
