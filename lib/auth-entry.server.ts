@@ -50,16 +50,25 @@ export async function beginAuthEntry(request: NextRequest, entry: AuthEntry) {
       });
     }
     const login = await oauthService().beginLogin(mode);
+    const oauthInput = {
+      state: login.state,
+      nonce: login.nonce,
+      codeChallenge: login.codeChallenge,
+      newUser: readNewUserHint(request.nextUrl.searchParams),
+      returnTo: postLoginPath
+    };
     const destination = mode === "identity"
       ? (entry === "register"
-        ? identityOAuthClient().registrationUrl(login)
-        : identityOAuthClient().authorizationUrl(login))
+        ? identityOAuthClient().registrationUrl(oauthInput)
+        : identityOAuthClient().authorizationUrl(oauthInput))
       : new URL("/dev/identity/authorize", configuredPublicOrigin());
     if (mode === "local") {
       destination.searchParams.set("state", login.state);
       destination.searchParams.set("nonce", login.nonce);
       destination.searchParams.set("code_challenge", login.codeChallenge);
       destination.searchParams.set("code_challenge_method", "S256");
+      if (oauthInput.returnTo) destination.searchParams.set("return_to", oauthInput.returnTo);
+      if (oauthInput.newUser !== null) destination.searchParams.set("new_user", oauthInput.newUser ? "true" : "false");
       if (demoProfile) {
         destination.searchParams.set("persona", demoProfile.persona);
         destination.searchParams.set(
@@ -88,4 +97,15 @@ export async function beginAuthEntry(request: NextRequest, entry: AuthEntry) {
       headers: { "cache-control": "no-store" }
     });
   }
+}
+
+function readNewUserHint(searchParams: URLSearchParams): boolean | null {
+  for (const key of ["new_user", "newUser", "new-user", "novo_usuario", "novoUsuario", "signup", "register"]) {
+    const value = searchParams.get(key);
+    if (value === null) continue;
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "sim"].includes(normalized)) return true;
+    if (["false", "0", "no", "nao", "não"].includes(normalized)) return false;
+  }
+  return null;
 }

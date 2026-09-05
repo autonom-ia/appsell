@@ -248,7 +248,13 @@ export class IdentityOAuthClient implements OAuthTokenRefresher {
     });
   }
 
-  authorizationUrl(input: { state: string; nonce?: string; codeChallenge: string }) {
+  authorizationUrl(input: {
+    state: string;
+    nonce?: string;
+    codeChallenge: string;
+    newUser?: boolean | null | undefined;
+    returnTo?: string | null | undefined;
+  }) {
     requireOpaque(input.state, "state");
     if (!PKCE_CHALLENGE.test(input.codeChallenge)) {
       throw new IdentityOAuthProtocolError("OAuth PKCE challenge is invalid.");
@@ -262,6 +268,13 @@ export class IdentityOAuthClient implements OAuthTokenRefresher {
       code_challenge: input.codeChallenge,
       code_challenge_method: "S256"
     };
+    if (input.returnTo) {
+      requireReturnTo(input.returnTo);
+      parameters.return_to = input.returnTo;
+    }
+    if (input.newUser !== undefined && input.newUser !== null) {
+      parameters.new_user = input.newUser ? "true" : "false";
+    }
     // Only "required" sends a nonce. "disabled" omits it and rejects any ID
     // token that echoes one back; "broker" omits it because the upstream
     // discards it, and accepts whatever the relayed token happens to carry.
@@ -277,7 +290,13 @@ export class IdentityOAuthClient implements OAuthTokenRefresher {
   // Mesma carga do authorize, apontada para a tela de cadastro. O Identity le
   // client_id, redirect_uri, state e code_challenge da propria query string,
   // entao o pedido sobrevive a criacao da conta.
-  registrationUrl(input: { state: string; nonce?: string; codeChallenge: string }) {
+  registrationUrl(input: {
+    state: string;
+    nonce?: string;
+    codeChallenge: string;
+    newUser?: boolean | null | undefined;
+    returnTo?: string | null | undefined;
+  }) {
     const url = new URL(this.config.registrationEndpoint);
     url.search = this.authorizationUrl(input).search;
     return url;
@@ -848,6 +867,18 @@ function resolveRefreshRotation(
 
 function requireOpaque(value: string, label: string) {
   if (!OPAQUE_VALUE.test(value)) throw new IdentityOAuthProtocolError(`OAuth ${label} is invalid.`);
+}
+
+function requireReturnTo(value: string) {
+  if (!value || value.length > 512 || !value.startsWith("/") || value.startsWith("//") || value.includes("#")) {
+    throw new IdentityOAuthProtocolError("OAuth return_to is invalid.");
+  }
+  try {
+    const parsed = new URL(value, "https://appsell.local");
+    if (`${parsed.pathname}${parsed.search}` !== value) throw new Error("non-canonical return_to");
+  } catch {
+    throw new IdentityOAuthProtocolError("OAuth return_to is invalid.");
+  }
 }
 
 function requireNonce(value: string | undefined): string {

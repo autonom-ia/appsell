@@ -193,6 +193,45 @@ describe("Identity OAuth server adapter", () => {
     });
   });
 
+  test("forwards the new-user checkout hint and safe return path", () => {
+    const client = new IdentityOAuthClient(parseIdentityOAuthConfig(environment()));
+    const url = client.authorizationUrl({
+      state: STATE,
+      nonce: NONCE,
+      codeChallenge: CHALLENGE,
+      newUser: true,
+      returnTo: "/s/hub2you/p/condicoes-gerais"
+    });
+    expect(url.searchParams.get("new_user")).toBe("true");
+    expect(url.searchParams.get("return_to")).toBe("/s/hub2you/p/condicoes-gerais");
+    expect(url.searchParams.get("client_id")).toBe(LOGICAL_CLIENT_ID);
+    expect(url.searchParams.get("redirect_uri")).toBe("http://localhost:3000/auth/callback");
+    expect(url.searchParams.get("state")).toBe(STATE);
+    expect(url.searchParams.get("code_challenge")).toBe(CHALLENGE);
+    expect(url.searchParams.get("code_challenge_method")).toBe("S256");
+  });
+
+  test("forwards an explicit opt-out of the new-user hint", () => {
+    const client = new IdentityOAuthClient(parseIdentityOAuthConfig(environment()));
+    const url = client.authorizationUrl({
+      state: STATE,
+      nonce: NONCE,
+      codeChallenge: CHALLENGE,
+      newUser: false
+    });
+    expect(url.searchParams.get("new_user")).toBe("false");
+  });
+
+  test.each(["https://attacker.example/", "//attacker.example", "/library#fragment"])("rejects unsafe return_to: %s", (returnTo) => {
+    const client = new IdentityOAuthClient(parseIdentityOAuthConfig(environment()));
+    expect(() => client.authorizationUrl({
+      state: STATE,
+      nonce: NONCE,
+      codeChallenge: CHALLENGE,
+      returnTo
+    })).toThrow(IdentityOAuthProtocolError);
+  });
+
   test("rejects a nonce above the Foundation boundary before authorization or token exchange", async () => {
     const client = new IdentityOAuthClient(parseIdentityOAuthConfig(environment()));
     const nonce = "n".repeat(257);
