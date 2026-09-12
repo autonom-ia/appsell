@@ -684,6 +684,35 @@ def cover_ready_key(seller_id: UUID, product_id: UUID, upload_id: UUID) -> str:
     return product_ready_key(seller_id, product_id, "cover", upload_id)
 
 
+def assert_storage_capabilities(*, environment: str, scanner: MalwareScanner) -> None:
+    """O que vem da imagem e da configuração, e não do ambiente externo.
+
+    Separado do resto por causa do que acontece depois da falha. Antivírus fora
+    do ar e controle de bucket em deriva são dependências: degradam, o monitor
+    reavalia em ciclo e elas voltam sozinhas — a API sobe e recusa só o upload
+    enquanto durar.
+
+    O que está aqui não volta sozinho. Ferramenta que não está na imagem não
+    aparece no tick seguinte, e o monitor nem a procura; scanner sem grau de
+    produção rodando em produção é configuração errada, não indisponibilidade.
+    Tolerar isso seria uma API subindo para sempre degradada por um defeito que
+    ninguém vai ver passar. Continua fatal, alto e imediato.
+    """
+    if environment in {"staging", "production"} and not scanner.production_capable:
+        raise StorageCapabilityError(
+            "production-capable malware scanner is required outside local/CI"
+        )
+
+    # O worker chama pdftoppm e ffmpeg como processos. Faltando, ele pega o
+    # trabalho, falha no meio, engole o erro e repete ate o lease expirar — sem
+    # nada dizer que a ferramenta nao existe.
+    for tool in ("pdftoppm", "ffmpeg"):
+        if shutil.which(tool) is None:
+            raise StorageCapabilityError(
+                f"{tool} is unavailable: the asset worker cannot process media without it"
+            )
+
+
 def assert_storage_worker_ready(
     *,
     environment: str,
@@ -699,19 +728,7 @@ def assert_storage_worker_ready(
     )
     if not scanner.healthy():
         raise StorageCapabilityError("malware scanner is unhealthy")
-    if environment in {"staging", "production"} and not scanner.production_capable:
-        raise StorageCapabilityError(
-            "production-capable malware scanner is required outside local/CI"
-        )
-
-    # O worker chama pdftoppm e ffmpeg como processos. Faltando, ele pega o
-    # trabalho, falha no meio, engole o erro e repete ate o lease expirar — sem
-    # nada dizer que a ferramenta nao existe. Recusar subir e alto e imediato.
-    for tool in ("pdftoppm", "ffmpeg"):
-        if shutil.which(tool) is None:
-            raise StorageCapabilityError(
-                f"{tool} is unavailable: the asset worker cannot process media without it"
-            )
+    assert_storage_capabilities(environment=environment, scanner=scanner)
 
     # Aplicada na subida, e não exigida: um ambiente cuja credencial não pode
     # escrever política de bucket não deve ficar sem worker por causa disso. O

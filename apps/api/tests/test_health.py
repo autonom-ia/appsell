@@ -125,9 +125,20 @@ def _producao_com_sandbox() -> Any:
 
 
 class _StorageFalso:
-    """O storage não é o assunto deste teste, e não pode ser o que o quebra."""
+    """Um storage que atende, para o assunto do teste poder ser outro.
+
+    A superfície aqui é a que `_refresh_storage_dependencies` chama a cada tick.
+    Faltando um destes métodos, o monitor cai no `except` e reprova por engano —
+    o que faria um teste de recuperação falhar sem nada de errado no código.
+    """
 
     def ensure_local_ci_controls(self, **_kwargs: object) -> None:
+        return None
+
+    def probe_availability(self) -> None:
+        return None
+
+    def assert_runtime_controls(self, **_kwargs: object) -> None:
         return None
 
 
@@ -160,6 +171,9 @@ async def test_a_api_sobe_com_o_scanner_reprovado_e_o_ready_denuncia(
     monkeypatch.setattr(main, "S3Storage", lambda _s: _StorageFalso())
     monkeypatch.setattr(main, "run_fulfillment_worker_loop", _nunca_termina)
     monkeypatch.setattr(main, "database_ready", _sempre(True))
+    # Capacidade da imagem não é o assunto, e depender do `ffmpeg` da máquina que
+    # roda o teste tornaria o resultado dependente de ambiente.
+    monkeypatch.setattr(main, "assert_storage_capabilities", lambda **_kwargs: None)
     # O monitor contínuo é quem passa a mandar: aqui ele nunca aprova o storage.
     monkeypatch.setattr(main, "_refresh_storage_dependencies", _sempre(None))
 
@@ -286,3 +300,134 @@ def _ready_respondendo(pronto: bool):  # type: ignore[no-untyped-def]
         yield
     finally:
         main._dependencias_prontas = original
+
+
+@pytest.mark.asyncio
+async def test_o_monitor_recupera_sozinho_depois_do_boot_reprovado(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A subida degradada só vale se ela voltar sozinha — este teste é o que prova.
+
+    Tolerar a reprovação no arranque, sem isto, seria trocar o laço de reinício
+    por uma API presa em degradado até alguém reiniciar na mão. O que mantém a
+    promessa de pé é `_refresh_storage_dependencies`: ele roda em ciclo, e as
+    dependências ficam registradas em `app.state` mesmo reprovadas justamente
+    para ele poder sondá-las de novo.
+
+    O caminho aqui é o do incidente de 12/09/2026 inteiro: o antivírus reprova
+    no boot, a API sobe, o `ready` denuncia, o `freshclam` atualiza a assinatura
+    e o próximo tick do monitor devolve o upload — sem deploy e sem restart.
+    """
+    scanner = _ScannerQueVolta()
+    storage = _StorageFalso()
+    monkeypatch.setattr(main, "get_settings", lambda: _producao_com_storage())
+    monkeypatch.setattr(main, "create_engine", lambda s: create_async_engine(s.database_url))
+    monkeypatch.setattr(main, "S3Storage", lambda _s: storage)
+    monkeypatch.setattr(main, "run_fulfillment_worker_loop", _nunca_termina)
+    monkeypatch.setattr(main, "database_ready", _sempre(True))
+    # O sandbox não é o assunto: o que se mede aqui é o antivírus indo e voltando.
+    monkeypatch.setattr(main, "_pdf_sandbox_ready", _sempre(True))
+    monkeypatch.setattr(main, "assert_storage_capabilities", lambda **_kwargs: None)
+    # Quem o monitor sonda é o scanner que o `lifespan` constrói e guarda em
+    # `app.state`, não o do teste — é essa passagem que precisa ser exercitada.
+    monkeypatch.setattr(main, "ClamAvScanner", lambda _socket: scanner)
+
+    def _segue_o_scanner(**_kwargs: object) -> None:
+        if not scanner.healthy():
+            raise StorageCapabilityError("malware scanner is unhealthy")
+
+    monkeypatch.setattr(main, "assert_storage_worker_ready", _segue_o_scanner)
+
+    async with main.lifespan(main.app):
+        assert main.app.state.storage_runtime_ready is False, "a subida tinha de sair degradada"
+
+        # A assinatura foi atualizada: a dependência voltou, sem ninguém tocar
+        # no processo.
+        scanner.voltou = True
+        await main._refresh_storage_dependencies(main.app, force_control_audit=True)
+
+        assert main.app.state.storage_runtime_ready is True, (
+            "o monitor não recuperou — sem isto, a API fica presa em degradado"
+        )
+
+        transport = ASGITransport(app=main.app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/health/ready")
+
+    assert response.status_code == 200
+    assert response.json()["storage"] is True
+    assert scanner.sondagens >= 2, "o monitor precisa sondar de novo, não reusar o veredito do boot"
+
+
+class _ScannerQueVolta:
+    """Reprova até a assinatura ser atualizada, como o `clamd` do incidente."""
+
+    provider_name = "clamav-clamd"
+    production_capable = True
+
+    def __init__(self) -> None:
+        self.voltou = False
+        self.sondagens = 0
+
+    def healthy(self) -> bool:
+        self.sondagens += 1
+        return self.voltou
+
+    def scan(self, _path: object) -> bool:
+        return True
+
+
+def test_o_startup_assume_um_processo_por_container() -> None:
+    """A marca de "já ficou pronta" vive no processo, e isso é uma premissa.
+
+    `ever_ready` mora em `app.state`, que é por processo. Com mais de um worker
+    por contêiner a sonda passaria a cair ora num, ora noutro: o que já serviu
+    responde 200, o que acabou de nascer responde 503, e o Swarm veria a task
+    oscilar sem motivo — pior durante um deploy, que é justamente quando o
+    `startup` precisa ser confiável.
+
+    Hoje é um processo por contêiner nos dois lados, e a premissa se sustenta.
+    Este teste existe para ela não ser quebrada sem querer: quem acrescentar
+    `--workers` ou trocar por um gerenciador de processos precisa antes mover
+    `ever_ready` para fora da memória do processo.
+    """
+    from pathlib import Path as _Path
+
+    raiz = _Path(__file__).resolve().parents[3]
+
+    api = (raiz / "deploy/easypanel-native/Dockerfile.api").read_text()
+    comando_api = api[api.index('CMD ["uvicorn"') :]
+    assert "--workers" not in comando_api
+    assert "gunicorn" not in api
+
+    web = (raiz / "deploy/easypanel-native/Dockerfile.web").read_text()
+    assert 'CMD ["node", "server.js"]' in web
+    assert "pm2" not in web
+    assert "cluster" not in web
+
+
+@pytest.mark.asyncio
+async def test_ferramenta_faltando_na_imagem_continua_derrubando_a_subida(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nem toda falha de storage vira degradação — só a que volta sozinha.
+
+    O antivírus fora do ar é dependência: o monitor reavalia em ciclo e ela
+    volta, então a API sobe e recusa só o upload enquanto durar. Ferramenta que
+    não está na imagem é outra coisa. Não aparece no tick seguinte, o monitor
+    nem a procura, e uma API que subisse assim ficaria para sempre degradada por
+    um defeito de build que ninguém veria passar — pior, o `startup` a manteria
+    fora de rotação em silêncio.
+
+    Falhar aqui é o que faz o deploy parar e mostrar o motivo.
+    """
+    monkeypatch.setattr(main, "get_settings", lambda: _producao_com_storage())
+    monkeypatch.setattr(main, "create_engine", lambda s: create_async_engine(s.database_url))
+    monkeypatch.setattr(main, "S3Storage", lambda _s: _StorageFalso())
+    monkeypatch.setattr(main, "run_fulfillment_worker_loop", _nunca_termina)
+    monkeypatch.setattr(main, "_pdf_sandbox_ready", _sempre(True))
+    monkeypatch.setattr("appsell_api.storage_worker.shutil.which", lambda tool: None)
+
+    with pytest.raises(StorageCapabilityError, match="pdftoppm"):
+        async with main.lifespan(main.app):
+            pass

@@ -33,6 +33,7 @@ from .storage_worker import (
     ClamAvScanner,
     DeterministicLocalScanner,
     MalwareScanner,
+    assert_storage_capabilities,
     assert_storage_worker_ready,
 )
 from .webhook_routes import router as webhook_router
@@ -102,10 +103,18 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         # para reavaliar e recuperar ele precisa delas em mãos.
         app.state.storage = storage
         app.state.asset_scanner = scanner
-        # Mesmo motivo do sandbox, alguns parágrafos acima, e pelo mesmo
-        # precedente: não parar de subir por causa disto. Em 12/09/2026 o
-        # antivírus reprovou a assinatura por idade — com o `clamd` de pé e a
-        # versão mais recente que existia publicada — e esta linha era um
+        # Sem `try`, e por isso mesmo: o que esta chamada cobre é imagem mal
+        # construída e configuração errada — ferramenta que não está na imagem,
+        # scanner sem grau de produção rodando em produção. Nada disso volta no
+        # tick seguinte, e o monitor nem procura. Subir degradado por causa
+        # disso seria esconder defeito de deploy atrás de um 503 no upload.
+        await to_thread.run_sync(
+            lambda: assert_storage_capabilities(environment=settings.environment, scanner=scanner)
+        )
+        # Daqui para baixo é dependência externa, e a decisão é a do sandbox
+        # alguns parágrafos acima: não parar de subir por causa disto. Em
+        # 12/09/2026 o antivírus reprovou a assinatura por idade — com o `clamd`
+        # de pé e a versão mais recente que existia publicada — e isto era um
         # `raise`. A API não subiu, o Swarm religou, e `sell.autonomia.site`
         # ficou 3h06 em 502: login, catálogo, checkout e leitura de PDF já
         # validado caíram junto, e nenhum deles passa perto do antivírus.
@@ -132,6 +141,11 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
                 capacidade_recusada="upload_de_arquivo",
             )
             aprovado = False
+        # Os dois juntos porque a checagem acima cobre os dois: ela audita os
+        # controles e sonda o antivírus, e reprovando não diz qual dos dois
+        # caiu. Marcar os controles como não auditados é o lado seguro — é o que
+        # faz `_refresh_storage_dependencies` refazer a auditoria no primeiro
+        # tick em vez de esperar a cadência dela.
         app.state.storage_runtime_ready = aprovado
         app.state.storage_controls_ready = aprovado
         # O sandbox não entra aqui. Ter storage e ter parser de PDF são coisas
