@@ -12,6 +12,7 @@ from typing import Literal, Protocol
 from uuid import UUID
 
 from .asset_media import is_document
+from .clamav_mirror import daily_publicada_no_mirror
 from .document_verifier import spooled_document_file
 from .image_verifier import ImageRejected, spooled_cover_file
 from .logging_setup import get_logger
@@ -28,6 +29,21 @@ from .video_verifier import VIDEO_MP4_MIME, prepared_catalogue_video, spooled_vi
 
 _EICAR = b"EICAR-STANDARD-ANTIVIRUS-TEST-FILE"
 _logger = get_logger(__name__)
+
+# Assinatura mais nova que o relógio local: erro de relógio de um dos lados.
+_RELOGIO_ADIANTADO = timedelta(hours=1)
+
+# Sem resposta do mirror, a idade volta a valer. O teto é largo de propósito:
+# o fornecedor passa dias sem publicar de vez em quando — em 26 dias de registro
+# isso aconteceu duas vezes — e recusar o upload nessas janelas não protege
+# ninguém, porque não existe assinatura melhor para buscar.
+_IDADE_MAXIMA_SEM_MIRROR = timedelta(days=14)
+
+# Quantas versões atrás do mirror ainda são a operação normal. Com verificação
+# de hora em hora, o esperado é zero, e uma na janela entre o mirror publicar e
+# o `freshclam` baixar. Mais que isso é o `freshclam` deixando de buscar o que
+# existe — e aí, sim, o antivírus tem menos do que poderia ter.
+_VERSOES_DE_ATRASO_TOLERADAS = 2
 
 
 class ScanRejected(RuntimeError):
@@ -82,17 +98,44 @@ class ClamAvScanner:
         self.timeout_seconds = timeout_seconds
 
     def healthy(self) -> bool:
+        """Pergunta se o antivírus serve, e não há uma só medida para isso.
+
+        Até 12/09/2026 media idade da assinatura contra um teto de 48h. Idade é
+        o calendário de publicação do fornecedor, e a medida errava nos dois
+        sentidos: reprovou uma assinatura de 50h que era a mais recente que
+        existia no mundo — custou 3h06 de loja fora do ar — e aprovaria uma de
+        20h com o `freshclam` calado há uma semana.
+
+        O que separa "protegido" de "cego" é estar na versão mais nova que
+        existe, não a idade dela. É o que o mirror responde, pelo mesmo caminho
+        que o `freshclam` usa. Quando ele não responde, a idade volta como rede
+        de segurança, com teto largo: DNS fora não pode, sozinho, recusar o
+        envio de arquivo de um vendedor.
+        """
         try:
             if self._request(b"zPING\0", stream=None) != b"PONG":
                 return False
             version = self._request(b"zVERSION\0", stream=None).decode("ascii")
-            signature_date = datetime.strptime(
+            local = int(version.split("/")[1])
+            construida = datetime.strptime(
                 version.rsplit("/", 1)[1], "%a %b %d %H:%M:%S %Y"
             ).replace(tzinfo=UTC)
-            age = datetime.now(UTC) - signature_date
-            return -timedelta(hours=1) <= age <= timedelta(hours=48)
         except (IndexError, UnicodeDecodeError, ValueError, ScannerUnavailable):
             return False
+
+        idade = datetime.now(UTC) - construida
+        if idade < -_RELOGIO_ADIANTADO:
+            # Assinatura do futuro é relógio errado de um dos dois lados, e aí
+            # nenhuma das contas abaixo significa o que deveria.
+            return False
+
+        publicada = daily_publicada_no_mirror(timeout_seconds=self.timeout_seconds)
+        if publicada is None:
+            return idade <= _IDADE_MAXIMA_SEM_MIRROR
+        # Contado em versões, não em horas: a distância até o mirror é o que diz
+        # se o `freshclam` está buscando o que existe. A idade da assinatura é
+        # do fornecedor, e já foi ela que, medida sozinha, tirou a loja do ar.
+        return (publicada - local) <= _VERSOES_DE_ATRASO_TOLERADAS
 
     def scan(self, path: Path) -> bool:
         response = self._request(b"zINSTREAM\0", stream=path)
