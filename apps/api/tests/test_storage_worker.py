@@ -4,8 +4,9 @@ import base64
 import hashlib
 import io
 import struct
+from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -376,32 +377,20 @@ def test_clamav_invalid_response_is_retryable(
         ClamAvScanner("/run/appsell-clamav/clamd.sock").scan(source)
 
 
-def test_clamav_health_requires_fresh_signatures(monkeypatch: pytest.MonkeyPatch) -> None:
-    fresh = datetime.now(UTC).strftime("%a %b %d %H:%M:%S %Y")
-    responses = iter((b"PONG\0", f"ClamAV 1.4/123/{fresh}\0".encode()))
+def test_assinatura_fresca_passa_mesmo_sem_o_mirror(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Era `test_clamav_health_requires_fresh_signatures`, e o contrato mudou.
 
-    class FakeSocket:
-        def __enter__(self) -> FakeSocket:
-            return self
+    A versão anterior exigia assinatura com menos de 48h e mais nada. Isso
+    reprovou, em 12/09/2026, uma base que era a mais recente publicada no
+    mundo, e a loja ficou 3h06 fora do ar. A idade deixou de ser a medida
+    principal; ela é a rede de segurança de quando o mirror não responde.
 
-        def __exit__(self, *_args: object) -> None:
-            return None
+    O que este teste guarda é essa rede: assinatura fresca, sem conseguir falar
+    com o mirror, continua aprovando.
+    """
+    scanner = _monta(monkeypatch, daily_local=28121, idade_horas=3, daily_publicada=None)
 
-        def settimeout(self, _value: float) -> None:
-            pass
-
-        def connect(self, _path: str) -> None:
-            pass
-
-        def sendall(self, _payload: bytes) -> None:
-            pass
-
-        def recv(self, _size: int) -> bytes:
-            return next(responses)
-
-    monkeypatch.setattr("appsell_api.storage_worker.socket.socket", lambda *_args: FakeSocket())
-
-    assert ClamAvScanner("/run/appsell-clamav/clamd.sock").healthy() is True
+    assert scanner.healthy() is True
 
 
 def make_job(
@@ -459,3 +448,161 @@ def valid_mp4() -> bytes:
         + mp4_box(b"moov", b"metadata")
         + mp4_box(b"mdat", b"video")
     )
+
+
+class _ClamdFalso:
+    """Um `clamd` que responde `PONG` e depois a versão que o teste mandar.
+
+    O iterador vem de fora porque `_request` abre um socket por comando: se
+    cada abertura recomeçasse a sequência, o `VERSION` receberia `PONG` e o
+    teste passaria a medir outra coisa.
+    """
+
+    def __init__(self, respostas: Iterator[bytes]) -> None:
+        self.respostas = respostas
+
+    def __enter__(self) -> _ClamdFalso:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def settimeout(self, _value: float) -> None:
+        pass
+
+    def connect(self, _path: str) -> None:
+        pass
+
+    def sendall(self, _payload: bytes) -> None:
+        pass
+
+    def recv(self, _size: int) -> bytes:
+        return next(self.respostas)
+
+
+def _monta(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    daily_local: int,
+    idade_horas: float,
+    daily_publicada: int | None,
+) -> ClamAvScanner:
+    construida = datetime.now(UTC) - timedelta(hours=idade_horas)
+    versao = f"ClamAV 1.4.6/{daily_local}/{construida.strftime('%a %b %d %H:%M:%S %Y')}\0"
+    respostas = iter((b"PONG\0", versao.encode()))
+    monkeypatch.setattr(
+        "appsell_api.storage_worker.socket.socket",
+        lambda *_args: _ClamdFalso(respostas),
+    )
+    monkeypatch.setattr(
+        "appsell_api.storage_worker.daily_publicada_no_mirror",
+        lambda **_kwargs: daily_publicada,
+    )
+    return ClamAvScanner("/run/appsell-clamav/clamd.sock")
+
+
+def test_assinatura_velha_mas_a_mais_recente_que_existe_e_saudavel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """O caso que derrubou a loja em 12/09/2026.
+
+    A assinatura tinha 50h e o limite era 48h, então `healthy()` reprovou. Só
+    que a 28119 era a versão mais recente publicada no mundo naquele momento: o
+    `clamd` estava de pé, com tudo o que existia para ter. Reprovar ali não
+    protegia ninguém — não havia assinatura melhor para buscar — e custou 3h06
+    de loja fora do ar.
+
+    Idade é o calendário de publicação do fornecedor. Estar na versão mais
+    recente é o que diz se estamos protegidos.
+    """
+    scanner = _monta(monkeypatch, daily_local=28119, idade_horas=50, daily_publicada=28119)
+
+    assert scanner.healthy() is True
+
+
+def test_assinatura_nova_mas_atrasada_do_mirror_ha_muito_tempo_reprova(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """O caso que a regra antiga aprovava e não devia.
+
+    Assinatura de 20h passa folgada em qualquer limite de idade. Mas se o
+    mirror já publicou versões adiante e nós seguimos parados, o `freshclam`
+    não está conseguindo atualizar — rede, disco, credencial, o que for. Aí
+    estamos cegos de verdade, existe o que buscar, e há o que consertar.
+
+    É esta a situação em que recusar o upload protege alguém.
+    """
+    scanner = _monta(monkeypatch, daily_local=28119, idade_horas=20, daily_publicada=28130)
+
+    assert scanner.healthy() is False
+
+
+def test_atraso_recente_do_mirror_nao_reprova(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Estar uma versão atrás por minutos é o `freshclam` fazendo o trabalho.
+
+    Com verificação de hora em hora, existe uma janela normal entre o mirror
+    publicar e nós baixarmos. Reprovar nela transformaria operação rotineira em
+    incidente, que é o erro que este arquivo inteiro existe para não repetir.
+    """
+    scanner = _monta(monkeypatch, daily_local=28120, idade_horas=2, daily_publicada=28121)
+
+    assert scanner.healthy() is True
+
+
+def test_sem_resposta_do_mirror_cai_para_a_idade_com_limite_generoso(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DNS fora não pode, sozinho, recusar upload.
+
+    Sem resposta do mirror não dá para saber se estamos atrasados, e tratar
+    isso como "cego" faria uma falha de DNS derrubar o envio de arquivo. A
+    idade volta a valer como rede de segurança, com limite largo o bastante
+    para os gaps normais do fornecedor.
+    """
+    quatro_dias = _monta(monkeypatch, daily_local=28119, idade_horas=96, daily_publicada=None)
+    assert quatro_dias.healthy() is True
+
+    trinta_dias = _monta(monkeypatch, daily_local=28119, idade_horas=720, daily_publicada=None)
+    assert trinta_dias.healthy() is False
+
+
+def test_clamd_fora_reprova_antes_de_qualquer_pergunta_sobre_versao(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sem `PONG` não há o que discutir, e o mirror nem chega a ser consultado."""
+    consultas: list[int] = []
+
+    def _nao_deveria(**_kwargs: object) -> int | None:
+        consultas.append(1)
+        return 28121
+
+    monkeypatch.setattr("appsell_api.storage_worker.daily_publicada_no_mirror", _nao_deveria)
+    monkeypatch.setattr(
+        "appsell_api.storage_worker.socket.socket",
+        lambda *_args: (_ for _ in ()).throw(OSError("sem socket")),
+    )
+
+    assert ClamAvScanner("/run/appsell-clamav/clamd.sock").healthy() is False
+    assert consultas == [], "não faz sentido perguntar ao mirror com o scanner fora"
+
+
+def test_mirror_anunciando_versao_menor_que_a_local_nao_aprova_sozinho(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Estar à frente do mirror não existe, então a resposta não serve.
+
+    Não há como ter uma base que o mirror nunca publicou. Quando a conta dá
+    negativa, ou o fornecedor reverteu uma publicação, ou a resposta não veio
+    de quem devia — e a subtração crua aprovaria os dois casos: com um TXT
+    forjado anunciando `1`, `1 - 28121` passa em qualquer teto e o antivírus
+    seria dado como saudável para sempre, inclusive com o `freshclam` parado
+    há meses.
+
+    A resposta implausível é descartada e a idade decide, que é o mesmo
+    caminho de quando o mirror não responde.
+    """
+    recente = _monta(monkeypatch, daily_local=28121, idade_horas=3, daily_publicada=1)
+    assert recente.healthy() is True, "a idade ainda é boa, então o upload segue"
+
+    parada = _monta(monkeypatch, daily_local=28121, idade_horas=720, daily_publicada=1)
+    assert parada.healthy() is False, "sem mirror confiável, a idade precisa valer"
