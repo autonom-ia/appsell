@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import contextmanager
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -9,6 +10,7 @@ from test_config import INTERNAL_AUTH, REMOTE_STORAGE
 
 from appsell_api import main
 from appsell_api.storage_s3 import StorageCapabilityError
+from appsell_api.storage_worker import DiagnosticoDoScanner
 
 
 @pytest.mark.asyncio
@@ -370,8 +372,16 @@ class _ScannerQueVolta:
         self.sondagens = 0
 
     def healthy(self) -> bool:
+        return self.diagnostico().saudavel
+
+    def diagnostico(self) -> DiagnosticoDoScanner:
         self.sondagens += 1
-        return self.voltou
+        return DiagnosticoDoScanner(
+            saudavel=self.voltou,
+            motivo="em_dia_com_o_mirror" if self.voltou else "base_atrasada_em_relacao_ao_mirror",
+            daily_local=28119,
+            daily_publicada=28119 if self.voltou else 28130,
+        )
 
     def scan(self, _path: object) -> bool:
         return True
@@ -431,3 +441,83 @@ async def test_ferramenta_faltando_na_imagem_continua_derrubando_a_subida(
     with pytest.raises(StorageCapabilityError, match="pdftoppm"):
         async with main.lifespan(main.app):
             pass
+
+
+@pytest.mark.asyncio
+async def test_o_ready_conta_por_que_o_antivirus_reprovou() -> None:
+    """`"storage": false` sozinho não diz o que fazer.
+
+    Em 12/09/2026 era o que havia, e descobrir que a causa era a base atrasada
+    — e não o `clamd` fora — custou SSH no host, leitura de log de contêiner e
+    comparação manual com o mirror, com a loja em 502 o tempo inteiro.
+    """
+    main.app.state.asset_scanner_diagnostico = {
+        "saudavel": False,
+        "motivo": "base_atrasada_em_relacao_ao_mirror",
+        "daily_local": 28119,
+        "daily_publicada": 28130,
+        "versoes_atrasadas": 11,
+        "idade_horas": 20.4,
+    }
+
+    transport = ASGITransport(app=main.app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        with _ready_respondendo(False):
+            resposta = await client.get("/health/ready")
+
+    corpo = resposta.json()
+    assert corpo["antivirus"]["motivo"] == "base_atrasada_em_relacao_ao_mirror"
+    assert corpo["antivirus"]["versoes_atrasadas"] == 11
+
+
+@pytest.mark.asyncio
+async def test_o_ready_omite_o_antivirus_quando_nao_ha_o_que_contar() -> None:
+    """Sem storage configurado não existe diagnóstico, e campo vazio engana."""
+    main.app.state.asset_scanner_diagnostico = None
+
+    transport = ASGITransport(app=main.app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        with _ready_respondendo(True):
+            resposta = await client.get("/health/ready")
+
+    assert "antivirus" not in resposta.json()
+
+
+def test_o_log_do_antivirus_sai_na_mudanca_e_nao_a_cada_passagem() -> None:
+    """O monitor roda a cada dez segundos.
+
+    Repetir a mesma linha nesse ritmo enterra a informação em vez de mostrá-la:
+    uma degradação de uma hora viraria 360 linhas idênticas, e quem procurasse o
+    começo dela teria de rolar por todas. Sai na transição, que é o que alguém
+    precisa ver.
+    """
+    app = SimpleNamespace(state=SimpleNamespace())
+    degradado = DiagnosticoDoScanner(
+        saudavel=False, motivo="base_atrasada_em_relacao_ao_mirror", versoes_atrasadas=11
+    )
+    saudavel = DiagnosticoDoScanner(saudavel=True, motivo="em_dia_com_o_mirror")
+
+    linhas: list[tuple[str, str]] = []
+
+    class _LogFalso:
+        def info(self, evento: str, **campos: object) -> None:
+            linhas.append(("info", evento))
+
+        def error(self, evento: str, **campos: object) -> None:
+            linhas.append(("error", evento))
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("appsell_api.main.get_logger", lambda _nome: _LogFalso())
+        for _ in range(5):
+            main._registra_diagnostico_do_scanner(app, degradado)  # type: ignore[arg-type]
+        for _ in range(5):
+            main._registra_diagnostico_do_scanner(app, saudavel)  # type: ignore[arg-type]
+        main._registra_diagnostico_do_scanner(app, degradado)  # type: ignore[arg-type]
+
+    assert linhas == [
+        ("error", "antivirus_degradado"),
+        ("info", "antivirus_saudavel"),
+        ("error", "antivirus_degradado"),
+    ], f"11 passagens deveriam render 3 linhas, renderam {len(linhas)}"
+    # E o `ready` enxerga sempre o estado corrente, não só o da transição.
+    assert app.state.asset_scanner_diagnostico["motivo"] == "base_atrasada_em_relacao_ao_mirror"

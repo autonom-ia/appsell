@@ -9,6 +9,7 @@ from fastapi import Response, status
 
 import appsell_api.main as main_module
 from appsell_api.storage_s3 import StorageCapabilityError
+from appsell_api.storage_worker import DiagnosticoDoScanner
 
 
 class MutableStorage:
@@ -29,6 +30,9 @@ class MutableStorage:
 class HealthyScanner:
     def healthy(self) -> bool:
         return True
+
+    def diagnostico(self) -> DiagnosticoDoScanner:
+        return DiagnosticoDoScanner(saudavel=True, motivo="em_dia_com_o_mirror")
 
 
 @pytest.mark.asyncio

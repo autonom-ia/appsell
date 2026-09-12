@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import itertools
 import struct
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -489,7 +490,9 @@ def _monta(
 ) -> ClamAvScanner:
     construida = datetime.now(UTC) - timedelta(hours=idade_horas)
     versao = f"ClamAV 1.4.6/{daily_local}/{construida.strftime('%a %b %d %H:%M:%S %Y')}\0"
-    respostas = iter((b"PONG\0", versao.encode()))
+    # Cíclico porque `_request` abre um socket por comando, e um mesmo scanner
+    # pode ser perguntado mais de uma vez no teste.
+    respostas = itertools.cycle((b"PONG\0", versao.encode()))
     monkeypatch.setattr(
         "appsell_api.storage_worker.socket.socket",
         lambda *_args: _ClamdFalso(respostas),
@@ -606,3 +609,89 @@ def test_mirror_anunciando_versao_menor_que_a_local_nao_aprova_sozinho(
 
     parada = _monta(monkeypatch, daily_local=28121, idade_horas=720, daily_publicada=1)
     assert parada.healthy() is False, "sem mirror confiável, a idade precisa valer"
+
+
+def test_o_diagnostico_diz_por_que_o_antivirus_esta_reprovado(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Em 12/09/2026 o `ready` respondia `"storage": false` e nada mais.
+
+    Descobrir que era a base atrasada, e não o `clamd` fora, exigiu SSH no host,
+    ler log de contêiner e comparar versão com o mirror na mão. Enquanto isso a
+    loja seguia em 502.
+
+    O veredito passa a carregar o que foi apurado para chegar nele.
+    """
+    scanner = _monta(monkeypatch, daily_local=28119, idade_horas=20, daily_publicada=28130)
+
+    d = scanner.diagnostico()
+
+    assert d.saudavel is False
+    assert d.motivo == "base_atrasada_em_relacao_ao_mirror"
+    assert d.daily_local == 28119
+    assert d.daily_publicada == 28130
+    assert d.versoes_atrasadas == 11
+    assert d.idade_horas is not None
+    assert 19 <= d.idade_horas <= 21
+
+
+def test_o_diagnostico_separa_clamd_fora_de_base_atrasada(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """São problemas diferentes, com donos diferentes e consertos diferentes."""
+    monkeypatch.setattr(
+        "appsell_api.storage_worker.socket.socket",
+        lambda *_args: (_ for _ in ()).throw(OSError("sem socket")),
+    )
+
+    d = ClamAvScanner("/run/appsell-clamav/clamd.sock").diagnostico()
+
+    assert d.saudavel is False
+    assert d.motivo == "scanner_sem_resposta"
+    assert d.daily_local is None
+
+
+def test_o_diagnostico_registra_quando_o_mirror_nao_respondeu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sem o mirror, quem decide é a idade — e isso precisa estar visível.
+
+    Um `"storage": true` que veio da rede de segurança não é a mesma coisa que
+    um que veio da comparação com o que existe publicado.
+    """
+    scanner = _monta(monkeypatch, daily_local=28119, idade_horas=50, daily_publicada=None)
+
+    d = scanner.diagnostico()
+
+    assert d.saudavel is True
+    assert d.motivo == "mirror_sem_resposta_idade_aceitavel"
+    assert d.daily_publicada is None
+    assert d.versoes_atrasadas is None
+
+
+def test_o_diagnostico_do_caso_saudavel_diz_que_esta_em_dia(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A base de 50h do incidente, que era a mais recente que existia."""
+    scanner = _monta(monkeypatch, daily_local=28119, idade_horas=50, daily_publicada=28119)
+
+    d = scanner.diagnostico()
+
+    assert d.saudavel is True
+    assert d.motivo == "em_dia_com_o_mirror"
+    assert d.versoes_atrasadas == 0
+
+
+def test_healthy_continua_sendo_o_veredito_do_diagnostico(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """O `MalwareScanner` exige `healthy()`, e ele não pode divergir do resto.
+
+    Dois caminhos calculando a mesma coisa é como se cria o dia em que o `ready`
+    diz uma coisa e o upload faz outra.
+    """
+    reprovado = _monta(monkeypatch, daily_local=28119, idade_horas=20, daily_publicada=28130)
+    assert reprovado.healthy() is reprovado.diagnostico().saudavel is False
+
+    aprovado = _monta(monkeypatch, daily_local=28121, idade_horas=3, daily_publicada=28121)
+    assert aprovado.healthy() is aprovado.diagnostico().saudavel is True

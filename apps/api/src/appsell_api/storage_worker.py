@@ -58,11 +58,41 @@ class ScannerUnavailable(RuntimeError):
     pass
 
 
+@dataclass(frozen=True)
+class DiagnosticoDoScanner:
+    """O veredito e o que foi apurado para chegar nele.
+
+    `healthy()` devolve um booleano e joga fora o resto. Em 12/09/2026 isso
+    custou caro: o `ready` respondia `"storage": false` e descobrir que era a
+    base atrasada, e não o `clamd` fora, exigiu SSH no host e comparação manual
+    com o mirror — enquanto a loja seguia em 502.
+    """
+
+    saudavel: bool
+    motivo: str
+    daily_local: int | None = None
+    daily_publicada: int | None = None
+    versoes_atrasadas: int | None = None
+    idade_horas: float | None = None
+
+    def como_dicionario(self) -> dict[str, object]:
+        return {
+            "saudavel": self.saudavel,
+            "motivo": self.motivo,
+            "daily_local": self.daily_local,
+            "daily_publicada": self.daily_publicada,
+            "versoes_atrasadas": self.versoes_atrasadas,
+            "idade_horas": (None if self.idade_horas is None else round(self.idade_horas, 1)),
+        }
+
+
 class MalwareScanner(Protocol):
     provider_name: str
     production_capable: bool
 
     def healthy(self) -> bool: ...
+
+    def diagnostico(self) -> DiagnosticoDoScanner: ...
 
     def scan(self, path: Path) -> bool: ...
 
@@ -75,6 +105,9 @@ class DeterministicLocalScanner:
 
     def healthy(self) -> bool:
         return True
+
+    def diagnostico(self) -> DiagnosticoDoScanner:
+        return DiagnosticoDoScanner(saudavel=True, motivo="verificador_local")
 
     def scan(self, path: Path) -> bool:
         with path.open("rb") as source:
@@ -98,7 +131,16 @@ class ClamAvScanner:
         self.timeout_seconds = timeout_seconds
 
     def healthy(self) -> bool:
-        """Pergunta se o antivírus serve, e não há uma só medida para isso.
+        """O veredito sozinho, que é o que o `MalwareScanner` exige.
+
+        Um caminho só de decisão, em `diagnostico()`. Dois cálculos paralelos da
+        mesma coisa é como se cria o dia em que o `ready` diz uma coisa e o
+        upload faz outra.
+        """
+        return self.diagnostico().saudavel
+
+    def diagnostico(self) -> DiagnosticoDoScanner:
+        """Pergunta se o antivírus serve, e devolve também o porquê.
 
         Até 12/09/2026 media idade da assinatura contra um teto de 48h. Idade é
         o calendário de publicação do fornecedor, e a medida errava nos dois
@@ -111,23 +153,34 @@ class ClamAvScanner:
         que o `freshclam` usa. Quando ele não responde, a idade volta como rede
         de segurança, com teto largo: DNS fora não pode, sozinho, recusar o
         envio de arquivo de um vendedor.
+
+        O motivo viaja junto porque, no incidente, `"storage": false` obrigou a
+        abrir SSH no host para descobrir qual dos três problemas era.
         """
         try:
             if self._request(b"zPING\0", stream=None) != b"PONG":
-                return False
+                return DiagnosticoDoScanner(saudavel=False, motivo="scanner_sem_resposta")
             version = self._request(b"zVERSION\0", stream=None).decode("ascii")
             local = int(version.split("/")[1])
             construida = datetime.strptime(
                 version.rsplit("/", 1)[1], "%a %b %d %H:%M:%S %Y"
             ).replace(tzinfo=UTC)
-        except (IndexError, UnicodeDecodeError, ValueError, ScannerUnavailable):
-            return False
+        except ScannerUnavailable:
+            return DiagnosticoDoScanner(saudavel=False, motivo="scanner_sem_resposta")
+        except (IndexError, UnicodeDecodeError, ValueError):
+            return DiagnosticoDoScanner(saudavel=False, motivo="versao_ilegivel")
 
         idade = datetime.now(UTC) - construida
+        horas = idade.total_seconds() / 3600
         if idade < -_RELOGIO_ADIANTADO:
             # Assinatura do futuro é relógio errado de um dos dois lados, e aí
             # nenhuma das contas abaixo significa o que deveria.
-            return False
+            return DiagnosticoDoScanner(
+                saudavel=False,
+                motivo="assinatura_no_futuro",
+                daily_local=local,
+                idade_horas=horas,
+            )
 
         publicada = daily_publicada_no_mirror(timeout_seconds=self.timeout_seconds)
         # Estar à frente do mirror não existe: não há como ter uma base que ele
@@ -136,11 +189,31 @@ class ClamAvScanner:
         # aprovaria os dois. Um TXT forjado anunciando `1` daria o antivírus
         # como saudável para sempre, com o `freshclam` parado ou não.
         if publicada is None or publicada < local:
-            return idade <= _IDADE_MAXIMA_SEM_MIRROR
+            aceitavel = idade <= _IDADE_MAXIMA_SEM_MIRROR
+            return DiagnosticoDoScanner(
+                saudavel=aceitavel,
+                motivo=(
+                    "mirror_sem_resposta_idade_aceitavel"
+                    if aceitavel
+                    else "mirror_sem_resposta_base_parada"
+                ),
+                daily_local=local,
+                idade_horas=horas,
+            )
+
         # Contado em versões, não em horas: a distância até o mirror é o que diz
         # se o `freshclam` está buscando o que existe. A idade da assinatura é
         # do fornecedor, e já foi ela que, medida sozinha, tirou a loja do ar.
-        return (publicada - local) <= _VERSOES_DE_ATRASO_TOLERADAS
+        atraso = publicada - local
+        em_dia = atraso <= _VERSOES_DE_ATRASO_TOLERADAS
+        return DiagnosticoDoScanner(
+            saudavel=em_dia,
+            motivo="em_dia_com_o_mirror" if em_dia else "base_atrasada_em_relacao_ao_mirror",
+            daily_local=local,
+            daily_publicada=publicada,
+            versoes_atrasadas=atraso,
+            idade_horas=horas,
+        )
 
     def scan(self, path: Path) -> bool:
         response = self._request(b"zINSTREAM\0", stream=path)
