@@ -32,6 +32,7 @@ from .storage_s3 import S3Storage
 from .storage_worker import (
     ClamAvScanner,
     DeterministicLocalScanner,
+    DiagnosticoDoScanner,
     MalwareScanner,
     assert_storage_capabilities,
     assert_storage_worker_ready,
@@ -262,12 +263,19 @@ async def ready(response: Response) -> dict[str, Any]:
     estado = await _dependencias_prontas()
     if not estado["pronto"]:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-    return {
+    corpo: dict[str, Any] = {
         "status": "ok" if estado["pronto"] else "unavailable",
         "database": estado["database"],
         "storage": estado["storage"],
         "pdf_sandbox": estado["pdf_sandbox"],
     }
+    # `"storage": false` sozinho não diz o que fazer. Em 12/09/2026 descobrir
+    # que a causa era a base atrasada, e não o `clamd` fora, custou SSH no host
+    # e comparação manual com o mirror — com a loja em 502 o tempo inteiro.
+    diagnostico = getattr(app.state, "asset_scanner_diagnostico", None)
+    if diagnostico is not None:
+        corpo["antivirus"] = diagnostico
+    return corpo
 
 
 @app.get("/health/startup")
@@ -342,6 +350,29 @@ def _cached_dependency_ready(
     )
 
 
+def _registra_diagnostico_do_scanner(
+    app_instance: FastAPI, diagnostico: DiagnosticoDoScanner
+) -> None:
+    """Guarda o diagnóstico para o `ready` e registra quando o veredito muda.
+
+    Na transição, e não a cada passagem: o monitor roda a cada dez segundos, e
+    repetir a mesma linha nesse ritmo enterraria a informação em vez de mostrá-la.
+
+    Em 26/08/2026 a mesma degradação que derrubou a loja em 12/09 apareceu e
+    passou sozinha em cerca de 15h, sem ninguém saber. Não havia nada para ler.
+    """
+    anterior = getattr(app_instance.state, "asset_scanner_diagnostico", None)
+    app_instance.state.asset_scanner_diagnostico = diagnostico.como_dicionario()
+    motivo_anterior = anterior.get("motivo") if isinstance(anterior, dict) else None
+    if motivo_anterior == diagnostico.motivo:
+        return
+    log = get_logger(__name__)
+    if diagnostico.saudavel:
+        log.info("antivirus_saudavel", **diagnostico.como_dicionario())
+    else:
+        log.error("antivirus_degradado", **diagnostico.como_dicionario())
+
+
 async def _monitor_storage_dependencies(app_instance: FastAPI, stop: asyncio.Event) -> None:
     while not stop.is_set():
         await _refresh_storage_dependencies(app_instance)
@@ -372,7 +403,9 @@ async def _refresh_storage_dependencies(
             if storage is None or scanner is None:
                 raise RuntimeError("storage dependencies are unavailable")
             await to_thread.run_sync(storage.probe_availability)
-            operational = await to_thread.run_sync(scanner.healthy)
+            diagnostico = await to_thread.run_sync(scanner.diagnostico)
+            operational = diagnostico.saudavel
+            _registra_diagnostico_do_scanner(app_instance, diagnostico)
         except Exception:
             operational = False
 
