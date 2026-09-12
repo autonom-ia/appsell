@@ -976,7 +976,14 @@ def _route_parameters(
 
 async def _storage(request: Request, internal: AuthenticatedInternalRequest) -> S3Storage:
     storage: S3Storage | None = getattr(request.app.state, "storage", None)
-    if storage is None:
+    # Ter o objeto não é o mesmo que poder aceitar arquivo. Desde 12/09/2026 a
+    # API sobe com a dependência degradada em vez de entrar em laço de reinício
+    # e levar a loja junto, e o monitor precisa do objeto em mãos para reavaliar
+    # e recuperar sozinho — então a presença dele deixou de ser prova de nada.
+    # Sem o antivírus, o que entrasse aqui ficaria parado na quarentena à espera
+    # de um worker que não vai processá-lo: melhor a recusa na porta.
+    degradado = not bool(getattr(request.app.state, "storage_runtime_ready", False))
+    if storage is None or degradado:
         await internal.consume_rejected_request()
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

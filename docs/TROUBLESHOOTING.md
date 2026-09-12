@@ -1,5 +1,64 @@
 # TROUBLESHOOTING
 
+## Problema: `502` no site com a API em laço de reinício
+
+### Sintoma
+
+`sell.autonomia.site` devolve `502`. `docker ps -a` mostra a task da API saindo
+com `exit 3` a cada poucos segundos, e a do `web` sendo derrubada junto com
+`exit 143` sem ter problema próprio.
+
+### Causa provável
+
+Alguma dependência do storage está reprovada e a subida não tolera isso, ou o
+`HEALTHCHECK` do contêiner está sondando um endereço que agrega dependências
+externas.
+
+Em 12/09/2026 as duas coisas aconteceram juntas: o `healthy()` do antivírus
+reprovou a assinatura por idade — com o `clamd` de pé e a versão mais recente
+que existia publicada — e isso era fatal no `lifespan`. O site ficou 3h06 fora.
+
+### Diagnóstico read-only
+
+```sh
+# a API está saindo por qual motivo?
+docker service logs --tail 60 sell-autonomia_api 2>&1 | grep -i "startup failed" -B40
+
+# o que o processo acha das próprias dependências
+docker exec $(docker ps --filter name=sell-autonomia_api -q | head -1) \
+  python -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8000/health/ready',timeout=5).read().decode())"
+
+# a assinatura local está atrás da publicada?
+dig +short TXT current.cvd.clamav.net            # 3º campo: daily publicada
+docker exec $(docker ps --filter name=sell-autonomia_clamav -q) \
+  sh -c 'printf "zVERSION\0" | nc 127.0.0.1 3310'
+```
+
+### Correção
+
+Se a assinatura local estiver atrás da publicada, force a verificação sem
+esperar o ciclo — é a mesma operação que roda diariamente, apenas fora de hora:
+
+```sh
+docker exec $(docker ps --filter name=sell-autonomia_clamav -q) \
+  sh -c 'kill -USR1 $(pgrep -f "freshclam.*--daemon")'
+```
+
+O `freshclam` notifica o `clamd` sozinho (`NotifyClamd` no `freshclam.conf`), e
+a API recupera no ciclo seguinte do monitor, sem precisar de deploy.
+
+### Contrato em vigor
+
+- A API **sobe** com storage ou antivírus reprovados. Quem conta a verdade é o
+  `/health/ready`, e o `_monitor_storage_dependencies` recupera sozinho quando a
+  dependência volta.
+- O caminho de upload é o único que recusa nesse estado: `503`
+  `asset_storage_unavailable`. Nada entra sem ser escaneado.
+- O `HEALTHCHECK` dos contêineres sonda `/health/startup`, não `/health/ready`.
+  Enquanto a task nunca ficou pronta ele espelha o `ready`, o que impede a
+  promoção de task quebrada num deploy; depois disso responde pelo processo, o
+  que impede que dependência degradada mate task saudável.
+
 ## Problema: criação de produto retorna 403 após atualização
 
 ### Sintoma

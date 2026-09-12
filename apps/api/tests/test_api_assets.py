@@ -211,12 +211,17 @@ def intent_body(**overrides: Any) -> bytes:
 
 @asynccontextmanager
 async def client_for(
-    auth: FakeAuth, storage: FakeStorage | None, *, video_upload_enabled: bool = False
+    auth: FakeAuth,
+    storage: FakeStorage | None,
+    *,
+    video_upload_enabled: bool = False,
+    storage_runtime_ready: bool = True,
 ) -> AsyncIterator[httpx.AsyncClient]:
     app = FastAPI()
     app.include_router(router)
     app.state.internal_auth = auth
     app.state.storage = storage
+    app.state.storage_runtime_ready = storage_runtime_ready
     app.state.settings = SimpleNamespace(
         storage_quarantine_bucket="appsell-quarantine",
         storage_ready_bucket="appsell-ready",
@@ -532,6 +537,36 @@ async def test_storage_unavailable_consumes_authenticated_request() -> None:
     assert response.json() == {"detail": "asset_storage_unavailable"}
     assert auth.rejected_requests == 1
     assert auth.session.calls == []
+
+
+@pytest.mark.asyncio
+async def test_upload_recusa_enquanto_a_dependencia_de_storage_esta_degradada() -> None:
+    """Ter o objeto de storage em mãos não é o mesmo que poder aceitar arquivo.
+
+    Desde 12/09/2026 a API sobe mesmo com o antivírus reprovado, em vez de
+    entrar em laço de reinício e levar a loja inteira junto. O preço disso é que
+    `app.state.storage` passa a existir com a dependência degradada — o monitor
+    precisa do objeto em mãos para reavaliar e recuperar sozinho.
+
+    Se o guarda olhasse só a presença do objeto, o upload seria aceito e o
+    arquivo ficaria parado na quarentena esperando um worker que não vai
+    processá-lo. Recusar na porta, com 503, é o que mantém o fail-closed: nada
+    entra sem ser escaneado, e o vendedor recebe a recusa na hora em vez de um
+    envio que morre em silêncio.
+    """
+    auth = FakeAuth(seller=SELLER, scalar_values=[])
+    storage = FakeStorage(uuid4())
+    async with client_for(auth, storage, storage_runtime_ready=False) as client:
+        response = await client.post(
+            asset_path("/upload-intents"),
+            content=intent_body(),
+            headers={"content-type": "application/json"},
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "asset_storage_unavailable"}
+    assert storage.presign_calls == [], "não pode assinar URL com a dependência degradada"
+    assert auth.rejected_requests == 1
 
 
 @pytest.mark.asyncio
