@@ -584,3 +584,25 @@ def test_clamd_fora_reprova_antes_de_qualquer_pergunta_sobre_versao(
 
     assert ClamAvScanner("/run/appsell-clamav/clamd.sock").healthy() is False
     assert consultas == [], "não faz sentido perguntar ao mirror com o scanner fora"
+
+
+def test_mirror_anunciando_versao_menor_que_a_local_nao_aprova_sozinho(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Estar à frente do mirror não existe, então a resposta não serve.
+
+    Não há como ter uma base que o mirror nunca publicou. Quando a conta dá
+    negativa, ou o fornecedor reverteu uma publicação, ou a resposta não veio
+    de quem devia — e a subtração crua aprovaria os dois casos: com um TXT
+    forjado anunciando `1`, `1 - 28121` passa em qualquer teto e o antivírus
+    seria dado como saudável para sempre, inclusive com o `freshclam` parado
+    há meses.
+
+    A resposta implausível é descartada e a idade decide, que é o mesmo
+    caminho de quando o mirror não responde.
+    """
+    recente = _monta(monkeypatch, daily_local=28121, idade_horas=3, daily_publicada=1)
+    assert recente.healthy() is True, "a idade ainda é boa, então o upload segue"
+
+    parada = _monta(monkeypatch, daily_local=28121, idade_horas=720, daily_publicada=1)
+    assert parada.healthy() is False, "sem mirror confiável, a idade precisa valer"

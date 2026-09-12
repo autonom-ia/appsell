@@ -22,7 +22,9 @@ from __future__ import annotations
 import random
 import socket
 import struct
+import threading
 from pathlib import Path
+from time import monotonic
 
 _MIRROR = "current.cvd.clamav.net"
 _RESOLV_CONF = Path("/etc/resolv.conf")
@@ -36,8 +38,44 @@ _TAMANHO_MAXIMO = 4096
 _SALTOS_MAXIMOS = 16
 
 
+# A base publicada muda cerca de uma vez por dia, e `healthy()` é perguntado
+# antes de cada arquivo da fila e a cada passagem do monitor. Sem reaproveitar,
+# cada uma dessas perguntas vira uma consulta — e, com o DNS calado, cada uma
+# espera o tempo limite antes de responder.
+_VALIDADE_DA_RESPOSTA = 300.0
+# Falha fica valendo bem menos: é estado que se quer reavaliar logo, não um
+# veredito para carregar por cinco minutos.
+_VALIDADE_DA_FALHA = 30.0
+
+_cache_lock = threading.Lock()
+_cache: tuple[float, int | None] | None = None
+
+
+def limpa_cache_do_mirror() -> None:
+    """Descarta a resposta guardada. Existe para os testes não vazarem estado."""
+    global _cache
+    with _cache_lock:
+        _cache = None
+
+
 def daily_publicada_no_mirror(*, timeout_seconds: float = 3.0) -> int | None:
     """A base diária anunciada pelo mirror, ou `None` se não der para saber."""
+    global _cache
+    agora = monotonic()
+    with _cache_lock:
+        if _cache is not None:
+            guardado_em, valor = _cache
+            validade = _VALIDADE_DA_RESPOSTA if valor is not None else _VALIDADE_DA_FALHA
+            if agora - guardado_em <= validade:
+                return valor
+
+    valor = _consulta(timeout_seconds=timeout_seconds)
+    with _cache_lock:
+        _cache = (monotonic(), valor)
+    return valor
+
+
+def _consulta(*, timeout_seconds: float) -> int | None:
     for servidor in _nameservers():
         texto = _consulta_txt(servidor, timeout_seconds=timeout_seconds)
         if texto is None:

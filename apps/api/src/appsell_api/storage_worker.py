@@ -130,7 +130,12 @@ class ClamAvScanner:
             return False
 
         publicada = daily_publicada_no_mirror(timeout_seconds=self.timeout_seconds)
-        if publicada is None:
+        # Estar à frente do mirror não existe: não há como ter uma base que ele
+        # nunca publicou. A conta dando negativa é o fornecedor revertendo uma
+        # publicação ou a resposta não vindo de quem devia — e a subtração crua
+        # aprovaria os dois. Um TXT forjado anunciando `1` daria o antivírus
+        # como saudável para sempre, com o `freshclam` parado ou não.
+        if publicada is None or publicada < local:
             return idade <= _IDADE_MAXIMA_SEM_MIRROR
         # Contado em versões, não em horas: a distância até o mirror é o que diz
         # se o `freshclam` está buscando o que existe. A idade da assinatura é

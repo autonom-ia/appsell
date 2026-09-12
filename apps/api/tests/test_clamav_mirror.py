@@ -2,11 +2,22 @@
 
 from __future__ import annotations
 
+import random
 import struct
 
 import pytest
 
 from appsell_api import clamav_mirror
+
+
+@pytest.fixture(autouse=True)
+def _cache_limpo() -> None:
+    """Estado global entre testes vira teste que passa pelo motivo errado.
+
+    O cache do módulo é compartilhado por processo. Sem zerar entre um teste e
+    outro, o primeiro a rodar decide a resposta dos seguintes.
+    """
+    clamav_mirror.limpa_cache_do_mirror()
 
 
 def _resposta_txt(pedido_id: int, texto: str, *, tipo: int = 16) -> bytes:
@@ -128,3 +139,88 @@ def _responde(monkeypatch: pytest.MonkeyPatch, monta) -> None:  # type: ignore[n
             return monta(enviados[-1]), ("10.0.0.1", 53)
 
     monkeypatch.setattr("appsell_api.clamav_mirror.socket.socket", lambda *_a: _SocketFalso())
+
+
+def test_a_resposta_e_reusada_em_vez_de_consultar_a_cada_pergunta(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`healthy()` pergunta antes de cada arquivo da fila e a cada passagem do monitor.
+
+    Sem reaproveitar, cada uma dessas perguntas vira uma consulta de DNS. A base
+    publicada muda cerca de uma vez por dia, então guardar a resposta por alguns
+    minutos não perde precisão nenhuma.
+    """
+    clamav_mirror.limpa_cache_do_mirror()
+    consultas: list[int] = []
+
+    def _conta(*, timeout_seconds: float) -> int:
+        consultas.append(1)
+        return 28121
+
+    monkeypatch.setattr(clamav_mirror, "_consulta", _conta)
+
+    for _ in range(20):
+        assert clamav_mirror.daily_publicada_no_mirror() == 28121
+
+    assert consultas == [1], f"consultou {len(consultas)} vezes em 20 perguntas"
+
+
+def test_falha_fica_valendo_bem_menos_que_uma_resposta_boa(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Não saber é estado para reavaliar logo, não veredito para carregar.
+
+    Guardar um `None` pelo mesmo tempo de uma resposta boa faria uma falha
+    momentânea de DNS manter o sinal desligado muito depois de a rede voltar.
+    """
+    assert clamav_mirror._VALIDADE_DA_FALHA < clamav_mirror._VALIDADE_DA_RESPOSTA
+
+    clamav_mirror.limpa_cache_do_mirror()
+    respostas = iter([None, 28121])
+    monkeypatch.setattr(clamav_mirror, "_consulta", lambda **_kwargs: next(respostas))
+    relogio = iter([0.0, 0.0, 60.0, 60.0, 60.0])
+    monkeypatch.setattr(clamav_mirror, "monotonic", lambda: next(relogio))
+
+    assert clamav_mirror.daily_publicada_no_mirror() is None
+    # Passado mais que a validade da falha e menos que a de uma resposta boa.
+    assert clamav_mirror.daily_publicada_no_mirror() == 28121
+
+
+def test_nenhum_pedaco_de_resposta_faz_o_leitor_estourar() -> None:
+    """Todo prefixo de uma resposta boa, e 20 mil respostas de lixo.
+
+    O leitor anda por tamanhos que vieram da rede. A cada `struct.unpack` e a
+    cada fatia existe a chance de ler além do que chegou, e um pacote cortado no
+    lugar certo é a forma mais barata de descobrir isso em produção. Aqui a
+    varredura é exaustiva nos prefixos e aleatória com semente fixa no resto —
+    o que falhar, falha igual na próxima execução.
+    """
+    pedido_id = 0x1234
+    completa = _resposta_txt(pedido_id, "1.4.6:63:28121:1789210800:1:90:49192:339")
+
+    for corte in range(len(completa) + 1):
+        clamav_mirror._le_resposta(completa[:corte], pedido_id=pedido_id)
+
+    # Semente fixa de propósito: o que falhar aqui falha igual na próxima
+    # execução. Não há nada de secreto neste sorteio.
+    sorteio = random.Random(7)  # noqa: S311
+    cabecalho = completa[:4]
+    for _ in range(20_000):
+        tamanho = sorteio.randrange(0, 80)
+        lixo = bytes(sorteio.randrange(256) for _ in range(tamanho))
+        clamav_mirror._le_resposta(cabecalho + lixo, pedido_id=pedido_id)
+
+
+def test_ponteiro_de_compressao_apontando_para_si_mesmo_nao_prende_o_leitor() -> None:
+    """Um nome que aponta para o próprio começo é o laço clássico do formato.
+
+    O leitor não segue ponteiro — anda por cima dele e para —, então o ciclo não
+    chega a existir. Este teste é o que garante que continue assim se alguém
+    trocar essa decisão por uma que resolva o nome de verdade.
+    """
+    pedido_id = 0x1234
+    cabecalho = struct.pack("!HHHHHH", pedido_id, 0x8180, 1, 1, 0, 0)
+    # Pergunta cujo nome é só um ponteiro para onde ele mesmo começa.
+    veneno = cabecalho + b"\xc0\x0c" + struct.pack("!HH", 16, 1) + b"\xc0\x0c" * 40
+
+    assert clamav_mirror._le_resposta(veneno, pedido_id=pedido_id) is None
