@@ -33,7 +33,16 @@ describe("EasyPanel native runtime contract", () => {
     expect(webDockerfile).toContain("/app/.next/standalone");
     expect(webDockerfile).toContain("/app/public");
     expect(webDockerfile).toContain('CMD ["node", "server.js"]');
-    expect(webDockerfile).toContain("/api/health/ready");
+    // O `HEALTHCHECK` sonda `startup`, não `ready` nem `live`, e a diferença
+    // tem história dos dois lados. Sondar `ready` fazia o Swarm matar um
+    // processo saudável quando uma dependência degradava: em 12/09/2026 a API
+    // entrou em laço de reinício e derrubou o `web` junto, repetidamente, com
+    // ele servindo catálogo e páginas públicas o tempo todo. Sondar `live` puro
+    // devolveria o problema de 30/08/2026, quando uma task subiu quebrada e foi
+    // promovida em silêncio. O `startup` espelha o `ready` até a task ficar
+    // pronta uma vez, e responde pelo processo daí em diante.
+    expect(webDockerfile).toContain("/api/health/startup");
+    expect(webDockerfile).not.toContain("/api/health/ready");
     expect(webDockerfile).not.toContain("/api/health/live').then");
   });
 

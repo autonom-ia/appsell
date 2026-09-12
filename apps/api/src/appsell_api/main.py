@@ -20,7 +20,7 @@ from .email_worker import run_email_worker_loop
 from .fulfillment_worker import run_fulfillment_worker_loop
 from .internal_requests import InternalRequestAuthenticator
 from .learning_routes import router as learning_router
-from .logging_setup import configure_logging, install_request_logging
+from .logging_setup import configure_logging, get_logger, install_request_logging
 from .payout_routes import router as payout_router
 from .payout_sync_routes import router as payout_sync_router
 from .platform_bootstrap_routes import router as platform_bootstrap_router
@@ -59,6 +59,10 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     app.state.webhook_secrets = WebhookSecretResolver.from_settings(settings)
     app.state.storage = None
     app.state.asset_scanner = None
+    # Vira verdadeiro na primeira vez que as dependências ficam prontas, e não
+    # volta atrás: é o que separa "esta task nunca serviu" de "serviu e alguma
+    # dependência degradou depois". Quem lê isso é o `startup`.
+    app.state.ever_ready = False
     app.state.inline_asset_worker_enabled = False
     app.state.storage_runtime_ready = settings.environment in {"local", "ci"}
     app.state.storage_controls_ready = settings.environment in {"local", "ci"}
@@ -93,19 +97,43 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
                     allowed_origin=settings.storage_allowed_origin
                 )
             )
-        await to_thread.run_sync(
-            lambda: assert_storage_worker_ready(
-                environment=settings.environment,
-                storage=storage,
-                scanner=scanner,
-                allowed_origin=settings.storage_allowed_origin,
-                cors_mode=getattr(settings, "storage_cors_mode", "s3"),
-            )
-        )
+        # As dependências ficam registradas mesmo quando a checagem abaixo
+        # reprova: quem decide se elas estão utilizáveis é o monitor periódico, e
+        # para reavaliar e recuperar ele precisa delas em mãos.
         app.state.storage = storage
         app.state.asset_scanner = scanner
-        app.state.storage_runtime_ready = True
-        app.state.storage_controls_ready = True
+        # Mesmo motivo do sandbox, alguns parágrafos acima, e pelo mesmo
+        # precedente: não parar de subir por causa disto. Em 12/09/2026 o
+        # antivírus reprovou a assinatura por idade — com o `clamd` de pé e a
+        # versão mais recente que existia publicada — e esta linha era um
+        # `raise`. A API não subiu, o Swarm religou, e `sell.autonomia.site`
+        # ficou 3h06 em 502: login, catálogo, checkout e leitura de PDF já
+        # validado caíram junto, e nenhum deles passa perto do antivírus.
+        #
+        # O antivírus responde pelo caminho de upload, e é só esse caminho que
+        # deve recusar quando ele falta — `_storage` devolve 503 enquanto durar.
+        # Quem conta a verdade é o `ready`, e o monitor recupera sozinho quando
+        # a dependência volta.
+        aprovado = True
+        try:
+            await to_thread.run_sync(
+                lambda: assert_storage_worker_ready(
+                    environment=settings.environment,
+                    storage=storage,
+                    scanner=scanner,
+                    allowed_origin=settings.storage_allowed_origin,
+                    cors_mode=getattr(settings, "storage_cors_mode", "s3"),
+                )
+            )
+        except Exception as erro:
+            get_logger(__name__).error(
+                "dependencia_de_storage_indisponivel_na_subida",
+                erro=str(erro),
+                capacidade_recusada="upload_de_arquivo",
+            )
+            aprovado = False
+        app.state.storage_runtime_ready = aprovado
+        app.state.storage_controls_ready = aprovado
         # O sandbox não entra aqui. Ter storage e ter parser de PDF são coisas
         # diferentes, e esta linha desfazia a sonda de alguns parágrafos acima:
         # o serviço isolado podia estar fora e a API respondia pronta até a
@@ -217,6 +245,47 @@ async def live() -> dict[str, str]:
 
 @app.get("/health/ready")
 async def ready(response: Response) -> dict[str, Any]:
+    estado = await _dependencias_prontas()
+    if not estado["pronto"]:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return {
+        "status": "ok" if estado["pronto"] else "unavailable",
+        "database": estado["database"],
+        "storage": estado["storage"],
+        "pdf_sandbox": estado["pdf_sandbox"],
+    }
+
+
+@app.get("/health/startup")
+async def startup(response: Response) -> dict[str, Any]:
+    """O endereço que o `HEALTHCHECK` do contêiner sonda.
+
+    Ele responde a uma pergunta diferente da do `ready`: não "dá para me mandar
+    tráfego agora", e sim "esta task chegou a servir alguma vez". São os dois
+    lados do mesmo contrato, e usar o `ready` aqui dava só um deles.
+
+    Enquanto a task nunca ficou pronta, espelha o `ready`. É o que evita a
+    promoção silenciosa de task quebrada num deploy — em 30/08/2026 o socket do
+    sandbox sumiu, a task subiu assim, foi promovida e todo PDF passou a abrir
+    sem botão.
+
+    Depois que ficou pronta uma vez, responde pelo processo e só por ele. É o
+    que faltava em 12/09/2026: com `retries=6` e `interval=10s`, um minuto de
+    antivírus fora bastava para o Swarm matar uma task saudável, e a seguinte
+    subia no mesmo estado. Degradação em regime é assunto do `ready`, que
+    continua devolvendo 503 e tirando a task de rotação enquanto durar.
+    """
+    if not bool(getattr(app.state, "ever_ready", False)):
+        estado = await _dependencias_prontas()
+        if estado["pronto"]:
+            app.state.ever_ready = True
+        else:
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+            return {"status": "starting", "ever_ready": False}
+    return {"status": "ok", "ever_ready": True}
+
+
+async def _dependencias_prontas() -> dict[str, Any]:
     engine: AsyncEngine = app.state.db_engine
     database = await database_ready(engine)
     storage = await _storage_ready()
@@ -227,11 +296,8 @@ async def ready(response: Response) -> dict[str, Any]:
         settings,
         required=settings.pdf_sandbox_required,
     )
-    ready_now = database and storage and pdf_sandbox
-    if not ready_now:
-        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     return {
-        "status": "ok" if ready_now else "unavailable",
+        "pronto": database and storage and pdf_sandbox,
         "database": database,
         "storage": storage,
         "pdf_sandbox": pdf_sandbox,
