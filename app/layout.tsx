@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./styles.css";
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://sell.autonomia.site"),
   title: "Autonom.ia Sell",
   description: "A plataforma da Autonom.ia para criar, vender e entregar produtos digitais.",
 };

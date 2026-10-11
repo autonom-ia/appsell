@@ -22,6 +22,7 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
   const server = startBff(port, distDir, {
     APPSELL_REDIS_URL: redis.url,
     APPSELL_REDIS_PREFIX: `appsell:test:demo-${suffix}`,
+    APPSELL_TRUST_PROXY_HEADERS: "true",
     APPSELL_SESSION_HMAC_KEY_B64: randomBytes(32).toString("base64"),
     APPSELL_CSRF_HMAC_KEY_B64: randomBytes(32).toString("base64"),
     APPSELL_PUBLIC_ORIGIN: origin,
@@ -41,6 +42,31 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
 
   try {
     await waitForBff(server, port);
+    const storefront = await fetch(`${origin}/api/public/storefronts/autonomia-demo?limit=12`);
+    expect(storefront.status, await storefront.clone().text()).toBe(200);
+    expect(storefront.headers.get("cache-control")).toBe("no-store, max-age=0");
+    expect(storefront.headers.get("cdn-cache-control")).toBe("no-store");
+    const storefrontPayload = await storefront.json() as {
+      seller: { slug: string; name: string };
+      products: Array<{ slug: string; title: string; course_count: number }>;
+      next_cursor: string | null;
+    };
+    expect(storefrontPayload.seller).toEqual({ slug: "autonomia-demo", name: "Autonom.ia Demo" });
+    expect(storefrontPayload.products).toHaveLength(1);
+    expect(storefrontPayload.products[0]).toMatchObject({
+      slug: "codex-na-pratica",
+      title: "Codex na prática",
+      course_count: 1
+    });
+    const publicBytes = JSON.stringify(storefrontPayload);
+    expect(publicBytes).not.toContain("seller_organization_id");
+    expect(publicBytes).not.toContain("snapshot");
+    expect(publicBytes).not.toContain("modules");
+    expect(publicBytes).not.toContain("lessons");
+    expect(publicBytes).not.toContain("assets");
+    expect((await fetch(`${origin}/api/public/storefronts/Autonomia-Demo`)).status).toBe(404);
+    expect((await fetch(`${origin}/api/public/storefronts/autonomia-demo/products/nao-publicado`)).status).toBe(404);
+
     const invalid = await fetch(`${origin}/auth/login?persona=attacker`, { redirect: "manual" });
     expect(invalid.status).toBe(400);
 
@@ -105,6 +131,52 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     expect(forbiddenPdf.status).not.toBe(200);
 
     browser = await chromium.launch();
+    const publicContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    const publicPage = await publicContext.newPage();
+    await publicPage.goto(`${origin}/s/autonomia-demo`);
+    await pwExpect(publicPage.getByRole("heading", { level: 1, name: "Autonom.ia Demo" })).toBeVisible();
+    await pwExpect(publicPage.getByRole("heading", { level: 3, name: "Codex na prática" })).toBeVisible();
+    await publicPage.getByRole("link", { name: "Conhecer produto" }).click();
+    await publicPage.waitForURL(`${origin}/s/autonomia-demo/codex-na-pratica`);
+    await pwExpect(publicPage.getByRole("heading", { level: 1, name: "Codex na prática" })).toBeVisible();
+    await pwExpect(publicPage.getByRole("heading", { level: 2, name: "O que você vai encontrar" })).toBeVisible();
+    expect(await publicPage.locator("body").innerText()).not.toContain("SEGREDO-DA-AULA-NUNCA-PUBLICAR");
+    for (const width of [320, 390, 768, 1024]) {
+      await publicPage.setViewportSize({ width, height: 844 });
+      await publicPage.goto(`${origin}/s/autonomia-demo`);
+      const layout = await publicPage.evaluate(() => ({
+        client: document.documentElement.clientWidth,
+        scroll: document.documentElement.scrollWidth,
+        shortTargets: [...document.querySelectorAll("a,button")].flatMap((target) => {
+          const rect = target.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0 && (rect.width < 44 || rect.height < 44)
+            ? [{ name: target.textContent?.trim(), width: rect.width, height: rect.height }]
+            : [];
+        })
+      }));
+      expect(layout.scroll, `public overflow at ${width}px`).toBeLessThanOrEqual(layout.client);
+      expect(layout.shortTargets, `public short targets at ${width}px`).toEqual([]);
+    }
+    await publicPage.setViewportSize({ width: 320, height: 844 });
+    await publicPage.evaluate(() => { document.documentElement.style.fontSize = "200%"; });
+    const zoomed = await publicPage.evaluate(() => ({
+      client: document.documentElement.clientWidth,
+      scroll: document.documentElement.scrollWidth
+    }));
+    expect(zoomed.scroll).toBeLessThanOrEqual(zoomed.client);
+    await publicPage.evaluate(() => { document.documentElement.style.fontSize = "100%"; });
+    await publicPage.emulateMedia({ reducedMotion: "reduce" });
+    await publicPage.goto(`${origin}/s/autonomia-demo`);
+    await publicPage.keyboard.press("Tab");
+    await pwExpect(publicPage.getByRole("link", { name: "Pular para o conteúdo" })).toBeFocused();
+    await publicPage.keyboard.press("Enter");
+    await pwExpect(publicPage.locator("#conteudo-vitrine")).toBeFocused();
+    await publicPage.goto(`${origin}/s/autonomia-demo/codex-na-pratica`);
+    await publicPage.getByRole("link", { name: "Entrar como aluno demo" }).click();
+    await publicPage.waitForURL(`${origin}/library`);
+    await pwExpect(publicPage.getByRole("heading", { name: "Minha biblioteca" })).toBeVisible();
+    await publicContext.close();
+
     const buyerContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
     const buyerPage = await buyerContext.newPage();
     await buyerPage.goto(origin);
@@ -112,6 +184,10 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     await buyerPage.waitForURL(`${origin}/library`);
     await pwExpect(buyerPage.getByRole("heading", { name: "Minha biblioteca" })).toBeVisible();
     await pwExpect(buyerPage.getByRole("heading", { level: 2, name: "Codex na prática", exact: true })).toBeVisible();
+    await buyerPage.getByRole("link", { name: "Ver produto e catálogo de Autonom.ia Demo" }).click();
+    await buyerPage.waitForURL(`${origin}/s/autonomia-demo/codex-na-pratica`);
+    await pwExpect(buyerPage.getByRole("heading", { level: 1, name: "Codex na prática" })).toBeVisible();
+    await buyerPage.goto(`${origin}/library`);
     await buyerPage.getByRole("link", { name: "Começar curso" }).click();
     await buyerPage.waitForURL(/\/library\/items\/[0-9a-f-]+\/lessons\/[0-9a-f-]+$/);
     await pwExpect(buyerPage.getByRole("heading", { level: 1, name: "O que é Codex e quando usar" })).toBeVisible();
@@ -140,6 +216,39 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     await pwExpect(adminPage.getByText("Nenhum produto ativo está disponível para esta conta.")).toBeVisible();
     expect((await adminPage.request.get(`${origin}${assetHref}`)).status()).not.toBe(200);
     await adminContext.close();
+
+    const unavailable = await fetch(`${origin}/storefront-unavailable?seller=autonomia-demo`);
+    expect(unavailable.status).toBe(503);
+    expect(unavailable.headers.get("retry-after")).toBe("30");
+    expect(await unavailable.text()).toContain("<h1>Não foi possível carregar esta vitrine.</h1>");
+
+    const rateHeaders = { "x-forwarded-for": "203.0.113.200" };
+    for (let index = 0; index < 60; index += 1) {
+      const allowed = await fetch(`${origin}/api/public/storefronts/autonomia-demo?limit=1`, {
+        headers: rateHeaders
+      });
+      expect(allowed.status, `rate request ${index + 1}`).toBe(200);
+    }
+    const limited = await fetch(`${origin}/s/autonomia-demo`, { headers: rateHeaders });
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get("retry-after")).toBe("60");
+    const limitedHtml = await limited.text();
+    expect(limitedHtml).toContain("<main>");
+    expect(limitedHtml).toContain("<h1>A vitrine precisa de um instante.</h1>");
+    expect(limitedHtml).toContain("Tentar novamente");
+
+    await redis.stopServer();
+    const protectedFailure = await fetch(`${origin}/s/autonomia-demo`, {
+      headers: { "x-forwarded-for": "203.0.113.201" }
+    });
+    expect(protectedFailure.status).toBe(503);
+    const protectedFailureHtml = await protectedFailure.text();
+    expect(protectedFailureHtml).toContain("<h1>Não foi possível carregar esta vitrine.</h1>");
+    expect(protectedFailureHtml).toContain("Ir para o início");
+
+    await redis.restartServer();
+    const recovered = await waitForStorefrontRecovery(origin, server);
+    expect(recovered.status, await recovered.clone().text()).toBe(200);
   } finally {
     await browser?.close();
     await stopBff(server);
@@ -148,6 +257,21 @@ test.skipIf(!domainApiUrl)("serves isolated admin and buyer demos with protected
     await Promise.all(generatedFiles.map((file, index) => writeFile(join(process.cwd(), file), originals[index] ?? "")));
   }
 }, 60_000);
+
+async function waitForStorefrontRecovery(origin: string, server: ChildProcess) {
+  const deadline = Date.now() + 5_000;
+  let response: Response | undefined;
+  while (Date.now() < deadline) {
+    if (server.exitCode !== null) throw new Error("BFF exited during Redis recovery.");
+    response = await fetch(`${origin}/api/public/storefronts/autonomia-demo?limit=1`, {
+      headers: { "x-forwarded-for": "203.0.113.202" }
+    });
+    if (response.status === 200) return response;
+    expect(response.status).toBe(503);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`BFF did not recover after Redis restart; last status ${response?.status ?? "none"}.`);
+}
 
 async function login(origin: string, persona: "admin" | "buyer") {
   const start = await fetch(`${origin}/auth/login?persona=${persona}`, { redirect: "manual" });

@@ -54,6 +54,20 @@ alterações em produção, VPS, DNS, secrets, billing real ou dados de clientes
 9. Nenhuma conexão comum de aplicação possui bypass permanente de RLS.
 10. Nenhum artefato deste pacote toca produção, VPS ou secrets.
 
+## Vitrine pública Local/CI — Issue #49
+
+- o browser acessa somente o BFF; o BFF assina uma identidade técnica fixa com
+  a capability `storefront.public.read` e contexto seller nulo;
+- o PostgreSQL projeta no publish uma allowlist persistida contendo apenas
+  seller público, produto, oferta e resumo de cursos; snapshots, módulos,
+  aulas, assets, compradores, métricas e UUIDs internos não saem do domínio;
+- listagem, detalhe e “outros produtos” resolvem o seller por slug canônico e
+  revalidam organização ativa, produto publicado e ponteiro de publicação;
+- Redis limita cliente e tráfego global antes da criação do envelope/replay;
+  indisponibilidade do rate limit falha fechada;
+- este vertical foi validado somente em Local/CI. Não certifica CDN, proxy,
+  sizing, HA, staging ou produção.
+
 ## Gate de aprovação
 
 Antes de habilitar Identity real, tenancy, billing, dados reais ou produção,

@@ -113,7 +113,7 @@ exposição; não transforma chamadas em confiáveis.
 | TM-21 | Dependência/imagem comprometida | T/E | Alto | lock, provenance, SBOM, scan e digest | CI supply-chain |
 | TM-22 | Backup não restaura ou restaura seller errado | T/I/A | Alto | criptografia, restore isolado, validação de tenant | exercício de restore |
 | TM-23 | Redis/serviço externo indisponível perde estado | T/A | Alto | Postgres como origem, retry/circuit breaker | fault injection |
-| TM-24 | Enumeração revela seller, buyer ou produto privado | I | Alto | 404 uniforme, rate limit, IDs não sequenciais | enumeração automatizada |
+| TM-24 | Enumeração revela seller, buyer ou produto privado | I | Alto | 404 uniforme, slug canônico, projeção pública allowlist e rate limit Redis antes do envelope | enumeração automatizada + cross-tenant PG/BFF |
 | TM-25 | Service worker preserva sessão/conteúdo após logout | I | Alto | somente shell público, private no-store, purge | inspeção offline pós-logout |
 | TM-26 | SSRF por URL de mídia/webhook | S/I/E | Alto | allowlist, DNS/IP checks, egress e timeout | destinos localhost/metadata negados |
 | TM-27 | CSV formula injection ou associação cruzada | T/E | Alto | parser estrito, tenant server-side, escape export | corpus CSV adversarial |

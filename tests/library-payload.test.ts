@@ -62,6 +62,20 @@ describe("library payload validation", () => {
     expect(isLibraryPayload({ items: [libraryItem({ progress_percent: 101 })] })).toBe(false);
   });
 
+  it("rejects seller and product slugs that could escape the public storefront route", () => {
+    expect(isLibraryPayload({
+      items: [libraryItem({ seller: { id: "seller", slug: "../admin", name: "Autonom.ia" } })]
+    })).toBe(false);
+    expect(isLibraryPayload({
+      items: [libraryItem({
+        product: {
+          id: "product", slug: "//attacker.example", title: "Codex na prática", description: "Curso",
+          publication_id: "publication", publication_version: 1
+        }
+      })]
+    })).toBe(false);
+  });
+
   it("keeps an unavailable item and an empty description from invalidating other products", () => {
     const unavailable = libraryItem({
       entitlement_id: "c7b7267b-b10d-48fd-8cce-bff9e80c928c",

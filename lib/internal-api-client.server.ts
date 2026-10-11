@@ -28,7 +28,7 @@ interface ApiRequest {
     "catalog.curriculum.reorder" | "catalog.asset.read" | "catalog.asset.create" |
     "catalog.asset.upload.confirm" | "catalog.asset.upload.cancel" |
     "catalog.asset.archive" | "library.read" | "library.asset.read" |
-    "learning.player.read" | "learning.progress.write";
+    "learning.player.read" | "learning.progress.write" | "storefront.public.read";
   sellerOrganizationId?: string;
   body?: Record<string, unknown>;
 }
@@ -520,6 +520,29 @@ export async function readDomainLibrary(sessionId: string, session: ServerSessio
   });
 }
 
+export async function readDomainPublicStorefront(
+  sellerSlug: string,
+  cursor: string | null = null,
+  limit = 12
+) {
+  const query = new URLSearchParams({ limit: String(limit) });
+  if (cursor) query.set("cursor", cursor);
+  return domainRequest("appsell-public-storefront-v1", publicStorefrontSession(), {
+    method: "GET",
+    path: `/v1/public/storefronts/${sellerSlug}`,
+    query: query.toString(),
+    capability: "storefront.public.read"
+  });
+}
+
+export async function readDomainPublicProduct(sellerSlug: string, productSlug: string) {
+  return domainRequest("appsell-public-storefront-v1", publicStorefrontSession(), {
+    method: "GET",
+    path: `/v1/public/storefronts/${sellerSlug}/products/${productSlug}`,
+    capability: "storefront.public.read"
+  });
+}
+
 export async function authorizeDomainLearningAsset(
   sessionId: string,
   session: ServerSession,
@@ -601,6 +624,16 @@ function learningProgressBody(input: LearningProgressInput) {
     ...(input.progressPercent === undefined
       ? {}
       : { progress_percent: input.progressPercent })
+  };
+}
+
+function publicStorefrontSession(): ServerSession {
+  const now = Date.now();
+  return {
+    subject: "public-storefront-v1",
+    createdAt: now,
+    expiresAt: now + 60_000,
+    tokenRevision: 1
   };
 }
 

@@ -16,7 +16,7 @@ from appsell_api.reset_demo_tenant import load_manifest
 CAPACITY_CONFIRMATION = "capacity-100-tenants-v1"
 CAPACITY_DATABASE_MARKER = "appsell-capacity-target-v1"
 CAPACITY_TENANTS = 100
-EXPECTED_MIGRATION = "0008_private_asset_storage"
+EXPECTED_MIGRATION = "0009_public_storefront"
 
 
 def parse_args() -> argparse.Namespace:

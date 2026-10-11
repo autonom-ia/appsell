@@ -26,6 +26,16 @@ Este marco é Local/CI; não é o Identity real e não concede conta de produç�
 
 ## Última mudança relevante
 
+2026-07-12 — Issue #49 implementada localmente na branch
+`feat/49-public-storefront`: vitrine e detalhe seller-scoped, “outros produtos”
+restrito ao mesmo produtor, projeção pública persistida/RLS, envelope interno,
+rate limit Redis antes do replay e UI mobile-first. Gates locais: 161 testes
+PostgreSQL/API, 3 verticais BFF/browser, 138 Vitest e baseline repetida de 100
+tenants sem erro, timeout ou vazamento cross-tenant. Reviews independentes de
+segurança e jornada ficaram verdes (P0/P1/P2 = 0); acessibilidade ficou verde
+com um P3 não bloqueante no shell de contingência. Ainda sem PR, merge,
+staging, produção ou checkout.
+
 2026-07-12 — Issue #44 implementada localmente na branch
 `fix/44-postgres-startup-headroom`: stability gate PostgreSQL read-only antes da
 migration, máximo de duas falhas transitórias e três probes consecutivas;

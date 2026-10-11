@@ -23,6 +23,7 @@ from .storage_worker import (
     MalwareScanner,
     assert_storage_worker_ready,
 )
+from .storefront_routes import router as storefront_router
 
 
 @asynccontextmanager
@@ -118,6 +119,7 @@ app.include_router(router)
 app.include_router(catalog_router)
 app.include_router(learning_router)
 app.include_router(asset_router)
+app.include_router(storefront_router)
 
 
 @app.get("/health/live")

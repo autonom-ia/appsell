@@ -12,6 +12,8 @@ export interface IsolatedRedis {
   port: number;
   pid: number;
   client: Redis;
+  stopServer: () => Promise<void>;
+  restartServer: () => Promise<void>;
   stop: () => Promise<void>;
 }
 
@@ -19,17 +21,9 @@ export async function startIsolatedRedis(): Promise<IsolatedRedis> {
   const port = await unusedNonDefaultPort();
   const directory = await mkdtemp(join(tmpdir(), "appsell-redis-test-"));
   const password = randomBytes(32).toString("base64url");
-  const process = spawn(redisBinary(), [
-    "--bind", "127.0.0.1",
-    "--port", String(port),
-    "--dir", directory,
-    "--save", "",
-    "--appendonly", "no",
-    "--protected-mode", "yes",
-    "--requirepass", password
-  ], { stdio: "ignore" });
   const url = `redis://:${encodeURIComponent(password)}@127.0.0.1:${port}/0`;
-  const client = new Redis(url, { lazyConnect: true, maxRetriesPerRequest: 1, retryStrategy: () => null });
+  let process = spawnRedis(port, directory, password);
+  let client = createProbeClient(url);
   try {
     await waitUntilReady(process, port);
     await client.connect();
@@ -40,11 +34,30 @@ export async function startIsolatedRedis(): Promise<IsolatedRedis> {
     await rm(directory, { recursive: true, force: true });
     throw error;
   }
-  return {
+  const isolated: IsolatedRedis = {
     url,
     port,
-    pid: process.pid!,
-    client,
+    get pid() { return process.pid!; },
+    get client() { return client; },
+    stopServer: async () => {
+      client.disconnect();
+      await stopProcess(process);
+    },
+    restartServer: async () => {
+      if (process.exitCode === null) throw new Error("Isolated redis-server is still running.");
+      process = spawnRedis(port, directory, password);
+      client = createProbeClient(url);
+      try {
+        await waitUntilReady(process, port);
+        await client.connect();
+        if (await client.ping() !== "PONG") throw new Error("Restarted isolated Redis ping failed.");
+        await assertOwnedRedis(client, process);
+      } catch (error) {
+        client.disconnect();
+        await stopProcess(process);
+        throw error;
+      }
+    },
     stop: async () => {
       try {
         if (client.status === "ready") await client.quit();
@@ -55,6 +68,23 @@ export async function startIsolatedRedis(): Promise<IsolatedRedis> {
       }
     }
   };
+  return isolated;
+}
+
+function spawnRedis(port: number, directory: string, password: string) {
+  return spawn(redisBinary(), [
+    "--bind", "127.0.0.1",
+    "--port", String(port),
+    "--dir", directory,
+    "--save", "",
+    "--appendonly", "no",
+    "--protected-mode", "yes",
+    "--requirepass", password
+  ], { stdio: "ignore" });
+}
+
+function createProbeClient(url: string) {
+  return new Redis(url, { lazyConnect: true, maxRetriesPerRequest: 1, retryStrategy: () => null });
 }
 
 export async function unusedNonDefaultPort() {

@@ -123,10 +123,12 @@ uv run --project apps/api pytest \
   apps/api/tests/test_postgres_demo_learning.py \
   apps/api/tests/test_postgres_learning_progress.py \
   apps/api/tests/test_postgres_private_assets.py \
+  apps/api/tests/test_postgres_public_storefront.py \
   apps/api/tests/test_reset_demo_tenant.py \
   apps/api/tests/test_api_catalog.py \
   apps/api/tests/test_api_onboarding.py \
-  apps/api/tests/test_api_learning.py
+  apps/api/tests/test_api_learning.py \
+  apps/api/tests/test_api_storefront.py
 if uv run --project apps/api python -m appsell_api.configure_context_key 2>/dev/null; then
   echo "configure_context_key re-enabled a consumed bootstrap" >&2
   exit 1

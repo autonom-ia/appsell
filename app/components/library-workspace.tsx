@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { isPublicSlug } from "../../lib/public-storefront";
 
 export interface LibraryItem {
   entitlement_id: string;
@@ -109,6 +110,7 @@ export function LibraryWorkspace() {
           <span aria-hidden="true">→</span>
         </Link>
         : <div className="library-unavailable"><button className="primary-button" type="button" disabled>Conteúdo indisponível</button><p>Este produto ainda não possui uma aula publicada.</p></div>}
+      <Link prefetch={false} className="library-storefront-link" href={`/s/${item.seller.slug}/${item.product.slug}`}>Ver produto e catálogo de {item.seller.name} <span aria-hidden="true">→</span></Link>
     </article>;
   })}</div>;
 }
@@ -133,18 +135,19 @@ export function isLibraryPayload(value: unknown): value is { items: LibraryItem[
 function isLibraryItem(value: unknown): value is LibraryItem {
   if (!isRecord(value)) return false;
   return isUuid(value.entitlement_id) && (value.resume_lesson_id === null || isUuid(value.resume_lesson_id)) &&
-    isStringRecord(value.seller, ["id", "slug", "name"]) && isProduct(value.product) &&
+    isSeller(value.seller) && isProduct(value.product) &&
     Number.isInteger(value.progress_percent) && typeof value.progress_percent === "number" &&
     value.progress_percent >= 0 && value.progress_percent <= 100;
 }
 
 function isProduct(value: unknown) {
-  return isStringRecord(value, ["id", "slug", "title", "publication_id"]) && typeof value.description === "string" &&
+  return isRecord(value) && isNonEmptyString(value.id) && isPublicSlug(value.slug) &&
+    isNonEmptyString(value.title) && isNonEmptyString(value.publication_id) && typeof value.description === "string" &&
     Number.isInteger(value.publication_version) && (value.publication_version as number) > 0;
 }
 
-function isStringRecord(value: unknown, keys: string[]): value is Record<string, unknown> {
-  return isRecord(value) && keys.every((key) => isNonEmptyString(value[key]));
+function isSeller(value: unknown) {
+  return isRecord(value) && isNonEmptyString(value.id) && isPublicSlug(value.slug) && isNonEmptyString(value.name);
 }
 
 function isNonEmptyString(value: unknown): value is string {

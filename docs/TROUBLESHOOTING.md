@@ -49,3 +49,17 @@ por ação de propósito. Não relaxe Origin/CSRF para preservar sessões antiga
 
 Timeout/503 preserva a chave idempotente para retry do mesmo corpo. Uma nova
 edição cria uma nova intenção; não force novas chaves manualmente.
+
+## Problema: vitrine pública retorna 429 ou 503
+
+- `429 rate_limited`: aguarde o `Retry-After` antes de repetir. O limite é
+  aplicado no Redis antes de qualquer envelope ou escrita de replay no banco.
+- `503 storefront_unavailable`: confirme o Redis isolado e o namespace
+  `APPSELL_REDIS_PREFIX`; o comportamento é fail-closed.
+- `APPSELL_TRUST_PROXY_HEADERS=true` só pode ser habilitado atrás de proxy
+  confiável que remova e reescreva `X-Forwarded-For`. Fora dessa topologia,
+  mantenha `false`; acessos diretos usam apenas o teto global de 6.000/minuto,
+  sem fingir um limite individual baseado em header não confiável.
+
+Não desative o rate limit para recuperar disponibilidade. Em staging/produção,
+valide a cadeia de proxies e execute carga/soak antes de liberar a vitrine.
