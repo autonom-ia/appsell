@@ -25,7 +25,9 @@ assinatura na query:
 Cabeçalhos que o navegador manda: `content-type`, `x-amz-checksum-sha256`,
 `x-amz-meta-appsell-upload-id`. Criar, fechar e abortar multipart, `HEAD`,
 cópia e remoção são da API e do worker, pelo endpoint **interno**
-(`storage_internal_endpoint`), que não passa por esta borda.
+(`storage_internal_endpoint`). Ele só não passa por esta borda se apontar para a
+rede do Swarm. Na produção, em 23/10/2026, ele passava: ver "Antes de
+aplicar", item 0.
 
 O `storage_public_audit` (rodado à mão, de fora) faz OPTIONS em `/` e sondas
 anônimas que precisam voltar 401 ou 403. Continua passando.
@@ -97,6 +99,11 @@ O ensaio achou três erros das versões anteriores, já corrigidos:
 
 ## Antes de aplicar
 
+0. **Bloqueante.** O `storage_internal_endpoint` da `api` e do `asset-worker` não
+   pode passar por `minio.autonomia.site`. Em 23/10/2026 a borda foi aplicada e
+   revertida em 38 s porque passava: o `HEAD` de controle da api fez hairpin
+   pelo Traefik, caiu no bloqueio, e o `/health/ready` foi a 503 (#461). O
+   endpoint precisa apontar para a rede interna do Swarm antes de reaplicar.
 1. Quem mais usa `minio.autonomia.site`: o destino `s3` do backup
    (`APPSELL_BACKUP_S3_ENDPOINT`), o `view-storage` e qualquer `mc` apontado
    para ele. Credencial em cabeçalho por esta borda passa a voltar 403.
@@ -123,37 +130,46 @@ são escritos antes da janela. Hoje, no head do PR #477, o SHA-256 do arquivo é
 mudar o arquivo, vale o do merge.
 
 ```sh
+# 0. sudo sem senha; sem ele, parar antes de tocar em qualquer coisa
+sudo -n true || echo "PARAR: sudo -n não liberado neste host"
+
 # 1. estado atual: o arquivo ativo tem de ser o de hoje
-sha256sum /etc/easypanel/traefik/config/appsell-storage.yaml
+sudo -n sha256sum /etc/easypanel/traefik/config/appsell-storage.yaml
 #    → 551a0363d6b8b6e96a474174e1fc8e6f11f8d7abc605bb80d3bb02149453347b; outro valor: parar
 
 # 2. backup com nome fixo, fora da pasta do Traefik
 test ! -e /tmp/appsell-storage_traefik_pre477.yaml      # existir: parar e perguntar
-sudo cp -p -- /etc/easypanel/traefik/config/appsell-storage.yaml /tmp/appsell-storage_traefik_pre477.yaml
-sha256sum /tmp/appsell-storage_traefik_pre477.yaml      # → 551a0363…
+sudo -n cp -p -- /etc/easypanel/traefik/config/appsell-storage.yaml /tmp/appsell-storage_traefik_pre477.yaml
+sudo -n sha256sum /tmp/appsell-storage_traefik_pre477.yaml      # → 551a0363…
 
 # 3. o novo, escrito ao lado com nome que o Traefik não lê
 #    (no Mac, num checkout com o merge:)
 #    git show <sha-do-merge>:deploy/easypanel-native/appsell-storage.traefik.yaml > /tmp/appsell-storage_traefik_477.novo
 #    scp /tmp/appsell-storage_traefik_477.novo claudete:/tmp/appsell-storage_traefik_477.novo
 #    (no host:)
-sudo cp -- /tmp/appsell-storage_traefik_477.novo /etc/easypanel/traefik/config/.appsell-storage.novo
-sudo chmod --reference=/etc/easypanel/traefik/config/appsell-storage.yaml /etc/easypanel/traefik/config/.appsell-storage.novo
-sudo chown --reference=/etc/easypanel/traefik/config/appsell-storage.yaml /etc/easypanel/traefik/config/.appsell-storage.novo
+sudo -n cp -- /tmp/appsell-storage_traefik_477.novo /etc/easypanel/traefik/config/.appsell-storage.novo
+sudo -n chmod --reference=/etc/easypanel/traefik/config/appsell-storage.yaml /etc/easypanel/traefik/config/.appsell-storage.novo
+sudo -n chown --reference=/etc/easypanel/traefik/config/appsell-storage.yaml /etc/easypanel/traefik/config/.appsell-storage.novo
 
 # 4. validação antes do mv
-sha256sum /etc/easypanel/traefik/config/.appsell-storage.novo   # → <sha256-do-arquivo-no-merge>; outro: apagar o .novo e parar
+sudo -n sha256sum /etc/easypanel/traefik/config/.appsell-storage.novo   # → <sha256-do-arquivo-no-merge>; outro: apagar o .novo e parar
 python3 -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1]))' /etc/easypanel/traefik/config/.appsell-storage.novo \
   && echo "yaml ok"   # se o host não tiver PyYAML, vale o sha256: o mesmo arquivo passou no ensaio (22/22)
 grep -c 'appsell-storage-https\|appsell-storage-deny' /etc/easypanel/traefik/config/.appsell-storage.novo   # → 4
 
 # 5. troca única
-sudo mv -f -- /etc/easypanel/traefik/config/.appsell-storage.novo /etc/easypanel/traefik/config/appsell-storage.yaml
+sudo -n mv -f -- /etc/easypanel/traefik/config/.appsell-storage.novo /etc/easypanel/traefik/config/appsell-storage.yaml
 
 # 6. o Traefik aceitou?
 sleep 5
-sudo docker service logs --since 1m easypanel-traefik 2>&1 | grep -c -i 'error while parsing rule\|invalid rule\|appsell-storage'
-#    erro que cite appsell-storage: rollback imediato
+sudo -n docker service logs --since 1m easypanel-traefik 2>&1 | grep -i -c 'error while parsing rule\|invalid rule\|level=error'
+#    → 0. Não filtrar por "appsell-storage": o log de acesso traz o nome do
+#    roteador em toda linha, e a contagem deixa de dizer se houve erro.
+
+# 7. a api continua vendo o storage (o probe dela faz HEAD nos buckets)
+cid=$(sudo -n docker ps -q --filter name=sell-autonomia_api. | head -1)
+sudo -n docker exec "$cid" python -c 'import urllib.request; print(urllib.request.urlopen("http://127.0.0.1:8000/health/ready", timeout=5).read().decode())'
+#    → "storage":true. 503 ou erro: rollback imediato
 ```
 
 **Verificação, de fora do host:**
@@ -173,10 +189,11 @@ um falhar, rollback.
 Pré-aprovado pelo mesmo OK da aplicação. Também atômico, com caminhos literais:
 
 ```sh
-sudo cp -p -- /tmp/appsell-storage_traefik_pre477.yaml /etc/easypanel/traefik/config/.appsell-storage.volta
-sha256sum /etc/easypanel/traefik/config/.appsell-storage.volta   # → 551a0363…
-sudo mv -f -- /etc/easypanel/traefik/config/.appsell-storage.volta /etc/easypanel/traefik/config/appsell-storage.yaml
-sha256sum /etc/easypanel/traefik/config/appsell-storage.yaml     # → 551a0363…
+sudo -n true || echo "PARAR: sudo -n não liberado neste host"
+sudo -n cp -p -- /tmp/appsell-storage_traefik_pre477.yaml /etc/easypanel/traefik/config/.appsell-storage.volta
+sudo -n sha256sum /etc/easypanel/traefik/config/.appsell-storage.volta   # → 551a0363…
+sudo -n mv -f -- /etc/easypanel/traefik/config/.appsell-storage.volta /etc/easypanel/traefik/config/appsell-storage.yaml
+sudo -n sha256sum /etc/easypanel/traefik/config/appsell-storage.yaml     # → 551a0363…
 ```
 
 ETA: menos de 1 minuto. Conferir `curl https://minio.autonomia.site/minio/health/live` → 200 de novo
