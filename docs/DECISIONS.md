@@ -347,6 +347,30 @@ remove os atalhos com os nomes antigos das funções de capa — eles seguem at�
 uma migration futura, porque foram o que permitiu entregar sem janela de
 manutenção.
 
+## Decisão 022 — o Sell passa a ser tocado por trilhas, e o merge de PR seguro é delegado
+
+Em 23/10/2026, numa sessão do Claude Code com a Orquestração Sell, o Rodrigo
+aprovou o plano do programa (`docs/programa/PROGRAMA.md`) e escreveu: "Sim.
+Delego o merge de PR seguro." O pedido está registrado na Issue #435, e o OK
+dele para este PR fica citado no próprio PR.
+
+O que muda:
+
+- o trabalho é dividido em trilhas, cada uma dona de pastas
+  (`docs/programa/TRILHAS.md`), coordenadas pela Orquestração Sell, até 8 chats
+  no pico, com rampa por condição;
+- a Orquestração Sell pode mergear sem perguntar **só** o PR que cumpre o
+  critério de PR seguro do `AGENTS.md`, seção 6. Todo o resto continua com o OK
+  explícito do Rodrigo;
+- mudança no próprio critério (seções 6 e 7 do `AGENTS.md`, `TRILHAS.md`,
+  `.claude/agents/`) nunca é PR seguro.
+
+Por quê: na Orquestração Deploy do Chat2You, a fila de merge na mão de uma
+pessoa só virou gargalo quando vários chats passaram a trabalhar em paralelo.
+A delegação é estreita de propósito: nada de dinheiro, acesso, infra,
+dependência ou dado pessoal. O critério que vale é o da seção 6 do `AGENTS.md`;
+este resumo não o substitui.
+
 ## Pendências que bloqueiam ampliação
 
 - staging separado e DNS próprio;
