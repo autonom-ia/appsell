@@ -200,11 +200,11 @@ from appsell_api.storage_s3 import S3Storage
 S3Storage(get_settings()).probe_availability()
 print("storage ok")' && echo "$s ok" || echo "$s FALHOU: rollback imediato"
 done
-#    E o /health/ready, três leituras com 10 s entre elas, todas com
+#    E o /health/ready, três leituras com 15 s entre elas, todas com
 #    "storage":true:
 cid=$(sudo -n docker ps -q --filter name=sell-autonomia_api. | head -1)
 for _ in 1 2 3; do
-  sleep 10
+  sleep 15
   sudo -n docker exec "$cid" python -c 'import urllib.request; print(urllib.request.urlopen("http://127.0.0.1:8000/health/ready", timeout=5).read().decode())'
 done
 #    503, erro ou "storage":false em qualquer uma: rollback imediato
