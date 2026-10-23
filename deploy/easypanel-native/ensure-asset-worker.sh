@@ -68,7 +68,8 @@ networks=("${clamav_networks[0]}")
 # worker copia, aponta para o alias appsell-storage, que só existe nesta rede.
 # Ela vem da etapa 4 do docs/runbooks/storage-461-rede-interna.md, com OK: este
 # script nunca a cria. Sem ela, o worker sobe sem storage.
-storage_network="${APPSSELL_STORAGE_INTERNAL_NETWORK:-sell-storage-internal}"
+# Nome fixo: é o da etapa 4, e um override só abriria caminho para outra rede.
+storage_network="sell-storage-internal"
 if ! storage_network_shape="$(
   docker network inspect "$storage_network" --format '{{.Id}} {{.Driver}} {{.Internal}} {{.Scope}}'
 )"; then
