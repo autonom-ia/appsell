@@ -3,16 +3,41 @@
 # The production MinIO build supports the S3 data API but does not implement
 # PutBucketCors. Keep bucket versioning and anonymous-denial checks in the API;
 # enforce the browser CORS contract at this HTTPS edge instead.
+#
+# Allowlist (#461). O MinIO community não recebe mais correção, e este endpoint
+# está na internet. A borda deixa passar só o que o navegador da loja usa, todo
+# por URL pré-assinada (assinatura na query, nunca no cabeçalho):
+#   PUT  /<quarentena>/<chave>   envio simples, capa e parte do multipart
+#   GET  /<pronto>/<chave>       leitura de PDF, vídeo, imagem e capa
+#   OPTIONS em qualquer caminho  preflight do CORS (o audit público pede em `/`)
+# Todo o resto (ListBuckets, /minio/admin, /minio/health, DELETE, POST, HEAD)
+# cai no roteador de prioridade 1, que responde 403. O audit
+# `storage_public_audit` espera 401 ou 403 nessas sondas e continua passando.
+#
+# Os nomes dos buckets são os padrões do repositório; conferir no host
+# (APPSELL_API_STORAGE_QUARANTINE_BUCKET e _READY_BUCKET) antes de aplicar.
+# Sintaxe de regra do Traefik v3.
 http:
   routers:
     appsell-storage-https:
       entryPoints:
         - https
-      rule: Host(`minio.autonomia.site`) && PathPrefix(`/`)
+      # Uma linha só: o Traefik recusa quebra de linha dentro da regra.
+      rule: "Host(`minio.autonomia.site`) && ((Method(`PUT`) && PathPrefix(`/appsell-quarantine/`)) || (Method(`GET`) && PathPrefix(`/appsell-ready/`)) || Method(`OPTIONS`))"
       service: appsell-storage
       middlewares:
         - appsell-storage-cors
+        - appsell-storage-only-query-auth
       priority: 100
+      tls: {}
+    appsell-storage-deny:
+      entryPoints:
+        - https
+      rule: Host(`minio.autonomia.site`)
+      service: appsell-storage
+      middlewares:
+        - appsell-storage-deny-all
+      priority: 1
       tls: {}
   middlewares:
     appsell-storage-cors:
@@ -38,6 +63,25 @@ http:
           - X-Amz-Checksum-Sha256
         accessControlMaxAge: 300
         addVaryHeader: true
+    # O navegador manda só content-type, x-amz-checksum-sha256 e
+    # x-amz-meta-appsell-upload-id (lib/storage-upload-policy.server.ts), com a
+    # assinatura na query. Valor vazio faz o Traefik remover o cabeçalho:
+    # - Authorization: sem ele, chave vazada não chega à API S3 por esta borda;
+    # - X-Amz-Content-Sha256: fecha o modo de envio com trailer não assinado;
+    # - X-Amz-Meta-Snowball-Auto-Extract: fecha a extração automática de tar.
+    appsell-storage-only-query-auth:
+      headers:
+        customRequestHeaders:
+          Authorization: ""
+          X-Amz-Content-Sha256: ""
+          X-Amz-Meta-Snowball-Auto-Extract: ""
+    # Todo pedido recebe 403. A única faixa liberada é 192.0.2.1/32
+    # (TEST-NET-1, RFC 5737), que nunca é origem real; localhost não serviria,
+    # porque passaria pedido vindo do próprio host.
+    appsell-storage-deny-all:
+      ipAllowList:
+        sourceRange:
+          - 192.0.2.1/32
   services:
     appsell-storage:
       loadBalancer:
