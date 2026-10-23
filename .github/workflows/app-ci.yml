@@ -193,6 +193,8 @@ jobs:
           uv run --project apps/api pip-audit --local
           uv run --project apps/api pytest \
             apps/api/tests/test_config.py \
+            apps/api/tests/test_config_storage_internal_http.py \
+            apps/api/tests/test_storage_rede_interna.py \
             apps/api/tests/test_health.py \
             apps/api/tests/test_capacity_telemetry.py \
             apps/api/tests/test_log_da_api.py \
@@ -272,6 +274,7 @@ jobs:
           uv run --project apps/api pip-audit --local
           uv run --project apps/api pytest \
             apps/api/tests/test_config.py \
+            apps/api/tests/test_config_storage_internal_http.py \
             apps/api/tests/test_health.py \
             apps/api/tests/test_capacity_telemetry.py \
             apps/api/tests/test_log_da_api.py \
