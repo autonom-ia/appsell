@@ -132,7 +132,7 @@ Linha de base de 23/10, lida antes de qualquer mudança:
 **Gravar a saída de antes no #437. Se o "antes" divergir dessa linha de
 base, não fazer release.**
 
-## Fase 1 — fixar o rollback e construir 🔴 (OK do Rodrigo)
+## Fase 1a — preservar a imagem de rollback 🔴 (OK do Rodrigo; escreve no host)
 
 O rollback é escrito **aqui, com valores literais**, antes de mexer em
 qualquer coisa. Não depende de variável de shell nem de `/tmp`.
@@ -140,10 +140,31 @@ qualquer coisa. Não depende de variável de shell nem de `/tmp`.
 ```text
 ROLLBACK_IMAGE = easypanel/sell-autonomia/web:fa13a78
 ROLLBACK_ID    = sha256:1b71ec566e8c3a5c9e6885960d8691fca092ed117fc50383569641bc63beba86
+ROLLBACK_TAG   = easypanel/sell-autonomia/web:rollback-437-fa13a78
 ```
 
+Anotar o ID não basta: se a tag `fa13a78` for sobrescrita ou removida, o ID
+fica sem nome e pode ser coletado. A primeira escrita no host é dar à imagem
+uma segunda tag, que nenhum build usa:
+
+```sh
+docker tag sha256:1b71ec566e8c3a5c9e6885960d8691fca092ed117fc50383569641bc63beba86 \
+  easypanel/sell-autonomia/web:rollback-437-fa13a78
+docker image inspect easypanel/sell-autonomia/web:rollback-437-fa13a78 --format '{{.Id}} {{index .Config.Labels "org.opencontainers.image.revision"}}'
+# esperado: sha256:1b71ec566e8c3a5c9e6885960d8691fca092ed117fc50383569641bc63beba86 fa13a78
+```
+
+**Abort:** se o `inspect` não devolver esse ID e o label `fa13a78`, parar. O
+release não segue sem rollback preservado.
+
+O release toca só o `web`. Se um release futuro subir também `api` ou
+`asset-worker`, o mesmo passo vale para a imagem deles
+(`api:409ae23` = `sha256:16545966e6fe…`), com a tag `rollback-<issue>-409ae23`.
+
 - **Proibido `docker image prune`, `docker system prune` ou `docker rmi`** no
-  host até a Fase 3 fechar. A imagem `fa13a78` é o único caminho de volta.
+  host até a Fase 3 fechar.
+
+## Fase 1b — construir 🔴 (OK do Rodrigo)
 - Guardar os **nomes** das variáveis do web, nunca os valores, num arquivo do
   host fora de `/tmp`:
 
@@ -171,7 +192,7 @@ docker run --rm --entrypoint node easypanel/sell-autonomia/web:$SHA -e 'console.
 docker run --rm --entrypoint sh easypanel/sell-autonomia/web:$SHA -c 'ls node_modules/.pnpm | grep -E "^sharp@"'                  # sharp@0.35.5…
 docker run --rm --entrypoint sh easypanel/sell-autonomia/web:$SHA -c \
   "grep -rhoaE '\"[0-9]+\.[0-9]+\.[0-9]+\",[A-Za-z_\$]+=\"ECONNECTION\"' .next/server/chunks | sort -u"                             # \"10.2.1\" (nodemailer vai embutido no bundle)
-docker image inspect easypanel/sell-autonomia/web:fa13a78 --format '{{.Id}}'   # ainda = ROLLBACK_ID
+docker image inspect easypanel/sell-autonomia/web:rollback-437-fa13a78 --format '{{.Id}}'   # ainda = ROLLBACK_ID
 ```
 
 **Safety abort da Fase 1:** build falhou; label diferente do `SHA`; next ≠
@@ -234,12 +255,15 @@ Primeira opção: volta para a `PreviousSpec`, que depois da Fase 2 é
 docker service rollback sell-autonomia_web
 ```
 
-Se a `PreviousSpec` não for a esperada, usar a imagem fixada:
+Se a `PreviousSpec` não for a esperada, usar a tag preservada na Fase 1a:
 
 ```sh
-docker service update --image easypanel/sell-autonomia/web:fa13a78 \
-  --update-order start-first sell-autonomia_web
+docker service update --image easypanel/sell-autonomia/web:rollback-437-fa13a78 \
+  --update-order start-first --update-failure-action pause sell-autonomia_web
 ```
+
+`pause` aqui é de propósito: se o próprio rollback falhar, o Swarm não pode
+"voltar" para a versão nova que acabou de ser recusada.
 
 Depois: repetir o smoke e registrar sintoma, horário e saída no #437 e em
 `PRODUCTION_CURRENT.md`. O banco não entra no rollback, porque o release não
@@ -251,7 +275,7 @@ tem migration.
   imagens **lidas do host** (web, api, worker e sandbox) e a correção do
   registro de 04/09 → 12/09 → 16/10.
 - Inventário (#438, PR #448) atualizado com os SHAs reais.
-- Depois de 24 h estável, com OK do Rodrigo: decidir se `fa13a78` pode sair
-  do host. Até lá, nada de prune.
+- Depois de 24 h estável, com OK do Rodrigo: decidir se `fa13a78` e a tag
+  `rollback-437-fa13a78` podem sair do host. Até lá, nada de prune.
 - Apagar `$TMPDIR/appsell-src-$SHA.tar.gz` local e `/home/claudete/appsell-src-$SHA*`
   no host. `/home/claudete/releases/437` fica até a Fase 3 fechar.
