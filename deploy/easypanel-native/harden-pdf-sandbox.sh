@@ -2,13 +2,18 @@
 # Endurece o serviço sell-autonomia_pdf-sandbox no Swarm (#468).
 #
 # No Linux o parser de PDF roda sem sandbox do sistema; o contêiner é o único
-# isolamento. A leitura de 23/10/2026 achou ReadOnly=false, CapabilityDrop=null
-# e PIDs sem limite. Este script aplica o que o compose já tem e o CI prova
-# (scripts/test-pdf-sandbox-isolation.sh): root read-only, cap-drop ALL,
-# /tmp em tmpfs de 2 GiB e no máximo 64 processos.
+# isolamento. A leitura de 23/10/2026 achou ReadOnly=false, CapabilityDrop=null,
+# PIDs sem limite e a task no `bridge` padrão (masquerade ligado): saída para a
+# internet e para o host por 172.17.0.1. Este script aplica, num update só:
+# root read-only, cap-drop ALL, /tmp em tmpfs de 2 GiB, no máximo 64
+# processos e a rede overlay `--internal` abaixo, que tira o bridge.
 #
-# Rede: fora deste script. O serviço não declara rede; qual rede a task usa de
-# fato depende de uma leitura do contêiner ainda não autorizada. Ver #468.
+# Por que overlay internal e não `none`: o Swarm recusa `--network none`
+# ("network none not found"). Provado no runner com Swarm de verdade (run
+# 39971140452, branch prova/468-swarm-rede): depois do update, só a rede
+# interna, sem saída para 1.1.1.1/8.8.8.8, host 172.17.0.1 com ENETUNREACH; o
+# rollback volta ao bridge. A api fala com o sandbox pelo socket do volume,
+# que não depende de rede.
 #
 # Uso:
 #   harden-pdf-sandbox.sh            # seco: confere o estado e imprime o comando
@@ -21,6 +26,7 @@ set -euo pipefail
 
 service="sell-autonomia_pdf-sandbox"
 expected_image="easypanel/sell-autonomia/pdf-sandbox:d5e00ec"
+rede="sell-autonomia_pdf-sandbox-isolada"
 tmp_bytes=2147483648
 pids=64
 mode="${1:-seco}"
@@ -34,6 +40,7 @@ estado() {
   echo "pids=$(fmt '{{.Spec.TaskTemplate.Resources.Limits.Pids}}')"
   echo "order=$(fmt '{{.Spec.UpdateConfig.Order}}')"
   echo "mounts=$(fmt '{{range .Spec.TaskTemplate.ContainerSpec.Mounts}}{{.Type}}:{{.Target}} {{end}}')"
+  echo "redes=$(fmt '{{range .Spec.TaskTemplate.Networks}}{{.Target}} {{end}}')"
   echo "env_count=$(fmt '{{len .Spec.TaskTemplate.ContainerSpec.Env}}')"
 }
 
@@ -44,6 +51,15 @@ saudavel() {
   test -n "$api" || return 1
   sudo -n docker exec "$api" python -c \
     "import urllib.request,json; r=json.load(urllib.request.urlopen('http://127.0.0.1:8000/health/ready',timeout=5)); assert r.get('pdf_sandbox') is True, r"
+}
+
+so_rede_interna() {
+  local cid redes
+  cid="$(sudo -n docker ps -q --filter "name=${service}." | head -1)"
+  test -n "$cid" || return 1
+  redes="$(sudo -n docker inspect "$cid" --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}')"
+  echo "redes do contêiner: $redes"
+  [ "$redes" = "$rede " ]
 }
 
 tasks_running() {
@@ -76,9 +92,17 @@ case "$mode" in
       *" /tmp "*) echo "ABORT: já existe mount em /tmp; revisar antes" >&2; exit 1 ;;
     esac
     [ "$(fmt '{{.Spec.RollbackConfig.Order}}')" = "stop-first" ] || { echo "ABORT: rollback order não é stop-first" >&2; exit 1; }
+    if sudo -n docker network inspect "$rede" >/dev/null 2>&1; then
+      [ "$(sudo -n docker network inspect "$rede" --format '{{.Driver}} {{.Internal}} {{.Scope}}')" = "overlay true swarm" ] \
+        || { echo "ABORT: $rede existe e não é overlay internal de swarm" >&2; exit 1; }
+      echo "rede $rede: já existe, overlay internal"
+    else
+      echo "rede $rede: será criada (overlay --internal)"
+    fi
     comando=(sudo -n docker service update --detach=false --update-order stop-first
       --read-only --cap-drop ALL --limit-pids "$pids"
       --mount-add "type=tmpfs,destination=/tmp,tmpfs-size=${tmp_bytes},tmpfs-mode=1777"
+      --network-add "$rede"
       "$service")
     printf 'comando:'; printf ' %q' "${comando[@]}"; echo
     [ "$mode" = "--aplicar" ] || { echo "seco: nada aplicado"; exit 0; }
@@ -89,6 +113,11 @@ case "$mode" in
     # shellcheck disable=SC2024
     (umask 077 && sudo -n docker service inspect "$service" --format '{{json .Spec}}' > "$backup")
     echo "backup: $backup"
+    if ! sudo -n docker network inspect "$rede" >/dev/null 2>&1; then
+      sudo -n docker network create --driver overlay --internal "$rede" >/dev/null
+      [ "$(sudo -n docker network inspect "$rede" --format '{{.Driver}} {{.Internal}}')" = "overlay true" ] \
+        || { echo "ABORT: $rede criada sem internal" >&2; exit 1; }
+    fi
     env_antes="$(fmt '{{len .Spec.TaskTemplate.ContainerSpec.Env}}')"
     "${comando[@]}"
     env_depois="$(fmt '{{len .Spec.TaskTemplate.ContainerSpec.Env}}')"
@@ -98,6 +127,7 @@ case "$mode" in
       exit 1
     fi
     estado
+    so_rede_interna || { echo "ABORT: contêiner fora da rede interna ou ainda no bridge; rollback" >&2; "$0" --rollback; exit 1; }
     echo "aplicado; conferir na loja: PDF novo numa aula de teste e leitura pelo comprador"
     ;;
   --rollback)
@@ -106,6 +136,8 @@ case "$mode" in
     # prova do estado de antes, não o caminho de volta.
     [ "$(fmt '{{.Spec.RollbackConfig.Order}}')" = "stop-first" ] || { echo "ABORT: rollback order não é stop-first" >&2; exit 1; }
     sudo -n docker service rollback --detach=false "$service"
+    # A rede interna fica: sem serviço ligado ela não faz nada. Removê-la é
+    # `docker network rm sell-autonomia_pdf-sandbox-isolada`, com OK.
     estado
     convergiu || { echo "rollback sem saúde: escalar ao Rodrigo" >&2; exit 1; }
     echo "rollback concluído"
