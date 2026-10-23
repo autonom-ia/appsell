@@ -52,25 +52,29 @@ class Store:
         self.integration = uuid4()
 
 
-def _channel_hash(connection: Connection) -> str:
-    """O hash do canal pela regra da 0059; cria um canal se o banco não tem."""
+def _channel(connection: Connection) -> tuple[str, str]:
+    """O canal pela identidade que a 0059 grava; cria um canal se o banco não tem."""
     row = connection.execute(
-        "select endpoint.endpoint_key_sha256 from webhook_endpoint endpoint "
+        "select distinct endpoint.endpoint_key_sha256,endpoint.secret_reference "
+        "from webhook_endpoint endpoint "
         "join checkout_integration integration "
         "on integration.seller_organization_id=endpoint.seller_organization_id "
         "and integration.id=endpoint.checkout_integration_id "
-        "where endpoint.status='active' and integration.status='active' "
-        "order by endpoint.created_at,endpoint.seller_organization_id,endpoint.id limit 1"
-    ).fetchone()
-    if row is not None:
-        return str(row[0])
+        "where integration.adapter='generic_hmac_v1' "
+        "and integration.display_name='Financial checkout' "
+        "and endpoint.status='active' and integration.status='active'"
+    ).fetchall()
+    assert len(row) <= 1, "o banco de teste tem mais de um canal Financial"
+    if row:
+        return str(row[0][0]), str(row[0][1])
     platform = Store("canal", bound=False, on_channel=True)
-    channel = _sha(f"canal-{RUN}")
+    channel = (_sha(f"canal-{RUN}"), f"map-canal-{RUN}")
     _seed_store(connection, platform, channel)
     return channel
 
 
-def _seed_store(connection: Connection, store: Store, channel: str) -> None:
+def _seed_store(connection: Connection, store: Store, channel: tuple[str, str]) -> None:
+    """Endpoint do canal copia hash e secret_reference do canal, como a 0059."""
     connection.execute(
         "insert into seller_organization(id,slug,display_name,status) values(%s,%s,%s,'active')",
         (store.id, store.slug, f"Map {store.label}"),
@@ -81,19 +85,24 @@ def _seed_store(connection: Connection, store: Store, channel: str) -> None:
             "financial_product_catalog_item_id=%s where id=%s",
             (uuid4(), uuid4(), store.id),
         )
+    # Só o endpoint do canal leva o nome que a 0059 grava; o endpoint próprio de
+    # uma loja fora do canal é um "Checkout externo", como o provision_checkout.
     connection.execute(
         "insert into checkout_integration(seller_organization_id,id,adapter,display_name,"
-        "status) values(%s,%s,'generic_hmac_v1','Financial checkout','active')",
-        (store.id, store.integration),
+        "status) values(%s,%s,'generic_hmac_v1',%s,'active')",
+        (
+            store.id,
+            store.integration,
+            "Financial checkout" if store.on_channel else "Checkout externo",
+        ),
     )
     connection.execute(
         "insert into webhook_endpoint(seller_organization_id,checkout_integration_id,"
         "endpoint_key_sha256,secret_reference,status) values(%s,%s,%s,%s,'active')",
         (
-            store.id,
-            store.integration,
-            channel if store.on_channel else _sha(f"{store.slug}:proprio"),
-            f"map-{store.label}-{RUN}",
+            (store.id, store.integration, *channel)
+            if store.on_channel
+            else (store.id, store.integration, _sha(f"{store.slug}:proprio"), store.slug)
         ),
     )
 
@@ -132,7 +141,7 @@ def stores() -> dict[str, Store]:
         "sem-canal": Store("sem-canal", bound=True, on_channel=False),
     }
     with psycopg.connect(ADMIN_URL) as connection:
-        channel = _channel_hash(connection)
+        channel = _channel(connection)
         for store in created.values():
             _seed_store(connection, store, channel)
         connection.commit()
@@ -214,6 +223,62 @@ def test_the_backfill_maps_what_is_missing_once(stores: dict[str, Store]) -> Non
     mapped = [row for row in _mappings(store) if row[2] == product]
     assert mapped == [(store.integration, _sha(str(product)), product)]
     assert _mappings(stores["solta"]) == set()
+
+
+def test_an_old_endpoint_reactivated_does_not_move_the_channel(
+    stores: dict[str, Store],
+) -> None:
+    # O defeito que a Qualidade provou: com "o endpoint ativo mais antigo", um
+    # endpoint antigo de outro adapter reativado virava o canal, e o produto novo
+    # ficava sem mapping em silêncio.
+    assert ADMIN_URL
+    old = Store("antigo", bound=False, on_channel=False)
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "insert into seller_organization(id,slug,display_name,status) "
+            "values(%s,%s,'Map antigo','active')",
+            (old.id, old.slug),
+        )
+        connection.execute(
+            "insert into checkout_integration(seller_organization_id,id,adapter,display_name,"
+            "status,created_at) values(%s,%s,'generic_hmac_v1','Checkout externo','active',"
+            "'2000-01-01')",
+            (old.id, old.integration),
+        )
+        connection.execute(
+            "insert into webhook_endpoint(seller_organization_id,checkout_integration_id,"
+            "endpoint_key_sha256,secret_reference,status,created_at) "
+            "values(%s,%s,%s,%s,'disabled','2000-01-01')",
+            (old.id, old.integration, _sha(f"antigo-{RUN}"), f"map-antigo-{RUN}"),
+        )
+        connection.execute(
+            "update webhook_endpoint set status='active' where seller_organization_id=%s",
+            (old.id,),
+        )
+        connection.commit()
+    store = stores["vinculada"]
+    product = _product(store, "depois-do-antigo")
+
+    assert (store.integration, _sha(str(product)), product) in _mappings(store)
+
+
+def test_a_second_channel_identity_fails_loud(stores: dict[str, Store]) -> None:
+    # Dois canais "Financial checkout" ativos com hashes diferentes: o trigger
+    # levanta erro em vez de escolher um. Tudo numa transação desfeita, para não
+    # sujar o banco compartilhado.
+    assert ADMIN_URL
+    intruder = Store("intruso", bound=True, on_channel=True)
+    with psycopg.connect(ADMIN_URL) as connection:
+        _seed_store(connection, intruder, (_sha(f"intruso-{RUN}"), f"intruso-{RUN}"))
+        connection.execute("set role appsell_owner")
+        with pytest.raises(psycopg.Error) as raised:
+            connection.execute(
+                "insert into catalog_product(seller_organization_id,id,slug,title,description)"
+                " values(%s,%s,'ambiguo','Produto','Produto')",
+                (stores["vinculada"].id, uuid4()),
+            )
+        assert raised.value.sqlstate == "55000"
+        connection.rollback()
 
 
 def test_schema_ready_knows_the_head() -> None:

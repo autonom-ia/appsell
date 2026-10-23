@@ -17,8 +17,16 @@ Esta migration:
   mapping.
 
 Só acrescenta linhas. Nenhum mapping existente muda, e loja sem vínculo ou sem
-endpoint do canal não ganha nada. O canal é achado pela mesma regra da 0059: o
-`endpoint_key_sha256` do endpoint ativo mais antigo.
+endpoint do canal não ganha nada.
+
+O canal é achado pela identidade que a 0059 grava, e não por idade: as
+integrações `generic_hmac_v1` chamadas `'Financial checkout'` e os endpoints
+delas, que copiam o mesmo `endpoint_key_sha256` e `secret_reference` do canal
+global. `app_private.financial_channel()` exige exatamente **uma** identidade
+ativa; se não houver nenhuma, ou houver mais de uma, levanta erro (55000) em vez
+de mapear no lugar errado. Um endpoint antigo reativado, de outro adapter ou de
+outro nome, não muda o canal. Loja vinculada sem endpoint do canal (vinculada
+depois da 0059) não ganha mapping: é o #470, resolvido pela ativação do #382.
 
 Não reprocessa `dead_letter` já existente. Se houver algum, ele vai para um
 runbook com OK do Rodrigo.
@@ -57,6 +65,7 @@ _BASES_DO_READY: tuple[str, ...] = (
     "app_private.schema_ready_base_0017()",
 )
 _BASE_DO_ACESSO = "app_private.schema_ready_base_0016()"
+_CANAL_GLOBAL = "app_private.financial_channel()"
 _CANAL = "app_private.financial_channel_integration(uuid)"
 _MAPEIA = "app_private.map_financial_product()"
 _TRIGGER = "catalog_product_financial_mapping"
@@ -73,8 +82,49 @@ def _migration_anterior() -> ModuleType:
     return modulo
 
 
-# A integração do canal Financial da loja: a do endpoint que tem o hash do
-# canal global. A regra do canal é a da 0059, para mapear onde ela mapeou.
+# A identidade do canal global é a que a 0059 grava em toda loja vinculada:
+# integração generic_hmac_v1 chamada 'Financial checkout', com endpoint que copia
+# o hash e o secret_reference do canal. Nada de "o mais antigo": exatamente uma
+# identidade ativa, ou erro.
+_FUNCAO_CANAL_GLOBAL = r"""
+create function app_private.financial_channel()
+returns table(
+  endpoint_key_sha256 text, secret_reference text,
+  revision bigint, max_clock_skew_seconds integer
+) language plpgsql stable security definer
+set search_path=pg_catalog,app_private,public,pg_temp as $$
+declare identities integer;
+begin
+  select count(distinct (endpoint.endpoint_key_sha256, endpoint.secret_reference))
+  into identities
+  from public.webhook_endpoint endpoint
+  join public.checkout_integration integration
+    on integration.seller_organization_id=endpoint.seller_organization_id
+   and integration.id=endpoint.checkout_integration_id
+  where integration.adapter='generic_hmac_v1'
+    and integration.display_name='Financial checkout'
+    and integration.status='active' and endpoint.status='active';
+  if identities <> 1 then
+    raise exception 'financial channel must have exactly one identity, found %', identities
+      using errcode='55000';
+  end if;
+  return query
+  select endpoint.endpoint_key_sha256, endpoint.secret_reference,
+    endpoint.revision, endpoint.max_clock_skew_seconds
+  from public.webhook_endpoint endpoint
+  join public.checkout_integration integration
+    on integration.seller_organization_id=endpoint.seller_organization_id
+   and integration.id=endpoint.checkout_integration_id
+  where integration.adapter='generic_hmac_v1'
+    and integration.display_name='Financial checkout'
+    and integration.status='active' and endpoint.status='active'
+  order by endpoint.created_at,endpoint.id
+  limit 1;
+end $$
+"""
+
+# A integração do canal Financial da loja: a do endpoint ativo que tem o hash do
+# canal global. O unique(seller, endpoint_key_sha256) da 0059 garante no máximo um.
 _FUNCAO_CANAL = r"""
 create function app_private.financial_channel_integration(p_seller uuid)
 returns uuid language sql stable security definer
@@ -84,19 +134,10 @@ set search_path=pg_catalog,app_private,public,pg_temp as $$
   join public.checkout_integration integration
     on integration.seller_organization_id=endpoint.seller_organization_id
    and integration.id=endpoint.checkout_integration_id
+  join app_private.financial_channel() channel
+    on channel.endpoint_key_sha256=endpoint.endpoint_key_sha256
   where endpoint.seller_organization_id=p_seller
     and endpoint.status='active' and integration.status='active'
-    and endpoint.endpoint_key_sha256=(
-      select channel.endpoint_key_sha256
-      from public.webhook_endpoint channel
-      join public.checkout_integration channel_integration
-        on channel_integration.seller_organization_id=channel.seller_organization_id
-       and channel_integration.id=channel.checkout_integration_id
-      where channel.status='active' and channel_integration.status='active'
-      order by channel.created_at,channel.seller_organization_id,channel.id
-      limit 1)
-  order by endpoint.created_at,endpoint.id
-  limit 1
 $$
 """
 
@@ -170,6 +211,7 @@ end $migration$
 
 
 _READY_DO_MAPPING = (
+    "            and to_regprocedure('app_private.financial_channel()') is not null\n"
     "            and to_regprocedure('app_private.financial_channel_integration(uuid)')"
     " is not null\n"
     "            and exists(select 1 from pg_catalog.pg_trigger\n"
@@ -186,8 +228,10 @@ def _ready_funcao() -> tuple[str, str]:
 
 def upgrade() -> None:
     op.execute("set local role appsell_owner")
+    op.execute(_FUNCAO_CANAL_GLOBAL)
     op.execute(_FUNCAO_CANAL)
     op.execute(_FUNCAO_MAPEIA)
+    op.execute(f"revoke all on function {_CANAL_GLOBAL} from public")
     op.execute(f"revoke all on function {_CANAL} from public")
     op.execute(f"revoke all on function {_MAPEIA} from public")
     op.execute(_CRIA_TRIGGER)
@@ -216,3 +260,4 @@ def downgrade() -> None:
     op.execute(f"drop trigger {_TRIGGER} on public.catalog_product")
     op.execute(f"drop function {_MAPEIA}")
     op.execute(f"drop function {_CANAL}")
+    op.execute(f"drop function {_CANAL_GLOBAL}")
