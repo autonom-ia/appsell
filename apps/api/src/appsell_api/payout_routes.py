@@ -27,10 +27,13 @@ exits the context normally (committing the audit), and only then raises.
 from __future__ import annotations
 
 import json
+import os
 import re
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
+import structlog
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 from sqlalchemy import text
@@ -40,6 +43,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .internal_requests import AuthenticatedInternalRequest, InternalRequestAuthenticator
 
 router = APIRouter(prefix="/v1/me/sellers")
+logger = structlog.get_logger(__name__)
 
 _PROVIDERS = frozenset({"stripe"})
 # Stripe account ids are `acct_` + alphanumerics. 0021's column constraint
@@ -211,6 +215,181 @@ async def bind_payout_account(request: Request, seller_id: UUID) -> dict[str, An
     }
 
 
+# Ativação de vendas pelo Financial (#382). O par (operador e item de catálogo)
+# é GLOBAL e vem da env da API, nunca do navegador; a loja só escolhe ativar.
+# Quem pode ativar é uma lista de lojas na env (flag por loja), vazia por
+# padrão: a Hub2You fica fora até o Rodrigo liberar, e mesmo dentro a 0064 não
+# toca vínculo existente. A pré-condição da #439 (conta de recebimentos pronta)
+# é outra flag, desligada até a decisão.
+_SHARED_OPERATOR_ENV = "APPSELL_FINANCIAL_SHARED_OPERATOR_ID"
+_SHARED_CATALOG_ITEM_ENV = "APPSELL_FINANCIAL_SHARED_CATALOG_ITEM_ID"
+_SELF_SERVICE_SELLERS_ENV = "APPSELL_FINANCIAL_SELF_SERVICE_SELLER_IDS"
+_REQUIRE_PAYOUT_ENV = "APPSELL_FINANCIAL_ACTIVATION_REQUIRES_PAYOUT_ACCOUNT"
+_FLAG_VALUES = {"": False, "false": False, "true": True}
+
+
+class FinancialActivationConfigError(ValueError):
+    """A env da ativação está malformada; a rota recusa em vez de adivinhar."""
+
+
+@dataclass(frozen=True)
+class FinancialActivationConfig:
+    self_service_sellers: frozenset[UUID]
+    operator_id: UUID | None
+    catalog_item_id: UUID | None
+    require_payout_ready: bool
+
+    @property
+    def has_shared_pair(self) -> bool:
+        return self.operator_id is not None and self.catalog_item_id is not None
+
+
+def financial_activation_config(environ: dict[str, str] | None = None) -> FinancialActivationConfig:
+    env = os.environ if environ is None else environ
+    try:
+        sellers = frozenset(
+            UUID(item.strip())
+            for item in env.get(_SELF_SERVICE_SELLERS_ENV, "").split(",")
+            if item.strip()
+        )
+        operator = env.get(_SHARED_OPERATOR_ENV, "").strip()
+        catalog_item = env.get(_SHARED_CATALOG_ITEM_ENV, "").strip()
+        require = env.get(_REQUIRE_PAYOUT_ENV, "").strip().lower()
+        if require not in _FLAG_VALUES:
+            raise ValueError(_REQUIRE_PAYOUT_ENV)
+        if bool(operator) != bool(catalog_item):
+            raise ValueError("shared financial pair is incomplete")
+        return FinancialActivationConfig(
+            self_service_sellers=sellers,
+            operator_id=UUID(operator) if operator else None,
+            catalog_item_id=UUID(catalog_item) if catalog_item else None,
+            require_payout_ready=_FLAG_VALUES[require],
+        )
+    except ValueError as error:
+        raise FinancialActivationConfigError(str(error)) from error
+
+
+class FinancialActivationBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+@router.get("/{seller_id}/financial-activation")
+async def read_financial_activation(request: Request, seller_id: UUID) -> dict[str, Any]:
+    auth, internal = await _authenticate(request, "commerce.payout.read")
+    await _require_seller(internal, seller_id)
+    config = _activation_config()
+    envelope = internal.envelope
+    try:
+        async with auth.domain_session(envelope) as session:
+            await _require_membership(session, seller_id, _READ_ROLES)
+            if seller_id not in config.self_service_sellers:
+                return {"self_service": False}
+            row = (
+                (
+                    await session.execute(
+                        text(
+                            "select bound, payout_ready, channel_ready from "
+                            "app_private.resolve_seller_financial_activation(:seller_id)"
+                        ),
+                        {"seller_id": seller_id},
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+    except DBAPIError as error:
+        raise _payout_domain_error(error) from error
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+    return {"self_service": True, **_activation_status(row, config)}
+
+
+@router.post("/{seller_id}/financial-activation")
+async def activate_financial(request: Request, seller_id: UUID) -> dict[str, Any]:
+    auth, internal = await _authenticate(request, "commerce.payout.manage")
+    await _require_seller(internal, seller_id)
+    await _model_from_body(FinancialActivationBody, internal)
+    config = _activation_config()
+    envelope = internal.envelope
+    try:
+        async with auth.domain_session(envelope) as session:
+            await _require_membership(session, seller_id, _MANAGE_ROLES)
+            if seller_id not in config.self_service_sellers:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="financial_self_service_disabled",
+                )
+            if config.operator_id is None or config.catalog_item_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="financial_activation_unconfigured",
+                )
+            outcome = await session.scalar(
+                text(
+                    "select app_private.activate_seller_financial("
+                    ":seller_id, :operator_id, :catalog_item_id, "
+                    ":require_payout_ready, :request_id)"
+                ),
+                {
+                    "seller_id": seller_id,
+                    "operator_id": config.operator_id,
+                    "catalog_item_id": config.catalog_item_id,
+                    "require_payout_ready": config.require_payout_ready,
+                    "request_id": envelope.request_id,
+                },
+            )
+    except DBAPIError as error:
+        raise _payout_domain_error(error) from error
+    logger.info(
+        "seller_financial_activation",
+        seller_organization_id=str(seller_id),
+        outcome=outcome,
+        request_id=str(envelope.request_id),
+    )
+    if outcome in _ACTIVATION_SUCCESS:
+        return {"status": "active", "changed": outcome == "activated"}
+    refusal = _ACTIVATION_REFUSALS.get(str(outcome))
+    if refusal is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="payout_unavailable"
+        )
+    raise HTTPException(status_code=refusal[0], detail=refusal[1])
+
+
+_ACTIVATION_SUCCESS = frozenset({"activated", "already_active"})
+_ACTIVATION_REFUSALS: dict[str, tuple[int, str]] = {
+    "payout_account_not_ready": (status.HTTP_409_CONFLICT, "payout_account_not_ready"),
+    "channel_unavailable": (
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+        "financial_channel_unavailable",
+    ),
+    "seller_inactive": (status.HTTP_403_FORBIDDEN, "forbidden"),
+}
+
+
+def _activation_config() -> FinancialActivationConfig:
+    try:
+        return financial_activation_config()
+    except FinancialActivationConfigError as error:
+        logger.error("financial_activation_config_invalid", reason=str(error))
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="financial_activation_unconfigured",
+        ) from error
+
+
+def _activation_status(row: Any, config: FinancialActivationConfig) -> dict[str, Any]:
+    if row["bound"]:
+        return {"status": "active", "reason": None}
+    if not config.has_shared_pair:
+        return {"status": "blocked", "reason": "unconfigured"}
+    if not row["channel_ready"]:
+        return {"status": "blocked", "reason": "channel_unavailable"}
+    if config.require_payout_ready and not row["payout_ready"]:
+        return {"status": "blocked", "reason": "payout_account_not_ready"}
+    return {"status": "available", "reason": None}
+
+
 async def _require_membership(
     session: AsyncSession,
     seller_id: UUID,
@@ -244,9 +423,9 @@ async def _require_seller(internal: AuthenticatedInternalRequest, seller_id: UUI
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
 
-async def _model_from_body(
-    model: type[PayoutAccountBindBody], internal: AuthenticatedInternalRequest
-) -> PayoutAccountBindBody:
+async def _model_from_body[Model: BaseModel](
+    model: type[Model], internal: AuthenticatedInternalRequest
+) -> Model:
     try:
         value = json.loads(internal.body, object_pairs_hook=_reject_duplicate_keys)
         return model.model_validate(value)
