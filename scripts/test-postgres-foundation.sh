@@ -243,6 +243,9 @@ uv run --project apps/api python -m appsell_api.reset_demo_tenant \
   --confirm-demo-key autonomia-demo-v1
 
 docker compose -p "$project" up -d --build --wait api
+# O parser de PDF roda sem sandbox do sistema no Linux: o contêiner é o único
+# isolamento, e ele precisa negar rede e escrita (#468).
+scripts/test-pdf-sandbox-isolation.sh "$project"
 curl --fail --silent "http://127.0.0.1:${api_port}/health/live"
 curl --fail --silent "http://127.0.0.1:${api_port}/health/ready"
 APPSELL_TEST_DOMAIN_API_URL="http://127.0.0.1:${api_port}" \
