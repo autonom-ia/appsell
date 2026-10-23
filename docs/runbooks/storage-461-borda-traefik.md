@@ -153,6 +153,10 @@ mudar o arquivo, vale o do merge.
 # 0. sudo sem senha; sem ele, parar antes de tocar em qualquer coisa
 sudo -n true || { echo "PARAR: sudo -n não liberado neste host"; exit 1; }
 
+# 0b. linha de base: rodar AGORA o bloco do passo 7, antes de qualquer troca.
+#     Prova que o `python -c` funciona na api e no worker. Se falhar aqui, o
+#     problema não é a borda: parar e reportar.
+
 # 1. estado atual: o arquivo ativo tem de ser o de hoje
 sudo -n sha256sum /etc/easypanel/traefik/config/appsell-storage.yaml
 #    → 551a0363d6b8b6e96a474174e1fc8e6f11f8d7abc605bb80d3bb02149453347b; outro valor: parar
@@ -182,11 +186,13 @@ sudo -n mv -f -- /etc/easypanel/traefik/config/.appsell-storage.novo /etc/easypa
 
 # 6. o Traefik aceitou?
 sleep 5
-sudo -n docker service logs --since 1m easypanel-traefik 2>&1 | grep -i 'error while parsing rule\|invalid rule\|level=error' \
-  | grep -i -c 'appsell-storage\|providerName=file'
+sudo -n docker service logs --since 1m easypanel-traefik 2>&1 | grep -i 'error while parsing rule\|invalid rule\|level=error\|"level":"error"' \
+  | grep -i -c 'appsell-storage\|providerName=file\|"providerName":"file"'
 #    → 0. O primeiro filtro pega só erro (o log de acesso traz o nome do
 #    roteador em toda linha); o segundo deixa só o que é deste arquivo ou do
-#    provedor de arquivo, não erro de outro projeto da VPS.
+#    provedor de arquivo, não erro de outro projeto da VPS. Os dois filtros
+#    aceitam o log em texto e em JSON: o de acesso lido em 23/10/2026 era texto,
+#    mas o de erro nunca foi visto.
 
 # 7. api e worker continuam vendo o storage. O probe roda direto em cada
 #    contêiner, sem o cache do /health/ready (que vale até 30 s e mostraria o
