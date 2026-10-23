@@ -66,9 +66,13 @@ def test_flag_on_rejects_http_ip_address(endpoint: str) -> None:
     [
         "http://localhost:9000",
         "http://LOCALHOST:9000",
-        # O Docker põe os dois no /etc/hosts do contêiner, apontando para ::1.
+        # Os seis nomes que o Docker põe no /etc/hosts do contêiner.
         "http://ip6-localhost:9000",
         "http://ip6-loopback:9000",
+        "http://ip6-localnet:9000",
+        "http://ip6-mcastprefix:9000",
+        "http://ip6-allnodes:9000",
+        "http://ip6-allrouters:9000",
     ],
 )
 def test_flag_on_rejects_http_localhost(endpoint: str) -> None:

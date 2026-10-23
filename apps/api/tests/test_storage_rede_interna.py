@@ -8,7 +8,9 @@ duas, como o Swarm. As falhas entram pelo ambiente. Nada toca Docker real.
 import json
 import os
 import shutil
+import signal
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -108,6 +110,12 @@ elif comando == "network create":
     salvar()
 elif comando == "service inspect":
     servico = estado["servicos"][args[2]]
+    # Uma leitura da env falha uma vez depois do update: erro do `set -e`.
+    leitura_da_env = "{{json .Spec.TaskTemplate.ContainerSpec.Env}}"
+    if servico.get("ler_env_falha") and opcao("--format") == leitura_da_env:
+        servico["ler_env_falha"] = False
+        salvar()
+        print("erro de leitura", file=sys.stderr); sys.exit(1)
     print(avaliar(opcao("--format"), servico) if "--format" in args else json.dumps([servico]))
 elif comando == "service update":
     nome = args[-1]
@@ -136,6 +144,9 @@ elif comando == "service update":
             container["Env"] = env + [alvo]
     if falha("ZERA_ENV", nome):
         nova["TaskTemplate"]["ContainerSpec"]["Env"] = []
+    if falha("TROCA_NOME", nome):
+        nova["TaskTemplate"]["ContainerSpec"]["Env"][0] = "OUTRA_VARIAVEL=x"
+    servico["ler_env_falha"] = falha("FALHA_LEITURA_ENV", nome)
     servico["PreviousSpec"], servico["Spec"] = servico["Spec"], nova
     servico["quebrado"] = falha("SEM_STORAGE", nome) or falha("NAO_SOBE", nome)
     servico["parado"] = falha("NAO_SOBE", nome)
@@ -217,8 +228,8 @@ def pasta(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def rodar(pasta: Path, *argumentos: str, **falhas: str) -> subprocess.CompletedProcess[str]:
-    ambiente = {
+def _ambiente(pasta: Path, **falhas: str) -> dict[str, str]:
+    return {
         "PATH": f"{pasta / 'bin'}:{os.environ['PATH']}",
         "PASTA": str(pasta),
         "STORAGE461_PASTA": str(pasta / "backups"),
@@ -227,6 +238,10 @@ def rodar(pasta: Path, *argumentos: str, **falhas: str) -> subprocess.CompletedP
         "STORAGE461_PAUSA_LEITURAS": "0",
         **falhas,
     }
+
+
+def rodar(pasta: Path, *argumentos: str, **falhas: str) -> subprocess.CompletedProcess[str]:
+    ambiente = _ambiente(pasta, **falhas)
     return subprocess.run(  # noqa: S603
         [str(_BASH), str(_SCRIPT), *argumentos],
         env=ambiente,
@@ -418,3 +433,129 @@ def test_desfazer_aborta_se_outro_deploy_entrou_no_meio(pasta: Path) -> None:
         if linha.startswith("service rollback") and linha.endswith(API)
     ]
     assert rollbacks == []
+    # Parou no ABORT da api: o storage não perdeu o alias.
+    assert {"Target": REDE, "Aliases": ["appsell-storage"]} in redes(pasta, STORAGE)
+
+
+def gravar(pasta: Path, atual: dict[str, Any]) -> None:
+    (pasta / "estado.json").write_text(json.dumps(atual))
+
+
+def test_rede_poe_stop_first_na_api(pasta: Path) -> None:
+    atual = estado(pasta)
+    atual["servicos"][API]["Spec"]["UpdateConfig"]["Order"] = "start-first"
+    atual["servicos"][API]["Spec"]["RollbackConfig"]["Order"] = "start-first"
+    gravar(pasta, atual)
+    assert rodar(pasta, "rede").returncode == 0
+    assert spec(pasta, API)["UpdateConfig"] == {"Order": "stop-first"}
+    assert spec(pasta, API)["RollbackConfig"] == {"Order": "stop-first"}
+
+
+def test_worker_sem_rollback_stop_first_aborta_antes_do_backup(pasta: Path) -> None:
+    atual = estado(pasta)
+    atual["servicos"][WORKER]["Spec"]["RollbackConfig"]["Order"] = "start-first"
+    gravar(pasta, atual)
+    resultado = rodar(pasta, "rede")
+    assert resultado.returncode == 1
+    assert "rollback order diferente de stop-first" in resultado.stderr
+    assert atualizados(pasta) == []
+    assert list((pasta / "backups").iterdir()) == []
+
+
+def test_sigterm_nas_leituras_do_ready_volta_api_e_worker(pasta: Path) -> None:
+    assert rodar(pasta, "rede").returncode == 0
+    antes = {servico: spec(pasta, servico) for servico in (API, WORKER)}
+    processo = subprocess.Popen(  # noqa: S603
+        [str(_BASH), str(_SCRIPT), "env"],
+        env=_ambiente(pasta, STORAGE461_PAUSA_LEITURAS="30"),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert processo.stdout is not None
+    for linha in processo.stdout:
+        if linha.startswith(f"{WORKER}: env"):
+            break
+    processo.send_signal(signal.SIGTERM)
+    _, erros = processo.communicate(timeout=20)
+    assert processo.returncode == 130
+    assert "restaurando" in erros
+    for servico in (API, WORKER):
+        assert spec(pasta, servico) == antes[servico], servico
+
+
+def test_erro_do_set_e_depois_do_update_volta_a_api(pasta: Path) -> None:
+    assert rodar(pasta, "rede").returncode == 0
+    antes = spec(pasta, API)
+    (pasta / "chamadas.log").unlink()
+    resultado = rodar(pasta, "env", FALHA_LEITURA_ENV=API)
+    assert resultado.returncode == 1
+    assert "restaurando" in resultado.stderr
+    assert spec(pasta, API) == antes
+    assert atualizados(pasta) == [API]
+
+
+def test_env_com_variavel_trocada_falha_pelo_nome(pasta: Path) -> None:
+    assert rodar(pasta, "rede").returncode == 0
+    antes = spec(pasta, API)
+    resultado = rodar(pasta, "env", TROCA_NOME=API)
+    assert resultado.returncode == 1
+    assert "sumiram as variáveis APPSELL_API_ENVIRONMENT" in resultado.stderr
+    assert spec(pasta, API) == antes
+
+
+def test_desfazer_da_etapa_4_com_a_6_no_ar_para_no_primeiro_abort(pasta: Path) -> None:
+    assert rodar(pasta, "rede").returncode == 0
+    ts_da_4 = ultimo_ts(pasta)
+    time.sleep(1.1)  # o ts tem resolução de segundo
+    assert rodar(pasta, "env").returncode == 0
+    depois_da_6 = {servico: spec(pasta, servico) for servico in (STORAGE, API, WORKER)}
+    (pasta / "chamadas.log").unlink()
+    resultado = rodar(pasta, "desfazer", ts_da_4)
+    assert resultado.returncode == 1
+    assert f"restauração parada em {WORKER}" in resultado.stderr
+    chamadas = (pasta / "chamadas.log").read_text().splitlines()
+    assert [linha for linha in chamadas if linha.startswith("service rollback")] == []
+    for servico in (STORAGE, API, WORKER):
+        assert spec(pasta, servico) == depois_da_6[servico], servico
+
+
+def test_storage_nao_volta_enquanto_a_api_usa_o_alias(pasta: Path) -> None:
+    atual = estado(pasta)
+    for qual in ("Spec", "PreviousSpec"):
+        env = atual["servicos"][API][qual]["TaskTemplate"]["ContainerSpec"]["Env"]
+        env[1] = "APPSELL_API_STORAGE_INTERNAL_ENDPOINT=http://appsell-storage:9000"
+    gravar(pasta, atual)
+    assert rodar(pasta, "rede").returncode == 0
+    resultado = rodar(pasta, "desfazer", ultimo_ts(pasta))
+    assert resultado.returncode == 1
+    assert f"{API} ainda usa appsell-storage" in resultado.stderr
+    assert {"Target": REDE, "Aliases": ["appsell-storage"]} in redes(pasta, STORAGE)
+
+
+@pytest.mark.parametrize("ts", ["../../etc/x", "20261023T1200Z", "", "20261023T120000Z;id"])
+def test_desfazer_recusa_ts_fora_do_formato(pasta: Path, ts: str) -> None:
+    resultado = rodar(pasta, "desfazer", ts)
+    assert resultado.returncode != 0
+    assert (
+        not (pasta / "chamadas.log").exists()
+        or "service rollback" not in (pasta / "chamadas.log").read_text()
+    )
+
+
+def rollbacks(pasta: Path) -> list[str]:
+    chamadas = (pasta / "chamadas.log").read_text().splitlines()
+    return [linha.split()[-1] for linha in chamadas if linha.startswith("service rollback")]
+
+
+def test_desfazer_volta_worker_api_e_storage_nesta_ordem(pasta: Path) -> None:
+    assert rodar(pasta, "rede").returncode == 0
+    (pasta / "chamadas.log").unlink()
+    assert rodar(pasta, "desfazer", ultimo_ts(pasta)).returncode == 0
+    assert rollbacks(pasta) == [WORKER, API, STORAGE]
+
+
+def test_falha_no_meio_volta_do_ultimo_tocado_para_o_primeiro(pasta: Path) -> None:
+    resultado = rodar(pasta, "rede", SEM_STORAGE=WORKER)
+    assert resultado.returncode == 1
+    assert rollbacks(pasta) == [WORKER, API, STORAGE]

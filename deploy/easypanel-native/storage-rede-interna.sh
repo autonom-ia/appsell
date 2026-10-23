@@ -8,10 +8,12 @@
 #   storage-rede-interna.sh desfazer <backup-ts> # volta à spec dos backups desse ts
 #
 # Regra de cada escrita: backup da spec com a digital por campo, um update por
-# serviço, e depois de cada um a conferência (task Running, contagem de env,
-# storage respondendo). Falhou: os serviços já tocados voltam ao backup, do
-# último para o primeiro, e o script sai com 1. A volta só usa a PreviousSpec do
-# Swarm quando ela é igual ao backup; em qualquer outro caso, ABORT e Rodrigo.
+# serviço, e depois de cada um a conferência (task Running, nomes e contagem de
+# env, storage respondendo). Qualquer saída que não seja o fim verde (falha de
+# conferência, erro do `set -e`, Ctrl-C, SIGTERM, queda do SSH) volta os
+# serviços já tocados ao backup, do último para o primeiro, e sai com 1 (130
+# no sinal). A volta só usa a PreviousSpec do Swarm quando ela é igual ao
+# backup; em qualquer outro caso, ABORT e Rodrigo, sem tocar no resto.
 #
 # Nunca imprime env: só nomes de variável, contagens e hashes.
 set -euo pipefail
@@ -31,6 +33,9 @@ pausa_das_leituras="${STORAGE461_PAUSA_LEITURAS:-15}"
 pasta_dos_backups="${STORAGE461_PASTA:-/tmp}"
 
 d() { sudo -n docker "$@"; }
+# `sleep` em segundo plano: o `wait` deixa o trap rodar já no sinal, sem
+# esperar o fim da pausa.
+pausa() { sleep "$1" & wait "$!"; }
 spec_json() { d service inspect "$1" --format "{{json .${2}}}"; }
 abort() { echo "ABORT: $*" >&2; exit 1; }
 
@@ -42,10 +47,11 @@ campos=(Labels TaskTemplate.ContainerSpec.Image TaskTemplate.ContainerSpec.Env
 digital() {
   # digital <serviço> Spec|PreviousSpec → "campo hash" por linha; só hashes
   # O `with` evita o erro de ponteiro nulo quando não há PreviousSpec.
-  local servico="$1" qual="$2" campo
+  # Inspect que falha é erro, não hash de saída vazia.
+  local servico="$1" qual="$2" campo valor
   for campo in "${campos[@]}"; do
-    printf '%s %s\n' "$campo" \
-      "$(d service inspect "$servico" --format "{{with .${qual}}}{{json .${campo}}}{{end}}" | sha256sum | cut -d' ' -f1)"
+    valor="$(d service inspect "$servico" --format "{{with .${qual}}}{{json .${campo}}}{{end}}")" || return 1
+    printf '%s %s\n' "$campo" "$(printf '%s' "$valor" | sha256sum | cut -d' ' -f1)"
   done
 }
 
@@ -117,7 +123,7 @@ convergiu() {
       return 0
     fi
     [ "$(date +%s)" -lt "$fim" ] || return 1
-    sleep "$intervalo_segundos"
+    pausa "$intervalo_segundos"
   done
 }
 
@@ -138,22 +144,36 @@ restaurar() {
   backup="$(caminho_do_backup "$servico" "$ts").digital"
   test -s "$backup" || { echo "ABORT: falta $backup" >&2; return 1; }
   agora="$(mktemp)"; anterior="$(mktemp)"
-  digital "$servico" Spec > "$agora"
+  digital "$servico" Spec > "$agora" || {
+    rm -f -- "$agora" "$anterior"
+    echo "ABORT: $servico: não li a spec atual; falar com o Rodrigo" >&2
+    return 1
+  }
   if [ -z "$(diferencas "$backup" "$agora")" ]; then
     rm -f -- "$agora" "$anterior"
     echo "$servico: spec já igual ao backup, nada a desfazer"
     return 0
   fi
-  digital "$servico" PreviousSpec > "$anterior"
-  dif="$(diferencas "$backup" "$anterior")"
+  digital "$servico" PreviousSpec > "$anterior" || dif="(não li a PreviousSpec)"
+  [ -n "${dif:-}" ] || dif="$(diferencas "$backup" "$anterior")"
   if [ -n "$dif" ]; then
     rm -f -- "$agora" "$anterior"
     echo "ABORT: $servico: a spec anterior do Swarm difere do backup em: $dif; falar com o Rodrigo" >&2
     return 1
   fi
+  if [ "$servico" = "$storage" ]; then
+    storage_sem_clientes_do_alias || { rm -f -- "$agora" "$anterior"; return 1; }
+  fi
+  if [ "$(spec_json "$servico" Spec.RollbackConfig.Order)" != '"stop-first"' ]; then
+    rm -f -- "$agora" "$anterior"
+    echo "ABORT: $servico: rollback order não é stop-first; falar com o Rodrigo" >&2
+    return 1
+  fi
   d service rollback --detach=false "$servico" >/dev/null || true
-  digital "$servico" Spec > "$agora"
-  dif="$(diferencas "$backup" "$agora")"
+  dif="(não li a spec depois do rollback)"
+  if digital "$servico" Spec > "$agora"; then
+    dif="$(diferencas "$backup" "$agora")"
+  fi
   rm -f -- "$agora" "$anterior"
   if [ -n "$dif" ]; then
     echo "ABORT: $servico: depois do rollback a spec difere do backup em: $dif; falar com o Rodrigo" >&2
@@ -169,19 +189,39 @@ restaurar() {
 tocados=()
 ts_da_janela=""
 desfazer_tocados() {
-  local i falhou=0
+  # Para no primeiro ABORT: restaurar o resto por cima de um serviço que não
+  # voltou pode deixar a api apontando para um storage fora da rede.
+  local i
   for ((i = ${#tocados[@]} - 1; i >= 0; i--)); do
-    restaurar "${tocados[$i]}" "$ts_da_janela" || falhou=1
+    restaurar "${tocados[$i]}" "$ts_da_janela" || return 1
   done
-  return "$falhou"
+}
+
+concluido=0
+ao_sair() {
+  # Roda em toda saída depois de armado. Sem `set -e` aqui: um echo para um
+  # SSH que caiu não pode interromper a restauração.
+  local codigo=$?
+  set +e
+  trap - EXIT INT TERM HUP
+  trap '' PIPE
+  [ "$concluido" = "1" ] && exit 0
+  if [ "${#tocados[@]}" -gt 0 ]; then
+    echo "a etapa não terminou verde (código $codigo): restaurando" >&2
+    desfazer_tocados || echo "ABORT: a restauração parou; falar com o Rodrigo" >&2
+  fi
+  [ "$codigo" = "130" ] && exit 130
+  exit 1
+}
+
+armar_restauracao() {
+  trap ao_sair EXIT
+  trap 'exit 130' INT TERM HUP
 }
 
 falhar() {
-  # falhar <motivo>: desfaz o que esta execução tocou e sai com 1
+  # falhar <motivo>: sai com 1; quem desfaz é o ao_sair
   echo "FALHOU: $*" >&2
-  if [ "${#tocados[@]}" -gt 0 ]; then
-    desfazer_tocados || echo "ABORT: a restauração não fechou; falar com o Rodrigo" >&2
-  fi
   exit 1
 }
 
@@ -194,11 +234,16 @@ preparar_janela() {
   for servico in "$storage" "$api" "$worker"; do
     task_running "$servico" || abort "$servico sem task Running antes de começar"
   done
+  # O rollback usa a ordem da spec atual. storage e api recebem stop-first no
+  # próprio update desta janela; o worker já nasce assim (ensure-asset-worker.sh).
+  [ "$(spec_json "$worker" Spec.RollbackConfig.Order)" = '"stop-first"' ] \
+    || abort "$worker com rollback order diferente de stop-first"
   ts_da_janela="$(date -u +%Y%m%dT%H%M%SZ)"
   for servico in "$storage" "$api" "$worker"; do
     guardar_backup "$servico" "$ts_da_janela"
   done
   echo "backups: $(caminho_do_backup '<serviço>' "$ts_da_janela").json"
+  armar_restauracao
 }
 
 esta_na_rede() {
@@ -207,18 +252,47 @@ esta_na_rede() {
   redes_do_servico "$1" | grep -Fxq -- "$id"
 }
 
+ordem_do() {
+  # storage e api entram com stop-first nos dois sentidos: MinIO de instância
+  # única não pode ter duas tasks no mesmo volume, e a api é uma task só com o
+  # lease do e-mail. O worker mantém a ordem com que o script dele o cria.
+  [ "$1" = "$worker" ] || printf '%s\n' --update-order stop-first --rollback-order stop-first
+}
+
+host_do_endpoint_interno() {
+  # Só o hostname, nunca o valor inteiro.
+  spec_json "$1" Spec.TaskTemplate.ContainerSpec.Env | jq -r --arg chave "${chave_do_endpoint}=" '
+    [.[] | select(startswith($chave)) | ltrimstr($chave)
+      | ltrimstr("http://") | ltrimstr("https://") | split("/")[0] | split(":")[0]] | first // ""'
+}
+
+storage_sem_clientes_do_alias() {
+  # Voltar o storage tira o alias. Se a api ou o worker ainda usam o alias, o
+  # storage some para eles e o /health/ready cai.
+  local servico
+  for servico in "$api" "$worker"; do
+    if [ "$(host_do_endpoint_interno "$servico")" = "$alias_do_storage" ]; then
+      echo "ABORT: $storage não volta: $servico ainda usa $alias_do_storage; desfazer antes a etapa 6; falar com o Rodrigo" >&2
+      return 1
+    fi
+  done
+}
+
 atualizar() {
   # atualizar <serviço> <checagem> <variáveis novas> <args do update...>
   # Update, conferência e, na falha, volta de tudo o que esta execução tocou.
-  local servico="$1" checagem="$2" novas="$3" antes depois
+  local servico="$1" checagem="$2" novas="$3" antes depois nomes_antes sumiram
   shift 3
   antes="$(contagem_de_env "$servico")"
+  nomes_antes="$(nomes_de_env "$servico")"
   tocados+=("$servico")
   d service update --detach=false "$@" "$servico" >/dev/null || falhar "update de $servico saiu com erro"
   convergiu "$servico" "$checagem" || falhar "$servico não convergiu ($checagem)"
   depois="$(contagem_de_env "$servico")"
   echo "$servico: env $antes → $depois"
   [ "$depois" = "$((antes + novas))" ] || falhar "$servico: env $antes → $depois, esperado $((antes + novas))"
+  sumiram="$(comm -23 <(printf '%s\n' "$nomes_antes") <(nomes_de_env "$servico") | tr '\n' ' ')"
+  [ -z "${sumiram// /}" ] || falhar "$servico: sumiram as variáveis $sumiram"
 }
 
 etapa_rede() {
@@ -237,21 +311,23 @@ etapa_rede() {
       --network-add "name=${rede},alias=${alias_do_storage}"
     convergiu "$api" storage_pela_api || falhar "a api deixou de ver o storage depois do update dele"
   fi
-  local servico
+  local servico ordem
   for servico in "$api" "$worker"; do
     if esta_na_rede "$servico"; then
       echo "$servico: já na rede"
       continue
     fi
-    atualizar "$servico" storage_responde 0 --network-add "$rede"
+    mapfile -t ordem < <(ordem_do "$servico")
+    atualizar "$servico" storage_responde 0 ${ordem[@]+"${ordem[@]}"} --network-add "$rede"
   done
+  concluido=1
   echo "etapa 4 concluída; backups com ts $ts_da_janela"
 }
 
 etapa_env() {
   preparar_janela
   rede_isolada || abort "a rede $rede não existe ou não é isolada: a etapa 4 não fechou"
-  local servico novas
+  local servico novas ordem
   for servico in "$storage" "$api" "$worker"; do
     esta_na_rede "$servico" || abort "$servico fora da rede $rede: a etapa 4 não fechou"
   done
@@ -260,24 +336,31 @@ etapa_env() {
     novas=0
     nomes_de_env "$servico" | grep -Fxq -- "$flag" || novas=$((novas + 1))
     nomes_de_env "$servico" | grep -Fxq -- "$chave_do_endpoint" || novas=$((novas + 1))
-    atualizar "$servico" storage_responde "$novas" \
+    mapfile -t ordem < <(ordem_do "$servico")
+    atualizar "$servico" storage_responde "$novas" ${ordem[@]+"${ordem[@]}"} \
       --env-add "${flag}=true" --env-add "${chave_do_endpoint}=${endpoint_interno}"
+    nomes_de_env "$servico" | grep -Fxq -- "$flag" || falhar "$servico sem $flag depois do update"
   done
   local leitura
   for leitura in 1 2 3; do
-    sleep "$pausa_das_leituras"
+    pausa "$pausa_das_leituras"
     ready_com_storage || falhar "/health/ready sem storage na leitura $leitura"
   done
+  concluido=1
   echo "etapa 6 concluída; backups com ts $ts_da_janela"
 }
 
 desfazer() {
-  local ts="${1:?uso: desfazer <ts-do-backup>}" servico falhou=0
+  local ts="${1:?uso: desfazer <ts-do-backup>}" servico
+  # O ts vira parte de um caminho: só o formato que o próprio script imprime.
+  case "$ts" in
+    [0-9][0-9][0-9][0-9][0-1][0-9][0-3][0-9]T[0-2][0-9][0-5][0-9][0-5][0-9]Z) ;;
+    *) abort "ts inválido: use o que a etapa imprimiu (AAAAMMDDTHHMMSSZ)" ;;
+  esac
   sudo -n true || abort "sudo -n não liberado neste host"
   for servico in "$worker" "$api" "$storage"; do
-    restaurar "$servico" "$ts" || falhou=1
+    restaurar "$servico" "$ts" || abort "restauração parada em $servico; os seguintes não foram tocados; falar com o Rodrigo"
   done
-  [ "$falhou" = "0" ] || abort "restauração incompleta; falar com o Rodrigo"
 }
 
 seco() {

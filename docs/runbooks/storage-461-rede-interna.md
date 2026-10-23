@@ -268,14 +268,21 @@ O que o `rede` faz, nesta ordem, e onde para:
    --network-add name=sell-storage-internal,alias=appsell-storage`, depois a
    api precisa voltar a ver o storage (`probe_availability()` de dentro dela).
 5. api, depois worker, com `--network-add sell-storage-internal`; depois de
-   cada um, `probe_availability()` de dentro do próprio serviço.
+   cada um, `probe_availability()` de dentro do próprio serviço. A api leva
+   junto `--update-order stop-first --rollback-order stop-first`; o worker
+   mantém a ordem do `ensure-asset-worker.sh` e precisa já estar com rollback
+   `stop-first`, ou o script para antes do backup.
 
 Cada update é conferido: saída do `docker service update`, 1 task `Running`
-e a checagem verde em até 180 s, e a contagem de env igual à de antes. Falhou
-qualquer um: o script volta os serviços que já tocou, do último para o
-primeiro, e sai com 1. Os que ele não tocou ficam como estão. Serviço que já
-está na rede é pulado, então rodar de novo depois de uma falha corrigida não
-repete o que fechou.
+e a checagem verde em até 180 s, a contagem de env igual à de antes e nenhum
+nome de variável a menos. Qualquer saída que não seja o fim verde (conferência
+que falha, erro de comando, Ctrl-C, SIGTERM ou queda do SSH) volta os serviços
+que já tocou, do último para o primeiro, e sai com 1 (130 no sinal). Os que
+ele não tocou ficam como estão. Serviço que já está na rede é pulado, então
+rodar de novo depois de uma falha corrigida não repete o que fechou.
+
+Rodar dentro de um `tmux` no host: a queda do SSH também desfaz, mas a etapa
+fica pela metade e tem de ser repetida.
 
 ### Conferência
 
@@ -309,8 +316,10 @@ Com o `ts` impresso pela escrita:
 bash storage-rede-interna.sh desfazer <ts>
 ```
 
-Worker, api e storage, nesta ordem. Para cada um, compara a digital da spec
-atual com a do backup, campo a campo:
+O `ts` só é aceito no formato que a etapa imprime (`AAAAMMDDTHHMMSSZ`).
+Worker, api e storage, nesta ordem, **parando no primeiro ABORT**: os
+seguintes não são tocados. Para cada um, compara a digital da spec atual com a
+do backup, campo a campo:
 
 - igual ao backup: nada a desfazer (é o que acontece num serviço que o update
   não chegou a mudar, e na segunda execução do mesmo `desfazer`);
@@ -321,10 +330,15 @@ atual com a do backup, campo a campo:
   outro update entrou no meio): **ABORT, sem rollback**. Um rollback ali cairia
   na spec desse outro deploy. Vai ao Rodrigo, com os campos que diferem.
 
-Desfeitos os três, a rede fica vazia; apagar só ela, pelo nome:
+O storage ainda tem duas travas antes do rollback: a api e o worker não podem
+estar com `appsell-storage` no `INTERNAL_ENDPOINT` (voltar o storage tira o
+alias, e o `/health/ready` cai), e a ordem de rollback da spec atual tem de
+ser `stop-first`. Sem isso, ABORT.
+
+A rede só sai se o `desfazer` terminou com código 0:
 
 ```sh
-sudo -n docker network rm sell-storage-internal
+bash storage-rede-interna.sh desfazer <ts> && sudo -n docker network rm sell-storage-internal
 ```
 
 Depois da etapa 6, o `desfazer` da etapa 4 aborta por desenho: a
@@ -430,18 +444,20 @@ O que o `env` faz e onde para:
 1. As mesmas checagens e backups da etapa 4, com um `ts` novo.
 2. A rede existe e é `overlay true swarm`, e os três serviços estão nela. Se
    não, a etapa 4 não fechou: para antes de qualquer update.
-3. api primeiro, depois worker: `--env-add
+3. api primeiro (com `stop-first` nos dois sentidos), depois worker: `--env-add
    APPSELL_API_STORAGE_INTERNAL_HTTP_ALLOWED=true --env-add
    APPSELL_API_STORAGE_INTERNAL_ENDPOINT=http://appsell-storage:9000`. Depois
    de cada um: 1 task `Running` e `probe_availability()` verde de dentro dele
    em até 180 s, e a contagem de env igual à de antes **mais as variáveis que
-   não existiam** (1 hoje: a flag é nova e o endpoint é substituído). Contagem
-   diferente, como uma env que zerou, é falha.
+   não existiam** (1 hoje: a flag é nova e o endpoint é substituído), nenhum
+   nome a menos e a flag presente. Contagem diferente, como uma env que
+   zerou, ou uma variável trocada por outra, é falha.
 4. Três leituras do `/health/ready` de dentro da api, 15 s entre elas, todas
    com `"storage":true`.
 
-Falhou qualquer passo: volta o que tocou, do último para o primeiro, e sai com
-1. Se a api falha, o worker não é tocado.
+Falhou qualquer passo, ou a execução foi interrompida: volta o que tocou, do
+último para o primeiro, e sai com 1 (130 no sinal). Se a api falha, o worker
+não é tocado.
 
 **Conferência:**
 

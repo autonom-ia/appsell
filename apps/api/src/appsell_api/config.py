@@ -387,12 +387,25 @@ class Settings(BaseSettings):
         return self.storage_provider == "s3"
 
 
+_DOCKER_ETC_HOSTS_NAMES = frozenset(
+    {
+        "ip6-localhost",
+        "ip6-loopback",
+        "ip6-localnet",
+        "ip6-mcastprefix",
+        "ip6-allnodes",
+        "ip6-allrouters",
+    }
+)
+
+
 def _is_local_host(host: str) -> bool:
     normalized = host.lower().rstrip(".")
     if not normalized or normalized == "localhost" or normalized.endswith(".localhost"):
         return True
-    # O Docker põe os dois no /etc/hosts de todo contêiner, apontando para ::1.
-    if normalized in {"ip6-localhost", "ip6-loopback"}:
+    # Os nomes que o Docker põe no /etc/hosts de todo contêiner: loopback,
+    # rede local e multicast do IPv6. Nenhum é um serviço de outra máquina.
+    if normalized in _DOCKER_ETC_HOSTS_NAMES:
         return True
     if normalized in {"postgres", "seaweedfs", "seaweed"}:
         return True
