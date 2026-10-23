@@ -20,7 +20,7 @@ select 'create role appsell_runtime login nosuperuser nocreatedb nocreaterole no
 where not exists (select 1 from pg_roles where rolname = 'appsell_runtime')\gexec
 
 -- Conciliação (#147): só lê, por uma função. Nasce sem login; ganha login
--- abaixo quando APPSELL_RECONCILER_PASSWORD existe. A migration 0062 concede o
+-- abaixo quando APPSELL_RECONCILER_PASSWORD existe. A migration 0063 concede o
 -- execute na função se este papel existir.
 select 'create role appsell_reconciler nologin nosuperuser nocreatedb nocreaterole noinherit nobypassrls'
 where not exists (select 1 from pg_roles where rolname = 'appsell_reconciler')\gexec

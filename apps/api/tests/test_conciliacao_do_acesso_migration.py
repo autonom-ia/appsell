@@ -1,4 +1,4 @@
-"""A 0062 é lida como texto: o que importa é que a leitura continue só leitura,
+"""A 0063 é lida como texto: o que importa é que a leitura continue só leitura,
 fora do alcance do runtime, e que o `schema_ready` a conheça (#147).
 
 O SQL rodando de verdade é provado em `test_postgres_checkout_reconciliation.py`.
@@ -26,7 +26,7 @@ def _migration(nome: str, apelido: str) -> ModuleType:
 
 @pytest.fixture
 def migration() -> ModuleType:
-    return _migration(next(VERSOES.glob("0062_*.py")).name, "appsell_migration_0062")
+    return _migration(next(VERSOES.glob("*_conciliacao_do_acesso.py")).name, "appsell_conciliacao")
 
 
 def _comandos_de(migration: ModuleType, direcao: Callable[[], None]) -> list[str]:
@@ -94,8 +94,8 @@ def test_o_readiness_aprende_a_funcao_e_a_versao(migration: ModuleType) -> None:
         "app_private.schema_ready_base_0016()",
         "app_private.schema_ready_base_0017()",
     )
-    assert migration.revision in migration._READY_ATE_0062
-    assert migration._READY_ATE_0062.startswith(migration._READY_ATE_0061[:-2])
+    assert migration.revision in migration._READY_ATE_0063
+    assert migration._READY_ATE_0063.startswith(migration._READY_ATE_0062[:-2])
     de, para = migration._ready_funcao()
     assert "advance_entitlements_to" in de
     assert para.startswith(de) and migration._RELATORIO in para

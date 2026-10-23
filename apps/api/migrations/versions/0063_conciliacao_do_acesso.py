@@ -45,8 +45,8 @@ que depende de fonte que o Sell não tem hoje e, quando existir, casa pelo mesmo
 O `downgrade` existe e só remove a leitura, sem dado a preservar. É exceção à
 cadeia forward-only desde a 0059.
 
-Revision ID: 0062_conciliacao_do_acesso
-Revises: 0061_o_atraso_alcanca_o_aluno
+Revision ID: 0063_conciliacao_do_acesso
+Revises: 0062_mapping_do_produto_novo
 """
 
 from __future__ import annotations
@@ -57,19 +57,20 @@ from types import ModuleType
 
 from alembic import op
 
-revision = "0062_conciliacao_do_acesso"
-down_revision = "0061_o_atraso_alcanca_o_aluno"
+revision = "0063_conciliacao_do_acesso"
+down_revision = "0062_mapping_do_produto_novo"
 branch_labels = None
 depends_on = None
 
-_READY_ATE_0061 = (
-    "'0057_banner_na_vitrine','0058_capa_na_biblioteca','0059_canal_financial_global',"
-    "'0060_atualizacao_chega_ao_aluno','0061_o_atraso_alcanca_o_aluno'))"
-)
 _READY_ATE_0062 = (
     "'0057_banner_na_vitrine','0058_capa_na_biblioteca','0059_canal_financial_global',"
     "'0060_atualizacao_chega_ao_aluno','0061_o_atraso_alcanca_o_aluno',"
-    "'0062_conciliacao_do_acesso'))"
+    "'0062_mapping_do_produto_novo'))"
+)
+_READY_ATE_0063 = (
+    "'0057_banner_na_vitrine','0058_capa_na_biblioteca','0059_canal_financial_global',"
+    "'0060_atualizacao_chega_ao_aluno','0061_o_atraso_alcanca_o_aluno',"
+    "'0062_mapping_do_produto_novo','0063_conciliacao_do_acesso'))"
 )
 _BASES_DO_READY: tuple[str, ...] = (
     "app_private.schema_ready_base_0016()",
@@ -103,11 +104,11 @@ end $migration$
 
 
 def _migration_anterior() -> ModuleType:
-    """Lê a âncora que a `0061` deixou no `schema_ready`, em vez de copiá-la."""
+    """Lê a âncora que a `0062` deixou no `schema_ready`, em vez de copiá-la."""
     caminho = Path(__file__).with_name(f"{down_revision}.py")
-    spec = importlib_util.spec_from_file_location("appsell_migration_0061", caminho)
+    spec = importlib_util.spec_from_file_location("appsell_migration_0062", caminho)
     if spec is None or spec.loader is None:  # pragma: no cover - caminho fixo no repo
-        raise RuntimeError("a migration 0061 nao pode ser lida")
+        raise RuntimeError("a migration 0062 nao pode ser lida")
     modulo = importlib_util.module_from_spec(spec)
     spec.loader.exec_module(modulo)
     return modulo
@@ -247,7 +248,7 @@ end $migration$
 
 
 def _ready_funcao() -> tuple[str, str]:
-    de = _migration_anterior()._READY_FUNCAO_PARA
+    de = _migration_anterior()._ready_funcao()[1]
     return de, de + f"            and to_regprocedure('{_RELATORIO}') is not null\n"
 
 
@@ -259,8 +260,8 @@ def upgrade() -> None:
     for alvo in _BASES_DO_READY:
         op.execute(
             _REESCREVE.replace("ALVO", alvo)
-            .replace("DE", _READY_ATE_0061)
-            .replace("PARA", _READY_ATE_0062)
+            .replace("DE", _READY_ATE_0062)
+            .replace("PARA", _READY_ATE_0063)
         )
     de, para = _ready_funcao()
     op.execute(_REESCREVE.replace("ALVO", _BASE_DO_ACESSO).replace("DE", de).replace("PARA", para))
@@ -274,8 +275,8 @@ def downgrade() -> None:
     for alvo in _BASES_DO_READY:
         op.execute(
             _REESCREVE.replace("ALVO", alvo)
-            .replace("DE", _READY_ATE_0062)
-            .replace("PARA", _READY_ATE_0061)
+            .replace("DE", _READY_ATE_0063)
+            .replace("PARA", _READY_ATE_0062)
         )
     op.execute(_RETIRA)
     op.execute(f"drop function {_RELATORIO}")

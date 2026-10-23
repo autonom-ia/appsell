@@ -1,4 +1,4 @@
-"""A leitura de conciliação num Postgres de verdade (#147, migration 0062).
+"""A leitura de conciliação num Postgres de verdade (#147, migration 0063).
 
 Duas lojas, cada uma com um caso de cada categoria e com casos limpos. O teste
 prova que cada divergência aparece uma vez, na loja certa, e que o caso limpo

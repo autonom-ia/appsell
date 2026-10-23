@@ -1,6 +1,6 @@
 """Report purchases that should have become access and did not (#147).
 
-Read-only. Calls ``app_private.checkout_reconciliation_report`` (migration 0062)
+Read-only. Calls ``app_private.checkout_reconciliation_report`` (migration 0063)
 inside a READ ONLY transaction and prints one JSON report on stdout. Every
 divergence also goes to stderr as one ``appsell.reconciliation.divergence``
 line, so a log search finds it without parsing the report.
