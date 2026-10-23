@@ -66,7 +66,8 @@ as trilhas estão em `docs/programa/PROGRAMA.md`.
    dinheiro, auth, upload, webhook ou dado pessoal, `sell-security-reviewer`.
    CI verde é condição, não revisão.
 6. A Orquestração Sell monta o lote e mergeia (ou pede o OK do Rodrigo).
-7. Deploy pelo trem, com rollback escrito antes. Cada trilha confere a sua parte
+7. Deploy com rollback escrito antes: pelo trem da Orquestração Deploy depois
+   do #438, até lá pelo runbook do Sell com OK do Rodrigo. Cada trilha confere a sua parte
    na versão no ar e responde "ok, SHA".
 8. Limpeza: `git worktree remove` + `git worktree prune`, snapshots do MacCluster
    da entrega apagados pelo caminho exato.
@@ -100,8 +101,10 @@ Rodrigo em 23/10/2026, Decisão 022) quando **tudo** for verdade:
 1. Cada job do CI da área tocada terminou em `success` no head atual. Job
    `skipped` não conta como verde; se a área tocada não tem job, não é seguro.
 2. Revisado pelo chat Qualidade, sem achado CRÍTICO ou ALTO aberto.
-3. Sem migration, ou com migration que só cria tabela, coluna ou índice, com o
-   número reservado.
+3. Sem migration, ou com migration que só cria coluna ou índice, com o número
+   reservado. Tabela nova nunca é PR seguro: exige função `security definer`
+   e `schema_ready`, então passa pelo `sell-security-reviewer` e pelo OK do
+   Rodrigo.
 4. Não toca nada desta lista:
    - dinheiro: checkout, Financial, Stripe, comissão, repasse, preço;
    - controle de acesso, login e cripto: Identity, sessão, cookies, CSRF,
@@ -116,7 +119,7 @@ Rodrigo em 23/10/2026, Decisão 022) quando **tudo** for verdade:
    - secrets.
 
 Todo o resto espera OK explícito do Rodrigo, citado no PR: merge de PR não
-seguro, deploy, migration que não seja só criação, qualquer coisa em produção,
+seguro, deploy, migration que não seja só coluna ou índice, qualquer coisa em produção,
 DNS, permissões, billing, liberar funcionalidade para todas as lojas.
 
 **Migrations:** cadeia única e forward-only. Número reservado pela Orquestração

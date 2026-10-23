@@ -17,9 +17,10 @@ A plataforma cobra por % da venda e por tokens.
   entrou na `main`, guarda dos gates do `AGENTS.md`.
 - **Trilhas de execução** (até 6 chats): cada uma dona das pastas listadas em
   [`TRILHAS.md`](TRILHAS.md).
-- **Merge e deploy** pelo trem da Orquestração Deploy
-  (`chat2you/docs/processo-de-release.md`). O Sell entra no trem depois do
-  inventário de deploy preenchido (Onda 0).
+- **Merge** pela Orquestração Sell (PR seguro) ou com OK do Rodrigo (o resto).
+  **Deploy** pelo trem da Orquestração Deploy
+  (`chat2you/docs/processo-de-release.md`) depois do inventário de deploy
+  aceito (#438); até lá, pelo runbook do Sell com OK do Rodrigo.
 
 Pico: 8 chats. Rampa por condição, não por data:
 
@@ -44,8 +45,8 @@ Esforço em semanas de trabalho de 1 dev (P = 1, M = 2, G = 6, GG = 10).
 - Segurança: subir para produção as correções de RCE já na `main` (`7543df9`).
 - Plataforma: CI obrigatório e verde (#422, #333, #266, #159), logs da API (#312),
   inventário de deploy para o trem.
-- Dinheiro: decisão de quem é o vendedor de registro; Sell enviar conta
-  conectada e comissão ao Financial; cadastro de vendedor self-service (#382);
+- Dinheiro: decisão de quem é o vendedor de registro (#439); conforme a
+  decisão, Sell enviar conta conectada e comissão (#440); cadastro de vendedor self-service (#382);
   estorno revoga acesso (#151); conciliação (#147); conferir valor (#148); Pix.
 - Membros: e-mail de compra validado em produção (#349, #357).
 - Orquestração: triagem das PRs de julho, fechar Issues já resolvidas, Project

@@ -368,7 +368,8 @@ O que muda:
 Por quê: na Orquestração Deploy do Chat2You, a fila de merge na mão de uma
 pessoa só virou gargalo quando vários chats passaram a trabalhar em paralelo.
 A delegação é estreita de propósito: nada de dinheiro, acesso, infra,
-dependência ou dado pessoal.
+dependência ou dado pessoal. O critério que vale é o da seção 6 do `AGENTS.md`;
+este resumo não o substitui.
 
 ## Pendências que bloqueiam ampliação
 
