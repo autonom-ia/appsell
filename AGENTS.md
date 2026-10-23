@@ -12,7 +12,10 @@ no caminho de ser "uma Hotmart". O **vendedor** tem uma loja com marca própria,
 monta produto → currículo → oferta → preview → publicar, e vende. O
 **comprador** é uma identidade global (login pelo Identity da Autonom.ia) que
 recebe acesso por *entitlement* e estuda na biblioteca. O **superadmin** é
-global. Cobrança passa pelo serviço **Financial** (repo `autonom-ia/autonomia-financial`).
+global. Em produção, o checkout passa pelo serviço **Financial** (repo
+`autonom-ia/autonomia-financial`, modo `financial_checkout`). Isso diverge do
+#140, que previa o Stripe Connect direto no Sell; quem é o vendedor de registro
+está em aberto (#439).
 
 Stack: Next.js (`app/`, `lib/`) como web + BFF; FastAPI (`apps/api/`) com
 Postgres e Alembic (`apps/api/migrations/versions/`); asset-worker e
@@ -41,9 +44,12 @@ as trilhas estão em `docs/programa/PROGRAMA.md`.
 - Cada trilha só escreve nas pastas que são dela (`docs/programa/TRILHAS.md`).
   Precisa mexer fora? Pede ao dono pela Orquestração Sell. Conflito, ela decide.
 - A Orquestração Sell atribui Issues, reserva números de migration, monta os
-  lotes e mergeia PR seguro (ver seção 6). Ela não escreve código de trilha.
-- **Merge e deploy entram pelo trem da Orquestração Deploy**, que cuida dos
-  deploys de todos os projetos (`chat2you/docs/processo-de-release.md`).
+  lotes e **aperta o merge** do PR seguro (seção 6). Ela não escreve código de
+  trilha.
+- **O deploy entra pelo trem da Orquestração Deploy**, que cuida dos deploys de
+  todos os projetos (`chat2you/docs/processo-de-release.md`), assim que o
+  inventário de deploy do Sell estiver aceito (#438). Até lá, deploy segue o
+  runbook do Sell com OK do Rodrigo. Merge na `main` do Sell não dispara deploy.
 - O chat **Qualidade e Segurança** revisa e testa cada PR com agentes novos,
   sem o contexto da trilha.
 
@@ -54,7 +60,8 @@ as trilhas estão em `docs/programa/PROGRAMA.md`.
 3. Teste antes do código. Rodar e **ler a saída inteira**.
 4. PR com `Refs #N` (ou `Closes #N` quando fecha a Issue inteira), e a evidência:
    comandos rodados com o resultado lido, isolamento entre lojas quando toca
-   dado, linha **Liberação** (sem flag / piloto na loja X até a data Y / todas).
+   dado, linha **Liberação**: "sem flag" só para correção ou mudança sem
+   comportamento novo; funcionalidade nova é "piloto na loja X até a data Y".
 5. Revisão pelo chat Qualidade: `sell-reviewer`, `sell-tester` e, quando toca
    dinheiro, auth, upload, webhook ou dado pessoal, `sell-security-reviewer`.
    CI verde é condição, não revisão.
@@ -78,31 +85,46 @@ uv run --project apps/api mypy --config-file apps/api/pyproject.toml apps/api/sr
 uv run --project apps/api pytest apps/api/tests/<arquivo>.py
 ```
 
-A lista exata do que o CI roda está em `.github/workflows/app-ci.yml` (roteada
-por área alterada). Rode cada comando separado e leia o resultado de cada um.
+O CI também roda `pnpm build`, `pnpm audit` e `pip-audit`. A lista exata está em
+`.github/workflows/app-ci.yml`, roteada por área alterada. Rode cada comando
+separado e leia o resultado de cada um.
 
 Teste com Postgres real roda pelo MacCluster (regras globais, seção R5), nunca
 contra banco de produção. Nunca encadear teste e commit (`pnpm test && git commit`).
 
 ## 6. Merge, migration e o que exige o Rodrigo
 
-**PR seguro** — a Orquestração Sell pode mergear sozinha (delegado pelo Rodrigo
-em 23/10/2026) quando **tudo** for verdade:
+**PR seguro** — a Orquestração Sell pode mergear sem perguntar (delegado pelo
+Rodrigo em 23/10/2026, Decisão 022) quando **tudo** for verdade:
 
-- CI verde no head atual;
-- revisado pelo chat Qualidade, sem achado CRÍTICO ou ALTO aberto;
-- sem migration, ou com migration só aditiva com número reservado;
-- não toca dinheiro (checkout, Financial, Stripe, comissão, repasse), auth
-  (Identity, sessão, cookies), infra/deploy, secrets ou dado pessoal em massa.
+1. Cada job do CI da área tocada terminou em `success` no head atual. Job
+   `skipped` não conta como verde; se a área tocada não tem job, não é seguro.
+2. Revisado pelo chat Qualidade, sem achado CRÍTICO ou ALTO aberto.
+3. Sem migration, ou com migration que só cria tabela, coluna ou índice, com o
+   número reservado.
+4. Não toca nada desta lista:
+   - dinheiro: checkout, Financial, Stripe, comissão, repasse, preço;
+   - controle de acesso, login e cripto: Identity, sessão, cookies, CSRF,
+     tokens, redirects, RBAC, chaves e envelopes (lista em `TRILHAS.md`);
+   - função `security definer`, `grant`, política RLS ou `schema_ready`;
+   - dado pessoal, em qualquer volume;
+   - infra, deploy, CI e gates: `.github/`, `scripts/ci/`, `deploy/`, `infra/`;
+   - dependência nova ou atualizada (`package.json`, `pnpm-lock.yaml`,
+     `pyproject.toml`, `uv.lock`);
+   - as próprias regras: `AGENTS.md` seções 6 e 7, `docs/programa/TRILHAS.md`,
+     `.claude/agents/`;
+   - secrets.
 
-Todo o resto espera OK explícito do Rodrigo: merge de PR não seguro, deploy,
-migration não aditiva, qualquer coisa em produção, DNS, permissões, billing,
-liberar funcionalidade para todas as lojas.
+Todo o resto espera OK explícito do Rodrigo, citado no PR: merge de PR não
+seguro, deploy, migration que não seja só criação, qualquer coisa em produção,
+DNS, permissões, billing, liberar funcionalidade para todas as lojas.
 
 **Migrations:** cadeia única e forward-only. Número reservado pela Orquestração
 Sell antes de escrever (`docs/programa/TRILHAS.md`, seção "Reserva de
-migrations"). Só aditiva no fluxo normal; remoção é expand/contract com rollback
-escrito. Ordem de deploy: web → api → migration (Decisão 020).
+migrations"). Remoção ou renomeação é expand/contract com rollback escrito.
+**A ordem de deploy é decidida por release** (migration aditiva costuma ir
+antes do código; houve releases web → api → migration) e vai escrita no PR e
+no runbook, nunca presumida.
 
 ## 7. Gates que não se abrem
 
@@ -112,8 +134,9 @@ escrito. Ordem de deploy: web → api → migration (Decisão 020).
 - Nada de pixel, cookie de afiliado ou rastreio sem consentimento registrado.
 - Nada ligado para todas as lojas sem piloto com data de decisão.
 - Toda tabela nova segue o padrão de isolamento: RLS `enable` + `force`, acesso
-  só por função `security definer` em `app_private`, PK com
-  `seller_organization_id`, e entra na lista do `schema_ready`.
+  só por função `security definer` em `app_private`, e entra na lista do
+  `schema_ready`. Tabela de loja tem PK com `seller_organization_id`; tabela
+  global (como `identity_user`) é exceção justificada no PR.
 - O browser nunca decide preço nem acesso (Decisão 005).
 
 ## 8. Regras que mais quebram aqui
