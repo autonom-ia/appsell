@@ -61,7 +61,32 @@ def test_a_leitura_nao_devolve_dado_pessoal(migration: ModuleType) -> None:
 def test_o_runtime_nao_recebe_a_funcao(migration: ModuleType) -> None:
     comandos = _comandos_de(migration, migration.upgrade)
     assert f"revoke all on function {migration._RELATORIO} from public" in comandos
-    assert not any("grant execute" in c for c in comandos)
+    concessoes = [c for c in comandos if "grant " in c and " to " in c]
+    # Só o papel de conciliação, e só se ele existir: o migrator não cria papel.
+    assert concessoes == [migration._CONCEDE]
+    assert "appsell_runtime" not in migration._CONCEDE
+    assert "if exists(select 1 from pg_roles where rolname='appsell_reconciler')" in (
+        migration._CONCEDE
+    )
+
+
+def test_a_funcao_fecha_o_search_path_e_usa_o_instante_da_transacao(
+    migration: ModuleType,
+) -> None:
+    funcao = migration._FUNCAO
+    assert "set search_path=pg_catalog,app_private,public,pg_temp" in funcao
+    # `stable` não combina com relógio volátil.
+    assert "clock_timestamp()" not in funcao
+
+
+def test_o_estado_nao_depende_da_janela(migration: ModuleType) -> None:
+    funcao = migration._FUNCAO
+    # A janela só filtra evento recebido, que não muda depois de chegar.
+    # assinatura, `is null`, `<=`, a diferença de 31 dias e o evento.
+    assert funcao.count("p_since") == 5
+    assert "event.received_at >= p_since and event.received_at < p_before" in funcao
+    assert "job.created_at >= p_since" not in funcao
+    assert "grant_row.updated_at >= p_since" not in funcao
 
 
 def test_o_readiness_aprende_a_funcao_e_a_versao(migration: ModuleType) -> None:
@@ -79,6 +104,7 @@ def test_o_readiness_aprende_a_funcao_e_a_versao(migration: ModuleType) -> None:
 def test_a_cabeca_da_cadeia_desce(migration: ModuleType) -> None:
     comandos = _comandos_de(migration, migration.downgrade)
     assert comandos[-1] == f"drop function {migration._RELATORIO}"
+    assert comandos[-2] == migration._RETIRA
     # O readiness esquece a função antes de ela sumir.
     de, para = migration._ready_funcao()
     assert any(para in c and de in c for c in comandos[:-1])

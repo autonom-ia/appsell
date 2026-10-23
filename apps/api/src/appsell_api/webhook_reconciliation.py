@@ -8,8 +8,13 @@ line, so a log search finds it without parsing the report.
 Exit codes: 0 no divergence, 1 divergences found, 2 the report could not run.
 Nothing is repaired here: each category says what the operation must check.
 
+Run it as ``appsell_reconciler``, never as the migrator: that role has only
+``connect``, ``usage`` on ``app_private`` and ``execute`` on this one function,
+and starts every transaction read-only. The migrator inherits ``appsell_owner``,
+which can run DDL.
+
 Usage:
-  APPSELL_RECONCILIATION_DATABASE_URL=postgresql://... \\
+  APPSELL_RECONCILIATION_DATABASE_URL=postgresql://appsell_reconciler@... \\
   python -m appsell_api.webhook_reconciliation \\
     --since 2026-10-20T00:00:00Z --before 2026-10-23T00:00:00Z [--stale-minutes 60]
 """
