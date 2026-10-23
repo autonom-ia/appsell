@@ -262,23 +262,76 @@ def test_an_old_endpoint_reactivated_does_not_move_the_channel(
     assert (store.integration, _sha(str(product)), product) in _mappings(store)
 
 
-def test_a_second_channel_identity_fails_loud(stores: dict[str, Store]) -> None:
-    # Dois canais "Financial checkout" ativos com hashes diferentes: o trigger
-    # levanta erro em vez de escolher um. Tudo numa transação desfeita, para não
-    # sujar o banco compartilhado.
+def test_an_ambiguous_channel_never_blocks_product_creation(stores: dict[str, Store]) -> None:
+    # Dois canais "Financial checkout" ativos: o produto entra, sem mapping, e o
+    # trigger avisa. Bloquear a criação seria regressão para toda loja vinculada,
+    # a Hub2You inclusive. Tudo numa transação desfeita: o banco é compartilhado.
     assert ADMIN_URL
     intruder = Store("intruso", bound=True, on_channel=True)
+    store = stores["vinculada"]
+    product = uuid4()
+    warnings: list[str] = []
     with psycopg.connect(ADMIN_URL) as connection:
+        connection.add_notice_handler(
+            lambda diagnostic: warnings.append(str(diagnostic.message_primary))
+        )
         _seed_store(connection, intruder, (_sha(f"intruso-{RUN}"), f"intruso-{RUN}"))
         connection.execute("set role appsell_owner")
-        with pytest.raises(psycopg.Error) as raised:
-            connection.execute(
-                "insert into catalog_product(seller_organization_id,id,slug,title,description)"
-                " values(%s,%s,'ambiguo','Produto','Produto')",
-                (stores["vinculada"].id, uuid4()),
-            )
-        assert raised.value.sqlstate == "55000"
+        connection.execute(
+            "insert into catalog_product(seller_organization_id,id,slug,title,description)"
+            " values(%s,%s,'ambiguo','Produto','Produto')",
+            (store.id, product),
+        )
+        mapped = connection.execute(
+            "select count(*) from external_product_mapping where catalog_product_id=%s",
+            (product,),
+        ).fetchone()
         connection.rollback()
+    assert mapped == (0,)
+    assert any(
+        message.startswith("appsell.financial_channel_unresolved") and str(product) in message
+        for message in warnings
+    )
+
+
+# O SQL do runbook de rotação do segredo do canal (corpo do PR #466): troca todas
+# as cópias numa transação, para o canal nunca ter duas identidades.
+CHANNEL_ROTATION_SQL = (
+    "update public.webhook_endpoint endpoint "
+    "set secret_reference=%s, revision=endpoint.revision+1, updated_at=clock_timestamp() "
+    "from app_private.financial_channel() canal "
+    "where endpoint.endpoint_key_sha256=canal.endpoint_key_sha256 "
+    "and endpoint.secret_reference=canal.secret_reference"
+)
+
+
+def test_the_secret_rotation_runbook_keeps_one_channel(stores: dict[str, Store]) -> None:
+    # Pega a rotação parcial: trocar a referência em só uma cópia deixaria duas
+    # identidades e o produto novo sem mapping.
+    assert ADMIN_URL
+    store = stores["outra"]
+    product = uuid4()
+    new_reference = f"rotacao-{RUN}"
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute("set role appsell_owner")
+        rotated = connection.execute(CHANNEL_ROTATION_SQL, (new_reference,)).rowcount
+        channel = connection.execute(
+            "select secret_reference from app_private.financial_channel()"
+        ).fetchall()
+        connection.execute(
+            "insert into catalog_product(seller_organization_id,id,slug,title,description)"
+            " values(%s,%s,'depois-da-rotacao','Produto','Produto')",
+            (store.id, product),
+        )
+        mapped = connection.execute(
+            "select checkout_integration_id from external_product_mapping "
+            "where catalog_product_id=%s",
+            (product,),
+        ).fetchall()
+        connection.rollback()
+    assert rotated >= 3
+    assert channel == [(new_reference,)]
+    assert mapped == [(store.integration,)]
 
 
 def test_schema_ready_knows_the_head() -> None:

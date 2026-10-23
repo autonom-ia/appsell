@@ -73,6 +73,15 @@ def test_o_canal_e_a_identidade_que_a_0059_grava(migration: ModuleType) -> None:
     assert "app_private.financial_channel()" in migration._FUNCAO_CANAL
 
 
+def test_o_trigger_avisa_e_segue_sem_bloquear(migration: ModuleType) -> None:
+    sql = migration._FUNCAO_MAPEIA
+    assert "exception when sqlstate '55000' then" in sql
+    assert "raise warning 'appsell.financial_channel_unresolved" in sql
+    aviso = sql.index("raise warning")
+    assert sql.index("return new;", aviso) > aviso
+    assert "raise exception" not in sql
+
+
 def test_funcoes_fechadas(migration: ModuleType) -> None:
     comandos = _comandos_de(migration, migration.upgrade)
     assert f"revoke all on function {migration._CANAL_GLOBAL} from public" in comandos
