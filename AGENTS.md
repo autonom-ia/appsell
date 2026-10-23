@@ -131,6 +131,12 @@ no runbook, nunca presumida.
 
 ## 7. Gates que não se abrem
 
+- **A loja da Hub2You está no ar e não pode regredir** (regra do Rodrigo,
+  23/10/2026). Todo PR roda o smoke da Hub2You antes e depois: `/s/hub2you`,
+  `/s/hub2you/p/condicoes-gerais` e `/s/hub2you/p/gerador-de-cotacoes-comparativas`
+  respondem 200 com "Comprar agora" (linha de base medida em 23/10). Comportamento
+  novo que alcance a Hub2You entra atrás de flag por loja, desligada para ela até
+  o Rodrigo liberar.
 - Nada de funcionalidade de dinheiro sem log, alerta e conciliação entre Stripe
   e acesso liberado (#147).
 - Nada de divisão de pagamento antes de o estorno revogar o acesso (#151).
