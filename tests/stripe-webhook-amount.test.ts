@@ -4,13 +4,17 @@ import type { NextRequest } from "next/server";
 
 vi.mock("server-only", () => ({}));
 
-// #148: the webhook must check HOW MUCH was paid, not only that the session is
-// "paid". Unlike tests/stripe-webhook.test.ts, the signature here is real: the
-// Stripe SDK signs a test payload and the route verifies it, so the amounts
-// asserted are the ones that reached constructEvent byte for byte.
+// #148: the webhook must check HOW MUCH was paid against the offer's
+// server-side price, not only that the session is "paid". Unlike
+// tests/stripe-webhook.test.ts, the signature here is real: the Stripe SDK
+// signs a test payload and the route verifies it, so the amounts asserted are
+// the ones that reached constructEvent byte for byte.
 const WEBHOOK_SECRET = "whsec_test_amount_check";
 
-const { proxyCheckoutWebhook } = vi.hoisted(() => ({ proxyCheckoutWebhook: vi.fn() }));
+const { proxyCheckoutWebhook, readPublicStorefront } = vi.hoisted(() => ({
+  proxyCheckoutWebhook: vi.fn(),
+  readPublicStorefront: vi.fn()
+}));
 
 vi.mock("@/lib/stripe-config.server", () => ({
   StripeConfigError: class extends Error {},
@@ -20,12 +24,37 @@ vi.mock("@/lib/stripe-config.server", () => ({
 }));
 
 vi.mock("@/lib/checkout-webhook-proxy.server", () => ({ proxyCheckoutWebhook }));
+vi.mock("@/lib/internal-api-client.server", () => ({ readPublicStorefront }));
 
 import { POST } from "../app/api/webhooks/stripe/route";
 
 const ENDPOINT_KEY = "endpoint_0123456789abcdefghijklmnopqrstuv";
 const EVENT_CREATED = 1_753_000_000;
+const HUB2YOU_PRICE = 4_700;
+const OTHER_STORE_PRICE = 19_900;
 const originalEnvironment = { ...process.env };
+
+// Two stores, each with one product at its own server-side price.
+const STOREFRONTS: Record<string, unknown> = {
+  hub2you: storefront("hub2you", "11111111-1111-4111-8111-111111111111", "condicoes-gerais", HUB2YOU_PRICE),
+  "outra-loja": storefront("outra-loja", "44444444-4444-4444-8444-444444444444", "curso", OTHER_STORE_PRICE)
+};
+
+function storefront(slug: string, sellerId: string, productSlug: string, unitAmountMinor: number) {
+  return {
+    schema_version: 1,
+    seller: { id: sellerId, slug, name: slug },
+    products: [{
+      id: "22222222-2222-4222-8222-222222222222",
+      slug: productSlug,
+      title: "Produto",
+      description: "Produto",
+      publication_id: "33333333-3333-4333-8333-333333333333",
+      publication_version: 1,
+      price: { unit_amount_minor: unitAmountMinor, currency: "BRL", billing_period: "one_time" }
+    }]
+  };
+}
 
 interface SessionOverrides {
   eventId?: string;
@@ -36,8 +65,8 @@ interface SessionOverrides {
   orderId?: string;
 }
 
-// Shape of what create-session produces today: one BRL line item at the
-// storefront price, no discount, so amount_total === amount_subtotal.
+// Shape of what create-session produces today for the Hub2You product: one BRL
+// line item at the storefront price, no discount.
 function paidSession(overrides: SessionOverrides = {}) {
   return {
     id: overrides.eventId ?? "evt_amount_1",
@@ -50,8 +79,8 @@ function paidSession(overrides: SessionOverrides = {}) {
         id: "cs_test_amount_1",
         object: "checkout.session",
         payment_status: "paid",
-        amount_subtotal: overrides.amountSubtotal === undefined ? 4_700 : overrides.amountSubtotal,
-        amount_total: overrides.amountTotal === undefined ? 4_700 : overrides.amountTotal,
+        amount_subtotal: overrides.amountSubtotal === undefined ? HUB2YOU_PRICE : overrides.amountSubtotal,
+        amount_total: overrides.amountTotal === undefined ? HUB2YOU_PRICE : overrides.amountTotal,
         currency: overrides.currency === undefined ? "brl" : overrides.currency,
         metadata: {
           financial_product_key: overrides.productKey ?? "prod_hub2you_condicoes",
@@ -78,12 +107,34 @@ function emittedPayloads() {
   return proxyCheckoutWebhook.mock.calls.map(([, body]) => JSON.parse((body as Buffer).toString("utf8")));
 }
 
+async function expectAmountMismatch(event: ReturnType<typeof paidSession>, orderId = "order-amount-1") {
+  const response = await POST(signedRequest(event));
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ received: true, ignored: "amount_mismatch", order_id: orderId });
+  expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
+  const logged = vi.mocked(console.error).mock.calls.map(([line]) => JSON.parse(String(line)));
+  expect(logged).toContainEqual(expect.objectContaining({
+    marker: "appsell.stripe_webhook.dropped",
+    reason: "amount_mismatch",
+    order_id: orderId
+  }));
+  // Correlation only: never the buyer's e-mail or subject.
+  expect(JSON.stringify(logged)).not.toContain("buyer@example.test");
+  expect(JSON.stringify(logged)).not.toContain("cognito-sub-amount");
+}
+
 describe("POST /api/webhooks/stripe — amount check (#148)", () => {
   beforeEach(() => {
     process.env.APPSELL_CHECKOUT_WEBHOOK_ENDPOINT_KEY = ENDPOINT_KEY;
     process.env.APPSELL_CHECKOUT_WEBHOOK_SECRET_B64 = Buffer.alloc(32, 7).toString("base64");
+    process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON = JSON.stringify({
+      "hub2you/condicoes-gerais": { financial_product_key: "prod_hub2you_condicoes" },
+      "outra-loja/curso": { financial_product_key: "prod_outra_loja" }
+    });
     proxyCheckoutWebhook.mockReset();
     proxyCheckoutWebhook.mockResolvedValue({ status: 202, payload: { status: "accepted" } });
+    readPublicStorefront.mockReset();
+    readPublicStorefront.mockImplementation(async (slug: string) => STOREFRONTS[slug]);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
   });
 
@@ -106,36 +157,63 @@ describe("POST /api/webhooks/stripe — amount check (#148)", () => {
       buyer_identity_sub: "cognito-sub-amount"
     }]);
     expect(proxyCheckoutWebhook.mock.calls[0]![2].eventId).toBe("selfemit:order-amount-1");
+    expect(readPublicStorefront).toHaveBeenCalledWith("hub2you");
   });
 
-  it("refuses access when a discount brought the total below the price", async () => {
-    const response = await POST(signedRequest(paidSession({ amountTotal: 0 })));
-
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({
-      received: true,
-      ignored: "amount_mismatch",
-      order_id: "order-amount-1"
-    });
-    expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
-    expect(console.error).toHaveBeenCalledWith(expect.stringContaining("\"reason\":\"amount_mismatch\""));
+  it("refuses a R$0,50 session carrying valid metadata of a R$199 product", async () => {
+    // Probe P4 from the review: total === subtotal, so only the server-side
+    // price can tell this session was not made by create-session.
+    await expectAmountMismatch(paidSession({
+      amountTotal: 50,
+      amountSubtotal: 50,
+      productKey: "prod_outra_loja"
+    }));
   });
 
-  it("refuses access for a partial discount too", async () => {
-    await POST(signedRequest(paidSession({ amountTotal: 470 })));
-    expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
+  it("refuses a 100% discount", async () => {
+    await expectAmountMismatch(paidSession({ amountTotal: 0 }));
   });
 
-  it("refuses access when the session was charged in another currency", async () => {
-    const response = await POST(signedRequest(paidSession({ currency: "usd" })));
-
-    expect(await response.json()).toMatchObject({ ignored: "amount_mismatch" });
-    expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
+  it("refuses a partial discount", async () => {
+    await expectAmountMismatch(paidSession({ amountTotal: 470 }));
   });
 
-  it("refuses access when the amounts are missing from the session", async () => {
-    await POST(signedRequest(paidSession({ amountTotal: null, amountSubtotal: null })));
-    expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
+  it("refuses a total above the subtotal", async () => {
+    await expectAmountMismatch(paidSession({ amountTotal: HUB2YOU_PRICE + 100 }));
+  });
+
+  it("refuses a session charged in another currency", async () => {
+    await expectAmountMismatch(paidSession({ currency: "usd" }));
+  });
+
+  it("refuses a session without amount_total", async () => {
+    await expectAmountMismatch(paidSession({ amountTotal: null }));
+  });
+
+  it("refuses a session without any amounts", async () => {
+    await expectAmountMismatch(paidSession({ amountTotal: null, amountSubtotal: null }));
+  });
+
+  it("refuses store A's product paid at store B's price, and grants store B at its own price", async () => {
+    await expectAmountMismatch(paidSession({ amountTotal: OTHER_STORE_PRICE, amountSubtotal: OTHER_STORE_PRICE }));
+
+    const response = await POST(signedRequest(paidSession({
+      eventId: "evt_amount_other_store",
+      amountTotal: OTHER_STORE_PRICE,
+      amountSubtotal: OTHER_STORE_PRICE,
+      productKey: "prod_outra_loja",
+      orderId: "order-other-store"
+    })));
+
+    expect(await response.json()).toEqual({ status: "accepted" });
+    expect(emittedPayloads().map((payload) => [payload.external_product_id, payload.external_purchase_id]))
+      .toEqual([["prod_outra_loja", "order-other-store"]]);
+    expect(readPublicStorefront).toHaveBeenLastCalledWith("outra-loja");
+  });
+
+  it("refuses a product that is no longer offered on the storefront", async () => {
+    readPublicStorefront.mockImplementation(async () => ({ ...STOREFRONTS.hub2you as object, products: [] }));
+    await expectAmountMismatch(paidSession());
   });
 
   it("answers a replayed mismatched event the same way, without emitting", async () => {
@@ -147,18 +225,39 @@ describe("POST /api/webhooks/stripe — amount check (#148)", () => {
     expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
   });
 
-  it("judges each store's session by its own price", async () => {
-    await POST(signedRequest(paidSession({ amountTotal: 0 })));
-    await POST(signedRequest(paidSession({
-      eventId: "evt_amount_other_store",
-      amountTotal: 9_900,
-      amountSubtotal: 9_900,
-      productKey: "prod_outra_loja",
-      orderId: "order-other-store"
-    })));
+  it("re-emits a replayed valid event byte for byte, so the ingress dedups it", async () => {
+    proxyCheckoutWebhook
+      .mockResolvedValueOnce({ status: 202, payload: { status: "accepted" } })
+      .mockResolvedValueOnce({ status: 202, payload: { status: "replayed" } });
+    const event = paidSession();
 
-    expect(emittedPayloads().map((payload) => payload.external_purchase_id)).toEqual(["order-other-store"]);
-    expect(emittedPayloads()[0].external_product_id).toBe("prod_outra_loja");
+    const first = await (await POST(signedRequest(event))).json();
+    const replay = await (await POST(signedRequest(event))).json();
+
+    expect([first, replay]).toEqual([{ status: "accepted" }, { status: "replayed" }]);
+    const [firstCall, replayCall] = proxyCheckoutWebhook.mock.calls;
+    expect((replayCall![1] as Buffer).equals(firstCall![1] as Buffer)).toBe(true);
+    expect(replayCall![2].eventId).toBe(firstCall![2].eventId);
+  });
+
+  it("keeps Stripe redelivering while the product is not mapped", async () => {
+    process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON = JSON.stringify({});
+    const response = await POST(signedRequest(paidSession()));
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "product_not_mapped" });
+    expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
+  });
+
+  it("keeps Stripe redelivering while the storefront is unavailable", async () => {
+    readPublicStorefront.mockRejectedValue(new Error("domain down"));
+    const unavailable = await POST(signedRequest(paidSession()));
+    readPublicStorefront.mockResolvedValue({ unexpected: true });
+    const malformed = await POST(signedRequest(paidSession()));
+
+    expect([unavailable.status, malformed.status]).toEqual([503, 503]);
+    expect(await unavailable.json()).toEqual({ error: "amount_verification_unavailable" });
+    expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
   });
 
   it("still rejects an event that is not signed with the endpoint secret", async () => {
@@ -166,5 +265,6 @@ describe("POST /api/webhooks/stripe — amount check (#148)", () => {
 
     expect(response.status).toBe(400);
     expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
+    expect(readPublicStorefront).not.toHaveBeenCalled();
   });
 });

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { isChargeableBuyerEmail, normalizeBuyerEmail } from "@/lib/buyer-email";
 import { resolveBuyerIdentity } from "@/lib/buyer-identity.server";
-import { resolveCheckoutProduct } from "@/lib/checkout-config";
+import { STRIPE_CHECKOUT_CURRENCY, resolveCheckoutProduct } from "@/lib/checkout-config";
 import { directChargeApplicationFeeCents } from "@/lib/checkout-fee";
 import {
   checkoutProvider,
@@ -195,7 +195,7 @@ export async function POST(request: NextRequest) {
         {
           quantity: 1,
           price_data: {
-            currency: "brl",
+            currency: STRIPE_CHECKOUT_CURRENCY,
             unit_amount: amount,
             product_data: { name: product.title }
           }

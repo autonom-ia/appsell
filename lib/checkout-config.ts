@@ -5,6 +5,11 @@
 // products directly. Any malformed entry invalidates the whole map (fail
 // closed) so a bad deploy cannot silently sell a misconfigured product.
 
+// The only currency the Stripe checkout charges in slice 1, in Stripe's
+// lowercase form. create-session prices with it and the webhook refuses any
+// other, so the two cannot drift apart.
+export const STRIPE_CHECKOUT_CURRENCY = "brl";
+
 export interface CheckoutProductMapping {
   financialProductKey: string;
 }

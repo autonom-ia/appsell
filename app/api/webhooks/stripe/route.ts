@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import type Stripe from "stripe";
 
+import { STRIPE_CHECKOUT_CURRENCY, findCheckoutProductByKey } from "@/lib/checkout-config";
 import { proxyCheckoutWebhook } from "@/lib/checkout-webhook-proxy.server";
+import { readPublicStorefront } from "@/lib/internal-api-client.server";
 import { RawBodyTooLargeError, readLimitedRawBody } from "@/lib/limited-raw-body.server";
+import { parsePublicStorefront } from "@/lib/public-storefront";
 import {
   type StripeKeyMode,
   StripeConfigError,
@@ -156,17 +159,35 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ received: true, ignored: "unrecognized_session" }, { status: 200, headers: noStore() });
   }
 
-  // HOW MUCH was paid, not only THAT it was paid (#148). create-session writes
-  // one BRL line item at the storefront price and offers no promotion codes, so
-  // a session it made always has amount_total === amount_subtotal. A total
-  // below the subtotal means a discount (a 100% coupon still reports "paid"),
-  // and nothing in this slice prices a discount, so it grants nothing. A
-  // different currency or missing amounts are never one of our sessions.
+  // HOW MUCH was paid, not only THAT it was paid (#148). The metadata only
+  // proves which product the session CLAIMS to be for; it does not prove that
+  // create-session made the session. Anyone able to mint a session on the
+  // platform account (a restricted key, a Dashboard user, another integration)
+  // can copy valid metadata onto a R$0,50 session. So the amount is checked
+  // against the offer's server-side price, read now from the storefront — the
+  // same source create-session priced from — exactly as the Connect route does
+  // (app/api/webhooks/stripe/connect/route.ts). amount_total must also equal
+  // amount_subtotal: a total below it is a discount (a 100% coupon still
+  // reports "paid"), and nothing in this slice prices a discount.
   //
-  // Deterministic in the event, so 200: a redelivery would fail identically.
-  // Logged so the Stripe ↔ buyer_entitlement reconciliation (#147) sees it.
-  // A legitimate discount (coupons) must change THIS rule, not bypass it.
-  if (!isFullPriceBrlSession(session)) {
+  // An unmapped product or an unreachable storefront is configuration or an
+  // outage, fixable within Stripe's retry window: 503 keeps it redelivering.
+  // A mismatch is deterministic, so 200 — a redelivery fails identically. The
+  // buyer was charged and gets no access: the order id goes to stderr under
+  // appsell.stripe_webhook.dropped for manual refund until the reconciliation
+  // (#147) reads it. A legitimate discount must change THIS rule, not bypass it.
+  const origin = findCheckoutProductByKey(metadata.financialProductKey);
+  if (!origin) return jsonError("product_not_mapped", 503);
+  let expectedAmountMinor: number | null;
+  try {
+    const storefront = parsePublicStorefront(await readPublicStorefront(origin.sellerSlug));
+    if (!storefront) return jsonError("amount_verification_unavailable", 503);
+    const product = storefront.products.find((candidate) => candidate.slug === origin.productSlug);
+    expectedAmountMinor = product?.price?.unit_amount_minor ?? null;
+  } catch {
+    return jsonError("amount_verification_unavailable", 503);
+  }
+  if (!paidTheOfferPrice(session, expectedAmountMinor)) {
     logIrreversibleDrop({ reason: "amount_mismatch", event, orderId: metadata.orderId });
     return NextResponse.json(
       { received: true, ignored: "amount_mismatch", order_id: metadata.orderId },
@@ -300,13 +321,13 @@ function readCheckoutMetadata(metadata: Stripe.Metadata | null): CheckoutMetadat
   return { financialProductKey, orderId, buyerEmail, buyerIdentitySub };
 }
 
-function isFullPriceBrlSession(session: Stripe.Checkout.Session): boolean {
-  const total = session.amount_total;
-  return session.currency === "brl" &&
-    Number.isInteger(total) &&
-    total !== null &&
-    total > 0 &&
-    total === session.amount_subtotal;
+function paidTheOfferPrice(session: Stripe.Checkout.Session, expectedAmountMinor: number | null): boolean {
+  return session.currency === STRIPE_CHECKOUT_CURRENCY &&
+    expectedAmountMinor !== null &&
+    Number.isInteger(expectedAmountMinor) &&
+    expectedAmountMinor > 0 &&
+    session.amount_total === expectedAmountMinor &&
+    session.amount_subtotal === expectedAmountMinor;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
