@@ -85,6 +85,22 @@ def test_flag_on_accepts_http_service_name() -> None:
     assert resolved.storage_internal_endpoint == "http://appsell-storage:9000"
 
 
+def test_flag_on_rejects_http_internal_endpoint_without_path_style() -> None:
+    # Virtual-host monta `<bucket>.appsell-storage`, que não resolve na rede
+    # isolada.
+    with pytest.raises(ValidationError, match="requires path-style addressing"):
+        settings(
+            storage_internal_http_allowed=True,
+            storage_internal_endpoint="http://appsell-storage:9000",
+            storage_path_style=False,
+        )
+
+
+def test_flag_on_with_https_does_not_require_path_style() -> None:
+    resolved = settings(storage_internal_http_allowed=True, storage_path_style=False)
+    assert resolved.storage_path_style is False
+
+
 def test_flag_on_still_rejects_http_public_endpoint() -> None:
     with pytest.raises(ValidationError, match="remote HTTPS S3 endpoints are required"):
         settings(

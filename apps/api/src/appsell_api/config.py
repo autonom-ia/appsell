@@ -342,6 +342,12 @@ class Settings(BaseSettings):
             )
             internal = urlparse(self.storage_internal_endpoint)
             if self.storage_internal_http_allowed and internal.scheme == "http":
+                # Com virtual-host o cliente monta `<bucket>.appsell-storage`, que
+                # não existe na rede isolada: o alias só resolve como path-style.
+                if not self.storage_path_style:
+                    raise ValueError(
+                        "internal HTTP storage endpoint requires path-style addressing"
+                    )
                 if not _is_isolated_service_name(internal.hostname or ""):
                     raise ValueError(
                         "internal HTTP storage endpoint must be an isolated service name"

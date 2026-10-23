@@ -38,6 +38,20 @@ a secret pela rede; manda o access key id e a assinatura. A rede
 `api` e `asset-worker`. O alias `appsell-storage` existe só nela. **Nunca** na
 rede compartilhada do EasyPanel, que outros projetos da VPS enxergam.
 
+**Por que sem `--opt encrypted`, por enquanto.** O IPsec do overlay cifra só o
+tráfego **entre nós** do Swarm. A produção é uma VPS só; a etapa 3 confirma
+que o Swarm tem um nó. Com um nó, o tráfego da rede nunca sai do host, e a
+cifra não protegeria nada. Se a etapa 3 mostrar mais de um nó, parar: a rede
+só nasce com `--opt encrypted`, depois de ensaiada. Ligá-la sem ensaio arrisca a própria criação da rede (módulos do
+kernel, portas ESP) e não temos prova de que funciona e é gratuita aqui.
+**Gatilho de revisão:** no dia em que o Swarm ganhar um segundo nó,
+`--opt encrypted` passa a ser obrigatório nesta rede, antes do nó entrar.
+
+**Path-style é obrigatório.** Com a flag ligada e endpoint http, o `config.py`
+recusa `APPSELL_API_STORAGE_PATH_STYLE=false`: em virtual-host o cliente
+montaria `<bucket>.appsell-storage`, que não resolve. O ensaio da etapa 5
+imprime o valor.
+
 ## Regras desta janela
 
 - Todo `docker` no host vai com `sudo -n`. Primeira linha de cada sessão:
@@ -83,6 +97,7 @@ for s in sell-autonomia_storage sell-autonomia_api sell-autonomia_asset-worker; 
       done
 done
 sudo -n docker network ls --format '{{.Name}}' | grep -Fx sell-storage-internal || echo "sell-storage-internal: não existe"
+sudo -n docker node ls --format '{{.Hostname}} {{.Status}} {{.Availability}} {{.ManagerStatus}}'   # esperado: 1 linha
 ```
 
 E no painel do EasyPanel, só olhando: o `storage` é um serviço do projeto
@@ -300,6 +315,7 @@ from appsell_api.storage_s3 import S3Storage
 atual = get_settings()
 ensaio = atual.model_copy(update={"storage_internal_endpoint": "http://appsell-storage:9000"})
 storage = S3Storage(ensaio)
+print("path_style:", ensaio.storage_path_style)   # tem de ser True
 try:
     storage.probe_availability()
     print("HEAD assinado nos dois buckets: ok")
@@ -310,7 +326,7 @@ except Exception as erro:
 done
 ```
 
-Esperado: as duas linhas `ok` nos dois serviços. Qualquer `erro:` significa
+Esperado: `path_style: True` e as duas linhas `ok` nos dois serviços. Qualquer `erro:` significa
 parar aqui. Não há rollback, porque nada mudou.
 
 ## Etapa 6 — env da api e do worker
