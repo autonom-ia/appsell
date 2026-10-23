@@ -25,6 +25,7 @@ api_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0
 superuser_secret="$(openssl rand -hex 24)"
 migrator_secret="$(openssl rand -hex 24)"
 runtime_secret="$(openssl rand -hex 24)"
+reconciler_secret="$(openssl rand -hex 24)"
 context_key="$(openssl rand -hex 32)"
 bootstrap_key="$(openssl rand -hex 32)"
 internal_key_b64="$(openssl rand -base64 32)"
@@ -57,6 +58,8 @@ export APPSELL_API_PORT="$api_port"
 export APPSELL_POSTGRES_SUPERUSER_PASSWORD="$superuser_secret"
 export APPSELL_MIGRATOR_PASSWORD="$migrator_secret"
 export APPSELL_RUNTIME_PASSWORD="$runtime_secret"
+# O 001_roles.sh dá login ao appsell_reconciler quando esta variável existe (#459).
+export APPSELL_RECONCILER_PASSWORD="$reconciler_secret"
 export APPSELL_INTERNAL_ISSUER="appsell-bff-test"
 export APPSELL_INTERNAL_AUDIENCE="appsell-api-test"
 export APPSELL_IDENTITY_ISSUER="https://identity.test.autonomia.site"
@@ -178,57 +181,23 @@ uv run --project apps/api python -m appsell_api.configure_context_key
 
 export APPSELL_TEST_POSTGRES_ADMIN_URL="postgresql://postgres:${superuser_secret}@127.0.0.1:${port}/appsell"
 export APPSELL_TEST_POSTGRES_RUNTIME_URL="postgresql://appsell_runtime:${runtime_secret}@127.0.0.1:${port}/appsell"
+export APPSELL_TEST_POSTGRES_RECONCILER_URL="postgresql://appsell_reconciler:${reconciler_secret}@127.0.0.1:${port}/appsell"
 export APPSELL_TEST_CONTEXT_KEY_HEX="$context_key"
 export APPSELL_TEST_BOOTSTRAP_KEY_HEX="$bootstrap_key"
 # Aqui o Postgres existe: um teste que pula deixou de provar o que devia, e a
 # sessão reprova (apps/api/tests/exige_postgres.py, #450).
 export APPSELL_REQUIRE_POSTGRES="1"
-uv run --project apps/api pytest \
-  apps/api/tests/test_postgres_foundation.py \
-  apps/api/tests/test_postgres_bff_onboarding.py \
-  apps/api/tests/test_postgres_product_course.py \
-  apps/api/tests/test_postgres_product_publication.py \
-  apps/api/tests/test_postgres_access_links.py \
-  apps/api/tests/test_postgres_document_material.py \
-  apps/api/tests/test_postgres_product_cover.py \
-  apps/api/tests/test_postgres_curriculum.py \
-  apps/api/tests/test_postgres_learning_progress.py \
-  apps/api/tests/test_postgres_multi_asset_migration.py \
-  apps/api/tests/test_postgres_private_assets.py \
-  apps/api/tests/test_postgres_superadmin_inspection.py \
-  apps/api/tests/test_postgres_public_storefront.py \
-  apps/api/tests/test_postgres_demo_checkout.py \
-  apps/api/tests/test_postgres_webhook_ingress.py \
-  apps/api/tests/test_postgres_seller_payout_account.py \
-  apps/api/tests/test_postgres_payout_repoint_audit.py \
-  apps/api/tests/test_postgres_payout_status_sync.py \
-  apps/api/tests/test_postgres_payout_destination.py \
-  apps/api/tests/test_postgres_seller_membership_role.py \
-  apps/api/tests/test_postgres_pdf_access_policy.py \
-  apps/api/tests/test_postgres_pdf_preraster.py \
-  apps/api/tests/test_postgres_email_outbox.py \
-  apps/api/tests/test_postgres_minha_conta.py \
-  apps/api/tests/test_api_minha_conta.py \
-  apps/api/tests/test_postgres_configuracoes_da_loja.py \
-  apps/api/tests/test_asset_media_mirror.py \
-  apps/api/tests/test_postgres_asset_media_catalogue.py \
-  apps/api/tests/test_postgres_checkout_fulfillment.py \
-  apps/api/tests/test_postgres_constraint_regexes.py \
-  apps/api/tests/test_postgres_demo_learning.py \
-  apps/api/tests/test_postgres_player_materials.py \
-  apps/api/tests/test_postgres_ready_candidate_media.py \
-  apps/api/tests/test_api_seller_settings.py \
-  apps/api/tests/test_email_layout.py \
-  apps/api/tests/test_email_worker.py \
-  apps/api/tests/test_internal_request_body_limit.py \
-  apps/api/tests/test_demo_codex_pdfs.py \
-  apps/api/tests/test_reset_demo_tenant.py \
-  apps/api/tests/test_api_catalog.py \
-  apps/api/tests/test_api_onboarding.py \
-  apps/api/tests/test_api_learning.py \
-  apps/api/tests/test_api_assets.py \
-  apps/api/tests/test_api_superadmin_inspection.py \
-  apps/api/tests/test_api_superadmin_bootstrap.py
+# A pasta inteira, para que teste de banco novo entre por existir (#450, #459).
+# Cada --ignore roda em outra chamada, e scripts/ci/tests confere isso:
+# - demo_checkout, internal_requests e asset_worker_runner, logo abaixo, em
+#   processos próprios;
+# - os dois de S3 real, no test-storage-vertical.sh (cert-storage).
+uv run --project apps/api pytest apps/api/tests \
+  --ignore=apps/api/tests/test_api_demo_checkout.py \
+  --ignore=apps/api/tests/test_internal_requests.py \
+  --ignore=apps/api/tests/test_asset_worker_runner.py \
+  --ignore=apps/api/tests/test_storage_s3_contract.py \
+  --ignore=apps/api/tests/test_storage_upload_publication_vertical.py
 uv run --project apps/api pytest apps/api/tests/test_api_demo_checkout.py
 uv run --project apps/api pytest \
   apps/api/tests/test_internal_requests.py \

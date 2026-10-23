@@ -144,7 +144,9 @@ jobs:
           # sobre um arquivo gerado na hora. Sem ele o CI reprovaria por
           # dependencia de sistema, e um `skipif` esconderia justamente o teste
           # que prova o `+faststart` do material de aula.
-          if [[ "${{ steps.route.outputs.storage }}" == true || "${{ steps.route.outputs.api }}" == true ]]; then
+          # A rota postgres roda a pasta inteira da api com APPSELL_REQUIRE_POSTGRES=1,
+          # e o `test_video_verifier.py` pularia sem ffmpeg, reprovando a sessão.
+          if [[ "${{ steps.route.outputs.storage }}" == true || "${{ steps.route.outputs.api }}" == true || "${{ steps.route.outputs.postgres }}" == true ]]; then
             packages+=(poppler-utils ffmpeg)
           fi
           sudo apt-get update
