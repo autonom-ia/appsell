@@ -1,17 +1,19 @@
 """Report purchases that should have become access and did not (#147).
 
-Read-only. Calls ``app_private.checkout_reconciliation_report`` (migration 0063)
-inside a READ ONLY transaction and prints one JSON report on stdout. Every
+Calls ``app_private.checkout_reconciliation_report`` (migration 0063) and
+prints one JSON report on stdout. Every
 divergence also goes to stderr as one ``appsell.reconciliation.divergence``
 line, so a log search finds it without parsing the report.
 
 Exit codes: 0 no divergence, 1 divergences found, 2 the report could not run.
 Nothing is repaired here: each category says what the operation must check.
 
-Run it as ``appsell_reconciler``, never as the migrator: that role has only
-``connect``, ``usage`` on ``app_private`` and ``execute`` on this one function,
-and starts every transaction read-only. The migrator inherits ``appsell_owner``,
-which can run DDL.
+Run it as ``appsell_reconciler``, never as the migrator. What keeps it from
+writing are the grants: that role has only ``connect``, ``usage`` on
+``app_private`` and ``execute`` on this one function, which only reads. The READ
+ONLY transaction here and the role's ``default_transaction_read_only`` are an
+extra layer, not the guarantee. The migrator inherits ``appsell_owner``, which
+can run DDL.
 
 Usage:
   APPSELL_RECONCILIATION_DATABASE_URL=postgresql://appsell_reconciler@... \\

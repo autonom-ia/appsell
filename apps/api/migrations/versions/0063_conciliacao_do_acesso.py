@@ -29,6 +29,10 @@ cego entre execuções.
 | `access_without_grant` | acesso `billing` ativo sem grant nenhum, nem ativo nem estornado (acesso sem compra) |
 | `refunded_with_access` | a compra foi estornada, nenhum grant ativo restou e o acesso segue ativo; uma linha por compra |
 
+`access_without_grant` pode trazer acesso legado, liberado antes da 0020 criar
+o `entitlement_grant`. Por isso essa categoria só vira alerta depois de medida
+em produção: a consulta de medição está no runbook do PR #459.
+
 As de **evento** usam a janela pelo `received_at`, que não muda: execuções que
 encostam uma na outra cobrem todo evento uma vez.
 
