@@ -1,197 +1,257 @@
-# Plano — subir as correções de RCE para produção (#437)
+# Plano — subir para produção as correções de segurança do `web` (#437, #449)
 
-> **Estado: plano.** Nada aqui foi executado. Cada fase marcada 🔴 só começa
-> com o OK explícito do Rodrigo, inclusive a Fase 0, que é só leitura no host.
+> **Estado: plano.** Fase 0 executada em 23/10/2026, só leitura, com OK do
+> Rodrigo. Da Fase 1 em diante, nada roda sem novo OK explícito dele.
 > Base: [`PRODUCTION_RELEASE_APPSSELL.md`](PRODUCTION_RELEASE_APPSSELL.md).
+> Revisão: aprovado com ressalvas pela Orquestração. Esta versão incorpora as
+> ressalvas.
 
-## O que está em jogo
+## O que a Fase 0 mudou
 
-`7543df9` (PR #430) sobe `next` 16.2.11 → 16.3.3 e `nodemailer` 9.1.0 → 9.1.1.
-As duas dependências são do **`web`** (Next): a API Python não muda para fechar
-as RCE. O último estado lido do host (04/09) é `web` e `api` em `68ffd7b`.
+O plano anterior partia de `PRODUCTION_CURRENT.md` (web e api em `68ffd7b`,
+04/09). O host respondeu outra coisa. Leitura completa em
+[#437](https://github.com/autonom-ia/appsell/issues/437#issuecomment-6364372588).
 
-Delta `68ffd7b..origin/main` (`409ae23`), lido no repositório em 23/10:
-
-| Serviço | O que muda | Risco |
-|---|---|---|
-| `web` | Next 16.3.3, nodemailer 9.1.1 (#430); `HEALTHCHECK` sonda `/api/health/startup` (nova rota, #428); link de login do checkout marca usuário novo (#426, toca `/s/<loja>/p/<produto>`) | médio: minor do Next muda render |
-| `api` + `asset-worker` | antivírus deixa de ser fatal na subida e passa a ser medido pela base publicada (`clamav_mirror`, consulta DNS TXT a `current.cvd.clamav.net`) (#428, #432, #434); `HEALTHCHECK` sonda `/health/startup` | médio: muda o caminho do incidente de 12/09 |
-| `pdf-sandbox` | nada | — fica onde está |
-| banco | **nenhuma migration nova**. `0060`/`0061` já estão no host (head `0061`, 04/09); o #425 mexeu só no `downgrade` da `0061` e na formatação da `0059` | baixo |
-
-Nenhuma variável de ambiente nova no delta (procurado em `apps/api/src`, `lib/`,
-`app/api/health`).
-
-**Fato que muda a leitura:** `docs/TROUBLESHOOTING.md` registra 3h06 de 502 em
-12/09/2026. Pode ter havido deploy ou restart depois de 04/09 sem registro. Por
-isso a Fase 0 é obrigatória: o plano parte do que o host responder, não desta
-página.
-
-## Decisão pedida ao Rodrigo
-
-| Opção | O quê | Prós | Contras |
+| Serviço | Em produção (label `revision`) | ID da imagem | Spec anterior |
 |---|---|---|---|
-| **A (recomendada)** | Só `web` em `409ae23` | fecha as duas RCE; rollback de uma linha; não toca API, banco nem worker | api fica com o antivírus fatal na subida (o defeito do incidente de 12/09) até a Fase 3 |
-| B | `web` e depois `api`+`asset-worker` em `409ae23`, na mesma janela | tudo da `main` no ar de uma vez | dobra a superfície da janela; o caminho do antivírus novo nunca rodou em produção |
-| C | Só `web` em `7543df9` exato | menor diff possível | sobe um `web` cuja `HEALTHCHECK` ainda sonda `/ready` (o defeito que o #428 corrigiu) e deixa `b387252` fora; não há ganho real sobre A |
+| web | `fa13a78` | `sha256:1b71ec566e8c…` | `web:b387252` |
+| api | `409ae23` | `sha256:16545966e6fe…` | `api:fa13a78` |
+| asset-worker | `409ae23` | mesma da api | `api:d5e00ec` |
+| pdf-sandbox | `d5e00ec` | `sha256:bc88217ab7b5…` | `pdf-sandbox:712e5bb` |
 
-Recomendo **A agora** e **a Fase 3 (api + worker) como janela própria**, depois
-de A estável por 24 h. O resto deste plano segue A e descreve a Fase 3 à parte.
+- O `7543df9` (PR #430) **já está no ar**: o web `fa13a78` o contém. As tasks
+  foram atualizadas em 16/10 às 21:12 UTC, sem registro.
+- O web roda **Next 16.3.3** (lido no contêiner), que ainda tem 3 RCE
+  críticas, duas sem autenticação. A correção é a #449 (PR #455): next 16.4.2,
+  nodemailer 10.2.1, sharp ≥0.35.5.
+- **O host guarda uma imagem só por serviço.** A anterior do web (`b387252`)
+  não existe mais. Sem cuidado, não há para onde voltar.
+
+**Portanto o release é só do `web`**, no SHA de merge do PR #455 na `main`.
+API, worker, sandbox e banco não mudam: a #449 não toca `apps/api`, e a api já
+roda o código mais novo da main.
 
 ## Pré-condições (no repositório, sem tocar o host)
 
-- [ ] CI verde no SHA alvo. Hoje **não existe**: o App CI está desligado (#422).
-  Até o #422 fechar, a prova é local e deve ser anexada ao #437:
-  `pnpm install --frozen-lockfile && pnpm test && pnpm build` no `409ae23`, com
-  a saída lida. Sem isso, o Rodrigo decide se aceita release sem CI.
-- [ ] `git rev-parse origin/main` = `409ae23…` no momento do release. Se a `main`
-  andou, reavaliar o delta antes de seguir.
+1. O PR #455 está mergeado com OK do Rodrigo. `SHA` = SHA curto do merge na
+   `main`.
+2. **CI no SHA exato:** run do App CI com `conclusion=success` no `SHA`, com
+   `Certify web on the integrated merge-group SHA` **executado** (`success`,
+   não `skipped`):
 
-## Fase 0 — ler o host 🔴 (OK do Rodrigo, só leitura)
+   ```sh
+   gh run list --repo autonom-ia/appsell --workflow "App CI" --commit "$SHA" \
+     --json databaseId,event,conclusion
+   gh run view <id> --repo autonom-ia/appsell --json jobs \
+     --jq '.jobs[].steps[]|select(.name|startswith("Certify web"))|.conclusion'   # success
+   ```
+
+   Hoje a `main` não passa nesse critério. A run de push 34692188049
+   (`409ae23`) reprovou com:
+   - **16 falhas de pytest.** Nenhuma é de produto, e as três causas estão
+     corrigidas no PR #451 (#422): o teste da 0019 descia através da 0060, que é
+     forward-only; o env do `test-postgres-foundation.sh` vazava para o
+     `test_email_worker` (14 falhas); e o `test_api_onboarding` não esperava o
+     `display_name`.
+   - **`test_storage_s3_contract`** (abort do multipart). Ele roda contra o
+     SeaweedFS do CI, e a produção usa MinIO. Está aberto com o dono de
+     storage e é da api, não do web.
+   - **`pip-audit`** (58 CVEs) e **`pnpm audit`** (19, fechadas pelo #455).
+
+   Para o release do web, o necessário é o `cert-web` verde. Se a run
+   inteira não puder ficar verde por causa de passos da api alheios ao
+   release, quem decide aceitar é o Rodrigo, explicitamente.
+3. **Delta:** do `SHA` até a `main` no momento do release, nada pode tocar
+   `app/`, `lib/`, `package.json`, `pnpm-lock.yaml` ou `deploy/`. Se tocar,
+   reavaliar.
+
+   ```sh
+   git fetch origin && git diff --stat "$SHA" origin/main -- app lib package.json pnpm-lock.yaml deploy   # vazio
+   ```
+4. Prova local, se usada: um comando por vez, cada saída lida antes do
+   próximo. Nunca encadear com `&&`.
+
+   ```sh
+   pnpm install --frozen-lockfile
+   pnpm lint
+   pnpm typecheck
+   pnpm test
+   corepack pnpm@11.13.0 --pm-on-fail=ignore audit --prod
+   pnpm build
+   ```
+
+## Fase 0 bis — reconferir o host no dia 🔴 (só leitura, OK do Rodrigo)
+
+Repetir a leitura logo antes da Fase 1. Nunca dar `cat` em spec nem em env:
+só campos com `--format`.
 
 ```sh
-dig +short sell.autonomia.site            # resolver antes; em 31/08 o alias apontava para máquina desativada
-ssh claudete                              # confirmar que o IP do host = o do dig
-docker service ls --filter name=sell-autonomia --format '{{.Name}} {{.Image}} {{.Replicas}}'
-docker service inspect sell-autonomia_web sell-autonomia_api sell-autonomia_asset-worker \
-  --format '{{.Spec.Name}} {{.Spec.TaskTemplate.ContainerSpec.Image}} {{.UpdatedAt}}'
-docker service inspect sell-autonomia_api --format '{{.Spec.TaskTemplate.ContainerSpec.StopGracePeriod}}'   # tem que ser 5m30s
-docker images 'easypanel/sell-autonomia/*' --format '{{.Repository}}:{{.Tag}} {{.CreatedAt}}'
-df -h / ; free -g ; uptime                # parar se disco < 15 GiB livre ou memória livre < 2 GiB
+dig +short sell.autonomia.site                 # tem de dar 85.31.60.100, o mesmo do alias claudete
+ssh claudete
+docker node ls --format '{{.Hostname}} {{.Status}} {{.Availability}}'
+docker service inspect sell-autonomia_web --format \
+  'image={{.Spec.TaskTemplate.ContainerSpec.Image}} replicas={{.Spec.Mode.Replicated.Replicas}} update={{json .Spec.UpdateConfig}} hc={{json .Spec.TaskTemplate.ContainerSpec.Healthcheck}}'
+docker image inspect easypanel/sell-autonomia/web:fa13a78 --format '{{.Id}} {{index .Config.Labels "org.opencontainers.image.revision"}}'
+docker ps --filter name=sell-autonomia_web. --format '{{.ID}}' | head -1 | xargs docker inspect --format '{{.State.Health.Status}}'
+free -h ; df -h /
 ```
 
-Saída esperada e decisão:
+**Abort antes de começar** se acontecer qualquer um destes:
+- a imagem do web não for `fa13a78` com ID `sha256:1b71ec566e8c3a5c9e6885960d8691fca092ed117fc50383569641bc63beba86` (alguém
+  mexeu; voltar à Orquestração);
+- a task não estiver `healthy`;
+- memória `available` abaixo de 2 GiB (o `start-first` roda duas tasks do web
+  ao mesmo tempo);
+- disco livre abaixo de 15 GiB.
 
-- `web` já em SHA que contém `7543df9` (`git merge-base --is-ancestor 7543df9 <sha>`):
-  **não há release**. Registrar o SHA em `PRODUCTION_CURRENT.md` e fechar o #437.
-- `web` em `68ffd7b` ou outro SHA sem `7543df9`: seguir para a Fase 1.
-- Algo inesperado (serviço a mais, réplica 0/1, imagem sem tag de SHA): parar e
-  trazer à Orquestração.
-
-## Smoke Hub2You — mesmo script antes e depois
-
-Roda de qualquer máquina (é tráfego público, mas conta como leitura de
-produção e entra no mesmo OK da Fase 0):
+## Smoke — mesmo script antes e depois
 
 ```sh
-for p in /s/hub2you /s/hub2you/p/condicoes-gerais /s/hub2you/p/gerador-de-cotacoes-comparativas; do
-  body=$(curl -s -o /tmp/smoke.html -w '%{http_code}' "https://sell.autonomia.site$p")
-  grep -q 'Comprar agora' /tmp/smoke.html && cta=sim || cta=NAO
-  echo "$p $body comprar_agora=$cta"
-done
-for p in / /auth/login /auth/signup /robots.txt /sitemap.xml /api/health/live /api/health/ready /library; do
-  curl -s -o /dev/null -w "$p %{http_code}\n" "https://sell.autonomia.site$p"
-done
+B=https://sell.autonomia.site
+curl -s "$B/s/hub2you" -o /tmp/v.html -w 'vitrine %{http_code}\n'; grep -c 'Ver e comprar' /tmp/v.html   # 200 e 2
+for p in /s/hub2you/p/condicoes-gerais /s/hub2you/p/gerador-de-cotacoes-comparativas; do
+  c=$(curl -s -o /tmp/p.html -w '%{http_code}' "$B$p")
+  echo "$p $c comprar_agora=$(grep -c 'Comprar agora' /tmp/p.html) new_user=$(grep -o 'new_user=true' /tmp/p.html | wc -l)"
+done                                                                                   # 200, ≥1, ≥1
+curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' \
+  "$B/auth/login?next=/s/hub2you/p/condicoes-gerais&new_user=true"                    # 307 → auth.autonomia.site/login/ com return_to e new_user=true
+curl -s -o /dev/null -w 'identity %{http_code}\n' "<redirect_url acima>"              # 200
+for p in / /robots.txt /sitemap.xml /api/health/live /api/health/ready /api/health/startup; do
+  curl -s -o /dev/null -w "$p %{http_code}\n" "$B$p"; done                            # 200
+for p in /library /auth/signup; do curl -s -o /dev/null -w "$p %{http_code}\n" "$B$p"; done   # 307
 ```
 
-Linha de base exigida: as três da Hub2You = `200 comprar_agora=sim`; `/library`
-= `307`; o resto `200`. Gravar a saída de **antes** no #437. Se a linha de base
-de antes já falhar, não fazer release: é outro incidente.
+Linha de base de 23/10, lida antes de qualquer mudança:
+- vitrine: 200 com 2 × "Ver e comprar" (o código da vitrine não tem "Comprar
+  agora");
+- as duas páginas de produto: 200 com "Comprar agora" e `new_user=true` ×4;
+- `/auth/login…`: 307 para o Identity, que responde 200;
+- `/library` e `/auth/signup`: 307;
+- o resto: 200.
 
-## Fase 1 — backup e build 🔴 (OK do Rodrigo)
+**Gravar a saída de antes no #437. Se o "antes" divergir dessa linha de
+base, não fazer release.**
 
-```sh
-SHA=409ae23
-TS=$(date +%Y%m%d-%H%M%S)
-D=/tmp/sell-release-437-$TS && mkdir -m 700 "$D"
-docker service inspect sell-autonomia_web > "$D/web.spec.json"
-docker service inspect sell-autonomia_web --format '{{json .Spec.TaskTemplate.ContainerSpec.Env}}' \
-  | python3 -c 'import json,sys;print("\n".join(sorted(e.split("=",1)[0] for e in json.load(sys.stdin))))' > "$D/web.env-names"
-docker service inspect sell-autonomia_web --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}' > "$D/web.image-anterior"
+## Fase 1 — fixar o rollback e construir 🔴 (OK do Rodrigo)
+
+O rollback é escrito **aqui, com valores literais**, antes de mexer em
+qualquer coisa. Não depende de variável de shell nem de `/tmp`.
+
+```text
+ROLLBACK_IMAGE = easypanel/sell-autonomia/web:fa13a78
+ROLLBACK_ID    = sha256:1b71ec566e8c3a5c9e6885960d8691fca092ed117fc50383569641bc63beba86
 ```
 
-- O `web` não toca banco nesta opção, então o `pg_dump` não é pré-requisito do
-  passo; ainda assim, fazer o dump do runbook (`pg_dump -Fc` +
-  `pg_restore --list`) se a Fase 3 for na mesma janela.
-- Nunca imprimir `Env` com valores. Só nomes.
+- **Proibido `docker image prune`, `docker system prune` ou `docker rmi`** no
+  host até a Fase 3 fechar. A imagem `fa13a78` é o único caminho de volta.
+- Guardar os **nomes** das variáveis do web, nunca os valores, num arquivo do
+  host fora de `/tmp`:
 
-Fonte e imagem (mesmo caminho dos releases de 02–04/09):
+  ```sh
+  install -d -m 700 /home/claudete/releases/437
+  docker service inspect sell-autonomia_web --format '{{json .Spec.TaskTemplate.ContainerSpec.Env}}' \
+    | python3 -c 'import json,sys;print("\n".join(sorted(e.split("=",1)[0] for e in json.load(sys.stdin))))' \
+    > /home/claudete/releases/437/web.env-names.antes
+  ```
+
+Fonte e imagem:
 
 ```sh
-# na máquina local, worktree limpa em origin/main
-git archive --format=tar.gz -o /tmp/appsell-src-$SHA.tar.gz $SHA
-scp /tmp/appsell-src-$SHA.tar.gz claudete:/home/claudete/
-# no host
-mkdir /home/claudete/appsell-src-$SHA && tar -xzf /home/claudete/appsell-src-$SHA.tar.gz -C /home/claudete/appsell-src-$SHA
+# local, worktree limpa no SHA
+git archive --format=tar.gz -o "$TMPDIR/appsell-src-$SHA.tar.gz" "$SHA"
+scp "$TMPDIR/appsell-src-$SHA.tar.gz" claudete:/home/claudete/
+# host
+mkdir /home/claudete/appsell-src-$SHA
+tar -xzf /home/claudete/appsell-src-$SHA.tar.gz -C /home/claudete/appsell-src-$SHA
 cd /home/claudete/appsell-src-$SHA
 docker build -f deploy/easypanel-native/Dockerfile.web --build-arg GIT_SHA=$SHA \
   -t easypanel/sell-autonomia/web:$SHA .
-docker run --rm --entrypoint node easypanel/sell-autonomia/web:$SHA -e 'console.log(require("next/package.json").version)'   # 16.3.3
+docker image inspect easypanel/sell-autonomia/web:$SHA --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'   # = $SHA
+docker run --rm --entrypoint node easypanel/sell-autonomia/web:$SHA -e 'console.log(require("next/package.json").version)'      # 16.4.2
+docker run --rm --entrypoint sh easypanel/sell-autonomia/web:$SHA -c 'ls node_modules/.pnpm | grep -E "^sharp@"'                  # sharp@0.35.5…
+docker run --rm --entrypoint sh easypanel/sell-autonomia/web:$SHA -c \
+  "grep -rhoaE '\"[0-9]+\.[0-9]+\.[0-9]+\",[A-Za-z_\$]+=\"ECONNECTION\"' .next/server/chunks | sort -u"                             # \"10.2.1\" (nodemailer vai embutido no bundle)
+docker image inspect easypanel/sell-autonomia/web:fa13a78 --format '{{.Id}}'   # ainda = ROLLBACK_ID
 ```
 
-**Safety abort da Fase 1:** build falhou, versão do Next ≠ `16.3.3`, ou
-disco/memória abaixo do limite → parar. Nada em produção mudou ainda.
+**Safety abort da Fase 1:** build falhou; label diferente do `SHA`; next ≠
+16.4.2; sharp < 0.35.5; nodemailer ≠ 10.2.1; ou a imagem de rollback sumiu.
+Nesse ponto nada em produção mudou.
 
 ## Fase 2 — trocar o `web` 🔴 (OK do Rodrigo)
 
 ```sh
-docker service update --image easypanel/sell-autonomia/web:$SHA \
-  --update-order stop-first sell-autonomia_web
-docker service ps sell-autonomia_web --no-trunc | head -5        # Running em web:$SHA
-docker service inspect sell-autonomia_web --format '{{json .Spec.TaskTemplate.ContainerSpec.Env}}' \
-  | python3 -c 'import json,sys;print("\n".join(sorted(e.split("=",1)[0] for e in json.load(sys.stdin))))' > "$D/web.env-names.depois"
-diff "$D/web.env-names" "$D/web.env-names.depois" && echo VARS_IGUAIS
+docker service update \
+  --image easypanel/sell-autonomia/web:$SHA \
+  --update-order start-first \
+  --update-failure-action rollback \
+  --update-monitor 90s \
+  sell-autonomia_web
 ```
 
-`stop-first` derruba o `web` por alguns segundos (como nos releases de
-02–04/09). Fazer fora do horário de pico.
+Com `start-first` a task nova sobe ao lado da antiga e só a substitui depois
+de `healthy` (o `HEALTHCHECK` da imagem sonda `/api/health/startup`). Com
+`--update-failure-action rollback` e `--update-monitor 90s`, se a task nova
+falhar em até 90 s, o próprio Swarm volta para a spec anterior. Não há janela
+de site fora do ar.
 
 Validação, nesta ordem:
 
-1. `docker service ps` mostra a task nova `Running` há ≥ 60 s e o health do
-   contêiner `healthy` (`docker inspect --format '{{.State.Health.Status}}' <cid>`).
-2. `https://sell.autonomia.site/api/health/ready` = 200 com `redis`, `api` e
-   `storage_upload` verdadeiros; `/api/health/startup` = 200.
-3. Smoke Hub2You idêntico à linha de base.
-4. `docker service logs --since 5m sell-autonomia_web 2>&1 | grep -Ei 'error|unhandled|fatal'`
-   sem linha nova.
-5. Prova do bundle novo (health verde não prova bundle): para visitante
-   anônimo, o link de login da página do produto passa a ser gerado por
-   `productCheckoutLoginHref` (#426) e leva `new_user=true`. Antes do release a
-   contagem é 0; depois, ≥ 1:
-   `curl -s https://sell.autonomia.site/s/hub2you/p/condicoes-gerais | grep -c 'new_user=true'`
+1. `docker service ps sell-autonomia_web --format '{{.Name}} {{.Image}} {{.CurrentState}} {{.Error}}' | head -3`:
+   task nova `Running` em `web:$SHA` há ≥ 90 s, health `healthy`, a antiga
+   `Shutdown`.
+2. `docker service inspect sell-autonomia_web --format '{{.UpdateStatus.State}}'`
+   = `completed` (não `rollback_completed`).
+3. Variáveis por nome:
 
-**Safety abort → rollback imediato, sem novo OK** (regra 3 do Rodrigo): task
-não converge em 3 min, `VARS_IGUAIS` não aparece, qualquer linha do smoke
-Hub2You diferente da linha de base, ou `ready` ≠ 200.
+   ```sh
+   docker service inspect sell-autonomia_web --format '{{json .Spec.TaskTemplate.ContainerSpec.Env}}' \
+     | python3 -c 'import json,sys;print("\n".join(sorted(e.split("=",1)[0] for e in json.load(sys.stdin))))' \
+     > /home/claudete/releases/437/web.env-names.depois
+   diff /home/claudete/releases/437/web.env-names.antes /home/claudete/releases/437/web.env-names.depois && echo VARS_IGUAIS
+   ```
 
-## Rollback (ETA ≈ 1–2 min)
+4. Smoke completo, idêntico à linha de base.
+5. `docker service logs --since 5m sell-autonomia_web 2>&1 | grep -Eic 'error|unhandled|fatal'`
+   = 0 linhas novas.
+6. Prova do bundle: o contêiner em execução responde `16.4.2` ao mesmo
+   `require("next/package.json").version` (`docker exec <cid> node -e …`, só
+   leitura).
 
-A imagem anterior continua no host:
+**Safety abort, com rollback imediato e sem novo OK** (regra 3 do Rodrigo):
+- `UpdateStatus` = `rollback_*`;
+- task sem convergir em 3 min;
+- `VARS_IGUAIS` ausente;
+- qualquer linha do smoke diferente da linha de base;
+- `/api/health/ready` ≠ 200.
+
+## Rollback (ETA ≈ 1–2 min, sem janela fora do ar com start-first)
+
+Primeira opção: volta para a `PreviousSpec`, que depois da Fase 2 é
+`web:fa13a78`.
 
 ```sh
-docker service update --image "$(cat $D/web.image-anterior)" \
-  --update-order stop-first sell-autonomia_web
+docker service rollback sell-autonomia_web
 ```
 
-Depois: repetir o smoke Hub2You, registrar sintoma, horário e saída no #437 e
-em `PRODUCTION_CURRENT.md`. Sem migration nesta fase, então rollback não toca
-o banco.
+Se a `PreviousSpec` não for a esperada, usar a imagem fixada:
 
-## Fase 3 — `api` e `asset-worker` (janela própria) 🔴
+```sh
+docker service update --image easypanel/sell-autonomia/web:fa13a78 \
+  --update-order start-first sell-autonomia_web
+```
 
-Só depois de A estável por 24 h e com OK novo. Resumo, para ser detalhado no
-mesmo formato se aprovado:
+Depois: repetir o smoke e registrar sintoma, horário e saída no #437 e em
+`PRODUCTION_CURRENT.md`. O banco não entra no rollback, porque o release não
+tem migration.
 
-1. Backup: spec + nomes das variáveis de `api` e `asset-worker`, `pg_dump -Fc`
-   validado por `pg_restore --list`, cabeça do Alembic (tem que ser `0061`).
-2. Imagem `easypanel/sell-autonomia/api:$SHA` com `Dockerfile.api`; o worker
-   usa a mesma imagem. O `pdf-sandbox` **não** muda.
-3. `docker service update --image … --update-order stop-first sell-autonomia_api`
-   — conferir que a graça segue em `5m30s` (o `update` não pode zerá-la).
-4. Worker: `docker service update --image … sell-autonomia_asset-worker` lendo
-   antes `--limit-memory` atual (4 GiB) — **não** usar `ensure-asset-worker.sh`,
-   que aborta com o serviço existente e declara 1 GiB.
-5. Ready interno da API (`/health/ready` por `docker exec`, ver
-   `PRODUCTION_CURRENT.md`) com `database`, `storage`, `pdf_sandbox` e o campo
-   novo `antivirus`; o contêiner consegue resolver `TXT current.cvd.clamav.net`.
-6. Rollback: `docker service update --image easypanel/sell-autonomia/api:<anterior>`
-   e o mesmo no worker. ETA ≈ 2–3 min (a graça de 330 s pode alongar o stop).
+## Fase 3 — fechar
 
-## Registro final
-
-`PRODUCTION_CURRENT.md` recebe o bloco de evidência do runbook (issue, pr,
-merge_sha, ci_run, previous_release, backup, migration_head, imagens, health,
-smoke, rollback_decision) com o SHA **lido do host** depois do update. Depois
-da conferência: apagar `/tmp/appsell-src-$SHA.tar.gz` local e do host; manter
-`$D` até a Fase 3 fechar.
+- `PRODUCTION_CURRENT.md` recebe o bloco de evidência do runbook, com as
+  imagens **lidas do host** (web, api, worker e sandbox) e a correção do
+  registro de 04/09 → 12/09 → 16/10.
+- Inventário (#438, PR #448) atualizado com os SHAs reais.
+- Depois de 24 h estável, com OK do Rodrigo: decidir se `fa13a78` pode sair
+  do host. Até lá, nada de prune.
+- Apagar `$TMPDIR/appsell-src-$SHA.tar.gz` local e `/home/claudete/appsell-src-$SHA*`
+  no host. `/home/claudete/releases/437` fica até a Fase 3 fechar.
