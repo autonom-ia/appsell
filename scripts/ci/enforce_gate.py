@@ -13,6 +13,7 @@ KNOWN_STEPS = {
     "fast_backup",
     "fast_preview",
     "cert_web",
+    "cert_api",
     "cert_postgres",
     "cert_storage",
     "cert_openbao",
@@ -46,6 +47,8 @@ def expected_steps(
     elif event in {"merge_group", "push", "workflow_dispatch"}:
         if route.get("web"):
             expected.add("cert_web")
+        if route.get("api"):
+            expected.add("cert_api")
         if route.get("postgres"):
             expected.add("cert_postgres")
         if route.get("openbao"):

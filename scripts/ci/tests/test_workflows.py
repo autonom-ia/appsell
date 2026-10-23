@@ -55,6 +55,7 @@ class AppCiWorkflowTests(unittest.TestCase):
             "fast-backup",
             "fast-preview",
             "cert-web",
+            "cert-api",
             "cert-postgres",
             "cert-storage",
             "cert-openbao",
@@ -76,6 +77,20 @@ class AppCiWorkflowTests(unittest.TestCase):
         )
         self.assertIn(
             "CI_OUTCOME_CERT_PREVIEW: ${{ steps.cert-preview.outcome }}", self.source
+        )
+
+    def test_api_suites_run_by_folder_not_by_list(self) -> None:
+        # #333: a lista à mão deixou 26 arquivos de teste fora de todo passo.
+        # Rodar a pasta faz a suíte nova entrar por existir.
+        for step_id in ("fast-api", "cert-api"):
+            with self.subTest(step=step_id):
+                start = self.source.index(f"id: {step_id}")
+                end = self.source.index("- name:", start)
+                block = self.source[start:end]
+                self.assertIn("pytest apps/api/tests", block)
+                self.assertNotIn("apps/api/tests/test_", block)
+        self.assertIn(
+            "CI_OUTCOME_CERT_API: ${{ steps.cert-api.outcome }}", self.source
         )
 
     def test_diff_uses_event_specific_shas_and_full_history(self) -> None:

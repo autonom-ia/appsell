@@ -11,6 +11,7 @@ def outcomes(**overrides: str) -> dict[str, str]:
         "fast_backup": "skipped",
         "fast_preview": "skipped",
         "cert_web": "skipped",
+        "cert_api": "skipped",
         "cert_postgres": "skipped",
         "cert_storage": "skipped",
         "cert_openbao": "skipped",
@@ -63,6 +64,7 @@ class ExpectedStepsTests(unittest.TestCase):
             {
                 "route",
                 "cert_web",
+                "cert_api",
                 "cert_postgres",
                 "cert_storage",
                 "cert_openbao",
@@ -73,6 +75,16 @@ class ExpectedStepsTests(unittest.TestCase):
             },
             expected_steps("merge_group", route),
         )
+
+    def test_api_scope_requires_the_api_certification_on_integrated_sha(
+        self,
+    ) -> None:
+        # #333: sem isto, um merge que mexe só na api entrava pela fila sem
+        # rodar um teste da api sequer.
+        for event in ("merge_group", "push", "workflow_dispatch"):
+            with self.subTest(event=event):
+                self.assertIn("cert_api", expected_steps(event, {"api": True}))
+        self.assertNotIn("cert_api", expected_steps("merge_group", {"web": True}))
 
     def test_storage_scope_requires_the_storage_certification(self) -> None:
         route = {"storage": True}
