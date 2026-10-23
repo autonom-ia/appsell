@@ -40,6 +40,7 @@ test.skipIf(!domainApiUrl)("signed webhook crosses the real BFF, API, and Postgr
     APPSELL_PUBLIC_ORIGIN: `http://127.0.0.1:${firstPort}`,
     NEXT_TELEMETRY_DISABLED: "1"
   };
+  await seedEndpointWithoutSecret();
   const first = startBff(firstPort, firstDist, shared);
   let second: ChildProcess | undefined;
 
@@ -268,6 +269,28 @@ async function databaseEventDigest(eventId: string) {
   return databaseScalar(
     "select payload_sha256||'|'||payload_octets from webhook_event " +
       `where external_event_id_sha256='${eventHash}'`
+  );
+}
+
+// O endpoint cujo segredo não existe no cofre da API é semeado aqui, e não
+// herdado do pytest: em 04/09 (69a9502) a semente que este teste usava saiu de
+// test_postgres_webhook_ingress.py, e o caso do 503 passou a dar 401 sem que
+// nada apontasse a dependência. `checkout-other-v1` não está no keyring do
+// test-postgres-foundation.sh, que só conhece `checkout-demo-v1`.
+async function seedEndpointWithoutSecret() {
+  const seller = "dd000000-0000-4000-8000-0000000000a1";
+  const integration = "dd000000-0000-4000-8000-0000000000a2";
+  const endpoint = "dd000000-0000-4000-8000-0000000000a3";
+  const endpointHash = createHash("sha256").update(missingSecretEndpointKey).digest("hex");
+  await databaseScalar(
+    "insert into seller_organization(id,slug,display_name,status) " +
+      `values('${seller}','webhook-sem-segredo','Webhook sem segredo','active') on conflict do nothing;` +
+      "insert into checkout_integration(seller_organization_id,id,adapter,display_name,status) " +
+      `values('${seller}','${integration}','generic_hmac_v1','Checkout sem segredo','active') on conflict do nothing;` +
+      "insert into webhook_endpoint(seller_organization_id,id,checkout_integration_id," +
+      "endpoint_key_sha256,secret_reference,status) " +
+      `values('${seller}','${endpoint}','${integration}','${endpointHash}','checkout-other-v1','active') ` +
+      "on conflict do nothing"
   );
 }
 
