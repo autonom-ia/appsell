@@ -104,6 +104,7 @@ STORAGE_PATTERNS = (
     "tests/http-byte-range.test.ts",
     "scripts/generate-demo-codex-pdfs.py",
     "scripts/test-storage-vertical.sh",
+    "scripts/test-storage-minio.sh",
 )
 
 

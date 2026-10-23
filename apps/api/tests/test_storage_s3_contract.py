@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 from reportlab.pdfgen.canvas import Canvas  # type: ignore[import-untyped]
 
 from appsell_api.asset_media import max_bytes as asset_max_bytes
@@ -117,7 +118,7 @@ def test_real_s3_contract_version_checksum_cors_anonymous_and_copy() -> None:
     storage.delete_version(bucket=copied.bucket, key=copied.key, version_id=copied.version_id)
 
 
-def test_real_presign_rejects_wrong_length_and_local_limit() -> None:
+def test_real_presign_rejects_wrong_length_and_local_limit(buckets_existem: None) -> None:
     storage = storage_client()
     payload = valid_pdf()
     upload = storage.presign_put(
@@ -189,6 +190,26 @@ def test_real_presign_rejects_wrong_length_and_local_limit() -> None:
     )
 
 
+@pytest.fixture
+def buckets_existem() -> None:
+    """Os dois buckets, sem os controles de CI.
+
+    Os testes de multipart e de assinatura rodam também contra o MinIO
+    (`scripts/test-storage-minio.sh`, #460), que não implementa CORS por bucket.
+    Lá o `ensure_local_ci_controls` não roda, e o bucket é criado aqui.
+    """
+    controle = storage_client()._control
+    for bucket in ("appsell-quarantine", "appsell-ready"):
+        try:
+            controle.create_bucket(Bucket=bucket)
+        except ClientError as error:
+            if error.response["Error"]["Code"] not in {
+                "BucketAlreadyOwnedByYou",
+                "BucketAlreadyExists",
+            }:
+                raise
+
+
 def storage_client() -> S3Storage:
     return S3Storage(
         Settings(
@@ -222,7 +243,7 @@ def valid_pdf() -> bytes:
     return output.getvalue()
 
 
-def test_real_s3_multipart_round_trip_resume_and_abort() -> None:
+def test_real_s3_multipart_round_trip_resume_and_abort(buckets_existem: None) -> None:
     """O envio em partes, contra o storage de verdade, do início ao fim.
 
     O que este teste prova e nenhum outro prova: que o objeto montado a partir
@@ -315,15 +336,45 @@ def test_real_s3_multipart_round_trip_resume_and_abort() -> None:
         headers=primeira.headers,
         timeout=60,
     )
+    segunda = storage.presign_upload_part(
+        bucket=storage.quarantine_bucket,
+        key=abandonado,
+        storage_upload_id=outro,
+        part_number=2,
+        plan=plano,
+        sha256_hex=hashlib.sha256(payload[plano.bytes_for_part(1) :]).hexdigest(),
+    )
     storage.abort_multipart_upload(
         bucket=storage.quarantine_bucket, key=abandonado, storage_upload_id=outro
     )
-    # Cancelar tem de apagar as partes. Sem isto elas ficam ocupando disco sem
-    # aparecer em listagem de objeto nenhuma.
-    with pytest.raises(StorageError):
-        storage.list_multipart_parts(
+    # Cancelar tem de matar o envio: nenhuma parte nova entra e ele não fecha.
+    # É isso que impede as partes de ficarem ocupando disco sem aparecer em
+    # listagem nenhuma. A prova é pelas duas operações que escreveriam (#452).
+    depois = httpx.put(
+        segunda.url,
+        content=payload[plano.bytes_for_part(1) :],
+        headers=segunda.headers,
+        timeout=60,
+    )
+    assert depois.status_code == 404, depois.text
+    assert "NoSuchUpload" in depois.text
+    with pytest.raises(ClientError) as fechamento:
+        storage._control.complete_multipart_upload(
+            Bucket=storage.quarantine_bucket,
+            Key=abandonado,
+            UploadId=outro,
+            MultipartUpload={"Parts": [{"PartNumber": 1, "ETag": '"qualquer"'}]},
+        )
+    assert fechamento.value.response["Error"]["Code"] == "NoSuchUpload"
+    # A listagem varia por storage: o MinIO recusa com NoSuchUpload e o
+    # SeaweedFS responde lista vazia. As duas dizem que não sobrou parte.
+    try:
+        sobras = storage.list_multipart_parts(
             bucket=storage.quarantine_bucket, key=abandonado, storage_upload_id=outro
         )
+    except StorageError:
+        sobras = ()
+    assert sobras == ()
     assert storage.find_multipart_upload(bucket=storage.quarantine_bucket, key=abandonado) is None
     # Depois de fechado o envio deixa de existir como envio, e a busca não pode
     # devolver o de um vizinho de prefixo.

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -88,6 +88,10 @@ class UploadedPart:
     part_number: int
     byte_size: int
     etag: str
+    # SHA-256 em base64, como o storage devolve na listagem. O envio abre com
+    # `ChecksumAlgorithm=SHA256`, e aí o MinIO só fecha se o fechamento repetir
+    # o checksum de cada parte (#460).
+    checksum_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -363,6 +367,7 @@ class S3Storage:
                             part_number=int(parte["PartNumber"]),
                             byte_size=int(parte["Size"]),
                             etag=str(parte["ETag"]).strip('"'),
+                            checksum_sha256=_checksum_da_listagem(parte),
                         )
                     )
                 if not response.get("IsTruncated"):
@@ -401,12 +406,7 @@ class S3Storage:
                 Bucket=bucket,
                 Key=key,
                 UploadId=storage_upload_id,
-                MultipartUpload={
-                    "Parts": [
-                        {"PartNumber": parte.part_number, "ETag": f'"{parte.etag}"'}
-                        for parte in parts
-                    ]
-                },
+                MultipartUpload={"Parts": [_parte_do_fechamento(parte) for parte in parts]},
             )
             return str(response.get("VersionId") or "")
         except (BotoCoreError, ClientError) as error:
@@ -1050,6 +1050,20 @@ def _asset_content_disposition(
     ):
         raise ValueError("asset file_name or media_type is invalid")
     return f"{disposition}; filename*=UTF-8''{quote(file_name, safe='')}"
+
+
+def _checksum_da_listagem(parte: Mapping[str, Any]) -> str | None:
+    checksum = parte.get("ChecksumSHA256")
+    return str(checksum) if checksum else None
+
+
+def _parte_do_fechamento(parte: UploadedPart) -> dict[str, object]:
+    # Sem checksum na listagem, o fechamento vai só com o ETag, e quem decide se
+    # isso basta é o storage.
+    item: dict[str, object] = {"PartNumber": parte.part_number, "ETag": f'"{parte.etag}"'}
+    if parte.checksum_sha256:
+        item["ChecksumSHA256"] = parte.checksum_sha256
+    return item
 
 
 def _checksum_b64(sha256_hex: str) -> str:
