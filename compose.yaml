@@ -106,10 +106,12 @@ services:
     # Quatro núcleos porque é o que faz a divisão em faixas valer a pena: medido
     # com um documento real de 300 páginas, 208 s com um núcleo e 89 s com
     # quatro. Com um só, o código roda sequencial de propósito — dividir sem ter
-    # onde correr é mais lento.
+    # onde correr é mais lento. O runner do CI tem 2 núcleos e o Docker recusa
+    # pedir mais do que a máquina tem, então o script de teste baixa o valor
+    # para o que existe; o padrão continua sendo o de produção.
     pids_limit: 64
     mem_limit: 4g
-    cpus: 4.0
+    cpus: ${APPSELL_PDF_SANDBOX_CPUS:-4.0}
     tmpfs:
       - /tmp:size=2147483648,mode=1777,noexec,nosuid
     healthcheck:

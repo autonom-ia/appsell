@@ -146,6 +146,7 @@ async def test_identity_onboarding_and_seller_listing_are_persistent(
         "id": str(IDENTITY_ID),
         "email": "creator@example.test",
         "email_verified": True,
+        "display_name": None,
     }
 
     me = await client.get(
