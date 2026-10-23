@@ -397,6 +397,9 @@ def _activation_status(row: Any, config: FinancialActivationConfig) -> dict[str,
     if row["bound"]:
         if row["endpoint_state"] == "active" and row["unmapped_products"] == 0:
             return {"status": "active", "reason": None}
+        # Sem o par global o POST recusa (503): oferecer o botão seria mentira.
+        if not config.has_shared_pair:
+            return {"status": "blocked", "reason": "unconfigured"}
         return {"status": "available", "reason": "incomplete"}
     if not config.has_shared_pair:
         return {"status": "blocked", "reason": "unconfigured"}

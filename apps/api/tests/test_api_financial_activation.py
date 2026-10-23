@@ -305,6 +305,38 @@ async def test_read_without_the_pair_is_blocked(env: pytest.MonkeyPatch) -> None
     assert response.json()["reason"] == "unconfigured"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("row", "expected"),
+    [
+        # Vínculo incompleto sem o par: o POST recusaria, então nada de botão.
+        (
+            {"bound": True, "endpoint_state": "missing", "unmapped_products": 0},
+            ("blocked", "unconfigured"),
+        ),
+        (
+            {"bound": True, "endpoint_state": "active", "unmapped_products": 1},
+            ("blocked", "unconfigured"),
+        ),
+        # Vínculo completo segue ativo: não há o que fazer, com ou sem o par.
+        (
+            {"bound": True, "endpoint_state": "active", "unmapped_products": 0},
+            ("active", None),
+        ),
+    ],
+)
+async def test_without_the_pair_nothing_is_offered_as_available(
+    env: pytest.MonkeyPatch, row: dict[str, Any], expected: tuple[str, str | None]
+) -> None:
+    env.delenv("APPSELL_FINANCIAL_SHARED_OPERATOR_ID")
+    env.delenv("APPSELL_FINANCIAL_SHARED_CATALOG_ITEM_ID")
+    fields: dict[str, Any] = {"payout_ready": False, "channel_ready": True, **row}
+    auth = FakeAuth(seller_id=SELLER_ID, script=["seller_owner", situation(**fields)])
+    response = await get(auth)
+
+    assert (response.json()["status"], response.json()["reason"]) == expected
+
+
 @pytest.mark.parametrize(
     "environ",
     [

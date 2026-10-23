@@ -11,7 +11,8 @@ export type FinancialActivationReason =
   | "payout_account_not_ready";
 
 export const FINANCIAL_ACTIVATION_REASON_COPY: Record<FinancialActivationReason, string> = {
-  unconfigured: "A ativação ainda não está disponível. Fale com o suporte.",
+  unconfigured:
+    "Ativação indisponível: a configuração de pagamento da plataforma ainda não foi concluída. Fale com o suporte.",
   channel_unavailable: "A ativação está temporariamente indisponível. Tente mais tarde.",
   channel_inactive: "As vendas desta loja estão pausadas. Fale com o suporte.",
   payout_account_not_ready:
