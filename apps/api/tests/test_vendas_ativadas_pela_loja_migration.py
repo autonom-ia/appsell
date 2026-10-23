@@ -46,16 +46,18 @@ def test_vinculo_existente_sai_antes_de_qualquer_escrita(migration: ModuleType) 
 def test_recusas_nao_escrevem(migration: ModuleType) -> None:
     sql = migration._FUNCAO_ATIVA
     primeira_escrita = sql.index("update public.seller_organization")
-    for recusa in ("seller_inactive", "payout_account_not_ready", "channel_unavailable"):
+    for recusa in ("seller_inactive", "payout_account_not_ready"):
         assert sql.index(f"return '{recusa}'") < primeira_escrita
 
 
-def test_o_canal_e_o_da_0059(migration: ModuleType) -> None:
-    assert (
-        "order by endpoint.created_at,endpoint.seller_organization_id,endpoint.id"
-        in migration._FUNCAO_ATIVA
-    )
-    assert "on conflict do nothing" in migration._FUNCAO_ATIVA
+def test_o_canal_e_a_identidade_da_0062(migration: ModuleType) -> None:
+    # Nada de "o endpoint mais antigo": as duas funções perguntam à 0062.
+    for funcao in (migration._FUNCAO_ATIVA, migration._FUNCAO_SITUACAO):
+        assert "from app_private.financial_channel()" in funcao
+        assert "order by" not in funcao
+    ativa = migration._FUNCAO_ATIVA
+    assert ativa.index("financial_channel()") < ativa.index("update public.seller_organization")
+    assert "on conflict do nothing" in ativa
 
 
 def test_portoes_de_capability_e_loja(migration: ModuleType) -> None:

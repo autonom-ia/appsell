@@ -40,19 +40,22 @@ def _sha(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-def _channel_hash(connection: Connection) -> str:
-    row = connection.execute(
-        "select endpoint.endpoint_key_sha256 from webhook_endpoint endpoint "
-        "join checkout_integration integration "
+def _channel(connection: Connection) -> tuple[str, str]:
+    """O canal pela identidade que a 0059 grava; cria um se o banco não tem."""
+    rows = connection.execute(
+        "select distinct endpoint.endpoint_key_sha256,endpoint.secret_reference "
+        "from webhook_endpoint endpoint join checkout_integration integration "
         "on integration.seller_organization_id=endpoint.seller_organization_id "
         "and integration.id=endpoint.checkout_integration_id "
-        "where endpoint.status='active' and integration.status='active' "
-        "order by endpoint.created_at,endpoint.seller_organization_id,endpoint.id limit 1"
-    ).fetchone()
-    if row is not None:
-        return str(row[0])
+        "where integration.adapter='generic_hmac_v1' "
+        "and integration.display_name='Financial checkout' "
+        "and endpoint.status='active' and integration.status='active'"
+    ).fetchall()
+    assert len(rows) <= 1, "o banco de teste tem mais de um canal Financial"
+    if rows:
+        return str(rows[0][0]), str(rows[0][1])
     owner = _seller(connection, "canal")
-    channel = _sha(f"canal-{RUN}")
+    channel = (_sha(f"canal-{RUN}"), f"ativa-canal-{RUN}")
     _endpoint(connection, owner, channel)
     return channel
 
@@ -67,7 +70,8 @@ def _seller(connection: Connection, label: str) -> UUID:
     return UUID(str(row[0]))
 
 
-def _endpoint(connection: Connection, seller: UUID, key_sha256: str) -> UUID:
+def _endpoint(connection: Connection, seller: UUID, channel: tuple[str, str]) -> UUID:
+    """Endpoint no canal, copiando hash e secret_reference, como a 0059."""
     integration = uuid4()
     connection.execute(
         "insert into checkout_integration(seller_organization_id,id,adapter,display_name,"
@@ -77,7 +81,7 @@ def _endpoint(connection: Connection, seller: UUID, key_sha256: str) -> UUID:
     connection.execute(
         "insert into webhook_endpoint(seller_organization_id,checkout_integration_id,"
         "endpoint_key_sha256,secret_reference,status) values(%s,%s,%s,%s,'active')",
-        (seller, integration, key_sha256, f"ativa-{seller}"),
+        (seller, integration, *channel),
     )
     return integration
 
@@ -178,7 +182,7 @@ def world() -> dict[str, UUID | str]:
             "'ativa.actor@example.test',true) on conflict do nothing",
             (ACTOR,),
         )
-        channel = _channel_hash(connection)
+        channel = _channel(connection)
         # No papel da Hub2You: vínculo gravado à mão, com par próprio, endpoint
         # no canal e produto mapeado.
         hub = _seller(connection, "hub")
@@ -189,8 +193,8 @@ def world() -> dict[str, UUID | str]:
         )
         _endpoint(connection, hub, channel)
         _product(connection, hub, "curso-hub")
-        world: dict[str, UUID | str] = {"channel": channel, "hub": hub}
-        for label in ("a", "b", "replay", "exige", "exige-pronta", "contexto"):
+        world: dict[str, UUID | str] = {"channel": channel[0], "hub": hub}
+        for label in ("a", "b", "replay", "exige", "exige-pronta", "contexto", "ambiguo"):
             world[label] = _seller(connection, label)
         for label in ("a", "b"):
             seller = world[label]
@@ -324,6 +328,34 @@ def test_the_439_precondition_passes_with_a_ready_account(
     seller = _id(world, "exige-pronta")
     assert _situation(seller) == (False, True, True)
     assert _activate(seller, require_payout_ready=True) == "activated"
+
+
+def test_an_ambiguous_channel_fails_loud_and_writes_nothing(
+    world: dict[str, UUID | str],
+) -> None:
+    # Pega a ativação escolhendo um canal entre dois: levanta 55000, não grava, e a
+    # leitura mostra a loja bloqueada em vez de quebrar a página.
+    assert ADMIN_URL
+    seller = _id(world, "ambiguo")
+    before = _snapshot(seller)
+    with psycopg.connect(ADMIN_URL) as connection:
+        intruder = _seller(connection, "intruso")
+        _endpoint(connection, intruder, (_sha(f"intruso-{RUN}"), f"intruso-{RUN}"))
+        connection.commit()
+    try:
+        with pytest.raises(psycopg.Error) as raised:
+            _activate(seller)
+        assert raised.value.sqlstate == "55000"
+        assert _snapshot(seller) == before
+        assert _situation(seller) == (False, False, False)
+    finally:
+        with psycopg.connect(ADMIN_URL) as connection:
+            connection.execute(
+                "update webhook_endpoint set status='disabled' where seller_organization_id=%s",
+                (intruder,),
+            )
+            connection.commit()
+    assert _situation(seller) == (False, False, True)
 
 
 def test_runtime_still_cannot_write_the_binding_directly(world: dict[str, UUID | str]) -> None:

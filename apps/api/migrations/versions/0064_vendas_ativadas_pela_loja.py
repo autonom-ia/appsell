@@ -14,7 +14,9 @@ Esta migration cria duas funções, chamadas pela API com o papel do vendedor:
 * `app_private.activate_seller_financial(uuid,uuid,uuid,boolean,uuid)`
   (`commerce.payout.manage`): grava o par do Financial, cria a integração e o
   endpoint da loja no canal global, mapeia os produtos que já existem e audita.
-  Tudo numa transação, pela mesma regra da 0059.
+  Tudo numa transação. O canal é `app_private.financial_channel()` (0062): a
+  identidade única que a 0059 grava, nunca "o endpoint mais antigo". Sem canal,
+  ou com mais de um, a ativação levanta 55000 e nada é gravado.
 
 O par (operador e item de catálogo) é **global**: vem da env da API
 (`APPSELL_FINANCIAL_SHARED_OPERATOR_ID`, `APPSELL_FINANCIAL_SHARED_CATALOG_ITEM_ID`),
@@ -23,8 +25,9 @@ nunca do navegador. O produto do Sell segue no snapshot do checkout.
 Loja que **já tem vínculo** não é tocada: a função devolve `already_active`
 sem escrever nada. É o caso da Hub2You, cujo par foi gravado à mão e pode ser
 diferente do global. Recusas também não escrevem: `payout_account_not_ready`
-(pré-condição da #439, ligada só quando a API pede), `channel_unavailable` (não
-há canal global) e `seller_inactive`.
+(pré-condição da #439, ligada só quando a API pede) e `seller_inactive`.
+
+Resolve o #470: loja vinculada depois da 0059 ganha aqui o endpoint do canal.
 
 Quem pode ativar (flag por loja, desligada para a Hub2You) é decidido na API.
 Esta migration não liga nada sozinha.
@@ -85,6 +88,7 @@ create function app_private.resolve_seller_financial_activation(p_seller uuid)
 returns table(bound boolean, payout_ready boolean, channel_ready boolean)
 language plpgsql stable security definer
 set search_path=pg_catalog,app_private,public,pg_temp as $$
+declare channel_found boolean;
 begin
   if app_private.context_text('capability') is distinct from 'commerce.payout.read'
     or p_seller is null
@@ -92,17 +96,19 @@ begin
   then
     raise exception 'seller financial activation read denied' using errcode='42501';
   end if;
+  -- A leitura não levanta: canal ausente ou ambíguo vira "bloqueado" na tela.
+  begin
+    perform 1 from app_private.financial_channel();
+    channel_found := true;
+  exception when sqlstate '55000' then
+    channel_found := false;
+  end;
   return query
   select seller.financial_operator_id is not null,
     exists(
       select 1 from public.seller_payout_account account
       where account.seller_organization_id=seller.id and account.charges_enabled),
-    exists(
-      select 1 from public.webhook_endpoint endpoint
-      join public.checkout_integration integration
-        on integration.seller_organization_id=endpoint.seller_organization_id
-       and integration.id=endpoint.checkout_integration_id
-      where endpoint.status='active' and integration.status='active')
+    channel_found
   from public.seller_organization seller
   where seller.id=p_seller and seller.status='active';
 end $$
@@ -155,20 +161,12 @@ begin
     return 'payout_account_not_ready';
   end if;
 
-  -- O canal global é o da 0059: o endpoint ativo mais antigo.
-  select endpoint.endpoint_key_sha256, endpoint.secret_reference,
-    endpoint.revision, endpoint.max_clock_skew_seconds
+  -- O canal global pela identidade da 0059; zero ou mais de um levanta 55000
+  -- antes de qualquer escrita.
+  select identity.endpoint_key_sha256, identity.secret_reference,
+    identity.revision, identity.max_clock_skew_seconds
   into channel
-  from public.webhook_endpoint endpoint
-  join public.checkout_integration integration
-    on integration.seller_organization_id=endpoint.seller_organization_id
-   and integration.id=endpoint.checkout_integration_id
-  where endpoint.status='active' and integration.status='active'
-  order by endpoint.created_at,endpoint.seller_organization_id,endpoint.id
-  limit 1;
-  if not found then
-    return 'channel_unavailable';
-  end if;
+  from app_private.financial_channel() identity;
 
   update public.seller_organization
   set financial_operator_id=p_operator,

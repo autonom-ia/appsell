@@ -165,7 +165,6 @@ async def test_the_439_flag_reaches_the_database(env: pytest.MonkeyPatch) -> Non
 @pytest.mark.parametrize(
     ("outcome", "code", "detail"),
     [
-        ("channel_unavailable", 503, "financial_channel_unavailable"),
         ("seller_inactive", 403, "forbidden"),
         ("unexpected", 503, "payout_unavailable"),
     ],
@@ -178,6 +177,16 @@ async def test_refusals_map_to_http(
 
     assert response.status_code == code
     assert response.json()["detail"] == detail
+
+
+@pytest.mark.asyncio
+async def test_a_missing_or_ambiguous_channel_is_unavailable(env: pytest.MonkeyPatch) -> None:
+    # financial_channel() levanta 55000 antes de qualquer escrita.
+    auth = FakeAuth(seller_id=SELLER_ID, script=["seller_owner", db_error("55000")])
+    response = await post(auth)
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "financial_channel_unavailable"
 
 
 @pytest.mark.asyncio

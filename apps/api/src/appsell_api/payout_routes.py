@@ -339,6 +339,17 @@ async def activate_financial(request: Request, seller_id: UUID) -> dict[str, Any
                 },
             )
     except DBAPIError as error:
+        if _sqlstate(error) == "55000":
+            # financial_channel(): nenhum ou mais de um canal. Nada foi gravado.
+            logger.error(
+                "seller_financial_activation_channel_invalid",
+                seller_organization_id=str(seller_id),
+                request_id=str(envelope.request_id),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="financial_channel_unavailable",
+            ) from error
         raise _payout_domain_error(error) from error
     logger.info(
         "seller_financial_activation",
@@ -359,10 +370,6 @@ async def activate_financial(request: Request, seller_id: UUID) -> dict[str, Any
 _ACTIVATION_SUCCESS = frozenset({"activated", "already_active"})
 _ACTIVATION_REFUSALS: dict[str, tuple[int, str]] = {
     "payout_account_not_ready": (status.HTTP_409_CONFLICT, "payout_account_not_ready"),
-    "channel_unavailable": (
-        status.HTTP_503_SERVICE_UNAVAILABLE,
-        "financial_channel_unavailable",
-    ),
     "seller_inactive": (status.HTTP_403_FORBIDDEN, "forbidden"),
 }
 
