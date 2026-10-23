@@ -132,11 +132,37 @@ no runbook, nunca presumida.
 ## 7. Gates que não se abrem
 
 - **A loja da Hub2You está no ar e não pode regredir** (regra do Rodrigo,
-  23/10/2026). Todo PR roda o smoke da Hub2You antes e depois: `/s/hub2you`,
-  `/s/hub2you/p/condicoes-gerais` e `/s/hub2you/p/gerador-de-cotacoes-comparativas`
-  respondem 200 com "Comprar agora" (linha de base medida em 23/10). Comportamento
-  novo que alcance a Hub2You entra atrás de flag por loja, desligada para ela até
-  o Rodrigo liberar.
+  23/10/2026). Todo PR roda o smoke da Hub2You antes e depois, sem sessão:
+  - a vitrine `/s/hub2you` responde 200 com 2 cards "Ver e comprar" (R$ 47,00
+    e R$ 87,00; o espaço depois de "R$" é U+00A0) e 0 assets com erro;
+  - `/s/hub2you/p/condicoes-gerais` e `/s/hub2you/p/gerador-de-cotacoes-comparativas`
+    respondem 200 com "Comprar agora", cujo href é
+    `/auth/login?next=<path da página>&new_user=true`;
+  - esse `/auth/login` responde 307 para o Identity, levando `return_to` e
+    `new_user=true`, e o Identity responde 200.
+
+  Linha de base medida em 23/10 (#445). Comportamento novo que alcance a Hub2You
+  entra atrás de flag por loja, desligada para ela até o Rodrigo liberar.
+- **Financial e neuro.ai: criar é o caminho; mudar o que existe exige análise
+  de impacto** (regra do Rodrigo, 23/10/2026). Os repos `autonomia-financial`,
+  `autonomia-financial-sdk`, `financial-dashboard-sdk` e `neuroai-web` são do
+  sócio dele. São eles que conversam com o Asaas e o Stripe, e atendem vários
+  projetos em produção, inclusive com auth. Implementação nova de dinheiro
+  passa por eles, e não direto pelo gateway. As integrações diretas com o Stripe
+  que o Sell já tem (`app/api/checkout/stripe/create-session`, `app/api/webhooks/stripe/`,
+  `lib/stripe-config.server.ts`) continuam até o Rodrigo decidir a migração.
+  - **Criar**: rota, função ou módulo novo e isolado, que não muda o contrato nem
+    o comportamento de nada que já existe, segue o fluxo normal. O merge é do
+    Rodrigo, porque é dinheiro.
+  - **Mudar o que existe**: contrato de rota, comportamento, schema, função
+    compartilhada ou versão publicada de SDK. A trilha entrega antes a análise de
+    impacto à Orquestração, que a leva ao Rodrigo. Só depois do OK dele vem o
+    código. Os SDKs pedem cuidado dobrado: o deploy do `neuroai-web` atualiza
+    esses pacotes para `--latest`.
+  - Todo PR nesses repos traz uma seção de impacto: o que é novo, o que muda,
+    quem chama o código alterado (lido no código, com caminho) e o teste que
+    prova que o comportamento antigo continua igual. Sem essa seção, o PR fica
+    bloqueado.
 - Nada de funcionalidade de dinheiro sem log, alerta e conciliação entre Stripe
   e acesso liberado (#147).
 - Nada de divisão de pagamento antes de o estorno revogar o acesso (#151).
