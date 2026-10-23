@@ -22,6 +22,10 @@ import { configuredPublicOrigin, hasConfiguredOrigin } from "@/lib/public-origin
 import { parsePublicStorefront, type PublicStorefrontProduct } from "@/lib/public-storefront";
 import { StripeConfigError, stripeClient } from "@/lib/stripe-config.server";
 
+// Stripe refuses expires_at under 30 minutes from ITS creation time, which is
+// later than ours by the request latency; one extra minute keeps us above it.
+const CHECKOUT_SESSION_TTL_SECONDS = 31 * 60;
+
 export const dynamic = "force-dynamic";
 
 // Slice 1 (platform-direct, NOT Connect): create a REAL one-time Stripe Checkout
@@ -191,6 +195,11 @@ export async function POST(request: NextRequest) {
       // safe together with the async event handling in
       // app/api/webhooks/stripe/route.ts (PAID_EVENT_TYPES).
       payment_method_types: ["card"],
+      // Short on purpose (#148). The webhook checks the amount against the
+      // offer's price at PAYMENT time, so a session left open while the seller
+      // changes the price would charge the buyer and then grant nothing. Stripe
+      // defaults to 24 h; this keeps the window near its 30-minute minimum.
+      expires_at: Math.floor(Date.now() / 1_000) + CHECKOUT_SESSION_TTL_SECONDS,
       line_items: [
         {
           quantity: 1,

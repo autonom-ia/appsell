@@ -11,10 +11,14 @@ vi.mock("server-only", () => ({}));
 // the ones that reached constructEvent byte for byte.
 const WEBHOOK_SECRET = "whsec_test_amount_check";
 
-const { proxyCheckoutWebhook, readPublicStorefront } = vi.hoisted(() => ({
-  proxyCheckoutWebhook: vi.fn(),
-  readPublicStorefront: vi.fn()
-}));
+const { proxyCheckoutWebhook, readPublicStorefront, DomainApiError } = vi.hoisted(() => {
+  class DomainApiError extends Error {
+    constructor(readonly status: number, readonly code: string) {
+      super(code);
+    }
+  }
+  return { proxyCheckoutWebhook: vi.fn(), readPublicStorefront: vi.fn(), DomainApiError };
+});
 
 vi.mock("@/lib/stripe-config.server", () => ({
   StripeConfigError: class extends Error {},
@@ -24,7 +28,7 @@ vi.mock("@/lib/stripe-config.server", () => ({
 }));
 
 vi.mock("@/lib/checkout-webhook-proxy.server", () => ({ proxyCheckoutWebhook }));
-vi.mock("@/lib/internal-api-client.server", () => ({ readPublicStorefront }));
+vi.mock("@/lib/internal-api-client.server", () => ({ readPublicStorefront, DomainApiError }));
 
 import { POST } from "../app/api/webhooks/stripe/route";
 
@@ -105,6 +109,43 @@ function signedRequest(event: unknown, secret = WEBHOOK_SECRET): NextRequest {
 
 function emittedPayloads() {
   return proxyCheckoutWebhook.mock.calls.map(([, body]) => JSON.parse((body as Buffer).toString("utf8")));
+}
+
+function loggedLines(): Array<Record<string, unknown>> {
+  return vi.mocked(console.error).mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
+}
+
+// A cause no redelivery fixes: 200 so Stripe stops, and one durable line.
+async function expectPermanentDrop(reason: string) {
+  const response = await POST(signedRequest(paidSession()));
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ received: true, ignored: reason, order_id: "order-amount-1" });
+  expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
+  expect(loggedLines()).toEqual([expect.objectContaining({
+    marker: "appsell.stripe_webhook.dropped",
+    reason,
+    stripe_event_id: "evt_amount_1",
+    order_id: "order-amount-1"
+  })]);
+}
+
+// An outage: 503 so Stripe keeps redelivering, and the cause on record while
+// the retry window is still open.
+async function expectRetrying(error: string, reason: string, extra: Record<string, unknown> = {}) {
+  const response = await POST(signedRequest(paidSession()));
+  expect(response.status).toBe(503);
+  expect(await response.json()).toEqual({ error });
+  expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
+  const logged = loggedLines();
+  expect(logged).toEqual([expect.objectContaining({
+    marker: "appsell.stripe_webhook.retrying",
+    reason,
+    stripe_event_id: "evt_amount_1",
+    order_id: "order-amount-1",
+    ...extra
+  })]);
+  expect(JSON.stringify(logged)).not.toContain("buyer@example.test");
+  expect(JSON.stringify(logged)).not.toContain("cognito-sub-amount");
 }
 
 async function expectAmountMismatch(event: ReturnType<typeof paidSession>, orderId = "order-amount-1") {
@@ -240,24 +281,78 @@ describe("POST /api/webhooks/stripe — amount check (#148)", () => {
     expect(replayCall![2].eventId).toBe(firstCall![2].eventId);
   });
 
-  it("keeps Stripe redelivering while the product is not mapped", async () => {
-    process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON = JSON.stringify({});
+  it("drops, with a record, a product that is not in the map", async () => {
+    process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON = JSON.stringify({
+      "outra-loja/curso": { financial_product_key: "prod_outra_loja" }
+    });
+    await expectPermanentDrop("product_not_mapped");
+    expect(readPublicStorefront).not.toHaveBeenCalled();
+  });
+
+  it("drops, with a record, a key mapped to two products", async () => {
+    process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON = JSON.stringify({
+      "hub2you/condicoes-gerais": { financial_product_key: "prod_hub2you_condicoes" },
+      "outra-loja/curso": { financial_product_key: "prod_hub2you_condicoes" }
+    });
+    await expectPermanentDrop("product_key_ambiguous");
+  });
+
+  it("drops, with a record, a store the domain no longer knows", async () => {
+    readPublicStorefront.mockRejectedValue(new DomainApiError(404, "seller_not_found"));
+    await expectPermanentDrop("seller_not_found");
+  });
+
+  it("keeps Stripe redelivering, with a record, while the map does not parse", async () => {
+    process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON = "{not json";
+    await expectRetrying("product_map_invalid", "product_map_invalid", { error_name: null });
+    expect(readPublicStorefront).not.toHaveBeenCalled();
+  });
+
+  it("keeps Stripe redelivering, with a record, while the storefront is down", async () => {
+    readPublicStorefront.mockRejectedValue(new DomainApiError(503, "domain_api_unavailable"));
+    await expectRetrying("amount_verification_unavailable", "storefront_unavailable", {
+      error_name: "DomainApiError",
+      upstream_status: 503
+    });
+  });
+
+  it("keeps Stripe redelivering, with a record, on an unexpected storefront failure", async () => {
+    readPublicStorefront.mockRejectedValue(new TypeError("fetch failed https://api.internal/secret-path"));
+    await expectRetrying("amount_verification_unavailable", "storefront_unavailable", {
+      error_name: "TypeError",
+      upstream_status: null
+    });
+    // The name, never the message: it can carry a URL.
+    expect(JSON.stringify(loggedLines())).not.toContain("secret-path");
+  });
+
+  it("keeps Stripe redelivering, with a record, on a storefront shape this build cannot read", async () => {
+    readPublicStorefront.mockResolvedValue({ unexpected: true });
+    await expectRetrying("amount_verification_unavailable", "storefront_unreadable");
+  });
+
+  it("delivers once the storefront is back, without a duplicate", async () => {
+    readPublicStorefront.mockRejectedValueOnce(new DomainApiError(503, "domain_api_unavailable"));
+    const down = await POST(signedRequest(paidSession()));
+    const back = await POST(signedRequest(paidSession()));
+
+    expect([down.status, back.status]).toEqual([503, 200]);
+    expect(await back.json()).toEqual({ status: "accepted" });
+    expect(proxyCheckoutWebhook).toHaveBeenCalledOnce();
+  });
+
+  it("records why the domain ingress was unreachable", async () => {
+    proxyCheckoutWebhook.mockRejectedValue(new Error("socket hang up"));
     const response = await POST(signedRequest(paidSession()));
 
     expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({ error: "product_not_mapped" });
-    expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
-  });
-
-  it("keeps Stripe redelivering while the storefront is unavailable", async () => {
-    readPublicStorefront.mockRejectedValue(new Error("domain down"));
-    const unavailable = await POST(signedRequest(paidSession()));
-    readPublicStorefront.mockResolvedValue({ unexpected: true });
-    const malformed = await POST(signedRequest(paidSession()));
-
-    expect([unavailable.status, malformed.status]).toEqual([503, 503]);
-    expect(await unavailable.json()).toEqual({ error: "amount_verification_unavailable" });
-    expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
+    expect(await response.json()).toEqual({ error: "checkout_webhook_unavailable" });
+    expect(loggedLines()).toEqual([expect.objectContaining({
+      marker: "appsell.stripe_webhook.retrying",
+      reason: "checkout_webhook_unavailable",
+      order_id: "order-amount-1",
+      error_name: "Error"
+    })]);
   });
 
   it("still rejects an event that is not signed with the endpoint secret", async () => {

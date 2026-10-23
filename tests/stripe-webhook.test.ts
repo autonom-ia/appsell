@@ -31,6 +31,7 @@ vi.mock("@/lib/checkout-webhook-proxy.server", () => ({ proxyCheckoutWebhook }))
 // Server-side price the #148 amount check compares against: R$47 for the one
 // mapped product. tests/stripe-webhook-amount.test.ts covers the check itself.
 vi.mock("@/lib/internal-api-client.server", () => ({
+  DomainApiError: class extends Error {},
   readPublicStorefront: async () => ({
     schema_version: 1,
     seller: { id: "11111111-1111-4111-8111-111111111111", slug: "loja", name: "Loja" },

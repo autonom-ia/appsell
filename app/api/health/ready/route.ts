@@ -11,7 +11,8 @@ export async function GET() {
       status: state.ready ? "ok" : "unavailable",
       redis: state.redis,
       api: state.api,
-      storage_upload: state.storageUpload
+      storage_upload: state.storageUpload,
+      checkout_map: state.checkoutMap
     },
     {
       status: state.ready ? 200 : 503,

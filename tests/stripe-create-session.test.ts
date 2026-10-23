@@ -247,6 +247,20 @@ describe("POST /api/checkout/stripe/create-session", () => {
     expect(createFinancialExternalCheckoutIntent).not.toHaveBeenCalled();
   });
 
+  it("expires the Stripe session about 31 minutes after creating it (#148)", async () => {
+    // The webhook checks the amount against the price at payment time; a 24 h
+    // session would let a price change refuse a legitimate buyer.
+    readPublicStorefront.mockResolvedValue(storefrontWithPrice(4990));
+    const before = Math.floor(Date.now() / 1_000);
+    const response = await POST(request(validBody));
+    const after = Math.floor(Date.now() / 1_000);
+
+    expect(response.status).toBe(200);
+    const params = (sessionsCreate.mock.calls[0] as unknown[])[0] as { expires_at: number };
+    expect(params.expires_at).toBeGreaterThanOrEqual(before + 31 * 60);
+    expect(params.expires_at).toBeLessThanOrEqual(after + 31 * 60);
+  });
+
   it("builds a one-time BRL session with the SERVER-SIDE amount and correct metadata", async () => {
     readPublicStorefront.mockResolvedValue(storefrontWithPrice(4990));
     const response = await POST(request(validBody));
