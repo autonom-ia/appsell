@@ -40,14 +40,23 @@ anônimas que precisam voltar 401 ou 403. Continua passando.
   `X-Amz-Content-Sha256` e `X-Amz-Meta-Snowball-Auto-Extract`: nenhuma
   credencial em cabeçalho chega ao MinIO por esta borda, nem o modo de envio com
   trailer não assinado, nem a extração automática de tar;
-- novo roteador `appsell-storage-deny`, prioridade 1, responde 403 a todo o
-  resto: `ListBuckets`, `/minio/admin`, `/minio/health`, `DELETE`, `POST`,
+- novo roteador `appsell-storage-deny`, prioridade **99**, responde 403 a todo
+  o resto: `ListBuckets`, `/minio/admin`, `/minio/health`, `DELETE`, `POST`,
   `HEAD`, escrita no pronto, leitura da quarentena.
+
+**Por que 99, e não 1.** O `main.yaml` que o EasyPanel gera tem
+`https-dados_minio-0` para o mesmo host, `priority: 0` (no Traefik, o tamanho da
+regra: 46), apontando para `dados_minio:9001`, o console do MinIO do projeto
+`dados`. Hoje ela nunca ganha, porque a rota do Sell tem 100. Um bloqueio com
+prioridade abaixo de 46 mandaria o pedido negado para esse console. O ensaio
+abaixo provou isso.
 
 ## Ensaio (local, 23/10/2026)
 
-Traefik **3.7.16** (binário da release, SHA-256 conferido) com este arquivo e um
-MinIO `RELEASE.2025-09-07T16-13-09Z` local. URLs assinadas com boto3, pedidos
+Traefik **3.6.7**, a versão da produção, e 3.7.16 (binários da release,
+SHA-256 conferido), com este arquivo, uma cópia da rota `https-dados_minio-0`
+(prioridade 0) apontando para uma isca que responde 299, e um MinIO
+`RELEASE.2025-09-07T16-13-09Z` local, a versão da produção. URLs assinadas com boto3, pedidos
 com `curl --resolve minio.autonomia.site:18443:127.0.0.1`. **17/17**:
 
 - passam: PUT pré-assinado com os cabeçalhos do navegador (200, e o objeto
@@ -59,33 +68,44 @@ com `curl --resolve minio.autonomia.site:18443:127.0.0.1`. **17/17**:
   ListObjects com SigV4 **no cabeçalho** (controle: o mesmo pedido direto no
   MinIO passa), PUT anônimo.
 
-O ensaio achou dois erros da primeira versão, já corrigidos:
+Controle: com o bloqueio em prioridade 1, 8 dos pedidos que deviam dar 403
+chegaram à isca (9/17). Com 99, 17/17 nas duas versões do Traefik.
+
+O ensaio achou três erros das versões anteriores, já corrigidos:
 
 - regra quebrada em várias linhas: o Traefik recusa (`expected ')', found newline`);
 - `ipAllowList` com `127.0.0.1/32` deixava passar pedido vindo do próprio host.
-  A faixa agora é `192.0.2.1/32` (TEST-NET-1), que nunca é origem real.
+  A faixa agora é `192.0.2.1/32` (TEST-NET-1), que nunca é origem real;
+- bloqueio com prioridade 1 perdia para a rota do `dados`.
 
-## Antes de aplicar (leitura no host, com OK)
+## Leitura no host (23/10/2026, com OK, só leitura)
 
-1. Versão do Traefik: `docker service inspect easypanel-traefik --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}'`.
-   O arquivo usa a sintaxe v3 (`ipAllowList`; regras v3). Em v2 **não aplicar**.
-2. Onde o arquivo vive: procurar o roteador `appsell-storage-https` nos
-   arquivos de configuração dinâmica do Traefik do EasyPanel. Se não estiver
-   lá, a borda atual é outra, e este runbook para.
-3. Nomes dos buckets: `APPSELL_API_STORAGE_QUARANTINE_BUCKET` e
-   `APPSELL_API_STORAGE_READY_BUCKET` da api, **só os nomes**, nunca outros valores. Se
-   diferirem de `appsell-quarantine` e `appsell-ready`, trocar no `PathPrefix`.
-4. Quem mais usa `minio.autonomia.site`: o destino `s3` do backup
+- Traefik: serviço `easypanel-traefik`, imagem `traefik:3.6.7`.
+- Arquivo ativo: `/etc/easypanel/traefik/config/appsell-storage.yaml`, com
+  SHA-256 `551a0363…` **igual** ao `appsell-storage.traefik.yaml` da `main`. Na
+  mesma pasta há `appsell-storage.yaml.bak-20260822T1121Z`, que o provedor de
+  arquivo não carrega por causa da extensão.
+- Buckets no volume `sell-autonomia_storage_data`: `appsell-quarantine` (4 KB),
+  `appsell-ready` (196 MB) e `appsell-backups` (152 KB), os nomes do
+  `PathPrefix`.
+- MinIO: `RELEASE.2025-09-07T16-13-09Z`.
+
+## Antes de aplicar
+
+1. Quem mais usa `minio.autonomia.site`: o destino `s3` do backup
    (`APPSELL_BACKUP_S3_ENDPOINT`), o `view-storage` e qualquer `mc` apontado
    para ele. Credencial em cabeçalho por esta borda passa a voltar 403.
-5. Logs do Traefik da última semana para o host `minio.autonomia.site`:
+   O bucket `appsell-backups` existe: se o backup `s3` grava nele **por
+   este endereço**, passa a receber 403 e precisa do endpoint interno.
+2. Logs do Traefik da última semana para o host `minio.autonomia.site`:
    método e caminho distintos. Qualquer coisa fora da tabela acima é um uso que
    esta mudança quebra: parar e reportar.
 
 ## Aplicação (só com OK do Rodrigo)
 
 ```sh
-F=<caminho lido no passo 2>
+F=/etc/easypanel/traefik/config/appsell-storage.yaml
+sha256sum "$F"        # tem de ser 551a0363…; outro valor: parar
 : "${F:?caminho vazio — parar}"
 cp -p -- "$F" "/tmp/appsell-storage-traefik_$(date -u +%Y%m%dT%H%M%SZ).yaml"   # backup
 # escrever o novo arquivo a partir do SHA do merge, conferindo sha256 dos dois lados

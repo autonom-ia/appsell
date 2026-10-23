@@ -11,7 +11,7 @@
 #   GET  /<pronto>/<chave>       leitura de PDF, vídeo, imagem e capa
 #   OPTIONS em qualquer caminho  preflight do CORS (o audit público pede em `/`)
 # Todo o resto (ListBuckets, /minio/admin, /minio/health, DELETE, POST, HEAD)
-# cai no roteador de prioridade 1, que responde 403. O audit
+# cai no roteador de prioridade 99, que responde 403. O audit
 # `storage_public_audit` espera 401 ou 403 nessas sondas e continua passando.
 #
 # Os nomes dos buckets são os padrões do repositório; conferir no host
@@ -37,7 +37,11 @@ http:
       service: appsell-storage
       middlewares:
         - appsell-storage-deny-all
-      priority: 1
+      # Acima da rota que o EasyPanel gera para o mesmo host no main.yaml
+      # (`https-dados_minio-0`, priority 0 = tamanho da regra, 46), que leva ao
+      # console do MinIO do projeto `dados`. Com priority 1 o pedido negado
+      # cairia lá. Abaixo da allowlist (100).
+      priority: 99
       tls: {}
   middlewares:
     appsell-storage-cors:
