@@ -63,6 +63,28 @@ mapfile -t clamav_networks < <(
 }
 networks=("${clamav_networks[0]}")
 
+# A rede isolada do storage (#461). Com a flag
+# APPSELL_API_STORAGE_INTERNAL_HTTP_ALLOWED, o endpoint interno da API, que o
+# worker copia, aponta para o alias appsell-storage, que só existe nesta rede.
+# Ela vem da etapa 4 do docs/runbooks/storage-461-rede-interna.md, com OK: este
+# script nunca a cria. Sem ela, o worker sobe sem storage.
+storage_network="${APPSSELL_STORAGE_INTERNAL_NETWORK:-sell-storage-internal}"
+if ! storage_network_shape="$(
+  docker network inspect "$storage_network" --format '{{.Id}} {{.Driver}} {{.Internal}} {{.Scope}}'
+)"; then
+  echo "storage internal network not found: $storage_network (step 4 of docs/runbooks/storage-461-rede-interna.md)" >&2
+  exit 1
+fi
+read -r storage_network_id storage_network_driver storage_network_internal storage_network_scope \
+  <<<"$storage_network_shape"
+[[ "$storage_network_driver $storage_network_internal $storage_network_scope" == "overlay true swarm" ]] || {
+  echo "storage internal network must be an internal swarm overlay: $storage_network" >&2
+  exit 1
+}
+if [[ "$storage_network_id" != "${clamav_networks[0]}" ]]; then
+  networks+=("$storage_network_id")
+fi
+
 mount_source() {
   local target="$1"
   jq -r --arg target "$target" '

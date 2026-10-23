@@ -201,6 +201,7 @@ jobs:
             apps/api/tests/test_links_do_pdf_com_o_sandbox_ocupado.py \
             apps/api/tests/test_preparo_de_video_do_pdf.py \
             apps/api/tests/test_limites_de_midia.py \
+            apps/api/tests/test_ensure_asset_worker.py \
             apps/api/tests/test_pdf_derivatives.py \
             apps/api/tests/test_parser_de_midia_fica_no_sandbox.py \
             apps/api/tests/test_pdf_sandbox_service.py \
