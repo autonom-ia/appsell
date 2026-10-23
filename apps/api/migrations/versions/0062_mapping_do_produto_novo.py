@@ -25,7 +25,9 @@ delas, que copiam o mesmo `endpoint_key_sha256` e `secret_reference` do canal
 global. `app_private.financial_channel()` exige exatamente **uma** identidade
 ativa; se não houver nenhuma, ou houver mais de uma, levanta erro (55000) em vez
 de mapear no lugar errado. Um endpoint antigo reativado, de outro adapter ou de
-outro nome, não muda o canal. Loja vinculada sem endpoint do canal (vinculada
+outro nome, não muda o canal. No trigger esse erro vira `RAISE WARNING`
+(`appsell.financial_channel_unresolved`) e o produto entra sem mapping: criar
+produto nunca falha por causa do canal. A migration e o backfill abortam. Loja vinculada sem endpoint do canal (vinculada
 depois da 0059) não ganha mapping: é o #470, resolvido pela ativação do #382.
 
 Não reprocessa `dead_letter` já existente. Se houver algum, ele vai para um
@@ -155,7 +157,17 @@ begin
   ) then
     return new;
   end if;
-  integration_id := app_private.financial_channel_integration(new.seller_organization_id);
+  -- Canal não resolvido (nenhum ou mais de um) NÃO bloqueia a criação de
+  -- produto: o produto entra sem mapping, o aviso sai no log do Postgres e a
+  -- conciliação (#459) mostra o job em dead_letter. Quem reprova alto é o
+  -- readiness; a migration e o backfill abortam.
+  begin
+    integration_id := app_private.financial_channel_integration(new.seller_organization_id);
+  exception when sqlstate '55000' then
+    raise warning 'appsell.financial_channel_unresolved: product % not mapped: %',
+      new.id, sqlerrm;
+    return new;
+  end;
   if integration_id is null then
     return new;
   end if;
