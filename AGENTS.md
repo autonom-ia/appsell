@@ -149,7 +149,7 @@ no runbook, nunca presumida.
   sócio dele. São eles que conversam com o Asaas e o Stripe, e atendem vários
   projetos em produção, inclusive com auth. Implementação nova de dinheiro
   passa por eles, e não direto pelo gateway. As integrações diretas com o Stripe
-  que o Sell já tem (`app/api/checkout/create-session`, `app/api/webhooks/stripe/`,
+  que o Sell já tem (`app/api/checkout/stripe/create-session`, `app/api/webhooks/stripe/`,
   `lib/stripe-config.server.ts`) continuam até o Rodrigo decidir a migração.
   - **Criar**: rota, função ou módulo novo e isolado, que não muda o contrato nem
     o comportamento de nada que já existe, segue o fluxo normal. O merge é do
