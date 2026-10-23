@@ -60,14 +60,21 @@ def _channel(connection: Connection) -> tuple[str, str]:
     return channel
 
 
-def _seller(connection: Connection, label: str) -> UUID:
+def _seller(connection: Connection, label: str, role: str = "seller_owner") -> UUID:
     row = connection.execute(
         "insert into seller_organization(slug,display_name,status) "
         "values(%s,%s,'active') returning id",
         (f"ativa-{label}-{RUN}", f"Ativa {label}"),
     ).fetchone()
     assert row is not None
-    return UUID(str(row[0]))
+    seller = UUID(str(row[0]))
+    # A 0064 confere no banco que o ator é seller_owner da loja.
+    connection.execute(
+        "insert into seller_membership(seller_organization_id,identity_user_id,role,status)"
+        " values(%s,%s,%s,'active')",
+        (seller, ACTOR, role),
+    )
+    return seller
 
 
 def _endpoint(connection: Connection, seller: UUID, channel: tuple[str, str]) -> UUID:
@@ -127,17 +134,17 @@ def _activate(
     return str(row[0])
 
 
-def _situation(seller: UUID) -> tuple[bool, bool, bool]:
+def _situation(seller: UUID) -> tuple[bool, bool, bool, str, int]:
     assert RUNTIME_URL
     with psycopg.connect(RUNTIME_URL) as connection:
         _context(connection, READ, seller)
         row = connection.execute(
-            "select bound,payout_ready,channel_ready "
+            "select bound,payout_ready,channel_ready,endpoint_state,unmapped_products "
             "from app_private.resolve_seller_financial_activation(%s)",
             (seller,),
         ).fetchone()
     assert row is not None
-    return bool(row[0]), bool(row[1]), bool(row[2])
+    return bool(row[0]), bool(row[1]), bool(row[2]), str(row[3]), int(str(row[4]))
 
 
 def _snapshot(seller: UUID) -> dict[str, list[tuple[object, ...]]]:
@@ -166,7 +173,7 @@ def _snapshot(seller: UUID) -> dict[str, list[tuple[object, ...]]]:
             ),
             "audit": rows(
                 "select action,result from audit_event where seller_organization_id=%s "
-                "and action='seller_financial.activated'"
+                "and action like 'seller_financial.%%'"
             ),
         }
 
@@ -196,6 +203,29 @@ def world() -> dict[str, UUID | str]:
         world: dict[str, UUID | str] = {"channel": channel[0], "hub": hub}
         for label in ("a", "b", "replay", "exige", "exige-pronta", "contexto", "ambiguo"):
             world[label] = _seller(connection, label)
+        world["admin"] = _seller(connection, "admin", role="seller_admin")
+        # O caso da #470: vínculo gravado depois da 0059, sem endpoint no canal.
+        orfa = _seller(connection, "orfa")
+        connection.execute(
+            "update seller_organization set financial_operator_id=%s,"
+            "financial_product_catalog_item_id=%s where id=%s",
+            (uuid4(), uuid4(), orfa),
+        )
+        world["orfa"] = orfa
+        world["orfa-p1"] = _product(connection, orfa, "produto-orfao")
+        # Endpoint do canal desativado por alguém.
+        pausada = _seller(connection, "pausada")
+        connection.execute(
+            "update seller_organization set financial_operator_id=%s,"
+            "financial_product_catalog_item_id=%s where id=%s",
+            (uuid4(), uuid4(), pausada),
+        )
+        _endpoint(connection, pausada, channel)
+        connection.execute(
+            "update webhook_endpoint set status='disabled' where seller_organization_id=%s",
+            (pausada,),
+        )
+        world["pausada"] = pausada
         for label in ("a", "b"):
             seller = world[label]
             assert isinstance(seller, UUID)
@@ -239,14 +269,14 @@ def test_the_existing_hub2you_binding_comes_back_untouched(world: dict[str, UUID
     assert _activate(hub, require_payout_ready=True) == "already_active"
 
     assert _snapshot(hub) == before
-    assert _situation(hub)[0] is True
+    assert _situation(hub) == (True, False, True, "active", 0)
 
 
 def test_activation_binds_the_shared_pair_and_the_channel(world: dict[str, UUID | str]) -> None:
     # Pega a loja ativada sem endpoint no canal ou sem mapping: a compra
     # morreria em dead_letter, como no #465.
     seller = _id(world, "a")
-    assert _situation(seller) == (False, False, True)
+    assert _situation(seller) == (False, False, True, "missing", 0)
 
     assert _activate(seller) == "activated"
 
@@ -259,7 +289,7 @@ def test_activation_binds_the_shared_pair_and_the_channel(world: dict[str, UUID 
     products = {_id(world, "a-p1"), _id(world, "a-p2")}
     assert after["mappings"] == sorted(((integration, _sha(str(p)), p) for p in products), key=str)
     assert after["audit"] == [("seller_financial.activated", "succeeded")]
-    assert _situation(seller)[0] is True
+    assert _situation(seller) == (True, False, True, "active", 0)
 
 
 def test_a_product_created_after_activation_is_mapped(world: dict[str, UUID | str]) -> None:
@@ -288,7 +318,7 @@ def test_activating_a_never_touches_b(world: dict[str, UUID | str]) -> None:
     b = _id(world, "b")
     assert _snapshot(b)["endpoints"] == []
     assert _snapshot(b)["mappings"] == []
-    assert _situation(b)[0] is False
+    assert _situation(b) == (False, False, True, "missing", 0)
 
 
 def test_a_store_cannot_activate_another(world: dict[str, UUID | str]) -> None:
@@ -307,7 +337,7 @@ def test_read_capability_cannot_activate(world: dict[str, UUID | str]) -> None:
     with pytest.raises(psycopg.Error) as raised:
         _activate(seller, capability=READ)
     assert raised.value.sqlstate == INSUFFICIENT_PRIVILEGE
-    assert _situation(seller)[0] is False
+    assert _situation(seller) == (False, False, True, "missing", 0)
 
 
 def test_the_439_precondition_refuses_without_a_ready_account(
@@ -326,7 +356,7 @@ def test_the_439_precondition_passes_with_a_ready_account(
     world: dict[str, UUID | str],
 ) -> None:
     seller = _id(world, "exige-pronta")
-    assert _situation(seller) == (False, True, True)
+    assert _situation(seller) == (False, True, True, "missing", 0)
     assert _activate(seller, require_payout_ready=True) == "activated"
 
 
@@ -347,7 +377,7 @@ def test_an_ambiguous_channel_fails_loud_and_writes_nothing(
             _activate(seller)
         assert raised.value.sqlstate == "55000"
         assert _snapshot(seller) == before
-        assert _situation(seller) == (False, False, False)
+        assert _situation(seller) == (False, False, False, "missing", 0)
     finally:
         with psycopg.connect(ADMIN_URL) as connection:
             connection.execute(
@@ -355,7 +385,73 @@ def test_an_ambiguous_channel_fails_loud_and_writes_nothing(
                 (intruder,),
             )
             connection.commit()
-    assert _situation(seller) == (False, False, True)
+    assert _situation(seller) == (False, False, True, "missing", 0)
+
+
+def test_a_bound_store_without_endpoint_is_repaired_not_reported_active(
+    world: dict[str, UUID | str],
+) -> None:
+    # O ALTO da Qualidade: vínculo sem endpoint devolvia already_active e a tela
+    # dizia "Vendas ativas" com a compra indo para dead_letter (#470).
+    seller = _id(world, "orfa")
+    before = _snapshot(seller)
+    assert _situation(seller) == (True, False, True, "missing", 0)
+
+    assert _activate(seller) == "repaired"
+
+    after = _snapshot(seller)
+    assert after["seller"] == before["seller"]
+    assert len(after["endpoints"]) == 1
+    assert after["endpoints"][0][2] == world["channel"]
+    integration = after["endpoints"][0][1]
+    product = _id(world, "orfa-p1")
+    assert after["mappings"] == [(integration, _sha(str(product)), product)]
+    assert after["audit"] == [("seller_financial.repaired", "succeeded")]
+    assert _situation(seller) == (True, False, True, "active", 0)
+    assert _activate(seller) == "already_active"
+    assert _snapshot(seller) == after
+
+
+def test_a_missing_mapping_is_reported_and_repaired(world: dict[str, UUID | str]) -> None:
+    # Vínculo e endpoint ok, um produto sem mapping: nem "active" na leitura, nem
+    # already_active na ativação.
+    seller = _id(world, "replay")
+    assert ADMIN_URL
+    assert _activate(seller) in {"activated", "already_active"}
+    with psycopg.connect(ADMIN_URL) as connection:
+        product = _product(connection, seller, "sem-mapping-ainda")
+        connection.execute(
+            "delete from external_product_mapping where catalog_product_id=%s", (product,)
+        )
+        connection.commit()
+    assert _situation(seller) == (True, False, True, "active", 1)
+
+    assert _activate(seller) == "repaired"
+
+    assert _situation(seller) == (True, False, True, "active", 0)
+
+
+def test_a_disabled_channel_endpoint_is_blocked_and_untouched(
+    world: dict[str, UUID | str],
+) -> None:
+    # MÉDIO (a): endpoint desativado nunca vira "active" nem é reativado aqui.
+    seller = _id(world, "pausada")
+    before = _snapshot(seller)
+    assert _situation(seller) == (True, False, True, "disabled", 0)
+
+    assert _activate(seller) == "channel_disabled"
+
+    assert _snapshot(seller) == before
+
+
+def test_only_the_owner_activates_in_the_database(world: dict[str, UUID | str]) -> None:
+    # MÉDIO (d): seller_admin com a capability de escrita é recusado no banco.
+    seller = _id(world, "admin")
+    before = _snapshot(seller)
+    with pytest.raises(psycopg.Error) as raised:
+        _activate(seller)
+    assert raised.value.sqlstate == INSUFFICIENT_PRIVILEGE
+    assert _snapshot(seller) == before
 
 
 def test_runtime_still_cannot_write_the_binding_directly(world: dict[str, UUID | str]) -> None:

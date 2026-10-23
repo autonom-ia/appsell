@@ -379,7 +379,13 @@ export async function readSellerPayoutAccount(
 export interface SellerFinancialActivationProjection {
   self_service: boolean;
   status?: "active" | "available" | "blocked";
-  reason?: "unconfigured" | "channel_unavailable" | "payout_account_not_ready" | null;
+  reason?:
+    | "unconfigured"
+    | "channel_unavailable"
+    | "channel_inactive"
+    | "payout_account_not_ready"
+    | "incomplete"
+    | null;
 }
 
 // Ativação de vendas pelo Financial (#382). O corpo é sempre vazio: o par do

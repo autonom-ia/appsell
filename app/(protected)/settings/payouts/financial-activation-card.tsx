@@ -20,7 +20,7 @@ interface ActivationResponse {
   activation: {
     self_service: boolean;
     status?: FinancialActivationStatus;
-    reason?: FinancialActivationReason | null;
+    reason?: FinancialActivationReason | "incomplete" | null;
   };
   csrf: { activate: string } | null;
 }
@@ -28,8 +28,8 @@ interface ActivationResponse {
 type CardState =
   | { kind: "hidden" }
   | { kind: "active" }
-  | { kind: "available" }
-  | { kind: "activating" }
+  | { kind: "available"; incomplete: boolean }
+  | { kind: "activating"; incomplete: boolean }
   | { kind: "blocked"; reason: FinancialActivationReason }
   | { kind: "error" };
 
@@ -60,8 +60,10 @@ export function FinancialActivationCard() {
     if (!activation.self_service) return setState({ kind: "hidden" });
     csrfToken.current = payload.csrf?.activate ?? "";
     if (activation.status === "active") return setState({ kind: "active" });
-    if (activation.status === "available") return setState({ kind: "available" });
-    if (activation.status === "blocked" && activation.reason) {
+    if (activation.status === "available") {
+      return setState({ kind: "available", incomplete: activation.reason === "incomplete" });
+    }
+    if (activation.status === "blocked" && activation.reason && activation.reason !== "incomplete") {
       return setState({ kind: "blocked", reason: activation.reason });
     }
     setState({ kind: "hidden" });
@@ -90,10 +92,10 @@ export function FinancialActivationCard() {
     };
   }, [loadStatus]);
 
-  const activate = useCallback(async () => {
+  const activate = useCallback(async (incomplete: boolean) => {
     if (!seller) return;
     focusHeadingNext.current = true;
-    setState({ kind: "activating" });
+    setState({ kind: "activating", incomplete });
     try {
       const body = new FormData();
       body.set("_csrf", csrfToken.current);
@@ -105,6 +107,9 @@ export function FinancialActivationCard() {
         const payload = (await response.json().catch(() => null)) as { error?: string } | null;
         if (payload?.error === "payout_account_not_ready") {
           return setState({ kind: "blocked", reason: "payout_account_not_ready" });
+        }
+        if (payload?.error === "financial_channel_inactive") {
+          return setState({ kind: "blocked", reason: "channel_inactive" });
         }
         return setState({ kind: "error" });
       }
@@ -127,19 +132,26 @@ export function FinancialActivationCard() {
       ) : null}
       {state.kind === "available" || state.kind === "activating" ? (
         <>
-          <h2 ref={headingRef} tabIndex={-1}>Ative as vendas da sua loja</h2>
+          <h2 ref={headingRef} tabIndex={-1}>
+            {state.incomplete ? "Conclua a ativação das vendas" : "Ative as vendas da sua loja"}
+          </h2>
           <p>
-            Com as vendas ativas, os produtos publicados com preço passam a aceitar
-            pagamento e o comprador recebe o acesso logo depois.
+            {state.incomplete
+              ? "Falta um passo para o comprador receber o acesso depois do pagamento. Conclua agora; nada muda nos seus preços."
+              : "Com as vendas ativas, os produtos publicados com preço passam a aceitar pagamento e o comprador recebe o acesso logo depois."}
           </p>
           <button
             type="button"
             className="primary-button"
             disabled={state.kind === "activating"}
             aria-busy={state.kind === "activating"}
-            onClick={() => void activate()}
+            onClick={() => void activate(state.incomplete)}
           >
-            {state.kind === "activating" ? "Ativando…" : "Ativar vendas"}
+            {state.kind === "activating"
+              ? "Ativando…"
+              : state.incomplete
+                ? "Concluir ativação"
+                : "Ativar vendas"}
           </button>
         </>
       ) : null}
@@ -155,7 +167,7 @@ export function FinancialActivationCard() {
           <p className="form-error">
             Nada foi alterado na sua loja. Tente de novo em alguns minutos.
           </p>
-          <button type="button" className="secondary-button" onClick={() => void activate()}>
+          <button type="button" className="secondary-button" onClick={() => void activate(false)}>
             Tentar de novo
           </button>
         </>

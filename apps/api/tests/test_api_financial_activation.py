@@ -40,12 +40,21 @@ def env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     return monkeypatch
 
 
-def situation(*, bound: bool, payout_ready: bool, channel_ready: bool) -> FakeResult:
+def situation(
+    *,
+    bound: bool,
+    payout_ready: bool,
+    channel_ready: bool,
+    endpoint_state: str = "missing",
+    unmapped_products: int = 0,
+) -> FakeResult:
     return FakeResult(
         one_or_none={
             "bound": bound,
             "payout_ready": payout_ready,
             "channel_ready": channel_ready,
+            "endpoint_state": endpoint_state,
+            "unmapped_products": unmapped_products,
         }
     )
 
@@ -88,6 +97,24 @@ async def test_a_body_with_any_field_is_refused(env: pytest.MonkeyPatch) -> None
     assert response.status_code == 422
     assert auth.session.calls == []
     assert auth.rejected_requests == 1
+
+
+@pytest.mark.asyncio
+async def test_a_repair_is_reported_as_a_change(env: pytest.MonkeyPatch) -> None:
+    auth = FakeAuth(seller_id=SELLER_ID, script=["seller_owner", "repaired"])
+    response = await post(auth)
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "active", "changed": True}
+
+
+@pytest.mark.asyncio
+async def test_a_disabled_channel_endpoint_is_a_conflict(env: pytest.MonkeyPatch) -> None:
+    auth = FakeAuth(seller_id=SELLER_ID, script=["seller_owner", "channel_disabled"])
+    response = await post(auth)
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "financial_channel_inactive"
 
 
 @pytest.mark.asyncio
@@ -214,37 +241,47 @@ async def test_read_outside_the_flag_says_only_that(env: pytest.MonkeyPatch) -> 
 @pytest.mark.parametrize(
     ("row", "require", "expected"),
     [
-        ({"bound": True, "payout_ready": False, "channel_ready": False}, "", ("active", None)),
+        # Só "active" com vínculo, endpoint ativo e todo produto mapeado.
         (
-            {"bound": False, "payout_ready": False, "channel_ready": True},
+            {"bound": True, "endpoint_state": "active", "unmapped_products": 0},
             "",
-            ("available", None),
+            ("active", None),
         ),
         (
-            {"bound": False, "payout_ready": False, "channel_ready": False},
+            {"bound": True, "endpoint_state": "missing", "unmapped_products": 0},
+            "",
+            ("available", "incomplete"),
+        ),
+        (
+            {"bound": True, "endpoint_state": "active", "unmapped_products": 2},
+            "",
+            ("available", "incomplete"),
+        ),
+        (
+            {"bound": True, "endpoint_state": "disabled", "unmapped_products": 0},
+            "",
+            ("blocked", "channel_inactive"),
+        ),
+        ({"bound": False}, "", ("available", None)),
+        ({"bound": False, "channel_ready": False}, "", ("blocked", "channel_unavailable")),
+        (
+            {"bound": True, "channel_ready": False, "endpoint_state": "missing"},
             "",
             ("blocked", "channel_unavailable"),
         ),
-        (
-            {"bound": False, "payout_ready": False, "channel_ready": True},
-            "true",
-            ("blocked", "payout_account_not_ready"),
-        ),
-        (
-            {"bound": False, "payout_ready": True, "channel_ready": True},
-            "true",
-            ("available", None),
-        ),
+        ({"bound": False}, "true", ("blocked", "payout_account_not_ready")),
+        ({"bound": False, "payout_ready": True}, "true", ("available", None)),
     ],
 )
 async def test_read_reports_what_activation_would_do(
     env: pytest.MonkeyPatch,
-    row: dict[str, bool],
+    row: dict[str, Any],
     require: str,
     expected: tuple[str, str | None],
 ) -> None:
     env.setenv("APPSELL_FINANCIAL_ACTIVATION_REQUIRES_PAYOUT_ACCOUNT", require)
-    auth = FakeAuth(seller_id=SELLER_ID, script=["seller_admin", situation(**row)])
+    fields: dict[str, Any] = {"payout_ready": False, "channel_ready": True, **row}
+    auth = FakeAuth(seller_id=SELLER_ID, script=["seller_admin", situation(**fields)])
     response = await get(auth)
 
     assert response.status_code == 200

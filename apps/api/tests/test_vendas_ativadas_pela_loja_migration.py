@@ -36,18 +36,25 @@ def _comandos_de(migration: ModuleType, direcao: Callable[[], None]) -> list[str
     return executados
 
 
-def test_vinculo_existente_sai_antes_de_qualquer_escrita(migration: ModuleType) -> None:
+def test_vinculo_existente_nunca_tem_o_par_trocado(migration: ModuleType) -> None:
     sql = migration._FUNCAO_ATIVA
-    retorno = sql.index("return 'already_active'")
-    for escrita in ("update public.seller_organization", "insert into public."):
-        assert sql.index(escrita) > retorno
+    troca = sql.index("update public.seller_organization")
+    assert sql.rindex("if v_seller.financial_operator_id is null then", 0, troca) < troca
+    # already_active só depois de conferir endpoint e mappings.
+    assert sql.index("return 'already_active'") > sql.index("get diagnostics")
 
 
 def test_recusas_nao_escrevem(migration: ModuleType) -> None:
     sql = migration._FUNCAO_ATIVA
     primeira_escrita = sql.index("update public.seller_organization")
-    for recusa in ("seller_inactive", "payout_account_not_ready"):
+    for recusa in ("seller_inactive", "payout_account_not_ready", "channel_disabled"):
         assert sql.index(f"return '{recusa}'") < primeira_escrita
+
+
+def test_o_banco_confere_o_dono(migration: ModuleType) -> None:
+    sql = migration._FUNCAO_ATIVA
+    assert "resolve_seller_membership_role(p_seller) is distinct from 'seller_owner'" in sql
+    assert sql.index("seller_owner") < sql.index("pg_advisory_xact_lock")
 
 
 def test_o_canal_e_a_identidade_da_0062(migration: ModuleType) -> None:

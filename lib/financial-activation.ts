@@ -7,11 +7,13 @@ export type FinancialActivationStatus = "active" | "available" | "blocked";
 export type FinancialActivationReason =
   | "unconfigured"
   | "channel_unavailable"
+  | "channel_inactive"
   | "payout_account_not_ready";
 
 export const FINANCIAL_ACTIVATION_REASON_COPY: Record<FinancialActivationReason, string> = {
   unconfigured: "A ativação ainda não está disponível. Fale com o suporte.",
   channel_unavailable: "A ativação está temporariamente indisponível. Tente mais tarde.",
+  channel_inactive: "As vendas desta loja estão pausadas. Fale com o suporte.",
   payout_account_not_ready:
     "Conclua a conta de recebimentos acima antes de ativar as vendas."
 };

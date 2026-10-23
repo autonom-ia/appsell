@@ -288,7 +288,8 @@ async def read_financial_activation(request: Request, seller_id: UUID) -> dict[s
                 (
                     await session.execute(
                         text(
-                            "select bound, payout_ready, channel_ready from "
+                            "select bound, payout_ready, channel_ready, endpoint_state, "
+                            "unmapped_products from "
                             "app_private.resolve_seller_financial_activation(:seller_id)"
                         ),
                         {"seller_id": seller_id},
@@ -358,7 +359,7 @@ async def activate_financial(request: Request, seller_id: UUID) -> dict[str, Any
         request_id=str(envelope.request_id),
     )
     if outcome in _ACTIVATION_SUCCESS:
-        return {"status": "active", "changed": outcome == "activated"}
+        return {"status": "active", "changed": outcome != "already_active"}
     refusal = _ACTIVATION_REFUSALS.get(str(outcome))
     if refusal is None:
         raise HTTPException(
@@ -367,9 +368,10 @@ async def activate_financial(request: Request, seller_id: UUID) -> dict[str, Any
     raise HTTPException(status_code=refusal[0], detail=refusal[1])
 
 
-_ACTIVATION_SUCCESS = frozenset({"activated", "already_active"})
+_ACTIVATION_SUCCESS = frozenset({"activated", "repaired", "already_active"})
 _ACTIVATION_REFUSALS: dict[str, tuple[int, str]] = {
     "payout_account_not_ready": (status.HTTP_409_CONFLICT, "payout_account_not_ready"),
+    "channel_disabled": (status.HTTP_409_CONFLICT, "financial_channel_inactive"),
     "seller_inactive": (status.HTTP_403_FORBIDDEN, "forbidden"),
 }
 
@@ -386,12 +388,18 @@ def _activation_config() -> FinancialActivationConfig:
 
 
 def _activation_status(row: Any, config: FinancialActivationConfig) -> dict[str, Any]:
-    if row["bound"]:
-        return {"status": "active", "reason": None}
-    if not config.has_shared_pair:
-        return {"status": "blocked", "reason": "unconfigured"}
+    # "active" só com vínculo, endpoint ativo no canal e todo produto mapeado:
+    # vínculo sozinho mandaria a compra para dead_letter (#470).
     if not row["channel_ready"]:
         return {"status": "blocked", "reason": "channel_unavailable"}
+    if row["endpoint_state"] == "disabled":
+        return {"status": "blocked", "reason": "channel_inactive"}
+    if row["bound"]:
+        if row["endpoint_state"] == "active" and row["unmapped_products"] == 0:
+            return {"status": "active", "reason": None}
+        return {"status": "available", "reason": "incomplete"}
+    if not config.has_shared_pair:
+        return {"status": "blocked", "reason": "unconfigured"}
     if config.require_payout_ready and not row["payout_ready"]:
         return {"status": "blocked", "reason": "payout_account_not_ready"}
     return {"status": "available", "reason": None}
