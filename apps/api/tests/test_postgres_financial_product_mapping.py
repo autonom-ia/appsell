@@ -294,6 +294,35 @@ def test_an_ambiguous_channel_never_blocks_product_creation(stores: dict[str, St
     )
 
 
+def _channel_ready_as_runtime(connection: psycopg.Connection[tuple[object, ...]]) -> object:
+    connection.execute("set role appsell_runtime")
+    row = connection.execute("select app_private.financial_channel_ready()").fetchone()
+    connection.execute("reset role")
+    assert row is not None
+    return row[0]
+
+
+def test_the_channel_readiness_follows_the_bound_stores(stores: dict[str, Store]) -> None:
+    # O que a API pergunta no startup e no ready. Pega três erros: o runtime sem
+    # grant (a sonda viraria "desconhecido" para sempre), o canal ambíguo dado
+    # como pronto, e banco sem loja vinculada (dev, demo) reprovando o startup.
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        assert _channel_ready_as_runtime(connection) is True
+        _seed_store(
+            connection,
+            Store("intruso-ready", bound=True, on_channel=True),
+            (_sha(f"intruso-ready-{RUN}"), f"intruso-ready-{RUN}"),
+        )
+        assert _channel_ready_as_runtime(connection) is False
+        connection.execute(
+            "update seller_organization set financial_operator_id=null,"
+            "financial_product_catalog_item_id=null"
+        )
+        assert _channel_ready_as_runtime(connection) is True
+        connection.rollback()
+
+
 # O SQL do runbook de rotação do segredo do canal (corpo do PR #466): troca todas
 # as cópias numa transação, para o canal nunca ter duas identidades.
 CHANNEL_ROTATION_SQL = (
