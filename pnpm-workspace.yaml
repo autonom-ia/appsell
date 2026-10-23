@@ -1,10 +1,10 @@
 # Único lugar dos overrides: o pnpm 11 ignora o campo "pnpm" do package.json
 # (#449). Cada linha fecha uma vulnerabilidade transitiva; ver pnpm audit.
 overrides:
-  brace-expansion@1: 1.1.18
-  brace-expansion@5: 5.0.9
+  brace-expansion@1: 1.1.21
+  brace-expansion@5: 5.0.12
   browserslist: '>=4.28.7'
-  js-yaml: 4.3.1
+  js-yaml: 4.3.2
   nanoid@3: 3.3.18
   postcss: 8.5.23
   sharp: '>=0.35.5'
