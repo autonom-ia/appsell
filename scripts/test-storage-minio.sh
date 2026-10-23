@@ -40,7 +40,10 @@ access_key="contract-$(openssl rand -hex 8)"
 secret_key="$(openssl rand -hex 32)"
 mkdir -p "$workdir/data"
 
+# O MinIO não tem CORS por bucket: a origem permitida é global. A mesma que o
+# contrato usa (storage_allowed_origin no teste).
 MINIO_ROOT_USER="$access_key" MINIO_ROOT_PASSWORD="$secret_key" \
+MINIO_API_CORS_ALLOW_ORIGIN="http://localhost:3000" \
   "$workdir/minio" server "$workdir/data" --address "127.0.0.1:${port}" --quiet \
   >"$workdir/minio.log" 2>&1 &
 minio_pid=$!

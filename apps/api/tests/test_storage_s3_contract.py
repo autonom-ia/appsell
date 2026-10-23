@@ -196,7 +196,8 @@ def buckets_existem() -> None:
 
     Os testes de multipart e de assinatura rodam também contra o MinIO
     (`scripts/test-storage-minio.sh`, #460), que não implementa CORS por bucket.
-    Lá o `ensure_local_ci_controls` não roda, e o bucket é criado aqui.
+    Lá o `ensure_local_ci_controls` não roda, e o bucket é criado aqui, com o
+    versionamento que o worker exige.
     """
     controle = storage_client()._control
     for bucket in ("appsell-quarantine", "appsell-ready"):
@@ -208,6 +209,9 @@ def buckets_existem() -> None:
                 "BucketAlreadyExists",
             }:
                 raise
+        # O worker exige VersionId em todo objeto; sem versionamento o
+        # fechamento do multipart volta sem ele.
+        controle.put_bucket_versioning(Bucket=bucket, VersioningConfiguration={"Status": "Enabled"})
 
 
 def storage_client() -> S3Storage:
