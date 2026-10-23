@@ -144,6 +144,8 @@ elif comando == "service update":
             container["Env"] = env + [alvo]
     if falha("ZERA_ENV", nome):
         nova["TaskTemplate"]["ContainerSpec"]["Env"] = []
+    if falha("ROLLBACK_START_FIRST", nome):
+        nova["RollbackConfig"]["Order"] = "start-first"
     if falha("TROCA_NOME", nome):
         nova["TaskTemplate"]["ContainerSpec"]["Env"][0] = "OUTRA_VARIAVEL=x"
     servico["ler_env_falha"] = falha("FALHA_LEITURA_ENV", nome)
@@ -559,3 +561,38 @@ def test_falha_no_meio_volta_do_ultimo_tocado_para_o_primeiro(pasta: Path) -> No
     resultado = rodar(pasta, "rede", SEM_STORAGE=WORKER)
     assert resultado.returncode == 1
     assert rollbacks(pasta) == [WORKER, API, STORAGE]
+
+
+def test_restauracao_para_no_primeiro_abort_e_nao_toca_os_anteriores(pasta: Path) -> None:
+    # O worker falha e não pode voltar (rollback start-first na spec nova):
+    # api e storage, tocados antes, ficam como estão para o Rodrigo decidir.
+    resultado = rodar(pasta, "rede", SEM_STORAGE=WORKER, ROLLBACK_START_FIRST=WORKER)
+    assert resultado.returncode == 1
+    assert "rollback order não é stop-first" in resultado.stderr
+    assert "a restauração parou" in resultado.stderr
+    assert rollbacks(pasta) == []
+
+
+def test_restaura_mesmo_com_stderr_que_nao_aceita_escrita(pasta: Path) -> None:
+    # Como um SSH que caiu: toda escrita no stderr falha (EPIPE, com o SIGPIPE
+    # ignorado, herdado do Python). Sem o `set +e` do ao_sair, a primeira
+    # mensagem dele derrubaria a restauração.
+    assert rodar(pasta, "rede").returncode == 0
+    antes = spec(pasta, API)
+    leitura, escrita = os.pipe()
+    os.close(leitura)
+    try:
+        resultado = subprocess.run(  # noqa: S603
+            [str(_BASH), str(_SCRIPT), "env"],
+            env=_ambiente(pasta, ZERA_ENV=API),
+            stdout=subprocess.PIPE,
+            stderr=escrita,
+            text=True,
+            check=False,
+            restore_signals=False,
+        )
+    finally:
+        os.close(escrita)
+    assert resultado.returncode == 1
+    assert spec(pasta, API) == antes
+    assert f"{API}: restaurado, igual ao backup" in resultado.stdout

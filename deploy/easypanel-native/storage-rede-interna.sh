@@ -32,6 +32,10 @@ intervalo_segundos="${STORAGE461_INTERVALO_SEGUNDOS:-10}"
 pausa_das_leituras="${STORAGE461_PAUSA_LEITURAS:-15}"
 pasta_dos_backups="${STORAGE461_PASTA:-/tmp}"
 
+for ferramenta in jq sha256sum join comm; do
+  command -v "$ferramenta" >/dev/null || { echo "ABORT: falta $ferramenta neste host" >&2; exit 1; }
+done
+
 d() { sudo -n docker "$@"; }
 # `sleep` em segundo plano: o `wait` deixa o trap rodar já no sinal, sem
 # esperar o fim da pausa.
@@ -203,8 +207,9 @@ ao_sair() {
   # SSH que caiu não pode interromper a restauração.
   local codigo=$?
   set +e
-  trap - EXIT INT TERM HUP
-  trap '' PIPE
+  # Um segundo Ctrl-C não corta a restauração no meio.
+  trap - EXIT
+  trap '' INT TERM HUP PIPE
   [ "$concluido" = "1" ] && exit 0
   if [ "${#tocados[@]}" -gt 0 ]; then
     echo "a etapa não terminou verde (código $codigo): restaurando" >&2
@@ -269,9 +274,14 @@ host_do_endpoint_interno() {
 storage_sem_clientes_do_alias() {
   # Voltar o storage tira o alias. Se a api ou o worker ainda usam o alias, o
   # storage some para eles e o /health/ready cai.
-  local servico
+  local servico host
   for servico in "$api" "$worker"; do
-    if [ "$(host_do_endpoint_interno "$servico")" = "$alias_do_storage" ]; then
+    # Falha fechada: sem ler o endpoint, o storage não volta.
+    host="$(host_do_endpoint_interno "$servico")" || {
+      echo "ABORT: $storage não volta: não li o endpoint de $servico; falar com o Rodrigo" >&2
+      return 1
+    }
+    if [ "$host" = "$alias_do_storage" ]; then
       echo "ABORT: $storage não volta: $servico ainda usa $alias_do_storage; desfazer antes a etapa 6; falar com o Rodrigo" >&2
       return 1
     fi
