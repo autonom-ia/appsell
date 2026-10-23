@@ -10,6 +10,7 @@ nenhuma começa sem a anterior conferida:
 | 3 | leitura do EasyPanel e das redes | não |
 | 4 | rede `sell-storage-internal` e alias `appsell-storage` | sim (spec) |
 | 5 | ensaio assinado, com o endpoint trocado só no processo | não |
+| 5b | merge do #481: o `ensure-asset-worker.sh` põe o worker na rede nova | não |
 | 6 | env da api e do worker: flag ligada e endpoint interno | sim (env) |
 | 7 | reaplicar a borda do #477 | sim (Traefik) |
 
@@ -95,10 +96,16 @@ env editada pelo painel?
 - Se **são**: parar. A rede, o alias e a env precisam entrar pela
   configuração que o EasyPanel guarda. O método volta ao Rodrigo antes de
   qualquer escrita.
-- O `asset-worker` é criado por `deploy/easypanel-native/ensure-asset-worker.sh`,
-  que hoje põe o worker só na rede do ClamAV. Antes da etapa 6, o script
-  precisa acrescentar `sell-storage-internal`, em PR próprio. Sem isso, um
-  worker recriado pelo script volta sem a rede e quebra.
+- O `asset-worker` é criado por `deploy/easypanel-native/ensure-asset-worker.sh`.
+  O #481 faz o script exigir `sell-storage-internal` e pôr o worker nela, além
+  da rede do ClamAV. O merge dele é a etapa 5b, antes da 6. Sem ele, um worker
+  recriado pelo script volta sem a rede e quebra. O script só roda quando o
+  worker é recriado, então o merge basta e não há deploy no host.
+- A `api` não tem script nosso. Ela é App Service do EasyPanel
+  (`deploy/easypanel-native/README.md:21` e `:69`), e os releases só trocam a
+  imagem (`docs/PRODUCTION_CURRENT.md:326`), o que preserva as redes e a env. Um
+  deploy pelo próprio EasyPanel remontaria a spec e tiraria a rede. É a decisão
+  logo acima: se o painel gerencia a api, a rede e a env entram por ele.
 - `storage` precisa estar com `update=stop-first` e `rollback=stop-first`:
   MinIO de instância única não pode ter duas tasks no mesmo volume. A etapa 4
   fixa isso no mesmo update. Ler o valor de hoje é só para registrar.
@@ -308,7 +315,8 @@ parar aqui. Não há rollback, porque nada mudou.
 
 ## Etapa 6 — env da api e do worker
 
-Só depois da etapa 5 verde, e da decisão da etapa 3 sobre quem gerencia a env.
+Só depois da etapa 5 verde, do merge do #481 (etapa 5b) e da decisão da
+etapa 3 sobre quem gerencia a env.
 
 ```sh
 sudo -n true || { echo "PARAR: sudo -n não liberado neste host"; exit 1; }
