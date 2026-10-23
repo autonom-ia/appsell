@@ -348,7 +348,9 @@ class Settings(BaseSettings):
                     raise ValueError(
                         "internal HTTP storage endpoint requires path-style addressing"
                     )
-                if not _is_isolated_service_name(internal.hostname or ""):
+                if not _is_printable_ascii(
+                    self.storage_internal_endpoint
+                ) or not _is_isolated_service_name(internal.hostname or ""):
                     raise ValueError(
                         "internal HTTP storage endpoint must be an isolated service name"
                     )
@@ -389,6 +391,9 @@ def _is_local_host(host: str) -> bool:
     normalized = host.lower().rstrip(".")
     if not normalized or normalized == "localhost" or normalized.endswith(".localhost"):
         return True
+    # O Docker põe os dois no /etc/hosts de todo contêiner, apontando para ::1.
+    if normalized in {"ip6-localhost", "ip6-loopback"}:
+        return True
     if normalized in {"postgres", "seaweedfs", "seaweed"}:
         return True
     try:
@@ -399,6 +404,11 @@ def _is_local_host(host: str) -> bool:
 
 _SERVICE_NAME_CHARACTERS = frozenset(string.ascii_lowercase + string.digits + "-")
 _SERVICE_NAME_MAX_LENGTH = 63
+
+
+def _is_printable_ascii(value: str) -> bool:
+    """O `urlparse` tira `\t` e `\n` antes de separar o host: confere-se a string crua."""
+    return value.isascii() and value.isprintable() and " " not in value
 
 
 def _is_isolated_service_name(host: str) -> bool:

@@ -61,7 +61,16 @@ def test_flag_on_rejects_http_ip_address(endpoint: str) -> None:
         settings(storage_internal_http_allowed=True, storage_internal_endpoint=endpoint)
 
 
-@pytest.mark.parametrize("endpoint", ["http://localhost:9000", "http://LOCALHOST:9000"])
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "http://localhost:9000",
+        "http://LOCALHOST:9000",
+        # O Docker põe os dois no /etc/hosts do contêiner, apontando para ::1.
+        "http://ip6-localhost:9000",
+        "http://ip6-loopback:9000",
+    ],
+)
 def test_flag_on_rejects_http_localhost(endpoint: str) -> None:
     with pytest.raises(ValidationError, match="internal HTTP storage endpoint"):
         settings(storage_internal_http_allowed=True, storage_internal_endpoint=endpoint)
@@ -75,6 +84,44 @@ def test_flag_on_rejects_http_host_with_underscore() -> None:
             storage_internal_http_allowed=True,
             storage_internal_endpoint="http://sell-autonomia_storage:9000",
         )
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    ["http://-appsell-storage:9000", "http://appsell-storage-:9000"],
+)
+def test_flag_on_rejects_http_host_with_hyphen_at_the_edge(endpoint: str) -> None:
+    with pytest.raises(ValidationError, match="internal HTTP storage endpoint"):
+        settings(storage_internal_http_allowed=True, storage_internal_endpoint=endpoint)
+
+
+def test_flag_on_accepts_http_host_with_63_characters() -> None:
+    endpoint = f"http://{'a' * 63}:9000"
+    resolved = settings(storage_internal_http_allowed=True, storage_internal_endpoint=endpoint)
+    assert resolved.storage_internal_endpoint == endpoint
+
+
+def test_flag_on_rejects_http_host_with_64_characters() -> None:
+    with pytest.raises(ValidationError, match="internal HTTP storage endpoint"):
+        settings(
+            storage_internal_http_allowed=True,
+            storage_internal_endpoint=f"http://{'a' * 64}:9000",
+        )
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "http://appsell-\tstorage:9000",
+        "http://appsell-storage\n:9000",
+        "http://appsell storage:9000",
+        "http://appsell-störáge:9000",
+    ],
+)
+def test_flag_on_rejects_http_endpoint_with_control_space_or_non_ascii(endpoint: str) -> None:
+    # O `urlparse` tiraria `\t` e `\n`, e o host sairia limpo.
+    with pytest.raises(ValidationError, match="internal HTTP storage endpoint"):
+        settings(storage_internal_http_allowed=True, storage_internal_endpoint=endpoint)
 
 
 def test_flag_on_accepts_http_service_name() -> None:
