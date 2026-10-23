@@ -27,8 +27,14 @@ ativa; se não houver nenhuma, ou houver mais de uma, levanta erro (55000) em ve
 de mapear no lugar errado. Um endpoint antigo reativado, de outro adapter ou de
 outro nome, não muda o canal. No trigger esse erro vira `RAISE WARNING`
 (`appsell.financial_channel_unresolved`) e o produto entra sem mapping: criar
-produto nunca falha por causa do canal. A migration e o backfill abortam. Loja vinculada sem endpoint do canal (vinculada
-depois da 0059) não ganha mapping: é o #470, resolvido pela ativação do #382.
+produto nunca falha por causa do canal. A migration e o backfill abortam. Loja
+vinculada sem endpoint do canal (vinculada depois da 0059) não ganha mapping: é
+o #470, resolvido pela ativação do #382.
+
+`app_private.financial_channel_ready()` diz à API se o canal resolve. Com loja
+vinculada e canal ambíguo, a task nova reprova no `/health/startup` e nunca
+entra; em regime o `/health/ready` não muda de status, só mostra o campo e
+loga. Sem loja vinculada a resposta é sempre verdadeira.
 
 Não reprocessa `dead_letter` já existente. Se houver algum, ele vai para um
 runbook com OK do Rodrigo.
@@ -122,6 +128,29 @@ begin
     and integration.status='active' and endpoint.status='active'
   order by endpoint.created_at,endpoint.id
   limit 1;
+end $$
+"""
+
+# O canal resolve? É o que a API pergunta no startup e no ready. Sem loja
+# vinculada (dev, demo, banco novo) não há canal a exigir, e a resposta é sim.
+_CANAL_PRONTO = "app_private.financial_channel_ready()"
+_FUNCAO_CANAL_PRONTO = r"""
+create function app_private.financial_channel_ready()
+returns boolean language plpgsql stable security definer
+set search_path=pg_catalog,app_private,public,pg_temp as $$
+begin
+  if not exists(
+    select 1 from public.seller_organization seller
+    where seller.status='active'
+      and seller.financial_operator_id is not null
+      and seller.financial_product_catalog_item_id is not null
+  ) then
+    return true;
+  end if;
+  perform 1 from app_private.financial_channel();
+  return true;
+exception when sqlstate '55000' then
+  return false;
 end $$
 """
 
@@ -243,9 +272,12 @@ def upgrade() -> None:
     op.execute(_FUNCAO_CANAL_GLOBAL)
     op.execute(_FUNCAO_CANAL)
     op.execute(_FUNCAO_MAPEIA)
+    op.execute(_FUNCAO_CANAL_PRONTO)
     op.execute(f"revoke all on function {_CANAL_GLOBAL} from public")
     op.execute(f"revoke all on function {_CANAL} from public")
     op.execute(f"revoke all on function {_MAPEIA} from public")
+    op.execute(f"revoke all on function {_CANAL_PRONTO} from public")
+    op.execute(f"grant execute on function {_CANAL_PRONTO} to appsell_runtime")
     op.execute(_CRIA_TRIGGER)
     op.execute(_BACKFILL)
     for alvo in _BASES_DO_READY:
@@ -270,6 +302,7 @@ def downgrade() -> None:
             .replace("PARA", _READY_ATE_0061)
         )
     op.execute(f"drop trigger {_TRIGGER} on public.catalog_product")
+    op.execute(f"drop function {_CANAL_PRONTO}")
     op.execute(f"drop function {_MAPEIA}")
     op.execute(f"drop function {_CANAL}")
     op.execute(f"drop function {_CANAL_GLOBAL}")

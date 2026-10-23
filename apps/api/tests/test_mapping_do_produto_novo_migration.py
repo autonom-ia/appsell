@@ -87,11 +87,16 @@ def test_funcoes_fechadas(migration: ModuleType) -> None:
     assert f"revoke all on function {migration._CANAL_GLOBAL} from public" in comandos
     assert f"revoke all on function {migration._CANAL} from public" in comandos
     assert f"revoke all on function {migration._MAPEIA} from public" in comandos
-    assert not any("grant " in c for c in comandos)
+    assert f"revoke all on function {migration._CANAL_PRONTO} from public" in comandos
+    # O único grant é a pergunta da API: o runtime só sabe se o canal resolve.
+    assert [c for c in comandos if "grant " in c] == [
+        f"grant execute on function {migration._CANAL_PRONTO} to appsell_runtime"
+    ]
     for funcao in (
         migration._FUNCAO_CANAL_GLOBAL,
         migration._FUNCAO_CANAL,
         migration._FUNCAO_MAPEIA,
+        migration._FUNCAO_CANAL_PRONTO,
     ):
         assert "security definer" in funcao
         assert "set search_path=pg_catalog,app_private,public,pg_temp" in funcao
@@ -108,10 +113,19 @@ def test_o_readiness_aprende_a_versao_e_o_trigger(migration: ModuleType) -> None
 
 def test_a_descida_tira_o_trigger_e_deixa_os_mappings(migration: ModuleType) -> None:
     comandos = _comandos_de(migration, migration.downgrade)
-    assert comandos[-4:] == [
+    assert comandos[-5:] == [
         f"drop trigger {migration._TRIGGER} on public.catalog_product",
+        f"drop function {migration._CANAL_PRONTO}",
         f"drop function {migration._MAPEIA}",
         f"drop function {migration._CANAL}",
         f"drop function {migration._CANAL_GLOBAL}",
     ]
     assert not any("external_product_mapping" in c for c in comandos)
+
+
+def test_sem_loja_vinculada_o_canal_esta_pronto(migration: ModuleType) -> None:
+    # Dev, demo e banco novo não têm canal a exigir: o startup não pode reprovar.
+    sql = migration._FUNCAO_CANAL_PRONTO
+    assert sql.index("if not exists(") < sql.index("return true;")
+    assert sql.index("return true;") < sql.index("app_private.financial_channel()")
+    assert "when sqlstate '55000' then\n  return false;" in sql
