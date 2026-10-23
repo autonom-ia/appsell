@@ -156,6 +156,24 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ received: true, ignored: "unrecognized_session" }, { status: 200, headers: noStore() });
   }
 
+  // HOW MUCH was paid, not only THAT it was paid (#148). create-session writes
+  // one BRL line item at the storefront price and offers no promotion codes, so
+  // a session it made always has amount_total === amount_subtotal. A total
+  // below the subtotal means a discount (a 100% coupon still reports "paid"),
+  // and nothing in this slice prices a discount, so it grants nothing. A
+  // different currency or missing amounts are never one of our sessions.
+  //
+  // Deterministic in the event, so 200: a redelivery would fail identically.
+  // Logged so the Stripe ↔ buyer_entitlement reconciliation (#147) sees it.
+  // A legitimate discount (coupons) must change THIS rule, not bypass it.
+  if (!isFullPriceBrlSession(session)) {
+    logIrreversibleDrop({ reason: "amount_mismatch", event, orderId: metadata.orderId });
+    return NextResponse.json(
+      { received: true, ignored: "amount_mismatch", order_id: metadata.orderId },
+      { status: 200, headers: noStore() }
+    );
+  }
+
   let config: { endpointKey: string; secret: Buffer };
   try {
     config = selfEmitWebhookConfig();
@@ -280,6 +298,15 @@ function readCheckoutMetadata(metadata: Stripe.Metadata | null): CheckoutMetadat
   // buildCheckoutApprovedPayload rejects the worker-reserved `registration:`
   // namespace, and the domain re-validates charset and length independently.
   return { financialProductKey, orderId, buyerEmail, buyerIdentitySub };
+}
+
+function isFullPriceBrlSession(session: Stripe.Checkout.Session): boolean {
+  const total = session.amount_total;
+  return session.currency === "brl" &&
+    Number.isInteger(total) &&
+    total !== null &&
+    total > 0 &&
+    total === session.amount_subtotal;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

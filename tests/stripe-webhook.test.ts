@@ -64,6 +64,10 @@ function completedEvent(
       object: {
         object: "checkout.session",
         payment_status: overrides.paymentStatus ?? "paid",
+        // Every real session carries these; the #148 amount check requires them.
+        amount_subtotal: 4_700,
+        amount_total: 4_700,
+        currency: "brl",
         metadata: overrides.metadata === undefined
           ? {
               financial_product_key: "prod_codex_v1",
