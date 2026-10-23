@@ -9,6 +9,7 @@
 # por URL pré-assinada (assinatura na query, nunca no cabeçalho):
 #   PUT  /<quarentena>/<chave>   envio simples, capa e parte do multipart
 #   GET  /<pronto>/<chave>       leitura de PDF, vídeo, imagem e capa
+#   (os dois só com X-Amz-Algorithm=AWS4-HMAC-SHA256 na query)
 #   OPTIONS em qualquer caminho  preflight do CORS (o audit público pede em `/`)
 # Todo o resto (ListBuckets, /minio/admin, /minio/health, DELETE, POST, HEAD)
 # cai no roteador de prioridade 99, que responde 403. O audit
@@ -23,7 +24,10 @@ http:
       entryPoints:
         - https
       # Uma linha só: o Traefik recusa quebra de linha dentro da regra.
-      rule: "Host(`minio.autonomia.site`) && ((Method(`PUT`) && PathPrefix(`/appsell-quarantine/`)) || (Method(`GET`) && PathPrefix(`/appsell-ready/`)) || Method(`OPTIONS`))"
+      # PUT e GET só com assinatura SigV4 na query (X-Amz-Algorithm): pedido
+      # sem assinatura nem chega ao MinIO. OPTIONS fica sem, porque o preflight
+      # do CORS não leva a URL assinada.
+      rule: "Host(`minio.autonomia.site`) && ((Method(`PUT`) && PathPrefix(`/appsell-quarantine/`) && Query(`X-Amz-Algorithm`, `AWS4-HMAC-SHA256`)) || (Method(`GET`) && PathPrefix(`/appsell-ready/`) && Query(`X-Amz-Algorithm`, `AWS4-HMAC-SHA256`)) || Method(`OPTIONS`))"
       service: appsell-storage
       middlewares:
         - appsell-storage-cors
