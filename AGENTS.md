@@ -132,11 +132,20 @@ no runbook, nunca presumida.
 ## 7. Gates que não se abrem
 
 - **A loja da Hub2You está no ar e não pode regredir** (regra do Rodrigo,
-  23/10/2026). Todo PR roda o smoke da Hub2You antes e depois: `/s/hub2you`,
+  23/10/2026). Todo PR roda o smoke da Hub2You antes e depois: a vitrine
+  `/s/hub2you` responde 200 com "Ver e comprar"; as páginas
   `/s/hub2you/p/condicoes-gerais` e `/s/hub2you/p/gerador-de-cotacoes-comparativas`
-  respondem 200 com "Comprar agora" (linha de base medida em 23/10). Comportamento
+  respondem 200 com "Comprar agora", e o botão leva a `/auth/login?…&new_user=true`,
+  que responde 307 para o Identity (linha de base medida em 23/10, #445). Comportamento
   novo que alcance a Hub2You entra atrás de flag por loja, desligada para ela até
   o Rodrigo liberar.
+- **O Financial e o neuro.ai são usados como estão** (regra do Rodrigo,
+  23/10/2026). São do sócio dele e atendem vários projetos, então não podem
+  regredir. Nenhuma trilha escreve, commita, abre PR ou comenta nesses repos. Ler
+  o código é permitido. Desenho que precise de endpoint ou de comportamento novo
+  no Financial é bloqueio: refazer com a API que ele já expõe, citando rota e
+  versão lidas no código. Sem caminho, a Orquestração leva a proposta ao Rodrigo
+  antes de qualquer linha.
 - Nada de funcionalidade de dinheiro sem log, alerta e conciliação entre Stripe
   e acesso liberado (#147).
 - Nada de divisão de pagamento antes de o estorno revogar o acesso (#151).
