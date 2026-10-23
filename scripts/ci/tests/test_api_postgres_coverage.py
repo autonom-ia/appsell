@@ -64,6 +64,19 @@ class ApiPostgresCoverageTests(unittest.TestCase):
         self.assertIn("export APPSELL_TEST_POSTGRES_RECONCILER_URL=", script)
         self.assertIn("APPSELL_RECONCILER_PASSWORD: ${APPSELL_RECONCILER_PASSWORD:-}", compose)
 
+    def test_api_container_settings_do_not_leak_into_pytest(self) -> None:
+        # #464: o Settings lê todo APPSELL_API_* do ambiente. Exportado no
+        # shell do script, o que era do contêiner da API derrubava testes que
+        # nada têm de banco. Só a porta, que o compose mapeia, fica exportada.
+        script = POSTGRES_SCRIPTS[0].read_text(encoding="utf-8")
+        exported = [
+            line.split("=", 1)[0].removeprefix("export ").strip()
+            for line in script.splitlines()
+            if line.startswith("export APPSELL_API_")
+        ]
+
+        self.assertEqual(["APPSELL_API_PORT"], exported)
+
     def test_postgres_foundation_makes_a_skip_fail(self) -> None:
         script = POSTGRES_SCRIPTS[0].read_text(encoding="utf-8")
         exported = script.index('export APPSELL_REQUIRE_POSTGRES="1"')

@@ -64,10 +64,13 @@ export APPSELL_INTERNAL_ISSUER="appsell-bff-test"
 export APPSELL_INTERNAL_AUDIENCE="appsell-api-test"
 export APPSELL_IDENTITY_ISSUER="https://identity.test.autonomia.site"
 export APPSELL_INTERNAL_HMAC_KEYRING_B64_JSON="[{\"id\":\"test-v1\",\"key\":\"${internal_key_b64}\",\"active\":true}]"
-APPSELL_API_CONTEXT_HMAC_KEY_B64="$(printf '%s' "$context_key" | xxd -r -p | base64)"
-export APPSELL_API_CONTEXT_HMAC_KEY_B64
+# As três variáveis `api_*` abaixo são do contêiner da API e não são exportadas.
+# O `Settings` lê todo `APPSELL_API_*` do ambiente, e exportadas elas vazavam
+# para o pytest: a configuração parcial derrubava testes que nada têm de banco
+# (#464). Elas vão só no `docker compose up` da API, mais abaixo.
+api_context_hmac_key_b64="$(printf '%s' "$context_key" | xxd -r -p | base64)"
 export APPSELL_SERVICE_CREDENTIAL_B64="$service_credential_b64"
-export APPSELL_API_WEBHOOK_LOCAL_KEYRING_B64_JSON="[{\"reference\":\"checkout-demo-v1\",\"key\":\"${webhook_secret_b64}\"}]"
+api_webhook_local_keyring_b64_json="[{\"reference\":\"checkout-demo-v1\",\"key\":\"${webhook_secret_b64}\"}]"
 export APPSELL_TEST_WEBHOOK_SECRET_B64="$webhook_secret_b64"
 export APPSELL_TEST_WEBHOOK_SESSION_KEY_B64="$webhook_bff_session_b64"
 export APPSELL_TEST_WEBHOOK_CSRF_KEY_B64="$webhook_bff_csrf_b64"
@@ -81,7 +84,7 @@ import sys
 print(json.dumps([hashlib.sha256(base64.b64decode(value)).hexdigest() for value in sys.argv[1:]]))
 PY
 )"
-export APPSELL_API_WEBHOOK_FORBIDDEN_KEY_SHA256_JSON="$webhook_forbidden_hashes"
+api_webhook_forbidden_key_sha256_json="$webhook_forbidden_hashes"
 
 if [[ "$webhook_secret_b64" == "$internal_key_b64" || "$webhook_secret_b64" == "$service_credential_b64" \
   || "$webhook_secret_b64" == "$webhook_bff_session_b64" \
@@ -217,7 +220,10 @@ APPSELL_DEMO_DATABASE_URL="$APPSELL_TEST_POSTGRES_ADMIN_URL" \
 uv run --project apps/api python -m appsell_api.reset_demo_tenant \
   --confirm-demo-key autonomia-demo-v1
 
-docker compose -p "$project" up -d --build --wait api
+APPSELL_API_CONTEXT_HMAC_KEY_B64="$api_context_hmac_key_b64" \
+APPSELL_API_WEBHOOK_LOCAL_KEYRING_B64_JSON="$api_webhook_local_keyring_b64_json" \
+APPSELL_API_WEBHOOK_FORBIDDEN_KEY_SHA256_JSON="$api_webhook_forbidden_key_sha256_json" \
+  docker compose -p "$project" up -d --build --wait api
 curl --fail --silent "http://127.0.0.1:${api_port}/health/live"
 curl --fail --silent "http://127.0.0.1:${api_port}/health/ready"
 APPSELL_TEST_DOMAIN_API_URL="http://127.0.0.1:${api_port}" \
