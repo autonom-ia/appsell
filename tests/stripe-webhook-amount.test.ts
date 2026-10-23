@@ -122,6 +122,7 @@ async function expectPermanentDrop(reason: string) {
   expect(await response.json()).toEqual({ received: true, ignored: reason, order_id: "order-amount-1" });
   expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
   expect(loggedLines()).toEqual([expect.objectContaining({
+    level: "error",
     marker: "appsell.stripe_webhook.dropped",
     reason,
     stripe_event_id: "evt_amount_1",
@@ -138,6 +139,7 @@ async function expectRetrying(error: string, reason: string, extra: Record<strin
   expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
   const logged = loggedLines();
   expect(logged).toEqual([expect.objectContaining({
+    level: "error",
     marker: "appsell.stripe_webhook.retrying",
     reason,
     stripe_event_id: "evt_amount_1",
@@ -155,6 +157,7 @@ async function expectAmountMismatch(event: ReturnType<typeof paidSession>, order
   expect(proxyCheckoutWebhook).not.toHaveBeenCalled();
   const logged = vi.mocked(console.error).mock.calls.map(([line]) => JSON.parse(String(line)));
   expect(logged).toContainEqual(expect.objectContaining({
+    level: "error",
     marker: "appsell.stripe_webhook.dropped",
     reason: "amount_mismatch",
     order_id: orderId

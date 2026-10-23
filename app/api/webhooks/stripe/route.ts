@@ -70,6 +70,7 @@ function logIrreversibleDrop(input: {
 }) {
   console.error(
     JSON.stringify({
+      level: "error",
       marker: "appsell.stripe_webhook.dropped",
       reason: input.reason,
       stripe_event_id: input.event.id,
@@ -95,6 +96,7 @@ function logRetrying(input: {
 }) {
   console.error(
     JSON.stringify({
+      level: "error",
       marker: "appsell.stripe_webhook.retrying",
       reason: input.reason,
       stripe_event_id: input.event.id,
