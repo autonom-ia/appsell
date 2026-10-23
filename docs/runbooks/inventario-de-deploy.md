@@ -1,0 +1,27 @@
+# Inventário de deploy — Autonom.ia Sell
+
+Modelo: `chat2you/docs/runbooks/inventario-de-deploy.md` (a Orquestração Deploy
+só assume a fila do projeto depois que este arquivo existe). Campo sem resposta
+comprovada fica **a confirmar**. Fonte de cada linha entre parênteses.
+
+Produção: `https://sell.autonomia.site`, VPS EasyPanel nativo (Docker Swarm),
+projeto EasyPanel `sell-autonomia`. Último estado lido do host: **04/09/2026**.
+Até a Fase 0 do #437, todo SHA abaixo é "registrado", não "conferido".
+
+| Campo | Resposta do Sell |
+|---|---|
+| Como sobe | **Manual.** Nada sobe sozinho: push na `main` só roda o App CI. Quem opera envia o fonte (`git archive`) para `/home/claudete/appsell-src-<sha>` no host, constrói as imagens lá com `--build-arg GIT_SHA=<sha>` e roda `docker service update --image … --update-order stop-first` serviço por serviço (`PRODUCTION_RELEASE_APPSSELL.md`, releases de 02–04/09 em `PRODUCTION_CURRENT.md`) |
+| O que não dispara | Tudo, porque não há deploy automático. O workflow `EasyPanel native images` só constrói e ensaia imagens (manual ou toda segunda às 06:41 UTC) e **não publica** em lugar nenhum |
+| Serviços e imagens | `sell-autonomia_web` ← `easypanel/sell-autonomia/web:<sha>` (`Dockerfile.web`) · `sell-autonomia_api` ← `easypanel/sell-autonomia/api:<sha>` (`Dockerfile.api`) · `sell-autonomia_asset-worker` ← a mesma imagem da api · `sell-autonomia_pdf-sandbox` ← a mesma imagem da api, com outra tag · `sell-autonomia_bootstrap-native-90` ← `Dockerfile.bootstrap`, sem container rodando (guarda a credencial do migrador). Os serviços **não precisam andar no mesmo SHA** |
+| Ordem | Padrão: **web → api → migration**, porque o web aceita o campo novo antes de a API expô-lo (`PRODUCTION_CURRENT.md`, release `89233e2`). Quando a API nova depende de função nova no banco, a migration vem primeiro (release `803fa82`). A ordem é decidida por release e escrita antes. `pdf-sandbox` **sempre** com `stop-first` e `--no-healthcheck` |
+| Health checks | `web`: `HEALTHCHECK` do contêiner em `/api/health/startup`; tráfego em `/api/health/ready` (público, `https://sell.autonomia.site/api/health/ready`: `redis`, `api`, `storage_upload`). **Não existe** `/api/healthz`. `api`: `HEALTHCHECK` em `/health/startup`; `/health/ready` (`database`, `storage`, `pdf_sandbox`, `antivirus`) só por `docker exec` dentro do contêiner. O ready público do web **não prova** a API. `asset-worker`: `--health-cmd` próprio do serviço (`ensure-asset-worker.sh`) |
+| Rollback | `docker service update --image easypanel/sell-autonomia/<serviço>:<sha-anterior> --update-order stop-first sell-autonomia_<serviço>`. A imagem anterior fica no host. Leva cerca de 1–2 min por serviço; a `api` pode levar até ~6 min, por causa da graça de 330 s. Sentido inverso da subida. `alembic downgrade` **não** é a primeira resposta, e a cadeia não desce inteira: a `0060` é forward-only (#425) |
+| Migrations | Alembic em `apps/api/migrations`, aplicado à mão num contêiner efêmero da imagem da api na rede `easypanel`, com `APPSELL_MIGRATOR_DATABASE_URL` montada no host (`docker run --rm --network easypanel … alembic upgrade head`). Antes: `pg_dump -Fc` validado por `pg_restore --list`. Head registrado: `0061_o_atraso_alcanca_o_aluno` |
+| Backup | Dump lógico antes de cada release, em `/tmp/sell-release-<sha>-<ts>` no host, junto com a spec dos serviços e os **nomes** das variáveis. Rotina diária cifrada off-host: scripts prontos em `deploy/easypanel-native/backup/`, rotina recorrente **a confirmar** (`BACKUP_RESTORE_SELL.md`) |
+| Acesso à produção | SSH `claudete` no host (resolver `dig +short sell.autonomia.site` antes: em 31/08 o alias apontava para máquina desativada). Banco: `postgres-native-90`, base `appsell_native_90`, só pela rede do Swarm. Logs: `docker service logs sell-autonomia_<serviço>`; a API grava JSON, uma linha `http_request` por requisição (`TROUBLESHOOTING.md`). Logs fora do host: **não há** (#312) |
+| Segredos e env | Na spec dos serviços Swarm, gerida pelo EasyPanel. Nunca usar `updateEnv` do painel sem o campo `env` completo (omitir apaga tudo). Comparar variáveis **por nome** antes e depois de cada `service update`. Nomes de referência: `deploy/easypanel-native/*.env.example` |
+| Compartilha com | O host EasyPanel, a rede Docker `easypanel` e o Traefik com os outros projetos da VPS: **a confirmar** quais. Postgres e ClamAV são serviços do próprio projeto `sell-autonomia` |
+| Fila | Ainda não há. Entra no trem da Orquestração Deploy por este inventário (#438) |
+| Testes que travam | Hoje **nenhum check é obrigatório**: a `main` não tem branch protection. O App CI (`app-ci.yml`, job `ci-gate`) roda em PR, push na `main` e `workflow_dispatch`. A última execução na `main` (`409ae23`, 12/09) reprovou; a correção está no #422. Tornar `ci-gate` obrigatório é proposta da trilha Plataforma, e a decisão é do Rodrigo |
+| Quem confere | Depois de cada release: health dos dois lados, logs sem `ERROR`/`Traceback`, smoke da Hub2You (`/s/hub2you`, `/s/hub2you/p/condicoes-gerais`, `/s/hub2you/p/gerador-de-cotacoes-comparativas` = 200 com "Comprar agora") e prova do bundle novo por string servida. Registro em `PRODUCTION_CURRENT.md`, com o SHA lido do host |
+| Quem aprova o quê | Merge, deploy, produção (inclusive leitura no host), migration, secrets, DNS, permissões e billing: **Rodrigo**, uma operação por vez (`AGENTS.md`). Rollback pré-escrito pode rodar sem novo OK se o safety abort disparar |
