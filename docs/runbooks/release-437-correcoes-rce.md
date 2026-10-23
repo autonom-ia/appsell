@@ -41,6 +41,7 @@ roda o código mais novo da main.
    não `skipped`):
 
    ```sh
+   : "${SHA:?SHA vazio — parar}"
    gh run list --repo autonom-ia/appsell --workflow "App CI" --commit "$SHA" \
      --json databaseId,event,conclusion
    gh run view <id> --repo autonom-ia/appsell --json jobs \
@@ -67,6 +68,7 @@ roda o código mais novo da main.
    reavaliar.
 
    ```sh
+   : "${SHA:?SHA vazio — parar}"
    git fetch origin && git diff --stat "$SHA" origin/main -- app lib package.json pnpm-lock.yaml deploy   # vazio
    ```
 4. Prova local, se usada: um comando por vez, cada saída lida antes do
@@ -111,27 +113,33 @@ docker ps --filter name=sell-autonomia_web. --format '{{.ID}}' | head -1 | xargs
 # MinIO (storage de produção): health e espaço, só leitura. Os dois serviços
 # existem no host (Fase 0). Lista fixa de propósito: se um sumir, o
 # `docker service ps` falha com erro na tela, e isso é abort.
+# O contêiner vem da task do próprio serviço, não de um filtro por nome.
 for s in sell-autonomia_storage sell-autonomia_view-storage; do
   docker service ps "$s" --filter desired-state=running --format "$s {{.CurrentState}} {{.Error}}"
-  cid=$(docker ps --filter "name=$s." --format '{{.ID}}' | head -1)
-  test -n "$cid" || echo "ABORT: $s sem contêiner Running neste nó"
-  docker inspect "$cid" --format "$s health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}"
-  # espaço do disco onde mora cada volume do MinIO
-  docker inspect "$cid" --format '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' | while read -r src; do
-    test -n "$src" && df -h "$src"
-  done
+  task=$(docker service ps -q "$s" --filter desired-state=running | head -1)
+  cid=$(docker inspect --format '{{.Status.ContainerStatus.ContainerID}}' "$task")
+  test -n "$cid" || echo "ABORT: $s sem contêiner Running neste nó — parar aqui"
+  docker inspect "$cid" --format "$s health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} mounts={{range .Mounts}}{{.Type}}:{{.Name}} {{end}}"
 done
-free -h ; df -h / ; uptime
+# Os dois MinIO usam volume nomeado (sell-autonomia_storage_data e
+# sell-autonomia_view-storage_data, lido no host em 23/10/2026), dentro de
+# /var/lib/docker. O `df` do caminho do volume pede root; o de /var/lib/docker
+# não, e mostra o mesmo sistema de arquivos.
+free -h ; df -h / /var/lib/docker ; uptime
 ```
 
 **Abort antes de começar** se acontecer qualquer um destes:
 - a imagem do web não for `fa13a78` com ID
   `sha256:1b71ec566e8c3a5c9e6885960d8691fca092ed117fc50383569641bc63beba86`
   (alguém mexeu; voltar à Orquestração);
-- a task do web não estiver `healthy`, ou MinIO sem task `Running`;
+- a task do web não estiver `healthy`, MinIO sem task `Running`, ou MinIO com
+  health `unhealthy` (`none` é aceito: o serviço não declara healthcheck);
+- algum `ABORT:` impresso pelo laço acima: o laço só avisa, e é aqui que se
+  para;
+- um mount do MinIO que não seja `volume:` (o `df` acima deixaria de valer);
 - memória `available` abaixo de **4 GiB** (2 GiB do `start-first` mais a folga
   dos outros projetos da VPS);
-- disco livre abaixo de 15 GiB no `/` ou no volume do MinIO.
+- disco livre abaixo de 15 GiB no `/` ou no `/var/lib/docker`.
 
 ## Smoke — mesmo script antes e depois
 
@@ -197,6 +205,11 @@ docker service inspect sell-autonomia_web --format '{{json .Spec.TaskTemplate.Co
 **Abort:** se o `inspect` não devolver esse ID e o label `fa13a78`, parar. O
 release não segue sem rollback preservado.
 
+Desvio declarado no pedido de OK: estes arquivos ficam em
+`/home/claudete/releases/437/*.antes`, sem timestamp, e não no padrão
+`/tmp/<service>_*_<timestamp>.json`. Guardam só campos da spec e nomes de
+variáveis, nunca valores, e o runbook não usa `updateEnv`.
+
 Se um release futuro subir também `api` ou `asset-worker`, o mesmo passo vale
 para a imagem deles (`api:409ae23` = `sha256:16545966e6fe…`), com a tag
 `rollback-<issue>-409ae23`.
@@ -222,7 +235,10 @@ Opção 2, comandos exatos. A fonte vai para um caminho literal:
 # local, worktree limpa exatamente no SHA do merge. O tar vai direto pelo ssh:
 # nenhum arquivo local para apagar depois.
 git -C <worktree> rev-parse --short HEAD          # tem de ser o SHA escrito no #437
-git -C <worktree> archive --format=tar.gz HEAD | ssh claudete 'cat > /home/claudete/releases/437/src.tar.gz'
+git -C <worktree> archive --format=tar.gz HEAD > "$TMPDIR/release-437-src.tar.gz"
+shasum -a 256 "$TMPDIR/release-437-src.tar.gz"      # anotar
+ssh claudete 'cat > /home/claudete/releases/437/src.tar.gz' < "$TMPDIR/release-437-src.tar.gz"
+ssh claudete 'sha256sum /home/claudete/releases/437/src.tar.gz'   # igual ao anotado; diferente: parar
 
 # host
 SHA=<sha-do-merge>                                 # literal, copiado do #437
@@ -234,20 +250,28 @@ free -h                                             # abort se available < 6 GiB
 # O driver docker-container baixa a imagem do BuildKit no host: é uma escrita
 # a mais, declarada no pedido de OK. Fixada por digest (v0.34.0, 07/10/2026).
 # Antes da janela, numa máquina com docker (não no host), conferir que a tag
-# ainda aponta para esse digest e registrar a saída no #437:
+# ainda aponta para esse digest. É o digest do índice OCI, que é o que o
+# `imagetools` devolve:
 #   docker buildx imagetools inspect moby/buildkit:v0.34.0 --format '{{json .Manifest.Digest}}'
+#   esperado: "sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c"
+# Outro valor: PARAR e voltar à Orquestração. A tag foi movida, e o digest
+# fixado abaixo deixou de ser a v0.34.0 publicada. Registrar a saída no #437.
 docker buildx create --name release-437 --driver docker-container \
   --driver-opt image=moby/buildkit:v0.34.0@sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c \
   --driver-opt memory=3g --driver-opt memory-swap=3g --driver-opt cpuset-cpus=0-1
 (
   # o builder sai junto com o build, deu certo, falhou ou foi interrompido
-  trap 'docker buildx rm release-437' EXIT
+  trap 'docker buildx rm release-437' EXIT INT TERM HUP
   docker buildx build --builder release-437 --load \
     -f /home/claudete/releases/437/src/deploy/easypanel-native/Dockerfile.web \
     --build-arg GIT_SHA="$SHA" -t "easypanel/sell-autonomia/web:$SHA" \
     /home/claudete/releases/437/src
 )
 docker buildx ls | grep -F release-437              # sem saída: o builder saiu
+# Com saída, o trap não rodou (sessão caiu, kill -9). Remover pelo nome e
+# conferir de novo; só seguir com a linha acima sem saída:
+#   docker buildx rm release-437
+#   docker buildx ls | grep -F release-437
 ```
 
 **Observador de memória durante o build**, numa segunda sessão ssh aberta antes
@@ -259,7 +283,8 @@ free -h -s 10
 
 Se a coluna `available` cair abaixo de 4 GiB, interromper o build na primeira
 sessão (Ctrl-C). O `trap` remove o builder; conferir com o `docker buildx ls`
-acima e seguir o rollback, que aqui é só não tocar o serviço.
+acima. Se o builder ainda aparecer, `docker buildx rm release-437` e conferir de
+novo. Depois seguir o rollback, que aqui é só não tocar o serviço.
 
 Conferência da imagem, antes de tocar o serviço:
 
@@ -269,7 +294,7 @@ docker image inspect "easypanel/sell-autonomia/web:$SHA" --format '{{index .Conf
 docker run --rm --entrypoint node "easypanel/sell-autonomia/web:$SHA" -e 'console.log(require("next/package.json").version)'      # 16.4.2
 docker run --rm --entrypoint sh "easypanel/sell-autonomia/web:$SHA" -c 'ls node_modules/.pnpm | grep -E "^sharp@"'                  # sharp@0.35.5…
 docker run --rm --entrypoint sh "easypanel/sell-autonomia/web:$SHA" -c \
-  "grep -rlF 'SMTP handshake finished' .next/server/chunks | grep -v '\.map\$' | xargs grep -cF '\"10.0.10\"'"                   # 1 (o nodemailer vai embutido no bundle)
+  "grep -rlF 'SMTP handshake finished' .next/server/chunks | grep -v '\.map\$' | xargs -r grep -cF '\"10.0.10\"'"                   # 1 (o nodemailer vai embutido no bundle)
 docker image inspect easypanel/sell-autonomia/web:rollback-437-fa13a78 --format '{{.Id}}'                                          # ainda = ROLLBACK_ID
 ```
 
@@ -278,7 +303,7 @@ docker image inspect easypanel/sell-autonomia/web:rollback-437-fa13a78 --format 
 - memória `available` abaixo de 4 GiB em qualquer momento;
 - o label difere do SHA;
 - next ≠ 16.4.2, sharp < 0.35.5, ou o chunk do nodemailer sem `"10.0.10"`
-  (contagem 0 ou mais de um chunk);
+  (contagem 0, saída vazia ou mais de um chunk);
 - a imagem de rollback sumiu.
 
 Nesse ponto nada em produção mudou.
@@ -395,6 +420,7 @@ tem migration.
 - Limpeza da fonte, só em caminhos exatos, depois de conferir que ninguém usa:
 
   ```sh
+  command -v lsof                                   # sem saída: parar, não apagar
   test -d /home/claudete/releases/437/src \
     && test -z "$(lsof +D /home/claudete/releases/437/src)" \
     && rm -r -- /home/claudete/releases/437/src
