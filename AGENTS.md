@@ -133,8 +133,8 @@ no runbook, nunca presumida.
 
 - **A loja da Hub2You está no ar e não pode regredir** (regra do Rodrigo,
   23/10/2026). Todo PR roda o smoke da Hub2You antes e depois, sem sessão:
-  - a vitrine `/s/hub2you` responde 200 com 2 cards "Ver e comprar" (R$ 47 e
-    R$ 87; o espaço depois de "R$" é U+00A0) e 0 assets com erro;
+  - a vitrine `/s/hub2you` responde 200 com 2 cards "Ver e comprar" (R$ 47,00
+    e R$ 87,00; o espaço depois de "R$" é U+00A0) e 0 assets com erro;
   - `/s/hub2you/p/condicoes-gerais` e `/s/hub2you/p/gerador-de-cotacoes-comparativas`
     respondem 200 com "Comprar agora", cujo href é
     `/auth/login?next=<path da página>&new_user=true`;
@@ -147,8 +147,10 @@ no runbook, nunca presumida.
   de impacto** (regra do Rodrigo, 23/10/2026). Os repos `autonomia-financial`,
   `autonomia-financial-sdk`, `financial-dashboard-sdk` e `neuroai-web` são do
   sócio dele. São eles que conversam com o Asaas e o Stripe, e atendem vários
-  projetos em produção, inclusive com auth. O Sell nunca fala direto com o
-  gateway: toda implementação de dinheiro passa por eles.
+  projetos em produção, inclusive com auth. Implementação nova de dinheiro
+  passa por eles, e não direto pelo gateway. As integrações diretas com o Stripe
+  que o Sell já tem (`app/api/checkout/create-session`, `app/api/webhooks/stripe/`,
+  `lib/stripe-config.server.ts`) continuam até o Rodrigo decidir a migração.
   - **Criar**: rota, função ou módulo novo e isolado, que não muda o contrato nem
     o comportamento de nada que já existe, segue o fluxo normal. O merge é do
     Rodrigo, porque é dinheiro.
