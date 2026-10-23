@@ -104,6 +104,26 @@ O ensaio achou três erros das versões anteriores, já corrigidos:
    revertida em 38 s porque passava: o `HEAD` de controle da api fez hairpin
    pelo Traefik, caiu no bloqueio, e o `/health/ready` foi a 503 (#461). O
    endpoint precisa apontar para a rede interna do Swarm antes de reaplicar.
+
+   Conferência (só leitura, OK próprio). Imprime **só o hostname** de cada
+   endpoint, nunca o valor inteiro nem outra variável:
+
+   ```sh
+   for s in sell-autonomia_api sell-autonomia_asset-worker; do
+     sudo -n docker service inspect "$s" --format '{{json .Spec.TaskTemplate.ContainerSpec.Env}}' \
+       | python3 -c '
+   import json, sys, urllib.parse
+   env = dict(e.split("=", 1) for e in json.load(sys.stdin) if "=" in e)
+   for nome in ("APPSELL_API_STORAGE_INTERNAL_ENDPOINT", "APPSELL_API_STORAGE_PUBLIC_ENDPOINT"):
+       valor = env.get(nome)
+       print(sys.argv[1], nome, urllib.parse.urlsplit(valor).hostname if valor else "ausente")
+   ' "$s"
+   done
+   ```
+
+   Esperado: `INTERNAL_ENDPOINT` = `sell-autonomia_storage` nos dois serviços;
+   `PUBLIC_ENDPOINT` = `minio.autonomia.site` na api. No worker, ausente ou o
+   mesmo valor. `INTERNAL_ENDPOINT` = `minio.autonomia.site`: **não aplicar**.
 1. Quem mais usa `minio.autonomia.site`: o destino `s3` do backup
    (`APPSELL_BACKUP_S3_ENDPOINT`), o `view-storage` e qualquer `mc` apontado
    para ele. Credencial em cabeçalho por esta borda passa a voltar 403.
@@ -131,7 +151,7 @@ mudar o arquivo, vale o do merge.
 
 ```sh
 # 0. sudo sem senha; sem ele, parar antes de tocar em qualquer coisa
-sudo -n true || echo "PARAR: sudo -n não liberado neste host"
+sudo -n true || { echo "PARAR: sudo -n não liberado neste host"; exit 1; }
 
 # 1. estado atual: o arquivo ativo tem de ser o de hoje
 sudo -n sha256sum /etc/easypanel/traefik/config/appsell-storage.yaml
@@ -162,14 +182,32 @@ sudo -n mv -f -- /etc/easypanel/traefik/config/.appsell-storage.novo /etc/easypa
 
 # 6. o Traefik aceitou?
 sleep 5
-sudo -n docker service logs --since 1m easypanel-traefik 2>&1 | grep -i -c 'error while parsing rule\|invalid rule\|level=error'
-#    → 0. Não filtrar por "appsell-storage": o log de acesso traz o nome do
-#    roteador em toda linha, e a contagem deixa de dizer se houve erro.
+sudo -n docker service logs --since 1m easypanel-traefik 2>&1 | grep -i 'error while parsing rule\|invalid rule\|level=error' \
+  | grep -i -c 'appsell-storage\|providerName=file'
+#    → 0. O primeiro filtro pega só erro (o log de acesso traz o nome do
+#    roteador em toda linha); o segundo deixa só o que é deste arquivo ou do
+#    provedor de arquivo, não erro de outro projeto da VPS.
 
-# 7. a api continua vendo o storage (o probe dela faz HEAD nos buckets)
+# 7. api e worker continuam vendo o storage. O probe roda direto em cada
+#    contêiner, sem o cache do /health/ready (que vale até 30 s e mostraria o
+#    resultado de antes da troca).
+for s in sell-autonomia_api sell-autonomia_asset-worker; do
+  cid=$(sudo -n docker inspect --format '{{.Status.ContainerStatus.ContainerID}}' \
+    "$(sudo -n docker service ps -q "$s" --filter desired-state=running | head -1)")
+  sudo -n docker exec "$cid" python -c '
+from appsell_api.config import get_settings
+from appsell_api.storage_s3 import S3Storage
+S3Storage(get_settings()).probe_availability()
+print("storage ok")' && echo "$s ok" || echo "$s FALHOU: rollback imediato"
+done
+#    E o /health/ready, três leituras com 10 s entre elas, todas com
+#    "storage":true:
 cid=$(sudo -n docker ps -q --filter name=sell-autonomia_api. | head -1)
-sudo -n docker exec "$cid" python -c 'import urllib.request; print(urllib.request.urlopen("http://127.0.0.1:8000/health/ready", timeout=5).read().decode())'
-#    → "storage":true. 503 ou erro: rollback imediato
+for _ in 1 2 3; do
+  sleep 10
+  sudo -n docker exec "$cid" python -c 'import urllib.request; print(urllib.request.urlopen("http://127.0.0.1:8000/health/ready", timeout=5).read().decode())'
+done
+#    503, erro ou "storage":false em qualquer uma: rollback imediato
 ```
 
 **Verificação, de fora do host:**
@@ -189,7 +227,7 @@ um falhar, rollback.
 Pré-aprovado pelo mesmo OK da aplicação. Também atômico, com caminhos literais:
 
 ```sh
-sudo -n true || echo "PARAR: sudo -n não liberado neste host"
+sudo -n true || { echo "PARAR: sudo -n não liberado neste host"; exit 1; }
 sudo -n cp -p -- /tmp/appsell-storage_traefik_pre477.yaml /etc/easypanel/traefik/config/.appsell-storage.volta
 sudo -n sha256sum /etc/easypanel/traefik/config/.appsell-storage.volta   # → 551a0363…
 sudo -n mv -f -- /etc/easypanel/traefik/config/.appsell-storage.volta /etc/easypanel/traefik/config/appsell-storage.yaml
