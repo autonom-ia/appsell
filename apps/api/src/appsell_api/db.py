@@ -50,3 +50,20 @@ async def database_ready(engine: AsyncEngine) -> bool:
             return bool(value)
     except Exception:  # readiness deliberately collapses driver details
         return False
+
+
+async def financial_channel_ready(engine: AsyncEngine) -> bool | None:
+    """O canal Financial resolve (#465)? `None` quando não deu para perguntar.
+
+    Banco fora ou schema atrás já reprovam por `database_ready`; aqui o
+    desconhecido não vira "canal quebrado".
+    """
+    try:
+        async with engine.connect() as connection:
+            value = await connection.scalar(
+                text("select app_private.financial_channel_ready()"),
+                execution_options={"timeout": 3},
+            )
+            return bool(value)
+    except Exception:  # readiness deliberately collapses driver details
+        return None

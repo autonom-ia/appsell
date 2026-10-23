@@ -70,6 +70,10 @@ export APPSELL_TEST_WEBHOOK_SESSION_KEY_B64="$webhook_bff_session_b64"
 export APPSELL_TEST_WEBHOOK_CSRF_KEY_B64="$webhook_bff_csrf_b64"
 export APPSELL_TEST_WEBHOOK_VAULT_KEY_B64="$webhook_bff_vault_b64"
 export APPSELL_TEST_COMPOSE_PROJECT="$project"
+# O pdf-sandbox pede 4 núcleos (compose.yaml); o runner do CI tem 2 e o Docker
+# recusa a task. Usa o que a máquina tem, até o valor de produção.
+cpus_da_maquina="$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
+export APPSELL_PDF_SANDBOX_CPUS="$(( cpus_da_maquina < 4 ? cpus_da_maquina : 4 )).0"
 webhook_forbidden_hashes="$(python3 - "$webhook_bff_session_b64" "$webhook_bff_csrf_b64" "$webhook_bff_vault_b64" <<'PY'
 import base64
 import hashlib
