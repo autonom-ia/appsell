@@ -257,6 +257,18 @@ describe("POST /api/webhooks/stripe — amount check (#148)", () => {
     await expectAmountMismatch(paidSession());
   });
 
+  it("refuses an offer that is not a one-time BRL price, even at the same number", async () => {
+    const hub2you = STOREFRONTS.hub2you as { products: Array<{ price: Record<string, unknown> }> };
+    for (const price of [
+      { unit_amount_minor: HUB2YOU_PRICE, currency: "BRL", billing_period: "monthly" },
+      { unit_amount_minor: HUB2YOU_PRICE, currency: "USD", billing_period: "one_time" }
+    ]) {
+      readPublicStorefront.mockResolvedValue({ ...hub2you, products: [{ ...hub2you.products[0], price }] });
+      vi.mocked(console.error).mockClear();
+      await expectAmountMismatch(paidSession());
+    }
+  });
+
   it("answers a replayed mismatched event the same way, without emitting", async () => {
     const event = paidSession({ amountTotal: 0 });
     const first = await (await POST(signedRequest(event))).json();

@@ -257,7 +257,13 @@ export async function POST(request: NextRequest) {
     return jsonError("amount_verification_unavailable", 503);
   }
   const product = storefront.products.find((candidate) => candidate.slug === origin.productSlug);
-  const expectedAmountMinor = product?.price?.unit_amount_minor ?? null;
+  // Same gate create-session prices through: only a one-time BRL offer has an
+  // amount this session can be compared with. A monthly or foreign-currency
+  // offer with the same number is not the price that was charged.
+  const price = product?.price;
+  const expectedAmountMinor = price?.currency === "BRL" && price.billing_period === "one_time"
+    ? price.unit_amount_minor
+    : null;
   if (!paidTheOfferPrice(session, expectedAmountMinor)) {
     logIrreversibleDrop({ reason: "amount_mismatch", event, orderId: metadata.orderId });
     return NextResponse.json(
