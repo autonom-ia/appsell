@@ -802,9 +802,22 @@ class TestOEnvelopeDoSandbox:
         dois caminhos o serviço toma.
         """
         for caminho in self.ARQUIVOS:
-            nucleos = re.search(r"cpus:\s*([\d.]+)", self._bloco_do_sandbox(caminho))
+            nucleos = _cpus_padrao(self._bloco_do_sandbox(caminho))
             assert nucleos is not None, caminho
-            assert float(nucleos.group(1)) >= pdf_derivatives._MAX_RASTER_WORKERS, caminho
+            assert nucleos >= pdf_derivatives._MAX_RASTER_WORKERS, caminho
+
+
+def _cpus_padrao(bloco: str) -> float | None:
+    """O `cpus:` do bloco, ou o padrão de `${VAR:-N}` quando o valor vem do ambiente."""
+    for linha in bloco.splitlines():
+        chave, separador, valor = linha.strip().partition(":")
+        if chave != "cpus" or not separador:
+            continue
+        valor = valor.strip()
+        if valor.startswith("${") and valor.endswith("}") and ":-" in valor:
+            valor = valor[2:-1].split(":-", 1)[1]
+        return float(valor)
+    return None
 
 
 class TestAMigrationNaoQuebraOReadiness:

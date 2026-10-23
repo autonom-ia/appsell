@@ -1336,6 +1336,12 @@ def test_upgrade_from_0003_preserves_existing_draft() -> None:
             )
 
 
+# A cadeia inteira não desce desde a 0059: a 0060 é forward-only por definição
+# (#425). Este teste prova as guardas de downgrade da 0019, então sobe só até
+# ela; subir até a cabeça fazia o downgrade parar na 0060 antes de chegar aqui.
+OFFER_STATUS_MIGRATION = "0019_offer_status"
+
+
 @pytest.mark.skipif(not MIGRATOR_URL, reason="migrator URL is required for downgrade test")
 def test_offer_status_migration_preserves_history_and_allows_clean_downgrade() -> None:
     assert ADMIN_URL and RUNTIME_URL and MIGRATOR_URL and CONTEXT_KEY_HEX
@@ -1460,7 +1466,7 @@ def test_offer_status_migration_preserves_history_and_allows_clean_downgrade() -
             )
             connection.commit()
 
-        run_migration(transitioned_database, "upgrade", "head")
+        run_migration(transitioned_database, "upgrade", OFFER_STATUS_MIGRATION)
         with psycopg.connect(target_admin_url) as connection:
             assert connection.execute(
                 "select status, version from offer where id = %s", (offer_id,)
@@ -1511,7 +1517,7 @@ def test_offer_status_migration_preserves_history_and_allows_clean_downgrade() -
                 """,
                 (offer_id,),
             ).fetchone() == (
-                EXPECTED_MIGRATION,
+                OFFER_STATUS_MIGRATION,
                 "archived",
                 3,
                 2,
@@ -1539,9 +1545,9 @@ def test_offer_status_migration_preserves_history_and_allows_clean_downgrade() -
                 from offer where id = %s
                 """,
                 (offer_id,),
-            ).fetchone() == (EXPECTED_MIGRATION, "draft", 3, 2, True)
+            ).fetchone() == (OFFER_STATUS_MIGRATION, "draft", 3, 2, True)
 
-        run_migration(clean_database, "upgrade", "head")
+        run_migration(clean_database, "upgrade", OFFER_STATUS_MIGRATION)
         run_migration(clean_database, "downgrade", "0018_offer_pricing")
         with psycopg.connect(database_url(ADMIN_URL, clean_database)) as connection:
             assert connection.execute(
