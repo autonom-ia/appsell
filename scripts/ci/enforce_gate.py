@@ -8,6 +8,7 @@ from typing import Mapping
 
 KNOWN_STEPS = {
     "route",
+    "audit_api",
     "fast_web",
     "fast_api",
     "fast_backup",
@@ -34,6 +35,8 @@ def expected_steps(
 ) -> set[str]:
     expected = {"route"}
     if event == "pull_request":
+        if route.get("api"):
+            expected.add("audit_api")
         if route.get("web"):
             expected.add("fast_web")
         if route.get("api"):
@@ -45,6 +48,8 @@ def expected_steps(
     elif event == "push" and merge_queue_active:
         expected.add("smoke")
     elif event in {"merge_group", "push", "workflow_dispatch"}:
+        if route.get("api") or route.get("postgres"):
+            expected.add("audit_api")
         if route.get("web"):
             expected.add("cert_web")
         if route.get("api"):

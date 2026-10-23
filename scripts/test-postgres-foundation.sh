@@ -180,6 +180,9 @@ export APPSELL_TEST_POSTGRES_ADMIN_URL="postgresql://postgres:${superuser_secret
 export APPSELL_TEST_POSTGRES_RUNTIME_URL="postgresql://appsell_runtime:${runtime_secret}@127.0.0.1:${port}/appsell"
 export APPSELL_TEST_CONTEXT_KEY_HEX="$context_key"
 export APPSELL_TEST_BOOTSTRAP_KEY_HEX="$bootstrap_key"
+# Aqui o Postgres existe: um teste que pula deixou de provar o que devia, e a
+# sessão reprova (apps/api/tests/exige_postgres.py, #450).
+export APPSELL_REQUIRE_POSTGRES="1"
 uv run --project apps/api pytest \
   apps/api/tests/test_postgres_foundation.py \
   apps/api/tests/test_postgres_bff_onboarding.py \
@@ -207,6 +210,13 @@ uv run --project apps/api pytest \
   apps/api/tests/test_postgres_minha_conta.py \
   apps/api/tests/test_api_minha_conta.py \
   apps/api/tests/test_postgres_configuracoes_da_loja.py \
+  apps/api/tests/test_asset_media_mirror.py \
+  apps/api/tests/test_postgres_asset_media_catalogue.py \
+  apps/api/tests/test_postgres_checkout_fulfillment.py \
+  apps/api/tests/test_postgres_constraint_regexes.py \
+  apps/api/tests/test_postgres_demo_learning.py \
+  apps/api/tests/test_postgres_player_materials.py \
+  apps/api/tests/test_postgres_ready_candidate_media.py \
   apps/api/tests/test_api_seller_settings.py \
   apps/api/tests/test_email_layout.py \
   apps/api/tests/test_email_worker.py \
