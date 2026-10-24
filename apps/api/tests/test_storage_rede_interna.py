@@ -146,6 +146,8 @@ elif comando == "service update":
         nova["TaskTemplate"]["ContainerSpec"]["Env"] = []
     if falha("ROLLBACK_START_FIRST", nome):
         nova["RollbackConfig"]["Order"] = "start-first"
+    if falha("ROLLBACK_STOP_FIRST", nome):
+        nova["RollbackConfig"]["Order"] = "stop-first"
     if falha("TROCA_NOME", nome):
         nova["TaskTemplate"]["ContainerSpec"]["Env"][0] = "OUTRA_VARIAVEL=x"
     servico["ler_env_falha"] = falha("FALHA_LEITURA_ENV", nome)
@@ -443,14 +445,29 @@ def gravar(pasta: Path, atual: dict[str, Any]) -> None:
     (pasta / "estado.json").write_text(json.dumps(atual))
 
 
-def test_rede_poe_stop_first_na_api(pasta: Path) -> None:
-    atual = estado(pasta)
-    atual["servicos"][API]["Spec"]["UpdateConfig"]["Order"] = "start-first"
-    atual["servicos"][API]["Spec"]["RollbackConfig"]["Order"] = "start-first"
-    gravar(pasta, atual)
+def test_rede_poe_start_first_na_api_e_stop_first_no_storage(pasta: Path) -> None:
+    # A api troca sem derrubar a loja; o MinIO nunca tem duas tasks no volume.
     assert rodar(pasta, "rede").returncode == 0
-    assert spec(pasta, API)["UpdateConfig"] == {"Order": "stop-first"}
-    assert spec(pasta, API)["RollbackConfig"] == {"Order": "stop-first"}
+    assert spec(pasta, API)["UpdateConfig"] == {"Order": "start-first"}
+    assert spec(pasta, API)["RollbackConfig"] == {"Order": "start-first"}
+    assert spec(pasta, STORAGE)["UpdateConfig"] == {"Order": "stop-first"}
+    assert spec(pasta, STORAGE)["RollbackConfig"] == {"Order": "stop-first"}
+    assert spec(pasta, WORKER)["UpdateConfig"] == {"Order": "stop-first"}
+
+
+def test_env_poe_start_first_na_api(pasta: Path) -> None:
+    assert rodar(pasta, "rede").returncode == 0
+    assert rodar(pasta, "env").returncode == 0
+    assert spec(pasta, API)["UpdateConfig"] == {"Order": "start-first"}
+    assert spec(pasta, API)["RollbackConfig"] == {"Order": "start-first"}
+
+
+def test_api_com_rollback_stop_first_na_spec_nova_nao_volta(pasta: Path) -> None:
+    # A volta da api usa a ordem da spec atual; stop-first ali derrubaria a loja.
+    resultado = rodar(pasta, "rede", SEM_STORAGE=API, ROLLBACK_STOP_FIRST=API)
+    assert resultado.returncode == 1
+    assert "rollback order não é start-first" in resultado.stderr
+    assert rollbacks(pasta) == []
 
 
 def test_worker_sem_rollback_stop_first_aborta_antes_do_backup(pasta: Path) -> None:

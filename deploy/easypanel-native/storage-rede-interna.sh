@@ -168,9 +168,9 @@ restaurar() {
   if [ "$servico" = "$storage" ]; then
     storage_sem_clientes_do_alias || { rm -f -- "$agora" "$anterior"; return 1; }
   fi
-  if [ "$(spec_json "$servico" Spec.RollbackConfig.Order)" != '"stop-first"' ]; then
+  if [ "$(spec_json "$servico" Spec.RollbackConfig.Order)" != "\"$(rollback_esperado "$servico")\"" ]; then
     rm -f -- "$agora" "$anterior"
-    echo "ABORT: $servico: rollback order não é stop-first; falar com o Rodrigo" >&2
+    echo "ABORT: $servico: rollback order não é $(rollback_esperado "$servico"); falar com o Rodrigo" >&2
     return 1
   fi
   d service rollback --detach=false "$servico" >/dev/null || true
@@ -239,8 +239,9 @@ preparar_janela() {
   for servico in "$storage" "$api" "$worker"; do
     task_running "$servico" || abort "$servico sem task Running antes de começar"
   done
-  # O rollback usa a ordem da spec atual. storage e api recebem stop-first no
-  # próprio update desta janela; o worker já nasce assim (ensure-asset-worker.sh).
+  # O rollback usa a ordem da spec atual. storage e api recebem a ordem deles no
+  # próprio update desta janela; o worker já nasce com rollback stop-first
+  # (ensure-asset-worker.sh).
   [ "$(spec_json "$worker" Spec.RollbackConfig.Order)" = '"stop-first"' ] \
     || abort "$worker com rollback order diferente de stop-first"
   ts_da_janela="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -257,11 +258,25 @@ esta_na_rede() {
   redes_do_servico "$1" | grep -Fxq -- "$id"
 }
 
+rollback_esperado() {
+  # storage: stop-first, porque MinIO de instância única não pode ter duas tasks
+  # no mesmo volume. api: start-first, como a spec dela em produção
+  # (inventario-de-deploy.md): a task nova só substitui a antiga depois de
+  # healthy, e o e-mail é claim com lease e fence no banco, então duas tasks ao
+  # mesmo tempo não enviam em dobro. Com stop-first a loja cai na troca (22 s de
+  # 500 medidos na etapa 2, em 24/10/2026; até 330 s com e-mail em lease).
+  # worker: stop-first, como o ensure-asset-worker.sh o cria.
+  case "$1" in
+    "$api") echo start-first ;;
+    *) echo stop-first ;;
+  esac
+}
+
 ordem_do() {
-  # storage e api entram com stop-first nos dois sentidos: MinIO de instância
-  # única não pode ter duas tasks no mesmo volume, e a api é uma task só com o
-  # lease do e-mail. O worker mantém a ordem com que o script dele o cria.
-  [ "$1" = "$worker" ] || printf '%s\n' --update-order stop-first --rollback-order stop-first
+  # Só a api leva a ordem no update; o storage leva a dele explícita, e o
+  # worker mantém a da spec.
+  [ "$1" = "$api" ] && printf '%s\n' --update-order start-first --rollback-order start-first
+  return 0
 }
 
 host_do_endpoint_interno() {
