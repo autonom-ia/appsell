@@ -161,8 +161,12 @@ rodar aplicar 0 -- --aplicar
 [ "$(ver '{{.Spec.TaskTemplate.ContainerSpec.ReadOnly}}')" = "true" ] || falhar "aplicar: root gravável"
 [ "$(ver '{{json .Spec.TaskTemplate.ContainerSpec.CapabilityDrop}}')" = '["ALL"]' ] || falhar "aplicar: sem cap-drop ALL"
 [ "$(ver '{{.Spec.TaskTemplate.Resources.Limits.Pids}}')" = "64" ] || falhar "aplicar: pids"
-[ "$(ver '{{range .Spec.TaskTemplate.ContainerSpec.Mounts}}{{.Type}}:{{.Target}} {{end}}')" = "volume:/run/appsell-pdf tmpfs:/tmp " ] \
-  || falhar "aplicar: mounts"
+# O Swarm não guarda a ordem dos mounts: confere os dois e que só há dois.
+montagens="$(ver '{{range .Spec.TaskTemplate.ContainerSpec.Mounts}}{{.Type}}:{{.Target}} {{end}}')"
+read -ra lista <<<"$montagens"
+[ "${#lista[@]}" = "2" ] || falhar "aplicar: mounts $montagens"
+case " $montagens" in *" tmpfs:/tmp "*) ;; *) falhar "aplicar: sem tmpfs em /tmp" ;; esac
+case " $montagens" in *" volume:/run/appsell-pdf "*) ;; *) falhar "aplicar: sem o volume do socket" ;; esac
 [ "$(ver '{{len .Spec.TaskTemplate.Networks}}')" = "1" ] || falhar "aplicar: redes"
 [ "$(ver '{{len .Spec.TaskTemplate.ContainerSpec.Env}}')" = "1" ] || falhar "aplicar: env mudou"
 [ "$(sudo -n docker network inspect "$rede" --format '{{.Driver}} {{.Internal}}')" = "overlay true" ] || falhar "aplicar: rede não é overlay internal"
