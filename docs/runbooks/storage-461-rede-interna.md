@@ -1,56 +1,106 @@
-# Controle do storage pela rede interna (#461, pré-requisito do #477)
+# Controle do storage pela rede do projeto (#461, pré-requisito do #477)
 
-**Nada aqui foi aplicado.** Cada etapa tem o seu OK do Rodrigo, nesta ordem, e
-nenhuma começa sem a anterior conferida:
+**Nada daqui em diante foi aplicado.** Cada etapa precisa do seu OK do Rodrigo,
+nesta ordem, e só começa depois da anterior conferida:
 
-| OK | Etapa | Escreve no host? |
-|---|---|---|
-| 1 | merge do PR desta flag | não |
-| 2 | deploy da imagem com a flag **desligada** | sim (imagem) |
-| 3 | leitura do EasyPanel e das redes | não |
-| 4 | rede `sell-storage-internal` e alias `appsell-storage` | sim (spec) |
-| 5 | ensaio assinado, com o endpoint trocado só no processo | não |
-| 5b | merge do #481: o `ensure-asset-worker.sh` põe o worker na rede nova | não |
-| 6 | env da api e do worker: flag ligada e endpoint interno | sim (env) |
-| 7 | reaplicar a borda do #477 | sim (Traefik) |
+| OK | Etapa | Escreve no host? | Estado |
+|---|---|---|---|
+| 1 | merge do PR da flag (#480) | não | feito |
+| 2 | deploy da imagem com a flag **desligada** | sim (imagem) | feito em 24/10/2026, `api:2759090` |
+| 3 | leitura do EasyPanel e das redes | não | feito em 24/10/2026 |
+| 4 | — | — | **removida**: não há rede nova |
+| 5 | ensaio assinado e `getent`, com o endpoint trocado só no processo | não | |
+| 5b | merge deste PR: script e `ensure-asset-worker.sh` no alias existente | não | |
+| 6a | env do worker, pelo `storage-rede-interna.sh` | sim (env) | |
+| 6b | env da api, **pelo Rodrigo no painel** do EasyPanel | sim (env) | |
+| 7 | reaplicar a borda do #477 | sim (Traefik) | |
+
+## Decisões do Rodrigo (24/10/2026, depois da etapa 3)
+
+- **Rede: "Nome que já existe".** O endpoint interno passa a ser
+  `http://sell-autonomia-storage:9000`, o alias que o EasyPanel já dá ao
+  `storage` na rede `easypanel-sell-autonomia`. Não há rede nova, e o storage
+  não para. A etapa 4 sai do plano.
+- **Env da api: "Você, no painel".** O Rodrigo muda as duas variáveis da api no
+  EasyPanel, seguindo o roteiro da etapa 6b. **Nenhum agente vê valor.** A env
+  do worker fica conosco: vai por script, com backup e contagem.
 
 ## Por que
 
 Lido na produção em 23/10/2026 (#461):
 
-- `APPSELL_API_STORAGE_INTERNAL_ENDPOINT` da `api` e do `asset-worker` aponta
-  para `minio.autonomia.site`. O controle do storage (HEAD, multipart, cópia,
-  remoção) sai pelo host público e volta pelo Traefik. A borda do #477 fechou
-  esse caminho e o `/health/ready` foi a 503, e a borda foi revertida em 38 s.
-- O hairpin não era descuido: fora de local/CI o `config.py` exigia https nos
-  dois endpoints. A flag `APPSELL_API_STORAGE_INTERNAL_HTTP_ALLOWED` (este PR)
-  aceita http só no endpoint interno e só para um nome de serviço de um
-  rótulo.
-- `sell-autonomia_storage` resolve dentro dos dois contêineres, mas o MinIO
-  responde **400 `InvalidRequest`** a esse Host, porque `_` não é hostname
-  válido. Pelo IP da VIP, ou com `Host: appsell-storage:9000`, responde 200.
-  Daí o alias sem `_`.
+- O `APPSELL_API_STORAGE_INTERNAL_ENDPOINT` da `api` e do `asset-worker` aponta
+  para `minio.autonomia.site`. Por isso o controle do storage (HEAD, multipart,
+  cópia, remoção) sai pelo host público e volta pelo Traefik. A borda do #477
+  fechou esse caminho, o `/health/ready` foi a 503, e a borda foi revertida em
+  38 s.
+- O hairpin não era descuido. Fora de local/CI, o `config.py` exigia https nos
+  dois endpoints. A flag `APPSELL_API_STORAGE_INTERNAL_HTTP_ALLOWED` (#480)
+  aceita http só no endpoint interno, e só para um nome de serviço de um
+  rótulo. `sell-autonomia-storage` passa nessa validação
+  (`_is_isolated_service_name`).
 
-**Por que uma rede só para isso.** Em http, quem está na mesma rede lê os
-objetos e pode repetir um pedido assinado dentro da validade. O SigV4 não manda
-a secret pela rede; manda o access key id e a assinatura. A rede
-`sell-storage-internal` é `--internal` e tem só três serviços: `storage`,
-`api` e `asset-worker`. O alias `appsell-storage` existe só nela. **Nunca** na
-rede compartilhada do EasyPanel, que outros projetos da VPS enxergam.
+**Por que esse nome.** Na etapa 3 (24/10/2026) o `storage` estava na rede
+`easypanel-sell-autonomia`, com os aliases `sell-autonomia-storage` e
+`storage`, e na rede `easypanel`, sem alias. A api está nas duas redes; o
+worker só na do projeto.
 
-**Por que sem `--opt encrypted`, por enquanto.** O IPsec do overlay cifra só o
-tráfego **entre nós** do Swarm. A produção é uma VPS só; a etapa 3 confirma
-que o Swarm tem um nó. Com um nó, o tráfego da rede nunca sai do host, e a
-cifra não protegeria nada. Se a etapa 3 mostrar mais de um nó, parar: a rede
-só nasce com `--opt encrypted`, depois de ensaiada. Ligá-la sem ensaio arrisca a própria criação da rede (módulos do
-kernel, portas ESP) e não temos prova de que funciona e é gratuita aqui.
-**Gatilho de revisão:** no dia em que o Swarm ganhar um segundo nó,
-`--opt encrypted` passa a ser obrigatório nesta rede, antes do nó entrar.
+- **`storage` não serve.** A api também está na rede compartilhada `easypanel`,
+  onde 22 serviços de vários projetos da VPS se enxergam. Um nome curto pode
+  coincidir com o de outro projeto.
+- **`sell-autonomia_storage` também não.** Ele resolve, mas o MinIO responde
+  **400 `InvalidRequest`** a esse Host, porque `_` não é válido em hostname.
+
+O `getent` da etapa 5 prova que o nome escolhido resolve só para a VIP do
+storage na rede do projeto, nos dois serviços.
+
+**O que muda em exposição.** Com http, quem está na mesma rede pode ler os
+objetos em trânsito e repetir um pedido assinado enquanto ele vale. O SigV4
+não manda a secret pela rede; manda o access key id e a assinatura. Hoje a
+rede do projeto tem 11 serviços, todos do Sell. A rede compartilhada não entra
+no caminho: o alias não existe nela. Uma rede só com storage, api e worker
+seria mais estreita. O Rodrigo escolheu esta para não pausar o storage.
+
+**Por que sem cifra.** O Swarm tem um nó (etapa 3). Com um nó, o tráfego entre
+contêineres nunca sai do host. O script recusa rodar com dois nós.
+**Gatilho de revisão:** no dia em que o Swarm ganhar um segundo nó, este
+caminho volta à mesa antes de o nó entrar.
 
 **Path-style é obrigatório.** Com a flag ligada e endpoint http, o `config.py`
-recusa `APPSELL_API_STORAGE_PATH_STYLE=false`: em virtual-host o cliente
-montaria `<bucket>.appsell-storage`, que não resolve. O ensaio da etapa 5
-imprime o valor.
+recusa `APPSELL_API_STORAGE_PATH_STYLE=false`. Em virtual-host o cliente
+montaria `<bucket>.sell-autonomia-storage`, e esse nome não resolve. O ensaio
+da etapa 5 imprime o valor.
+
+## O que saiu, e o que fica morto
+
+Saiu do `storage-rede-interna.sh`:
+
+- o modo `rede`;
+- a criação de `sell-storage-internal`;
+- o alias `appsell-storage`;
+- o update do `storage`, com a trava que o acompanhava
+  (`storage_sem_clientes_do_alias`);
+- o modo `env`, que mudava a api por `--env-add`;
+- a ordem `start-first` posta na api (`ordem_do`, #485). A api não é mais
+  tocada pelo script, só lida.
+
+No lugar entraram três modos:
+
+- `worker`, que muda só o worker;
+- `api-antes` e `api-depois`, que só leem e só gravam o backup em `/tmp`.
+
+Saiu do `ensure-asset-worker.sh` o bloco do #481, que exigia
+`sell-storage-internal` (exit 1 se a rede faltasse) e punha o worker nela.
+Com a rede fora do plano, a próxima recriação do worker falharia nesse ponto.
+O worker volta a entrar só na rede do ClamAV, que é a do projeto. Quando o
+endpoint interno copiado da api é um nome de serviço (sem ponto), o script
+exige que o `storage` tenha esse nome como alias nessa rede. Sem o alias, o
+script falha antes do `service create`.
+
+No host não fica nada morto. A etapa 3 confirmou que `sell-storage-internal`
+não existe, e nada da etapa 4 foi aplicado. No repositório não sobra código
+morto: o que saiu foi apagado, e o histórico do #480, #481, #483 e #485
+guarda a versão anterior.
 
 ## Regras desta janela
 
@@ -60,142 +110,132 @@ imprime o valor.
   sudo -n true || { echo "PARAR: sudo -n não liberado neste host"; exit 1; }
   ```
 
-- Nunca imprimir env. Quando um valor importa, imprime-se só o hostname.
-- Nunca usar `updateEnv` nem outro endpoint TRPC do EasyPanel. Env muda com
-  `docker service update --env-add`, que não apaga as outras variáveis, e só
-  se a etapa 3 mostrar que o EasyPanel não gerencia aquele serviço.
-- Backup de spec em `/tmp/<service>_spec_pre461_<timestamp>.json`, com
-  `umask 077`, feito pelo `storage-rede-interna.sh` junto da digital por campo
-  (`.digital`, só hashes). A spec do `storage` leva a env com a credencial root do MinIO:
-  o arquivo fica 600 e é apagado pelo nome exato 24 h depois da etapa 7.
+- Nunca imprimir env. Quando um valor importa, imprime-se só o hostname, ou um
+  sim/não de uma comparação.
+- Nenhum agente usa o `updateEnv` nem outro endpoint TRPC do EasyPanel.
+- Backup de spec em `/tmp/<serviço>_spec_pre461_<ts>.json`, com `umask 077`,
+  feito pelo `storage-rede-interna.sh`, junto da digital por campo
+  (`.digital`, só hashes). O backup leva a env com credenciais. O arquivo fica
+  com permissão 600 e é apagado pelo nome exato 24 h depois da etapa 7.
+- O script é copiado para o host a partir do `main` do merge, com o
+  `sha256sum` conferido contra o do repositório, e roda dentro de um `tmux`.
 
-## Etapa 2 — imagem com a flag desligada
+## Etapa 3 — o que a leitura mostrou (24/10/2026)
 
-Pelo processo de release em vigor (modelo: `release-437-correcoes-rce.md`), na
-ordem que o `PRODUCTION_CURRENT.md` manda. Nenhuma env muda. Com a flag
-ausente, a validação é a mesma de antes, e a prova disso são os testes de
-`test_config_storage_internal_http.py`.
+- O `storage` e a `api` não têm rótulos e são do projeto `sell-autonomia` do
+  EasyPanel. A api é App Service com fonte GitHub e `Dockerfile.api`
+  (`deploy/easypanel-native/README.md`).
+- O `asset-worker` tem os rótulos `com.autonomia.*`. Ele é criado pelo
+  `ensure-asset-worker.sh`, que copia a env da api.
+- O `storage` está com `update=stop-first` e `rollback=stop-first`.
+- A api está com `update=start-first` e `rollback=stop-first`, graça de
+  5m30s, e os volumes `/run/appsell-clamav` e `/run/appsell-pdf`.
+- O worker está com `update=stop-first` e `rollback=stop-first`, e graça
+  de 30 s.
+- As redes `easypanel-sell-autonomia` e `easypanel` são overlay, não
+  internas, do Swarm e attachable. O Swarm tem 1 nó.
 
-**Pronto quando:** `/health/ready` da api com `"storage":true`, os serviços
-com a contagem de env igual à do backup e o smoke da Hub2You igual ao de antes.
+## Etapa 5 — ensaio assinado (só leitura)
 
-## Etapa 3 — leitura do EasyPanel e das redes (só leitura)
+### 5.1 O nome resolve só para o storage do Sell
 
-Decide **como** a rede e o alias entram. Se o EasyPanel gerencia o serviço e
-reescreve a spec num redeploy, um `docker service update` some no próximo
-deploy. É a mesma lição de prod-config-não-é-código. Lê só rótulos, redes,
-ordem de update e tipo de mount, sem env:
+A VIP do storage em cada rede, e o Id da rede do projeto:
 
 ```sh
-for s in sell-autonomia_storage sell-autonomia_api sell-autonomia_asset-worker; do
-  echo "== $s"
-  sudo -n docker service inspect "$s" --format '{{range $k, $v := .Spec.Labels}}{{println $k}}{{end}}'
-  sudo -n docker service inspect "$s" --format \
-    'update={{.Spec.UpdateConfig.Order}} rollback={{.Spec.RollbackConfig.Order}} replicas={{.Spec.Mode.Replicated.Replicas}} mounts={{range .Spec.TaskTemplate.ContainerSpec.Mounts}}{{.Type}}:{{.Target}} {{end}}'
-  sudo -n docker service inspect "$s" --format '{{range .Spec.TaskTemplate.Networks}}{{.Target}} {{json .Aliases}}{{println}}{{end}}' \
-    | while read -r alvo aliases; do
-        printf '%s aliases=%s\n' "$(sudo -n docker network inspect "$alvo" --format '{{.Name}} driver={{.Driver}} internal={{.Internal}} scope={{.Scope}}')" "$aliases"
-      done
+sudo -n docker network inspect easypanel-sell-autonomia --format '{{.Id}}'
+sudo -n docker service inspect sell-autonomia_storage \
+  --format '{{range .Endpoint.VirtualIPs}}{{.NetworkID}} {{.Addr}}{{println}}{{end}}'
+sudo -n docker service inspect sell-autonomia_storage \
+  --format '{{range .Spec.TaskTemplate.Networks}}{{.Target}} {{json .Aliases}}{{println}}{{end}}'
+```
+
+Esperado:
+
+- a linha cujo `NetworkID` é o Id de `easypanel-sell-autonomia` traz a VIP do
+  storage nessa rede;
+- o alias `sell-autonomia-storage` aparece **só** na linha dessa rede.
+
+Depois, de dentro da api e do worker:
+
+```sh
+cid_de() { sudo -n docker inspect --format '{{.Status.ContainerStatus.ContainerID}}' \
+  "$(sudo -n docker service ps -q "$1" --filter desired-state=running | head -1)"; }
+for s in sell-autonomia_api sell-autonomia_asset-worker; do
+  echo "== $s"; sudo -n docker exec "$(cid_de "$s")" getent hosts sell-autonomia-storage
 done
-sudo -n docker network ls --format '{{.Name}}' | grep -Fx sell-storage-internal || echo "sell-storage-internal: não existe"
-sudo -n docker node ls --format '{{.Hostname}} {{.Status}} {{.Availability}} {{.ManagerStatus}}'   # esperado: 1 linha
 ```
 
-E no painel do EasyPanel, só olhando: o `storage` é um serviço do projeto
-`sell-autonomia`? O painel tem campo de rede ou alias para ele? A `api` tem a
-env editada pelo painel?
+Esperado nos dois: **uma linha**, com exatamente a VIP da rede do projeto, sem
+a máscara.
 
-**Decisão, antes da etapa 4:**
+- Outro IP, ou mais de uma linha: o nome também responde por outro serviço
+  (na api, pela rede `easypanel`). Parar e levar ao Rodrigo.
+- Nenhuma linha: o alias não está na rede do serviço. Parar.
 
-- Se o `storage` e a `api` **não** são gerenciados pelo EasyPanel (sem rótulo
-  dele, criados por script): seguir com os comandos abaixo.
-- Se **são**: parar. A rede, o alias e a env precisam entrar pela
-  configuração que o EasyPanel guarda. O método volta ao Rodrigo antes de
-  qualquer escrita.
-- O `asset-worker` é criado por `deploy/easypanel-native/ensure-asset-worker.sh`.
-  O #481 faz o script exigir `sell-storage-internal` e pôr o worker nela, além
-  da rede do ClamAV. O merge dele é a etapa 5b, antes da 6. Sem ele, um worker
-  recriado pelo script volta sem a rede e quebra. O script só roda quando o
-  worker é recriado, então o merge basta e não há deploy no host.
-- A `api` não tem script nosso. Ela é App Service do EasyPanel
-  (`deploy/easypanel-native/README.md:21` e `:69`), e os releases só trocam a
-  imagem (`docs/PRODUCTION_CURRENT.md:326`), o que preserva as redes e a env. Um
-  deploy pelo próprio EasyPanel remontaria a spec e tiraria a rede. É a decisão
-  logo acima: se o painel gerencia a api, a rede e a env entram por ele.
-- `storage` precisa estar com `update=stop-first` e `rollback=stop-first`:
-  MinIO de instância única não pode ter duas tasks no mesmo volume. A etapa 4
-  fixa isso no mesmo update. Ler o valor de hoje é só para registrar.
+O `storage-rede-interna.sh seco` faz a mesma conferência e imprime
+`alias=ok` ou `alias=falha` para cada serviço.
 
-## Etapa 4 — rede e alias
+### 5.2 SigV4, path-style e credenciais pelo nome novo
 
-### Antes: worker ocioso, smoke e linha de base
+O `health/live` não usa assinatura. Este passo prova a assinatura, o
+path-style e as credenciais pelo endpoint novo, antes de mudar a env. O
+endpoint é trocado **só no processo** do ensaio. A credencial já está no
+contêiner e não é impressa: a saída é `ok`, ou o nome e o código do erro.
 
-Nada de envio em andamento: a pausa do storage derrubaria um multipart ou um
-trabalho de verificação no meio. A consulta, só contagens, numa transação
-READ ONLY:
+As `Settings` são construídas de novo, com a env real do contêiner e os dois
+valores da etapa 6 por cima. Assim a validação do `config.py` roda inteira
+antes da troca. Se ela recusar a env de produção com a flag ligada, o erro
+aparece aqui, e não numa task nova que nunca fica `healthy`.
+(`model_copy(update=...)` não rodaria os validadores.)
 
 ```sh
-sudo -n docker exec -i "$(sudo -n docker ps -q --filter name=sell-autonomia_postgres-native-90. | head -1)" \
-  psql -U appsell_native_admin -d appsell_native_90 -At <<'SQL'
-begin transaction read only;
-select 'upload em voo', count(*) from app_private.asset_upload
-  where status in ('pending','uploaded','verifying') and expires_at > now();
-select 'verificação na fila', count(*) from app_private.asset_verification_job
-  where status in ('queued','leased');
-select 'limpeza na fila', count(*) from app_private.asset_storage_cleanup_job
-  where status in ('queued','leased');
-select 'capa em voo', count(*) from app_private.product_cover_upload
-  where status = 'pending';
-select 'logo em voo', count(*) from app_private.seller_logo_upload
-  where status = 'pending';
-select 'e-mail em lease', count(*) from app_private.email_outbox
-  where status = 'leased';
-rollback;
-SQL
+for s in sell-autonomia_api sell-autonomia_asset-worker; do
+  cid=$(sudo -n docker inspect --format '{{.Status.ContainerStatus.ContainerID}}' \
+    "$(sudo -n docker service ps -q "$s" --filter desired-state=running | head -1)")
+  sudo -n docker exec "$cid" python -c '
+from appsell_api.config import Settings
+from appsell_api.storage_s3 import S3Storage
+def falha(erro):
+    codigo = getattr(erro, "response", {}).get("Error", {}).get("Code", "-")
+    print("erro:", type(erro).__name__, codigo)
+try:
+    ensaio = Settings(
+        storage_internal_http_allowed=True,
+        storage_internal_endpoint="http://sell-autonomia-storage:9000",
+    )
+    print("validação do config.py: ok, path_style:", ensaio.storage_path_style)
+except Exception as erro:
+    falha(erro)
+    raise SystemExit(1)
+storage = S3Storage(ensaio)
+try:
+    storage.probe_availability()
+    print("HEAD assinado nos dois buckets: ok")
+    storage.assert_runtime_controls(
+        allowed_origin=ensaio.storage_allowed_origin,
+        require_tls=True,
+        cors_mode=getattr(ensaio, "storage_cors_mode", "s3"),
+    )
+    print("versionamento e CORS dos dois buckets: ok")
+    storage.object_exists(bucket=ensaio.storage_ready_bucket, key="ensaio-461/nao-existe")
+    print("HEAD assinado de objeto: ok")
+except Exception as erro:
+    falha(erro)' | sed "s/^/$s /"
+done
 ```
 
-**Seguir só com tudo em 0.** Um `pending` vencido não conta, e o filtro por
-`expires_at` já o tira. Diferente de 0: esperar e repetir.
+Esperado nos dois serviços: `validação do config.py: ok, path_style: True` e
+as três linhas `ok`. Os parâmetros do `assert_runtime_controls` são os mesmos
+que a api usa no `/health/ready` (`main.py`). Qualquer `erro:` manda parar
+aqui. Não há rollback, porque nada mudou.
 
-**Janela:** de baixo tráfego, escolhida pelo Rodrigo. A pausa do `storage`, na
-etapa 4, atinge `minio.autonomia.site` e, com ele, as imagens da vitrine.
+## Etapa 5b — merge deste PR
 
-**A api troca sempre com `start-first`.** É a ordem de update da spec dela em
-produção (`inventario-de-deploy.md`, tabela da Fase 0). A task nova
-sobe ao lado da antiga e só a substitui depois de `healthy` (o `HEALTHCHECK`
-sonda `/health/startup`, que só fica verde com as dependências prontas: o
-`ever_ready` de `main.py`). Duas tasks ao mesmo tempo não enviam e-mail em
-dobro: o claim é por lease com fence no banco (`email_worker.py`, docstring do
-módulo). A api só monta os sockets do ClamAV e do sandbox, como cliente, e não
-roda migration nesta janela.
+O `ensure-asset-worker.sh` só roda quando o worker é recriado. O merge basta;
+não há deploy no host. Sem este merge, a recriação do worker falha por causa
+do bloco do #481.
 
-Com `stop-first`, a loja inteira cai na troca. Foram 22 s de 500 na página de
-produto na etapa 2 (24/10/2026, 07:59:53–08:00:14), e a queda pode ir a 330 s
-(`--stop-grace-period`) se houver e-mail em lease. O `storage-rede-interna.sh`
-põe `--update-order start-first` na api nas etapas 4 e 6. `stop-first` no update
-fica só no `storage` (MinIO de instância única, um volume).
-
-O **rollback** da api continua `stop-first`, como na spec de produção
-(`update=start-first rollback=stop-first`, lido em 24/10/2026 às 07:55:58).
-Um rollback da api, portanto, **para a loja inteira** pelo tempo da troca: ~22 s
-de 500 na etapa 2, e até 330 s (`--stop-grace-period`) com e-mail em lease. É o
-custo de todo rollback que toca a api, e ele é anunciado antes de executar.
-Trocar o rollback order para `start-first` é outra decisão, com justificativa e
-OK próprios do Rodrigo.
-
-**Outros clientes do MinIO do Sell.** O backup do banco
-(`deploy/easypanel-native/backup/`, `APPSELL_BACKUP_S3_ENDPOINT`), o
-`view-storage` e qualquer `mc` dependem do storage de pé. Antes de marcar a
-janela, ler quando o backup roda, sem abrir conteúdo:
-
-```sh
-sudo -n ls -l /etc/cron.d/appsell-native-backup 2>&1
-sudo -n awk '!/^#/ && NF {print $1, $2, $3, $4, $5}' /etc/cron.d/appsell-native-backup 2>&1
-```
-
-e, no painel do EasyPanel, só olhando, se existe serviço agendado de backup
-(opção B do `BACKUP_RESTORE_SELL.md`). A janela fica a pelo menos 1 h de
-qualquer execução encontrada.
+## Linha de base, antes das etapas 6a e 6b
 
 **Smoke da Hub2You (AGENTS.md §7), na máquina local, antes e depois de cada
 escrita.** Sem sessão; só códigos e contagens:
@@ -223,7 +263,7 @@ def imagens(texto):
 cod, _, vitrine = get(BASE + "/s/hub2you")
 img = imagens(vitrine)
 print("vitrine", cod, "cards", vitrine.count(">Ver e comprar<"),
-      "R$ 47,00", "R$ 47,00" in vitrine, "R$ 87,00", "R$ 87,00" in vitrine,
+      "R$ 47,00", "R$ 47,00" in vitrine, "R$ 87,00", "R$ 87,00" in vitrine,
       "imagens", len(img), "com erro", sum(c != 200 for c in img))
 for p in ("condicoes-gerais", "gerador-de-cotacoes-comparativas"):
     caminho = f"/s/hub2you/p/{p}"
@@ -239,15 +279,18 @@ for p in ("condicoes-gerais", "gerador-de-cotacoes-comparativas"):
 PY
 ```
 
-Esperado: vitrine 200, 2 cards, os dois preços, 0 imagens com erro. A
-contagem é do texto visível (`>Ver e comprar<`): o payload da página repete a
-frase, e a contagem solta dá 4. Cada
-página 200, `comprar True`, `href True`, `login 307`, `return_to True`,
-`new_user True`, `identity 200`. Antes de qualquer escrita, guardar a saída
-como linha de base.
+Esperado:
 
-**Medir o tempo real sem storage**, numa segunda sessão local aberta antes do
-update, com fim ao Ctrl-C:
+- vitrine 200, 2 cards, os dois preços e 0 imagens com erro. A contagem é do
+  texto visível (`>Ver e comprar<`). O payload da página repete a frase, e a
+  contagem solta dá 4.
+- cada página: 200, `comprar True`, `href True`, `login 307`,
+  `return_to True`, `new_user True` e `identity 200`.
+
+Antes de qualquer escrita, guardar a saída como linha de base.
+
+**Laço de disponibilidade**, numa segunda sessão local aberta antes de cada
+escrita, até o Ctrl-C:
 
 ```sh
 while :; do
@@ -255,276 +298,238 @@ while :; do
     "$(curl -s -o /dev/null -m 2 -w '%{http_code}' https://minio.autonomia.site/minio/health/live)" \
     "$(curl -s -o /dev/null -m 5 -w '%{http_code}' https://sell.autonomia.site/s/hub2you/p/condicoes-gerais)"
   sleep 1
-done | tee "$TMPDIR/storage-461-pausa.log"
+done | tee "$TMPDIR/storage-461-janela.log"
 ```
 
-O tempo sem storage e o tempo sem loja vão, cada um, da primeira linha
-diferente de 200 até a primeira 200 de volta, e entram no registro do #461.
+Qualquer linha diferente de 200 entra no registro do #461, com início e fim.
 
-### Escrita
+**Worker ocioso, só para a etapa 6a.** O worker troca com `stop-first`, e um
+trabalho de verificação no meio seria interrompido. A consulta, só contagens,
+numa transação READ ONLY:
 
-Pelo `deploy/easypanel-native/storage-rede-interna.sh`, copiado para o host
-a partir do `main` do merge, com o `sha256sum` conferido contra o do
-repositório. Primeiro o modo seco, que só lê:
+```sh
+sudo -n docker exec -i "$(sudo -n docker ps -q --filter name=sell-autonomia_postgres-native-90. | head -1)" \
+  psql -U appsell_native_admin -d appsell_native_90 -At <<'SQL'
+begin transaction read only;
+select 'verificação na fila', count(*) from app_private.asset_verification_job
+  where status in ('queued','leased');
+select 'limpeza na fila', count(*) from app_private.asset_storage_cleanup_job
+  where status in ('queued','leased');
+rollback;
+SQL
+```
+
+Seguir só com as duas contagens em 0. Diferente de 0: esperar e repetir.
+
+## Etapa 6a — env do worker, por script
+
+Vem antes da api porque o worker não serve a loja. É a primeira prova com um
+processo real, e o rollback dele não para a vitrine.
 
 ```sh
 bash storage-rede-interna.sh seco
-bash storage-rede-interna.sh rede
+bash storage-rede-interna.sh worker
 ```
 
-O que o `rede` faz, nesta ordem, e onde para:
+O que o `worker` faz, e onde para:
 
-1. `sudo -n`, Swarm com 1 nó (com 2, para: a rede teria de nascer com
-   `--opt encrypted`, ensaiada antes), os três serviços com 1 task `Running`.
-2. Backup das três specs em `/tmp/<serviço>_spec_pre461_<ts>.json`, `umask
-   077`, e a digital por campo (`Labels`, imagem, env, mounts, redes,
-   recursos, ordem de update e de rollback) em `.digital`, só hashes. O `ts`
-   sai impresso: é o nome dos backups.
-3. Cria `sell-storage-internal` se não existe e exige `overlay true swarm`.
-   Rede existente que não seja interna: para **antes de qualquer update**.
-4. `storage` com `--update-order stop-first --rollback-order stop-first
-   --network-add name=sell-storage-internal,alias=appsell-storage`, depois a
-   api precisa voltar a ver o storage (`probe_availability()` de dentro dela).
-5. api, depois worker, com `--network-add sell-storage-internal`; depois de
-   cada um, `probe_availability()` de dentro do próprio serviço. A api leva
-   junto `--update-order start-first` (o rollback order fica o da spec); o worker
-   mantém a ordem da spec e precisa já estar com rollback `stop-first`, ou o
-   script para antes do backup.
+1. Confere, sem escrever nada:
+   - o `sudo -n` e o Swarm com 1 nó;
+   - o `storage` e o worker com 1 task `Running`;
+   - o rollback order do worker, que tem de ser `stop-first`;
+   - a conferência do alias da etapa 5.1: o worker na rede em que o storage
+     tem o alias, e o `getent` dando só a VIP do storage nessa rede.
+   Qualquer falha: ABORT, sem backup e sem update.
+2. Se a flag e o endpoint já estão nos valores desta janela, não faz nada.
+3. Faz o backup da spec e da digital em `/tmp/sell-autonomia_asset-worker_spec_pre461_<ts>.*`
+   e imprime o `ts`.
+4. Roda um update só, com `--env-add APPSELL_API_STORAGE_INTERNAL_HTTP_ALLOWED=true
+   --env-add APPSELL_API_STORAGE_INTERNAL_ENDPOINT=http://sell-autonomia-storage:9000`.
+   A ordem de update fica a da spec.
+5. Confere, em até 180 s:
+   - 1 task `Running`;
+   - o `probe_availability()` verde de dentro do worker;
+   - a contagem de env igual à de antes **mais as variáveis que não existiam**
+     (1 hoje: a flag é nova e o endpoint é substituído);
+   - nenhum nome de variável a menos;
+   - a flag e o endpoint com os valores desta janela.
 
-Cada update é conferido: saída do `docker service update`, 1 task `Running`
-e a checagem verde em até 180 s, a contagem de env igual à de antes e nenhum
-nome de variável a menos. Qualquer saída que não seja o fim verde (conferência
-que falha, erro de comando, Ctrl-C, SIGTERM ou queda do SSH) volta os serviços
-que já tocou, do último para o primeiro, e sai com 1 (130 no sinal). Os que
-ele não tocou ficam como estão. Serviço que já está na rede é pulado, então
-rodar de novo depois de uma falha corrigida não repete o que fechou.
+Qualquer saída que não seja o fim verde volta o worker ao backup e sai com 1
+(130 no sinal). Isso vale para conferência que falha, erro de comando, Ctrl-C,
+SIGTERM ou queda do SSH.
 
-Rodar dentro de um `tmux` no host: a queda do SSH também desfaz, mas a etapa
-fica pela metade e tem de ser repetida.
+**Conferência:** o comando do item 0 do runbook do #477 imprime
+`sell-autonomia-storage` como `INTERNAL_ENDPOINT` no worker. O smoke da
+Hub2You fica igual à linha de base.
 
-### Conferência
-
-```sh
-for s in sell-autonomia_storage sell-autonomia_api sell-autonomia_asset-worker; do
-  echo "$s env=$(sudo -n docker service inspect "$s" --format '{{len .Spec.TaskTemplate.ContainerSpec.Env}}') $(sudo -n docker service ps "$s" --filter desired-state=running --format '{{.CurrentState}}' | head -1)"
-done
-for s in sell-autonomia_api sell-autonomia_asset-worker; do
-  cid=$(sudo -n docker inspect --format '{{.Status.ContainerStatus.ContainerID}}' \
-    "$(sudo -n docker service ps -q "$s" --filter desired-state=running | head -1)")
-  sudo -n docker exec "$cid" python -c '
-import socket, urllib.request, urllib.error
-print("appsell-storage resolve:", bool(socket.getaddrinfo("appsell-storage", 9000)))
-try:
-    print("health/live HTTP", urllib.request.urlopen("http://appsell-storage:9000/minio/health/live", timeout=5).status)
-except urllib.error.HTTPError as e:
-    print("health/live HTTP", e.code)' | sed "s/^/$s /"
-done
-```
-
-Esperado: a contagem de env de cada serviço **igual** à do backup, os três
-`Running`, `resolve: True` e `HTTP 200` nos dois. Depois disso, o passo 7 do
-runbook do #477 (probe direto e três leituras do `/health/ready`, todas com
-`"storage":true`) e o smoke da Hub2You igual à linha de base.
-
-### Rollback da etapa 4 (≈ 1–2 min)
-
-**Custo do rollback da api:** a loja inteira para durante a troca. Foram ~22 s de 500
-na etapa 2, e pode chegar a 330 s (`--stop-grace-period`) com e-mail em lease.
-Anunciar isso antes de executar, e medir com o laço de pausa.
-
-Com o `ts` impresso pela escrita:
+**Rollback da etapa 6a (≈ 1 min, sem efeito na loja):**
 
 ```sh
 bash storage-rede-interna.sh desfazer <ts>
 ```
 
-O `ts` só é aceito no formato que a etapa imprime (`AAAAMMDDTHHMMSSZ`).
-Worker, api e storage, nesta ordem, **parando no primeiro ABORT**: os
-seguintes não são tocados. Para cada um, compara a digital da spec atual com a
-do backup, campo a campo:
+O `ts` só é aceito no formato que a etapa imprime (`AAAAMMDDTHHMMSSZ`). O
+script compara a digital da spec atual com a do backup, campo a campo:
 
-- igual ao backup: nada a desfazer (é o que acontece num serviço que o update
-  não chegou a mudar, e na segunda execução do mesmo `desfazer`);
+- igual ao backup: nada a desfazer. É o que acontece na segunda execução;
 - diferente, e a `PreviousSpec` do Swarm igual ao backup: `docker service
   rollback`, e confere de novo que a spec ficou igual ao backup e a task
   `Running`;
-- diferente, e a `PreviousSpec` também diferente (um deploy do EasyPanel ou
-  outro update entrou no meio): **ABORT, sem rollback**. Um rollback ali cairia
-  na spec desse outro deploy. Vai ao Rodrigo, com os campos que diferem.
+- diferente, e a `PreviousSpec` também diferente: **ABORT, sem rollback**.
+  Um rollback ali cairia na spec de outro deploy. Vai ao Rodrigo, com os campos
+  que diferem.
 
-O storage ainda tem duas travas antes do rollback: a api e o worker não podem
-estar com `appsell-storage` no `INTERNAL_ENDPOINT` (voltar o storage tira o
-alias, e o `/health/ready` cai), e a ordem de rollback da spec atual tem de
-ser `stop-first`, como em todos os serviços. Ordem diferente: ABORT.
+**Aborto automático:** o script volta sozinho. Smoke diferente da linha de
+base ou conferência que falha: `desfazer <ts>` sem novo OK, e alerta à
+Orquestração.
 
-A rede só sai se o `desfazer` terminou com código 0:
+## Etapa 6b — env da api, pelo Rodrigo no painel
 
-```sh
-bash storage-rede-interna.sh desfazer <ts> && sudo -n docker network rm sell-storage-internal
-```
+A loja depende da api. Nesta etapa nenhum agente escreve na api. O agente só
+fotografa a spec antes e confere depois, sem ver valor.
 
-Depois da etapa 6, o `desfazer` da etapa 4 aborta por desenho: a
-`PreviousSpec` passou a ser a da etapa 6. A ordem é desfazer a 6 primeiro e,
-se a 4 também tiver de sair, levar ao Rodrigo.
+### Trava antes de abrir o editor de env (bloqueante)
 
-**Aborto automático da etapa 4:** o script já volta sozinho quando um serviço
-não fica `Running` em 180 s, a contagem de env muda ou o storage não responde.
-Smoke diferente da linha de base, ou a conferência acima falhando: `desfazer
-<ts>` sem novo OK, e alerta à Orquestração.
+A api é App Service do EasyPanel com fonte GitHub e `Dockerfile.api`
+(`deploy/easypanel-native/README.md`). Mas nenhum release dela passou pelo
+painel. Todos trocaram a imagem por fora, com `docker service update --image`
+(`inventario-de-deploy.md`, "Como sobe"). A graça de 330 s também entrou
+assim (`PRODUCTION_CURRENT.md`, "O período de graça é parte do contrato"). Os
+dois volumes da api não constam do README, que fala em "sem mounts".
 
-## Etapa 5 — ensaio assinado (só leitura)
+**Não foi lido o que um Deploy do painel faz com isso.** Se o painel aplicar a
+env reconstruindo a imagem a partir do fonte que ele guarda, ele pode:
 
-O `health/live` não usa assinatura. Este passo prova o SigV4, o path-style e
-as credenciais pelo endpoint novo antes de mudar a env. O endpoint é trocado
-**só no processo** do ensaio. A credencial já está no contêiner e não é
-impressa: a saída é `ok` ou o nome e o código do erro.
+- trocar a imagem `api:<sha>` por um build de outra branch;
+- voltar a graça para 10 s. Aí o Swarm mata o envio de e-mail no meio, e o
+  comprador recebe duas vezes;
+- tirar os volumes do ClamAV e do sandbox de PDF.
 
-As `Settings` são construídas de novo, com a env real do contêiner e os dois
-valores da etapa 6 por cima. Assim a validação do `config.py` roda inteira
-antes da troca: se ela recusar a env de produção com a flag ligada, o erro
-aparece aqui, e não numa task nova da api que nunca fica `healthy` depois da
-etapa 6.
-(`model_copy(update=...)` não rodaria os validadores.)
+Antes de editar, o Rodrigo confere no painel, só olhando:
 
-```sh
-for s in sell-autonomia_api sell-autonomia_asset-worker; do
-  cid=$(sudo -n docker inspect --format '{{.Status.ContainerStatus.ContainerID}}' \
-    "$(sudo -n docker service ps -q "$s" --filter desired-state=running | head -1)")
-  sudo -n docker exec "$cid" python -c '
-from appsell_api.config import Settings
-from appsell_api.storage_s3 import S3Storage
-def falha(erro):
-    codigo = getattr(erro, "response", {}).get("Error", {}).get("Code", "-")
-    print("erro:", type(erro).__name__, codigo)
-try:
-    ensaio = Settings(
-        storage_internal_http_allowed=True,
-        storage_internal_endpoint="http://appsell-storage:9000",
-    )
-    print("validação do config.py: ok, path_style:", ensaio.storage_path_style)
-except Exception as erro:
-    falha(erro)
-    raise SystemExit(1)
-storage = S3Storage(ensaio)
-try:
-    storage.probe_availability()
-    print("HEAD assinado nos dois buckets: ok")
-    storage.assert_runtime_controls(
-        allowed_origin=ensaio.storage_allowed_origin,
-        require_tls=True,
-        cors_mode=getattr(ensaio, "storage_cors_mode", "s3"),
-    )
-    print("versionamento e CORS dos dois buckets: ok")
-    storage.object_exists(bucket=ensaio.storage_ready_bucket, key="ensaio-461/nao-existe")
-    print("HEAD assinado de objeto: ok")
-except Exception as erro:
-    falha(erro)' | sed "s/^/$s /"
-done
-```
+1. **Source** da api: GitHub (repositório, branch, commit) ou imagem Docker?
+2. Existe um caminho para aplicar a env **sem build**, só com restart ou
+   redeploy da imagem atual?
+3. **Mounts**: aparecem os volumes de `/run/appsell-clamav` e
+   `/run/appsell-pdf`?
+4. Em **Deploy** ou **Advanced**: há campo de graça (stop grace period) e de
+   zero downtime? Com que valor?
 
-Esperado nos dois serviços: `validação do config.py: ok, path_style: True` e
-as três linhas `ok`. Os mesmos parâmetros do `assert_runtime_controls` que a
-api usa no `/health/ready` (`main.py`). Qualquer `erro:` significa parar
-aqui. Não há rollback, porque nada mudou.
+**Parar e voltar à Orquestração** sem salvar nada se:
 
-**Prova negativa do isolamento,** no mesmo passo, só leitura:
+- a aplicação da env exige build a partir do GitHub;
+- os mounts não aparecem;
+- a graça não é configurável no painel.
 
-```sh
-sudo -n docker network inspect --verbose sell-storage-internal \
-  --format '{{range $nome, $s := .Services}}{{println $nome}}{{end}}' | sort
-#   → exatamente sell-autonomia_api, sell-autonomia_asset-worker e sell-autonomia_storage
-sudo -n docker service inspect sell-autonomia_storage \
-  --format '{{range .Endpoint.VirtualIPs}}{{.NetworkID}} {{.Addr}}{{println}}{{end}}'
-#   → a VIP do storage na rede sell-storage-internal (comparar o NetworkID com o Id da rede)
-```
+Qualquer um dos três reescreveria a spec que o `api-depois` exige igual. Com
+a imagem atual mantida, os mounts no painel e a graça em 330 s (ou sem que o
+painel a toque), seguir.
 
-Depois, de dentro da api o nome tem de dar essa VIP (sem a máscara), e de
-dentro do `sell-autonomia_web`, que fica só na rede do EasyPanel, não pode
-resolver:
+### Antes
 
-```sh
-cid_de() { sudo -n docker inspect --format '{{.Status.ContainerStatus.ContainerID}}' \
-  "$(sudo -n docker service ps -q "$1" --filter desired-state=running | head -1)"; }
-sudo -n docker exec "$(cid_de sell-autonomia_api)" python -c '
-import socket; print("api:", sorted({a[4][0] for a in socket.getaddrinfo("appsell-storage", 9000)}))'
-sudo -n docker exec "$(cid_de sell-autonomia_web)" node -e '
-require("dns").lookup("appsell-storage", (e, a) => { console.log("web:", e ? e.code : a); process.exit(e ? 0 : 1) })'
-#   → api: [<a VIP>]   web: ENOTFOUND (rc 0). Se o web resolver, a rede vazou: parar e Rodrigo.
-```
+1. Linha de base: smoke da Hub2You e laço de disponibilidade.
+2. No host, o agente fotografa a api:
 
-## Etapa 6 — env da api e do worker
+   ```sh
+   bash storage-rede-interna.sh api-antes
+   ```
 
-Só depois da etapa 5 verde, do merge do #481 (etapa 5b) e da decisão da
-etapa 3 sobre quem gerencia a env.
+   Ele confere o `sudo -n`, o Swarm com 1 nó, as tasks `Running`, o rollback
+   `stop-first` e o alias de dentro da api (etapa 5.1). Depois grava
+   `/tmp/sell-autonomia_api_spec_pre461_<ts>.{json,digital}` e imprime a
+   contagem de env, o hostname do endpoint interno (`minio.autonomia.site`) e
+   o `ts`. Não escreve na api.
+3. O Rodrigo anota, para ele, o valor **atual** de
+   `APPSELL_API_STORAGE_INTERNAL_ENDPOINT`. É o valor do rollback. Nenhum
+   agente o vê.
 
-```sh
-bash storage-rede-interna.sh seco
-bash storage-rede-interna.sh env
-```
+### No painel, nesta ordem
 
-O que o `env` faz e onde para:
+Nomes exatos, sem espaço antes nem depois do `=`:
 
-1. As mesmas checagens e backups da etapa 4, com um `ts` novo.
-2. A rede existe e é `overlay true swarm`, e os três serviços estão nela. Se
-   não, a etapa 4 não fechou: para antes de qualquer update.
-3. api primeiro (com `--update-order start-first`), depois worker: `--env-add
-   APPSELL_API_STORAGE_INTERNAL_HTTP_ALLOWED=true --env-add
-   APPSELL_API_STORAGE_INTERNAL_ENDPOINT=http://appsell-storage:9000`. Depois
-   de cada um: 1 task `Running` e `probe_availability()` verde de dentro dele
-   em até 180 s, e a contagem de env igual à de antes **mais as variáveis que
-   não existiam** (1 hoje: a flag é nova e o endpoint é substituído), nenhum
-   nome a menos e a flag presente. Contagem diferente, como uma env que
-   zerou, ou uma variável trocada por outra, é falha.
-4. Três leituras do `/health/ready` de dentro da api, 15 s entre elas, todas
-   com `"storage":true`.
+1. `APPSELL_API_STORAGE_INTERNAL_HTTP_ALLOWED=true` (nova).
+2. `APPSELL_API_STORAGE_INTERNAL_ENDPOINT=http://sell-autonomia-storage:9000`
+   (substitui o valor atual; o nome é o mesmo).
+3. Nenhuma outra variável muda, sai ou entra. Salvar as duas juntas e aplicar
+   uma vez.
 
-Falhou qualquer passo, ou a execução foi interrompida: volta o que tocou, do
-último para o primeiro, e sai com 1 (130 no sinal). Se a api falha, o worker
-não é tocado.
+A ordem importa se o painel aplicar uma de cada vez. A flag sozinha não muda
+nada: com o endpoint https, a validação é a mesma de hoje. O endpoint http
+sem a flag é recusado pelo `config.py`, e a task nova nunca fica `healthy`.
 
-**Conferência:**
+O painel está com `zeroDowntime=true`, isto é, `start-first`. A task nova sobe
+ao lado da antiga e só a substitui depois de `healthy`, sem queda da loja.
+Duas tasks juntas não mandam e-mail em dobro: o claim é por lease com fence no
+banco (`email_worker.py`).
 
-- a contagem de env de cada serviço é a do backup **mais 1** (a flag é nova; o
-  endpoint é substituído);
-- o comando do item 0 do runbook do #477 imprime `appsell-storage` como
-  `INTERNAL_ENDPOINT` nos dois serviços;
-- o passo 7 do runbook do #477: probe direto nos dois e três leituras do
-  `/health/ready`, 15 s entre elas, todas com `"storage":true`;
-- o log do Traefik, nos 5 minutos seguintes, sem `HEAD /appsell-` vindo de
-  `172.18.0.1`, porque o controle deixou de passar por ele;
-- smoke da Hub2You igual à linha de base.
+### Depois
 
-**Custo do rollback da api:** a loja inteira para durante a troca. Foram ~22 s de 500
-na etapa 2, e pode chegar a 330 s (`--stop-grace-period`) com e-mail em lease.
-Anunciar isso antes de executar, e medir com o laço de pausa.
+1. Quando a task nova estiver `Running`, o agente roda:
 
-**Rollback da etapa 6 (≈ 1 min por serviço):** com o `ts` impresso pelo
-`env`, o mesmo `desfazer` da etapa 4, com as mesmas três saídas (nada a
-desfazer, rollback conferido, ou ABORT e Rodrigo):
+   ```sh
+   bash storage-rede-interna.sh api-depois <ts>
+   ```
 
-```sh
-bash storage-rede-interna.sh desfazer <ts>
-```
+   Ele só lê, e sai com 1 na primeira falha, dizendo qual rollback usar.
+   Confere:
 
-Depois, o comando do item 0 tem de voltar a mostrar `minio.autonomia.site`.
+   - a digital por campo contra o backup. Só a env pode ter mudado. Imagem,
+     graça, mounts, redes, recursos, rótulos ou ordens de update e rollback
+     diferentes saem como `o painel mudou mais que a env: <campos>`;
+   - a contagem de env igual à do backup mais 1, e nenhum nome a menos;
+   - a flag e o endpoint com os valores desta janela;
+   - o `probe_availability()` de dentro da api e o alias resolvendo só para a
+     VIP do storage;
+   - três leituras do `/health/ready`, com 15 s entre elas, todas com
+     `"storage":true`.
+2. O item 0 do runbook do #477 imprime `sell-autonomia-storage` como
+   `INTERNAL_ENDPOINT` nos dois serviços.
+3. O smoke da Hub2You fica igual à linha de base, e o laço sem linha diferente
+   de 200.
+4. Nos 5 minutos seguintes, o log do Traefik não mostra `HEAD /appsell-` vindo
+   de `172.18.0.1`: o controle deixou de passar por ele.
 
-**Aborto automático da etapa 6:** o script já volta sozinho quando a task nova
-não fica `Running` em 180 s, o storage não responde, a contagem de env não é
-a esperada ou uma das três leituras do `/health/ready` vem sem
-`"storage":true`. Smoke diferente da linha de base, ou a conferência acima
-falhando: `desfazer <ts>` sem novo OK e alerta à Orquestração.
+### Rollback da etapa 6b
+
+Há dois rollbacks, conforme o que o `api-depois` disser:
+
+- **Só a env está errada,** ou o storage não responde. O Rodrigo volta pelo
+  painel:
+  - `APPSELL_API_STORAGE_INTERNAL_ENDPOINT` ao valor anotado no passo 3;
+  - `APPSELL_API_STORAGE_INTERNAL_HTTP_ALLOWED` removida.
+
+  Depois salva e aplica, com a mesma trava e o mesmo `start-first`, e a loja
+  não para. ETA: 2 a 3 min. Conferência: o item 0 do #477 volta a mostrar
+  `minio.autonomia.site`, o `/health/ready` volta com `"storage":true`, e o
+  smoke volta a ser igual à linha de base.
+- **O painel mudou mais que a env** (imagem, graça, mounts). O rollback do
+  painel não desfaz isso. O agente roda `bash storage-rede-interna.sh
+  desfazer <ts>`. Ele usa a `PreviousSpec` do Swarm só se ela for igual ao
+  backup; se não for, ABORT e Rodrigo. O rollback da api é `stop-first`, então
+  **a loja para durante a troca**: ~22 s de 500 na etapa 2, e até 330 s com
+  e-mail em lease. Anunciar antes de executar, e medir com o laço.
+
+  Depois disso, o painel guarda uma config diferente da spec em produção. O
+  próximo Deploy pelo painel a reaplicaria. Até o Rodrigo decidir como
+  alinhar, ninguém aplica nada da api pelo painel.
+
+**Aborto:** smoke diferente da linha de base, ou `api-depois` com saída 1. Um
+desses dois rollbacks, sem novo OK, e alerta à Orquestração.
 
 ## Etapa 7 — reaplicar a borda do #477
 
-Pelo `storage-461-borda-traefik.md`. O item 0 dele agora espera
-`appsell-storage` como `INTERNAL_ENDPOINT` nos dois serviços. O teste que
-importa é o que derrubou a primeira tentativa: depois do `mv`, o
-`/health/ready` continua com `"storage":true`, porque o controle já não passa
-pela borda.
+Pelo `storage-461-borda-traefik.md`. O item 0 dele espera
+`sell-autonomia-storage` como `INTERNAL_ENDPOINT` nos dois serviços.
+
+O teste que importa é o que derrubou a primeira tentativa. Depois do `mv`, o
+`/health/ready` tem de continuar com `"storage":true`, porque o controle já
+não passa pela borda.
 
 ## Limpeza
 
-24 h depois da etapa 7 estável, apagar pelo nome exato os backups
-`/tmp/<serviço>_spec_pre461_<ts>.json` e `.digital` dos dois `ts` anotados.
-Atualizar o `PRODUCTION_CURRENT.md` com a rede, o alias, a flag e o tempo de
-pausa medido.
+24 h depois da etapa 7 estável:
+
+- apagar pelo nome exato os backups `/tmp/<serviço>_spec_pre461_<ts>.json` e
+  `.digital` dos `ts` anotados;
+- atualizar o `PRODUCTION_CURRENT.md` com o endpoint interno, a flag e o
+  resultado do laço de disponibilidade.
