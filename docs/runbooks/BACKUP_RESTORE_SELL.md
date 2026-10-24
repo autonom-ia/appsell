@@ -177,8 +177,32 @@ bash deploy/easypanel-native/backup/restore-native.sh \
   /caminho/para/appsell_native_90-<stamp>.dump.gpg
 ```
 
+**No host, antes de rodar** (#492):
+
+1. Levar os scripts do SHA da `main` **com a fonte dos papéis**. O restore cria
+   no descartável, como `NOLOGIN` e sem senha, os papéis que
+   `infra/postgres/init/001_roles.sh` cria; sem esse arquivo ele para.
+   ```sh
+   git archive origin/main deploy/easypanel-native/backup infra/postgres/init/001_roles.sh \
+     | ssh claudete 'mkdir -p /home/claudete/releases/backup-<data> && tar -x -C /home/claudete/releases/backup-<data>'
+   ```
+2. Conferir a imagem que vai ser usada. O padrão é a do servidor de produção,
+   por digest (`lib-backup.sh`). No host, ela tem de ser a da task do
+   `postgres-native-90` em execução:
+   ```sh
+   t="$(sudo -n docker service ps -q sell-autonomia_postgres-native-90 --filter desired-state=running | head -1)"
+   sudo -n docker inspect "$(sudo -n docker inspect "$t" --format '{{.Status.ContainerStatus.ContainerID}}')" --format '{{.Image}}'
+   # o padrão do BACKUP_PG_IMAGE no lib-backup.sh
+   sudo -n docker image inspect postgres@sha256:ebba4f4de37f08f138f97c1443c987a435e783177afedcc4aaf2da1930fbc37a \
+     --format '{{.Id}} {{json .RepoDigests}}'
+   ```
+   O `Id` da segunda linha tem de ser igual à primeira. Se não for, ou se a
+   imagem não existir no host, **parar**. Não fazer pull às cegas: passar
+   `BACKUP_PG_IMAGE`/`RESTORE_PG_IMAGE` com o ID lido na primeira linha.
+
 Aceite do ensaio:
 - `integrity ok: ...`
+- `roles created in the disposable target: ...` (os de `001_roles.sh`)
 - `restored non-system tables: N` com `N > 0`
 - `identity_user rows restored: M` (quando aplicável)
 - `restore rehearsal ok: ... is restorable`
