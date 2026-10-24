@@ -179,8 +179,11 @@ prova_pdf_pelo_worker() {
   test -n "$cid" || { echo "sem contêiner do $trabalhador"; return 1; }
   erro="$(mktemp)"
   # O PDF é lido pelo usuário que roda o script; o sudo é só do docker.
+  # Sem `-I` aqui: ele ignora o PYTHONPATH da imagem, e é por ele que o worker
+  # acha o appsell_api (o pacote não é instalado no .venv). A prova roda com o
+  # mesmo ambiente do worker, de dentro do contêiner dele.
   # shellcheck disable=SC2024
-  if ! saida="$(sudo -n docker exec -i "$cid" python -I -c '
+  if ! saida="$(sudo -n docker exec -i "$cid" python -c '
 import json, shutil, sys, tempfile
 from pathlib import Path
 from appsell_api.pdf_derivatives import prepared_pdf_file

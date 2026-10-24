@@ -380,6 +380,12 @@ jobs:
           BOOTSTRAP_IMAGE: autonomia-sell-native-bootstrap:rehearsal
         run: bash deploy/easypanel-native/test-bootstrap-native.sh
 
+      - name: Rehearse PDF sandbox hardening in a throwaway Swarm
+        id: cert-sandbox
+        if: ${{ !cancelled() && (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch') && steps.route.outputs.sandbox == 'true' }}
+        timeout-minutes: 30
+        run: bash deploy/easypanel-native/test-harden-pdf-sandbox-swarm.sh
+
       - name: Smoke merged main without repeating certification
         id: smoke
         if: ${{ !cancelled() && github.event_name == 'push' }}
@@ -412,6 +418,7 @@ jobs:
           CI_OUTCOME_CERT_OPENBAO: ${{ steps.cert-openbao.outcome }}
           CI_OUTCOME_CERT_BACKUP: ${{ steps.cert-backup.outcome }}
           CI_OUTCOME_CERT_PREVIEW: ${{ steps.cert-preview.outcome }}
+          CI_OUTCOME_CERT_SANDBOX: ${{ steps.cert-sandbox.outcome }}
           CI_OUTCOME_IMAGE_WEB: ${{ steps.image-web.outcome }}
           CI_OUTCOME_IMAGE_API: ${{ steps.image-api.outcome }}
           CI_OUTCOME_IMAGE_BOOTSTRAP: ${{ steps.image-bootstrap.outcome }}

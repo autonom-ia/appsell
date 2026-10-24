@@ -20,6 +20,7 @@ KNOWN_STEPS = {
     "cert_openbao",
     "cert_backup",
     "cert_preview",
+    "cert_sandbox",
     "image_web",
     "image_api",
     "image_bootstrap",
@@ -64,6 +65,9 @@ def expected_steps(
             expected.add("cert_backup")
         if route.get("preview"):
             expected.add("cert_preview")
+        # O ensaio em Swarm leva minutos: só na fila e no dispatch, não no push.
+        if route.get("sandbox") and event in {"merge_group", "workflow_dispatch"}:
+            expected.add("cert_sandbox")
         for scope in ("web", "api", "bootstrap"):
             if route.get(f"image_{scope}"):
                 expected.add(f"image_{scope}")
