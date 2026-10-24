@@ -104,7 +104,7 @@ O ensaio achou três erros das versões anteriores, já corrigidos:
    revertida em 38 s porque passava: o `HEAD` de controle da api fez hairpin
    pelo Traefik, caiu no bloqueio, e o `/health/ready` foi a 503 (#461). O
    endpoint precisa apontar para a rede interna do Swarm antes de reaplicar. As
-etapas 1 a 6 do `storage-461-rede-interna.md` vêm antes desta.
+etapas 1 a 6b do `storage-461-rede-interna.md` vêm antes desta.
 
    Conferência (só leitura, OK próprio). Imprime **só o hostname** de cada
    endpoint, nunca o valor inteiro nem outra variável:
@@ -122,10 +122,12 @@ etapas 1 a 6 do `storage-461-rede-interna.md` vêm antes desta.
    done
    ```
 
-   Esperado: `INTERNAL_ENDPOINT` = `appsell-storage` nos dois serviços. É o
-   alias da rede `sell-storage-internal`, que entra pelo
-   `storage-461-rede-interna.md` (#480). `sell-autonomia_storage` **não** serve:
-   o MinIO responde 400 a Host com `_`;
+   Esperado: `INTERNAL_ENDPOINT` = `sell-autonomia-storage` nos dois serviços.
+   É o alias que o EasyPanel já dá ao `storage` na rede do projeto
+   (`easypanel-sell-autonomia`), e entra pelas etapas 6a e 6b do
+   `storage-461-rede-interna.md`. `storage` **não** serve: a api também está na
+   rede compartilhada `easypanel`, onde o nome pode ser de outro projeto.
+   `sell-autonomia_storage` também não: o MinIO responde 400 a Host com `_`;
    `PUBLIC_ENDPOINT` = `minio.autonomia.site` na api. No worker, ausente ou o
    mesmo valor. `INTERNAL_ENDPOINT` = `minio.autonomia.site`: **não aplicar**.
 1. Quem mais usa `minio.autonomia.site`: o destino `s3` do backup
