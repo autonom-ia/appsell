@@ -1,4 +1,4 @@
-"""O ensure-asset-worker.sh põe o worker na rede isolada do storage (#461).
+"""O ensure-asset-worker.sh põe o worker na rede do projeto, onde o storage tem o alias (#461).
 
 Roda o script de verdade com um `docker` falso no PATH, que responde ao
 `inspect` e grava os argumentos do `service create`. Nada toca Docker real.
@@ -39,7 +39,6 @@ pytestmark = pytest.mark.skipif(
 )
 
 _REDE_DO_CLAMAV = "rede-clamav-id"
-_REDE_DO_STORAGE = "rede-storage-id"
 
 _ENV_DA_API = [
     "APPSELL_API_ENVIRONMENT=production",
@@ -49,7 +48,7 @@ _ENV_DA_API = [
     "APPSELL_API_INTERNAL_HMAC_KEYRING_B64_JSON=[]",
     "APPSELL_API_SERVICE_CREDENTIAL_B64=x",
     "APPSELL_API_STORAGE_PROVIDER=s3",
-    "APPSELL_API_STORAGE_INTERNAL_ENDPOINT=http://appsell-storage:9000",
+    "APPSELL_API_STORAGE_INTERNAL_ENDPOINT=http://sell-autonomia-storage:9000",
     "APPSELL_API_STORAGE_CONTROL_ACCESS_KEY=k",
     "APPSELL_API_STORAGE_CONTROL_SECRET_KEY=s",
     "APPSELL_API_STORAGE_QUARANTINE_BUCKET=appsell-quarantine",
@@ -78,8 +77,9 @@ _SPEC_DA_API = [
     }
 ]
 
-# Responde só ao que o script pergunta. `REDE` escolhe o estado da rede do
-# storage; `WORKER_EXISTE` simula a segunda execução.
+# Responde só ao que o script pergunta. `REDES_DO_STORAGE` é o JSON das redes
+# do storage (`ausente`: o serviço não existe); `WORKER_EXISTE` simula a
+# segunda execução.
 _DOCKER_FALSO = """#!/usr/bin/env bash
 set -euo pipefail
 case "$1 $2" in
@@ -88,6 +88,9 @@ case "$1 $2" in
       sell-autonomia_api) cat "$PASTA/api.json" ;;
       sell-autonomia_clamav)
         if [[ "${4:-}" == "--format" ]]; then echo "$REDE_DO_CLAMAV"; else echo "[]"; fi ;;
+      sell-autonomia_storage)
+        if [[ "$REDES_DO_STORAGE" == "ausente" ]]; then echo "no such service" >&2; exit 1; fi
+        echo "$REDES_DO_STORAGE" ;;
       sell-autonomia_asset-worker)
         if [[ "$WORKER_EXISTE" == "1" ]]; then echo "[]"
         else echo "no such service" >&2; exit 1; fi ;;
@@ -95,19 +98,20 @@ case "$1 $2" in
     esac ;;
   "network inspect")
     echo "$3" >> "$PASTA/redes-inspecionadas.txt"
-    case "$REDE" in
-      ausente) echo "Error: No such network: $3" >&2; exit 1 ;;
-      certa) echo "$REDE_DO_STORAGE overlay true swarm" ;;
-      sem-internal) echo "$REDE_DO_STORAGE overlay false swarm" ;;
-      local) echo "$REDE_DO_STORAGE bridge true local" ;;
-      a-do-clamav) echo "$REDE_DO_CLAMAV overlay true swarm" ;;
-    esac ;;
+    echo "o script não inspeciona rede" >&2; exit 1 ;;
   "service create")
     shift 2
     printf '%s\\n' "$@" > "$PASTA/create.txt" ;;
   *) echo "docker falso não conhece: $*" >&2; exit 1 ;;
 esac
 """
+
+# Como na produção (24/10/2026): o alias na rede do projeto, e o storage
+# também na rede compartilhada, sem alias.
+_REDES_COM_ALIAS = [
+    {"Target": _REDE_DO_CLAMAV, "Aliases": ["sell-autonomia-storage", "storage"]},
+    {"Target": "rede-easypanel-id"},
+]
 
 
 @pytest.fixture
@@ -124,17 +128,29 @@ def pasta(tmp_path: Path) -> Path:
 
 
 def rodar(
-    pasta: Path, *, rede: str, worker_existe: bool = False, extra: dict[str, str] | None = None
+    pasta: Path,
+    *,
+    redes_do_storage: object = _REDES_COM_ALIAS,
+    worker_existe: bool = False,
+    endpoint: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    if endpoint is not None:
+        spec = json.loads(json.dumps(_SPEC_DA_API))
+        env = spec[0]["Spec"]["TaskTemplate"]["ContainerSpec"]["Env"]
+        chave = "APPSELL_API_STORAGE_INTERNAL_ENDPOINT="
+        spec[0]["Spec"]["TaskTemplate"]["ContainerSpec"]["Env"] = [
+            chave + endpoint if e.startswith(chave) else e for e in env
+        ]
+        (pasta / "api.json").write_text(json.dumps(spec))
     ambiente = {
         "PATH": f"{pasta / 'bin'}:{os.environ['PATH']}",
         "PASTA": str(pasta),
-        "REDE": rede,
+        "REDES_DO_STORAGE": (
+            redes_do_storage if isinstance(redes_do_storage, str) else json.dumps(redes_do_storage)
+        ),
         "WORKER_EXISTE": "1" if worker_existe else "0",
         "REDE_DO_CLAMAV": _REDE_DO_CLAMAV,
-        "REDE_DO_STORAGE": _REDE_DO_STORAGE,
         "CONFIRM_APPSSELL_ASSET_WORKER": "appsell-asset-worker-v1",
-        **(extra or {}),
     }
     return subprocess.run(  # noqa: S603
         [str(_BASH), str(_SCRIPT)], env=ambiente, capture_output=True, text=True, check=False
@@ -153,14 +169,16 @@ def montagens(args: list[str]) -> list[str]:
     return [args[i + 1] for i, arg in enumerate(args) if arg == "--mount"]
 
 
-def test_o_worker_entra_na_rede_do_clamav_e_na_do_storage(pasta: Path) -> None:
-    resultado = rodar(pasta, rede="certa")
+def test_o_worker_entra_so_na_rede_do_projeto_onde_o_storage_tem_o_alias(pasta: Path) -> None:
+    resultado = rodar(pasta)
     assert resultado.returncode == 0, resultado.stderr
-    assert redes(argumentos(pasta)) == [_REDE_DO_CLAMAV, _REDE_DO_STORAGE]
+    assert redes(argumentos(pasta)) == [_REDE_DO_CLAMAV]
+    # Nenhuma rede nova: o #481 exigia sell-storage-internal, que não existe.
+    assert not (pasta / "redes-inspecionadas.txt").exists()
 
 
 def test_os_sockets_do_clamav_e_do_pdf_sandbox_continuam_iguais(pasta: Path) -> None:
-    resultado = rodar(pasta, rede="certa")
+    resultado = rodar(pasta)
     assert resultado.returncode == 0, resultado.stderr
     assert montagens(argumentos(pasta)) == [
         "type=volume,source=vol-clamav,destination=/run/appsell-clamav,readonly=true",
@@ -169,39 +187,46 @@ def test_os_sockets_do_clamav_e_do_pdf_sandbox_continuam_iguais(pasta: Path) -> 
     ]
 
 
-def test_sem_a_rede_do_storage_falha_sem_criar_nada(pasta: Path) -> None:
-    resultado = rodar(pasta, rede="ausente")
+@pytest.mark.parametrize(
+    "redes_do_storage",
+    [
+        [{"Target": _REDE_DO_CLAMAV, "Aliases": ["storage"]}, {"Target": "rede-easypanel-id"}],
+        # O alias numa rede em que o worker não entra não serve.
+        [
+            {"Target": _REDE_DO_CLAMAV},
+            {"Target": "rede-easypanel-id", "Aliases": ["sell-autonomia-storage"]},
+        ],
+        None,
+    ],
+    ids=["outro-alias", "alias-em-outra-rede", "sem-redes"],
+)
+def test_sem_o_alias_na_rede_do_worker_falha_sem_criar_nada(
+    pasta: Path, redes_do_storage: object
+) -> None:
+    resultado = rodar(pasta, redes_do_storage=redes_do_storage)
     assert resultado.returncode == 1
-    assert "storage internal network not found: sell-storage-internal" in resultado.stderr
+    assert (
+        "storage alias sell-autonomia-storage not found on the worker network" in resultado.stderr
+    )
     assert not (pasta / "create.txt").exists()
 
 
-@pytest.mark.parametrize("rede", ["sem-internal", "local"])
-def test_rede_do_storage_que_nao_e_overlay_interna_falha(pasta: Path, rede: str) -> None:
-    resultado = rodar(pasta, rede=rede)
+def test_sem_o_servico_do_storage_falha_sem_criar_nada(pasta: Path) -> None:
+    resultado = rodar(pasta, redes_do_storage="ausente")
     assert resultado.returncode == 1
-    assert "must be an internal swarm overlay" in resultado.stderr
+    assert "storage service not found: sell-autonomia_storage" in resultado.stderr
     assert not (pasta / "create.txt").exists()
 
 
-def test_a_mesma_rede_nao_entra_duas_vezes(pasta: Path) -> None:
-    resultado = rodar(pasta, rede="a-do-clamav")
+def test_endpoint_publico_nao_depende_do_alias(pasta: Path) -> None:
+    # Antes da troca, a api ainda usa o host público, que resolve fora da rede.
+    resultado = rodar(pasta, redes_do_storage="ausente", endpoint="https://minio.autonomia.site")
     assert resultado.returncode == 0, resultado.stderr
     assert redes(argumentos(pasta)) == [_REDE_DO_CLAMAV]
 
 
 def test_rodar_de_novo_nao_cria_outro_worker(pasta: Path) -> None:
-    resultado = rodar(pasta, rede="certa", worker_existe=True)
+    resultado = rodar(pasta, worker_existe=True)
     assert resultado.returncode == 1
     assert "worker service already exists" in resultado.stderr
     assert not (pasta / "create.txt").exists()
-
-
-@pytest.mark.parametrize(
-    "variavel", ["APPSSELL_STORAGE_INTERNAL_NETWORK", "APPSELL_STORAGE_INTERNAL_NETWORK"]
-)
-def test_a_rede_do_storage_nao_aceita_override_pelo_ambiente(pasta: Path, variavel: str) -> None:
-    resultado = rodar(pasta, rede="certa", extra={variavel: "outra-rede"})
-    assert resultado.returncode == 0, resultado.stderr
-    inspecionadas = (pasta / "redes-inspecionadas.txt").read_text().split()
-    assert inspecionadas == ["sell-storage-internal"]
