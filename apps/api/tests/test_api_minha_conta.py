@@ -12,7 +12,11 @@ import httpx
 import pytest
 from fastapi import HTTPException
 from sqlalchemy.exc import DBAPIError
-from test_api_onboarding import client, signed_headers  # noqa: F401 (fixture)
+from test_api_onboarding import (  # noqa: F401 (fixture)
+    client,
+    pytestmark,
+    signed_headers,
+)
 
 from appsell_api.routes import _export_error
 

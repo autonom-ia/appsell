@@ -1043,8 +1043,12 @@ def test_open_upload_quota_is_atomic_under_concurrency() -> None:
             (worker,),
         ).fetchone()
         assert reconciles_row is not None
-        reconciles = reconciles_row[0]
         connection.commit()
+    # A loja demo é compartilhada pela pasta inteira: outro teste pode deixar
+    # um `quarantine_reconcile` dela na fila. Contam só os jobs dos uploads que
+    # este teste cancelou (#450).
+    deste_teste = {str(upload_id) for (upload_id,) in uploads}
+    reconciles = [job for job in reconciles_row[0] if job["upload_id"] in deste_teste]
     assert len(reconciles) == 10
     assert all(job["kind"] == "quarantine_reconcile" for job in reconciles)
     assert all(job["delete_mode"] == "delete_all_versions" for job in reconciles)
