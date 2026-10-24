@@ -268,19 +268,18 @@ def pasta(tmp_path: Path) -> Path:
             {"NetworkID": REDE_COMPARTILHADA, "Addr": "10.0.1.9/24"},
         ]
     }
+    api = _servico(list(ENV_DA_API), [{"Target": REDE_COMPARTILHADA}, {"Target": REDE_DO_PROJETO}])
+    # A api em produção troca com start-first (lido em 24/10/2026).
+    api["Spec"]["UpdateConfig"]["Order"] = "start-first"
     estado = {
         "redes": {},
         "dns": {API: [VIP], WORKER: [VIP]},
         "servicos": {
             STORAGE: storage,
-            API: _servico(
-                list(ENV_DA_API), [{"Target": REDE_COMPARTILHADA}, {"Target": REDE_DO_PROJETO}]
-            ),
+            API: api,
             WORKER: _servico(list(ENV_DA_API), [{"Target": REDE_DO_PROJETO}]),
         },
     }
-    # A api em produção troca com start-first (lido em 24/10/2026).
-    estado["servicos"][API]["Spec"]["UpdateConfig"]["Order"] = "start-first"
     (tmp_path / "estado.json").write_text(json.dumps(estado))
     return tmp_path
 
@@ -512,30 +511,34 @@ def test_falha_depois_do_update_volta_as_duas_variaveis_sem_rollback(
 @pytest.mark.parametrize(
     "falha", ["ZERA_ENV", "TROCA_NOME", "MUDA_GRACA", "MUDA_VALOR", "MUDA_HEALTHCHECK"]
 )
-def test_update_que_estragou_mais_que_as_duas_volta_pela_previous_spec(
+def test_update_que_estragou_mais_que_as_duas_para_sem_rollback(
     pasta: Path, servico: str, falha: str
 ) -> None:
-    # A volta das duas variáveis não conserta isso. A PreviousSpec é o backup
-    # (o único update foi o desta janela): rollback, e a spec volta inteira.
-    antes = spec(pasta, servico)
+    # A volta das duas variáveis não conserta isso, e o rollback é stop-first
+    # (na api, a loja para): ABORT e Rodrigo, sem outro comando no serviço.
     resultado = rodar(pasta, MODO[servico], **{falha: servico})
     assert resultado.returncode == 1
-    assert "docker service rollback (stop-first)" in resultado.stderr
-    assert f"{servico}: restaurado, igual ao backup" in resultado.stdout
-    assert spec(pasta, servico) == antes
-    assert rollbacks(pasta) == [servico]
-    assert updates_da_volta(pasta) == []
-
-
-def test_rollback_order_diferente_de_stop_first_nao_volta(pasta: Path) -> None:
-    atual = estado(pasta)
-    atual["servicos"][WORKER]["Spec"]["RollbackConfig"]["Order"] = "start-first"
-    gravar(pasta, atual)
-    resultado = rodar(pasta, "worker", ZERA_ENV=WORKER)
-    assert resultado.returncode == 1
-    assert "rollback order não é stop-first" in resultado.stderr
+    assert "último recurso, só com OK do Rodrigo" in resultado.stderr
     assert "a restauração parou" in resultado.stderr
     assert rollbacks(pasta) == []
+    assert updates_da_volta(pasta) == []
+    assert atualizados(pasta) == [servico]
+
+
+def test_falha_no_meio_da_troca_da_api_volta_por_update_start_first(pasta: Path) -> None:
+    # A task nova não vê o storage: a api volta por update, na ordem da spec
+    # (start-first, a loja não para), nunca pelo rollback stop-first.
+    antes = spec(pasta, API)
+    resultado = rodar(pasta, "api", SEM_STORAGE=API)
+    assert resultado.returncode == 1
+    assert f"{API}: restaurado, igual ao backup" in resultado.stdout
+    assert rollbacks(pasta) == []
+    assert updates_da_volta(pasta) == [API]
+    volta = [c for c in chamadas(pasta) if c.startswith("service update") and "--env-rm" in c]
+    assert "--update-order" not in volta[0]
+    assert "--rollback-order" not in volta[0]
+    assert spec(pasta, API)["UpdateConfig"] == {"Order": "start-first"}
+    assert sorted_env(pasta, API) == sorted(antes["TaskTemplate"]["ContainerSpec"]["Env"])
 
 
 def test_env_zerada_falha_pela_contagem(pasta: Path) -> None:
@@ -608,7 +611,7 @@ def test_restaura_mesmo_com_stderr_que_nao_aceita_escrita(pasta: Path) -> None:
     try:
         resultado = subprocess.run(  # noqa: S603
             [str(_BASH), str(_SCRIPT), "worker"],
-            env=_ambiente(pasta, ZERA_ENV=WORKER),
+            env=_ambiente(pasta, SEM_STORAGE=WORKER),
             stdout=subprocess.PIPE,
             stderr=escrita,
             text=True,
@@ -667,8 +670,9 @@ def test_desfazer_aborta_se_outra_variavel_mudou_depois(pasta: Path) -> None:
     (pasta / "chamadas.log").unlink()
     resultado = rodar(pasta, "desfazer", ts)
     assert resultado.returncode == 1
-    assert "a PreviousSpec também difere" in resultado.stderr
+    assert "outra variável difere do backup" in resultado.stderr
     assert atualizados(pasta) == []
+    assert rollbacks(pasta) == []
 
 
 def test_desfazer_aborta_se_outro_deploy_mudou_a_imagem(pasta: Path) -> None:
@@ -680,7 +684,9 @@ def test_desfazer_aborta_se_outro_deploy_mudou_a_imagem(pasta: Path) -> None:
     (pasta / "chamadas.log").unlink()
     resultado = rodar(pasta, "desfazer", ts)
     assert resultado.returncode == 1
-    assert "a PreviousSpec também difere" in resultado.stderr
+    assert "a spec difere do backup em:" in resultado.stderr
+    assert "TaskTemplate.ContainerSpec.Image" in resultado.stderr
+    assert rollbacks(pasta) == []
     assert atualizados(pasta) == []
 
 

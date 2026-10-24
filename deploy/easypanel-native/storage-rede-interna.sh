@@ -16,12 +16,10 @@
 # com 1 (130 no sinal).
 #
 # A volta é outro update, que põe as duas variáveis como estavam no backup, na
-# ordem de update da spec. Na api é start-first: a loja não para, ao contrário
-# do `docker service rollback`, que usa o rollback order (stop-first). Se a
-# spec difere do backup em algo além dessas duas variáveis, a volta só usa o
-# `docker service rollback` quando a PreviousSpec do Swarm é igual ao backup (o
-# único update desde ele foi o desta janela); em qualquer outro caso, ABORT e
-# Rodrigo.
+# ordem de update da spec. Na api é start-first: a loja não para. O script
+# nunca roda `docker service rollback`: ele usa o rollback order da spec
+# (stop-first) e pararia a loja. Se a spec difere do backup em algo além das
+# duas variáveis, ABORT e Rodrigo; o rollback fica como último recurso, com OK.
 #
 # Nunca imprime env: só nomes de variável, contagens, hashes e hostnames.
 set -euo pipefail
@@ -68,19 +66,18 @@ campo_da_env="TaskTemplate.ContainerSpec.Env"
 prazo_do_exec="${STORAGE461_PRAZO_EXEC:-60}"
 
 digital() {
-  # digital <serviço> [Spec|PreviousSpec] → "campo hash" por linha; só hashes
-  # O `with` evita o erro de ponteiro nulo quando não há PreviousSpec.
+  # digital <serviço> → "campo hash" por linha; só hashes
   # Inspect que falha é erro, não hash de saída vazia. A env entra ordenada:
   # o `--env-add` do docker reordena a lista, e a ordem não muda o processo.
-  local servico="$1" qual="${2:-Spec}" campo valor
+  local servico="$1" campo valor
   for campo in "${campos[@]}"; do
-    valor="$(d service inspect "$servico" --format "{{with .${qual}}}{{json .${campo}}}{{end}}")" || return 1
+    valor="$(d service inspect "$servico" --format "{{json .Spec.${campo}}}")" || return 1
     if [ "$campo" = "$campo_da_env" ]; then
       valor="$(printf '%s' "$valor" | jq -c 'sort')" || return 1
     fi
     printf '%s %s\n' "$campo" "$(printf '%s' "$valor" | sha256sum | cut -d' ' -f1)"
   done
-  valor="$(d service inspect "$servico" --format "{{with .${qual}}}{{json .}}{{end}}")" || return 1
+  valor="$(d service inspect "$servico" --format "{{json .Spec}}")" || return 1
   valor="$(printf '%s' "$valor" | jq -cS 'del(.TaskTemplate.ContainerSpec.Env)')" || return 1
   printf 'Resto %s\n' "$(printf '%s' "$valor" | sha256sum | cut -d' ' -f1)"
 }
@@ -258,26 +255,6 @@ voltar_as_duas_variaveis() {
   d service update --detach=false "${args[@]}" "$servico" >/dev/null || true
 }
 
-voltar_pela_previous_spec() {
-  # docker service rollback, só se a PreviousSpec é o backup. Usa o rollback
-  # order da spec, que tem de ser stop-first; na api a loja para na troca.
-  local servico="$1" base="$2" anterior dif=""
-  anterior="$(mktemp)"
-  digital "$servico" PreviousSpec > "$anterior" || dif="(não li a PreviousSpec)"
-  [ -n "$dif" ] || dif="$(diferencas "${base}.digital" "$anterior")"
-  rm -f -- "$anterior"
-  if [ -n "$dif" ]; then
-    echo "ABORT: $servico: a spec difere do backup além das duas variáveis, e a PreviousSpec também difere em: $dif; falar com o Rodrigo" >&2
-    return 1
-  fi
-  if [ "$(spec_json "$servico" Spec.RollbackConfig.Order)" != '"stop-first"' ]; then
-    echo "ABORT: $servico: rollback order não é stop-first; falar com o Rodrigo" >&2
-    return 1
-  fi
-  echo "$servico: a spec difere do backup além das duas variáveis; docker service rollback (stop-first)" >&2
-  d service rollback --detach=false "$servico" >/dev/null || true
-}
-
 restaurar() {
   # restaurar <serviço> <ts>: volta ao backup, e só se for seguro
   local servico="$1" ts="$2" base agora dif
@@ -295,12 +272,18 @@ restaurar() {
     echo "$servico: spec já igual ao backup, nada a desfazer"
     return 0
   fi
-  if [ "$dif" = "$campo_da_env " ] && [ "$(spec_json "$servico" Spec.TaskTemplate.ContainerSpec.Env | resto_da_env)" \
-    = "$(jq '.[0].Spec.TaskTemplate.ContainerSpec.Env' "${base}.json" | resto_da_env)" ]; then
-    voltar_as_duas_variaveis "$servico" "$base"
-  else
-    voltar_pela_previous_spec "$servico" "$base" || return 1
+  if [ "$dif" != "$campo_da_env " ]; then
+    echo "ABORT: $servico: a spec difere do backup em: $dif; a volta da env não desfaz isso." >&2
+    echo "ABORT: último recurso, só com OK do Rodrigo: docker service rollback $servico (stop-first; na api, a loja para)" >&2
+    return 1
   fi
+  if [ "$(spec_json "$servico" Spec.TaskTemplate.ContainerSpec.Env | resto_da_env)" \
+    != "$(jq '.[0].Spec.TaskTemplate.ContainerSpec.Env' "${base}.json" | resto_da_env)" ]; then
+    echo "ABORT: $servico: outra variável difere do backup; a volta das duas não desfaz isso." >&2
+    echo "ABORT: último recurso, só com OK do Rodrigo: docker service rollback $servico (stop-first; na api, a loja para)" >&2
+    return 1
+  fi
+  voltar_as_duas_variaveis "$servico" "$base"
   igual_ao_backup_depois_da_volta "$servico" "$base"
 }
 

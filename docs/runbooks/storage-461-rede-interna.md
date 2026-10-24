@@ -132,7 +132,6 @@ guarda a versão anterior.
   (`deploy/easypanel-native/README.md`).
 - O `asset-worker` tem os rótulos `com.autonomia.*`. Ele é criado pelo
   `ensure-asset-worker.sh`, que copia a env da api.
-- O `storage` está com `update=stop-first` e `rollback=stop-first`.
 - A api está com `update=start-first` e `rollback=stop-first`, graça de
   5m30s, e os volumes `/run/appsell-clamav` e `/run/appsell-pdf`.
 - O worker está com `update=stop-first` e `rollback=stop-first`, e graça
@@ -406,23 +405,23 @@ bash storage-rede-interna.sh desfazer <ts>
 
 O `ts` só é aceito no formato que a etapa imprime (`AAAAMMDDTHHMMSSZ`). Ctrl-C
 e queda do SSH não interrompem o `desfazer`. O script compara a spec atual com
-o backup e escolhe uma de quatro saídas:
+o backup e escolhe uma de três saídas:
 
 1. **Igual ao backup:** nada a desfazer. É o que acontece na segunda execução.
 2. **Diferente só nas duas variáveis desta janela:** um update que as põe como
-   no backup (a flag sai; o endpoint volta ao valor dele). O valor vem do
-   arquivo de backup e vai direto para o argumento do `docker`, nunca para a
-   tela. O update usa a ordem da spec, então na api é `start-first`, **sem
-   parar a loja**.
-3. **Diferente em mais coisa, e a `PreviousSpec` do Swarm igual ao backup:** o
-   único update desde o backup foi o desta janela, e ele estragou mais que as
-   duas variáveis. Nesse caso o script roda `docker service rollback`, que usa
-   o rollback order da spec, `stop-first`. **Na api, a loja para durante a
-   troca**: ~22 s de 500 na etapa 2, e até 330 s com e-mail em lease. Anunciar
-   antes, e medir com o laço.
-4. **Diferente em mais coisa, e a `PreviousSpec` também diferente:** outro
-   deploy entrou no meio. **ABORT, sem tocar no serviço**, e Rodrigo, com os
-   campos que diferem.
+   no backup (`--env-rm` da flag, `--env-add` do endpoint anterior). O valor
+   vem do arquivo de backup e vai direto para o argumento do `docker`, nunca
+   para a tela. O update vai sem `--update-order`, então vale a ordem da spec:
+   na api é `start-first`, **sem parar a loja**. Depois, a digital tem de ser
+   igual à do backup, sem nenhuma diferença.
+3. **Diferente em qualquer outra coisa** (outro campo da spec, ou o valor de
+   outra variável): **ABORT, sem tocar no serviço**, e Rodrigo, com os campos
+   que diferem.
+
+O script **nunca** roda `docker service rollback`. Ele usa o rollback order da
+spec, `stop-first`, e na api a loja para durante a troca: ~22 s de 500 na
+etapa 2, e até 330 s com e-mail em lease. Fica como último recurso, fora do
+script, só com OK do Rodrigo, anunciado antes e medido com o laço.
 
 Depois da volta, o script confere a spec igual ao backup e 1 task `Running` na
 imagem do backup, com o storage respondendo de dentro dela. Se não for assim:
