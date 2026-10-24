@@ -35,7 +35,8 @@ e nada que já lê a loja passa a ver CPF por acidente.
 | `seller_organization_id` | `uuid` PK, FK → `seller_organization(id)` | uma identidade por loja |
 | `legal_name` | `text` | 2 a 200 caracteres (`length`), sem espaço nas pontas; nome da pessoa (CPF) ou razão social (CNPJ) |
 | `document_type` | `text` | `'cpf'` ou `'cnpj'` |
-| `document_number` | `text` | forma canônica: CPF com 11 dígitos; CNPJ com 14 posições, sem pontuação e em maiúsculas (ver 2.2) |
+| `cnpj_number` | `text`, nulo para CPF | CNPJ na forma canônica, 14 posições sem pontuação e em maiúsculas (ver 2.2). CNPJ é dado de empresa, público, e fica inteiro |
+| `document_display` | `text` | o que aparece para quem vê: CNPJ formatado inteiro, ou o CPF mascarado `***.456.789-**`. **O CPF inteiro não é guardado** (ver 1.5) |
 | `country` | `text` | ISO 3166-1 alfa-2 em maiúsculas. **Na v1 só `'BR'`** (check). O checkout é só BRL; outro país entra por migration própria |
 | `source` | `text` | `'seller_declared'` na v1. `'stripe_kyc'` e `'asaas_kyc'` ficam reservados para quando a leitura do KYC existir |
 | `revision` | `bigint` | começa em 1; sobe a cada alteração (concorrência otimista, como as configurações da loja) |
@@ -44,21 +45,32 @@ e nada que já lê a loja passa a ver CPF por acidente.
 Restrições:
 
 - `check (document_type in ('cpf','cnpj'))` e `check (country = 'BR')`.
-- `check (app_private.is_valid_document(document_type, document_number))`: o
-  banco é a autoridade da validação.
-- `unique (document_type, document_number)` **não** existe. Um mesmo CNPJ pode
+- `check (document_type = 'cnpj') = (cnpj_number is not null)`.
+- `check (cnpj_number is null or app_private.is_valid_document('cnpj', cnpj_number))`.
+- A validação do CPF acontece **dentro da função de gravação**, sobre o número
+  recebido como parâmetro, antes de ele ser descartado. O banco continua sendo
+  a autoridade da validação dos dois tipos.
+- Não existe `unique` por documento. Um mesmo CNPJ pode
   ter várias lojas (decisão A3, várias marcas).
 
 ### 1.2 Acesso
 
-- `enable row level security` e `force row level security`, sem política para
-  `appsell_runtime`. **O runtime não lê nem escreve a tabela**; só as funções
-  `security definer` abaixo tocam nela, com `search_path` fechado e
-  `revoke all from public`. É o mesmo padrão de `external_product_mapping`.
+- `enable row level security` e `force row level security`, com **uma única
+  política, a do dono**, como em `0012_checkout_webhook_ingress.py:182-183`:
+  `create policy seller_legal_identity_owner_all on seller_legal_identity to
+  appsell_owner using (true) with check (true)`. Sem ela, as funções `security
+  definer` (que rodam como `appsell_owner`) leriam vazio.
+- **Nenhuma política nem grant para `appsell_runtime`**: o runtime não lê nem
+  escreve a tabela. Só as funções abaixo tocam nela, com `search_path` fechado e
+  `revoke all from public`.
 - `app_private.read_seller_legal_identity(actor uuid, seller uuid)`: exige a
   capability `seller.settings.read` e o contexto da loja.
-  - `seller_owner` vê o documento inteiro.
-  - `seller_admin` vê o documento mascarado (ver 3.2).
+  - **O papel vem do contexto, não do parâmetro**:
+    `resolve_seller_membership_role(p_seller)`, que lê
+    `context_uuid('identity_user_id')` (`0025:103-117`). Um `actor` diferente da
+    identidade do contexto dá `42501` antes de qualquer leitura.
+  - `seller_owner` e `seller_admin` veem `legal_name` e `document_display`
+    (ver 3.2). Como o CPF inteiro não é guardado, ninguém o lê.
   - `seller_editor` e `seller_support` recebem `42501`.
 - `app_private.update_seller_legal_identity(actor, seller, legal_name,
   document_type, document_number, expected_revision, request_id)`:
@@ -69,17 +81,23 @@ Restrições:
   - Audita `seller.legal_identity.updated` com `metadata = {document_type,
     changed: ['legal_name'|'document'], revision}`. **Nunca o número.**
   - Replay com o mesmo `request_id` devolve o resultado anterior sem gravar de
-    novo.
+    novo. **O registro de replay guarda só `request_id`, `revision` e status**,
+    nunca o corpo nem o documento.
 - `app_private.seller_public_legal_identity(seller uuid)`: devolve só o que o
   comprador vê: `legal_name`, `document_type` e `document_display` (ver 3.2).
-  Quem chama é a projeção pública e o fulfillment.
+  - **Não tem grant para ninguém.** Só é chamada de dentro de outras funções
+    `security definer`: a projeção pública e o registro da venda.
+  - Na projeção pública, responde só para a loja que a vitrine já mostra: o
+    mesmo critério da 0052, `organization.status = 'active'`, buscada pelo slug
+    (`0052_configuracoes_da_loja.py:803,925`). Loja suspensa ou inexistente não
+    devolve identidade.
+  - No registro da venda, responde só para a loja da própria venda.
 
 ### 1.3 Onde a identidade vira fato da venda
 
 A identidade de hoje não pode reescrever o recibo de ontem. No momento da venda,
 a tabela de venda proposta em `VENDEDOR-E-GATEWAYS.md` §1.7 item 4 guarda uma
-**cópia para exibição**: `seller_legal_name` e `seller_document_display`, já
-mascarado. Não guarda o número inteiro. A loja que troca de CNPJ muda as vendas
+**cópia para exibição**: `seller_legal_name` e `seller_document_display`. A loja que troca de CNPJ muda as vendas
 seguintes, não as passadas.
 
 ### 1.4 Projeção pública
@@ -88,6 +106,38 @@ A projeção da vitrine (0052) ganha `legal_identity: {legal_name, document_type
 document_display}` **só quando a loja tem identidade**. Loja sem identidade
 devolve o JSON de hoje, byte a byte, então o web antigo não quebra. A ordem de
 deploy é a mesma da 0052: web → api → migration.
+
+### 1.5 Por que o CPF inteiro não é guardado (MÉDIO 4 da Qualidade)
+
+Minimização (LGPD art. 6º, III): na v1, o CPF inteiro não tem leitor. O
+comprador vê o CPF mascarado, a auditoria não leva o número, e a loja não
+precisa ver o próprio CPF; para trocá-lo, digita de novo. Por isso a função de
+gravação recebe o CPF, valida o dígito verificador, calcula `document_display`
+e **descarta o número**. Nada em repouso, nada em backup.
+
+Cifrar pelo transit do OpenBao foi a primeira opção considerada, e não serve
+agora:
+
+- o cofre que o Sell já tem é o de **tokens de sessão** do web
+  (`lib/token-vault.ts:97-101`, contexto de sessão);
+- o provedor OpenBao **recusa produção**
+  (`lib/openbao-transit-key-envelope-provider.server.ts:38-40`);
+- pelo plano do OpenBao, a API não recebe credencial de cofre
+  (`docs/plans/OPENBAO_PROD_PLAN.md:29`);
+- qual provedor roda em produção não está escrito no repositório.
+
+Cifrar exigiria tirar do banco a validação do CPF e criar um fluxo novo de
+cofre no web, sem um leitor que justifique.
+
+**O que reabre a questão** é a pergunta jurídica do §3.5. Se o comprador tiver
+de ver o CPF **inteiro**, o número passa a ser público por desenho. Aí ele é
+guardado como o CNPJ, e o `BACKUP_RESTORE_SELL.md` passa a dizer que o backup
+carrega CPF.
+
+Cuidado com o parâmetro: o CPF passa pela chamada da função. Antes do deploy,
+conferir no Postgres de produção, só leitura, que `log_statement` não é `all` e
+que `log_parameter_max_length_on_error` é `0`. Assim o valor não vai para o log
+do banco.
 
 ## 2. Validação de CPF e CNPJ
 
@@ -99,7 +149,7 @@ algoritmo existe em três lugares, com os mesmos casos de teste:
 
 | Onde | Para quê |
 |---|---|
-| `app_private.is_valid_document(type, number)` (PL/pgSQL) | autoridade: `check` da tabela e da função de gravação |
+| `app_private.is_valid_document(type, number)` (PL/pgSQL) | autoridade: dentro da função de gravação (CPF e CNPJ) e no `check` do `cnpj_number` |
 | `apps/api/src/appsell_api/legal_identity.py` | recusa cedo, com o motivo certo, antes do banco |
 | `lib/legal-identity.ts` | erro no campo enquanto a pessoa digita |
 
@@ -166,8 +216,7 @@ Qualquer outro caractere recusa o valor; não é descartado em silêncio.
 
 | Quem | Nome legal | Documento |
 |---|---|---|
-| `seller_owner`, em Configurações | inteiro | inteiro |
-| `seller_admin` | inteiro | mascarado |
+| `seller_owner` e `seller_admin`, em Configurações | inteiro | CNPJ inteiro; CPF mascarado (o inteiro não é guardado) |
 | `seller_editor`, `seller_support` | não vê | não vê |
 | Comprador (checkout, vitrine, recibo) | inteiro | **CNPJ inteiro** (dado público de empresa); **CPF mascarado** |
 | Superadmin da plataforma (inspeção) | inteiro | mascarado |
@@ -180,14 +229,16 @@ web não remontam a máscara.
 ### 3.3 Logs e e-mail
 
 - **Log**: nenhum campo de log recebe nome legal, documento ou o corpo da
-  requisição de gravação. O que se loga é `seller_id`, `document_type`,
+  requisição de gravação, **nem na API nem na rota Next (BFF)** por onde o corpo
+  passa antes. O que se loga é `seller_id`, `document_type`,
   `revision` e o resultado.
   - O redator do log (`logging_setup.py`) **não pega** CPF: 11 dígitos estão
     abaixo do limite dele, e ele mesmo se declara "rede de segurança, não
     garantia".
-  - Por isso a garantia é um teste: o fluxo de gravação, com sucesso e com erro
-    de validação, roda com captura de log, e o teste exige que nenhum valor
-    contenha o documento, nem com nem sem pontuação.
+  - Por isso a garantia é um teste, **em dois lugares**: a rota da API e a rota
+    Next do BFF. O fluxo de gravação, com sucesso e com erro de validação, roda
+    com captura de log, e o teste exige que nenhum valor contenha o documento,
+    nem com nem sem pontuação.
 - **Erro**: a resposta de validação diz qual regra falhou (`document_invalid`,
   `document_type_mismatch`), nunca ecoa o valor enviado.
 - **E-mail**: a fila (`email_outbox`, 0049) recebe só `seller_legal_name` e
@@ -206,9 +257,27 @@ web não remontam a máscara.
     porque o recibo é documento da compra do comprador.
   - Prazo proposto para a cópia nas vendas: **5 anos após a venda**, alinhado ao
     prazo de guarda de documentos fiscais. **Validar com o jurídico.**
+  - **Quem apaga e como:** um job de retenção da API, diário e idempotente,
+    troca `seller_legal_name` e `seller_document_display` das vendas com mais de
+    5 anos por `null` e audita a contagem. Ele não apaga a venda. A primeira
+    venda com cópia só vence 5 anos depois do passo 4 do §5, então o job tem
+    Issue própria e entra antes dessa data, com teste de fronteira (dia 1825 ×
+    1826).
 - **Backup**: segue a política de `BACKUP_RESTORE_SELL.md`. Uma restauração não
   pode trazer de volta uma identidade apagada sem reaplicar o runbook. Isso fica
   registrado no runbook.
+
+### 3.5 Pergunta aberta, para o Rodrigo e o jurídico (não decidida)
+
+O Decreto 7.962/2013, art. 2º, I, pede que o site de comércio eletrônico
+informe o "número de inscrição do fornecedor" no CPF ou no CNPJ.
+
+**Mostrar o CPF mascarado ao comprador atende a isso, ou o CPF tem de aparecer
+inteiro?**
+
+A resposta muda o §1.5: mascarado mantém o CPF fora do banco; inteiro o torna
+público e ele passa a ser guardado. O mesmo parecer deve confirmar a base legal
+do §3.1 e o prazo de 5 anos do §3.4. Até a resposta, vale o mascarado.
 
 ## 4. Onde aparece para o comprador
 

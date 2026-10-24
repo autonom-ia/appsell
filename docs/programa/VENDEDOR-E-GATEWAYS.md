@@ -174,7 +174,7 @@ ainda.
    obrigatória antes de qualquer loja entrar no autosserviço.
 2. **"Vendido por" em todo lugar onde o comprador decide ou paga**: card de
    compra, checkout do cadastro, página do produto e rodapé da vitrine. Texto
-   proposto: "Vendido por {nome legal da loja} · {CPF/CNPJ mascarado}.
+   proposto: "Vendido por {nome legal da loja} · CNPJ {inteiro} ou CPF {mascarado}.
    Plataforma: Autonom.ia Sell." O rodapé da vitrine deixa de dizer que o
    pagamento é "protegido pela plataforma" e ganha links para os termos e para a
    política de reembolso da loja.
