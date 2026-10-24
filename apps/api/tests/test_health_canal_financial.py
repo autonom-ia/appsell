@@ -3,8 +3,10 @@
 Com loja vinculada e o canal sem exatamente uma identidade, produto novo fica
 sem mapping e a compra dele vai para `dead_letter`. A decisão da Orquestração:
 
-* `startup`, antes de a task ter ficado pronta: reprova, e a task nova nunca
-  entra. A anterior segue servindo;
+* `startup`: o canal **não** reprova (#503). A api tem uma réplica; um
+  reinício com o canal ambíguo deixaria a task nova sem nunca ficar healthy, e
+  a loja inteira cairia por um canal que só afeta a entrega do Financial. O
+  canal aparece como campo e sai no log de erro;
 * `ready`, em regime: o status HTTP não muda (um 503 tiraria todas as tasks de
   rotação de uma vez), aparece `"financial_channel": false` e o log
   `appsell.financial_channel.unresolved` sai em `error` na transição e depois no
@@ -14,7 +16,9 @@ sem mapping e a compra dele vai para `dead_letter`. A decisão da Orquestração
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
+from types import SimpleNamespace
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -57,17 +61,84 @@ async def _get(caminho: str) -> tuple[int, dict[str, object]]:
 
 
 @pytest.mark.asyncio
-async def test_o_startup_reprova_a_task_nova_com_o_canal_ambiguo(
+async def test_o_canal_ambiguo_nao_derruba_o_startup_e_sai_no_log(
     estado_limpo: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Pega a task nova promovida com o canal quebrado: todo produto novo iria
-    # para dead_letter sem ninguém ver.
+    # Pega o reinício que tira a loja do ar: com uma réplica, a task que nunca
+    # fica healthy não tem anterior para segurar o tráfego (#503).
     _canal(monkeypatch, False)
+
+    with capture_logs() as logs:
+        status_code, corpo = await _get("/health/startup")
+
+    assert status_code == 200
+    assert corpo == {"status": "ok", "ever_ready": True, "financial_channel": False}
+    assert main.app.state.ever_ready
+    erros = [log for log in logs if log["event"] == UNRESOLVED]
+    assert len(erros) == 1
+    assert erros[0]["log_level"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_com_o_canal_ambiguo_a_loja_segue_servindo(
+    estado_limpo: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Pega a task tirada de rotação pelo `ready`: com o canal ambíguo, o
+    # startup e o ready seguem 200 e o ready continua "ok".
+    _canal(monkeypatch, False)
+
+    startup_status, _ = await _get("/health/startup")
+    ready_status, corpo = await _get("/health/ready")
+
+    assert (startup_status, ready_status) == (200, 200)
+    assert corpo["status"] == "ok"
+    assert corpo["financial_channel"] is False
+
+
+@pytest.mark.asyncio
+async def test_em_regime_o_monitor_loga_o_canal_sem_ninguem_sondar_o_ready(
+    estado_limpo: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Pega o canal que cai com a task rodando e não deixa rastro: em produção
+    # ninguém sonda o `ready` da api, e o `startup` em regime não pergunta nada
+    # ao banco (o HEALTHCHECK não pode depender dele). Quem pergunta é o monitor.
+    main.app.state.ever_ready = True
+    _canal(monkeypatch, False)
+    parar = asyncio.Event()
+
+    async def _uma_passagem(*_args: object, **_kwargs: object) -> None:
+        parar.set()
+
+    monkeypatch.setattr(main, "_refresh_storage_dependencies", _uma_passagem)
+    instancia = SimpleNamespace(
+        state=SimpleNamespace(settings=SimpleNamespace(storage_health_probe_interval_seconds=1))
+    )
+
+    with capture_logs() as logs:
+        await main._monitor_storage_dependencies(instancia, parar)  # type: ignore[arg-type]
+
+    erros = [log for log in logs if log["event"] == UNRESOLVED]
+    assert len(erros) == 1
+    assert erros[0]["log_level"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_dependencia_fora_ainda_reprova_o_startup(
+    estado_limpo: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Pega a correção larga demais: o canal sai do gate, as dependências reais
+    # (banco, storage, sandbox) continuam nele.
+    monkeypatch.setattr(
+        main,
+        "_dependencias_prontas",
+        _sempre({"pronto": False, "database": False, "storage": True, "pdf_sandbox": True}),
+    )
+    _canal(monkeypatch, True)
 
     status_code, corpo = await _get("/health/startup")
 
     assert status_code == 503
-    assert corpo == {"status": "starting", "ever_ready": False, "financial_channel": False}
+    assert corpo == {"status": "starting", "ever_ready": False}
     assert not main.app.state.ever_ready
 
 
