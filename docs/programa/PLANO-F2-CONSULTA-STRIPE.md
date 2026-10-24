@@ -90,9 +90,12 @@ Comportamento:
 - valida a entrada com métodos de string, sem regex:
   - `paymentIntentId.startsWith("pi_")`;
   - `stripeAccount` nulo ou `startsWith("acct_")`;
-  - `secretKeyParameterName` começa com `/autonomia/<stage>/financial/gateways/`
-    e termina com `/secret-key` (`startsWith`/`endsWith`). Isso recusa o
-    `webhook-secret` e qualquer outro parâmetro;
+  - `secretKeyParameterName` tem de ser **exatamente** um dos nomes da lista
+    `STRIPE_REFUND_READER_ALLOWED_SECRET_PARAMETERS` (comparação de igualdade,
+    `allowed.includes(name)`). O worker passa o `secret_key_parameter_name` lido
+    do `company_gateways` do pedido, sem montar nem normalizar o nome. A bridge
+    não deduz formato: a lista é a única regra. Isso recusa o `webhook-secret`,
+    o parâmetro de outro operador e qualquer nome fora da lista;
   - tamanhos máximos.
   Entrada inválida recebe recusa e nenhuma chamada;
 - **lê a chave no SSM ela mesma.** A chave nunca viaja no payload do invoke nem
@@ -117,16 +120,36 @@ papel compartilhado tem `ssm:PutParameter`/`ssm:DeleteParameter`,
   - `logs:CreateLogStream`, `logs:PutLogEvents` só no log group
     `/aws/lambda/autonomia-financial-${stage}-stripeRefundReader`
     (`logs:CreateLogGroup` no mesmo ARN);
-  - `ssm:GetParameter`, **sem** `GetParameters`, `ByPath`, `Put` ou `Delete`, só
-    nos nomes gerados por `gatewaySecretParameterName`
-    (`src/secret-store.ts:87-90`):
-    `arn:aws:ssm:<região>:<conta>:parameter/autonomia/${stage}/financial/gateways/*/stripe/*/secret-key`.
-    Antes do deploy, a Orquestração confere, só leitura, que os nomes (não os
-    valores) dos 2 gateways de produção seguem esse formato. Um gateway
-    importado com outro nome ficaria fora e apareceria no dry-run como erro
-    de leitura de chave;
+  - `ssm:GetParameter`, **sem** `GetParameters`, `ByPath`, `Put` ou `Delete`,
+    só nos **ARNs exatos** das secret-keys Stripe em uso, sem curinga.
   - `kms:Decrypt` com `kms:ViaService = ssm.${region}.amazonaws.com` e
-    `kms:EncryptionContext:PARAMETER_ARN` igual ao mesmo ARN.
+    `kms:EncryptionContext:PARAMETER_ARN` igual à mesma lista de ARNs.
+- **Os nomes em produção.** A Orquestração conferiu, só pelo nome, sem ler
+  valor, em 24/10/2026. As 2 secret-keys Stripe live em uso estão no
+  **formato legado**: sem `credentialVersion`, com `financial` antes do stage.
+
+  | Operador | `secret_key_parameter_name` |
+  |---|---|
+  | `13a30647…` | `/autonomia/financial/prod/gateways/<op>/stripe/live/secret-key` |
+  | `bf9daec0…` | `/autonomia/financial/prod/gateways/<op>/stripe/live/secret-key` |
+
+  O formato do `gatewaySecretParameterName`
+  (`/autonomia/prod/financial/gateways/<op>/<provider>/<mode>/<version>/<kind>`,
+  `src/secret-store.ts:87-90`) só existe hoje para Asaas e para uma
+  webhook-secret Stripe do `bf9daec0`. O desenho anterior, por prefixo do
+  formato novo, recusaria os dois operadores.
+- **Uma fonte só para as duas listas.** O `serverless.yml` declara uma vez, em
+  `custom.stripeRefundReaderSecretParameters`, a lista dos nomes completos. O
+  IAM (`ssm:GetParameter` e a condição do KMS) e a variável
+  `STRIPE_REFUND_READER_ALLOWED_SECRET_PARAMETERS` da bridge saem dela, então
+  o código e o papel não divergem. Os nomes exatos com o `<op>` real entram no
+  PR do código. O nome de parâmetro não é segredo; o valor nunca aparece.
+- **Gateway novo exige revisão do IAM.** Um gateway Stripe direto novo, ou a
+  rotação que gere um nome novo, só entra no polling depois de um PR que
+  acrescente o nome à lista, com revisão da Qualidade e OK de deploy. Até lá, o
+  dry-run conta os pedidos dele como `skippedSecretNotAllowed`, sem chamada.
+  O worker confere a lista antes de invocar, para não gastar invocação com
+  recusa certa.
 - O papel **não** permite `lambda:InvokeFunction`, `ec2:*`, SQS nem acesso ao
   banco.
 - Rede: `vpc: null`. Uma Lambda fora da VPC não tem filtro de egress pela AWS;
@@ -196,6 +219,7 @@ execução, e registra por operador:
 - `fullyRefunded`;
 - `partiallyRefunded`;
 - `skippedGatewayUnresolved`;
+- `skippedSecretNotAllowed`, para gateway com nome fora da lista;
 - `stripeErrors` por status;
 - o prefixo de 12 caracteres do sha256 do `order.id` dos estornados.
 
@@ -221,15 +245,28 @@ Teste por operador, o que a Orquestração pediu:
    operadores.
 4. Gateway de outro operador em `paymentGateway.companyGatewayId`: o pedido é
    pulado, sem chamada.
-5. Pedido com `selection.connect.accountId` preenchido: fica fora do polling,
+5. Os dois formatos de nome: um gateway legado e um versionado, ambos na
+   lista. O worker passa a cada um o `secret_key_parameter_name` lido do
+   banco, byte a byte. Um terceiro gateway com nome fora da lista é contado
+   como `skippedSecretNotAllowed`, sem invocar a bridge.
+6. Pedido com `selection.connect.accountId` preenchido: fica fora do polling,
    porque é escopo do F1.
-6. `dry_run` em produção: contador por operador. Um operador com 100% de
+7. `dry_run` em produção: contador por operador. Um operador com 100% de
    `stripeErrors` 401/403 mostra chave ou conta errada antes do `deliver`.
 
 Bridge:
 
-- recusa um parâmetro SSM fora do prefixo, um id que não começa com `pi_` e uma
-  conta que não começa com `acct_`, antes de qualquer chamada;
+- aceita os dois formatos de nome **somente** quando o nome está na lista:
+  o legado `/autonomia/financial/prod/gateways/<op>/stripe/live/secret-key` e
+  o versionado
+  `/autonomia/prod/financial/gateways/<op>/stripe/live/<version>/secret-key`;
+- recusa, antes de ler o SSM:
+  - um nome válido em formato mas fora da lista;
+  - a `webhook-secret` do mesmo gateway;
+  - o nome com uma barra a mais ou a menos e o nome com espaço;
+  - o nome de outro operador;
+  - um id que não começa com `pi_`;
+  - uma conta que não começa com `acct_`;
 - faz só `GET`, só para `/v1/refunds`;
 - segue a paginação até o teto;
 - a chave não aparece no retorno nem no log (teste com logger espião);
@@ -240,7 +277,15 @@ Teste estrutural do `serverless.yml`:
   `reservedConcurrency: 2`;
 - o papel não tem `ssm:PutParameter`, `ssm:DeleteParameter`,
   `lambda:InvokeFunction` nem `ec2:`;
-- o papel compartilhado tem só uma linha a mais.
+- o papel compartilhado tem só uma linha a mais;
+- o `ssm:GetParameter` do papel lista ARNs **sem curinga**, iguais um a um a
+  `custom.stripeRefundReaderSecretParameters`, e a condição do KMS lista os
+  mesmos ARNs;
+- a variável `STRIPE_REFUND_READER_ALLOWED_SECRET_PARAMETERS` da bridge vem da
+  mesma lista;
+- a fixture da lista tem um nome de cada formato, legado e versionado, e os
+  dois aparecem no IAM e na variável. Isso pega a regressão do desenho
+  anterior, que aceitava só um formato.
 
 PostgreSQL:
 - seleção dos candidatos (connect nulo, horizonte, entregue, allowlist);
@@ -265,6 +310,8 @@ Mudanças em arquivo existente, todas listadas no PR:
 ## 6. OK separado (nada disso entra no PR)
 
 - Deploy, que cria a Lambda e o papel novos.
+- Cada nome novo na lista de secret-keys (gateway direto novo ou rotação com
+  nome novo): PR próprio, revisão da Qualidade do IAM e deploy.
 - `dry_run` em produção e a leitura dos números.
 - Preencher `FINANCIAL_EXTERNAL_CHECKOUT_REFUND_ENDPOINT_ORIGINS`.
 - `deliver`. Na primeira rodada, o backfill revoga o …ybva.
@@ -273,8 +320,8 @@ Mudanças em arquivo existente, todas listadas no PR:
 
 - **Chave da plataforma lendo conta conectada.** É o mesmo acesso que já cria a
   sessão (`src/financial-service.ts:3455-3456`). Não há permissão nova na Stripe.
-- **Lambda nova com acesso ao SSM.** O papel é próprio, só com `GetParameter` no
-  prefixo das chaves e sem escrita. A entrada é validada antes de ler o SSM.
+- **Lambda nova com acesso ao SSM.** O papel é próprio, só com `GetParameter` nos
+  ARNs exatos das chaves, sem curinga e sem escrita. A entrada é validada antes de ler o SSM.
 - **Estorno feito depois do horizonte de 365 dias.** Não é visto. O horizonte é
   configurável e fica registrado.
 - **Rate limit da Stripe.** Lote de 25 a cada 5 min, mais o backfill único. O
