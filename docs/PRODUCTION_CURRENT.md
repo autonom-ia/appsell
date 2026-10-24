@@ -2,24 +2,47 @@
 
 > Fonte operacional para retomar o projeto sem depender do histórico da conversa.
 >
-> Última verificação documentada: **2026-09-04**. Esta página separa o que foi
+> Última verificação documentada: **2026-10-24**. Esta página separa o que foi
 > comprovado na produção do que continua sendo plano ou laboratório Local/CI.
 
 ## Release em produção
 
-> Última verificação: **2026-09-04**, lendo o host — não a memória desta página.
-> Esta página já divergiu da realidade três vezes; o que vale é o que
-> `docker service ls` responde.
+> Última verificação: **2026-10-24 16:10 UTC**, lendo o host, não a memória
+> desta página. Esta página já divergiu da realidade quatro vezes; o que vale é
+> o que `docker service ls` responde.
 
 | Item | Estado |
 |---|---|
 | Domínio | `https://sell.autonomia.site` |
 | Ambiente | VPS EasyPanel nativo, Docker Swarm |
-| SHA do **api** | `68ffd7b` — lido do host em 04/09/2026; a página dizia `89233e2` e estava errada |
-| SHA do **asset-worker** | `d5e00ec` — mesma imagem da api, vários SHAs atrás |
-| SHA do **pdf-sandbox** | `d5e00ec` — mesma imagem da api, com outra tag |
-| SHA do **web** | `68ffd7b` — o mesmo da api |
-| Banco | head **`0061_o_atraso_alcanca_o_aluno`**, `schema_ready() = true` |
+| SHA do **web** | `2d2e64f`, ID `sha256:01d83832b960…`, lido do host em 24/10/2026 (#437) |
+| SHA do **api** | `2759090`, ID `sha256:0e126a1a5b03…`, lido do host em 24/10/2026 |
+| SHA do **asset-worker** | `2759090`, a mesma imagem da api |
+| SHA do **pdf-sandbox** | `d5e00ec`, ID `sha256:bc88217ab7b5…` |
+| Banco | head registrado **`0061_o_atraso_alcanca_o_aluno`** (04/09). **Não relido** no release de 24/10, que é só do web e não tem migration. A `0062` (#459) está na `main` e não foi aplicada |
+
+**Release de 2026-10-24, só o `web`: `2d2e64f` (#437, #449; PRs #455, #488).**
+Fecha as três RCE críticas do Next 16.3.3 (GHSA-2464-fhr4-w9xw,
+GHSA-673q-mjm6-r5xr, GHSA-vcvr-r3jv-pc5j) e os advisories do nodemailer:
+Next 16.4.2, sharp 0.35.5, nodemailer 10.1.7, conferidos dentro da imagem.
+- App CI run 40106372418: os 7 Certify em success, com o web executado.
+- Imagem construída no host com teto (BuildKit, 3 GiB, 2 núcleos), a partir do
+  `git archive` de `2d2e64f`.
+- Troca `start-first`: a task `kpuep1r3ub7v` (`fa13a78`) deu lugar à
+  `s136wz089vbw`, com `UpdateStatus=completed`, as 52 variáveis iguais por nome
+  e o smoke da Hub2You idêntico antes e depois.
+- A spec do web passa a `start-first`, com failure `rollback` e monitor 90 s
+  na subida, e `start-first` com `pause` na volta.
+- A volta para `fa13a78` está em `/home/claudete/releases/437/web-fa13a78.tar`
+  (sha256 `fadcf96c…3f07`), porque o prune das 00:39 apaga a imagem antiga.
+  O roteiro é o do `release-437-correcoes-rce.md`.
+- Registro: [#437](https://github.com/autonom-ia/appsell/issues/437#issuecomment-6386432353).
+
+**Correção do registro (04/09 → 16/10 → 24/10).** O deploy de 16/10, 21:12 UTC,
+que levou o web de `b387252` a `fa13a78` e a api a `409ae23`, não teve
+registro; foi achado na Fase 0 do #437, em 23/10. Em 24/10 a api foi para
+`2759090` nas etapas 4 e 6 do #461, registradas lá e não nesta página. Este
+bloco registra o que o host respondeu em 24/10.
 
 **Correção de 2026-09-04, migration `0061` (PR #424, issue #420).** A `0060`
 subiu com um defeito que **quebrou o publicar** dos dois únicos produtos com
