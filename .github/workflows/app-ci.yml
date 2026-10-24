@@ -193,6 +193,8 @@ jobs:
           uv run --project apps/api pip-audit --local
           uv run --project apps/api pytest \
             apps/api/tests/test_config.py \
+            apps/api/tests/test_config_storage_internal_http.py \
+            apps/api/tests/test_storage_rede_interna.py \
             apps/api/tests/test_health.py \
             apps/api/tests/test_capacity_telemetry.py \
             apps/api/tests/test_log_da_api.py \
@@ -201,6 +203,7 @@ jobs:
             apps/api/tests/test_links_do_pdf_com_o_sandbox_ocupado.py \
             apps/api/tests/test_preparo_de_video_do_pdf.py \
             apps/api/tests/test_limites_de_midia.py \
+            apps/api/tests/test_ensure_asset_worker.py \
             apps/api/tests/test_pdf_derivatives.py \
             apps/api/tests/test_parser_de_midia_fica_no_sandbox.py \
             apps/api/tests/test_pdf_sandbox_service.py \
@@ -271,6 +274,7 @@ jobs:
           uv run --project apps/api pip-audit --local
           uv run --project apps/api pytest \
             apps/api/tests/test_config.py \
+            apps/api/tests/test_config_storage_internal_http.py \
             apps/api/tests/test_health.py \
             apps/api/tests/test_capacity_telemetry.py \
             apps/api/tests/test_log_da_api.py \
