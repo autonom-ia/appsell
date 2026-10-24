@@ -3,8 +3,9 @@
 Refs #439 #487 · autonom-ia/autonomia-financial#152 · substitui o desenho do
 autonom-ia/autonomia-financial#153 (draft)
 
-Status: **plano, sem código.** Depende de OK do Rodrigo. O endpoint Stripe atual
-do Financial **não é tocado**.
+Status: **aprovado para código pelo Rodrigo em 24/10/2026** (opção B), com a
+camada ligada só para nós (§3.5). Merge, deploy e ativação seguem com OK dele.
+O endpoint Stripe atual do Financial **não é tocado**.
 
 ## 0. Por que o desenho do #153 não serve
 
@@ -349,6 +350,49 @@ não depende do endpoint atual (§0).
   impacto e OK. A Qualidade sugeriu `redirect: "error"`. Fica registrado como
   follow-up.
 
+### 3.5 Camada ligada só para nós (decisão do Rodrigo, 24/10/2026)
+
+Regra do Rodrigo para o Financial: toda mudança é uma camada nova, aditiva,
+ligada só para a Autonom.ia e a Hub2You. Depois do teste, o sócio decide se
+liga para todos.
+
+**Allowlist de operador.**
+- Variável nova `FINANCIAL_EXTERNAL_CHECKOUT_REFUND_OPERATOR_IDS`, lista de
+  UUIDs separados por vírgula, **vazia por padrão**. Vazia, nenhum pedido é
+  consultado, mesmo em `dry_run` ou `deliver`.
+- Ela soma com a allowlist de origens. O pedido só entra se o operador **e** a
+  origem estiverem nas duas listas.
+- Os ids reais entram na ativação, com OK do Rodrigo, e não no código.
+- Pedido de operador fora da lista não gera consulta à Stripe, aviso nem
+  escrita. O `dry_run` conta esses pedidos por operador em
+  `skippedOperatorNotAllowed`, com uma consulta só de contagem.
+- O `deliver` também confere a lista na hora do envio. Tirar um operador da
+  lista para os avisos dele já enfileirados.
+
+**Pedidos retidos (lista de ignorados auditada).**
+- Tabela nova na 053, `financial.external_checkout_refund_holds`, append-only:
+  `id`, `checkout_order_id` (FK), `action` (`hold` ou `release`), `reason`
+  (obrigatório), `actor`, `created_at`. O runtime tem só INSERT e SELECT.
+- O estado de um pedido é a ação da linha mais recente. Sem linha, não há
+  retenção.
+- Pedido retido continua sendo consultado na Stripe, mas **não gera aviso**.
+  Se já houver aviso pendente, o claim não o entrega. No `dry_run`, ele aparece
+  em `heldFullyRefunded`, com o prefixo do pedido.
+- `hold` e `release` são modos novos do runner, `mode = "hold"` e
+  `mode = "release"`, só por invocação manual (`aws lambda invoke`), como o
+  replay. Payload: `{ orderIds, reason, actor }`, limite de 50, `reason`
+  vazio recebe recusa.
+- Cada `release` em produção tem OK do Rodrigo, porque revoga acesso.
+
+**O caso …ybva (teste do sócio, acesso mantido).**
+- Ele fica retido **antes** do primeiro `deliver`: o `hold` dele é o passo 1 da
+  ativação.
+- Além disso, a primeira execução em `deliver` passa pelo Rodrigo com a lista
+  do `dry_run` mais recente. Ele confere quais pedidos seriam revogados. O
+  `…ybva` tem de aparecer em `heldFullyRefunded`, e não em `fullyRefunded`.
+- As duas proteções valem juntas. Se o `hold` faltar, a conferência da lista
+  pega; se a lista passar, o `hold` segura.
+
 ## 4. Testes
 
 Teste por operador, o que a Orquestração pediu:
@@ -436,6 +480,18 @@ Ajustes de §3.4, com o defeito que cada teste pega:
   `redirect_refused`. Origem fora da lista e `http:` são recusadas antes de
   conectar. O papel não tem `ssm:`, `kms:` nem `lambda:`.
 
+Camada ligada só para nós (§3.5):
+- lista de operadores vazia: nenhuma consulta, nenhum aviso, em qualquer modo.
+  Pega a camada ligada para todos por padrão;
+- operador fora da lista: sem chamada à bridge, contado em
+  `skippedOperatorNotAllowed`. Pega a regra do Rodrigo violada;
+- aviso enfileirado de operador que saiu da lista não é entregue;
+- pedido retido e estornado: consultado, sem aviso, contado em
+  `heldFullyRefunded`. Pega o …ybva revogado sem confirmação;
+- aviso pendente de pedido retido depois do enfileiramento não é entregue;
+- `release` volta a valer pela linha mais recente; o runtime não apaga nem
+  altera `holds`; `reason` vazio e mais de 50 itens recebem recusa.
+
 ## 5. Prova de isolamento no PR
 
 Igual ao #153. O diff destes arquivos vem vazio: `financial-service.ts`,
@@ -459,8 +515,12 @@ Mudanças em arquivo existente, todas listadas no PR:
 - Cada nome novo na lista de secret-keys (gateway direto novo ou rotação com
   nome novo): PR próprio, revisão da Qualidade do IAM e deploy.
 - `dry_run` em produção e a leitura dos números.
-- Preencher `FINANCIAL_EXTERNAL_CHECKOUT_REFUND_ENDPOINT_ORIGINS`.
-- `deliver`. Na primeira rodada, o backfill revoga o …ybva.
+- Preencher `FINANCIAL_EXTERNAL_CHECKOUT_REFUND_ENDPOINT_ORIGINS` e
+  `FINANCIAL_EXTERNAL_CHECKOUT_REFUND_OPERATOR_IDS` (só Autonom.ia e Hub2You).
+- `hold` do …ybva, antes do `deliver` (§3.5).
+- `deliver`: a primeira execução passa pelo Rodrigo com a lista do `dry_run`.
+- Cada `release` de pedido retido.
+- Ligar para outros operadores: decisão do sócio, depois do teste.
 - Quem assina o tópico SNS dos alarmes, e-mail ou canal (antes do `deliver`).
 - Cada replay de `dead_letter` em produção.
 - Follow-up fora do F2: `redirect` no `fetch` existente do `purchase.approved`
