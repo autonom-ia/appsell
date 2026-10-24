@@ -12,7 +12,7 @@ nesta ordem, e só começa depois da anterior conferida:
 | 5 | ensaio assinado e `getent`, com o endpoint trocado só no processo | não | |
 | 5b | merge deste PR: script e `ensure-asset-worker.sh` no alias existente | não | |
 | 6a | env do worker, pelo `storage-rede-interna.sh` | sim (env) | |
-| 6b | env da api, **pelo Rodrigo no painel** do EasyPanel | sim (env) | |
+| 6b | env da api, pelo mesmo script | sim (env) | |
 | 7 | reaplicar a borda do #477 | sim (Traefik) | |
 
 ## Decisões do Rodrigo (24/10/2026, depois da etapa 3)
@@ -21,9 +21,12 @@ nesta ordem, e só começa depois da anterior conferida:
   `http://sell-autonomia-storage:9000`, o alias que o EasyPanel já dá ao
   `storage` na rede `easypanel-sell-autonomia`. Não há rede nova, e o storage
   não para. A etapa 4 sai do plano.
-- **Env da api: "Você, no painel".** O Rodrigo muda as duas variáveis da api no
-  EasyPanel, seguindo o roteiro da etapa 6b. **Nenhum agente vê valor.** A env
-  do worker fica conosco: vai por script, com backup e contagem.
+- **Env da api e do worker: "Pelo script".** A primeira decisão era o Rodrigo
+  mudar a api no painel. Ela foi trocada depois da leitura de que um Deploy do
+  painel pode reescrever a spec da api (ver "Risco: o painel diverge da
+  produção"). As duas variáveis entram por `docker service update --env-add`.
+  Os valores não são secretos. **Nenhum agente vê valor**: o script só imprime
+  nomes, contagens, hashes e hostnames.
 
 ## Por que
 
@@ -80,14 +83,16 @@ Saiu do `storage-rede-interna.sh`:
 - o alias `appsell-storage`;
 - o update do `storage`, com a trava que o acompanhava
   (`storage_sem_clientes_do_alias`);
-- o modo `env`, que mudava a api por `--env-add`;
-- a ordem `start-first` posta na api (`ordem_do`, #485). A api não é mais
-  tocada pelo script, só lida.
+- a `--update-order start-first` posta na api pelo script (`ordem_do`, #485).
+  Agora o script exige que a spec da api já esteja com `start-first` e não
+  muda a ordem.
 
-No lugar entraram três modos:
+O modo `env` virou dois, `worker` e `api`, com o mesmo caminho e a mesma
+conferência.
 
-- `worker`, que muda só o worker;
-- `api-antes` e `api-depois`, que só leem e só gravam o backup em `/tmp`.
+**O storage não é tocado.** Nenhuma etapa faz update nele: o alias já existe.
+Por isso a ordem de update e de rollback do storage não precisa ser lida nem
+fixada antes da janela. Essa leitura existia só por causa da etapa 4.
 
 Saiu do `ensure-asset-worker.sh` o bloco do #481, que exigia
 `sell-storage-internal` (exit 1 se a rede faltasse) e punha o worker nela.
@@ -321,200 +326,173 @@ SQL
 
 Seguir só com as duas contagens em 0. Diferente de 0: esperar e repetir.
 
-## Etapa 6a — env do worker, por script
+## Etapas 6a e 6b — env do worker, depois da api, pelo script
 
-Vem antes da api porque o worker não serve a loja. É a primeira prova com um
-processo real, e o rollback dele não para a vitrine.
+O worker vem primeiro porque não serve a loja. É a primeira prova com um
+processo real, e a volta dele não para a vitrine. A api vem depois, com OK
+próprio, em outra execução e com outro `ts`.
 
 ```sh
 bash storage-rede-interna.sh seco
-bash storage-rede-interna.sh worker
+bash storage-rede-interna.sh worker     # 6a
+bash storage-rede-interna.sh api        # 6b, depois da 6a conferida
 ```
 
-O que o `worker` faz, e onde para:
+O que cada modo faz, e onde para:
 
-1. Confere, sem escrever nada:
+1. **Confere, sem escrever nada:**
    - o `sudo -n` e o Swarm com 1 nó;
-   - o `storage` e o worker com 1 task `Running`;
-   - o rollback order do worker, que tem de ser `stop-first`;
-   - a conferência do alias da etapa 5.1: o worker na rede em que o storage
-     tem o alias, e o `getent` dando só a VIP do storage nessa rede.
-   Qualquer falha: ABORT, sem backup e sem update.
-2. Se a flag e o endpoint já estão nos valores desta janela, não faz nada.
-3. Faz o backup da spec e da digital em `/tmp/sell-autonomia_asset-worker_spec_pre461_<ts>.*`
-   e imprime o `ts`.
-4. Roda um update só, com `--env-add APPSELL_API_STORAGE_INTERNAL_HTTP_ALLOWED=true
-   --env-add APPSELL_API_STORAGE_INTERNAL_ENDPOINT=http://sell-autonomia-storage:9000`.
-   A ordem de update fica a da spec.
-5. Confere, em até 180 s:
-   - 1 task `Running`;
-   - o `probe_availability()` verde de dentro do worker;
-   - a contagem de env igual à de antes **mais as variáveis que não existiam**
-     (1 hoje: a flag é nova e o endpoint é substituído);
-   - nenhum nome de variável a menos;
-   - a flag e o endpoint com os valores desta janela.
+   - o `storage` e o serviço com 1 task `Running`;
+   - a conferência do alias da etapa 5.1: o serviço na rede em que o storage
+     tem o alias, e o `getent` dando só a VIP do storage nessa rede;
+   - na api, a ordem de update da spec em `start-first`. O script não muda a
+     ordem; se ela não for essa, a troca e a volta parariam a loja;
+   - o estado de partida lido em 24/10/2026: a flag ainda não existe, e o
+     endpoint existe.
 
-Qualquer saída que não seja o fim verde volta o worker ao backup e sai com 1
-(130 no sinal). Isso vale para conferência que falha, erro de comando, Ctrl-C,
-SIGTERM ou queda do SSH.
+   Qualquer falha: ABORT, sem backup e sem update. Se a flag e o endpoint já
+   estão nos valores desta janela, não faz nada.
+2. **Backup** da spec e da digital em `/tmp/<serviço>_spec_pre461_<ts>.*`, e
+   imprime o `ts`. A digital tem um hash por campo (rótulos, imagem, env
+   ordenada, mounts, graça, redes, recursos, ordens de update e rollback) e um
+   `Resto`, que é a spec inteira sem a env.
+3. **Um update só,** com `--env-add APPSELL_API_STORAGE_INTERNAL_HTTP_ALLOWED=true
+   --env-add APPSELL_API_STORAGE_INTERNAL_ENDPOINT=http://sell-autonomia-storage:9000`,
+   sem `--update-order`. Vale a ordem da spec: `start-first` na api, então a
+   task nova sobe ao lado da antiga e só a substitui depois de `healthy`, sem
+   queda da loja. Duas tasks juntas não mandam e-mail em dobro: o claim é por
+   lease com fence no banco (`email_worker.py`).
+4. **Confere, em até 180 s** (cada `docker exec` com prazo de 60 s):
+   - 1 task `Running`, **na imagem do backup**, e o `probe_availability()`
+     verde de dentro dela;
+   - a digital contra o backup, onde **só a env** pode ter mudado. Qualquer
+     outro campo, inclusive o `Resto`, é falha;
+   - a contagem de env igual à do backup **mais 1** (a flag entra; o endpoint é
+     substituído), e nenhum nome a menos;
+   - o valor de todas as outras variáveis igual ao do backup, comparado por
+     hash e sem imprimir;
+   - a flag e o endpoint com os valores desta janela, e o alias resolvendo só
+     para a VIP do storage de dentro da task nova;
+   - na api, três leituras do `/health/ready`, com 15 s entre elas, todas com
+     `"storage":true`.
 
-**Conferência:** o comando do item 0 do runbook do #477 imprime
-`sell-autonomia-storage` como `INTERNAL_ENDPOINT` no worker. O smoke da
-Hub2You fica igual à linha de base.
+   O `/health/ready` lê o estado de um monitor em segundo plano, com janela
+   de frescor (`main.py`). As três leituras mostram que esse monitor ficou
+   verde. O probe fresco é o do item anterior, feito de dentro da task.
 
-**Rollback da etapa 6a (≈ 1 min, sem efeito na loja):**
+**A volta automática.** Qualquer saída que não seja o fim verde volta o
+serviço ao backup e sai com 1 (130 no sinal). Isso vale para conferência que
+falha, erro de comando, Ctrl-C, SIGTERM ou queda do SSH. A volta é a mesma do
+`desfazer` abaixo.
+
+Um update só com `--env-add` pode, em tese, normalizar outro campo da spec. Se
+isso acontecer, a conferência falha e o serviço volta. É o comportamento
+pretendido: a janela fecha sem mudança, e o caso vai ao Rodrigo.
+
+**Conferência depois de cada uma:**
+
+- o comando do item 0 do runbook do #477 imprime `sell-autonomia-storage`
+  como `INTERNAL_ENDPOINT` no serviço que mudou;
+- o smoke da Hub2You fica igual à linha de base, e o laço não mostra linha
+  diferente de 200;
+- depois da 6b: nos 5 minutos seguintes, o log do Traefik não mostra
+  `HEAD /appsell-` vindo de `172.18.0.1`. O controle deixou de passar por ele.
+
+**Rollback (≈ 1–2 min por serviço):**
 
 ```sh
 bash storage-rede-interna.sh desfazer <ts>
 ```
 
-O `ts` só é aceito no formato que a etapa imprime (`AAAAMMDDTHHMMSSZ`). O
-script compara a digital da spec atual com a do backup, campo a campo:
+O `ts` só é aceito no formato que a etapa imprime (`AAAAMMDDTHHMMSSZ`). Ctrl-C
+e queda do SSH não interrompem o `desfazer`. O script compara a spec atual com
+o backup e escolhe uma de quatro saídas:
 
-- igual ao backup: nada a desfazer. É o que acontece na segunda execução;
-- diferente, e a `PreviousSpec` do Swarm igual ao backup: `docker service
-  rollback`, e confere de novo que a spec ficou igual ao backup e a task
-  `Running`;
-- diferente, e a `PreviousSpec` também diferente: **ABORT, sem rollback**.
-  Um rollback ali cairia na spec de outro deploy. Vai ao Rodrigo, com os campos
-  que diferem.
+1. **Igual ao backup:** nada a desfazer. É o que acontece na segunda execução.
+2. **Diferente só nas duas variáveis desta janela:** um update que as põe como
+   no backup (a flag sai; o endpoint volta ao valor dele). O valor vem do
+   arquivo de backup e vai direto para o argumento do `docker`, nunca para a
+   tela. O update usa a ordem da spec, então na api é `start-first`, **sem
+   parar a loja**.
+3. **Diferente em mais coisa, e a `PreviousSpec` do Swarm igual ao backup:** o
+   único update desde o backup foi o desta janela, e ele estragou mais que as
+   duas variáveis. Nesse caso o script roda `docker service rollback`, que usa
+   o rollback order da spec, `stop-first`. **Na api, a loja para durante a
+   troca**: ~22 s de 500 na etapa 2, e até 330 s com e-mail em lease. Anunciar
+   antes, e medir com o laço.
+4. **Diferente em mais coisa, e a `PreviousSpec` também diferente:** outro
+   deploy entrou no meio. **ABORT, sem tocar no serviço**, e Rodrigo, com os
+   campos que diferem.
 
-**Aborto automático:** o script volta sozinho. Smoke diferente da linha de
-base ou conferência que falha: `desfazer <ts>` sem novo OK, e alerta à
-Orquestração.
+Depois da volta, o script confere a spec igual ao backup e 1 task `Running` na
+imagem do backup, com o storage respondendo de dentro dela. Se não for assim:
+ABORT e Rodrigo.
 
-## Etapa 6b — env da api, pelo Rodrigo no painel
+**Aborto:** a volta do próprio script é automática. Smoke diferente da linha
+de base, ou conferência que falha depois do fim verde: `desfazer <ts>` sem
+novo OK, e alerta à Orquestração.
 
-A loja depende da api. Nesta etapa nenhum agente escreve na api. O agente só
-fotografa a spec antes e confere depois, sem ver valor.
+**O `ensure-asset-worker.sh` depois da 6b.** A próxima recriação do worker
+copia a env da api, e com ela a flag e o endpoint. O script confere que o
+alias existe na rede do worker, mas não que ele resolve só para a VIP do
+storage: o worker ainda não existe nessa hora. Depois de recriar o worker,
+rodar `bash storage-rede-interna.sh seco` e conferir `alias=ok`.
 
-### Trava antes de abrir o editor de env (bloqueante)
+## Risco: o painel diverge da produção
 
-A api é App Service do EasyPanel com fonte GitHub e `Dockerfile.api`
-(`deploy/easypanel-native/README.md`). Mas nenhum release dela passou pelo
-painel. Todos trocaram a imagem por fora, com `docker service update --image`
-(`inventario-de-deploy.md`, "Como sobe"). A graça de 330 s também entrou
-assim (`PRODUCTION_CURRENT.md`, "O período de graça é parte do contrato"). Os
-dois volumes da api não constam do README, que fala em "sem mounts".
+Este risco já existia e não depende desta janela.
 
-**Não foi lido o que um Deploy do painel faz com isso.** Se o painel aplicar a
-env reconstruindo a imagem a partir do fonte que ele guarda, ele pode:
+A api e o web são App Services do EasyPanel, com fonte GitHub e Dockerfile
+(`deploy/easypanel-native/README.md`). Nenhum release passou pelo painel.
+Todos trocaram a imagem por fora, com `docker service update --image`
+(`inventario-de-deploy.md`, "Como sobe"). A graça de 330 s da api também
+entrou assim (`PRODUCTION_CURRENT.md`, "O período de graça é parte do
+contrato"). Os volumes do ClamAV e do sandbox de PDF não constam do README,
+que fala em "sem mounts".
+
+O painel guarda a configuração de quando o serviço foi criado. Um Deploy pelo
+painel reaplicaria essa configuração, e pode:
 
 - trocar a imagem `api:<sha>` por um build de outra branch;
 - voltar a graça para 10 s. Aí o Swarm mata o envio de e-mail no meio, e o
   comprador recebe duas vezes;
-- tirar os volumes do ClamAV e do sandbox de PDF.
+- tirar os volumes do ClamAV e do sandbox.
 
-Antes de editar, o Rodrigo confere no painel, só olhando:
+Depois das etapas 6a e 6b, ele também tiraria a flag e o endpoint interno. Com
+a borda do #477 aplicada, isso derrubaria o `/health/ready`.
 
-1. **Source** da api: GitHub (repositório, branch, commit) ou imagem Docker?
-2. Existe um caminho para aplicar a env **sem build**, só com restart ou
-   redeploy da imagem atual?
-3. **Mounts**: aparecem os volumes de `/run/appsell-clamav` e
-   `/run/appsell-pdf`?
-4. Em **Deploy** ou **Advanced**: há campo de graça (stop grace period) e de
-   zero downtime? Com que valor?
+Até a Issue abaixo fechar, **ninguém aplica nada da api nem do web pelo painel
+do EasyPanel**.
 
-**Parar e voltar à Orquestração** sem salvar nada se:
+Texto proposto para a Issue (a Orquestração abre):
 
-- a aplicação da env exige build a partir do GitHub;
-- os mounts não aparecem;
-- a graça não é configurável no painel.
-
-Qualquer um dos três reescreveria a spec que o `api-depois` exige igual. Com
-a imagem atual mantida, os mounts no painel e a graça em 330 s (ou sem que o
-painel a toque), seguir.
-
-### Antes
-
-1. Linha de base: smoke da Hub2You e laço de disponibilidade.
-2. No host, o agente fotografa a api:
-
-   ```sh
-   bash storage-rede-interna.sh api-antes
-   ```
-
-   Ele confere o `sudo -n`, o Swarm com 1 nó, as tasks `Running`, o rollback
-   `stop-first` e o alias de dentro da api (etapa 5.1). Depois grava
-   `/tmp/sell-autonomia_api_spec_pre461_<ts>.{json,digital}` e imprime a
-   contagem de env, o hostname do endpoint interno (`minio.autonomia.site`) e
-   o `ts`. Não escreve na api.
-3. O Rodrigo anota, para ele, o valor **atual** de
-   `APPSELL_API_STORAGE_INTERNAL_ENDPOINT`. É o valor do rollback. Nenhum
-   agente o vê.
-
-### No painel, nesta ordem
-
-Nomes exatos, sem espaço antes nem depois do `=`:
-
-1. `APPSELL_API_STORAGE_INTERNAL_HTTP_ALLOWED=true` (nova).
-2. `APPSELL_API_STORAGE_INTERNAL_ENDPOINT=http://sell-autonomia-storage:9000`
-   (substitui o valor atual; o nome é o mesmo).
-3. Nenhuma outra variável muda, sai ou entra. Salvar as duas juntas e aplicar
-   uma vez.
-
-A ordem importa se o painel aplicar uma de cada vez. A flag sozinha não muda
-nada: com o endpoint https, a validação é a mesma de hoje. O endpoint http
-sem a flag é recusado pelo `config.py`, e a task nova nunca fica `healthy`.
-
-O painel está com `zeroDowntime=true`, isto é, `start-first`. A task nova sobe
-ao lado da antiga e só a substitui depois de `healthy`, sem queda da loja.
-Duas tasks juntas não mandam e-mail em dobro: o claim é por lease com fence no
-banco (`email_worker.py`).
-
-### Depois
-
-1. Quando a task nova estiver `Running`, o agente roda:
-
-   ```sh
-   bash storage-rede-interna.sh api-depois <ts>
-   ```
-
-   Ele só lê, e sai com 1 na primeira falha, dizendo qual rollback usar.
-   Confere:
-
-   - a digital por campo contra o backup. Só a env pode ter mudado. Imagem,
-     graça, mounts, redes, recursos, rótulos ou ordens de update e rollback
-     diferentes saem como `o painel mudou mais que a env: <campos>`;
-   - a contagem de env igual à do backup mais 1, e nenhum nome a menos;
-   - a flag e o endpoint com os valores desta janela;
-   - o `probe_availability()` de dentro da api e o alias resolvendo só para a
-     VIP do storage;
-   - três leituras do `/health/ready`, com 15 s entre elas, todas com
-     `"storage":true`.
-2. O item 0 do runbook do #477 imprime `sell-autonomia-storage` como
-   `INTERNAL_ENDPOINT` nos dois serviços.
-3. O smoke da Hub2You fica igual à linha de base, e o laço sem linha diferente
-   de 200.
-4. Nos 5 minutos seguintes, o log do Traefik não mostra `HEAD /appsell-` vindo
-   de `172.18.0.1`: o controle deixou de passar por ele.
-
-### Rollback da etapa 6b
-
-Há dois rollbacks, conforme o que o `api-depois` disser:
-
-- **Só a env está errada,** ou o storage não responde. O Rodrigo volta pelo
-  painel:
-  - `APPSELL_API_STORAGE_INTERNAL_ENDPOINT` ao valor anotado no passo 3;
-  - `APPSELL_API_STORAGE_INTERNAL_HTTP_ALLOWED` removida.
-
-  Depois salva e aplica, com a mesma trava e o mesmo `start-first`, e a loja
-  não para. ETA: 2 a 3 min. Conferência: o item 0 do #477 volta a mostrar
-  `minio.autonomia.site`, o `/health/ready` volta com `"storage":true`, e o
-  smoke volta a ser igual à linha de base.
-- **O painel mudou mais que a env** (imagem, graça, mounts). O rollback do
-  painel não desfaz isso. O agente roda `bash storage-rede-interna.sh
-  desfazer <ts>`. Ele usa a `PreviousSpec` do Swarm só se ela for igual ao
-  backup; se não for, ABORT e Rodrigo. O rollback da api é `stop-first`, então
-  **a loja para durante a troca**: ~22 s de 500 na etapa 2, e até 330 s com
-  e-mail em lease. Anunciar antes de executar, e medir com o laço.
-
-  Depois disso, o painel guarda uma config diferente da spec em produção. O
-  próximo Deploy pelo painel a reaplicaria. Até o Rodrigo decidir como
-  alinhar, ninguém aplica nada da api pelo painel.
-
-**Aborto:** smoke diferente da linha de base, ou `api-depois` com saída 1. Um
-desses dois rollbacks, sem novo OK, e alerta à Orquestração.
+> **O painel do EasyPanel diverge da produção do Sell (api e web)**
+>
+> **Problema.** A api e o web são App Services do EasyPanel, com fonte GitHub
+> e Dockerfile. Todos os releases trocaram a imagem por fora do painel
+> (`docker service update --image`). A graça de 330 s da api, os volumes de
+> `/run/appsell-clamav` e `/run/appsell-pdf`, e, depois do #461, a flag
+> `APPSELL_API_STORAGE_INTERNAL_HTTP_ALLOWED` e o endpoint interno
+> `http://sell-autonomia-storage:9000` também entraram por `docker service
+> update`. A configuração guardada no painel não foi lida. Um Deploy pelo
+> painel pode reconstruir a imagem a partir de outra branch, voltar a graça
+> para 10 s (e-mail em dobro), tirar os volumes e desfazer a env do #461. Com
+> a borda do #477, isso derruba o `/health/ready`.
+>
+> **Pronto quando:**
+> 1. A configuração do painel da api e do web foi lida pelo Rodrigo, sem
+>    agente ver valor: fonte, branch, build, env (só nomes), mounts, graça e
+>    zero downtime. Cada campo foi comparado com a spec em produção.
+> 2. Há uma decisão escrita. Uma opção: o painel passa a ser a fonte, alinhado
+>    com a produção. A outra: os serviços saem do controle de deploy do painel,
+>    com o motivo registrado.
+> 3. `inventario-de-deploy.md` e `PRODUCTION_CURRENT.md` dizem qual é a fonte
+>    da verdade da spec.
+> 4. Até lá: nenhum Deploy da api ou do web pelo painel. A regra fica escrita
+>    no `inventario-de-deploy.md`.
+>
+> **Risco:** alto (loja Hub2You). **Tipo:** infra. **Ambiente:** produção.
+> Refs #461.
 
 ## Etapa 7 — reaplicar a borda do #477
 

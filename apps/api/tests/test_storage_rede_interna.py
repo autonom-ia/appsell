@@ -66,6 +66,8 @@ def salvar():
     json.dump(estado, open(ESTADO, "w"))
 
 def valor(obj, caminho):
+    if not caminho.strip("."):
+        return obj
     for parte in caminho.strip(".").split("."):
         if obj is None:
             return None
@@ -135,21 +137,38 @@ elif comando == "service update":
             if "alias" in partes:
                 rede["Aliases"] = [partes["alias"]]
             nova["TaskTemplate"]["Networks"].append(rede)
-        elif arg == "--env-add":
+        elif arg in ("--env-add", "--env-rm"):
             chave = alvo.split("=", 1)[0]
             container = nova["TaskTemplate"]["ContainerSpec"]
             env = [e for e in container["Env"] if e.split("=", 1)[0] != chave]
-            container["Env"] = env + [alvo]
-    if falha("ZERA_ENV", nome):
+            # Como o docker, o --env-add não preserva a ordem da lista.
+            container["Env"] = [alvo] + env if arg == "--env-add" else env
+    # As falhas valem só no update da janela, o que liga a flag; a volta é
+    # outro update, que precisa funcionar.
+    janela = "APPSELL_API_STORAGE_INTERNAL_HTTP_ALLOWED=true" in args
+    def falha_da_janela(chave):
+        return janela and falha(chave, nome)
+    if falha_da_janela("ZERA_ENV"):
         nova["TaskTemplate"]["ContainerSpec"]["Env"] = []
-    if falha("ROLLBACK_START_FIRST", nome):
-        nova["RollbackConfig"]["Order"] = "start-first"
-    if falha("TROCA_NOME", nome):
-        nova["TaskTemplate"]["ContainerSpec"]["Env"][0] = "OUTRA_VARIAVEL=x"
-    servico["ler_env_falha"] = falha("FALHA_LEITURA_ENV", nome)
+    if falha_da_janela("MUDA_VALOR"):
+        env = nova["TaskTemplate"]["ContainerSpec"]["Env"]
+        nova["TaskTemplate"]["ContainerSpec"]["Env"] = [
+            "APPSELL_API_STORAGE_CONTROL_SECRET_KEY=outro" if "SECRET_KEY=" in e else e for e in env
+        ]
+    if falha_da_janela("MUDA_HEALTHCHECK"):
+        nova["TaskTemplate"]["ContainerSpec"]["Healthcheck"] = {"Test": ["NONE"]}
+    if falha_da_janela("MUDA_GRACA"):
+        nova["TaskTemplate"]["ContainerSpec"]["StopGracePeriod"] = 10000000000
+    if falha_da_janela("TROCA_NOME"):
+        env = nova["TaskTemplate"]["ContainerSpec"]["Env"]
+        nova["TaskTemplate"]["ContainerSpec"]["Env"] = [
+            "OUTRA_VARIAVEL=x" if e.startswith("APPSELL_API_ENVIRONMENT=") else e for e in env
+        ]
+    servico["ler_env_falha"] = falha_da_janela("FALHA_LEITURA_ENV")
     servico["PreviousSpec"], servico["Spec"] = servico["Spec"], nova
-    servico["quebrado"] = falha("SEM_STORAGE", nome) or falha("NAO_SOBE", nome)
-    servico["parado"] = falha("NAO_SOBE", nome)
+    servico["quebrado"] = falha_da_janela("SEM_STORAGE") or falha_da_janela("NAO_SOBE")
+    servico["parado"] = falha_da_janela("NAO_SOBE")
+    servico["imagem_da_task"] = "outra:imagem" if falha_da_janela("IMAGEM_DA_TASK") else None
     salvar()
 elif comando == "service rollback":
     servico = estado["servicos"][args[-1]]
@@ -165,10 +184,17 @@ elif comando == "service ps":
     elif not estado["servicos"][nome].get("parado"):
         print("Running 5 seconds ago")
 elif args[0] == "inspect":
-    print(json.dumps("cid-" + args[1][len("task-"):]))
+    nome = args[1][len("task-"):]
+    if "Image" in opcao("--format"):
+        servico = estado["servicos"][nome]
+        da_spec = servico["Spec"]["TaskTemplate"]["ContainerSpec"]["Image"]
+        imagem = servico.get("imagem_da_task") or da_spec
+        print(json.dumps(imagem))
+    else:
+        print(json.dumps("cid-" + nome))
 elif args[0] == "exec":
     nome = args[1][len("cid-"):]
-    if args[2] == "getent":
+    if "getent" in args:
         ips = estado["dns"].get(nome, [])
         print("\n".join(f"{ip}      {args[-1]}" for ip in ips))
         sys.exit(0 if ips else 2)
@@ -253,6 +279,8 @@ def pasta(tmp_path: Path) -> Path:
             WORKER: _servico(list(ENV_DA_API), [{"Target": REDE_DO_PROJETO}]),
         },
     }
+    # A api em produção troca com start-first (lido em 24/10/2026).
+    estado["servicos"][API]["Spec"]["UpdateConfig"]["Order"] = "start-first"
     (tmp_path / "estado.json").write_text(json.dumps(estado))
     return tmp_path
 
@@ -320,41 +348,63 @@ def ultimo_ts(pasta: Path, servico: str) -> str:
     return nomes[-1][len(f"{servico}_spec_pre461_") : -len(".json")]
 
 
-def painel(pasta: Path, nova_env: list[str], **outros: Any) -> None:
-    """O deploy do EasyPanel: a spec nova e a de antes vira a PreviousSpec."""
-    atual = estado(pasta)
-    api = atual["servicos"][API]
-    nova = json.loads(json.dumps(api["Spec"]))
-    nova["TaskTemplate"]["ContainerSpec"]["Env"] = nova_env
-    nova["TaskTemplate"]["ContainerSpec"].update(outros)
-    api["PreviousSpec"], api["Spec"] = api["Spec"], nova
-    gravar(pasta, atual)
+def updates_da_volta(pasta: Path) -> list[str]:
+    return [
+        linha.split()[-1]
+        for linha in chamadas(pasta)
+        if linha.startswith("service update") and "--env-rm" in linha
+    ]
 
 
-ENV_DO_PAINEL = [ENV_DA_API[0], ENDPOINT, ENV_DA_API[2], FLAG]
+def sorted_env(pasta: Path, servico: str) -> list[str]:
+    return sorted(env(pasta, servico))
 
 
-# Worker
+MODO = {WORKER: "worker", API: "api"}
+OS_DOIS = pytest.mark.parametrize("servico", [WORKER, API])
 
 
-def test_worker_liga_a_flag_e_troca_o_endpoint_so_nele(pasta: Path) -> None:
-    antes = {servico: spec(pasta, servico) for servico in (STORAGE, API)}
-    resultado = rodar(pasta, "worker")
+# A janela: só a env muda, mais uma variável
+
+
+@OS_DOIS
+def test_liga_a_flag_e_troca_o_endpoint_so_no_servico(pasta: Path, servico: str) -> None:
+    outros = [s for s in (STORAGE, API, WORKER) if s != servico]
+    antes = {s: spec(pasta, s) for s in (STORAGE, API, WORKER)}
+    resultado = rodar(pasta, MODO[servico])
     assert resultado.returncode == 0, resultado.stderr
-    assert atualizados(pasta) == [WORKER]
-    assert len(env(pasta, WORKER)) == len(ENV_DA_API) + 1
-    assert FLAG in env(pasta, WORKER)
-    assert ENDPOINT in env(pasta, WORKER)
-    for servico in (STORAGE, API):
-        assert spec(pasta, servico) == antes[servico], servico
-    # A ordem de update do worker fica a da spec.
-    assert spec(pasta, WORKER)["UpdateConfig"] == {"Order": "stop-first"}
+    assert atualizados(pasta) == [servico]
+    assert sorted_env(pasta, servico) == sorted([ENV_DA_API[0], ENDPOINT, ENV_DA_API[2], FLAG])
+    assert f"{servico}: env 3 → 4" in resultado.stdout
+    # Fora a env, a spec é a mesma.
+    depois, de_antes = spec(pasta, servico), antes[servico]
+    for qual in (depois, de_antes):
+        qual["TaskTemplate"]["ContainerSpec"].pop("Env")
+    assert depois == de_antes
+    for s in outros:
+        assert spec(pasta, s) == antes[s], s
 
 
-def test_worker_de_novo_nao_atualiza_nada(pasta: Path) -> None:
-    assert rodar(pasta, "worker").returncode == 0
+def test_a_api_troca_com_start_first_sem_o_script_mudar_a_ordem(pasta: Path) -> None:
+    assert rodar(pasta, "api").returncode == 0
+    linha = next(c for c in chamadas(pasta) if c.startswith("service update"))
+    assert "--update-order" not in linha
+    assert spec(pasta, API)["UpdateConfig"] == {"Order": "start-first"}
+    assert spec(pasta, API)["RollbackConfig"] == {"Order": "stop-first"}
+
+
+def test_api_sem_start_first_na_spec_aborta_sem_escrever(pasta: Path) -> None:
+    atual = estado(pasta)
+    atual["servicos"][API]["Spec"]["UpdateConfig"]["Order"] = "stop-first"
+    gravar(pasta, atual)
+    _sem_escrita(pasta, rodar(pasta, "api"), "update order diferente de start-first")
+
+
+@OS_DOIS
+def test_de_novo_nao_atualiza_nada(pasta: Path, servico: str) -> None:
+    assert rodar(pasta, MODO[servico]).returncode == 0
     (pasta / "chamadas.log").unlink()
-    resultado = rodar(pasta, "worker")
+    resultado = rodar(pasta, MODO[servico])
     assert resultado.returncode == 0, resultado.stderr
     assert "nada a fazer" in resultado.stdout
     assert atualizados(pasta) == []
@@ -362,8 +412,10 @@ def test_worker_de_novo_nao_atualiza_nada(pasta: Path) -> None:
 
 def test_o_script_nao_cria_nem_mexe_em_rede(pasta: Path) -> None:
     assert rodar(pasta, "worker").returncode == 0
+    assert rodar(pasta, "api").returncode == 0
     assert not any(linha.startswith("network ") for linha in chamadas(pasta))
     assert not any("--network" in linha for linha in chamadas(pasta))
+    assert STORAGE not in atualizados(pasta)
 
 
 def _sem_escrita(pasta: Path, resultado: subprocess.CompletedProcess[str], motivo: str) -> None:
@@ -373,61 +425,117 @@ def _sem_escrita(pasta: Path, resultado: subprocess.CompletedProcess[str], motiv
     assert backups(pasta) == []
 
 
-def test_worker_fora_da_rede_do_alias_aborta_sem_escrever(pasta: Path) -> None:
+@OS_DOIS
+def test_fora_da_rede_do_alias_aborta_sem_escrever(pasta: Path, servico: str) -> None:
     atual = estado(pasta)
-    atual["servicos"][WORKER]["Spec"]["TaskTemplate"]["Networks"] = [{"Target": REDE_COMPARTILHADA}]
+    atual["servicos"][servico]["Spec"]["TaskTemplate"]["Networks"] = [
+        {"Target": REDE_COMPARTILHADA}
+    ]
     gravar(pasta, atual)
-    _sem_escrita(pasta, rodar(pasta, "worker"), "fora da rede do alias")
+    _sem_escrita(pasta, rodar(pasta, MODO[servico]), "fora da rede do alias")
 
 
+@OS_DOIS
 @pytest.mark.parametrize(
     "resolve", [["10.0.9.9"], [VIP, "10.0.9.9"], []], ids=["outro-ip", "dois-ips", "nao-resolve"]
 )
 def test_alias_que_nao_resolve_so_para_a_vip_aborta_sem_escrever(
-    pasta: Path, resolve: list[str]
+    pasta: Path, servico: str, resolve: list[str]
 ) -> None:
-    # Outro serviço respondendo pelo nome, ou nome que não existe.
+    # Outro serviço respondendo pelo nome (na api, pela rede compartilhada), ou
+    # nome que não existe.
     atual = estado(pasta)
-    atual["dns"][WORKER] = resolve
+    atual["dns"][servico] = resolve
     gravar(pasta, atual)
-    _sem_escrita(pasta, rodar(pasta, "worker"), "não vê o storage pelo alias")
+    _sem_escrita(pasta, rodar(pasta, MODO[servico]), "não vê o storage pelo alias")
 
 
 def test_alias_em_duas_redes_do_storage_aborta_sem_escrever(pasta: Path) -> None:
     atual = estado(pasta)
     atual["servicos"][STORAGE]["Spec"]["TaskTemplate"]["Networks"][1]["Aliases"] = [ALIAS]
     gravar(pasta, atual)
-    _sem_escrita(pasta, rodar(pasta, "worker"), "exatamente uma rede")
+    _sem_escrita(pasta, rodar(pasta, "api"), "exatamente uma rede")
 
 
 def test_swarm_com_dois_nos_aborta_sem_escrever(pasta: Path) -> None:
     _sem_escrita(pasta, rodar(pasta, "worker", NOS="2"), "o Swarm tem 2 nós")
 
 
-def test_worker_sem_rollback_stop_first_aborta_antes_do_backup(pasta: Path) -> None:
+@pytest.mark.parametrize(
+    ("env_de_partida", "motivo"),
+    [
+        ([*ENV_DA_API, "APPSELL_API_STORAGE_INTERNAL_HTTP_ALLOWED=false"], "já tem"),
+        ([ENV_DA_API[0], ENV_DA_API[2]], "sem APPSELL_API_STORAGE_INTERNAL_ENDPOINT"),
+    ],
+    ids=["flag-ja-existe", "sem-endpoint"],
+)
+def test_partida_diferente_da_lida_aborta_sem_escrever(
+    pasta: Path, env_de_partida: list[str], motivo: str
+) -> None:
     atual = estado(pasta)
-    atual["servicos"][WORKER]["Spec"]["RollbackConfig"]["Order"] = "start-first"
+    atual["servicos"][API]["Spec"]["TaskTemplate"]["ContainerSpec"]["Env"] = env_de_partida
     gravar(pasta, atual)
-    _sem_escrita(pasta, rodar(pasta, "worker"), "rollback order diferente de stop-first")
+    _sem_escrita(pasta, rodar(pasta, "api"), motivo)
 
 
-def test_update_recusado_nao_volta_para_a_spec_antiga(pasta: Path) -> None:
-    antes = spec(pasta, WORKER)
-    resultado = rodar(pasta, "worker", FALHA_UPDATE=WORKER)
+@OS_DOIS
+def test_update_recusado_nao_faz_volta(pasta: Path, servico: str) -> None:
+    antes = spec(pasta, servico)
+    resultado = rodar(pasta, MODO[servico], FALHA_UPDATE=servico)
     assert resultado.returncode == 1
     assert "nada a desfazer" in resultado.stdout
-    assert spec(pasta, WORKER) == antes
+    assert spec(pasta, servico) == antes
+    assert updates_da_volta(pasta) == []
     assert rollbacks(pasta) == []
 
 
-@pytest.mark.parametrize("falha", ["SEM_STORAGE", "NAO_SOBE", "ZERA_ENV", "FALHA_LEITURA_ENV"])
-def test_falha_depois_do_update_volta_o_worker(pasta: Path, falha: str) -> None:
-    antes = spec(pasta, WORKER)
-    resultado = rodar(pasta, "worker", **{falha: WORKER})
+@OS_DOIS
+@pytest.mark.parametrize(
+    "falha", ["SEM_STORAGE", "NAO_SOBE", "FALHA_LEITURA_ENV", "IMAGEM_DA_TASK"]
+)
+def test_falha_depois_do_update_volta_as_duas_variaveis_sem_rollback(
+    pasta: Path, servico: str, falha: str
+) -> None:
+    # Só as duas variáveis mudaram: a volta é update na ordem da spec (na api,
+    # start-first, sem parar a loja), nunca o rollback stop-first.
+    antes = spec(pasta, servico)
+    resultado = rodar(pasta, MODO[servico], **{falha: servico})
     assert resultado.returncode == 1
     assert "restaurando" in resultado.stderr
-    assert spec(pasta, WORKER) == antes
-    assert rollbacks(pasta) == [WORKER]
+    assert f"{servico}: restaurado, igual ao backup" in resultado.stdout
+    assert sorted_env(pasta, servico) == sorted(antes["TaskTemplate"]["ContainerSpec"]["Env"])
+    assert updates_da_volta(pasta) == [servico]
+    assert rollbacks(pasta) == []
+
+
+@OS_DOIS
+@pytest.mark.parametrize(
+    "falha", ["ZERA_ENV", "TROCA_NOME", "MUDA_GRACA", "MUDA_VALOR", "MUDA_HEALTHCHECK"]
+)
+def test_update_que_estragou_mais_que_as_duas_volta_pela_previous_spec(
+    pasta: Path, servico: str, falha: str
+) -> None:
+    # A volta das duas variáveis não conserta isso. A PreviousSpec é o backup
+    # (o único update foi o desta janela): rollback, e a spec volta inteira.
+    antes = spec(pasta, servico)
+    resultado = rodar(pasta, MODO[servico], **{falha: servico})
+    assert resultado.returncode == 1
+    assert "docker service rollback (stop-first)" in resultado.stderr
+    assert f"{servico}: restaurado, igual ao backup" in resultado.stdout
+    assert spec(pasta, servico) == antes
+    assert rollbacks(pasta) == [servico]
+    assert updates_da_volta(pasta) == []
+
+
+def test_rollback_order_diferente_de_stop_first_nao_volta(pasta: Path) -> None:
+    atual = estado(pasta)
+    atual["servicos"][WORKER]["Spec"]["RollbackConfig"]["Order"] = "start-first"
+    gravar(pasta, atual)
+    resultado = rodar(pasta, "worker", ZERA_ENV=WORKER)
+    assert resultado.returncode == 1
+    assert "rollback order não é stop-first" in resultado.stderr
+    assert "a restauração parou" in resultado.stderr
+    assert rollbacks(pasta) == []
 
 
 def test_env_zerada_falha_pela_contagem(pasta: Path) -> None:
@@ -437,52 +545,64 @@ def test_env_zerada_falha_pela_contagem(pasta: Path) -> None:
 
 
 def test_variavel_trocada_falha_pelo_nome(pasta: Path) -> None:
-    antes = spec(pasta, WORKER)
-    resultado = rodar(pasta, "worker", TROCA_NOME=WORKER)
+    resultado = rodar(pasta, "api", TROCA_NOME=API)
     assert resultado.returncode == 1
     assert "sumiram as variáveis APPSELL_API_ENVIRONMENT" in resultado.stderr
-    assert spec(pasta, WORKER) == antes
 
 
-def test_worker_com_rollback_order_trocado_pelo_update_nao_volta(pasta: Path) -> None:
-    resultado = rodar(pasta, "worker", SEM_STORAGE=WORKER, ROLLBACK_START_FIRST=WORKER)
+def test_task_em_outra_imagem_nao_conta_como_pronta(pasta: Path) -> None:
+    resultado = rodar(pasta, "api", IMAGEM_DA_TASK=API)
     assert resultado.returncode == 1
-    assert "rollback order não é stop-first" in resultado.stderr
-    assert "a restauração parou" in resultado.stderr
-    assert rollbacks(pasta) == []
+    assert "não convergiu" in resultado.stderr
 
 
-def test_sigterm_durante_a_conferencia_volta_o_worker(pasta: Path) -> None:
-    antes = spec(pasta, WORKER)
+def test_valor_de_outra_variavel_trocado_falha_sem_imprimir(pasta: Path) -> None:
+    # Mesmos nomes e mesma contagem: só o hash do resto da env pega.
+    resultado = rodar(pasta, "api", MUDA_VALOR=API)
+    assert resultado.returncode == 1
+    assert "o valor de outra variável mudou no update" in resultado.stderr
+    assert "outro" not in resultado.stdout + resultado.stderr.replace("outra", "")
+
+
+def test_campo_fora_da_lista_entra_pelo_resto(pasta: Path) -> None:
+    resultado = rodar(pasta, "api", MUDA_HEALTHCHECK=API)
+    assert resultado.returncode == 1
+    assert "o update mudou mais que a env: Resto TaskTemplate.ContainerSpec.Env" in resultado.stderr
+
+
+def test_update_que_muda_mais_que_a_env_falha(pasta: Path) -> None:
+    resultado = rodar(pasta, "api", MUDA_GRACA=API)
+    assert resultado.returncode == 1
+    assert "o update mudou mais que a env:" in resultado.stderr
+    assert "TaskTemplate.ContainerSpec.StopGracePeriod" in resultado.stderr
+
+
+def test_sigterm_nas_leituras_do_ready_volta_a_api(pasta: Path) -> None:
+    antes = spec(pasta, API)
     processo = subprocess.Popen(  # noqa: S603
-        [str(_BASH), str(_SCRIPT), "worker"],
-        env=_ambiente(
-            pasta,
-            SEM_STORAGE=WORKER,
-            STORAGE461_PRAZO_SEGUNDOS="60",
-            STORAGE461_INTERVALO_SEGUNDOS="30",
-        ),
+        [str(_BASH), str(_SCRIPT), "api"],
+        env=_ambiente(pasta, STORAGE461_PAUSA_LEITURAS="30"),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
-    limite = time.monotonic() + 15
-    while WORKER not in atualizados(pasta):
-        assert time.monotonic() < limite, "o update não aconteceu"
-        time.sleep(0.05)
+    assert processo.stdout is not None
+    for linha in processo.stdout:
+        if linha.startswith(f"{API}: env"):
+            break
     time.sleep(0.3)
     processo.send_signal(signal.SIGTERM)
-    _, erros = processo.communicate(timeout=20)
+    saida, erros = processo.communicate(timeout=20)
     assert processo.returncode == 130
     assert "restaurando" in erros
-    assert spec(pasta, WORKER) == antes
+    assert f"{API}: restaurado, igual ao backup" in saida
+    assert sorted_env(pasta, API) == sorted(antes["TaskTemplate"]["ContainerSpec"]["Env"])
 
 
 def test_restaura_mesmo_com_stderr_que_nao_aceita_escrita(pasta: Path) -> None:
     # Como um SSH que caiu: toda escrita no stderr falha (EPIPE, com o SIGPIPE
     # ignorado, herdado do Python). Sem o `set +e` do ao_sair, a primeira
     # mensagem dele derrubaria a restauração.
-    antes = spec(pasta, WORKER)
     leitura, escrita = os.pipe()
     os.close(leitura)
     try:
@@ -498,157 +618,82 @@ def test_restaura_mesmo_com_stderr_que_nao_aceita_escrita(pasta: Path) -> None:
     finally:
         os.close(escrita)
     assert resultado.returncode == 1
-    assert spec(pasta, WORKER) == antes
     assert f"{WORKER}: restaurado, igual ao backup" in resultado.stdout
 
 
-# Api: o painel muda, o script fotografa antes e confere depois
-
-
-def test_api_antes_so_guarda_o_backup(pasta: Path) -> None:
-    antes = spec(pasta, API)
-    resultado = rodar(pasta, "api-antes")
-    assert resultado.returncode == 0, resultado.stderr
-    assert atualizados(pasta) == []
-    assert spec(pasta, API) == antes
-    ts = ultimo_ts(pasta, API)
-    assert backups(pasta) == [f"{API}_spec_pre461_{ts}.digital", f"{API}_spec_pre461_{ts}.json"]
-    assert "endpoint_interno=minio.autonomia.site" in resultado.stdout
-    assert "segredo-de-teste" not in resultado.stdout + resultado.stderr
-
-
-def test_api_antes_sem_o_alias_aborta(pasta: Path) -> None:
-    atual = estado(pasta)
-    atual["dns"][API] = ["10.0.9.9"]
-    gravar(pasta, atual)
-    _sem_escrita(pasta, rodar(pasta, "api-antes"), "não vê o storage pelo alias")
-
-
-def test_api_depois_aceita_o_painel_que_so_mudou_a_env(pasta: Path) -> None:
-    assert rodar(pasta, "api-antes").returncode == 0
-    ts = ultimo_ts(pasta, API)
-    painel(pasta, list(ENV_DO_PAINEL))
-    resultado = rodar(pasta, "api-depois", ts)
-    assert resultado.returncode == 0, resultado.stderr
-    assert "env 3 → 4" in resultado.stdout
-    assert atualizados(pasta) == []
-    assert rollbacks(pasta) == []
-
-
-@pytest.mark.parametrize(
-    ("campo", "valor"),
-    [
-        ("Image", "easypanel/sell-autonomia/api:latest"),
-        ("StopGracePeriod", 10000000000),
-        ("Mounts", None),
-    ],
-)
-def test_api_depois_recusa_o_painel_que_mudou_outro_campo(
-    pasta: Path, campo: str, valor: Any
-) -> None:
-    # Um deploy pelo painel que reconstrói do fonte troca a imagem, a graça
-    # de 330 s ou os mounts que entraram por fora dele.
-    assert rodar(pasta, "api-antes").returncode == 0
-    ts = ultimo_ts(pasta, API)
-    painel(pasta, list(ENV_DO_PAINEL), **{campo: valor})
-    resultado = rodar(pasta, "api-depois", ts)
-    assert resultado.returncode == 1
-    assert f"o painel mudou mais que a env: TaskTemplate.ContainerSpec.{campo}" in resultado.stderr
-    assert f"desfazer {ts}" in resultado.stderr
-
-
-@pytest.mark.parametrize(
-    ("nova_env", "motivo"),
-    [
-        ([ENV_DA_API[0], ENDPOINT, ENV_DA_API[2]], "esperado 4"),
-        ([ENV_DA_API[0], ENV_DA_API[1], ENV_DA_API[2], FLAG], "sem a flag e o endpoint"),
-        (
-            [ENDPOINT, ENV_DA_API[2], FLAG, "OUTRA=1"],
-            "sumiram as variáveis APPSELL_API_ENVIRONMENT",
-        ),
-        (
-            [ENV_DA_API[0], ENDPOINT, ENV_DA_API[2], "APPSELL_API_STORAGE_INTERNAL_HTTP_ALLOWED=1"],
-            "sem a flag e o endpoint",
-        ),
-    ],
-    ids=["faltou-a-flag", "endpoint-velho", "variavel-trocada", "flag-com-outro-valor"],
-)
-def test_api_depois_recusa_env_errada_e_manda_ao_painel(
-    pasta: Path, nova_env: list[str], motivo: str
-) -> None:
-    assert rodar(pasta, "api-antes").returncode == 0
-    ts = ultimo_ts(pasta, API)
-    painel(pasta, nova_env)
-    resultado = rodar(pasta, "api-depois", ts)
-    assert resultado.returncode == 1
-    assert motivo in resultado.stderr
-    assert "rollback no painel" in resultado.stderr
-    assert "segredo-de-teste" not in resultado.stdout + resultado.stderr
-
-
-def test_api_depois_sem_storage_manda_ao_painel(pasta: Path) -> None:
-    assert rodar(pasta, "api-antes").returncode == 0
-    ts = ultimo_ts(pasta, API)
-    painel(pasta, list(ENV_DO_PAINEL))
-    atual = estado(pasta)
-    atual["servicos"][API]["quebrado"] = True
-    gravar(pasta, atual)
-    resultado = rodar(pasta, "api-depois", ts)
-    assert resultado.returncode == 1
-    assert "não vê o storage; rollback no painel" in resultado.stderr
+@OS_DOIS
+def test_nenhum_valor_de_env_aparece_na_saida(pasta: Path, servico: str) -> None:
+    textos = []
+    for argumentos, falhas in (((MODO[servico],), {"ZERA_ENV": servico}), (("seco",), {})):
+        resultado = rodar(pasta, *argumentos, **falhas)
+        textos.append(resultado.stdout + resultado.stderr)
+    for texto in textos:
+        assert "segredo-de-teste" not in texto
+        assert "https://minio.autonomia.site" not in texto
 
 
 # Desfazer
 
 
-def test_desfazer_do_worker_duas_vezes_volta_uma_vez_so(pasta: Path) -> None:
-    antes = spec(pasta, WORKER)
-    assert rodar(pasta, "worker").returncode == 0
-    ts = ultimo_ts(pasta, WORKER)
+@OS_DOIS
+def test_desfazer_duas_vezes_volta_uma_vez_so(pasta: Path, servico: str) -> None:
+    antes = spec(pasta, servico)
+    assert rodar(pasta, MODO[servico]).returncode == 0
+    ts = ultimo_ts(pasta, servico)
     primeiro = rodar(pasta, "desfazer", ts)
     assert primeiro.returncode == 0, primeiro.stderr
-    assert spec(pasta, WORKER) == antes
+    assert sorted_env(pasta, servico) == sorted(antes["TaskTemplate"]["ContainerSpec"]["Env"])
     segundo = rodar(pasta, "desfazer", ts)
     assert segundo.returncode == 0, segundo.stderr
     assert "nada a desfazer" in segundo.stdout
-    assert rollbacks(pasta) == [WORKER]
+    assert updates_da_volta(pasta) == [servico]
+    assert rollbacks(pasta) == []
 
 
-def test_desfazer_da_api_volta_a_spec_de_antes_do_painel(pasta: Path) -> None:
-    antes = spec(pasta, API)
-    assert rodar(pasta, "api-antes").returncode == 0
+def outro_deploy(pasta: Path, mudar: Any) -> None:
+    """Um update alheio na api, como o Swarm: a spec de antes vira a PreviousSpec."""
+    atual = estado(pasta)
+    api = atual["servicos"][API]
+    nova = json.loads(json.dumps(api["Spec"]))
+    mudar(nova)
+    api["PreviousSpec"], api["Spec"] = api["Spec"], nova
+    gravar(pasta, atual)
+
+
+def test_desfazer_aborta_se_outra_variavel_mudou_depois(pasta: Path) -> None:
+    assert rodar(pasta, "api").returncode == 0
     ts = ultimo_ts(pasta, API)
-    painel(pasta, list(ENV_DO_PAINEL), Image="easypanel/sell-autonomia/api:latest")
-    resultado = rodar(pasta, "desfazer", ts)
-    assert resultado.returncode == 0, resultado.stderr
-    assert spec(pasta, API) == antes
-    assert rollbacks(pasta) == [API]
-
-
-def test_desfazer_aborta_se_outro_deploy_entrou_no_meio(pasta: Path) -> None:
-    # Dois deploys do painel depois do backup: a PreviousSpec deixa de ser o
-    # backup, e um rollback cairia na spec do primeiro deles.
-    assert rodar(pasta, "api-antes").returncode == 0
-    ts = ultimo_ts(pasta, API)
-    painel(pasta, list(ENV_DO_PAINEL))
-    painel(pasta, list(ENV_DO_PAINEL), Image="easypanel/sell-autonomia/api:latest")
+    outro_deploy(pasta, lambda nova: nova["TaskTemplate"]["ContainerSpec"]["Env"].append("NOVA=1"))
+    (pasta / "chamadas.log").unlink()
     resultado = rodar(pasta, "desfazer", ts)
     assert resultado.returncode == 1
-    assert "falar com o Rodrigo" in resultado.stderr
-    assert rollbacks(pasta) == []
+    assert "a PreviousSpec também difere" in resultado.stderr
+    assert atualizados(pasta) == []
+
+
+def test_desfazer_aborta_se_outro_deploy_mudou_a_imagem(pasta: Path) -> None:
+    assert rodar(pasta, "api").returncode == 0
+    ts = ultimo_ts(pasta, API)
+    outro_deploy(
+        pasta, lambda nova: nova["TaskTemplate"]["ContainerSpec"].update(Image="api:outra")
+    )
+    (pasta / "chamadas.log").unlink()
+    resultado = rodar(pasta, "desfazer", ts)
+    assert resultado.returncode == 1
+    assert "a PreviousSpec também difere" in resultado.stderr
+    assert atualizados(pasta) == []
 
 
 def test_desfazer_sem_backup_desse_ts_aborta(pasta: Path) -> None:
     resultado = rodar(pasta, "desfazer", "20261024T120000Z")
     assert resultado.returncode == 1
     assert "nenhum backup com ts" in resultado.stderr
-    assert rollbacks(pasta) == []
+    assert atualizados(pasta) == []
 
 
 @pytest.mark.parametrize("ts", ["../../etc/x", "20261023T1200Z", "", "20261023T120000Z;id"])
-@pytest.mark.parametrize("modo", ["desfazer", "api-depois"])
-def test_ts_fora_do_formato_e_recusado(pasta: Path, modo: str, ts: str) -> None:
-    resultado = rodar(pasta, modo, ts)
+def test_ts_fora_do_formato_e_recusado(pasta: Path, ts: str) -> None:
+    resultado = rodar(pasta, "desfazer", ts)
     assert resultado.returncode != 0
     assert "ts inválido" in resultado.stderr
     assert chamadas(pasta) == []
@@ -657,11 +702,10 @@ def test_ts_fora_do_formato_e_recusado(pasta: Path, modo: str, ts: str) -> None:
 # Seco
 
 
-def test_seco_so_le_e_nao_imprime_valor(pasta: Path) -> None:
+def test_seco_so_le(pasta: Path) -> None:
     resultado = rodar(pasta, "seco")
     assert resultado.returncode == 0, resultado.stderr
     assert atualizados(pasta) == []
     assert backups(pasta) == []
     assert f"{WORKER}: env=3 endpoint_interno=minio.autonomia.site no_alvo=não" in resultado.stdout
-    assert "alias=ok" in resultado.stdout
-    assert "segredo-de-teste" not in resultado.stdout + resultado.stderr
+    assert resultado.stdout.count("alias=ok") == 2
