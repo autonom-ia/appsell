@@ -6,7 +6,8 @@ sem mapping e a compra dele vai para `dead_letter`. A decisão da Orquestração
 * `startup`: o canal **não** reprova (#503). A api tem uma réplica; um
   reinício com o canal ambíguo deixaria a task nova sem nunca ficar healthy, e
   a loja inteira cairia por um canal que só afeta a entrega do Financial. O
-  canal aparece como campo e sai no log de erro;
+  startup nem consulta o canal (a consulta levaria até 3 s, o timeout do
+  HEALTHCHECK); quem pergunta é o monitor de dependências, que loga o erro;
 * `ready`, em regime: o status HTTP não muda (um 503 tiraria todas as tasks de
   rotação de uma vez), aparece `"financial_channel": false` e o log
   `appsell.financial_channel.unresolved` sai em `error` na transição e depois no
@@ -61,22 +62,26 @@ async def _get(caminho: str) -> tuple[int, dict[str, object]]:
 
 
 @pytest.mark.asyncio
-async def test_o_canal_ambiguo_nao_derruba_o_startup_e_sai_no_log(
+async def test_o_canal_ambiguo_nao_derruba_o_startup_nem_e_consultado_nele(
     estado_limpo: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Pega o reinício que tira a loja do ar: com uma réplica, a task que nunca
-    # fica healthy não tem anterior para segurar o tráfego (#503).
-    _canal(monkeypatch, False)
+    # Pega dois jeitos de o reinício tirar a loja do ar: o canal no gate (a
+    # task que nunca fica healthy não tem anterior para segurar o tráfego) e a
+    # consulta lenta estourando o timeout de 3 s do HEALTHCHECK (#503).
+    consultas: list[object] = []
 
-    with capture_logs() as logs:
-        status_code, corpo = await _get("/health/startup")
+    async def _ambiguo(*args: object, **_kwargs: object) -> bool:
+        consultas.append(args)
+        return False
+
+    monkeypatch.setattr(main, "financial_channel_ready", _ambiguo)
+
+    status_code, corpo = await _get("/health/startup")
 
     assert status_code == 200
-    assert corpo == {"status": "ok", "ever_ready": True, "financial_channel": False}
+    assert corpo == {"status": "ok", "ever_ready": True}
     assert main.app.state.ever_ready
-    erros = [log for log in logs if log["event"] == UNRESOLVED]
-    assert len(erros) == 1
-    assert erros[0]["log_level"] == "error"
+    assert consultas == []
 
 
 @pytest.mark.asyncio

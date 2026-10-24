@@ -32,9 +32,9 @@
     `secret_reference`) derrubaria a loja inteira, por causa de um canal que só
     afeta a entrega do Financial.
   - **O que fica no lugar.**
-    - O canal vira campo informativo, sem 503: no `ready` sempre, e no
-      `startup` só na primeira resposta pronta. Em regime, o `startup` responde
-      `{"status":"ok","ever_ready":true}`.
+    - O canal vira campo informativo no `ready`, sem 503. O `startup` nem o
+      consulta, porque a consulta levaria até 3 s, o timeout do HEALTHCHECK. A
+      resposta pronta do `startup` é sempre `{"status":"ok","ever_ready":true}`.
     - O log `appsell.financial_channel.unresolved` sai em `error` no máximo uma
       vez a cada 5 min. Quem pergunta em regime é o monitor de dependências,
       porque ninguém sonda o `ready` da api em produção, e o `startup` em regime
@@ -85,7 +85,7 @@
 
 ### O que a api nova muda
 
-- `/health/startup`: o campo `financial_channel` só na primeira resposta pronta, sem mudar o status (#503).
+- `/health/startup`: o canal não entra nem é consultado (#503).
 - `/health/ready`: o campo `financial_channel`, sem mudar o status.
 - Rotas de ativação: existem, mas desligadas.
 - Rotas de payout existentes: só a tipagem de `_model_from_body`.
@@ -235,6 +235,7 @@
 | `dead_letter_sem_mapping` | ? | | igual |
 | `fora_do_dono` | ? | | igual |
 | `reconciler` | 0 (esperado) | | 0 |
+| `admin_ignora_rls` | `t` (esperado: o admin nasce como `POSTGRES_USER`) | | `t` (exigido) |
 | onde está a credencial do migrador | **a confirmar (#456)** | | (só o nome do lugar) |
 | memória `available` / disco livre | — | | ≥ 4 GiB / ≥ 15 GiB |
 
@@ -266,6 +267,7 @@ erro. Nesse caso, ler o `schema_ready()` como admin e anotar o desvio.
 - `UpdateConfig.Order` da api diferente de `start-first`;
 - `alembic_version` diferente de 0061;
 - `schema_ready` `f`;
+- `admin_ignora_rls` `f`: com o FORCE RLS, todas as contagens seriam 0 sem erro;
 - `identidades_do_canal` ≠ 1, com `lojas_vinculadas` > 0: a 0062 abortaria, e o
   caso é do Rodrigo;
 - alguma `APPSELL_FINANCIAL_*` já presente;
@@ -594,10 +596,13 @@ caso de dano de dado.
 | Credencial do migrador perdida (#456) | B1 | bloqueia o release |
 | Credencial exposta | `--env-file` `600`, apagado no fim da fase; nunca por argumento | — |
 
-## Anexo A — `anexo-A.sql` (leitura, sha256 `f79d652da6dedee1a7d06f268b9a63d4709e93a0b2e3227064061d588c6423eb`)
+## Anexo A — `anexo-A.sql` (leitura, sha256 `1865847760e1d0b8b66441fb24e4eef313b022c34a3932d0df2157dbafd65086`)
 
 ```sql
 begin transaction read only;
+-- FORCE ROW LEVEL SECURITY nas tabelas lidas: sem superusuário ou BYPASSRLS,
+-- as contagens saem 0 sem erro e a Fase 0 mentiria.
+select 'admin_ignora_rls', rolsuper or rolbypassrls from pg_roles where rolname=current_user;
 select 'versao', version_num from alembic_version;
 set local role appsell_runtime;
 select 'schema_ready', app_private.schema_ready();
