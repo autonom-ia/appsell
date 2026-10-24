@@ -1,4 +1,5 @@
 import { expect as expectBase, test, type Page } from "@playwright/test";
+import { login } from "./support/login";
 
 // Ver o comentário no topo: 20 s cobrem o carregamento sob carga da suíte
 // inteira. As asserções continuam medindo comportamento; só a paciência muda.
@@ -68,12 +69,6 @@ const CSRF = {
   intent: "csrf-intent", confirm: "csrf-confirm", cancel: "csrf-cancel",
   archive: "csrf-archive", policy: "csrf-policy"
 };
-
-async function login(page: Page) {
-  await page.goto("/");
-  await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
-  await expect(page).toHaveURL("/dashboard");
-}
 
 /** Aulas suficientes para a página ser mais alta que a janela — sem isso o
  *  scroll não tem para onde voltar e o defeito não aparece. */

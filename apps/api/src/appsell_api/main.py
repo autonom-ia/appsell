@@ -14,7 +14,12 @@ from .catalog_routes import router as catalog_router
 from .checkout_routes import router as checkout_router
 from .config import Settings, get_settings
 from .cover_routes import router as cover_router
-from .db import create_engine, create_session_factory, database_ready
+from .db import (
+    create_engine,
+    create_session_factory,
+    database_ready,
+    financial_channel_ready,
+)
 from .demo_checkout_worker import run_demo_checkout_worker_loop
 from .email_worker import run_email_worker_loop
 from .fulfillment_worker import run_fulfillment_worker_loop
@@ -275,6 +280,11 @@ async def ready(response: Response) -> dict[str, Any]:
     diagnostico = getattr(app.state, "asset_scanner_diagnostico", None)
     if diagnostico is not None:
         corpo["antivirus"] = diagnostico
+    # O canal Financial não muda o status: um 503 aqui tiraria de rotação todas
+    # as tasks de uma vez, e a API inteira cairia por causa de um canal.
+    canal = await _canal_financial()
+    if canal is not None:
+        corpo["financial_channel"] = canal
     return corpo
 
 
@@ -299,12 +309,49 @@ async def startup(response: Response) -> dict[str, Any]:
     """
     if not bool(getattr(app.state, "ever_ready", False)):
         estado = await _dependencias_prontas()
-        if estado["pronto"]:
+        # Canal Financial ambíguo com loja vinculada: a task nova não entra e a
+        # anterior segue servindo. Depois de pronta, é só assunto do `ready`.
+        canal = await _canal_financial() if estado["pronto"] else None
+        if estado["pronto"] and canal is not False:
             app.state.ever_ready = True
         else:
             response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-            return {"status": "starting", "ever_ready": False}
+            corpo: dict[str, Any] = {"status": "starting", "ever_ready": False}
+            if canal is False:
+                corpo["financial_channel"] = False
+            return corpo
     return {"status": "ok", "ever_ready": True}
+
+
+# Canal ambíguo em regime: um log na transição e, enquanto durar, no máximo um a
+# cada 5 min. A sonda roda a cada poucos segundos e não pode virar spam.
+_CANAL_FINANCIAL_LOG_INTERVALO_S = 300.0
+_relogio = time.monotonic
+
+
+async def _canal_financial() -> bool | None:
+    canal = await financial_channel_ready(app.state.db_engine)
+    if canal is None:
+        return None
+    anterior = getattr(app.state, "financial_channel_ok", None)
+    app.state.financial_channel_ok = canal
+    if canal:
+        if anterior is False:
+            get_logger(__name__).info("appsell.financial_channel.resolved")
+        return True
+    agora = _relogio()
+    ultimo = getattr(app.state, "financial_channel_logged_at", None)
+    if (
+        anterior is not False
+        or ultimo is None
+        or (agora - ultimo >= _CANAL_FINANCIAL_LOG_INTERVALO_S)
+    ):
+        app.state.financial_channel_logged_at = agora
+        get_logger(__name__).error(
+            "appsell.financial_channel.unresolved",
+            detalhe="loja vinculada e canal Financial sem exatamente uma identidade",
+        )
+    return False
 
 
 async def _dependencias_prontas() -> dict[str, Any]:

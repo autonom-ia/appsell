@@ -28,7 +28,7 @@ def _migration(nome: str, apelido: str) -> ModuleType:
 
 @pytest.fixture
 def migration() -> ModuleType:
-    return _migration("0061_o_atraso_alcanca_o_aluno.py", "appsell_migration_0061")
+    return _migration(next(VERSOES.glob("0061_*.py")).name, "appsell_migration_0061")
 
 
 def _comandos_de(migration: ModuleType, direcao: Callable[[], None]) -> list[str]:
@@ -92,7 +92,7 @@ def test_o_readiness_aprende_a_funcao_e_a_versao(migration: ModuleType) -> None:
     )
     assert migration._BASE_DO_ACESSO == "app_private.schema_ready_base_0016()"
     assert "advance_entitlements_to" in migration._READY_FUNCAO_PARA
-    assert "0061_o_atraso_alcanca_o_aluno" in migration._READY_ATE_0061
+    assert migration.revision in migration._READY_ATE_0061
 
 
 def test_a_cabeca_da_cadeia_desce(migration: ModuleType) -> None:
