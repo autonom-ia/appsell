@@ -167,10 +167,16 @@ O que fica igual ao #153:
 - modo `off`/`dry_run`/`deliver`;
 - allowlist de origens vazia por padrão;
 - assinatura v1 e event id `financial:external-checkout-refund:<pedido>`;
-- tabela de avisos, `dead_letter` para 4xx e backoff;
+- tabela de avisos com backoff;
 - vetor de ouro com o Sell (autonom-ia/appsell#494).
 
-O que muda: a fonte do estorno deixa de ser o razão e passa a ser a bridge.
+O que muda:
+- a fonte do estorno deixa de ser o razão e passa a ser a bridge;
+- o envio deixa de usar o `stripeBridge` existente e passa por uma Lambda nova
+  que não segue redirect;
+- o `dead_letter` deixa de ser final.
+
+Os detalhes estão em §3.4.
 
 A migration 053 (ainda não mergeada) muda nesta revisão: além da tabela de
 avisos, ganha `financial.external_checkout_refund_checks`, com estas colunas:
@@ -188,7 +194,7 @@ fora de nenhum outro schema. O banco é compartilhado com o auth.
 
 Ciclo `deliver`, a cada 5 min:
 
-1. Seleciona até `BATCH` (padrão 25) pedidos com `next_check_at <= now()`. São
+1. Seleciona até `BATCH` (padrão 10; ver orçamento de tempo em §3.4) pedidos com `next_check_at <= now()`. São
    pedidos `provisioned`, com `externalFulfillmentEventId`,
    `selection.connect.accountId` nulo, origem na allowlist, pagamento em
    `financial.payments` com `metadata.kind = 'external_hosted_checkout'` e
@@ -197,8 +203,8 @@ Ciclo `deliver`, a cada 5 min:
    `hasMore` até 10 páginas.
 3. Grava `refunded_minor` e `refund_ids`. Só `succeeded` conta; `pending`,
    `failed` e `canceled` não contam.
-4. Se `refunded_minor >= round(payments.amount * 100)`, cria o aviso (tabela do
-   #153), que segue o fluxo de entrega já testado.
+4. Se `refunded_minor >= round(payments.amount * 100)`, cria o aviso na tabela
+   do #153. A entrega segue as regras de §3.4.
 5. Agenda o próximo `next_check_at` por idade do pagamento:
 
    | Idade | Intervalo |
@@ -230,6 +236,118 @@ antes do `deliver`.
 de todos os sistemas que usam a mesma conta Stripe, e tem retenção de cerca de
 30 dias. A consulta por `payment_intent` só enxerga o charge do nosso pedido e
 não tem limite de idade. O volume é pequeno e não justifica a exposição.
+
+### 3.4 Ajustes da revisão da Qualidade sobre o #153 (comentário 6383591960)
+
+Valem para o código novo do F2 v2. Nenhum mexe em arquivo existente, salvo o
+item (h), que fica em PR próprio.
+
+**(a) MÉDIO: `dead_letter` com replay e alarme.**
+
+O `dead_letter` deixa de ser o fim silencioso. A classificação da resposta do
+destino muda assim:
+
+| Resposta do destino | Antes (#153) | Agora |
+|---|---|---|
+| 2xx | entregue | entregue |
+| 3xx | (seguia o redirect) | `redirect_refused`: retry longo, depois `dead_letter` |
+| 401, 403, 404, 410 | `dead_letter` imediato | `route_or_auth`: retry longo, depois `dead_letter` |
+| 400, 422 | `dead_letter` imediato | `dead_letter` imediato (`payload_rejected`) |
+| 408, 409, 425, 429, 5xx, falha de rede | retry com backoff | retry com backoff (sem mudança) |
+| origem fora da allowlist | `dead_letter` | `endpoint_not_allowed`: retry longo, não é fim |
+
+O retry longo serve para o caso de troca de segredo ou de `endpointKey` do
+lado do Sell: tenta de hora em hora, até 72 h, e só então vai para
+`dead_letter`. Sobre o 3xx, ver (h).
+
+**Alarme** (recursos novos no `resources:` do `serverless.yml`):
+- `AWS::Logs::MetricFilter` no log group do runner. Conta as linhas
+  `external_checkout_refund_dead_letter` e `external_checkout_refund_retry_long`
+  (namespace `Autonomia/Financial`, métricas `RefundDeadLetter` e
+  `RefundRetryLong`);
+- `AWS::CloudWatch::Alarm` com `RefundDeadLetter >= 1` em 5 min. Um segundo
+  alarme dispara se `RefundRetryLong >= 1` durar mais de 6 h;
+- `AWS::SNS::Topic` novo para os dois alarmes. **Quem assina o tópico** (e-mail
+  ou canal) é decisão e OK do Rodrigo; o PR cria o tópico sem assinatura;
+- o worker também emite `external_checkout_refund_backlog`, com a contagem por
+  status, a cada execução. Assim, `dead_letter` parado aparece mesmo sem log
+  novo.
+
+**Replay auditado:**
+- é uma função nova no mesmo runner, `mode = "replay"`, acionada só por
+  invocação manual da Lambda (`aws lambda invoke`), nunca pelo agendamento.
+  Payload: `{ orderSha256Prefixes | notificationIds, reason, actor }`;
+- só reabre `dead_letter`. Volta a `pending` com `attempts = 0` e
+  `available_at = now()`;
+- é tudo numa transação, com uma linha numa tabela nova,
+  `financial.external_checkout_refund_replays`: id do aviso, `actor`, `reason`,
+  `previous_failure_kind`, `previous_attempts`, `last_http_status`,
+  `replayed_at`. Essa tabela é append-only: o runtime tem só INSERT/SELECT,
+  sem UPDATE ou DELETE;
+- limite de 50 avisos por chamada. Um `reason` vazio recebe recusa;
+- **cada replay em produção tem OK do Rodrigo.** O replay revoga acesso de
+  comprador.
+
+**(b) BAIXO: limite de tentativas no claim.** O `claim` não entrega uma linha
+com `attempts >= MAX_ATTEMPTS`. A mesma transação que pega a lease vencida move
+essas linhas para `dead_letter`, com `failure_kind = 'max_attempts'`. Assim, uma
+Lambda que morre no meio do envio não gera tentativas sem limite. O alarme de
+(a) cobre esse caso.
+
+**(c) BAIXO: lote contra o timeout de 60 s.**
+- O runner recebe o `context` da Lambda e para de pegar trabalho quando
+  `context.getRemainingTimeInMillis() < 15_000`. A conferência acontece antes de
+  cada consulta à Stripe e antes de cada envio.
+- O lote de envio cai para 4. A consulta à Stripe fica em 10 por execução, com
+  timeout de 8 s por invocação da bridge.
+- Item não processado volta a `pending` sem gastar tentativa: a lease é
+  liberada e o `attempts` não sobe.
+
+**(d) BAIXO: nenhum `catch {}` mudo.** Toda falha de transporte registra a
+classe (`error.name`) e o código (`error.code`, quando houver), mais o prefixo
+do pedido. A mensagem bruta não entra no log, porque pode conter URL; o
+segredo, nunca. Um teste com logger espião confere isso.
+
+**(e) BAIXO: a 053 sem `IF NOT EXISTS`.**
+- `CREATE TABLE` e `CREATE INDEX` puros, como na 051. Num banco compartilhado,
+  uma tabela com o mesmo nome faz a migration falhar, em vez de ser aceita em
+  silêncio.
+- Depois do `GRANT`:
+  `REVOKE DELETE, TRUNCATE, REFERENCES, TRIGGER ... FROM financial_api_runtime`
+  nas tabelas novas. A de replays também perde `UPDATE`.
+
+**(f) BAIXO: `lock_timeout` de 5 s.** As FKs para `financial.payments`,
+`financial.checkout_orders` e `financial.company_gateways` pedem
+`SHARE ROW EXCLUSIVE` nessas tabelas. A 053 usa `SET LOCAL lock_timeout = '5s'`
+(e mantém `statement_timeout = '30s'`). Se não conseguir o lock, a migration
+falha rápido e o deploy aborta, sem enfileirar escritas do checkout atrás dela.
+
+**(g) Pré-requisito "assinar `refund.*`".** Substituído pela opção 3. O F2 v2
+não depende do endpoint atual (§0).
+
+**(h) Envio sem redirect.**
+- O envio do `purchase.refunded` **não** usa o `stripeBridge` nem
+  `DirectExternalCheckoutFulfillmentTransport`. O `fetch` deles segue redirect
+  (`src/external-checkout-fulfillment.ts:23`), e um 307 reenviaria o POST
+  assinado, com o e-mail do comprador, para outro host.
+- Lambda nova, `externalCheckoutRefundSender` (arquivo novo
+  `src/external-checkout-refund-sender.ts`):
+  - `vpc: null`;
+  - papel próprio só com logs: **sem SSM, sem KMS e sem invoke**. A assinatura é
+    feita pelo worker, e a Lambda recebe o pedido já assinado;
+  - `fetch(url, { method: "POST", redirect: "manual", signal: AbortSignal.timeout(8_000) })`;
+  - qualquer 3xx volta como `redirect_refused`, com status e sem o `Location`;
+  - confere de novo a origem contra a própria
+    `EXTERNAL_CHECKOUT_REFUND_ALLOWED_ORIGINS` (igualdade exata de
+    `new URL(url).origin`), antes de qualquer conexão;
+  - só aceita `https:`.
+- O papel compartilhado ganha mais **uma linha** em `lambda:InvokeFunction`,
+  com o ARN dela.
+- O redirect seguido no `purchase.approved` já existe hoje
+  (`external-checkout-fulfillment.ts:23`, usado pelo `stripeBridge`). Ele fica
+  **fora deste PR**: é código existente e exige PR próprio, com análise de
+  impacto e OK. A Qualidade sugeriu `redirect: "error"`. Fica registrado como
+  follow-up.
 
 ## 4. Testes
 
@@ -294,6 +412,30 @@ PostgreSQL:
 - estorno total cria um aviso, parcial não cria;
 - idempotência ao consultar de novo.
 
+Ajustes de §3.4, com o defeito que cada teste pega:
+- (a) classificação: 3xx, 401/403/404/410 e origem fora da allowlist vão para
+  retry longo, e só depois de 72 h para `dead_letter`. 400/422 vão direto.
+  Pega estornado que fica com acesso por falha passageira do Sell;
+- (a) replay: reabre só `dead_letter`, grava a auditoria na mesma transação,
+  recusa `reason` vazio e mais de 50 itens, e o runtime não consegue apagar nem
+  alterar a auditoria. Pega replay sem rastro;
+- (a) estrutural: `MetricFilter`, os 2 alarmes e o tópico SNS existem e
+  apontam para o log group do runner. O tópico nasce sem assinatura;
+- (b) linha com `attempts = MAX` e lease vencida vai para `dead_letter` no
+  claim e não é entregue. Pega Lambda que morre e tenta sem fim;
+- (c) com tempo restante abaixo de 15 s, o runner não começa nova consulta nem
+  novo envio, e o item volta sem gastar tentativa. Pega timeout que queima
+  tentativas;
+- (d) falha de transporte loga `error.name` e `error.code`, nunca a mensagem
+  bruta nem o segredo. Pega `catch {}` mudo;
+- (e)(f) o texto da 053 não contém `IF NOT EXISTS`, tem
+  `lock_timeout = '5s'` e o `REVOKE` da 051. O PostgreSQL confirma o grant
+  efetivo e que a migration falha se a tabela já existir;
+- (h) a Lambda de envio: com o destino respondendo 307, não há segunda
+  requisição (servidor de teste conta as conexões) e o resultado é
+  `redirect_refused`. Origem fora da lista e `http:` são recusadas antes de
+  conectar. O papel não tem `ssm:`, `kms:` nem `lambda:`.
+
 ## 5. Prova de isolamento no PR
 
 Igual ao #153. O diff destes arquivos vem vazio: `financial-service.ts`,
@@ -302,8 +444,12 @@ Igual ao #153. O diff destes arquivos vem vazio: `financial-service.ts`,
 migrations 001-052.
 
 Mudanças em arquivo existente, todas listadas no PR:
-- `serverless.yml`: o bloco do runner; o bloco da `stripeRefundReader`; o
-  `StripeRefundReaderRole` em `resources`; uma linha em `lambda:InvokeFunction`;
+- `serverless.yml`:
+  - o bloco do runner;
+  - os blocos da `stripeRefundReader` e da `externalCheckoutRefundSender`;
+  - os papéis `StripeRefundReaderRole` e `ExternalCheckoutRefundSenderRole`, o
+    `MetricFilter`, os 2 alarmes e o tópico SNS em `resources`;
+  - **duas linhas** em `lambda:InvokeFunction` do papel compartilhado;
 - `pr-validation.yml`: o passo do teste PostgreSQL;
 - `deploy-workflow.test.ts`: a linha da última migration.
 
@@ -315,6 +461,11 @@ Mudanças em arquivo existente, todas listadas no PR:
 - `dry_run` em produção e a leitura dos números.
 - Preencher `FINANCIAL_EXTERNAL_CHECKOUT_REFUND_ENDPOINT_ORIGINS`.
 - `deliver`. Na primeira rodada, o backfill revoga o …ybva.
+- Quem assina o tópico SNS dos alarmes, e-mail ou canal (antes do `deliver`).
+- Cada replay de `dead_letter` em produção.
+- Follow-up fora do F2: `redirect` no `fetch` existente do `purchase.approved`
+  (`src/external-checkout-fulfillment.ts:23`). Precisa de Issue e PR próprios,
+  com análise de impacto.
 
 ## 7. Riscos
 
@@ -324,8 +475,12 @@ Mudanças em arquivo existente, todas listadas no PR:
   ARNs exatos das chaves, sem curinga e sem escrita. A entrada é validada antes de ler o SSM.
 - **Estorno feito depois do horizonte de 365 dias.** Não é visto. O horizonte é
   configurável e fica registrado.
-- **Rate limit da Stripe.** Lote de 25 a cada 5 min, mais o backfill único. O
-  volume atual é pequeno; 429 reagenda.
+- **Rate limit da Stripe.** Lote de 10 consultas a cada 5 min, mais o backfill
+  único, que se espalha por vários ciclos. O volume atual é pequeno; 429
+  reagenda.
+- **Duas Lambdas novas fora da VPC.** Uma lê a chave e fala com a Stripe; a
+  outra fala com o Sell e não tem acesso ao SSM. Nenhuma das duas tem as duas
+  capacidades, e os papéis são separados e mínimos.
 
 ---
 
