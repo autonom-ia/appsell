@@ -170,6 +170,10 @@ def test_rejects_pdf_when_sandbox_exceeds_time_limit(
     assert list(tmp_path.iterdir()) == []
 
 
+# `_sandbox_command` só aplica sandbox do sistema no macOS (`sandbox-exec`). No
+# Linux o parser roda sem ele, e quem isola é o contêiner `pdf-sandbox`
+# (`isolated_service_boundary=True`). Essa prova é a #468, não este teste.
+@pytest.mark.so_macos
 def test_os_sandbox_denies_network_and_writes_outside_output_directory(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

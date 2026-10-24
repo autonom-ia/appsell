@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { BANNED_SALES_TERMS, findBannedTerms } from "../../lib/sales-vocabulary";
+import { login } from "./support/login";
 
 /**
  * A4.5 — os termos de sistema não aparecem na área de vendas, e o CI falha se
@@ -14,12 +15,6 @@ import { BANNED_SALES_TERMS, findBannedTerms } from "../../lib/sales-vocabulary"
 
 const SELLER_ID = "4df98a2e-d1dd-5f25-bbea-58b8072a0e7b";
 const PRODUCT_ID = "82efefc5-a3c9-5126-a7d1-4918d5428d63";
-
-async function login(page: Page) {
-  await page.goto("/");
-  await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
-  await expect(page).toHaveURL("/dashboard");
-}
 
 const EDITOR_SECTIONS = ["produto", "curriculo", "oferta", "publicar"] as const;
 

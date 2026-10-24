@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { login } from "./support/login";
 
 /**
  * #256 — criar uma turma é uma decisão guiada, não quatro controles soltos.
@@ -32,12 +33,6 @@ function productPayload() {
     readiness: { can_publish: true, has_unpublished_changes: false, items: [] },
     csrf: { update: "u", publish: "p", offer_status: "o", access_link_create: "c", access_link_revoke: "r", access_link_rotate: "t" }
   };
-}
-
-async function login(page: Page) {
-  await page.goto("/");
-  await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
-  await expect(page).toHaveURL("/dashboard");
 }
 
 /** Guarda o corpo de cada POST de criação, que é onde a prova mora. */

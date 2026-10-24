@@ -309,21 +309,53 @@ def test_real_s3_multipart_round_trip_resume_and_abort() -> None:
         plan=plano,
         sha256_hex=hashlib.sha256(payload[: plano.bytes_for_part(1)]).hexdigest(),
     )
-    httpx.put(
+    resposta = httpx.put(
         primeira.url,
         content=payload[: plano.bytes_for_part(1)],
         headers=primeira.headers,
         timeout=60,
     )
+    assert resposta.status_code == 200, resposta.text
+    # Sem ver a parte gravada antes, "nenhuma parte depois" não provaria nada.
+    antes = storage.list_multipart_parts(
+        bucket=storage.quarantine_bucket, key=abandonado, storage_upload_id=outro
+    )
+    assert [parte.part_number for parte in antes] == [1]
     storage.abort_multipart_upload(
         bucket=storage.quarantine_bucket, key=abandonado, storage_upload_id=outro
     )
     # Cancelar tem de apagar as partes. Sem isto elas ficam ocupando disco sem
     # aparecer em listagem de objeto nenhuma.
-    with pytest.raises(StorageError):
-        storage.list_multipart_parts(
+    #
+    # O ListParts de um envio cancelado não é igual em todo storage: a AWS e o
+    # MinIO respondem NoSuchUpload, e o SeaweedFS 4.39 responde 200 sem partes
+    # quando a store do filer não acusa a pasta ausente (`listObjectParts` em
+    # weed/s3api/filer_multipart.go). Os dois querem dizer "não há parte".
+    try:
+        depois = storage.list_multipart_parts(
             bucket=storage.quarantine_bucket, key=abandonado, storage_upload_id=outro
         )
+    except StorageError:
+        depois = ()
+    assert depois == ()
+    # A prova que vale em qualquer storage: o envio deixou de existir, então
+    # uma parte nova para ele é recusada em vez de voltar a ocupar disco.
+    segunda = storage.presign_upload_part(
+        bucket=storage.quarantine_bucket,
+        key=abandonado,
+        storage_upload_id=outro,
+        part_number=2,
+        plan=plano,
+        sha256_hex=hashlib.sha256(payload[plano.bytes_for_part(1) :]).hexdigest(),
+    )
+    recusada = httpx.put(
+        segunda.url,
+        content=payload[plano.bytes_for_part(1) :],
+        headers=segunda.headers,
+        timeout=60,
+    )
+    assert recusada.status_code == 404, recusada.text
+    assert "NoSuchUpload" in recusada.text
     assert storage.find_multipart_upload(bucket=storage.quarantine_bucket, key=abandonado) is None
     # Depois de fechado o envio deixa de existir como envio, e a busca não pode
     # devolver o de um vizinho de prefixo.
