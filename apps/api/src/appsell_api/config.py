@@ -1,4 +1,6 @@
 import ipaddress
+import socket
+import string
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Self
@@ -37,6 +39,11 @@ class Settings(BaseSettings):
     service_credential_b64: str = ""
     storage_provider: Literal["disabled", "s3"] = "disabled"
     storage_internal_endpoint: str = ""
+    # Aceita http só no endpoint interno, e só para um nome de serviço da rede
+    # isolada do Swarm (#461). Sem ela, fora de local/CI, o controle do storage
+    # tinha de sair pelo host público e voltar pelo Traefik. Desligada, nada
+    # muda.
+    storage_internal_http_allowed: bool = False
     storage_public_endpoint: str = ""
     storage_region: str = "us-east-1"
     storage_path_style: bool = True
@@ -329,7 +336,26 @@ class Settings(BaseSettings):
             sandbox = urlparse(self.pdf_sandbox_url)
             if self.pdf_sandbox_url and sandbox.scheme != "https":
                 raise ValueError("HTTPS PDF parser transport is required outside local/CI")
-            for endpoint in (self.storage_internal_endpoint, self.storage_public_endpoint):
+            remote_endpoints: tuple[str, ...] = (
+                self.storage_internal_endpoint,
+                self.storage_public_endpoint,
+            )
+            internal = urlparse(self.storage_internal_endpoint)
+            if self.storage_internal_http_allowed and internal.scheme == "http":
+                # Com virtual-host o cliente monta `<bucket>.appsell-storage`, que
+                # não existe na rede isolada: o alias só resolve como path-style.
+                if not self.storage_path_style:
+                    raise ValueError(
+                        "internal HTTP storage endpoint requires path-style addressing"
+                    )
+                if not _is_printable_ascii(
+                    self.storage_internal_endpoint
+                ) or not _is_isolated_service_name(internal.hostname or ""):
+                    raise ValueError(
+                        "internal HTTP storage endpoint must be an isolated service name"
+                    )
+                remote_endpoints = (self.storage_public_endpoint,)
+            for endpoint in remote_endpoints:
                 parsed = urlparse(endpoint)
                 if parsed.scheme != "https" or _is_local_host(parsed.hostname or ""):
                     raise ValueError("remote HTTPS S3 endpoints are required outside local/CI")
@@ -361,9 +387,25 @@ class Settings(BaseSettings):
         return self.storage_provider == "s3"
 
 
+_DOCKER_ETC_HOSTS_NAMES = frozenset(
+    {
+        "ip6-localhost",
+        "ip6-loopback",
+        "ip6-localnet",
+        "ip6-mcastprefix",
+        "ip6-allnodes",
+        "ip6-allrouters",
+    }
+)
+
+
 def _is_local_host(host: str) -> bool:
     normalized = host.lower().rstrip(".")
     if not normalized or normalized == "localhost" or normalized.endswith(".localhost"):
+        return True
+    # Os nomes que o Docker põe no /etc/hosts de todo contêiner: loopback,
+    # rede local e multicast do IPv6. Nenhum é um serviço de outra máquina.
+    if normalized in _DOCKER_ETC_HOSTS_NAMES:
         return True
     if normalized in {"postgres", "seaweedfs", "seaweed"}:
         return True
@@ -371,6 +413,38 @@ def _is_local_host(host: str) -> bool:
         return ipaddress.ip_address(normalized).is_loopback
     except ValueError:
         return False
+
+
+_SERVICE_NAME_CHARACTERS = frozenset(string.ascii_lowercase + string.digits + "-")
+_SERVICE_NAME_MAX_LENGTH = 63
+
+
+def _is_printable_ascii(value: str) -> bool:
+    """O `urlparse` tira `\t` e `\n` antes de separar o host: confere-se a string crua."""
+    return value.isascii() and value.isprintable() and " " not in value
+
+
+def _is_isolated_service_name(host: str) -> bool:
+    """Nome de serviço de um rótulo só, como o alias da rede isolada.
+
+    Recusa nome com ponto (pode ser resolvido fora da rede), com `_` (o MinIO
+    responde 400 a esse Host), IP em qualquer forma que o resolvedor aceite
+    (inclusive `2130706433` e `0x7f000001`) e os nomes locais.
+    """
+    if (
+        not host
+        or len(host) > _SERVICE_NAME_MAX_LENGTH
+        or not set(host) <= _SERVICE_NAME_CHARACTERS
+        or host.startswith("-")
+        or host.endswith("-")
+        or _is_local_host(host)
+    ):
+        return False
+    try:
+        socket.inet_aton(host)
+    except OSError:
+        return True
+    return False
 
 
 @lru_cache
