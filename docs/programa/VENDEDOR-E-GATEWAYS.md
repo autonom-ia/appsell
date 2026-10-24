@@ -36,12 +36,71 @@ Cada achado tem uma classe:
 - **B**: falta a identidade do vendedor onde o comprador precisa dela.
 - **C**: encanamento que supõe a plataforma como vendedora.
 
+### 1.0 De quem é a conta que recebe o dinheiro hoje
+
+O operador é **por loja**, não global: o Sell manda
+`operatorId: seller.financial_operator_id` (`create-session/route.ts:124`), que é
+gravado por loja em `seller_organization`
+(`0055_seller_financial_binding.py:105-111`), pelo
+`configure_seller_financial.py` (o operador é um argumento explícito,
+`--financial-operator-id`).
+
+No Financial, a credencial do gateway também é **por operador**:
+
+- `financial.company_gateways` tem uma linha por operador, provedor e modo
+  (`UNIQUE (operator_id, provider, mode)`), com o **nome** do parâmetro SSM da
+  chave secreta e o `account_id` (`database/migrations/002_payment_gateways.sql:14-33`).
+- O nome do parâmetro é montado com o `operatorId`
+  (`gatewaySecretParameterName`, `src/secret-store.ts:87`; uso em
+  `src/financial-service.ts:787-791`).
+- O checkout externo pega o gateway do operador do pedido
+  (`resolveActiveStripeGateway(order.operatorId)`, `financial-service.ts:3445-3446`
+  e `:4662-4674`), lê a chave pelo nome guardado (`:3450`) e cria a sessão com
+  `accountId: gateway.accountId` (`:3453-3456`).
+- Os operadores do Financial são **empresas**: a migration
+  `010_operator_organization_link.sql:41-75` cria `autonom-ia` ("Autonom.ia") e
+  `hub2you` ("Hub2You").
+
+Consequência: **o dinheiro cai na conta Stripe que o gateway do operador da loja
+usa.**
+
+- Se a loja Hub2You do Sell está vinculada ao operador `hub2you`, e o gateway
+  desse operador usa a conta Stripe da Hub2You, **a Hub2You já é a vendedora de
+  fato**. Nesse caso, a divergência com a decisão é só de texto e de modelo
+  (seções 1.2 a 1.6), não de dinheiro.
+- Se a loja está vinculada ao operador `autonom-ia`, ou se o gateway do operador
+  usa a conta Stripe da Autonom.ia, **a Autonom.ia recebe o dinheiro de fato**.
+  Essa é a divergência principal com a decisão.
+- Para **loja nova** a resposta já é conhecida, e é a segunda. O autosserviço do
+  #469 grava o **mesmo par global** para toda loja
+  (`APPSELL_FINANCIAL_SHARED_OPERATOR_ID`). Sem `connect.accountId`, toda loja
+  nova cobraria na conta do gateway desse único operador. Por isso a flag do
+  #469 fica vazia até a #440 mandar a conta conectada da loja.
+
+**O código não responde qual é o caso da Hub2You hoje: só a produção.** Não li
+dado de produção. A leitura que resolve, só de nomes, sem segredo nem
+identificador completo:
+
+```sql
+-- Sell (appsell): a qual operador cada loja vinculada aponta
+select slug, financial_operator_id from public.seller_organization where financial_operator_id is not null;
+```
+
+```sql
+-- Financial: de que empresa é esse operador e se o gateway dele tem conta própria
+select o.key, o.name, g.provider, g.mode, g.status, g.display_name, right(g.account_id, 4) as conta_final from financial.company_gateways g join financial.operators o on o.id = g.operator_id where g.operator_id = '<financial_operator_id da loja>';
+```
+
+Falta ainda saber **de que pessoa jurídica é a conta Stripe** por trás da chave
+desse gateway. O banco não guarda isso; quem responde é o painel do Stripe ou o
+Rodrigo.
+
 ### 1.1 Checkout
 
 | Onde | O que acontece | Classe |
 |---|---|---|
 | `app/api/checkout/stripe/create-session/route.ts:105-117` | No modo `financial_checkout`, que é o de produção, o destino de repasse nunca é buscado e fica `null`. | C |
-| `…/create-session/route.ts:120,150-153` | Por isso `connect.accountId` e `applicationFeeAmountMinor` vão sempre `null` ao Financial. A cobrança sai pela conta Stripe do gateway do operador no Financial, não pela conta da loja, e não há comissão. | C |
+| `…/create-session/route.ts:120,150-153` | Por isso `connect.accountId` e `applicationFeeAmountMinor` vão sempre `null` ao Financial. A cobrança sai pela conta Stripe do gateway do **operador ao qual a loja está vinculada** (ver 1.0), sem conta conectada e sem comissão. | C |
 | `…/create-session/route.ts:27-29` | O comentário do arquivo assume o desenho: "platform-direct, NOT Connect … charges the platform's own Stripe account". | C |
 | `…/create-session/route.ts:110-117` | No caminho legado `local_stripe`, loja sem conta de recebimentos cobra pela plataforma (`destination = null`, sessão sem `stripeAccount`). Só bloqueia quando a conta existe com `charges_enabled = false`. | C |
 | `…/create-session/route.ts:126-131` | O Financial recebe só `{id, slug, name}` da loja: o nome de exibição, sem nome legal nem documento. | B |
@@ -121,9 +180,12 @@ ainda.
    política de reembolso da loja.
 3. **Identidade legal da loja no modelo**: nome legal, tipo e número do
    documento, país e a fonte desse dado (KYC do Stripe ou cadastro do Asaas).
-   **Isso é dado pessoal (CPF), e o desenho precisa do OK do Rodrigo.** A
-   recomendação é ler do KYC do provedor e guardar só o necessário para exibir,
+   A recomendação é ler do KYC do provedor e guardar só o necessário para exibir,
    com o documento mascarado.
+
+   > **Pergunta para o Rodrigo:** o Sell pode guardar o nome legal e o CPF/CNPJ
+   > da loja (dado pessoal quando for CPF), ou deve só exibir o que vier do
+   > provedor, sem armazenar?
 4. **Tabela de venda** com o vendedor de registro explícito: loja, gateway,
    conta conectada, valor bruto, comissão, moeda, estado (pago, estornado,
    contestado). Ela serve à conciliação (#147/#459) e ao recibo.
