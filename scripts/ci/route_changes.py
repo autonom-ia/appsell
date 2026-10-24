@@ -107,7 +107,10 @@ STORAGE_PATTERNS = (
     "scripts/test-storage-vertical.sh",
 )
 # O endurecimento do pdf-sandbox e o que ele prova (#478): o script, o ensaio
-# em Swarm e o código que as provas exercitam pelo worker e pelo sandbox.
+# em Swarm e todo módulo que o sandbox importa e roda (pdf_* e video_*: o
+# serviço chama verificador, raster, links e remux de vídeo), mais os limites
+# que dizem quanto ele grava no /tmp (asset_media, learning_pdf). Um deles
+# gravando fora do /tmp ou abrindo processos demais quebraria o PDF em produção.
 # Os dois scripts não fazem imagem nenhuma: vão só para o ensaio.
 SANDBOX_SCRIPTS = (
     "deploy/easypanel-native/harden-pdf-sandbox.sh",
@@ -116,8 +119,10 @@ SANDBOX_SCRIPTS = (
 SANDBOX_PATTERNS = (
     *SANDBOX_SCRIPTS,
     "deploy/easypanel-native/Dockerfile.api",
-    "apps/api/src/appsell_api/pdf_derivatives.py",
-    "apps/api/src/appsell_api/pdf_sandbox_*.py",
+    "apps/api/src/appsell_api/pdf_*.py",
+    "apps/api/src/appsell_api/video_*.py",
+    "apps/api/src/appsell_api/asset_media.py",
+    "apps/api/src/appsell_api/learning_pdf.py",
 )
 
 

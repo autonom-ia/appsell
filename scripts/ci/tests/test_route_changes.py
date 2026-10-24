@@ -29,6 +29,14 @@ class ClassifyPathsTests(unittest.TestCase):
             "apps/api/src/appsell_api/pdf_derivatives.py",
             "apps/api/src/appsell_api/pdf_sandbox_runner.py",
             "apps/api/src/appsell_api/pdf_sandbox_service.py",
+            "apps/api/src/appsell_api/pdf_sandbox.py",
+            "apps/api/src/appsell_api/pdf_raster.py",
+            "apps/api/src/appsell_api/pdf_links.py",
+            "apps/api/src/appsell_api/pdf_verifier.py",
+            "apps/api/src/appsell_api/video_remux.py",
+            "apps/api/src/appsell_api/video_verifier.py",
+            "apps/api/src/appsell_api/asset_media.py",
+            "apps/api/src/appsell_api/learning_pdf.py",
             "deploy/easypanel-native/Dockerfile.api",
         ):
             with self.subTest(path=path):
