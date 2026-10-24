@@ -443,14 +443,29 @@ def gravar(pasta: Path, atual: dict[str, Any]) -> None:
     (pasta / "estado.json").write_text(json.dumps(atual))
 
 
-def test_rede_poe_stop_first_na_api(pasta: Path) -> None:
-    atual = estado(pasta)
-    atual["servicos"][API]["Spec"]["UpdateConfig"]["Order"] = "start-first"
-    atual["servicos"][API]["Spec"]["RollbackConfig"]["Order"] = "start-first"
-    gravar(pasta, atual)
+def test_rede_poe_start_first_na_api_e_stop_first_no_storage(pasta: Path) -> None:
+    # A api troca sem derrubar a loja; o MinIO nunca tem duas tasks no volume.
     assert rodar(pasta, "rede").returncode == 0
-    assert spec(pasta, API)["UpdateConfig"] == {"Order": "stop-first"}
+    assert spec(pasta, API)["UpdateConfig"] == {"Order": "start-first"}
+    # O rollback order da api fica o da spec: mudar é outra decisão.
     assert spec(pasta, API)["RollbackConfig"] == {"Order": "stop-first"}
+    assert spec(pasta, STORAGE)["UpdateConfig"] == {"Order": "stop-first"}
+    assert spec(pasta, STORAGE)["RollbackConfig"] == {"Order": "stop-first"}
+    assert spec(pasta, WORKER)["UpdateConfig"] == {"Order": "stop-first"}
+
+
+def test_env_poe_start_first_na_api(pasta: Path) -> None:
+    assert rodar(pasta, "rede").returncode == 0
+    assert rodar(pasta, "env").returncode == 0
+    assert spec(pasta, API)["UpdateConfig"] == {"Order": "start-first"}
+    assert spec(pasta, API)["RollbackConfig"] == {"Order": "stop-first"}
+
+
+def test_api_com_rollback_order_diferente_da_spec_nao_volta(pasta: Path) -> None:
+    resultado = rodar(pasta, "rede", SEM_STORAGE=API, ROLLBACK_START_FIRST=API)
+    assert resultado.returncode == 1
+    assert "rollback order não é stop-first" in resultado.stderr
+    assert rollbacks(pasta) == []
 
 
 def test_worker_sem_rollback_stop_first_aborta_antes_do_backup(pasta: Path) -> None:

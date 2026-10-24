@@ -157,13 +157,31 @@ SQL
 **Seguir só com tudo em 0.** Um `pending` vencido não conta, e o filtro por
 `expires_at` já o tira. Diferente de 0: esperar e repetir.
 
-**Janela:** de baixo tráfego, escolhida pelo Rodrigo, e anunciada como **pausa
-da loja**, não só das imagens. Cada update ou rollback da api para a loja
-inteira: a api é uma task só, `stop-first`, com `--stop-grace-period 330s`
-(`PRODUCTION_CURRENT.md`, "O período de graça é parte do contrato"). Com um
-e-mail em lease, a parada pode passar de 5 min. A api reinicia na etapa 4, na
-6 e em cada rollback. A pausa do `storage` atinge `minio.autonomia.site` e,
-com ele, as imagens da vitrine.
+**Janela:** de baixo tráfego, escolhida pelo Rodrigo. A pausa do `storage`, na
+etapa 4, atinge `minio.autonomia.site` e, com ele, as imagens da vitrine.
+
+**A api troca sempre com `start-first`.** É a ordem de update da spec dela em
+produção (`inventario-de-deploy.md`, tabela da Fase 0). A task nova
+sobe ao lado da antiga e só a substitui depois de `healthy` (o `HEALTHCHECK`
+sonda `/health/startup`, que só fica verde com as dependências prontas: o
+`ever_ready` de `main.py`). Duas tasks ao mesmo tempo não enviam e-mail em
+dobro: o claim é por lease com fence no banco (`email_worker.py`, docstring do
+módulo). A api só monta os sockets do ClamAV e do sandbox, como cliente, e não
+roda migration nesta janela.
+
+Com `stop-first`, a loja inteira cai na troca. Foram 22 s de 500 na página de
+produto na etapa 2 (24/10/2026, 07:59:53–08:00:14), e a queda pode ir a 330 s
+(`--stop-grace-period`) se houver e-mail em lease. O `storage-rede-interna.sh`
+põe `--update-order start-first` na api nas etapas 4 e 6. `stop-first` no update
+fica só no `storage` (MinIO de instância única, um volume).
+
+O **rollback** da api continua `stop-first`, como na spec de produção
+(`update=start-first rollback=stop-first`, lido em 24/10/2026 às 07:55:58).
+Um rollback da api, portanto, **para a loja inteira** pelo tempo da troca: ~22 s
+de 500 na etapa 2, e até 330 s (`--stop-grace-period`) com e-mail em lease. É o
+custo de todo rollback que toca a api, e ele é anunciado antes de executar.
+Trocar o rollback order para `start-first` é outra decisão, com justificativa e
+OK próprios do Rodrigo.
 
 **Outros clientes do MinIO do Sell.** O backup do banco
 (`deploy/easypanel-native/backup/`, `APPSELL_BACKUP_S3_ENDPOINT`), o
@@ -269,9 +287,9 @@ O que o `rede` faz, nesta ordem, e onde para:
    api precisa voltar a ver o storage (`probe_availability()` de dentro dela).
 5. api, depois worker, com `--network-add sell-storage-internal`; depois de
    cada um, `probe_availability()` de dentro do próprio serviço. A api leva
-   junto `--update-order stop-first --rollback-order stop-first`; o worker
-   mantém a ordem do `ensure-asset-worker.sh` e precisa já estar com rollback
-   `stop-first`, ou o script para antes do backup.
+   junto `--update-order start-first` (o rollback order fica o da spec); o worker
+   mantém a ordem da spec e precisa já estar com rollback `stop-first`, ou o
+   script para antes do backup.
 
 Cada update é conferido: saída do `docker service update`, 1 task `Running`
 e a checagem verde em até 180 s, a contagem de env igual à de antes e nenhum
@@ -310,6 +328,10 @@ runbook do #477 (probe direto e três leituras do `/health/ready`, todas com
 
 ### Rollback da etapa 4 (≈ 1–2 min)
 
+**Custo do rollback da api:** a loja inteira para durante a troca. Foram ~22 s de 500
+na etapa 2, e pode chegar a 330 s (`--stop-grace-period`) com e-mail em lease.
+Anunciar isso antes de executar, e medir com o laço de pausa.
+
 Com o `ts` impresso pela escrita:
 
 ```sh
@@ -333,7 +355,7 @@ do backup, campo a campo:
 O storage ainda tem duas travas antes do rollback: a api e o worker não podem
 estar com `appsell-storage` no `INTERNAL_ENDPOINT` (voltar o storage tira o
 alias, e o `/health/ready` cai), e a ordem de rollback da spec atual tem de
-ser `stop-first`. Sem isso, ABORT.
+ser `stop-first`, como em todos os serviços. Ordem diferente: ABORT.
 
 A rede só sai se o `desfazer` terminou com código 0:
 
@@ -360,7 +382,8 @@ impressa: a saída é `ok` ou o nome e o código do erro.
 As `Settings` são construídas de novo, com a env real do contêiner e os dois
 valores da etapa 6 por cima. Assim a validação do `config.py` roda inteira
 antes da troca: se ela recusar a env de produção com a flag ligada, o erro
-aparece aqui, e não num crash-loop da api `stop-first` depois da etapa 6.
+aparece aqui, e não numa task nova da api que nunca fica `healthy` depois da
+etapa 6.
 (`model_copy(update=...)` não rodaria os validadores.)
 
 ```sh
@@ -444,7 +467,7 @@ O que o `env` faz e onde para:
 1. As mesmas checagens e backups da etapa 4, com um `ts` novo.
 2. A rede existe e é `overlay true swarm`, e os três serviços estão nela. Se
    não, a etapa 4 não fechou: para antes de qualquer update.
-3. api primeiro (com `stop-first` nos dois sentidos), depois worker: `--env-add
+3. api primeiro (com `--update-order start-first`), depois worker: `--env-add
    APPSELL_API_STORAGE_INTERNAL_HTTP_ALLOWED=true --env-add
    APPSELL_API_STORAGE_INTERNAL_ENDPOINT=http://appsell-storage:9000`. Depois
    de cada um: 1 task `Running` e `probe_availability()` verde de dentro dele
@@ -470,6 +493,10 @@ não é tocado.
 - o log do Traefik, nos 5 minutos seguintes, sem `HEAD /appsell-` vindo de
   `172.18.0.1`, porque o controle deixou de passar por ele;
 - smoke da Hub2You igual à linha de base.
+
+**Custo do rollback da api:** a loja inteira para durante a troca. Foram ~22 s de 500
+na etapa 2, e pode chegar a 330 s (`--stop-grace-period`) com e-mail em lease.
+Anunciar isso antes de executar, e medir com o laço de pausa.
 
 **Rollback da etapa 6 (≈ 1 min por serviço):** com o `ts` impresso pelo
 `env`, o mesmo `desfazer` da etapa 4, com as mesmas três saídas (nada a

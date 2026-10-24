@@ -239,8 +239,9 @@ preparar_janela() {
   for servico in "$storage" "$api" "$worker"; do
     task_running "$servico" || abort "$servico sem task Running antes de começar"
   done
-  # O rollback usa a ordem da spec atual. storage e api recebem stop-first no
-  # próprio update desta janela; o worker já nasce assim (ensure-asset-worker.sh).
+  # O rollback usa a ordem da spec atual. O storage recebe stop-first no próprio
+  # update desta janela; api e worker já estão com rollback stop-first em
+  # produção (lido em 24/10/2026) e o update não muda isso.
   [ "$(spec_json "$worker" Spec.RollbackConfig.Order)" = '"stop-first"' ] \
     || abort "$worker com rollback order diferente de stop-first"
   ts_da_janela="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -258,10 +259,15 @@ esta_na_rede() {
 }
 
 ordem_do() {
-  # storage e api entram com stop-first nos dois sentidos: MinIO de instância
-  # única não pode ter duas tasks no mesmo volume, e a api é uma task só com o
-  # lease do e-mail. O worker mantém a ordem com que o script dele o cria.
-  [ "$1" = "$worker" ] || printf '%s\n' --update-order stop-first --rollback-order stop-first
+  # A api troca com start-first, a ordem de update da spec dela em produção
+  # (inventario-de-deploy.md; lida no host em 24/10/2026): a task nova só
+  # substitui a antiga depois de healthy, e o e-mail é claim com lease e fence
+  # no banco, então duas tasks juntas não enviam em dobro. Com stop-first a loja
+  # cai na troca (22 s de 500 na etapa 2, em 24/10/2026; até 330 s com e-mail
+  # em lease). O rollback order fica o da spec (stop-first): mudá-lo é outra
+  # decisão. O storage leva a ordem dele explícita; o worker mantém a da spec.
+  [ "$1" = "$api" ] && printf '%s\n' --update-order start-first
+  return 0
 }
 
 host_do_endpoint_interno() {
