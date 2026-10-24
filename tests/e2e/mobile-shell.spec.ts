@@ -1,20 +1,18 @@
 import { expect, test } from "@playwright/test";
+import { login } from "./support/login";
 
-const SHELL_BRAND_NAME = "sell. by Autonom.ia — início";
+const SHELL_BRAND_NAME = "sell. by Autonom.ia: início";
 
-async function login(page: import("@playwright/test").Page) {
-  await page.goto("/");
-  await expect(page.getByRole("link", { name: "Autonom.ia Sell — início" })).toBeVisible();
+async function enterAndWaitForSession(page: import("@playwright/test").Page) {
   const sessionReady = page.waitForResponse((response) =>
     response.url().endsWith("/api/session") && response.status() === 200);
-  await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
-  await expect(page).toHaveURL("/dashboard");
+  await login(page);
   await expect(page.getByRole("heading", { name: "Seu negócio em um só lugar." })).toBeVisible();
   await sessionReady;
 }
 
 test("keeps the core journey usable without horizontal overflow", async ({ page }) => {
-  await login(page);
+  await enterAndWaitForSession(page);
   await expect(page.getByRole("link", { name: SHELL_BRAND_NAME }))
     .toContainText("sell.");
   for (const target of [
@@ -49,7 +47,7 @@ test("does not render protected preview content for an anonymous request", async
 
 test("exposes touch-sized mobile navigation and preserves deep links", async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 800 });
-  await login(page);
+  await enterAndWaitForSession(page);
   const mobileBrand = page.locator(".mobile-topbar")
     .getByRole("link", { name: SHELL_BRAND_NAME });
   await expect(mobileBrand).toContainText("sell.");
@@ -80,7 +78,7 @@ test("exposes touch-sized mobile navigation and preserves deep links", async ({ 
 });
 
 test("supports keyboard skip navigation and reduced motion", async ({ page }) => {
-  await login(page);
+  await enterAndWaitForSession(page);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.reload();
   await expect(page.getByRole("heading", { name: "Seu negócio em um só lugar." })).toBeVisible();
@@ -94,7 +92,7 @@ test("supports keyboard skip navigation and reduced motion", async ({ page }) =>
 });
 
 test("reuses the resolved shell profile across client-side navigation", async ({ page }) => {
-  await login(page);
+  await enterAndWaitForSession(page);
   let sessionRequests = 0;
   page.on("response", (response) => {
     if (response.url().endsWith("/api/session")) sessionRequests += 1;
@@ -113,9 +111,7 @@ test("keeps seller navigation hidden until the shell profile resolves", async ({
     await route.continue();
   });
 
-  await page.goto("/");
-  await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
-  await expect(page).toHaveURL("/dashboard");
+  await login(page);
   await expect(page.getByRole("heading", { name: "Seu negócio em um só lugar." })).toBeVisible();
   await expect(page.getByRole("link", { name: "Produtos" })).toHaveCount(0);
   await expect(page.locator(".nav-eyebrow")).toHaveText("Carregando acesso");
@@ -130,9 +126,7 @@ test("keeps seller navigation hidden when the shell profile is unavailable", asy
     await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ authenticated: false }) });
   });
 
-  await page.goto("/");
-  await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
-  await expect(page).toHaveURL("/dashboard");
+  await login(page);
   await expect(page.locator(".nav-eyebrow")).toHaveText("Acesso indisponível");
   await expect(page.getByRole("link", { name: "Produtos" })).toHaveCount(0);
   await expect(page.getByRole("link", { name: /Voltar para a entrada|Entrada/ }).first()).toBeVisible();
@@ -141,7 +135,15 @@ test("keeps seller navigation hidden when the shell profile is unavailable", asy
 
 test("keeps seller onboarding recoverable when the domain API is unavailable", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await login(page);
+  await enterAndWaitForSession(page);
+  // O admin demo não pode criar loja de verdade: a rota recusa seller.onboard
+  // com 403 antes de chegar à API (requireDemoCapability, em
+  // lib/internal-api-client.server.ts). O que este teste prova é a tela diante
+  // do 503 da API caída, então só o POST é simulado; a leitura continua real.
+  await page.route("**/api/sellers", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    await route.fulfill({ status: 503, json: { error: "seller_api_unavailable" } });
+  });
   await page.goto("/products");
   const submit = page.getByRole("button", { name: "Ativar minha loja" });
   await expect(submit).toBeEnabled();
@@ -217,7 +219,7 @@ test("creates a tenant-scoped product draft in the mobile UI", async ({ page }, 
   });
 
   await page.setViewportSize({ width: 360, height: 800 });
-  await login(page);
+  await enterAndWaitForSession(page);
   await page.goto("/products");
   await page.getByLabel("Sua loja").selectOption({ label: "Studio Mobile · @studio-mobile" });
   // A lista vem antes do formulário desde a #257: quem chega em Produtos vê o
@@ -312,7 +314,7 @@ test("preserves loaded products when the next catalog page fails", async ({ page
     });
   });
 
-  await login(page);
+  await enterAndWaitForSession(page);
   await page.goto("/products");
   // A single space needs no manual pick: the workspace opens already scoped.
   await expect(page.getByText("@studio-mobile · proprietário")).toBeVisible();
@@ -417,7 +419,7 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
   });
 
   await page.setViewportSize({ width: 320, height: 568 });
-  await login(page);
+  await enterAndWaitForSession(page);
   await page.goto(`/products/${sellerId}/${productId}`);
   await expect(page.getByRole("heading", { name: "Creator OS", exact: true })).toBeVisible();
   await page.getByLabel("Nome do produto").fill("Creator OS 2");
@@ -571,7 +573,7 @@ test("authors and reorders a tenant curriculum at 320px without drag", async ({ 
   }];
 
   await page.setViewportSize({ width: 320, height: 800 });
-  await login(page);
+  await enterAndWaitForSession(page);
   await page.route("**/api/sellers/**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -781,7 +783,7 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
   const rejectedPolicyStarted = new Promise<void>((resolve) => { markRejectedPolicyStarted = resolve; });
 
   await page.setViewportSize({ width: 360, height: 844 });
-  await login(page);
+  await enterAndWaitForSession(page);
   await page.route("http://127.0.0.1:8333/**", async (route) => {
     if (route.request().method() === "OPTIONS") {
       await route.fulfill({
@@ -1099,7 +1101,7 @@ test("fails publication closed for string readiness and a missing offer", async 
   const course = { id: "74000000-0000-4000-8000-000000000001", title: "Curso privado", description: "", status: "draft", draft_version: 1, position: 1 };
   await page.route(`**/api/sellers/${sellerId}/products/${productId}`, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ product: { id: productId, seller_organization_id: sellerId, slug: "produto-sem-oferta", title: "Produto sem oferta", description: "Privado", status: "draft", version: 1, draft_version: 1, course, courses: [course], offer: null, publication: null, has_unpublished_changes: true, readiness: { can_publish: false, items: ["offer_missing"] } }, csrf: { update: "csrf-update", publish: "csrf-publish" } }) }));
   await page.route(`**/api/sellers/${sellerId}/products/${productId}/preview`, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ snapshot: { product: { id: productId, title: "Produto sem oferta", slug: "produto-sem-oferta", description: "Privado", status: "draft" }, courses: [{ title: course.title }], offer: null }, versions: { product: 1, course: 1, offer: 0 } }) }));
-  await login(page);
+  await enterAndWaitForSession(page);
   // A prévia deixou de ser uma etapa com endereço próprio na Onda 3: virou o
   // diálogo "Ver como aluno", alcançável de qualquer área. O que este teste
   // afirma continua sendo o mesmo — sem oferta, a prévia diz isso e a
@@ -1119,7 +1121,7 @@ test("fails publication closed for string readiness and a missing offer", async 
 
 test("covers the approved responsive widths", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "viewport matrix runs once in Chromium");
-  await login(page);
+  await enterAndWaitForSession(page);
   for (const width of [320, 360, 390, 768, 1024, 1440]) {
     await page.setViewportSize({ width, height: 900 });
     for (const path of ["/", "/dashboard", "/products", "/library"]) {
@@ -1169,7 +1171,7 @@ test("keeps product editing independent and confirms archival when the offer is 
   });
 
   await page.setViewportSize({ width: 320, height: 568 });
-  await login(page);
+  await enterAndWaitForSession(page);
   await page.goto(`/products/${sellerId}/${productId}`);
   await expect(page.getByRole("heading", { name: "Curso Vivo", exact: true })).toBeVisible();
 
@@ -1235,7 +1237,7 @@ test("keeps product editing available while an offer transition is in flight", a
   });
 
   await page.setViewportSize({ width: 320, height: 568 });
-  await login(page);
+  await enterAndWaitForSession(page);
   await page.goto(`/products/${sellerId}/${productId}?section=publicar`);
   await expect(page.getByRole("heading", { name: "Acesso gratuito" })).toBeVisible();
   await page.getByRole("button", { name: "Ativar vendas e usar checkout" }).click();
@@ -1288,7 +1290,7 @@ test("offers an in-flow refresh after an offer version conflict", async ({ page 
   });
 
   await page.setViewportSize({ width: 320, height: 568 });
-  await login(page);
+  await enterAndWaitForSession(page);
   await page.goto(`/products/${sellerId}/${productId}?section=publicar`);
   await expect(page.getByRole("heading", { name: "Acesso gratuito" })).toBeVisible();
   await page.getByRole("button", { name: "Ativar vendas e usar checkout" }).click();
@@ -1329,7 +1331,7 @@ test("preserves a non-BRL offer currency on save and labels the price in that cu
   });
 
   await page.setViewportSize({ width: 320, height: 568 });
-  await login(page);
+  await enterAndWaitForSession(page);
   await page.goto(`/products/${sellerId}/${productId}?section=oferta`);
   // Price label is in the stored currency, not R$.
   await expect(page.getByText("Preço (USD)")).toBeVisible();

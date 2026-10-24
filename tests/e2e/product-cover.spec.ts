@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { login } from "./support/login";
 
 /**
  * #232 — a capa do produto, vista pelo vendedor.
@@ -50,12 +51,6 @@ function productPayload(cover: Record<string, unknown> | null) {
   };
 }
 
-async function login(page: Page) {
-  await page.goto("/");
-  await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
-  await expect(page).toHaveURL("/dashboard");
-}
-
 async function openEditor(page: Page, cover: Record<string, unknown> | null) {
   await page.route(`**/api/sellers/${SELLER_ID}/products/${PRODUCT_ID}`, async (route) => {
     await route.fulfill({ json: productPayload(cover) });
@@ -67,13 +62,19 @@ async function openEditor(page: Page, cover: Record<string, unknown> | null) {
   await expect(page.getByRole("heading", { name: "Capa do produto" })).toBeVisible();
 }
 
+/** O painel da capa. O editor também tem o do banner, com as mesmas classes
+ *  (#352); sem este escopo um locator acha os dois e o teste perde o alvo. */
+function painelDaCapa(page: Page) {
+  return page.getByRole("region", { name: "Capa do produto" });
+}
+
 test("um produto sem capa mostra a arte gerada, não um vazio", async ({ page }) => {
   await login(page);
   await openEditor(page, null);
 
-  const fallback = page.locator(".cover-fallback");
+  const fallback = painelDaCapa(page).locator(".cover-fallback");
   await expect(fallback).toBeVisible();
-  await expect(page.locator(".cover-image")).toHaveCount(0);
+  await expect(painelDaCapa(page).locator(".cover-image")).toHaveCount(0);
   // A arte não pode ser um retângulo transparente: se o gradiente sumir, o
   // vendedor vê um buraco na tela e este teste precisa acusar.
   const background = await fallback.evaluate((node) => getComputedStyle(node).backgroundImage);
@@ -92,7 +93,7 @@ test("uma capa existente aparece com texto alternativo que diz de quem é", asyn
 
   const image = page.getByRole("img", { name: "Capa atual de IA na prática" });
   await expect(image).toBeVisible();
-  await expect(page.locator(".cover-fallback")).toHaveCount(0);
+  await expect(painelDaCapa(page).locator(".cover-fallback")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Remover capa" })).toBeVisible();
 });
 
@@ -106,7 +107,7 @@ test("um arquivo do tipo errado é recusado sem chegar à rede", async ({ page }
     await route.fulfill({ json: {} });
   });
 
-  await page.locator('.cover-choose input[type="file"]').setInputFiles({
+  await painelDaCapa(page).locator('.cover-choose input[type="file"]').setInputFiles({
     name: "planilha.csv",
     mimeType: "text/csv",
     buffer: Buffer.from("a,b\n1,2\n")
@@ -177,7 +178,7 @@ test("sair da área durante o envio é bloqueado, e a falha chega aos olhos de q
     await route.fulfill({ status: 503, json: { error: "cover_storage_unavailable" } });
   });
 
-  await page.locator('.cover-choose input[type="file"]').setInputFiles({
+  await painelDaCapa(page).locator('.cover-choose input[type="file"]').setInputFiles({
     name: "capa.png",
     mimeType: "image/png",
     buffer: Buffer.from(PNG_BASE64, "base64")
@@ -254,7 +255,7 @@ test("uma capa larga é enquadrada em 16:9, e não esticada na vertical", async 
     height: 954
   });
 
-  const box = await page.locator(".cover-image").boundingBox();
+  const box = await painelDaCapa(page).locator(".cover-image").boundingBox();
   expect(box).not.toBeNull();
 
   // Os atributos width/height do <img> viram presentational hints de CSS. O
