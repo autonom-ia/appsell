@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { login } from "./support/login";
 
 function containsRawOrBase64Encoded(input: string, raw: string) {
   if (input.includes(raw)) return true;
@@ -35,9 +36,7 @@ test("keeps the opaque session out of browser-readable surfaces", async ({ conte
     ]));
   });
 
-  await page.goto("/");
-  await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
-  await expect(page).toHaveURL("/dashboard");
+  await login(page);
   await expect(page.getByRole("heading", { name: "Seu negócio em um só lugar." })).toBeVisible();
 
   const sessionCookie = (await context.cookies()).find((cookie) => cookie.name === "appsell_session");
@@ -92,7 +91,9 @@ test("keeps the opaque session out of browser-readable surfaces", async ({ conte
 });
 
 test("preserves a legitimate transaction after an invalid callback", async ({ context, page }) => {
-  const login = await page.request.get("/auth/login", { maxRedirects: 0 });
+  // Com o demo ligado o login exige persona (lib/auth-entry.server.ts); a
+  // transação, o state e o callback são os mesmos de um login sem persona.
+  const login = await page.request.get("/auth/login?persona=admin", { maxRedirects: 0 });
   expect(login.status()).toBe(307);
   expect(login.headers()["cache-control"]).toBe("no-store");
 
@@ -144,9 +145,7 @@ test("rejects a forged session before reading oversized mutation bodies", async 
 });
 
 test("rejects forged origin and CSRF before revoking a same-origin session", async ({ browser, context, page }) => {
-  await page.goto("/");
-  await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
-  await expect(page).toHaveURL("/dashboard");
+  await login(page);
   const authCookies = await context.cookies();
   const rawSession = authCookies.find((cookie) => cookie.name === "appsell_session")?.value ?? "";
   const csrf = authCookies.find((cookie) => cookie.name === "appsell_csrf");
@@ -154,8 +153,7 @@ test("rejects forged origin and CSRF before revoking a same-origin session", asy
 
   const otherContext = await browser.newContext();
   const otherPage = await otherContext.newPage();
-  await otherPage.goto("/");
-  await otherPage.getByRole("link", { name: "Entrar no ambiente local" }).click();
+  await login(otherPage);
   const otherCsrf = (await otherContext.cookies()).find((cookie) => cookie.name === "appsell_csrf")?.value ?? "";
   await otherContext.close();
 

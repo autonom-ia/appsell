@@ -144,7 +144,9 @@ jobs:
           # sobre um arquivo gerado na hora. Sem ele o CI reprovaria por
           # dependencia de sistema, e um `skipif` esconderia justamente o teste
           # que prova o `+faststart` do material de aula.
-          if [[ "${{ steps.route.outputs.storage }}" == true || "${{ steps.route.outputs.api }}" == true ]]; then
+          # A rota postgres roda a pasta inteira da api com APPSELL_REQUIRE_POSTGRES=1,
+          # e o `test_video_verifier.py` pularia sem ffmpeg, reprovando a sessão.
+          if [[ "${{ steps.route.outputs.storage }}" == true || "${{ steps.route.outputs.api }}" == true || "${{ steps.route.outputs.postgres }}" == true ]]; then
             packages+=(poppler-utils ffmpeg)
           fi
           sudo apt-get update
@@ -181,6 +183,15 @@ jobs:
           sudo systemctl restart postgresql
           bash scripts/ci/exercita_migrations.sh
 
+      # #450: o pip-audit fica num passo só dele. Dentro do mesmo `set -e` do
+      # pytest, uma CVE nova impedia a suíte de rodar, e o cert-postgres passou
+      # de setembro a outubro sem executar um teste de banco.
+      - name: Audit API dependencies
+        id: audit-api
+        if: ${{ !cancelled() && ((github.event_name == 'pull_request' && steps.route.outputs.api == 'true') || ((github.event_name == 'merge_group' || (github.event_name == 'push' && steps.policy.outputs.product_checks == 'true') || github.event_name == 'workflow_dispatch') && (steps.route.outputs.api == 'true' || steps.route.outputs.postgres == 'true'))) }}
+        shell: bash
+        run: uv run --project apps/api pip-audit --local
+
       - name: Fast API checks for pull requests
         id: fast-api
         if: ${{ !cancelled() && github.event_name == 'pull_request' && steps.route.outputs.api == 'true' }}
@@ -190,29 +201,7 @@ jobs:
           uv run --project apps/api ruff format --check apps/api
           uv run --project apps/api ruff check apps/api
           uv run --project apps/api mypy --config-file apps/api/pyproject.toml apps/api/src apps/api/tests
-          uv run --project apps/api pip-audit --local
-          uv run --project apps/api pytest \
-            apps/api/tests/test_config.py \
-            apps/api/tests/test_health.py \
-            apps/api/tests/test_capacity_telemetry.py \
-            apps/api/tests/test_log_da_api.py \
-            apps/api/tests/test_db_pool_budget.py \
-            apps/api/tests/test_troca_do_socket_do_sandbox.py \
-            apps/api/tests/test_links_do_pdf_com_o_sandbox_ocupado.py \
-            apps/api/tests/test_preparo_de_video_do_pdf.py \
-            apps/api/tests/test_limites_de_midia.py \
-            apps/api/tests/test_pdf_derivatives.py \
-            apps/api/tests/test_parser_de_midia_fica_no_sandbox.py \
-            apps/api/tests/test_pdf_sandbox_service.py \
-            apps/api/tests/test_storage_worker.py \
-            apps/api/tests/test_video_remux.py \
-            apps/api/tests/test_video_verifier.py \
-            apps/api/tests/test_faststart_no_video_do_catalogo.py \
-            apps/api/tests/test_envio_em_partes.py \
-            apps/api/tests/test_email_layout.py \
-            apps/api/tests/test_email_worker.py \
-            apps/api/tests/test_internal_requests.py \
-            apps/api/tests/test_api_assets.py
+          uv run --project apps/api pytest apps/api/tests
 
       - name: Fast backup contract checks for pull requests
         id: fast-backup
@@ -259,6 +248,17 @@ jobs:
           pnpm test:e2e
           pnpm test:e2e:production
 
+      - name: Certify API on the integrated SHA
+        id: cert-api
+        if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && steps.policy.outputs.product_checks == 'true') || github.event_name == 'workflow_dispatch') && steps.route.outputs.api == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --project apps/api ruff format --check apps/api
+          uv run --project apps/api ruff check apps/api
+          uv run --project apps/api mypy --config-file apps/api/pyproject.toml apps/api/src apps/api/tests
+          uv run --project apps/api pytest apps/api/tests
+
       - name: Certify PostgreSQL foundation on the integrated SHA
         id: cert-postgres
         if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && steps.policy.outputs.product_checks == 'true') || github.event_name == 'workflow_dispatch') && steps.route.outputs.postgres == 'true' }}
@@ -268,9 +268,9 @@ jobs:
           uv run --project apps/api ruff format --check apps/api
           uv run --project apps/api ruff check apps/api
           uv run --project apps/api mypy --config-file apps/api/pyproject.toml apps/api/src apps/api/tests
-          uv run --project apps/api pip-audit --local
           uv run --project apps/api pytest \
             apps/api/tests/test_config.py \
+            apps/api/tests/test_config_storage_internal_http.py \
             apps/api/tests/test_health.py \
             apps/api/tests/test_capacity_telemetry.py \
             apps/api/tests/test_log_da_api.py \
@@ -400,11 +400,13 @@ jobs:
           CI_MERGE_QUEUE_ACTIVE: ${{ vars.APPSELL_MERGE_QUEUE_ACTIVE }}
           CI_ROUTE_JSON: ${{ steps.route.outputs.route_json }}
           CI_OUTCOME_ROUTE: ${{ steps.route.outcome }}
+          CI_OUTCOME_AUDIT_API: ${{ steps.audit-api.outcome }}
           CI_OUTCOME_FAST_WEB: ${{ steps.fast-web.outcome }}
           CI_OUTCOME_FAST_API: ${{ steps.fast-api.outcome }}
           CI_OUTCOME_FAST_BACKUP: ${{ steps.fast-backup.outcome }}
           CI_OUTCOME_FAST_PREVIEW: ${{ steps.fast-preview.outcome }}
           CI_OUTCOME_CERT_WEB: ${{ steps.cert-web.outcome }}
+          CI_OUTCOME_CERT_API: ${{ steps.cert-api.outcome }}
           CI_OUTCOME_CERT_POSTGRES: ${{ steps.cert-postgres.outcome }}
           CI_OUTCOME_CERT_STORAGE: ${{ steps.cert-storage.outcome }}
           CI_OUTCOME_CERT_OPENBAO: ${{ steps.cert-openbao.outcome }}

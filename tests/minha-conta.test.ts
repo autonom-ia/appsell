@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, test, vi } from "vitest";
 
@@ -301,7 +301,12 @@ describe("a conta no produto", () => {
     const reset = readFileSync(resolve(root, "apps/api/src/appsell_api/reset_demo_tenant.py"), "utf8");
     expect(reset).toContain(`EXPECTED_MIGRATION = "${head}"`);
     const script = readFileSync(resolve(root, "scripts/test-postgres-foundation.sh"), "utf8");
-    expect(script).toContain("test_postgres_minha_conta.py");
-    expect(script).toContain("test_api_minha_conta.py");
+    // O script roda a pasta inteira (#450): o teste entra por existir, desde
+    // que nenhum --ignore o tire.
+    expect(script).toContain("pytest apps/api/tests \\\n");
+    expect(existsSync(resolve(root, "apps/api/tests/test_postgres_minha_conta.py"))).toBe(true);
+    expect(script).not.toContain("--ignore=apps/api/tests/test_postgres_minha_conta.py");
+    expect(existsSync(resolve(root, "apps/api/tests/test_api_minha_conta.py"))).toBe(true);
+    expect(script).not.toContain("--ignore=apps/api/tests/test_api_minha_conta.py");
   });
 });
