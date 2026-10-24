@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { login } from "./support/login";
 
 /**
  * A3.5 — percorrer o editor e publicar usando apenas o teclado, com o foco
@@ -59,12 +60,6 @@ function productPayload() {
     },
     csrf: { update: "csrf-update", publish: "csrf-publish", offer_status: "csrf-offer" }
   };
-}
-
-async function login(page: Page) {
-  await page.goto("/");
-  await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
-  await expect(page).toHaveURL("/dashboard");
 }
 
 async function mockEditor(page: Page) {
