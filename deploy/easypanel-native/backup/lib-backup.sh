@@ -50,7 +50,40 @@ require_env() {
 # environment (uppercase env name; never a lowercase conninfo string). It is
 # forwarded by NAME only (`-e PGPASSWORD`, no `=value`) with the value exported
 # just for that invocation, so it never appears on the world-readable argv.
-: "${BACKUP_PG_IMAGE:=postgres:16-alpine}"
+# The default is the image the production server runs (spec of
+# sell-autonomia_postgres-native-90, read 24/10/2026: PostgreSQL 17.10).
+# pg_dump refuses a server whose major is newer than its own, so a lower major
+# here makes every backup fail; pg_assert_client_not_older checks it (#492).
+: "${BACKUP_PG_IMAGE:=postgres@sha256:ebba4f4de37f08f138f97c1443c987a435e783177afedcc4aaf2da1930fbc37a}"
+
+# pg_client_major IMAGE
+# Echoes the major version of the pg_dump inside IMAGE ("17" for 17.10).
+pg_client_major() {
+  local image="$1" version
+  version="$(docker run --rm "$image" pg_dump --version)" \
+    || die "could not run pg_dump --version in ${image}"
+  # `pg_dump (PostgreSQL) 17.10 (Debian ...)`: the third field is the version.
+  version="$(awk '{ print $3 }' <<<"$version")"
+  version="${version%%.*}"
+  [[ -n "$version" && "$version" != *[!0-9]* ]] \
+    || die "unexpected pg_dump --version output in ${image}"
+  printf '%s\n' "$version"
+}
+
+# pg_assert_client_not_older HOST PORT USER DB SECRET
+# Fails before any dump when the client image is older than the server: pg_dump
+# would refuse anyway, but only after the backup window has started.
+pg_assert_client_not_older() {
+  local server_num server_major client_major
+  server_num="$(pg_scalar "$@" "show server_version_num")"
+  [[ -n "$server_num" && "$server_num" != *[!0-9]* ]] \
+    || die "could not read server_version_num"
+  server_major=$(( server_num / 10000 ))
+  client_major="$(pg_client_major "$BACKUP_PG_IMAGE")"
+  (( client_major >= server_major )) \
+    || die "pg_dump ${client_major} in BACKUP_PG_IMAGE is older than server ${server_major}: use a PostgreSQL ${server_major}+ image"
+  log "client major ${client_major} >= server major ${server_major}"
+}
 
 # pg_dump_to_file HOST PORT USER DB SECRET OUTFILE
 # Streams a custom-format (compressed, restorable) dump to a host file via
@@ -94,6 +127,39 @@ pg_restore_from_file() {
       --exit-on-error \
       --host="$host" --port="$port" --username="$user" --dbname="$db" \
     <"$dumpfile"
+}
+
+# pg_roles_from_source FILE
+# Echoes, one per line, the roles that FILE (infra/postgres/init/001_roles.sh)
+# creates, read from its `select 'create role <name> ...'` statements. The
+# restore creates exactly these, so the role set has a single source: a role
+# added to production through that file reaches the rehearsal with no list to
+# keep in sync. pg_dump does not carry roles (they belong to the cluster), and
+# --no-owner/--no-privileges do not strip the role a CREATE POLICY names.
+pg_roles_from_source() {
+  local source="$1" roles role
+  [[ -s "$source" ]] || die "roles source not found or empty: ${source}"
+  roles="$(awk -v q="'" '$1 == "select" && $2 == q "create" && $3 == "role" { print $4 }' "$source")"
+  [[ -n "$roles" ]] || die "no create role statement found in ${source##*/}"
+  while IFS= read -r role; do
+    [[ -n "$role" && "$role" != *[!a-z0-9_]* ]] \
+      || die "unexpected role name in ${source##*/}: ${role}"
+  done <<<"$roles"
+  printf '%s\n' "$roles"
+}
+
+# pg_create_nologin_roles HOST PORT USER DB SECRET ROLE...
+# Creates each ROLE as NOLOGIN with no password. Meant only for a disposable
+# restore target: the roles exist so the restored policies resolve, and nobody
+# can log in as them.
+pg_create_nologin_roles() {
+  local host="$1" port="$2" user="$3" db="$4" secret="$5" role
+  shift 5
+  for role in "$@"; do
+    [[ -n "$role" && "$role" != *[!a-z0-9_]* ]] || die "refusing role name: ${role}"
+    pg_scalar "$host" "$port" "$user" "$db" "$secret" \
+      "create role \"${role}\" nologin" >/dev/null
+  done
 }
 
 # pg_scalar HOST PORT USER DB SECRET SQL
