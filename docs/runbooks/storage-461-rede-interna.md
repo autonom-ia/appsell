@@ -418,6 +418,13 @@ o backup e escolhe uma de três saídas:
    outra variável): **ABORT, sem tocar no serviço**, e Rodrigo, com os campos
    que diferem.
 
+**Depois da etapa 7, a borda sai primeiro.** Com a borda do #477 aplicada, o
+endpoint público não aceita mais o controle do storage. Um `desfazer` da api ou
+do worker, que devolve `minio.autonomia.site`, poria o `/health/ready` em 503.
+Por isso a ordem é: o rollback do `storage-461-borda-traefik.md` primeiro, a
+conferência de que `https://minio.autonomia.site/minio/health/live` volta a
+200, e só depois o `desfazer` daqui.
+
 O script **nunca** roda `docker service rollback`. Ele usa o rollback order da
 spec, `stop-first`, e na api a loja para durante a troca: ~22 s de 500 na
 etapa 2, e até 330 s com e-mail em lease. Fica como último recurso, fora do

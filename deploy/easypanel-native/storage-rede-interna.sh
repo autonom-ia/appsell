@@ -112,13 +112,33 @@ container_do() {
   d inspect "$task" --format '{{json .Status.ContainerStatus.ContainerID}}' | jq -r '.'
 }
 
-imagem_da_task() {
-  # A imagem da task que está rodando, não a da spec: um crash-loop com outra
-  # imagem não passa por restaurado.
-  local task
-  task="$(d service ps -q "$1" --filter desired-state=running | head -1)"
-  test -n "$task" || return 1
-  d inspect "$task" --format '{{json .Spec.ContainerSpec.Image}}'
+task_da_vez() { d service ps -q "$1" --filter desired-state=running | head -1; }
+
+task_de_antes=""
+task_igual_a_spec() {
+  # Com start-first e um update pausado, a task antiga segue Running sozinha,
+  # com a mesma imagem, e o /health/ready passa por ela. Então a task que roda
+  # tem de ser nova (não a anotada antes do update), ter a imagem esperada e a
+  # env da spec atual, e o contêiner dela tem de ter a flag só se a spec tiver.
+  local servico="$1" task cid env_da_task env_da_spec flag_na_spec flag_no_conteiner
+  task="$(task_da_vez "$servico")"
+  test -n "$task" && [ "$task" != "$task_de_antes" ] || return 1
+  [ "$(d inspect "$task" --format '{{json .Spec.ContainerSpec.Image}}')" = "$imagem_esperada" ] || return 1
+  env_da_task="$(d inspect "$task" --format '{{json .Spec.ContainerSpec.Env}}' | jq -c 'sort' | sha256sum)" || return 1
+  env_da_spec="$(spec_json "$servico" Spec.TaskTemplate.ContainerSpec.Env | jq -c 'sort' | sha256sum)" || return 1
+  [ "$env_da_task" = "$env_da_spec" ] || return 1
+  # No contêiner, só os nomes: o que o processo recebeu de fato.
+  cid="$(d inspect "$task" --format '{{json .Status.ContainerStatus.ContainerID}}' | jq -r '.')" || return 1
+  flag_no_conteiner="$(d inspect "$cid" --format '{{json .Config.Env}}' \
+    | jq --arg chave "${flag}=" 'any(.[]; startswith($chave))')" || return 1
+  flag_na_spec="$(spec_json "$servico" Spec.TaskTemplate.ContainerSpec.Env \
+    | jq --arg chave "${flag}=" 'any(.[]; startswith($chave))')" || return 1
+  [ "$flag_no_conteiner" = "$flag_na_spec" ]
+}
+
+update_concluido() {
+  # O Swarm terminou o update: nem pausado, nem em andamento.
+  [ "$(d service inspect "$1" --format '{{with .UpdateStatus}}{{json .State}}{{end}}')" = '"completed"' ]
 }
 
 # HEAD assinado nos dois buckets, de dentro do contêiner, com o endpoint que
@@ -208,9 +228,9 @@ guardar_backup() {
 
 imagem_esperada=""
 pronto() {
-  # pronto <serviço>: a task roda a imagem do backup e o storage responde de
-  # dentro dela.
-  [ "$(imagem_da_task "$1")" = "$imagem_esperada" ] && storage_responde "$1"
+  # pronto <serviço>: o update terminou, a task roda a imagem do backup com a
+  # env da spec, e o storage responde de dentro dela.
+  update_concluido "$1" && task_igual_a_spec "$1" && storage_responde "$1"
 }
 
 resto_da_env() {
@@ -252,6 +272,7 @@ voltar_as_duas_variaveis() {
       args+=(--env-rm "$chave")
     fi
   done
+  task_de_antes="$(task_da_vez "$servico")"
   d service update --detach=false "${args[@]}" "$servico" >/dev/null || true
 }
 
@@ -355,6 +376,7 @@ etapa_env() {
   imagem_esperada="$(spec_json "$servico" Spec.TaskTemplate.ContainerSpec.Image)"
   trap ao_sair EXIT
   trap 'exit 130' INT TERM HUP
+  task_de_antes="$(task_da_vez "$servico")"
   tocado="$servico"
   # Sem --update-order: vale a ordem da spec, conferida acima.
   d service update --detach=false \

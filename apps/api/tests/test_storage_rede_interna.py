@@ -54,7 +54,7 @@ pytestmark = pytest.mark.skipif(
 
 # O docker falso: lê e grava o estado num JSON, e entende só o que o script usa.
 _DOCKER_FALSO = r"""#!/usr/bin/env python3
-import copy, json, os, sys
+import copy, json, os, sys, time
 PASTA = os.environ["PASTA"]
 ESTADO = os.path.join(PASTA, "estado.json")
 estado = json.load(open(ESTADO))
@@ -110,9 +110,9 @@ elif comando == "network inspect":
     print(avaliar(opcao("--format"), rede) if "--format" in args else json.dumps([rede]))
 elif comando == "service inspect":
     servico = estado["servicos"][args[2]]
-    # Uma leitura da env falha uma vez depois do update: erro do `set -e`.
-    leitura_da_env = "{{json .Spec.TaskTemplate.ContainerSpec.Env}}"
-    if servico.get("ler_env_falha") and opcao("--format") == leitura_da_env:
+    # Uma leitura da spec falha uma vez depois do update. É a da digital, que
+    # só roda na conferência, fora da convergência (que tentaria de novo).
+    if servico.get("ler_env_falha") and opcao("--format") == "{{json .Spec}}":
         servico["ler_env_falha"] = False
         salvar()
         print("erro de leitura", file=sys.stderr); sys.exit(1)
@@ -169,6 +169,34 @@ elif comando == "service update":
     servico["quebrado"] = falha_da_janela("SEM_STORAGE") or falha_da_janela("NAO_SOBE")
     servico["parado"] = falha_da_janela("NAO_SOBE")
     servico["imagem_da_task"] = "outra:imagem" if falha_da_janela("IMAGEM_DA_TASK") else None
+    # A task antiga segue Running com a env de antes (update pausado, start-first).
+    servico["env_da_task"] = (
+        servico["PreviousSpec"]["TaskTemplate"]["ContainerSpec"]["Env"]
+        if falha_da_janela("TASK_ANTIGA") else None
+    )
+    # Task nova a cada update; com a task antiga presa, o ID não muda.
+    if not (falha_da_janela("TASK_ANTIGA") or falha_da_janela("MESMO_ID")):
+        servico["geracao"] = servico.get("geracao", 0) + 1
+    # Uma task nova com a flag, mas com o endpoint de antes: nem o ID nem a
+    # flag no contêiner a denunciam, só a env da task contra a da spec.
+    if falha_da_janela("TASK_NOVA_ENV_VELHA"):
+        endpoint = "APPSELL_API_STORAGE_INTERNAL_ENDPOINT="
+        velho = next(
+            e for e in servico["PreviousSpec"]["TaskTemplate"]["ContainerSpec"]["Env"]
+            if e.startswith(endpoint)
+        )
+        servico["env_da_task"] = [
+            velho if e.startswith(endpoint) else e
+            for e in servico["Spec"]["TaskTemplate"]["ContainerSpec"]["Env"]
+        ]
+    servico["conteiner_sem_flag"] = falha_da_janela("CONTEINER_SEM_FLAG")
+    pausado = falha_da_janela("UPDATE_PAUSADO")
+    servico["UpdateStatus"] = {"State": "paused" if pausado else "completed"}
+    # A volta (o update que não liga a flag) também pode falhar.
+    if not janela and falha("VOLTA_NAO_SOBE", nome):
+        servico["parado"] = True
+    if not janela and falha("VOLTA_LENTA", nome):
+        servico["parado_ate"] = time.time() + 3
     salvar()
 elif comando == "service rollback":
     servico = estado["servicos"][args[-1]]
@@ -176,28 +204,50 @@ elif comando == "service rollback":
         print("no previous spec", file=sys.stderr); sys.exit(1)
     servico["Spec"], servico["PreviousSpec"] = servico["PreviousSpec"], servico["Spec"]
     servico["quebrado"] = servico["parado"] = False
+    servico["geracao"] = servico.get("geracao", 0) + 1
     salvar()
 elif comando == "service ps":
     nome = args[3] if args[2] == "-q" else args[2]
     if args[2] == "-q":
-        print(f"task-{nome}")
-    elif not estado["servicos"][nome].get("parado"):
+        print(f"task-{nome}-{estado['servicos'][nome].get('geracao', 0)}")
+    elif not estado["servicos"][nome].get("parado") and (
+        time.time() >= estado["servicos"][nome].get("parado_ate", 0)
+    ):
         print("Running 5 seconds ago")
 elif args[0] == "inspect":
-    nome = args[1][len("task-"):]
-    if "Image" in opcao("--format"):
-        servico = estado["servicos"][nome]
-        da_spec = servico["Spec"]["TaskTemplate"]["ContainerSpec"]["Image"]
-        imagem = servico.get("imagem_da_task") or da_spec
-        print(json.dumps(imagem))
+    tipo, resto = args[1].split("-", 1)
+    nome, geracao = resto.rsplit("-", 1)
+    servico = estado["servicos"][nome]
+    da_spec = servico["Spec"]["TaskTemplate"]["ContainerSpec"]
+    env_da_task = servico.get("env_da_task") or da_spec["Env"]
+    formato = opcao("--format")
+    if tipo == "cid":
+        # docker inspect do contêiner: a env do processo, com a da imagem.
+        sem_flag = servico.get("conteiner_sem_flag")
+        flag = "APPSELL_API_STORAGE_INTERNAL_HTTP_ALLOWED="
+        env = [e for e in env_da_task if not (sem_flag and e.startswith(flag))]
+        print(json.dumps(env + ["PATH=/usr/local/bin:/usr/bin"]))
+    elif "Image" in formato:
+        print(json.dumps(servico.get("imagem_da_task") or da_spec["Image"]))
+    elif "Env" in formato:
+        print(json.dumps(env_da_task))
     else:
-        print(json.dumps("cid-" + nome))
+        print(json.dumps(f"cid-{nome}-{geracao}"))
 elif args[0] == "exec":
-    nome = args[1][len("cid-"):]
+    nome = args[1].split("-", 1)[1].rsplit("-", 1)[0]
     if "getent" in args:
         ips = estado["dns"].get(nome, [])
         print("\n".join(f"{ip}      {args[-1]}" for ip in ips))
         sys.exit(0 if ips else 2)
+    if falha("EXEC_TRAVA", nome):
+        # Um probe que trava. O `timeout` do script, dentro do contêiner, é o
+        # que o corta; sem ele, trava de vez.
+        if "timeout" in args:
+            time.sleep(int(args[args.index("timeout") + 1]))
+            sys.exit(124)
+        time.sleep(600)
+    if any("/health/ready" in arg for arg in args) and falha("READY_503", nome):
+        sys.exit(1)
     sys.exit(1 if estado["servicos"][nome].get("quebrado") else 0)
 else:
     print("docker falso não conhece: " + " ".join(args), file=sys.stderr); sys.exit(1)
@@ -303,6 +353,7 @@ def rodar(pasta: Path, *argumentos: str, **falhas: str) -> subprocess.CompletedP
         capture_output=True,
         text=True,
         check=False,
+        timeout=120,
     )
 
 
@@ -715,3 +766,145 @@ def test_seco_so_le(pasta: Path) -> None:
     assert backups(pasta) == []
     assert f"{WORKER}: env=3 endpoint_interno=minio.autonomia.site no_alvo=não" in resultado.stdout
     assert resultado.stdout.count("alias=ok") == 2
+
+
+# Lacunas da revisão da Qualidade no b34bbce
+
+
+def test_volta_que_nao_sobe_aborta(pasta: Path) -> None:
+    # A volta foi aplicada, mas a task não fica Running: não é "restaurado".
+    resultado = rodar(pasta, "api", SEM_STORAGE=API, VOLTA_NAO_SOBE=API)
+    assert resultado.returncode == 1
+    assert "sem task Running na imagem do backup e com storage" in resultado.stderr
+    assert "a restauração parou" in resultado.stderr
+    assert "restaurado, igual ao backup" not in resultado.stdout
+    assert rollbacks(pasta) == []
+
+
+def test_ready_em_503_com_storage_verde_falha_e_volta(pasta: Path) -> None:
+    # O probe direto passa, mas o /health/ready não: a api não está pronta.
+    antes = spec(pasta, API)
+    resultado = rodar(pasta, "api", READY_503=API)
+    assert resultado.returncode == 1
+    assert "/health/ready sem storage na leitura 1" in resultado.stderr
+    assert f"{API}: restaurado, igual ao backup" in resultado.stdout
+    assert sorted_env(pasta, API) == sorted(antes["TaskTemplate"]["ContainerSpec"]["Env"])
+    assert updates_da_volta(pasta) == [API]
+    assert rollbacks(pasta) == []
+
+
+@pytest.mark.parametrize("falha", ["TASK_ANTIGA", "UPDATE_PAUSADO"])
+def test_task_antiga_ou_update_pausado_nao_contam_como_prontos(pasta: Path, falha: str) -> None:
+    # Com start-first e o update pausado, a task antiga segue Running sozinha,
+    # com a mesma imagem e o storage verde.
+    resultado = rodar(pasta, "api", **{falha: API})
+    assert resultado.returncode == 1
+    assert "não convergiu" in resultado.stderr
+    assert updates_da_volta(pasta) == [API]
+
+
+def test_probe_travado_e_cortado_pelo_prazo_do_exec(pasta: Path) -> None:
+    inicio = time.monotonic()
+    resultado = rodar(
+        pasta, "worker", EXEC_TRAVA=WORKER, STORAGE461_PRAZO_EXEC="1", STORAGE461_PRAZO_SEGUNDOS="2"
+    )
+    assert time.monotonic() - inicio < 60
+    assert resultado.returncode == 1
+    assert "não convergiu" in resultado.stderr
+
+
+def _espera_a_volta(pasta: Path, processo: subprocess.Popen[str]) -> None:
+    limite = time.monotonic() + 30
+    while not updates_da_volta(pasta):
+        assert processo.poll() is None, "o script saiu antes da volta"
+        assert time.monotonic() < limite, "a volta não começou"
+        time.sleep(0.05)
+    time.sleep(0.3)
+
+
+def test_segundo_sinal_nao_corta_a_restauracao(pasta: Path) -> None:
+    # SIGTERM no meio da volta: o ao_sair ignora e termina a restauração.
+    antes = spec(pasta, API)
+    processo = subprocess.Popen(  # noqa: S603
+        [str(_BASH), str(_SCRIPT), "api"],
+        env=_ambiente(
+            pasta,
+            SEM_STORAGE=API,
+            VOLTA_LENTA=API,
+            STORAGE461_PRAZO_SEGUNDOS="10",
+            STORAGE461_INTERVALO_SEGUNDOS="1",
+        ),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    _espera_a_volta(pasta, processo)
+    processo.send_signal(signal.SIGTERM)
+    saida, _ = processo.communicate(timeout=60)
+    assert processo.returncode == 1
+    assert f"{API}: restaurado, igual ao backup" in saida
+    assert sorted_env(pasta, API) == sorted(antes["TaskTemplate"]["ContainerSpec"]["Env"])
+
+
+def test_sinal_nao_corta_o_desfazer(pasta: Path) -> None:
+    antes = spec(pasta, API)
+    assert rodar(pasta, "api").returncode == 0
+    ts = ultimo_ts(pasta, API)
+    processo = subprocess.Popen(  # noqa: S603
+        [str(_BASH), str(_SCRIPT), "desfazer", ts],
+        env=_ambiente(
+            pasta,
+            VOLTA_LENTA=API,
+            STORAGE461_PRAZO_SEGUNDOS="10",
+            STORAGE461_INTERVALO_SEGUNDOS="1",
+        ),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    _espera_a_volta(pasta, processo)
+    processo.send_signal(signal.SIGTERM)
+    saida, erros = processo.communicate(timeout=60)
+    assert processo.returncode == 0, erros
+    assert f"{API}: restaurado, igual ao backup" in saida
+    assert sorted_env(pasta, API) == sorted(antes["TaskTemplate"]["ContainerSpec"]["Env"])
+
+
+def test_conteiner_sem_a_flag_nao_conta_como_pronto(pasta: Path) -> None:
+    # A spec e a task dizem que a flag entrou; o processo não a recebeu.
+    resultado = rodar(pasta, "api", CONTEINER_SEM_FLAG=API)
+    assert resultado.returncode == 1
+    assert "não convergiu" in resultado.stderr
+    assert updates_da_volta(pasta) == [API]
+
+
+def test_start_first_pausado_com_a_task_nova_falhando_aborta_e_restaura(pasta: Path) -> None:
+    # O cenário de 23/10 em potencial: a task nova falha, o Swarm pausa, a
+    # antiga segue Running com a env velha e o /health/ready verde por ela.
+    # A spec já tem a env nova; o script não pode declarar sucesso.
+    antes = spec(pasta, API)
+    resultado = rodar(pasta, "api", TASK_ANTIGA=API, UPDATE_PAUSADO=API)
+    assert resultado.returncode == 1
+    assert "concluído" not in resultado.stdout
+    assert "não convergiu" in resultado.stderr
+    assert f"{API}: restaurado, igual ao backup" in resultado.stdout
+    assert sorted_env(pasta, API) == sorted(antes["TaskTemplate"]["ContainerSpec"]["Env"])
+    assert rollbacks(pasta) == []
+
+
+def test_task_com_o_mesmo_id_nao_conta_como_nova(pasta: Path) -> None:
+    # O Swarm diz a env nova, mas a task é a mesma de antes do update: só o
+    # ID a denuncia.
+    resultado = rodar(pasta, "api", MESMO_ID=API)
+    assert resultado.returncode == 1
+    assert "não convergiu" in resultado.stderr
+    assert updates_da_volta(pasta) == [API]
+
+
+def test_task_nova_com_o_endpoint_de_antes_nao_conta_como_pronta(pasta: Path) -> None:
+    # ID novo e flag no contêiner, mas o endpoint da task é o de antes: só a
+    # env da task contra a da spec a denuncia.
+    resultado = rodar(pasta, "api", TASK_NOVA_ENV_VELHA=API)
+    assert resultado.returncode == 1
+    assert "não convergiu" in resultado.stderr
+    assert updates_da_volta(pasta) == [API]
