@@ -46,7 +46,13 @@ F3 (endpoint Connect na Stripe) não é PR: é operação com OK separado (§3).
 
 ## 2. PRs
 
-### F2 — Financial emite `purchase.refunded` (financial#150)
+### F2 — Financial emite `purchase.refunded` (financial#152)
+
+> **Revisado em 24/10/2026: este desenho foi substituído.** O razão de produção
+> não recebe estorno, porque os endpoints do Financial na Stripe não assinam
+> `charge.refunded`/`refund.*`. O novo desenho, com o worker consultando a
+> Stripe por uma bridge isolada, está em `PLANO-F2-CONSULTA-STRIPE.md`. O texto
+> abaixo fica como histórico do #153 (draft).
 
 **O que existe hoje (origin/main 7d68ed1):**
 
@@ -177,6 +183,26 @@ acesso? Hoje o razão grava `chargeback`, mas este PR só trata `refund`.
   `POST /financial/webhooks/stripe-connect`), segredo próprio e casamento por
   `selection.connect.accountId`. Ignora todo evento cujo `account` é o
   `account_id` de algum `company_gateway`, para não competir com o webhook atual.
+- **Estorno desde o início (24/10/2026).** O endpoint Connect novo assina
+  `charge.refunded`, `refund.created` e `refund.updated` já na criação (F3). O
+  tratamento é próprio, sem passar pelo `PostgresStripeSettlementRecorder` nem
+  pelo ack do webhook atual (`src/financial-service.ts:7981-7990`):
+  - casamento: o `event.account` tem de ser a conta conectada de um pedido
+    (`selection.connect.accountId`), e o `payment_intent` do evento tem de ser
+    o `gateway_payment_id` do `financial.payments` daquele pedido;
+  - **charge desconhecido recebe ack 200**, com o evento registrado como
+    `ignored_unknown_charge` no journal próprio do receptor e um contador no
+    log. Nunca 503 por falta de par, porque esse é o defeito do caminho atual
+    (`src/verifiable-ledger.ts:1028`);
+  - 5xx só para falha transitória real (banco indisponível). A Stripe
+    reentrega por até 3 dias, e depois o evento aparece no journal como falho;
+  - idempotência por `event.id` no journal do receptor;
+  - estorno total de pedido entregue entra na mesma tabela de avisos do F2, com
+    a mesma assinatura, o mesmo event id e o mesmo envio. Estorno parcial e
+    chargeback seguem a decisão aberta em financial#152.
+  - Com isso, as lojas com conta conectada própria (S1) não precisam de
+    polling. O polling do F2 cobre só os gateways diretos (Hub2You `13a30647`
+    e `bf9daec0`), filtrando `selection.connect.accountId` nulo.
 - Arquivos novos: `src/stripe-connect-webhook.ts`,
   `tests/stripe-connect-webhook.test.ts`.
 - Linhas de registro: uma rota em `src/routes.ts` e uma variável de segredo em
@@ -195,15 +221,16 @@ acesso? Hoje o razão grava `chargeback`, mas este PR só trata `refund`.
 
 ## 3. O que fica fora dos PRs e exige OK separado
 
-- Criar o endpoint Connect na Stripe (F3) e gravar o segredo dele.
-- Ligar `FINANCIAL_EXTERNAL_CHECKOUT_REFUND_WORKER_ENABLED` em produção.
-  **Atenção:** ao ligar, o worker avisa o Sell de todo estorno total já no razão.
-  O …ybva será revogado na primeira rodada, se o estorno dele estiver lá.
-- Antes de ligar: conferência só de leitura, feita pela Orquestração, de quantos
-  pedidos o worker pegaria na primeira rodada e se o …ybva está entre eles. Se o
-  estorno do …ybva não estiver no razão (ficou em
-  `payment_settlement_unmatched_sources`), a revogação dele é manual, com OK do
-  Rodrigo.
+- Criar o endpoint Connect na Stripe (F3), já com `charge.refunded`/`refund.*`,
+  e gravar o segredo dele.
+- O endpoint Stripe atual do Financial **não ganha eventos de estorno** (decisão
+  de 24/10/2026; ver `PLANO-F2-CONSULTA-STRIPE.md` §0).
+- `FINANCIAL_EXTERNAL_CHECKOUT_REFUND_WORKER_MODE=dry_run` em produção. É a
+  primeira execução: consulta a Stripe e não grava nem envia. Os números por
+  operador vão para o Rodrigo.
+- `FINANCIAL_EXTERNAL_CHECKOUT_REFUND_WORKER_MODE=deliver`. **Atenção:** o
+  backfill revoga, na primeira rodada, todo estorno total de pedido entregue,
+  inclusive o …ybva.
 - Preencher `APPSELL_FINANCIAL_CONNECT_SELLER_IDS` com qualquer loja.
 - Vincular a conta da Hub2You na `seller_payout_account`.
 - Deploy de qualquer um dos PRs.
