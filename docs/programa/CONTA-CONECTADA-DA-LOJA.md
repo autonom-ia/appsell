@@ -168,3 +168,63 @@ loja real → conciliação (#147/#459) → piloto com OK do Rodrigo. Isso é a 
 - A divergência real com a decisão da #439 está **no operador `bf9daec0`**:
   qualquer loja vinculada a ele vende na conta da Autonom.ia. Hoje nenhuma loja do
   Sell deveria estar nele. A flag do #469 fica vazia até F1 e S1 existirem.
+
+## (e) A lacuna de estorno
+
+Conciliação Stripe × Sell feita pela Orquestração (#439, comentário 6383192898):
+
+- O Financial grava na sessão Stripe `metadata.orderId`, e o SHA-256 dele bate
+  com `external_purchase_id_sha256` nas 4 vendas do Sell.
+- A 5ª venda paga (`…avqK`) não chegou ao Sell e foi estornada.
+- A `…ybva` foi estornada, mas **o acesso continua `completed` no Sell**.
+
+**Resposta: o Sell sabe revogar, mas o Financial nunca avisa o estorno de uma
+venda do checkout externo.**
+
+### Sell: pronto para revogar
+
+- A entrada aceita `purchase.refunded` (`apps/api/src/appsell_api/webhook_adapters.py:14`;
+  enum do evento em `0012_checkout_webhook_ingress.py:94` e
+  `0020_checkout_fulfillment.py:102`).
+- O fulfillment trata o estorno (`0020_checkout_fulfillment.py:654-700`):
+  - marca o grant da compra como `refunded`, mesmo que o estorno chegue antes da
+    aprovação;
+  - revoga a `buyer_entitlement` (`status='revoked'`) quando nenhum grant ativo
+    resta para o par comprador × produto;
+  - audita `commerce.fulfillment_entitlement_revoked`.
+- O estorno vence a aprovação fora de ordem: uma aprovação que chega depois não
+  concede acesso (`0020:600-622`).
+- As reescritas posteriores de `apply_checkout_fulfillment` (0049, 0051) inserem
+  trechos por âncora e mantêm esse ramo.
+- Testes: `tests/test_postgres_checkout_fulfillment.py:393,420,520`.
+
+### Financial: não emite
+
+- O checkout externo emite **só** `event_type: "purchase.approved"`
+  (`src/financial-service.ts:4518`, em `deliverExternalCheckoutFulfillment`,
+  `:4509-4560`). Não existe outro `event_type` nesse caminho.
+- Um evento de estorno (`charge.refunded`, `refund.*`) não é de
+  `checkout.session`. Por isso não acha o pedido do checkout externo
+  (`:4170-4173`) e não entra no ramo que entrega ao Sell (`:4174-4178`).
+- Ele segue para o ledger (`stripeSettlementRecorder.record`, `:3698-3703`) e,
+  só se for de crédito avulso, para o mapeamento de crédito avulso
+  (`:8168-8176`).
+- O `purchase.refunded` que existe no Financial é do **crédito avulso**, outro
+  produto: `src/one-time-credits.ts:158,175-180`, tipo em `src/types.ts:1991`. Ele
+  nunca vai para o Sell.
+
+### O que isso significa
+
+- Hoje, **todo estorno de venda do Sell deixa o acesso aberto**. Foi o que
+  aconteceu na `…ybva`.
+- A venda paga que não chega ao Sell (`…avqK`) é outro furo: compra sem acesso. A
+  conciliação do #459 mostra os dois casos.
+- A correção é a F2 da seção (c): **código novo e isolado no Financial**, que
+  emite `purchase.refunded` com o mesmo contrato do `purchase.approved`
+  (`seller_id`, `external_purchase_id = order.id`, assinatura `generic_hmac_v1`)
+  quando o estorno de um pedido de checkout externo for confirmado. É a
+  financial#150. **Nada muda no Sell**: o adaptador e o fulfillment já tratam o
+  evento.
+- Até lá, o gate do programa vale também para a venda sem divisão de pagamento:
+  o estorno precisa de revogação manual, por runbook e com OK do Rodrigo, para
+  cada caso que a conciliação mostrar.
