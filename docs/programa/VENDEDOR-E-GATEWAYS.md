@@ -39,7 +39,7 @@ Cada achado tem uma classe:
 ### 1.0 De quem é a conta que recebe o dinheiro hoje
 
 O operador é **por loja**, não global: o Sell manda
-`operatorId: seller.financial_operator_id` (`create-session/route.ts:124`), que é
+`operatorId: seller.financial_operator_id` (`create-session/route.ts:125`), que é
 gravado por loja em `seller_organization`
 (`0055_seller_financial_binding.py:105-111`), pelo
 `configure_seller_financial.py` (o operador é um argumento explícito,
@@ -58,7 +58,7 @@ No Financial, a credencial do gateway também é **por operador**:
   e `:4662-4674`), lê a chave pelo nome guardado (`:3450`) e cria a sessão com
   `accountId: gateway.accountId` (`:3453-3456`).
 - Os operadores do Financial são **empresas**: a migration
-  `010_operator_organization_link.sql:41-75` cria `autonom-ia` ("Autonom.ia") e
+  `010_operator_organization_link.sql:38-75` cria `autonom-ia` ("Autonom.ia") e
   `hub2you` ("Hub2You").
 
 Consequência: **o dinheiro cai na conta Stripe que o gateway do operador da loja
@@ -72,7 +72,7 @@ usa.**
   usa a conta Stripe da Autonom.ia, **a Autonom.ia recebe o dinheiro de fato**.
   Essa é a divergência principal com a decisão.
 - Para **loja nova** a resposta já é conhecida, e é a segunda. O autosserviço do
-  #469 grava o **mesmo par global** para toda loja
+  #469 (ainda não mergeado) grava o **mesmo par global** para toda loja
   (`APPSELL_FINANCIAL_SHARED_OPERATOR_ID`). Sem `connect.accountId`, toda loja
   nova cobraria na conta do gateway desse único operador. Por isso a flag do
   #469 fica vazia até a #440 mandar a conta conectada da loja.
