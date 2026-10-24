@@ -79,7 +79,16 @@ Restrições:
     `resolve_seller_membership_role(p_seller) = 'seller_owner'`, como no #469.
   - Advisory lock por loja; confere a `expected_revision`; valida; grava.
   - Audita `seller.legal_identity.updated` com `metadata = {document_type,
-    changed: ['legal_name'|'document'], revision}`. **Nunca o número.**
+    legal_name_changed, document_changed, revision}`. **Nunca o número, a
+    máscara nem um hash dele.** Os dois campos de mudança são booleanos,
+    calculados por comparação dentro da função:
+    - `legal_name_changed`: o nome novo contra o gravado.
+    - `document_changed`, para CNPJ: `cnpj_number` novo contra o gravado.
+    - Para CPF, o inteiro não é guardado e não há com que comparar. A máscara
+      não serve: dois CPFs diferentes podem ter a mesma. Um hash também não,
+      porque guardaria o CPF de outra forma. Por isso o campo registra só
+      `document_submitted: true`, ou seja, que o pedido trouxe um CPF. Mudou ou
+      não, fica desconhecido por desenho.
   - Replay com o mesmo `request_id` devolve o resultado anterior sem gravar de
     novo. **O registro de replay guarda só `request_id`, `revision` e status**,
     nunca o corpo nem o documento.
@@ -134,10 +143,20 @@ de ver o CPF **inteiro**, o número passa a ser público por desenho. Aí ele é
 guardado como o CNPJ, e o `BACKUP_RESTORE_SELL.md` passa a dizer que o backup
 carrega CPF.
 
-Cuidado com o parâmetro: o CPF passa pela chamada da função. Antes do deploy,
-conferir no Postgres de produção, só leitura, que `log_statement` não é `all` e
-que `log_parameter_max_length_on_error` é `0`. Assim o valor não vai para o log
-do banco.
+Cuidado com o parâmetro: o CPF passa pela chamada da função. **Antes do deploy
+do passo 1 (§5), é bloqueio no runbook** conferir no Postgres de produção, só
+leitura (`show …`), que:
+
+- `log_statement` não é `all` (`mod` também loga a chamada; o aceitável é
+  `none` ou `ddl`);
+- `log_parameter_max_length` é `0`, **ou** `log_min_duration_statement` é `-1`
+  (sem isso, uma chamada lenta loga o parâmetro);
+- `log_parameter_max_length_on_error` é `0`;
+- `auto_explain` não está em `shared_preload_libraries` com
+  `auto_explain.log_parameter_max_length` diferente de `0`.
+
+Qualquer item fora disso bloqueia o deploy até a configuração ser corrigida, com
+OK do Rodrigo, porque é infra de produção.
 
 ## 2. Validação de CPF e CNPJ
 
@@ -202,7 +221,10 @@ Qualquer outro caractere recusa o valor; não é descartado em silêncio.
 ### 3.1 Base legal e finalidade
 
 - **CNPJ e razão social** são dados de pessoa jurídica: não são dado pessoal.
-- **CPF e nome de pessoa física** são dado pessoal. A base proposta é a
+- **CPF e nome de pessoa física** são dado pessoal. **O `document_display` do
+  CPF também é**: nome completo mais 6 dígitos do meio reidentificam a pessoa.
+  Ele recebe o mesmo tratamento do nome: fica fora de log, aparece só onde a
+  tabela do §3.2 manda, e a retenção do §3.4 vale para ele. A base proposta é a
   **execução de contrato** com a loja e o cumprimento de obrigação legal de
   informar o fornecedor ao consumidor (LGPD art. 7º, II e V).
 - A finalidade é identificar o vendedor ao comprador, no checkout e no recibo, e
@@ -240,7 +262,13 @@ web não remontam a máscara.
     com captura de log, e o teste exige que nenhum valor contenha o documento,
     nem com nem sem pontuação.
 - **Erro**: a resposta de validação diz qual regra falhou (`document_invalid`,
-  `document_type_mismatch`), nunca ecoa o valor enviado.
+  `document_type_mismatch`) e nunca ecoa o valor enviado.
+  - O 422 padrão do FastAPI ecoa o valor (`input`) quando o pydantic recusa o
+    campo. Por isso o campo do documento é `str` **sem restrição de forma no
+    pydantic** (nem tamanho, nem padrão): só o limite de tamanho do corpo. Toda a
+    validação fica no código, que responde `document_invalid` sem o valor.
+  - O teste de log e de resposta cobre também o caminho do 422: um corpo com o
+    documento num campo de tipo errado não pode devolver o documento.
 - **E-mail**: a fila (`email_outbox`, 0049) recebe só `seller_legal_name` e
   `seller_document_display`, já mascarado. **O CPF inteiro nunca entra na fila**,
   porque a fila é persistida e reenviada.
@@ -310,5 +338,10 @@ Cada passo é uma Issue e um PR, e nenhum vai a produção sem OK do Rodrigo:
 ## Fora deste desenho
 
 - Leitura automática do KYC do Stripe ou do Asaas (`source` já reservado).
+- **Caso futuro: subconta Asaas.** Criar a subconta da loja no Asaas pede o
+  `cpfCnpj` inteiro. Como o Sell não guarda o CPF, o fluxo de criação **pede o
+  documento de novo** à loja, valida, repassa ao Asaas na mesma requisição e
+  descarta, sem gravar no Sell nem em log. Vale o mesmo cuidado do 422 e do log
+  desta seção. O CNPJ pode ser lido da tabela.
 - País diferente de BR e documento estrangeiro.
 - Nota fiscal.
