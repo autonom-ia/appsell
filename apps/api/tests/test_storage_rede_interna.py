@@ -146,8 +146,6 @@ elif comando == "service update":
         nova["TaskTemplate"]["ContainerSpec"]["Env"] = []
     if falha("ROLLBACK_START_FIRST", nome):
         nova["RollbackConfig"]["Order"] = "start-first"
-    if falha("ROLLBACK_STOP_FIRST", nome):
-        nova["RollbackConfig"]["Order"] = "stop-first"
     if falha("TROCA_NOME", nome):
         nova["TaskTemplate"]["ContainerSpec"]["Env"][0] = "OUTRA_VARIAVEL=x"
     servico["ler_env_falha"] = falha("FALHA_LEITURA_ENV", nome)
@@ -449,7 +447,8 @@ def test_rede_poe_start_first_na_api_e_stop_first_no_storage(pasta: Path) -> Non
     # A api troca sem derrubar a loja; o MinIO nunca tem duas tasks no volume.
     assert rodar(pasta, "rede").returncode == 0
     assert spec(pasta, API)["UpdateConfig"] == {"Order": "start-first"}
-    assert spec(pasta, API)["RollbackConfig"] == {"Order": "start-first"}
+    # O rollback order da api fica o da spec: mudar é outra decisão.
+    assert spec(pasta, API)["RollbackConfig"] == {"Order": "stop-first"}
     assert spec(pasta, STORAGE)["UpdateConfig"] == {"Order": "stop-first"}
     assert spec(pasta, STORAGE)["RollbackConfig"] == {"Order": "stop-first"}
     assert spec(pasta, WORKER)["UpdateConfig"] == {"Order": "stop-first"}
@@ -459,14 +458,13 @@ def test_env_poe_start_first_na_api(pasta: Path) -> None:
     assert rodar(pasta, "rede").returncode == 0
     assert rodar(pasta, "env").returncode == 0
     assert spec(pasta, API)["UpdateConfig"] == {"Order": "start-first"}
-    assert spec(pasta, API)["RollbackConfig"] == {"Order": "start-first"}
+    assert spec(pasta, API)["RollbackConfig"] == {"Order": "stop-first"}
 
 
-def test_api_com_rollback_stop_first_na_spec_nova_nao_volta(pasta: Path) -> None:
-    # A volta da api usa a ordem da spec atual; stop-first ali derrubaria a loja.
-    resultado = rodar(pasta, "rede", SEM_STORAGE=API, ROLLBACK_STOP_FIRST=API)
+def test_api_com_rollback_order_diferente_da_spec_nao_volta(pasta: Path) -> None:
+    resultado = rodar(pasta, "rede", SEM_STORAGE=API, ROLLBACK_START_FIRST=API)
     assert resultado.returncode == 1
-    assert "rollback order não é start-first" in resultado.stderr
+    assert "rollback order não é stop-first" in resultado.stderr
     assert rollbacks(pasta) == []
 
 
