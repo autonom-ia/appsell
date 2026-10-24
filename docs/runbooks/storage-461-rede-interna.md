@@ -177,9 +177,11 @@ fica só no `storage` (MinIO de instância única, um volume).
 
 O **rollback** da api continua `stop-first`, como na spec de produção
 (`update=start-first rollback=stop-first`, lido em 24/10/2026 às 07:55:58).
-Um rollback da api, portanto, para a loja pelo tempo da troca, como a etapa 2
-mediu. Trocar o rollback order para `start-first` é outra decisão, com
-justificativa e OK próprios do Rodrigo.
+Um rollback da api, portanto, **para a loja inteira** pelo tempo da troca: ~22 s
+de 500 na etapa 2, e até 330 s (`--stop-grace-period`) com e-mail em lease. É o
+custo de todo rollback que toca a api, e ele é anunciado antes de executar.
+Trocar o rollback order para `start-first` é outra decisão, com justificativa e
+OK próprios do Rodrigo.
 
 **Outros clientes do MinIO do Sell.** O backup do banco
 (`deploy/easypanel-native/backup/`, `APPSELL_BACKUP_S3_ENDPOINT`), o
@@ -325,6 +327,10 @@ runbook do #477 (probe direto e três leituras do `/health/ready`, todas com
 `"storage":true`) e o smoke da Hub2You igual à linha de base.
 
 ### Rollback da etapa 4 (≈ 1–2 min)
+
+**Custo do rollback da api:** a loja inteira para durante a troca. Foram ~22 s de 500
+na etapa 2, e pode chegar a 330 s (`--stop-grace-period`) com e-mail em lease.
+Anunciar isso antes de executar, e medir com o laço de pausa.
 
 Com o `ts` impresso pela escrita:
 
@@ -487,6 +493,10 @@ não é tocado.
 - o log do Traefik, nos 5 minutos seguintes, sem `HEAD /appsell-` vindo de
   `172.18.0.1`, porque o controle deixou de passar por ele;
 - smoke da Hub2You igual à linha de base.
+
+**Custo do rollback da api:** a loja inteira para durante a troca. Foram ~22 s de 500
+na etapa 2, e pode chegar a 330 s (`--stop-grace-period`) com e-mail em lease.
+Anunciar isso antes de executar, e medir com o laço de pausa.
 
 **Rollback da etapa 6 (≈ 1 min por serviço):** com o `ts` impresso pelo
 `env`, o mesmo `desfazer` da etapa 4, com as mesmas três saídas (nada a
