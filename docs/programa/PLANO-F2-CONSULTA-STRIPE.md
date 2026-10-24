@@ -535,3 +535,60 @@ endpoint passaria a falhar sem fim, o mesmo endpoint que entrega o
 
 O estorno do Sell é tratado pelo F2 (autonom-ia/autonomia-financial#152), que
 não grava no razão.
+
+---
+
+## Anexo — rascunho da Issue "redirect no purchase.approved" (não abrir sem OK)
+
+**Repositório:** autonom-ia/autonomia-financial
+
+**Título:** Entrega do checkout externo segue redirect e pode reenviar o POST assinado para outro host
+
+**Corpo:**
+
+Refs autonom-ia/autonomia-financial#153 (revisão da Qualidade, comentário 6383591960) · autonom-ia/appsell#487
+
+### Problema
+
+`DirectExternalCheckoutFulfillmentTransport.send` chama `fetch` sem a opção
+`redirect` (`src/external-checkout-fulfillment.ts:23-33`). No Node, o padrão é
+`redirect: "follow"`. Se o destino responder 307 ou 308, o `fetch` repete o
+POST com o mesmo corpo e os mesmos cabeçalhos para o `Location`. Isso inclui
+`x-external-checkout-webhook-signature`, `buyer_email` e `buyer_identity_sub`.
+Um destino comprometido ou mal configurado pode, assim, mandar um evento
+assinado e dados do comprador para um host fora da allowlist.
+
+Onde o caminho é usado:
+- `purchase.approved`, em `src/financial-service.ts:4541`, pela
+  `LambdaExternalCheckoutFulfillmentTransport`;
+- `stripeBridge`, action `sendSignedExternalCheckoutFulfillment`, em
+  `src/stripe-bridge.ts:81-86`. Essa action roda a mesma
+  `DirectExternalCheckoutFulfillmentTransport` fora da VPC.
+
+A allowlist da bridge (`EXTERNAL_CHECKOUT_FULFILLMENT_ALLOWED_ORIGINS`,
+`src/stripe-bridge.ts:101-110`) confere só a URL inicial. O destino do
+redirect não passa por ela.
+
+### Proposta
+
+Usar `redirect: "error"`, ou `"manual"` tratando o 3xx como falha, na
+`DirectExternalCheckoutFulfillmentTransport`.
+
+### Impacto a analisar antes do PR (muda código existente)
+
+- Se o endpoint do Sell responde 3xx hoje em algum caso (barra final, http →
+  https, host canônico), o `purchase.approved` passa a falhar. Com isso o
+  webhook Stripe devolve 503 (`src/financial-service.ts:4547-4558`) e a Stripe
+  reentrega. Confirmar, só leitura, que o
+  `fulfillmentWebhookUrl` gerado pelo Sell
+  (`app/api/checkout/stripe/create-session/route.ts:158`) responde 2xx sem
+  redirect.
+- Conferir se outros chamadores usam a classe. Hoje são o `financial-service`
+  e o `stripe-bridge`.
+- Escrever um teste com um servidor local que responde 307, contando as
+  conexões.
+
+### Fora desta Issue
+
+O envio do `purchase.refunded` do F2 v2 já nasce com `redirect: "manual"`
+numa Lambda própria (§3.4 (h)).
