@@ -19,8 +19,14 @@
 #
 # Uso:
 #   harden-pdf-sandbox.sh                       # seco: confere e imprime o comando
+#   harden-pdf-sandbox.sh --provar              # só as duas provas abaixo, sem update
 #   harden-pdf-sandbox.sh --aplicar             # só com OK do Rodrigo
 #   harden-pdf-sandbox.sh --rollback <backup>   # volta à spec do backup
+#
+# --provar e --aplicar pedem PDF_SANDBOX_PROVA_PDF: o caminho do
+# output/pdf/codex/01-o-que-e-codex.pdf do repositório, levado ao host com
+# `git show <sha>:output/pdf/codex/01-o-que-e-codex.pdf`. O sha256 dele está
+# fixo abaixo; outro arquivo é recusado antes de qualquer coisa.
 #
 # Nunca mexe em env nem imagem. A ordem é sempre stop-first: start-first no
 # pdf-sandbox já derrubou a produção (incidente ee194bf). Os nomes vêm do
@@ -38,6 +44,10 @@ pids=64
 memoria_minima=3221225472
 prazo_segundos=180
 verdes_seguidos=3
+trabalhador="${PDF_SANDBOX_WORKER:-sell-autonomia_asset-worker}"
+prova_pdf="${PDF_SANDBOX_PROVA_PDF:-}"
+prova_sha256=1a182ac49637d0b6ae9bf105fd8eccdfd651d75e920aaa2d65869b826878f887
+prova_paginas=1
 mode="${1:-seco}"
 
 fmt() { sudo -n docker service inspect "$service" --format "$1"; }
@@ -150,6 +160,99 @@ container_endurecido() {
   contem "$(sudo -n docker inspect "$cid" --format '{{range .Mounts}}{{.Type}}:{{.Destination}} {{end}}')" tmpfs:/tmp || { echo "sem tmpfs em /tmp"; return 1; }
 }
 
+# Prova (a): o worker manda um PDF conhecido ao sandbox pelo mesmo cliente que
+# usa nos uploads (prepared_pdf_file, o mesmo de storage_worker.py) e recebe as
+# páginas de volta. Não toca banco, storage nem produto: o PDF vai pelo stdin,
+# fica no /tmp do worker (tmpfs) e é apagado no fim.
+#
+# Como todo trabalho de PDF, ela recicla o sandbox: com
+# APPSELL_PDF_SANDBOX_RECYCLE_AFTER_JOB=true o processo sai com 77 depois de
+# responder (pdf_sandbox_service.py), e o Swarm sobe uma task nova
+# (RestartPolicy on-failure). Por isso quem chama espera convergir de novo.
+prova_pdf_pelo_worker() {
+  local cid saida erro
+  test -n "$prova_pdf" || { echo "falta PDF_SANDBOX_PROVA_PDF"; return 1; }
+  test -f "$prova_pdf" || { echo "PDF de prova ausente: $prova_pdf"; return 1; }
+  [ "$(sha256sum "$prova_pdf" | cut -d' ' -f1)" = "$prova_sha256" ] \
+    || { echo "PDF de prova não é o do repositório"; return 1; }
+  cid="$(container_do "$trabalhador")"
+  test -n "$cid" || { echo "sem contêiner do $trabalhador"; return 1; }
+  erro="$(mktemp)"
+  # O PDF é lido pelo usuário que roda o script; o sudo é só do docker.
+  # shellcheck disable=SC2024
+  if ! saida="$(sudo -n docker exec -i "$cid" python -I -c '
+import json, shutil, sys, tempfile
+from pathlib import Path
+from appsell_api.pdf_derivatives import prepared_pdf_file
+pasta = Path(tempfile.mkdtemp(prefix="prova-478-"))
+try:
+    origem = pasta / "prova.pdf"
+    origem.write_bytes(sys.stdin.buffer.read())
+    with prepared_pdf_file(origem) as arquivo:
+        print(json.dumps({"page_count": arquivo.page_count, "pages": len(arquivo.pages),
+                          "source_sha256": arquivo.source_sha256_hex}, sort_keys=True))
+finally:
+    shutil.rmtree(pasta, ignore_errors=True)
+' < "$prova_pdf" 2>"$erro")"; then
+    echo "prova pelo worker: o worker não processou o PDF: $(tail -c 300 "$erro")"
+    rm -f -- "$erro"
+    return 1
+  fi
+  rm -f -- "$erro"
+  saida="${saida##*$'\n'}"
+  echo "prova pelo worker: $saida"
+  python3 -I -c '
+import json, sys
+r = json.loads(sys.argv[1])
+sys.exit(0 if r["page_count"] == int(sys.argv[3]) and r["pages"] >= 1 and r["source_sha256"] == sys.argv[2] else 1)
+' "$saida" "$prova_sha256" "$prova_paginas" || { echo "prova pelo worker: resultado diferente do esperado ($prova_paginas página, $prova_sha256)"; return 1; }
+}
+
+# Prova (b): de dentro do sandbox, nenhuma saída para fora nem para o host, e o
+# socket interno responde. Só ENETUNREACH ou EHOSTUNREACH contam como sem
+# saída: recusa (ECONNREFUSED) quer dizer que o pacote chegou ao destino, e
+# timeout quer dizer que há rota.
+prova_sandbox_isolado() {
+  local cid
+  cid="$(container_do "$service")"
+  test -n "$cid" || { echo "sem contêiner do $service"; return 1; }
+  sudo -n docker exec "$cid" python -I -c '
+import errno, json, socket, sys
+falhas = []
+for alvo in (("1.1.1.1", 443), ("8.8.8.8", 53), ("172.17.0.1", 80)):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(3)
+    try:
+        s.connect(alvo)
+        falhas.append("%s:%d conectou" % alvo)
+    except socket.timeout:
+        falhas.append("%s:%d timeout (há rota)" % alvo)
+    except OSError as falha:
+        if falha.errno not in (errno.ENETUNREACH, errno.EHOSTUNREACH):
+            falhas.append("%s:%d %s" % (alvo[0], alvo[1], errno.errorcode.get(falha.errno, falha.errno)))
+    finally:
+        s.close()
+try:
+    u = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    u.settimeout(5)
+    u.connect("/run/appsell-pdf/pdf.sock")
+    u.sendall(b"GET /health HTTP/1.0\r\nHost: pdf-sandbox\r\n\r\n")
+    dados = b""
+    while True:
+        parte = u.recv(4096)
+        if not parte:
+            break
+        dados += parte
+    cabeca, _, corpo = dados.partition(b"\r\n\r\n")
+    if cabeca.split(b" ", 2)[1] != b"200" or json.loads(corpo) != {"status": "ok"}:
+        falhas.append("socket interno sem 200 ok")
+except (OSError, ValueError, IndexError) as falha:
+    falhas.append("socket interno: %s" % falha)
+print("prova do isolamento: " + ("; ".join(falhas) if falhas else "sem saída para fora e para o host, socket 200 ok"))
+sys.exit(1 if falhas else 0)
+'
+}
+
 # Volta à spec do backup, e só se for seguro. Se o update nem foi aceito, a
 # spec continua igual ao backup e a PreviousSpec é a do deploy anterior: um
 # rollback ali voltaria para uma spec velha.
@@ -208,6 +311,14 @@ conferir() {
 }
 
 case "$mode" in
+  --provar)
+    # O isolamento antes do PDF: a prova do PDF recicla a task do sandbox.
+    falhou=0
+    prova_sandbox_isolado || falhou=1
+    prova_pdf_pelo_worker || falhou=1
+    convergiu || { echo "o sandbox não voltou depois da reciclagem" >&2; falhou=1; }
+    exit "$falhou"
+    ;;
   seco|--aplicar)
     conferir
     comando=(sudo -n docker service update --detach=false --update-order stop-first
@@ -217,6 +328,11 @@ case "$mode" in
       "$service")
     printf 'comando:'; printf ' %q' "${comando[@]}"; echo
     [ "$mode" = "--aplicar" ] || { echo "seco: nada aplicado"; exit 0; }
+
+    # Linha de base, antes de qualquer mudança: se o PDF já não passa agora, o
+    # problema é anterior ao isolamento e nada é aplicado.
+    prova_pdf_pelo_worker || { echo "ABORT: a prova pelo worker já falha antes do isolamento; problema anterior, nada aplicado" >&2; exit 1; }
+    convergiu || { echo "ABORT: o sandbox não voltou da reciclagem da linha de base; nada aplicado" >&2; exit 1; }
 
     backup="/tmp/pdf-sandbox_spec_$(date -u +%Y%m%dT%H%M%SZ).json"
     # A spec tem as variáveis de ambiente: o arquivo nasce 0600, do usuário que
@@ -253,9 +369,14 @@ case "$mode" in
     [ "$env_antes" = "$env_depois" ] || { echo "ABORT: env $env_antes -> $env_depois" >&2; exit 1; }
     convergiu || { echo "ABORT: sandbox não respondeu $verdes_seguidos vezes seguidas em ${prazo_segundos}s" >&2; exit 1; }
     container_endurecido || { echo "ABORT: contêiner não ficou endurecido" >&2; exit 1; }
+    prova_sandbox_isolado || { echo "ABORT: o sandbox não ficou isolado" >&2; exit 1; }
+    prova_pdf_pelo_worker || { echo "ABORT: o worker deixou de processar PDF pelo sandbox" >&2; exit 1; }
+    # A prova do PDF reciclou a task: a nova também tem de subir endurecida.
+    convergiu || { echo "ABORT: o sandbox não voltou da reciclagem depois do isolamento" >&2; exit 1; }
+    container_endurecido || { echo "ABORT: a task reciclada não ficou endurecida" >&2; exit 1; }
     estado
     concluido=1
-    echo "aplicado; conferir na loja: PDF novo numa aula de teste e leitura pelo comprador"
+    echo "aplicado; depois, só observar no log do $trabalhador o próximo PDF de usuário (asset_worker_storage_retry com PdfSandboxUnavailable é falha)"
     ;;
   --rollback)
     backup="${2:?uso: --rollback <backup.json>}"
@@ -266,7 +387,7 @@ case "$mode" in
     # `docker network rm sell-autonomia_pdf-sandbox-isolada`, com OK.
     ;;
   *)
-    echo "uso: $0 [--aplicar | --rollback <backup.json>]" >&2
+    echo "uso: $0 [--provar | --aplicar | --rollback <backup.json>]" >&2
     exit 2
     ;;
 esac
