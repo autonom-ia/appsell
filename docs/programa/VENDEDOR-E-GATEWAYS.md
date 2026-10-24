@@ -47,9 +47,11 @@ gravado por loja em `seller_organization`
 
 No Financial, a credencial do gateway também é **por operador**:
 
-- `financial.company_gateways` tem uma linha por operador, provedor e modo
-  (`UNIQUE (operator_id, provider, mode)`), com o **nome** do parâmetro SSM da
-  chave secreta e o `account_id` (`database/migrations/002_payment_gateways.sql:14-33`).
+- `financial.company_gateways` (`database/migrations/002_payment_gateways.sql:14-33`)
+  guarda o **nome** do parâmetro SSM da chave secreta e o `account_id`. Cada
+  operador tem **um gateway ativo** por provedor e modo: o índice único parcial
+  `uq_financial_active_company_gateway_mode`
+  (`020_bind_one_time_credit_gateway.sql:82-87`) substituiu o `UNIQUE` da 002.
 - O nome do parâmetro é montado com o `operatorId`
   (`gatewaySecretParameterName`, `src/secret-store.ts:87`; uso em
   `src/financial-service.ts:787-791`).
@@ -76,6 +78,16 @@ usa.**
   (`APPSELL_FINANCIAL_SHARED_OPERATOR_ID`). Sem `connect.accountId`, toda loja
   nova cobraria na conta do gateway desse único operador. Por isso a flag do
   #469 fica vazia até a #440 mandar a conta conectada da loja.
+
+**Verificado pela Orquestração na Stripe** (24/10/2026, só leitura): os dois
+operadores live usam a mesma chave de plataforma.
+
+- O operador `13a30647` cobra na conta conectada "Hub2You LTDA", por cobrança
+  direta sem comissão. Nele, a loja **já é a vendedora de fato**.
+- O operador `bf9daec0` cobra na conta da Autonom.ia.
+
+Os caminhos e a proposta de unificação estão em `CONTA-CONECTADA-DA-LOJA.md`. O
+texto abaixo é a leitura de antes da verificação.
 
 **O código não responde qual é o caso da Hub2You hoje: só a produção.** Não li
 dado de produção. A leitura que resolve, só de nomes, sem segredo nem
