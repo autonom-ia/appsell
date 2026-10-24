@@ -62,6 +62,7 @@ Restrições:
   - `seller_editor` e `seller_support` recebem `42501`.
 - `app_private.update_seller_legal_identity(actor, seller, legal_name,
   document_type, document_number, expected_revision, request_id)`:
+  - Exige a capability `seller.settings.update` e o contexto da loja.
   - Só `seller_owner`, conferido no banco com
     `resolve_seller_membership_role(p_seller) = 'seller_owner'`, como no #469.
   - Advisory lock por loja; confere a `expected_revision`; valida; grava.
@@ -172,8 +173,7 @@ Qualquer outro caractere recusa o valor; não é descartado em silêncio.
 | Superadmin da plataforma (inspeção) | inteiro | mascarado |
 | Log, métrica, trace, mensagem de erro | **nunca** | **nunca** |
 
-Máscara do CPF: `***.456.789-**`, mostrando só os 6 dígitos do meio. É o padrão
-de exibição de CPF adotado em publicações do governo federal desde 2019. Quem
+Máscara do CPF: `***.456.789-**`, mostrando só os 6 dígitos do meio. Quem
 calcula a máscara é uma única função no banco (`document_display`); a API e o
 web não remontam a máscara.
 

@@ -183,9 +183,9 @@ ainda.
    A recomendação é ler do KYC do provedor e guardar só o necessário para exibir,
    com o documento mascarado.
 
-   > **Pergunta para o Rodrigo:** o Sell pode guardar o nome legal e o CPF/CNPJ
-   > da loja (dado pessoal quando for CPF), ou deve só exibir o que vier do
-   > provedor, sem armazenar?
+   > **Autorizado pelo Rodrigo** (24/10/2026, no #487: "2. autorizo"): o Sell
+   > guarda nome ou razão social, CPF/CNPJ e país da loja. O desenho está em
+   > `IDENTIDADE-LEGAL-DA-LOJA.md`.
 4. **Tabela de venda** com o vendedor de registro explícito: loja, gateway,
    conta conectada, valor bruto, comissão, moeda, estado (pago, estornado,
    contestado). Ela serve à conciliação (#147/#459) e ao recibo.
