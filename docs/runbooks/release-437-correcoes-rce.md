@@ -23,7 +23,8 @@ O plano anterior partia de `PRODUCTION_CURRENT.md` (web e api em `68ffd7b`,
   foram atualizadas em 16/10 às 21:12 UTC, sem registro.
 - O web roda **Next 16.3.3** (lido no contêiner), que ainda tem 3 RCE
   críticas, duas sem autenticação. A correção é a #449 (PR #455): next 16.4.2,
-  nodemailer 10.0.10 (fixada no #455), sharp ≥0.35.5.
+  nodemailer 10.1.7 (fixada no #488, depois dos 3 GHSA do addressparser de
+  23/10/2026; era 10.0.10 no #455), sharp ≥0.35.5.
 - **O host guarda uma imagem só por serviço.** A anterior do web (`b387252`)
   não existe mais. Sem cuidado, não há para onde voltar.
 
@@ -304,7 +305,7 @@ sudo -n docker image inspect "easypanel/sell-autonomia/web:$SHA" --format '{{ind
 sudo -n docker run --rm --entrypoint node "easypanel/sell-autonomia/web:$SHA" -e 'console.log(require("next/package.json").version)'      # 16.4.2
 sudo -n docker run --rm --entrypoint sh "easypanel/sell-autonomia/web:$SHA" -c 'ls node_modules/.pnpm | grep -E "^sharp@"'                  # sharp@0.35.5…
 sudo -n docker run --rm --entrypoint sh "easypanel/sell-autonomia/web:$SHA" -c \
-  "grep -rlF 'SMTP handshake finished' .next/server/chunks | grep -v '\.map\$' | xargs -r grep -cF '\"10.0.10\"'"                   # 1 (o nodemailer vai embutido no bundle)
+  "grep -rlF 'SMTP handshake finished' .next/server/chunks | grep -v '\.map\$' | xargs -r grep -cF '\"10.1.7\"'"                   # 1 (o nodemailer vai embutido no bundle)
 sudo -n docker image inspect easypanel/sell-autonomia/web:rollback-437-fa13a78 --format '{{.Id}}'                                          # ainda = ROLLBACK_ID
 ```
 
@@ -312,7 +313,7 @@ sudo -n docker image inspect easypanel/sell-autonomia/web:rollback-437-fa13a78 -
 - o build falhou ou foi morto por memória;
 - memória `available` abaixo de 4 GiB em qualquer momento;
 - o label difere do SHA;
-- next ≠ 16.4.2, sharp < 0.35.5, ou o chunk do nodemailer sem `"10.0.10"`
+- next ≠ 16.4.2, sharp < 0.35.5, ou o chunk do nodemailer sem `"10.1.7"`
   (contagem 0, saída vazia ou mais de um chunk);
 - a imagem de rollback sumiu.
 
