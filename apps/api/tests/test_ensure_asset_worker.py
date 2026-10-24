@@ -94,6 +94,7 @@ case "$1 $2" in
       *) exit 1 ;;
     esac ;;
   "network inspect")
+    echo "$3" >> "$PASTA/redes-inspecionadas.txt"
     case "$REDE" in
       ausente) echo "Error: No such network: $3" >&2; exit 1 ;;
       certa) echo "$REDE_DO_STORAGE overlay true swarm" ;;
@@ -123,7 +124,7 @@ def pasta(tmp_path: Path) -> Path:
 
 
 def rodar(
-    pasta: Path, *, rede: str, worker_existe: bool = False
+    pasta: Path, *, rede: str, worker_existe: bool = False, extra: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
     ambiente = {
         "PATH": f"{pasta / 'bin'}:{os.environ['PATH']}",
@@ -133,6 +134,7 @@ def rodar(
         "REDE_DO_CLAMAV": _REDE_DO_CLAMAV,
         "REDE_DO_STORAGE": _REDE_DO_STORAGE,
         "CONFIRM_APPSSELL_ASSET_WORKER": "appsell-asset-worker-v1",
+        **(extra or {}),
     }
     return subprocess.run(  # noqa: S603
         [str(_BASH), str(_SCRIPT)], env=ambiente, capture_output=True, text=True, check=False
@@ -193,3 +195,13 @@ def test_rodar_de_novo_nao_cria_outro_worker(pasta: Path) -> None:
     assert resultado.returncode == 1
     assert "worker service already exists" in resultado.stderr
     assert not (pasta / "create.txt").exists()
+
+
+@pytest.mark.parametrize(
+    "variavel", ["APPSSELL_STORAGE_INTERNAL_NETWORK", "APPSELL_STORAGE_INTERNAL_NETWORK"]
+)
+def test_a_rede_do_storage_nao_aceita_override_pelo_ambiente(pasta: Path, variavel: str) -> None:
+    resultado = rodar(pasta, rede="certa", extra={variavel: "outra-rede"})
+    assert resultado.returncode == 0, resultado.stderr
+    inspecionadas = (pasta / "redes-inspecionadas.txt").read_text().split()
+    assert inspecionadas == ["sell-storage-internal"]
