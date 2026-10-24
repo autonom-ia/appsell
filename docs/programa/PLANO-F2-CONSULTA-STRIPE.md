@@ -62,9 +62,12 @@ criaram a Checkout Session do pedido. É o que o Financial já faz em
 Consequências:
 
 - não existe chave nova, e não é preciso chave da Hub2You;
-- o gateway usado é imutável depois do uso (trigger
-  `guard_bound_company_gateway_mutation`, migration 020:91-118). O nome do
-  parâmetro SSM não muda; a rotação troca só o valor;
+- correção (24/10, achada no código): a trigger
+  `guard_bound_company_gateway_mutation` (migration 020:91-118) só protege
+  gateways ligados a `one_time_credit_orders`, **não** os de checkout externo,
+  e não cobre `secret_key_parameter_name`. O worker lê o gateway atual a cada
+  consulta; se o nome mudar, a lista exata da bridge recusa até um PR
+  acrescentar o nome novo;
 - `company_gateways` é **só lida** (SELECT). Não há escrita, nem chamada a
   `resolveActiveStripeGateway` ou `stripeEventMatchesGateway`;
 - pedido sem `companyGatewayId`, com gateway inexistente, de outro operador ou
