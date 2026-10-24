@@ -43,8 +43,9 @@ Plataforma. Uma reserva vale por 7 dias sem PR aberto.
 
 | Número | Trilha | Issue | Estado |
 |---|---|---|---|
-| `0062` | 2 · Dinheiro | #147 | reservada em 23/10 |
-| `0063` | 2 · Dinheiro | #382 | reservada em 23/10 |
-| `0064` | — | — | livre |
+| `0062` | 2 · Dinheiro | #465 | mergeada (#466) |
+| `0063` | 2 · Dinheiro | #147 | PR #459 |
+| `0064` | 2 · Dinheiro | #382 | PR #469 |
+| `0065` | 2 · Dinheiro | #439 (identidade legal da loja) | reservada em 24/10 |
 
-Head atual da `main`: `0061_o_atraso_alcanca_o_aluno`.
+Head atual da `main`: `0062_mapping_do_produto_novo`.
