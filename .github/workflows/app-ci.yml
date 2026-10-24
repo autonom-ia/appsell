@@ -270,6 +270,7 @@ jobs:
           uv run --project apps/api mypy --config-file apps/api/pyproject.toml apps/api/src apps/api/tests
           uv run --project apps/api pytest \
             apps/api/tests/test_config.py \
+            apps/api/tests/test_config_storage_internal_http.py \
             apps/api/tests/test_health.py \
             apps/api/tests/test_capacity_telemetry.py \
             apps/api/tests/test_log_da_api.py \
