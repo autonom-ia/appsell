@@ -19,7 +19,7 @@
 | SHA do **api** | `2759090`, ID `sha256:0e126a1a5b03…`, lido do host em 24/10/2026 |
 | SHA do **asset-worker** | `2759090`, a mesma imagem da api |
 | SHA do **pdf-sandbox** | `d5e00ec`, ID `sha256:bc88217ab7b5…` |
-| Banco | head registrado **`0061_o_atraso_alcanca_o_aluno`** (04/09). **Não relido** no release de 24/10, que é só do web e não tem migration. A `0062` (#459) está na `main` e não foi aplicada |
+| Banco | head registrado **`0061_o_atraso_alcanca_o_aluno`** (04/09). **Não relido** no release de 24/10, que é só do web e não tem migration. A `0062_mapping_do_produto_novo` (#466) e a `0063_conciliacao_do_acesso` (#459) estão na `main` e não foram aplicadas |
 
 **Release de 2026-10-24, só o `web`: `2d2e64f` (#437, #449; PRs #455, #488).**
 Fecha as três RCE críticas do Next 16.3.3 (GHSA-2464-fhr4-w9xw,
