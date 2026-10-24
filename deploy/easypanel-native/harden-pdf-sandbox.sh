@@ -179,11 +179,11 @@ prova_pdf_pelo_worker() {
   test -n "$cid" || { echo "sem contêiner do $trabalhador"; return 1; }
   erro="$(mktemp)"
   # O PDF é lido pelo usuário que roda o script; o sudo é só do docker.
-  # Sem `-I` aqui: ele ignora o PYTHONPATH da imagem, e é por ele que o worker
-  # acha o appsell_api (o pacote não é instalado no .venv). A prova roda com o
-  # mesmo ambiente do worker, de dentro do contêiner dele.
+  # `-P` e não `-I`: o `-I` ignora o PYTHONPATH da imagem, e é por ele que o
+  # worker acha o appsell_api (o pacote não é instalado no .venv). O `-P` só
+  # tira o diretório atual do sys.path. A prova roda com o ambiente do worker.
   # shellcheck disable=SC2024
-  if ! saida="$(sudo -n docker exec -i "$cid" python -c '
+  if ! saida="$(sudo -n docker exec -i "$cid" python -P -c '
 import json, shutil, sys, tempfile
 from pathlib import Path
 from appsell_api.pdf_derivatives import prepared_pdf_file
@@ -192,8 +192,8 @@ try:
     origem = pasta / "prova.pdf"
     origem.write_bytes(sys.stdin.buffer.read())
     with prepared_pdf_file(origem) as arquivo:
-        print(json.dumps({"page_count": arquivo.page_count, "pages": len(arquivo.pages),
-                          "source_sha256": arquivo.source_sha256_hex}, sort_keys=True))
+        print("prova-478 " + json.dumps({"page_count": arquivo.page_count, "pages": len(arquivo.pages),
+                          "source_sha256": arquivo.source_sha256_hex}, sort_keys=True), flush=True)
 finally:
     shutil.rmtree(pasta, ignore_errors=True)
 ' < "$prova_pdf" 2>"$erro")"; then
@@ -202,7 +202,13 @@ finally:
     return 1
   fi
   rm -f -- "$erro"
-  saida="${saida##*$'\n'}"
+  # Só a linha marcada é o resultado: um log no stdout não a confunde.
+  local linha resultado=""
+  while IFS= read -r linha; do
+    case "$linha" in "prova-478 "*) resultado="${linha#prova-478 }" ;; esac
+  done <<<"$saida"
+  saida="$resultado"
+  test -n "$saida" || { echo "prova pelo worker: sem a linha de resultado"; return 1; }
   echo "prova pelo worker: $saida"
   python3 -I -c '
 import json, sys
