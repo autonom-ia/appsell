@@ -1,7 +1,9 @@
 # Plano — subir para produção as correções de segurança do `web` (#437, #449)
 
-> **Estado: plano.** Fase 0 executada em 23/10/2026, só leitura, com OK do
-> Rodrigo. Da Fase 1 em diante, nada roda sem novo OK explícito dele.
+> **Estado: executado em 24/10/2026.** O web subiu em `2d2e64f` às 16:06 UTC,
+> com o OK do Rodrigo repassado pela Orquestração. O registro está no
+> [#437](https://github.com/autonom-ia/appsell/issues/437#issuecomment-6386432353).
+> O plano fica como roteiro do próximo release do web.
 > Base: [`PRODUCTION_RELEASE_APPSSELL.md`](PRODUCTION_RELEASE_APPSSELL.md).
 > Revisão: ressalvas da Orquestração e da Qualidade incorporadas. Nenhuma
 > remoção por curinga; toda variável usada no host tem guarda `${VAR:?}`.
@@ -213,8 +215,32 @@ sudo -n docker service inspect sell-autonomia_web --format '{{json .Spec.TaskTem
   > /home/claudete/releases/437/web.env-names.antes      # só nomes, nunca valores
 ```
 
-**Abort:** se o `inspect` não devolver esse ID e o label `fa13a78`, parar. O
-release não segue sem rollback preservado.
+**A tag não sobrevive à madrugada.** O host tem o cron
+`/etc/cron.d/docker-image-prune`:
+`39 0 * * * root docker image prune -af --filter "until=24h"`, lido em
+24/10/2026. Ele apaga, às 00:39, toda imagem que nenhum contêiner usa e que
+foi *criada* há mais de 24 h, com tag ou sem. Depois da troca, a imagem antiga
+e a tag de volta ficam sem contêiner e somem na primeira madrugada. O cron é do
+host compartilhado e não é mexido. Por isso a volta também fica guardada em
+arquivo:
+
+```sh
+sudo -n docker save -o /home/claudete/releases/437/web-fa13a78.tar \
+  easypanel/sell-autonomia/web:fa13a78 easypanel/sell-autonomia/web:rollback-437-fa13a78
+sudo -n chown claudete: /home/claudete/releases/437/web-fa13a78.tar
+(cd /home/claudete/releases/437 && sha256sum web-fa13a78.tar | tee web-fa13a78.tar.sha256)
+# prova do conteúdo sem carregar: as duas tags e a config com o ID de produção
+tar -xOf /home/claudete/releases/437/web-fa13a78.tar manifest.json \
+  | python3 -c 'import json,sys;m=json.load(sys.stdin)[0];print(m["RepoTags"],m["Config"])'
+# esperado: as duas tags e blobs/sha256/1b71ec566e8c3a5c9e6885960d8691fca092ed117fc50383569641bc63beba86
+```
+
+Em 24/10 o arquivo teve 305851904 B, levou 37 s e ficou com sha256
+`fadcf96cdb4772854649b4c4bc48fbdea9cba19db335d7dd6fb8d1f2d6983f07`.
+
+**Abort:** se o `inspect` não devolver esse ID e o label `fa13a78`, se o
+`save` falhar, ou se o manifest não trouxer as duas tags e essa config, parar.
+O release não segue sem rollback preservado.
 
 Desvio declarado no pedido de OK: estes arquivos ficam em
 `/home/claudete/releases/437/*.antes`, sem timestamp, e não no padrão
@@ -395,25 +421,24 @@ Validação, nesta ordem:
 > sobe em até **24 h**. Se isso não for possível, o bloqueio do Traefik fica
 > ativo até o release.
 
-Antes de confiar no `service rollback`, conferir para onde ele volta:
+**Não usar `docker service rollback`.** Ele volta para a `PreviousSpec`, cuja
+imagem o prune das 00:39 pode já ter apagado. A volta é sempre pela tag, e a
+tag vem do arquivo quando a imagem não existe mais:
 
 ```sh
-sudo -n docker service inspect sell-autonomia_web --format '{{.PreviousSpec.TaskTemplate.ContainerSpec.Image}}'
-# esperado: easypanel/sell-autonomia/web:fa13a78 — o mesmo de /home/claudete/releases/437/web.spec-campos.antes
-```
+sudo -n docker image inspect easypanel/sell-autonomia/web:rollback-437-fa13a78 --format '{{.Id}}'
+# = sha256:1b71ec566e8c3a5c9e6885960d8691fca092ed117fc50383569641bc63beba86: seguir para o update
+# "No such image": carregar do arquivo antes
+(cd /home/claudete/releases/437 && sha256sum -c web-fa13a78.tar.sha256)   # OK, senão parar
+sudo -n docker load -i /home/claudete/releases/437/web-fa13a78.tar
+sudo -n docker image inspect easypanel/sell-autonomia/web:rollback-437-fa13a78 --format '{{.Id}}'   # o ID acima
 
-Se bater:
-
-```sh
-sudo -n docker service rollback sell-autonomia_web
-```
-
-Se não bater, usar a tag preservada na Fase 1a:
-
-```sh
 sudo -n docker service update --image easypanel/sell-autonomia/web:rollback-437-fa13a78 \
   --update-order start-first --update-failure-action pause sell-autonomia_web
 ```
+
+O `load` de 300 MB leva cerca de 1 min, e a troca `start-first` mais 1 a 2 min,
+sem a loja sair do ar.
 
 `pause` aqui é de propósito: se o próprio rollback falhar, o Swarm não pode
 "voltar" para a versão nova que acabou de ser recusada.
@@ -440,7 +465,8 @@ tem migration.
 
   No local não sobra arquivo: o tar foi direto pelo ssh.
 - Ficam até 24 h estáveis e novo OK do Rodrigo: `/home/claudete/releases/437/`
-  (nomes de variáveis e campos da spec), a imagem `fa13a78` e a tag
-  `rollback-437-fa13a78`. A remoção delas também é pelo nome exato
+  (nomes de variáveis, campos da spec e o `web-fa13a78.tar` com o
+  `.sha256`), a imagem `fa13a78` e a tag `rollback-437-fa13a78`. A imagem e a
+  tag podem sumir antes, pelo prune; o arquivo não. A remoção delas também é pelo nome exato
   (`sudo -n docker rmi easypanel/sell-autonomia/web:rollback-437-fa13a78`), nunca por
   prune.
