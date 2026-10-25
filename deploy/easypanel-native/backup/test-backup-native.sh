@@ -240,13 +240,17 @@ export APPSELL_BACKUP_S3_SECRET_KEY="$s3_writer_secret"
 export BACKUP_S3_DOCKER_NETWORK="$network_name"
 s3_key="sell/native-90/${enc_file##*/}"
 
-# A Content-MD5 that does not match the body must be refused, and nothing
-# may land. MD5 of the empty string, which no encrypted dump has.
+# A Content-MD5 that does not match the body must be refused as BadDigest,
+# and nothing may land. MD5 of the empty string, which no encrypted dump has.
+# Any other failure (network, credentials) would prove nothing about the MD5.
+bad_digest_log="${workdir}/bad-digest.log"
 if (s3_content_md5() { printf '1B2M2Y8AsgTpgAmY7PhCfg=='; }; ship_offhost "$enc_file") \
-    2>/dev/null; then
+    2>"$bad_digest_log"; then
   echo "an upload with a wrong Content-MD5 must be refused but succeeded" >&2
   exit 1
 fi
+grep -qF "BadDigest" "$bad_digest_log" \
+  || { cat "$bad_digest_log" >&2; echo "the wrong Content-MD5 failed for another reason" >&2; exit 1; }
 if s3_as "$s3_admin_key" "$s3_admin_secret" s3api head-object \
     --bucket "$s3_bucket" --key "$s3_key" >/dev/null 2>&1; then
   echo "a refused upload left an object behind" >&2
