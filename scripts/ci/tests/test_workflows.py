@@ -132,6 +132,23 @@ class AppCiWorkflowTests(unittest.TestCase):
         self.assertIn("github.event.merge_group.head_sha", self.source)
         self.assertIn("github.event.before", self.source)
 
+    def test_e2e_traces_are_kept_only_when_an_attempt_failed(self) -> None:
+        start = self.source.index("id: e2e-traces")
+        block = self.source[start:self.source.index("- name:", start)]
+        self.assertIn("hashFiles('test-results/**/trace.zip') != ''", block)
+        self.assertIn("steps.cert-web.outcome != 'skipped'", block)
+        self.assertIn("continue-on-error: true", block)
+        self.assertIn("retention-days: 7", block)
+        self.assertIn("uses: actions/upload-artifact@", block)
+        self.assertNotIn("secrets.", block)
+        self.assertNotIn("CI_OUTCOME_E2E_TRACES", self.source)
+
+    def test_production_e2e_does_not_wipe_the_e2e_traces(self) -> None:
+        config = (ROOT / "playwright.production.config.ts").read_text(encoding="utf-8")
+        self.assertIn('outputDir: "test-results/production"', config)
+        e2e = (ROOT / "playwright.config.ts").read_text(encoding="utf-8")
+        self.assertNotIn("outputDir:", e2e)
+
     def test_all_external_actions_are_sha_pinned(self) -> None:
         action_lines = re.findall(r"^\s*(?:- )?uses: (.+)$", self.source, re.M)
         self.assertTrue(action_lines)
