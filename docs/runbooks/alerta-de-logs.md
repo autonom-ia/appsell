@@ -78,7 +78,7 @@ Depois, um comando por vez:
 : "${SHA:?SHA vazio — parar}"
 install -d -m 0755 /opt/sell-alerta
 install -d -m 0700 /etc/sell-alerta /var/lib/sell-alerta
-git -C /home/claudete/appsell-src-"$SHA" show "$SHA":scripts/ops/alerta_de_logs.py > /opt/sell-alerta/alerta_de_logs.py
+git -C <home-do-operador>/appsell-src-"$SHA" show "$SHA":scripts/ops/alerta_de_logs.py > /opt/sell-alerta/alerta_de_logs.py
 chmod 0755 /opt/sell-alerta/alerta_de_logs.py
 install -m 0600 /dev/null /etc/sell-alerta/alerta.env   # preencher com editor, sem ecoar valor
 python3 /opt/sell-alerta/alerta_de_logs.py --seco       # lê os logs e imprime, sem enviar
