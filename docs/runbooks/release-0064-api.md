@@ -464,10 +464,12 @@ git status --porcelain    # vazio
 faz quatro coisas:
 1. abre uma porta em `127.0.0.1`, ligada por `ssh` ao contêiner da api atual
    e dali ao Postgres;
-2. monta `APPSELL_MIGRATOR_DATABASE_URL` (`postgresql+psycopg://…@127.0.0.1:<porta>/appsell_native_90`)
+2. monta `APPSELL_MIGRATOR_DATABASE_URL`
+   (`postgresql+psycopg://…@127.0.0.1:<porta>/appsell_native_90?…&require_auth=scram-sha-256`)
    **só no ambiente do comando**, lendo a senha do lugar do B1. A senha não
-   aparece em argumento, tela, histórico ou arquivo;
-3. roda o comando;
+   aparece em argumento, tela, histórico ou arquivo. O `require_auth` faz o
+   libpq recusar a conexão se o servidor pedir outro método que não SCRAM;
+3. roda o comando e, durante ele, conta o argv com URL (passo 3);
 4. derruba o túnel e confere que não sobrou processo, nem local nem no host.
 
 Cada túnel aceita **uma conexão**. O `env.py` usa `NullPool` e uma transação
@@ -479,10 +481,13 @@ Os timeouts de sessão vão pelo `PGOPTIONS`, que o libpq do psycopg lê:
 export PGOPTIONS="-c lock_timeout=5s -c statement_timeout=120s"
 ```
 
-**3. Ensaio em leitura**, logo antes, na mesma sessão:
+**3. Ensaio em leitura**, logo antes, na mesma sessão. Ele prova o método de
+autenticação e que a URL não aparece em argumento de processo:
 
 ```sh
 cd "$CHECKOUT/apps/api"
+# require_auth existe a partir do libpq 16 (160000).
+.venv/bin/python -I -c 'import psycopg; print(psycopg.pq.version())'   # >= 160000
 PGOPTIONS="$PGOPTIONS -c default_transaction_read_only=on" \
   com_tunel .venv/bin/alembic current      # 0061_o_atraso_alcanca_o_aluno
 pre_voo() {
@@ -492,9 +497,22 @@ pre_voo() {
 pre_voo   # antes: rc=1, só public.seller_payout_account
 ```
 
-Ensaiado em 25/10 a partir do #510 (885a611): `alembic current` deu
-`0061_o_atraso_alcanca_o_aluno`, e o pré-voo deu `rc=1` só com a tabela. O
-túnel foi derrubado e não sobrou processo.
+Durante cada comando, o `com_tunel` conta, no local e no host, as linhas de
+`ps -eo args` com URL de banco (esquema `postgres…://`, ou `://…@127.0.0.1`).
+Tem de dar **0** nos dois lados. O padrão é o esquema de URL, e não a palavra
+solta: o caminho de binário do Postgres (`…/postgresql@16/…`) e um `ssh
+usuario@127.0.0.1` de outro serviço casariam e não são URL. O contador foi
+provado com um processo falso de URL no argv: deu 1 no local e no host, e 0
+quando ele saiu.
+
+Ensaiado em 25/10 a partir do #510 (885a611), em leitura:
+- libpq `180000`;
+- `alembic current` deu `0061_o_atraso_alcanca_o_aluno`;
+- o pré-voo deu `rc=1`, só com a tabela;
+- 0 linhas de argv com URL, no local e no host;
+- túnel derrubado, sem processo sobrando;
+- controle negativo: exigir `require_auth=md5` falhou com `server requested
+  SASL authentication`, então o servidor autentica por SCRAM.
 
 - `rc=2` no pré-voo é erro de conexão, não drift: parar e entender antes de
   seguir.
@@ -533,7 +551,18 @@ PGOPTIONS="$PGOPTIONS -c default_transaction_read_only=on" \
 Só então repetir, e só com novo OK. Qualquer outra versão: parar e levar ao
 Rodrigo.
 
-**4. Conferência.** Na máquina local, rodar `leitura anexo-B.sql` e depois
+**Se a máquina local cair** (antes, durante ou depois do upgrade):
+1. noutra máquina de quem opera, refazer o passo 1 com o mesmo `SHA`. O
+   `git status --porcelain` tem de dar vazio e o `alembic heads`, 0065;
+2. preparar o `com_tunel` e o lugar da credencial do registro privado;
+3. rodar o ensaio do passo 3. O `alembic current` diz onde o banco está: 0061
+   (nada entrou) ou 0065 (a leva entrou inteira). Nunca há meio-termo, porque é
+   uma transação só;
+4. seguir do ponto que o `alembic current` mostrar, com novo OK.
+
+A mesma volta vale para o Rollback 2.
+
+**5. Conferência.** Na máquina local, rodar `leitura anexo-B.sql` e depois
 `leitura anexo-A.sql`. Esperado:
 - `versao` = `0065_dono_da_conta_payout`;
 - `schema_ready` = `t` e `canal_pronto` = `t`;
