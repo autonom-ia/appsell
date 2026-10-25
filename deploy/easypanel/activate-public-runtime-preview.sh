@@ -21,6 +21,7 @@ runtime_preview_acquire_transition_lock "$RUNTIME_PREVIEW_TRANSITION_LOCK"
   exit 1
 }
 
+public_ipv4="$(runtime_preview_public_ipv4)"
 runtime_preview_verify_public_dns
 
 runtime_preview_api_login
@@ -260,7 +261,7 @@ jq -n \
   --arg project "$RUNTIME_PREVIEW_PROJECT" --arg service "$RUNTIME_PREVIEW_SERVICE" \
   --arg source_sha "$source_sha" --arg domain_id "$domain_id" \
   --arg host "$RUNTIME_PREVIEW_PUBLIC_HOST" --arg origin "$RUNTIME_PREVIEW_PUBLIC_ORIGIN" \
-  --arg ipv4 "$RUNTIME_PREVIEW_PUBLIC_IPV4" --arg certificate_sha256 "$certificate_sha256" \
+  --arg ipv4 "$public_ipv4" --arg certificate_sha256 "$certificate_sha256" \
   --arg checked_at "$(date -u +%FT%TZ)" \
   '{schema_version:$schema_version,project:$project,service:$service,source_sha:$source_sha,
     domain_id:$domain_id,host:$host,origin:$origin,ipv4:$ipv4,

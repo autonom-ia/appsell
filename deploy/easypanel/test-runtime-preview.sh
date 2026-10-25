@@ -300,7 +300,8 @@ if services["e2e"].get("environment") != {
 }:
     raise SystemExit("E2E received application secrets or unexpected environment")
 if services["e2e-bridge"].get("environment") != {
-    "E2E_RUNTIME_BRIDGE_SOCKET": "/transport/sell.sock"
+    "E2E_RUNTIME_BRIDGE_SOCKET": "/transport/sell.sock",
+    "APPSELL_RUNTIME_PREVIEW_PUBLIC_IPV4": "192.0.2.10",
 }:
     raise SystemExit("E2E bridge received application secrets or unexpected environment")
 if services["e2e-bridge"].get("ports"):
@@ -402,8 +403,8 @@ resolver_args = re.findall(r'["\'](--host-resolver-rules=[^"\']+)["\']', playwri
 expected_resolver_arg = "--host-resolver-rules=MAP sell.autonomia.site 127.0.0.1"
 if resolver_args != [expected_resolver_arg]:
     raise SystemExit(f"runtime-preview Chromium resolver args drifted: {resolver_args}")
-if "*" in resolver_args[0] or "85.31.60.100" in resolver_args[0]:
-    raise SystemExit("runtime-preview Chromium resolver must not use a wildcard or public IP")
+if "*" in resolver_args[0]:
+    raise SystemExit("runtime-preview Chromium resolver must not use a wildcard")
 device_spread = '...devices["iPhone 15"]'
 if playwright_config.count(device_spread) != 1:
     raise SystemExit("runtime-preview must inherit the iPhone 15 device exactly once")
@@ -468,7 +469,7 @@ grep -Fq 'runtime-preview remained healthy with stable IDs and zero restarts for
   "$here/verify-runtime-preview.sh"
 grep -Fq 'runtime-preview-loopback-proxy.mjs' "$here/run-runtime-preview-e2e.sh"
 grep -Fq 'upstreamSocket: "/transport/sell.sock"' "$here/runtime-preview-loopback-proxy.mjs"
-grep -Fq 'upstreamHost: "85.31.60.100"' "$here/runtime-preview-unix-bridge.mjs"
+grep -Fq 'UPSTREAM_HOST_ENV = "APPSELL_RUNTIME_PREVIEW_PUBLIC_IPV4"' "$here/runtime-preview-unix-bridge.mjs"
 grep -Fq 'upstreamPort: 443' "$here/runtime-preview-unix-bridge.mjs"
 grep -Fq 'server.listen({ host, port: listenPort, ipv6Only: host === "::1" }' \
   "$here/runtime-preview-loopback-proxy.mjs"
