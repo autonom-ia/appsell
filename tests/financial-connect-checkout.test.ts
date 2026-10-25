@@ -13,6 +13,7 @@ const parts = {
   productId: "22222222-2222-4222-8222-222222222222",
   offerId: "33333333-3333-4333-8333-333333333333",
   buyerIdentitySub: "cognito-sub-default",
+  buyerEmail: "buyer@example.test",
   amountMinor: 4990,
   accountId: "acct_store_a",
   applicationFeeAmountMinor: 323
@@ -49,6 +50,7 @@ describe("connectCheckoutIdempotencyKey", () => {
       { productId: "77777777-7777-4777-8777-777777777777" },
       { offerId: "88888888-8888-4888-8888-888888888888" },
       { buyerIdentitySub: "cognito-sub-other" },
+      { buyerEmail: "fixed@example.test" },
       { amountMinor: 5990 },
       { accountId: "acct_store_b" },
       { applicationFeeAmountMinor: 324 }
@@ -63,5 +65,6 @@ describe("connectCheckoutIdempotencyKey", () => {
     expect(key.startsWith("sell-connect-v1:")).toBe(true);
     expect(key.length).toBeLessThanOrEqual(160);
     expect(key).not.toContain(parts.buyerIdentitySub);
+    expect(key).not.toContain(parts.buyerEmail);
   });
 });

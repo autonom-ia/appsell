@@ -27,12 +27,15 @@ export interface ConnectCheckoutKeyParts {
   productId: string;
   offerId: string;
   buyerIdentitySub: string;
+  // Normalized. A buyer who fixes the e-mail inside the window gets a new
+  // order, so the receipt goes to the address being charged now.
+  buyerEmail: string;
   amountMinor: number;
   accountId: string;
   applicationFeeAmountMinor: number;
 }
 
-// Hashed, so the buyer's subject never travels in clear in the key.
+// Hashed, so the buyer's subject and e-mail never travel in clear in the key.
 export function connectCheckoutIdempotencyKey(parts: ConnectCheckoutKeyParts, nowMs: number = Date.now()): string {
   const windowIndex = Math.floor(nowMs / CONNECT_IDEMPOTENCY_WINDOW_MS);
   const material = JSON.stringify([
@@ -40,6 +43,7 @@ export function connectCheckoutIdempotencyKey(parts: ConnectCheckoutKeyParts, no
     parts.productId,
     parts.offerId,
     parts.buyerIdentitySub,
+    parts.buyerEmail,
     parts.amountMinor,
     parts.accountId,
     parts.applicationFeeAmountMinor,

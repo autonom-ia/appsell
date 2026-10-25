@@ -529,6 +529,20 @@ describe("POST /api/checkout/stripe/create-session — Financial with the store'
     expect(first).not.toContain("buyer@example.test");
   });
 
+  it("on the list, the same buyer fixing the e-mail inside the window gets a new key", async () => {
+    // Otherwise the Financial would reuse the old order and the receipt would
+    // go to the e-mail the buyer just corrected.
+    vi.useFakeTimers({ now: new Date("2026-10-25T12:05:00Z"), toFake: ["Date"] });
+    process.env.APPSELL_FINANCIAL_CONNECT_SELLER_IDS = SELLER_ID;
+    resolveCheckoutPayoutDestination.mockResolvedValue(readyDestination());
+
+    await POST(request(validBody));
+    await POST(request({ ...validBody, buyer_email: "fixed@example.test" }));
+
+    expect(intentInput(0).idempotencyKey).not.toEqual(intentInput(1).idempotencyKey);
+    expect((intentInput(1).buyer as { email: string }).email).toBe("fixed@example.test");
+  });
+
   it("on the list, a new 30-minute window or a new price gets a new key", async () => {
     vi.useFakeTimers({ now: new Date("2026-10-25T12:05:00Z"), toFake: ["Date"] });
     process.env.APPSELL_FINANCIAL_CONNECT_SELLER_IDS = SELLER_ID;

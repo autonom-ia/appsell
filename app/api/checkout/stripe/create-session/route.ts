@@ -175,6 +175,7 @@ export async function POST(request: NextRequest) {
             productId: product.id,
             offerId: product.publication_id,
             buyerIdentitySub,
+            buyerEmail: input.buyerEmail,
             amountMinor: amount,
             accountId: destination.provider_account_id,
             applicationFeeAmountMinor: applicationFeeCents
