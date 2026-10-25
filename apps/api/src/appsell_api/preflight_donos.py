@@ -18,7 +18,7 @@ Uso:
   python -m appsell_api.preflight_donos
 
 Sai com 0 e `{"status":"ok"}` sem nada fora da convenção. Sai com 1 e a lista
-quando há algo fora. Sai com 2 em erro de uso.
+quando há algo fora. Sai com 2 em erro de uso ou de banco.
 """
 
 from __future__ import annotations
@@ -82,7 +82,7 @@ def url_do_psycopg(url: str) -> str:
     return make_url(url).set(drivername="postgresql").render_as_string(hide_password=False)
 
 
-def verificar(url: str) -> int:
+def _ler(url: str) -> list[tuple[str, str, str]]:
     with psycopg.connect(url_do_psycopg(url), autocommit=True) as connection:
         with connection.transaction():
             connection.execute("set transaction read only")
@@ -90,6 +90,16 @@ def verificar(url: str) -> int:
             objetos = fora_da_convencao(connection)
             # Sai pelo rollback: o pré-voo não deixa nada no banco.
             raise psycopg.Rollback()
+    return objetos
+
+
+def verificar(url: str) -> int:
+    # Banco fora ou senha errada não é drift: sai com 2, como erro de uso, e a
+    # mensagem leva só o tipo do erro, nunca a URL nem o texto do servidor.
+    try:
+        objetos = _ler(url)
+    except psycopg.Error as erro:
+        _fail(f"database error: {type(erro).__name__}")
     if not objetos:
         print(json.dumps({"status": "ok", "dono": DONO}))
         return 0
