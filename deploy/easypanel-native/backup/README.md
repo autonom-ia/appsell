@@ -33,8 +33,16 @@ do Postgres nativo (decisão de infra).
     o valor exportado só naquela invocação. O Docker lê o valor do próprio
     ambiente (`/proc/<pid>/environ`, modo `0400` — só dono e root), nunca do argv.
     Usar `-e VAR=valor` é proibido nestes scripts (vazaria no argv).
-- O client Postgres roda em **container fixado** (`postgres:16-alpine`); o host só
-  precisa de Docker + gpg. Versão de servidor casada pela tag da imagem.
+- O client Postgres roda em **container fixado**, por padrão a mesma imagem do
+  servidor de produção (PostgreSQL 17, por digest); o host só precisa de Docker
+  + gpg. O `backup-native.sh` recusa, antes do dump, um client de major menor que
+  o do servidor, e o `restore-native.sh` recusa um alvo de major menor que o do
+  dump (#492).
+- O restore cria no Postgres descartável, como `NOLOGIN` e sem senha, os papéis
+  que `infra/postgres/init/001_roles.sh` cria. O `pg_dump` não leva papéis, e as
+  políticas RLS do schema citam `appsell_owner` e `appsell_runtime`. Para rodar
+  no host, leve esse arquivo junto com esta pasta (mesmo caminho relativo) ou
+  aponte `RESTORE_ROLES_SOURCE` para ele.
 - O dump em claro é apagado assim que o artefato cifrado existe (ou em qualquer
   falha, via `trap`).
 - Off-host envia **apenas o artefato cifrado**.
@@ -63,7 +71,7 @@ Opcionais (defaults):
 | `APPSELL_BACKUP_DIR` | `/var/backups/appsell-native-90` |
 | `APPSELL_BACKUP_KEEP` | `7` |
 | `APPSELL_BACKUP_DEST_KIND` | `none` \| `local-dir` \| `s3` \| `rsync` |
-| `BACKUP_PG_IMAGE` | `postgres:16-alpine` |
+| `BACKUP_PG_IMAGE` | a imagem do servidor de produção (`lib-backup.sh`) |
 
 ### Destino off-host
 
