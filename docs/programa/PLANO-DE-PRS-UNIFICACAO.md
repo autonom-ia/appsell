@@ -35,7 +35,7 @@ Este documento é o plano, **antes do código**. Nada aqui foi implementado.
 
 | # | Repo | PR | Depende de | Por que nesta posição |
 |---|---|---|---|---|
-| 1 | financial | **F2** — emitir `purchase.refunded` ao Sell | nada | Há caso real (…ybva): estornado e acesso ativo |
+| 1 | financial | **F2** — emitir `purchase.refunded` ao Sell | nada | Há caso real (<cobrança-de-teste-2>): estornado e acesso ativo |
 | 2 | appsell | **S0** — teste de contrato do estorno vindo do Financial | nada (pode ir junto com F2) | Prova que o Sell revoga o formato exato que o F2 vai mandar |
 | 3 | appsell | **S2** — taxa estritamente menor que o líquido e preço mínimo | nada | Sem isso o Financial recusa a sessão quando a taxa é igual ao preço |
 | 4 | appsell | **S1** — chave `APPSELL_FINANCIAL_CONNECT_SELLER_IDS` | S2 | Envia conta conectada e taxa só para as lojas listadas |
@@ -51,7 +51,7 @@ F3 (endpoint Connect na Stripe) não é PR: é operação com OK separado (§3).
 > **Revisado em 24/10/2026: este desenho foi substituído.** O razão de produção
 > não recebe estorno, porque os endpoints do Financial na Stripe não assinam
 > `charge.refunded`/`refund.*`. O novo desenho, com o worker consultando a
-> Stripe por uma bridge isolada, está em `PLANO-F2-CONSULTA-STRIPE.md`. O texto
+> Stripe por uma bridge isolada, foi implementado no Financial (ver `PLANO-F2-CONSULTA-STRIPE.md`). O texto
 > abaixo fica como histórico do #153 (draft).
 
 **O que existe hoje (origin/main 7d68ed1):**
@@ -70,7 +70,7 @@ pagamentos `external_hosted_checkout` com estorno **total** registrado e ainda
 não avisados. Para cada um, envia `purchase.refunded` ao mesmo
 `fulfillmentWebhookUrl` do pedido, com a mesma assinatura do `purchase.approved`.
 O worker não chama a Stripe e não precisa de endpoint novo. Por isso também
-alcança estornos já passados, como o …ybva — desde que o razão tenha o estorno.
+alcança estornos já passados, como o <cobrança-de-teste-2> — desde que o razão tenha o estorno.
 
 **Arquivos novos:**
 
@@ -201,8 +201,8 @@ acesso? Hoje o razão grava `chargeback`, mas este PR só trata `refund`.
     a mesma assinatura, o mesmo event id e o mesmo envio. Estorno parcial e
     chargeback seguem a decisão aberta em financial#152.
   - Com isso, as lojas com conta conectada própria (S1) não precisam de
-    polling. O polling do F2 cobre só os gateways diretos (Hub2You `13a30647`
-    e `bf9daec0`), filtrando `selection.connect.accountId` nulo.
+    polling. O polling do F2 cobre só os gateways diretos (`<operador-A>` e
+    `<operador-B>`), filtrando `selection.connect.accountId` nulo.
 - Arquivos novos: `src/stripe-connect-webhook.ts`,
   `tests/stripe-connect-webhook.test.ts`.
 - Linhas de registro: uma rota em `src/routes.ts` e uma variável de segredo em
@@ -224,13 +224,13 @@ acesso? Hoje o razão grava `chargeback`, mas este PR só trata `refund`.
 - Criar o endpoint Connect na Stripe (F3), já com `charge.refunded`/`refund.*`,
   e gravar o segredo dele.
 - O endpoint Stripe atual do Financial **não ganha eventos de estorno** (decisão
-  de 24/10/2026; ver `PLANO-F2-CONSULTA-STRIPE.md` §0).
+  de 24/10/2026; ver `PLANO-F2-CONSULTA-STRIPE.md`).
 - `FINANCIAL_EXTERNAL_CHECKOUT_REFUND_WORKER_MODE=dry_run` em produção. É a
   primeira execução: consulta a Stripe e não grava nem envia. Os números por
   operador vão para o Rodrigo.
 - `FINANCIAL_EXTERNAL_CHECKOUT_REFUND_WORKER_MODE=deliver`. **Atenção:** o
   backfill revoga, na primeira rodada, todo estorno total de pedido entregue,
-  inclusive o …ybva.
+  inclusive o <cobrança-de-teste-2>.
 - Preencher `APPSELL_FINANCIAL_CONNECT_SELLER_IDS` com qualquer loja.
 - Vincular a conta da Hub2You na `seller_payout_account`.
 - Deploy de qualquer um dos PRs.

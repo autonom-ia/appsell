@@ -79,12 +79,11 @@ usa.**
   nova cobraria na conta do gateway desse único operador. Por isso a flag do
   #469 fica vazia até a #440 mandar a conta conectada da loja.
 
-**Verificado pela Orquestração na Stripe** (24/10/2026, só leitura): os dois
-operadores live usam a mesma chave de plataforma.
+**Verificado pela Orquestração na Stripe** (24/10/2026, só leitura):
 
-- O operador `13a30647` cobra na conta conectada "Hub2You LTDA", por cobrança
+- O operador `<operador-A>` cobra na conta conectada `<conta-conectada-da-loja>`, por cobrança
   direta sem comissão. Nele, a loja **já é a vendedora de fato**.
-- O operador `bf9daec0` cobra na conta da Autonom.ia.
+- O operador `<operador-B>` cobra na conta da Autonom.ia.
 
 Os caminhos e a proposta de unificação estão em `CONTA-CONECTADA-DA-LOJA.md`. O
 texto abaixo é a leitura de antes da verificação.
