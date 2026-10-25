@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:fast": "vitest run --config vitest.fast.config.ts",
-    "test:e2e": "node scripts/with-isolated-redis.mjs pnpm exec playwright test",
+    "test:e2e": "node scripts/with-isolated-redis.mjs node scripts/google-fonts-mock.mjs pnpm exec playwright test",
     "test:e2e:identity-real": "node scripts/with-isolated-redis.mjs node scripts/run-real-identity-cross-repo.mjs",
     "test:e2e:production": "playwright test --config=playwright.production.config.ts"
   },
@@ -25,7 +25,7 @@
     "ioredis": "5.10.0",
     "jose": "6.2.3",
     "lenis": "^1.3.26",
-    "next": "16.4.2",
+    "next": "16.4.3",
     "nodemailer": "10.1.7",
     "react": "19.2.7",
     "react-dom": "19.2.7",
@@ -38,7 +38,7 @@
     "@types/react-dom": "19.2.2",
     "aws-sdk-client-mock": "^4.1.0",
     "eslint": "9.39.1",
-    "eslint-config-next": "16.4.2",
+    "eslint-config-next": "16.4.3",
     "typescript": "5.9.3",
     "vite": "7.3.7",
     "vitest": "4.1.12"
