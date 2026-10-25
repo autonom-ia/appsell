@@ -7,8 +7,8 @@
 # abaixo no lugar da rede padrão.
 #
 # Por que overlay internal e não `none`: o Swarm recusa `--network none`
-# ("network none not found"), provado num Swarm de verdade. A api fala com o sandbox pelo socket do volume, que
-# não depende de rede.
+# ("network none not found"), provado num Swarm de verdade. A api fala com o
+# sandbox pelo socket do volume, que não depende de rede.
 #
 # O que o Swarm não deixa aplicar, e por isso fica de fora: `no-new-privileges`
 # (não existe em `docker service`) e `noexec,nosuid` no tmpfs (só `tmpfs-size` e
