@@ -57,14 +57,17 @@ envie o conteúdo de `ROOT/upload` para o caminho exato
 `/opt/autonomia-sell-preview/issue-77/APPSELL_SHA_12`. Na VPS, carregue somente
 as três imagens registradas e gere o env; o script lê
 apenas os envs dos dois serviços exclusivos, cria chaves independentes e não
-imprime valores:
+imprime valores. O IPv4 público aprovado do host entra só por
+`APPSELL_RUNTIME_PREVIEW_PUBLIC_IPV4` e fica no env gerado; sem ela o gerador,
+a ativação pública e a verificação com E2E param antes de agir:
 
 ```bash
 RUN_ROOT=/opt/autonomia-sell-preview/issue-77/APPSELL_SHA_12
 sudo "$RUN_ROOT/config/easypanel/load-runtime-preview-images.sh" \
   "$RUN_ROOT" APPSELL_SHA
-sudo "$RUN_ROOT/config/easypanel/generate-runtime-preview-env.sh" \
-  /root/sell-runtime-preview-env-77 APPSELL_SHA
+sudo env APPSELL_RUNTIME_PREVIEW_PUBLIC_IPV4=<ip-do-host> \
+  "$RUN_ROOT/config/easypanel/generate-runtime-preview-env.sh" \
+  <pasta-do-env> APPSELL_SHA
 ```
 
 O preflight recusa serviço, container ou porta preexistente, valida o isolamento
@@ -73,7 +76,7 @@ Docker já existentes. As credenciais do EasyPanel são fornecidas somente como
 env ao processo na própria VPS; a API aceita apenas loopback:
 
 ```bash
-ENV_FILE=/root/sell-runtime-preview-env-77/runtime-preview.env
+ENV_FILE=<pasta-do-env>/runtime-preview.env
 sudo -E "$RUN_ROOT/config/easypanel/preflight-runtime-preview.sh" \
   "$RUN_ROOT" "$ENV_FILE" APPSELL_SHA
 sudo -E env CONFIRM_RUNTIME_PREVIEW_UP=appsell-runtime-preview-77 \
@@ -85,7 +88,7 @@ sudo -E "$RUN_ROOT/config/easypanel/verify-runtime-preview.sh" \
 
 O primeiro deploy permanece privado até a verificação acima ficar verde. Depois,
 a ativação pública aditiva cria exatamente um domínio EasyPanel para
-`sell-autonomia/runtime-preview`, exige DNS exclusivo em `85.31.60.100`, valida
+`sell-autonomia/runtime-preview`, exige DNS exclusivo no IPv4 de `APPSELL_RUNTIME_PREVIEW_PUBLIC_IPV4`, valida
 o certificado emitido para `sell.autonomia.site` e registra uma attestation
 root-only. Ela não altera nem reinicia `dados`, `flow` ou qualquer serviço n8n:
 

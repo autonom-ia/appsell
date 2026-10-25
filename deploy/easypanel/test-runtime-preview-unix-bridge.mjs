@@ -6,8 +6,10 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  bridgeConfigFromEnv,
   DEFAULT_BRIDGE_CONFIG,
   startUnixBridge,
+  UPSTREAM_HOST_ENV,
 } from "./runtime-preview-unix-bridge.mjs";
 
 function listenTcp(server) {
@@ -46,13 +48,26 @@ function exchange(socketPath, payload) {
   });
 }
 
-test("production bridge defaults are immutable and target only the approved public VPS", () => {
+test("production bridge defaults are immutable and carry no upstream host", () => {
   assert.deepEqual(DEFAULT_BRIDGE_CONFIG, {
     socketPath: "/transport/sell.sock",
-    upstreamHost: "85.31.60.100",
     upstreamPort: 443,
   });
   assert.equal(Object.isFrozen(DEFAULT_BRIDGE_CONFIG), true);
+  assert.equal(UPSTREAM_HOST_ENV, "APPSELL_RUNTIME_PREVIEW_PUBLIC_IPV4");
+});
+
+test("bridge upstream comes only from the required IPv4 environment variable", () => {
+  const config = bridgeConfigFromEnv({ [UPSTREAM_HOST_ENV]: "192.0.2.10" });
+  assert.deepEqual(config, {
+    socketPath: "/transport/sell.sock",
+    upstreamPort: 443,
+    upstreamHost: "192.0.2.10",
+  });
+  assert.equal(Object.isFrozen(config), true);
+  for (const env of [{}, { [UPSTREAM_HOST_ENV]: "" }, { [UPSTREAM_HOST_ENV]: "sell.autonomia.site" }]) {
+    assert.throws(() => bridgeConfigFromEnv(env), /APPSELL_RUNTIME_PREVIEW_PUBLIC_IPV4 is required/);
+  }
 });
 
 test("Unix bridge owns a mode-600 socket and forwards only to its configured TCP peer", async () => {

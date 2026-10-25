@@ -10,6 +10,9 @@ runtime_preview_require_root
 runtime_preview_require_commands curl date dig docker jq openssl realpath sha256sum stat timeout
 runtime_preview_assert_run_root "$1" "$3"
 runtime_preview_assert_env_file "$2"
+if [[ "${RUN_RUNTIME_PREVIEW_E2E:-0}" == "1" ]]; then
+  runtime_preview_public_ipv4 >/dev/null
+fi
 source_sha="$3"
 compose_file="$RUNTIME_PREVIEW_RUN_ROOT/config/easypanel/compose.runtime-preview.yaml"
 expected_ingress_command_json="$(env \

@@ -119,15 +119,28 @@ runtime_preview_delete_exact_public_domain
 [[ -f "$deleted_marker" ]]
 runtime_preview_verify_public_domain_absent
 
+RUNTIME_PREVIEW_ENV_FILE="$tmp/runtime-preview.env"
+printf 'APPSELL_SOURCE_SHA=%s\n' 0123456789abcdef0123456789abcdef01234567 >"$RUNTIME_PREVIEW_ENV_FILE"
 dns_mode=valid
 dig() {
   case "$2:$dns_mode" in
-    A:valid|A:unexpected-aaaa) printf '%s\n' "$RUNTIME_PREVIEW_PUBLIC_IPV4" ;;
+    A:valid|A:unexpected-aaaa) printf '%s\n' 192.0.2.10 ;;
     AAAA:unexpected-aaaa) printf '%s\n' '2a02:4780:14:72a4::1' ;;
     AAAA:valid|CNAME:valid|CNAME:unexpected-aaaa) ;;
     *) return 2 ;;
   esac
 }
+if runtime_preview_verify_public_dns >/dev/null 2>&1; then
+  echo "public DNS was accepted without an approved IPv4 in the env file" >&2
+  exit 1
+fi
+printf 'APPSELL_RUNTIME_PREVIEW_PUBLIC_IPV4=%s\n' 192.0.2.11 >>"$RUNTIME_PREVIEW_ENV_FILE"
+if runtime_preview_verify_public_dns >/dev/null 2>&1; then
+  echo "public DNS was accepted for an address other than the approved IPv4" >&2
+  exit 1
+fi
+printf 'APPSELL_SOURCE_SHA=%s\nAPPSELL_RUNTIME_PREVIEW_PUBLIC_IPV4=%s\n' \
+  0123456789abcdef0123456789abcdef01234567 192.0.2.10 >"$RUNTIME_PREVIEW_ENV_FILE"
 runtime_preview_verify_public_dns
 dns_mode=unexpected-aaaa
 if runtime_preview_verify_public_dns >/dev/null 2>&1; then
