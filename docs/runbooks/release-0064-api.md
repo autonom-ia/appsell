@@ -468,7 +468,9 @@ faz quatro coisas:
    (`postgresql+psycopg://…@127.0.0.1:<porta>/appsell_native_90?…&require_auth=scram-sha-256`)
    **só no ambiente do comando**, lendo a senha do lugar do B1. A senha não
    aparece em argumento, tela, histórico ou arquivo. O `require_auth` faz o
-   libpq recusar a conexão se o servidor pedir outro método que não SCRAM;
+   libpq recusar a conexão se o servidor pedir outro método que não SCRAM. Sem
+   a credencial, ele aborta com `rc=2` antes de rodar qualquer coisa: uma URL
+   vazia faria o alembic cair na do `alembic.ini`;
 3. roda o comando e, durante ele, conta o argv com URL (passo 3);
 4. derruba o túnel e confere que não sobrou processo, nem local nem no host.
 
