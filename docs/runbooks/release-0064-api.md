@@ -242,7 +242,7 @@
 Leitura dos serviços:
 
 ```sh
-dig +short sell.autonomia.site                 # 85.31.60.100, o mesmo do alias claudete
+dig +short sell.autonomia.site                 # o mesmo IP de `ssh -G claudete | grep '^hostname '`
 ssh claudete
 sudo -n true || echo "PARAR: sudo -n não liberado neste host"
 for s in sell-autonomia_api sell-autonomia_asset-worker; do
