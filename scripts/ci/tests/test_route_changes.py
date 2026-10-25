@@ -88,6 +88,11 @@ class ClassifyPathsTests(unittest.TestCase):
         self.assertTrue(route["api"])
         self.assertTrue(route["storage"])
 
+    def test_minio_contract_script_runs_the_storage_suite(self) -> None:
+        route = classify_paths(["scripts/test-storage-minio.sh"])
+
+        self.assertTrue(route["storage"])
+
     def test_openbao_change_covers_real_suite_and_node_inputs(self) -> None:
         route = classify_paths(
             ["lib/token-vault-provider.server.ts", "infra/openbao/policy.hcl"]

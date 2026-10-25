@@ -105,6 +105,7 @@ STORAGE_PATTERNS = (
     "tests/http-byte-range.test.ts",
     "scripts/generate-demo-codex-pdfs.py",
     "scripts/test-storage-vertical.sh",
+    "scripts/test-storage-minio.sh",
 )
 # O endurecimento do pdf-sandbox e o que ele prova (#478): o script, o ensaio
 # em Swarm e todo módulo que o sandbox importa e roda (pdf_* e video_*: o
