@@ -2,15 +2,12 @@
 # Endurece o serviço sell-autonomia_pdf-sandbox no Swarm (#468).
 #
 # No Linux o parser de PDF roda sem sandbox do sistema; o contêiner é o único
-# isolamento. A leitura de 23/10/2026 achou ReadOnly=false, CapabilityDrop=null,
-# PIDs sem limite e a task no `bridge` padrão (masquerade ligado): saída para a
-# internet e para o host por 172.17.0.1. Este script aplica, num update só:
-# root read-only, cap-drop ALL, /tmp em tmpfs de 2 GiB, no máximo 64
-# processos e a rede overlay `--internal` abaixo, que tira o bridge.
+# isolamento. Este script aplica, num update só: root read-only, cap-drop ALL,
+# /tmp em tmpfs de 2 GiB, no máximo 64 processos e a rede overlay `--internal`
+# abaixo no lugar da rede padrão.
 #
 # Por que overlay internal e não `none`: o Swarm recusa `--network none`
-# ("network none not found"). Provado no runner com Swarm de verdade (branch
-# prova/468-swarm-rede). A api fala com o sandbox pelo socket do volume, que
+# ("network none not found"), provado num Swarm de verdade. A api fala com o sandbox pelo socket do volume, que
 # não depende de rede.
 #
 # O que o Swarm não deixa aplicar, e por isso fica de fora: `no-new-privileges`

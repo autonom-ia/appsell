@@ -5,7 +5,7 @@
 # um trap. Nada disso se prova com docker falso: aqui sobe um Swarm de verdade,
 # com um sandbox da mesma forma do de produção (imagem da api, usuário 10001,
 # socket num volume, reciclagem depois de cada PDF, stop-first, sem
-# healthcheck, no bridge padrão) e dois clientes ("api" e "asset-worker") que
+# healthcheck, ainda sem endurecer) e dois clientes ("api" e "asset-worker") que
 # montam o socket como em produção. Roda o script real em todos os modos e
 # confere a spec e o comportamento depois de cada um:
 #
@@ -74,7 +74,7 @@ sudo -n docker run --rm --user 0:0 --network none -v "$volume:/run/appsell-pdf" 
 nucleos="$(nproc)"
 [ "$nucleos" -gt 4 ] && nucleos=4
 
-echo "== sandbox com a forma de produção (lida no host em 24/10/2026)"
+echo "== sandbox com a forma de produção, ainda sem endurecer"
 sudo -n docker service create --quiet --detach=false --no-resolve-image --name "$sandbox" \
   --user 10001:10001 --env APPSELL_PDF_SANDBOX_RECYCLE_AFTER_JOB=true \
   --limit-memory 4g --limit-cpu "$nucleos" \
