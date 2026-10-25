@@ -265,6 +265,8 @@ def imagens(texto):
         urls.add(html.unescape(texto[i:j].replace("\\u0026", "&").rstrip("\\"))); i = j
     return [get(u)[0] for u in urls]
 cod, _, vitrine = get(BASE + "/s/hub2you")
+# O preço sai com espaço não separável (R$\xa047,00); a comparação usa o comum.
+vitrine = vitrine.replace("\xa0", " ")
 img = imagens(vitrine)
 print("vitrine", cod, "cards", vitrine.count(">Ver e comprar<"),
       "R$ 47,00", "R$ 47,00" in vitrine, "R$ 87,00", "R$ 87,00" in vitrine,
