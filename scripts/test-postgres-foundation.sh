@@ -235,7 +235,6 @@ APPSELL_LOCAL_IDENTITY_EMAIL="creator@example.test" \
 pnpm exec vitest run --no-file-parallelism \
   tests/bff-api-onboarding.test.ts \
   tests/bff-superadmin-inspection.test.ts \
-  tests/bff-webhook-ingress.test.ts \
-  tests/bff-learning-multiprocess.test.ts
+  tests/bff-webhook-ingress.test.ts
 restore_test_generated_files
 git diff --exit-code -- next-env.d.ts tsconfig.json

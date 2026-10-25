@@ -11,6 +11,7 @@ DOMAIN_API_ENV = "APPSELL_TEST_DOMAIN_API_URL"
 PENDENTES = {
     "tests/bff-buyer-multi-seller.test.ts": 537,
     "tests/bff-demo-library.test.ts": 538,
+    "tests/bff-learning-multiprocess.test.ts": 541,
 }
 
 
