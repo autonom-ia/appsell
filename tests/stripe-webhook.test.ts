@@ -28,6 +28,25 @@ vi.mock("@/lib/stripe-config.server", () => ({
 // Fake proxy so nothing hits the domain ingress; we assert what it received.
 vi.mock("@/lib/checkout-webhook-proxy.server", () => ({ proxyCheckoutWebhook }));
 
+// Server-side price the #148 amount check compares against: R$47 for the one
+// mapped product. tests/stripe-webhook-amount.test.ts covers the check itself.
+vi.mock("@/lib/internal-api-client.server", () => ({
+  DomainApiError: class extends Error {},
+  readPublicStorefront: async () => ({
+    schema_version: 1,
+    seller: { id: "11111111-1111-4111-8111-111111111111", slug: "loja", name: "Loja" },
+    products: [{
+      id: "22222222-2222-4222-8222-222222222222",
+      slug: "curso",
+      title: "Curso",
+      description: "Curso",
+      publication_id: "33333333-3333-4333-8333-333333333333",
+      publication_version: 1,
+      price: { unit_amount_minor: 4_700, currency: "BRL", billing_period: "one_time" }
+    }]
+  })
+}));
+
 import { POST } from "../app/api/webhooks/stripe/route";
 
 const ORIGIN = "http://localhost:3000";
@@ -64,6 +83,10 @@ function completedEvent(
       object: {
         object: "checkout.session",
         payment_status: overrides.paymentStatus ?? "paid",
+        // Every real session carries these; the #148 amount check requires them.
+        amount_subtotal: 4_700,
+        amount_total: 4_700,
+        currency: "brl",
         metadata: overrides.metadata === undefined
           ? {
               financial_product_key: "prod_codex_v1",
@@ -80,6 +103,9 @@ function completedEvent(
 describe("POST /api/webhooks/stripe", () => {
   beforeEach(() => {
     process.env.APPSELL_CHECKOUT_WEBHOOK_ENDPOINT_KEY = ENDPOINT_KEY;
+    process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON = JSON.stringify({
+      "loja/curso": { financial_product_key: "prod_codex_v1" }
+    });
     process.env.APPSELL_CHECKOUT_WEBHOOK_SECRET_B64 = SECRET_B64;
     keyMode.value = "live";
     constructEvent.mockReset();
