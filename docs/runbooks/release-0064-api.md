@@ -9,6 +9,8 @@
 >   foram decididas pela Orquestração em 24/10.
 > - **0065 e pré-voo de donos (#509):** acrescentados pela trilha Plataforma em
 >   25/10/2026. A 0065 entra na mesma leva, e o pré-voo roda antes e depois.
+> - **D3 (#522):** desde 25/10, o migrador roda na máquina de quem opera. A
+>   credencial dele nunca vai ao host.
 > - **Base:**
 >   - `release-437-correcoes-rce.md`: regras de shell e a volta guardada em
 >     arquivo;
@@ -46,6 +48,17 @@
     troca quando o `startup` fica verde, e o canal está fora desse gate. A Fase
     5 **detecta** depois da troca, pelo `financial_channel` no `ready`, e o freio
     é o rollback.
+
+- **D3 — a credencial do migrador nunca vai ao host (#522).**
+  - O alembic e o pré-voo rodam na máquina de quem opera, a partir de um
+    checkout limpo do `SHA` mergeado, com as dependências do `uv.lock` daquele
+    `SHA`.
+  - Eles chegam ao Postgres por um túnel local, que só vive durante a janela
+    (Fase 4).
+  - O Postgres confere a senha por SCRAM: ela não passa em claro pelo host, e
+    nada dela é gravado lá.
+  - O código das migrations é o mesmo da imagem do `SHA`. A Fase 3 confere que
+    as 4 migrations estão na imagem.
 
 ## O que sobe, e o que não muda
 
@@ -162,8 +175,8 @@ funções do `pgcrypto` ficam de fora por serem membros de extensão.
 - No downgrade, o `drop trigger` pede `ACCESS EXCLUSIVE`, que bloqueia também a
   leitura.
 - Para não enfileirar atrás de uma transação longa, upgrade e downgrade rodam
-  com `lock_timeout=5s`, pelo `PGOPTIONS` do env-file. Conferido em 24/10: o
-  psycopg do alembic recebe o valor.
+  com `lock_timeout=5s`, pelo `PGOPTIONS` do ambiente do comando (Fase 4).
+  Conferido em 24/10: o psycopg do alembic recebe o valor.
 - O `alter table … owner` da 0065 pede `ACCESS EXCLUSIVE` em
   `seller_payout_account` e segura até o commit da leva inteira. Nesse
   intervalo, leitura e escrita de conta de recebimento esperam. Hoje esses
@@ -172,14 +185,15 @@ funções do `pgcrypto` ficam de fora por serem membros de extensão.
 
 ## Bloqueios antes de qualquer fase 🔴
 
-- **B1 — credencial do migrador (#456, aberta).**
+- **B1 — credencial do migrador (#456): respondida em 25/10.**
   - Os releases de setembro tiravam a URL do migrador da spec do
     `sell-autonomia_bootstrap-native-90`. Esse serviço **não existe mais** no
     Swarm (leitura de 23/10).
-  - Sem saber onde ela vive hoje, a Fase 4 não tem como rodar. A resposta é o
-    nome do lugar, nunca o valor.
-  - A saída é uma leitura do host com OK do Rodrigo. Se a credencial tiver
-    sumido, recriá-la é secret e permissão: decisão do Rodrigo.
+  - Hoje a credencial vive na máquina de quem opera. O lugar está no registro
+    privado, nunca no repo.
+  - O papel dela é o mesmo que hoje é dono de `seller_payout_account`, como a
+    0065 exige.
+  - Foi usada em 25/10, só em leitura, pelo túnel da Fase 4.
 - **B2 — CI no SHA do release.**
   - É preciso um `workflow_dispatch` do App CI no `SHA`, com `cert_api`,
     `cert_postgres` e o `ci-gate` em success. O `cert_postgres` roda a cadeia
@@ -252,8 +266,9 @@ funções do `pgcrypto` ficam de fora por serem membros de extensão.
 - Variável só por nome.
 - Log só por contagem:
   `2>&1 | grep -Eic 'error|traceback|financial_channel.unresolved'`.
-- **A credencial nunca vai por argumento** (`-e VAR=valor` aparece em `ps` e no
-  log do sudo). Ela vai por `--env-file` (Fase 4).
+- **A credencial do migrador nunca vai ao host** (D3). Na máquina local, ela
+  também não vai por argumento nem para a tela. Ela entra só no ambiente do
+  processo do alembic ou do pré-voo (Fase 4).
 
 ## Fase 0 — leitura do host no dia 🔴 (só leitura, OK do Rodrigo)
 
@@ -407,8 +422,8 @@ Muda só:
 - `--build-arg GIT_SHA="$SHA"`;
 - `-t "easypanel/sell-autonomia/api:$SHA"`.
 
-Fonte em `$PASTA/src`. O `src.tar.gz` também fica no
-host, porque o downgrade precisa dele.
+Fonte em `$PASTA/src`. O `src.tar.gz` também fica no host, como prova do que
+foi buildado. O downgrade roda do checkout local (D3).
 
 ```sh
 : "${PASTA:?PASTA vazio — parar}"
@@ -433,58 +448,90 @@ Até aqui, nada em produção mudou.
 
 A api atual segue servindo.
 
-**1. Env-file do migrador.** Criado só agora e apagado no fim desta fase. O
-conteúdo:
-- `APPSELL_MIGRATOR_DATABASE_URL=<do lugar que o B1 respondeu>`;
-- `PGOPTIONS=-c lock_timeout=5s`.
-
-Ele é criado no host com `umask 077`, preenchido pelo stdin, sem eco e sem
-argumento de comando:
+**1. Checkout local, na máquina de quem opera.** Nada desta etapa toca o host.
 
 ```sh
-: "${PASTA:?PASTA vazio — parar}"
-E="$PASTA/migrator.env"
-( umask 077; cat > "$E" )      # conteúdo colado pelo stdin; nunca na tela
-test "$(stat -c %a "$E")" = 600 || echo "PARAR: permissão do env-file"
+: "${SHA:?}"
+: "${CHECKOUT:?}"   # pasta local nova, do registro privado
+git worktree add --detach "$CHECKOUT" "$SHA"
+cd "$CHECKOUT/apps/api"
+uv sync --frozen          # as dependências do uv.lock deste SHA
+git status --porcelain    # vazio
+.venv/bin/alembic heads   # 0065_dono_da_conta_payout (head)
 ```
 
-**2. Leitura de antes.** Repetir `leitura anexo-A.sql` logo antes do upgrade, e
-guardar os números. Produto criado entre a Fase 0 e este passo muda a conta.
-O `pre_voo_donos` tem de seguir em 1, com a mesma tabela.
+**2. O túnel.** `com_tunel <comando>` vem do registro privado de quem opera e
+faz quatro coisas:
+1. abre uma porta em `127.0.0.1`, ligada por `ssh` ao contêiner da api atual
+   e dali ao Postgres;
+2. monta `APPSELL_MIGRATOR_DATABASE_URL`
+   (`postgresql+psycopg://…@127.0.0.1:<porta>/appsell_native_90?…&require_auth=scram-sha-256`)
+   **só no ambiente do comando**, lendo a senha do lugar do B1. A senha não
+   aparece em argumento, tela, histórico ou arquivo. O `require_auth` faz o
+   libpq recusar a conexão se o servidor pedir outro método que não SCRAM. Sem
+   a credencial, ele aborta com `rc=2` antes de rodar qualquer coisa: uma URL
+   vazia faria o alembic cair na do `alembic.ini`;
+3. roda o comando e, durante ele, conta o argv com URL (passo 3);
+4. derruba o túnel e confere que não sobrou processo, nem local nem no host.
 
-O pré-voo da imagem nova, com a credencial do env-file e sem ela aparecer em
-argumento:
+Cada túnel aceita **uma conexão**. O `env.py` usa `NullPool` e uma transação
+só, então o `upgrade head` cabe numa conexão. Um túnel por comando.
+
+Os timeouts de sessão vão pelo `PGOPTIONS`, que o libpq do psycopg lê:
 
 ```sh
-: "${PASTA:?PASTA vazio — parar}"
-: "${SHA:?}"
+export PGOPTIONS="-c lock_timeout=5s -c statement_timeout=120s"
+```
+
+**3. Ensaio em leitura**, logo antes, na mesma sessão. Ele prova o método de
+autenticação e que a URL não aparece em argumento de processo:
+
+```sh
+cd "$CHECKOUT/apps/api"
+# require_auth existe a partir do libpq 16 (160000).
+.venv/bin/python -I -c 'import psycopg; print(psycopg.pq.version())'   # >= 160000
+PGOPTIONS="$PGOPTIONS -c default_transaction_read_only=on" \
+  com_tunel .venv/bin/alembic current      # 0061_o_atraso_alcanca_o_aluno
 pre_voo() {
-  sudo -n docker run --rm --network easypanel --env-file "$PASTA/migrator.env" \
-    --entrypoint sh "easypanel/sell-autonomia/api:$SHA" -c \
-    'APPSELL_PREFLIGHT_DATABASE_URL="$APPSELL_MIGRATOR_DATABASE_URL" exec python -m appsell_api.preflight_donos'
+  com_tunel sh -c 'APPSELL_PREFLIGHT_DATABASE_URL="$APPSELL_MIGRATOR_DATABASE_URL" exec .venv/bin/python -m appsell_api.preflight_donos'
   echo "pre_voo rc=$?"
 }
 pre_voo   # antes: rc=1, só public.seller_payout_account
 ```
 
-A função `pre_voo` vale só nesta sessão de shell. O passo 3 roda na **mesma
-sessão**. Se ela cair, colar de novo o bloco acima antes do passo 3.
+Durante cada comando, o `com_tunel` conta, no local e no host, as linhas de
+`ps -eo args` com URL de banco (esquema `postgres…://`, ou `://…@127.0.0.1`).
+Tem de dar **0** nos dois lados. O padrão é o esquema de URL, e não a palavra
+solta: o caminho de binário do Postgres (`…/postgresql@16/…`) e um `ssh
+usuario@127.0.0.1` de outro serviço casariam e não são URL. O contador foi
+provado com um processo falso de URL no argv: deu 1 no local e no host, e 0
+quando ele saiu.
 
-- `rc=2` é erro de conexão, não drift: parar e entender antes de seguir.
+Ensaiado em 25/10 a partir do #510 (885a611), em leitura:
+- libpq `180000`;
+- `alembic current` deu `0061_o_atraso_alcanca_o_aluno`;
+- o pré-voo deu `rc=1`, só com a tabela;
+- 0 linhas de argv com URL, no local e no host;
+- túnel derrubado, sem processo sobrando;
+- controle negativo: exigir `require_auth=md5` falhou com `server requested
+  SASL authentication`, então o servidor autentica por SCRAM.
+
+- `rc=2` no pré-voo é erro de conexão, não drift: parar e entender antes de
+  seguir.
 - `rc=0` antes do upgrade quer dizer que o dono já mudou desde a Fase 0, por
   outra mão: parar, reler a Fase 0 inteira e não seguir sem entender.
+- `alembic current` diferente de 0061: parar.
 
-**3. Upgrade.**
+**Leitura de antes.** Repetir `leitura anexo-A.sql` logo antes do upgrade, e
+guardar os números. Produto criado entre a Fase 0 e este passo muda a conta.
+O `pre_voo_donos` tem de seguir em 1, com a mesma tabela.
+
+**4. Upgrade**, na mesma sessão:
 
 ```sh
-: "${PASTA:?PASTA vazio — parar}"
-: "${SHA:?}"
-sudo -n docker run --rm --network easypanel --env-file "$PASTA/migrator.env" \
-  -v "$PASTA/src/apps/api:/mig" -w /mig \
-  "easypanel/sell-autonomia/api:$SHA" alembic upgrade head; echo "alembic rc=$?"
+cd "$CHECKOUT/apps/api"
+com_tunel .venv/bin/alembic upgrade head; echo "alembic rc=$?"
 pre_voo   # depois: rc=0, {"status":"ok",...}
-test -f "$PASTA/migrator.env" && rm -- "$PASTA/migrator.env"
-test ! -e "$PASTA/migrator.env" && echo ENV_APAGADO
 ```
 
 Esperado:
@@ -492,9 +539,32 @@ Esperado:
 - `alembic rc=0`;
 - `pre_voo rc=0`;
 - sem `ERROR` nem `Traceback`;
-- `ENV_APAGADO`.
+- o túnel derrubado depois de cada comando, sem processo sobrando.
 
-**4. Conferência.** Na máquina local, rodar `leitura anexo-B.sql` e depois
+**Se o túnel cair no meio do upgrade**, a conexão fecha e o Postgres desfaz a
+transação inteira. Antes de qualquer nova tentativa, conferir com um túnel
+novo, em leitura, que nada entrou:
+
+```sh
+PGOPTIONS="$PGOPTIONS -c default_transaction_read_only=on" \
+  com_tunel .venv/bin/alembic current      # tem de seguir 0061
+```
+
+Só então repetir, e só com novo OK. Qualquer outra versão: parar e levar ao
+Rodrigo.
+
+**Se a máquina local cair** (antes, durante ou depois do upgrade):
+1. noutra máquina de quem opera, refazer o passo 1 com o mesmo `SHA`. O
+   `git status --porcelain` tem de dar vazio e o `alembic heads`, 0065;
+2. preparar o `com_tunel` e o lugar da credencial do registro privado;
+3. rodar o ensaio do passo 3. O `alembic current` diz onde o banco está: 0061
+   (nada entrou) ou 0065 (a leva entrou inteira). Nunca há meio-termo, porque é
+   uma transação só;
+4. seguir do ponto que o `alembic current` mostrar, com novo OK.
+
+A mesma volta vale para o Rollback 2.
+
+**5. Conferência.** Na máquina local, rodar `leitura anexo-B.sql` e depois
 `leitura anexo-A.sql`. Esperado:
 - `versao` = `0065_dono_da_conta_payout`;
 - `schema_ready` = `t` e `canal_pronto` = `t`;
@@ -517,8 +587,8 @@ O log da api também mostra contagem 0, e o smoke fica igual à linha de base.
 **Safety abort:**
 - Se a migration falhar, a transação desfaz tudo e o banco segue em 0061.
   - Uma falha `must be owner of table seller_payout_account` quer dizer que o
-    migrador do env-file não é o dono atual (ver Fase 0, `dono_payout`).
-  - Conferir que `versao` = 0061, apagar o env-file e parar.
+    migrador do B1 não é o dono atual (ver Fase 0, `dono_payout`).
+  - Conferir que `versao` = 0061 e parar.
   - Se a falha for `lock_timeout`, pode repetir uma vez, com novo OK.
 - Se a migration passar e alguma conferência falhar, parar sem trocar a api e
   levar o achado ao Rodrigo.
@@ -602,13 +672,17 @@ Validação, nesta ordem:
   imagens com ID e `alembic_version`.
 - Apagar a pasta `src` por caminho exato, com `lsof +D` vazio, como na Fase 3
   do #437. O `src.tar.gz` fica.
+- Confirmar que nenhum túnel sobrou, nem na máquina local nem no host. O
+  `CHECKOUT` local fica até o fim das 24 h, porque o Rollback 2 roda dele;
+  depois sai por `git worktree remove`.
 - **Ficam até 24 h estáveis, e novo OK:**
   - `api-2759090.tar` com o `.sha256`;
   - `src.tar.gz`;
   - o dump;
   - os `.antes`.
 
-  O downgrade precisa do `.tar` e do `src.tar.gz`. O dump tem dado pessoal:
+  A volta da api precisa do `.tar`. O downgrade precisa do `CHECKOUT` local
+  (Fase 4). O dump tem dado pessoal:
   prazo e remoção são do Rodrigo, por caminho exato.
 - **Fora deste release, cada um com OK próprio:**
   - **o web do #469** (cartão de ativação e rota
@@ -642,18 +716,20 @@ sudo -n docker service update --image easypanel/sell-autonomia/api:rollback-0064
 é o trigger da 0062 travando a criação de produto. Faz-se com a api já em
 `2759090`.
 
-- Recriar o `src` a partir do `src.tar.gz`, conferido pelo sha256.
-- Recriar o env-file como no passo 1 da Fase 4.
-- Usar a imagem de volta, que existe no host ou no `.tar`. O alembic dela lê os
-  arquivos de migration do `src` montado.
+- Usar o mesmo checkout local do `SHA` e o mesmo túnel da Fase 4 (D3). O
+  downgrade é o código das migrations desse `SHA`, e a credencial não vai ao
+  host.
 
 ```sh
-: "${PASTA:?PASTA vazio — parar}"
-sudo -n docker run --rm --network easypanel --env-file "$PASTA/migrator.env" \
-  -v "$PASTA/src/apps/api:/mig" -w /mig \
-  easypanel/sell-autonomia/api:rollback-0064-2759090 alembic downgrade 0061_o_atraso_alcanca_o_aluno; echo "rc=$?"
-test -f "$PASTA/migrator.env" && rm -- "$PASTA/migrator.env"
+cd "$CHECKOUT/apps/api"
+export PGOPTIONS="-c lock_timeout=5s -c statement_timeout=120s"
+com_tunel .venv/bin/alembic downgrade 0061_o_atraso_alcanca_o_aluno; echo "rc=$?"
+PGOPTIONS="$PGOPTIONS -c default_transaction_read_only=on" \
+  com_tunel .venv/bin/alembic current      # 0061_o_atraso_alcanca_o_aluno
 ```
+
+ETA de 1 a 2 min. O `drop trigger` pode precisar de repetição por causa do
+`lock_timeout`.
 
 Esperado:
 - `rc=0`, com 0065→0064, 0064→0063, 0063→0062 e 0062→0061;
@@ -705,7 +781,9 @@ caso de dano de dado.
 | 0065 rodada com outro papel que não o dono atual | Fase 0 (`dono_payout`) e a própria 0065, que falha no `alter` | nenhum: a transação desfaz a leva |
 | Lock da 0065 em `seller_payout_account` | `lock_timeout=5s` | conta de recebimento espera até o commit; hoje esses caminhos já falham |
 | Outro objeto com dono errado aparece no dia | Fase 0 (`pre_voo_donos`) | nenhum: a janela não começa |
-| Credencial exposta | `--env-file` `600`, apagado no fim da fase; nunca por argumento | — |
+| Credencial exposta | D3: fica na máquina de quem opera, só no ambiente do comando; o Postgres a confere por SCRAM, e ela nunca vai ao host | — |
+| O túnel cai no meio do upgrade | transação única: o Postgres desfaz a leva; `alembic current` = 0061 antes de repetir, com novo OK | nenhum: a api atual segue sobre 0061 |
+| Túnel esquecido aberto | `com_tunel` derruba e confere ao fim de cada comando; a Fase 6 confere de novo | — |
 
 ## Anexo A — `anexo-A.sql` (leitura, sha256 `b433f3daa84ca68173bf6dfa4d05b0a23ceced59dab17596f216b6f103add974`)
 
