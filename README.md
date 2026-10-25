@@ -124,7 +124,8 @@ Para desenvolvimento manual, copie `.env.example`, substitua todos os valores
 
 ```bash
 docker compose up -d --wait postgres
-uv run --project apps/api alembic -c apps/api/alembic.ini upgrade head
+APPSELL_MIGRATOR_USE_LOCAL_INI=1 \
+  uv run --project apps/api alembic -c apps/api/alembic.ini upgrade head
 uv run --project apps/api python -m appsell_api.configure_context_key
 docker compose up -d --build api
 ```
