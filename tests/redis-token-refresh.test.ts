@@ -95,16 +95,18 @@ function internalRedis(service: RedisOAuthService) {
   return (service as unknown as { redis: RedisEvalClient }).redis;
 }
 
-async function readPairTtls(firstKey: string, secondKey: string): Promise<[number, number]> {
+// Absolute deadlines (epoch ms) do not move while the clock runs, so two
+// reads taken at different milliseconds still compare exactly.
+async function readPairDeadlines(firstKey: string, secondKey: string): Promise<[number, number]> {
   const result = await isolated.client.eval(
-    "return {redis.call('PTTL', KEYS[1]), redis.call('PTTL', KEYS[2])}",
+    "return {redis.call('PEXPIRETIME', KEYS[1]), redis.call('PEXPIRETIME', KEYS[2])}",
     2,
     firstKey,
     secondKey
   );
   if (!Array.isArray(result) || result.length !== 2 ||
       typeof result[0] !== "number" || typeof result[1] !== "number") {
-    throw new Error("Redis returned an invalid paired TTL result");
+    throw new Error("Redis returned an invalid paired deadline result");
   }
   return [result[0], result[1]];
 }
@@ -438,18 +440,19 @@ describe("distributed Redis token refresh", () => {
     const vaultRecordKey = key(context.prefix, "vault", context.sessionId);
     await isolated.client.pexpire(sessionKey, 1_500);
     await isolated.client.pexpire(vaultRecordKey, 700);
-    const before = Math.min(...await readPairTtls(sessionKey, vaultRecordKey));
+    const before = Math.min(...await readPairDeadlines(sessionKey, vaultRecordKey));
+    expect(before).toBeGreaterThan(0);
     await context.first.refreshSession(context.sessionId, 1, {
       async refresh() {
         return successFor(context.initial);
       }
     });
-    const [sessionTtl, vaultTtl] = await readPairTtls(sessionKey, vaultRecordKey);
-    expect(sessionTtl).toBeGreaterThan(0);
-    expect(vaultTtl).toBeGreaterThan(0);
-    expect(sessionTtl).toBeLessThanOrEqual(before);
-    expect(vaultTtl).toBeLessThanOrEqual(before);
-    expect(sessionTtl).toBe(vaultTtl);
+    const [sessionDeadline, vaultDeadline] = await readPairDeadlines(sessionKey, vaultRecordKey);
+    expect(sessionDeadline).toBeGreaterThan(0);
+    expect(vaultDeadline).toBeGreaterThan(0);
+    expect(sessionDeadline).toBeLessThanOrEqual(before);
+    expect(vaultDeadline).toBeLessThanOrEqual(before);
+    expect(sessionDeadline).toBe(vaultDeadline);
 
     const persistent = await createSession();
     let calls = 0;

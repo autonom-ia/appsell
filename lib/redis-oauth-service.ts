@@ -330,20 +330,26 @@ if next_session.subject ~= session.subject or next_session.createdAt ~= session.
   return 'SESSION_INTEGRITY_ERROR'
 end
 
-local session_ttl = redis.call('PTTL', KEYS[1])
-local vault_ttl = redis.call('PTTL', KEYS[2])
+-- Absolute deadlines: Redis < 7.2 does not freeze the clock inside a script,
+-- so a relative PTTL read followed by a relative PSETEX would push the pair
+-- past its previous deadline by the script's own run time.
+local session_at = redis.call('PEXPIRETIME', KEYS[1])
+local vault_at = redis.call('PEXPIRETIME', KEYS[2])
 local now_ms = tonumber(ARGV[6])
 local refresh_expires_at = tonumber(ARGV[7])
-if session_ttl <= 0 or vault_ttl <= 0 or not now_ms or not refresh_expires_at then return 'TTL_ERROR' end
-local absolute_ttl = tonumber(session.expiresAt) - now_ms
-local refresh_ttl = refresh_expires_at - now_ms
-local final_ttl = math.floor(math.min(session_ttl, vault_ttl, absolute_ttl, refresh_ttl))
-if final_ttl <= 0 then return 'TTL_ERROR' end
+if session_at <= 0 or vault_at <= 0 or not now_ms or not refresh_expires_at then return 'TTL_ERROR' end
+local clock = redis.call('TIME')
+local redis_now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
+local absolute_at = redis_now + tonumber(session.expiresAt) - now_ms
+local refresh_at = redis_now + refresh_expires_at - now_ms
+local final_at = math.floor(math.min(session_at, vault_at, absolute_at, refresh_at))
+if final_at <= redis_now then return 'TTL_ERROR' end
+local final_at_arg = string.format('%d', final_at)
 
-redis.call('PSETEX', KEYS[1], final_ttl, ARGV[4])
-redis.call('PSETEX', KEYS[2], final_ttl, ARGV[5])
+redis.call('SET', KEYS[1], ARGV[4], 'PXAT', final_at_arg)
+redis.call('SET', KEYS[2], ARGV[5], 'PXAT', final_at_arg)
 redis.call('DEL', KEYS[3], KEYS[4])
-redis.call('PEXPIRE', KEYS[5], final_ttl)
+redis.call('PEXPIREAT', KEYS[5], final_at_arg)
 return 'OK'
 `;
 
