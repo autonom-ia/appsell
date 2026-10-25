@@ -467,8 +467,12 @@ pre_voo() {
 pre_voo   # antes: rc=1, só public.seller_payout_account
 ```
 
-Saída com `rc=2` é erro de conexão, não drift: parar e entender antes de
-seguir.
+A função `pre_voo` vale só nesta sessão de shell. O passo 3 roda na **mesma
+sessão**. Se ela cair, colar de novo o bloco acima antes do passo 3.
+
+- `rc=2` é erro de conexão, não drift: parar e entender antes de seguir.
+- `rc=0` antes do upgrade quer dizer que o dono já mudou desde a Fase 0, por
+  outra mão: parar, reler a Fase 0 inteira e não seguir sem entender.
 
 **3. Upgrade.**
 
