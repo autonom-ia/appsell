@@ -15,6 +15,8 @@ export default defineConfig({
     // Several integration files start real Next.js processes and temporarily
     // snapshot Next-generated config. Serial files keep those shared worktree
     // surfaces deterministic while each test still exercises concurrency.
-    fileParallelism: false
+    fileParallelism: false,
+    // Os testes que sobem `next dev` não vão mais ao Google Fonts (#457).
+    globalSetup: ["tests/setup/fontes-do-google.ts"]
   }
 });

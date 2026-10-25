@@ -1,5 +1,6 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { resolve } from "node:path";
+import { login } from "./support/login";
 
 const entitlementId = "bee105e2-7809-5bf5-874a-d6332dc4a4ef";
 const lessonOne = "a39181dd-c70c-57b3-935d-d97fd834d709";
@@ -27,11 +28,9 @@ type PdfStudyMockStore = {
   bookmarks: number[];
 };
 
-async function login(page: Page) {
-  await page.goto("/");
+async function enterAndWaitForSession(page: Page) {
   const sessionReady = page.waitForResponse((response) => response.url().endsWith("/api/session") && response.status() === 200);
-  await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
-  await expect(page).toHaveURL("/dashboard");
+  await login(page);
   await sessionReady;
 }
 
@@ -334,7 +333,7 @@ test("bounds protected PDF requests for a 65-page reader", async ({ page }) => {
     }
   });
 
-  await login(page);
+  await enterAndWaitForSession(page);
   await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
   await expect(page.locator(".protected-pdf-preview img"))
     .toHaveAttribute("src", `/api/library/items/${entitlementId}/assets/${assetId}/pages/1`);
@@ -410,7 +409,7 @@ test("prioritizes, retries and reuses protected pages while the reader stays ope
       await route.fulfill({ status: 200, contentType: "image/png", body: protectedPng });
     }
   });
-  await login(page);
+  await enterAndWaitForSession(page);
   await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
   await expect(page.locator(".protected-pdf-preview img")).toBeVisible();
 
@@ -447,7 +446,7 @@ test("prioritizes, retries and reuses protected pages while the reader stays ope
 test("keeps the restored PDF page after the reader measures its viewport", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await mockLearningApi(page, { pdfPageCount: 65 });
-  await login(page);
+  await enterAndWaitForSession(page);
   const viewHref = `/api/library/items/${entitlementId}/assets/${assetId}/pages`;
   await page.evaluate(({ key }) => {
     window.sessionStorage.setItem(key, JSON.stringify({ version: 1, page: 31, zoom: 1 }));
@@ -494,7 +493,7 @@ test("navigates PDF index links and opens linked video inside the protected read
       }
     ]
   });
-  await login(page);
+  await enterAndWaitForSession(page);
   await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
   await page.getByRole("button", { name: "Abrir leitor" }).click();
   const reader = page.getByRole("dialog", { name: "Leitor de Guia da aula" });
@@ -544,7 +543,7 @@ test("persists vector annotations and favorites without drifting across zoom and
     pdfStudyStore,
     onPdfStudyMutation: (mutation) => studyMutations.push(mutation)
   });
-  await login(page);
+  await enterAndWaitForSession(page);
   await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
   await page.getByRole("button", { name: "Abrir leitor" }).click();
   const reader = page.getByRole("dialog", { name: "Leitor de Guia da aula" });
@@ -702,7 +701,7 @@ test("draws with one touch, reserves two touches for zoom and scrolls in hand mo
   test.skip(testInfo.project.name !== "chromium", "Raw multi-touch proof uses Chromium CDP.");
   await page.setViewportSize({ width: 390, height: 844 });
   await mockLearningApi(page, { pdfPageCount: 3 });
-  await login(page);
+  await enterAndWaitForSession(page);
   await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
   await page.getByRole("button", { name: "Abrir leitor" }).click();
   const reader = page.getByRole("dialog", { name: "Leitor de Guia da aula" });
@@ -758,7 +757,7 @@ test("draws with one touch, reserves two touches for zoom and scrolls in hand mo
 test("pans with a mouse in hand mode and explains how to edit markings", async ({ page }) => {
   await page.setViewportSize({ width: 1100, height: 760 });
   await mockLearningApi(page, { pdfPageCount: 3 });
-  await login(page);
+  await enterAndWaitForSession(page);
   await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
   await page.getByRole("button", { name: "Abrir leitor" }).click();
   const reader = page.getByRole("dialog", { name: "Leitor de Guia da aula" });
@@ -793,7 +792,7 @@ test("pans with a mouse in hand mode and explains how to edit markings", async (
 test("opens the mobile shelf, protects the PDF and completes into the next lesson", async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 800 });
   const mutations = await mockLearningApi(page);
-  await login(page);
+  await enterAndWaitForSession(page);
   await page.goto("/library");
   await expect(page.getByRole("heading", { name: "Codex na prática", exact: true })).toBeVisible();
   await expect(page.getByText("Conteúdo exclusivo da primeira aula.")).toHaveCount(0);
@@ -875,7 +874,7 @@ test("streams protected video on mobile and persists stepped and ended progress"
       });
     }
   });
-  await login(page);
+  await enterAndWaitForSession(page);
   await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
 
   const video = page.locator('video[aria-label="Codex em 3 passos"]');
@@ -922,7 +921,7 @@ test("retries unacknowledged video progress and preserves the final percentage",
       } }) });
     }
   });
-  await login(page);
+  await enterAndWaitForSession(page);
   await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
   const video = page.locator('video[aria-label="Codex em 3 passos"]');
   await video.evaluate((element) => {
@@ -946,7 +945,7 @@ test("bounds automatic video progress retries during a sustained outage", async 
       await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "temporary" }) });
     }
   });
-  await login(page);
+  await enterAndWaitForSession(page);
   await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
   await page.locator('video[aria-label="Codex em 3 passos"]').evaluate((element) => {
     Object.defineProperty(element, "duration", { configurable: true, value: 100 });
@@ -973,7 +972,7 @@ test("clears stale lesson content before a denied cross-resource navigation reso
       await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "not_found" }) });
     }
   });
-  await login(page);
+  await enterAndWaitForSession(page);
   await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
   await expect(page.getByRole("heading", { level: 1, name: "O que é Codex" })).toBeVisible();
   const mobileOutline = page.locator(".player-outline-mobile");
@@ -995,7 +994,7 @@ test("uses the server resume lesson to enter the correct course in a multi-cours
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(secondCourseEnvelope()) });
     }
   });
-  await login(page);
+  await enterAndWaitForSession(page);
   await page.goto("/library");
   const resume = page.getByRole("link", { name: /Começar curso/ });
   await expect(resume).toHaveAttribute("href", `/library/items/${entitlementId}/lessons/${lessonTwo}`);
@@ -1007,7 +1006,7 @@ test("uses the server resume lesson to enter the correct course in a multi-cours
 
 test("renders a product without lessons without hiding the shelf", async ({ page }) => {
   await mockLearningApi(page, { libraryResume: null });
-  await login(page);
+  await enterAndWaitForSession(page);
   await page.goto("/library");
   await expect(page.getByRole("heading", { name: "Codex na prática", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Conteúdo indisponível" })).toBeDisabled();
@@ -1016,7 +1015,7 @@ test("renders a product without lessons without hiding the shelf", async ({ page
 
 test("rejects a progress response from another enrollment", async ({ page }) => {
   await mockLearningApi(page, { progressEnrollment: foreignEnrollmentId });
-  await login(page);
+  await enterAndWaitForSession(page);
   await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
   await expect(page.getByRole("heading", { level: 1, name: "O que é Codex" })).toBeVisible();
   await expect(page.getByText("A resposta de progresso não pôde ser validada.")).toBeVisible();
@@ -1040,7 +1039,7 @@ test("removes delivered content when focus revalidation reports revocation", asy
       }
     }
   });
-  await login(page);
+  await enterAndWaitForSession(page);
   await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
   await expect(page.getByText("Conteúdo exclusivo da primeira aula.")).toBeVisible();
   await progressStarted;
@@ -1075,7 +1074,7 @@ test("revalidates revocation after completing the final lesson", async ({ page }
       }
     }
   });
-  await login(page);
+  await enterAndWaitForSession(page);
   await page.goto(`/library/items/${entitlementId}/lessons/${lessonTwo}`);
   await expect(page.getByText("Conteúdo exclusivo da segunda aula.")).toBeVisible();
   await page.getByRole("button", { name: "Concluir curso" }).click();
@@ -1106,7 +1105,7 @@ test("revalidates revocation after completing the final lesson", async ({ page }
  * sem atributo nenhum da 153 tambem, porque o cabecalho da pagina propaga.
  */
 test("o video incorporado declara uma politica de referrer que o provedor aceita", async ({ page }) => {
-  await login(page);
+  await enterAndWaitForSession(page);
   await mockLearningApi(page);
   await mockLessonMaterials(page);
   await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
@@ -1122,7 +1121,7 @@ test("o video incorporado declara uma politica de referrer que o provedor aceita
 test("o Vimeo continua sem referrer: a excecao vale onde foi provada", async ({ page }) => {
   // O 153 foi reproduzido no YouTube, e so nele. Entregar a origem ao Vimeo
   // por analogia seria afrouxar sem motivo demonstrado.
-  await login(page);
+  await enterAndWaitForSession(page);
   await mockLearningApi(page);
   await mockLessonMaterials(page, "vimeo");
   await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
@@ -1133,7 +1132,7 @@ test("o Vimeo continua sem referrer: a excecao vale onde foi provada", async ({ 
 });
 
 test("o link externo da aula chega ao aluno com o destino intacto", async ({ page }) => {
-  await login(page);
+  await enterAndWaitForSession(page);
   await mockLearningApi(page);
   await mockLessonMaterials(page);
   await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
@@ -1189,7 +1188,7 @@ test("o vídeo do PDF diz que está sendo preparado, e depois toca", async ({ pa
       }
     ]
   });
-  await login(page);
+  await enterAndWaitForSession(page);
   await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
   await page.getByRole("button", { name: "Abrir leitor" }).click();
   const reader = page.getByRole("dialog", { name: "Leitor de Guia da aula" });

@@ -6,7 +6,7 @@ pr:                #233, #234, #236, #238, #239
 merge_sha:         3ddd58b9d2efe192185f0708fd024b5ca278ed7e
 ci_run:            32841252106 (certificação completa, 6/6 escopos verdes)
 previous_release:  50b6301 (banco em 0033_pdf_study_state)
-backup:            /home/claudete/backups/appsell/appsell_native_90_20260825T114340Z.dump
+backup:            <pasta-de-backups>/appsell_native_90_20260825T114340Z.dump
                    881 KB · 828 objetos · pg_restore --list OK · 600
 migration_head:    0033_pdf_study_state -> 0036_lesson_material_links
 web_image:         easypanel/sell-autonomia/web  @ 3ddd58b

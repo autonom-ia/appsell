@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { login } from "./support/login";
 
 /**
  * #257 — o cartão e a entrada do catálogo.
@@ -51,12 +52,6 @@ async function openCatalog(page: Page) {
   });
   await page.goto("/products");
   await expect(page.locator("article.draft-card").first()).toBeVisible();
-}
-
-async function login(page: Page) {
-  await page.goto("/");
-  await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
-  await expect(page).toHaveURL("/dashboard");
 }
 
 function luminance(color: string): number {

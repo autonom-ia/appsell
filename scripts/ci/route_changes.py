@@ -21,6 +21,7 @@ SCOPES = (
     "image_bootstrap",
     "backup",
     "preview",
+    "sandbox",
 )
 
 IGNORED_PREFIXES = (
@@ -104,6 +105,24 @@ STORAGE_PATTERNS = (
     "tests/http-byte-range.test.ts",
     "scripts/generate-demo-codex-pdfs.py",
     "scripts/test-storage-vertical.sh",
+)
+# O endurecimento do pdf-sandbox e o que ele prova (#478): o script, o ensaio
+# em Swarm e todo módulo que o sandbox importa e roda (pdf_* e video_*: o
+# serviço chama verificador, raster, links e remux de vídeo), mais os limites
+# que dizem quanto ele grava no /tmp (asset_media, learning_pdf). Um deles
+# gravando fora do /tmp ou abrindo processos demais quebraria o PDF em produção.
+# Os dois scripts não fazem imagem nenhuma: vão só para o ensaio.
+SANDBOX_SCRIPTS = (
+    "deploy/easypanel-native/harden-pdf-sandbox.sh",
+    "deploy/easypanel-native/test-harden-pdf-sandbox-swarm.sh",
+)
+SANDBOX_PATTERNS = (
+    *SANDBOX_SCRIPTS,
+    "deploy/easypanel-native/Dockerfile.api",
+    "apps/api/src/appsell_api/pdf_*.py",
+    "apps/api/src/appsell_api/video_*.py",
+    "apps/api/src/appsell_api/asset_media.py",
+    "apps/api/src/appsell_api/learning_pdf.py",
 )
 
 
@@ -243,6 +262,10 @@ def classify_paths(paths: Iterable[str]) -> dict[str, object]:
                 route["image_bootstrap"] = True
             matched = True
 
+        if _matches(path, SANDBOX_PATTERNS):
+            route["sandbox"] = True
+            matched = True
+
         if path == ".dockerignore":
             route["image_web"] = True
             route["image_api"] = True
@@ -251,7 +274,10 @@ def classify_paths(paths: Iterable[str]) -> dict[str, object]:
         elif path.startswith("deploy/easypanel-native/backup/"):
             route["backup"] = True
             matched = True
-        elif path.startswith("deploy/easypanel-native/"):
+        elif (
+            path.startswith("deploy/easypanel-native/")
+            and path not in SANDBOX_SCRIPTS
+        ):
             name = PurePosixPath(path).name.lower()
             if "web" in name:
                 route["image_web"] = True

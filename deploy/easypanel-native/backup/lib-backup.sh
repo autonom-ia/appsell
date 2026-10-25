@@ -50,7 +50,40 @@ require_env() {
 # environment (uppercase env name; never a lowercase conninfo string). It is
 # forwarded by NAME only (`-e PGPASSWORD`, no `=value`) with the value exported
 # just for that invocation, so it never appears on the world-readable argv.
-: "${BACKUP_PG_IMAGE:=postgres:16-alpine}"
+# The default is the image the production server runs (spec of
+# sell-autonomia_postgres-native-90, read 24/10/2026: PostgreSQL 17.10).
+# pg_dump refuses a server whose major is newer than its own, so a lower major
+# here makes every backup fail; pg_assert_client_not_older checks it (#492).
+: "${BACKUP_PG_IMAGE:=postgres@sha256:ebba4f4de37f08f138f97c1443c987a435e783177afedcc4aaf2da1930fbc37a}"
+
+# pg_client_major IMAGE
+# Echoes the major version of the pg_dump inside IMAGE ("17" for 17.10).
+pg_client_major() {
+  local image="$1" version
+  version="$(docker run --rm "$image" pg_dump --version)" \
+    || die "could not run pg_dump --version in ${image}"
+  # `pg_dump (PostgreSQL) 17.10 (Debian ...)`: the third field is the version.
+  version="$(awk '{ print $3 }' <<<"$version")"
+  version="${version%%.*}"
+  [[ -n "$version" && "$version" != *[!0-9]* ]] \
+    || die "unexpected pg_dump --version output in ${image}"
+  printf '%s\n' "$version"
+}
+
+# pg_assert_client_not_older HOST PORT USER DB SECRET
+# Fails before any dump when the client image is older than the server: pg_dump
+# would refuse anyway, but only after the backup window has started.
+pg_assert_client_not_older() {
+  local server_num server_major client_major
+  server_num="$(pg_scalar "$@" "show server_version_num")"
+  [[ -n "$server_num" && "$server_num" != *[!0-9]* ]] \
+    || die "could not read server_version_num"
+  server_major=$(( server_num / 10000 ))
+  client_major="$(pg_client_major "$BACKUP_PG_IMAGE")"
+  (( client_major >= server_major )) \
+    || die "pg_dump ${client_major} in BACKUP_PG_IMAGE is older than server ${server_major}: use a PostgreSQL ${server_major}+ image"
+  log "client major ${client_major} >= server major ${server_major}"
+}
 
 # pg_dump_to_file HOST PORT USER DB SECRET OUTFILE
 # Streams a custom-format (compressed, restorable) dump to a host file via
@@ -94,6 +127,39 @@ pg_restore_from_file() {
       --exit-on-error \
       --host="$host" --port="$port" --username="$user" --dbname="$db" \
     <"$dumpfile"
+}
+
+# pg_roles_from_source FILE
+# Echoes, one per line, the roles that FILE (infra/postgres/init/001_roles.sh)
+# creates, read from its `select 'create role <name> ...'` statements. The
+# restore creates exactly these, so the role set has a single source: a role
+# added to production through that file reaches the rehearsal with no list to
+# keep in sync. pg_dump does not carry roles (they belong to the cluster), and
+# --no-owner/--no-privileges do not strip the role a CREATE POLICY names.
+pg_roles_from_source() {
+  local source="$1" roles role
+  [[ -s "$source" ]] || die "roles source not found or empty: ${source}"
+  roles="$(awk -v q="'" '$1 == "select" && $2 == q "create" && $3 == "role" { print $4 }' "$source")"
+  [[ -n "$roles" ]] || die "no create role statement found in ${source##*/}"
+  while IFS= read -r role; do
+    [[ -n "$role" && "$role" != *[!a-z0-9_]* ]] \
+      || die "unexpected role name in ${source##*/}: ${role}"
+  done <<<"$roles"
+  printf '%s\n' "$roles"
+}
+
+# pg_create_nologin_roles HOST PORT USER DB SECRET ROLE...
+# Creates each ROLE as NOLOGIN with no password. Meant only for a disposable
+# restore target: the roles exist so the restored policies resolve, and nobody
+# can log in as them.
+pg_create_nologin_roles() {
+  local host="$1" port="$2" user="$3" db="$4" secret="$5" role
+  shift 5
+  for role in "$@"; do
+    [[ -n "$role" && "$role" != *[!a-z0-9_]* ]] || die "refusing role name: ${role}"
+    pg_scalar "$host" "$port" "$user" "$db" "$secret" \
+      "create role \"${role}\" nologin" >/dev/null
+  done
 }
 
 # pg_scalar HOST PORT USER DB SECRET SQL
@@ -172,7 +238,7 @@ rotate_local() {
 # ship_offhost ENCFILE — dispatches on APPSELL_BACKUP_DEST_KIND:
 #   none      : local retention only (default)
 #   local-dir : copy to APPSELL_BACKUP_LOCAL_DIR (used by the CI rehearsal)
-#   s3        : upload to a MinIO/S3 bucket via the MinIO client (mc) container
+#   s3        : upload to an S3 bucket with one PutObject (AWS CLI container)
 #   rsync     : rsync over SSH to APPSELL_BACKUP_RSYNC_TARGET
 # Only the encrypted artifact is ever shipped off-host.
 ship_offhost() {
@@ -200,27 +266,61 @@ ship_offhost() {
   esac
 }
 
-# S3-compatible (MinIO) upload via the mc container. Credentials arrive via env
-# and are wired into a throwaway alias inside the container; nothing is written
-# to a config file on the host. The MC_HOST_offhost URL embeds the access/secret
-# keys, so it is forwarded to the container by NAME only (`-e MC_HOST_offhost`,
-# no `=value`) — the value is exported just for this invocation and never lands
-# on the world-readable argv.
+# S3 upload with a single PutObject call, via the AWS CLI pinned by digest
+# (2.37.12, amd64 and arm64). The destination IAM grants only s3:PutObject on
+# the prefix, with no Get, List or Delete (#517), so the client must not need
+# anything else: `s3api put-object` with an explicit key issues exactly one
+# request, while `aws s3 cp` and `mc cp` may also list or stat the target.
+# Content-MD5 makes the server reject a body that differs from the local file.
+# The access and secret keys reach the container by env NAME only (`-e
+# AWS_ACCESS_KEY_ID`, no `=value`), exported just for this invocation, so they
+# never land on the world-readable argv.
+: "${BACKUP_S3_IMAGE:=amazon/aws-cli:2.37.12@sha256:ce44b800602264c12298bbf3399055a4cefdb9ed4a098abe564afe26e7071bce}"
+
+# s3_content_md5 FILE — base64 MD5 of FILE, as the Content-MD5 header wants it.
+s3_content_md5() {
+  openssl dgst -md5 -binary "$1" | openssl base64 -A
+}
+
 ship_offhost_s3() {
   local encfile="$1"
-  require_env APPSELL_BACKUP_S3_ENDPOINT APPSELL_BACKUP_S3_BUCKET \
+  require_env APPSELL_BACKUP_S3_BUCKET APPSELL_BACKUP_S3_REGION \
     APPSELL_BACKUP_S3_ACCESS_KEY APPSELL_BACKUP_S3_SECRET_KEY
+  command -v openssl >/dev/null 2>&1 || die "openssl is required for the s3 destination"
   local prefix="${APPSELL_BACKUP_S3_PREFIX:-sell/native-90}"
-  local image="${BACKUP_MC_IMAGE:-minio/mc:latest}"
+  prefix="${prefix#/}"
+  prefix="${prefix%/}"
   local dir="${encfile%/*}" base="${encfile##*/}"
-  local mc_host="https://${APPSELL_BACKUP_S3_ACCESS_KEY}:${APPSELL_BACKUP_S3_SECRET_KEY}@${APPSELL_BACKUP_S3_ENDPOINT#https://}"
-  MC_HOST_offhost="$mc_host" docker run --rm \
-    -e MC_HOST_offhost \
-    -v "$dir:/data:ro" \
-    "$image" \
-    cp "/data/${base}" "offhost/${APPSELL_BACKUP_S3_BUCKET}/${prefix}/${base}" \
+  local key="${prefix:+${prefix}/}${base}"
+  local md5
+  md5="$(s3_content_md5 "$encfile")" || die "could not hash ${base}"
+  [[ -n "$md5" ]] || die "could not hash ${base}"
+
+  local -a docker_args=(--rm -v "$dir:/data:ro"
+    -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_DEFAULT_REGION
+    -e AWS_EC2_METADATA_DISABLED
+    -e AWS_REQUEST_CHECKSUM_CALCULATION -e AWS_RESPONSE_CHECKSUM_VALIDATION)
+  [[ -n "${BACKUP_S3_DOCKER_NETWORK:-}" ]] \
+    && docker_args+=(--network "$BACKUP_S3_DOCKER_NETWORK")
+  # Empty endpoint means AWS itself; a value points at an S3-compatible store.
+  local -a endpoint_args=()
+  [[ -n "${APPSELL_BACKUP_S3_ENDPOINT:-}" ]] \
+    && endpoint_args=(--endpoint-url "$APPSELL_BACKUP_S3_ENDPOINT")
+
+  # The checksum variables keep the CLI to the Content-MD5 we send: since 2.23
+  # it adds its own trailing checksum, which some S3-compatible stores refuse.
+  AWS_ACCESS_KEY_ID="$APPSELL_BACKUP_S3_ACCESS_KEY" \
+    AWS_SECRET_ACCESS_KEY="$APPSELL_BACKUP_S3_SECRET_KEY" \
+    AWS_DEFAULT_REGION="$APPSELL_BACKUP_S3_REGION" \
+    AWS_EC2_METADATA_DISABLED=true \
+    AWS_REQUEST_CHECKSUM_CALCULATION=when_required \
+    AWS_RESPONSE_CHECKSUM_VALIDATION=when_required \
+    docker run "${docker_args[@]}" "$BACKUP_S3_IMAGE" \
+    "${endpoint_args[@]}" s3api put-object \
+    --bucket "$APPSELL_BACKUP_S3_BUCKET" --key "$key" \
+    --body "/data/${base}" --content-md5 "$md5" >/dev/null \
     || die "off-host S3 upload failed for ${base}"
-  log "off-host: uploaded ${base} to s3://${APPSELL_BACKUP_S3_BUCKET}/${prefix}/"
+  log "off-host: uploaded ${base} to s3://${APPSELL_BACKUP_S3_BUCKET}/${key}"
 }
 
 # rsync-over-SSH upload. The SSH identity path and known_hosts arrive via env so

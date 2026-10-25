@@ -376,6 +376,47 @@ export async function readSellerPayoutAccount(
   }) as Promise<{ payout_account: SellerPayoutAccountProjection | null }>;
 }
 
+export interface SellerFinancialActivationProjection {
+  self_service: boolean;
+  status?: "active" | "available" | "blocked";
+  reason?:
+    | "unconfigured"
+    | "channel_unavailable"
+    | "channel_inactive"
+    | "payout_account_not_ready"
+    | "incomplete"
+    | null;
+}
+
+// Ativação de vendas pelo Financial (#382). O corpo é sempre vazio: o par do
+// Financial vem da env da API e nunca passa pelo navegador nem pelo BFF.
+export async function readSellerFinancialActivation(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/sellers/${sellerOrganizationId}/financial-activation`,
+    capability: "commerce.payout.read",
+    sellerOrganizationId
+  }) as Promise<SellerFinancialActivationProjection>;
+}
+
+export async function activateSellerFinancial(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `/v1/me/sellers/${sellerOrganizationId}/financial-activation`,
+    capability: "commerce.payout.manage",
+    sellerOrganizationId,
+    body: {}
+  }) as Promise<{ status: "active"; changed: boolean }>;
+}
+
 // The provider_account_id sent here must come ONLY from an authenticated
 // accounts.create response (or a verified provider webhook) — never from
 // anything the browser submitted. The domain API enforces membership and the

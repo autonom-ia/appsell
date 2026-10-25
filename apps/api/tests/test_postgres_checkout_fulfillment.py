@@ -692,3 +692,49 @@ def test_worker_requires_active_allowlist_and_runtime_has_no_table_access(
                 (fixture["worker"],),
             )
             connection.commit()
+
+
+def test_financial_refund_event_id_revokes_the_financial_approval(
+    fixture: dict[str, UUID | str],
+) -> None:
+    # Contract with autonom-ia/autonomia-financial#152: the Financial approves with
+    # financial:external-checkout:<order> and refunds with
+    # financial:external-checkout-refund:<order>, both keyed by the order id as
+    # external_purchase_id. Catches: the refund id being taken as a replay of the
+    # approval, and a replayed refund changing anything.
+    assert ADMIN_URL
+    _register_worker(fixture)
+    order_id = str(uuid4())
+    buyer = f"buyer.financial.{RUN}@example.test"
+    _accept(
+        fixture,
+        event_reference=f"financial:external-checkout:{order_id}",
+        purchase_reference=order_id,
+        buyer_email=buyer,
+    )
+    assert any(result.get("applied") is True for result in _drain(fixture))
+    granted = _entitlement(fixture, order_id)
+    assert granted is not None and granted[1] == "active"
+
+    refund_event, refund_created = _accept(
+        fixture,
+        event_reference=f"financial:external-checkout-refund:{order_id}",
+        event_type="purchase.refunded",
+        purchase_reference=order_id,
+        buyer_email=buyer,
+    )
+    assert refund_created
+    assert any(result.get("revoked") is True for result in _drain(fixture))
+    revoked = _entitlement(fixture, order_id)
+    assert revoked is not None and revoked[1] == "revoked"
+
+    replay_event, replay_created = _accept(
+        fixture,
+        event_reference=f"financial:external-checkout-refund:{order_id}",
+        event_type="purchase.refunded",
+        purchase_reference=order_id,
+        buyer_email=buyer,
+    )
+    assert replay_event == refund_event and not replay_created
+    assert _drain(fixture) == []
+    assert _entitlement(fixture, order_id) == revoked
