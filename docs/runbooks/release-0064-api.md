@@ -1,4 +1,4 @@
-# Plano — migrations 0062, 0063 e 0064 e a api nova em produção
+# Plano — migrations 0062 a 0065 e a api nova em produção
 
 > **Estado: só plano. Nada daqui foi executado.**
 >
@@ -7,6 +7,8 @@
 > - **Quem preparou:** a trilha 2 · Dinheiro, em 24/10/2026. A revisão
 >   independente veio com 1 ALTO e 6 MÉDIOS. Todos foram incorporados. D1 e D2
 >   foram decididas pela Orquestração em 24/10.
+> - **0065 e pré-voo de donos (#509):** acrescentados pela trilha Plataforma em
+>   25/10/2026. A 0065 entra na mesma leva, e o pré-voo roda antes e depois.
 > - **Base:**
 >   - `release-437-correcoes-rce.md`: regras de shell e a volta guardada em
 >     arquivo;
@@ -49,7 +51,7 @@
 
 | Item | De | Para |
 |---|---|---|
-| Banco `appsell_native_90` | `0061_o_atraso_alcanca_o_aluno` (registrado em 04/09, **não relido desde então**) | `0064_vendas_ativadas_pela_loja` |
+| Banco `appsell_native_90` | `0061_o_atraso_alcanca_o_aluno` (relido em 25/10) | `0065_dono_da_conta_payout` |
 | `sell-autonomia_api` | `api:2759090` (lido em 24/10, ID `sha256:0e126a1a5b03…`) | `api:<SHA>` (Pré-condição 1) |
 | `asset-worker` | `api:2759090` | **não muda** (D1) |
 | `web`, `pdf-sandbox` | — | **não mudam** |
@@ -82,6 +84,33 @@
     existe na env de produção, o `GET` responde `{"self_service": false}` e o
     `POST`, 403.
   - A Hub2You fica de fora.
+- **0065 (#509).**
+  - Passa o dono de `public.seller_payout_account` para `appsell_owner`, só se
+    ele for outro. Índices, toast e tipos acompanham a tabela.
+  - Em produção a tabela nasceu com o migrador como dono. As funções de
+    payout (`security definer`, dono `appsell_owner`) recebem
+    `permission denied` nela, inclusive as da 0064. A 0065 conserta isso.
+  - Ninguém perde acesso: o migrador é membro de `appsell_owner`, o runtime
+    nunca teve privilégio direto, e o FORCE RLS e a policy não mudam.
+  - Sai do `set local role` do `env.py` só pelo tempo do `alter`, como a 0053:
+    só o dono atual transfere a posse. Por isso a migration tem de rodar com o
+    **mesmo migrador que é o dono hoje**. Com outro, o `alter` falha e a
+    transação desfaz as quatro.
+  - O downgrade não devolve o dono.
+
+### O pré-voo de donos
+
+`python -m appsell_api.preflight_donos` lista os objetos de `public` e
+`app_private` cujo dono não é `appsell_owner`, sem contar membros de extensão.
+Só lê o catálogo, numa transação READ ONLY com `statement_timeout` de 5 s.
+Sai com 0 sem nada fora, com 1 e a lista quando há algo fora, e com 2 em erro de
+uso ou de banco. A URL vem de `APPSELL_PREFLIGHT_DATABASE_URL`, sem valor
+padrão. O mesmo critério está no anexo A (`pre_voo_donos`).
+
+Lido em produção em 25/10, só em leitura: **um item**, a própria
+`seller_payout_account`. Todos os objetos do migrador no banco são dela (tabela,
+índices, toast e tipos). O `alembic_version` pertence ao `appsell_owner`. As
+funções do `pgcrypto` ficam de fora por serem membros de extensão.
 
 ### O que a api nova muda
 
@@ -109,8 +138,11 @@
        trigger ativo;
      - o caso de canal ambíguo está em
        `test_an_ambiguous_channel_never_blocks_product_creation`.
-   - **Startup.** O `schema_ready()` fica no banco e aceita de 0057 a 0064,
+   - **Startup.** O `schema_ready()` fica no banco e aceita de 0057 a 0065,
      então o `/health/startup` da api atual continua verde.
+   - **0065.** Só troca o dono de uma tabela e ensina a versão ao readiness.
+     Para a api atual, o efeito é as funções de payout voltarem a ler e gravar
+     a tabela.
    - **Confirmação no host.** A Fase 4 lê o `/health/ready` da api atual depois
      da migration.
 2. **A api nova precisa da 0064.**
@@ -122,7 +154,7 @@
    banco em 0064 o tempo que for preciso.
 
 **Uma transação só.** O `env.py` tem um único `begin_transaction` para o
-`upgrade head`. Ou entram as três migrations, ou nenhuma.
+`upgrade head`. Ou entram as quatro migrations, ou nenhuma.
 
 **Locks.**
 - O `create trigger` pede `SHARE ROW EXCLUSIVE` em `catalog_product` e segura
@@ -132,6 +164,10 @@
 - Para não enfileirar atrás de uma transação longa, upgrade e downgrade rodam
   com `lock_timeout=5s`, pelo `PGOPTIONS` do env-file. Conferido em 24/10: o
   psycopg do alembic recebe o valor.
+- O `alter table … owner` da 0065 pede `ACCESS EXCLUSIVE` em
+  `seller_payout_account` e segura até o commit da leva inteira. Nesse
+  intervalo, leitura e escrita de conta de recebimento esperam. Hoje esses
+  caminhos já falham com `permission denied`.
 - Se o lock não sair em 5 s, a transação volta inteira e pode ser repetida.
 
 ## Bloqueios antes de qualquer fase 🔴
@@ -147,7 +183,8 @@
 - **B2 — CI no SHA do release.**
   - É preciso um `workflow_dispatch` do App CI no `SHA`, com `cert_api`,
     `cert_postgres` e o `ci-gate` em success. O `cert_postgres` roda a cadeia
-    `0062→0063→0064`.
+    `0062→0063→0064→0065` e o teste do drift de dono
+    (`test_postgres_dono_da_conta_payout.py`).
   - O run 40110451823 vale para `e31e37a`, o conteúdo do #469. O `SHA` da
     `main` é outro commit e precisa de run próprio.
 
@@ -160,8 +197,8 @@
      vazio.
    - Se a `main` andar, repetir o diff. Qualquer linha nesses caminhos obriga a
      reavaliar.
-   - O `SHA` só existe depois do merge do PR do #503. O `workflow_dispatch` do B2
-     roda nele.
+   - O `SHA` só existe depois do merge do PR do #503 e do PR do #509. O
+     `workflow_dispatch` do B2 roda nele.
 2. **A volta, ensaiada em 24/10 em banco local.**
    - Cadeia: `upgrade 0061` → `upgrade head` →
      `downgrade 0061_o_atraso_alcanca_o_aluno` → `upgrade head`.
@@ -170,14 +207,21 @@
    - Depois do downgrade sobraram 0 das 7 funções, 0 trigger e 0 funções de
      `app_private` fora do dono.
    - No CI, cada downgrade rodou quando a sua migration era a cabeça (#466, #459,
-     #469).
+     #469, #509).
+   - **0065, ensaiada em 25/10 em banco local.** Com o drift recriado em 0064
+     (dono = migrador), o `upgrade head` levou tabela, índices e tipo ao
+     `appsell_owner`. O `downgrade -1` manteve o dono, e o `upgrade` de novo
+     voltou à cabeça.
 3. **Leitura em arquivo local.**
    - O SQL de leitura (anexo A) e o de conferência (anexo B) ficam no
      computador de quem opera. Cada bloco é copiado para `anexo-A.sql` e
      `anexo-B.sql`, sem a cerca, terminando em quebra de linha. O `shasum -a 256`
      de cada arquivo tem de bater com o título do anexo.
    - Eles vão pelo stdin do `ssh`, e nada é gravado no host.
-   - Os dois foram testados em banco local, em 0061 e em 0064, com exit 0.
+   - Os dois foram testados em banco local, em 0061 e em 0064, com exit 0. Em
+     25/10, na versão com a 0065, foram testados em 0065 com e sem o drift de
+     dono. Com o drift, o anexo A dá `pre_voo_donos` 1 e o anexo B para com
+     `permission denied` no `owner_le_payout`, o que na Fase 4 é abort.
    - Sem dado vinculado, a contagem do backfill só foi provada em sintaxe. A
      prova com dado é a Fase 4.
 
@@ -234,7 +278,9 @@
 | `APPSELL_FINANCIAL_SHARED_OPERATOR_ID` / `_CATALOG_ITEM_ID` | ausentes | | **ausentes** |
 | `APPSELL_FINANCIAL_ACTIVATION_REQUIRES_PAYOUT_ACCOUNT` | ausente | | **ausente** (valor inválido derruba o GET com 503) |
 | imagem e estado do `asset-worker` | `2759090` | | não muda |
-| `alembic_version` | `0061_o_atraso_alcanca_o_aluno` | | `0064_vendas_ativadas_pela_loja` |
+| `alembic_version` | `0061_o_atraso_alcanca_o_aluno` | | `0065_dono_da_conta_payout` |
+| `pre_voo_donos` | 1: `public.seller_payout_account` (25/10) | | 0 |
+| `dono_payout` | o migrador (25/10) | | `appsell_owner` |
 | `schema_ready()` como runtime | `t` (04/09) | | `t` |
 | `identidades_do_canal` | 1 (esperado) | | 1 (exigido) |
 | `lojas_vinculadas` / `…_com_hash_do_canal` | ? / ? | | — |
@@ -278,6 +324,11 @@ erro. Nesse caso, ler o `schema_ready()` como admin e anotar o desvio.
 - `admin_ignora_rls` `f`: com o FORCE RLS, todas as contagens seriam 0 sem erro;
 - `identidades_do_canal` ≠ 1, com `lojas_vinculadas` > 0: a 0062 abortaria, e o
   caso é do Rodrigo;
+- `pre_voo_donos` com qualquer objeto além de `public.seller_payout_account`:
+  cada item novo se decide antes da janela (corrigir numa migration, aceitar no
+  pré-voo, ou bloquear), nunca no dia;
+- `dono_payout` diferente do papel do migrador do B1: a 0065 falharia no
+  `alter`;
 - alguma `APPSELL_FINANCIAL_*` já presente;
 - memória ou disco abaixo do limite;
 - B1 ou B2 sem resposta, ou o PR do #503 fora da `main`.
@@ -364,9 +415,9 @@ host, porque o downgrade precisa dele.
 : "${SHA:?}"
 sudo -n docker image inspect "easypanel/sell-autonomia/api:$SHA" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'   # = SHA
 sudo -n docker run --rm --entrypoint python "easypanel/sell-autonomia/api:$SHA" -c \
-  'import appsell_api.db as d, appsell_api.payout_routes as p; print(hasattr(d,"financial_channel_ready"), p._SELF_SERVICE_SELLERS_ENV)'
-# True APPSELL_FINANCIAL_SELF_SERVICE_SELLER_IDS
-ls "$PASTA"/src/apps/api/migrations/versions/ | grep -c '^006[234]_'   # 3
+  'import appsell_api.db as d, appsell_api.payout_routes as p, appsell_api.preflight_donos as v; print(hasattr(d,"financial_channel_ready"), p._SELF_SERVICE_SELLERS_ENV, v.DONO)'
+# True APPSELL_FINANCIAL_SELF_SERVICE_SELLER_IDS appsell_owner
+ls "$PASTA"/src/apps/api/migrations/versions/ | grep -c '^006[2345]_'   # 4
 sudo -n docker image inspect easypanel/sell-autonomia/api:rollback-0064-2759090 --format '{{.Id}}'   # = ROLLBACK_ID
 ```
 
@@ -399,6 +450,29 @@ test "$(stat -c %a "$E")" = 600 || echo "PARAR: permissão do env-file"
 
 **2. Leitura de antes.** Repetir `leitura anexo-A.sql` logo antes do upgrade, e
 guardar os números. Produto criado entre a Fase 0 e este passo muda a conta.
+O `pre_voo_donos` tem de seguir em 1, com a mesma tabela.
+
+O pré-voo da imagem nova, com a credencial do env-file e sem ela aparecer em
+argumento:
+
+```sh
+: "${PASTA:?PASTA vazio — parar}"
+: "${SHA:?}"
+pre_voo() {
+  sudo -n docker run --rm --network easypanel --env-file "$PASTA/migrator.env" \
+    --entrypoint sh "easypanel/sell-autonomia/api:$SHA" -c \
+    'APPSELL_PREFLIGHT_DATABASE_URL="$APPSELL_MIGRATOR_DATABASE_URL" exec python -m appsell_api.preflight_donos'
+  echo "pre_voo rc=$?"
+}
+pre_voo   # antes: rc=1, só public.seller_payout_account
+```
+
+A função `pre_voo` vale só nesta sessão de shell. O passo 3 roda na **mesma
+sessão**. Se ela cair, colar de novo o bloco acima antes do passo 3.
+
+- `rc=2` é erro de conexão, não drift: parar e entender antes de seguir.
+- `rc=0` antes do upgrade quer dizer que o dono já mudou desde a Fase 0, por
+  outra mão: parar, reler a Fase 0 inteira e não seguir sem entender.
 
 **3. Upgrade.**
 
@@ -408,20 +482,24 @@ guardar os números. Produto criado entre a Fase 0 e este passo muda a conta.
 sudo -n docker run --rm --network easypanel --env-file "$PASTA/migrator.env" \
   -v "$PASTA/src/apps/api:/mig" -w /mig \
   "easypanel/sell-autonomia/api:$SHA" alembic upgrade head; echo "alembic rc=$?"
+pre_voo   # depois: rc=0, {"status":"ok",...}
 test -f "$PASTA/migrator.env" && rm -- "$PASTA/migrator.env"
 test ! -e "$PASTA/migrator.env" && echo ENV_APAGADO
 ```
 
 Esperado:
-- três `Running upgrade` (0061→0062, 0062→0063, 0063→0064);
-- `rc=0`;
+- quatro `Running upgrade` (0061→0062, 0062→0063, 0063→0064, 0064→0065);
+- `alembic rc=0`;
+- `pre_voo rc=0`;
 - sem `ERROR` nem `Traceback`;
 - `ENV_APAGADO`.
 
 **4. Conferência.** Na máquina local, rodar `leitura anexo-B.sql` e depois
 `leitura anexo-A.sql`. Esperado:
-- `versao` = `0064_vendas_ativadas_pela_loja`;
+- `versao` = `0065_dono_da_conta_payout`;
 - `schema_ready` = `t` e `canal_pronto` = `t`;
+- `dono_payout` = `appsell_owner` e `owner_le_payout` = `t`;
+- `pre_voo_donos` = 0;
 - `fora_do_dono` igual ao da Fase 0;
 - `trigger` = `O`;
 - `linhas_que_o_backfill_grava` = 0;
@@ -438,6 +516,8 @@ O log da api também mostra contagem 0, e o smoke fica igual à linha de base.
 
 **Safety abort:**
 - Se a migration falhar, a transação desfaz tudo e o banco segue em 0061.
+  - Uma falha `must be owner of table seller_payout_account` quer dizer que o
+    migrador do env-file não é o dono atual (ver Fase 0, `dono_payout`).
   - Conferir que `versao` = 0061, apagar o env-file e parar.
   - Se a falha for `lock_timeout`, pode repetir uma vez, com novo OK.
 - Se a migration passar e alguma conferência falhar, parar sem trocar a api e
@@ -576,9 +656,22 @@ test -f "$PASTA/migrator.env" && rm -- "$PASTA/migrator.env"
 ```
 
 Esperado:
-- `rc=0`, com 0064→0063, 0063→0062 e 0062→0061;
+- `rc=0`, com 0065→0064, 0064→0063, 0063→0062 e 0062→0061;
 - depois, pelo anexo B: `versao` = 0061 e `schema_ready` = `t`;
-- 0 das 7 funções e 0 trigger.
+- 0 das 7 funções e 0 trigger;
+- `dono_payout` continua `appsell_owner`: o downgrade da 0065 não devolve o
+  dono, porque isso recriaria o defeito.
+
+**Voltar só o dono**, se algum dia for preciso. Exige OK do Rodrigo e desfaz a
+correção: as funções de payout voltam a dar `permission denied`. ETA abaixo de
+1 min, como admin, numa transação só:
+
+```sql
+begin;
+set local lock_timeout = '3s';
+alter table public.seller_payout_account owner to <migrador do B1>;
+commit;
+```
 
 Ensaiado em 24/10.
 
@@ -609,9 +702,12 @@ caso de dano de dado.
 | Lock no downgrade (`ACCESS EXCLUSIVE`) | `lock_timeout=5s` | leitura de produto espera até 5 s |
 | Api nova reprova no startup por dependência (banco, storage, sandbox) | `start-first`: a antiga segue servindo e o update pausa | nenhum |
 | Credencial do migrador perdida (#456) | B1 | bloqueia o release |
+| 0065 rodada com outro papel que não o dono atual | Fase 0 (`dono_payout`) e a própria 0065, que falha no `alter` | nenhum: a transação desfaz a leva |
+| Lock da 0065 em `seller_payout_account` | `lock_timeout=5s` | conta de recebimento espera até o commit; hoje esses caminhos já falham |
+| Outro objeto com dono errado aparece no dia | Fase 0 (`pre_voo_donos`) | nenhum: a janela não começa |
 | Credencial exposta | `--env-file` `600`, apagado no fim da fase; nunca por argumento | — |
 
-## Anexo A — `anexo-A.sql` (leitura, sha256 `1865847760e1d0b8b66441fb24e4eef313b022c34a3932d0df2157dbafd65086`)
+## Anexo A — `anexo-A.sql` (leitura, sha256 `b433f3daa84ca68173bf6dfa4d05b0a23ceced59dab17596f216b6f103add974`)
 
 ```sql
 begin transaction read only;
@@ -682,10 +778,32 @@ select 'dead_letter_sem_mapping', count(*) from app_private.fulfillment_job
 select 'fora_do_dono', count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace
   where n.nspname='app_private' and pg_get_userbyid(p.proowner)<>'appsell_owner';
 select 'reconciler', count(*) from pg_roles where rolname='appsell_reconciler';
+select 'dono_payout', pg_get_userbyid(relowner) from pg_class
+  where oid='public.seller_payout_account'::regclass;
+-- o critério de appsell_api.preflight_donos (#509): fora do appsell_owner, sem
+-- membros de extensão
+with esquema as (select oid from pg_namespace where nspname in ('public','app_private')),
+de_extensao as (select classid, objid from pg_depend where deptype='e'),
+fora as (
+  select 'relação' tipo, n.nspname||'.'||c.relname nome from pg_class c
+    join pg_namespace n on n.oid=c.relnamespace
+    where c.relnamespace in (select oid from esquema) and c.relkind in ('r','p','v','m','S','f')
+      and pg_get_userbyid(c.relowner)<>'appsell_owner'
+      and not exists (select 1 from de_extensao d where d.classid='pg_class'::regclass and d.objid=c.oid)
+  union all
+  select 'função', p.oid::regprocedure::text from pg_proc p
+    where p.pronamespace in (select oid from esquema) and pg_get_userbyid(p.proowner)<>'appsell_owner'
+      and not exists (select 1 from de_extensao d where d.classid='pg_proc'::regclass and d.objid=p.oid)
+  union all
+  select 'tipo', t.oid::regtype::text from pg_type t left join pg_class r on r.oid=t.typrelid
+    where t.typnamespace in (select oid from esquema) and t.typtype in ('c','d','e','r','m')
+      and (t.typtype<>'c' or r.relkind='c') and pg_get_userbyid(t.typowner)<>'appsell_owner'
+      and not exists (select 1 from de_extensao d where d.classid='pg_type'::regclass and d.objid=t.oid))
+select 'pre_voo_donos', count(*), coalesce(string_agg(tipo||' '||nome, ', ' order by nome), '') from fora;
 rollback;
 ```
 
-## Anexo B — `anexo-B.sql` (conferência, sha256 `5b2634812f13925462e05148551c603d7cac44694e5abd44ea00f2d615c1470b`)
+## Anexo B — `anexo-B.sql` (conferência, sha256 `ed9010368feb37102021df0797d068175117aa2c4b84614c1c3ef2790c7abee4`)
 
 ```sql
 begin transaction read only;
@@ -698,5 +816,11 @@ select 'fora_do_dono', count(*) from pg_proc p join pg_namespace n on n.oid=p.pr
   where n.nspname='app_private' and pg_get_userbyid(p.proowner)<>'appsell_owner';
 select 'trigger', tgenabled::text from pg_trigger
   where tgrelid='public.catalog_product'::regclass and tgname='catalog_product_financial_mapping';
+select 'dono_payout', pg_get_userbyid(relowner) from pg_class
+  where oid='public.seller_payout_account'::regclass;
+-- o SELECT que as funções de payout fazem, como o dono delas (#509)
+set local role appsell_owner;
+select 'owner_le_payout', count(*) >= 0 from public.seller_payout_account;
+reset role;
 rollback;
 ```
