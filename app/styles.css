@@ -294,7 +294,12 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .draft-list-heading h2 { overflow-wrap: anywhere; }
 .draft-list-heading > strong { display: grid; width: 42px; height: 42px; place-items: center; flex: 0 0 auto; border-radius: 14px; background: rgba(59,130,246,.1); color: var(--blue); font-variant-numeric: tabular-nums; }
 .draft-card { min-width: 0; padding: 17px; border: 1px solid var(--border); border-radius: 16px; background: linear-gradient(145deg,#fff,#f8fbff); }
-.draft-card { content-visibility: auto; contain-intrinsic-size: auto 260px; }
+/* Sem `content-visibility: auto` aqui, nem no módulo do currículo e no índice
+   do curso (#496). Fora da tela o cartão era desenhado com o tamanho reservado,
+   260 px, e ao entrar na tela crescia para o real (345 px no celular): tudo
+   abaixo descia 85 px no instante do toque, e "Novo produto" recebia o dedo
+   mas não o clique. As listas são paginadas e curtas; o ganho de pular o
+   desenho não paga um botão que foge. */
 .draft-card + .draft-card { margin-top: 12px; }
 /* `.draft-card > div` e `.draft-card > div > span:last-child` existiam para a
    linha de selos da marcação antiga. Com o cartão em duas colunas, elas
@@ -419,7 +424,7 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .curriculum-empty { margin-top: 16px; padding: 24px 18px; border: 1px dashed rgba(30,58,138,.3); border-radius: 16px; background: rgba(219,234,254,.35); }
 .curriculum-empty p { margin: 7px 0 0; color: var(--text); line-height: 1.55; }
 .curriculum-modules, .curriculum-lessons { min-width: 0; margin: 16px 0 0; padding: 0; display: grid; gap: 14px; list-style: none; }
-.curriculum-module { width: 100%; min-width: 0; max-width: 100%; padding: 16px; border: 1px solid var(--border); border-radius: 18px; background: linear-gradient(145deg,#fff,#f8fbff); content-visibility: auto; contain-intrinsic-inline-size: none; contain-intrinsic-block-size: auto 520px; }
+.curriculum-module { width: 100%; min-width: 0; max-width: 100%; padding: 16px; border: 1px solid var(--border); border-radius: 18px; background: linear-gradient(145deg,#fff,#f8fbff); }
 .curriculum-module > header, .curriculum-lessons article > header { min-width: 0; display: grid; gap: 12px; }
 .curriculum-module header > div:first-child, .curriculum-lessons article header > div:first-child { min-width: 0; }
 .curriculum-module header span, .curriculum-lessons article header span { color: var(--soft); font-size: .66rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
@@ -743,7 +748,7 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .player-outline-mobile summary:focus-visible { outline: 3px solid var(--bright); outline-offset: 3px; }
 .player-outline-mobile .course-outline-list { padding: 0 14px 16px; }
 .course-outline-list { min-width: 0; display: grid; gap: 18px; }
-.course-outline-list section { width: 100%; min-width: 0; max-width: 100%; content-visibility: auto; contain-intrinsic-inline-size: none; contain-intrinsic-block-size: auto 280px; }
+.course-outline-list section { width: 100%; min-width: 0; max-width: 100%; }
 .course-outline-list h3 { margin: 0 0 8px; color: var(--text); font-size: .8rem; letter-spacing: .02em; overflow-wrap: anywhere; }
 .course-outline-list ol { margin: 0; padding: 0; display: grid; gap: 5px; list-style: none; }
 .course-outline-list li { min-width: 0; }
