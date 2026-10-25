@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { login } from "./support/login";
 
 /**
  * #258 — cada etapa do editor diz o próprio estado, e nada da Onda 3 regride.
@@ -50,12 +51,6 @@ function payload(shape: Partial<Shape> = {}) {
     readiness: { can_publish: true, has_unpublished_changes: it.unpublishedChanges, items: [] },
     csrf: { update: "u", publish: "p", offer_status: "o" }
   };
-}
-
-async function login(page: Page) {
-  await page.goto("/");
-  await page.getByRole("link", { name: "Entrar no ambiente local" }).click();
-  await expect(page).toHaveURL("/dashboard");
 }
 
 async function openEditor(page: Page, shape: Partial<Shape> = {}) {

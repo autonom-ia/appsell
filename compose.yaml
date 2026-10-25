@@ -136,6 +136,8 @@ services:
       POSTGRES_DB: appsell
       APPSELL_MIGRATOR_PASSWORD: ${APPSELL_MIGRATOR_PASSWORD:?set in local env}
       APPSELL_RUNTIME_PASSWORD: ${APPSELL_RUNTIME_PASSWORD:?set in local env}
+      # Opcional: sem ela o appsell_reconciler nasce sem login (#459).
+      APPSELL_RECONCILER_PASSWORD: ${APPSELL_RECONCILER_PASSWORD:-}
     ports:
       - "127.0.0.1:${APPSELL_POSTGRES_PORT:-55432}:5432"
     volumes:

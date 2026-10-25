@@ -13,6 +13,40 @@ from scripts.ci.route_changes import (
 
 
 class ClassifyPathsTests(unittest.TestCase):
+    def test_pdf_sandbox_hardening_routes_the_swarm_rehearsal(self) -> None:
+        # #478: o script e o ensaio vão só para o ensaio; o código que as
+        # provas exercitam também o pede, além das próprias suítes.
+        for path in (
+            "deploy/easypanel-native/harden-pdf-sandbox.sh",
+            "deploy/easypanel-native/test-harden-pdf-sandbox-swarm.sh",
+        ):
+            with self.subTest(path=path):
+                route = classify_paths([path])
+                self.assertTrue(route["sandbox"])
+                self.assertFalse(route["image_bootstrap"])
+                self.assertFalse(route["full"])
+        for path in (
+            "apps/api/src/appsell_api/pdf_derivatives.py",
+            "apps/api/src/appsell_api/pdf_sandbox_runner.py",
+            "apps/api/src/appsell_api/pdf_sandbox_service.py",
+            "apps/api/src/appsell_api/pdf_sandbox.py",
+            "apps/api/src/appsell_api/pdf_raster.py",
+            "apps/api/src/appsell_api/pdf_links.py",
+            "apps/api/src/appsell_api/pdf_verifier.py",
+            "apps/api/src/appsell_api/video_remux.py",
+            "apps/api/src/appsell_api/video_verifier.py",
+            "apps/api/src/appsell_api/asset_media.py",
+            "apps/api/src/appsell_api/learning_pdf.py",
+            "deploy/easypanel-native/Dockerfile.api",
+        ):
+            with self.subTest(path=path):
+                route = classify_paths([path])
+                self.assertTrue(route["sandbox"])
+                self.assertTrue(route["image_api"])
+        self.assertFalse(
+            classify_paths(["deploy/easypanel-native/ensure-asset-worker.sh"])["sandbox"]
+        )
+
     def test_docs_only_emits_no_product_suite(self) -> None:
         route = classify_paths(["docs/plans/CI.md", "README.md"])
 
