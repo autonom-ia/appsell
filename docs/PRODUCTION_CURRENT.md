@@ -2,12 +2,12 @@
 
 > Fonte operacional para retomar o projeto sem depender do histórico da conversa.
 >
-> Última verificação documentada: **2026-10-24**. Esta página separa o que foi
+> Última verificação documentada: **2026-10-25**. Esta página separa o que foi
 > comprovado na produção do que continua sendo plano ou laboratório Local/CI.
 
 ## Release em produção
 
-> Última verificação: **2026-10-24 16:10 UTC**, lendo o host, não a memória
+> Última verificação: **2026-10-25 11:17 UTC**, lendo o host, não a memória
 > desta página. Esta página já divergiu da realidade quatro vezes; o que vale é
 > o que `docker service ls` responde.
 
@@ -16,10 +16,38 @@
 | Domínio | `https://sell.autonomia.site` |
 | Ambiente | VPS EasyPanel nativo, Docker Swarm |
 | SHA do **web** | `2d2e64f`, ID `sha256:01d83832b960…`, lido do host em 24/10/2026 (#437) |
-| SHA do **api** | `2759090`, ID `sha256:0e126a1a5b03…`, lido do host em 24/10/2026 |
-| SHA do **asset-worker** | `2759090`, a mesma imagem da api |
-| SHA do **pdf-sandbox** | `d5e00ec`, ID `sha256:bc88217ab7b5…` |
-| Banco | head registrado **`0061_o_atraso_alcanca_o_aluno`** (04/09). **Não relido** no release de 24/10, que é só do web e não tem migration. A `0062_mapping_do_produto_novo` (#466) e a `0063_conciliacao_do_acesso` (#459) estão na `main` e não foram aplicadas |
+| SHA do **api** | `25771bf`, ID `sha256:d12d9fcebd08…`, lido do host em 25/10/2026 (#510) |
+| SHA do **asset-worker** | `2759090`, ID `sha256:0e126a1a5b03…` (não mudou no release de 25/10) |
+| SHA do **pdf-sandbox** | `d5e00ec`, ID `sha256:bc88217ab7b5…`, endurecido em 25/10 (#468): root read-only, `cap-drop ALL`, 64 processos, `/tmp` em tmpfs e rede interna sem saída |
+| Banco | **`0065_dono_da_conta_payout`**, lido do banco em 25/10/2026 depois do upgrade (0061 → 0062 → 0063 → 0064 → 0065) |
+
+**Release de 2026-10-25: migrations `0062`–`0065` e a api `25771bf` (#509, #510;
+runbook `release-0064-api.md`, D3 no #525).** O worker, o web e o pdf-sandbox não
+mudaram de imagem.
+- App CI no SHA (run 40181764830): cadeia de migrations, Certify API e Certify
+  PostgreSQL em success.
+- Antes: a volta da api `2759090` guardada em `docker save` com sha256 (o prune
+  das 00:39 a apagaria) e `pg_dump -Fc` com 76 tabelas, conferido por
+  `pg_restore`. Os dois ficam no host.
+- Migration às 10:49 UTC, numa transação só, da máquina de quem opera (D3: a
+  credencial do migrador não vai ao host). Antes: pré-voo de donos com 1 item
+  (`seller_payout_account`). Depois: `alembic current` = `0065`, pré-voo 0,
+  `schema_ready` e `canal_pronto` verdadeiros, dono da tabela `appsell_owner`,
+  backfill sem linha nova (4 mappings antes e depois) e 0 dead letter.
+- Troca da api às 11:16 UTC, `start-first`, só `--image`: a task nova ficou
+  healthy em 14 s e o update `completed` às 11:16:54. Mesmos 38 nomes de env,
+  `/health/ready` três vezes `ok` com banco, storage, sandbox, antivírus e canal
+  Financial verdadeiros, e 0 linhas de erro no log.
+- Loja: o smoke da Hub2You saiu idêntico antes e depois, e a vitrine respondeu
+  200 em todas as 1341 amostras da janela (10:43–11:17).
+- A volta (`release-0064-api.md`, Rollback): a api volta pela imagem guardada,
+  sem mexer no banco, porque a `2759090` roda sobre o banco em `0065`.
+
+**pdf-sandbox endurecido em 2026-10-25 (#468, PR #478).** Só a spec mudou, com a
+mesma imagem: root read-only, `cap-drop ALL`, no máximo 64 processos, `/tmp` em
+tmpfs e uma rede interna sem saída. A prova do PDF pelo worker passou antes e
+depois; o smoke da Hub2You ficou idêntico. Registro na
+[#468](https://github.com/autonom-ia/appsell/issues/468).
 
 **Release de 2026-10-24, só o `web`: `2d2e64f` (#437, #449; PRs #455, #488).**
 Fecha as três RCE críticas do Next 16.3.3 (GHSA-2464-fhr4-w9xw,
