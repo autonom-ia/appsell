@@ -17,6 +17,10 @@ readonly source_container="appsell-backup-test-source"
 readonly target_container="appsell-backup-test-target"
 readonly source_alias="backup-source"
 readonly target_alias="backup-target"
+readonly s3_container="appsell-backup-test-s3"
+# Same image the CI storage stack runs (compose.yaml).
+readonly s3_image="chrislusf/seaweedfs:4.39@sha256:c7d6c721b30ae711db766bbbfd40192776e263d4e51e22f57baef7bef93c12c6"
+readonly s3_bucket="appsell-backup-test"
 # Same major as production by default (lib-backup.sh), so the major checks
 # below exercise the real pair.
 readonly postgres_image="${TEST_POSTGRES_IMAGE:-$BACKUP_PG_IMAGE}"
@@ -28,12 +32,16 @@ readonly test_user="appsell_backup_test"
 source_secret="$(openssl rand -hex 24)"
 target_secret="$(openssl rand -hex 24)"
 export APPSELL_BACKUP_ENCRYPTION_SECRET="$(openssl rand -hex 32)"
+s3_admin_key="$(openssl rand -hex 10)"
+s3_admin_secret="$(openssl rand -hex 20)"
+s3_writer_key="$(openssl rand -hex 10)"
+s3_writer_secret="$(openssl rand -hex 20)"
 
 export BACKUP_DOCKER_NETWORK="$network_name"
 export BACKUP_PG_IMAGE="$postgres_image"
 
 cleanup() {
-  docker rm -f "$source_container" "$target_container" >/dev/null 2>&1 || true
+  docker rm -f "$source_container" "$target_container" "$s3_container" >/dev/null 2>&1 || true
   docker network rm "$network_name" >/dev/null 2>&1 || true
   [[ -n "${workdir:-}" ]] && rm -rf -- "$workdir" 2>/dev/null || true
 }
@@ -157,6 +165,113 @@ export APPSELL_BACKUP_LOCAL_DIR="$offhost_dir"
 ship_offhost "$enc_file"
 shipped="${offhost_dir}/${enc_file##*/}"
 [[ -s "$shipped" ]] || { echo "off-host copy missing: $shipped" >&2; exit 1; }
+
+echo "--- step 5b: ship off-host (s3) with an identity that may only write"
+# The production IAM grants s3:PutObject on the prefix and nothing else. The
+# writer identity here has SeaweedFS "Write" on the bucket and no Read or
+# List, so the upload passes only if the client needs nothing but PutObject.
+s3_config="$(printf '{"identities":[
+  {"name":"admin","credentials":[{"accessKey":"%s","secretKey":"%s"}],
+   "actions":["Admin","Read","List","Tagging","Write"]},
+  {"name":"writer","credentials":[{"accessKey":"%s","secretKey":"%s"}],
+   "actions":["Write:%s"]}]}' \
+  "$s3_admin_key" "$s3_admin_secret" "$s3_writer_key" "$s3_writer_secret" "$s3_bucket")"
+# The config carries keys, so it goes in by env NAME and is written inside
+# the container; nothing lands on the argv or in a host file.
+SEAWEED_S3_CONFIG="$s3_config" docker run -d --name "$s3_container" \
+  --network "$network_name" \
+  -e SEAWEED_S3_CONFIG --entrypoint /bin/sh "$s3_image" -ec '
+    mkdir -p /tmp/weed
+    printf %s "$SEAWEED_S3_CONFIG" > /tmp/weed/s3.json
+    exec weed server -dir=/tmp/weed -s3 -s3.port=8333 -s3.config=/tmp/weed/s3.json
+  ' >/dev/null
+# By IP: the AWS CLI then addresses the bucket in the path. With a host name
+# it may try <bucket>.<host>, which nothing here resolves.
+s3_ip="$(docker inspect -f \
+  "{{(index .NetworkSettings.Networks \"${network_name}\").IPAddress}}" "$s3_container")"
+[[ -n "$s3_ip" ]] || { echo "the test S3 store has no address" >&2; exit 1; }
+s3_endpoint="http://${s3_ip}:8333"
+
+s3_download_dir="${workdir}/s3-download"
+mkdir -p "$s3_download_dir"
+# s3_as KEY SECRET ARGS... — one AWS CLI call against the test store.
+s3_as() {
+  local access="$1" secret="$2"
+  shift 2
+  AWS_ACCESS_KEY_ID="$access" AWS_SECRET_ACCESS_KEY="$secret" \
+    AWS_DEFAULT_REGION=us-east-1 AWS_EC2_METADATA_DISABLED=true \
+    AWS_REQUEST_CHECKSUM_CALCULATION=when_required \
+    AWS_RESPONSE_CHECKSUM_VALIDATION=when_required \
+    docker run --rm --network "$network_name" -v "$s3_download_dir:/out" \
+    -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_DEFAULT_REGION \
+    -e AWS_EC2_METADATA_DISABLED \
+    -e AWS_REQUEST_CHECKSUM_CALCULATION -e AWS_RESPONSE_CHECKSUM_VALIDATION \
+    "$BACKUP_S3_IMAGE" --endpoint-url "$s3_endpoint" "$@"
+}
+# Creating the bucket doubles as the readiness wait.
+bucket_ready=0
+for _ in $(seq 1 60); do
+  if s3_as "$s3_admin_key" "$s3_admin_secret" s3api create-bucket \
+      --bucket "$s3_bucket" >/dev/null 2>&1; then
+    bucket_ready=1
+    break
+  fi
+  sleep 2
+done
+if [[ "$bucket_ready" != "1" ]]; then
+  docker logs "$s3_container" 2>&1 | tail -40 >&2
+  echo "the test S3 store never accepted the bucket" >&2
+  exit 1
+fi
+
+# The writer must really be write-only, or the upload below proves nothing.
+if s3_as "$s3_writer_key" "$s3_writer_secret" s3api list-objects-v2 \
+    --bucket "$s3_bucket" >/dev/null 2>&1; then
+  echo "the writer identity can list the bucket; the test would prove nothing" >&2
+  exit 1
+fi
+
+export APPSELL_BACKUP_DEST_KIND="s3"
+export APPSELL_BACKUP_S3_ENDPOINT="$s3_endpoint"
+export APPSELL_BACKUP_S3_BUCKET="$s3_bucket"
+export APPSELL_BACKUP_S3_REGION="us-east-1"
+export APPSELL_BACKUP_S3_ACCESS_KEY="$s3_writer_key"
+export APPSELL_BACKUP_S3_SECRET_KEY="$s3_writer_secret"
+export BACKUP_S3_DOCKER_NETWORK="$network_name"
+s3_key="sell/native-90/${enc_file##*/}"
+
+# A Content-MD5 that does not match the body must be refused as BadDigest,
+# and nothing may land. MD5 of the empty string, which no encrypted dump has.
+# Any other failure (network, credentials) would prove nothing about the MD5.
+bad_digest_log="${workdir}/bad-digest.log"
+if (s3_content_md5() { printf '1B2M2Y8AsgTpgAmY7PhCfg=='; }; ship_offhost "$enc_file") \
+    2>"$bad_digest_log"; then
+  echo "an upload with a wrong Content-MD5 must be refused but succeeded" >&2
+  exit 1
+fi
+grep -qF "BadDigest" "$bad_digest_log" \
+  || { cat "$bad_digest_log" >&2; echo "the wrong Content-MD5 failed for another reason" >&2; exit 1; }
+if s3_as "$s3_admin_key" "$s3_admin_secret" s3api head-object \
+    --bucket "$s3_bucket" --key "$s3_key" >/dev/null 2>&1; then
+  echo "a refused upload left an object behind" >&2
+  exit 1
+fi
+
+ship_offhost "$enc_file"
+
+# The writer cannot read back what it wrote.
+if s3_as "$s3_writer_key" "$s3_writer_secret" s3api get-object \
+    --bucket "$s3_bucket" --key "$s3_key" /out/writer-read.gpg >/dev/null 2>&1; then
+  echo "the writer identity can read objects; the test would prove nothing" >&2
+  exit 1
+fi
+s3_as "$s3_admin_key" "$s3_admin_secret" s3api get-object \
+  --bucket "$s3_bucket" --key "$s3_key" /out/from-s3.gpg >/dev/null
+cmp -s "$enc_file" "${s3_download_dir}/from-s3.gpg" \
+  || { echo "the object in S3 differs from the local artifact" >&2; exit 1; }
+decrypt_file "${s3_download_dir}/from-s3.gpg" "${workdir}/from-s3.dump"
+pg_verify_dump "${workdir}/from-s3.dump"
+unset APPSELL_BACKUP_S3_ACCESS_KEY APPSELL_BACKUP_S3_SECRET_KEY
 
 echo "--- step 6: decrypt the OFF-HOST copy (proves the shipped file is usable)"
 decrypt_file "$shipped" "$restored_plain"

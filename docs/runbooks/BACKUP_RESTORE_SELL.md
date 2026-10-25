@@ -51,7 +51,13 @@ replay de WAL.
 - Secrets disponíveis como variáveis de ambiente **em runtime**, nunca em arquivo commitado:
   - `APPSELL_POSTGRES_SECRET` — senha da role de leitura do `postgres-native-90`.
   - `APPSELL_BACKUP_ENCRYPTION_SECRET` — passphrase gpg (gerar 32 bytes: `openssl rand -hex 32`).
-  - Credenciais do destino off-host (S3/MinIO ou SSH) conforme `APPSELL_BACKUP_DEST_KIND`.
+  - Credenciais do destino off-host (S3 ou SSH) conforme `APPSELL_BACKUP_DEST_KIND`.
+
+Para o destino `s3`, antes de ligar o cron, exigir as três condições abaixo. Faltando qualquer uma, o destino não liga:
+
+1. `APPSELL_BACKUP_S3_REGION` está no env do host, junto com bucket e credenciais. Sem ela, o script para com `missing required environment variable`.
+2. `openssl` está no `PATH` que o cron usa, e não só no da sessão interativa. Conferir com o mesmo `env -` da linha do cron: `/usr/bin/env - bash -c 'command -v openssl'` 🟢.
+3. Uma rodada manual (seção 4) mostra `off-host: uploaded` no log.
 
 > A passphrase gpg é a chave do reino: sem ela, os backups são inúteis. Guardar
 > no mesmo cofre de secrets do projeto (não no host, não no repo). Perder a
@@ -104,8 +110,8 @@ export APPSELL_POSTGRES_USER=<role-de-leitura>
 export APPSELL_POSTGRES_SECRET=<via-cofre>            # nunca ecoar
 export APPSELL_BACKUP_ENCRYPTION_SECRET=<via-cofre>   # nunca ecoar
 export APPSELL_BACKUP_DEST_KIND=s3
-export APPSELL_BACKUP_S3_ENDPOINT=https://<storage-endpoint>
 export APPSELL_BACKUP_S3_BUCKET=<bucket>
+export APPSELL_BACKUP_S3_REGION=<regiao-do-bucket>
 export APPSELL_BACKUP_S3_ACCESS_KEY=<via-cofre>
 export APPSELL_BACKUP_S3_SECRET_KEY=<via-cofre>
 
@@ -119,6 +125,8 @@ Confirmar no log:
 - `backup ok: ....dump.gpg`
 
 Verificar no destino que o objeto `.dump.gpg` chegou com o tamanho esperado 🟢.
+A credencial do host só tem `PutObject` e não lê o bucket, então essa conferência
+usa outra credencial (console ou papel de leitura), nunca a do cron.
 
 ---
 
@@ -138,8 +146,8 @@ Arquivo `/etc/cron.d/appsell-native-backup` (permissão 0600), rodando 03:15 UTC
   APPSELL_POSTGRES_HOST=sell-autonomia_postgres-native-90 \
   APPSELL_POSTGRES_USER=<role> \
   APPSELL_BACKUP_DEST_KIND=s3 \
-  APPSELL_BACKUP_S3_ENDPOINT=https://<endpoint> \
   APPSELL_BACKUP_S3_BUCKET=<bucket> \
+  APPSELL_BACKUP_S3_REGION=<regiao> \
   bash -c 'set -a; . /root/.config/appsell-backup.env; set +a; \
     /opt/appsell/deploy/easypanel-native/backup/backup-native.sh \
     >> /var/log/appsell-backup.log 2>&1'

@@ -238,7 +238,7 @@ rotate_local() {
 # ship_offhost ENCFILE — dispatches on APPSELL_BACKUP_DEST_KIND:
 #   none      : local retention only (default)
 #   local-dir : copy to APPSELL_BACKUP_LOCAL_DIR (used by the CI rehearsal)
-#   s3        : upload to a MinIO/S3 bucket via the MinIO client (mc) container
+#   s3        : upload to an S3 bucket with one PutObject (AWS CLI container)
 #   rsync     : rsync over SSH to APPSELL_BACKUP_RSYNC_TARGET
 # Only the encrypted artifact is ever shipped off-host.
 ship_offhost() {
@@ -266,27 +266,61 @@ ship_offhost() {
   esac
 }
 
-# S3-compatible (MinIO) upload via the mc container. Credentials arrive via env
-# and are wired into a throwaway alias inside the container; nothing is written
-# to a config file on the host. The MC_HOST_offhost URL embeds the access/secret
-# keys, so it is forwarded to the container by NAME only (`-e MC_HOST_offhost`,
-# no `=value`) — the value is exported just for this invocation and never lands
-# on the world-readable argv.
+# S3 upload with a single PutObject call, via the AWS CLI pinned by digest
+# (2.37.12, amd64 and arm64). The destination IAM grants only s3:PutObject on
+# the prefix, with no Get, List or Delete (#517), so the client must not need
+# anything else: `s3api put-object` with an explicit key issues exactly one
+# request, while `aws s3 cp` and `mc cp` may also list or stat the target.
+# Content-MD5 makes the server reject a body that differs from the local file.
+# The access and secret keys reach the container by env NAME only (`-e
+# AWS_ACCESS_KEY_ID`, no `=value`), exported just for this invocation, so they
+# never land on the world-readable argv.
+: "${BACKUP_S3_IMAGE:=amazon/aws-cli:2.37.12@sha256:ce44b800602264c12298bbf3399055a4cefdb9ed4a098abe564afe26e7071bce}"
+
+# s3_content_md5 FILE — base64 MD5 of FILE, as the Content-MD5 header wants it.
+s3_content_md5() {
+  openssl dgst -md5 -binary "$1" | openssl base64 -A
+}
+
 ship_offhost_s3() {
   local encfile="$1"
-  require_env APPSELL_BACKUP_S3_ENDPOINT APPSELL_BACKUP_S3_BUCKET \
+  require_env APPSELL_BACKUP_S3_BUCKET APPSELL_BACKUP_S3_REGION \
     APPSELL_BACKUP_S3_ACCESS_KEY APPSELL_BACKUP_S3_SECRET_KEY
+  command -v openssl >/dev/null 2>&1 || die "openssl is required for the s3 destination"
   local prefix="${APPSELL_BACKUP_S3_PREFIX:-sell/native-90}"
-  local image="${BACKUP_MC_IMAGE:-minio/mc:latest}"
+  prefix="${prefix#/}"
+  prefix="${prefix%/}"
   local dir="${encfile%/*}" base="${encfile##*/}"
-  local mc_host="https://${APPSELL_BACKUP_S3_ACCESS_KEY}:${APPSELL_BACKUP_S3_SECRET_KEY}@${APPSELL_BACKUP_S3_ENDPOINT#https://}"
-  MC_HOST_offhost="$mc_host" docker run --rm \
-    -e MC_HOST_offhost \
-    -v "$dir:/data:ro" \
-    "$image" \
-    cp "/data/${base}" "offhost/${APPSELL_BACKUP_S3_BUCKET}/${prefix}/${base}" \
+  local key="${prefix:+${prefix}/}${base}"
+  local md5
+  md5="$(s3_content_md5 "$encfile")" || die "could not hash ${base}"
+  [[ -n "$md5" ]] || die "could not hash ${base}"
+
+  local -a docker_args=(--rm -v "$dir:/data:ro"
+    -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_DEFAULT_REGION
+    -e AWS_EC2_METADATA_DISABLED
+    -e AWS_REQUEST_CHECKSUM_CALCULATION -e AWS_RESPONSE_CHECKSUM_VALIDATION)
+  [[ -n "${BACKUP_S3_DOCKER_NETWORK:-}" ]] \
+    && docker_args+=(--network "$BACKUP_S3_DOCKER_NETWORK")
+  # Empty endpoint means AWS itself; a value points at an S3-compatible store.
+  local -a endpoint_args=()
+  [[ -n "${APPSELL_BACKUP_S3_ENDPOINT:-}" ]] \
+    && endpoint_args=(--endpoint-url "$APPSELL_BACKUP_S3_ENDPOINT")
+
+  # The checksum variables keep the CLI to the Content-MD5 we send: since 2.23
+  # it adds its own trailing checksum, which some S3-compatible stores refuse.
+  AWS_ACCESS_KEY_ID="$APPSELL_BACKUP_S3_ACCESS_KEY" \
+    AWS_SECRET_ACCESS_KEY="$APPSELL_BACKUP_S3_SECRET_KEY" \
+    AWS_DEFAULT_REGION="$APPSELL_BACKUP_S3_REGION" \
+    AWS_EC2_METADATA_DISABLED=true \
+    AWS_REQUEST_CHECKSUM_CALCULATION=when_required \
+    AWS_RESPONSE_CHECKSUM_VALIDATION=when_required \
+    docker run "${docker_args[@]}" "$BACKUP_S3_IMAGE" \
+    "${endpoint_args[@]}" s3api put-object \
+    --bucket "$APPSELL_BACKUP_S3_BUCKET" --key "$key" \
+    --body "/data/${base}" --content-md5 "$md5" >/dev/null \
     || die "off-host S3 upload failed for ${base}"
-  log "off-host: uploaded ${base} to s3://${APPSELL_BACKUP_S3_BUCKET}/${prefix}/"
+  log "off-host: uploaded ${base} to s3://${APPSELL_BACKUP_S3_BUCKET}/${key}"
 }
 
 # rsync-over-SSH upload. The SSH identity path and known_hosts arrive via env so
