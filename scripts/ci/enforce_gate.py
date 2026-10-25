@@ -8,16 +8,19 @@ from typing import Mapping
 
 KNOWN_STEPS = {
     "route",
+    "audit_api",
     "fast_web",
     "fast_api",
     "fast_backup",
     "fast_preview",
     "cert_web",
+    "cert_api",
     "cert_postgres",
     "cert_storage",
     "cert_openbao",
     "cert_backup",
     "cert_preview",
+    "cert_sandbox",
     "image_web",
     "image_api",
     "image_bootstrap",
@@ -33,6 +36,8 @@ def expected_steps(
 ) -> set[str]:
     expected = {"route"}
     if event == "pull_request":
+        if route.get("api"):
+            expected.add("audit_api")
         if route.get("web"):
             expected.add("fast_web")
         if route.get("api"):
@@ -44,8 +49,12 @@ def expected_steps(
     elif event == "push" and merge_queue_active:
         expected.add("smoke")
     elif event in {"merge_group", "push", "workflow_dispatch"}:
+        if route.get("api") or route.get("postgres"):
+            expected.add("audit_api")
         if route.get("web"):
             expected.add("cert_web")
+        if route.get("api"):
+            expected.add("cert_api")
         if route.get("postgres"):
             expected.add("cert_postgres")
         if route.get("openbao"):
@@ -56,6 +65,9 @@ def expected_steps(
             expected.add("cert_backup")
         if route.get("preview"):
             expected.add("cert_preview")
+        # O ensaio em Swarm leva minutos: só na fila e no dispatch, não no push.
+        if route.get("sandbox") and event in {"merge_group", "workflow_dispatch"}:
+            expected.add("cert_sandbox")
         for scope in ("web", "api", "bootstrap"):
             if route.get(f"image_{scope}"):
                 expected.add(f"image_{scope}")

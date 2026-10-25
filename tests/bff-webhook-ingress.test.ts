@@ -40,6 +40,9 @@ test.skipIf(!domainApiUrl)("signed webhook crosses the real BFF, API, and Postgr
     APPSELL_PUBLIC_ORIGIN: `http://127.0.0.1:${firstPort}`,
     NEXT_TELEMETRY_DISABLED: "1"
   };
+  await seedEndpointWithoutSecret();
+  const expiredReplays = await seedExpiredReplays();
+  const databaseState = await replayWindowProbe();
   const first = startBff(firstPort, firstDist, shared);
   let second: ChildProcess | undefined;
 
@@ -160,6 +163,11 @@ test.skipIf(!domainApiUrl)("signed webhook crosses the real BFF, API, and Postgr
     expect(tooLarge.status).toBe(413);
     expect(await tooLarge.json()).toEqual({ error: "payload_too_large" });
     expect(await databaseState()).toEqual(stateBeforeOversized);
+    // A limpeza dos vencidos aconteceu no meio do teste: o caso do #505 rodou.
+    expect(await databaseScalar(
+      "select count(*) from app_private.bff_request_replay " +
+        `where request_id in ('${expiredReplays.join("','")}')`
+    )).toBe("0");
   } finally {
     await Promise.all([stopBff(first), ...(second ? [stopBff(second)] : [])]);
     await Promise.all([
@@ -222,10 +230,32 @@ async function restartApi(project: string) {
   throw new Error(`API did not recover after restart: ${diagnostics}`);
 }
 
-async function databaseState() {
+type DatabaseState = {
+  replayRequests: number;
+  webhookEvents: number;
+  outboxEvents: number;
+  webhookAudits: number;
+};
+
+// #505: cada replay novo apaga os vencidos há mais de 5 min (0008, a função
+// que grava em bff_request_replay). Contar a tabela inteira fazia a contagem
+// cair quando replays de testes anteriores venciam no meio deste. Uma linha
+// gravada aqui vence em até 120 s e só pode ser apagada 5 min depois disso,
+// muito além dos 60 s do teste: contar só o que foi consumido desde o início
+// dele, pelo relógio do próprio Postgres, é uma contagem que só cresce.
+async function replayWindowProbe(): Promise<() => Promise<DatabaseState>> {
+  const startedAt = await databaseScalar("select extract(epoch from clock_timestamp())::text");
+  if (!Number.isFinite(Number(startedAt))) {
+    throw new Error(`PostgreSQL clock probe returned an invalid instant: ${startedAt.slice(-200)}`);
+  }
+  return () => databaseStateSince(startedAt);
+}
+
+async function databaseStateSince(replayWindowStartEpoch: string): Promise<DatabaseState> {
   const project = requiredEnvironment("APPSELL_TEST_COMPOSE_PROJECT");
   const query = [
-    "select count(*) from app_private.bff_request_replay",
+    "select count(*) from app_private.bff_request_replay " +
+      `where consumed_at >= to_timestamp(${replayWindowStartEpoch})`,
     "select count(*) from webhook_event",
     "select count(*) from app_private.outbox_event",
     "select count(*) from audit_event where action='commerce.webhook_received'"
@@ -253,10 +283,7 @@ async function databaseState() {
   };
 }
 
-function expectReplayConsumedWithoutDomainMutation(
-  before: Awaited<ReturnType<typeof databaseState>>,
-  after: Awaited<ReturnType<typeof databaseState>>
-) {
+function expectReplayConsumedWithoutDomainMutation(before: DatabaseState, after: DatabaseState) {
   expect(after).toEqual({
     ...before,
     replayRequests: before.replayRequests + 1
@@ -269,6 +296,41 @@ async function databaseEventDigest(eventId: string) {
     "select payload_sha256||'|'||payload_octets from webhook_event " +
       `where external_event_id_sha256='${eventHash}'`
   );
+}
+
+// O endpoint cujo segredo não existe no cofre da API é semeado aqui, e não
+// herdado do pytest: em 04/09 (69a9502) a semente que este teste usava saiu de
+// test_postgres_webhook_ingress.py, e o caso do 503 passou a dar 401 sem que
+// nada apontasse a dependência. `checkout-other-v1` não está no keyring do
+// test-postgres-foundation.sh, que só conhece `checkout-demo-v1`.
+async function seedEndpointWithoutSecret() {
+  const seller = "dd000000-0000-4000-8000-0000000000a1";
+  const integration = "dd000000-0000-4000-8000-0000000000a2";
+  const endpoint = "dd000000-0000-4000-8000-0000000000a3";
+  const endpointHash = createHash("sha256").update(missingSecretEndpointKey).digest("hex");
+  await databaseScalar(
+    "insert into seller_organization(id,slug,display_name,status) " +
+      `values('${seller}','webhook-sem-segredo','Webhook sem segredo','active') on conflict do nothing;` +
+      "insert into checkout_integration(seller_organization_id,id,adapter,display_name,status) " +
+      `values('${seller}','${integration}','generic_hmac_v1','Checkout sem segredo','active') on conflict do nothing;` +
+      "insert into webhook_endpoint(seller_organization_id,id,checkout_integration_id," +
+      "endpoint_key_sha256,secret_reference,status) " +
+      `values('${seller}','${endpoint}','${integration}','${endpointHash}','checkout-other-v1','active') ` +
+      "on conflict do nothing"
+  );
+}
+
+// Replays vencidos há muito, como os que a suíte deixa: o primeiro replay do
+// teste os apaga (#505). Sem eles a limpeza só acontecia quando o relógio
+// ajudava, e a contagem errada passava quase sempre.
+async function seedExpiredReplays() {
+  const ids = [randomUUID(), randomUUID(), randomUUID()];
+  await databaseScalar(
+    "insert into app_private.bff_request_replay(request_id,expires_at,consumed_at) select id::uuid, " +
+      "clock_timestamp()-interval '1 hour', clock_timestamp()-interval '1 hour' " +
+      `from unnest(array['${ids.join("','")}']) as id`
+  );
+  return ids;
 }
 
 async function databaseScalar(query: string) {

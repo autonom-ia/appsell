@@ -33,8 +33,16 @@ do Postgres nativo (decisão de infra).
     o valor exportado só naquela invocação. O Docker lê o valor do próprio
     ambiente (`/proc/<pid>/environ`, modo `0400` — só dono e root), nunca do argv.
     Usar `-e VAR=valor` é proibido nestes scripts (vazaria no argv).
-- O client Postgres roda em **container fixado** (`postgres:16-alpine`); o host só
-  precisa de Docker + gpg. Versão de servidor casada pela tag da imagem.
+- O client Postgres roda em **container fixado**, por padrão a mesma imagem do
+  servidor de produção (PostgreSQL 17, por digest); o host só precisa de Docker
+  + gpg. O `backup-native.sh` recusa, antes do dump, um client de major menor que
+  o do servidor, e o `restore-native.sh` recusa um alvo de major menor que o do
+  dump (#492).
+- O restore cria no Postgres descartável, como `NOLOGIN` e sem senha, os papéis
+  que `infra/postgres/init/001_roles.sh` cria. O `pg_dump` não leva papéis, e as
+  políticas RLS do schema citam `appsell_owner` e `appsell_runtime`. Para rodar
+  no host, leve esse arquivo junto com esta pasta (mesmo caminho relativo) ou
+  aponte `RESTORE_ROLES_SOURCE` para ele.
 - O dump em claro é apagado assim que o artefato cifrado existe (ou em qualquer
   falha, via `trap`).
 - Off-host envia **apenas o artefato cifrado**.
@@ -63,18 +71,26 @@ Opcionais (defaults):
 | `APPSELL_BACKUP_DIR` | `/var/backups/appsell-native-90` |
 | `APPSELL_BACKUP_KEEP` | `7` |
 | `APPSELL_BACKUP_DEST_KIND` | `none` \| `local-dir` \| `s3` \| `rsync` |
-| `BACKUP_PG_IMAGE` | `postgres:16-alpine` |
+| `BACKUP_PG_IMAGE` | a imagem do servidor de produção (`lib-backup.sh`) |
 
 ### Destino off-host
 
-`s3` (MinIO/S3-compatível, via container `minio/mc`):
+`s3` (AWS S3 ou compatível): um único `s3api put-object` pelo container
+`amazon/aws-cli`, fixado por digest em `lib-backup.sh`. O envio leva
+`Content-MD5`, então o servidor recusa corpo diferente do arquivo local. Basta
+uma política IAM com `s3:PutObject` no prefixo, sem `Get`, `List` nem `Delete`;
+o teste de CI prova isso com uma identidade que só escreve (#517). O host
+precisa de `openssl` para o MD5.
 
 | Var | Descrição |
 |---|---|
-| `APPSELL_BACKUP_S3_ENDPOINT` | ex.: `https://storage.<host>` |
 | `APPSELL_BACKUP_S3_BUCKET` | bucket de destino |
+| `APPSELL_BACKUP_S3_REGION` | região do bucket (ex.: `sa-east-1`) |
 | `APPSELL_BACKUP_S3_PREFIX` | prefixo (default `sell/native-90`) |
 | `APPSELL_BACKUP_S3_ACCESS_KEY` / `APPSELL_BACKUP_S3_SECRET_KEY` | credenciais (só via env) |
+| `APPSELL_BACKUP_S3_ENDPOINT` | opcional; vazio = AWS. Preencher só para S3 compatível |
+| `BACKUP_S3_IMAGE` | opcional; default é a imagem fixada por digest |
+| `BACKUP_S3_DOCKER_NETWORK` | opcional; rede Docker do container de envio |
 
 `rsync` (SSH):
 

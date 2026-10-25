@@ -524,7 +524,7 @@ Não copiar do Studio:
 
 Confirmado em 2026-07-10:
 
-- `sell.autonomia.site` resolve para `85.31.60.100`;
+- `sell.autonomia.site` resolve para `<ip-do-host>`;
 - HTTP redireciona para HTTPS;
 - HTTPS apresenta certificado autoassinado `CN=Easypanel`;
 - a resposta atual é `404` padrão do Easypanel;
@@ -533,7 +533,7 @@ Confirmado em 2026-07-10:
 
 Gates P0 antes de staging/produção:
 
-1. confirmar acesso e responsabilidade sobre `85.31.60.100`;
+1. confirmar acesso e responsabilidade sobre `<ip-do-host>`;
 2. medir CPU, RAM, disco, IOPS, espaço Docker e workloads existentes;
 3. aprovar `sell-staging.autonomia.site`;
 4. criar rota no Easypanel e emitir certificado válido;

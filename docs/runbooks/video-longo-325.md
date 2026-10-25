@@ -94,7 +94,7 @@ descartável, com o fonte montado do host.
 
 ```bash
 docker run --rm --network container:<api> \
-  -v /home/claudete/appsell-src-<sha>/apps/api:/work -w /work \
+  -v <home-do-operador>/appsell-src-<sha>/apps/api:/work -w /work \
   -e APPSELL_MIGRATOR_DATABASE_URL="postgresql+psycopg://appsell_native_admin:<senha>@sell-autonomia_postgres-native-90:5432/appsell_native_90" \
   --entrypoint sh easypanel/sell-autonomia/api:<sha> \
   -c 'cd /work && python -m alembic upgrade head'

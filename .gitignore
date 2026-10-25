@@ -36,3 +36,6 @@ __pycache__/
 # Configuração de servidor de desenvolvimento local; o caminho dentro dela
 # existe só na máquina de quem a criou.
 .claude/launch.json
+
+# Saída local do Playwright MCP
+.playwright-mcp/

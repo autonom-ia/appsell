@@ -106,10 +106,12 @@ services:
     # Quatro núcleos porque é o que faz a divisão em faixas valer a pena: medido
     # com um documento real de 300 páginas, 208 s com um núcleo e 89 s com
     # quatro. Com um só, o código roda sequencial de propósito — dividir sem ter
-    # onde correr é mais lento.
+    # onde correr é mais lento. O runner do CI tem 2 núcleos e o Docker recusa
+    # pedir mais do que a máquina tem, então o script de teste baixa o valor
+    # para o que existe; o padrão continua sendo o de produção.
     pids_limit: 64
     mem_limit: 4g
-    cpus: 4.0
+    cpus: ${APPSELL_PDF_SANDBOX_CPUS:-4.0}
     tmpfs:
       - /tmp:size=2147483648,mode=1777,noexec,nosuid
     healthcheck:
@@ -134,6 +136,8 @@ services:
       POSTGRES_DB: appsell
       APPSELL_MIGRATOR_PASSWORD: ${APPSELL_MIGRATOR_PASSWORD:?set in local env}
       APPSELL_RUNTIME_PASSWORD: ${APPSELL_RUNTIME_PASSWORD:?set in local env}
+      # Opcional: sem ela o appsell_reconciler nasce sem login (#459).
+      APPSELL_RECONCILER_PASSWORD: ${APPSELL_RECONCILER_PASSWORD:-}
     ports:
       - "127.0.0.1:${APPSELL_POSTGRES_PORT:-55432}:5432"
     volumes:

@@ -103,6 +103,14 @@ describe("Redis OAuth store", () => {
       state: login.state
     }, exchanger)).sessionId).toBe(sessionId);
     expect(calls).toHaveLength(1);
+    // O callback de Identity também grava o par num instante só (#511).
+    const pairPrefix = `appsell:test:${suffix}:{appsell:test:${suffix}}`;
+    const [identitySessionAt, identityVaultAt] = await Promise.all([
+      isolated.client.call("PEXPIRETIME", `${pairPrefix}:session:${sha256(sessionId)}`),
+      isolated.client.call("PEXPIRETIME", `${pairPrefix}:vault:${sha256(sessionId)}`)
+    ]);
+    expect(identitySessionAt).toBeGreaterThan(Date.now());
+    expect(identitySessionAt).toBe(identityVaultAt);
 
     const keys = await isolated.client.keys(`appsell:test:${suffix}:{appsell:test:${suffix}}:*`);
     const values = await Promise.all(keys.map((key) => isolated.client.get(key)));
@@ -298,12 +306,17 @@ describe("Redis OAuth store", () => {
       state: active.login.state
     });
     const activePrefix = `appsell:test:case-${sequence}:{appsell:test:case-${sequence}}`;
-    const [sessionTtl, vaultTtl] = await Promise.all([
-      isolated.client.pttl(`${activePrefix}:session:${sha256(sessionId)}`),
-      isolated.client.pttl(`${activePrefix}:vault:${sha256(sessionId)}`)
+    const sessionKey = `${activePrefix}:session:${sha256(sessionId)}`;
+    const vaultKey = `${activePrefix}:vault:${sha256(sessionId)}`;
+    expect(await isolated.client.pttl(sessionKey)).toBeGreaterThan(0);
+    // O par vence no mesmo milissegundo (#511): antes havia 5 ms de folga
+    // aqui, e era essa folga que escondia o descompasso no Redis 7.0.
+    const [sessionAt, vaultAt] = await Promise.all([
+      isolated.client.call("PEXPIRETIME", sessionKey),
+      isolated.client.call("PEXPIRETIME", vaultKey)
     ]);
-    expect(sessionTtl).toBeGreaterThan(0);
-    expect(Math.abs(sessionTtl - vaultTtl)).toBeLessThanOrEqual(5);
+    expect(typeof sessionAt).toBe("number");
+    expect(sessionAt).toBe(vaultAt);
     expect(await txStore.getSession(sessionId)).not.toBeNull();
     await new Promise((resolve) => setTimeout(resolve, 80));
     expect(await txStore.getSession(sessionId)).toBeNull();

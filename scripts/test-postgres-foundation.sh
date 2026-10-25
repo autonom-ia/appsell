@@ -25,6 +25,7 @@ api_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0
 superuser_secret="$(openssl rand -hex 24)"
 migrator_secret="$(openssl rand -hex 24)"
 runtime_secret="$(openssl rand -hex 24)"
+reconciler_secret="$(openssl rand -hex 24)"
 context_key="$(openssl rand -hex 32)"
 bootstrap_key="$(openssl rand -hex 32)"
 internal_key_b64="$(openssl rand -base64 32)"
@@ -57,19 +58,28 @@ export APPSELL_API_PORT="$api_port"
 export APPSELL_POSTGRES_SUPERUSER_PASSWORD="$superuser_secret"
 export APPSELL_MIGRATOR_PASSWORD="$migrator_secret"
 export APPSELL_RUNTIME_PASSWORD="$runtime_secret"
+# O 001_roles.sh dá login ao appsell_reconciler quando esta variável existe (#459).
+export APPSELL_RECONCILER_PASSWORD="$reconciler_secret"
 export APPSELL_INTERNAL_ISSUER="appsell-bff-test"
 export APPSELL_INTERNAL_AUDIENCE="appsell-api-test"
 export APPSELL_IDENTITY_ISSUER="https://identity.test.autonomia.site"
 export APPSELL_INTERNAL_HMAC_KEYRING_B64_JSON="[{\"id\":\"test-v1\",\"key\":\"${internal_key_b64}\",\"active\":true}]"
-APPSELL_API_CONTEXT_HMAC_KEY_B64="$(printf '%s' "$context_key" | xxd -r -p | base64)"
-export APPSELL_API_CONTEXT_HMAC_KEY_B64
+# As três variáveis `api_*` abaixo são do contêiner da API e não são exportadas.
+# O `Settings` lê todo `APPSELL_API_*` do ambiente, e exportadas elas vazavam
+# para o pytest: a configuração parcial derrubava testes que nada têm de banco
+# (#464). Elas vão só no `docker compose up` da API, mais abaixo.
+api_context_hmac_key_b64="$(printf '%s' "$context_key" | xxd -r -p | base64)"
 export APPSELL_SERVICE_CREDENTIAL_B64="$service_credential_b64"
-export APPSELL_API_WEBHOOK_LOCAL_KEYRING_B64_JSON="[{\"reference\":\"checkout-demo-v1\",\"key\":\"${webhook_secret_b64}\"}]"
+api_webhook_local_keyring_b64_json="[{\"reference\":\"checkout-demo-v1\",\"key\":\"${webhook_secret_b64}\"}]"
 export APPSELL_TEST_WEBHOOK_SECRET_B64="$webhook_secret_b64"
 export APPSELL_TEST_WEBHOOK_SESSION_KEY_B64="$webhook_bff_session_b64"
 export APPSELL_TEST_WEBHOOK_CSRF_KEY_B64="$webhook_bff_csrf_b64"
 export APPSELL_TEST_WEBHOOK_VAULT_KEY_B64="$webhook_bff_vault_b64"
 export APPSELL_TEST_COMPOSE_PROJECT="$project"
+# O pdf-sandbox pede 4 núcleos (compose.yaml); o runner do CI tem 2 e o Docker
+# recusa a task. Usa o que a máquina tem, até o valor de produção.
+cpus_da_maquina="$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
+export APPSELL_PDF_SANDBOX_CPUS="$(( cpus_da_maquina < 4 ? cpus_da_maquina : 4 )).0"
 webhook_forbidden_hashes="$(python3 - "$webhook_bff_session_b64" "$webhook_bff_csrf_b64" "$webhook_bff_vault_b64" <<'PY'
 import base64
 import hashlib
@@ -78,7 +88,7 @@ import sys
 print(json.dumps([hashlib.sha256(base64.b64decode(value)).hexdigest() for value in sys.argv[1:]]))
 PY
 )"
-export APPSELL_API_WEBHOOK_FORBIDDEN_KEY_SHA256_JSON="$webhook_forbidden_hashes"
+api_webhook_forbidden_key_sha256_json="$webhook_forbidden_hashes"
 
 if [[ "$webhook_secret_b64" == "$internal_key_b64" || "$webhook_secret_b64" == "$service_credential_b64" \
   || "$webhook_secret_b64" == "$webhook_bff_session_b64" \
@@ -178,47 +188,23 @@ uv run --project apps/api python -m appsell_api.configure_context_key
 
 export APPSELL_TEST_POSTGRES_ADMIN_URL="postgresql://postgres:${superuser_secret}@127.0.0.1:${port}/appsell"
 export APPSELL_TEST_POSTGRES_RUNTIME_URL="postgresql://appsell_runtime:${runtime_secret}@127.0.0.1:${port}/appsell"
+export APPSELL_TEST_POSTGRES_RECONCILER_URL="postgresql://appsell_reconciler:${reconciler_secret}@127.0.0.1:${port}/appsell"
 export APPSELL_TEST_CONTEXT_KEY_HEX="$context_key"
 export APPSELL_TEST_BOOTSTRAP_KEY_HEX="$bootstrap_key"
-uv run --project apps/api pytest \
-  apps/api/tests/test_postgres_foundation.py \
-  apps/api/tests/test_postgres_bff_onboarding.py \
-  apps/api/tests/test_postgres_product_course.py \
-  apps/api/tests/test_postgres_product_publication.py \
-  apps/api/tests/test_postgres_access_links.py \
-  apps/api/tests/test_postgres_document_material.py \
-  apps/api/tests/test_postgres_product_cover.py \
-  apps/api/tests/test_postgres_curriculum.py \
-  apps/api/tests/test_postgres_learning_progress.py \
-  apps/api/tests/test_postgres_multi_asset_migration.py \
-  apps/api/tests/test_postgres_private_assets.py \
-  apps/api/tests/test_postgres_superadmin_inspection.py \
-  apps/api/tests/test_postgres_public_storefront.py \
-  apps/api/tests/test_postgres_demo_checkout.py \
-  apps/api/tests/test_postgres_webhook_ingress.py \
-  apps/api/tests/test_postgres_seller_payout_account.py \
-  apps/api/tests/test_postgres_payout_repoint_audit.py \
-  apps/api/tests/test_postgres_payout_status_sync.py \
-  apps/api/tests/test_postgres_payout_destination.py \
-  apps/api/tests/test_postgres_seller_membership_role.py \
-  apps/api/tests/test_postgres_pdf_access_policy.py \
-  apps/api/tests/test_postgres_pdf_preraster.py \
-  apps/api/tests/test_postgres_email_outbox.py \
-  apps/api/tests/test_postgres_minha_conta.py \
-  apps/api/tests/test_api_minha_conta.py \
-  apps/api/tests/test_postgres_configuracoes_da_loja.py \
-  apps/api/tests/test_api_seller_settings.py \
-  apps/api/tests/test_email_layout.py \
-  apps/api/tests/test_email_worker.py \
-  apps/api/tests/test_internal_request_body_limit.py \
-  apps/api/tests/test_demo_codex_pdfs.py \
-  apps/api/tests/test_reset_demo_tenant.py \
-  apps/api/tests/test_api_catalog.py \
-  apps/api/tests/test_api_onboarding.py \
-  apps/api/tests/test_api_learning.py \
-  apps/api/tests/test_api_assets.py \
-  apps/api/tests/test_api_superadmin_inspection.py \
-  apps/api/tests/test_api_superadmin_bootstrap.py
+# Aqui o Postgres existe: um teste que pula deixou de provar o que devia, e a
+# sessão reprova (apps/api/tests/exige_postgres.py, #450).
+export APPSELL_REQUIRE_POSTGRES="1"
+# A pasta inteira, para que teste de banco novo entre por existir (#450, #459).
+# Cada --ignore roda em outra chamada, e scripts/ci/tests confere isso:
+# - demo_checkout, internal_requests e asset_worker_runner, logo abaixo, em
+#   processos próprios;
+# - os dois de S3 real, no test-storage-vertical.sh (cert-storage).
+uv run --project apps/api pytest apps/api/tests \
+  --ignore=apps/api/tests/test_api_demo_checkout.py \
+  --ignore=apps/api/tests/test_internal_requests.py \
+  --ignore=apps/api/tests/test_asset_worker_runner.py \
+  --ignore=apps/api/tests/test_storage_s3_contract.py \
+  --ignore=apps/api/tests/test_storage_upload_publication_vertical.py
 uv run --project apps/api pytest apps/api/tests/test_api_demo_checkout.py
 uv run --project apps/api pytest \
   apps/api/tests/test_internal_requests.py \
@@ -238,7 +224,10 @@ APPSELL_DEMO_DATABASE_URL="$APPSELL_TEST_POSTGRES_ADMIN_URL" \
 uv run --project apps/api python -m appsell_api.reset_demo_tenant \
   --confirm-demo-key autonomia-demo-v1
 
-docker compose -p "$project" up -d --build --wait api
+APPSELL_API_CONTEXT_HMAC_KEY_B64="$api_context_hmac_key_b64" \
+APPSELL_API_WEBHOOK_LOCAL_KEYRING_B64_JSON="$api_webhook_local_keyring_b64_json" \
+APPSELL_API_WEBHOOK_FORBIDDEN_KEY_SHA256_JSON="$api_webhook_forbidden_key_sha256_json" \
+  docker compose -p "$project" up -d --build --wait api
 curl --fail --silent "http://127.0.0.1:${api_port}/health/live"
 curl --fail --silent "http://127.0.0.1:${api_port}/health/ready"
 APPSELL_TEST_DOMAIN_API_URL="http://127.0.0.1:${api_port}" \

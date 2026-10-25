@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import smtplib
 from types import SimpleNamespace
 from typing import Any, cast
@@ -26,6 +27,11 @@ _NOMES = (
 def _settings(monkeypatch: pytest.MonkeyPatch, **env: str) -> Settings:
     for nome in _NOMES:
         monkeypatch.delenv(nome, raising=False)
+    # O `test-postgres-foundation.sh` exporta parte da autenticação interna com o
+    # prefixo da API e parte sem; herdada aqui, ela vira configuração incompleta
+    # e o `Settings` recusa antes de o teste chegar ao SMTP.
+    for nome in [chave for chave in os.environ if chave.startswith("APPSELL_API_")]:
+        monkeypatch.delenv(nome)
     for nome, valor in env.items():
         monkeypatch.setenv(nome, valor)
     return Settings(_env_file=None)  # type: ignore[call-arg]

@@ -14,7 +14,12 @@ from .catalog_routes import router as catalog_router
 from .checkout_routes import router as checkout_router
 from .config import Settings, get_settings
 from .cover_routes import router as cover_router
-from .db import create_engine, create_session_factory, database_ready
+from .db import (
+    create_engine,
+    create_session_factory,
+    database_ready,
+    financial_channel_ready,
+)
 from .demo_checkout_worker import run_demo_checkout_worker_loop
 from .email_worker import run_email_worker_loop
 from .fulfillment_worker import run_fulfillment_worker_loop
@@ -275,6 +280,11 @@ async def ready(response: Response) -> dict[str, Any]:
     diagnostico = getattr(app.state, "asset_scanner_diagnostico", None)
     if diagnostico is not None:
         corpo["antivirus"] = diagnostico
+    # O canal Financial não muda o status: um 503 aqui tiraria de rotação todas
+    # as tasks de uma vez, e a API inteira cairia por causa de um canal.
+    canal = await _canal_financial()
+    if canal is not None:
+        corpo["financial_channel"] = canal
     return corpo
 
 
@@ -289,7 +299,10 @@ async def startup(response: Response) -> dict[str, Any]:
     Enquanto a task nunca ficou pronta, espelha o `ready`. É o que evita a
     promoção silenciosa de task quebrada num deploy — em 30/08/2026 o socket do
     sandbox sumiu, a task subiu assim, foi promovida e todo PDF passou a abrir
-    sem botão.
+    sem botão. O canal Financial fica fora desse espelho (#503): não reprova
+    nem é consultado aqui, porque com uma réplica um reinício com o canal
+    ambíguo tiraria a loja inteira do ar. Ele sai no log pelo monitor de
+    dependências e aparece como campo no `ready`.
 
     Depois que ficou pronta uma vez, responde pelo processo e só por ele. É o
     que faltava em 12/09/2026: com `retries=6` e `interval=10s`, um minuto de
@@ -299,12 +312,47 @@ async def startup(response: Response) -> dict[str, Any]:
     """
     if not bool(getattr(app.state, "ever_ready", False)):
         estado = await _dependencias_prontas()
-        if estado["pronto"]:
-            app.state.ever_ready = True
-        else:
+        if not estado["pronto"]:
             response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
             return {"status": "starting", "ever_ready": False}
+        # O canal Financial não entra aqui (#503). A api tem uma réplica: num
+        # reinício com o canal ambíguo, a task nova nunca ficaria healthy e a
+        # loja inteira cairia por um canal que só afeta a entrega do Financial.
+        # Nem a consulta entra: ela levaria até 3 s, o timeout do HEALTHCHECK.
+        # Quem pergunta é o monitor de dependências; o `ready` mostra o campo.
+        app.state.ever_ready = True
     return {"status": "ok", "ever_ready": True}
+
+
+# Canal ambíguo em regime: um log na transição e, enquanto durar, no máximo um a
+# cada 5 min. A sonda roda a cada poucos segundos e não pode virar spam.
+_CANAL_FINANCIAL_LOG_INTERVALO_S = 300.0
+_relogio = time.monotonic
+
+
+async def _canal_financial() -> bool | None:
+    canal = await financial_channel_ready(app.state.db_engine)
+    if canal is None:
+        return None
+    anterior = getattr(app.state, "financial_channel_ok", None)
+    app.state.financial_channel_ok = canal
+    if canal:
+        if anterior is False:
+            get_logger(__name__).info("appsell.financial_channel.resolved")
+        return True
+    agora = _relogio()
+    ultimo = getattr(app.state, "financial_channel_logged_at", None)
+    if (
+        anterior is not False
+        or ultimo is None
+        or (agora - ultimo >= _CANAL_FINANCIAL_LOG_INTERVALO_S)
+    ):
+        app.state.financial_channel_logged_at = agora
+        get_logger(__name__).error(
+            "appsell.financial_channel.unresolved",
+            detalhe="loja vinculada e canal Financial sem exatamente uma identidade",
+        )
+    return False
 
 
 async def _dependencias_prontas() -> dict[str, Any]:
@@ -376,6 +424,10 @@ def _registra_diagnostico_do_scanner(
 async def _monitor_storage_dependencies(app_instance: FastAPI, stop: asyncio.Event) -> None:
     while not stop.is_set():
         await _refresh_storage_dependencies(app_instance)
+        # Em produção ninguém sonda o `ready` da api, e o `startup` em regime
+        # não pergunta ao banco. É aqui que o canal ambíguo vira log de erro
+        # (#503); `_canal_financial` limita a um a cada 5 min.
+        await _canal_financial()
         try:
             await asyncio.wait_for(
                 stop.wait(),

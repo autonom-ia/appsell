@@ -144,6 +144,32 @@ done
   exit 1
 }
 
+# O endpoint interno vem da API. Um nome de serviço (sem ponto) só resolve na
+# rede do projeto, onde o EasyPanel dá ao storage o alias
+# sell-autonomia-storage (#461, docs/runbooks/storage-461-rede-interna.md). O
+# worker entra só na rede do ClamAV, que é essa: o storage tem de levar o nome
+# nela, ou o worker sobe sem storage. Nome fixo do storage: um override só
+# abriria caminho para outro serviço.
+storage_service="sell-autonomia_storage"
+storage_host="$(env_value APPSELL_API_STORAGE_INTERNAL_ENDPOINT)"
+storage_host="${storage_host#*://}"
+storage_host="${storage_host%%/*}"
+storage_host="${storage_host%%:*}"
+if [[ "$storage_host" != *.* ]]; then
+  storage_networks="$(
+    docker service inspect "$storage_service" --format '{{json .Spec.TaskTemplate.Networks}}'
+  )" || {
+    echo "storage service not found: $storage_service" >&2
+    exit 1
+  }
+  jq -e --arg network "${networks[0]}" --arg alias "$storage_host" \
+    'any((. // [])[]; .Target == $network and any((.Aliases // [])[]; . == $alias))' \
+    <<<"$storage_networks" >/dev/null || {
+    echo "storage alias $storage_host not found on the worker network (docs/runbooks/storage-461-rede-interna.md)" >&2
+    exit 1
+  }
+fi
+
 create_args=(
   service create
   --name "$worker_service"
