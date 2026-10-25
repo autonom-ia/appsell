@@ -299,7 +299,10 @@ async def startup(response: Response) -> dict[str, Any]:
     Enquanto a task nunca ficou pronta, espelha o `ready`. É o que evita a
     promoção silenciosa de task quebrada num deploy — em 30/08/2026 o socket do
     sandbox sumiu, a task subiu assim, foi promovida e todo PDF passou a abrir
-    sem botão.
+    sem botão. O canal Financial fica fora desse espelho (#503): não reprova
+    nem é consultado aqui, porque com uma réplica um reinício com o canal
+    ambíguo tiraria a loja inteira do ar. Ele sai no log pelo monitor de
+    dependências e aparece como campo no `ready`.
 
     Depois que ficou pronta uma vez, responde pelo processo e só por ele. É o
     que faltava em 12/09/2026: com `retries=6` e `interval=10s`, um minuto de
@@ -309,17 +312,15 @@ async def startup(response: Response) -> dict[str, Any]:
     """
     if not bool(getattr(app.state, "ever_ready", False)):
         estado = await _dependencias_prontas()
-        # Canal Financial ambíguo com loja vinculada: a task nova não entra e a
-        # anterior segue servindo. Depois de pronta, é só assunto do `ready`.
-        canal = await _canal_financial() if estado["pronto"] else None
-        if estado["pronto"] and canal is not False:
-            app.state.ever_ready = True
-        else:
+        if not estado["pronto"]:
             response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-            corpo: dict[str, Any] = {"status": "starting", "ever_ready": False}
-            if canal is False:
-                corpo["financial_channel"] = False
-            return corpo
+            return {"status": "starting", "ever_ready": False}
+        # O canal Financial não entra aqui (#503). A api tem uma réplica: num
+        # reinício com o canal ambíguo, a task nova nunca ficaria healthy e a
+        # loja inteira cairia por um canal que só afeta a entrega do Financial.
+        # Nem a consulta entra: ela levaria até 3 s, o timeout do HEALTHCHECK.
+        # Quem pergunta é o monitor de dependências; o `ready` mostra o campo.
+        app.state.ever_ready = True
     return {"status": "ok", "ever_ready": True}
 
 
@@ -423,6 +424,10 @@ def _registra_diagnostico_do_scanner(
 async def _monitor_storage_dependencies(app_instance: FastAPI, stop: asyncio.Event) -> None:
     while not stop.is_set():
         await _refresh_storage_dependencies(app_instance)
+        # Em produção ninguém sonda o `ready` da api, e o `startup` em regime
+        # não pergunta ao banco. É aqui que o canal ambíguo vira log de erro
+        # (#503); `_canal_financial` limita a um a cada 5 min.
+        await _canal_financial()
         try:
             await asyncio.wait_for(
                 stop.wait(),

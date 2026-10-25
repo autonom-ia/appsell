@@ -21,7 +21,7 @@
 #   APPSELL_BACKUP_DIR               /var/backups/appsell-native-90
 #   APPSELL_BACKUP_KEEP              7
 #   APPSELL_BACKUP_DEST_KIND         none | local-dir | s3 | rsync   (default none)
-#   BACKUP_PG_IMAGE                  postgres:16-alpine
+#   BACKUP_PG_IMAGE                  the production server image (lib-backup.sh)
 #   (destination-specific vars are validated by lib-backup.sh when selected)
 set -euo pipefail
 
@@ -54,6 +54,8 @@ mkdir -p "$backup_dir"
 chmod 0700 "$backup_dir" 2>/dev/null || true
 
 log "backup start: db=${pg_db} host=${pg_host}:${pg_port} dest=${APPSELL_BACKUP_DEST_KIND:-none}"
+
+pg_assert_client_not_older "$pg_host" "$pg_port" "$pg_user" "$pg_db" "$APPSELL_POSTGRES_SECRET"
 
 log "step 1/5: pg_dump (custom format) -> ${dump_file##*/}"
 pg_dump_to_file "$pg_host" "$pg_port" "$pg_user" "$pg_db" \
