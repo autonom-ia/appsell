@@ -75,14 +75,22 @@ Opcionais (defaults):
 
 ### Destino off-host
 
-`s3` (MinIO/S3-compatível, via container `minio/mc`):
+`s3` (AWS S3 ou compatível): um único `s3api put-object` pelo container
+`amazon/aws-cli`, fixado por digest em `lib-backup.sh`. O envio leva
+`Content-MD5`, então o servidor recusa corpo diferente do arquivo local. Basta
+uma política IAM com `s3:PutObject` no prefixo, sem `Get`, `List` nem `Delete`;
+o teste de CI prova isso com uma identidade que só escreve (#517). O host
+precisa de `openssl` para o MD5.
 
 | Var | Descrição |
 |---|---|
-| `APPSELL_BACKUP_S3_ENDPOINT` | ex.: `https://storage.<host>` |
 | `APPSELL_BACKUP_S3_BUCKET` | bucket de destino |
+| `APPSELL_BACKUP_S3_REGION` | região do bucket (ex.: `sa-east-1`) |
 | `APPSELL_BACKUP_S3_PREFIX` | prefixo (default `sell/native-90`) |
 | `APPSELL_BACKUP_S3_ACCESS_KEY` / `APPSELL_BACKUP_S3_SECRET_KEY` | credenciais (só via env) |
+| `APPSELL_BACKUP_S3_ENDPOINT` | opcional; vazio = AWS. Preencher só para S3 compatível |
+| `BACKUP_S3_IMAGE` | opcional; default é a imagem fixada por digest |
+| `BACKUP_S3_DOCKER_NETWORK` | opcional; rede Docker do container de envio |
 
 `rsync` (SSH):
 

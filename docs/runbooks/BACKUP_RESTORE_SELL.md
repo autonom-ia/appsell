@@ -104,8 +104,8 @@ export APPSELL_POSTGRES_USER=<role-de-leitura>
 export APPSELL_POSTGRES_SECRET=<via-cofre>            # nunca ecoar
 export APPSELL_BACKUP_ENCRYPTION_SECRET=<via-cofre>   # nunca ecoar
 export APPSELL_BACKUP_DEST_KIND=s3
-export APPSELL_BACKUP_S3_ENDPOINT=https://<storage-endpoint>
 export APPSELL_BACKUP_S3_BUCKET=<bucket>
+export APPSELL_BACKUP_S3_REGION=<regiao-do-bucket>
 export APPSELL_BACKUP_S3_ACCESS_KEY=<via-cofre>
 export APPSELL_BACKUP_S3_SECRET_KEY=<via-cofre>
 
@@ -138,8 +138,8 @@ Arquivo `/etc/cron.d/appsell-native-backup` (permissão 0600), rodando 03:15 UTC
   APPSELL_POSTGRES_HOST=sell-autonomia_postgres-native-90 \
   APPSELL_POSTGRES_USER=<role> \
   APPSELL_BACKUP_DEST_KIND=s3 \
-  APPSELL_BACKUP_S3_ENDPOINT=https://<endpoint> \
   APPSELL_BACKUP_S3_BUCKET=<bucket> \
+  APPSELL_BACKUP_S3_REGION=<regiao> \
   bash -c 'set -a; . /root/.config/appsell-backup.env; set +a; \
     /opt/appsell/deploy/easypanel-native/backup/backup-native.sh \
     >> /var/log/appsell-backup.log 2>&1'
