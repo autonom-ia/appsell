@@ -177,6 +177,21 @@ class ClassifyPathsTests(unittest.TestCase):
         self.assertTrue(route["postgres"])
         self.assertFalse(route["full"])
 
+    def test_pdf_sandbox_isolation_probe_routes_postgres(self) -> None:
+        # A sonda da #468 roda dentro do test-postgres-foundation.sh.
+        route = classify_paths(["scripts/test-pdf-sandbox-isolation.sh"])
+        self.assertFalse(route["full"])
+        for path in (
+            "scripts/test-pdf-sandbox-isolation.sh",
+            "scripts/ci/pdf_sandbox_probe.py",
+        ):
+            with self.subTest(path=path):
+                route = classify_paths([path])
+
+                # `scripts/ci/` ainda leva à certificação inteira, que
+                # inclui o postgres.
+                self.assertTrue(route["postgres"])
+
     def test_preview_workflow_routes_preview_only(self) -> None:
         route = classify_paths([".github/workflows/preview-images.yml"])
 

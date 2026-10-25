@@ -211,6 +211,10 @@ def classify_paths(paths: Iterable[str]) -> dict[str, object]:
             route["api"] = True
             route["postgres"] = True
             matched = True
+        elif path == "scripts/test-pdf-sandbox-isolation.sh":
+            # A sonda da #468 roda dentro do test-postgres-foundation.sh.
+            route["postgres"] = True
+            matched = True
         elif path == "scripts/with-isolated-redis.mjs":
             route["web"] = True
             matched = True
