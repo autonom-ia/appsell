@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // Quem sobe `next dev` nos testes não vai ao Google Fonts (#457, #513).
 //
@@ -15,7 +15,10 @@ import { pathToFileURL } from "node:url";
 //
 // O Next lê NEXT_FONT_GOOGLE_MOCKED_RESPONSES para o CSS. O Turbopack ainda
 // baixa os arquivos de fonte de verdade, então o CSS de mock aponta para um
-// servidor local, que responde qualquer `.woff2` com bytes fixos.
+// servidor local, que serve os arquivos reais de tests/fixtures/google-fonts.
+// Bytes falsos fariam o navegador cair na fonte de fallback, e a medida de
+// layout do E2E deixaria de ser a da produção: no runner Linux, sem Arial, um
+// botão a 320px passou a sair da tela (#513).
 //
 // A chave é a URL exata que o Next monta a partir do layout. Fonte ou peso novo
 // no layout muda a URL, e o servidor falha com "Missing mocked response for
@@ -25,26 +28,49 @@ import { pathToFileURL } from "node:url";
 // `node scripts/google-fonts-mock.mjs <comando> [...args]`, e o Playwright
 // repassa o env ao webServer.
 export const GOOGLE_FONTS = [
-  { url: "https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap", family: "Inter", weights: ["100 900"] },
-  { url: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300..700&display=swap", family: "Space Grotesk", weights: ["300 700"] },
-  { url: "https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;800;900&display=swap", family: "Montserrat", weights: ["400", "600", "800", "900"] },
-  { url: "https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap", family: "IBM Plex Mono", weights: ["400", "500"] }
+  {
+    url: "https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap",
+    family: "Inter",
+    faces: [{ weight: "100 900", file: "inter.woff2" }]
+  },
+  {
+    url: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300..700&display=swap",
+    family: "Space Grotesk",
+    faces: [{ weight: "300 700", file: "space-grotesk.woff2" }]
+  },
+  {
+    url: "https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;800;900&display=swap",
+    family: "Montserrat",
+    // Um arquivo variável para os quatro pesos, como o próprio Google serve.
+    faces: ["400", "600", "800", "900"].map((weight) => ({ weight, file: "montserrat.woff2" }))
+  },
+  {
+    url: "https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap",
+    family: "IBM Plex Mono",
+    faces: [
+      { weight: "400", file: "ibm-plex-mono-400.woff2" },
+      { weight: "500", file: "ibm-plex-mono-500.woff2" }
+    ]
+  }
 ];
 
-const FONT_BYTES = Buffer.from("wOF2-mock-appsell");
+const FONTS_DIRECTORY = fileURLToPath(new URL("../tests/fixtures/google-fonts/", import.meta.url));
+// O mesmo intervalo do bloco `latin` que o Google serve.
+const LATIN_RANGE =
+  "U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, " +
+  "U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD";
 
-function css(origin, family, weights) {
-  const slug = family.toLowerCase().split(" ").join("-");
-  return weights
-    .map((weight) => [
+function css(origin, family, faces) {
+  return faces
+    .map(({ weight, file }) => [
       "/* latin */",
       "@font-face {",
       `  font-family: '${family}';`,
       "  font-style: normal;",
       `  font-weight: ${weight};`,
       "  font-display: swap;",
-      `  src: url(${origin}/${slug}-${weight.split(" ").join("-")}.woff2) format('woff2');`,
-      "  unicode-range: U+0000-00FF;",
+      `  src: url(${origin}/${file}) format('woff2');`,
+      `  unicode-range: ${LATIN_RANGE};`,
       "}",
       ""
     ].join("\n"))
@@ -52,10 +78,18 @@ function css(origin, family, weights) {
 }
 
 export async function startGoogleFontsMock() {
+  const files = new Map();
+  for (const font of GOOGLE_FONTS) {
+    for (const { file } of font.faces) {
+      if (!files.has(`/${file}`)) files.set(`/${file}`, await readFile(join(FONTS_DIRECTORY, file)));
+    }
+  }
+  // Só os arquivos da lista, pelo nome exato: nada do disco além deles.
   const server = createServer((request, response) => {
-    if (request.method === "GET" && (request.url ?? "").endsWith(".woff2")) {
+    const bytes = request.method === "GET" ? files.get(request.url ?? "") : undefined;
+    if (bytes) {
       response.writeHead(200, { "content-type": "font/woff2" });
-      response.end(FONT_BYTES);
+      response.end(bytes);
       return;
     }
     response.writeHead(404);
@@ -68,7 +102,7 @@ export async function startGoogleFontsMock() {
 
   const directory = await mkdtemp(join(tmpdir(), "appsell-fontes-"));
   const file = join(directory, "respostas.cjs");
-  const responses = Object.fromEntries(GOOGLE_FONTS.map((font) => [font.url, css(origin, font.family, font.weights)]));
+  const responses = Object.fromEntries(GOOGLE_FONTS.map((font) => [font.url, css(origin, font.family, font.faces)]));
   await writeFile(file, `module.exports = ${JSON.stringify(responses, null, 2)};\n`, "utf8");
 
   return {
