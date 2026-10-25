@@ -2,7 +2,7 @@
 
 > **Estado: só plano. Nada daqui foi executado.**
 >
-> - **Quem executa:** a trilha Plataforma, pelo SSH `claudete`, uma fase por
+> - **Quem executa:** a trilha Plataforma, por SSH no host, uma fase por
 >   vez. Cada fase marcada 🔴 precisa do OK do Rodrigo.
 > - **Quem preparou:** a trilha 2 · Dinheiro, em 24/10/2026. A revisão
 >   independente veio com 1 ALTO e 6 MÉDIOS. Todos foram incorporados. D1 e D2
@@ -183,7 +183,7 @@
 
    ```sh
    leitura() {   # $1 = arquivo .sql local
-     ssh claudete 'sudo -n docker exec -i "$(sudo -n docker ps -q --filter name=sell-autonomia_postgres-native-90. | head -1)" psql -U appsell_native_admin -d appsell_native_90 -At -v ON_ERROR_STOP=1' < "$1"
+     : "${ALIAS:?}"; ssh "$ALIAS" 'sudo -n docker exec -i "$(sudo -n docker ps -q --filter name=sell-autonomia_postgres-native-90. | head -1)" psql -U appsell_native_admin -d appsell_native_90 -At -v ON_ERROR_STOP=1' < "$1"
    }
    ```
 
@@ -195,7 +195,15 @@
   - nenhum `rm` com curinga;
   - proibidos até a Fase 6: `docker image prune`, `system prune`,
     `volume prune`, `rmi` e `builder prune --all`.
-- A pasta do release é `/home/claudete/releases/api-0064/`.
+- **Valores do host ficam fora do repo**, que é público. Nada de IP, alias ou
+  usuário SSH, nem caminho no host. Eles vêm do registro privado de quem opera:
+  - `ALIAS`, na máquina local: o alias SSH do host;
+  - `PASTA`, no host: a pasta deste release, com valor literal, fora de
+    qualquer pasta de projeto. Primeira linha de cada sessão:
+    `: "${PASTA:?PASTA vazio — parar}"`.
+- Desvio declarado em relação ao #437: os `rm` deste plano usam `$PASTA`. Só
+  apagam **arquivo**, nunca pasta, sempre depois do guard de `PASTA` e de um
+  `test -f` no mesmo caminho.
 - Spec e env só com `--format` de campos. Nada de `cat`.
 - Variável só por nome.
 - Log só por contagem:
@@ -242,8 +250,8 @@
 Leitura dos serviços:
 
 ```sh
-dig +short sell.autonomia.site                 # o mesmo IP de `ssh -G claudete | grep '^hostname '`
-ssh claudete
+dig +short sell.autonomia.site                 # o mesmo IP de `ssh -G "$ALIAS" | grep '^hostname '`
+ssh "$ALIAS"
 sudo -n true || echo "PARAR: sudo -n não liberado neste host"
 for s in sell-autonomia_api sell-autonomia_asset-worker; do
   sudo -n docker service inspect "$s" --format \
@@ -295,7 +303,7 @@ Fase 0:
 ROLLBACK_IMAGE = easypanel/sell-autonomia/api:2759090
 ROLLBACK_ID    = <ID completo lido na Fase 0>
 ROLLBACK_TAG   = easypanel/sell-autonomia/api:rollback-0064-2759090
-PASTA          = /home/claudete/releases/api-0064
+PASTA          = <do registro privado de quem opera>
 ```
 
 1. `install -d -m 700` da pasta.
@@ -317,7 +325,8 @@ fica no `.tar`.
 ```sh
 TS=<literal AAAAMMDDTHHMMSSZ>
 : "${TS:?}"
-D=/home/claudete/releases/api-0064/appsell_native_90_pre0064_$TS.dump
+: "${PASTA:?}"
+D="$PASTA/appsell_native_90_pre0064_$TS.dump"
 PG="$(sudo -n docker ps -q --filter name=sell-autonomia_postgres-native-90. | head -1)"
 : "${PG:?postgres sem contêiner — parar}"
 ( umask 077; sudo -n docker exec "$PG" pg_dump -U appsell_native_admin -Fc appsell_native_90 > "$D" 2> "$D.err" ); echo "pg_dump rc=$?"
@@ -346,7 +355,7 @@ Muda só:
 - `--build-arg GIT_SHA="$SHA"`;
 - `-t "easypanel/sell-autonomia/api:$SHA"`.
 
-Fonte em `/home/claudete/releases/api-0064/src`. O `src.tar.gz` também fica no
+Fonte em `$PASTA/src`. O `src.tar.gz` também fica no
 host, porque o downgrade precisa dele.
 
 ```sh
@@ -355,7 +364,7 @@ sudo -n docker image inspect "easypanel/sell-autonomia/api:$SHA" --format '{{ind
 sudo -n docker run --rm --entrypoint python "easypanel/sell-autonomia/api:$SHA" -c \
   'import appsell_api.db as d, appsell_api.payout_routes as p; print(hasattr(d,"financial_channel_ready"), p._SELF_SERVICE_SELLERS_ENV)'
 # True APPSELL_FINANCIAL_SELF_SERVICE_SELLER_IDS
-ls /home/claudete/releases/api-0064/src/apps/api/migrations/versions/ | grep -c '^006[234]_'   # 3
+ls "$PASTA"/src/apps/api/migrations/versions/ | grep -c '^006[234]_'   # 3
 sudo -n docker image inspect easypanel/sell-autonomia/api:rollback-0064-2759090 --format '{{.Id}}'   # = ROLLBACK_ID
 ```
 
@@ -380,7 +389,7 @@ Ele é criado no host com `umask 077`, preenchido pelo stdin, sem eco e sem
 argumento de comando:
 
 ```sh
-E=/home/claudete/releases/api-0064/migrator.env
+E="$PASTA/migrator.env"
 ( umask 077; cat > "$E" )      # conteúdo colado pelo stdin; nunca na tela
 test "$(stat -c %a "$E")" = 600 || echo "PARAR: permissão do env-file"
 ```
@@ -392,11 +401,11 @@ guardar os números. Produto criado entre a Fase 0 e este passo muda a conta.
 
 ```sh
 : "${SHA:?}"
-sudo -n docker run --rm --network easypanel --env-file /home/claudete/releases/api-0064/migrator.env \
-  -v /home/claudete/releases/api-0064/src/apps/api:/mig -w /mig \
+sudo -n docker run --rm --network easypanel --env-file "$PASTA/migrator.env" \
+  -v "$PASTA/src/apps/api:/mig" -w /mig \
   "easypanel/sell-autonomia/api:$SHA" alembic upgrade head; echo "alembic rc=$?"
-rm -- /home/claudete/releases/api-0064/migrator.env
-test ! -e /home/claudete/releases/api-0064/migrator.env && echo ENV_APAGADO
+test -f "$PASTA/migrator.env" && rm -- "$PASTA/migrator.env"
+test ! -e "$PASTA/migrator.env" && echo ENV_APAGADO
 ```
 
 Esperado:
@@ -457,9 +466,9 @@ Validação, nesta ordem:
    ```sh
    : "${SHA:?}"
    sudo -n docker service ps sell-autonomia_api --filter desired-state=running \
-     --format '{{.ID}} {{.Image}}' | grep -F "api:$SHA" > /home/claudete/releases/api-0064/task-nova
-   test "$(wc -l < /home/claudete/releases/api-0064/task-nova)" -eq 1 || echo "PARAR: task nova ausente ou ambígua"
-   task=$(cut -d' ' -f1 /home/claudete/releases/api-0064/task-nova)
+     --format '{{.ID}} {{.Image}}' | grep -F "api:$SHA" > "$PASTA/task-nova"
+   test "$(wc -l < "$PASTA/task-nova")" -eq 1 || echo "PARAR: task nova ausente ou ambígua"
+   task=$(cut -d' ' -f1 "$PASTA/task-nova")
    cid=$(sudo -n docker inspect --format '{{.Status.ContainerStatus.ContainerID}}' "$task")
    : "${cid:?task nova sem contêiner}"
    ```
@@ -554,10 +563,10 @@ sudo -n docker service update --image easypanel/sell-autonomia/api:rollback-0064
   arquivos de migration do `src` montado.
 
 ```sh
-sudo -n docker run --rm --network easypanel --env-file /home/claudete/releases/api-0064/migrator.env \
-  -v /home/claudete/releases/api-0064/src/apps/api:/mig -w /mig \
+sudo -n docker run --rm --network easypanel --env-file "$PASTA/migrator.env" \
+  -v "$PASTA/src/apps/api:/mig" -w /mig \
   easypanel/sell-autonomia/api:rollback-0064-2759090 alembic downgrade 0061_o_atraso_alcanca_o_aluno; echo "rc=$?"
-rm -- /home/claudete/releases/api-0064/migrator.env
+test -f "$PASTA/migrator.env" && rm -- "$PASTA/migrator.env"
 ```
 
 Esperado:
