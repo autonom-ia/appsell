@@ -47,21 +47,12 @@ gravado por loja em `seller_organization`
 
 No Financial, a credencial do gateway também é **por operador**:
 
-- `financial.company_gateways` (`database/migrations/002_payment_gateways.sql:14-33`)
-  guarda o **nome** do parâmetro SSM da chave secreta e o `account_id`. Cada
-  operador tem **um gateway ativo** por provedor e modo: o índice único parcial
-  `uq_financial_active_company_gateway_mode`
-  (`020_bind_one_time_credit_gateway.sql:82-87`) substituiu o `UNIQUE` da 002.
-- O nome do parâmetro é montado com o `operatorId`
-  (`gatewaySecretParameterName`, `src/secret-store.ts:87`; uso em
-  `src/financial-service.ts:787-791`).
-- O checkout externo pega o gateway do operador do pedido
-  (`resolveActiveStripeGateway(order.operatorId)`, `financial-service.ts:3445-3446`
-  e `:4662-4674`), lê a chave pelo nome guardado (`:3450`) e cria a sessão com
-  `accountId: gateway.accountId` (`:3453-3456`).
-- Os operadores do Financial são **empresas**: a migration
-  `010_operator_organization_link.sql:38-75` cria `autonom-ia` ("Autonom.ia") e
-  `hub2you` ("Hub2You").
+- Cada operador tem **um gateway ativo** por provedor e modo, com a própria
+  credencial e o `account_id` da conta em que cobra.
+- O checkout externo usa o gateway do operador do pedido e cria a sessão na
+  conta desse gateway.
+- Os operadores do Financial são **empresas**: hoje, Autonom.ia e Hub2You.
+- O detalhe com referências de código fica no Financial, que é privado.
 
 Consequência: **o dinheiro cai na conta Stripe que o gateway do operador da loja
 usa.**
@@ -219,23 +210,21 @@ ainda.
 
 | Capacidade | Stripe | Asaas |
 |---|---|---|
-| Implementado | Sim: `src/gateway-client.ts` | Sim: `src/asaas-gateway-client.ts`, atrás de flags desligadas por padrão (`FINANCIAL_ASAAS_ENABLED`, `_PIX_ENABLED`, `_CARD_ENABLED`, `_PIX_AUTOMATIC_ENABLED`, em `src/config.ts:53-57`) |
-| **Checkout externo, o que o Sell usa** | **Sim, e só ele.** `resolveActiveStripeGateway` aceita só Stripe (`financial-service.ts:4662-4674`); `createExternalHostedCheckoutSession` recusa outro provedor (`:3447`) | **Não.** Só nos fluxos internos de outros projetos: `startCheckout`, fatura e renovação de assinatura |
-| Moeda | O cliente repassa a moeda, mas o checkout externo aceita **só BRL** (`routes.ts:471`, `financial-service.ts:3504`) | Só BRL (`assertBrl`, `asaas-gateway-client.ts:301,337,560`) |
-| Recorrência no checkout externo | Só compra única (`routes.ts:472`, `financial-service.ts:3503`) | — |
-| País do comprador | Não há tratamento (nenhum `country` em `src`) | Não há |
-| Cartão nacional | Sim, no checkout externo: `payment_method_types: ["card"]` (`gateway-client.ts:371`) | Sim, por checkout hospedado (`asaas-gateway-client.ts:561-566`), fora do checkout externo |
+| Implementado | Sim | Sim, atrás de flags desligadas por padrão (`FINANCIAL_ASAAS_ENABLED`, `_PIX_ENABLED`, `_CARD_ENABLED`, `_PIX_AUTOMATIC_ENABLED`) |
+| **Checkout externo, o que o Sell usa** | **Sim, e só ele** | **Não.** Só nos fluxos internos de outros projetos: checkout, fatura e renovação de assinatura |
+| Moeda | O checkout externo aceita **só BRL** | Só BRL |
+| Recorrência no checkout externo | Só compra única | — |
+| País do comprador | Não há tratamento | Não há |
+| Cartão nacional | Sim, no checkout externo | Sim, por checkout hospedado, fora do checkout externo |
 | Cartão internacional | Funciona como qualquer cartão na Checkout Session, mas o preço é sempre em BRL | Não encontrado |
-| Pix | Não | Sim: cobrança, assinatura e Pix Automático (`asaas-gateway-client.ts:305,342,376`) |
-| Boleto | Não | **Não** (nenhuma ocorrência de `boleto` ou `BOLETO` em `src`) |
-| Split e comissão | Sim: Connect por **cobrança direta**, com cabeçalho `Stripe-Account` = conta conectada e `payment_intent_data[application_fee_amount]` (`gateway-client.ts:381-386`). Sem `transfer_data`, `on_behalf_of` nem onboarding de conta | **Não** (nenhum `split`, `walletId` ou subconta em `src`) |
-| Validação da comissão | A taxa precisa ser inteira, ≥ 0 e **menor** que o líquido (`financial-service.ts:3511-3514`) | — |
+| Pix | Não | Sim: cobrança, assinatura e Pix Automático |
+| Boleto | Não | **Não** |
+| Split e comissão | Sim: Connect por **cobrança direta** (cabeçalho `Stripe-Account` com a conta conectada e `application_fee_amount`). Sem `transfer_data`, `on_behalf_of` nem onboarding de conta | **Não** |
+| Validação da comissão | A taxa precisa ser inteira, ≥ 0 e **menor** que o valor | — |
 | Prazo de recebimento | Não está no código: depende do contrato do provedor | Idem |
-| Taxas do gateway | Não há tabela; o ledger registra `fee` vindo da conciliação (`verifiable-ledger.ts:1137-1139`) | Idem; o rollout exige conciliar bruto, taxa e líquido (`docs/asaas-rollout.md:88,110`) |
-| Estorno feito pelo Financial | Não há chamada de estorno | Não; só `cancelPayment` (`asaas-gateway-client.ts:509-511`) |
-| Estorno e disputa recebidos | `charge.refunded` e `charge.dispute.*` são mapeados só para crédito avulso (`financial-service.ts:8168-8176`). **No checkout externo, todo evento que não seja `checkout.session.completed` ou `async_payment_succeeded` é ignorado** (`:4176-4178`) | `PAYMENT_REFUNDED` e `PAYMENT_CHARGEBACK_*` são recebidos e deixados para a conciliação (`financial-service.ts:3906-3908`) |
-| Aviso ao Sell | Só `purchase.approved` (`financial-service.ts:4518`) | — |
-| Webhook | `POST /financial/webhooks/stripe`, com assinatura conferida (`routes.ts:2663`). Casa o evento pela conta: `event.account === gateway.accountId` (`financial-service.ts:8249-8252`) | `POST /financial/webhooks/asaas/:id`, um por gateway, com token em tempo constante (`asaas-gateway-client.ts:955-962`) |
+| Taxas do gateway | Não há tabela; o ledger registra a taxa vinda da conciliação | Idem; o rollout exige conciliar bruto, taxa e líquido |
+| Estorno e disputa | Precisam revogar o acesso no Sell: autonom-ia/autonomia-financial#150 | Idem |
+| Webhook | Um receptor com assinatura conferida, que casa o evento pela conta do gateway | Um por gateway, com token conferido em tempo constante |
 
 ### 2.2 Quando usar cada um
 
@@ -245,13 +234,13 @@ medidos antes do piloto, na mesma régua das evidências de `lib/appsell-pricing
 
 | Situação | Gateway | Hoje no Financial | Código novo necessário |
 |---|---|---|---|
-| Comprador fora do Brasil, ou preço em outra moeda | **Stripe** | Não: o checkout externo é só BRL | Sim. Moeda além de BRL no checkout externo é **mudança no que existe** (`routes.ts:471`, `:3504`): análise de impacto + OK |
+| Comprador fora do Brasil, ou preço em outra moeda | **Stripe** | Não: o checkout externo é só BRL | Sim. Moeda além de BRL no checkout externo é **mudança no que existe**: análise de impacto + OK |
 | Comprador no Brasil pagando com cartão internacional, preço em BRL | **Stripe** | Sim (cartão) | Não, além da #440 |
 | Comprador no Brasil com cartão nacional | **Asaas** no alvo; **Stripe** hoje | Stripe sim; Asaas só fora do checkout externo | Sim: o Asaas no checkout externo |
 | Pix | **Asaas** | Só fora do checkout externo | Sim: o Asaas no checkout externo |
 | Boleto | **Asaas** | Não existe | Sim: boleto no cliente Asaas e no checkout externo |
 | Comissão para a plataforma com o dinheiro na loja | Stripe: Connect com cobrança direta. Asaas: split para a carteira da loja | Stripe sim; Asaas não | Asaas: subconta (ou carteira) da loja e split. É código novo |
-| Estorno e chargeback revogam o acesso | Os dois | Não, no checkout externo de nenhum dos dois | Sim nos dois (#151, financial#150) |
+| Estorno e chargeback revogam o acesso | Os dois | Em andamento (financial#150) | Sim nos dois (#151, financial#150) |
 
 Regra de escolha proposta, quando os dois estiverem prontos para a loja:
 
@@ -263,7 +252,7 @@ Regra de escolha proposta, quando os dois estiverem prontos para a loja:
    plataforma.
 
 Quem decide é o Financial, que já tem `financial.gateway_routing_rules` por
-método, moeda, produto e plano (`database/migrations/047_asaas_multi_gateway.sql:37-57`).
+método, moeda, produto e plano.
 O Sell não escolhe gateway; ele informa a loja e a conta conectada.
 
 ### 2.3 Caminho sem regressão no Financial
@@ -300,20 +289,18 @@ O que muda ou se confirma:
    pronta recebe um erro claro e não cobra.
 2. **Divergência de limite que a #440 precisa resolver**: o Sell limita a
    comissão ao **valor inteiro** (`lib/checkout-fee.ts:23-26`, "the seller nets
-   zero"), mas o Financial recusa comissão **≥** líquido
-   (`financial-service.ts:3511-3514`). Num preço pequeno, em que a parte fixa
+   zero"), mas o Financial recusa comissão igual ou maior que o valor. Num
+   preço pequeno, em que a parte fixa
    (R$ 0,49 no plano launch) alcança o preço, o checkout falharia. Proposta: preço
    mínimo de venda acima da parte fixa, validado no Sell ao publicar o preço, e
    teste do caso-limite. O Financial não muda.
 3. **Pré-requisito no Financial: eventos da conta conectada.** Com cobrança
-   direta, `checkout.session.completed` chega com `event.account = acct_da_loja`.
-   O casamento atual (`event.account === gateway.accountId`) recusa esse evento,
-   e o comprador pagaria sem receber acesso. A #440 depende do receptor Connect
-   novo da seção 2.3, que é código novo, sem tocar no casamento existente.
+   direta, o evento de pagamento chega com a conta da loja, e o receptor de
+   hoje casa pela conta do gateway. A #440 depende do receptor Connect novo da
+   seção 2.3, que é código novo, sem tocar no casamento existente.
    Teste obrigatório: venda conectada da loja A nunca casa com pedido da loja B.
 4. **Estorno e chargeback**: com cobrança direta, o estorno e a disputa acontecem
-   na conta da loja, e o Financial hoje ignora esses eventos no checkout externo
-   (`:4176-4178`). Vale o gate do programa: nada de divisão de pagamento em
+   na conta da loja e precisam revogar o acesso. Vale o gate do programa: nada de divisão de pagamento em
    produção antes de o estorno revogar o acesso (#151, financial#150). O evento
    de estorno precisa levar `seller_id`, como já leva o `purchase.approved`.
 5. **Plano da loja**: a comissão depende do plano (`lib/appsell-pricing.ts:7-9`:

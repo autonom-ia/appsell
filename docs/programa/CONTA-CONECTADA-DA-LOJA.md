@@ -14,8 +14,7 @@ lido sem alterar nada.
   **sem application fee**.
 - Operador `<operador-B>`: cobra na própria conta da Autonom.ia.
 - A conta conectada "AUTONOM.IA" existe, mas não cobra.
-- Em 60 dias: 1 cobrança na plataforma e 24 na conta da Hub2You, quase todas do
-  faturamento do Chat2You (metadata `chatwootAccountId`/`invoiceId`), não do
+- A conta da Hub2You também recebe o faturamento do Chat2You, que não sai do
   Sell.
 
 Conclusão: o caminho "conta conectada da loja" já funciona na Stripe, mas foi
@@ -52,78 +51,25 @@ checkout legado. O checkout de produção manda `connect.accountId: null`
 (`create-session/route.ts:153`). Ninguém usa a conta conectada que a loja
 cadastrou.
 
-## (b) Como o `account_id` do operador foi parar no gateway
+## (b) O gateway do operador no Financial
 
-- O gateway é cadastrado **à mão, por admin**:
-  - Rotas `POST`/`PATCH /financial/company-gateways` (`src/routes.ts:2094`,
-    `:2109`) exigem um JWT com `financial.admin` (`requireAdmin`,
-    `routes.ts:4966-4969`).
-  - O corpo inclui `accountId` (`companyGatewaySchema`, `routes.ts:288-299`).
-  - Não existe rota por chave interna (`x-api-key`) para operador ou gateway.
-- `createCompanyGateway` (`financial-service.ts:782-826`) **não confere o
-  `accountId`** ao gravar.
-- Existe uma validação separada e opcional (`/validate`,
-  `gateway-client.ts:200-229`):
-  - com chave de plataforma e `accountId` diferente da dona da chave, chama
-    `GET /accounts/{accountId}`; um 200 prova que a conta está conectada à
-    plataforma;
-  - ela devolve `charges_enabled`, mas não reprova quando ele é falso.
-- **Um gateway ativo por operador e modo**: o índice único parcial
-  `uq_financial_active_company_gateway_mode` (`020_bind_one_time_credit_gateway.sql:82-87`)
-  substituiu o `UNIQUE` da 002. Por isso o erro "mais de um gateway Stripe
-  ativo" de `resolveActiveStripeGateway` (`financial-service.ts:4670-4671`) não
-  chega a acontecer.
-- Depois que um pedido de crédito avulso usa o gateway, `account_id`, `mode` e
-  `operator_id` **não mudam mais**. O trigger
-  `guard_bound_company_gateway_mutation` (`020:91-118`) obriga a criar outro
-  gateway.
-- **Operador** vem da sincronização do Admin, por fila
-  (`src/financial-sync-consumer.ts:69-80`), ou da rota admin
-  (`routes.ts:1660-1700`). Operador sincronizado não pode ser editado
-  (`financial-service.ts:262-270`). Não existe API para criar operador ou
-  gateway **por loja**.
+- O gateway Stripe é cadastrado por admin no Financial, um por operador e modo.
+  O `account_id` dele define em que conta caem as cobranças do operador.
+- Vários fluxos do Financial dependem desse `account_id`: checkout externo do
+  Sell, faturas, renovação, cartão salvo e crédito avulso. **Mudar o gateway do
+  operador `<operador-A>` pode afetar esses fluxos e o faturamento do Chat2You na
+  conta da Hub2You.**
+- O receptor de webhook de hoje casa o evento pela conta do gateway. Um pedido
+  com a conta de outra loja não é confirmado. Por isso o F1 é pré-requisito de
+  qualquer loja na flag do S1.
 
-Quem depende do `account_id` do gateway do operador, ou seja, o que não pode
-quebrar (`financial-service.ts`):
-
-| Fluxo | Onde |
-|---|---|
-| Checkout externo (Sell) | `:3362`, `:3455` (`connectedAccountId ?? accountId`, `gateway-client.ts:386`) |
-| Checkout com PaymentIntent e SetupIntent | `:2768`, `:2802` |
-| Pagamento de fatura | `:3118`, `:3160`, `:3261` |
-| Renovação de assinatura (off-session) | `:6481`, `:6629` |
-| Cartão salvo | `:6731`, `:6784`, `:7063` |
-| Crédito avulso | `:2480`, `:2514-2567`, `:5165-5195`, webhook `:8187` |
-| Clientes e meios de pagamento | `payment_gateway_customers` por `company_gateway_id` (migration 021). Vivem na conta para a qual o gateway aponta |
-| Webhook | `stripeEventMatchesGateway` (`:8249-8253`), `resolveVerifiedStripeWebhookGateway` (`:4618-4660`) |
-| Smoke do release | `:953-960` |
-
-O faturamento do Chat2You na conta da Hub2You (metadata `chatwootAccountId`)
-**não sai do Financial**: o repositório não tem `chatwoot`. Outro sistema cria
-essas cobranças. Isso é inferência
-e precisa ser confirmado no repositório do Chat2You. **Mudar o gateway do
-operador `<operador-A>` pode afetar esse faturamento, as renovações e os clientes
-salvos.**
-
-### Webhook da conta conectada
-
-- Existe um só endpoint, `POST /financial/webhooks/stripe` (`routes.ts:2663`).
-  Ele tenta o segredo de cada gateway (`financial-service.ts:3644-3668`).
-- O evento casa quando o segredo confere e `event.account === gateway.accountId`
-  (`:8249-8253`).
-- Para o operador `<operador-A>`, os eventos da conta da Hub2You **casam**, desde que
-  o segredo de webhook desse gateway seja o de um endpoint **Connect** da Stripe.
-  O repositório não mostra esse endpoint; ele está só na configuração da Stripe.
-- Para um pedido com `connect.accountId` diferente do `account_id` do gateway (o
-  caso de várias lojas sob um mesmo operador), o evento **não casa**: "Webhook não
-  verificado para nenhum gateway configurado." (`:3666`).
+O mapa com as referências de código fica no Financial, que é privado.
 
 ## (c) Proposta para unificar
 
 Princípio: **a loja cadastra a própria conta pelo Sell, como já faz, e o Sell
-manda essa conta e a comissão em cada pedido.** O Financial já aceita isso no
-checkout externo (`selection.connect`, `routes.ts:478-481`; comissão em
-`gateway-client.ts:381-383`). Falta o retorno: o webhook da conta conectada.
+manda essa conta e a comissão em cada pedido.** O Financial já aceita conta e
+comissão no checkout externo. Falta o retorno: o webhook da conta conectada.
 
 Operador: as lojas do autosserviço ficam sob um **operador compartilhado** da
 plataforma, cujo gateway não tem `account_id`. A conta de cada loja vai por
@@ -132,11 +78,11 @@ pedido, nunca no gateway. A Hub2You continua no próprio operador (ver d).
 | # | Mudança | Onde | Nova ou altera o que existe | Quem depende do que existe |
 |---|---|---|---|---|
 | S1 | No modo `financial_checkout`, resolver a conta da loja (`resolve_payout_destination`, que já existe), exigir `charges_enabled` e enviar `connect.accountId` e `applicationFeeAmountMinor` | Sell, `create-session/route.ts` | **Altera** código do Sell, **atrás de flag por loja** (`APPSELL_FINANCIAL_CONNECT_SELLER_IDS`, vazia por padrão) | Toda venda do Sell. Fora da flag, o pedido sai igual ao de hoje (`null`), byte a byte |
-| S2 | Comissão menor que o líquido: o Sell hoje limita ao valor inteiro (`lib/checkout-fee.ts:23-26`) e o Financial recusa ≥ (`financial-service.ts:3511-3514`). Preço mínimo ao publicar e teste do caso-limite | Sell | Altera o Sell | Só o caminho com flag |
+| S2 | Comissão menor que o líquido: o Sell hoje limita ao valor inteiro (`lib/checkout-fee.ts:23-26`) e o Financial recusa comissão igual ou maior que o valor. Preço mínimo ao publicar e teste do caso-limite | Sell | Altera o Sell | Só o caminho com flag |
 | S3 | O aviso do painel sobre conta conectada passa a seguir o modo real do checkout | Sell, `dashboard-overview.tsx:244-282` | Altera o Sell (texto) | Nenhum |
 | F1 | **Receptor novo de eventos Connect**: rota própria (ex.: `POST /financial/webhooks/stripe-connect`), segredo próprio do endpoint Connect da plataforma, e casamento pelo pedido. O pedido grava `selection.connect.accountId`, e o evento só vale se `event.account` for essa conta **e** o pedido for daquela sessão. Para a liquidação, chama o mesmo caminho do checkout externo | Financial | **Nova e isolada**. Não toca em `stripeEventMatchesGateway`, `resolveActiveStripeGateway` nem `company_gateways` | Eventos cujo `event.account` é o `account_id` de algum gateway (a Hub2You) **são ignorados** pelo receptor novo e seguem no endpoint de hoje. Assim nada muda para o operador `<operador-A>`. A idempotência vem do estado do pedido |
 | F2 | Estorno e disputa de pedido conectado viram aviso ao Sell (com `seller_id`), para revogar o acesso | Financial | **Nova** (#151, financial#150) | Gate do programa: nada de divisão de pagamento em produção antes disso |
-| F3 | Endpoint Connect na Stripe para a conta de plataforma, apontando para F1, e o segredo dele no SSM | Stripe e infra | Configuração nova | **Não pode reaproveitar** o segredo do gateway `<operador-A>`, se esse já for um endpoint Connect: seriam dois receptores do mesmo evento. Confirmar no painel antes |
+| F3 | Endpoint Connect na Stripe para a conta de plataforma, apontando para F1, com segredo próprio | Stripe e infra | Configuração nova | **Não pode reaproveitar** o segredo do gateway `<operador-A>`, se esse já for um endpoint Connect: seriam dois receptores do mesmo evento. Confirmar no painel antes |
 
 **O que não muda em hipótese nenhuma**: o gateway e o `account_id` do operador
 `<operador-A>`, o `account_id` nulo do `<operador-B>`, e as funções de casamento e de
@@ -153,15 +99,14 @@ loja real → conciliação (#147/#459) → piloto com OK do Rodrigo. Isso é a 
   `<operador-A>`, a venda do Sell cai **na conta conectada `<conta-conectada-da-loja>`**, pelo
   `account_id` do gateway, sem comissão. É o mesmo caminho do faturamento do
   Chat2You. **A Hub2You já é a vendedora de fato.**
-- O webhook dessa venda casa no endpoint de hoje (`event.account ===
-  gateway.accountId`), desde que o segredo do gateway seja o do endpoint Connect.
-  O `purchase.approved` chega ao Sell como hoje.
+- O webhook dessa venda casa no receptor de hoje, pela conta do gateway. O
+  `purchase.approved` chega ao Sell como hoje.
 - **Recomendação: a Hub2You fica exatamente assim.** Não entra na flag do S1, e
   nada muda no gateway dela.
 - Se um dia houver comissão sobre a venda da Hub2You no Sell, o caminho só do
   Sell é mandar `connect.accountId` igual à mesma conta, mais a comissão. O
-  Financial usa `connectedAccountId ?? accountId`, então a conta é a mesma e o
-  webhook continua casando. Para isso a loja precisa da conta em
+  Financial usa a conta do pedido ou, sem ela, a do gateway; a conta é a mesma e
+  o webhook continua casando. Para isso a loja precisa da conta em
   `seller_payout_account`. Como a conta foi criada fora do Sell, isso exige um
   vínculo operacional (a função de vínculo existe, `0021:181`), com OK do
   Rodrigo. Não é para agora.
@@ -169,62 +114,14 @@ loja real → conciliação (#147/#459) → piloto com OK do Rodrigo. Isso é a 
   qualquer loja vinculada a ele vende na conta da Autonom.ia. Hoje nenhuma loja do
   Sell deveria estar nele. A flag do #469 fica vazia até F1 e S1 existirem.
 
-## (e) A lacuna de estorno
+## (e) Estorno e disputa
 
-Conciliação Stripe × Sell feita pela Orquestração (#439, comentário 6383192898):
-
-- O Financial grava na sessão Stripe `metadata.orderId`, e o SHA-256 dele bate
-  com `external_purchase_id_sha256` nas 4 vendas do Sell.
-- A 5ª venda paga (`<cobrança-de-teste-1>`) não chegou ao Sell e foi estornada.
-- A `<cobrança-de-teste-2>` foi estornada, mas **o acesso continua `completed` no Sell**.
-
-**Resposta: o Sell sabe revogar, mas o Financial nunca avisa o estorno de uma
-venda do checkout externo.**
-
-### Sell: pronto para revogar
-
-- A entrada aceita `purchase.refunded` (`apps/api/src/appsell_api/webhook_adapters.py:14`;
-  enum do evento em `0012_checkout_webhook_ingress.py:94` e
-  `0020_checkout_fulfillment.py:102`).
-- O fulfillment trata o estorno (`0020_checkout_fulfillment.py:654-700`):
-  - marca o grant da compra como `refunded`, mesmo que o estorno chegue antes da
-    aprovação;
-  - revoga a `buyer_entitlement` (`status='revoked'`) quando nenhum grant ativo
-    resta para o par comprador × produto;
-  - audita `commerce.fulfillment_entitlement_revoked`.
-- O estorno vence a aprovação fora de ordem: uma aprovação que chega depois não
-  concede acesso (`0020:600-622`).
-- As reescritas posteriores de `apply_checkout_fulfillment` (0049, 0051) inserem
-  trechos por âncora e mantêm esse ramo.
-- Testes: `tests/test_postgres_checkout_fulfillment.py:393,420,520`.
-
-### Financial: não emite
-
-- O checkout externo emite **só** `event_type: "purchase.approved"`
-  (`src/financial-service.ts:4518`, em `deliverExternalCheckoutFulfillment`,
-  `:4509-4560`). Não existe outro `event_type` nesse caminho.
-- Um evento de estorno (`charge.refunded`, `refund.*`) não é de
-  `checkout.session`. Por isso não acha o pedido do checkout externo
-  (`:4170-4173`) e não entra no ramo que entrega ao Sell (`:4174-4178`).
-- Ele segue para o ledger (`stripeSettlementRecorder.record`, `:3698-3703`) e,
-  só se for de crédito avulso, para o mapeamento de crédito avulso
-  (`:8168-8176`).
-- O `purchase.refunded` que existe no Financial é do **crédito avulso**, outro
-  produto: `src/one-time-credits.ts:158,175-180`, tipo em `src/types.ts:1991`. Ele
-  nunca vai para o Sell.
-
-### O que isso significa
-
-- Hoje, **todo estorno de venda do Sell deixa o acesso aberto**. Foi o que
-  aconteceu na `<cobrança-de-teste-2>`.
-- A venda paga que não chega ao Sell (`<cobrança-de-teste-1>`) é outro furo: compra sem acesso. A
-  conciliação do #459 mostra os dois casos.
-- A correção é a F2 da seção (c): **código novo e isolado no Financial**, que
-  emite `purchase.refunded` com o mesmo contrato do `purchase.approved`
-  (`seller_id`, `external_purchase_id = order.id`, assinatura `generic_hmac_v1`)
-  quando o estorno de um pedido de checkout externo for confirmado. É a
-  financial#150. **Nada muda no Sell**: o adaptador e o fulfillment já tratam o
-  evento.
-- Até lá, o gate do programa vale também para a venda sem divisão de pagamento:
-  o estorno precisa de revogação manual, por runbook e com OK do Rodrigo, para
-  cada caso que a conciliação mostrar.
+- Estorno e disputa de uma venda do Sell precisam revogar o acesso. O Sell já
+  sabe revogar: o adaptador aceita `purchase.refunded`
+  (`apps/api/src/appsell_api/webhook_adapters.py:14`) e o fulfillment trata o
+  estorno (`0020_checkout_fulfillment.py:654-700`), mesmo fora de ordem. Testes:
+  `tests/test_postgres_checkout_fulfillment.py:393,420,520`.
+- O aviso de estorno vem do Financial: autonom-ia/autonomia-financial#150, #153 e
+  #159. Pedido com conta conectada depende também do F1.
+- A conciliação do #459 compara venda paga e acesso nos dois sentidos. Cada caso
+  que ela mostrar segue por runbook, com OK do Rodrigo.
