@@ -137,7 +137,18 @@ if client_count == 1 then redis.call('PEXPIRE', KEYS[2], ARGV[3]) end
 return 1
 `;
 
-const CALLBACK_SCRIPT = `
+// O par sessão/vault vence num instante absoluto só (#511). Gravar os dois
+// com PSETEX relativo deixava 1 ms de diferença quando o relógio virava entre
+// os comandos: no Redis 7.0 o tempo anda dentro do script. Com PXAT sobre o
+// mesmo valor, o par vence no mesmo milissegundo em qualquer versão.
+const REDIS_NOW_MS_LUA = `
+local function redis_now_ms()
+  local t = redis.call('TIME')
+  return tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+end
+`;
+
+const CALLBACK_SCRIPT = `${REDIS_NOW_MS_LUA}
 local transaction_json = redis.call('GET', KEYS[1])
 if not transaction_json then
   local receipt = redis.call('GET', KEYS[4])
@@ -163,8 +174,9 @@ local session = cjson.decode(ARGV[2])
 if code.subject ~= session.subject then return 'SUBJECT_MISMATCH' end
 
 if redis.call('EXISTS', KEYS[3]) == 1 or redis.call('EXISTS', KEYS[5]) == 1 then return 'PAIR_COLLISION' end
-redis.call('PSETEX', KEYS[3], ARGV[3], ARGV[2])
-redis.call('PSETEX', KEYS[5], ARGV[3], ARGV[6])
+local pair_at = redis_now_ms() + tonumber(ARGV[3])
+redis.call('SET', KEYS[3], ARGV[2], 'PXAT', pair_at)
+redis.call('SET', KEYS[5], ARGV[6], 'PXAT', pair_at)
 redis.call('PSETEX', KEYS[4], ARGV[5], ARGV[4])
 redis.call('DEL', KEYS[1], KEYS[2])
 return 'OK'
@@ -197,7 +209,7 @@ if not acquired then return 'BUSY' end
 return 'ACQUIRED'
 `;
 
-const COMMIT_IDENTITY_CALLBACK_SCRIPT = `
+const COMMIT_IDENTITY_CALLBACK_SCRIPT = `${REDIS_NOW_MS_LUA}
 local transaction_json = redis.call('GET', KEYS[1])
 if not transaction_json then
   local receipt = redis.call('GET', KEYS[4])
@@ -214,8 +226,9 @@ if redis.call('GET', KEYS[2]) ~= ARGV[3] then return 'STALE_CLAIM' end
 local transaction = cjson.decode(transaction_json)
 if transaction.state ~= ARGV[1] then return 'INVALID_STATE' end
 if redis.call('EXISTS', KEYS[3]) == 1 or redis.call('EXISTS', KEYS[5]) == 1 then return 'PAIR_COLLISION' end
-redis.call('PSETEX', KEYS[3], ARGV[5], ARGV[4])
-redis.call('PSETEX', KEYS[5], ARGV[5], ARGV[8])
+local pair_at = redis_now_ms() + tonumber(ARGV[5])
+redis.call('SET', KEYS[3], ARGV[4], 'PXAT', pair_at)
+redis.call('SET', KEYS[5], ARGV[8], 'PXAT', pair_at)
 redis.call('PSETEX', KEYS[4], ARGV[7], ARGV[6])
 redis.call('DEL', KEYS[1], KEYS[2])
 return 'OK'
@@ -313,7 +326,7 @@ redis.call('PSETEX', KEYS[4], ttl, ARGV[4])
 return 'STARTED'
 `;
 
-const COMMIT_REFRESH_SCRIPT = `
+const COMMIT_REFRESH_SCRIPT = `${REDIS_NOW_MS_LUA}
 local session_json = redis.call('GET', KEYS[1])
 local vault_json = redis.call('GET', KEYS[2])
 if not session_json and not vault_json then return 'MISSING' end
@@ -330,20 +343,24 @@ if next_session.subject ~= session.subject or next_session.createdAt ~= session.
   return 'SESSION_INTEGRITY_ERROR'
 end
 
-local session_ttl = redis.call('PTTL', KEYS[1])
-local vault_ttl = redis.call('PTTL', KEYS[2])
+-- Vencimentos absolutos do par atual: o novo nunca passa do mais curto deles.
+local session_at = redis.call('PEXPIRETIME', KEYS[1])
+local vault_at = redis.call('PEXPIRETIME', KEYS[2])
 local now_ms = tonumber(ARGV[6])
 local refresh_expires_at = tonumber(ARGV[7])
-if session_ttl <= 0 or vault_ttl <= 0 or not now_ms or not refresh_expires_at then return 'TTL_ERROR' end
-local absolute_ttl = tonumber(session.expiresAt) - now_ms
-local refresh_ttl = refresh_expires_at - now_ms
-local final_ttl = math.floor(math.min(session_ttl, vault_ttl, absolute_ttl, refresh_ttl))
-if final_ttl <= 0 then return 'TTL_ERROR' end
+if session_at <= 0 or vault_at <= 0 or not now_ms or not refresh_expires_at then return 'TTL_ERROR' end
+-- Os limites da sessão e do refresh token vêm no relógio da aplicação; passam
+-- para o do Redis pela distância até agora, como o TTL relativo fazia.
+local redis_now = redis_now_ms()
+local absolute_at = redis_now + (tonumber(session.expiresAt) - now_ms)
+local refresh_at = redis_now + (refresh_expires_at - now_ms)
+local pair_at = math.floor(math.min(session_at, vault_at, absolute_at, refresh_at))
+if pair_at <= redis_now then return 'TTL_ERROR' end
 
-redis.call('PSETEX', KEYS[1], final_ttl, ARGV[4])
-redis.call('PSETEX', KEYS[2], final_ttl, ARGV[5])
+redis.call('SET', KEYS[1], ARGV[4], 'PXAT', pair_at)
+redis.call('SET', KEYS[2], ARGV[5], 'PXAT', pair_at)
 redis.call('DEL', KEYS[3], KEYS[4])
-redis.call('PEXPIRE', KEYS[5], final_ttl)
+redis.call('PEXPIREAT', KEYS[5], pair_at)
 return 'OK'
 `;
 
