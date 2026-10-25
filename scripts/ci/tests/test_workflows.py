@@ -62,6 +62,7 @@ class AppCiWorkflowTests(unittest.TestCase):
             "cert-openbao",
             "cert-backup",
             "cert-preview",
+            "cert-sandbox",
             "image-web",
             "image-api",
             "image-bootstrap",
@@ -78,6 +79,24 @@ class AppCiWorkflowTests(unittest.TestCase):
         )
         self.assertIn(
             "CI_OUTCOME_CERT_PREVIEW: ${{ steps.cert-preview.outcome }}", self.source
+        )
+        self.assertIn(
+            "CI_OUTCOME_CERT_SANDBOX: ${{ steps.cert-sandbox.outcome }}", self.source
+        )
+
+    def test_sandbox_rehearsal_runs_only_in_queue_and_dispatch(self) -> None:
+        # #478: o ensaio sobe um Swarm no runner. Nunca em pull_request nem em
+        # push, e sempre pelo script versionado.
+        start = self.source.index("id: cert-sandbox")
+        end = self.source.index("- name:", start)
+        block = self.source[start:end]
+        self.assertIn("github.event_name == 'merge_group'", block)
+        self.assertIn("github.event_name == 'workflow_dispatch'", block)
+        self.assertNotIn("pull_request", block)
+        self.assertNotIn("'push'", block)
+        self.assertIn("steps.route.outputs.sandbox == 'true'", block)
+        self.assertIn(
+            "bash deploy/easypanel-native/test-harden-pdf-sandbox-swarm.sh", block
         )
 
     def test_api_suites_run_by_folder_not_by_list(self) -> None:

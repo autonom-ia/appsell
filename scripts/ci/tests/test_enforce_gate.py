@@ -18,6 +18,7 @@ def outcomes(**overrides: str) -> dict[str, str]:
         "cert_openbao": "skipped",
         "cert_backup": "skipped",
         "cert_preview": "skipped",
+        "cert_sandbox": "skipped",
         "image_web": "skipped",
         "image_api": "skipped",
         "image_bootstrap": "skipped",
@@ -109,6 +110,24 @@ class ExpectedStepsTests(unittest.TestCase):
         )
 
         self.assertEqual(["audit_api=failure"], failures)
+
+    def test_sandbox_rehearsal_is_expected_only_in_queue_and_dispatch(
+        self,
+    ) -> None:
+        # #478: o ensaio em Swarm do endurecimento do pdf-sandbox.
+        for event in ("merge_group", "workflow_dispatch"):
+            with self.subTest(event=event):
+                self.assertIn("cert_sandbox", expected_steps(event, {"sandbox": True}))
+        self.assertNotIn("cert_sandbox", expected_steps("push", {"sandbox": True}))
+        self.assertNotIn(
+            "cert_sandbox", expected_steps("pull_request", {"sandbox": True})
+        )
+        self.assertNotIn("cert_sandbox", expected_steps("merge_group", {"api": True}))
+
+    def test_skipped_sandbox_rehearsal_rejects_the_queue(self) -> None:
+        failures = evaluate_gate("merge_group", {"sandbox": True}, outcomes())
+
+        self.assertEqual(["cert_sandbox=skipped"], failures)
 
     def test_storage_scope_requires_the_storage_certification(self) -> None:
         route = {"storage": True}
