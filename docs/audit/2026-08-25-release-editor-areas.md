@@ -6,7 +6,7 @@ pr:                #244
 merge_sha:         adc3fa498d54140a2296da62fab903e34365f93b
 ci_run:            32854651433 — success
 previous_release:  50f5849 (mesmo dia)
-backup:            /home/claudete/backups/appsell/appsell_native_90_20260825T134930Z.dump
+backup:            <pasta-de-backups>/appsell_native_90_20260825T134930Z.dump
                    950.748 bytes · permissão 600
 migration_head:    0036_lesson_material_links (INALTERADO — release sem migration)
 web_image:         easypanel/sell-autonomia/web  @ adc3fa4

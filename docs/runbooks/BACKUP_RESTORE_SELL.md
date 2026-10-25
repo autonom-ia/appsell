@@ -1,7 +1,7 @@
 # Runbook — Backup & Restore do Autonom.ia Sell (native-90)
 
 Banco: `appsell_native_90` · Serviço EasyPanel: `postgres-native-90` ·
-Projeto: `sell-autonomia` · VPS `85.31.60.100` · Storage off-host: MinIO
+Projeto: `sell-autonomia` · VPS `<ip-do-host>` · Storage off-host: MinIO
 (serviço `storage`).
 
 Estado atual (2026-08-24): existe dump lógico pré-cutover do release
@@ -11,7 +11,7 @@ runbook cobre a primeira camada — dump lógico diário, cifrado, off-host, com
 restore ensaiado. PITR/WAL está na seção "Evolução" como próximo passo de infra 🔴.
 
 Evidência do dump pré-cutover:
-`/home/claudete/backups/appsell/appsell_native_90-before-2c8a3689-20260823-183653.dump`;
+`<pasta-de-backups>/appsell_native_90-before-2c8a3689-20260823-183653.dump`;
 SHA-256 `509134d43c1be6f502965b83eecc51eb4f68278ff2a7f0025f7aa5fb93bbea12`.
 
 Scripts: `deploy/easypanel-native/backup/` (ver `README.md` do diretório para o
@@ -51,7 +51,13 @@ replay de WAL.
 - Secrets disponíveis como variáveis de ambiente **em runtime**, nunca em arquivo commitado:
   - `APPSELL_POSTGRES_SECRET` — senha da role de leitura do `postgres-native-90`.
   - `APPSELL_BACKUP_ENCRYPTION_SECRET` — passphrase gpg (gerar 32 bytes: `openssl rand -hex 32`).
-  - Credenciais do destino off-host (S3/MinIO ou SSH) conforme `APPSELL_BACKUP_DEST_KIND`.
+  - Credenciais do destino off-host (S3 ou SSH) conforme `APPSELL_BACKUP_DEST_KIND`.
+
+Para o destino `s3`, antes de ligar o cron, exigir as três condições abaixo. Faltando qualquer uma, o destino não liga:
+
+1. `APPSELL_BACKUP_S3_REGION` está no env do host, junto com bucket e credenciais. Sem ela, o script para com `missing required environment variable`.
+2. `openssl` está no `PATH` que o cron usa, e não só no da sessão interativa. Conferir com o mesmo `env -` da linha do cron: `/usr/bin/env - bash -c 'command -v openssl'` 🟢.
+3. Uma rodada manual (seção 4) mostra `off-host: uploaded` no log.
 
 > A passphrase gpg é a chave do reino: sem ela, os backups são inúteis. Guardar
 > no mesmo cofre de secrets do projeto (não no host, não no repo). Perder a
@@ -104,8 +110,8 @@ export APPSELL_POSTGRES_USER=<role-de-leitura>
 export APPSELL_POSTGRES_SECRET=<via-cofre>            # nunca ecoar
 export APPSELL_BACKUP_ENCRYPTION_SECRET=<via-cofre>   # nunca ecoar
 export APPSELL_BACKUP_DEST_KIND=s3
-export APPSELL_BACKUP_S3_ENDPOINT=https://<storage-endpoint>
 export APPSELL_BACKUP_S3_BUCKET=<bucket>
+export APPSELL_BACKUP_S3_REGION=<regiao-do-bucket>
 export APPSELL_BACKUP_S3_ACCESS_KEY=<via-cofre>
 export APPSELL_BACKUP_S3_SECRET_KEY=<via-cofre>
 
@@ -119,6 +125,8 @@ Confirmar no log:
 - `backup ok: ....dump.gpg`
 
 Verificar no destino que o objeto `.dump.gpg` chegou com o tamanho esperado 🟢.
+A credencial do host só tem `PutObject` e não lê o bucket, então essa conferência
+usa outra credencial (console ou papel de leitura), nunca a do cron.
 
 ---
 
@@ -129,7 +137,7 @@ processo sem ficarem em arquivo legível por outros.
 
 ### Opção A — cron do host (recomendada para começar)
 
-Arquivo `/etc/cron.d/appsell-native-backup` (permissão 0600), rodando 03:15 UTC:
+Arquivo `<arquivo-cron-do-backup>` (permissão 0600), rodando 03:15 UTC:
 
 ```cron
 # 🔴 criar este arquivo exige acesso ao host — OK do Rodrigo
@@ -138,15 +146,15 @@ Arquivo `/etc/cron.d/appsell-native-backup` (permissão 0600), rodando 03:15 UTC
   APPSELL_POSTGRES_HOST=sell-autonomia_postgres-native-90 \
   APPSELL_POSTGRES_USER=<role> \
   APPSELL_BACKUP_DEST_KIND=s3 \
-  APPSELL_BACKUP_S3_ENDPOINT=https://<endpoint> \
   APPSELL_BACKUP_S3_BUCKET=<bucket> \
-  bash -c 'set -a; . /root/.config/appsell-backup.env; set +a; \
-    /opt/appsell/deploy/easypanel-native/backup/backup-native.sh \
-    >> /var/log/appsell-backup.log 2>&1'
+  APPSELL_BACKUP_S3_REGION=<regiao> \
+  bash -c 'set -a; . <arquivo-env-do-backup>; set +a; \
+    <checkout-no-host>/deploy/easypanel-native/backup/backup-native.sh \
+    >> <log-do-backup> 2>&1'
 ```
 
 Os secrets (`APPSELL_POSTGRES_SECRET`, `APPSELL_BACKUP_ENCRYPTION_SECRET`,
-`APPSELL_BACKUP_S3_*`) ficam em `/root/.config/appsell-backup.env` (0600), fora do
+`APPSELL_BACKUP_S3_*`) ficam em `<arquivo-env-do-backup>` (0600), fora do
 repo. Rotação e valores 🔴.
 
 ### Opção B — serviço agendado no EasyPanel
@@ -177,8 +185,32 @@ bash deploy/easypanel-native/backup/restore-native.sh \
   /caminho/para/appsell_native_90-<stamp>.dump.gpg
 ```
 
+**No host, antes de rodar** (#492):
+
+1. Levar os scripts do SHA da `main` **com a fonte dos papéis**. O restore cria
+   no descartável, como `NOLOGIN` e sem senha, os papéis que
+   `infra/postgres/init/001_roles.sh` cria; sem esse arquivo ele para.
+   ```sh
+   git archive origin/main deploy/easypanel-native/backup infra/postgres/init/001_roles.sh \
+     | ssh <alias-ssh> 'mkdir -p <home-do-operador>/releases/backup-<data> && tar -x -C <home-do-operador>/releases/backup-<data>'
+   ```
+2. Conferir a imagem que vai ser usada. O padrão é a do servidor de produção,
+   por digest (`lib-backup.sh`). No host, ela tem de ser a da task do
+   `postgres-native-90` em execução:
+   ```sh
+   t="$(sudo -n docker service ps -q sell-autonomia_postgres-native-90 --filter desired-state=running | head -1)"
+   sudo -n docker inspect "$(sudo -n docker inspect "$t" --format '{{.Status.ContainerStatus.ContainerID}}')" --format '{{.Image}}'
+   # o padrão do BACKUP_PG_IMAGE no lib-backup.sh
+   sudo -n docker image inspect postgres@sha256:ebba4f4de37f08f138f97c1443c987a435e783177afedcc4aaf2da1930fbc37a \
+     --format '{{.Id}} {{json .RepoDigests}}'
+   ```
+   O `Id` da segunda linha tem de ser igual à primeira. Se não for, ou se a
+   imagem não existir no host, **parar**. Não fazer pull às cegas: passar
+   `BACKUP_PG_IMAGE`/`RESTORE_PG_IMAGE` com o ID lido na primeira linha.
+
 Aceite do ensaio:
 - `integrity ok: ...`
+- `roles created in the disposable target: ...` (os de `001_roles.sh`)
 - `restored non-system tables: N` com `N > 0`
 - `identity_user rows restored: M` (quando aplicável)
 - `restore rehearsal ok: ... is restorable`

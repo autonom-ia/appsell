@@ -1,7 +1,9 @@
 # Plano — subir para produção as correções de segurança do `web` (#437, #449)
 
-> **Estado: plano.** Fase 0 executada em 23/10/2026, só leitura, com OK do
-> Rodrigo. Da Fase 1 em diante, nada roda sem novo OK explícito dele.
+> **Estado: executado em 24/10/2026.** O web subiu em `2d2e64f` às 16:06 UTC,
+> com o OK do Rodrigo repassado pela Orquestração. O registro está no
+> [#437](https://github.com/autonom-ia/appsell/issues/437#issuecomment-6386432353).
+> O plano fica como roteiro do próximo release do web.
 > Base: [`PRODUCTION_RELEASE_APPSSELL.md`](PRODUCTION_RELEASE_APPSSELL.md).
 > Revisão: ressalvas da Orquestração e da Qualidade incorporadas. Nenhuma
 > remoção por curinga; toda variável usada no host tem guarda `${VAR:?}`.
@@ -23,7 +25,8 @@ O plano anterior partia de `PRODUCTION_CURRENT.md` (web e api em `68ffd7b`,
   foram atualizadas em 16/10 às 21:12 UTC, sem registro.
 - O web roda **Next 16.3.3** (lido no contêiner), que ainda tem 3 RCE
   críticas, duas sem autenticação. A correção é a #449 (PR #455): next 16.4.2,
-  nodemailer 10.x (versão fixada no PR), sharp ≥0.35.5.
+  nodemailer 10.1.7 (fixada no #488, depois dos 3 GHSA do addressparser de
+  23/10/2026; era 10.0.10 no #455), sharp ≥0.35.5.
 - **O host guarda uma imagem só por serviço.** A anterior do web (`b387252`)
   não existe mais. Sem cuidado, não há para onde voltar.
 
@@ -41,6 +44,7 @@ roda o código mais novo da main.
    não `skipped`):
 
    ```sh
+   : "${SHA:?SHA vazio — parar}"
    gh run list --repo autonom-ia/appsell --workflow "App CI" --commit "$SHA" \
      --json databaseId,event,conclusion
    gh run view <id> --repo autonom-ia/appsell --json jobs \
@@ -67,6 +71,7 @@ roda o código mais novo da main.
    reavaliar.
 
    ```sh
+   : "${SHA:?SHA vazio — parar}"
    git fetch origin && git diff --stat "$SHA" origin/main -- app lib package.json pnpm-lock.yaml deploy   # vazio
    ```
 4. Prova local, se usada: um comando por vez, cada saída lida antes do
@@ -83,8 +88,17 @@ roda o código mais novo da main.
 
 ## Regras de shell no host (valem para todas as fases)
 
+- **Todo `docker` no host vai com `sudo -n`.** O usuário do SSH não está no
+  grupo `docker` (conferido em 23/10/2026), e um `docker` sem sudo falha no
+  primeiro passo. O `-n` nunca pede senha: sem sudo liberado, o comando falha
+  na hora, em vez de travar a sessão. Primeira linha de cada sessão ssh:
+
+  ```sh
+  sudo -n true || echo "PARAR: sudo -n não liberado neste host"
+  ```
+
 - **Nenhum `rm` com curinga, nenhum `rm` de caminho montado com variável.**
-  Toda pasta do release é literal e fica sob `/home/claudete/releases/437/`.
+  Toda pasta do release é literal e fica sob `<pasta-do-release>/`.
 - Toda variável usada no host é definida **no próprio host**, na mesma sessão,
   com valor literal, e protegida na primeira linha que a usa:
   `: "${SHA:?SHA vazio — parar}"`. Uma variável definida na máquina local não
@@ -101,31 +115,44 @@ Repetir a leitura logo antes da Fase 1. Nunca dar `cat` em spec nem em env:
 só campos com `--format`.
 
 ```sh
-dig +short sell.autonomia.site                 # tem de dar 85.31.60.100, o mesmo do alias claudete
-ssh claudete
-docker node ls --format '{{.Hostname}} {{.Status}} {{.Availability}}'
-docker service inspect sell-autonomia_web --format \
+dig +short sell.autonomia.site                 # tem de dar <ip-do-host>, o mesmo do `<alias-ssh>`
+ssh <alias-ssh>
+sudo -n true || echo "PARAR: sudo -n não liberado neste host"
+sudo -n docker node ls --format '{{.Hostname}} {{.Status}} {{.Availability}}'
+sudo -n docker service inspect sell-autonomia_web --format \
   'image={{.Spec.TaskTemplate.ContainerSpec.Image}} replicas={{.Spec.Mode.Replicated.Replicas}} update={{json .Spec.UpdateConfig}} rollback={{json .Spec.RollbackConfig}} hc={{json .Spec.TaskTemplate.ContainerSpec.Healthcheck}} previous={{if .PreviousSpec}}{{.PreviousSpec.TaskTemplate.ContainerSpec.Image}}{{end}}'
-docker image inspect easypanel/sell-autonomia/web:fa13a78 --format '{{.Id}} {{index .Config.Labels "org.opencontainers.image.revision"}}'
-docker ps --filter name=sell-autonomia_web. --format '{{.ID}}' | head -1 | xargs docker inspect --format '{{.State.Health.Status}}'
-# MinIO (storage de produção): health e espaço, só leitura
-for s in storage view-storage; do
-  docker service ps sell-autonomia_$s --filter desired-state=running --format "$s {{.CurrentState}} {{.Error}}"
-  cid=$(docker ps --filter name=sell-autonomia_$s. --format '{{.ID}}' | head -1)
-  docker inspect "$cid" --format "$s health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} mounts={{range .Mounts}}{{.Type}}:{{.Source}} {{end}}"
+sudo -n docker image inspect easypanel/sell-autonomia/web:fa13a78 --format '{{.Id}} {{index .Config.Labels "org.opencontainers.image.revision"}}'
+sudo -n docker ps --filter name=sell-autonomia_web. --format '{{.ID}}' | head -1 | xargs sudo -n docker inspect --format '{{.State.Health.Status}}'
+# MinIO (storage de produção): health e espaço, só leitura. Os dois serviços
+# existem no host (Fase 0). Lista fixa de propósito: se um sumir, o
+# `docker service ps` falha com erro na tela, e isso é abort.
+# O contêiner vem da task do próprio serviço, não de um filtro por nome.
+for s in sell-autonomia_storage sell-autonomia_view-storage; do
+  sudo -n docker service ps "$s" --filter desired-state=running --format "$s {{.CurrentState}} {{.Error}}"
+  task=$(sudo -n docker service ps -q "$s" --filter desired-state=running | head -1)
+  cid=$(sudo -n docker inspect --format '{{.Status.ContainerStatus.ContainerID}}' "$task")
+  test -n "$cid" || echo "ABORT: $s sem contêiner Running neste nó — parar aqui"
+  sudo -n docker inspect "$cid" --format "$s health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} mounts={{range .Mounts}}{{.Type}}:{{.Name}} {{end}}"
 done
-# espaço onde moram os volumes do MinIO: df dos Source listados acima
-free -h ; df -h / ; uptime
+# Os dois MinIO usam volume nomeado (sell-autonomia_storage_data e
+# sell-autonomia_view-storage_data, lido no host em 23/10/2026), dentro de
+# /var/lib/docker. O `df` do caminho do volume pede root; o de /var/lib/docker
+# não, e mostra o mesmo sistema de arquivos.
+free -h ; df -h / /var/lib/docker ; uptime
 ```
 
 **Abort antes de começar** se acontecer qualquer um destes:
 - a imagem do web não for `fa13a78` com ID
   `sha256:1b71ec566e8c3a5c9e6885960d8691fca092ed117fc50383569641bc63beba86`
   (alguém mexeu; voltar à Orquestração);
-- a task do web não estiver `healthy`, ou MinIO sem task `Running`;
+- a task do web não estiver `healthy`, MinIO sem task `Running`, ou MinIO com
+  health `unhealthy` (`none` é aceito: o serviço não declara healthcheck);
+- algum `ABORT:` impresso pelo laço acima: o laço só avisa, e é aqui que se
+  para;
+- um mount do MinIO que não seja `volume:` (o `df` acima deixaria de valer);
 - memória `available` abaixo de **4 GiB** (2 GiB do `start-first` mais a folga
   dos outros projetos da VPS);
-- disco livre abaixo de 15 GiB no `/` ou no volume do MinIO.
+- disco livre abaixo de 15 GiB no `/` ou no `/var/lib/docker`.
 
 ## Smoke — mesmo script antes e depois
 
@@ -166,7 +193,7 @@ Valores literais, sem variável de shell:
 ROLLBACK_IMAGE = easypanel/sell-autonomia/web:fa13a78
 ROLLBACK_ID    = sha256:1b71ec566e8c3a5c9e6885960d8691fca092ed117fc50383569641bc63beba86
 ROLLBACK_TAG   = easypanel/sell-autonomia/web:rollback-437-fa13a78
-PASTA          = /home/claudete/releases/437
+PASTA          = <pasta-do-release>
 ```
 
 Anotar o ID não basta: um ID sem tag pode ser coletado. A primeira escrita no
@@ -174,22 +201,51 @@ host dá à imagem uma segunda tag, que nenhum build usa, e guarda os campos da
 spec que o rollback precisa (sem env):
 
 ```sh
-install -d -m 700 /home/claudete/releases/437
-docker tag sha256:1b71ec566e8c3a5c9e6885960d8691fca092ed117fc50383569641bc63beba86 \
+install -d -m 700 <pasta-do-release>
+sudo -n docker tag sha256:1b71ec566e8c3a5c9e6885960d8691fca092ed117fc50383569641bc63beba86 \
   easypanel/sell-autonomia/web:rollback-437-fa13a78
-docker image inspect easypanel/sell-autonomia/web:rollback-437-fa13a78 \
+sudo -n docker image inspect easypanel/sell-autonomia/web:rollback-437-fa13a78 \
   --format '{{.Id}} {{index .Config.Labels "org.opencontainers.image.revision"}}'
 # esperado: sha256:1b71ec566e8c3a5c9e6885960d8691fca092ed117fc50383569641bc63beba86 fa13a78
-docker service inspect sell-autonomia_web --format \
+sudo -n docker service inspect sell-autonomia_web --format \
   '{"image":{{json .Spec.TaskTemplate.ContainerSpec.Image}},"update":{{json .Spec.UpdateConfig}},"rollback":{{json .Spec.RollbackConfig}},"replicas":{{.Spec.Mode.Replicated.Replicas}}}' \
-  > /home/claudete/releases/437/web.spec-campos.antes
-docker service inspect sell-autonomia_web --format '{{json .Spec.TaskTemplate.ContainerSpec.Env}}' \
+  > <pasta-do-release>/web.spec-campos.antes
+sudo -n docker service inspect sell-autonomia_web --format '{{json .Spec.TaskTemplate.ContainerSpec.Env}}' \
   | python3 -c 'import json,sys;print("\n".join(sorted(e.split("=",1)[0] for e in json.load(sys.stdin))))' \
-  > /home/claudete/releases/437/web.env-names.antes      # só nomes, nunca valores
+  > <pasta-do-release>/web.env-names.antes      # só nomes, nunca valores
 ```
 
-**Abort:** se o `inspect` não devolver esse ID e o label `fa13a78`, parar. O
-release não segue sem rollback preservado.
+**A tag não sobrevive à madrugada.** O host tem o cron
+`<cron-de-prune-do-host>`:
+`39 0 * * * root docker image prune -af --filter "until=24h"`, lido em
+24/10/2026. Ele apaga, às 00:39, toda imagem que nenhum contêiner usa e que
+foi *criada* há mais de 24 h, com tag ou sem. Depois da troca, a imagem antiga
+e a tag de volta ficam sem contêiner e somem na primeira madrugada. O cron é do
+host compartilhado e não é mexido. Por isso a volta também fica guardada em
+arquivo:
+
+```sh
+sudo -n docker save -o <pasta-do-release>/web-fa13a78.tar \
+  easypanel/sell-autonomia/web:fa13a78 easypanel/sell-autonomia/web:rollback-437-fa13a78
+sudo -n chown <usuario-ssh>: <pasta-do-release>/web-fa13a78.tar
+(cd <pasta-do-release> && sha256sum web-fa13a78.tar | tee web-fa13a78.tar.sha256)
+# prova do conteúdo sem carregar: as duas tags e a config com o ID de produção
+tar -xOf <pasta-do-release>/web-fa13a78.tar manifest.json \
+  | python3 -c 'import json,sys;m=json.load(sys.stdin)[0];print(m["RepoTags"],m["Config"])'
+# esperado: as duas tags e blobs/sha256/1b71ec566e8c3a5c9e6885960d8691fca092ed117fc50383569641bc63beba86
+```
+
+Em 24/10 o arquivo teve 305851904 B, levou 37 s e ficou com sha256
+`fadcf96cdb4772854649b4c4bc48fbdea9cba19db335d7dd6fb8d1f2d6983f07`.
+
+**Abort:** se o `inspect` não devolver esse ID e o label `fa13a78`, se o
+`save` falhar, ou se o manifest não trouxer as duas tags e essa config, parar.
+O release não segue sem rollback preservado.
+
+Desvio declarado no pedido de OK: estes arquivos ficam em
+`<pasta-do-release>/*.antes`, sem timestamp, e não no padrão
+`/tmp/<service>_*_<timestamp>.json`. Guardam só campos da spec e nomes de
+variáveis, nunca valores, e o runbook não usa `updateEnv`.
 
 Se um release futuro subir também `api` ou `asset-worker`, o mesmo passo vale
 para a imagem deles (`api:409ae23` = `sha256:16545966e6fe…`), com a tag
@@ -213,46 +269,78 @@ levar a VPS a OOM. Por isso a ordem de preferência é:
 Opção 2, comandos exatos. A fonte vai para um caminho literal:
 
 ```sh
-# local, worktree limpa exatamente no SHA do merge
-: "${TMPDIR:?TMPDIR vazio — parar}"
+# local, worktree limpa exatamente no SHA do merge. O tar vai direto pelo ssh:
+# nenhum arquivo local para apagar depois.
 git -C <worktree> rev-parse --short HEAD          # tem de ser o SHA escrito no #437
-git -C <worktree> archive --format=tar.gz -o "$TMPDIR/release-437-src.tar.gz" HEAD
-scp "$TMPDIR/release-437-src.tar.gz" claudete:/home/claudete/releases/437/src.tar.gz
+git -C <worktree> archive --format=tar.gz HEAD > "$TMPDIR/release-437-src.tar.gz"
+shasum -a 256 "$TMPDIR/release-437-src.tar.gz"      # anotar
+ssh <alias-ssh> 'cat > <pasta-do-release>/src.tar.gz' < "$TMPDIR/release-437-src.tar.gz"
+ssh <alias-ssh> 'sha256sum <pasta-do-release>/src.tar.gz'   # igual ao anotado; diferente: parar
 
 # host
 SHA=<sha-do-merge>                                 # literal, copiado do #437
 : "${SHA:?SHA vazio — parar}"
-test ! -e /home/claudete/releases/437/src           # abort se já existir
-install -d -m 700 /home/claudete/releases/437/src
-tar -xzf /home/claudete/releases/437/src.tar.gz -C /home/claudete/releases/437/src
+test ! -e <pasta-do-release>/src           # abort se já existir
+install -d -m 700 <pasta-do-release>/src
+tar -xzf <pasta-do-release>/src.tar.gz -C <pasta-do-release>/src
 free -h                                             # abort se available < 6 GiB antes do build
-docker buildx create --name release-437 --driver docker-container \
+# O driver docker-container baixa a imagem do BuildKit no host: é uma escrita
+# a mais, declarada no pedido de OK. Fixada por digest (v0.34.0, 07/10/2026).
+# Antes da janela, numa máquina com docker (não no host), conferir que a tag
+# ainda aponta para esse digest. É o digest do índice OCI, que é o que o
+# `imagetools` devolve:
+#   docker buildx imagetools inspect moby/buildkit:v0.34.0 --format '{{json .Manifest.Digest}}'
+#   esperado: "sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c"
+# Outro valor: PARAR e voltar à Orquestração. A tag foi movida, e o digest
+# fixado abaixo deixou de ser a v0.34.0 publicada. Registrar a saída no #437.
+sudo -n docker buildx create --name release-437 --driver docker-container \
+  --driver-opt image=moby/buildkit:v0.34.0@sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c \
   --driver-opt memory=3g --driver-opt memory-swap=3g --driver-opt cpuset-cpus=0-1
-docker buildx build --builder release-437 --load \
-  -f /home/claudete/releases/437/src/deploy/easypanel-native/Dockerfile.web \
-  --build-arg GIT_SHA="$SHA" -t "easypanel/sell-autonomia/web:$SHA" \
-  /home/claudete/releases/437/src
-docker buildx rm release-437                        # remove só o builder deste release, pelo nome
+(
+  # o builder sai junto com o build, deu certo, falhou ou foi interrompido
+  trap 'sudo -n docker buildx rm release-437' EXIT INT TERM HUP
+  sudo -n docker buildx build --builder release-437 --load \
+    -f <pasta-do-release>/src/deploy/easypanel-native/Dockerfile.web \
+    --build-arg GIT_SHA="$SHA" -t "easypanel/sell-autonomia/web:$SHA" \
+    <pasta-do-release>/src
+)
+sudo -n docker buildx ls | grep -F release-437              # sem saída: o builder saiu
+# Com saída, o trap não rodou (sessão caiu, kill -9). Remover pelo nome e
+# conferir de novo; só seguir com a linha acima sem saída:
+#   sudo -n docker buildx rm release-437
+#   sudo -n docker buildx ls | grep -F release-437
 ```
+
+**Observador de memória durante o build**, numa segunda sessão ssh aberta antes
+do `buildx build`:
+
+```sh
+free -h -s 10
+```
+
+Se a coluna `available` cair abaixo de 4 GiB, interromper o build na primeira
+sessão (Ctrl-C). O `trap` remove o builder; conferir com o `sudo -n docker buildx ls`
+acima. Se o builder ainda aparecer, `sudo -n docker buildx rm release-437` e conferir de
+novo. Depois seguir o rollback, que aqui é só não tocar o serviço.
 
 Conferência da imagem, antes de tocar o serviço:
 
 ```sh
 : "${SHA:?SHA vazio — parar}"
-docker image inspect "easypanel/sell-autonomia/web:$SHA" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'   # = SHA
-docker run --rm --entrypoint node "easypanel/sell-autonomia/web:$SHA" -e 'console.log(require("next/package.json").version)'      # 16.4.2
-docker run --rm --entrypoint sh "easypanel/sell-autonomia/web:$SHA" -c 'ls node_modules/.pnpm | grep -E "^sharp@"'                  # sharp@0.35.5…
-docker run --rm --entrypoint sh "easypanel/sell-autonomia/web:$SHA" -c \
-  "grep -rhoaE '\"[0-9]+\.[0-9]+\.[0-9]+\",[A-Za-z_\$]+=\"ECONNECTION\"' .next/server/chunks | sort -u"                             # versão do nodemailer fixada no #455 (vai embutido no bundle)
-docker image inspect easypanel/sell-autonomia/web:rollback-437-fa13a78 --format '{{.Id}}'                                          # ainda = ROLLBACK_ID
+sudo -n docker image inspect "easypanel/sell-autonomia/web:$SHA" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'   # = SHA
+sudo -n docker run --rm --entrypoint node "easypanel/sell-autonomia/web:$SHA" -e 'console.log(require("next/package.json").version)'      # 16.4.2
+sudo -n docker run --rm --entrypoint sh "easypanel/sell-autonomia/web:$SHA" -c 'ls node_modules/.pnpm | grep -E "^sharp@"'                  # sharp@0.35.5…
+sudo -n docker run --rm --entrypoint sh "easypanel/sell-autonomia/web:$SHA" -c \
+  "grep -rlF 'SMTP handshake finished' .next/server/chunks | grep -v '\.map\$' | xargs -r grep -cF '\"10.1.7\"'"                   # 1 (o nodemailer vai embutido no bundle)
+sudo -n docker image inspect easypanel/sell-autonomia/web:rollback-437-fa13a78 --format '{{.Id}}'                                          # ainda = ROLLBACK_ID
 ```
 
 **Safety abort da Fase 1b:**
 - o build falhou ou foi morto por memória;
 - memória `available` abaixo de 4 GiB em qualquer momento;
 - o label difere do SHA;
-- next ≠ 16.4.2, sharp < 0.35.5, ou nodemailer diferente da versão fixada no
-  #455;
+- next ≠ 16.4.2, sharp < 0.35.5, ou o chunk do nodemailer sem `"10.1.7"`
+  (contagem 0, saída vazia ou mais de um chunk);
 - a imagem de rollback sumiu.
 
 Nesse ponto nada em produção mudou.
@@ -261,7 +349,7 @@ Nesse ponto nada em produção mudou.
 
 ```sh
 : "${SHA:?SHA vazio — parar}"
-docker service update \
+sudo -n docker service update \
   --image "easypanel/sell-autonomia/web:$SHA" \
   --update-order start-first \
   --update-failure-action rollback \
@@ -283,25 +371,25 @@ docker service update \
 
 Validação, nesta ordem:
 
-1. `docker service ps sell-autonomia_web --format '{{.Name}} {{.Image}} {{.CurrentState}} {{.Error}}' | head -3`:
+1. `sudo -n docker service ps sell-autonomia_web --format '{{.Name}} {{.Image}} {{.CurrentState}} {{.Error}}' | head -3`:
    task nova `Running` em `web:$SHA` há ≥ 90 s, health `healthy`, a antiga
    `Shutdown`.
-2. `docker service inspect sell-autonomia_web --format '{{.UpdateStatus.State}} previous={{.PreviousSpec.TaskTemplate.ContainerSpec.Image}}'`
+2. `sudo -n docker service inspect sell-autonomia_web --format '{{.UpdateStatus.State}} previous={{.PreviousSpec.TaskTemplate.ContainerSpec.Image}}'`
    = `completed previous=easypanel/sell-autonomia/web:fa13a78`.
 3. Variáveis por nome:
 
    ```sh
-   docker service inspect sell-autonomia_web --format '{{json .Spec.TaskTemplate.ContainerSpec.Env}}' \
+   sudo -n docker service inspect sell-autonomia_web --format '{{json .Spec.TaskTemplate.ContainerSpec.Env}}' \
      | python3 -c 'import json,sys;print("\n".join(sorted(e.split("=",1)[0] for e in json.load(sys.stdin))))' \
-     > /home/claudete/releases/437/web.env-names.depois
-   diff /home/claudete/releases/437/web.env-names.antes /home/claudete/releases/437/web.env-names.depois && echo VARS_IGUAIS
+     > <pasta-do-release>/web.env-names.depois
+   diff <pasta-do-release>/web.env-names.antes <pasta-do-release>/web.env-names.depois && echo VARS_IGUAIS
    ```
 
 4. Smoke completo, idêntico à linha de base.
-5. `docker service logs --since 5m sell-autonomia_web 2>&1 | grep -Eic 'error|unhandled|fatal'`
+5. `sudo -n docker service logs --since 5m sell-autonomia_web 2>&1 | grep -Eic 'error|unhandled|fatal'`
    = 0 linhas novas.
 6. Prova do bundle: o contêiner em execução responde `16.4.2` a
-   `require("next/package.json").version` (`docker exec <cid> node -e …`, só
+   `require("next/package.json").version` (`sudo -n docker exec <cid> node -e …`, só
    leitura).
 
 **Safety abort, com rollback imediato e sem novo OK** (regra 3 do Rodrigo):
@@ -333,25 +421,24 @@ Validação, nesta ordem:
 > sobe em até **24 h**. Se isso não for possível, o bloqueio do Traefik fica
 > ativo até o release.
 
-Antes de confiar no `service rollback`, conferir para onde ele volta:
+**Não usar `docker service rollback`.** Ele volta para a `PreviousSpec`, cuja
+imagem o prune das 00:39 pode já ter apagado. A volta é sempre pela tag, e a
+tag vem do arquivo quando a imagem não existe mais:
 
 ```sh
-docker service inspect sell-autonomia_web --format '{{.PreviousSpec.TaskTemplate.ContainerSpec.Image}}'
-# esperado: easypanel/sell-autonomia/web:fa13a78 — o mesmo de /home/claudete/releases/437/web.spec-campos.antes
-```
+sudo -n docker image inspect easypanel/sell-autonomia/web:rollback-437-fa13a78 --format '{{.Id}}'
+# = sha256:1b71ec566e8c3a5c9e6885960d8691fca092ed117fc50383569641bc63beba86: seguir para o update
+# "No such image": carregar do arquivo antes
+(cd <pasta-do-release> && sha256sum -c web-fa13a78.tar.sha256)   # OK, senão parar
+sudo -n docker load -i <pasta-do-release>/web-fa13a78.tar
+sudo -n docker image inspect easypanel/sell-autonomia/web:rollback-437-fa13a78 --format '{{.Id}}'   # o ID acima
 
-Se bater:
-
-```sh
-docker service rollback sell-autonomia_web
-```
-
-Se não bater, usar a tag preservada na Fase 1a:
-
-```sh
-docker service update --image easypanel/sell-autonomia/web:rollback-437-fa13a78 \
+sudo -n docker service update --image easypanel/sell-autonomia/web:rollback-437-fa13a78 \
   --update-order start-first --update-failure-action pause sell-autonomia_web
 ```
+
+O `load` de 300 MB leva cerca de 1 min, e a troca `start-first` mais 1 a 2 min,
+sem a loja sair do ar.
 
 `pause` aqui é de propósito: se o próprio rollback falhar, o Swarm não pode
 "voltar" para a versão nova que acabou de ser recusada.
@@ -369,14 +456,17 @@ tem migration.
 - Limpeza da fonte, só em caminhos exatos, depois de conferir que ninguém usa:
 
   ```sh
-  test -d /home/claudete/releases/437/src && lsof +D /home/claudete/releases/437/src   # sem saída
-  rm -r -- /home/claudete/releases/437/src
-  test -f /home/claudete/releases/437/src.tar.gz && rm -- /home/claudete/releases/437/src.tar.gz
+  command -v lsof                                   # sem saída: parar, não apagar
+  test -d <pasta-do-release>/src \
+    && test -z "$(lsof +D <pasta-do-release>/src)" \
+    && rm -r -- <pasta-do-release>/src
+  test -f <pasta-do-release>/src.tar.gz && rm -- <pasta-do-release>/src.tar.gz
   ```
 
-  No local: `: "${TMPDIR:?}"; test -f "$TMPDIR/release-437-src.tar.gz" && rm -- "$TMPDIR/release-437-src.tar.gz"`.
-- Ficam até 24 h estáveis e novo OK do Rodrigo: `/home/claudete/releases/437/`
-  (nomes de variáveis e campos da spec), a imagem `fa13a78` e a tag
-  `rollback-437-fa13a78`. A remoção delas também é pelo nome exato
-  (`docker rmi easypanel/sell-autonomia/web:rollback-437-fa13a78`), nunca por
+  No local não sobra arquivo: o tar foi direto pelo ssh.
+- Ficam até 24 h estáveis e novo OK do Rodrigo: `<pasta-do-release>/`
+  (nomes de variáveis, campos da spec e o `web-fa13a78.tar` com o
+  `.sha256`), a imagem `fa13a78` e a tag `rollback-437-fa13a78`. A imagem e a
+  tag podem sumir antes, pelo prune; o arquivo não. A remoção delas também é pelo nome exato
+  (`sudo -n docker rmi easypanel/sell-autonomia/web:rollback-437-fa13a78`), nunca por
   prune.
