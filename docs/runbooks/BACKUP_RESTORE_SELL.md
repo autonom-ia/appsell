@@ -137,7 +137,7 @@ processo sem ficarem em arquivo legível por outros.
 
 ### Opção A — cron do host (recomendada para começar)
 
-Arquivo `/etc/cron.d/appsell-native-backup` (permissão 0600), rodando 03:15 UTC:
+Arquivo `<arquivo-cron-do-backup>` (permissão 0600), rodando 03:15 UTC:
 
 ```cron
 # 🔴 criar este arquivo exige acesso ao host — OK do Rodrigo
@@ -149,8 +149,8 @@ Arquivo `/etc/cron.d/appsell-native-backup` (permissão 0600), rodando 03:15 UTC
   APPSELL_BACKUP_S3_BUCKET=<bucket> \
   APPSELL_BACKUP_S3_REGION=<regiao> \
   bash -c 'set -a; . <arquivo-env-do-backup>; set +a; \
-    /opt/appsell/deploy/easypanel-native/backup/backup-native.sh \
-    >> /var/log/appsell-backup.log 2>&1'
+    <checkout-no-host>/deploy/easypanel-native/backup/backup-native.sh \
+    >> <log-do-backup> 2>&1'
 ```
 
 Os secrets (`APPSELL_POSTGRES_SECRET`, `APPSELL_BACKUP_ENCRYPTION_SECRET`,

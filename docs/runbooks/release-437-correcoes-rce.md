@@ -216,7 +216,7 @@ sudo -n docker service inspect sell-autonomia_web --format '{{json .Spec.TaskTem
 ```
 
 **A tag não sobrevive à madrugada.** O host tem o cron
-`/etc/cron.d/docker-image-prune`:
+`<cron-de-prune-do-host>`:
 `39 0 * * * root docker image prune -af --filter "until=24h"`, lido em
 24/10/2026. Ele apaga, às 00:39, toda imagem que nenhum contêiner usa e que
 foi *criada* há mais de 24 h, com tag ou sem. Depois da troca, a imagem antiga
