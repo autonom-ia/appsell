@@ -323,6 +323,7 @@ fica no `.tar`.
 ## Fase 2 — dump do banco 🔴 (escreve no host)
 
 ```sh
+: "${PASTA:?PASTA vazio — parar}"
 TS=<literal AAAAMMDDTHHMMSSZ>
 : "${TS:?}"
 : "${PASTA:?}"
@@ -359,6 +360,7 @@ Fonte em `$PASTA/src`. O `src.tar.gz` também fica no
 host, porque o downgrade precisa dele.
 
 ```sh
+: "${PASTA:?PASTA vazio — parar}"
 : "${SHA:?}"
 sudo -n docker image inspect "easypanel/sell-autonomia/api:$SHA" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'   # = SHA
 sudo -n docker run --rm --entrypoint python "easypanel/sell-autonomia/api:$SHA" -c \
@@ -389,6 +391,7 @@ Ele é criado no host com `umask 077`, preenchido pelo stdin, sem eco e sem
 argumento de comando:
 
 ```sh
+: "${PASTA:?PASTA vazio — parar}"
 E="$PASTA/migrator.env"
 ( umask 077; cat > "$E" )      # conteúdo colado pelo stdin; nunca na tela
 test "$(stat -c %a "$E")" = 600 || echo "PARAR: permissão do env-file"
@@ -400,6 +403,7 @@ guardar os números. Produto criado entre a Fase 0 e este passo muda a conta.
 **3. Upgrade.**
 
 ```sh
+: "${PASTA:?PASTA vazio — parar}"
 : "${SHA:?}"
 sudo -n docker run --rm --network easypanel --env-file "$PASTA/migrator.env" \
   -v "$PASTA/src/apps/api:/mig" -w /mig \
@@ -464,6 +468,7 @@ Validação, nesta ordem:
    única na imagem do `SHA`:
 
    ```sh
+   : "${PASTA:?PASTA vazio — parar}"
    : "${SHA:?}"
    sudo -n docker service ps sell-autonomia_api --filter desired-state=running \
      --format '{{.ID}} {{.Image}}' | grep -F "api:$SHA" > "$PASTA/task-nova"
@@ -563,6 +568,7 @@ sudo -n docker service update --image easypanel/sell-autonomia/api:rollback-0064
   arquivos de migration do `src` montado.
 
 ```sh
+: "${PASTA:?PASTA vazio — parar}"
 sudo -n docker run --rm --network easypanel --env-file "$PASTA/migrator.env" \
   -v "$PASTA/src/apps/api:/mig" -w /mig \
   easypanel/sell-autonomia/api:rollback-0064-2759090 alembic downgrade 0061_o_atraso_alcanca_o_aluno; echo "rc=$?"
