@@ -1,5 +1,6 @@
 import { PayoutConnectCard } from "../../../components/payout-connect-card";
 import { SettingsNav } from "../../../components/settings-nav";
+import { FinancialActivationCard } from "./financial-activation-card";
 
 // Recebimentos moraram em /payouts, no menu principal. Agora são uma área de
 // Configurações (#352). O endereço antigo redireciona (next.config.ts).
@@ -18,6 +19,7 @@ export default function PayoutSettingsPage() {
       </header>
       <SettingsNav active="payouts"/>
       <PayoutConnectCard />
+      <FinancialActivationCard />
     </>
   );
 }
