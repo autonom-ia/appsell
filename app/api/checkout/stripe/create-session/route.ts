@@ -4,6 +4,7 @@ import { isChargeableBuyerEmail, normalizeBuyerEmail } from "@/lib/buyer-email";
 import { resolveBuyerIdentity } from "@/lib/buyer-identity.server";
 import { resolveCheckoutProduct } from "@/lib/checkout-config";
 import { directChargeApplicationFeeCents } from "@/lib/checkout-fee";
+import { connectCheckoutIdempotencyKey, isFinancialConnectSeller } from "@/lib/financial-connect-checkout";
 import {
   checkoutProvider,
   checkoutWebhookEndpointKey,
@@ -103,9 +104,12 @@ export async function POST(request: NextRequest) {
   const buyerIdentitySub = identity.subject;
 
   // Financial owns gateway selection from the product's operator. The payout
-  // destination below belongs only to the legacy local direct-charge path.
+  // destination below belongs to the legacy local direct-charge path and, on
+  // the Financial path, only to the stores listed for their own connected
+  // account (#440); every other Financial store sends no account.
+  const connectSeller = provider === "financial_checkout" && isFinancialConnectSeller(parsed.seller.id);
   let destination: { provider_account_id: string; charges_enabled: boolean } | null = null;
-  if (provider !== "financial_checkout") {
+  if (provider !== "financial_checkout" || connectSeller) {
     try {
       destination = (await resolveCheckoutPayoutDestination(parsed.seller.id)).payout_destination;
     } catch {
@@ -114,10 +118,18 @@ export async function POST(request: NextRequest) {
     if (destination && !destination.charges_enabled) {
       return jsonError("seller_not_ready_to_charge", 409);
     }
+    // A listed store charges on its own account or not at all: falling back to
+    // the operator's gateway would put the money in the wrong account.
+    if (connectSeller && !destination) return jsonError("seller_not_ready_to_charge", 409);
   }
 
   const origin = configuredPublicOrigin();
   const applicationFeeCents = destination ? directChargeApplicationFeeCents(amount) : null;
+  // The fee is capped at the whole price, and the Financial refuses a fee that
+  // is not below it: the store would net nothing. Refuse before creating an order.
+  if (connectSeller && applicationFeeCents !== null && applicationFeeCents >= amount) {
+    return jsonError("product_price_below_platform_fee", 409);
+  }
   if (provider === "financial_checkout") {
     try {
       const endpointKey = checkoutWebhookEndpointKey();
@@ -157,7 +169,17 @@ export async function POST(request: NextRequest) {
         cancelUrl: `${origin}/s/${input.sellerSlug}/p/${input.productSlug}?checkout=cancelled`,
         fulfillmentWebhookUrl: `${origin}/api/webhooks/checkouts/${endpointKey}`,
         fulfillmentEndpointKey: endpointKey,
-        idempotencyKey: crypto.randomUUID()
+        idempotencyKey: connectSeller && destination && applicationFeeCents !== null
+          ? connectCheckoutIdempotencyKey({
+            sellerId: parsed.seller.id,
+            productId: product.id,
+            offerId: product.publication_id,
+            buyerIdentitySub,
+            amountMinor: amount,
+            accountId: destination.provider_account_id,
+            applicationFeeAmountMinor: applicationFeeCents
+          })
+          : crypto.randomUUID()
       });
       const stripeCheckoutUrl = await createFinancialExternalCheckoutSession(result.checkoutUrl);
       return NextResponse.json({ url: stripeCheckoutUrl }, { headers: noStore() });
