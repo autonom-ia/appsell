@@ -37,14 +37,13 @@ MAX_AMOSTRAS = 3
 MAX_ATRASO = timedelta(minutes=60)
 LEITURA_TIMEOUT_S = 60
 # Campos que podem ir no e-mail. Nada de identificador de pessoa, e-mail,
-# cabeçalho, corpo ou id de pedido.
+# cabeçalho, corpo ou id de pedido. Só campos de valor fechado: texto livre
+# (`reason`, `route`) pode carregar e-mail ou caminho concreto e fica de fora.
 CAMPOS_DA_AMOSTRA = (
     "timestamp",
     "level",
     "event",
     "marker",
-    "reason",
-    "route",
     "method",
     "status",
     "status_code",

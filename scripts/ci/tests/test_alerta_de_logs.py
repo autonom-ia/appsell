@@ -93,7 +93,10 @@ class AmostraTests(unittest.TestCase):
                     "request_id": "req-1",
                     "email": "maria@example.test",
                     "authorization": "Bearer abc",
-                    "reason": f"token {segredo} recusado",
+                    "error_type": segredo,
+                    # Texto livre: pode trazer e-mail ou caminho concreto.
+                    "reason": "conta joao@example.test recusada",
+                    "route": "/api/minha-conta/pedidos/ped_123",
                 },
             )
         ]
@@ -102,6 +105,10 @@ class AmostraTests(unittest.TestCase):
         amostra = resumo.amostras[0]
 
         self.assertNotIn("maria@example.test", amostra)
+        self.assertNotIn("joao@example.test", amostra)
+        self.assertNotIn("ped_123", amostra)
+        self.assertNotIn("reason", amostra)
+        self.assertNotIn("route", amostra)
         self.assertNotIn("Bearer", amostra)
         self.assertNotIn(segredo, amostra)
         self.assertIn("<REDACTED>", amostra)

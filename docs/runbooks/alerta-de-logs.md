@@ -20,7 +20,8 @@ do Rodrigo**: é escrita no host de produção e cópia de credencial.
    serviço e por `event` (API) ou `marker` (web). Linha que não é JSON não conta.
 3. Se houve erro, manda **um e-mail por janela** com a contagem e as três
    primeiras linhas. Das linhas só saem os campos de uma lista fechada
-   (`event`, `marker`, `reason`, `route`, `status`, `request_id`, `sqlstate`…).
+   (`event`, `marker`, `status`, `request_id`, `sqlstate`…), todos de valor
+   fechado. Texto livre, como `reason` e `route`, não sai.
    E-mail de pessoa, cabeçalho, corpo e id de pedido nunca saem. Valor com 32+
    caracteres `[A-Za-z0-9_-]` sai como `<REDACTED>`.
 4. Sem erro, não manda nada.
