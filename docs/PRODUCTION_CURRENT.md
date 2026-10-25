@@ -61,7 +61,7 @@ Next 16.4.2, sharp 0.35.5, nodemailer 10.1.7, conferidos dentro da imagem.
   e o smoke da Hub2You idêntico antes e depois.
 - A spec do web passa a `start-first`, com failure `rollback` e monitor 90 s
   na subida, e `start-first` com `pause` na volta.
-- A volta para `fa13a78` está em `/home/claudete/releases/437/web-fa13a78.tar`
+- A volta para `fa13a78` está em `<pasta-do-release>/web-fa13a78.tar`
   (sha256 `fadcf96c…3f07`), porque o prune das 00:39 apaga a imagem antiga.
   O roteiro é o do `release-437-correcoes-rce.md`.
 - Registro: [#437](https://github.com/autonom-ia/appsell/issues/437#issuecomment-6386432353).
@@ -426,12 +426,12 @@ as funções `*_seller_logo_*` que a 0054 dropa.
 
 ```bash
 D=/tmp/sell-release-banner-20260903-112420   # specs api/web/asset-worker, nomes das vars, pg_dump -Fc, cabeça 0053
-# fonte via git archive → /home/claudete/appsell-src-a49e017; imagens web e api com --build-arg GIT_SHA=a49e017
+# fonte via git archive → <home-do-operador>/appsell-src-a49e017; imagens web e api com --build-arg GIT_SHA=a49e017
 docker service update --image easypanel/sell-autonomia/web:a49e017 --update-order stop-first sell-autonomia_web
 docker service update --image easypanel/sell-autonomia/api:a49e017 --update-order stop-first sell-autonomia_api
 # a senha do migrador sai do SPEC do serviço bootstrap-native-90 (ele não tem container rodando)
 docker run --rm --network easypanel -e APPSELL_MIGRATOR_DATABASE_URL=<montada no host> \
-  -v /home/claudete/appsell-src-a49e017/apps/api:/mig -w /mig \
+  -v <home-do-operador>/appsell-src-a49e017/apps/api:/mig -w /mig \
   easypanel/sell-autonomia/api:a49e017 alembic upgrade head
 ```
 
@@ -508,7 +508,7 @@ vendedor e o resultado conferido em produção nos três motores.
 
 `web:8a0eca0` e `api:b9e1c61`, nesta ordem, **só depois** de
 `alembic downgrade 0053_dono_das_funcoes_payout` (com a imagem `api:a49e017` e
-a fonte em `/home/claudete/appsell-src-a49e017`). Dump em
+a fonte em `<home-do-operador>/appsell-src-a49e017`). Dump em
 `$D/appsell_native_90_antes.dump`.
 
 ## Release `8a0eca0` — Configurações da loja e página de vendas (2026-09-03)
@@ -548,12 +548,12 @@ coluna não existe. O review pegou a ordem invertida na primeira versão da PR.
 
 ```bash
 D=/tmp/sell-release-8a0eca0-<ts>                    # specs api/web, nomes das vars, pg_dump -Fc
-# fonte via git archive → /home/claudete/appsell-src-8a0eca0
+# fonte via git archive → <home-do-operador>/appsell-src-8a0eca0
 # imagens: deploy/easypanel-native/Dockerfile.web e Dockerfile.api, --build-arg GIT_SHA=8a0eca0
 docker service update --image easypanel/sell-autonomia/web:8a0eca0 --update-order stop-first sell-autonomia_web   # 1
 docker service update --image easypanel/sell-autonomia/api:8a0eca0 --update-order stop-first sell-autonomia_api   # 2
 docker run --rm --network easypanel -e APPSELL_MIGRATOR_DATABASE_URL=<montada no host> \
-  -v /home/claudete/appsell-src-8a0eca0/apps/api:/mig -w /mig \
+  -v <home-do-operador>/appsell-src-8a0eca0/apps/api:/mig -w /mig \
   easypanel/sell-autonomia/api:8a0eca0 alembic upgrade head                                                       # 3
 ```
 
@@ -654,9 +654,9 @@ inverso da `0050`.
 
 ```bash
 D=/tmp/sell-release-803fa82-20260902-201936      # specs api/web, nomes das vars, pg_dump -Fc
-# fonte via git archive → /home/claudete/appsell-src-803fa82; imagens api e web com --build-arg GIT_SHA=803fa82
+# fonte via git archive → <home-do-operador>/appsell-src-803fa82; imagens api e web com --build-arg GIT_SHA=803fa82
 docker run --rm --network easypanel -e APPSELL_MIGRATOR_DATABASE_URL=<montada no host> \
-  -v /home/claudete/appsell-src-803fa82/apps/api:/mig -w /mig \
+  -v <home-do-operador>/appsell-src-803fa82/apps/api:/mig -w /mig \
   easypanel/sell-autonomia/api:803fa82 alembic upgrade head          # 1. migration
 docker service update --image easypanel/sell-autonomia/api:803fa82 \
   --update-order stop-first sell-autonomia_api                        # 2. api
@@ -738,7 +738,7 @@ D=/tmp/sell-release-374c10b-20260902-181204          # specs, imagem anterior, p
 docker service update --image easypanel/sell-autonomia/api:374c10b \
   --update-order stop-first sell-autonomia_api        # 1. serviço
 docker run --rm --network easypanel -e APPSELL_MIGRATOR_DATABASE_URL=<montada no host> \
-  -v /home/claudete/appsell-src-374c10b/apps/api:/mig -w /mig \
+  -v <home-do-operador>/appsell-src-374c10b/apps/api:/mig -w /mig \
   easypanel/sell-autonomia/api:374c10b alembic upgrade head   # 2. migration
 ```
 
@@ -809,12 +809,12 @@ for s in api web asset-worker; do docker service inspect sell-autonomia_$s > $D/
 docker exec <postgres-native-90> sh -c 'pg_dump -U "$POSTGRES_USER" -d appsell_native_90 -Fc' > $D/appsell_native_90_antes.dump
 
 # 2. fonte e imagem
-git archive --format=tar origin/main | ssh <host> 'tar -x -C /home/claudete/appsell-src-70e6cb6'
+git archive --format=tar origin/main | ssh <host> 'tar -x -C <home-do-operador>/appsell-src-70e6cb6'
 docker build -f deploy/easypanel-native/Dockerfile.api --build-arg GIT_SHA=70e6cb6 -t easypanel/sell-autonomia/api:70e6cb6 .
 
 # 3. migration, com a API antiga no ar (compatível: só deixa linhas pendentes)
 docker run --rm --network easypanel -e APPSELL_MIGRATOR_DATABASE_URL=<montada no host a partir do env do bootstrap> \
-  -v /home/claudete/appsell-src-70e6cb6/apps/api:/mig -w /mig easypanel/sell-autonomia/api:581a592 alembic upgrade head
+  -v <home-do-operador>/appsell-src-70e6cb6/apps/api:/mig -w /mig easypanel/sell-autonomia/api:581a592 alembic upgrade head
 
 # 4. api: imagem, graça e as cinco variáveis numa atualização só
 docker service update --image easypanel/sell-autonomia/api:70e6cb6 --stop-grace-period 330s \
@@ -970,12 +970,12 @@ for s in api web; do docker service inspect sell-autonomia_$s > $D/spec_${s}_ant
 docker exec <postgres-native-90> pg_dump -U $POSTGRES_USER -d appsell_native_90 -Fc > $D/appsell_native_90_antes.dump
 
 # 2. fonte e imagens
-git archive --format=tar origin/main | ssh <host> 'tar -x -C /home/claudete/appsell-src-581a592'
+git archive --format=tar origin/main | ssh <host> 'tar -x -C <home-do-operador>/appsell-src-581a592'
 docker build -f deploy/easypanel-native/Dockerfile.api --build-arg GIT_SHA=581a592 -t easypanel/sell-autonomia/api:581a592 .
 docker build -f deploy/easypanel-native/Dockerfile.web --build-arg GIT_SHA=581a592 -t easypanel/sell-autonomia/web:581a592 .
 
 # 3. migration, com a API antiga ainda no ar
-docker run --rm --network <rede> -v /home/claudete/appsell-src-581a592/apps/api:/mig -w /mig \
+docker run --rm --network <rede> -v <home-do-operador>/appsell-src-581a592/apps/api:/mig -w /mig \
   easypanel/sell-autonomia/api:581a592 alembic upgrade head
 
 # 4. serviços, nesta ordem
@@ -1088,9 +1088,9 @@ mkdir -p /tmp/sell-release-982d46e
 docker service inspect sell-autonomia_web > /tmp/sell-release-982d46e/spec_web_antes.json
 
 git archive --format=tar origin/main | ssh <host> \
-  'mkdir -p /home/claudete/appsell-src-982d46e && tar -x -C /home/claudete/appsell-src-982d46e'
+  'mkdir -p <home-do-operador>/appsell-src-982d46e && tar -x -C <home-do-operador>/appsell-src-982d46e'
 
-cd /home/claudete/appsell-src-982d46e
+cd <home-do-operador>/appsell-src-982d46e
 docker build -f deploy/easypanel-native/Dockerfile.web \
   --build-arg GIT_SHA=982d46e -t easypanel/sell-autonomia/web:982d46e .
 
@@ -1155,10 +1155,10 @@ docker service inspect sell-autonomia_web \
 
 # 2. fonte no host
 git archive --format=tar origin/main | ssh <host> \
-  'mkdir -p /home/claudete/appsell-src-3bcae6e && tar -x -C /home/claudete/appsell-src-3bcae6e'
+  'mkdir -p <home-do-operador>/appsell-src-3bcae6e && tar -x -C <home-do-operador>/appsell-src-3bcae6e'
 
 # 3. build
-cd /home/claudete/appsell-src-3bcae6e
+cd <home-do-operador>/appsell-src-3bcae6e
 docker build -f deploy/easypanel-native/Dockerfile.web \
   --build-arg GIT_SHA=3bcae6e -t easypanel/sell-autonomia/web:3bcae6e .
 
@@ -1219,10 +1219,10 @@ docker service inspect sell-autonomia_web \
 
 # 2. fonte no host, no padrao de sempre
 git archive --format=tar origin/main | ssh <host> \
-  'mkdir -p /home/claudete/appsell-src-9ebb93f && tar -x -C /home/claudete/appsell-src-9ebb93f'
+  'mkdir -p <home-do-operador>/appsell-src-9ebb93f && tar -x -C <home-do-operador>/appsell-src-9ebb93f'
 
 # 3. build
-cd /home/claudete/appsell-src-9ebb93f
+cd <home-do-operador>/appsell-src-9ebb93f
 docker build -f deploy/easypanel-native/Dockerfile.web \
   --build-arg GIT_SHA=9ebb93f -t easypanel/sell-autonomia/web:9ebb93f .
 
@@ -1482,7 +1482,7 @@ Detalhe da entrega: [#291](https://github.com/autonom-ia/appsell/issues/291),
 
 > **A imagem da `api` tem o binário do Alembic mas não tem as migrations.** Só
 > `apps/api/src` entra no `Dockerfile.api`. Por isso a migration roda montando
-> `/home/claudete/appsell-src-<sha>/apps/api/migrations` de leitura no
+> `<home-do-operador>/appsell-src-<sha>/apps/api/migrations` de leitura no
 > contêiner, na rede `easypanel-sell-autonomia`. A senha do migrator é lida da
 > spec do serviço `bootstrap-native-90` em tempo de execução; nunca fica escrita
 > em disco.
@@ -1514,7 +1514,7 @@ intervenção manual.
 ### Rollback deste release
 
 ```sh
-ssh claudete 'bash /home/claudete/rollback_0042.sh'
+ssh <alias-ssh> 'bash <home-do-operador>/rollback_0042.sh'
 ```
 
 Volta `api` e `asset-worker` para `3799d86` e roda `alembic downgrade -1`.
@@ -1559,7 +1559,7 @@ A imagem anterior do web foi preservada **antes** do build, com o SHA que ela
 carregava:
 
 ```sh
-ssh claudete 'sudo docker service update --image easypanel/sell-autonomia/web:4cbdcf7 --force sell-autonomia_web'
+ssh <alias-ssh> 'sudo docker service update --image easypanel/sell-autonomia/web:4cbdcf7 --force sell-autonomia_web'
 ```
 
 ETA ~40 s. Não há migration para reverter.
@@ -1642,12 +1642,12 @@ o worker não tem caminho de capa nenhum.
 ### Rollback deste release
 
 ```sh
-ssh claudete 'bash /home/claudete/rollback_api.sh'
+ssh <alias-ssh> 'bash <home-do-operador>/rollback_api.sh'
 ```
 
 Desfaz imagem, as sete variáveis, o mount e o `ssl=require`. Backup íntegro da
 spec anterior em
-`/home/claudete/backups/appsell/appsell_api_spec_20260826T173516Z.json`
+`<pasta-de-backups>/appsell_api_spec_20260826T173516Z.json`
 (20 variáveis, 0 mounts). ETA ~40 s. Não há migration para reverter.
 
 ### Release `b09c690` — a moldura da capa (2026-08-26, fim do dia)
@@ -1672,7 +1672,7 @@ passa com `112.5`.
 Rollback:
 
 ```sh
-ssh claudete 'sudo docker service update --image easypanel/sell-autonomia/web:e112c2c sell-autonomia_web'
+ssh <alias-ssh> 'sudo docker service update --image easypanel/sell-autonomia/web:e112c2c sell-autonomia_web'
 ```
 
 Issue [#272](https://github.com/autonom-ia/appsell/issues/272), PR
@@ -1684,7 +1684,7 @@ O release de 2026-08-25 aplicou as migrations `0034`, `0035` e `0036`. Depois
 vieram `50f5849` e `adc3fa4` (sem migration), e em 2026-08-26 as migrations
 `0037` (capa do produto) e `0038` (materiais do player) sobre `4cbdcf7`.
 
-Backups lógicos em `/home/claudete/backups/appsell/`, o mais recente
+Backups lógicos em `<pasta-de-backups>/`, o mais recente
 `appsell_native_90_pre0038_20260826T071544Z.dump`. Tags de rollback de api no
 host: `4cbdcf7`, `16112c5`, `adc3fa4`, `50f5849`, `3ddd58b`.
 
@@ -1695,10 +1695,10 @@ Plataforma
 └── comercial@autonomia.site
     └── platform_superadmin
         ├── Tenant Autonom.ia
-        │   └── rodrigo.victor@autonomia.site
+        │   └── <e-mail-do-dono-autonomia>
         │       └── seller_owner
         └── Tenant Hub2You
-            └── comercial@hub2you.ai
+            └── <e-mail-do-dono-hub2you>
                 └── seller_owner
 
 Usuário comprador
@@ -1772,7 +1772,7 @@ por identidade, seller, produto, publicação, entitlement e asset.
 - Tenants `autonomia` e `hub2you` foram listados pelo superadmin.
 - Edição transacional de produto foi exercitada nos dois tenants e revertida ao
   final do smoke test.
-- `comercial@hub2you.ai` abriu `IA na prática` sem 404; currículo, oferta,
+- `<e-mail-do-dono-hub2you>` abriu `IA na prática` sem 404; currículo, oferta,
   preview e publicação carregaram.
 - O owner Hub2You foi negado no produto Autonom.ia.
 - O fluxo gratuito criou um entitlement, carregou biblioteca, player e PDF, e o
@@ -1818,9 +1818,9 @@ pr:                #421
 merge_sha:         e0f652b (squash)
 ci_run:            nenhum — o App CI do repo está `disabled_manually` (#422)
 previous_release:  api e web em 68ffd7b, banco em 0059_canal_financial_global
-backup:            /home/claudete/backups/appsell/appsell_native_90_pre_0060_20260904-182021.dump
+backup:            <pasta-de-backups>/appsell_native_90_pre_0060_20260904-182021.dump
                    1,2 MB, 1004 objetos, validado com pg_restore --list
-                   /home/claudete/backups/appsell/publish_product_pre_0060_20260904-182021.sql
+                   <pasta-de-backups>/publish_product_pre_0060_20260904-182021.sql
                    186 linhas, a função sem o bloco de avanço
 migration_head:    0060_atualizacao_chega_ao_aluno
 web_image:         inalterada (68ffd7b)
@@ -1896,9 +1896,9 @@ pr:                #424
 merge_sha:         d5d502b (squash)
 ci_run:            nenhum — o App CI do repo está `disabled_manually` (#422)
 previous_release:  banco em 0060_atualizacao_chega_ao_aluno
-backup:            /home/claudete/backups/appsell/appsell_native_90_pre_0061_20260904-184743.dump
+backup:            <pasta-de-backups>/appsell_native_90_pre_0061_20260904-184743.dump
                    1,2 MB, validado com pg_restore --list
-                   /home/claudete/backups/appsell/publish_product_pre_0061_20260904-184743.sql
+                   <pasta-de-backups>/publish_product_pre_0061_20260904-184743.sql
                    317 linhas, a função com o bloco inline da 0060
 migration_head:    0061_o_atraso_alcanca_o_aluno
 web_image:         inalterada (68ffd7b)

@@ -88,7 +88,7 @@ roda o código mais novo da main.
 
 ## Regras de shell no host (valem para todas as fases)
 
-- **Todo `docker` no host vai com `sudo -n`.** O usuário `claudete` não está no
+- **Todo `docker` no host vai com `sudo -n`.** O usuário do SSH não está no
   grupo `docker` (conferido em 23/10/2026), e um `docker` sem sudo falha no
   primeiro passo. O `-n` nunca pede senha: sem sudo liberado, o comando falha
   na hora, em vez de travar a sessão. Primeira linha de cada sessão ssh:
@@ -98,7 +98,7 @@ roda o código mais novo da main.
   ```
 
 - **Nenhum `rm` com curinga, nenhum `rm` de caminho montado com variável.**
-  Toda pasta do release é literal e fica sob `/home/claudete/releases/437/`.
+  Toda pasta do release é literal e fica sob `<pasta-do-release>/`.
 - Toda variável usada no host é definida **no próprio host**, na mesma sessão,
   com valor literal, e protegida na primeira linha que a usa:
   `: "${SHA:?SHA vazio — parar}"`. Uma variável definida na máquina local não
@@ -115,8 +115,8 @@ Repetir a leitura logo antes da Fase 1. Nunca dar `cat` em spec nem em env:
 só campos com `--format`.
 
 ```sh
-dig +short sell.autonomia.site                 # tem de dar 85.31.60.100, o mesmo do alias claudete
-ssh claudete
+dig +short sell.autonomia.site                 # tem de dar <ip-do-host>, o mesmo do `<alias-ssh>`
+ssh <alias-ssh>
 sudo -n true || echo "PARAR: sudo -n não liberado neste host"
 sudo -n docker node ls --format '{{.Hostname}} {{.Status}} {{.Availability}}'
 sudo -n docker service inspect sell-autonomia_web --format \
@@ -193,7 +193,7 @@ Valores literais, sem variável de shell:
 ROLLBACK_IMAGE = easypanel/sell-autonomia/web:fa13a78
 ROLLBACK_ID    = sha256:1b71ec566e8c3a5c9e6885960d8691fca092ed117fc50383569641bc63beba86
 ROLLBACK_TAG   = easypanel/sell-autonomia/web:rollback-437-fa13a78
-PASTA          = /home/claudete/releases/437
+PASTA          = <pasta-do-release>
 ```
 
 Anotar o ID não basta: um ID sem tag pode ser coletado. A primeira escrita no
@@ -201,7 +201,7 @@ host dá à imagem uma segunda tag, que nenhum build usa, e guarda os campos da
 spec que o rollback precisa (sem env):
 
 ```sh
-install -d -m 700 /home/claudete/releases/437
+install -d -m 700 <pasta-do-release>
 sudo -n docker tag sha256:1b71ec566e8c3a5c9e6885960d8691fca092ed117fc50383569641bc63beba86 \
   easypanel/sell-autonomia/web:rollback-437-fa13a78
 sudo -n docker image inspect easypanel/sell-autonomia/web:rollback-437-fa13a78 \
@@ -209,14 +209,14 @@ sudo -n docker image inspect easypanel/sell-autonomia/web:rollback-437-fa13a78 \
 # esperado: sha256:1b71ec566e8c3a5c9e6885960d8691fca092ed117fc50383569641bc63beba86 fa13a78
 sudo -n docker service inspect sell-autonomia_web --format \
   '{"image":{{json .Spec.TaskTemplate.ContainerSpec.Image}},"update":{{json .Spec.UpdateConfig}},"rollback":{{json .Spec.RollbackConfig}},"replicas":{{.Spec.Mode.Replicated.Replicas}}}' \
-  > /home/claudete/releases/437/web.spec-campos.antes
+  > <pasta-do-release>/web.spec-campos.antes
 sudo -n docker service inspect sell-autonomia_web --format '{{json .Spec.TaskTemplate.ContainerSpec.Env}}' \
   | python3 -c 'import json,sys;print("\n".join(sorted(e.split("=",1)[0] for e in json.load(sys.stdin))))' \
-  > /home/claudete/releases/437/web.env-names.antes      # só nomes, nunca valores
+  > <pasta-do-release>/web.env-names.antes      # só nomes, nunca valores
 ```
 
 **A tag não sobrevive à madrugada.** O host tem o cron
-`/etc/cron.d/docker-image-prune`:
+`<cron-de-prune-do-host>`:
 `39 0 * * * root docker image prune -af --filter "until=24h"`, lido em
 24/10/2026. Ele apaga, às 00:39, toda imagem que nenhum contêiner usa e que
 foi *criada* há mais de 24 h, com tag ou sem. Depois da troca, a imagem antiga
@@ -225,12 +225,12 @@ host compartilhado e não é mexido. Por isso a volta também fica guardada em
 arquivo:
 
 ```sh
-sudo -n docker save -o /home/claudete/releases/437/web-fa13a78.tar \
+sudo -n docker save -o <pasta-do-release>/web-fa13a78.tar \
   easypanel/sell-autonomia/web:fa13a78 easypanel/sell-autonomia/web:rollback-437-fa13a78
-sudo -n chown claudete: /home/claudete/releases/437/web-fa13a78.tar
-(cd /home/claudete/releases/437 && sha256sum web-fa13a78.tar | tee web-fa13a78.tar.sha256)
+sudo -n chown <usuario-ssh>: <pasta-do-release>/web-fa13a78.tar
+(cd <pasta-do-release> && sha256sum web-fa13a78.tar | tee web-fa13a78.tar.sha256)
 # prova do conteúdo sem carregar: as duas tags e a config com o ID de produção
-tar -xOf /home/claudete/releases/437/web-fa13a78.tar manifest.json \
+tar -xOf <pasta-do-release>/web-fa13a78.tar manifest.json \
   | python3 -c 'import json,sys;m=json.load(sys.stdin)[0];print(m["RepoTags"],m["Config"])'
 # esperado: as duas tags e blobs/sha256/1b71ec566e8c3a5c9e6885960d8691fca092ed117fc50383569641bc63beba86
 ```
@@ -243,7 +243,7 @@ Em 24/10 o arquivo teve 305851904 B, levou 37 s e ficou com sha256
 O release não segue sem rollback preservado.
 
 Desvio declarado no pedido de OK: estes arquivos ficam em
-`/home/claudete/releases/437/*.antes`, sem timestamp, e não no padrão
+`<pasta-do-release>/*.antes`, sem timestamp, e não no padrão
 `/tmp/<service>_*_<timestamp>.json`. Guardam só campos da spec e nomes de
 variáveis, nunca valores, e o runbook não usa `updateEnv`.
 
@@ -274,15 +274,15 @@ Opção 2, comandos exatos. A fonte vai para um caminho literal:
 git -C <worktree> rev-parse --short HEAD          # tem de ser o SHA escrito no #437
 git -C <worktree> archive --format=tar.gz HEAD > "$TMPDIR/release-437-src.tar.gz"
 shasum -a 256 "$TMPDIR/release-437-src.tar.gz"      # anotar
-ssh claudete 'cat > /home/claudete/releases/437/src.tar.gz' < "$TMPDIR/release-437-src.tar.gz"
-ssh claudete 'sha256sum /home/claudete/releases/437/src.tar.gz'   # igual ao anotado; diferente: parar
+ssh <alias-ssh> 'cat > <pasta-do-release>/src.tar.gz' < "$TMPDIR/release-437-src.tar.gz"
+ssh <alias-ssh> 'sha256sum <pasta-do-release>/src.tar.gz'   # igual ao anotado; diferente: parar
 
 # host
 SHA=<sha-do-merge>                                 # literal, copiado do #437
 : "${SHA:?SHA vazio — parar}"
-test ! -e /home/claudete/releases/437/src           # abort se já existir
-install -d -m 700 /home/claudete/releases/437/src
-tar -xzf /home/claudete/releases/437/src.tar.gz -C /home/claudete/releases/437/src
+test ! -e <pasta-do-release>/src           # abort se já existir
+install -d -m 700 <pasta-do-release>/src
+tar -xzf <pasta-do-release>/src.tar.gz -C <pasta-do-release>/src
 free -h                                             # abort se available < 6 GiB antes do build
 # O driver docker-container baixa a imagem do BuildKit no host: é uma escrita
 # a mais, declarada no pedido de OK. Fixada por digest (v0.34.0, 07/10/2026).
@@ -300,9 +300,9 @@ sudo -n docker buildx create --name release-437 --driver docker-container \
   # o builder sai junto com o build, deu certo, falhou ou foi interrompido
   trap 'sudo -n docker buildx rm release-437' EXIT INT TERM HUP
   sudo -n docker buildx build --builder release-437 --load \
-    -f /home/claudete/releases/437/src/deploy/easypanel-native/Dockerfile.web \
+    -f <pasta-do-release>/src/deploy/easypanel-native/Dockerfile.web \
     --build-arg GIT_SHA="$SHA" -t "easypanel/sell-autonomia/web:$SHA" \
-    /home/claudete/releases/437/src
+    <pasta-do-release>/src
 )
 sudo -n docker buildx ls | grep -F release-437              # sem saída: o builder saiu
 # Com saída, o trap não rodou (sessão caiu, kill -9). Remover pelo nome e
@@ -381,8 +381,8 @@ Validação, nesta ordem:
    ```sh
    sudo -n docker service inspect sell-autonomia_web --format '{{json .Spec.TaskTemplate.ContainerSpec.Env}}' \
      | python3 -c 'import json,sys;print("\n".join(sorted(e.split("=",1)[0] for e in json.load(sys.stdin))))' \
-     > /home/claudete/releases/437/web.env-names.depois
-   diff /home/claudete/releases/437/web.env-names.antes /home/claudete/releases/437/web.env-names.depois && echo VARS_IGUAIS
+     > <pasta-do-release>/web.env-names.depois
+   diff <pasta-do-release>/web.env-names.antes <pasta-do-release>/web.env-names.depois && echo VARS_IGUAIS
    ```
 
 4. Smoke completo, idêntico à linha de base.
@@ -429,8 +429,8 @@ tag vem do arquivo quando a imagem não existe mais:
 sudo -n docker image inspect easypanel/sell-autonomia/web:rollback-437-fa13a78 --format '{{.Id}}'
 # = sha256:1b71ec566e8c3a5c9e6885960d8691fca092ed117fc50383569641bc63beba86: seguir para o update
 # "No such image": carregar do arquivo antes
-(cd /home/claudete/releases/437 && sha256sum -c web-fa13a78.tar.sha256)   # OK, senão parar
-sudo -n docker load -i /home/claudete/releases/437/web-fa13a78.tar
+(cd <pasta-do-release> && sha256sum -c web-fa13a78.tar.sha256)   # OK, senão parar
+sudo -n docker load -i <pasta-do-release>/web-fa13a78.tar
 sudo -n docker image inspect easypanel/sell-autonomia/web:rollback-437-fa13a78 --format '{{.Id}}'   # o ID acima
 
 sudo -n docker service update --image easypanel/sell-autonomia/web:rollback-437-fa13a78 \
@@ -457,14 +457,14 @@ tem migration.
 
   ```sh
   command -v lsof                                   # sem saída: parar, não apagar
-  test -d /home/claudete/releases/437/src \
-    && test -z "$(lsof +D /home/claudete/releases/437/src)" \
-    && rm -r -- /home/claudete/releases/437/src
-  test -f /home/claudete/releases/437/src.tar.gz && rm -- /home/claudete/releases/437/src.tar.gz
+  test -d <pasta-do-release>/src \
+    && test -z "$(lsof +D <pasta-do-release>/src)" \
+    && rm -r -- <pasta-do-release>/src
+  test -f <pasta-do-release>/src.tar.gz && rm -- <pasta-do-release>/src.tar.gz
   ```
 
   No local não sobra arquivo: o tar foi direto pelo ssh.
-- Ficam até 24 h estáveis e novo OK do Rodrigo: `/home/claudete/releases/437/`
+- Ficam até 24 h estáveis e novo OK do Rodrigo: `<pasta-do-release>/`
   (nomes de variáveis, campos da spec e o `web-fa13a78.tar` com o
   `.sha256`), a imagem `fa13a78` e a tag `rollback-437-fa13a78`. A imagem e a
   tag podem sumir antes, pelo prune; o arquivo não. A remoção delas também é pelo nome exato
