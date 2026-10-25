@@ -245,7 +245,7 @@ Objetivo: nenhum bearer token permanente; token de runtime curto e órfão; sem
 
 ---
 
-## 2. Impacto cross-project (VPS multi-tenant 85.31.60.100, EasyPanel 2.31)
+## 2. Impacto cross-project (VPS multi-tenant <ip-do-host>, EasyPanel 2.31)
 
 Referência de incidente: 2026-05-22 (`destroyService` derrubou Lili + n8n). Regra: nada destrutivo, nada fora do projeto `sell-autonomia`.
 

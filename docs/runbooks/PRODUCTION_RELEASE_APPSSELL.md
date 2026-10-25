@@ -61,7 +61,7 @@ migration, não há imagem de API e o caminho encurta:
 
 1. Confirmar CI verde no SHA exato e fazer merge.
 2. Salvar a spec do serviço e a tag da imagem atual como rollback.
-3. Enviar o fonte para `/home/claudete/appsell-src-<sha>` e construir com
+3. Enviar o fonte para `<home-do-operador>/appsell-src-<sha>` e construir com
    `Dockerfile.web`, passando `--build-arg GIT_SHA=<sha>`.
 4. `docker service update --image ... --update-order stop-first sell-autonomia_web`.
 5. Se houver variável nova, adicioná-la **na mesma atualização**, com
@@ -129,7 +129,7 @@ um caminho antigo sem confirmar que o arquivo existe e está íntegro.
 
 ## Backup e restore
 
-- Backup pré-cutover da entrega: `/home/claudete/backups/appsell/`.
+- Backup pré-cutover da entrega: `<pasta-de-backups>/`.
 - O dump foi mantido com permissão restrita e passou por validação de lista.
 - Restore deve ser ensaiado em banco/volume novo; backup não é operação de
   rotina para apagar ou sobrescrever o banco atual.

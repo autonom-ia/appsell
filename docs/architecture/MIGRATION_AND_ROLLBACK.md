@@ -170,7 +170,7 @@ banco novo.
 Antes do cutover do release `2c8a3689`, foi gerado e preservado um dump lógico
 do banco de produção:
 
-- `/home/claudete/backups/appsell/appsell_native_90-before-2c8a3689-20260823-183653.dump`;
+- `<pasta-de-backups>/appsell_native_90-before-2c8a3689-20260823-183653.dump`;
 - SHA-256: `509134d43c1be6f502965b83eecc51eb4f68278ff2a7f0025f7aa5fb93bbea12`;
 - imagem anterior preservada para rollback: `64ab9956`.
 
