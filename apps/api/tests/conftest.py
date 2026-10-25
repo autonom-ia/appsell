@@ -18,6 +18,8 @@ import pytest
 
 from appsell_api import main
 
+pytest_plugins = ("exige_postgres",)
+
 _ESTADO_POR_TESTE = ("asset_scanner_diagnostico", "ever_ready")
 
 

@@ -93,7 +93,7 @@ reverificação/triagem completa do snapshot de dependências do Financial.
 
 Verificação pública não intrusiva:
 
-- `sell.autonomia.site` -> `85.31.60.100`;
+- `sell.autonomia.site` -> `<ip-do-host>`;
 - HTTP -> HTTPS;
 - certificado HTTPS autoassinado `CN=Easypanel`;
 - resposta atual `404` do Easypanel;
@@ -101,7 +101,7 @@ Verificação pública não intrusiva:
 - sem scan de portas;
 - nenhuma alteração em DNS, servidor ou certificado.
 
-Há drift na documentação do Studio: seus docs ainda mencionam `85.31.60.100`, mas os hosts públicos atuais do Studio resolvem para outro IP e usam Caddy/Let's Encrypt. Portanto, documentação histórica não prova capacidade ou topologia atual do host do AppSell.
+Há drift na documentação do Studio: seus docs ainda mencionam `<ip-do-host>`, mas os hosts públicos atuais do Studio resolvem para outro IP e usam Caddy/Let's Encrypt. Portanto, documentação histórica não prova capacidade ou topologia atual do host do AppSell.
 
 ## Harness
 

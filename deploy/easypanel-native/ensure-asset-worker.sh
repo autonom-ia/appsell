@@ -63,29 +63,6 @@ mapfile -t clamav_networks < <(
 }
 networks=("${clamav_networks[0]}")
 
-# A rede isolada do storage (#461). Com a flag
-# APPSELL_API_STORAGE_INTERNAL_HTTP_ALLOWED, o endpoint interno da API, que o
-# worker copia, aponta para o alias appsell-storage, que só existe nesta rede.
-# Ela vem da etapa 4 do docs/runbooks/storage-461-rede-interna.md, com OK: este
-# script nunca a cria. Sem ela, o worker sobe sem storage.
-# Nome fixo: é o da etapa 4, e um override só abriria caminho para outra rede.
-storage_network="sell-storage-internal"
-if ! storage_network_shape="$(
-  docker network inspect "$storage_network" --format '{{.Id}} {{.Driver}} {{.Internal}} {{.Scope}}'
-)"; then
-  echo "storage internal network not found: $storage_network (step 4 of docs/runbooks/storage-461-rede-interna.md)" >&2
-  exit 1
-fi
-read -r storage_network_id storage_network_driver storage_network_internal storage_network_scope \
-  <<<"$storage_network_shape"
-[[ "$storage_network_driver $storage_network_internal $storage_network_scope" == "overlay true swarm" ]] || {
-  echo "storage internal network must be an internal swarm overlay: $storage_network" >&2
-  exit 1
-}
-if [[ "$storage_network_id" != "${clamav_networks[0]}" ]]; then
-  networks+=("$storage_network_id")
-fi
-
 mount_source() {
   local target="$1"
   jq -r --arg target "$target" '
@@ -166,6 +143,32 @@ done
   echo "unexpected PDF sandbox socket path" >&2
   exit 1
 }
+
+# O endpoint interno vem da API. Um nome de serviço (sem ponto) só resolve na
+# rede do projeto, onde o EasyPanel dá ao storage o alias
+# sell-autonomia-storage (#461, docs/runbooks/storage-461-rede-interna.md). O
+# worker entra só na rede do ClamAV, que é essa: o storage tem de levar o nome
+# nela, ou o worker sobe sem storage. Nome fixo do storage: um override só
+# abriria caminho para outro serviço.
+storage_service="sell-autonomia_storage"
+storage_host="$(env_value APPSELL_API_STORAGE_INTERNAL_ENDPOINT)"
+storage_host="${storage_host#*://}"
+storage_host="${storage_host%%/*}"
+storage_host="${storage_host%%:*}"
+if [[ "$storage_host" != *.* ]]; then
+  storage_networks="$(
+    docker service inspect "$storage_service" --format '{{json .Spec.TaskTemplate.Networks}}'
+  )" || {
+    echo "storage service not found: $storage_service" >&2
+    exit 1
+  }
+  jq -e --arg network "${networks[0]}" --arg alias "$storage_host" \
+    'any((. // [])[]; .Target == $network and any((.Aliases // [])[]; . == $alias))' \
+    <<<"$storage_networks" >/dev/null || {
+    echo "storage alias $storage_host not found on the worker network (docs/runbooks/storage-461-rede-interna.md)" >&2
+    exit 1
+  }
+fi
 
 create_args=(
   service create

@@ -136,6 +136,15 @@ def test_flag_on_accepts_http_service_name() -> None:
     assert resolved.storage_internal_endpoint == "http://appsell-storage:9000"
 
 
+def test_flag_on_accepts_the_production_alias() -> None:
+    # O alias que o EasyPanel dá ao storage na rede do projeto (#461).
+    resolved = settings(
+        storage_internal_http_allowed=True,
+        storage_internal_endpoint="http://sell-autonomia-storage:9000",
+    )
+    assert resolved.storage_internal_endpoint == "http://sell-autonomia-storage:9000"
+
+
 def test_flag_on_rejects_http_internal_endpoint_without_path_style() -> None:
     # Virtual-host monta `<bucket>.appsell-storage`, que não resolve na rede
     # isolada.
