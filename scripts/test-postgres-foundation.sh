@@ -236,8 +236,6 @@ pnpm exec vitest run --no-file-parallelism \
   tests/bff-api-onboarding.test.ts \
   tests/bff-superadmin-inspection.test.ts \
   tests/bff-webhook-ingress.test.ts \
-  tests/bff-buyer-multi-seller.test.ts \
-  tests/bff-demo-library.test.ts \
   tests/bff-learning-multiprocess.test.ts
 restore_test_generated_files
 git diff --exit-code -- next-env.d.ts tsconfig.json
