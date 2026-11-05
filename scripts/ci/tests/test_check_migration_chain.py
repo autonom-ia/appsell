@@ -113,6 +113,53 @@ class ChainTests(unittest.TestCase):
             check_chain(self.versions)
         self.assertIn("0003_coluna", str(erro.exception))
 
+    def test_a_cycle_reachable_from_the_head_fails(self) -> None:
+        # Catches: 0002 <-> 0003 hanging under the head, and a self-loop; both
+        # descend from the head, and alembic still raises CycleDetected.
+        cases = {
+            "ida_e_volta": {
+                "0001_r.py": migration("0001_r", None),
+                "0002_a.py": 'revision = "0002_a"\ndown_revision = ("0003_b", "0001_r")\n',
+                "0003_b.py": migration("0003_b", "0002_a"),
+                "0004_h.py": migration("0004_h", "0002_a"),
+            },
+            "auto_laco": {
+                "0001_r.py": migration("0001_r", None),
+                "0002_a.py": 'revision = "0002_a"\ndown_revision = ("0002_a", "0001_r")\n',
+                "0003_h.py": migration("0003_h", "0002_a"),
+            },
+        }
+        for nome, files in cases.items():
+            with self.subTest(nome=nome), tempfile.TemporaryDirectory() as folder:
+                for name, source in files.items():
+                    (Path(folder) / name).write_text(source, encoding="utf-8")
+                with self.assertRaises(ChainError) as erro:
+                    check_chain(Path(folder))
+                self.assertIn("ciclo", str(erro.exception))
+
+    def test_a_local_variable_named_revision_inside_a_function_passes(self) -> None:
+        # Function bodies are another scope: alembic reads the module value.
+        self.linear()
+        self.write(
+            "0004_a.py",
+            migration("0004_a", "0003_coluna")
+            + "def upgrade():\n    for revision in range(3):\n        down_revision = revision\n",
+        )
+
+        self.assertEqual("0004_a", check_chain(self.versions))
+
+    def test_rebinding_revision_by_def_import_or_class_fails(self) -> None:
+        for nome, extra in {
+            "def": "def revision():\n    pass\n",
+            "import": "import os as revision\n",
+            "class": "class revision:\n    pass\n",
+        }.items():
+            with self.subTest(nome=nome):
+                self.linear()
+                self.write("0004_a.py", migration("0004_a", "0003_coluna") + extra)
+                with self.assertRaises(ChainError):
+                    check_chain(self.versions)
+
     def test_a_revision_assigned_outside_the_top_level_fails(self) -> None:
         # Catches: the checker reading one value while alembic runs the module
         # and sees another one set inside an `if`.

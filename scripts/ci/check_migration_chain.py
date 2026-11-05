@@ -28,6 +28,45 @@ class ChainError(RuntimeError):
     """A cadeia está quebrada ou não pôde ser lida."""
 
 
+_NEW_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+
+
+def _module_scope(tree: ast.Module):
+    """Os nós que o Python avalia no escopo do módulo.
+
+    Corpo de função, classe e lambda é outro escopo: uma variável local chamada
+    `revision` ali não muda o que o alembic lê. O nome da função ou da classe,
+    os decoradores e as bases, sim, são do módulo.
+    """
+    pending: list[ast.AST] = list(tree.body)
+    while pending:
+        node = pending.pop()
+        yield node
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            pending.extend(node.decorator_list)
+            pending.extend(node.args.defaults)
+            pending.extend(default for default in node.args.kw_defaults if default is not None)
+        elif isinstance(node, ast.ClassDef):
+            pending.extend(node.decorator_list)
+            pending.extend(node.bases)
+            pending.extend(keyword.value for keyword in node.keywords)
+        elif not isinstance(node, ast.Lambda):
+            pending.extend(ast.iter_child_nodes(node))
+
+
+def _bound_name(node: ast.AST) -> str | None:
+    """O nome que este nó liga no escopo em que aparece, se ligar algum."""
+    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+        return node.id
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return node.name
+    if isinstance(node, ast.alias):
+        return node.asname or node.name.partition(".")[0]
+    if isinstance(node, (ast.MatchAs, ast.MatchStar, ast.ExceptHandler)):
+        return node.name
+    return None
+
+
 def _assigned_literals(path: Path) -> dict[str, object]:
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -51,14 +90,12 @@ def _assigned_literals(path: Path) -> dict[str, object]:
             values[target.id] = ast.literal_eval(value)
         except ValueError as erro:
             raise ChainError(f"{path.name}: {target.id} não é um valor literal") from erro
-    # O alembic executa o módulo inteiro: uma atribuição dentro de `if`, função
-    # ou desempacotamento muda o valor que ele vê sem mudar o que lemos aqui.
-    stores = sum(
-        1
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id in NAMES
-    )
-    if stores != top_level:
+    # O alembic executa o módulo inteiro: uma ligação dentro de `if`, um `def`,
+    # `class` ou `import` com o mesmo nome muda o valor que ele vê sem mudar o
+    # que lemos aqui. Limite conhecido: `globals()[...]`/`exec` não se decidem
+    # por leitura estática; a revisão humana cobre.
+    bindings = sum(1 for node in _module_scope(tree) if _bound_name(node) in NAMES)
+    if bindings != top_level:
         raise ChainError(f"{path.name}: revision ou down_revision atribuído fora do topo do arquivo")
     return values
 
@@ -123,18 +160,27 @@ def check_chain(versions: Path) -> str:
     heads = sorted(set(parents) - referenced)
     if len(heads) != 1:
         raise ChainError(f"a cadeia precisa de uma cabeça só, achou {heads}")
-    # Uma raiz e uma cabeça não bastam: um ciclo solto (0003 -> 0005 -> 0004 ->
-    # 0003) não é raiz nem cabeça. Toda revision tem de descender da cabeça.
-    reached: set[str] = set()
-    pending = [heads[0]]
-    while pending:
-        revision = pending.pop()
-        if revision not in reached:
-            reached.add(revision)
-            pending.extend(parents[revision])
-    stray = sorted(set(parents) - reached)
-    if stray:
-        raise ChainError(f"revisions fora da cadeia da cabeça (ciclo?): {stray}")
+    # Uma raiz e uma cabeça não bastam: um ciclo (solto, pendurado sob a cabeça
+    # ou um auto-laço) quebra o `alembic upgrade` com CycleDetected. Ordenação
+    # topológica da raiz para a cabeça: o que sobra sem ser ordenado está num
+    # ciclo ou depende de um.
+    children: dict[str, list[str]] = {revision: [] for revision in parents}
+    waiting = {revision: len(set(ups)) for revision, ups in parents.items()}
+    for revision, ups in parents.items():
+        for parent in set(ups):
+            children[parent].append(revision)
+    ready = [revision for revision, count in waiting.items() if count == 0]
+    ordered = 0
+    while ready:
+        revision = ready.pop()
+        ordered += 1
+        for child in children[revision]:
+            waiting[child] -= 1
+            if waiting[child] == 0:
+                ready.append(child)
+    if ordered != len(parents):
+        stuck = sorted(revision for revision, count in waiting.items() if count > 0)
+        raise ChainError(f"ciclo na cadeia de migrations: {stuck}")
     return heads[0]
 
 
