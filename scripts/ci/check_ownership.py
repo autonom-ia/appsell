@@ -10,8 +10,12 @@ não geram nada.
 O rótulo roteia a revisão para a trilha dona. Não autoriza merge: isso
 continua com o `ci-gate`, a revisão e as regras do AGENTS.md.
 
-Os padrões são de shell (`fnmatch`), não regex: `pasta/` casa o prefixo,
-`nome*` casa o glob, o resto casa o caminho exato. Vale o mais específico.
+Padrões: `pasta/` casa o prefixo; um nome com `*` casa segmento a segmento
+(`fnmatch` por segmento, sem regex, e `*` não atravessa `/`); o resto casa o
+caminho exato. Caixa não importa. Vale o padrão mais específico.
+
+A lista de arquivos chega separada por NUL (`git diff -z`): sem isso, o git
+põe entre aspas os nomes não ASCII e eles escapariam do dono.
 """
 
 from __future__ import annotations
@@ -31,6 +35,10 @@ class ManifestError(RuntimeError):
     """O manifesto ou a entrada não dão para checar."""
 
 
+def _fold(text: str) -> str:
+    return text.casefold()
+
+
 @dataclass(frozen=True)
 class Rule:
     pattern: str
@@ -42,11 +50,13 @@ class Rule:
         return len(self.pattern.replace("*", ""))
 
     def matches(self, path: str) -> bool:
-        if self.pattern.endswith("/"):
-            return path.startswith(self.pattern)
-        if "*" in self.pattern:
-            return fnmatchcase(path, self.pattern)
-        return path == self.pattern
+        pattern, target = _fold(self.pattern), _fold(path)
+        if pattern.endswith("/"):
+            return target.startswith(pattern)
+        if "*" in pattern:
+            want, have = pattern.split("/"), target.split("/")
+            return len(want) == len(have) and all(fnmatchcase(h, w) for h, w in zip(have, want))
+        return target == pattern
 
 
 @dataclass(frozen=True)
@@ -82,9 +92,11 @@ def _names(label: str, bases: object) -> list[str]:
         raise ManifestError(f"{label}: esperava um mapa de base para nomes")
     patterns: list[str] = []
     for base, names in bases.items():
+        if not isinstance(base, str):
+            raise ManifestError(f"{label}: base inválida {base!r}")
         if base.startswith("_"):
             continue
-        if not isinstance(base, str) or (base and not base.endswith("/")):
+        if base and not base.endswith("/"):
             raise ManifestError(f"{label}: base {base!r} precisa terminar em /")
         if not isinstance(names, list) or not names:
             raise ManifestError(f"{label}: base {base!r} sem nomes")
@@ -101,22 +113,21 @@ def load_manifest(raw: object) -> Manifest:
     rules: list[Rule] = []
     seen: dict[str, str] = {}
     for label, bases in raw["trilhas"].items():
-        if not isinstance(label, str) or not label.startswith(LABEL_PREFIX):
-            raise ManifestError(f"rótulo {label!r} não começa com {LABEL_PREFIX}")
+        if not isinstance(label, str) or not label.startswith(LABEL_PREFIX) or label != _fold(label):
+            raise ManifestError(f"rótulo {label!r} precisa ser {LABEL_PREFIX}<nome> em minúsculas")
         for pattern in _names(label, bases):
-            if pattern in seen and seen[pattern] != label:
-                raise ManifestError(f"{pattern}: dono duplo ({seen[pattern]} e {label})")
-            seen[pattern] = label
+            key = _fold(pattern)
+            if key in seen and seen[key] != label:
+                raise ManifestError(f"{pattern}: dono duplo ({seen[key]} e {label})")
+            seen[key] = label
             rules.append(Rule(pattern, label))
-    exceptions = raw.get("excecoes", {"": []})
-    exception_rules = tuple(
-        Rule(pattern, None) for pattern in (_names("excecoes", exceptions) if exceptions.get("") else [])
-    )
+    exceptions = raw.get("excecoes")
+    exception_rules = () if exceptions is None else tuple(Rule(p, None) for p in _names("excecoes", exceptions))
     return Manifest(tuple(rules), exception_rules)
 
 
 def check_pull_request(manifest: Manifest, files: list[str], labels: list[str]) -> Result:
-    present = {label for label in labels if label.startswith(LABEL_PREFIX)}
+    present = {_fold(label.strip()) for label in labels}
     failures: list[str] = []
     warnings: list[str] = []
     for path in sorted(set(files)):
@@ -133,18 +144,35 @@ def check_pull_request(manifest: Manifest, files: list[str], labels: list[str]) 
 
 
 def trilhas_tokens(markdown: str) -> dict[str, set[str]]:
-    """Os caminhos entre crases de cada linha da tabela de posse, por rótulo."""
+    """Os caminhos entre crases de cada linha da tabela de posse, por rótulo.
+
+    Linha de tabela que cita caminho sem exatamente um rótulo é erro: senão a
+    paridade com o manifesto passaria por cima dela em silêncio.
+    """
     tokens: dict[str, set[str]] = {}
-    for line in markdown.splitlines():
+    # Só a tabela de posse, antes da primeira seção (`## Reserva de migrations`).
+    for line in markdown.split("\n## ", 1)[0].splitlines():
         if not line.startswith("|"):
             continue
         quoted = line.split("`")[1::2]
-        labels = [token for token in quoted if token.startswith(LABEL_PREFIX)]
-        if len(labels) != 1:
+        labels = [token for token in quoted if _fold(token).startswith(LABEL_PREFIX)]
+        paths = {token for token in quoted if not _fold(token).startswith(LABEL_PREFIX)}
+        if not quoted:
             continue
-        paths = {token for token in quoted if not token.startswith(LABEL_PREFIX)}
+        if len(labels) != 1:
+            raise ManifestError(f"linha da tabela sem um rótulo único: {line[:80]}")
         tokens.setdefault(labels[0], set()).update(paths)
     return tokens
+
+
+def escape_message(text: str) -> str:
+    """Escapa o texto de um comando de workflow (::error::<texto>)."""
+    return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+def escape_property(text: str) -> str:
+    """Escapa o valor de uma propriedade de comando de workflow (file=...)."""
+    return escape_message(text).replace(":", "%3A").replace(",", "%2C")
 
 
 def _labels(raw: str) -> list[str]:
@@ -157,24 +185,31 @@ def _labels(raw: str) -> list[str]:
     return labels
 
 
+def _files(path: Path) -> list[str]:
+    try:
+        return [item.decode("utf-8") for item in path.read_bytes().split(b"\0") if item]
+    except UnicodeDecodeError as erro:
+        raise ManifestError("nome de arquivo que não é UTF-8") from erro
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--manifest", type=Path, default=MANIFEST)
-    parser.add_argument("--files", type=Path, required=True, help="um caminho por linha")
+    parser.add_argument("--files", type=Path, required=True, help="caminhos separados por NUL (git diff -z)")
     parser.add_argument("--labels", required=True, help="lista JSON dos rótulos do PR")
     args = parser.parse_args(argv)
     try:
         manifest = load_manifest(json.loads(args.manifest.read_text(encoding="utf-8")))
         labels = _labels(args.labels)
-        files = [line.strip() for line in args.files.read_text(encoding="utf-8").splitlines() if line.strip()]
+        files = _files(args.files)
     except (OSError, json.JSONDecodeError, ManifestError) as erro:
-        print(f"::error::posse: não deu para checar ({erro})")
+        print(f"::error::{escape_message(f'posse: não deu para checar ({erro})')}")
         return 1
     result = check_pull_request(manifest, files, labels)
     for path in result.warnings:
-        print(f"::warning file={path}::posse: arquivo sem trilha dona; pergunte à Orquestração")
+        print(f"::warning file={escape_property(path)}::posse: arquivo sem trilha dona; pergunte à Orquestração")
     for failure in result.failures:
-        print(f"::error::posse: falta o rótulo da trilha dona ({failure})")
+        print(f"::error::{escape_message(f'posse: falta o rótulo da trilha dona ({failure})')}")
     if result.failures:
         return 1
     print(f"posse: {len(files)} arquivo(s), rótulos de trilha conferidos")

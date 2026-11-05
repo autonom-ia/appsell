@@ -6,6 +6,8 @@ from pathlib import Path
 from scripts.ci.check_ownership import (
     ManifestError,
     check_pull_request,
+    escape_message,
+    escape_property,
     load_manifest,
     main,
     trilhas_tokens,
@@ -14,6 +16,18 @@ from scripts.ci.check_ownership import (
 ROOT = Path(__file__).resolve().parents[3]
 MANIFEST = ROOT / "docs" / "programa" / "posse.json"
 TRILHAS = ROOT / "docs" / "programa" / "TRILHAS.md"
+# Caminhos que a linha de uma trilha cita mas que são de outra: a passagem
+# futura da trilha 2 para a 5 e a exceção de `settings/` da trilha 3.
+CROSS_MENTIONS = {
+    "trilha:checkout": {
+        "app/api/checkout/",
+        "app/(protected)/checkout/",
+        "checkout-workspace.tsx",
+        "stripe-checkout-card.tsx",
+        "lib/payments/",
+    },
+    "trilha:membros": {"app/(protected)/settings/payouts/"},
+}
 
 SMALL = {
     "trilhas": {
@@ -93,34 +107,87 @@ class OwnershipTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             manifest = Path(folder) / "posse.json"
             manifest.write_text(json.dumps(SMALL), encoding="utf-8")
-            files = Path(folder) / "files.txt"
-            files.write_text("lib/b.ts\nREADME.md\n", encoding="utf-8")
+            files = Path(folder) / "files.bin"
+            files.write_bytes(b"lib/b.ts\0README.md\0")
 
             self.assertEqual(1, main(["--manifest", str(manifest), "--files", str(files), "--labels", '["trilha:a"]']))
             self.assertEqual(0, main(["--manifest", str(manifest), "--files", str(files), "--labels", '["trilha:b"]']))
             # Labels that are not a JSON list of strings cannot be checked.
             self.assertEqual(1, main(["--manifest", str(manifest), "--files", str(files), "--labels", "trilha:b"]))
 
+    def test_non_ascii_paths_read_from_nul_separated_git_output(self) -> None:
+        # Catches: git quoting "caf\303\251.ts" and the owned file passing as
+        # an unowned warning.
+        with tempfile.TemporaryDirectory() as folder:
+            manifest = Path(folder) / "posse.json"
+            manifest.write_text(json.dumps(SMALL), encoding="utf-8")
+            files = Path(folder) / "files.bin"
+            files.write_bytes("app/a/b/café.ts".encode() + b"\0" + b"README.md\0")
+
+            self.assertEqual(1, main(["--manifest", str(manifest), "--files", str(files), "--labels", '["trilha:a"]']))
+            files.write_bytes(b"\xff\xfe\0")
+            self.assertEqual(1, main(["--manifest", str(manifest), "--files", str(files), "--labels", '["trilha:b"]']))
+
+    def test_case_differences_do_not_escape_the_owner(self) -> None:
+        result = check_pull_request(self.manifest, ["App/A/B/x.tsx", "LIB/B.ts"], ["trilha:a"])
+
+        self.assertEqual(["trilha:b: App/A/B/x.tsx", "trilha:b: LIB/B.ts"], result.failures)
+
+    def test_labels_compare_without_case_or_spaces(self) -> None:
+        result = check_pull_request(self.manifest, ["lib/b.ts"], [" Trilha:B "])
+
+        self.assertEqual([], result.failures)
+
+    def test_a_glob_does_not_cross_folders(self) -> None:
+        # lib/a-* is lib/a-<file>, not lib/a-x/<anything>.
+        result = check_pull_request(self.manifest, ["lib/a-x/deep.ts"], [])
+
+        self.assertEqual([], result.failures)
+        self.assertEqual(["lib/a-x/deep.ts"], result.warnings)
+
+    def test_annotations_escape_what_the_runner_would_parse(self) -> None:
+        self.assertEqual("a%25b%0Ac%3Ad%2Ce", escape_property("a%b\nc:d,e"))
+        self.assertEqual("a%25b%0Dc%0A", escape_message("a%b\rc\n"))
+
+    def test_exception_bases_and_table_rows_without_label(self) -> None:
+        manifest = load_manifest({"trilhas": {"trilha:a": {"": ["x.ts"]}}, "excecoes": {"outra/": ["y"]}})
+        self.assertTrue(manifest.is_exception("outra/y"))
+        with self.assertRaises(ManifestError):
+            load_manifest({"trilhas": {"trilha:a": {"": ["x.ts"]}}, "excecoes": {"outra": ["y"]}})
+        with self.assertRaises(ManifestError):
+            trilhas_tokens("| Sem rótulo | `lib/x.ts` |\n\n## Outra seção\n| `0062` | livre |\n")
+        with self.assertRaises(ManifestError):
+            trilhas_tokens("| Dois | `trilha:a` `trilha:b` | `lib/x.ts` |\n")
+
 
 class RepositoryManifestTests(unittest.TestCase):
     def test_the_repository_manifest_loads(self) -> None:
         load_manifest(json.loads(MANIFEST.read_text(encoding="utf-8")))
 
-    def test_manifest_and_trilhas_md_list_the_same_paths(self) -> None:
-        # Catches: TRILHAS.md and posse.json drifting apart (one is read by
-        # people, the other by the CI).
+    def test_manifest_and_trilhas_md_list_the_same_paths_per_trilha(self) -> None:
+        # Catches: TRILHAS.md and posse.json drifting apart, in either
+        # direction, trilha by trilha.
         raw = json.loads(MANIFEST.read_text(encoding="utf-8"))
         doc = trilhas_tokens(TRILHAS.read_text(encoding="utf-8"))
 
-        every_name = set()
+        self.assertEqual(set(raw["trilhas"]), set(doc))
         for label, bases in raw["trilhas"].items():
-            names = {name for base, items in bases.items() for name in items}
-            # A base (`app/components/`) aparece no texto como contexto dos nomes.
-            every_name |= names | {base for base in bases if base}
+            names = {name for items in bases.values() for name in items}
+            context = {base for base in bases if base}
+            mentions = CROSS_MENTIONS.get(label, set())
             with self.subTest(trilha=label):
-                self.assertEqual(set(), names - doc.get(label, set()), "no posse.json, falta no TRILHAS.md")
-        mentioned = set().union(*doc.values())
-        self.assertEqual(set(), mentioned - every_name, "no TRILHAS.md, falta no posse.json")
+                self.assertEqual(set(), names - doc[label], "no posse.json, falta no TRILHAS.md")
+                self.assertEqual(set(), doc[label] - names - context - mentions, "no TRILHAS.md, falta no posse.json")
+        for label, mentioned in CROSS_MENTIONS.items():
+            with self.subTest(citacao=label):
+                owned_elsewhere = {
+                    name
+                    for other, bases in raw["trilhas"].items()
+                    if other != label
+                    for items in bases.values()
+                    for name in items
+                }
+                self.assertEqual(set(), mentioned - owned_elsewhere)
 
     def test_known_files_resolve_to_their_trilha(self) -> None:
         manifest = load_manifest(json.loads(MANIFEST.read_text(encoding="utf-8")))

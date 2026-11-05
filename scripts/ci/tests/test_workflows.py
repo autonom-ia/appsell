@@ -217,8 +217,15 @@ class OwnershipWorkflowTests(unittest.TestCase):
         # ci-gate without them.
         self.assertIn("types: [opened, synchronize, reopened, labeled, unlabeled]", self.source)
         self.assertNotIn("labeled", workflow("app-ci.yml"))
-        self.assertIn("python3 scripts/ci/check_ownership.py", self.source)
+        self.assertIn('python3 -I "$checker" --manifest "$manifest"', self.source)
         self.assertNotIn("check_ownership", workflow("app-ci.yml"))
+
+    def test_the_rule_comes_from_the_base_and_paths_are_nul_separated(self) -> None:
+        # Catches: a PR loosening posse.json or the checker to pass itself, and
+        # git quoting non-ASCII names out of their owner.
+        self.assertIn('git show "$BASE_SHA:docs/programa/posse.json"', self.source)
+        self.assertIn('git show "$BASE_SHA:scripts/ci/check_ownership.py"', self.source)
+        self.assertIn("git diff -z --name-only --no-renames", self.source)
 
     def test_untrusted_pr_data_reaches_the_shell_only_through_env(self) -> None:
         run = self.source.split("run: |", 1)[1]

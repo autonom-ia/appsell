@@ -35,6 +35,20 @@ jobs:
           LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: |
           set -euo pipefail
-          files="$RUNNER_TEMP/posse-files.txt"
-          git diff --name-only --no-renames "$BASE_SHA...$HEAD_SHA" > "$files"
-          python3 scripts/ci/check_ownership.py --files "$files" --labels "$LABELS"
+          files="$RUNNER_TEMP/posse-files.bin"
+          # -z: sem aspas nem octal em nome não ASCII.
+          git diff -z --name-only --no-renames "$BASE_SHA...$HEAD_SHA" > "$files"
+          # Manifesto e checker vêm da base: o PR não pode afrouxar a regra
+          # que o julga. Só na criação (base ainda sem os dois) vale a do PR.
+          checker="$RUNNER_TEMP/check_ownership.py"
+          manifest="$RUNNER_TEMP/posse.json"
+          if git cat-file -e "$BASE_SHA:scripts/ci/check_ownership.py" \
+             && git cat-file -e "$BASE_SHA:docs/programa/posse.json"; then
+            git show "$BASE_SHA:scripts/ci/check_ownership.py" > "$checker"
+            git show "$BASE_SHA:docs/programa/posse.json" > "$manifest"
+          else
+            echo "::notice::posse: base sem o check; usando o do PR (só no PR que o cria)"
+            cp scripts/ci/check_ownership.py "$checker"
+            cp docs/programa/posse.json "$manifest"
+          fi
+          python3 -I "$checker" --manifest "$manifest" --files "$files" --labels "$LABELS"
