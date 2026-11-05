@@ -27,10 +27,6 @@ export default defineConfig({
     // papel continua coberta em tests/e2e/sessao-sem-papel.spec.ts.
     env: { APP_ENV: "local", APPSELL_DEMO_ENABLED: "true" },
     reuseExistingServer: false,
-    // No CI, a saída do servidor (compilação sob demanda de cada rota, com a
-    // duração) vai para o log, para casar travas de 30 s com o que o servidor
-    // fazia naquele segundo (#585).
-    stdout: process.env.CI ? "pipe" : "ignore",
     timeout: 120_000
   },
   projects: [
