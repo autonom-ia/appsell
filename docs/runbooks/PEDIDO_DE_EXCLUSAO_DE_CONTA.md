@@ -100,14 +100,27 @@ cobre **não se toca sem OK do encarregado**:
 - **Pode-se apagar** o que a pessoa criou e só a ela interessa: anotações e
   marcadores de PDF, `learning_pdf_study_state`, progresso de aula e estado
   de curso.
+- **Consentimentos de e-mail e tokens de descadastro** (a partir da migration
+  0066): uma função pronta apaga os dois e devolve quantos consentimentos
+  saíram.
+
+  ```sql
+  select app_private.forget_email_consents('<identity_user_id da PESSOA>');
+  ```
+
+  Ela acha os tokens pelo e-mail atual da conta, então roda **antes** de
+  qualquer mudança em `identity_user.email_normalized`. A supressão
+  (`email_suppression` e `email_suppression_global`, guardadas só como hash) **fica**: é o pedido de não
+  receber, e a exclusão não pode desfazê-lo. Anotar a quantidade devolvida no
+  `metadata` do passo 5.
 - **Anonimizar**: `identity_user.display_name` → `null`.
 - **Revogar** acessos ativos: `buyer_entitlement.status` → `'revoked'`.
 - **`identity_user.email_normalized`**: decisão da D-018. Não alterar sem OK
   do encarregado — nem apagar (pode ser exigido por registro de acesso) nem
   manter por reflexo.
 
-Nenhuma dessas operações tem função pronta. Cada uma é um `psql` de
-superusuário, feito à mão, num único caso por vez, com backup antes
+Fora a `forget_email_consents`, nenhuma dessas operações tem função pronta.
+Cada uma é um `psql` de superusuário, feito à mão, num único caso por vez, com backup antes
 (`pg_dump -Fc`), como qualquer escrita em produção.
 
 ## 5. Registrar que foi feito

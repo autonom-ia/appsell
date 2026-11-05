@@ -1,0 +1,49 @@
+# Dynamic Traefik configuration: the one-click unsubscribe endpoint stays out of
+# the edge access log (#561, follow-up of #575).
+#
+# RFC 8058 one-click: the mail provider POSTs to the URL in the
+# List-Unsubscribe header, so the token has to travel in the URL
+# (`/api/email/unsubscribe?t=<token>`). Whoever holds the token unsubscribes
+# the person, and the global access log writes the full request path. These
+# two routers win over the generic `Host(sell.autonomia.site)` routers
+# (priority 0) for this path only, send the request to the same web service
+# and turn the access log off for it. Every other path keeps its log line.
+#
+# The page `/e/descadastro` carries the token in the fragment (`#t=`), which
+# browsers never send, so it needs nothing here.
+#
+# The middlewares are the ones the generic routers use, defined by EasyPanel
+# in the same file provider. Runbook: docs/runbooks/descadastro-fora-do-log.md.
+http:
+  routers:
+    appsell-descadastro-http:
+      entryPoints:
+        - http
+      rule: Host(`sell.autonomia.site`) && PathPrefix(`/api/email/unsubscribe`)
+      service: appsell-web-descadastro
+      middlewares:
+        - redirect-to-https
+        - bad-gateway-error-page
+      priority: 200
+      observability:
+        accessLogs: false
+    appsell-descadastro-https:
+      entryPoints:
+        - https
+      rule: Host(`sell.autonomia.site`) && PathPrefix(`/api/email/unsubscribe`)
+      service: appsell-web-descadastro
+      middlewares:
+        - bad-gateway-error-page
+      priority: 200
+      observability:
+        accessLogs: false
+      tls:
+        certResolver: letsencrypt
+        domains:
+          - main: sell.autonomia.site
+  services:
+    appsell-web-descadastro:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: http://sell-autonomia_web:3000/
