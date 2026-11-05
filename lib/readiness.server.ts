@@ -1,3 +1,5 @@
+import { checkoutProductMapIsValid } from "@/lib/checkout-config";
+import { checkoutProvider } from "@/lib/financial-external-checkout.server";
 import { oauthService } from "@/lib/oauth-service.server";
 import { storageUploadConfigurationReady } from "@/lib/storage-upload-policy.server";
 
@@ -6,6 +8,7 @@ export type ReadinessState = {
   redis: boolean;
   api: boolean;
   storageUpload: boolean;
+  checkoutMap: boolean;
 };
 
 /**
@@ -21,7 +24,26 @@ export async function readinessState(): Promise<ReadinessState> {
     domainApiReady(),
     storageUploadConfigurationReady()
   ]);
-  return { ready: redis && api && storageUpload, redis, api, storageUpload };
+  const checkoutMap = checkoutProductMapReady();
+  return {
+    ready: redis && api && storageUpload && checkoutMap,
+    redis,
+    api,
+    storageUpload,
+    checkoutMap
+  };
+}
+
+/**
+ * Com o checkout do Stripe local, um mapa de produtos que não parseia derruba
+ * todo pagamento: o webhook não acha produto nenhum (#148). Reprovar aqui
+ * impede o deploy de promover a task, em vez de cada comprador descobrir.
+ *
+ * Com `financial_checkout` o mapa não decide venda nem entrega, então ele não
+ * pode tirar do ar uma loja que vende por lá.
+ */
+function checkoutProductMapReady() {
+  return checkoutProvider() === "financial_checkout" || checkoutProductMapIsValid();
 }
 
 async function redisReady() {
