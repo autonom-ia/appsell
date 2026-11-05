@@ -30,6 +30,24 @@ class AppCiWorkflowTests(unittest.TestCase):
         self.assertIn("types: [checks_requested]", self.source)
         self.assertIn("branches: [main]", self.source)
 
+    def test_migration_chain_shape_runs_on_every_event_and_feeds_the_gate(
+        self,
+    ) -> None:
+        # #551: sem condição de rota, para que nenhum evento a pule; e o gate
+        # recebe o resultado, então pulada ou falha reprova.
+        start = self.source.index("id: migration-shape")
+        step = self.source[start : self.source.index("- name:", start)]
+        self.assertIn("if: ${{ !cancelled() }}", step)
+        self.assertNotIn("steps.route", step)
+        self.assertIn(
+            "python3 scripts/ci/check_migration_chain.py apps/api/migrations/versions",
+            step,
+        )
+        self.assertIn(
+            "CI_OUTCOME_MIGRATION_SHAPE: ${{ steps.migration-shape.outcome }}",
+            self.source,
+        )
+
     def test_only_pull_request_runs_are_cancelled(self) -> None:
         self.assertIn("concurrency:", self.source)
         self.assertIn(

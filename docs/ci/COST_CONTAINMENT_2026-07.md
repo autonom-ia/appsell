@@ -60,6 +60,13 @@ The required workflow deliberately has no top-level `paths` filter. A docs-only
 change still emits `ci-gate=success`. Unknown files, routing failures,
 `compose.yaml`, the CI router and the required workflow fall back to all scopes.
 
+The migration chain shape (`migration_shape`, #551) is expected on every event,
+without a route condition: one Alembic head, no repeated migration number, no
+revision longer than the 32 characters of `alembic_version`. It reads the files
+with `ast` and treats anything it cannot read as a failure. In the merge queue
+it runs on the integrated result, where two green PRs that each add the same
+number meet for the first time.
+
 ## Router contract
 
 The router uses local Git history, never the pull-request files API:
