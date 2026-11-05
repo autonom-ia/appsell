@@ -75,6 +75,16 @@ jobs:
             --head "$head" \
             --github-output "$GITHUB_OUTPUT"
 
+      # #551: uma cabeça Alembic só e nenhum número repetido, em todo evento.
+      # No pull_request roda sobre refs/pull/N/merge (o PR mesclado com a main
+      # do momento). Sem fila de merge (conta pessoal), o verde fica velho
+      # quando a main anda; ver docs/ci/COST_CONTAINMENT_2026-07.md.
+      - name: Check the migration chain has one head and unique numbers
+        id: migration-shape
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: python3 scripts/ci/check_migration_chain.py apps/api/migrations/versions
+
       - name: Validate workflow schema with checksum-pinned actionlint
         if: ${{ !cancelled() && steps.route.outputs.workflow == 'true' }}
         shell: bash
@@ -428,6 +438,7 @@ jobs:
           CI_MERGE_QUEUE_ACTIVE: ${{ vars.APPSELL_MERGE_QUEUE_ACTIVE }}
           CI_ROUTE_JSON: ${{ steps.route.outputs.route_json }}
           CI_OUTCOME_ROUTE: ${{ steps.route.outcome }}
+          CI_OUTCOME_MIGRATION_SHAPE: ${{ steps.migration-shape.outcome }}
           CI_OUTCOME_AUDIT_API: ${{ steps.audit-api.outcome }}
           CI_OUTCOME_FAST_WEB: ${{ steps.fast-web.outcome }}
           CI_OUTCOME_FAST_API: ${{ steps.fast-api.outcome }}

@@ -118,6 +118,22 @@ Rodrigo em 23/10/2026, Decisão 022) quando **tudo** for verdade:
      `.claude/agents/`;
    - secrets.
 
+**PR que toca o web entra só com a certificação integrada lida** (Orquestração,
+05/11/2026). Vale para `app/`, `lib/`, `next.config.ts`, `proxy.ts` e
+dependência do web, seguro ou não. O `ci-gate` do `pull_request` roda só os
+testes rápidos: o E2E (`cert_web`) e o smoke rodam no `workflow_dispatch` e no
+push da `main`. Então, antes do merge:
+
+1. um run de `workflow_dispatch` no **head atual** do PR terminou verde;
+2. `cert_web` e smoke desse run foram **lidos**, com o número de testes que
+   falharam e que passaram só no retry. `ci-gate` verde não basta;
+3. sem esse run, o veredito da Qualidade é **pendente**, não aprovado.
+
+Por que existe: em 05/11/2026 o #534 (Next 16.4.3) entrou com `ci-gate` verde
+enquanto o dispatch do mesmo código tinha `cert_web=failure`. Os runs de push
+dos merges intermediários foram cancelados pela concorrência, e nenhum deles
+foi certificado.
+
 Todo o resto espera OK explícito do Rodrigo, citado no PR: merge de PR não
 seguro, deploy, migration que não seja só coluna ou índice, qualquer coisa em produção,
 DNS, permissões, billing, liberar funcionalidade para todas as lojas.
