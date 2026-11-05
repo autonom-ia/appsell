@@ -153,6 +153,7 @@ class ChainTests(unittest.TestCase):
             "def": "def revision():\n    pass\n",
             "import": "import os as revision\n",
             "class": "class revision:\n    pass\n",
+            "global": 'def f():\n    global revision\n    revision = "0004_z"\nf()\n',
         }.items():
             with self.subTest(nome=nome):
                 self.linear()

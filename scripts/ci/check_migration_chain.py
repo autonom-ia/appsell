@@ -95,7 +95,12 @@ def _assigned_literals(path: Path) -> dict[str, object]:
     # que lemos aqui. Limite conhecido: `globals()[...]`/`exec` não se decidem
     # por leitura estática; a revisão humana cobre.
     bindings = sum(1 for node in _module_scope(tree) if _bound_name(node) in NAMES)
-    if bindings != top_level:
+    # `global revision` numa função faz o corpo dela escrever no módulo.
+    declared = any(
+        isinstance(node, (ast.Global, ast.Nonlocal)) and NAMES.intersection(node.names)
+        for node in ast.walk(tree)
+    )
+    if bindings != top_level or declared:
         raise ChainError(f"{path.name}: revision ou down_revision atribuído fora do topo do arquivo")
     return values
 
