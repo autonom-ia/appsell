@@ -77,6 +77,26 @@ describe("POST /api/email/unsubscribe", () => {
     expect(descadastrarPorToken).not.toHaveBeenCalled();
   });
 
+  it("recusa corpo grande mesmo sem content-length (chunked)", async () => {
+    const enorme = new TextEncoder().encode(JSON.stringify({ token: "x".repeat(4000) }));
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let i = 0; i < enorme.length; i += 256) controller.enqueue(enorme.slice(i, i + 256));
+        controller.close();
+      }
+    });
+    const pedidoSemTamanho = new NextRequest(URL_BASE, {
+      method: "POST",
+      body: stream,
+      headers: { "content-type": "application/json", "x-forwarded-for": "192.0.2.9" },
+      duplex: "half"
+    } as RequestInit & { duplex: "half" });
+    expect(pedidoSemTamanho.headers.get("content-length")).toBeNull();
+    const resposta = await POST(pedidoSemTamanho);
+    expect(resposta.status).toBe(413);
+    expect(descadastrarPorToken).not.toHaveBeenCalled();
+  });
+
   it("limita a taxa por IP", async () => {
     const respostas = [];
     for (let i = 0; i < 12; i += 1) {

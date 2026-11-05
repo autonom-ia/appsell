@@ -13,7 +13,8 @@ Tudo é pelo **endereço** de e-mail normalizado, porque é para ele que se envi
 - `email_consent`: quem consentiu, com o quê, onde e quando. O escopo é a loja,
   ou a plataforma (`platform_news`), gravada como `_PLATAFORMA`. Trocar de
   e-mail não leva o consentimento ao endereço novo;
-- `email_unsubscribe_token`: um token por e-mail opcional emitido. Só o sha256
+- `email_unsubscribe_token`: um token por e-mail opcional emitido, com o sha256
+  do endereço (nunca o endereço). Só o sha256
   fica aqui; o token cru vai no payload do item da caixa de saída;
 - `email_suppression` (por escopo) e `email_suppression_global` (todas as
   lojas: reclamação, hard bounce). Guardam o sha256 do endereço, não o
@@ -168,7 +169,9 @@ _CRIA_TABELAS_MOLDE = (
       source text not null check (source in ('checkout','account','storefront_form')),
       text_version smallint not null,
       text_sha256 text not null check (octet_length(text_sha256) = 64),
-      identity_user_id uuid references public.identity_user(id) on delete set null,
+      -- Excluir a conta apaga o consentimento dela: não sobra "granted" para um
+      -- titular que saiu. A supressão (por sha) fica.
+      identity_user_id uuid references public.identity_user(id) on delete cascade,
       granted_at timestamptz not null,
       revoked_at timestamptz,
       revoked_source text check (
@@ -186,7 +189,7 @@ _CRIA_TABELAS_MOLDE = (
     create table app_private.email_unsubscribe_token (
       token_sha256 text primary key check (octet_length(token_sha256) = 64),
       scope_id uuid not null,
-      email_normalized text not null __EMAIL_CHECK__,
+      email_sha256 text not null check (octet_length(email_sha256) = 64),
       purpose text not null check (purpose in (__FINALIDADES__)),
       created_at timestamptz not null default clock_timestamp(),
       used_at timestamptz
@@ -333,10 +336,10 @@ _FUNCOES_MOLDE = (
       end if;
       v_scope := coalesce(p_seller,'__PLATAFORMA__'::uuid);
       v_token := rtrim(translate(encode(gen_random_bytes(32),'base64'),'+/','-_'),'=');
-      insert into app_private.email_unsubscribe_token(token_sha256,scope_id,email_normalized,
+      insert into app_private.email_unsubscribe_token(token_sha256,scope_id,email_sha256,
         purpose)
       values (encode(digest(convert_to(v_token,'UTF8'),'sha256'),'hex'),v_scope,
-        app_private.normalize_email(p_email),p_purpose);
+        app_private.email_sha256(p_email),p_purpose);
       return v_token;
     end $$
     """,
@@ -364,15 +367,37 @@ _FUNCOES_MOLDE = (
         revoked_at=clock_timestamp(),revoked_source='unsubscribe_link',
         updated_at=clock_timestamp()
         where consent.scope_id=v_row.scope_id
-          and consent.email_normalized=v_row.email_normalized
+          and app_private.email_sha256(consent.email_normalized)=v_row.email_sha256
           and consent.status='granted';
       insert into app_private.email_suppression(scope_id,email_sha256,reason)
-        values (v_row.scope_id,app_private.email_sha256(v_row.email_normalized),'unsubscribed')
+        values (v_row.scope_id,v_row.email_sha256,'unsubscribed')
         on conflict (scope_id,email_sha256) do nothing;
       return true;
     end $$
     """,
+    # Exclusão da conta (Decisão 019): quem executa o pedido chama esta função.
+    # Apaga consentimentos e tokens do titular; a supressão (por sha) fica,
+    # porque é o pedido de não receber que a exclusão não pode desfazer.
+    """
+    create function app_private.forget_email_consents(p_identity uuid)
+    returns integer language plpgsql volatile security definer
+    set search_path=pg_catalog,app_private,public as $$
+    declare v_email text; v_total integer;
+    begin
+      select app_private.normalize_email(person.email_normalized) into v_email
+        from public.identity_user person where person.id=p_identity;
+      delete from app_private.email_unsubscribe_token unsubscribe
+        where v_email is not null
+          and unsubscribe.email_sha256=app_private.email_sha256(v_email);
+      delete from app_private.email_consent consent
+        where consent.identity_user_id=p_identity
+           or (v_email is not null and consent.email_normalized=v_email);
+      get diagnostics v_total = row_count;
+      return v_total;
+    end $$
+    """,
 )
+
 
 # Molde sem f-string, como na 0049: as listas entram por replace, e o ruff não
 # vê SQL montado por interpolação (S608) onde só há constantes deste arquivo.
@@ -405,6 +430,7 @@ _ASSINATURAS_INTERNAS = (
     "app_private.email_kind_is_transactional(text)",
     "app_private.email_optional_block_reason(uuid,text,text)",
     "app_private.issue_email_unsubscribe_token(uuid,text,text)",
+    "app_private.forget_email_consents(uuid)",
 )
 
 

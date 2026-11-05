@@ -50,12 +50,12 @@ def base() -> None:
     assert ADMIN_URL
     with psycopg.connect(ADMIN_URL) as connection:
         enderecos = (EMAIL, EMAIL_SUPRIMIDO, EMAIL_SEM_CONSENTIMENTO)
-        for tabela in ("email_consent", "email_unsubscribe_token"):
+        for tabela in ("email_consent",):
             connection.execute(
                 f"delete from app_private.{tabela} where email_normalized in (%s,%s,%s)",  # noqa: S608
                 enderecos,
             )
-        for tabela in ("email_suppression", "email_suppression_global"):
+        for tabela in ("email_suppression", "email_suppression_global", "email_unsubscribe_token"):
             connection.execute(
                 f"delete from app_private.{tabela} where email_sha256 in "  # noqa: S608
                 "(app_private.email_sha256(%s),app_private.email_sha256(%s),"
@@ -164,7 +164,7 @@ def test_consentimento_sem_a_capacidade_ou_com_outra_loja_e_recusado() -> None:
     for capacidade, loja_do_contexto in ((WORKER_CAPABILITY, LOJA_A), (CONSENT, LOJA_B)):
         with psycopg.connect(RUNTIME_URL) as connection:
             _context(connection, COMPRADOR, capacidade, loja_do_contexto)
-            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
                 connection.execute(
                     "select app_private.record_email_consent(%s,'store_news',1::smallint,"
                     "'account',%s)",
@@ -176,7 +176,7 @@ def test_finalidade_da_plataforma_nao_aceita_loja() -> None:
     assert RUNTIME_URL
     with psycopg.connect(RUNTIME_URL) as connection:
         _context(connection, COMPRADOR, CONSENT, LOJA_A)
-        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
             connection.execute(
                 "select app_private.record_email_consent(%s,'platform_news',1::smallint,"
                 "'account',%s)",
@@ -339,6 +339,7 @@ def test_o_runtime_nao_le_as_tabelas_nem_emite_token() -> None:
         "select count(*) from app_private.email_suppression_global",
         "select count(*) from app_private.email_unsubscribe_token",
         "select app_private.issue_email_unsubscribe_token(null,'a@b.test','platform_news')",
+        f"select app_private.forget_email_consents('{COMPRADOR}')",
         f"select app_private.email_optional_block_reason('{LOJA_A}','a@b.test','store_news')",
     ):
         with psycopg.connect(RUNTIME_URL) as connection:
@@ -367,9 +368,65 @@ def test_uma_normalizacao_so_em_todo_caminho() -> None:
         colunas = connection.execute(
             "select table_name,column_name from information_schema.columns "
             "where table_schema='app_private' "
-            "and table_name in ('email_suppression','email_suppression_global')"
+            "and table_name in ('email_suppression','email_suppression_global',"
+            "'email_unsubscribe_token')"
         ).fetchall()
     assert normalizado == (EMAIL_SEM_CONSENTIMENTO, esperado)
     assert guardado == (1,)
     # A supressão sobrevive à exclusão da conta, então não guarda o endereço.
     assert not any("email_normalized" == coluna for _, coluna in colunas)
+
+
+def test_todo_kind_aceito_pela_caixa_de_saida_esta_classificado() -> None:
+    # Um transacional novo que entre na constraint sem entrar na lista da 0066
+    # cairia em no_consent em silêncio. Este teste lê a constraint do banco e
+    # exige que cada kind seja transacional conhecido ou opcional declarado.
+    opcionais_declarados: set[str] = set()
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        definicao = connection.execute(
+            "select pg_get_constraintdef(oid) from pg_constraint "
+            "where conname='email_outbox_kind_check' "
+            "and conrelid='app_private.email_outbox'::regclass"
+        ).fetchone()
+        assert definicao is not None
+        # Os literais são os trechos entre aspas simples: índices ímpares.
+        kinds = set(str(definicao[0]).split("'")[1::2])
+        assert kinds
+        transacionais = {
+            kind
+            for kind in kinds
+            if connection.execute(
+                "select app_private.email_kind_is_transactional(%s)", (kind,)
+            ).fetchone()
+            == (True,)
+        }
+    assert kinds - transacionais <= opcionais_declarados, kinds - transacionais
+
+
+def test_esquecer_o_titular_apaga_o_consentimento_e_mantem_a_supressao() -> None:
+    pessoa = uuid4()
+    email = f"consentimento.excluido.{pessoa.hex[:8]}@example.test"
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "insert into identity_user(id,identity_issuer,identity_sub,email_normalized,"
+            "email_verified) values(%s,%s,%s,%s,true)",
+            (pessoa, ISSUER, f"consent-excluido-{pessoa.hex[:8]}", email),
+        )
+        connection.commit()
+    _consentir(pessoa, LOJA_A)
+    _descadastrar(_emitir_token(LOJA_A, email))
+    _consentir(pessoa, LOJA_B)
+    with psycopg.connect(ADMIN_URL) as connection:
+        apagados = connection.execute(
+            "select app_private.forget_email_consents(%s)", (pessoa,)
+        ).fetchone()
+        consentimentos = connection.execute(
+            "select count(*) from app_private.email_consent where email_normalized=%s", (email,)
+        ).fetchone()
+        connection.commit()
+    assert apagados == (2,)
+    assert consentimentos == (0,)
+    assert _bloqueio(LOJA_A, email) == "suppressed"
+    assert _bloqueio(LOJA_B, email) == "no_consent"

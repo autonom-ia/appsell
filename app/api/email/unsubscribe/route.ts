@@ -49,11 +49,32 @@ function ipDe(request: NextRequest): string {
     request.headers.get("x-real-ip") || "desconhecido";
 }
 
+// Lê no máximo MAX_CORPO_BYTES + 1 do stream e para: o teto vale mesmo sem
+// content-length (chunked) ou com um content-length mentiroso.
+async function corpoLimitado(request: NextRequest): Promise<string | null> {
+  if (!request.body) return "";
+  const leitor = request.body.getReader();
+  const partes: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await leitor.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_CORPO_BYTES) return null;
+      partes.push(value);
+    }
+  } finally {
+    await leitor.cancel().catch(() => undefined);
+  }
+  return Buffer.concat(partes).toString("utf8");
+}
+
 export async function POST(request: NextRequest) {
   const declarado = Number(request.headers.get("content-length") ?? "0");
   if (declarado > MAX_CORPO_BYTES) return responder(413, { error: "corpo_grande" });
-  const corpo = await request.text();
-  if (Buffer.byteLength(corpo) > MAX_CORPO_BYTES) return responder(413, { error: "corpo_grande" });
+  const corpo = await corpoLimitado(request);
+  if (corpo === null) return responder(413, { error: "corpo_grande" });
   if (!dentroDoLimite(ipDe(request))) return responder(429, { error: "muitas_tentativas" });
 
   const token = tokenDoPedido(request, corpo);
