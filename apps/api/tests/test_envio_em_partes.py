@@ -246,3 +246,101 @@ class TestListagemCortada:
         storage = _storage_local()
         monkeypatch.setattr(storage, "_control", _Inteira())
         assert storage.find_multipart_upload(bucket="appsell-quarantine", key="k") == "um"
+
+
+class TestChecksumDasPartes:
+    """O envio abre com `ChecksumAlgorithm=SHA256`, e o fechamento tem de dizer o
+    checksum de cada parte (#460).
+
+    Com o algoritmo declarado na abertura, o MinIO recusa o
+    `CompleteMultipartUpload` cujas partes chegam só com o ETag. O checksum vem
+    da listagem das partes, que é de onde o fechamento já tira o ETag.
+    """
+
+    class _Storage:
+        def __init__(self) -> None:
+            self.fechamento: dict[str, object] | None = None
+
+        def list_parts(self, **_kwargs: object) -> dict[str, object]:
+            return {
+                "Parts": [
+                    {
+                        "PartNumber": 1,
+                        "Size": MULTIPART_PART_BYTES,
+                        "ETag": '"etag-1"',
+                        "ChecksumSHA256": "c3VtYS0x",
+                    },
+                    {"PartNumber": 2, "Size": 10, "ETag": '"etag-2"', "ChecksumSHA256": "c3VtYS0y"},
+                ],
+                "IsTruncated": False,
+            }
+
+        def complete_multipart_upload(self, **kwargs: object) -> dict[str, object]:
+            self.fechamento = kwargs
+            return {"VersionId": "v1"}
+
+    def test_a_listagem_guarda_o_checksum_de_cada_parte(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        storage = _storage_local()
+        monkeypatch.setattr(storage, "_control", self._Storage())
+
+        partes = storage.list_multipart_parts(
+            bucket="appsell-quarantine", key="k", storage_upload_id="envio"
+        )
+
+        assert [parte.checksum_sha256 for parte in partes] == ["c3VtYS0x", "c3VtYS0y"]
+
+    def test_o_fechamento_manda_o_checksum_de_cada_parte(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        falso = self._Storage()
+        storage = _storage_local()
+        monkeypatch.setattr(storage, "_control", falso)
+        partes = storage.list_multipart_parts(
+            bucket="appsell-quarantine", key="k", storage_upload_id="envio"
+        )
+
+        versao = storage.complete_multipart_upload(
+            bucket="appsell-quarantine",
+            key="k",
+            storage_upload_id="envio",
+            plan=multipart_plan(MULTIPART_PART_BYTES + 10),
+            parts=partes,
+        )
+
+        assert versao == "v1"
+        assert falso.fechamento is not None
+        assert falso.fechamento["MultipartUpload"] == {
+            "Parts": [
+                {"PartNumber": 1, "ETag": '"etag-1"', "ChecksumSHA256": "c3VtYS0x"},
+                {"PartNumber": 2, "ETag": '"etag-2"', "ChecksumSHA256": "c3VtYS0y"},
+            ]
+        }
+
+    def test_parte_sem_checksum_na_listagem_fecha_so_com_o_etag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Quem decide se o checksum faltante é aceitável é o storage, não nós."""
+        falso = self._Storage()
+        storage = _storage_local()
+        monkeypatch.setattr(storage, "_control", falso)
+
+        storage.complete_multipart_upload(
+            bucket="appsell-quarantine",
+            key="k",
+            storage_upload_id="envio",
+            plan=multipart_plan(MULTIPART_PART_BYTES + 10),
+            parts=(
+                UploadedPart(part_number=1, byte_size=MULTIPART_PART_BYTES, etag="etag-1"),
+                UploadedPart(part_number=2, byte_size=10, etag="etag-2"),
+            ),
+        )
+
+        assert falso.fechamento is not None
+        assert falso.fechamento["MultipartUpload"] == {
+            "Parts": [
+                {"PartNumber": 1, "ETag": '"etag-1"'},
+                {"PartNumber": 2, "ETag": '"etag-2"'},
+            ]
+        }

@@ -43,7 +43,7 @@ from types import ModuleType
 from alembic import op
 
 revision = "0067_oferta_padrao_do_produto"
-down_revision = "0065_dono_da_conta_payout"
+down_revision = "0066_consentimento_de_email"
 branch_labels = None
 depends_on = None
 
