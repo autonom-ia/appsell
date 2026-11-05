@@ -83,6 +83,7 @@ _PUBLICA_COM_ACESSO_TROCA = (
     "    if locked_offer.unit_amount_minor <= 0 then\n",
 )
 
+_LOCK_TIMEOUT = "set local lock_timeout = '5s'"
 _COLUNA = "alter table public.offer add column is_default boolean not null default true"
 _INDICE = """
 create unique index offer_one_default_per_product
@@ -127,6 +128,10 @@ def _reescreve(alvo: str, de: str, para: str) -> str:
 
 def upgrade() -> None:
     op.execute("set local role appsell_owner")
+    # `add column` e a reescrita das funções pedem lock exclusivo em `offer`.
+    # Com o checkout no ar, esperar mais que isso trava a vitrine; melhor falhar
+    # e rodar de novo.
+    op.execute(_LOCK_TIMEOUT)
     op.execute(_COLUNA)
     op.execute(_INDICE)
     op.execute(_reescreve(_VITRINE, *_VITRINE_TROCA))

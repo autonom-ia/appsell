@@ -48,6 +48,12 @@ def test_toda_oferta_existente_e_nova_nasce_padrao(migration: ModuleType) -> Non
     assert "boolean not null default true" in coluna
 
 
+def test_espera_por_lock_tem_limite_antes_de_tocar_na_tabela(migration: ModuleType) -> None:
+    comandos = _comandos_de(migration, migration.upgrade)
+    assert comandos.index(migration._LOCK_TIMEOUT) < comandos.index(migration._COLUNA)
+    assert migration._LOCK_TIMEOUT == "set local lock_timeout = '5s'"
+
+
 def test_no_maximo_uma_padrao_por_produto(migration: ModuleType) -> None:
     comandos = _comandos_de(migration, migration.upgrade)
     indice = next(c for c in comandos if "offer_one_default_per_product" in c)
