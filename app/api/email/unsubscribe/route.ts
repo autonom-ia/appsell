@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { ipDoCliente } from "@/lib/ip-do-cliente";
+
 import { descadastrarPorToken } from "./descadastro.server";
 import { dentroDoLimite } from "./limite";
 
@@ -44,11 +46,6 @@ function tokenDoPedido(request: NextRequest, corpo: string): string | null {
   }
 }
 
-function ipDe(request: NextRequest): string {
-  return request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-    request.headers.get("x-real-ip") || "desconhecido";
-}
-
 // Lê no máximo MAX_CORPO_BYTES + 1 do stream e para: o teto vale mesmo sem
 // content-length (chunked) ou com um content-length mentiroso.
 async function corpoLimitado(request: NextRequest): Promise<string | null> {
@@ -72,7 +69,7 @@ async function corpoLimitado(request: NextRequest): Promise<string | null> {
 
 export async function POST(request: NextRequest) {
   // Limite de taxa antes de ler qualquer byte do corpo.
-  if (!dentroDoLimite(ipDe(request))) return responder(429, { error: "muitas_tentativas" });
+  if (!dentroDoLimite(ipDoCliente(request))) return responder(429, { error: "muitas_tentativas" });
   const declarado = Number(request.headers.get("content-length") ?? "0");
   if (declarado > MAX_CORPO_BYTES) return responder(413, { error: "corpo_grande" });
   const corpo = await corpoLimitado(request);
