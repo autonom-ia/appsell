@@ -325,7 +325,7 @@ MIGRATOR_URL = os.environ.get("APPSELL_MIGRATOR_DATABASE_URL")
 
 
 @pytest.mark.skipif(not MIGRATOR_URL, reason="migrator URL is required for downgrade test")
-def test_downgrade_removes_the_function_and_keeps_the_schema_ready() -> None:
+def test_downgrade_removes_the_function_and_its_place_in_the_ready() -> None:
     assert ADMIN_URL and MIGRATOR_URL
     database = f"appsell_access_decision_{uuid4().hex}"
     maintenance_url = make_conninfo(ADMIN_URL, dbname="postgres")
@@ -342,14 +342,26 @@ def test_downgrade_removes_the_function_and_keeps_the_schema_ready() -> None:
             text=True,
         )
 
-    def state() -> tuple[bool, bool]:
+    # Banco novo não tem a chave de contexto, que o CI configura só no banco
+    # principal; então o valor do ready aqui não é True. O que a migration
+    # controla é a definição: o ready cita a função e a versão, e o downgrade
+    # tira as duas sem mexer no resto.
+    def state() -> tuple[bool, bool, bool, str]:
         with psycopg.connect(make_conninfo(ADMIN_URL, dbname=database)) as connection:
             row = connection.execute(
                 "select to_regprocedure('app_private.buyer_access_decision(uuid,uuid)')"
-                " is not null, app_private.schema_ready()"
+                " is not null, app_private.schema_ready(),"
+                " string_agg(pg_get_functiondef(oid), '' order by proname)"
+                " from pg_proc where oid in ("
+                "'app_private.schema_ready()'::regprocedure,"
+                "'app_private.schema_ready_base_0016()'::regprocedure,"
+                "'app_private.schema_ready_base_0017()'::regprocedure)"
+                " group by 1, 2"
             ).fetchone()
         assert row is not None
-        return (bool(row[0]), bool(row[1]))
+        definitions = str(row[2])
+        cites = "buyer_access_decision" in definitions and "0069_motivo_do_acesso" in definitions
+        return (bool(row[0]), cites, bool(row[1]), definitions)
 
     with psycopg.connect(maintenance_url, autocommit=True) as connection:
         connection.execute(sql.SQL("create database {}").format(sql.Identifier(database)))
@@ -364,11 +376,15 @@ def test_downgrade_removes_the_function_and_keeps_the_schema_ready() -> None:
     try:
         # Esta migration é a cabeça da cadeia (o teste de limites confere).
         migrate("upgrade", "head")
-        assert state() == (True, True)
+        head = state()
+        assert head[:2] == (True, True)
         migrate("downgrade", "-1")
-        assert state() == (False, True)
+        down = state()
+        assert down[:2] == (False, False)
+        # O downgrade só tira o que é desta migration: o veredito não muda.
+        assert down[2] == head[2]
         migrate("upgrade", "head")
-        assert state() == (True, True)
+        assert state() == head
     finally:
         with psycopg.connect(maintenance_url, autocommit=True) as connection:
             connection.execute(
