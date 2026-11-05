@@ -57,7 +57,8 @@ interface ApiRequest {
     "commerce.payout.read" | "commerce.payout.manage" | "commerce.payout.sync" |
     "commerce.checkout.destination" |
     "account.read" | "account.export" | "account.deletion.request" |
-    "seller.settings.read" | "seller.settings.update";
+    "seller.settings.read" | "seller.settings.update" |
+    "commerce.sales.report.read" | "commerce.sales.report.export";
   sellerOrganizationId?: string;
   inspectionToken?: string;
   body?: Record<string, unknown>;
@@ -1187,6 +1188,48 @@ export interface SellerSettingsProjection {
 
 function settingsPath(sellerOrganizationId: string) {
   return `/v1/me/sellers/${sellerOrganizationId}/settings`;
+}
+
+// Relatório de vendas (#562, Crescimento). A query entra no envelope assinado,
+// então a ordem dos parâmetros é a mesma aqui e na API.
+export interface SalesPeriod {
+  from: string;
+  to: string;
+}
+
+function salesQuery(period: SalesPeriod) {
+  return new URLSearchParams({ from: period.from, to: period.to }).toString();
+}
+
+export async function readDomainSalesReport(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  period: SalesPeriod
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/sellers/${sellerOrganizationId}/sales/report`,
+    query: salesQuery(period),
+    capability: "commerce.sales.report.read",
+    sellerOrganizationId
+  }) as Promise<Record<string, unknown>>;
+}
+
+export async function exportDomainSalesRows(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  period: SalesPeriod
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/sellers/${sellerOrganizationId}/sales/export`,
+    query: salesQuery(period),
+    capability: "commerce.sales.report.export",
+    sellerOrganizationId,
+    timeoutMs: 10_000
+  }) as Promise<Record<string, unknown>>;
 }
 
 export async function readDomainSellerSettings(
