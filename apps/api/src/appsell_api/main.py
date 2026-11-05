@@ -21,6 +21,7 @@ from .db import (
     financial_channel_ready,
 )
 from .demo_checkout_worker import run_demo_checkout_worker_loop
+from .email_preferences_routes import router as email_preferences_router
 from .email_worker import run_email_worker_loop
 from .fulfillment_worker import run_fulfillment_worker_loop
 from .internal_requests import InternalRequestAuthenticator
@@ -255,6 +256,7 @@ app.include_router(seller_settings_router)
 app.include_router(platform_bootstrap_router)
 app.include_router(platform_router)
 app.include_router(public_router)
+app.include_router(email_preferences_router)
 app.include_router(webhook_router)
 
 
