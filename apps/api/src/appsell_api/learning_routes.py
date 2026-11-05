@@ -1241,6 +1241,75 @@ async def authorize_asset_download(
     }
 
 
+#: Motivos que a `buyer_access_decision` (migration 0069) pode devolver para uma
+#: negação. `disputed` e `subscription_lapsed` são códigos reservados.
+_ACCESS_DENIAL_REASONS: Final = frozenset(
+    {
+        "refunded",
+        "revoked",
+        "expired",
+        "not_started",
+        "seller_unavailable",
+        "product_unavailable",
+        "disputed",
+        "subscription_lapsed",
+        "unavailable",
+    }
+)
+
+
+def _access_payload(row: Any) -> dict[str, Any]:
+    """Nega por padrão: só `allowed is True` com `reason == "active"` é acesso."""
+    allowed = row.get("allowed") if isinstance(row, dict) else None
+    reason = row.get("reason") if isinstance(row, dict) else None
+    update_pending = row.get("update_pending") if isinstance(row, dict) else None
+    if allowed is True and reason == "active":
+        return {"allowed": True, "reason": "active", "update_pending": update_pending is True}
+    if allowed is False and reason in _ACCESS_DENIAL_REASONS:
+        return {"allowed": False, "reason": reason, "update_pending": False}
+    return {"allowed": False, "reason": "unavailable", "update_pending": False}
+
+
+@router.get("/me/learning/items/{entitlement_id}/access")
+async def read_learning_access(
+    request: Request, response: Response, entitlement_id: UUID
+) -> dict[str, Any]:
+    """Por que o aluno tem ou não tem acesso a este item (#558).
+
+    Só explica: o portão continua nas funções `authorize_*` de cada rota.
+    Entitlement inexistente ou de outro comprador é o mesmo 404 das rotas de
+    conteúdo, para a rota não revelar ids.
+    """
+    auth, internal = await _authenticate(request, "library.read")
+    await _require_buyer_scope(internal)
+    try:
+        async with auth.domain_session(internal.envelope) as session:
+            row = (
+                (
+                    await session.execute(
+                        text(
+                            "select allowed,reason,update_pending "
+                            "from app_private.buyer_access_decision("
+                            ":identity_user_id,:entitlement_id)"
+                        ),
+                        {
+                            "identity_user_id": internal.envelope.identity.user_id,
+                            "entitlement_id": entitlement_id,
+                        },
+                    )
+                )
+                .mappings()
+                .one()
+            )
+    except DBAPIError as error:
+        raise _learning_domain_error(error) from error
+    decision = dict(row) if row is not None else None
+    if isinstance(decision, dict) and decision.get("reason") == "not_found":
+        raise _learning_not_found()
+    response.headers["cache-control"] = "no-store"
+    return {"access": _access_payload(decision)}
+
+
 @router.get("/me/learning/items/{entitlement_id}/resume")
 async def read_learning_resume(request: Request, entitlement_id: UUID) -> dict[str, Any]:
     auth, internal = await _authenticate(request, "learning.player.read")
