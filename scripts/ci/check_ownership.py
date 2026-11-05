@@ -11,8 +11,8 @@ O rótulo roteia a revisão para a trilha dona. Não autoriza merge: isso
 continua com o `ci-gate`, a revisão e as regras do AGENTS.md.
 
 Padrões: `pasta/` casa o prefixo; um nome com `*` casa segmento a segmento
-(`fnmatch` por segmento, sem regex, e `*` não atravessa `/`); o resto casa o
-caminho exato. Caixa não importa. Vale o padrão mais específico.
+(`fnmatch` por segmento, sem regex: `*` não atravessa `/`, mas o padrão que
+casa uma pasta pega o que há dentro dela); o resto casa o caminho exato. Caixa não importa. Vale o padrão mais específico.
 
 A lista de arquivos chega separada por NUL (`git diff -z`): sem isso, o git
 põe entre aspas os nomes não ASCII e eles escapariam do dono.
@@ -54,8 +54,11 @@ class Rule:
         if pattern.endswith("/"):
             return target.startswith(pattern)
         if "*" in pattern:
+            # Segmento a segmento: `*` não atravessa `/`. Caminho mais longo
+            # casa se o padrão casou uma pasta (`lib/checkout*` pega
+            # `lib/checkout-flow/x.ts`).
             want, have = pattern.split("/"), target.split("/")
-            return len(want) == len(have) and all(fnmatchcase(h, w) for h, w in zip(have, want))
+            return len(have) >= len(want) and all(fnmatchcase(h, w) for h, w in zip(have, want))
         return target == pattern
 
 
@@ -95,6 +98,8 @@ def _names(label: str, bases: object) -> list[str]:
         if not isinstance(base, str):
             raise ManifestError(f"{label}: base inválida {base!r}")
         if base.startswith("_"):
+            if label != "excecoes" and base != "_leia":
+                raise ManifestError(f"{label}: base {base!r} começa com _")
             continue
         if base and not base.endswith("/"):
             raise ManifestError(f"{label}: base {base!r} precisa terminar em /")

@@ -138,12 +138,17 @@ class OwnershipTests(unittest.TestCase):
 
         self.assertEqual([], result.failures)
 
-    def test_a_glob_does_not_cross_folders(self) -> None:
-        # lib/a-* is lib/a-<file>, not lib/a-x/<anything>.
-        result = check_pull_request(self.manifest, ["lib/a-x/deep.ts"], [])
+    def test_a_glob_matches_segment_by_segment_and_owns_matching_folders(self) -> None:
+        # Catches: lib/checkout-flow/x.ts escaping lib/checkout* (subfolder),
+        # and lib/x/a-y.ts wrongly owned through a `*` crossing `/`.
+        result = check_pull_request(self.manifest, ["lib/a-x/deep.ts", "lib/x/a-y.ts"], [])
 
-        self.assertEqual([], result.failures)
-        self.assertEqual(["lib/a-x/deep.ts"], result.warnings)
+        self.assertEqual(["trilha:a: lib/a-x/deep.ts"], result.failures)
+        self.assertEqual(["lib/x/a-y.ts"], result.warnings)
+
+    def test_a_trilha_base_starting_with_underscore_is_an_error(self) -> None:
+        with self.assertRaises(ManifestError):
+            load_manifest({"trilhas": {"trilha:a": {"_lib/": ["x.ts"]}}})
 
     def test_annotations_escape_what_the_runner_would_parse(self) -> None:
         self.assertEqual("a%25b%0Ac%3Ad%2Ce", escape_property("a%b\nc:d,e"))
@@ -197,6 +202,8 @@ class RepositoryManifestTests(unittest.TestCase):
             "apps/api/src/appsell_api/webhook_stripe.py": "trilha:dinheiro",
             "apps/api/src/appsell_api/pdf_sandbox.py": "trilha:midia",
             "app/components/ui/choice-select.tsx": "trilha:checkout",
+            "lib/checkout-flow/x.ts": "trilha:dinheiro",
+            "lib/token-vault/x.ts": "trilha:plataforma",
             "scripts/ci/enforce_gate.py": "trilha:plataforma",
             "docs/programa/posse.json": "trilha:orquestracao",
         }
