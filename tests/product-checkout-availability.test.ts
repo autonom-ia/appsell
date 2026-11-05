@@ -34,3 +34,16 @@ test("permits local Stripe checkout when the product is mapped", () => {
 
   expect(isProductCheckoutAvailable("hub2you", "ia-na-pratica")).toBe(true);
 });
+
+test("#544: offers no checkout when the provider is missing or unknown", () => {
+  process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON = JSON.stringify({
+    "hub2you/ia-na-pratica": {
+      financial_product_key: "prod_ia_na_pratica_v1"
+    }
+  });
+  for (const value of [undefined, "unexpected"]) {
+    if (value === undefined) delete process.env.APPSELL_CHECKOUT_PROVIDER;
+    else process.env.APPSELL_CHECKOUT_PROVIDER = value;
+    expect(isProductCheckoutAvailable("hub2you", "ia-na-pratica"), String(value)).toBe(false);
+  }
+});
