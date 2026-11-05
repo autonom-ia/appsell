@@ -18,15 +18,24 @@ export default defineConfig({
     trace: "retain-on-failure"
   },
   webServer: {
-    command: "pnpm dev",
+    // No CI, o servidor sobe por um filtro que só deixa passar para o log
+    // as linhas de compilação; o resto da saída nunca chega ao log público
+    // (tests/e2e/support/dev-server-log.mjs, #585).
+    command: process.env.CI ? "node tests/e2e/support/dev-server-log.mjs" : "pnpm dev",
     url: "http://localhost:3000",
     // Desde o #350, sessão sem papel é falha fechada: sem menu de vendedor e
     // sem CSRF de produto. Os specs entram como persona demo, que só existe em
     // NODE_ENV development/test com APP_ENV local/ci (lib/demo-config.ts;
     // tests/demo-config.test.ts prova a recusa em produção). A sessão sem
     // papel continua coberta em tests/e2e/sessao-sem-papel.spec.ts.
-    env: { APP_ENV: "local", APPSELL_DEMO_ENABLED: "true" },
+    // #544: o web não escolhe o provedor do checkout sozinho.
+    env: {
+      APP_ENV: "local",
+      APPSELL_DEMO_ENABLED: "true",
+      APPSELL_CHECKOUT_PROVIDER: process.env.APPSELL_CHECKOUT_PROVIDER ?? "local_stripe"
+    },
     reuseExistingServer: false,
+    stdout: process.env.CI ? "pipe" : "ignore",
     timeout: 120_000
   },
   projects: [
