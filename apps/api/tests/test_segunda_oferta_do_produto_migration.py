@@ -148,7 +148,7 @@ def test_grants_so_para_o_runtime(migration: ModuleType) -> None:
 
 def test_o_readiness_aprende_a_versao_e_as_funcoes(migration: ModuleType) -> None:
     de, para = migration._ready_versoes()
-    assert de.endswith("'0067_oferta_padrao_do_produto'))")
+    assert de.endswith(f"'{migration.down_revision}'))")
     assert para == de[:-2] + f",'{migration.revision}'))"
     de_f, para_f = migration._ready_funcoes()
     assert para_f.startswith(de_f)

@@ -81,7 +81,7 @@ def test_rascunho_padrao_nao_vira_acesso_gratis_com_outra_oferta_a_venda() -> No
     with psycopg.connect(ADMIN_URL) as connection:
         # Estado da fase 2, desfeito no fim: a padrão é rascunho, e uma
         # segunda oferta (não padrão) está à venda.
-        connection.execute("alter table offer drop constraint offer_seller_product_key")
+        connection.execute("alter table offer drop constraint if exists offer_seller_product_key")
         connection.execute(
             "insert into offer(seller_organization_id,id,catalog_product_id,title,status,"
             "unit_amount_minor,is_default) values(%s,%s,%s,'Oferta à venda','active',9700,false)",

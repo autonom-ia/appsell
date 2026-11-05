@@ -111,21 +111,11 @@ def test_oferta_de_produto_criado_depois_da_migration_nasce_padrao() -> None:
     assert linha == (True,)
 
 
-def test_a_fase_1_ainda_recusa_a_segunda_oferta() -> None:
-    assert ADMIN_URL
-    seller, product, _ = _ids()
-    with psycopg.connect(ADMIN_URL) as connection:
-        with pytest.raises(psycopg.errors.UniqueViolation) as recusa:
-            _inserir_oferta(connection, seller, product, is_default=False)
-        connection.rollback()
-    assert recusa.value.diag.constraint_name == "offer_seller_product_key"
-
-
 def test_sem_a_unique_antiga_o_banco_recusa_duas_padroes() -> None:
     assert ADMIN_URL
     seller, product, _ = _ids()
     with psycopg.connect(ADMIN_URL) as connection:
-        connection.execute("alter table offer drop constraint offer_seller_product_key")
+        connection.execute("alter table offer drop constraint if exists offer_seller_product_key")
         with pytest.raises(psycopg.errors.UniqueViolation) as recusa:
             _inserir_oferta(connection, seller, product, is_default=None)
         connection.rollback()
@@ -139,7 +129,7 @@ def test_a_vitrine_mostra_so_a_padrao_mesmo_com_outra_ativa() -> None:
         antes = connection.execute(
             "select app_private.read_public_storefront(%s)", (slug,)
         ).fetchone()
-        connection.execute("alter table offer drop constraint offer_seller_product_key")
+        connection.execute("alter table offer drop constraint if exists offer_seller_product_key")
         _inserir_oferta(connection, seller, product, is_default=False)
         depois = connection.execute(
             "select app_private.read_public_storefront(%s)", (slug,)
