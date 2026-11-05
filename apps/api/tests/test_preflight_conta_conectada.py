@@ -110,6 +110,7 @@ def test_recusa_loja_sem_conta_de_recebimento_sem_chamar_a_stripe(
         httpx.Response(200, text="não é json"),
         httpx.Response(200, json={"id": CONTA}),
         httpx.Response(200, json={"charges_enabled": "true", "payouts_enabled": True}),
+        httpx.Response(200, json={"charges_enabled": None, "payouts_enabled": True}),
     ],
 )
 def test_nao_deu_para_ler_a_stripe_conta_como_nao(
@@ -154,6 +155,23 @@ def test_banco_fora_conta_como_nao_sem_a_url(capsys: pytest.CaptureFixture[str])
     assert erro.startswith("error: database error: ")
     assert "senha-de-teste" not in erro
     assert "127.0.0.1" not in erro
+
+
+def test_falha_inesperada_sai_com_2_sem_a_mensagem(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Pega: uma exceção fora de LeituraFalhou saindo com 1 (lido como "loja
+    # bloqueada", não como "não deu para conferir") e com a URL do banco no erro.
+    def quebra(_url: str, _seller: UUID) -> preflight.ContaNoSell | None:
+        raise RuntimeError(URL)
+
+    monkeypatch.setattr(preflight, "ler_conta_no_sell", quebra)
+    with pytest.raises(SystemExit) as saida:
+        preflight.verificar(SELLER, URL, CHAVE, _stripe(_conta_stripe(True, True)))
+    assert saida.value.code == 2
+    texto = capsys.readouterr()
+    assert texto.out == ""
+    assert texto.err == "error: unexpected error: RuntimeError\n"
 
 
 def test_so_le_o_banco() -> None:

@@ -136,6 +136,10 @@ def verificar(seller: UUID, url: str, chave: str, client: httpx.Client | None = 
         )
     except LeituraFalhou as erro:
         _fail(str(erro))
+    except Exception as erro:  # noqa: BLE001 - qualquer outra falha também é "não"
+        # Sai com 2, como as leituras que falham, e só com o tipo: a mensagem
+        # pode trazer a URL do banco ou a resposta do provedor.
+        _fail(f"unexpected error: {type(erro).__name__}")
     codigo, saida = decidir(sell, stripe)
     print(json.dumps(saida))
     return codigo
