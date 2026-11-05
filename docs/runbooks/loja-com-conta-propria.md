@@ -35,7 +35,8 @@ segunda lista cobra pelo gateway do operador, ou seja, na conta da plataforma.
 
 Quem roda é a Trilha 1 · Plataforma, que opera o host do Sell.
 
-A lista nasceu vazia (05/11/2026). Por isso, no primeiro deploy da trava, o
+Lida no host em 05/11/2026: a variável está ausente no web, ou seja, a lista
+não tem loja nenhuma. Por isso, no primeiro deploy da trava, o
 pré-voo não roda em loja nenhuma: ele não é passo do deploy. É ele que trava a
 entrada de **cada loja nova**, uma por vez, antes de ela entrar na lista.
 

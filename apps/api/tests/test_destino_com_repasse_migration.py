@@ -68,10 +68,11 @@ def test_a_descida_tira_a_v2_depois_do_readiness(migration: ModuleType) -> None:
 
 
 def test_o_readiness_aprende_a_versao(migration: ModuleType) -> None:
-    anterior = _carregar("consentimento_de_email", "appsell_consentimento_0066_para_0073")
+    anterior = _carregar("oferta_padrao_do_produto", "appsell_oferta_0067_para_0073")
     assert migration.down_revision == anterior.revision
-    assert migration._READY_ATE_0066 == anterior._READY_ATE_0066
-    assert migration._READY_ATE_0073.startswith(migration._READY_ATE_0066[:-2])
+    # A 0067 calcula a lista em vez de guardá-la numa constante.
+    assert migration._READY_ATE_0067 == anterior._ready_versoes(anterior._migration_anterior())[1]
+    assert migration._READY_ATE_0073.startswith(migration._READY_ATE_0067[:-2])
     assert migration.revision in migration._READY_ATE_0073
     assert migration._BASES_DO_READY == anterior._BASES_DO_READY
 

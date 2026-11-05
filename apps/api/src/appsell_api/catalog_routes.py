@@ -470,15 +470,16 @@ async def list_product_drafts(
                             "join course "
                             "on course.seller_organization_id = linked.seller_organization_id "
                             "and course.id = linked.course_id "
-                            # Uma oferta por produto na prática, mas a ordem é
-                            # explícita para o preço nunca depender de sorte:
-                            # a ativa manda, e entre rascunhos vence a mais nova.
+                            # A lista mostra a oferta padrão, a mesma que a
+                            # vitrine vende (0067). A ordem fica explícita para
+                            # o preço nunca depender de sorte.
                             "left join lateral ("
                             "select candidate.status, candidate.unit_amount_minor, "
                             "candidate.currency from offer candidate "
                             "where candidate.seller_organization_id = "
                             "product.seller_organization_id "
                             "and candidate.catalog_product_id = product.id "
+                            "and candidate.is_default "
                             "and candidate.status <> 'archived' "
                             "order by (candidate.status = 'active') desc, candidate.version desc "
                             "limit 1"
@@ -1795,9 +1796,12 @@ async def _read_product_draft(
                             "join course "
                             "on course.seller_organization_id = linked.seller_organization_id "
                             "and course.id = linked.course_id "
+                            # Só a oferta padrão: com várias ofertas, o join
+                            # sem esse filtro multiplicaria as linhas (0067).
                             "left join offer "
                             "on offer.seller_organization_id = product.seller_organization_id "
                             "and offer.catalog_product_id = product.id "
+                            "and offer.is_default "
                             "left join publication "
                             "on publication.seller_organization_id = "
                             "product.seller_organization_id "

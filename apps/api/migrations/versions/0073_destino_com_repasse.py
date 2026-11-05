@@ -20,7 +20,7 @@ durante o deploy, ainda chama a antiga.
 Downgrade: tira a v2 e a versão do readiness.
 
 Revision ID: 0073_destino_com_repasse
-Revises: 0066_consentimento_de_email
+Revises: 0067_oferta_padrao_do_produto
 """
 
 from __future__ import annotations
@@ -28,25 +28,26 @@ from __future__ import annotations
 from alembic import op
 
 revision = "0073_destino_com_repasse"
-down_revision = "0066_consentimento_de_email"
+down_revision = "0067_oferta_padrao_do_produto"
 branch_labels = None
 depends_on = None
 
 DESTINO_V2 = "app_private.resolve_payout_destination_v2(uuid,text)"
 
-_READY_ATE_0066 = (
+_READY_ATE_0067 = (
     "'0057_banner_na_vitrine','0058_capa_na_biblioteca','0059_canal_financial_global',"
     "'0060_atualizacao_chega_ao_aluno','0061_o_atraso_alcanca_o_aluno',"
     "'0062_mapping_do_produto_novo','0063_conciliacao_do_acesso',"
     "'0064_vendas_ativadas_pela_loja','0065_dono_da_conta_payout',"
-    "'0066_consentimento_de_email'))"
+    "'0066_consentimento_de_email','0067_oferta_padrao_do_produto'))"
 )
 _READY_ATE_0073 = (
     "'0057_banner_na_vitrine','0058_capa_na_biblioteca','0059_canal_financial_global',"
     "'0060_atualizacao_chega_ao_aluno','0061_o_atraso_alcanca_o_aluno',"
     "'0062_mapping_do_produto_novo','0063_conciliacao_do_acesso',"
     "'0064_vendas_ativadas_pela_loja','0065_dono_da_conta_payout',"
-    "'0066_consentimento_de_email','0073_destino_com_repasse'))"
+    "'0066_consentimento_de_email','0067_oferta_padrao_do_produto',"
+    "'0073_destino_com_repasse'))"
 )
 _BASES_DO_READY: tuple[str, ...] = (
     "app_private.schema_ready_base_0016()",
@@ -99,7 +100,7 @@ def upgrade() -> None:
     for alvo in _BASES_DO_READY:
         op.execute(
             _REESCREVE.replace("ALVO", alvo)
-            .replace("DE", _READY_ATE_0066)
+            .replace("DE", _READY_ATE_0067)
             .replace("PARA", _READY_ATE_0073)
         )
 
@@ -110,6 +111,6 @@ def downgrade() -> None:
         op.execute(
             _REESCREVE.replace("ALVO", alvo)
             .replace("DE", _READY_ATE_0073)
-            .replace("PARA", _READY_ATE_0066)
+            .replace("PARA", _READY_ATE_0067)
         )
     op.execute(f"drop function {DESTINO_V2}")
