@@ -85,12 +85,14 @@ describe("POST /api/email/unsubscribe", () => {
         controller.close();
       }
     });
-    const pedidoSemTamanho = new NextRequest(URL_BASE, {
+    // `duplex` é exigido pelo undici para corpo em stream, mas não está no tipo.
+    const init = {
       method: "POST",
       body: stream,
       headers: { "content-type": "application/json", "x-forwarded-for": "192.0.2.9" },
       duplex: "half"
-    } as RequestInit & { duplex: "half" });
+    } as unknown as ConstructorParameters<typeof NextRequest>[1];
+    const pedidoSemTamanho = new NextRequest(URL_BASE, init);
     expect(pedidoSemTamanho.headers.get("content-length")).toBeNull();
     const resposta = await POST(pedidoSemTamanho);
     expect(resposta.status).toBe(413);
