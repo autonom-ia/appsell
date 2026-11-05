@@ -100,6 +100,53 @@ class ChainTests(unittest.TestCase):
 
         self.assertEqual("0006_junta", check_chain(self.versions))
 
+    def test_a_cycle_fails_even_with_one_root_and_one_head(self) -> None:
+        # Catches: 0003 -> 0005 -> 0004 -> 0003 hangs off nothing; 0002 looks
+        # like the only head and alembic raises CycleDetected on upgrade.
+        self.write("0001_base.py", migration("0001_base", None))
+        self.write("0002_tabela.py", migration("0002_tabela", "0001_base"))
+        self.write("0003_coluna.py", migration("0003_coluna", "0005_b"))
+        self.write("0004_a.py", migration("0004_a", "0003_coluna"))
+        self.write("0005_b.py", migration("0005_b", "0004_a"))
+
+        with self.assertRaises(ChainError) as erro:
+            check_chain(self.versions)
+        self.assertIn("0003_coluna", str(erro.exception))
+
+    def test_a_revision_assigned_outside_the_top_level_fails(self) -> None:
+        # Catches: the checker reading one value while alembic runs the module
+        # and sees another one set inside an `if`.
+        self.linear()
+        self.write(
+            "0004_a.py",
+            'revision = "0004_a"\ndown_revision = "0003_coluna"\n'
+            'if True:\n    revision = "0004_z"\n',
+        )
+
+        with self.assertRaises(ChainError):
+            check_chain(self.versions)
+
+    def test_a_revision_assigned_twice_fails(self) -> None:
+        self.linear()
+        self.write(
+            "0004_a.py",
+            'revision = "0004_a"\nrevision = "0004_b"\ndown_revision = "0003_coluna"\n',
+        )
+
+        with self.assertRaises(ChainError):
+            check_chain(self.versions)
+
+    def test_the_same_number_written_with_other_zeros_fails(self) -> None:
+        # Catches: 5_x next to 0005_b; as strings they differ, as numbers not.
+        self.linear()
+        self.write("0004_a.py", migration("0004_a", "0003_coluna"))
+        self.write("0005_b.py", migration("0005_b", "0004_a"))
+        self.write("5_x.py", migration("5_x", "0005_b"))
+
+        with self.assertRaises(ChainError) as erro:
+            check_chain(self.versions)
+        self.assertIn("repetido", str(erro.exception))
+
     def test_what_cannot_be_read_fails_instead_of_passing(self) -> None:
         # "Não deu para checar" counts as failure, never as approval.
         cases = {

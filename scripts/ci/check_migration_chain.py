@@ -18,9 +18,10 @@ import sys
 from pathlib import Path
 
 VERSIONS = Path("apps/api/migrations/versions")
-# `alembic_version.version_num` é varchar(32): uma revision maior falha no
-# upgrade, depois de a migration já ter rodado.
+# `alembic_version.version_num` é varchar(32): uma revision maior derruba o
+# `alembic upgrade` na hora de carimbar a versão.
 MAX_REVISION_LENGTH = 32
+NAMES = frozenset({"revision", "down_revision"})
 
 
 class ChainError(RuntimeError):
@@ -33,6 +34,7 @@ def _assigned_literals(path: Path) -> dict[str, object]:
     except (OSError, SyntaxError, UnicodeDecodeError) as erro:
         raise ChainError(f"{path.name}: não deu para ler ({erro.__class__.__name__})") from erro
     values: dict[str, object] = {}
+    top_level = 0
     for node in tree.body:
         if isinstance(node, ast.Assign) and len(node.targets) == 1:
             target, value = node.targets[0], node.value
@@ -40,12 +42,24 @@ def _assigned_literals(path: Path) -> dict[str, object]:
             target, value = node.target, node.value
         else:
             continue
-        if not isinstance(target, ast.Name) or target.id not in {"revision", "down_revision"}:
+        if not isinstance(target, ast.Name) or target.id not in NAMES:
             continue
+        if target.id in values:
+            raise ChainError(f"{path.name}: {target.id} atribuído mais de uma vez")
+        top_level += 1
         try:
             values[target.id] = ast.literal_eval(value)
         except ValueError as erro:
             raise ChainError(f"{path.name}: {target.id} não é um valor literal") from erro
+    # O alembic executa o módulo inteiro: uma atribuição dentro de `if`, função
+    # ou desempacotamento muda o valor que ele vê sem mudar o que lemos aqui.
+    stores = sum(
+        1
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id in NAMES
+    )
+    if stores != top_level:
+        raise ChainError(f"{path.name}: revision ou down_revision atribuído fora do topo do arquivo")
     return values
 
 
@@ -68,7 +82,7 @@ def check_chain(versions: Path) -> str:
         raise ChainError(f"{versions}: nenhuma migration encontrada")
 
     parents: dict[str, tuple[str, ...]] = {}
-    by_number: dict[str, list[str]] = {}
+    by_number: dict[int, list[str]] = {}
     for path in files:
         values = _assigned_literals(path)
         revision = values.get("revision")
@@ -89,11 +103,12 @@ def check_chain(versions: Path) -> str:
         if revision in parents:
             raise ChainError(f"revision repetida: {revision}")
         parents[revision] = _parents(path, values["down_revision"])
-        by_number.setdefault(number, []).append(revision)
+        # Comparado como inteiro: `5_x` e `0005_b` têm o mesmo número.
+        by_number.setdefault(int(number), []).append(revision)
 
     repeated = {number: names for number, names in by_number.items() if len(names) > 1}
     if repeated:
-        detail = "; ".join(f"{number}: {', '.join(names)}" for number, names in sorted(repeated.items()))
+        detail = "; ".join(f"{number:04d}: {', '.join(names)}" for number, names in sorted(repeated.items()))
         raise ChainError(f"número de migration repetido ({detail})")
 
     for revision, ups in sorted(parents.items()):
@@ -108,6 +123,18 @@ def check_chain(versions: Path) -> str:
     heads = sorted(set(parents) - referenced)
     if len(heads) != 1:
         raise ChainError(f"a cadeia precisa de uma cabeça só, achou {heads}")
+    # Uma raiz e uma cabeça não bastam: um ciclo solto (0003 -> 0005 -> 0004 ->
+    # 0003) não é raiz nem cabeça. Toda revision tem de descender da cabeça.
+    reached: set[str] = set()
+    pending = [heads[0]]
+    while pending:
+        revision = pending.pop()
+        if revision not in reached:
+            reached.add(revision)
+            pending.extend(parents[revision])
+    stray = sorted(set(parents) - reached)
+    if stray:
+        raise ChainError(f"revisions fora da cadeia da cabeça (ciclo?): {stray}")
     return heads[0]
 
 
