@@ -28,39 +28,16 @@ class ChainError(RuntimeError):
     """A cadeia está quebrada ou não pôde ser lida."""
 
 
-_NEW_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
-
-
-def _module_scope(tree: ast.Module):
-    """Os nós que o Python avalia no escopo do módulo.
-
-    Corpo de função, classe e lambda é outro escopo: uma variável local chamada
-    `revision` ali não muda o que o alembic lê. O nome da função ou da classe,
-    os decoradores e as bases, sim, são do módulo.
-    """
-    pending: list[ast.AST] = list(tree.body)
-    while pending:
-        node = pending.pop()
-        yield node
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            pending.extend(node.decorator_list)
-            pending.extend(node.args.defaults)
-            pending.extend(default for default in node.args.kw_defaults if default is not None)
-        elif isinstance(node, ast.ClassDef):
-            pending.extend(node.decorator_list)
-            pending.extend(node.bases)
-            pending.extend(keyword.value for keyword in node.keywords)
-        elif not isinstance(node, ast.Lambda):
-            pending.extend(ast.iter_child_nodes(node))
-
-
 def _bound_name(node: ast.AST) -> str | None:
-    """O nome que este nó liga no escopo em que aparece, se ligar algum."""
-    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+    """O nome que este nó liga (ou desliga), se for o caso."""
+    if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
         return node.id
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
         return node.name
     if isinstance(node, ast.alias):
+        # `from m import *` pode trazer qualquer nome: conta como ligação.
+        if node.name == "*":
+            return "revision"
         return node.asname or node.name.partition(".")[0]
     if isinstance(node, (ast.MatchAs, ast.MatchStar, ast.ExceptHandler)):
         return node.name
@@ -90,18 +67,23 @@ def _assigned_literals(path: Path) -> dict[str, object]:
             values[target.id] = ast.literal_eval(value)
         except ValueError as erro:
             raise ChainError(f"{path.name}: {target.id} não é um valor literal") from erro
-    # O alembic executa o módulo inteiro: uma ligação dentro de `if`, um `def`,
-    # `class` ou `import` com o mesmo nome muda o valor que ele vê sem mudar o
-    # que lemos aqui. Limite conhecido: `globals()[...]`/`exec` não se decidem
-    # por leitura estática; a revisão humana cobre.
-    bindings = sum(1 for node in _module_scope(tree) if _bound_name(node) in NAMES)
-    # `global revision` numa função faz o corpo dela escrever no módulo.
+    # O alembic executa o módulo inteiro. Modelar escopo (walrus em default,
+    # anotação, comprehension, `global`) deixou furos a cada rodada de revisão;
+    # a regra é fail-closed: esses dois nomes só podem ser ligados nas duas
+    # atribuições literais do topo. Qualquer outra ligação, em qualquer lugar
+    # do arquivo, reprova, inclusive variável local: basta renomeá-la.
+    # Limite conhecido: `globals()[...]`/`exec` não se decidem por leitura
+    # estática; a revisão humana cobre.
+    bindings = sum(1 for node in ast.walk(tree) if _bound_name(node) in NAMES)
     declared = any(
         isinstance(node, (ast.Global, ast.Nonlocal)) and NAMES.intersection(node.names)
         for node in ast.walk(tree)
     )
     if bindings != top_level or declared:
-        raise ChainError(f"{path.name}: revision ou down_revision atribuído fora do topo do arquivo")
+        raise ChainError(
+            f"{path.name}: revision ou down_revision ligado fora das duas atribuições do topo; "
+            "renomeie a variável"
+        )
     return values
 
 
