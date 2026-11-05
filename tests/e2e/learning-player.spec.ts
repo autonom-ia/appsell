@@ -685,7 +685,14 @@ test("edits, erases and restores a saved annotation, and survives a resize", asy
   await reader.getByLabel("Ir para página").fill("1");
   await reader.getByLabel("Ir para página").press("Enter");
   await expect(reader.getByLabel("Ir para página")).toHaveValue("1");
-  await reader.getByRole("button", { name: "Ajustar à largura" }).click();
+  // "Ajustar à largura" só se habilita fora do zoom mínimo, e volta a ele.
+  const fit = reader.getByRole("button", { name: "Ajustar à largura" });
+  await expect(fit).toBeDisabled();
+  await reader.getByRole("button", { name: "Aumentar zoom" }).click();
+  await expect(fit).toBeEnabled();
+  await fit.click();
+  await expect(fit).toBeDisabled();
+  await expect(reader.getByRole("button", { name: "Diminuir zoom" })).toBeDisabled();
   await reader.getByRole("button", { name: "Voltar ao curso" }).click();
   await expect(reader).toBeHidden();
 
