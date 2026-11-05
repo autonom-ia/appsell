@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from .asset_routes import router as asset_router
 from .asset_worker_runner import run_asset_worker_loop
+from .campaign_link_routes import public_router as tracking_public_router
+from .campaign_link_routes import router as campaign_link_router
 from .catalog_routes import router as catalog_router
 from .checkout_routes import router as checkout_router
 from .config import Settings, get_settings
@@ -256,6 +258,8 @@ app.include_router(platform_bootstrap_router)
 app.include_router(platform_router)
 app.include_router(public_router)
 app.include_router(webhook_router)
+app.include_router(campaign_link_router)
+app.include_router(tracking_public_router)
 
 
 @app.get("/health/live")
