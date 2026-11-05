@@ -11,6 +11,8 @@ export default defineConfig({
   },
   webServer: {
     command: "pnpm start",
+    // #544: the web refuses to pick a checkout provider on its own.
+    env: { APPSELL_CHECKOUT_PROVIDER: process.env.APPSELL_CHECKOUT_PROVIDER ?? "local_stripe" },
     url: "http://localhost:3000",
     reuseExistingServer: false,
     timeout: 120_000
