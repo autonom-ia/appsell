@@ -65,7 +65,7 @@ nunca neste repositório nem em chat:
 Antes, leitura sem escrita no host, para confirmar o que este runbook supõe:
 
 ```sh
-python3 --version                      # o script pede 3.9 ou mais novo
+python3 --version                      # 3.12 no host (05/11/2026); o script também roda em 3.9
 docker service logs --raw --timestamps --since 5m sell-autonomia_api | head -3
 ```
 

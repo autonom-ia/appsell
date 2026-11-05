@@ -6,8 +6,8 @@ dos serviços, conta as linhas JSON com `level` de erro por serviço e por
 `event` (API) ou `marker` (web) e manda um e-mail por janela, só se houver
 erro. Runbook: docs/runbooks/alerta-de-logs.md.
 
-Só biblioteca padrão, compatível com Python 3.9: o host não tem o ambiente da
-API, e a versão do python3 dele ainda não foi lida.
+Só biblioteca padrão: o host não tem o ambiente da API. Roda no host com
+Python 3.12 (lido em 05/11/2026); testado também em 3.9.
 
 O e-mail nunca leva a linha inteira. Leva a contagem e até três amostras com
 os campos de uma lista fechada, e qualquer valor com cara de credencial sai
