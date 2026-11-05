@@ -18,7 +18,10 @@ export default defineConfig({
     trace: "retain-on-failure"
   },
   webServer: {
-    command: "pnpm dev",
+    // No CI, o servidor sobe por um filtro que só deixa passar para o log
+    // as linhas de compilação; o resto da saída nunca chega ao log público
+    // (tests/e2e/support/dev-server-log.mjs, #585).
+    command: process.env.CI ? "node tests/e2e/support/dev-server-log.mjs" : "pnpm dev",
     url: "http://localhost:3000",
     // Desde o #350, sessão sem papel é falha fechada: sem menu de vendedor e
     // sem CSRF de produto. Os specs entram como persona demo, que só existe em
@@ -27,10 +30,14 @@ export default defineConfig({
     // papel continua coberta em tests/e2e/sessao-sem-papel.spec.ts.
     env: { APP_ENV: "local", APPSELL_DEMO_ENABLED: "true" },
     reuseExistingServer: false,
+    stdout: process.env.CI ? "pipe" : "ignore",
     timeout: 120_000
   },
+  // TEMPORÁRIO, só durante a prova da #585: o webkit-mobile roda primeiro,
+  // para separar o navegador da segunda metade do run. Volta à ordem
+  // normal antes do merge.
   projects: [
-    { name: "chromium", use: { ...devices["Desktop Chrome"] } },
-    { name: "webkit-mobile", use: { ...devices["iPhone 15"] } }
+    { name: "webkit-mobile", use: { ...devices["iPhone 15"] } },
+    { name: "chromium", use: { ...devices["Desktop Chrome"] } }
   ]
 });
