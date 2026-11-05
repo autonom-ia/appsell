@@ -168,6 +168,8 @@ describe("POST /api/checkout/stripe/create-session", () => {
     expect(readPublicStorefront).not.toHaveBeenCalled();
     expect(sessionsCreate).not.toHaveBeenCalled();
     expect(createFinancialExternalCheckoutIntent).not.toHaveBeenCalled();
+    expect(resolveBuyerIdentityMock).not.toHaveBeenCalled();
+    expect(resolveCheckoutPayoutDestination).not.toHaveBeenCalled();
   });
 
   it("rejects a cross-origin request (403) before touching Stripe or the domain", async () => {
