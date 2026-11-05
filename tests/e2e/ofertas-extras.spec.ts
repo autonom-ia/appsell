@@ -75,7 +75,12 @@ async function openOfferStep(page: Page, multiOffer: boolean) {
  */
 function watchErrors(page: Page, allowedFailedUrl?: string) {
   const errors: string[] = [];
-  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("pageerror", (error) => {
+    // O WebKit acusa o fetch de /api/session que a navegação do login aborta.
+    // Vem do shell, antes de o editor existir, e não do painel.
+    if (error.message.endsWith("/api/session due to access control checks.")) return;
+    errors.push(`pageerror: ${error.message}`);
+  });
   page.on("console", (message) => {
     if (message.type() !== "error") return;
     const failedLoad = allowedFailedUrl !== undefined
@@ -116,7 +121,7 @@ test.describe("#553 — ofertas extras atrás da lista de lojas", () => {
 
     const panel = page.getByRole("region", { name: "Outros preços" });
     await panel.getByLabel("Nome interno").fill("Plano trimestral");
-    await panel.getByLabel("Preço").fill("147,50");
+    await panel.getByRole("textbox", { name: "Preço", exact: true }).fill("147,50");
     await panel.getByRole("combobox", { name: "Cobrança" }).click();
     await page.getByRole("option", { name: "Assinatura anual" }).click();
     await panel.getByRole("button", { name: "Criar preço em rascunho" }).click();
