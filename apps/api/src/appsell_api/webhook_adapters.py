@@ -11,7 +11,17 @@ _EVENT_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _REFERENCE = re.compile(r"^[^\x00-\x1f\x7f]{1,255}$")
 _SIGNATURE = re.compile(r"^v1=([0-9a-f]{64})$")
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
-_EVENT_TYPES = frozenset({"purchase.approved", "purchase.refunded", "subscription.cancelled"})
+_EVENT_TYPES = frozenset(
+    {
+        "purchase.approved",
+        "purchase.refunded",
+        "subscription.cancelled",
+        # Disputa de pagamento (#542): mesmo formato do estorno.
+        "purchase.dispute_opened",
+        "purchase.dispute_won",
+        "purchase.dispute_lost",
+    }
+)
 _LEGACY_PROTOCOL = "appsell.webhook.generic-hmac.v1"
 _EXTERNAL_CHECKOUT_PROTOCOL = "external-checkout.webhook.generic-hmac.v1"
 _SUPPORTED_PROTOCOLS = frozenset({_LEGACY_PROTOCOL, _EXTERNAL_CHECKOUT_PROTOCOL})
