@@ -134,19 +134,19 @@ export function ProductOffersPanel(props: ProductOffersPanelProps) {
 
   return (
     <section className="offer-status-panel" aria-labelledby="product-offers-title">
-      <p className="eyebrow">Ofertas do produto</p>
-      <h2 id="product-offers-title">Outras ofertas</h2>
-      <p>A vitrine e o checkout vendem a oferta padrão. As outras ficam prontas para trocar de padrão sem mudar o preço de quem já está comprando.</p>
-      <ul className="product-offers-list" aria-label="Ofertas">
+      <p className="eyebrow">Preços do produto</p>
+      <h2 id="product-offers-title">Outros preços</h2>
+      <p>A vitrine e o checkout vendem o preço principal. Os outros ficam prontos para virar o principal sem mudar o valor de quem já está comprando.</p>
+      <ul className="product-offers-list" aria-label="Preços">
         {ordered.map((offer) => (
           <li key={offer.id}>
             <strong>{offer.title}</strong>
-            {offer.isDefault ? <span className="badge"> Padrão</span> : null}
+            {offer.isDefault ? <span className="badge"> Principal</span> : null}
             <span> · {offer.unitAmountMinor ? formatOfferPrice(offer.unitAmountMinor, offer.currency) : "sem preço"} · {billingPeriodLabel(offer.billingPeriod)} · {STATUS_LABEL[offer.status]}</span>
             {offer.isDefault ? null : (
               <span className="product-offers-actions">
                 {canBecomeDefault(offer, offers) ? (
-                  <button type="button" className="secondary-button" disabled={disabled || isBusy} onClick={() => void makeDefault(offer)}>Tornar padrão</button>
+                  <button type="button" className="secondary-button" disabled={disabled || isBusy} onClick={() => void makeDefault(offer)}>Tornar principal</button>
                 ) : null}
                 {offer.status === "draft" ? (
                   <button type="button" className="secondary-button" disabled={disabled || isBusy} onClick={() => void changeStatus(offer, "active")}>Ativar vendas</button>
@@ -166,7 +166,7 @@ export function ProductOffersPanel(props: ProductOffersPanelProps) {
       {canCreateOffer(offers) ? (
         <form onSubmit={(event) => void createOffer(event)} aria-labelledby="product-offer-new-title">
           <fieldset disabled={disabled || isBusy}>
-            <legend id="product-offer-new-title">Nova oferta</legend>
+            <legend id="product-offer-new-title">Novo preço</legend>
             <label className="editor-field">Nome no checkout
               <input id="new_offer_title" name="new_offer_title" value={title} onChange={(event) => setTitle(event.target.value)} minLength={2} maxLength={120} required autoComplete="off"/>
             </label>
@@ -178,10 +178,10 @@ export function ProductOffersPanel(props: ProductOffersPanelProps) {
             </label>
             <ChoiceSelect<string> label="Moeda" id="new_offer_currency" name="new_offer_currency" value={currency} options={OFFER_CURRENCIES} onChange={setCurrency} disabled={disabled || isBusy}/>
             <ChoiceSelect<string> label="Cobrança" id="new_offer_billing_period" name="new_offer_billing_period" value={period} options={OFFER_BILLING_PERIODS} onChange={setPeriod} disabled={disabled || isBusy}/>
-            <button className="primary-button" type="submit" disabled={!formReady || isBusy}>{busy.kind === "saving" && busy.target === "new" ? "Criando…" : "Criar oferta em rascunho"}</button>
+            <button className="primary-button" type="submit" disabled={!formReady || isBusy}>{busy.kind === "saving" && busy.target === "new" ? "Criando…" : "Criar preço em rascunho"}</button>
           </fieldset>
         </form>
-      ) : <p>Este produto já tem {MAX_OFFERS_PER_PRODUCT} ofertas, o máximo.</p>}
+      ) : <p>Este produto já tem {MAX_OFFERS_PER_PRODUCT} preços, o máximo.</p>}
     </section>
   );
 }

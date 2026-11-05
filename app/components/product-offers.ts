@@ -96,14 +96,14 @@ export function canBecomeDefault(
 
 /** Mensagem para cada recusa da api, pelo código exato que ela devolve. */
 export function offerErrorMessage(status: number, code: string | undefined): string {
-  if (code === "multi_offer_disabled") return "Esta loja ainda não pode ter mais de uma oferta.";
-  if (code === "multi_offer_misconfigured") return "Ofertas extras indisponíveis agora. Tente mais tarde.";
-  if (code === "offer_limit_reached") return `Cada produto pode ter até ${MAX_OFFERS_PER_PRODUCT} ofertas.`;
+  if (code === "multi_offer_disabled") return "Esta loja ainda não pode ter mais de um preço.";
+  if (code === "multi_offer_misconfigured") return "Preços extras indisponíveis agora. Tente mais tarde.";
+  if (code === "offer_limit_reached") return `Cada produto pode ter até ${MAX_OFFERS_PER_PRODUCT} preços.`;
   if (code === "default_offer_locked") {
-    return "A oferta padrão precisa continuar à venda e com o mesmo preço. Escolha uma oferta à venda com o mesmo preço, moeda e cobrança.";
+    return "O preço principal precisa continuar à venda e com o mesmo valor. Escolha um preço à venda com o mesmo valor, moeda e cobrança.";
   }
-  if (status === 409) return "A oferta mudou em outra aba. Recarregue e tente de novo.";
-  if (status === 422) return "Confira os campos da oferta.";
+  if (status === 409) return "O preço mudou em outra aba. Recarregue e tente de novo.";
+  if (status === 422) return "Confira os campos do preço.";
   if (status === 401 || status === 403) return "Sua sessão não permite esta ação. Entre de novo.";
   return "Não foi possível salvar agora. Tente de novo.";
 }

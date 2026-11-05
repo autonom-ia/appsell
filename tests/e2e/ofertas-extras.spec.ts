@@ -70,16 +70,16 @@ test.describe("#553 — ofertas extras atrás da lista de lojas", () => {
   test("desligado: a etapa Preço não ganha nada", async ({ page }) => {
     await login(page);
     await openOfferStep(page, false);
-    await expect(page.getByRole("heading", { name: "Outras ofertas" })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Tornar padrão" })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Outros preços" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Tornar principal" })).toHaveCount(0);
   });
 
   test("ligado: lista as ofertas, sem select nativo, e troca a padrão com o próprio token", async ({ page }) => {
     await login(page);
     await openOfferStep(page, true);
-    const panel = page.getByRole("region", { name: "Outras ofertas" });
+    const panel = page.getByRole("region", { name: "Outros preços" });
     await expect(panel).toBeVisible();
-    await expect(panel.getByRole("list", { name: "Ofertas" }).getByRole("listitem")).toHaveCount(2);
+    await expect(panel.getByRole("list", { name: "Preços" }).getByRole("listitem")).toHaveCount(2);
     await expect(panel.getByRole("combobox", { name: "Moeda" })).toBeVisible();
     await expect(panel.getByRole("combobox", { name: "Cobrança" })).toBeVisible();
     await expect(page.locator("select")).toHaveCount(0);
@@ -94,7 +94,7 @@ test.describe("#553 — ofertas extras atrás da lista de lojas", () => {
       };
       await route.fulfill({ json: { offer_id: EXTRA_ID, changed: true } });
     });
-    await panel.getByRole("button", { name: "Tornar padrão" }).click();
+    await panel.getByRole("button", { name: "Tornar principal" }).click();
     await expect.poll(() => sent).not.toBeNull();
     expect(sent).toMatchObject({ csrf: "od", version: "2" });
   });
@@ -105,8 +105,8 @@ test.describe("#553 — ofertas extras atrás da lista de lojas", () => {
     await page.route(`**/offers/${EXTRA_ID}/default`, async (route) => {
       await route.fulfill({ status: 403, json: { error: "multi_offer_disabled" } });
     });
-    const panel = page.getByRole("region", { name: "Outras ofertas" });
-    await panel.getByRole("button", { name: "Tornar padrão" }).click();
-    await expect(panel.getByRole("alert")).toHaveText("Esta loja ainda não pode ter mais de uma oferta.");
+    const panel = page.getByRole("region", { name: "Outros preços" });
+    await panel.getByRole("button", { name: "Tornar principal" }).click();
+    await expect(panel.getByRole("alert")).toHaveText("Esta loja ainda não pode ter mais de um preço.");
   });
 });
