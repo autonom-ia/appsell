@@ -9,7 +9,10 @@ export default defineConfig({
   // job. Parar nas 10 primeiras falhas não aprova nada: o job continua
   // vermelho, só que em minutos.
   maxFailures: process.env.CI ? 10 : undefined,
-  reporter: process.env.CI ? "github" : "list",
+  // No CI, o "list" soma ao "github" o projeto, o resultado e a duração de
+  // cada teste, inclusive a tentativa que falhou antes do retry: é o que
+  // separa teste lento de ambiente lento (#585).
+  reporter: process.env.CI ? [["github"], ["list"]] : "list",
   use: {
     baseURL: "http://localhost:3000",
     trace: "retain-on-failure"
@@ -22,7 +25,12 @@ export default defineConfig({
     // NODE_ENV development/test com APP_ENV local/ci (lib/demo-config.ts;
     // tests/demo-config.test.ts prova a recusa em produção). A sessão sem
     // papel continua coberta em tests/e2e/sessao-sem-papel.spec.ts.
-    env: { APP_ENV: "local", APPSELL_DEMO_ENABLED: "true" },
+    // #544: o web não escolhe o provedor do checkout sozinho.
+    env: {
+      APP_ENV: "local",
+      APPSELL_DEMO_ENABLED: "true",
+      APPSELL_CHECKOUT_PROVIDER: process.env.APPSELL_CHECKOUT_PROVIDER ?? "local_stripe"
+    },
     reuseExistingServer: false,
     timeout: 120_000
   },

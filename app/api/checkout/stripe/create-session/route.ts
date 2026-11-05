@@ -63,7 +63,13 @@ export async function POST(request: NextRequest) {
   const input = parseCreateSessionInput(rawBody);
   if (!input) return jsonError("invalid_request", 400);
 
-  const provider = checkoutProvider();
+  let provider: ReturnType<typeof checkoutProvider>;
+  try {
+    provider = checkoutProvider();
+  } catch (error) {
+    if (error instanceof FinancialExternalCheckoutConfigError) return jsonError("checkout_not_configured", 503);
+    throw error;
+  }
   const mapping = resolveCheckoutProduct(input.sellerSlug, input.productSlug);
   if (provider === "local_stripe" && !mapping) return jsonError("product_not_configured", 409);
 
