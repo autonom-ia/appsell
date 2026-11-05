@@ -172,9 +172,12 @@ This is a platform fact, not a pending decision. As a result:
 - the `merge_group` paths in `app-ci.yml` stay in place, harmless and unused,
   for a future move to an organization.
 
-**Proposed replacement, awaiting Rodrigo's OK:** turn on
-`strict_required_status_checks_policy` in the same ruleset. A PR then has to be
-up to date with `main` before it can merge, so `ci-gate` (including
+**Replacement, active since 05/11/2026 (Rodrigo's OK):**
+`strict_required_status_checks_policy=true` in the same ruleset; the previous
+ruleset was backed up before the change. A PR has to be up to date with `main`
+before it can merge, and the Sell orchestration runs the update-branch at merge
+time. Review verdicts apply to the head after that update; an update that
+brings a new migration or web change gets its CI read again. `ci-gate` (including
 `migration_shape`) runs on the integrated result. Example: if one PR adds `0066`
 on top of `0065` and merges, a second PR adding `0067` on top of `0065` is forced
 to update; its new run sees two heads and fails until it points to `0066`. The
