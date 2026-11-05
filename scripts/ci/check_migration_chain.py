@@ -34,14 +34,32 @@ class ChainError(RuntimeError):
     """A cadeia está quebrada ou não pôde ser lida."""
 
 
+def _module_statements(tree: ast.Module):
+    """As instruções que rodam no escopo do módulo, inclusive dentro de `if`,
+    `try`, `with`, `for` e `while` do topo. Corpo de função e de classe fica de
+    fora: `upgrade()` pode ter variável própria chamada `revision`."""
+    pending: list[ast.stmt] = list(tree.body)
+    while pending:
+        node = pending.pop(0)
+        yield node
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        for field in ("body", "orelse", "finalbody", "handlers", "cases"):
+            for child in getattr(node, field, []):
+                pending.extend(child.body if isinstance(child, (ast.ExceptHandler, ast.match_case)) else [child])
+
+
 def _assigned_literals(path: Path) -> dict[str, object]:
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     except (OSError, SyntaxError, UnicodeDecodeError) as erro:
         raise ChainError(f"{path.name}: não deu para ler ({erro.__class__.__name__})") from erro
     values: dict[str, object] = {}
-    for node in tree.body:
-        if isinstance(node, ast.Assign):
+    for node in _module_statements(tree):
+        nested = node not in tree.body
+        if isinstance(node, ast.Delete):
+            targets, value = node.targets, None
+        elif isinstance(node, ast.Assign):
             targets, value = node.targets, node.value
         elif isinstance(node, ast.AnnAssign):
             targets, value = [node.target], node.value
@@ -52,9 +70,11 @@ def _assigned_literals(path: Path) -> dict[str, object]:
         names = {n.id for t in targets for n in ast.walk(t) if isinstance(n, ast.Name)} & NAMES
         if not names:
             continue
-        simple = len(targets) == 1 and isinstance(targets[0], ast.Name) and value is not None
+        simple = not nested and len(targets) == 1 and isinstance(targets[0], ast.Name) and value is not None
         if not simple:
-            raise ChainError(f"{path.name}: {', '.join(sorted(names))} precisa ser `nome = literal`, sozinho")
+            raise ChainError(
+                f"{path.name}: {', '.join(sorted(names))} precisa ser `nome = literal`, sozinho, no topo do arquivo"
+            )
         name = targets[0].id
         if name in values:
             raise ChainError(f"{path.name}: {name} atribuído mais de uma vez")
@@ -88,8 +108,10 @@ def check_chain(versions: Path) -> str:
     for path in files:
         values = _assigned_literals(path)
         revision = values.get("revision")
-        if not isinstance(revision, str) or "down_revision" not in values:
+        if "revision" not in values or "down_revision" not in values:
             raise ChainError(f"{path.name}: revision ou down_revision ausente")
+        if not isinstance(revision, str):
+            raise ChainError(f"{path.name}: revision precisa ser texto")
         number = path.stem.partition("_")[0]
         if not number.isdigit():
             raise ChainError(f"{path.name}: o nome não começa pelo número da migration")

@@ -143,6 +143,9 @@ class ChainTests(unittest.TestCase):
             "desempacotar": 'revision, outra = "0004_b", 1\n',
             "aumentar": 'revision += "x"\n',
             "dois_alvos": 'revision = down_revision = "0004_b"\n',
+            "dentro_de_if": 'if True:\n    revision = "0004_z"\n',
+            "dentro_de_try": 'try:\n    pass\nexcept Exception:\n    revision = "0004_z"\n',
+            "del": "del revision\n",
         }.items():
             with self.subTest(nome=nome):
                 self.linear()
