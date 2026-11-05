@@ -520,11 +520,39 @@ test("navigates PDF index links and opens linked video inside the protected read
   await expect(reader.getByLabel("Ir para página")).toHaveValue("4");
 });
 
-test("persists vector annotations and favorites without drifting across zoom and resize", async ({
+// Os três testes abaixo eram um só, com três logins, três aberturas do leitor e
+// doze passos de zoom. No webkit-mobile ele somava ~31 s e estourava os 30 s na
+// espera das 13 mutações, embora todas chegassem com 200 em menos de 30 ms
+// (trace do run 42016707273, #585). Cada cenário agora semeia o estado no mock e
+// confere o que ficou salvo, em vez de contar requisições.
+
+function seededPenMark(id: string) {
+  return {
+    id,
+    page: 1,
+    tool: "pen",
+    color: "#173B73",
+    width: 0.003,
+    points: Array.from({ length: 11 }, (_, step) => ({
+      x: Number((0.2 + step * 0.045).toFixed(4)),
+      y: Number((0.3 + Math.sin(step / 2) * 0.015).toFixed(4))
+    }))
+  };
+}
+
+async function openReader(page: Page, viewport: { width: number; height: number }) {
+  await page.setViewportSize(viewport);
+  await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
+  await page.getByRole("button", { name: "Abrir leitor" }).click();
+  const reader = page.getByRole("dialog", { name: "Leitor de Guia da aula" });
+  await expect(reader.getByRole("button", { name: /Caneta/ })).toBeEnabled();
+  return reader;
+}
+
+test("draws, favorites, undoes and syncs vector annotations to another device", async ({
   browser, page
 }, testInfo) => {
   const mobile = testInfo.project.name.includes("mobile");
-  await page.setViewportSize(mobile ? { width: 390, height: 844 } : { width: 1440, height: 900 });
   const studyMutations: Record<string, unknown>[] = [];
   const pdfStudyStore: PdfStudyMockStore = {
     revision: 0,
@@ -544,15 +572,10 @@ test("persists vector annotations and favorites without drifting across zoom and
     onPdfStudyMutation: (mutation) => studyMutations.push(mutation)
   });
   await enterAndWaitForSession(page);
-  await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
-  await page.getByRole("button", { name: "Abrir leitor" }).click();
-  const reader = page.getByRole("dialog", { name: "Leitor de Guia da aula" });
-  const pen = reader.getByRole("button", { name: /Caneta/ });
-  await expect(pen).toBeEnabled();
-  await pen.click();
+  const reader = await openReader(page, mobile ? { width: 390, height: 844 } : { width: 1440, height: 900 });
+  await reader.getByRole("button", { name: /Caneta/ }).click();
 
-  const pageOne = reader.locator('.pdf-reader-page[data-page="1"]');
-  const layer = pageOne.locator(".pdf-study-layer");
+  const layer = reader.locator('.pdf-reader-page[data-page="1"] .pdf-study-layer');
   const layerBox = await layer.boundingBox();
   expect(layerBox).not.toBeNull();
   const bounds = layerBox!;
@@ -570,12 +593,17 @@ test("persists vector annotations and favorites without drifting across zoom and
   await expect(reader.getByRole("button", { name: /Favorito/ })).toHaveAttribute(
     "aria-pressed", "true"
   );
-
   await reader.getByRole("button", { name: /Desfazer/ }).click();
   await expect(layer.locator("polyline")).toHaveCount(0);
   await reader.getByRole("button", { name: /Refazer/ }).click();
   await expect(layer.locator("polyline")).toHaveCount(1);
-  await expect.poll(() => studyMutations.length).toBeGreaterThanOrEqual(4);
+
+  // O que importa é o que o servidor guardou, na ordem certa.
+  await expect.poll(() => studyMutations.map((item) => item.action)).toEqual([
+    "annotation.upsert", "bookmark.set", "annotation.delete", "annotation.upsert"
+  ]);
+  expect(pdfStudyStore.bookmarks).toEqual([1, 2]);
+  expect(pdfStudyStore.annotations.filter((item) => item.page === 1)).toHaveLength(1);
 
   const otherDevice = await browser.newContext({
     viewport: mobile ? { width: 390, height: 844 } : { width: 1366, height: 768 }
@@ -583,17 +611,27 @@ test("persists vector annotations and favorites without drifting across zoom and
   const otherPage = await otherDevice.newPage();
   await mockLearningApi(otherPage, { pdfPageCount: 3, pdfStudyStore });
   await login(otherPage);
-  await otherPage.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
-  await otherPage.getByRole("button", { name: "Abrir leitor" }).click();
-  const otherReader = otherPage.getByRole("dialog", { name: "Leitor de Guia da aula" });
-  await expect(otherReader.getByRole("button", { name: "Caneta" })).toBeEnabled();
+  const otherReader = await openReader(
+    otherPage, mobile ? { width: 390, height: 844 } : { width: 1366, height: 768 }
+  );
   await expect(otherReader.locator('.pdf-reader-page[data-page="1"] .pdf-study-layer polyline'))
     .toHaveCount(1);
   await expect(otherReader.getByRole("button", { name: "Favorito" }))
     .toHaveAttribute("aria-pressed", "true");
   await otherDevice.close();
+});
 
-  const mark = layer.locator("polyline").first();
+test("keeps vector annotations anchored to the page across zoom", async ({ page }, testInfo) => {
+  const mobile = testInfo.project.name.includes("mobile");
+  const seeded = seededPenMark("86000000-0000-4000-8000-000000000010");
+  const pdfStudyStore: PdfStudyMockStore = { revision: 0, annotations: [seeded], bookmarks: [] };
+  await mockLearningApi(page, { pdfPageCount: 3, pdfStudyStore });
+  await enterAndWaitForSession(page);
+  const reader = await openReader(page, mobile ? { width: 390, height: 844 } : { width: 1440, height: 900 });
+
+  const pageOne = reader.locator('.pdf-reader-page[data-page="1"]');
+  const mark = pageOne.locator(".pdf-study-layer polyline").first();
+  await expect(mark).toHaveCount(1);
   const pageBefore = await pageOne.boundingBox();
   const markBefore = await mark.boundingBox();
   const pointsBefore = await mark.getAttribute("points");
@@ -618,39 +656,43 @@ test("persists vector annotations and favorites without drifting across zoom and
   expect(Math.abs(normalizedBefore.x - normalizedAfter.x)).toBeLessThan(0.005);
   expect(Math.abs(normalizedBefore.y - normalizedAfter.y)).toBeLessThan(0.005);
   expect(await mark.getAttribute("points")).toBe(pointsBefore);
+});
 
-  await reader.getByRole("button", { name: /Minhas marcações/ }).click();
-  const panel = reader.locator(".pdf-study-panel");
-  await expect(panel).toBeVisible();
-  await panel.getByRole("button", { name: /Página 2/ }).click();
-  await expect(reader.getByLabel("Ir para página")).toHaveValue("2");
-  if (!mobile) await reader.getByRole("button", { name: /Minhas marcações/ }).click();
-
-  await reader.getByLabel("Ir para página").fill("1");
-  await reader.getByLabel("Ir para página").press("Enter");
-  await reader.getByRole("button", { name: "Ajustar à largura" }).click();
-  await reader.getByRole("button", { name: "Voltar ao curso" }).click();
-  await page.reload();
-  await page.getByRole("button", { name: "Abrir leitor" }).click();
-  const reopened = page.getByRole("dialog", { name: "Leitor de Guia da aula" });
-  await expect(reopened.getByRole("button", { name: /Caneta/ })).toBeEnabled();
-  await expect(reopened.locator('.pdf-reader-page[data-page="1"] .pdf-study-layer polyline'))
-    .toHaveCount(1);
+test("edits, erases and restores a saved annotation, and survives a resize", async ({
+  page
+}, testInfo) => {
+  const mobile = testInfo.project.name.includes("mobile");
+  const seeded = seededPenMark("86000000-0000-4000-8000-000000000011");
+  const studyMutations: Record<string, unknown>[] = [];
+  const pdfStudyStore: PdfStudyMockStore = { revision: 0, annotations: [seeded], bookmarks: [1] };
+  await mockLearningApi(page, {
+    pdfPageCount: 3,
+    pdfStudyStore,
+    onPdfStudyMutation: (mutation) => studyMutations.push(mutation)
+  });
+  await enterAndWaitForSession(page);
+  const reopened = await openReader(page, mobile ? { width: 390, height: 844 } : { width: 1440, height: 900 });
+  const reopenedLayer = reopened.locator('.pdf-reader-page[data-page="1"] .pdf-study-layer');
+  await expect(reopenedLayer.locator("polyline")).toHaveCount(1);
   await expect(reopened.getByRole("button", { name: /Favorito/ })).toHaveAttribute(
     "aria-pressed", "true"
   );
 
+  await reopened.getByRole("button", { name: /Minhas marcações/ }).click();
+  const panel = reopened.locator(".pdf-study-panel");
+  await expect(panel).toBeVisible();
+  await panel.getByRole("button", { name: /Página 1/ }).click();
+  await expect(reopened.getByLabel("Ir para página")).toHaveValue("1");
+  if (!mobile) await reopened.getByRole("button", { name: /Minhas marcações/ }).click();
+
   await reopened.getByRole("button", { name: /Borracha/ }).click();
   await reopened.locator('.pdf-reader-page[data-page="1"] .pdf-study-hit-target')
     .dispatchEvent("pointerdown", { pointerId: 1, pointerType: "mouse", button: 0 });
-  await expect(reopened.locator('.pdf-reader-page[data-page="1"] .pdf-study-layer polyline'))
-    .toHaveCount(0);
+  await expect(reopenedLayer.locator("polyline")).toHaveCount(0);
   await reopened.getByRole("button", { name: /Desfazer/ }).click();
-  await expect(reopened.locator('.pdf-reader-page[data-page="1"] .pdf-study-layer polyline'))
-    .toHaveCount(1);
+  await expect(reopenedLayer.locator("polyline")).toHaveCount(1);
 
   await reopened.getByRole("button", { name: "Editar marcação" }).click();
-  const reopenedLayer = reopened.locator('.pdf-reader-page[data-page="1"] .pdf-study-layer');
   const selectedMark = reopenedLayer.locator("polyline").first();
   const pointsBeforeMove = await selectedMark.getAttribute("points");
   const selectedPoint = await selectedMark.evaluate((element) => {
@@ -663,11 +705,7 @@ test("persists vector annotations and favorites without drifting across zoom and
   });
   await page.mouse.move(selectedPoint.x, selectedPoint.y);
   await page.mouse.down();
-  await page.mouse.move(
-    selectedPoint.x + 18,
-    selectedPoint.y + 14,
-    { steps: 4 }
-  );
+  await page.mouse.move(selectedPoint.x + 18, selectedPoint.y + 14, { steps: 4 });
   await page.mouse.up();
   await expect.poll(() => selectedMark.getAttribute("points")).not.toBe(pointsBeforeMove);
   await reopened.getByRole("button", { name: "Cor #D73535" }).click();
@@ -683,11 +721,19 @@ test("persists vector annotations and favorites without drifting across zoom and
   await reopened.getByRole("button", { name: "Desfazer" }).click();
   await expect(reopenedLayer.locator("polyline")).toHaveCount(1);
 
+  // As nove ações chegaram ao servidor, na ordem, e o estado salvo é o da tela.
+  await expect.poll(() => studyMutations.map((item) => item.action)).toEqual([
+    "annotation.delete", "annotation.upsert",
+    "annotation.upsert", "annotation.upsert", "annotation.upsert",
+    "annotation.delete", "annotation.upsert", "annotation.delete", "annotation.upsert"
+  ]);
+  const saved = pdfStudyStore.annotations.find((item) => item.id === seeded.id);
+  expect(saved).toMatchObject({ color: "#D73535", width: 0.005 });
+  expect(saved?.points).not.toEqual(seeded.points);
+
   await page.setViewportSize(mobile ? { width: 844, height: 390 } : { width: 1100, height: 760 });
   await expect(reopened.getByLabel("Ir para página")).toHaveValue("1");
-  await expect(reopened.locator('.pdf-reader-page[data-page="1"] .pdf-study-layer polyline'))
-    .toHaveCount(1);
-  await expect.poll(() => studyMutations.length).toBeGreaterThanOrEqual(13);
+  await expect(reopenedLayer.locator("polyline")).toHaveCount(1);
   const size = await page.evaluate(() => ({
     client: document.documentElement.clientWidth,
     scroll: document.documentElement.scrollWidth
