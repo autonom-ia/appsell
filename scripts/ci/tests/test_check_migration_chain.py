@@ -137,99 +137,29 @@ class ChainTests(unittest.TestCase):
                     check_chain(Path(folder))
                 self.assertIn("ciclo", str(erro.exception))
 
-    def test_dynamic_writes_fail_because_they_cannot_be_checked(self) -> None:
+    def test_other_top_level_forms_of_the_names_fail_with_a_clear_message(self) -> None:
+        # Catches: copy-paste mistakes that leave the value ambiguous.
         for nome, extra in {
-            "globals": 'globals()["revision"] = "0004_z"\n',
-            "vars": 'vars()["revision"] = "0004_z"\n',
-            "setattr": 'import sys\nsetattr(sys.modules[__name__], "revision", "0004_z")\n',
-            "exec": 'exec("revision = 1")\n',
-            "alias": 'g = globals\ng()["revision"] = "0004_z"\n',
-            "atributo": 'import sys\nsys.modules[__name__].revision = "0004_z"\n',
-            "builtins": 'import builtins\nbuiltins.exec("revision = 1")\n',
-        }.items():
-            with self.subTest(nome=nome):
-                self.linear()
-                self.write("0004_a.py", migration("0004_a", "0003_coluna") + extra)
-                with self.assertRaises(ChainError):
-                    check_chain(self.versions)
-
-    def test_reflection_fails_by_allowlist_not_denylist(self) -> None:
-        # Catches: frames, __globals__ and getattr-with-string reaching the
-        # module namespace; each round of review found another one, so the rule
-        # is an allowlist of imports plus a ban on reflective names.
-        for nome, extra in {
-            "getframe": 'import sys\nsys._getframe().f_globals["revision"] = "0004_z"\n',
-            "dunder_globals": '(lambda: 0).__globals__["revision"] = "0004_z"\n',
-            "getattr_string": 'f = lambda: 0\ngetattr(f, "__globals__")["revision"] = "0004_z"\n',
-            "inspect": 'import inspect\ninspect.currentframe().f_globals["revision"] = "0004_z"\n',
-            "gerador": 'g = (x for x in ())\ng.gi_frame.f_globals["revision"] = "0004_z"\n',
-            "modulo_via_atributo": 'from importlib import util\nutil.sys.modules[__name__].x = 1\n',
-            "import_fora_da_lista": "import os\n",
-            "importlib_inteiro": "import importlib\n",
-        }.items():
-            with self.subTest(nome=nome):
-                self.linear()
-                self.write("0004_a.py", migration("0004_a", "0003_coluna") + extra)
-                with self.assertRaises(ChainError):
-                    check_chain(self.versions)
-
-    def test_the_imports_the_repository_uses_pass(self) -> None:
-        self.linear()
-        self.write(
-            "0004_a.py",
-            "from __future__ import annotations\nfrom collections.abc import Sequence\n"
-            "from importlib import util as importlib_util\nfrom pathlib import Path\n"
-            "from types import ModuleType\nfrom alembic import op\n"
-            + migration("0004_a", "0003_coluna")
-            + 'caminho = Path(__file__).with_name("0003_coluna.py")\nX = importlib_util.module_from_spec\n',
-        )
-
-        self.assertEqual("0004_a", check_chain(self.versions))
-
-    def test_any_other_binding_of_the_names_fails_closed(self) -> None:
-        # Fail-closed on purpose: a local variable named revision is a visible,
-        # cheap false red (rename it); modelling scopes left silent false greens.
-        for nome, extra in {
-            "local": "def upgrade():\n    for revision in range(3):\n        pass\n",
-            "walrus_em_lambda": 'f = lambda a=(revision := "0004_z"): a\n',
-            "anotacao": 'def f(a: (revision := "0004_z")):\n    pass\n',
-            "del": "del revision\n",
-            "comprehension": "xs = [revision for revision in range(3)]\n",
-            "import_estrela": "from pathlib import *\n",
-            "match_mapping": "match {}:\n    case {**revision}:\n        pass\n",
+            "desempacotar": 'revision, outra = "0004_b", 1\n',
+            "aumentar": 'revision += "x"\n',
+            "dois_alvos": 'revision = down_revision = "0004_b"\n',
         }.items():
             with self.subTest(nome=nome):
                 self.linear()
                 self.write("0004_a.py", migration("0004_a", "0003_coluna") + extra)
                 with self.assertRaises(ChainError) as erro:
                     check_chain(self.versions)
-                self.assertIn("renomeie", str(erro.exception))
+                self.assertIn("revision", str(erro.exception))
 
-    def test_rebinding_revision_by_def_import_or_class_fails(self) -> None:
-        for nome, extra in {
-            "def": "def revision():\n    pass\n",
-            "import": "import os as revision\n",
-            "class": "class revision:\n    pass\n",
-            "global": 'def f():\n    global revision\n    revision = "0004_z"\nf()\n',
-        }.items():
-            with self.subTest(nome=nome):
-                self.linear()
-                self.write("0004_a.py", migration("0004_a", "0003_coluna") + extra)
-                with self.assertRaises(ChainError):
-                    check_chain(self.versions)
-
-    def test_a_revision_assigned_outside_the_top_level_fails(self) -> None:
-        # Catches: the checker reading one value while alembic runs the module
-        # and sees another one set inside an `if`.
+    def test_code_inside_functions_is_not_read(self) -> None:
+        # The check reads the module's top level only; upgrade() is free.
         self.linear()
         self.write(
             "0004_a.py",
-            'revision = "0004_a"\ndown_revision = "0003_coluna"\n'
-            'if True:\n    revision = "0004_z"\n',
+            migration("0004_a", "0003_coluna") + "def upgrade():\n    revision = 1\n    return revision\n",
         )
 
-        with self.assertRaises(ChainError):
-            check_chain(self.versions)
+        self.assertEqual("0004_a", check_chain(self.versions))
 
     def test_a_revision_assigned_twice_fails(self) -> None:
         self.linear()

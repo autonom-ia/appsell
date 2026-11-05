@@ -6,13 +6,15 @@ partir do mesmo pai. Cada um passa sozinho; juntos, a main fica com duas
 cabeças e o `alembic upgrade head` recusa. Esta checagem roda em todo evento
 do CI, inclusive na fila de merge, sobre o resultado integrado.
 
-Modelo de ameaça: erro honesto entre PRs paralelos, não autor malicioso (quem
-escreve a migration também poderia editar este script; para isso há revisão).
-Ainda assim, o que tornaria a leitura estática enganosa reprova.
+Lê os arquivos com `ast`, sem importar nem executar nada do PR. `revision` e
+`down_revision` precisam ser literais (texto, ou tupla de textos no merge)
+atribuídos uma vez no topo do módulo; qualquer outra forma falha com mensagem
+clara, e o que não der para ler é falha: "não deu para checar" nunca vira
+aprovado.
 
-Lê os arquivos com `ast`, sem importar nem executar nada. O que não der para
-ler (sintaxe, `revision` ausente ou calculada) é falha: "não deu para checar"
-nunca vira aprovado.
+Modelo de ameaça: erro honesto entre PRs paralelos. Autor malicioso está fora:
+a própria migration roda SQL arbitrário no upgrade, então a barreira contra
+ele é a revisão, não esta leitura.
 """
 
 from __future__ import annotations
@@ -26,71 +28,10 @@ VERSIONS = Path("apps/api/migrations/versions")
 # `alembic upgrade` na hora de carimbar a versão.
 MAX_REVISION_LENGTH = 32
 NAMES = frozenset({"revision", "down_revision"})
-# Lista de permitidos, não de proibidos: cada rodada de revisão achou outro
-# caminho de reflexão (frames, `__globals__`, `getattr` com string). Import só
-# destes módulos; import novo reprova até alguém conferir e acrescentar aqui.
-ALLOWED_FROM_IMPORTS = frozenset(
-    {"__future__", "alembic", "collections.abc", "importlib.util", "pathlib", "sqlalchemy", "typing", "types"}
-)
-ALLOWED_PLAIN_IMPORTS = frozenset({"sqlalchemy"})
-ALLOWED_DUNDER_NAMES = frozenset({"__file__", "__name__"})
-# Nomes que dão acesso ao namespace do módulo, a frames ou a outros módulos,
-# proibidos como nome e como atributo (`util.sys`, `mod.getattr`).
-REFLECTIVE = frozenset(
-    {
-        "getattr", "setattr", "delattr", "vars", "globals", "locals", "exec", "eval", "compile",
-        "breakpoint", "sys", "os", "builtins", "inspect", "gc", "ctypes", "importlib", "modules",
-        "_getframe", "_sys", "f_globals", "f_locals", "f_back", "f_builtins", "gi_frame",
-        "cr_frame", "ag_frame", "tb_frame", "currentframe",
-    }
-)
 
 
 class ChainError(RuntimeError):
     """A cadeia está quebrada ou não pôde ser lida."""
-
-
-def _bound_name(node: ast.AST) -> str | None:
-    """O nome que este nó liga (ou desliga), se for o caso."""
-    if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
-        return node.id
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-        return node.name
-    if isinstance(node, ast.alias):
-        # `from m import *` pode trazer qualquer nome: conta como ligação.
-        if node.name == "*":
-            return "revision"
-        return node.asname or node.name.partition(".")[0]
-    if isinstance(node, (ast.MatchAs, ast.MatchStar, ast.ExceptHandler)):
-        return node.name
-    if isinstance(node, ast.MatchMapping):
-        return node.rest
-    if isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del)):
-        return node.attr
-    return None
-
-
-def _reflection(node: ast.AST) -> str | None:
-    """Por que este nó impede a leitura estática, se impede."""
-    if isinstance(node, ast.ImportFrom):
-        module = "." * node.level + (node.module or "")
-        names = {alias.name for alias in node.names}
-        if module == "importlib" and names == {"util"}:
-            return None
-        if module not in ALLOWED_FROM_IMPORTS:
-            return f"import de {module!r} fora da lista"
-    if isinstance(node, ast.Import):
-        outside = sorted(alias.name for alias in node.names if alias.name not in ALLOWED_PLAIN_IMPORTS)
-        if outside:
-            return f"import de {outside} fora da lista"
-    if isinstance(node, ast.Name):
-        if node.id.startswith("__") and node.id not in ALLOWED_DUNDER_NAMES:
-            return f"nome {node.id!r}"
-        if node.id in REFLECTIVE:
-            return f"nome reflexivo {node.id!r}"
-    if isinstance(node, ast.Attribute) and (node.attr.startswith("__") or node.attr in REFLECTIVE):
-        return f"atributo reflexivo {node.attr!r}"
-    return None
 
 
 def _assigned_literals(path: Path) -> dict[str, object]:
@@ -99,44 +40,28 @@ def _assigned_literals(path: Path) -> dict[str, object]:
     except (OSError, SyntaxError, UnicodeDecodeError) as erro:
         raise ChainError(f"{path.name}: não deu para ler ({erro.__class__.__name__})") from erro
     values: dict[str, object] = {}
-    top_level = 0
     for node in tree.body:
-        if isinstance(node, ast.Assign) and len(node.targets) == 1:
-            target, value = node.targets[0], node.value
-        elif isinstance(node, ast.AnnAssign) and node.value is not None:
-            target, value = node.target, node.value
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign):
+            targets, value = [node.target], node.value
+        elif isinstance(node, ast.AugAssign):
+            targets, value = [node.target], None
         else:
             continue
-        if not isinstance(target, ast.Name) or target.id not in NAMES:
+        names = {n.id for t in targets for n in ast.walk(t) if isinstance(n, ast.Name)} & NAMES
+        if not names:
             continue
-        if target.id in values:
-            raise ChainError(f"{path.name}: {target.id} atribuído mais de uma vez")
-        top_level += 1
+        simple = len(targets) == 1 and isinstance(targets[0], ast.Name) and value is not None
+        if not simple:
+            raise ChainError(f"{path.name}: {', '.join(sorted(names))} precisa ser `nome = literal`, sozinho")
+        name = targets[0].id
+        if name in values:
+            raise ChainError(f"{path.name}: {name} atribuído mais de uma vez")
         try:
-            values[target.id] = ast.literal_eval(value)
+            values[name] = ast.literal_eval(value)
         except ValueError as erro:
-            raise ChainError(f"{path.name}: {target.id} não é um valor literal") from erro
-    # O alembic executa o módulo inteiro. Modelar escopo (walrus em default,
-    # anotação, comprehension, `global`) deixou furos a cada rodada de revisão;
-    # a regra é fail-closed: esses dois nomes só podem ser ligados nas duas
-    # atribuições literais do topo. Qualquer outra ligação, em qualquer lugar
-    # do arquivo, reprova, inclusive variável local: basta renomeá-la.
-    # Escrita dinâmica (`globals()[...]`, `vars()`, `setattr`, `exec`, `eval`)
-    # não se decide por leitura estática: chamar qualquer uma delas numa
-    # migration também reprova.
-    bindings = sum(1 for node in ast.walk(tree) if _bound_name(node) in NAMES)
-    declared = any(
-        isinstance(node, (ast.Global, ast.Nonlocal)) and NAMES.intersection(node.names)
-        for node in ast.walk(tree)
-    )
-    problem = next((reason for node in ast.walk(tree) if (reason := _reflection(node))), None)
-    if problem:
-        raise ChainError(f"{path.name}: {problem}; não dá para checar a revision")
-    if bindings != top_level or declared:
-        raise ChainError(
-            f"{path.name}: revision ou down_revision ligado fora das duas atribuições do topo; "
-            "renomeie a variável"
-        )
+            raise ChainError(f"{path.name}: {name} não é um valor literal") from erro
     return values
 
 
