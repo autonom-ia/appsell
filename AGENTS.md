@@ -176,11 +176,10 @@ no runbook, nunca presumida.
 
 ## 8. Regras que mais quebram aqui
 
-- Sem `<select>` nativo. O projeto **ainda não tem** o componente de escolha
-  acessível (padrão *select-only combobox*; referência: Bio
-  `src/components/ui/choice-select.tsx`). Quem tocar primeiro numa tela com
-  `<select>` cria o componente em `app/components/ui/` e troca todos os da tela.
-  Hoje há `<select>` em `product-editor-workspace.tsx`,
+- Sem `<select>` nativo. Toda escolha única usa `ChoiceSelect`
+  (`app/components/ui/choice-select.tsx`, padrão *select-only combobox*,
+  teclado em `choice-keys.ts`). Quem tocar numa tela com `<select>` troca
+  todos os da tela por ele. Hoje ainda há `<select>` em
   `product-draft-workspace.tsx`, `lesson-material-panel.tsx`,
   `lesson-asset-panel.tsx` e no painel de demo.
 - Sem regex para interpretar o que uma pessoa escreveu.
