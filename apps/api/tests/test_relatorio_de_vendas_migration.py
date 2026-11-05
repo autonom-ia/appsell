@@ -68,9 +68,9 @@ def test_as_funcoes_conferem_capacidade_papel_e_periodo(migration: ModuleType) -
         assert "context_uuid('identity_user_id') is distinct from p_actor" in sql
         assert "context_uuid('seller_organization_id') is distinct from p_seller" in sql
         assert "('seller_owner','seller_admin')" in sql
-        assert f"interval '{migration.PERIODO_MAXIMO_DIAS} days'" in sql or (
-            f"> {migration.PERIODO_MAXIMO_DIAS}" in sql
-        )
+        # Até 366 dias de calendário com as duas pontas: a diferença vai até 365.
+        assert f"p_to - p_from >= {migration.PERIODO_MAXIMO_DIAS}" in sql
+        assert "set search_path=pg_catalog,app_private,public,pg_temp" in sql
         # Nenhum dado pessoal nem payload sai da função.
         for proibido in ("email", "identity_sub", "buyer_identity_user_id", "payload"):
             assert proibido not in sql
@@ -81,6 +81,11 @@ def test_o_export_audita_e_limita(migration: ModuleType) -> None:
     assert "insert into public.audit_event" in export
     assert "'commerce.sales_exported'" in export
     assert f">= {migration.EXPORTS_POR_MINUTO}" in export
+    # A trava do ator vem antes da contagem, para exports simultâneos não
+    # lerem a mesma contagem.
+    trava = "pg_advisory_xact_lock(hashtextextended('appsell.sales_export:' || p_actor::text, 0))"
+    assert trava in export
+    assert export.index(trava) < export.index("from public.audit_event")
     assert f"> {migration.MAXIMO_DE_LINHAS}" in export
 
 

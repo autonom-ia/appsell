@@ -39,12 +39,13 @@ import { GET as csv } from "../app/(protected)/dashboard/vendas/csv/route";
 const LOJA = "44444444-4444-4444-8444-444444444444";
 const BASE = "https://sell.test/dashboard/vendas";
 
-function pedido(caminho: string, query: string) {
-  return new NextRequest(`${BASE}/${caminho}?${query}`);
+function pedido(caminho: string, query: string, headers: Record<string, string> = {}) {
+  return new NextRequest(`${BASE}/${caminho}?${query}`, { headers });
 }
 
 describe("rotas do relatório de vendas", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     vi.stubEnv("APPSELL_SALES_REPORT_PILOT_SELLER_IDS", LOJA);
     authenticatedSession.mockResolvedValue({ sessionId: "s", session: { subject: "u" } });
     readDomainSalesReport.mockResolvedValue({ schema_version: 1, rows: [] });
@@ -71,7 +72,9 @@ describe("rotas do relatório de vendas", () => {
     for (const query of [
       `seller=nao-uuid&from=2026-10-01&to=2026-10-31`,
       `seller=${LOJA}&from=2026-10-31&to=2026-10-01`,
-      `seller=${LOJA}&from=2026-10-01`
+      `seller=${LOJA}&from=2026-10-01`,
+      // 367 dias de calendário, contando as duas pontas.
+      `seller=${LOJA}&from=2025-10-01&to=2026-10-02`
     ]) {
       expect((await dados(pedido("dados", query))).status).toBe(422);
     }
@@ -97,6 +100,30 @@ describe("rotas do relatório de vendas", () => {
     );
     expect(resposta.headers.get("cache-control")).toBe("no-store");
     expect(await resposta.text()).toContain(",'@x,aprovada,");
+  });
+
+  it("366 dias de calendário, contando as duas pontas, ainda passam", async () => {
+    const resposta = await dados(pedido("dados", `seller=${LOJA}&from=2025-10-01&to=2026-10-01`));
+    expect(resposta.status).toBe(200);
+  });
+
+  it("o CSV recusa pedido vindo de outro site e não gasta a cota", async () => {
+    for (const origem of ["cross-site", "same-site"]) {
+      const resposta = await csv(
+        pedido("csv", `seller=${LOJA}&from=2026-10-01&to=2026-10-31`, { "sec-fetch-site": origem })
+      );
+      expect(resposta.status).toBe(403);
+    }
+    expect(exportDomainSalesRows).not.toHaveBeenCalled();
+  });
+
+  it("o CSV aceita a mesma origem e a navegação digitada pela pessoa", async () => {
+    for (const origem of ["same-origin", "none"]) {
+      const resposta = await csv(
+        pedido("csv", `seller=${LOJA}&from=2026-10-01&to=2026-10-31`, { "sec-fetch-site": origem })
+      );
+      expect(resposta.status).toBe(200);
+    }
   });
 
   it("limite de taxa da API vira 429", async () => {

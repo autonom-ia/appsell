@@ -11,7 +11,16 @@ export const dynamic = "force-dynamic";
 
 // CSV das vendas (#562): uma linha por compra, sem dado pessoal. A API audita
 // cada export e limita a 5 por minuto.
+//
+// O GET gasta a cota e grava auditoria. Pedido que o navegador marca como
+// vindo de outro site (link ou imagem de fora) é recusado antes de tudo. Sem o
+// cabeçalho (cliente antigo) ou com "none" (a pessoa digitou o endereço), segue.
+const ORIGENS_RECUSADAS = new Set(["cross-site", "same-site"]);
+
 export async function GET(request: NextRequest) {
+  if (ORIGENS_RECUSADAS.has(request.headers.get("sec-fetch-site") ?? "")) {
+    return respostaJson({ error: "forbidden" }, 403);
+  }
   const pedido = await pedidoDeVendas(request);
   if (!pedido.ok) return pedido.response;
   try {

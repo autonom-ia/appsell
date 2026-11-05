@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import threading
 import time
 from datetime import date
 from typing import Any, cast
@@ -32,6 +33,7 @@ LOJA_A = UUID("ee000000-0000-4000-8000-000000000721")
 LOJA_B = UUID("ee000000-0000-4000-8000-000000000722")
 DONO = UUID("ee000000-0000-4000-8000-000000000723")
 EDITOR = UUID("ee000000-0000-4000-8000-000000000724")
+CONCORRENTE = UUID("ee000000-0000-4000-8000-00000000072c")
 PRODUTO_A1 = UUID("ee000000-0000-4000-8000-000000000725")
 PRODUTO_A2 = UUID("ee000000-0000-4000-8000-000000000726")
 PRODUTO_B = UUID("ee000000-0000-4000-8000-000000000727")
@@ -90,7 +92,11 @@ def base() -> None:
         connection.execute(
             "delete from webhook_event where seller_organization_id in (%s,%s)", (LOJA_A, LOJA_B)
         )
-        for pessoa, sub in ((DONO, "sales-owner"), (EDITOR, "sales-editor")):
+        for pessoa, sub in (
+            (DONO, "sales-owner"),
+            (EDITOR, "sales-editor"),
+            (CONCORRENTE, "sales-concurrent"),
+        ):
             connection.execute(
                 "insert into identity_user(id,identity_issuer,identity_sub,email_normalized,"
                 "email_verified) values(%s,%s,%s,%s,true) on conflict do nothing",
@@ -146,6 +152,11 @@ def base() -> None:
             "insert into seller_membership(seller_organization_id,identity_user_id,role,status) "
             "values(%s,%s,'seller_editor','active') on conflict do nothing",
             (LOJA_A, EDITOR),
+        )
+        connection.execute(
+            "insert into seller_membership(seller_organization_id,identity_user_id,role,status) "
+            "values(%s,%s,'seller_admin','active') on conflict do nothing",
+            (LOJA_A, CONCORRENTE),
         )
         # Loja A: 3 compras do A1 (uma com replay do evento e outra estornada no
         # dia seguinte), 1 do A2. 23:30 em São Paulo de 01/10 ainda é 01/10.
@@ -254,19 +265,29 @@ def _relatorio(
     return cast(dict[str, Any], row[0])
 
 
+def _executar_export(
+    connection: Conexao, pessoa: UUID, loja: UUID, de: date, ate: date
+) -> dict[str, Any]:
+    _context(connection, pessoa, EXPORT, loja)
+    row = connection.execute(
+        "select app_private.export_sales_rows(%s,%s,%s,%s,null,%s)",
+        (pessoa, loja, de, ate, uuid4()),
+    ).fetchone()
+    assert row is not None
+    return cast(dict[str, Any], row[0])
+
+
 def _export(
-    loja: UUID = LOJA_A, de: date = date(2026, 10, 1), ate: date = date(2026, 10, 31)
+    loja: UUID = LOJA_A,
+    de: date = date(2026, 10, 1),
+    ate: date = date(2026, 10, 31),
+    pessoa: UUID = DONO,
 ) -> dict[str, Any]:
     assert RUNTIME_URL
     with psycopg.connect(RUNTIME_URL) as connection:
-        _context(connection, DONO, EXPORT, loja)
-        row = connection.execute(
-            "select app_private.export_sales_rows(%s,%s,%s,%s,null,%s)",
-            (DONO, loja, de, ate, uuid4()),
-        ).fetchone()
+        resultado = _executar_export(connection, pessoa, loja, de, ate)
         connection.commit()
-    assert row is not None
-    return cast(dict[str, Any], row[0])
+    return resultado
 
 
 def _linhas(relatorio: dict[str, Any]) -> set[tuple[str, str, int, int]]:
@@ -318,6 +339,25 @@ def test_periodo_invertido_ou_longo_demais_e_recusado() -> None:
         _relatorio(de=date(2026, 10, 2), ate=date(2026, 10, 1))
     with pytest.raises(psycopg.errors.InvalidParameterValue):
         _relatorio(de=date(2025, 1, 1), ate=date(2026, 10, 31))
+    # Até 366 dias de calendário, contando as duas pontas: o 367º é recusado.
+    assert _relatorio(de=date(2025, 10, 1), ate=date(2026, 10, 1))["rows"] is not None
+    with pytest.raises(psycopg.errors.InvalidParameterValue):
+        _relatorio(de=date(2025, 10, 1), ate=date(2026, 10, 2))
+
+
+def test_as_funcoes_fixam_o_search_path_com_pg_temp_no_fim() -> None:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        linhas = connection.execute(
+            "select p.proname, p.prosecdef, array_to_string(p.proconfig, ',') "
+            "from pg_proc p join pg_namespace n on n.oid = p.pronamespace "
+            "where n.nspname = 'app_private' "
+            "and p.proname in ('read_sales_report','export_sales_rows') order by p.proname",
+        ).fetchall()
+    assert linhas == [
+        ("export_sales_rows", True, "search_path=pg_catalog, app_private, public, pg_temp"),
+        ("read_sales_report", True, "search_path=pg_catalog, app_private, public, pg_temp"),
+    ]
 
 
 def test_saida_sem_dado_pessoal_nem_payload() -> None:
@@ -352,3 +392,34 @@ def test_export_tem_limite_de_taxa() -> None:
             erro = falha
             break
     assert erro is not None and erro.sqlstate == "P4291"
+
+
+def test_limite_de_taxa_vale_para_exports_simultaneos() -> None:
+    # 4 exports já gravados no minuto. A primeira conexão faz o 5º e segura a
+    # transação aberta; a segunda, ao mesmo tempo, precisa esperar a trava do
+    # ator e então ver 5 e ser recusada. Sem a trava, as duas contariam 4.
+    for _ in range(4):
+        _export(pessoa=CONCORRENTE)
+    assert RUNTIME_URL
+    resultado: dict[str, BaseException | None] = {"erro": None}
+
+    def segunda() -> None:
+        assert RUNTIME_URL
+        try:
+            with psycopg.connect(RUNTIME_URL) as outra:
+                _executar_export(outra, CONCORRENTE, LOJA_A, date(2026, 10, 1), date(2026, 10, 31))
+                outra.commit()
+        except BaseException as falha:  # noqa: BLE001 - o teste confere o tipo abaixo
+            resultado["erro"] = falha
+
+    with psycopg.connect(RUNTIME_URL) as primeira:
+        _executar_export(primeira, CONCORRENTE, LOJA_A, date(2026, 10, 1), date(2026, 10, 31))
+        linha = threading.Thread(target=segunda)
+        linha.start()
+        linha.join(timeout=2)
+        assert linha.is_alive(), "a segunda exportação não esperou a trava do ator"
+        primeira.commit()
+    linha.join(timeout=10)
+    assert not linha.is_alive()
+    erro = resultado["erro"]
+    assert isinstance(erro, psycopg.errors.DatabaseError) and erro.sqlstate == "P4291"

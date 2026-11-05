@@ -11,7 +11,7 @@ Regra de contagem, por compra `(integração, sha da compra)`:
   não cria linha, e reaprovação da mesma compra não conta segunda venda;
 - **estorno**: o primeiro `purchase.refunded` ou `subscription.cancelled`;
 - o dia é o de São Paulo (a loja vende em BRL), e o período é inclusivo nas
-  duas pontas, até 366 dias.
+  duas pontas, até 366 dias de calendário (a diferença entre as datas vai até 365).
 
 O valor em R$ fica para a v2: o webhook do Financial não traz valor
 (combinado com a trilha Dinheiro na #562).
@@ -19,7 +19,9 @@ O valor em R$ fica para a v2: o webhook do Financial não traz valor
 Nada de dado pessoal sai daqui: nem e-mail, nem identidade, nem payload. A
 compra aparece no CSV pelos 12 primeiros caracteres do sha que o próprio
 ingress guarda. O export grava `audit_event` e tem limite de 5 por minuto por
-pessoa, contado no banco, para valer em todas as réplicas.
+pessoa, contado no banco, para valer em todas as réplicas. Uma trava por
+pessoa (`pg_advisory_xact_lock`) vem antes da contagem, para exports
+simultâneos não passarem juntos.
 
 O `downgrade` só remove as duas funções: não há dado a preservar.
 
@@ -85,7 +87,7 @@ _GUARDA = """
             not in ('seller_owner','seller_admin') then
         raise exception 'sales report context is not authorized' using errcode='42501';
       end if;
-      if p_from is null or p_to is null or p_to < p_from or p_to - p_from > __DIAS__ then
+      if p_from is null or p_to is null or p_to < p_from or p_to - p_from >= __DIAS__ then
         raise exception 'invalid sales report period' using errcode='22023';
       end if;
 """
@@ -118,7 +120,7 @@ _LEITURA_MOLDE = """
     create function app_private.read_sales_report(
       p_actor uuid,p_seller uuid,p_from date,p_to date,p_product uuid
     ) returns jsonb language plpgsql stable security definer
-    set search_path=pg_catalog,app_private,public as $$
+    set search_path=pg_catalog,app_private,public,pg_temp as $$
     declare resultado jsonb;
     begin
 __GUARDA__
@@ -150,13 +152,16 @@ _EXPORT_MOLDE = """
     create function app_private.export_sales_rows(
       p_actor uuid,p_seller uuid,p_from date,p_to date,p_product uuid,p_request uuid
     ) returns jsonb language plpgsql volatile security definer
-    set search_path=pg_catalog,app_private,public as $$
+    set search_path=pg_catalog,app_private,public,pg_temp as $$
     declare resultado jsonb; total integer;
     begin
 __GUARDA__
       if p_request is null then
         raise exception 'sales report context is not authorized' using errcode='42501';
       end if;
+      -- Trava por pessoa até o fim da transação: dois exports ao mesmo tempo
+      -- não leem a mesma contagem antes de um deles gravar a auditoria.
+      perform pg_advisory_xact_lock(hashtextextended('appsell.sales_export:' || p_actor::text, 0));
       if (select count(*) from public.audit_event audit
           where audit.actor_identity_user_id=p_actor
             and audit.action='commerce.sales_exported'

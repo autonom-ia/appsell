@@ -99,11 +99,14 @@ async def _get(app: FastAPI, caminho: str) -> httpx.Response:
 
 def test_periodo_da_query_aceita_so_datas_iso_e_ordem() -> None:
     assert periodo_da_query("2026-10-01", "2026-10-31") == (date(2026, 10, 1), date(2026, 10, 31))
+    # 366 dias de calendário, contando as duas pontas, ainda passam.
+    assert periodo_da_query("2025-10-01", "2026-10-01") == (date(2025, 10, 1), date(2026, 10, 1))
     for de, ate in (
         ("2026-10-31", "2026-10-01"),
         ("01/10/2026", "2026-10-31"),
         ("2026-10-01T00:00", "2026-10-31"),
         ("2025-01-01", "2026-10-31"),
+        ("2025-10-01", "2026-10-02"),
         (None, "2026-10-31"),
     ):
         assert periodo_da_query(de, ate) is None

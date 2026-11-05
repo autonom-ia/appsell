@@ -38,14 +38,14 @@ _ERROS = {
 
 
 def periodo_da_query(de: str | None, ate: str | None) -> tuple[date, date] | None:
-    """Datas `AAAA-MM-DD`, início antes ou igual ao fim, até 366 dias."""
+    """Datas `AAAA-MM-DD`, início antes ou igual ao fim, até 366 dias de calendário."""
     if de is None or ate is None or len(de) != _TAMANHO_DATA_ISO or len(ate) != _TAMANHO_DATA_ISO:
         return None
     try:
         inicio, fim = date.fromisoformat(de), date.fromisoformat(ate)
     except ValueError:
         return None
-    if fim < inicio or (fim - inicio).days > PERIODO_MAXIMO_DIAS:
+    if fim < inicio or (fim - inicio).days >= PERIODO_MAXIMO_DIAS:
         return None
     return inicio, fim
 
