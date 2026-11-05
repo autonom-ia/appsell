@@ -132,3 +132,19 @@ def test_a_descida_derruba_tabelas_antes_das_funcoes(migration: ModuleType) -> N
     ultima_tabela = max(i for i, c in enumerate(comandos) if c.startswith("drop table"))
     normaliza = next(i for i, c in enumerate(comandos) if "normalize_email" in c and "drop" in c)
     assert ultima_tabela < normaliza
+
+
+def test_nao_toca_na_idempotencia_nem_no_caminho_da_compra(migration: ModuleType) -> None:
+    # Pedido da Frente E (#357): a 0066 só reescreve o claim. A inserção de
+    # purchase_confirmed (apply_checkout_fulfillment, 0049) e a dedupe_key
+    # ficam como estão; o caminho ponta a ponta continua provado em
+    # test_postgres_email_outbox.py, que roda contra o banco já na 0066.
+    comandos = _comandos_de(migration, migration.upgrade)
+    assert not any("apply_checkout_fulfillment" in c for c in comandos)
+    assert not any("email_outbox_dedupe_key" in c for c in comandos)
+    assert not any("alter table app_private.email_outbox" in c for c in comandos)
+    assert "dedupe_key" not in migration.TRECHO_DO_CLAIM
+    assert "insert" not in migration.TRECHO_DO_CLAIM
+    reescritas = [c for c in comandos if "pg_get_functiondef" in c]
+    assert sum(migration._CLAIM in c for c in reescritas) == 1
+    assert len(reescritas) == 1 + len(migration._BASES_DO_READY)
