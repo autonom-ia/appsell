@@ -16,7 +16,6 @@ import pytest
 from test_postgres_demo_learning import (
     ADMIN_URL,
     ISSUER,
-    OTHER_USER,
     RUNTIME_URL,
     apply_context,
     identity_id,
@@ -42,16 +41,26 @@ def _clean_grants() -> None:
     )
 
 
-@pytest.fixture(autouse=True)
-def fresh_demo() -> Iterator[None]:
-    manifest, manifest_sha = load_manifest()
+# Comprador próprio deste módulo: o seed de `test_postgres_demo_learning` cria
+# o dele sem `on conflict`, e os dois módulos rodam na mesma base.
+OTHER_USER = UUID("71000000-0000-4000-8000-000000000558")
+
+
+@pytest.fixture(scope="module", autouse=True)
+def other_buyer() -> Iterator[None]:
     admin(
         "insert into identity_user("
         "id,identity_issuer,identity_sub,email_normalized,email_verified) "
-        "values(%s,%s,'other-demo-user','other.demo@autonomia.site',true) "
-        "on conflict do nothing",
+        "values(%s,%s,'access-decision-other-buyer','access.decision.other@autonomia.site',true)",
         (OTHER_USER, ISSUER),
     )
+    yield
+    admin("delete from identity_user where id=%s", (OTHER_USER,))
+
+
+@pytest.fixture(autouse=True)
+def fresh_demo(other_buyer: None) -> Iterator[None]:
+    manifest, manifest_sha = load_manifest()
     _clean_grants()
     reset_once(manifest, manifest_sha)
     yield
