@@ -167,10 +167,10 @@ export function ProductOffersPanel(props: ProductOffersPanelProps) {
         <form onSubmit={(event) => void createOffer(event)} aria-labelledby="product-offer-new-title">
           <fieldset disabled={disabled || isBusy}>
             <legend id="product-offer-new-title">Novo preço</legend>
-            <label className="editor-field">Nome no checkout
+            <label className="editor-field">Nome interno
               <input id="new_offer_title" name="new_offer_title" value={title} onChange={(event) => setTitle(event.target.value)} minLength={2} maxLength={120} required autoComplete="off"/>
             </label>
-            <label className="editor-field">Descrição no checkout
+            <label className="editor-field">Descrição interna
               <textarea id="new_offer_summary" name="new_offer_summary" value={summary} onChange={(event) => setSummary(event.target.value)} maxLength={500} rows={3} autoComplete="off"/>
             </label>
             <label className="editor-field">Preço

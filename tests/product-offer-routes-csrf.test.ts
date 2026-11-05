@@ -147,6 +147,19 @@ describe("CSRF das rotas da segunda oferta", () => {
     expect(ok.status).toBe(200);
   });
 
+  it("pedido sem _csrf é recusado antes da api nas duas rotas", async () => {
+    const semCsrf = (form: Record<string, string>) =>
+      Object.fromEntries(Object.entries(form).filter(([name]) => name !== "_csrf"));
+    const semCsrfCriar = semCsrf(createForm("x"));
+    const semCsrfPadrao = semCsrf(defaultForm("x"));
+    const criada = await createOffer(formRequest(OFFERS_PATH, semCsrfCriar), productContext);
+    const trocada = await setDefault(formRequest(DEFAULT_PATH, semCsrfPadrao), offerContext);
+    expect(criada.status).toBe(422);
+    expect(trocada.status).toBe(422);
+    expect(createDomainProductOffer).not.toHaveBeenCalled();
+    expect(setDomainDefaultOffer).not.toHaveBeenCalled();
+  });
+
   it("token da própria ação de outra sessão também é recusado", async () => {
     const response = await setDefault(
       formRequest(DEFAULT_PATH, defaultForm(csrfTokenForSession("outra-sessao", SET_DEFAULT_OFFER_CSRF_ACTION))),

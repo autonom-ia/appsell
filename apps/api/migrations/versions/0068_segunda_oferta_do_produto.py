@@ -171,6 +171,13 @@ begin
      or p_title is null or btrim(p_title) <> p_title
      or octet_length(p_title) not between 2 and 120
      or p_summary is null or octet_length(p_summary) > 500
+     -- Caractere de controle, como o CHECK da tabela e o caminho antigo, mas
+     -- conferido código a código em vez de por expressão regular.
+     or exists (
+       select 1 from generate_series(1, char_length(p_title || p_summary)) as position
+       where ascii(substr(p_title || p_summary, position, 1)) < 32
+          or ascii(substr(p_title || p_summary, position, 1)) = 127
+     )
      or p_unit_amount_minor is null or p_unit_amount_minor < 0
      or p_unit_amount_minor > 99999999999
      or p_currency is null or length(p_currency) <> 3

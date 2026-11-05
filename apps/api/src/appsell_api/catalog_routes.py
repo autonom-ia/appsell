@@ -175,8 +175,16 @@ class OfferCreateBody(BaseModel):
     @field_validator("title")
     @classmethod
     def validate_title(cls, value: str) -> str:
-        if value != value.strip():
-            raise ValueError("title must not start or end with spaces")
+        if value != value.strip() or _contains_control(value):
+            raise ValueError("invalid title")
+        return value
+
+    @field_validator("summary")
+    @classmethod
+    def validate_summary(cls, value: str) -> str:
+        # Mesma regra do resumo no caminho antigo do editor (offer_summary).
+        if _contains_control(value):
+            raise ValueError("invalid summary")
         return value
 
     @field_validator("currency")

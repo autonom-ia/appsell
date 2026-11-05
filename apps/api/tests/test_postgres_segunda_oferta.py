@@ -43,6 +43,8 @@ def _cria_oferta(
     price: int = 9700,
     contexto: UUID | None = None,
     barreira: Barrier | None = None,
+    titulo: str = "Oferta extra",
+    resumo: str = "",
 ) -> UUID:
     assert RUNTIME_URL
     offer_id = uuid4()
@@ -58,8 +60,8 @@ def _cria_oferta(
                 seller_id,
                 product_id,
                 offer_id,
-                "Oferta extra",
-                "",
+                titulo,
+                resumo,
                 price,
                 "BRL",
                 "one_time",
@@ -91,9 +93,11 @@ def _torna_padrao(
     *,
     contexto: UUID | None = None,
     barreira: Barrier | None = None,
+    versao: int | None = None,
 ) -> tuple[Any, ...]:
     assert RUNTIME_URL
-    versao = _oferta(seller_id, offer_id)[1]
+    if versao is None:
+        versao = _oferta(seller_id, offer_id)[1]
     with psycopg.connect(RUNTIME_URL) as connection:
         apply_context(
             connection, SELLER_USER, contexto or seller_id, "catalog.offer.default.update"
@@ -390,3 +394,58 @@ def test_padrao_em_rascunho_troca_para_oferta_a_venda() -> None:
     linha = _torna_padrao(seller_id, product_id, extra)
     assert (linha[1], bool(linha[2])) == (offer_id, True)
     assert _padroes(seller_id, product_id) == [extra]
+
+
+def _ofertas_do_produto(seller_id: UUID, product_id: UUID) -> list[tuple[Any, ...]]:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        return connection.execute(
+            "select id, status, version, is_default, title from offer "
+            "where seller_organization_id=%s and catalog_product_id=%s order by id",
+            (seller_id, product_id),
+        ).fetchall()
+
+
+def test_loja_b_no_proprio_contexto_com_ids_de_a_recebe_28000() -> None:
+    """B assina como B e passa o próprio seller, mas o produto e a oferta são de A."""
+    seller_a, product_a, _ = _produto_vendido()
+    extra_a = _cria_oferta(seller_a, product_a)
+    _transiciona(seller_a, product_a, extra_a, "draft", "active")
+    antes = _ofertas_do_produto(seller_a, product_a)
+    seller_b, _, _ = create_graph()
+
+    assert _sqlstate(lambda: _cria_oferta(seller_b, product_a)) == "28000"
+    versao_a = _oferta(seller_a, extra_a)[1]
+    assert (
+        _sqlstate(lambda: _torna_padrao(seller_b, product_a, extra_a, versao=versao_a)) == "28000"
+    )
+    assert _ofertas_do_produto(seller_a, product_a) == antes
+
+
+def test_duas_trocas_para_o_mesmo_alvo_e_versao_uma_perde_com_40001() -> None:
+    seller_id, product_id, _ = _produto_vendido()
+    extra = _cria_oferta(seller_id, product_id)
+    _transiciona(seller_id, product_id, extra, "draft", "active")
+    versao = _oferta(seller_id, extra)[1]
+    barreira = Barrier(2)
+
+    def tenta() -> str:
+        return _resultado(
+            lambda: _torna_padrao(seller_id, product_id, extra, versao=versao, barreira=barreira)
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        resultados = sorted(pool.map(lambda _: tenta(), range(2)))
+    assert resultados == ["40001", "ok"]
+    assert _padroes(seller_id, product_id) == [extra]
+
+
+def test_caractere_de_controle_no_titulo_ou_resumo_e_recusado() -> None:
+    seller_id, product_id, _ = _produto_vendido()
+    for titulo, resumo in (("Plano\x01", ""), ("Plano", "linha\nnova"), ("Plano\x7f", "")):
+
+        def cria(titulo: str = titulo, resumo: str = resumo) -> None:
+            _cria_oferta(seller_id, product_id, titulo=titulo, resumo=resumo)
+
+        assert _sqlstate(cria) == "22023"
+    assert len(_ofertas_do_produto(seller_id, product_id)) == 1

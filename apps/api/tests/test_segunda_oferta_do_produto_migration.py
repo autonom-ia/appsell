@@ -51,6 +51,15 @@ def test_abre_a_segunda_oferta_sem_mudar_o_default(migration: ModuleType) -> Non
     assert not any("is_default" in c and "set default" in c for c in comandos)
 
 
+def test_create_product_offer_recusa_caractere_de_controle_sem_regex(
+    migration: ModuleType,
+) -> None:
+    sql = migration._FUNCAO_CRIA
+    assert "generate_series(1, char_length(p_title || p_summary))" in sql
+    assert "< 32" in sql and "= 127" in sql
+    assert "~" not in sql
+
+
 def test_so_create_product_offer_grava_oferta_nao_padrao(migration: ModuleType) -> None:
     sql = migration._FUNCAO_CRIA
     assert "'draft', p_unit_amount_minor, p_currency, p_billing_period, false" in sql

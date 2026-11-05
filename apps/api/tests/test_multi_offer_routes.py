@@ -162,3 +162,18 @@ def test_mapeamento_dos_codigos_novos() -> None:
     for sqlstate, detail in (("P4093", "default_offer_locked"), ("P4094", "offer_limit_reached")):
         mapped = _domain_error(SimpleNamespace(orig=_DriverError(sqlstate)))  # type: ignore[arg-type]
         assert (mapped.status_code, mapped.detail) == (409, detail)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("campo", "valor"), [("title", "Plano\x01"), ("summary", "a\nb")])
+async def test_caractere_de_controle_recusado_antes_do_banco(
+    monkeypatch: pytest.MonkeyPatch, campo: str, valor: str
+) -> None:
+    monkeypatch.setenv(MULTI_OFFER_SELLERS_ENV, str(SELLER_ID))
+    corpo = json.loads(_create_body())
+    corpo[campo] = valor
+    auth = FakeAuth(seller_id=SELLER_ID, result=FakeResult())
+    async with client_for(auth) as client:
+        response = await client.post(CREATE_PATH, content=json.dumps(corpo).encode())
+    assert response.status_code == 422
+    assert auth.session.calls == []

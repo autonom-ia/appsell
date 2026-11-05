@@ -1004,19 +1004,6 @@ export function ProductEditorWorkspace({
               {detail.offer.status === "archived" ? <p>Vendas encerradas. Crie um novo produto para vender novamente.</p> : null}
               <p className="form-note" role="status">A alteração do acesso é feita na etapa Distribuição, depois que o rascunho estiver salvo.</p>
             </section>
-            {/* Ofertas extras (#553): só existe quando a api liga a loja. Desligado, o DOM é o de antes. */}
-            {multiOffer.enabled ? (
-              <ProductOffersPanel
-                sellerId={sellerId}
-                productId={productId}
-                offers={multiOffer.offers}
-                csrfCreate={csrf.offerCreate}
-                csrfDefault={csrf.offerDefault}
-                csrfStatus={csrf.offerStatus}
-                disabled={detail.status === "archived" || dirty}
-                onChanged={() => loadDetail(true)}
-              />
-            ) : null}
           </>
         ) : null}
 
@@ -1082,6 +1069,20 @@ export function ProductEditorWorkspace({
         ) : null}
       </form>
       )}
+      {/* Ofertas extras (#553): fora do form do editor, que tem o próprio submit.
+          Só existe quando a api liga a loja; desligado, o DOM é o de antes. */}
+      {section === "oferta" && multiOffer.enabled ? (
+        <ProductOffersPanel
+          sellerId={sellerId}
+          productId={productId}
+          offers={multiOffer.offers}
+          csrfCreate={csrf.offerCreate}
+          csrfDefault={csrf.offerDefault}
+          csrfStatus={csrf.offerStatus}
+          disabled={detail.status === "archived" || dirty}
+          onChanged={() => loadDetail(true)}
+        />
+      ) : null}
 
 
       {publishDialogOpen ? (

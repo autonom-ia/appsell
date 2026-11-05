@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Request } from "@playwright/test";
 import { login } from "./support/login";
 
 /**
@@ -61,20 +61,82 @@ async function openOfferStep(page: Page, multiOffer: boolean) {
   await page.route("**/access-links", async (route) => {
     await route.fulfill({ json: { access_links: [] } });
   });
+  await page.route("**/materials", async (route) => {
+    await route.fulfill({ json: { materials: [], csrf: {} } });
+  });
   await page.goto(`/products/${SELLER_ID}/${PRODUCT_ID}?section=oferta`);
   await expect(page.getByRole("heading", { name: "IA na prática" })).toBeVisible();
   await expect(page.getByRole("group", { name: "Preço e cobrança" })).toBeVisible();
 }
 
+/**
+ * Erro de página e console.error reprovam o teste: um `<form>` dentro de outro,
+ * por exemplo, só aparece como aviso do React no console.
+ */
+function watchErrors(page: Page, allowedFailedUrl?: string) {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() !== "error") return;
+    const failedLoad = allowedFailedUrl !== undefined
+      && message.location().url.includes(allowedFailedUrl)
+      && message.text().startsWith("Failed to load resource");
+    if (!failedLoad) errors.push(`console.error: ${message.text()}`);
+  });
+  return errors;
+}
+
+function field(body: string, name: string, value: string) {
+  return body.includes(`name="${name}"\r\n\r\n${value}\r\n`);
+}
+
 test.describe("#553 — ofertas extras atrás da lista de lojas", () => {
   test("desligado: a etapa Preço não ganha nada", async ({ page }) => {
+    const errors = watchErrors(page);
     await login(page);
     await openOfferStep(page, false);
     await expect(page.getByRole("heading", { name: "Outros preços" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Tornar principal" })).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
+  test("ligado: cria um preço pela tela com um POST, sem salvar o rascunho do editor", async ({ page }) => {
+    const errors = watchErrors(page);
+    await login(page);
+    await openOfferStep(page, true);
+    const mutations: Request[] = [];
+    page.on("request", (request) => {
+      if (request.method() !== "GET" && request.url().includes(`/products/${PRODUCT_ID}`)) {
+        mutations.push(request);
+      }
+    });
+    await page.route(`**/api/sellers/${SELLER_ID}/products/${PRODUCT_ID}/offers`, async (route) => {
+      await route.fulfill({ status: 201, json: { offer_id: "novo", offer_version: 1, created: true } });
+    });
+
+    const panel = page.getByRole("region", { name: "Outros preços" });
+    await panel.getByLabel("Nome interno").fill("Plano trimestral");
+    await panel.getByLabel("Preço").fill("147,50");
+    await panel.getByRole("combobox", { name: "Cobrança" }).click();
+    await page.getByRole("option", { name: "Assinatura anual" }).click();
+    await panel.getByRole("button", { name: "Criar preço em rascunho" }).click();
+
+    await expect.poll(() => mutations.length).toBeGreaterThan(0);
+    await expect(panel.getByLabel("Nome interno")).toHaveValue("");
+    expect(mutations.map((request) => `${request.method()} ${new URL(request.url()).pathname}`)).toEqual([
+      `POST /api/sellers/${SELLER_ID}/products/${PRODUCT_ID}/offers`
+    ]);
+    const body = mutations[0]!.postDataBuffer()?.toString("utf8") ?? "";
+    expect(field(body, "_csrf", "oc")).toBe(true);
+    expect(field(body, "title", "Plano trimestral")).toBe(true);
+    expect(field(body, "unit_amount_minor", "14750")).toBe(true);
+    expect(field(body, "currency", "BRL")).toBe(true);
+    expect(field(body, "billing_period", "yearly")).toBe(true);
+    expect(errors).toEqual([]);
   });
 
   test("ligado: lista as ofertas, sem select nativo, e troca a padrão com o próprio token", async ({ page }) => {
+    const errors = watchErrors(page);
     await login(page);
     await openOfferStep(page, true);
     const panel = page.getByRole("region", { name: "Outros preços" });
@@ -97,9 +159,12 @@ test.describe("#553 — ofertas extras atrás da lista de lojas", () => {
     await panel.getByRole("button", { name: "Tornar principal" }).click();
     await expect.poll(() => sent).not.toBeNull();
     expect(sent).toMatchObject({ csrf: "od", version: "2" });
+    expect(errors).toEqual([]);
   });
 
   test("ligado: a recusa da api aparece para o vendedor", async ({ page }) => {
+    // O 403 aparece no console como recurso que falhou; só essa linha é aceita.
+    const errors = watchErrors(page, `/offers/${EXTRA_ID}/default`);
     await login(page);
     await openOfferStep(page, true);
     await page.route(`**/offers/${EXTRA_ID}/default`, async (route) => {
@@ -108,5 +173,6 @@ test.describe("#553 — ofertas extras atrás da lista de lojas", () => {
     const panel = page.getByRole("region", { name: "Outros preços" });
     await panel.getByRole("button", { name: "Tornar principal" }).click();
     await expect(panel.getByRole("alert")).toHaveText("Esta loja ainda não pode ter mais de um preço.");
+    expect(errors).toEqual([]);
   });
 });
