@@ -205,5 +205,35 @@ class ExpensiveWorkflowTriggerTests(unittest.TestCase):
                 self.assertIn("APPSELL_ARTIFACT_EVENT=workflow_dispatch", source)
 
 
+
+class OwnershipWorkflowTests(unittest.TestCase):
+    """#552: posse de pastas por rótulo, fora do ci-gate."""
+
+    def setUp(self) -> None:
+        self.source = workflow("posse.yml")
+
+    def test_label_changes_rerun_only_the_ownership_check(self) -> None:
+        # Catches: a label change re-running the suites, or producing a green
+        # ci-gate without them.
+        self.assertIn("types: [opened, synchronize, reopened, labeled, unlabeled]", self.source)
+        self.assertNotIn("labeled", workflow("app-ci.yml"))
+        self.assertIn("python3 scripts/ci/check_ownership.py", self.source)
+        self.assertNotIn("check_ownership", workflow("app-ci.yml"))
+
+    def test_untrusted_pr_data_reaches_the_shell_only_through_env(self) -> None:
+        run = self.source.split("run: |", 1)[1]
+        self.assertNotIn("${{", run)
+        self.assertIn("LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}", self.source)
+        self.assertIn("persist-credentials: false", self.source)
+        self.assertIn("contents: read", self.source)
+
+    def test_actions_are_sha_pinned(self) -> None:
+        for line in self.source.splitlines():
+            if "uses:" in line:
+                reference = line.split("uses:", 1)[1].split("#", 1)[0].strip()
+                version = reference.rpartition("@")[2]
+                self.assertEqual(40, len(version), line)
+                self.assertTrue(all(char in "0123456789abcdef" for char in version), line)
+
 if __name__ == "__main__":
     unittest.main()

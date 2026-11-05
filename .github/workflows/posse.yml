@@ -1,0 +1,40 @@
+name: Posse de pastas
+
+# #552: o PR que mexe em arquivo de uma trilha precisa do rótulo dela
+# (docs/programa/posse.json). Workflow próprio, e não passo do ci-gate, porque
+# trocar rótulo não pode rodar as suítes de novo nem produzir um ci-gate verde
+# sem elas. Consultivo até o ruleset exigir o check `posse` (OK do Rodrigo).
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: appsell-posse-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  posse:
+    name: posse
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout with history for the PR diff
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check folder ownership against the trilha labels
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          set -euo pipefail
+          files="$RUNNER_TEMP/posse-files.txt"
+          git diff --name-only --no-renames "$BASE_SHA...$HEAD_SHA" > "$files"
+          python3 scripts/ci/check_ownership.py --files "$files" --labels "$LABELS"
