@@ -34,6 +34,8 @@ import structlog
 from fastapi import FastAPI
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from appsell_api.redacao_pessoal import redigir_dado_pessoal
+
 _InformacaoDeExcecao = tuple[type[BaseException], BaseException, TracebackType | None]
 
 __all__ = [
@@ -569,6 +571,9 @@ def _redigir_texto(texto: str) -> str:
     # tamanho, para que `<REDACTED>` nao ocupe o lugar de onde a credencial
     # comecava e impeca o casamento do `(?<=://)`.
     texto = _CREDENCIAL_EM_URL.sub(_REDIGIDO, texto)
+    # E-mail, CPF/CNPJ, query string e cabecalho sensivel (#549): o que o
+    # tamanho nao denuncia.
+    texto = redigir_dado_pessoal(texto)
     texto = _CARTAO_CANDIDATO.sub(_redigir_se_for_cartao, texto)
     texto = _BASE64.sub(_REDIGIDO, texto)
     return _SEGREDO.sub(_redigir_se_nao_for_identificador, texto)
