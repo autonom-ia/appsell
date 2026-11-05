@@ -228,6 +228,9 @@ APPSELL_API_CONTEXT_HMAC_KEY_B64="$api_context_hmac_key_b64" \
 APPSELL_API_WEBHOOK_LOCAL_KEYRING_B64_JSON="$api_webhook_local_keyring_b64_json" \
 APPSELL_API_WEBHOOK_FORBIDDEN_KEY_SHA256_JSON="$api_webhook_forbidden_key_sha256_json" \
   docker compose -p "$project" up -d --build --wait api
+# O parser de PDF roda sem sandbox do sistema no Linux: o contêiner é o único
+# isolamento, e ele precisa negar rede e escrita (#468).
+scripts/test-pdf-sandbox-isolation.sh "$project"
 curl --fail --silent "http://127.0.0.1:${api_port}/health/live"
 curl --fail --silent "http://127.0.0.1:${api_port}/health/ready"
 APPSELL_TEST_DOMAIN_API_URL="http://127.0.0.1:${api_port}" \

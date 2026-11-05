@@ -75,6 +75,15 @@ jobs:
             --head "$head" \
             --github-output "$GITHUB_OUTPUT"
 
+      # #551: uma cabeça Alembic só e nenhum número repetido, em todo evento.
+      # Na fila de merge isto roda sobre o resultado integrado, que é onde
+      # duas migrations 0066 de PRs diferentes se encontram.
+      - name: Check the migration chain has one head and unique numbers
+        id: migration-shape
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: python3 scripts/ci/check_migration_chain.py apps/api/migrations/versions
+
       - name: Validate workflow schema with checksum-pinned actionlint
         if: ${{ !cancelled() && steps.route.outputs.workflow == 'true' }}
         shell: bash
@@ -248,6 +257,24 @@ jobs:
           pnpm test:e2e
           pnpm test:e2e:production
 
+      # A flaky E2E passes on retry and leaves the gate green, so the only
+      # evidence of its cause is the trace of the failed attempt (#519, #526).
+      # Playwright keeps a trace only for failed attempts (retain-on-failure),
+      # so this uploads nothing on a clean run. The suite runs as the local demo
+      # persona against throwaway services: no CI secret reaches the browser.
+      - name: Keep Playwright traces of failed or retried attempts
+        id: e2e-traces
+        if: ${{ !cancelled() && steps.cert-web.outcome != 'skipped' && hashFiles('test-results/**/trace.zip') != '' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: playwright-traces-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            test-results/**/trace.zip
+            test-results/**/error-context.md
+          retention-days: 7
+          if-no-files-found: ignore
+
       - name: Certify API on the integrated SHA
         id: cert-api
         if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && steps.policy.outputs.product_checks == 'true') || github.event_name == 'workflow_dispatch') && steps.route.outputs.api == 'true' }}
@@ -281,7 +308,11 @@ jobs:
       - name: Certify storage on the integrated SHA
         id: cert-storage
         if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && steps.policy.outputs.product_checks == 'true') || github.event_name == 'workflow_dispatch') && steps.route.outputs.storage == 'true' }}
-        run: ./scripts/test-storage-vertical.sh
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/test-storage-vertical.sh
+          ./scripts/test-storage-minio.sh
 
       - name: Certify OpenBao Transit on the integrated SHA
         id: cert-openbao
@@ -406,6 +437,7 @@ jobs:
           CI_MERGE_QUEUE_ACTIVE: ${{ vars.APPSELL_MERGE_QUEUE_ACTIVE }}
           CI_ROUTE_JSON: ${{ steps.route.outputs.route_json }}
           CI_OUTCOME_ROUTE: ${{ steps.route.outcome }}
+          CI_OUTCOME_MIGRATION_SHAPE: ${{ steps.migration-shape.outcome }}
           CI_OUTCOME_AUDIT_API: ${{ steps.audit-api.outcome }}
           CI_OUTCOME_FAST_WEB: ${{ steps.fast-web.outcome }}
           CI_OUTCOME_FAST_API: ${{ steps.fast-api.outcome }}

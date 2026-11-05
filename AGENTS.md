@@ -176,11 +176,10 @@ no runbook, nunca presumida.
 
 ## 8. Regras que mais quebram aqui
 
-- Sem `<select>` nativo. O projeto **ainda não tem** o componente de escolha
-  acessível (padrão *select-only combobox*; referência: Bio
-  `src/components/ui/choice-select.tsx`). Quem tocar primeiro numa tela com
-  `<select>` cria o componente em `app/components/ui/` e troca todos os da tela.
-  Hoje há `<select>` em `product-editor-workspace.tsx`,
+- Sem `<select>` nativo. Toda escolha única usa `ChoiceSelect`
+  (`app/components/ui/choice-select.tsx`, padrão *select-only combobox*,
+  teclado em `choice-keys.ts`). Quem tocar numa tela com `<select>` troca
+  todos os da tela por ele. Hoje ainda há `<select>` em
   `product-draft-workspace.tsx`, `lesson-material-panel.tsx`,
   `lesson-asset-panel.tsx` e no painel de demo.
 - Sem regex para interpretar o que uma pessoa escreveu.
@@ -192,7 +191,7 @@ no runbook, nunca presumida.
 
 <!-- BEGIN:nextjs-agent-rules -->
 
-# This is NOT the Next.js you know
+## This is NOT the Next.js you know
 
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
 

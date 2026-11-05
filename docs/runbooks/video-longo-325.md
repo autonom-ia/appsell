@@ -74,9 +74,9 @@ for s in api pdf-sandbox asset-worker web; do
 done
 
 # 2. specs, para poder restaurar
-mkdir -p /tmp/backup-specs-20260901
+mkdir -p <dir-do-release>
 for s in api pdf-sandbox asset-worker web; do
-  docker service inspect sell-autonomia_$s > /tmp/backup-specs-20260901/$s.json
+  docker service inspect sell-autonomia_$s > <dir-do-release>/$s.json
 done
 
 # 3. marcar as imagens em uso com o SHA delas, ANTES de construir
@@ -95,7 +95,7 @@ descartável, com o fonte montado do host.
 ```bash
 docker run --rm --network container:<api> \
   -v <home-do-operador>/appsell-src-<sha>/apps/api:/work -w /work \
-  -e APPSELL_MIGRATOR_DATABASE_URL="postgresql+psycopg://appsell_native_admin:<senha>@sell-autonomia_postgres-native-90:5432/appsell_native_90" \
+  -e APPSELL_MIGRATOR_DATABASE_URL="postgresql+psycopg://<usuario-admin>:<senha>@<host-do-banco>:5432/<banco>" \
   --entrypoint sh easypanel/sell-autonomia/api:<sha> \
   -c 'cd /work && python -m alembic upgrade head'
 ```
