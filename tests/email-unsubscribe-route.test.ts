@@ -103,6 +103,7 @@ describe("POST /api/email/unsubscribe", () => {
       respostas.push(await POST(pedido(JSON.stringify({ token: TOKEN }))));
     }
     expect(respostas.slice(0, 10).every((r) => r.status === 200)).toBe(true);
+    expect(respostas[10].status).toBe(429);
     expect(respostas[11].status).toBe(429);
     const outroIp = await POST(pedido(JSON.stringify({ token: TOKEN }), { ip: "198.51.100.2" }));
     expect(outroIp.status).toBe(200);

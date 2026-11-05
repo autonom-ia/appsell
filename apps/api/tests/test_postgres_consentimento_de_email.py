@@ -268,26 +268,86 @@ def _enfileirar(connection: Conexao, kind: str, payload: str, email: str = EMAIL
     return cast(UUID, row[0])
 
 
-def test_transacional_sai_mesmo_para_endereco_suprimido() -> None:
-    _registrar_worker()
-    assert ADMIN_URL and RUNTIME_URL
-    with psycopg.connect(ADMIN_URL) as connection:
-        _suprimir_globalmente(connection, EMAIL_SUPRIMIDO)
-        item = _enfileirar(connection, "purchase_confirmed", '{"schema_version":1}')
-        connection.commit()
+def _claim_na_transacao(connection: Conexao) -> set[str]:
+    """Reivindica dentro de uma transação que o teste reverte: os itens de
+    outras suítes voltam como estavam."""
+    _context(connection, WORKER, WORKER_CAPABILITY)
     vistos: set[str] = set()
     for _ in range(64):
-        with psycopg.connect(RUNTIME_URL) as connection:
-            _context(connection, WORKER, WORKER_CAPABILITY)
-            row = connection.execute(
-                "select app_private.claim_email_outbox(%s,%s,8,30)", (WORKER, EMAIL_LABEL)
-            ).fetchone()
-            connection.commit()
+        row = connection.execute(
+            "select app_private.claim_email_outbox(%s,%s,8,30)", (WORKER, EMAIL_LABEL)
+        ).fetchone()
         lote = cast(list[dict[str, object]], row[0] if row else [])
         if not lote:
-            break
+            return vistos
         vistos.update(str(entrada["id"]) for entrada in lote)
+    raise AssertionError("email outbox did not drain")
+
+
+def _sem_constraint_de_kind(connection: Conexao) -> None:
+    connection.execute(
+        "alter table app_private.email_outbox drop constraint email_outbox_kind_check"
+    )
+
+
+@pytest.mark.parametrize("kind", ["purchase_confirmed", "access_link_redeemed"])
+def test_transacional_sai_mesmo_para_endereco_suprimido(kind: str) -> None:
+    _registrar_worker()
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        _suprimir_globalmente(connection, EMAIL_SUPRIMIDO)
+        item = _enfileirar(connection, kind, '{"schema_version":1}')
+        _suprimir_globalmente(connection, EMAIL_SEM_CONSENTIMENTO)
+        sem_consentimento = _enfileirar(
+            connection, kind, '{"schema_version":1}', EMAIL_SEM_CONSENTIMENTO
+        )
+        vistos = _claim_na_transacao(connection)
+        connection.rollback()
+    assert {str(item), str(sem_consentimento)} <= vistos
+
+
+def test_opcional_com_consentimento_chega_ao_worker() -> None:
+    # Controle positivo: a regra não bloqueia quem consentiu.
+    _registrar_worker()
+    _consentir(COMPRADOR, LOJA_A, "content_reminder")
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        _sem_constraint_de_kind(connection)
+        item = _enfileirar(
+            connection,
+            "store_news_digest",
+            '{"schema_version":1,"purpose":"content_reminder"}',
+            EMAIL,
+        )
+        vistos = _claim_na_transacao(connection)
+        connection.rollback()
     assert str(item) in vistos
+
+
+def test_opcional_com_lease_vencido_e_barrado_ao_voltar() -> None:
+    _registrar_worker()
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        _sem_constraint_de_kind(connection)
+        item = _enfileirar(
+            connection,
+            "store_news_digest",
+            '{"schema_version":1,"purpose":"store_news"}',
+            EMAIL_SEM_CONSENTIMENTO,
+        )
+        connection.execute(
+            "update app_private.email_outbox set status='leased',lease_owner='outro-worker',"
+            "lease_fence=1,attempt_count=1,lease_expires_at=clock_timestamp()-interval '1 minute' "
+            "where id=%s",
+            (item,),
+        )
+        vistos = _claim_na_transacao(connection)
+        estado = connection.execute(
+            "select status,error_code from app_private.email_outbox where id=%s", (item,)
+        ).fetchone()
+        connection.rollback()
+    assert str(item) not in vistos
+    assert estado == ("dead_letter", "no_consent")
 
 
 def test_opcional_sem_permissao_nunca_chega_ao_worker() -> None:
@@ -297,9 +357,7 @@ def test_opcional_sem_permissao_nunca_chega_ao_worker() -> None:
     _registrar_worker()
     assert ADMIN_URL
     with psycopg.connect(ADMIN_URL) as connection:
-        connection.execute(
-            "alter table app_private.email_outbox drop constraint email_outbox_kind_check"
-        )
+        _sem_constraint_de_kind(connection)
         _suprimir_globalmente(connection, EMAIL_SUPRIMIDO)
         suprimido = _enfileirar(
             connection, "store_news_digest", '{"schema_version":1,"purpose":"store_news"}'
@@ -430,3 +488,141 @@ def test_esquecer_o_titular_apaga_o_consentimento_e_mantem_a_supressao() -> None
     assert consentimentos == (0,)
     assert _bloqueio(LOJA_A, email) == "suppressed"
     assert _bloqueio(LOJA_B, email) == "no_consent"
+
+
+def _datas(loja: UUID, email: str, token: str) -> tuple[object, ...]:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        consentimento = connection.execute(
+            "select revoked_at from app_private.email_consent "
+            "where scope_id=%s and email_normalized=%s and purpose='store_news'",
+            (loja, email),
+        ).fetchone()
+        usado = connection.execute(
+            "select used_at from app_private.email_unsubscribe_token where token_sha256=%s",
+            (hashlib.sha256(token.encode()).hexdigest(),),
+        ).fetchone()
+    assert consentimento is not None and usado is not None
+    return (consentimento[0], usado[0])
+
+
+def test_segundo_clique_nao_muda_as_datas_nem_audita_de_novo() -> None:
+    _consentir(COMPRADOR, LOJA_A)
+    token = _emitir_token(LOJA_A, EMAIL)
+    assert _descadastrar(token) is True
+    antes = _datas(LOJA_A, EMAIL, token)
+    assert _descadastrar(token) is True
+    assert _datas(LOJA_A, EMAIL, token) == antes
+    assert all(valor is not None for valor in antes)
+
+
+def test_descadastro_da_plataforma_nao_cala_as_lojas() -> None:
+    _consentir(COMPRADOR, LOJA_A)
+    _consentir(COMPRADOR, None, "platform_news")
+    assert _descadastrar(_emitir_token(None, EMAIL, "platform_news")) is True
+    assert _bloqueio(LOJA_A, EMAIL, "platform_news") == "suppressed"
+    assert _bloqueio(LOJA_A, EMAIL) is None
+
+
+def test_reconsentir_nao_tira_supressao_manual_nem_global() -> None:
+    assert ADMIN_URL
+    _consentir(OUTRA_PESSOA, LOJA_B)
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "insert into app_private.email_suppression(scope_id,email_sha256,reason) "
+            "values(%s,app_private.email_sha256(%s),'manual') on conflict do nothing",
+            (LOJA_B, EMAIL_SUPRIMIDO),
+        )
+        _suprimir_globalmente(connection, EMAIL_SUPRIMIDO)
+        connection.commit()
+    _consentir(OUTRA_PESSOA, LOJA_B)
+    with psycopg.connect(ADMIN_URL) as connection:
+        restantes = connection.execute(
+            "select (select count(*) from app_private.email_suppression "
+            " where scope_id=%s and email_sha256=app_private.email_sha256(%s)),"
+            "(select count(*) from app_private.email_suppression_global "
+            " where email_sha256=app_private.email_sha256(%s))",
+            (LOJA_B, EMAIL_SUPRIMIDO, EMAIL_SUPRIMIDO),
+        ).fetchone()
+    assert restantes == (1, 1)
+    assert _bloqueio(LOJA_B, EMAIL_SUPRIMIDO) == "suppressed"
+
+
+def test_revogar_pela_conta_e_auditado() -> None:
+    _consentir(COMPRADOR, LOJA_B, "content_reminder")
+    assert _bloqueio(LOJA_B, EMAIL, "content_reminder") is None
+    pedido = uuid4()
+    assert RUNTIME_URL and ADMIN_URL
+    with psycopg.connect(RUNTIME_URL) as connection:
+        _context(connection, COMPRADOR, CONSENT, LOJA_B)
+        connection.execute(
+            "select app_private.revoke_email_consent(%s,'content_reminder',%s)", (LOJA_B, pedido)
+        )
+        connection.commit()
+    assert _bloqueio(LOJA_B, EMAIL, "content_reminder") == "no_consent"
+    with psycopg.connect(ADMIN_URL) as connection:
+        fonte = connection.execute(
+            "select revoked_source from app_private.email_consent where scope_id=%s "
+            "and email_normalized=%s and purpose='content_reminder'",
+            (LOJA_B, EMAIL),
+        ).fetchone()
+        auditoria = connection.execute(
+            "select action from audit_event where request_id=%s", (pedido,)
+        ).fetchone()
+    assert fonte == ("account",)
+    assert auditoria == ("notification.email_consent_revoked",)
+
+
+def test_consentimento_da_plataforma_e_descadastro_sao_auditados() -> None:
+    pedido = uuid4()
+    assert RUNTIME_URL and ADMIN_URL
+    with psycopg.connect(RUNTIME_URL) as connection:
+        _context(connection, COMPRADOR, CONSENT)
+        connection.execute(
+            "select app_private.record_email_consent(null,'platform_news',1::smallint,"
+            "'account',%s)",
+            (pedido,),
+        )
+        connection.commit()
+    with psycopg.connect(ADMIN_URL) as connection:
+        antes = connection.execute(
+            "select count(*) from audit_event where action='notification.email_unsubscribed'"
+        ).fetchone()
+    _descadastrar(_emitir_token(None, EMAIL, "platform_news"))
+    with psycopg.connect(ADMIN_URL) as connection:
+        consentimento = connection.execute(
+            "select action,seller_organization_id from audit_event where request_id=%s", (pedido,)
+        ).fetchone()
+        depois = connection.execute(
+            "select count(*) from audit_event where action='notification.email_unsubscribed'"
+        ).fetchone()
+        metadados = connection.execute(
+            "select metadata::text from audit_event where action like 'notification.email_%%' "
+            "order by created_at desc limit 5"
+        ).fetchall()
+    assert consentimento == ("notification.email_consent_granted", None)
+    assert antes is not None and depois is not None and depois[0] == antes[0] + 1
+    # A auditoria não guarda endereço.
+    assert not any("@" in str(linha[0]) for linha in metadados)
+
+
+def test_troca_de_email_nao_leva_o_consentimento() -> None:
+    pessoa = uuid4()
+    antigo = f"consentimento.antigo.{pessoa.hex[:8]}@example.test"
+    novo = f"consentimento.novo.{pessoa.hex[:8]}@example.test"
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "insert into identity_user(id,identity_issuer,identity_sub,email_normalized,"
+            "email_verified) values(%s,%s,%s,%s,true)",
+            (pessoa, ISSUER, f"consent-troca-{pessoa.hex[:8]}", antigo),
+        )
+        connection.commit()
+    _consentir(pessoa, LOJA_A)
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "update identity_user set email_normalized=%s where id=%s", (novo, pessoa)
+        )
+        connection.commit()
+    assert _bloqueio(LOJA_A, antigo) is None
+    assert _bloqueio(LOJA_A, novo) == "no_consent"

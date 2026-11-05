@@ -128,3 +128,17 @@ async def test_banco_fora_responde_503_sem_ecoar_o_token() -> None:
     resposta = await _post(_app(chamadas, resultado=erro), b'{"token":"' + TOKEN.encode() + b'"}')
     assert resposta.status_code == 503
     assert TOKEN not in resposta.text
+
+
+@pytest.mark.asyncio
+async def test_o_token_nunca_vai_ao_log() -> None:
+    from structlog.testing import capture_logs
+
+    chamadas: list[dict[str, Any]] = []
+    with capture_logs() as registros:
+        await _post(_app(chamadas), b'{"token":"' + TOKEN.encode() + b'"}')
+        await _post(_app(chamadas, resultado=False), b'{"token":"' + TOKEN.encode() + b'"}')
+        erro = DBAPIError("select", {}, Exception(TOKEN))
+        await _post(_app(chamadas, resultado=erro), b'{"token":"' + TOKEN.encode() + b'"}')
+    assert registros
+    assert all(TOKEN not in repr(registro) for registro in registros)

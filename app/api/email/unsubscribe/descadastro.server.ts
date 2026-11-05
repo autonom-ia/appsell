@@ -26,10 +26,29 @@ export async function descadastrarPorToken(token: string): Promise<void> {
       cache: "no-store",
       signal: controller.signal
     });
-    if (resposta.status !== 204) throw new DescadastroIndisponivel();
-  } catch {
+    if (resposta.status !== 204) {
+      registrarFalha("upstream_status", null, resposta.status);
+      throw new DescadastroIndisponivel();
+    }
+  } catch (error) {
+    if (error instanceof DescadastroIndisponivel) throw error;
+    registrarFalha("upstream_unavailable", error, null);
     throw new DescadastroIndisponivel();
   } finally {
     clearTimeout(timeout);
   }
+}
+
+// Só o motivo, o NOME do erro e o status: a mensagem pode ecoar a URL, e o
+// token nunca entra no log.
+function registrarFalha(motivo: string, error: unknown, status: number | null): void {
+  console.error(
+    JSON.stringify({
+      level: "error",
+      marker: "appsell.email_unsubscribe.unavailable",
+      reason: motivo,
+      error_name: error instanceof Error ? error.name : null,
+      upstream_status: status
+    })
+  );
 }

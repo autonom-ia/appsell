@@ -69,6 +69,8 @@ def test_so_o_registro_e_o_descadastro_chegam_ao_runtime(migration: ModuleType) 
     assert concedidas == [
         "grant execute on function app_private.record_email_consent"
         "(uuid,text,smallint,text,uuid) to appsell_runtime",
+        "grant execute on function app_private.revoke_email_consent"
+        "(uuid,text,uuid) to appsell_runtime",
         "grant execute on function app_private.unsubscribe_email(text) to appsell_runtime",
     ]
 
@@ -85,6 +87,7 @@ def test_o_claim_bloqueia_antes_de_escolher_candidatos(migration: ModuleType) ->
     assert trecho.endswith(migration.ANCORA_DO_CLAIM.splitlines(keepends=True)[1])
     assert "not app_private.email_kind_is_transactional(queued.kind)" in trecho
     assert "status in ('pending','retry')" in trecho
+    assert "queued.status='leased' and queued.lease_expires_at<=clock_timestamp()" in trecho
     # A âncora tem de existir, uma vez, no texto da função que a 0049 criou.
     caixa = (VERSOES / "0049_caixa_de_saida_de_email.py").read_text(encoding="utf-8")
     assert caixa.count(migration.ANCORA_DO_CLAIM) == 1

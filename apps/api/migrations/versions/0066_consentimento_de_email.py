@@ -100,13 +100,16 @@ ANCORA_DO_CLAIM = """        and queued.attempt_count>=10;
 """
 TRECHO_DO_CLAIM = """        and queued.attempt_count>=10;
       -- 0066 (#561): opcional sem permissão não chega ao worker. Transacional
-      -- nunca entra aqui.
+      -- nunca entra aqui. Inclui o lease vencido, que o claim abaixo pegaria
+      -- de volta: um opcional reivindicado antes do descadastro não sai depois.
+      -- Ignora available_at de propósito: o bloqueio vale já, não no retry.
       update app_private.email_outbox queued set status='dead_letter',
         lease_owner=null,lease_expires_at=null,
         error_code=app_private.email_optional_block_reason(
           queued.seller_organization_id,queued.recipient_email,queued.payload->>'purpose'),
         updated_at=clock_timestamp()
-      where queued.status in ('pending','retry')
+      where (queued.status in ('pending','retry')
+          or (queued.status='leased' and queued.lease_expires_at<=clock_timestamp()))
         and not app_private.email_kind_is_transactional(queued.kind)
         and app_private.email_optional_block_reason(
           queued.seller_organization_id,queued.recipient_email,
@@ -142,7 +145,7 @@ NORMALIZACAO = (
     """,
     """
     create function app_private.email_sha256(p_email text)
-    returns text language sql immutable strict
+    returns text language sql stable strict
     set search_path=pg_catalog,app_private,public as $$
       select encode(digest(convert_to(app_private.normalize_email(p_email),'UTF8'),'sha256'),'hex')
     $$
@@ -315,10 +318,9 @@ _FUNCOES_MOLDE = (
           and scoped.reason='unsubscribed';
       insert into public.audit_event(seller_organization_id,actor_identity_user_id,
         action,target_type,target_id,result,request_id,metadata)
-      select p_seller,v_identity,'notification.email_consent_granted','email_consent',
+      values (p_seller,v_identity,'notification.email_consent_granted','email_consent',
         v_identity,'succeeded',p_request,
-        jsonb_build_object('purpose',p_purpose,'text_version',p_text_version,'source',p_source)
-      where p_seller is not null;
+        jsonb_build_object('purpose',p_purpose,'text_version',p_text_version,'source',p_source));
     end $$
     """,
     # Emissão interna, para as funções que enfileiram e-mail opcional. Não é
@@ -360,8 +362,11 @@ _FUNCOES_MOLDE = (
       if not found then
         return false;
       end if;
-      update app_private.email_unsubscribe_token unsubscribe set
-        used_at=coalesce(unsubscribe.used_at,clock_timestamp())
+      if v_row.used_at is not null then
+        -- Segundo clique: nada muda, nem as datas.
+        return true;
+      end if;
+      update app_private.email_unsubscribe_token unsubscribe set used_at=clock_timestamp()
         where unsubscribe.token_sha256=v_row.token_sha256;
       update app_private.email_consent consent set status='revoked',
         revoked_at=clock_timestamp(),revoked_source='unsubscribe_link',
@@ -372,7 +377,44 @@ _FUNCOES_MOLDE = (
       insert into app_private.email_suppression(scope_id,email_sha256,reason)
         values (v_row.scope_id,v_row.email_sha256,'unsubscribed')
         on conflict (scope_id,email_sha256) do nothing;
+      insert into public.audit_event(seller_organization_id,actor_identity_user_id,
+        action,target_type,target_id,result,request_id,metadata)
+      values (nullif(v_row.scope_id,'__PLATAFORMA__'::uuid),null,
+        'notification.email_unsubscribed','email_consent',null,'succeeded',gen_random_uuid(),
+        jsonb_build_object('purpose',v_row.purpose,'source','unsubscribe_link'));
       return true;
+    end $$
+    """,
+    # Revogar pela conta: a pessoa logada, para o endereço da identidade dela.
+    # Não grava supressão; o consentimento só deixa de valer.
+    """
+    create function app_private.revoke_email_consent(
+      p_seller uuid,p_purpose text,p_request uuid
+    ) returns void language plpgsql security definer
+    set search_path=pg_catalog,app_private,public as $$
+    declare v_identity uuid; v_email text;
+    begin
+      v_identity := app_private.context_uuid('identity_user_id');
+      if app_private.context_text('capability') is distinct from '__CAPACIDADE__'
+         or v_identity is null or p_request is null
+         or p_purpose is null or p_purpose not in (__FINALIDADES__)
+         or (p_purpose in (__FINALIDADES_DA_PLATAFORMA__)) <> (p_seller is null)
+         or (p_seller is not null and app_private.context_uuid('seller_organization_id')
+               is distinct from p_seller) then
+        raise exception 'email consent is not authorized' using errcode='28000';
+      end if;
+      select app_private.normalize_email(person.email_normalized) into v_email
+        from public.identity_user person where person.id=v_identity;
+      update app_private.email_consent consent set status='revoked',
+        revoked_at=clock_timestamp(),revoked_source='account',updated_at=clock_timestamp()
+        where consent.scope_id=coalesce(p_seller,'__PLATAFORMA__'::uuid)
+          and consent.email_normalized=v_email and consent.purpose=p_purpose
+          and consent.status='granted';
+      insert into public.audit_event(seller_organization_id,actor_identity_user_id,
+        action,target_type,target_id,result,request_id,metadata)
+      values (p_seller,v_identity,'notification.email_consent_revoked','email_consent',
+        v_identity,'succeeded',p_request,
+        jsonb_build_object('purpose',p_purpose,'source','account'));
     end $$
     """,
     # Exclusão da conta (Decisão 019): quem executa o pedido chama esta função.
@@ -422,6 +464,7 @@ _FUNCOES = tuple(_preencher(molde) for molde in _FUNCOES_MOLDE)
 
 _ASSINATURAS_DO_RUNTIME = (
     "app_private.record_email_consent(uuid,text,smallint,text,uuid)",
+    "app_private.revoke_email_consent(uuid,text,uuid)",
     "app_private.unsubscribe_email(text)",
 )
 _ASSINATURAS_INTERNAS = (

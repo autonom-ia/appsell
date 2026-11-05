@@ -71,17 +71,19 @@ async function corpoLimitado(request: NextRequest): Promise<string | null> {
 }
 
 export async function POST(request: NextRequest) {
+  // Limite de taxa antes de ler qualquer byte do corpo.
+  if (!dentroDoLimite(ipDe(request))) return responder(429, { error: "muitas_tentativas" });
   const declarado = Number(request.headers.get("content-length") ?? "0");
   if (declarado > MAX_CORPO_BYTES) return responder(413, { error: "corpo_grande" });
   const corpo = await corpoLimitado(request);
   if (corpo === null) return responder(413, { error: "corpo_grande" });
-  if (!dentroDoLimite(ipDe(request))) return responder(429, { error: "muitas_tentativas" });
 
   const token = tokenDoPedido(request, corpo);
   if (token) {
     try {
       await descadastrarPorToken(token);
     } catch {
+      // descadastro.server.ts já registrou o motivo, sem o token.
       return responder(503, { error: "descadastro_indisponivel" });
     }
   }
