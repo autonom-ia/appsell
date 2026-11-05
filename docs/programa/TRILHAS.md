@@ -12,7 +12,7 @@ Orquestração Sell antes de mexer**, e ela atualiza esta tabela.
 | 1 · Plataforma | `trilha:plataforma` | `lib/csrf.ts`, `lib/mutation-protection.server.ts`, `lib/internal-envelope.ts`, `lib/crypto.ts`, `lib/token-vault*`, `lib/*-key-envelope-provider.server.ts`, `.github/`, `scripts/` (inclui `scripts/ci/`), `deploy/`, `infra/`, `compose.yaml`, `next.config.ts`, `proxy.ts`, configs de teste (`vitest*.config.ts`, `playwright*.config.ts`), `apps/api/src/appsell_api/main.py`, `db.py`, `config.py`, `service_auth.py`, `internal_requests.py`, `apps/api/alembic.ini`, `docs/runbooks/`, `docs/PRODUCTION_CURRENT.md` |
 | 2 · Dinheiro | `trilha:dinheiro` | `app/api/checkout/`, `app/api/registration-checkout/`, `app/api/demo-checkout/`, `app/api/webhooks/`, `app/api/financial/`, `app/(protected)/checkout/`, `app/(protected)/settings/payouts/`, `lib/payments/` (novo), `lib/stripe*`, `lib/financial*`, `lib/checkout*`, `lib/payout-status.ts`, `lib/offer-price.ts`, `lib/appsell-pricing.ts`, `lib/product-checkout-availability.server.ts`, em `app/components/`: `checkout-workspace.tsx`, `stripe-checkout-card.tsx`, `payout-connect-card.tsx`, `demo-checkout-workspace.tsx`; na api `checkout_routes.py`, `provision_checkout.py`, `configure_seller_financial.py`, `payout_routes.py`, `payout_sync_routes.py`, `fulfillment_worker.py`, `demo_checkout_worker.py`, `webhook_*`; no repo Financial, só código novo e isolado; mudar o que existe exige análise de impacto e OK do Rodrigo antes (AGENTS.md §7) |
 | 3 · Loja, Produto e Membros | `trilha:membros` | `app/s/`, `app/c/` (resgate do link de acesso), `app/(protected)/products/`, `app/(protected)/library/`, `app/(protected)/settings/` (exceto `payouts/`), `app/auth/`, `app/api/me/`, `app/api/library/`, `app/api/sellers/`, `app/api/storefronts/`, `app/api/session/`, em `app/components/`: `access-link-*`, `access-links-panel.tsx`, `account-workspace.tsx`, `curriculum-workspace.tsx`, `free-access-workspace.tsx`, `lesson-description.tsx`, `library-workspace.tsx`, `product-card.tsx`, `product-draft-workspace.tsx`, `product-editor-workspace.tsx`, `product-headline-panel.tsx`, `product-image-panel.tsx`, `seller-onboarding-card.tsx`, `store-image-panel.tsx`, `store-settings-workspace.tsx`, `storefront-brand.tsx`, `settings-nav.tsx` e a UI comum (`app-shell.tsx`, `shell-profile-context.tsx`, `sell-brand.tsx`, `seller-space.ts`, `accessible-dialog.tsx`, `use-unsaved-changes.ts`); `lib/members/` (novo), `lib/learning-*`, `lib/oauth*`, `lib/identity-*`, `lib/session-*`, `lib/buyer-*`, `lib/store-*`, `lib/product-art.ts`, `lib/product-cover.ts`, `lib/access-link-token.server.ts`, `lib/post-login-redirect.ts`, `lib/rbac-roles.ts`, `lib/public-storefront.ts`, `lib/email/`, na api `catalog_routes.py`, `routes.py`, `public_routes.py`, `seller_settings_routes.py`, `cover_routes.py`, `learning_routes.py`, `email_worker.py`, `email_layout.py`; repos de Identity |
-| 4 · Crescimento e Dados | `trilha:crescimento` | `app/(protected)/dashboard/`, `app/components/dashboard*`, `lib/dashboard-*`, `lib/tracking/`, `lib/reports/` (novos); ponte com o Chat2You (PRs lá entram pela fila de lá) |
+| 4 · Crescimento e Dados | `trilha:crescimento` | `app/(protected)/dashboard/`, `app/components/dashboard*`, `lib/dashboard-*`, `lib/tracking/`, `lib/reports/`, `app/api/tracking/`, `apps/api/src/appsell_api/sales_report_routes.py`, `apps/api/src/appsell_api/campaign_link_routes.py` (novos); ponte com o Chat2You (PRs lá entram pela fila de lá) |
 | 5 · Checkout e Funil | `trilha:checkout` | Recebe da trilha 2 `app/api/checkout/`, `app/(protected)/checkout/`, `checkout-workspace.tsx` e `stripe-checkout-card.tsx` **quando** o PR que cria `lib/payments/` estiver no ar e a Orquestração Sell registrar a passagem nesta tabela |
 | 6 · Mídia e Comunidade | `trilha:midia` | na api `asset_*`, `storage_*`, `video_*`, `pdf_*`; em `app/components/`: `learning-player.tsx`, `lesson-asset-panel.tsx`, `lesson-material-panel.tsx`, `protected-pdf-reader.tsx`, `protected-pdf-study.tsx`; `lib/asset-media.ts`, `lib/private-learning-asset.server.ts`, `lib/protected-pdf-links.server.ts`, `lib/pdf-study*`, `lib/community/` (novo) |
 | Plataforma (superadmin) | `trilha:plataforma` | `app/(protected)/platform/`, `app/api/platform/`, `platform_routes.py`, `platform_bootstrap_routes.py` |
@@ -47,19 +47,22 @@ Plataforma. Uma reserva vale por 7 dias sem PR aberto.
 | `0063` | 2 · Dinheiro | #147 | mergeada (#459) |
 | `0064` | 2 · Dinheiro | #382 | mergeada (#469) |
 | `0065` | 2 · Dinheiro | #439 (identidade legal da loja) | mergeada |
-| `0066` | F · Crescimento | #561 | PR #575 |
+| `0066` | F · Crescimento | #561 | mergeada (#575) |
 | `0067` | D · Produto e preço | #553 fase 1 | PR #572 |
 | `0068` | D · Produto e preço | #553 fase 2 | reservada em 05/11 |
-| `0069` | E · Conteúdo e membros | #558 | reservada em 05/11 |
+| `0069` | E · Conteúdo e membros | #558 | PR #583 |
 | `0070` | E · Conteúdo e membros | #559 | reservada em 05/11 |
 | `0071` | 1 · Plataforma | #550 | PR #578 |
-| `0072` | F · Crescimento | #562 | reservada em 05/11 |
-| `0073` | 2 · Dinheiro | #545 | reservada em 05/11 |
+| `0072` | F · Crescimento | #562 | PR #594 |
+| `0073` | 2 · Dinheiro | #545 | PR #587 |
+| `0074` | 2 · Dinheiro | #542 | PR #593 |
+| `0075` | F · Crescimento | #563 | PR #599 |
+| `0076` | F · Crescimento | #561 (search_path) | PR #597 |
 
 O número reservado é da trilha, mas o `down_revision` é o head da `main` na
 hora do merge: quem entra depois rebaseia. O CI (`migration_shape`, #551) barra
 número repetido e cabeça dupla.
 
-Ordem de merge combinada em 05/11: #575 (0066) → #572 (0067) → #472 → #578 (0071).
+Ordem de merge: pela prontidão, com o `down_revision` no head da `main` na hora do merge. O #575 (0066) entrou em 05/11; o próximo é o #572 (0067).
 
-Head atual da `main`: `0065_dono_da_conta_payout`.
+Head atual da `main`: `0066_consentimento_de_email`.
