@@ -6,6 +6,10 @@
 // escrito por quem mandou o pedido, e não é endereço de ninguém. Por isso vale
 // o último item, e nunca o primeiro.
 //
+// Sem o cabeçalho (só fora da produção: teste, `next dev`), o endereço é o
+// marcador fixo. Nenhum outro cabeçalho serve de reserva: um limite de taxa não
+// pode cair num valor que o próprio pedido escolhe.
+//
 // Se um dia houver outro proxy entre a borda e a web, o último item passa a ser
 // o dele, e o limite de taxa junta todo mundo. Quem mudar a frente da web
 // revisa esta função.
@@ -20,5 +24,5 @@ export function ipDoCliente(pedido: ComCabecalhos): string {
     const ultimo = itens.at(-1);
     if (ultimo) return ultimo;
   }
-  return pedido.headers.get("x-real-ip")?.trim() || IP_DESCONHECIDO;
+  return IP_DESCONHECIDO;
 }

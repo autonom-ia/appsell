@@ -36,13 +36,13 @@ describe("ipDoCliente", () => {
     expect(ipDoCliente(pedido({ "x-forwarded-for": "198.51.100.20, " }))).toBe("198.51.100.20");
   });
 
-  it("sem X-Forwarded-For, usa o X-Real-IP", () => {
-    expect(ipDoCliente(pedido({ "x-real-ip": "198.51.100.30" }))).toBe("198.51.100.30");
+  it("o X-Real-IP do pedido não serve de reserva", () => {
+    expect(ipDoCliente(pedido({ "x-real-ip": "198.51.100.30" }))).toBe(IP_DESCONHECIDO);
   });
 
-  it("X-Forwarded-For vazio cai no X-Real-IP", () => {
+  it("X-Forwarded-For vazio é o marcador fixo", () => {
     expect(ipDoCliente(pedido({ "x-forwarded-for": " , ", "x-real-ip": "198.51.100.30" }))).toBe(
-      "198.51.100.30"
+      IP_DESCONHECIDO
     );
   });
 
