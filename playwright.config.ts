@@ -18,7 +18,10 @@ export default defineConfig({
     trace: "retain-on-failure"
   },
   webServer: {
-    command: "pnpm dev",
+    // No CI, o servidor sobe por um filtro que só deixa passar para o log
+    // as linhas de compilação; o resto da saída nunca chega ao log público
+    // (tests/e2e/support/dev-server-log.mjs, #585).
+    command: process.env.CI ? "node tests/e2e/support/dev-server-log.mjs" : "pnpm dev",
     url: "http://localhost:3000",
     // Desde o #350, sessão sem papel é falha fechada: sem menu de vendedor e
     // sem CSRF de produto. Os specs entram como persona demo, que só existe em
@@ -32,6 +35,7 @@ export default defineConfig({
       APPSELL_CHECKOUT_PROVIDER: process.env.APPSELL_CHECKOUT_PROVIDER ?? "local_stripe"
     },
     reuseExistingServer: false,
+    stdout: process.env.CI ? "pipe" : "ignore",
     timeout: 120_000
   },
   projects: [
