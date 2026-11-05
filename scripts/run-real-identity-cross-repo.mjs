@@ -154,6 +154,8 @@ try {
     APP_ENV: "ci",
     APPSELL_OAUTH_MODE: "identity",
     APPSELL_PUBLIC_ORIGIN: `http://localhost:${ports.sell}`,
+    // #544: o web não escolhe o provedor do checkout sozinho.
+    APPSELL_CHECKOUT_PROVIDER: "local_stripe",
     APPSELL_DEMO_ENABLED: "false",
     APPSELL_IDENTITY_DEMO_ENABLED: "true",
     APPSELL_DEMO_SUPERADMIN_ENABLED: "true",
