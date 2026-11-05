@@ -44,8 +44,22 @@ Plataforma. Uma reserva vale por 7 dias sem PR aberto.
 | Número | Trilha | Issue | Estado |
 |---|---|---|---|
 | `0062` | 2 · Dinheiro | #465 | mergeada (#466) |
-| `0063` | 2 · Dinheiro | #147 | PR #459 |
-| `0064` | 2 · Dinheiro | #382 | PR #469 |
-| `0065` | 2 · Dinheiro | #439 (identidade legal da loja) | reservada em 24/10 |
+| `0063` | 2 · Dinheiro | #147 | mergeada (#459) |
+| `0064` | 2 · Dinheiro | #382 | mergeada (#469) |
+| `0065` | 2 · Dinheiro | #439 (identidade legal da loja) | mergeada |
+| `0066` | F · Crescimento | #561 | PR #575 |
+| `0067` | D · Produto e preço | #553 fase 1 | PR #572 |
+| `0068` | D · Produto e preço | #553 fase 2 | reservada em 05/11 |
+| `0069` | E · Conteúdo e membros | #558 | reservada em 05/11 |
+| `0070` | E · Conteúdo e membros | #559 | reservada em 05/11 |
+| `0071` | 1 · Plataforma | #550 | PR #578 |
+| `0072` | F · Crescimento | #562 | reservada em 05/11 |
+| `0073` | 2 · Dinheiro | #545 | reservada em 05/11 |
 
-Head atual da `main`: `0062_mapping_do_produto_novo`.
+O número reservado é da trilha, mas o `down_revision` é o head da `main` na
+hora do merge: quem entra depois rebaseia. O CI (`migration_shape`, #551) barra
+número repetido e cabeça dupla.
+
+Ordem de merge combinada em 05/11: #575 (0066) → #572 (0067) → #472 → #578 (0071).
+
+Head atual da `main`: `0065_dono_da_conta_payout`.
