@@ -30,7 +30,7 @@ all`, acesso só por função `security definer` com `pg_temp` no fim do
 O `downgrade` apaga links, atribuições e contagens.
 
 Revision ID: 0075_links_e_atribuicao_utm
-Revises: 0065_dono_da_conta_payout
+Revises: 0066_consentimento_de_email
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "0075_links_e_atribuicao_utm"
-down_revision = "0065_dono_da_conta_payout"
+down_revision = "0066_consentimento_de_email"
 branch_labels = None
 depends_on = None
 
@@ -57,14 +57,15 @@ READY_ANTES = (
     "'0057_banner_na_vitrine','0058_capa_na_biblioteca','0059_canal_financial_global',"
     "'0060_atualizacao_chega_ao_aluno','0061_o_atraso_alcanca_o_aluno',"
     "'0062_mapping_do_produto_novo','0063_conciliacao_do_acesso',"
-    "'0064_vendas_ativadas_pela_loja','0065_dono_da_conta_payout'))"
+    "'0064_vendas_ativadas_pela_loja','0065_dono_da_conta_payout',"
+    "'0066_consentimento_de_email'))"
 )
 READY_DEPOIS = (
     "'0057_banner_na_vitrine','0058_capa_na_biblioteca','0059_canal_financial_global',"
     "'0060_atualizacao_chega_ao_aluno','0061_o_atraso_alcanca_o_aluno',"
     "'0062_mapping_do_produto_novo','0063_conciliacao_do_acesso',"
     "'0064_vendas_ativadas_pela_loja','0065_dono_da_conta_payout',"
-    "'0075_links_e_atribuicao_utm'))"
+    "'0066_consentimento_de_email','0075_links_e_atribuicao_utm'))"
 )
 _BASES_DO_READY: tuple[str, ...] = (
     "app_private.schema_ready_base_0016()",
