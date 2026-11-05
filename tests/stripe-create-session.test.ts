@@ -72,7 +72,12 @@ vi.mock("@/lib/buyer-identity.server", () => ({
 }));
 
 vi.mock("@/lib/financial-external-checkout.server", () => ({
-  checkoutProvider: () => process.env.APPSELL_CHECKOUT_PROVIDER === "financial_checkout" ? "financial_checkout" : "local_stripe",
+  // Same contract as the real one (#544): only an explicit, known value.
+  checkoutProvider: () => {
+    const value = process.env.APPSELL_CHECKOUT_PROVIDER;
+    if (value === "financial_checkout" || value === "local_stripe") return value;
+    throw new FakeFinancialConfigError("invalid_config: APPSELL_CHECKOUT_PROVIDER");
+  },
   checkoutWebhookEndpointKey: () => process.env.APPSELL_CHECKOUT_WEBHOOK_ENDPOINT_KEY ?? "",
   createFinancialExternalCheckoutIntent,
   createFinancialExternalCheckoutSession,
@@ -136,6 +141,7 @@ const originalEnvironment = { ...process.env };
 describe("POST /api/checkout/stripe/create-session", () => {
   beforeEach(() => {
     process.env.APPSELL_PUBLIC_ORIGIN = ORIGIN;
+    process.env.APPSELL_CHECKOUT_PROVIDER = "local_stripe";
     process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON = JSON.stringify({
       [`${SELLER}/${PRODUCT}`]: { financial_product_key: "prod_codex_v1" }
     });
@@ -149,6 +155,21 @@ describe("POST /api/checkout/stripe/create-session", () => {
 
   afterEach(() => {
     process.env = { ...originalEnvironment };
+  });
+
+  it("#544: a missing or unknown checkout provider charges nothing, on either path (503)", async () => {
+    for (const value of [undefined, "", "unexpected", "Financial_Checkout"]) {
+      if (value === undefined) delete process.env.APPSELL_CHECKOUT_PROVIDER;
+      else process.env.APPSELL_CHECKOUT_PROVIDER = value;
+      const response = await POST(request(validBody));
+      expect(response.status, String(value)).toBe(503);
+      expect(await response.json()).toEqual({ error: "checkout_not_configured" });
+    }
+    expect(readPublicStorefront).not.toHaveBeenCalled();
+    expect(sessionsCreate).not.toHaveBeenCalled();
+    expect(createFinancialExternalCheckoutIntent).not.toHaveBeenCalled();
+    expect(resolveBuyerIdentityMock).not.toHaveBeenCalled();
+    expect(resolveCheckoutPayoutDestination).not.toHaveBeenCalled();
   });
 
   it("rejects a cross-origin request (403) before touching Stripe or the domain", async () => {

@@ -14,12 +14,30 @@ export class FinancialExternalCheckoutError extends Error {
   }
 }
 
+const CHECKOUT_PROVIDERS = ["financial_checkout", "local_stripe"] as const;
+export type CheckoutProvider = (typeof CHECKOUT_PROVIDERS)[number];
+
+// #544: the provider decides where the money goes, so there is no default. A
+// missing or unknown value is a configuration error (named by the variable
+// only) instead of a silent charge on the old path.
 export function checkoutProvider(
   environment: Partial<Record<string, string | undefined>> = process.env
-) {
-  return environment.APPSELL_CHECKOUT_PROVIDER === "financial_checkout"
-    ? "financial_checkout"
-    : "local_stripe";
+): CheckoutProvider {
+  const value = environment.APPSELL_CHECKOUT_PROVIDER;
+  const provider = CHECKOUT_PROVIDERS.find((candidate) => candidate === value);
+  if (!provider) throw new FinancialExternalCheckoutConfigError("invalid_config: APPSELL_CHECKOUT_PROVIDER");
+  return provider;
+}
+
+export function configuredCheckoutProvider(
+  environment: Partial<Record<string, string | undefined>> = process.env
+): CheckoutProvider | null {
+  try {
+    return checkoutProvider(environment);
+  } catch (error) {
+    if (error instanceof FinancialExternalCheckoutConfigError) return null;
+    throw error;
+  }
 }
 
 export function checkoutWebhookEndpointKey(

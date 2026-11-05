@@ -95,6 +95,7 @@ function firstCreateCall(): CreateCall {
 describe("POST /api/checkout/stripe/create-session (direct charge)", () => {
   beforeEach(() => {
     process.env.APPSELL_PUBLIC_ORIGIN = ORIGIN;
+    process.env.APPSELL_CHECKOUT_PROVIDER = "local_stripe";
     process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON = JSON.stringify({
       [`${SELLER}/${PRODUCT}`]: { financial_product_key: "prod_curso_real_v1" }
     });

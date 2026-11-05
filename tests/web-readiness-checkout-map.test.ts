@@ -49,6 +49,37 @@ describe("web readiness: mapa de produtos do checkout", () => {
     expect(await ready()).toEqual({ status: 200, body: expect.objectContaining({ status: "ok", checkout_map: true }) });
   });
 
+  it("#544: reprova o ready e o startup sem o provedor do checkout, ou com valor desconhecido", async () => {
+    process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON = JSON.stringify({
+      "loja/curso": { financial_product_key: "prod_curso" }
+    });
+    for (const value of [undefined, "unexpected"]) {
+      if (value === undefined) delete process.env.APPSELL_CHECKOUT_PROVIDER;
+      else process.env.APPSELL_CHECKOUT_PROVIDER = value;
+      vi.resetModules();
+      expect(await ready(), String(value)).toEqual({
+        status: 503,
+        body: expect.objectContaining({ status: "unavailable", checkout_provider: false })
+      });
+      vi.resetModules();
+      delete (globalThis as unknown as Record<symbol, boolean | undefined>)[Symbol.for("appsell.web.everReady")];
+      const { GET } = await import("@/app/api/health/startup/route");
+      const response = await GET();
+      expect(response.status, String(value)).toBe(503);
+    }
+  });
+
+  it("aprova o provedor explícito", async () => {
+    for (const value of ["local_stripe", "financial_checkout"]) {
+      process.env.APPSELL_CHECKOUT_PROVIDER = value;
+      process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON = JSON.stringify({
+        "loja/curso": { financial_product_key: "prod_curso" }
+      });
+      vi.resetModules();
+      expect(await ready(), value).toEqual({ status: 200, body: expect.objectContaining({ checkout_provider: true }) });
+    }
+  });
+
   it("não reprova pelo mapa quando a venda passa pelo Financial", async () => {
     process.env.APPSELL_CHECKOUT_PROVIDER = "financial_checkout";
     process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON = "{not json";
