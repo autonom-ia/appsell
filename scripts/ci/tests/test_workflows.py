@@ -124,6 +124,17 @@ class AppCiWorkflowTests(unittest.TestCase):
             "CI_OUTCOME_AUDIT_API: ${{ steps.audit-api.outcome }}", self.source
         )
 
+    def test_storage_certification_also_runs_against_minio(self) -> None:
+        # #460: o SeaweedFS aceitava o fechamento sem checksum das partes que
+        # o MinIO da produção recusa. O contrato de multipart roda nos dois.
+        start = self.source.index("id: cert-storage")
+        end = self.source.index("- name:", start)
+        block = self.source[start:end]
+        self.assertIn("./scripts/test-storage-vertical.sh", block)
+        self.assertIn("./scripts/test-storage-minio.sh", block)
+        script = (ROOT / "scripts" / "test-storage-minio.sh").read_text(encoding="utf-8")
+        self.assertIn("sha256sum --check --status", script)
+
     def test_diff_uses_event_specific_shas_and_full_history(self) -> None:
         self.assertIn("fetch-depth: 0", self.source)
         self.assertIn("github.event.pull_request.base.sha", self.source)

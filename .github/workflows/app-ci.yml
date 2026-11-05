@@ -281,7 +281,11 @@ jobs:
       - name: Certify storage on the integrated SHA
         id: cert-storage
         if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && steps.policy.outputs.product_checks == 'true') || github.event_name == 'workflow_dispatch') && steps.route.outputs.storage == 'true' }}
-        run: ./scripts/test-storage-vertical.sh
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/test-storage-vertical.sh
+          ./scripts/test-storage-minio.sh
 
       - name: Certify OpenBao Transit on the integrated SHA
         id: cert-openbao
