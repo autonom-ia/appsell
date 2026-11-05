@@ -33,11 +33,8 @@ export default defineConfig({
     stdout: process.env.CI ? "pipe" : "ignore",
     timeout: 120_000
   },
-  // TEMPORÁRIO, só durante a prova da #585: o webkit-mobile roda primeiro,
-  // para separar o navegador da segunda metade do run. Volta à ordem
-  // normal antes do merge.
   projects: [
-    { name: "webkit-mobile", use: { ...devices["iPhone 15"] } },
-    { name: "chromium", use: { ...devices["Desktop Chrome"] } }
+    { name: "chromium", use: { ...devices["Desktop Chrome"] } },
+    { name: "webkit-mobile", use: { ...devices["iPhone 15"] } }
   ]
 });
