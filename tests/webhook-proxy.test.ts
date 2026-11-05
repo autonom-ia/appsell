@@ -94,4 +94,21 @@ describe("checkout webhook proxy", () => {
     })).resolves.toEqual({ status: 202, payload: { status: "accepted" } });
     expect(fetchMock).toHaveBeenCalledOnce();
   });
+
+  it("#544: a entrega de quem já pagou não depende do provedor do checkout", async () => {
+    // Catches: the fail-closed provider check leaking into the fulfillment
+    // path, which would leave a paid purchase without access.
+    delete process.env.APPSELL_CHECKOUT_PROVIDER;
+    const rawBody = Buffer.from('{"type":"purchase.approved"}');
+    const fetchMock = vi.fn(async () => Response.json({ status: "accepted" }, { status: 202 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(proxyCheckoutWebhook(endpointKey, rawBody, {
+      protocol: "external_checkout",
+      eventId: "evt-544",
+      timestamp: "1784000000",
+      signature: `v1=${"d".repeat(64)}`
+    })).resolves.toEqual({ status: 202, payload: { status: "accepted" } });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
 });

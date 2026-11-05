@@ -1,6 +1,6 @@
 import { Suspense } from "react";
 import { ProductEditorWorkspace } from "../../../../components/product-editor-workspace";
-import { checkoutProvider } from "@/lib/financial-external-checkout.server";
+import { configuredCheckoutProvider } from "@/lib/financial-external-checkout.server";
 
 export default async function ProductEditorPage({ params }: { params: Promise<{ sellerId: string; productId: string }> }) {
   const { sellerId, productId } = await params;
@@ -9,7 +9,9 @@ export default async function ProductEditorPage({ params }: { params: Promise<{ 
       <ProductEditorWorkspace
         sellerId={sellerId}
         productId={productId}
-        usesFinancialCheckout={checkoutProvider() === "financial_checkout"}
+        // Sem provedor válido (#544) o editor segue o contrato do checkout
+        // local, que exige conta de recebimento para publicar pago.
+        usesFinancialCheckout={configuredCheckoutProvider() === "financial_checkout"}
       />
     </Suspense>
   );

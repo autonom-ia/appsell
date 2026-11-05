@@ -25,7 +25,12 @@ export default defineConfig({
     // NODE_ENV development/test com APP_ENV local/ci (lib/demo-config.ts;
     // tests/demo-config.test.ts prova a recusa em produção). A sessão sem
     // papel continua coberta em tests/e2e/sessao-sem-papel.spec.ts.
-    env: { APP_ENV: "local", APPSELL_DEMO_ENABLED: "true" },
+    // #544: o web não escolhe o provedor do checkout sozinho.
+    env: {
+      APP_ENV: "local",
+      APPSELL_DEMO_ENABLED: "true",
+      APPSELL_CHECKOUT_PROVIDER: process.env.APPSELL_CHECKOUT_PROVIDER ?? "local_stripe"
+    },
     reuseExistingServer: false,
     timeout: 120_000
   },
