@@ -15,7 +15,6 @@ RUNTIME_PREVIEW_E2E_TRANSPORT_VOLUME="${RUNTIME_PREVIEW_COMPOSE_PROJECT}_runtime
 RUNTIME_PREVIEW_API_BASE="${EASYPANEL_API_BASE:-http://127.0.0.1:3000}"
 RUNTIME_PREVIEW_PUBLIC_HOST="sell.autonomia.site"
 RUNTIME_PREVIEW_PUBLIC_ORIGIN="https://sell.autonomia.site"
-RUNTIME_PREVIEW_PUBLIC_IPV4="85.31.60.100"
 RUNTIME_PREVIEW_VOLUME_ENVIRONMENT="local-ci-easypanel-preview"
 
 runtime_preview_fail() {
@@ -149,12 +148,18 @@ runtime_preview_verify_pdf_recycle_evidence() {
   }
 }
 
+# The approved public IPv4 lives only in the run's env file, never in the repo.
+runtime_preview_public_ipv4() {
+  runtime_preview_env_value APPSELL_RUNTIME_PREVIEW_PUBLIC_IPV4
+}
+
 runtime_preview_verify_public_dns() {
-  local a_records aaaa_records cname_records
+  local a_records aaaa_records cname_records expected_ipv4
+  expected_ipv4="$(runtime_preview_public_ipv4)" || return 1
   a_records="$(dig +short A "$RUNTIME_PREVIEW_PUBLIC_HOST")" || return 1
   aaaa_records="$(dig +short AAAA "$RUNTIME_PREVIEW_PUBLIC_HOST")" || return 1
   cname_records="$(dig +short CNAME "$RUNTIME_PREVIEW_PUBLIC_HOST")" || return 1
-  [[ "$a_records" == "$RUNTIME_PREVIEW_PUBLIC_IPV4" && -z "$aaaa_records" && -z "$cname_records" ]] || {
+  [[ "$a_records" == "$expected_ipv4" && -z "$aaaa_records" && -z "$cname_records" ]] || {
     runtime_preview_fail "public DNS must contain only the approved IPv4 and no AAAA or CNAME"
     return 1
   }
@@ -550,7 +555,8 @@ runtime_preview_delete_exact_public_domain() {
 }
 
 runtime_preview_verify_public_attestation() {
-  local attestation domain_id certificate certificate_pem certificate_sha256 headers
+  local attestation domain_id certificate certificate_pem certificate_sha256 headers public_ipv4
+  public_ipv4="$(runtime_preview_public_ipv4)" || return 1
   attestation="$RUNTIME_PREVIEW_RUN_ROOT/public-domain.attestation.json"
   runtime_preview_assert_protected_file "$attestation" || return 1
   runtime_preview_verify_public_dns || return 1
@@ -596,7 +602,7 @@ runtime_preview_verify_public_attestation() {
     --arg project "$RUNTIME_PREVIEW_PROJECT" --arg service "$RUNTIME_PREVIEW_SERVICE" \
     --arg source_sha "$(runtime_preview_env_value APPSELL_SOURCE_SHA)" \
     --arg domain_id "$domain_id" --arg host "$RUNTIME_PREVIEW_PUBLIC_HOST" \
-    --arg origin "$RUNTIME_PREVIEW_PUBLIC_ORIGIN" --arg ipv4 "$RUNTIME_PREVIEW_PUBLIC_IPV4" \
+    --arg origin "$RUNTIME_PREVIEW_PUBLIC_ORIGIN" --arg ipv4 "$public_ipv4" \
     --arg certificate_sha256 "$certificate_sha256" '
       .schema_version == "autonomia.easypanel-public-domain.v1" and
       .project == $project and .service == $service and .source_sha == $source_sha and

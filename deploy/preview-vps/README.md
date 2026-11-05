@@ -66,10 +66,10 @@ checksum, tag exclusiva, image ID e o label OCI
 
    ```bash
    RUN_ROOT="/opt/autonomia-sell-preview/issue-66/${APPSELL_SHA:0:12}"
-   ssh root@85.31.60.100 \
+   ssh <usuario-ssh>@<ip-do-host> \
      "test ! -e '$RUN_ROOT' && test ! -L '$RUN_ROOT' && install -d -o root -g root -m 0700 /opt/autonomia-sell-preview /opt/autonomia-sell-preview/issue-66 '$RUN_ROOT'"
    tar -C "$VERIFY_ROOT/upload" -cf - config artifacts \
-     | ssh root@85.31.60.100 \
+     | ssh <usuario-ssh>@<ip-do-host> \
        "tar --no-same-owner --no-overwrite-dir -xf - -C '$RUN_ROOT'"
    ```
 
@@ -99,7 +99,7 @@ Abrir um túnel SSH sem expor portas publicamente:
 ssh -N \
   -L 13200:127.0.0.1:13200 \
   -L 13217:127.0.0.1:13217 \
-  root@85.31.60.100
+  <usuario-ssh>@<ip-do-host>
 ```
 
 Depois acessar `http://localhost:13200`.
