@@ -60,6 +60,14 @@ The required workflow deliberately has no top-level `paths` filter. A docs-only
 change still emits `ci-gate=success`. Unknown files, routing failures,
 `compose.yaml`, the CI router and the required workflow fall back to all scopes.
 
+The migration chain shape (`migration_shape`, #551) is expected on every event,
+without a route condition: one Alembic head, no repeated migration number, no
+revision longer than the 32 characters of `alembic_version`. It reads the files
+with `ast` and treats anything it cannot read as a failure. On `pull_request` it
+runs on `refs/pull/N/merge`, the PR merged with `main` at the time of the run.
+That result goes stale when `main` moves; see "Merge queue is not available"
+below for what closes that gap.
+
 ## Router contract
 
 The router uses local Git history, never the pull-request files API:
@@ -147,3 +155,30 @@ the latest push, `ci-gate`, merge queue, blocked force-push/deletion and minimal
 bypass. A real merge-group canary must pass before normal queued merges.
 Only then may the separately approved repository variable
 `APPSELL_MERGE_QUEUE_ACTIVE` become `true`.
+
+## Merge queue is not available (05/11/2026)
+
+Adding the `merge_queue` rule to the `main` ruleset returned `422 Invalid rule
+'merge_queue'`. The repository belongs to a personal account (`owner.type=User`),
+and GitHub offers merge queue only to repositories owned by an organization.
+This is a platform fact, not a pending decision. As a result:
+
+- the ruleset kept `required_status_checks` (`ci-gate`), `non_fast_forward` and
+  `deletion`, unchanged;
+- `APPSELL_MERGE_QUEUE_ACTIVE` was not created, so `push main` keeps the full
+  conditional certification (the fail-safe mode described above). Do not
+  create it while there is no queue: it would reduce `push main` to smoke with
+  nothing certifying the integrated SHA before it;
+- the `merge_group` paths in `app-ci.yml` stay in place, harmless and unused,
+  for a future move to an organization.
+
+**Replacement, active since 05/11/2026 (Rodrigo's OK):**
+`strict_required_status_checks_policy=true` in the same ruleset; the previous
+ruleset was backed up before the change. A PR has to be up to date with `main`
+before it can merge, and the Sell orchestration runs the update-branch at merge
+time. Review verdicts apply to the head after that update; an update that
+brings a new migration or web change gets its CI read again. `ci-gate` (including
+`migration_shape`) runs on the integrated result. Example: if one PR adds `0066`
+on top of `0065` and merges, a second PR adding `0067` on top of `0065` is forced
+to update; its new run sees two heads and fails until it points to `0066`. The
+cost is one update-branch, and one PR CI run, per merge.
