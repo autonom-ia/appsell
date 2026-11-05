@@ -55,9 +55,12 @@ async def run_attribution_retention_loop(app: FastAPI, stop: asyncio.Event) -> N
             resultado = await limpar_uma_vez(session_factory)
             logger.info("attribution_retention", **resultado)
         except (DBAPIError, OSError) as error:
-            # Banco fora do ar: registra e tenta na próxima hora, sem derrubar
-            # a task em silêncio.
+            # Banco fora do ar: registra e tenta na próxima hora.
             logger.warning("attribution_retention_retry", error_type=type(error).__name__)
+        except Exception as error:  # noqa: BLE001 - registrar e seguir, nunca morrer calado
+            # Erro inesperado também não derruba a task em silêncio: a regra de
+            # apagar tem de continuar rodando. O nome do erro vai ao log, e só ele.
+            logger.error("attribution_retention_failed", error_type=type(error).__name__)
         try:
             await asyncio.wait_for(stop.wait(), timeout=INTERVALO_SEGUNDOS)
         except TimeoutError:

@@ -111,3 +111,22 @@ async def test_banco_fora_registra_e_o_laco_para_no_stop(monkeypatch: pytest.Mon
 async def test_sem_banco_configurado_nao_roda() -> None:
     app = FastAPI()
     await asyncio.wait_for(worker.run_attribution_retention_loop(app, asyncio.Event()), timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_erro_inesperado_registra_e_o_laco_segue(monkeypatch: pytest.MonkeyPatch) -> None:
+    respostas: list[object] = [KeyError("x")] + [
+        {"skipped": True, "without_sale": 0, "expired": 0} for _ in range(1000)
+    ]
+    chamadas: list[dict[str, Any]] = []
+    app = FastAPI()
+    app.state.db_session_factory = _fabrica(respostas, chamadas)
+    monkeypatch.setattr(worker, "INTERVALO_SEGUNDOS", 0.01)
+    stop = asyncio.Event()
+    with capture_logs() as logs:
+        tarefa = asyncio.create_task(worker.run_attribution_retention_loop(app, stop))
+        await asyncio.sleep(0.05)
+        stop.set()
+        await asyncio.wait_for(tarefa, timeout=1)
+    assert "attribution_retention_failed" in [log["event"] for log in logs]
+    assert len(chamadas) >= 2, "o laço parou depois do erro inesperado"

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   atribuicaoDaUrl,
+  cookieDeAtribuicao,
   JANELA_SEGUNDOS,
   lerAtribuicao,
   serializarAtribuicao,
@@ -9,6 +10,7 @@ import {
 } from "@/lib/tracking/attribution";
 import {
   aceitouOTextoAtual,
+  cookieDeEscolha,
   lerEscolha,
   precisaPerguntar,
   serializarEscolha
@@ -129,16 +131,32 @@ describe("cookies", () => {
 });
 
 describe("atribuição no início do checkout", () => {
+  const LOJA = "44444444-4444-4444-8444-444444444444";
+  const OUTRA = "55555555-5555-4555-8555-555555555555";
   const valor = serializarAtribuicao({ utm: { utm_source: "insta" }, link: null, visitadoEm: AGORA });
+  const aceito = serializarEscolha("accepted");
 
-  it("só com o aceite da versão atual", () => {
-    expect(atribuicaoDoPedido(cookies({ sell_utm: valor }), AGORA)).toBeNull();
+  it("só com o aceite da versão atual, e leva a versão aceita", () => {
+    expect(atribuicaoDoPedido(cookies({ [cookieDeAtribuicao(LOJA)]: valor }), LOJA, AGORA)).toBeNull();
     expect(
-      atribuicaoDoPedido(cookies({ sell_utm: valor, sell_cookie_choice: serializarEscolha("refused") }), AGORA)
+      atribuicaoDoPedido(
+        cookies({ [cookieDeAtribuicao(LOJA)]: valor, [cookieDeEscolha(LOJA)]: serializarEscolha("refused") }),
+        LOJA,
+        AGORA
+      )
     ).toBeNull();
     expect(
-      atribuicaoDoPedido(cookies({ sell_utm: valor, sell_cookie_choice: serializarEscolha("accepted") }), AGORA)
-    ).toEqual({ utm: { utm_source: "insta" }, link: null, visitadoEm: AGORA });
+      atribuicaoDoPedido(cookies({ [cookieDeAtribuicao(LOJA)]: valor, [cookieDeEscolha(LOJA)]: aceito }), LOJA, AGORA)
+    ).toEqual({ atribuicao: { utm: { utm_source: "insta" }, link: null, visitadoEm: AGORA }, versaoDoTexto: "v1" });
+  });
+
+  it("o aceite e a campanha de uma loja não valem na compra de outra", () => {
+    const daOutra = cookies({ [cookieDeAtribuicao(OUTRA)]: valor, [cookieDeEscolha(OUTRA)]: aceito });
+    expect(atribuicaoDoPedido(daOutra, LOJA, AGORA)).toBeNull();
+    const aceiteDaOutraCampanhaDaLoja = cookies({ [cookieDeAtribuicao(LOJA)]: valor, [cookieDeEscolha(OUTRA)]: aceito });
+    expect(atribuicaoDoPedido(aceiteDaOutraCampanhaDaLoja, LOJA, AGORA)).toBeNull();
+    expect(cookieDeAtribuicao(LOJA)).not.toBe(cookieDeAtribuicao(OUTRA));
+    expect(cookieDeEscolha(LOJA)).toBe("sell_choice_44444444444444448444444444444444");
   });
 });
 

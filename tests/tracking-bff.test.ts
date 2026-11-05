@@ -37,9 +37,9 @@ vi.mock("@/app/api/sellers/[sellerId]/products/[productId]/_route-shared", () =>
 import { POST as consentimento } from "../app/api/tracking/consent/route";
 import { GET as dados } from "../app/(protected)/dashboard/links/dados/route";
 import { POST as criar } from "../app/(protected)/dashboard/links/criar/route";
-import { serializarAtribuicao } from "@/lib/tracking/attribution";
+import { cookieDeAtribuicao, serializarAtribuicao } from "@/lib/tracking/attribution";
 import { registrarAtribuicaoDoCheckout } from "@/lib/tracking/checkout-attribution.server";
-import { serializarEscolha } from "@/lib/tracking/consent";
+import { cookieDeEscolha, serializarEscolha } from "@/lib/tracking/consent";
 import { limiteDoConsentimento } from "@/lib/tracking/consent-limit";
 import { urlDoLink } from "@/lib/tracking/link-url";
 import { periodoValido } from "@/lib/tracking/period";
@@ -96,7 +96,7 @@ describe("atribuição no checkout", () => {
   const aceito = serializarEscolha("accepted");
 
   it("com aceite e cookie válido, manda a referência da compra à API", async () => {
-    await registrarAtribuicaoDoCheckout(cookies({ sell_utm: atribuicao, sell_cookie_choice: aceito }), LOJA, "intent-1", AGORA);
+    await registrarAtribuicaoDoCheckout(cookies({ [cookieDeAtribuicao(LOJA)]: atribuicao, [cookieDeEscolha(LOJA)]: aceito }), LOJA, "intent-1", AGORA);
     expect(chamarRastreio).toHaveBeenCalledWith("/v1/public/tracking/checkout-attribution", {
       seller_organization_id: LOJA,
       purchase_reference: "intent-1",
@@ -106,21 +106,22 @@ describe("atribuição no checkout", () => {
       utm_campaign: null,
       utm_content: null,
       utm_term: null,
-      visited_at: AGORA
+      visited_at: AGORA,
+      consent_text_version: "v1"
     });
   });
 
   it("sem aceite ou fora do piloto, não chama nada", async () => {
-    await registrarAtribuicaoDoCheckout(cookies({ sell_utm: atribuicao }), LOJA, "intent-1", AGORA);
+    await registrarAtribuicaoDoCheckout(cookies({ [cookieDeAtribuicao(LOJA)]: atribuicao }), LOJA, "intent-1", AGORA);
     vi.stubEnv("APPSELL_UTM_PILOT_SELLER_IDS", "");
-    await registrarAtribuicaoDoCheckout(cookies({ sell_utm: atribuicao, sell_cookie_choice: aceito }), LOJA, "intent-1", AGORA);
+    await registrarAtribuicaoDoCheckout(cookies({ [cookieDeAtribuicao(LOJA)]: atribuicao, [cookieDeEscolha(LOJA)]: aceito }), LOJA, "intent-1", AGORA);
     expect(chamarRastreio).not.toHaveBeenCalled();
   });
 
   it("nunca lança erro, nem com a API fora do ar nem com cookie que explode", async () => {
     chamarRastreio.mockRejectedValue(new Error("tracking_unavailable"));
     await expect(
-      registrarAtribuicaoDoCheckout(cookies({ sell_utm: atribuicao, sell_cookie_choice: aceito }), LOJA, "intent-1", AGORA)
+      registrarAtribuicaoDoCheckout(cookies({ [cookieDeAtribuicao(LOJA)]: atribuicao, [cookieDeEscolha(LOJA)]: aceito }), LOJA, "intent-1", AGORA)
     ).resolves.toBeUndefined();
     const quebrado = { cookies: { get: () => { throw new Error("boom"); } } };
     await expect(registrarAtribuicaoDoCheckout(quebrado, LOJA, "intent-1", AGORA)).resolves.toBeUndefined();
@@ -145,6 +146,19 @@ describe("rota de consentimento do banner", () => {
     vi.stubEnv("APPSELL_UTM_PILOT_SELLER_IDS", "");
     expect((await consentimento(pedidoDeConsentimento({ seller: LOJA, choice: "v1.accepted" }))).status).toBe(204);
     expect(chamarRastreio).not.toHaveBeenCalled();
+  });
+
+  it("o IP do limite é o que a borda viu (último item), não o que o cliente escreveu", async () => {
+    for (let i = 0; i < 20; i += 1) {
+      const resposta = await consentimento(
+        pedidoDeConsentimento({ seller: LOJA, choice: "v1.refused" }, { "x-forwarded-for": `10.0.0.${i}, 203.0.113.9` })
+      );
+      expect(resposta.status).toBe(204);
+    }
+    const trocandoOPrimeiro = await consentimento(
+      pedidoDeConsentimento({ seller: LOJA, choice: "v1.refused" }, { "x-forwarded-for": "10.9.9.9, 203.0.113.9" })
+    );
+    expect(trocandoOPrimeiro.status).toBe(429);
   });
 
   it("limita 20 por minuto por IP", async () => {

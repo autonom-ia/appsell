@@ -250,6 +250,7 @@ async def test_atribuicao_grava_o_sha_da_compra_e_nunca_loga_a_referencia(
         "link_id": str(LINK),
         "utm_source": "instagram",
         "visited_at": visita,
+        "consent_text_version": "v1",
     }
     with capture_logs() as logs:
         resposta = await _pedir(app, "POST", "/v1/public/tracking/checkout-attribution", corpo)
@@ -257,6 +258,7 @@ async def test_atribuicao_grava_o_sha_da_compra_e_nunca_loga_a_referencia(
     assert chamadas[0]["sha"] == hashlib.sha256(b"intent-segredo-123").hexdigest()
     assert chamadas[0]["link"] == LINK and chamadas[0]["source"] == "instagram"
     assert chamadas[0]["visited_at"] == datetime(2026, 11, 5, 12, tzinfo=UTC)
+    assert chamadas[0]["consent_version"] == "v1"
     assert "intent-segredo-123" not in str(logs)
     assert logs[-1]["outcome"] == "recorded"
 
@@ -270,6 +272,8 @@ async def test_atribuicao_grava_o_sha_da_compra_e_nunca_loga_a_referencia(
         {"seller_organization_id": str(LOJA), "purchase_reference": "", "visited_at": 1},
         {"seller_organization_id": str(LOJA), "purchase_reference": "a", "visited_at": -1},
         {"seller_organization_id": str(LOJA), "purchase_reference": "a", "visited_at": 1, "x": 1},
+        # Sem a versão do texto aceito: não há prova do consentimento.
+        {"seller_organization_id": str(LOJA), "purchase_reference": "a", "visited_at": 1},
     ],
 )
 async def test_atribuicao_malformada_responde_204_sem_banco(

@@ -203,12 +203,13 @@ def _atribuir(
     fonte: str | None = "instagram",
     campanha: str | None = "outubro",
     meio: str | None = "social",
+    versao: str | None = "v1",
 ) -> bool:
     assert RUNTIME_URL
     with psycopg.connect(RUNTIME_URL) as connection:
         row = connection.execute(
-            "select app_private.record_checkout_attribution(%s,%s,%s,%s,%s,%s,null,null,%s)",
-            (loja, _sha(compra), link, fonte, meio, campanha, visita),
+            "select app_private.record_checkout_attribution(%s,%s,%s,%s,%s,%s,null,null,%s,%s)",
+            (loja, _sha(compra), link, fonte, meio, campanha, visita, versao),
         ).fetchone()
         connection.commit()
     assert row is not None
@@ -284,14 +285,16 @@ def test_atribuicao_respeita_a_janela_e_a_primeira_fica() -> None:
     assert _atribuir("janela-3", link, _agora() + timedelta(minutes=5)) is False
     assert _atribuir("janela-4", None, _agora(), fonte=None, campanha=None, meio=None) is False
     assert _atribuir("janela-5", None, _agora(), loja=LOJA_INATIVA) is False
+    # Sem a versão do texto aceito, não há prova do consentimento: não grava.
+    assert _atribuir("janela-6", None, _agora(), versao=None) is False
     assert ADMIN_URL
     with psycopg.connect(ADMIN_URL) as connection:
         row = connection.execute(
-            "select link_id,utm_source from app_private.checkout_attribution "
+            "select link_id,utm_source,consent_text_version from app_private.checkout_attribution "
             "where seller_organization_id=%s and purchase_sha256=%s",
             (LOJA_A, _sha("janela-1")),
         ).fetchone()
-    assert row == (link, "instagram")
+    assert row == (link, "instagram", "v1")
 
 
 def test_link_de_outra_loja_nao_entra_na_atribuicao() -> None:
@@ -443,7 +446,8 @@ def _atribuicao_antiga(compra: str, idade: timedelta) -> None:
     with psycopg.connect(ADMIN_URL) as connection:
         connection.execute(
             "insert into app_private.checkout_attribution(seller_organization_id,purchase_sha256,"
-            "utm_source,visited_at,created_at) values(%s,%s,'retencao',%s,%s)",
+            "utm_source,visited_at,consent_text_version,created_at) "
+            "values(%s,%s,'retencao',%s,'v1',%s)",
             (LOJA_A, _sha(compra), quando, quando),
         )
         connection.commit()

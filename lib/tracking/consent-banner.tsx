@@ -2,49 +2,21 @@
 
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 
-import {
-  atribuicaoDaUrl,
-  COOKIE_ATRIBUICAO,
-  JANELA_SEGUNDOS,
-  serializarAtribuicao
-} from "./attribution";
 import { TEXTO_DO_BANNER } from "./banner-text";
 import {
-  aceitouOTextoAtual,
-  COOKIE_ESCOLHA,
-  DURACAO_DA_ESCOLHA_SEGUNDOS,
-  precisaPerguntar,
-  serializarEscolha,
-  type Escolha
-} from "./consent";
-import { apagarCookie, cookieDoNavegador, valorDoCookie } from "./cookies";
-
-// Evento que reabre o banner: o link "Cookies" do rodapé da vitrine dispara.
-export const EVENTO_ABRIR_COOKIES = "sell:abrir-cookies";
-
-export function abrirPreferenciasDeCookies(): void {
-  window.dispatchEvent(new Event(EVENTO_ABRIR_COOKIES));
-}
+  bannerAbertoAoMontar,
+  cookiesAoEscolher,
+  cookiesAoMontar,
+  EVENTO_ABRIR_COOKIES
+} from "./banner-logic";
+import { serializarEscolha, type Escolha } from "./consent";
 
 function agoraEmSegundos(): number {
   return Math.floor(Date.now() / 1000);
 }
 
-// Grava a atribuição só se a página veio com UTM ou link da loja. Vale a
-// última visita: uma nova substitui a anterior.
-function capturarDaUrl(): void {
-  const atribuicao = atribuicaoDaUrl(new URLSearchParams(window.location.search), agoraEmSegundos());
-  if (atribuicao === null) return;
-  document.cookie = cookieDoNavegador(
-    COOKIE_ATRIBUICAO,
-    serializarAtribuicao(atribuicao),
-    JANELA_SEGUNDOS
-  );
-}
-
-interface BannerDeCookiesProps {
-  sellerId: string;
-  politicaHref: string;
+function gravar(cookies: readonly string[]): void {
+  for (const cookie of cookies) document.cookie = cookie;
 }
 
 // Conta a escolha no Sell, sem dado pessoal (loja, versão do texto, escolha).
@@ -54,43 +26,40 @@ function contarEscolha(sellerId: string, escolha: Escolha): void {
   void fetch("/api/tracking/consent", { method: "POST", body: corpo, keepalive: true }).catch(() => undefined);
 }
 
-// Montado pela vitrine só quando a loja está no piloto (pilot.ts). Sem
-// escolha, nada é gravado; fechar a página não conta como aceite.
 // O cookie não avisa quando muda: a assinatura não faz nada, e a leitura vale
 // para a renderização. No servidor não há escolha para ler, e o banner não sai.
 function assinarNada(): () => void {
   return () => undefined;
 }
 
-function precisaPerguntarAgora(): boolean {
-  return precisaPerguntar(valorDoCookie(document.cookie, COOKIE_ESCOLHA));
-}
-
 function semBannerNoServidor(): boolean {
   return false;
 }
 
+interface BannerDeCookiesProps {
+  sellerId: string;
+  politicaHref: string;
+}
+
+// Montado pela vitrine só quando a loja está no piloto (pilot.ts). Sem
+// escolha, nada é gravado; fechar a página não conta como aceite. A lógica do
+// que é gravado está em banner-logic.ts, com teste.
 export function BannerDeCookies({ sellerId, politicaHref }: BannerDeCookiesProps) {
-  const semEscolha = useSyncExternalStore(assinarNada, precisaPerguntarAgora, semBannerNoServidor);
+  const lerSemEscolha = useCallback(() => bannerAbertoAoMontar(sellerId, document.cookie), [sellerId]);
+  const semEscolha = useSyncExternalStore(assinarNada, lerSemEscolha, semBannerNoServidor);
   const [escolheuAgora, setEscolheuAgora] = useState(false);
   const [reaberto, setReaberto] = useState(false);
   const aberto = reaberto || (semEscolha && !escolheuAgora);
 
   useEffect(() => {
-    if (aceitouOTextoAtual(valorDoCookie(document.cookie, COOKIE_ESCOLHA))) capturarDaUrl();
+    gravar(cookiesAoMontar(sellerId, document.cookie, window.location.search, agoraEmSegundos()));
     const abrir = () => setReaberto(true);
     window.addEventListener(EVENTO_ABRIR_COOKIES, abrir);
     return () => window.removeEventListener(EVENTO_ABRIR_COOKIES, abrir);
-  }, []);
+  }, [sellerId]);
 
   const escolher = useCallback((escolha: Escolha) => {
-    document.cookie = cookieDoNavegador(
-      COOKIE_ESCOLHA,
-      serializarEscolha(escolha),
-      DURACAO_DA_ESCOLHA_SEGUNDOS
-    );
-    if (escolha === "accepted") capturarDaUrl();
-    else document.cookie = apagarCookie(COOKIE_ATRIBUICAO);
+    gravar(cookiesAoEscolher(sellerId, escolha, window.location.search, agoraEmSegundos()));
     contarEscolha(sellerId, escolha);
     setEscolheuAgora(true);
     setReaberto(false);

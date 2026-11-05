@@ -9,8 +9,10 @@ migration cria o que fica no Sell:
 - `checkout_attribution`: a atribuição gravada no início do checkout, presa ao
   sha256 da compra. É a mesma chave que o ingress do Financial grava em
   `webhook_event.external_purchase_id_sha256`, e é por ela que a venda
-  aprovada encontra a campanha. Não guarda nada que identifique a pessoa:
-  nem e-mail, nem identidade, nem IP;
+  aprovada encontra a campanha. É dado **pseudônimo**, não anônimo: o sha da
+  compra sem sal liga a atribuição a uma compra. Não guarda e-mail,
+  identidade, IP nem id de visitante, e guarda a versão do texto do banner
+  que a pessoa aceitou (prova do consentimento);
 - `cookie_consent_tally`: contagem diária de aceites e recusas por loja e
   versão do texto. Serve de prova agregada e de taxa de aceite, sem dado
   pessoal.
@@ -151,6 +153,10 @@ _CRIA_TABELAS_MOLDE = (
       link_id uuid,
       __COLUNAS_UTM__,
       visited_at timestamptz not null,
+      -- A versão do texto do banner que a pessoa aceitou: prova de qual texto
+      -- autorizou esta gravação.
+      consent_text_version text not null check (octet_length(consent_text_version) between 1 and 16
+        and translate(consent_text_version,'abcdefghijklmnopqrstuvwxyz0123456789.','') = ''),
       created_at timestamptz not null default clock_timestamp(),
       primary key (seller_organization_id,purchase_sha256),
       foreign key (seller_organization_id,link_id)
@@ -333,12 +339,13 @@ __GUARDA_LEITURA__
     create function app_private.record_checkout_attribution(
       p_seller uuid,p_purchase_sha256 text,p_link uuid,
       p_utm_source text,p_utm_medium text,p_utm_campaign text,p_utm_content text,
-      p_utm_term text,p_visited_at timestamptz
+      p_utm_term text,p_visited_at timestamptz,p_consent_text_version text
     ) returns boolean language plpgsql volatile security definer
     __SEARCH_PATH__ as $$
     declare v_link uuid;
     begin
       if p_seller is null or p_purchase_sha256 is null or p_visited_at is null
+         or p_consent_text_version is null
          or p_visited_at < clock_timestamp() - interval '__JANELA__ days'
          or p_visited_at > clock_timestamp() + interval '1 minute'
          or not exists (select 1 from public.seller_organization seller
@@ -348,9 +355,10 @@ __GUARDA_LEITURA__
       select link.id into v_link from app_private.campaign_link link
       where link.seller_organization_id=p_seller and link.id=p_link;
       insert into app_private.checkout_attribution(seller_organization_id,purchase_sha256,
-        link_id,utm_source,utm_medium,utm_campaign,utm_content,utm_term,visited_at)
+        link_id,utm_source,utm_medium,utm_campaign,utm_content,utm_term,visited_at,
+        consent_text_version)
       values(p_seller,p_purchase_sha256,v_link,p_utm_source,p_utm_medium,p_utm_campaign,
-        p_utm_content,p_utm_term,p_visited_at)
+        p_utm_content,p_utm_term,p_visited_at,p_consent_text_version)
       on conflict (seller_organization_id,purchase_sha256) do nothing;
       return found;
     exception when check_violation then
@@ -465,7 +473,8 @@ ASSINATURAS = (
     "app_private.archive_campaign_link(uuid,uuid,uuid,uuid)",
     "app_private.list_campaign_links(uuid,uuid)",
     "app_private.read_campaign_sales(uuid,uuid,date,date)",
-    "app_private.record_checkout_attribution(uuid,text,uuid,text,text,text,text,text,timestamptz)",
+    "app_private.record_checkout_attribution("
+    "uuid,text,uuid,text,text,text,text,text,timestamptz,text)",
     "app_private.record_cookie_consent(uuid,text,boolean)",
     "app_private.purge_checkout_attribution(integer)",
 )

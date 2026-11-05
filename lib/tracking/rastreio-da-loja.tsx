@@ -1,6 +1,7 @@
 "use client";
 
-import { abrirPreferenciasDeCookies, BannerDeCookies } from "./consent-banner";
+import { abrirPreferenciasDeCookies } from "./banner-logic";
+import { BannerDeCookies } from "./consent-banner";
 
 interface RastreioDaLojaProps {
   sellerId: string;
@@ -14,7 +15,7 @@ export function RastreioDaLoja({ sellerId }: RastreioDaLojaProps) {
     <>
       <BannerDeCookies sellerId={sellerId} politicaHref="/cookies"/>
       <p className="storefront-footer">
-        <button type="button" className="secondary-button" onClick={abrirPreferenciasDeCookies}>
+        <button type="button" className="secondary-button" onClick={() => abrirPreferenciasDeCookies()}>
           Cookies
         </button>
       </p>

@@ -22,15 +22,17 @@ export async function registrarAtribuicaoDoCheckout(
 ): Promise<void> {
   try {
     if (!atribuicaoLiberada(sellerId)) return;
-    const atribuicao = atribuicaoDoPedido(request.cookies, agora);
-    if (atribuicao === null) return;
+    const aceita = atribuicaoDoPedido(request.cookies, sellerId, agora);
+    if (aceita === null) return;
+    const { atribuicao, versaoDoTexto } = aceita;
     const utm = Object.fromEntries(CAMPOS_UTM.map((campo) => [campo, atribuicao.utm[campo] ?? null]));
     await chamarRastreio(CAMINHO, {
       seller_organization_id: sellerId,
       purchase_reference: checkoutIntentId,
       link_id: atribuicao.link,
       ...utm,
-      visited_at: atribuicao.visitadoEm
+      visited_at: atribuicao.visitadoEm,
+      consent_text_version: versaoDoTexto
     });
   } catch (error) {
     // chamarRastreio já registrou a falha da API; aqui só o erro inesperado.

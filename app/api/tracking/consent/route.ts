@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { ipDoCliente } from "@/lib/ip-do-cliente";
 import { PayloadTooLargeError, readLimitedForm } from "@/lib/limited-form.server";
 import { lerEscolha } from "@/lib/tracking/consent";
 import { limiteDoConsentimento } from "@/lib/tracking/consent-limit";
@@ -13,11 +14,6 @@ export const dynamic = "force-dynamic";
 const LIMITE_DO_CORPO = 512;
 const CABECALHOS = { "cache-control": "no-store" };
 
-function ipDe(request: NextRequest): string {
-  return request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-    request.headers.get("x-real-ip") || "desconhecido";
-}
-
 function vazio(status: number) {
   return new NextResponse(null, { status, headers: CABECALHOS });
 }
@@ -27,7 +23,7 @@ function vazio(status: number) {
 // Responde 204 para qualquer pedido aceito; loja fora do piloto não conta.
 export async function POST(request: NextRequest) {
   if (request.headers.get("sec-fetch-site") !== "same-origin") return vazio(403);
-  if (!limiteDoConsentimento.dentro(ipDe(request))) return vazio(429);
+  if (!limiteDoConsentimento.dentro(ipDoCliente(request))) return vazio(429);
   let form: FormData | null;
   try {
     form = await readLimitedForm(request, LIMITE_DO_CORPO);

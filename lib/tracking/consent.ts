@@ -3,7 +3,13 @@
 // gravado. A escolha vale para a versão do texto do banner; texto novo pede a
 // escolha de novo.
 
-export const COOKIE_ESCOLHA = "sell_cookie_choice";
+// Uma escolha por loja: o aceite numa loja não vale em outra do mesmo domínio.
+const PREFIXO_DO_COOKIE = "sell_choice_";
+
+export function cookieDeEscolha(sellerId: string): string {
+  return `${PREFIXO_DO_COOKIE}${sellerId.split("-").join("")}`;
+}
+
 export const VERSAO_DO_TEXTO = "v1";
 export const DURACAO_DA_ESCOLHA_SEGUNDOS = 183 * 24 * 60 * 60;
 
@@ -23,6 +29,11 @@ export function lerEscolha(valor: string | undefined): { versao: string; escolha
   const [versao, escolha] = partes as [string, string];
   if (versao.length === 0 || !ESCOLHAS.has(escolha)) return null;
   return { versao, escolha: escolha as Escolha };
+}
+
+// A versão aceita, ou null: só o "Aceitar" da versão atual libera a gravação.
+export function versaoAceita(valor: string | undefined): string | null {
+  return aceitouOTextoAtual(valor) ? VERSAO_DO_TEXTO : null;
 }
 
 // Só o "Aceitar" da versão atual do texto libera a gravação.

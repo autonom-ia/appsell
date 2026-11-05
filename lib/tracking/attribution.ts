@@ -1,11 +1,18 @@
 // Atribuição da visita (#563): os campos UTM e o link da loja que trouxeram a
 // pessoa, com a data da visita. Vale a última visita com UTM nos 7 dias.
 //
-// Nada aqui identifica a pessoa: sem IP, sem id de visitante, sem fingerprint.
-// O cookie só é gravado depois do "Aceitar" (ver consent.ts), e quem grava é o
-// banner, no navegador. Este módulo só monta e confere o valor.
+// O cookie não leva IP, id de visitante nem fingerprint: só os campos UTM, o
+// link e a data. Quando vira atribuição de uma compra, ele é dado pseudônimo
+// (ligado ao sha da compra), não anônimo. O cookie só é gravado depois do
+// "Aceitar" (ver consent.ts), e quem grava é o banner, no navegador.
+//
+// Um cookie por loja: no mesmo domínio, a campanha de uma loja nunca é lida
+// na compra de outra.
+const PREFIXO_DO_COOKIE = "sell_utm_";
 
-export const COOKIE_ATRIBUICAO = "sell_utm";
+export function cookieDeAtribuicao(sellerId: string): string {
+  return `${PREFIXO_DO_COOKIE}${sellerId.split("-").join("")}`;
+}
 export const JANELA_SEGUNDOS = 7 * 24 * 60 * 60;
 export const CAMPOS_UTM = [
   "utm_source",

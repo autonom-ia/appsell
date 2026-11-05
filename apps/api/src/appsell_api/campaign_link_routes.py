@@ -7,8 +7,9 @@ Duas rotas públicas são chamadas só pelo BFF, com a credencial de serviço:
 
 - a atribuição, no início do checkout, depois de o BFF conferir o aceite da
   versão atual do texto do banner e a janela de 7 dias do cookie. O BFF manda
-  a referência da compra, e o sha256 é calculado aqui, como no ingress do
-  webhook: é por ele que a venda aprovada encontra a campanha;
+  a referência da compra e a versão aceita; o sha256 é calculado aqui, como
+  no ingress do webhook: é por ele que a venda aprovada encontra a campanha.
+  O sha sem sal é pseudônimo, não anônimo;
 - a contagem do aceite ou da recusa, sem dado pessoal.
 
 As duas respondem 204 em qualquer caso válido, e a referência da compra nunca
@@ -201,6 +202,7 @@ class CheckoutAttributionBody(BaseModel):
     utm_content: str | None = _Utm
     utm_term: str | None = _Utm
     visited_at: int = Field(ge=0)
+    consent_text_version: str = Field(min_length=1, max_length=16)
 
 
 class CookieConsentBody(BaseModel):
@@ -240,7 +242,7 @@ async def record_checkout_attribution(request: Request) -> Response:
             gravada = await session.scalar(
                 text(
                     "select app_private.record_checkout_attribution(:seller,:sha,:link,:source,"
-                    ":medium,:campaign,:content,:term,:visited_at)"
+                    ":medium,:campaign,:content,:term,:visited_at,:consent_version)"
                 ),
                 {
                     "seller": body.seller_organization_id,
@@ -252,6 +254,7 @@ async def record_checkout_attribution(request: Request) -> Response:
                     "content": body.utm_content,
                     "term": body.utm_term,
                     "visited_at": datetime.fromtimestamp(body.visited_at, tz=UTC),
+                    "consent_version": body.consent_text_version,
                 },
             )
     except (DBAPIError, OverflowError, OSError) as error:
