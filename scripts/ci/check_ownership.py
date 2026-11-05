@@ -98,7 +98,9 @@ def _names(label: str, bases: object) -> list[str]:
         if not isinstance(base, str):
             raise ManifestError(f"{label}: base inválida {base!r}")
         if base.startswith("_"):
-            if label != "excecoes" and base != "_leia":
+            # Só o comentário `_leia` das exceções é pulado; em trilha, base com
+            # `_` esconderia nomes do dono.
+            if label != "excecoes" or base != "_leia":
                 raise ManifestError(f"{label}: base {base!r} começa com _")
             continue
         if base and not base.endswith("/"):

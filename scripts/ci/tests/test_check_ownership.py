@@ -149,6 +149,8 @@ class OwnershipTests(unittest.TestCase):
     def test_a_trilha_base_starting_with_underscore_is_an_error(self) -> None:
         with self.assertRaises(ManifestError):
             load_manifest({"trilhas": {"trilha:a": {"_lib/": ["x.ts"]}}})
+        with self.assertRaises(ManifestError):
+            load_manifest({"trilhas": {"trilha:a": {"": ["x.ts"], "_leia": ["lib/zzz.ts"]}}})
 
     def test_annotations_escape_what_the_runner_would_parse(self) -> None:
         self.assertEqual("a%25b%0Ac%3Ad%2Ce", escape_property("a%b\nc:d,e"))
