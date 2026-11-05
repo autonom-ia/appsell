@@ -30,6 +30,11 @@ vi.mock("@/lib/mutation-protection.server", async (original) => {
 // piloto, o HTML de cada página da loja tem de ser o mesmo da `main`: o teste
 // pega a página como ela está no merge-base com a `main`, renderiza as duas
 // versões com os mesmos dados e compara.
+//
+// Limite: depois do merge, o merge-base é o próprio HEAD, e a comparação vira
+// a página contra ela mesma. O valor deste teste é no PR que mexe na vitrine:
+// é ali que ele prova que nada mudou para quem está fora do piloto. Na main,
+// quem segura a Hub2You é o smoke dela (AGENTS.md §7).
 const RAIZ = fileURLToPath(new URL("..", import.meta.url));
 const PASTA = join(RAIZ, "tests", ".linha-de-base-563");
 const HUB2YOU = "11111111-1111-4111-8111-111111111111";
@@ -93,6 +98,9 @@ function baseDaMain(): string {
 async function paginaDaMain(caminho: string): Promise<Pagina> {
   const conteudo = execFileSync("git", ["show", `${baseDaMain()}:${caminho}`], { cwd: RAIZ });
   mkdirSync(PASTA, { recursive: true });
+  // A pasta é temporária e se ignora sozinha: nada dela vai para o git, mesmo
+  // se o teste cair antes do afterAll.
+  writeFileSync(join(PASTA, ".gitignore"), "*\n");
   const destino = join(PASTA, caminho.split("/").join("__"));
   writeFileSync(destino, conteudo);
   return (await import(destino)).default as Pagina;
