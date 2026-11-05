@@ -6,6 +6,7 @@ import { FormEvent, MouseEvent, useCallback, useEffect, useRef, useState } from 
 import { AccessibleDialog } from "./accessible-dialog";
 import { AccessLinksPanel } from "./access-links-panel";
 import { CurriculumWorkspace } from "./curriculum-workspace";
+import { ChoiceSelect } from "./ui/choice-select";
 import { ProductHeadlinePanel } from "./product-headline-panel";
 import { ProductImagePanel, type ProductCover } from "./product-image-panel";
 import { allowUnsavedNavigation, useUnsavedChanges } from "./use-unsaved-changes";
@@ -989,11 +990,7 @@ export function ProductEditorWorkspace({
               <EditorField label="Nome no checkout" name="offer_title" value={fields.offer_title} onChange={(value) => updateField("offer_title", value)} minLength={2} maxLength={120} required invalid={invalidField === "offer_title"}/>
               <EditorField label="Descrição no checkout" name="offer_summary" value={fields.offer_summary} onChange={(value) => updateField("offer_summary", value)} maxLength={500} multiline invalid={invalidField === "offer_summary"}/>
               <EditorField label={`Preço (${offerCurrencyLabel})`} name="offer_price" value={fields.offer_price} onChange={(value) => updateField("offer_price", value)} onBlur={() => setPriceTouched(true)} maxLength={12} inputMode="decimal" pattern="[0-9]{1,9}([.,][0-9]{1,2})?" sanitize={keepPriceCharacters} invalid={invalidField === "offer_price" || invalidField === "offer_unit_amount_minor" || priceLocallyInvalid} help="Use vírgula para centavos, ex.: 49,90. Deixe vazio para manter sem preço."/>
-              <label className="editor-field">Cobrança
-                <select id="offer_billing_period" name="offer_billing_period" value={fields.offer_billing_period} onChange={(event) => updateField("offer_billing_period", event.target.value)} aria-invalid={invalidField === "offer_billing_period"}>
-                  {OFFER_BILLING_PERIODS.map((entry) => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
-                </select>
-              </label>
+              <ChoiceSelect<string> label="Cobrança" id="offer_billing_period" name="offer_billing_period" value={fields.offer_billing_period} options={OFFER_BILLING_PERIODS} onChange={(value) => updateField("offer_billing_period", value)} invalid={invalidField === "offer_billing_period"} disabled={detail.status === "archived" || offerLocked}/>
             </fieldset>
             <section className="offer-status-panel" aria-labelledby="offer-status-title">
               <p className="eyebrow">Disponibilidade na vitrine</p>
