@@ -12,6 +12,7 @@ export async function GET() {
       redis: state.redis,
       api: state.api,
       storage_upload: state.storageUpload,
+      checkout_provider: state.checkoutProvider,
       checkout_map: state.checkoutMap
     },
     {

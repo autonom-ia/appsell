@@ -58,7 +58,7 @@ export default async function DemoCheckoutPage({
         : <section className="checkout-card checkout-unavailable" role="alert">
             <h2>Compra indisponível</h2>
             <p className="field-help">
-              Este produto não está com preço publicado para venda agora. Nenhuma
+              A compra deste produto está indisponível no momento. Nenhuma
               cobrança foi realizada.
             </p>
           </section>}

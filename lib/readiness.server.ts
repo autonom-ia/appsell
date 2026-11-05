@@ -1,5 +1,5 @@
 import { checkoutProductMapIsValid } from "@/lib/checkout-config";
-import { checkoutProvider } from "@/lib/financial-external-checkout.server";
+import { configuredCheckoutProvider } from "@/lib/financial-external-checkout.server";
 import { oauthService } from "@/lib/oauth-service.server";
 import { storageUploadConfigurationReady } from "@/lib/storage-upload-policy.server";
 
@@ -8,6 +8,7 @@ export type ReadinessState = {
   redis: boolean;
   api: boolean;
   storageUpload: boolean;
+  checkoutProvider: boolean;
   checkoutMap: boolean;
 };
 
@@ -24,12 +25,14 @@ export async function readinessState(): Promise<ReadinessState> {
     domainApiReady(),
     storageUploadConfigurationReady()
   ]);
+  const checkoutProvider = configuredCheckoutProvider() !== null;
   const checkoutMap = checkoutProductMapReady();
   return {
-    ready: redis && api && storageUpload && checkoutMap,
+    ready: redis && api && storageUpload && checkoutProvider && checkoutMap,
     redis,
     api,
     storageUpload,
+    checkoutProvider,
     checkoutMap
   };
 }
@@ -41,9 +44,12 @@ export async function readinessState(): Promise<ReadinessState> {
  *
  * Com `financial_checkout` o mapa não decide venda nem entrega, então ele não
  * pode tirar do ar uma loja que vende por lá.
+ *
+ * Sem provedor válido (#544) quem reprova é o `checkoutProvider`; o mapa só
+ * conta para o checkout local.
  */
 function checkoutProductMapReady() {
-  return checkoutProvider() === "financial_checkout" || checkoutProductMapIsValid();
+  return configuredCheckoutProvider() !== "local_stripe" || checkoutProductMapIsValid();
 }
 
 async function redisReady() {
