@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import type Stripe from "stripe";
 
+import { STRIPE_CHECKOUT_CURRENCY, lookupCheckoutProductByKey } from "@/lib/checkout-config";
 import { proxyCheckoutWebhook } from "@/lib/checkout-webhook-proxy.server";
+import { DomainApiError, readPublicStorefront } from "@/lib/internal-api-client.server";
 import { RawBodyTooLargeError, readLimitedRawBody } from "@/lib/limited-raw-body.server";
+import { parsePublicStorefront } from "@/lib/public-storefront";
 import {
   type StripeKeyMode,
   StripeConfigError,
@@ -67,6 +70,7 @@ function logIrreversibleDrop(input: {
 }) {
   console.error(
     JSON.stringify({
+      level: "error",
       marker: "appsell.stripe_webhook.dropped",
       reason: input.reason,
       stripe_event_id: input.event.id,
@@ -75,6 +79,45 @@ function logIrreversibleDrop(input: {
       order_id: input.orderId
     })
   );
+}
+
+// The other half: a 5xx keeps Stripe redelivering for ~3 days, and if the cause
+// turns out to be permanent the buyer still ends up charged and without access.
+// Every 5xx on the paid path therefore leaves this line, so the cause is
+// visible during the retry window instead of only in the Dashboard afterwards.
+// Same rule as above: Stripe ids and the exception's NAME, never its message
+// (which can echo a URL) nor the buyer's e-mail or subject.
+function logRetrying(input: {
+  reason: string;
+  event: Stripe.Event;
+  orderId: string | null;
+  error?: unknown;
+  upstreamStatus?: number;
+}) {
+  console.error(
+    JSON.stringify({
+      level: "error",
+      marker: "appsell.stripe_webhook.retrying",
+      reason: input.reason,
+      stripe_event_id: input.event.id,
+      stripe_event_type: input.event.type,
+      livemode: input.event.livemode,
+      order_id: input.orderId,
+      error_name: errorName(input.error),
+      upstream_status: input.upstreamStatus ??
+        (input.error instanceof DomainApiError ? input.error.status : null)
+    })
+  );
+}
+
+// `error.name`, not `constructor.name`: the bundler renames classes, and a
+// minified name in the log identifies nothing. Our own class gets its name
+// spelled out because it never sets `name`.
+function errorName(error: unknown): string | null {
+  if (error === undefined) return null;
+  if (error instanceof DomainApiError) return "DomainApiError";
+  if (error instanceof Error) return error.name;
+  return typeof error;
 }
 
 export async function POST(request: NextRequest) {
@@ -109,7 +152,8 @@ export async function POST(request: NextRequest) {
   let keyMode: StripeKeyMode;
   try {
     keyMode = stripeKeyMode();
-  } catch {
+  } catch (error) {
+    logRetrying({ reason: "stripe_key_mode_unknown", event, orderId: null, error });
     return jsonError("stripe_not_configured", 503);
   }
   if (event.livemode !== (keyMode === "live")) {
@@ -122,6 +166,7 @@ export async function POST(request: NextRequest) {
     // and the sale would be lost for good. 5xx keeps it redelivering for ~3
     // days, so restoring the live key still grants access.
     if (event.livemode) {
+      logRetrying({ reason: "livemode_mismatch_live_event", event, orderId: null });
       return jsonError("livemode_mismatch_live_event", 503);
     }
     // A TEST event on a live deployment moved no real money (a test endpoint
@@ -156,10 +201,84 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ received: true, ignored: "unrecognized_session" }, { status: 200, headers: noStore() });
   }
 
+  // HOW MUCH was paid, not only THAT it was paid (#148). The metadata only
+  // proves which product the session CLAIMS to be for; it does not prove that
+  // create-session made the session. Anyone able to mint a session on the
+  // platform account (a restricted key, a Dashboard user, another integration)
+  // can copy valid metadata onto a R$0,50 session. So the amount is checked
+  // against the offer's server-side price, read now from the storefront — the
+  // same source create-session priced from — exactly as the Connect route does
+  // (app/api/webhooks/stripe/connect/route.ts). amount_total must also equal
+  // amount_subtotal: a total below it is a discount (a 100% coupon still
+  // reports "paid"), and nothing in this slice prices a discount.
+  //
+  // Transient versus permanent decides the status code, because Stripe reads
+  // only that: 5xx redelivers for ~3 days, 2xx stops for good.
+  // - A map that does not parse, or a storefront that is down, times out or
+  //   answers 5xx, is an outage of this deployment. Every paid event fails the
+  //   same way until it is fixed (readiness already refuses an invalid map, so
+  //   a deploy cannot promote one), so 503 + appsell.stripe_webhook.retrying.
+  // - A key absent from the map or mapped twice, or a store the domain answers
+  //   404 for, is a fact about this purchase that no redelivery changes. 200 +
+  //   appsell.stripe_webhook.dropped, the same record as an amount mismatch:
+  //   the buyer was charged and needs a manual refund until #147 reads it.
+  // A mismatch is deterministic too, so 200 — a redelivery fails identically.
+  // A legitimate discount must change THIS rule, not bypass it.
+  const origin = lookupCheckoutProductByKey(metadata.financialProductKey);
+  if (origin.kind === "map_invalid") {
+    logRetrying({ reason: "product_map_invalid", event, orderId: metadata.orderId });
+    return jsonError("product_map_invalid", 503);
+  }
+  if (origin.kind !== "found") {
+    const reason = origin.kind === "ambiguous" ? "product_key_ambiguous" : "product_not_mapped";
+    logIrreversibleDrop({ reason, event, orderId: metadata.orderId });
+    return NextResponse.json(
+      { received: true, ignored: reason, order_id: metadata.orderId },
+      { status: 200, headers: noStore() }
+    );
+  }
+  let storefrontPayload: unknown;
+  try {
+    storefrontPayload = await readPublicStorefront(origin.sellerSlug);
+  } catch (error) {
+    if (error instanceof DomainApiError && error.status === 404) {
+      logIrreversibleDrop({ reason: "seller_not_found", event, orderId: metadata.orderId });
+      return NextResponse.json(
+        { received: true, ignored: "seller_not_found", order_id: metadata.orderId },
+        { status: 200, headers: noStore() }
+      );
+    }
+    logRetrying({ reason: "storefront_unavailable", event, orderId: metadata.orderId, error });
+    return jsonError("amount_verification_unavailable", 503);
+  }
+  const storefront = parsePublicStorefront(storefrontPayload);
+  if (!storefront) {
+    // The domain answered 2xx with a shape this build does not read: a
+    // version skew between web and API, fixed by a deploy.
+    logRetrying({ reason: "storefront_unreadable", event, orderId: metadata.orderId });
+    return jsonError("amount_verification_unavailable", 503);
+  }
+  const product = storefront.products.find((candidate) => candidate.slug === origin.productSlug);
+  // Same gate create-session prices through: only a one-time BRL offer has an
+  // amount this session can be compared with. A monthly or foreign-currency
+  // offer with the same number is not the price that was charged.
+  const price = product?.price;
+  const expectedAmountMinor = price?.currency === "BRL" && price.billing_period === "one_time"
+    ? price.unit_amount_minor
+    : null;
+  if (!paidTheOfferPrice(session, expectedAmountMinor)) {
+    logIrreversibleDrop({ reason: "amount_mismatch", event, orderId: metadata.orderId });
+    return NextResponse.json(
+      { received: true, ignored: "amount_mismatch", order_id: metadata.orderId },
+      { status: 200, headers: noStore() }
+    );
+  }
+
   let config: { endpointKey: string; secret: Buffer };
   try {
     config = selfEmitWebhookConfig();
-  } catch {
+  } catch (error) {
+    logRetrying({ reason: "checkout_webhook_not_configured", event, orderId: metadata.orderId, error });
     return jsonError("checkout_webhook_not_configured", 503);
   }
 
@@ -246,9 +365,24 @@ export async function POST(request: NextRequest) {
     // never "this purchase does not exist". Non-2xx on purpose: Stripe keeps
     // redelivering, so fixing the configuration within the retry window still
     // grants access.
-    if (delivered.status === 404) return jsonError("checkout_webhook_endpoint_not_found", 502);
+    if (delivered.status === 404) {
+      logRetrying({
+        reason: "checkout_webhook_endpoint_not_found",
+        event,
+        orderId: metadata.orderId,
+        upstreamStatus: delivered.status
+      });
+      return jsonError("checkout_webhook_endpoint_not_found", 502);
+    }
+    logRetrying({
+      reason: "checkout_webhook_rejected",
+      event,
+      orderId: metadata.orderId,
+      upstreamStatus: delivered.status
+    });
     return jsonError("checkout_webhook_rejected", 503);
-  } catch {
+  } catch (error) {
+    logRetrying({ reason: "checkout_webhook_unavailable", event, orderId: metadata.orderId, error });
     return jsonError("checkout_webhook_unavailable", 503);
   }
 }
@@ -280,6 +414,15 @@ function readCheckoutMetadata(metadata: Stripe.Metadata | null): CheckoutMetadat
   // buildCheckoutApprovedPayload rejects the worker-reserved `registration:`
   // namespace, and the domain re-validates charset and length independently.
   return { financialProductKey, orderId, buyerEmail, buyerIdentitySub };
+}
+
+function paidTheOfferPrice(session: Stripe.Checkout.Session, expectedAmountMinor: number | null): boolean {
+  return session.currency === STRIPE_CHECKOUT_CURRENCY &&
+    expectedAmountMinor !== null &&
+    Number.isInteger(expectedAmountMinor) &&
+    expectedAmountMinor > 0 &&
+    session.amount_total === expectedAmountMinor &&
+    session.amount_subtotal === expectedAmountMinor;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
