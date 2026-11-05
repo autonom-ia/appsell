@@ -11,8 +11,11 @@ que devolve `(allowed, reason, update_pending)`:
 * `not_found`: o entitlement não existe **ou é de outro comprador**. Os dois
   casos respondem igual de propósito: a função não pode virar oráculo de ids.
 * `refunded`: revogado, com compra estornada e nenhuma compra ativa do mesmo
-  produto para esta pessoa. Derivado de `app_private.entitlement_grant`; nada no
-  fulfillment muda (trilha Dinheiro).
+  produto para esta pessoa. Derivado de `app_private.entitlement_grant` por loja,
+  comprador e produto; nada no fulfillment muda (trilha Dinheiro). Limite
+  conhecido: um acesso revogado à mão de quem tem uma compra antiga estornada do
+  mesmo produto aparece como `refunded`. Só o próprio comprador vê o motivo, e a
+  derivação sai quando o motivo da revogação for gravado.
 * `revoked`, `expired`, `not_started`, `seller_unavailable`,
   `product_unavailable`.
 * `active`, com `update_pending=true` quando a loja publicou uma versão que não
@@ -165,7 +168,8 @@ begin
   end if;
 
   return query select true, 'active'::text,
-    (v_current_publication is not null and v_current_publication<>v_publication);
+    coalesce(v_current_publication is not null
+      and v_current_publication is distinct from v_publication, false);
 end $$
 """
 

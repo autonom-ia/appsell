@@ -1303,8 +1303,8 @@ async def read_learning_access(
             )
     except DBAPIError as error:
         raise _learning_domain_error(error) from error
-    decision = dict(row) if row is not None else None
-    if isinstance(decision, dict) and decision.get("reason") == "not_found":
+    decision = dict(row)
+    if decision.get("reason") == "not_found":
         raise _learning_not_found()
     response.headers["cache-control"] = "no-store"
     return {"access": _access_payload(decision)}

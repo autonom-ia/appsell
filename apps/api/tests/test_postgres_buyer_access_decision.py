@@ -7,12 +7,19 @@ negam. Ela explica a negação; nunca libera o que eles bloqueiam.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from collections.abc import Callable, Iterator
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
 import psycopg
 import pytest
+from psycopg import sql
+from psycopg.conninfo import make_conninfo
+from sqlalchemy.engine import make_url
 from test_postgres_demo_learning import (
     ADMIN_URL,
     ISSUER,
@@ -216,7 +223,7 @@ def test_reason_matches_what_the_content_routes_decide(
 
     got = decision(case["buyer"], case["entitlement"])
 
-    assert got[:2] == (allowed, reason), name
+    assert got == (allowed, reason, False), name
     assert library_has(case["buyer"], case["entitlement"]) is allowed
     assert asset_opens(case["buyer"], case["entitlement"], case["asset"]) is allowed
 
@@ -282,3 +289,88 @@ def test_runtime_only_executes_the_function() -> None:
             "app_private.schema_ready()"
         ).fetchone()
     assert row == (True, False, True)
+
+
+def test_new_publication_that_did_not_reach_the_student_is_update_pending() -> None:
+    case = ids()
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            """
+            create temp table next_publication on commit drop as
+            select * from publication
+             where seller_organization_id=%s and catalog_product_id=%s
+             order by version desc limit 1
+            """,
+            (case["seller"], case["product"]),
+        )
+        connection.execute(
+            "update next_publication set id=gen_random_uuid(), version=version+1,"
+            " published_at=clock_timestamp()"
+        )
+        connection.execute("insert into publication select * from next_publication")
+        connection.execute(
+            "update catalog_product set published_snapshot_id=(select id from next_publication)"
+            " where seller_organization_id=%s and id=%s",
+            (case["seller"], case["product"]),
+        )
+        connection.commit()
+
+    assert decision(case["buyer"], case["entitlement"]) == (True, "active", True)
+    # Continua com acesso: só não recebeu a versão nova.
+    assert library_has(case["buyer"], case["entitlement"]) is True
+
+
+MIGRATOR_URL = os.environ.get("APPSELL_MIGRATOR_DATABASE_URL")
+
+
+@pytest.mark.skipif(not MIGRATOR_URL, reason="migrator URL is required for downgrade test")
+def test_downgrade_removes_the_function_and_keeps_the_schema_ready() -> None:
+    assert ADMIN_URL and MIGRATOR_URL
+    database = f"appsell_access_decision_{uuid4().hex}"
+    maintenance_url = make_conninfo(ADMIN_URL, dbname="postgres")
+    repository_root = Path(__file__).resolve().parents[3]
+    migrator = make_url(MIGRATOR_URL).set(database=database).render_as_string(hide_password=False)
+
+    def migrate(*arguments: str) -> None:
+        subprocess.run(  # noqa: S603 -- arguments are fixed by this test
+            [sys.executable, "-m", "alembic", "-c", "apps/api/alembic.ini", *arguments],
+            cwd=repository_root,
+            env={**os.environ, "APPSELL_MIGRATOR_DATABASE_URL": migrator},
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    def state() -> tuple[bool, bool]:
+        with psycopg.connect(make_conninfo(ADMIN_URL, dbname=database)) as connection:
+            row = connection.execute(
+                "select to_regprocedure('app_private.buyer_access_decision(uuid,uuid)')"
+                " is not null, app_private.schema_ready()"
+            ).fetchone()
+        assert row is not None
+        return (bool(row[0]), bool(row[1]))
+
+    with psycopg.connect(maintenance_url, autocommit=True) as connection:
+        connection.execute(sql.SQL("create database {}").format(sql.Identifier(database)))
+        connection.execute(
+            sql.SQL("alter database {} owner to appsell_owner").format(sql.Identifier(database))
+        )
+        connection.execute(
+            sql.SQL("grant connect on database {} to appsell_migrator, appsell_runtime").format(
+                sql.Identifier(database)
+            )
+        )
+    try:
+        # Esta migration é a cabeça da cadeia (o teste de limites confere).
+        migrate("upgrade", "head")
+        assert state() == (True, True)
+        migrate("downgrade", "-1")
+        assert state() == (False, True)
+        migrate("upgrade", "head")
+        assert state() == (True, True)
+    finally:
+        with psycopg.connect(maintenance_url, autocommit=True) as connection:
+            connection.execute(
+                sql.SQL("drop database if exists {} with (force)").format(sql.Identifier(database))
+            )
