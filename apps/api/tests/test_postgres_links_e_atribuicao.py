@@ -202,12 +202,13 @@ def _atribuir(
     loja: UUID = LOJA_A,
     fonte: str | None = "instagram",
     campanha: str | None = "outubro",
+    meio: str | None = "social",
 ) -> bool:
     assert RUNTIME_URL
     with psycopg.connect(RUNTIME_URL) as connection:
         row = connection.execute(
-            "select app_private.record_checkout_attribution(%s,%s,%s,%s,'social',%s,null,null,%s)",
-            (loja, _sha(compra), link, fonte, campanha, visita),
+            "select app_private.record_checkout_attribution(%s,%s,%s,%s,%s,%s,null,null,%s)",
+            (loja, _sha(compra), link, fonte, meio, campanha, visita),
         ).fetchone()
         connection.commit()
     assert row is not None
@@ -281,7 +282,7 @@ def test_atribuicao_respeita_a_janela_e_a_primeira_fica() -> None:
     assert _atribuir("janela-1", None, _agora(), fonte="outra") is False
     assert _atribuir("janela-2", link, _agora() - timedelta(days=7, minutes=1)) is False
     assert _atribuir("janela-3", link, _agora() + timedelta(minutes=5)) is False
-    assert _atribuir("janela-4", None, _agora(), fonte=None, campanha=None) is False
+    assert _atribuir("janela-4", None, _agora(), fonte=None, campanha=None, meio=None) is False
     assert _atribuir("janela-5", None, _agora(), loja=LOJA_INATIVA) is False
     assert ADMIN_URL
     with psycopg.connect(ADMIN_URL) as connection:
