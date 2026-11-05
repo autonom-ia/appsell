@@ -92,11 +92,7 @@ POSTGRES_PASSWORD="$admin_secret" docker run -d --name "$target_container" \
 # Point the lib client wrapper at this rehearsal network.
 export BACKUP_DOCKER_NETWORK="$network_name"
 
-for _ in $(seq 1 30); do
-  docker exec "$target_container" pg_isready -q -U "$target_user" && break
-  sleep 2
-done
-docker exec "$target_container" pg_isready -q -U "$target_user" \
+pg_wait_container_ready "$target_container" "$target_user" "$target_db" \
   || die "disposable PostgreSQL did not become ready"
 
 log "step 4/6: create the Sell roles from ${roles_source##*/} (NOLOGIN, no password)"

@@ -54,7 +54,7 @@ Plataforma. Uma reserva vale por 7 dias sem PR aberto.
 | `0070` | E · Conteúdo e membros | #559 | reservada em 05/11 |
 | `0071` | 1 · Plataforma | #550 | PR #578 |
 | `0072` | F · Crescimento | #562 | reservada em 05/11 |
-| `0073` | 2 · Dinheiro | #545 | reservada em 05/11 |
+| `0073` | 2 · Dinheiro | #545 | PR #587 |
 
 O número reservado é da trilha, mas o `down_revision` é o head da `main` na
 hora do merge: quem entra depois rebaseia. O CI (`migration_shape`, #551) barra

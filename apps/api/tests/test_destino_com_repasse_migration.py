@@ -68,10 +68,10 @@ def test_a_descida_tira_a_v2_depois_do_readiness(migration: ModuleType) -> None:
 
 
 def test_o_readiness_aprende_a_versao(migration: ModuleType) -> None:
-    anterior = _carregar("dono_da_conta_payout", "appsell_dono_0065_para_0073")
+    anterior = _carregar("consentimento_de_email", "appsell_consentimento_0066_para_0073")
     assert migration.down_revision == anterior.revision
-    assert migration._READY_ATE_0065 == anterior._READY_ATE_0065
-    assert migration._READY_ATE_0073.startswith(migration._READY_ATE_0065[:-2])
+    assert migration._READY_ATE_0066 == anterior._READY_ATE_0066
+    assert migration._READY_ATE_0073.startswith(migration._READY_ATE_0066[:-2])
     assert migration.revision in migration._READY_ATE_0073
     assert migration._BASES_DO_READY == anterior._BASES_DO_READY
 
