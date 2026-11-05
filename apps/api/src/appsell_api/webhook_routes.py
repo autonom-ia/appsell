@@ -155,7 +155,7 @@ _ACCEPT_DISPUTE = text(
 
 
 def _accept_call(normalized: NormalizedCheckoutEvent) -> tuple[Any, dict[str, Any]]:
-    if normalized.dispute_id is None or normalized.dispute_created_at is None:
+    if normalized.dispute_id is None:
         return _ACCEPT, {}
     return _ACCEPT_DISPUTE, {
         "dispute_hash": _sha256(normalized.dispute_id),

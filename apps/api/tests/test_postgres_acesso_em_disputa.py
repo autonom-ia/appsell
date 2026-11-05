@@ -228,7 +228,7 @@ def _accept(
     seller: UUID = SELLER,
     event_reference: str | None = None,
     dispute: str = "dp_A",
-    created_at: str = "2026-11-10T10:00:00Z",
+    created_at: str | None = "2026-11-10T10:00:00Z",
     buyer: str | None = None,
     with_buyer: bool = True,
     without_details: bool = False,
@@ -320,7 +320,7 @@ def _send(
     seller: UUID = SELLER,
     event_reference: str | None = None,
     dispute: str = "dp_A",
-    created_at: str = "2026-11-10T10:00:00Z",
+    created_at: str | None = "2026-11-10T10:00:00Z",
     buyer: str | None = None,
 ) -> list[dict[str, object]]:
     _accept(
@@ -409,6 +409,17 @@ def test_perdida_antes_da_aberta_mantem_revogado(worker: UUID) -> None:
     assert _state("perdida-antes") == ("charged_back", "revoked")
 
 
+def test_aberta_antes_de_ligar_e_perdida_depois_nao_muda_o_acesso(worker: UUID) -> None:
+    # Pega: o desfecho que chega depois de a loja ser ligada fazendo valer uma
+    # disputa aberta antes dela (o piso é a data da disputa, não a do evento).
+    antiga = "2025-12-01T10:00:00Z"
+    _send(worker, "antes-depois", APPROVED, T0)
+    _send(worker, "antes-depois", OPENED, antiga, dispute="dp_OLD", created_at=antiga)
+    results = _send(worker, "antes-depois", LOST, T2, dispute="dp_OLD", created_at=antiga)
+    assert [result["reason"] for result in results] == ["dispute_before_enable"]
+    assert _state("antes-depois") == ("active", "active")
+
+
 def test_disputa_sobre_compra_estornada_nao_muda_nada(worker: UUID) -> None:
     # Pega: disputa ganha reativando uma compra já estornada.
     _send(worker, "estornada", APPROVED, T0)
@@ -486,6 +497,18 @@ def test_loja_desligada_aceita_o_evento_e_nao_muda_o_acesso(worker: UUID) -> Non
     results = _drain(worker)
     assert [result["reason"] for result in results] == ["dispute_access_disabled"]
     assert _state("desligada", OFF_SELLER) == ("active", "active")
+
+
+def test_disputa_sem_data_e_gravada_sem_efeito_e_alerta(worker: UUID) -> None:
+    # Pega: a data ausente caindo para "agora" e fazendo valer disputa antiga;
+    # ou a disputa sem data sumindo sem ninguém saber.
+    _send(worker, "sem-data", APPROVED, T0)
+    event_id, created = _accept("sem-data", LOST, T2, dispute="dp_SEMDATA", created_at=None)
+    assert created
+    results = _drain(worker)
+    assert [result["reason"] for result in results] == ["dispute_without_created_at"]
+    assert _state("sem-data") == ("active", "active")
+    assert any(row[0] == "dispute_without_created_at" and row[2] == event_id for row in _report())
 
 
 def test_outra_disputa_aberta_mantem_suspenso_quando_a_primeira_ganha(worker: UUID) -> None:

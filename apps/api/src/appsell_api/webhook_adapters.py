@@ -28,7 +28,8 @@ _EVENT_TYPES = frozenset(
 _DISPUTE_EVENT_TYPES = frozenset(
     {"purchase.dispute_opened", "purchase.dispute_won", "purchase.dispute_lost"}
 )
-_DISPUTE_KEYS = frozenset({"dispute_id", "dispute_created_at"})
+_DISPUTE_ID_KEY = "dispute_id"
+_DISPUTE_CREATED_KEY = "dispute_created_at"
 _DISPUTE_PREFIX = "dp_"
 _DISPUTE_ID_MAX = 255
 _LEGACY_PROTOCOL = "appsell.webhook.generic-hmac.v1"
@@ -120,10 +121,12 @@ def parse_generic_hmac_v1(body: bytes) -> NormalizedCheckoutEvent:
     if not isinstance(payload, dict):
         raise WebhookRejectedError("webhook_payload_invalid")
     is_dispute = payload.get("event_type") in _DISPUTE_EVENT_TYPES
-    # Disputa: exatamente as chaves do estorno (v3) mais as duas da disputa.
-    # Outro evento: as chaves da disputa nunca entram.
+    # Disputa: as chaves do estorno (v3) mais o id da disputa, e a data dela.
+    # A data pode faltar: a disputa é gravada sem efeito (ver abaixo). Outro
+    # evento: as chaves da disputa nunca entram.
+    with_dispute_id = expected_v3 | {_DISPUTE_ID_KEY}
     allowed = (
-        (expected_v3 | _DISPUTE_KEYS,)
+        (with_dispute_id | {_DISPUTE_CREATED_KEY}, with_dispute_id)
         if is_dispute
         else (
             expected_v1,
@@ -166,11 +169,7 @@ def parse_generic_hmac_v1(body: bytes) -> NormalizedCheckoutEvent:
         dispute_id = payload["dispute_id"]
         if not _valid_dispute_id(dispute_id):
             raise WebhookRejectedError("webhook_payload_invalid")
-        dispute_created_at = _utc_instant(payload["dispute_created_at"])
-        # A disputa existe antes de qualquer evento dela: datas trocadas
-        # deixariam passar disputa anterior à loja ligada.
-        if dispute_created_at > occurred_at:
-            raise WebhookRejectedError("webhook_payload_invalid")
+        dispute_created_at = _dispute_created_at(payload.get(_DISPUTE_CREATED_KEY), occurred_at)
     return NormalizedCheckoutEvent(
         event_type,
         product,
@@ -194,6 +193,22 @@ def _utc_instant(value: object) -> datetime:
     if instant.tzinfo is None or instant.utcoffset() != UTC.utcoffset(instant):
         raise WebhookRejectedError("webhook_payload_invalid")
     return instant
+
+
+def _dispute_created_at(value: object, occurred_at: datetime) -> datetime | None:
+    """A data real da disputa, ou None se faltar ou vier inválida.
+
+    Nunca vira "agora": sem data confiável o Sell grava a disputa sem efeito no
+    acesso e a conciliação alerta (`dispute_without_created_at`). Data depois
+    do evento também é inválida: a disputa existe antes de qualquer evento dela.
+    """
+    if value is None:
+        return None
+    try:
+        instant = _utc_instant(value)
+    except WebhookRejectedError:
+        return None
+    return instant if instant <= occurred_at else None
 
 
 def _valid_dispute_id(value: object) -> bool:

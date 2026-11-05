@@ -46,7 +46,11 @@ A regra, por disputa:
   ele muda;
 * vale só a disputa aberta na Stripe depois de a loja ser ligada (a data real
   da disputa contra a linha `enable` vigente). A anterior fica registrada sem
-  efeito, e isso é fixado na primeira vez que ela chega.
+  efeito, e isso é fixado na primeira vez que ela chega;
+* a data só vale vinda do evento assinado. Se faltar ou vier inválida (sem
+  UTC, ou depois do evento), a disputa é gravada sem data e sem efeito no
+  acesso, e a conciliação alerta (`dispute_without_created_at`). Nunca cai
+  para "agora".
 
 E por compra, a partir das disputas que valem:
 
@@ -325,7 +329,8 @@ create table app_private.checkout_dispute_event (
   seller_organization_id uuid not null,
   webhook_event_id uuid not null,
   dispute_id_sha256 text not null check ({_HASH_OK % ("dispute_id_sha256", "dispute_id_sha256")}),
-  dispute_created_at timestamptz not null,
+  -- Nula quando o evento veio sem data válida: a disputa não muda acesso.
+  dispute_created_at timestamptz,
   recorded_at timestamptz not null default clock_timestamp(),
   constraint checkout_dispute_event_pkey primary key (seller_organization_id,webhook_event_id),
   constraint checkout_dispute_event_event_fkey foreign key (seller_organization_id,webhook_event_id)
@@ -342,8 +347,9 @@ create table app_private.purchase_dispute (
     {_HASH_OK % ("external_purchase_id_sha256", "external_purchase_id_sha256")}),
   dispute_id_sha256 text not null check ({_HASH_OK % ("dispute_id_sha256", "dispute_id_sha256")}),
   state text not null check (state in ('opened','won','lost')),
-  dispute_created_at timestamptz not null,
+  dispute_created_at timestamptz,
   effective boolean not null,
+  check (dispute_created_at is not null or not effective),
   created_at timestamptz not null default clock_timestamp(),
   updated_at timestamptz not null default clock_timestamp(),
   constraint purchase_dispute_pkey primary key (seller_organization_id,checkout_integration_id,
@@ -382,9 +388,13 @@ begin
   if p_event_type is null or p_event_type not in (__DISPUTA__)
      or p_dispute_sha is null or length(p_dispute_sha)<>64
      or ltrim(p_dispute_sha,'0123456789abcdef')<>''
-     or p_dispute_created_at is null or p_occurred is null
-     or p_dispute_created_at > p_occurred then
+     or p_occurred is null then
     raise exception 'dispute webhook is invalid' using errcode='22023';
+  end if;
+  -- Data da disputa ausente ou depois do evento: grava sem data, nunca
+  -- "agora". A disputa fica sem efeito e a conciliação alerta.
+  if p_dispute_created_at > p_occurred then
+    p_dispute_created_at := null;
   end if;
   -- A aceitação de sempre: contexto, assinatura do endpoint, dedupe e job.
   select * into strict aceito from app_private.accept_checkout_webhook(
@@ -402,7 +412,7 @@ begin
   where evento.seller_organization_id=p_seller
     and evento.webhook_event_id=aceito.webhook_event_id;
   if gravado.dispute_id_sha256<>p_dispute_sha
-     or gravado.dispute_created_at<>p_dispute_created_at then
+     or gravado.dispute_created_at is distinct from p_dispute_created_at then
     raise exception 'dispute details conflict' using errcode='23505';
   end if;
   return query select aceito.webhook_event_id,aceito.outbox_event_id,aceito.created;
@@ -456,19 +466,22 @@ begin
   else
     -- Estado por disputa: o desfecho vence a abertura em qualquer ordem, e a
     -- perdida vence a ganha. Vale só a disputa aberta depois de a loja ser
-    -- ligada; isso é fixado na primeira vez que a disputa chega.
+    -- ligada; sem data confiável, não vale. Isso é fixado na primeira vez que
+    -- a disputa chega.
     insert into app_private.purchase_dispute as atual(
       seller_organization_id,checkout_integration_id,external_purchase_id_sha256,
       dispute_id_sha256,state,dispute_created_at,effective
     ) values (
       p_seller,p_integration,p_purchase,detalhe.dispute_id_sha256,estado,
-      detalhe.dispute_created_at,detalhe.dispute_created_at >= chave.created_at
+      detalhe.dispute_created_at,
+      coalesce(detalhe.dispute_created_at >= chave.created_at,false)
     )
     on conflict on constraint purchase_dispute_pkey do update set
       state=case
         when atual.state='lost' or excluded.state='lost' then 'lost'
         when atual.state='won' or excluded.state='won' then 'won'
         else 'opened' end,
+      dispute_created_at=coalesce(atual.dispute_created_at,excluded.dispute_created_at),
       updated_at=clock_timestamp()
     returning atual.state,atual.effective into estado_gravado,vale;
 
@@ -496,6 +509,7 @@ begin
       if alvo = 'active' then
         -- Nada a suspender: o grant nasce na aprovação.
         resultado := case when vale then 'grant_pending'
+          when detalhe.dispute_created_at is null then 'dispute_without_created_at'
           else 'dispute_before_enable' end;
       else
         -- A disputa chegou antes da aprovação: o grant nasce no estado dela, e
@@ -512,6 +526,7 @@ begin
       resultado := 'grant_final';
     elsif grant_status = alvo then
       resultado := case when vale then 'grant_unchanged'
+        when detalhe.dispute_created_at is null then 'dispute_without_created_at'
         else 'dispute_before_enable' end;
     else
       update app_private.entitlement_grant set status=alvo,updated_at=clock_timestamp()
@@ -718,6 +733,20 @@ _CONCILIA_ESTADO_PARA = """  -- Disputa (#542, 0074): compra suspensa ou perdida
         and grant_row.buyer_identity_user_id=access.buyer_identity_user_id
         and grant_row.catalog_product_id=access.catalog_product_id
         and grant_row.status='suspended');
+
+  -- Evento de disputa sem a data real da disputa: gravado sem efeito no
+  -- acesso; alguem confere a disputa na Stripe. Fato, pela janela.
+  return query
+  select 'dispute_without_created_at'::text, event.seller_organization_id, seller.slug,
+    'webhook_event'::text, event.id, event.event_type, event.external_purchase_id_sha256,
+    null::uuid, null::text, null::text, event.received_at
+  from public.webhook_event event
+  join public.seller_organization seller on seller.id=event.seller_organization_id
+  join app_private.checkout_dispute_event detail
+    on detail.seller_organization_id=event.seller_organization_id
+   and detail.webhook_event_id=event.id
+  where event.received_at >= p_since and event.received_at < p_before
+    and detail.dispute_created_at is null;
 
   -- Fato que nao muda (o evento chega uma vez): a janela pelo received_at
 """

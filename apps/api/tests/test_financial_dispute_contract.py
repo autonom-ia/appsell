@@ -110,12 +110,17 @@ def test_id_da_disputa_trocado_no_corpo_e_recusado() -> None:
         _verify(body=other)
 
 
-@pytest.mark.parametrize("missing", ["dispute_id", "dispute_created_at"])
-def test_disputa_sem_os_campos_da_disputa_e_recusada(missing: str) -> None:
-    # Pega: disputa sem id (sem estado por disputa) ou sem data real (sem o
-    # piso que ignora disputa anterior à loja ligada).
+def test_disputa_sem_id_e_recusada() -> None:
+    # Pega: disputa sem id, que não teria estado por disputa.
     with pytest.raises(WebhookRejectedError):
-        parse_generic_hmac_v1(_with(**{missing: None}))
+        parse_generic_hmac_v1(_with(dispute_id=None))
+
+
+def test_disputa_sem_data_entra_sem_data() -> None:
+    # Pega: a data ausente virando "agora", que faria disputa antiga valer.
+    event = parse_generic_hmac_v1(_with(dispute_created_at=None))
+    assert event.dispute_id == DISPUTE_ID
+    assert event.dispute_created_at is None
 
 
 @pytest.mark.parametrize("event_type", ["purchase.approved", "purchase.refunded"])
@@ -145,18 +150,20 @@ def test_id_da_disputa_fora_do_formato_da_stripe_e_recusado(dispute_id: object) 
 
 
 @pytest.mark.parametrize(
-    "created_at", ["2026-10-20T10:00:00", "2026-10-20T07:00:00-03:00", "ontem", 7]
+    "created_at",
+    [
+        "2026-10-20T10:00:00",
+        "2026-10-20T07:00:00-03:00",
+        "ontem",
+        7,
+        # Depois do evento: datas trocadas deixariam passar disputa antiga.
+        "2026-10-21T10:00:00.000Z",
+    ],
 )
-def test_data_da_disputa_tem_de_ser_utc(created_at: object) -> None:
-    # Pega: a data sem fuso (ou em outro fuso) mudando o piso de ativação.
-    with pytest.raises(WebhookRejectedError):
-        parse_generic_hmac_v1(_with(dispute_created_at=created_at))
-
-
-def test_disputa_criada_depois_do_evento_e_recusada() -> None:
-    # Pega: os dois campos de data trocados, que deixariam passar disputa antiga.
-    with pytest.raises(WebhookRejectedError):
-        parse_generic_hmac_v1(_with(dispute_created_at="2026-10-21T10:00:00.000Z"))
+def test_data_invalida_da_disputa_vira_sem_data(created_at: object) -> None:
+    # Pega: data sem fuso, em outro fuso ou depois do evento usada como piso,
+    # ou caindo para "agora".
+    assert parse_generic_hmac_v1(_with(dispute_created_at=created_at)).dispute_created_at is None
 
 
 def test_campo_a_mais_continua_recusado() -> None:
