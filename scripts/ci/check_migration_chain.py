@@ -6,6 +6,10 @@ partir do mesmo pai. Cada um passa sozinho; juntos, a main fica com duas
 cabeças e o `alembic upgrade head` recusa. Esta checagem roda em todo evento
 do CI, inclusive na fila de merge, sobre o resultado integrado.
 
+Modelo de ameaça: erro honesto entre PRs paralelos, não autor malicioso (quem
+escreve a migration também poderia editar este script; para isso há revisão).
+Ainda assim, o que tornaria a leitura estática enganosa reprova.
+
 Lê os arquivos com `ast`, sem importar nem executar nada. O que não der para
 ler (sintaxe, `revision` ausente ou calculada) é falha: "não deu para checar"
 nunca vira aprovado.
@@ -22,7 +26,12 @@ VERSIONS = Path("apps/api/migrations/versions")
 # `alembic upgrade` na hora de carimbar a versão.
 MAX_REVISION_LENGTH = 32
 NAMES = frozenset({"revision", "down_revision"})
-DYNAMIC_WRITERS = frozenset({"globals", "vars", "setattr", "exec", "eval"})
+# Referências que permitem escrever no módulo sem uma ligação visível. A regra
+# é pela referência, não pela chamada: alias (`g = globals`) e atributo
+# (`builtins.exec`) também contam.
+DYNAMIC_WRITERS = frozenset(
+    {"globals", "vars", "setattr", "exec", "eval", "__import__", "__builtins__", "builtins", "__dict__", "modules"}
+)
 
 
 class ChainError(RuntimeError):
@@ -44,6 +53,8 @@ def _bound_name(node: ast.AST) -> str | None:
         return node.name
     if isinstance(node, ast.MatchMapping):
         return node.rest
+    if isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del)):
+        return node.attr
     return None
 
 
@@ -84,11 +95,13 @@ def _assigned_literals(path: Path) -> dict[str, object]:
         for node in ast.walk(tree)
     )
     dynamic = any(
-        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in DYNAMIC_WRITERS
+        (isinstance(node, ast.Name) and node.id in DYNAMIC_WRITERS)
+        or (isinstance(node, ast.Attribute) and node.attr in DYNAMIC_WRITERS)
+        or (isinstance(node, ast.alias) and node.name.partition(".")[0] in DYNAMIC_WRITERS)
         for node in ast.walk(tree)
     )
     if dynamic:
-        raise ChainError(f"{path.name}: migration chama globals/vars/setattr/exec/eval; não dá para checar")
+        raise ChainError(f"{path.name}: migration usa escrita dinâmica (globals, exec, builtins...); não dá para checar")
     if bindings != top_level or declared:
         raise ChainError(
             f"{path.name}: revision ou down_revision ligado fora das duas atribuições do topo; "

@@ -143,6 +143,9 @@ class ChainTests(unittest.TestCase):
             "vars": 'vars()["revision"] = "0004_z"\n',
             "setattr": 'import sys\nsetattr(sys.modules[__name__], "revision", "0004_z")\n',
             "exec": 'exec("revision = 1")\n',
+            "alias": 'g = globals\ng()["revision"] = "0004_z"\n',
+            "atributo": 'import sys\nsys.modules[__name__].revision = "0004_z"\n',
+            "builtins": 'import builtins\nbuiltins.exec("revision = 1")\n',
         }.items():
             with self.subTest(nome=nome):
                 self.linear()
