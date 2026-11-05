@@ -137,6 +137,19 @@ class ChainTests(unittest.TestCase):
                     check_chain(Path(folder))
                 self.assertIn("ciclo", str(erro.exception))
 
+    def test_dynamic_writes_fail_because_they_cannot_be_checked(self) -> None:
+        for nome, extra in {
+            "globals": 'globals()["revision"] = "0004_z"\n',
+            "vars": 'vars()["revision"] = "0004_z"\n',
+            "setattr": 'import sys\nsetattr(sys.modules[__name__], "revision", "0004_z")\n',
+            "exec": 'exec("revision = 1")\n',
+        }.items():
+            with self.subTest(nome=nome):
+                self.linear()
+                self.write("0004_a.py", migration("0004_a", "0003_coluna") + extra)
+                with self.assertRaises(ChainError):
+                    check_chain(self.versions)
+
     def test_any_other_binding_of_the_names_fails_closed(self) -> None:
         # Fail-closed on purpose: a local variable named revision is a visible,
         # cheap false red (rename it); modelling scopes left silent false greens.
@@ -147,6 +160,7 @@ class ChainTests(unittest.TestCase):
             "del": "del revision\n",
             "comprehension": "xs = [revision for revision in range(3)]\n",
             "import_estrela": "from os.path import *\n",
+            "match_mapping": "match {}:\n    case {**revision}:\n        pass\n",
         }.items():
             with self.subTest(nome=nome):
                 self.linear()

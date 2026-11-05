@@ -22,6 +22,7 @@ VERSIONS = Path("apps/api/migrations/versions")
 # `alembic upgrade` na hora de carimbar a versão.
 MAX_REVISION_LENGTH = 32
 NAMES = frozenset({"revision", "down_revision"})
+DYNAMIC_WRITERS = frozenset({"globals", "vars", "setattr", "exec", "eval"})
 
 
 class ChainError(RuntimeError):
@@ -41,6 +42,8 @@ def _bound_name(node: ast.AST) -> str | None:
         return node.asname or node.name.partition(".")[0]
     if isinstance(node, (ast.MatchAs, ast.MatchStar, ast.ExceptHandler)):
         return node.name
+    if isinstance(node, ast.MatchMapping):
+        return node.rest
     return None
 
 
@@ -72,13 +75,20 @@ def _assigned_literals(path: Path) -> dict[str, object]:
     # a regra é fail-closed: esses dois nomes só podem ser ligados nas duas
     # atribuições literais do topo. Qualquer outra ligação, em qualquer lugar
     # do arquivo, reprova, inclusive variável local: basta renomeá-la.
-    # Limite conhecido: `globals()[...]`/`exec` não se decidem por leitura
-    # estática; a revisão humana cobre.
+    # Escrita dinâmica (`globals()[...]`, `vars()`, `setattr`, `exec`, `eval`)
+    # não se decide por leitura estática: chamar qualquer uma delas numa
+    # migration também reprova.
     bindings = sum(1 for node in ast.walk(tree) if _bound_name(node) in NAMES)
     declared = any(
         isinstance(node, (ast.Global, ast.Nonlocal)) and NAMES.intersection(node.names)
         for node in ast.walk(tree)
     )
+    dynamic = any(
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in DYNAMIC_WRITERS
+        for node in ast.walk(tree)
+    )
+    if dynamic:
+        raise ChainError(f"{path.name}: migration chama globals/vars/setattr/exec/eval; não dá para checar")
     if bindings != top_level or declared:
         raise ChainError(
             f"{path.name}: revision ou down_revision ligado fora das duas atribuições do topo; "
