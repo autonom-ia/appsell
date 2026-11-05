@@ -95,23 +95,30 @@ export async function startGoogleFontsMock() {
     response.writeHead(404);
     response.end();
   });
-  await new Promise((ready) => server.listen(0, "127.0.0.1", ready));
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("Could not allocate the Google Fonts mock port.");
-  const origin = `http://127.0.0.1:${address.port}`;
-
-  const directory = await mkdtemp(join(tmpdir(), "appsell-fontes-"));
-  const file = join(directory, "respostas.cjs");
-  const responses = Object.fromEntries(GOOGLE_FONTS.map((font) => [font.url, css(origin, font.family, font.faces)]));
-  await writeFile(file, `module.exports = ${JSON.stringify(responses, null, 2)};\n`, "utf8");
-
-  return {
-    file,
-    async close() {
-      await new Promise((closed) => server.close(() => closed()));
-      await rm(directory, { recursive: true, force: true });
-    }
+  let directory;
+  const close = async () => {
+    if (server.listening) await new Promise((closed) => server.close(() => closed()));
+    if (directory) await rm(directory, { recursive: true, force: true });
   };
+  try {
+    await new Promise((ready, failed) => {
+      server.once("error", failed);
+      server.listen(0, "127.0.0.1", ready);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Could not allocate the Google Fonts mock port.");
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    directory = await mkdtemp(join(tmpdir(), "appsell-fontes-"));
+    const file = join(directory, "respostas.cjs");
+    const responses = Object.fromEntries(GOOGLE_FONTS.map((font) => [font.url, css(origin, font.family, font.faces)]));
+    await writeFile(file, `module.exports = ${JSON.stringify(responses, null, 2)};\n`, "utf8");
+    return { file, close };
+  } catch (error) {
+    // Sem isto, um erro no meio deixava o servidor aberto e o processo preso.
+    await close();
+    throw error;
+  }
 }
 
 async function runWithMock(command, args) {
@@ -122,13 +129,17 @@ async function runWithMock(command, args) {
       stdio: "inherit",
       env: { ...process.env, NEXT_FONT_GOOGLE_MOCKED_RESPONSES: mock.file }
     });
+    // Todo sinal vai ao filho, não só o primeiro: o wrapper só sai depois
+    // dele, pelo `finally`, que fecha o mock.
     const forward = (signal) => child.kill(signal);
-    process.once("SIGINT", forward);
-    process.once("SIGTERM", forward);
+    process.on("SIGINT", forward);
+    process.on("SIGTERM", forward);
     process.exitCode = await new Promise((resolve, reject) => {
       child.once("error", reject);
       child.once("exit", (code, signal) => resolve(code ?? (signal ? 1 : 0)));
     });
+    process.off("SIGINT", forward);
+    process.off("SIGTERM", forward);
   } finally {
     await mock.close();
   }
