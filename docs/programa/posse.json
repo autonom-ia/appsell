@@ -1,0 +1,191 @@
+{
+  "_leia": "Fonte da posse de pastas lida pelo CI (#552). Espelho de TRILHAS.md: mudou um, mude o outro; o teste de paridade compara os dois. Cada trilha mapeia uma base para nomes: base vazia = caminho a partir da raiz. Nome terminado em / = pasta; com * = padrão de shell (fnmatch, sem regex). Vale o padrão mais específico (mais longo). O rótulo roteia a revisão; não autoriza merge.",
+  "trilhas": {
+    "trilha:orquestracao": {
+      "": ["docs/programa/", "AGENTS.md", "CLAUDE.md", "docs/DECISIONS.md"]
+    },
+    "trilha:qualidade": {
+      "": [".claude/agents/"]
+    },
+    "trilha:plataforma": {
+      "": [
+        "lib/csrf.ts",
+        "lib/mutation-protection.server.ts",
+        "lib/internal-envelope.ts",
+        "lib/crypto.ts",
+        "lib/token-vault*",
+        "lib/*-key-envelope-provider.server.ts",
+        ".github/",
+        "scripts/",
+        "scripts/ci/",
+        "deploy/",
+        "infra/",
+        "compose.yaml",
+        "next.config.ts",
+        "proxy.ts",
+        "vitest*.config.ts",
+        "playwright*.config.ts",
+        "apps/api/src/appsell_api/main.py",
+        "apps/api/alembic.ini",
+        "docs/runbooks/",
+        "docs/PRODUCTION_CURRENT.md",
+        "app/(protected)/platform/",
+        "app/api/platform/"
+      ],
+      "apps/api/src/appsell_api/": [
+        "db.py",
+        "config.py",
+        "service_auth.py",
+        "internal_requests.py",
+        "platform_routes.py",
+        "platform_bootstrap_routes.py"
+      ]
+    },
+    "trilha:dinheiro": {
+      "": [
+        "app/api/checkout/",
+        "app/api/registration-checkout/",
+        "app/api/demo-checkout/",
+        "app/api/webhooks/",
+        "app/api/financial/",
+        "app/(protected)/checkout/",
+        "app/(protected)/settings/payouts/",
+        "lib/payments/",
+        "lib/stripe*",
+        "lib/financial*",
+        "lib/checkout*",
+        "lib/payout-status.ts",
+        "lib/offer-price.ts",
+        "lib/appsell-pricing.ts",
+        "lib/product-checkout-availability.server.ts"
+      ],
+      "app/components/": [
+        "checkout-workspace.tsx",
+        "stripe-checkout-card.tsx",
+        "payout-connect-card.tsx",
+        "demo-checkout-workspace.tsx"
+      ],
+      "apps/api/src/appsell_api/": [
+        "checkout_routes.py",
+        "provision_checkout.py",
+        "configure_seller_financial.py",
+        "payout_routes.py",
+        "payout_sync_routes.py",
+        "fulfillment_worker.py",
+        "demo_checkout_worker.py",
+        "webhook_*"
+      ]
+    },
+    "trilha:membros": {
+      "": [
+        "app/s/",
+        "app/c/",
+        "app/(protected)/products/",
+        "app/(protected)/library/",
+        "app/(protected)/settings/",
+        "app/auth/",
+        "app/api/me/",
+        "app/api/library/",
+        "app/api/sellers/",
+        "app/api/storefronts/",
+        "app/api/session/",
+        "lib/members/",
+        "lib/learning-*",
+        "lib/oauth*",
+        "lib/identity-*",
+        "lib/session-*",
+        "lib/buyer-*",
+        "lib/store-*",
+        "lib/product-art.ts",
+        "lib/product-cover.ts",
+        "lib/access-link-token.server.ts",
+        "lib/post-login-redirect.ts",
+        "lib/rbac-roles.ts",
+        "lib/public-storefront.ts",
+        "lib/email/"
+      ],
+      "app/components/": [
+        "access-link-*",
+        "access-links-panel.tsx",
+        "account-workspace.tsx",
+        "curriculum-workspace.tsx",
+        "free-access-workspace.tsx",
+        "lesson-description.tsx",
+        "library-workspace.tsx",
+        "product-card.tsx",
+        "product-draft-workspace.tsx",
+        "product-editor-workspace.tsx",
+        "product-headline-panel.tsx",
+        "product-image-panel.tsx",
+        "seller-onboarding-card.tsx",
+        "store-image-panel.tsx",
+        "store-settings-workspace.tsx",
+        "storefront-brand.tsx",
+        "settings-nav.tsx",
+        "app-shell.tsx",
+        "shell-profile-context.tsx",
+        "sell-brand.tsx",
+        "seller-space.ts",
+        "accessible-dialog.tsx",
+        "use-unsaved-changes.ts"
+      ],
+      "apps/api/src/appsell_api/": [
+        "catalog_routes.py",
+        "routes.py",
+        "public_routes.py",
+        "seller_settings_routes.py",
+        "cover_routes.py",
+        "learning_routes.py",
+        "email_worker.py",
+        "email_layout.py"
+      ]
+    },
+    "trilha:crescimento": {
+      "": [
+        "app/(protected)/dashboard/",
+        "app/components/dashboard*",
+        "lib/dashboard-*",
+        "lib/tracking/",
+        "lib/reports/",
+        "apps/api/src/appsell_api/email_preferences_routes.py",
+        "app/e/descadastro/",
+        "app/api/email/unsubscribe/"
+      ]
+    },
+    "trilha:checkout": {
+      "": ["app/components/ui/"]
+    },
+    "trilha:midia": {
+      "": [
+        "lib/asset-media.ts",
+        "lib/private-learning-asset.server.ts",
+        "lib/protected-pdf-links.server.ts",
+        "lib/pdf-study*",
+        "lib/community/"
+      ],
+      "app/components/": [
+        "learning-player.tsx",
+        "lesson-asset-panel.tsx",
+        "lesson-material-panel.tsx",
+        "protected-pdf-reader.tsx",
+        "protected-pdf-study.tsx"
+      ],
+      "apps/api/src/appsell_api/": ["asset_*", "storage_*", "video_*", "pdf_*"]
+    }
+  },
+  "excecoes": {
+    "_leia": "Sem dono de trilha e sem aviso. O teste segue o código; a migration segue a reserva; arquivo de uso comum vai em PR próprio avisado à Orquestração.",
+    "": [
+      "tests/",
+      "apps/api/tests/",
+      "apps/api/migrations/versions/",
+      "docs/",
+      "app/layout.tsx",
+      "app/styles.css",
+      "package.json",
+      "pnpm-lock.yaml",
+      "apps/api/pyproject.toml",
+      "apps/api/uv.lock"
+    ]
+  }
+}

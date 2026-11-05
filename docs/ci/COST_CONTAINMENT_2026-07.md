@@ -147,3 +147,11 @@ the latest push, `ci-gate`, merge queue, blocked force-push/deletion and minimal
 bypass. A real merge-group canary must pass before normal queued merges.
 Only then may the separately approved repository variable
 `APPSELL_MERGE_QUEUE_ACTIVE` become `true`.
+
+### Posse de pastas (#552)
+
+`.github/workflows/posse.yml` roda só em `pull_request`, inclusive em `labeled`
+e `unlabeled`, com um job de até 5 minutos que só lê o diff e os rótulos. Fica
+fora do `ci-gate` de propósito: trocar rótulo não reexecuta as suítes nem pode
+gerar um `ci-gate` verde sem elas. É consultivo até o ruleset exigir o check
+`posse`, o que pede OK explícito do Rodrigo (Settings gate acima).
