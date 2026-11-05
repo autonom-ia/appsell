@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+
 import { enviarContatoComercial } from "@/lib/email/contato-comercial";
+import { ipDoCliente } from "@/lib/ip-do-cliente";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -59,7 +61,7 @@ export async function POST(request: NextRequest) {
     mensagem: campos.mensagem as string,
     origem: request.headers.get("origin"),
     agente: request.headers.get("user-agent"),
-    ip: request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? request.headers.get("x-real-ip")
+    ip: ipDoCliente(request)
   });
   if (!enviado) {
     return NextResponse.json({ error: "contato_indisponivel" }, { status: 503, headers: { "cache-control": "no-store" } });
