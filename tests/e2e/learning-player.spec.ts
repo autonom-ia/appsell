@@ -791,7 +791,7 @@ test("saves a quick drag at the position where the pointer was released", async 
   });
   await layer.evaluate((element) => {
     element.addEventListener("pointerdown", (event) => {
-      (window as unknown as { dragPointerId: number }).dragPointerId = event.pointerId;
+      (window as unknown as { dragPointerId: number }).dragPointerId = (event as PointerEvent).pointerId;
     }, { capture: true, once: true });
   });
   await page.mouse.move(start.x, start.y);
@@ -821,12 +821,13 @@ test("saves a quick drag at the position where the pointer was released", async 
     return Array.from(line.points).map((point) => ({ x: point.x, y: point.y / ratio }));
   });
   const saved = pdfStudyStore.annotations.find((item) => item.id === seeded.id);
-  expect(saved?.points).toHaveLength(shown.length);
-  saved!.points.forEach((point, index) => {
+  const savedPoints = (saved?.points ?? []) as { x: number; y: number }[];
+  expect(savedPoints).toHaveLength(shown.length);
+  savedPoints.forEach((point, index) => {
     expect(Math.abs(point.x - shown[index].x)).toBeLessThan(0.0005);
     expect(Math.abs(point.y - shown[index].y)).toBeLessThan(0.0005);
   });
-  expect(saved!.points[0].x).toBeGreaterThan(seeded.points[0].x);
+  expect(savedPoints[0].x).toBeGreaterThan(seeded.points[0].x);
 });
 
 test("draws with one touch, reserves two touches for zoom and scrolls in hand mode", async ({
