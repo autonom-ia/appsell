@@ -4,11 +4,21 @@ import { pathToFileURL } from "node:url";
 
 export const DEFAULT_BRIDGE_CONFIG = Object.freeze({
   socketPath: "/transport/sell.sock",
-  upstreamHost: "85.31.60.100",
   upstreamPort: 443,
 });
 
-export async function startUnixBridge(config = DEFAULT_BRIDGE_CONFIG) {
+export const UPSTREAM_HOST_ENV = "APPSELL_RUNTIME_PREVIEW_PUBLIC_IPV4";
+
+// The approved public IPv4 comes only from the environment; there is no default.
+export function bridgeConfigFromEnv(env) {
+  const upstreamHost = env[UPSTREAM_HOST_ENV];
+  if (!net.isIPv4(upstreamHost ?? "")) {
+    throw new Error(`${UPSTREAM_HOST_ENV} is required and must be an IPv4 address`);
+  }
+  return Object.freeze({ ...DEFAULT_BRIDGE_CONFIG, upstreamHost });
+}
+
+export async function startUnixBridge(config) {
   const { socketPath, upstreamHost, upstreamPort } = config;
   if (typeof socketPath !== "string" || !socketPath.startsWith("/")) {
     throw new TypeError("runtime-preview bridge socket path is invalid");
@@ -93,10 +103,9 @@ async function runCli() {
   if (expectedSocket !== DEFAULT_BRIDGE_CONFIG.socketPath) {
     throw new Error("runtime-preview bridge socket environment drifted");
   }
-  const bridge = await startUnixBridge();
-  console.log(
-    `runtime-preview Unix bridge ready for ${DEFAULT_BRIDGE_CONFIG.upstreamHost}:${DEFAULT_BRIDGE_CONFIG.upstreamPort}`,
-  );
+  const config = bridgeConfigFromEnv(process.env);
+  const bridge = await startUnixBridge(config);
+  console.log(`runtime-preview Unix bridge ready for ${config.upstreamHost}:${config.upstreamPort}`);
   let stopping = false;
   async function stop(exitCode) {
     if (stopping) return;
