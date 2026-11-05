@@ -427,9 +427,73 @@ def test_funcoes_fixam_o_search_path_com_pg_temp() -> None:
             "from pg_proc p join pg_namespace n on n.oid = p.pronamespace "
             "where n.nspname = 'app_private' and p.proname in ("
             "'create_campaign_link','archive_campaign_link','list_campaign_links',"
-            "'read_campaign_sales','record_checkout_attribution','record_cookie_consent')"
+            "'read_campaign_sales','record_checkout_attribution','record_cookie_consent',"
+            "'purge_checkout_attribution')"
         ).fetchall()
-    assert len(linhas) == 6
+    assert len(linhas) == 7
     for _nome, definer, configuracao in linhas:
         assert definer is True
         assert configuracao == "search_path=pg_catalog, app_private, public, pg_temp"
+
+
+def _atribuicao_antiga(compra: str, idade: timedelta) -> None:
+    assert ADMIN_URL
+    quando = _agora() - idade
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "insert into app_private.checkout_attribution(seller_organization_id,purchase_sha256,"
+            "utm_source,visited_at,created_at) values(%s,%s,'retencao',%s,%s)",
+            (LOJA_A, _sha(compra), quando, quando),
+        )
+        connection.commit()
+
+
+def _existe(compra: str) -> bool:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        row = connection.execute(
+            "select count(*) from app_private.checkout_attribution "
+            "where seller_organization_id=%s and purchase_sha256=%s",
+            (LOJA_A, _sha(compra)),
+        ).fetchone()
+    return row is not None and row[0] == 1
+
+
+def _limpar(connection: Conexao) -> dict[str, Any]:
+    row = connection.execute("select app_private.purge_checkout_attribution(5000)").fetchone()
+    assert row is not None
+    return cast(dict[str, Any], row[0])
+
+
+def test_limpeza_apaga_sem_venda_em_48h_e_tudo_depois_de_13_meses() -> None:
+    _atribuicao_antiga("ret-sem-venda", timedelta(hours=49))
+    _atribuicao_antiga("ret-recente", timedelta(hours=47))
+    _atribuicao_antiga("ret-com-venda", timedelta(days=30))
+    _evento("ret-e1", "purchase.approved", "ret-com-venda", _agora().isoformat())
+    _atribuicao_antiga("ret-velha", timedelta(days=400))
+    _evento("ret-e2", "purchase.approved", "ret-velha", _agora().isoformat())
+    assert RUNTIME_URL
+    with psycopg.connect(RUNTIME_URL) as connection:
+        resultado = _limpar(connection)
+        connection.commit()
+    assert resultado["skipped"] is False
+    assert resultado["without_sale"] >= 1 and resultado["expired"] >= 1
+    assert not _existe("ret-sem-venda")
+    assert _existe("ret-recente")
+    assert _existe("ret-com-venda")
+    assert not _existe("ret-velha")
+
+
+def test_duas_replicas_ao_mesmo_tempo_so_uma_limpa() -> None:
+    _atribuicao_antiga("ret-replica", timedelta(hours=50))
+    assert RUNTIME_URL
+    with psycopg.connect(RUNTIME_URL) as primeira, psycopg.connect(RUNTIME_URL) as segunda:
+        resultado_da_primeira = _limpar(primeira)
+        # A primeira segura a trava até o commit; a segunda não espera.
+        resultado_da_segunda = _limpar(segunda)
+        segunda.commit()
+        primeira.commit()
+    assert resultado_da_primeira["skipped"] is False
+    assert resultado_da_primeira["without_sale"] >= 1
+    assert resultado_da_segunda == {"skipped": True, "without_sale": 0, "expired": 0}
+    assert not _existe("ret-replica")

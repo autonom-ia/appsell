@@ -20,7 +20,10 @@ texto e o cookie está na janela de 7 dias (`lib/tracking/`). A função confere
 de novo a janela e a loja do link.
 
 Retenção (#563): a atribuição com venda aprovada fica 13 meses; sem venda
-aprovada em 48 h, é apagada. A rotina de limpeza vem num PR separado.
+aprovada em 48 h, é apagada. A regra nasce junto com o dado, nesta mesma
+migration (`purge_checkout_attribution`), porque a promessa da LGPD vale desde
+o primeiro registro. Quem chama é o worker de retenção da API, a cada hora; a
+trava de transação garante que só uma réplica limpe por vez.
 
 Todas as tabelas: RLS `enable` + `force`, política só para o dono, `revoke
 all`, acesso só por função `security definer` com `pg_temp` no fim do
@@ -47,6 +50,9 @@ CAPACIDADE_ESCRITA = "growth.campaign_link.write"
 JANELA_DIAS = 7
 MAXIMO_DE_LINKS_ATIVOS = 200
 MAXIMO_DE_LINKS_LISTADOS = 500
+HORAS_SEM_VENDA = 48
+MESES_DE_RETENCAO = 13
+LOTE_MAXIMO_DA_LIMPEZA = 5000
 PERIODO_MAXIMO_DIAS = 366
 TAMANHO_UTM = 100
 TAMANHO_NOME = 80
@@ -351,6 +357,47 @@ __GUARDA_LEITURA__
       return false;
     end $$
     """,
+    # Retenção (#563): apaga, em lote, a atribuição sem venda aprovada em 48 h
+    # e qualquer uma com mais de 13 meses. Só uma réplica por vez: a outra
+    # recebe `skipped` e não espera.
+    """
+    create function app_private.purge_checkout_attribution(p_limit integer)
+    returns jsonb language plpgsql volatile security definer
+    __SEARCH_PATH__ as $$
+    declare sem_venda integer; expiradas integer; v_limite integer;
+    begin
+      if not pg_try_advisory_xact_lock(hashtextextended('appsell.attribution_retention', 0)) then
+        return jsonb_build_object('skipped',true,'without_sale',0,'expired',0);
+      end if;
+      v_limite := least(greatest(coalesce(p_limit,0),1),__LOTE__);
+      with alvo as (
+        select attribution.seller_organization_id,attribution.purchase_sha256
+        from app_private.checkout_attribution attribution
+        where attribution.created_at < clock_timestamp() - interval '__HORAS__ hours'
+          and not exists (
+            select 1 from public.webhook_event event
+            where event.seller_organization_id=attribution.seller_organization_id
+              and event.external_purchase_id_sha256=attribution.purchase_sha256
+              and event.event_type='purchase.approved')
+        order by attribution.created_at limit v_limite
+      )
+      delete from app_private.checkout_attribution attribution using alvo
+      where attribution.seller_organization_id=alvo.seller_organization_id
+        and attribution.purchase_sha256=alvo.purchase_sha256;
+      get diagnostics sem_venda = row_count;
+      with alvo as (
+        select attribution.seller_organization_id,attribution.purchase_sha256
+        from app_private.checkout_attribution attribution
+        where attribution.created_at < clock_timestamp() - interval '__MESES__ months'
+        order by attribution.created_at limit v_limite
+      )
+      delete from app_private.checkout_attribution attribution using alvo
+      where attribution.seller_organization_id=alvo.seller_organization_id
+        and attribution.purchase_sha256=alvo.purchase_sha256;
+      get diagnostics expiradas = row_count;
+      return jsonb_build_object('skipped',false,'without_sale',sem_venda,'expired',expiradas);
+    end $$
+    """,
     # Contagem do aceite ou da recusa, sem dado pessoal. Chamada pelo BFF com a
     # credencial de serviço, com limite de taxa por IP lá.
     """
@@ -396,6 +443,9 @@ _VALORES = {
     "__DIAS__": str(PERIODO_MAXIMO_DIAS),
     "__JANELA__": str(JANELA_DIAS),
     "__FUSO__": FUSO,
+    "__HORAS__": str(HORAS_SEM_VENDA),
+    "__MESES__": str(MESES_DE_RETENCAO),
+    "__LOTE__": str(LOTE_MAXIMO_DA_LIMPEZA),
 }
 
 
@@ -417,6 +467,7 @@ ASSINATURAS = (
     "app_private.read_campaign_sales(uuid,uuid,date,date)",
     "app_private.record_checkout_attribution(uuid,text,uuid,text,text,text,text,text,timestamptz)",
     "app_private.record_cookie_consent(uuid,text,boolean)",
+    "app_private.purge_checkout_attribution(integer)",
 )
 
 
