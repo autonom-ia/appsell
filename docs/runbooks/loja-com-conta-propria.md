@@ -4,6 +4,12 @@ Vale para a lista `APPSELL_FINANCIAL_CONNECT_SELLER_IDS` do `web` (#440): a loja
 listada cobra na própria conta Stripe conectada, com a comissão da plataforma.
 Toda mudança nesta lista é operação de produção e exige OK do Rodrigo.
 
+> **Gate: a lista fica vazia até a disputa de cobrança direta estar coberta.**
+> Na loja da lista, a cobrança é direta, na conta da loja. A disputa dessa
+> cobrança nasce na conta da loja, e o tratamento de disputa (#542, v1) ainda não
+> a lê. Nenhuma loja entra na lista antes da v2 (#590) estar em produção,
+> mesmo com o pré-voo dando 0.
+
 ## As duas listas, e por que não basta uma
 
 | Lista | Onde | O que liga |
