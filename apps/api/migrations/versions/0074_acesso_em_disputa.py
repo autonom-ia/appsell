@@ -37,7 +37,8 @@ O que muda no banco:
   tipos novos, depois de já ter validado o lease e tomado os dois locks da
   compra e do par (comprador, produto);
 * a conciliação (#147) passa a ver a disputa: compra suspensa ou perdida com
-  acesso ativo, acesso suspenso sem disputa, e evento de disputa sem job.
+  acesso ativo, acesso suspenso sem disputa, compra suspensa em loja desligada,
+  evento de disputa sem job e evento de disputa sem data.
 
 A regra, por disputa:
 
@@ -47,6 +48,8 @@ A regra, por disputa:
 * vale só a disputa aberta na Stripe depois de a loja ser ligada (a data real
   da disputa contra a linha `enable` vigente). A anterior fica registrada sem
   efeito, e isso é fixado na primeira vez que ela chega;
+* loja desligada: disputa nova é ignorada, mas o desfecho de uma disputa que
+  já vale continua sendo aplicado (quem ganhou não fica suspenso para sempre);
 * a data só vale vinda do evento assinado. Se faltar ou vier inválida (sem
   UTC, ou depois do evento), a disputa é gravada sem data e sem efeito no
   acesso, e a conciliação alerta (`dispute_without_created_at`). Nunca cai
@@ -93,7 +96,7 @@ from types import ModuleType
 from alembic import op
 
 revision = "0074_acesso_em_disputa"
-down_revision = "0065_dono_da_conta_payout"
+down_revision = "0066_consentimento_de_email"
 branch_labels = None
 depends_on = None
 
@@ -118,25 +121,27 @@ _TIPOS_DE_ANTES = "'purchase.approved','purchase.refunded','subscription.cancell
 _TIPOS_DE_DISPUTA = "'purchase.dispute_opened','purchase.dispute_won','purchase.dispute_lost'"
 _TIPOS_DE_AGORA = _TIPOS_DE_ANTES + "," + _TIPOS_DE_DISPUTA
 
-_READY_ATE_0065 = (
+_READY_ATE_0066 = (
     "'0057_banner_na_vitrine','0058_capa_na_biblioteca','0059_canal_financial_global',"
     "'0060_atualizacao_chega_ao_aluno','0061_o_atraso_alcanca_o_aluno',"
     "'0062_mapping_do_produto_novo','0063_conciliacao_do_acesso',"
-    "'0064_vendas_ativadas_pela_loja','0065_dono_da_conta_payout'))"
+    "'0064_vendas_ativadas_pela_loja','0065_dono_da_conta_payout',"
+    "'0066_consentimento_de_email'))"
 )
 _READY_ATE_0074 = (
     "'0057_banner_na_vitrine','0058_capa_na_biblioteca','0059_canal_financial_global',"
     "'0060_atualizacao_chega_ao_aluno','0061_o_atraso_alcanca_o_aluno',"
     "'0062_mapping_do_produto_novo','0063_conciliacao_do_acesso',"
     "'0064_vendas_ativadas_pela_loja','0065_dono_da_conta_payout',"
-    "'0074_acesso_em_disputa'))"
+    "'0066_consentimento_de_email','0074_acesso_em_disputa'))"
 )
 _BASES_DO_READY: tuple[str, ...] = (
     "app_private.schema_ready_base_0016()",
     "app_private.schema_ready_base_0017()",
 )
 _BASE_DO_ACESSO = "app_private.schema_ready_base_0016()"
-# A 0065 não mexeu no trecho de funções do readiness: o último a mexer foi a 0064.
+# A 0065 e a 0066 não mexeram no trecho de funções do readiness: o último a
+# mexer foi a 0064.
 _ULTIMA_DO_READY = "0064_vendas_ativadas_pela_loja"
 
 _READY_DA_DISPUTA = (
@@ -428,7 +433,7 @@ create function app_private.apply_checkout_dispute(
 set search_path=pg_catalog,app_private,public,pg_temp as $$
 declare
   detalhe record; chave record; estado text; alvo text; estado_gravado text;
-  vale boolean;
+  vale boolean; ligada boolean := false; piso timestamptz; ja_vale boolean;
   grant_status text; resultado text; acesso text; v_entitlement_id uuid;
   v_publication uuid; mudou boolean := false;
 begin
@@ -461,7 +466,20 @@ begin
   from app_private.dispute_access_switch ultima
   where ultima.seller_organization_id=p_seller
   order by ultima.created_at desc, ultima.id desc limit 1;
-  if not found or chave.action <> 'enable' then
+  if found then
+    ligada := chave.action = 'enable';
+    piso := chave.created_at;
+  end if;
+  select disputa.effective into ja_vale
+  from app_private.purchase_dispute disputa
+  where disputa.seller_organization_id=p_seller
+    and disputa.checkout_integration_id=p_integration
+    and disputa.external_purchase_id_sha256=p_purchase
+    and disputa.dispute_id_sha256=detalhe.dispute_id_sha256;
+  -- Loja desligada: disputa nova não é registrada. O desfecho de uma disputa
+  -- que já vale continua sendo aplicado; sem isso, quem ganhou depois do
+  -- desligamento ficaria suspenso para sempre.
+  if not ligada and not coalesce(ja_vale,false) then
     resultado := 'dispute_access_disabled';
   else
     -- Estado por disputa: o desfecho vence a abertura em qualquer ordem, e a
@@ -474,7 +492,7 @@ begin
     ) values (
       p_seller,p_integration,p_purchase,detalhe.dispute_id_sha256,estado,
       detalhe.dispute_created_at,
-      coalesce(detalhe.dispute_created_at >= chave.created_at,false)
+      ligada and coalesce(detalhe.dispute_created_at >= piso,false)
     )
     on conflict on constraint purchase_dispute_pkey do update set
       state=case
@@ -734,6 +752,21 @@ _CONCILIA_ESTADO_PARA = """  -- Disputa (#542, 0074): compra suspensa ou perdida
         and grant_row.catalog_product_id=access.catalog_product_id
         and grant_row.status='suspended');
 
+  -- Compra suspensa em loja com a regra desligada: so o desfecho da propria
+  -- disputa a resolve. Uma linha por compra.
+  return query
+  select 'disputed_while_disabled'::text, grant_row.seller_organization_id, seller.slug,
+    'entitlement_grant'::text, null::uuid, null::text,
+    grant_row.external_purchase_id_sha256, grant_row.catalog_product_id,
+    grant_row.status, null::text, grant_row.updated_at
+  from app_private.entitlement_grant grant_row
+  join public.seller_organization seller on seller.id=grant_row.seller_organization_id
+  where grant_row.status='suspended'
+    and coalesce((select chave.action from app_private.dispute_access_switch chave
+                  where chave.seller_organization_id=grant_row.seller_organization_id
+                  order by chave.created_at desc, chave.id desc limit 1),
+                 'disable') <> 'enable';
+
   -- Evento de disputa sem a data real da disputa: gravado sem efeito no
   -- acesso; alguem confere a disputa na Stripe. Fato, pela janela.
   return query
@@ -821,7 +854,7 @@ def upgrade() -> None:
     for de, para in _TROCAS_NA_CONCILIACAO:
         op.execute(_reescreve(_RELATORIO, de, para))
     for alvo in _BASES_DO_READY:
-        op.execute(_reescreve(alvo, _READY_ATE_0065, _READY_ATE_0074))
+        op.execute(_reescreve(alvo, _READY_ATE_0066, _READY_ATE_0074))
     de, para = _ready_funcao()
     op.execute(_reescreve(_BASE_DO_ACESSO, de, para))
 
@@ -832,7 +865,7 @@ def downgrade() -> None:
     de, para = _ready_funcao()
     op.execute(_reescreve(_BASE_DO_ACESSO, para, de))
     for alvo in _BASES_DO_READY:
-        op.execute(_reescreve(alvo, _READY_ATE_0074, _READY_ATE_0065))
+        op.execute(_reescreve(alvo, _READY_ATE_0074, _READY_ATE_0066))
     for de, para in reversed(_TROCAS_NA_CONCILIACAO):
         op.execute(_reescreve(_RELATORIO, para, de))
     for de, para in reversed(_TROCAS_NA_APLICACAO):

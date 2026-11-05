@@ -12,8 +12,9 @@ a loja, quando e por quê, e a última linha da loja decide. Uma trigger recusa
 em env (`APPSELL_*_SELLER_IDS`) quando a decisão é tomada no código da
 aplicação, e em tabela quando é tomada dentro do SQL. Aqui a decisão acontece
 dentro de `apply_checkout_fulfillment`, sob o lock da compra, e o SQL não lê
-env. Só `apply_checkout_dispute` lê a tabela; a api não lê nem escreve nela
-(teste de Postgres).
+env. Só `apply_checkout_dispute` decide pela tabela; a conciliação só a lê,
+para o alerta de compra suspensa em loja desligada. A api não lê nem escreve
+nela (teste de Postgres).
 
 Loja fora da tabela: o evento de disputa é aceito e registrado, o job é
 concluído com `dispute_access_disabled` e o acesso não muda.
@@ -71,8 +72,9 @@ ficam registradas sem efeito e não mudam acesso nenhum.
 - `fulfillment_job` dos três tipos de disputa sem `dead_letter`.
 - Na conciliação (#147), nenhuma linha de `disputed_with_access` (compra
   suspensa ou perdida com acesso ativo), `suspended_without_dispute` (acesso
-  suspenso sem compra suspensa) ou `dispute_without_fulfillment` (evento de
-  disputa sem job).
+  suspenso sem compra suspensa), `dispute_without_fulfillment` (evento de
+  disputa sem job), `dispute_without_created_at` (evento de disputa sem a
+  data real) ou `disputed_while_disabled` (compra suspensa em loja desligada).
 
 Mandar para fora só contagens. Nenhuma linha com comprador.
 
@@ -85,13 +87,15 @@ insert into app_private.dispute_access_switch(seller_organization_id, action, ac
 values ('<seller_id>', 'disable', '<quem>', '<motivo e referência da aprovação>');
 ```
 
-Desligar **não devolve** os acessos já suspensos ou revogados por disputa. Eles
-ficam como estão até o próximo evento de disputa daquela compra, ou até a
-decisão de cada caso, com OK.
+Desligar **não devolve** os acessos já suspensos ou revogados por disputa, e
+para de registrar disputa nova. O desfecho de uma disputa que já valia continua
+sendo aplicado: quem ganhou depois do desligamento recupera o acesso. Enquanto
+isso, a conciliação mostra cada compra suspensa em loja desligada
+(`disputed_while_disabled`).
 
 Religar depois de desligar move o piso para a nova linha `enable`: a disputa
 aberta no intervalo fica sem efeito. A disputa já registrada mantém o que
-tinha.
+tinha, e o desfecho dela continua valendo.
 
 ## Volta da migration
 

@@ -79,6 +79,8 @@ def test_a_conciliacao_ganha_as_categorias_da_disputa(migration: ModuleType) -> 
         "'disputed_with_access'",
         "'suspended_without_dispute'",
         "'dispute_without_fulfillment'",
+        "'dispute_without_created_at'",
+        "'disputed_while_disabled'",
     ):
         assert categoria in trocas
 
@@ -165,10 +167,10 @@ def test_a_descida_recusa_com_disputa_registrada(migration: ModuleType) -> None:
 
 
 def test_o_readiness_aprende_a_versao(migration: ModuleType) -> None:
-    anterior = _carregar("dono_da_conta_payout", "appsell_dono_0065_para_0074")
+    anterior = _carregar("consentimento_de_email", "appsell_consentimento_0066_para_0074")
     assert migration.down_revision == anterior.revision
-    assert migration._READY_ATE_0065 == anterior._READY_ATE_0065
-    assert migration._READY_ATE_0074.startswith(migration._READY_ATE_0065[:-2])
+    assert migration._READY_ATE_0066 == anterior._READY_ATE_0066
+    assert migration._READY_ATE_0074.startswith(migration._READY_ATE_0066[:-2])
     assert migration.revision in migration._READY_ATE_0074
     assert migration._BASES_DO_READY == anterior._BASES_DO_READY
     assert EXPECTED_MIGRATION == migration.revision

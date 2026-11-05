@@ -28,6 +28,11 @@ pytestmark = pytest.mark.skipif(
 
 SELLER = UUID("e5420000-0000-4000-8000-000000000010")
 OFF_SELLER = UUID("e5420000-0000-4000-8000-000000000020")
+# Ligadas e depois desligadas (ou religadas) dentro do próprio teste.
+TOGGLE_SELLER = UUID("e5420000-0000-4000-8000-000000000030")
+RELINK_SELLER = UUID("e5420000-0000-4000-8000-000000000040")
+# Mesma compra e mesma disputa que SELLER, em outra loja: isolamento.
+OTHER_SELLER = UUID("e5420000-0000-4000-8000-000000000050")
 OWNER = UUID("e5420000-0000-4000-8000-000000000011")
 ENDPOINT_KEY = "dispute_0123456789abcdefghijklmnopqrstuv"
 KEY_REFERENCE = "checkout-dispute-v1"
@@ -164,6 +169,14 @@ def worker() -> UUID:
         )
         _seed_seller(connection, SELLER)
         _seed_seller(connection, OFF_SELLER)
+        for extra in (TOGGLE_SELLER, RELINK_SELLER, OTHER_SELLER):
+            _seed_seller(connection, extra)
+            connection.execute(
+                "insert into app_private.dispute_access_switch("
+                "seller_organization_id,action,actor,reason,created_at) "
+                "values(%s,'enable','pytest','teste da #542',%s)",
+                (extra, ENABLED_AT),
+            )
         # Só SELLER tem a regra ligada. OFF_SELLER foi ligada e depois
         # desligada: prova o desligado e que desligar não apaga quem ligou.
         connection.execute(
@@ -626,7 +639,7 @@ def test_reentrega_com_outra_disputa_no_mesmo_evento_e_recusada(worker: UUID) ->
     _drain(worker)
 
 
-def _report() -> list[tuple[str, str | None, UUID | None]]:
+def _report(seller: UUID = SELLER) -> list[tuple[str, str | None, UUID | None]]:
     assert ADMIN_URL
     with psycopg.connect(ADMIN_URL) as connection:
         rows = connection.execute(
@@ -634,9 +647,67 @@ def _report() -> list[tuple[str, str | None, UUID | None]]:
             "from app_private.checkout_reconciliation_report("
             "now()-interval '1 day',now()+interval '1 minute',interval '1 hour') "
             "where seller_organization_id=%s",
-            (SELLER,),
+            (seller,),
         ).fetchall()
     return cast(list[tuple[str, str | None, UUID | None]], rows)
+
+
+def _switch(seller: UUID, action: str, created_at: str) -> None:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "insert into app_private.dispute_access_switch("
+            "seller_organization_id,action,actor,reason,created_at) "
+            "values(%s,%s,'pytest','teste da #542',%s)",
+            (seller, action, created_at),
+        )
+        connection.commit()
+
+
+def _sha(purchase: str) -> str:
+    return hashlib.sha256(f"{RUN}:{purchase}".encode()).hexdigest()
+
+
+def test_desfecho_de_disputa_que_vale_e_aplicado_com_a_loja_desligada(worker: UUID) -> None:
+    # Pega: loja desligada descartando a vitória de uma disputa que já
+    # suspendeu o acesso; quem ganhou ficaria suspenso para sempre, sem alerta.
+    _send(worker, "desligou", APPROVED, T0, seller=TOGGLE_SELLER)
+    _send(worker, "desligou", OPENED, T1, seller=TOGGLE_SELLER)
+    assert _state("desligou", TOGGLE_SELLER) == ("suspended", "suspended")
+    _switch(TOGGLE_SELLER, "disable", "2026-01-02T00:00:00Z")
+    report = _report(TOGGLE_SELLER)
+    assert ("disputed_while_disabled", _sha("desligou"), None) in report
+    # Disputa nova com a loja desligada: ignorada.
+    results = _send(worker, "desligou", OPENED, T2, seller=TOGGLE_SELLER, dispute="dp_NOVA")
+    assert [result["reason"] for result in results] == ["dispute_access_disabled"]
+    results = _send(worker, "desligou", WON, T3, seller=TOGGLE_SELLER)
+    assert [result["reason"] for result in results] == ["grant_active"]
+    assert _state("desligou", TOGGLE_SELLER) == ("active", "active")
+    assert ("disputed_while_disabled", _sha("desligou"), None) not in _report(TOGGLE_SELLER)
+
+
+def test_religar_nao_tira_o_efeito_da_disputa_que_ja_valia(worker: UUID) -> None:
+    # Pega: o piso novo do religamento anulando uma disputa que já suspendeu,
+    # e a vitória dela não devolvendo o acesso.
+    _send(worker, "religou", APPROVED, T0, seller=RELINK_SELLER)
+    _send(worker, "religou", OPENED, T1, seller=RELINK_SELLER)
+    _switch(RELINK_SELLER, "disable", "2026-01-02T00:00:00Z")
+    _switch(RELINK_SELLER, "enable", "2026-12-01T00:00:00Z")
+    _send(worker, "religou", WON, T3, seller=RELINK_SELLER)
+    assert _state("religou", RELINK_SELLER) == ("active", "active")
+
+
+def test_disputa_de_uma_loja_nao_toca_a_mesma_compra_em_outra(worker: UUID) -> None:
+    # Pega: a purchase_dispute ou o recálculo cruzando lojas com a mesma
+    # referência de compra e o mesmo id de disputa.
+    _send(worker, "cruzada", APPROVED, T0)
+    _send(worker, "cruzada", APPROVED, T0, seller=OTHER_SELLER)
+    _send(worker, "cruzada", OPENED, T1)
+    assert _state("cruzada") == ("suspended", "suspended")
+    assert _state("cruzada", OTHER_SELLER) == ("active", "active")
+    _send(worker, "cruzada", LOST, T2, seller=OTHER_SELLER)
+    assert _state("cruzada") == ("suspended", "suspended")
+    assert _state("cruzada", OTHER_SELLER) == ("charged_back", "revoked")
 
 
 def _access_id(purchase: str) -> UUID:
@@ -774,9 +845,11 @@ def test_so_a_funcao_de_disputa_le_a_chave(worker: UUID) -> None:
             "unnest(array['select','insert','update','delete']) acao"
         ).fetchall()
     # A trigger só recusa; ela cita a tabela na mensagem, não a lê. O
-    # readiness só confere que a tabela existe e tem RLS.
+    # readiness só confere que a tabela existe e tem RLS. A conciliação só lê,
+    # para o alerta de compra suspensa em loja desligada.
     assert [nome for (nome,) in leitoras] == [
         "apply_checkout_dispute",
+        "checkout_reconciliation_report",
         "dispute_access_switch_append_only",
         "schema_ready_base_0016",
     ]
