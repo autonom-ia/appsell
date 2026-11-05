@@ -44,6 +44,9 @@ WON = "purchase.dispute_won"
 LOST = "purchase.dispute_lost"
 APPROVED = "purchase.approved"
 REFUNDED = "purchase.refunded"
+DISPUTES = frozenset({OPENED, WON, LOST})
+# A loja SELLER foi ligada nesta data: vale a disputa aberta depois dela.
+ENABLED_AT = "2026-01-01T00:00:00Z"
 # webhook_event é imutável: referências únicas por execução.
 RUN = uuid4().hex[:8]
 
@@ -165,10 +168,11 @@ def worker() -> UUID:
         # desligada: prova o desligado e que desligar não apaga quem ligou.
         connection.execute(
             "insert into app_private.dispute_access_switch("
-            "seller_organization_id,action,actor,reason) "
-            "values(%s,'enable','pytest','teste da #542'),"
-            "(%s,'enable','pytest','teste da #542'),(%s,'disable','pytest','teste da #542')",
-            (SELLER, OFF_SELLER, OFF_SELLER),
+            "seller_organization_id,action,actor,reason,"
+            "created_at) values(%s,'enable','pytest','teste da #542',%s),"
+            "(%s,'enable','pytest','teste da #542',clock_timestamp()),"
+            "(%s,'disable','pytest','teste da #542',clock_timestamp())",
+            (SELLER, ENABLED_AT, OFF_SELLER, OFF_SELLER),
         )
         connection.commit()
     with psycopg.connect(RUNTIME_URL) as connection:
@@ -198,6 +202,24 @@ def _context(
     )
 
 
+_ACCEPT_SQL = (
+    "select webhook_event_id,created from app_private.accept_checkout_webhook("
+    "%s::uuid,%s::uuid,%s::text,%s::text,1::bigint,%s::text,7::smallint,"
+    "%s::text,20::integer,%s::text,%s::text,11::smallint,%s::text,12::smallint,"
+    "%s::timestamptz,%s::bigint,%s::uuid,%s::text,%s::text)"
+)
+_ACCEPT_DISPUTE_SQL = (
+    "select webhook_event_id,created from app_private.accept_checkout_dispute_webhook("
+    "%s::uuid,%s::uuid,%s::text,%s::text,1::bigint,%s::text,7::smallint,"
+    "%s::text,20::integer,%s::text,%s::text,11::smallint,%s::text,12::smallint,"
+    "%s::timestamptz,%s::bigint,%s::uuid,%s::text,%s::text,%s::text,%s::timestamptz)"
+)
+
+
+def _dispute_sha(purchase: str, dispute: str) -> str:
+    return hashlib.sha256(f"{RUN}:{purchase}:{dispute}".encode()).hexdigest()
+
+
 def _accept(
     purchase: str,
     event_type: str,
@@ -205,17 +227,23 @@ def _accept(
     *,
     seller: UUID = SELLER,
     event_reference: str | None = None,
+    dispute: str = "dp_A",
+    created_at: str = "2026-11-10T10:00:00Z",
+    buyer: str | None = None,
+    with_buyer: bool = True,
+    without_details: bool = False,
 ) -> tuple[UUID, bool]:
+    """Aceita pelo ingresso real. Disputa vai pela aceitação de disputa, com o
+    id e a data real da disputa; `without_details` simula a aceitação sem eles."""
     assert RUNTIME_URL
     ids = _ids(seller)
-    reference = event_reference or f"{RUN}:{purchase}:{event_type}:{occurred_at}"
+    reference = event_reference or f"{RUN}:{purchase}:{event_type}:{dispute}:{occurred_at}"
+    is_dispute = event_type in DISPUTES and not without_details
+    email = f"buyer.{buyer or purchase}.{RUN}@example.test" if with_buyer else None
     with psycopg.connect(RUNTIME_URL) as connection:
         _context(connection, INGEST_IDENTITY, INGEST_CAPABILITY)
         row = connection.execute(
-            "select webhook_event_id,created from app_private.accept_checkout_webhook("
-            "%s::uuid,%s::uuid,%s::text,%s::text,1::bigint,%s::text,7::smallint,"
-            "%s::text,20::integer,%s::text,%s::text,11::smallint,%s::text,12::smallint,"
-            "%s::timestamptz,%s::bigint,%s::uuid,%s::text,%s::text)",
+            _ACCEPT_DISPUTE_SQL if is_dispute else _ACCEPT_SQL,
             (
                 seller,
                 ids["endpoint"],
@@ -229,8 +257,9 @@ def _accept(
                 occurred_at,
                 int(time.time()),
                 uuid4(),
-                f"buyer.{purchase}.{RUN}@example.test",
+                email,
                 None,
+                *((_dispute_sha(purchase, dispute), created_at) if is_dispute else ()),
             ),
         ).fetchone()
         connection.commit()
@@ -290,10 +319,24 @@ def _send(
     *,
     seller: UUID = SELLER,
     event_reference: str | None = None,
-) -> None:
-    _accept(purchase, event_type, occurred_at, seller=seller, event_reference=event_reference)
-    for result in _drain(worker):
+    dispute: str = "dp_A",
+    created_at: str = "2026-11-10T10:00:00Z",
+    buyer: str | None = None,
+) -> list[dict[str, object]]:
+    _accept(
+        purchase,
+        event_type,
+        occurred_at,
+        seller=seller,
+        event_reference=event_reference,
+        dispute=dispute,
+        created_at=created_at,
+        buyer=buyer,
+    )
+    results = _drain(worker)
+    for result in results:
         assert result.get("status") == "completed", result
+    return results
 
 
 def _state(purchase: str, seller: UUID = SELLER) -> tuple[str | None, str | None]:
@@ -445,6 +488,220 @@ def test_loja_desligada_aceita_o_evento_e_nao_muda_o_acesso(worker: UUID) -> Non
     assert _state("desligada", OFF_SELLER) == ("active", "active")
 
 
+def test_outra_disputa_aberta_mantem_suspenso_quando_a_primeira_ganha(worker: UUID) -> None:
+    # Pega: o estado único por compra (A aberta, B aberta, A ganha devolvia o
+    # acesso com B ainda aberta).
+    _send(worker, "duas", APPROVED, T0)
+    _send(worker, "duas", OPENED, T1, dispute="dp_A", created_at=T1)
+    _send(worker, "duas", OPENED, T2, dispute="dp_B", created_at=T2)
+    _send(worker, "duas", WON, T3, dispute="dp_A", created_at=T1)
+    assert _state("duas") == ("suspended", "suspended")
+    _send(worker, "duas", WON, T3, dispute="dp_B", created_at=T2)
+    assert _state("duas") == ("active", "active")
+
+
+def test_uma_perdida_entre_duas_disputas_e_final(worker: UUID) -> None:
+    # Pega: a vitória de outra disputa desfazendo a perdida.
+    _send(worker, "duas-perdida", APPROVED, T0)
+    _send(worker, "duas-perdida", OPENED, T1, dispute="dp_A", created_at=T1)
+    _send(worker, "duas-perdida", OPENED, T2, dispute="dp_B", created_at=T2)
+    _send(worker, "duas-perdida", LOST, T3, dispute="dp_A", created_at=T1)
+    _send(worker, "duas-perdida", WON, T3, dispute="dp_B", created_at=T2)
+    assert _state("duas-perdida") == ("charged_back", "revoked")
+
+
+def test_aberta_reenviada_com_data_mais_nova_nao_desfaz_o_desfecho(worker: UUID) -> None:
+    # Pega: o retry do Financial muda o occurred_at; a aberta reenviada depois
+    # do desfecho, com data mais nova, deixava a compra suspensa para sempre.
+    _send(worker, "retry-aberta", APPROVED, T0)
+    _send(worker, "retry-aberta", WON, T2)
+    _send(worker, "retry-aberta", OPENED, T3)
+    assert _state("retry-aberta") == ("active", "active")
+
+
+def test_disputa_aberta_antes_de_ligar_a_loja_fica_sem_efeito(worker: UUID) -> None:
+    # Pega: o primeiro deliver do Financial relendo disputas antigas e
+    # revogando hoje o acesso de uma perda de meses atrás.
+    antiga = "2025-12-01T10:00:00Z"
+    _send(worker, "antiga", APPROVED, T0)
+    results = _send(worker, "antiga", LOST, T2, dispute="dp_OLD", created_at=antiga)
+    assert [result["reason"] for result in results] == ["dispute_before_enable"]
+    _send(worker, "antiga", OPENED, T2, dispute="dp_OLD2", created_at=antiga)
+    assert _state("antiga") == ("active", "active")
+
+
+def test_abertura_aprovacao_e_vitoria_criam_o_acesso(worker: UUID) -> None:
+    # Pega: o grant que nasce suspenso pula a aprovação, e a vitória o ativava
+    # sem nunca criar o acesso.
+    _send(worker, "sem-acesso", OPENED, T1)
+    _send(worker, "sem-acesso", APPROVED, T0)
+    assert _state("sem-acesso") == ("suspended", None)
+    _send(worker, "sem-acesso", WON, T2)
+    assert _state("sem-acesso") == ("active", "active")
+
+
+def test_vitoria_sem_aprovacao_nao_cria_o_acesso(worker: UUID) -> None:
+    # Pega: a disputa sozinha liberando acesso de compra que nunca foi aprovada.
+    _send(worker, "so-disputa", OPENED, T1)
+    _send(worker, "so-disputa", WON, T2)
+    assert _state("so-disputa") == ("active", None)
+    _send(worker, "so-disputa", APPROVED, T0)
+    assert _state("so-disputa") == ("active", "active")
+
+
+def test_estorno_de_uma_compra_com_outra_suspensa_suspende_o_acesso(worker: UUID) -> None:
+    # Pega: A estornada e B suspensa (mesmo produto) revogando o acesso, e a
+    # vitória de B não o devolvendo.
+    _send(worker, "par-a", APPROVED, T0, buyer="par")
+    _send(worker, "par-b", APPROVED, T0, buyer="par")
+    _send(worker, "par-b", OPENED, T1, buyer="par")
+    assert _state("par-b") == ("suspended", "active")
+    _send(worker, "par-a", REFUNDED, T2, buyer="par")
+    assert _state("par-a") == ("refunded", "suspended")
+    _send(worker, "par-b", WON, T3, buyer="par")
+    assert _state("par-b") == ("active", "active")
+
+
+def test_estorno_nao_troca_a_perdida_por_estorno(worker: UUID) -> None:
+    # Pega: o refunded sobrescrevendo o charged_back (a #558 mostraria
+    # "estornado" para dinheiro que saiu pela disputa).
+    _send(worker, "perdida-estorno", APPROVED, T0)
+    _send(worker, "perdida-estorno", LOST, T2)
+    _send(worker, "perdida-estorno", REFUNDED, T3)
+    assert _state("perdida-estorno") == ("charged_back", "revoked")
+
+
+def test_disputa_sem_os_dados_da_disputa_nao_e_aplicada(worker: UUID) -> None:
+    # Pega: um evento de disputa aceito pelo caminho antigo, sem id nem data,
+    # aplicado como se fosse a disputa de sempre.
+    assert ADMIN_URL
+    _send(worker, "sem-dados", APPROVED, T0)
+    _accept("sem-dados", OPENED, T1, without_details=True)
+    jobs = _claim(worker)
+    assert len(jobs) == 1
+    try:
+        with pytest.raises(psycopg.errors.ObjectNotInPrerequisiteState):
+            _apply(worker, jobs[0])
+        assert _state("sem-dados") == ("active", "active")
+    finally:
+        with psycopg.connect(ADMIN_URL) as connection:
+            connection.execute(
+                "update app_private.fulfillment_job set status='dead_letter',"
+                "lease_owner=null,lease_expires_at=null,error_code='apply_retryable' "
+                "where seller_organization_id=%s and id=%s",
+                (SELLER, UUID(str(jobs[0]["id"]))),
+            )
+            connection.commit()
+
+
+def test_reentrega_com_outra_disputa_no_mesmo_evento_e_recusada(worker: UUID) -> None:
+    # Pega: o mesmo id de evento gravando o estado de outra disputa.
+    reference = f"{RUN}:reentrega:opened"
+    _accept("reentrega", OPENED, T1, event_reference=reference, dispute="dp_A")
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        _accept("reentrega", OPENED, T1, event_reference=reference, dispute="dp_B")
+    _drain(worker)
+
+
+def _report() -> list[tuple[str, str | None, UUID | None]]:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        rows = connection.execute(
+            "select category,external_purchase_id_sha256,reference_id "
+            "from app_private.checkout_reconciliation_report("
+            "now()-interval '1 day',now()+interval '1 minute',interval '1 hour') "
+            "where seller_organization_id=%s",
+            (SELLER,),
+        ).fetchall()
+    return cast(list[tuple[str, str | None, UUID | None]], rows)
+
+
+def _access_id(purchase: str) -> UUID:
+    assert ADMIN_URL
+    purchase_sha = hashlib.sha256(f"{RUN}:{purchase}".encode()).hexdigest()
+    with psycopg.connect(ADMIN_URL) as connection:
+        row = connection.execute(
+            "select access.id from app_private.entitlement_grant grant_row "
+            "join buyer_entitlement access on access.seller_organization_id="
+            "grant_row.seller_organization_id and access.buyer_identity_user_id="
+            "grant_row.buyer_identity_user_id and access.catalog_product_id="
+            "grant_row.catalog_product_id "
+            "where grant_row.seller_organization_id=%s "
+            "and grant_row.external_purchase_id_sha256=%s",
+            (SELLER, purchase_sha),
+        ).fetchone()
+    assert row is not None
+    return cast(UUID, row[0])
+
+
+def _force_access(access_id: UUID, status: str) -> None:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "update buyer_entitlement set status=%s where seller_organization_id=%s and id=%s",
+            (status, SELLER, access_id),
+        )
+        connection.commit()
+
+
+def test_conciliacao_ve_compra_em_disputa_com_acesso_ativo(worker: UUID) -> None:
+    # Pega: a conciliação olhando só 'refunded' e não vendo o suspenso ou
+    # perdido com o acesso ainda liberado.
+    _send(worker, "concilia-suspensa", APPROVED, T0)
+    _send(worker, "concilia-suspensa", OPENED, T1)
+    access = _access_id("concilia-suspensa")
+    purchase_sha = hashlib.sha256(f"{RUN}:concilia-suspensa".encode()).hexdigest()
+    _force_access(access, "active")
+    try:
+        assert ("disputed_with_access", purchase_sha, access) in _report()
+    finally:
+        _force_access(access, "suspended")
+    assert ("disputed_with_access", purchase_sha, access) not in _report()
+
+
+def test_conciliacao_ve_acesso_suspenso_sem_disputa(worker: UUID) -> None:
+    # Pega: uma suspensão que perdeu o motivo e ficaria para sempre.
+    _send(worker, "concilia-sem-motivo", APPROVED, T0)
+    access = _access_id("concilia-sem-motivo")
+    _force_access(access, "suspended")
+    try:
+        assert ("suspended_without_dispute", None, access) in _report()
+    finally:
+        _force_access(access, "active")
+
+
+def test_conciliacao_separa_a_disputa_sem_job_do_estorno(worker: UUID) -> None:
+    # Pega: o evento de disputa sem job caindo em refund_without_fulfillment.
+    event_id, created = _accept("concilia-sem-job", LOST, T2, with_buyer=False)
+    assert created
+    report = _report()
+    assert any(row[0] == "dispute_without_fulfillment" and row[2] == event_id for row in report)
+    assert not any(row[0] == "refund_without_fulfillment" and row[2] == event_id for row in report)
+
+
+def test_tabelas_novas_tem_rls_forcada_e_o_runtime_nao_le(worker: UUID) -> None:
+    # Pega: tabela nova sem RLS (o §7 exige enable + force) ou legível pela api.
+    assert ADMIN_URL and RUNTIME_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        flags = connection.execute(
+            "select relname, relrowsecurity, relforcerowsecurity from pg_class "
+            "where oid in ('app_private.dispute_access_switch'::regclass,"
+            "'app_private.checkout_dispute_event'::regclass,"
+            "'app_private.purchase_dispute'::regclass) order by 1"
+        ).fetchall()
+        ready = connection.execute("select app_private.schema_ready()").fetchone()
+    assert flags == [
+        ("checkout_dispute_event", True, True),
+        ("dispute_access_switch", True, True),
+        ("purchase_dispute", True, True),
+    ]
+    assert ready == (True,)
+    for tabela in ("app_private.checkout_dispute_event", "app_private.purchase_dispute"):
+        with psycopg.connect(RUNTIME_URL) as connection:
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                connection.execute(f"select 1 from {tabela}")  # noqa: S608 - nome literal
+
+
 def test_runtime_nao_le_nem_escreve_a_chave_por_loja() -> None:
     # Pega: a api ligando a regra para uma loja sem passar pela operação.
     assert RUNTIME_URL
@@ -493,10 +750,12 @@ def test_so_a_funcao_de_disputa_le_a_chave(worker: UUID) -> None:
             "from unnest(array['appsell_runtime','appsell_reconciler','public']) papel, "
             "unnest(array['select','insert','update','delete']) acao"
         ).fetchall()
-    # A trigger só recusa; ela cita a tabela na mensagem, não a lê.
+    # A trigger só recusa; ela cita a tabela na mensagem, não a lê. O
+    # readiness só confere que a tabela existe e tem RLS.
     assert [nome for (nome,) in leitoras] == [
         "apply_checkout_dispute",
         "dispute_access_switch_append_only",
+        "schema_ready_base_0016",
     ]
     assert not any(pode for _papel, pode in privilegios)
 

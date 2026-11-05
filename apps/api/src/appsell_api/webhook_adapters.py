@@ -16,12 +16,21 @@ _EVENT_TYPES = frozenset(
         "purchase.approved",
         "purchase.refunded",
         "subscription.cancelled",
-        # Disputa de pagamento (#542): mesmo formato do estorno.
+    }
+    | {
+        # Disputa de pagamento (#542): formato do estorno mais os dois campos
+        # da disputa, que só esses eventos levam.
         "purchase.dispute_opened",
         "purchase.dispute_won",
         "purchase.dispute_lost",
     }
 )
+_DISPUTE_EVENT_TYPES = frozenset(
+    {"purchase.dispute_opened", "purchase.dispute_won", "purchase.dispute_lost"}
+)
+_DISPUTE_KEYS = frozenset({"dispute_id", "dispute_created_at"})
+_DISPUTE_PREFIX = "dp_"
+_DISPUTE_ID_MAX = 255
 _LEGACY_PROTOCOL = "appsell.webhook.generic-hmac.v1"
 _EXTERNAL_CHECKOUT_PROTOCOL = "external-checkout.webhook.generic-hmac.v1"
 _SUPPORTED_PROTOCOLS = frozenset({_LEGACY_PROTOCOL, _EXTERNAL_CHECKOUT_PROTOCOL})
@@ -45,6 +54,10 @@ class NormalizedCheckoutEvent:
     buyer_email: str | None = None
     buyer_identity_sub: str | None = None
     seller_id: str | None = None
+    # Só nos eventos de disputa (#542): o id da disputa na Stripe e quando ela
+    # foi aberta lá. Ficam None nos demais.
+    dispute_id: str | None = None
+    dispute_created_at: datetime | None = None
 
 
 def verify_generic_hmac_v1(
@@ -104,14 +117,24 @@ def parse_generic_hmac_v1(body: bytes) -> NormalizedCheckoutEvent:
     expected_v2 = expected_v1 | {"buyer_email", "buyer_identity_sub"}
     expected_seller_v2 = expected_v1 | {"seller_id"}
     expected_v3 = expected_v2 | {"seller_id"}
-    if not isinstance(payload, dict) or set(payload) not in (
-        expected_v1,
-        expected_v2,
-        expected_seller_v2,
-        expected_v3,
-    ):
+    if not isinstance(payload, dict):
         raise WebhookRejectedError("webhook_payload_invalid")
-    has_buyer = set(payload) in (expected_v2, expected_v3)
+    is_dispute = payload.get("event_type") in _DISPUTE_EVENT_TYPES
+    # Disputa: exatamente as chaves do estorno (v3) mais as duas da disputa.
+    # Outro evento: as chaves da disputa nunca entram.
+    allowed = (
+        (expected_v3 | _DISPUTE_KEYS,)
+        if is_dispute
+        else (
+            expected_v1,
+            expected_v2,
+            expected_seller_v2,
+            expected_v3,
+        )
+    )
+    if set(payload) not in allowed:
+        raise WebhookRejectedError("webhook_payload_invalid")
+    has_buyer = "buyer_email" in payload
     event_type = payload["event_type"]
     product = payload["external_product_id"]
     purchase = payload["external_purchase_id"]
@@ -131,20 +154,54 @@ def parse_generic_hmac_v1(body: bytes) -> NormalizedCheckoutEvent:
         buyer_identity_sub = payload["buyer_identity_sub"]
         if not _valid_buyer_email(buyer_email) or not _valid_buyer_sub(buyer_identity_sub):
             raise WebhookRejectedError("webhook_payload_invalid")
-    try:
-        occurred_at = datetime.fromisoformat(occurred.replace("Z", "+00:00"))
-    except ValueError as error:
-        raise WebhookRejectedError("webhook_payload_invalid") from error
-    if occurred_at.tzinfo is None or occurred_at.utcoffset() != UTC.utcoffset(occurred_at):
-        raise WebhookRejectedError("webhook_payload_invalid")
+    occurred_at = _utc_instant(occurred)
     seller_id = payload.get("seller_id")
     if seller_id is not None and (
         not isinstance(seller_id, str) or _UUID.fullmatch(seller_id) is None
     ):
         raise WebhookRejectedError("webhook_payload_invalid")
+    dispute_id: str | None = None
+    dispute_created_at: datetime | None = None
+    if is_dispute:
+        dispute_id = payload["dispute_id"]
+        if not _valid_dispute_id(dispute_id):
+            raise WebhookRejectedError("webhook_payload_invalid")
+        dispute_created_at = _utc_instant(payload["dispute_created_at"])
+        # A disputa existe antes de qualquer evento dela: datas trocadas
+        # deixariam passar disputa anterior à loja ligada.
+        if dispute_created_at > occurred_at:
+            raise WebhookRejectedError("webhook_payload_invalid")
     return NormalizedCheckoutEvent(
-        event_type, product, purchase, occurred_at, buyer_email, buyer_identity_sub, seller_id
+        event_type,
+        product,
+        purchase,
+        occurred_at,
+        buyer_email,
+        buyer_identity_sub,
+        seller_id,
+        dispute_id,
+        dispute_created_at,
     )
+
+
+def _utc_instant(value: object) -> datetime:
+    if not isinstance(value, str):
+        raise WebhookRejectedError("webhook_payload_invalid")
+    try:
+        instant = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise WebhookRejectedError("webhook_payload_invalid") from error
+    if instant.tzinfo is None or instant.utcoffset() != UTC.utcoffset(instant):
+        raise WebhookRejectedError("webhook_payload_invalid")
+    return instant
+
+
+def _valid_dispute_id(value: object) -> bool:
+    # Id de disputa da Stripe: "dp_" e letras ou dígitos ASCII.
+    if not isinstance(value, str) or not value.startswith(_DISPUTE_PREFIX):
+        return False
+    body = value.removeprefix(_DISPUTE_PREFIX)
+    return len(value) <= _DISPUTE_ID_MAX and body.isascii() and body.isalnum()
 
 
 def _valid_buyer_email(value: object) -> bool:

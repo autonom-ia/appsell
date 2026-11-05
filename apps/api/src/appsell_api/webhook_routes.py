@@ -11,6 +11,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from .internal_requests import InternalRequestAuthenticator
 from .webhook_adapters import (
+    NormalizedCheckoutEvent,
     WebhookRejectedError,
     parse_generic_hmac_v1,
     verify_generic_hmac_v1,
@@ -72,22 +73,11 @@ async def accept_checkout_webhook(endpoint_key: str, request: Request) -> dict[s
             if resolution["adapter"] != "generic_hmac_v1":
                 raise _unavailable()
             normalized = normalized_hint or parse_generic_hmac_v1(internal.body)
+            accept_query, dispute_parameters = _accept_call(normalized)
             result = (
                 (
                     await session.execute(
-                        text(
-                            "select * from app_private.accept_checkout_webhook("
-                            "cast(:seller_id as uuid),cast(:endpoint_id as uuid),"
-                            "cast(:endpoint_hash as text),cast(:secret_reference as text),"
-                            "cast(:endpoint_revision as bigint),"
-                            "cast(:event_hash as text),cast(:event_octets as smallint),"
-                            "cast(:payload_hash as text),cast(:payload_octets as integer),"
-                            "cast(:event_type as text),cast(:product_hash as text),"
-                            "cast(:product_octets as smallint),cast(:purchase_hash as text),"
-                            "cast(:purchase_octets as smallint),cast(:occurred_at as timestamptz),"
-                            "cast(:signed_at_epoch as bigint),cast(:request_id as uuid),"
-                            "cast(:buyer_email as text),cast(:buyer_identity_sub as text))"
-                        ),
+                        accept_query,
                         {
                             "seller_id": resolution["seller_organization_id"],
                             "endpoint_id": resolution["webhook_endpoint_id"],
@@ -108,6 +98,7 @@ async def accept_checkout_webhook(endpoint_key: str, request: Request) -> dict[s
                             "request_id": internal.envelope.request_id,
                             "buyer_email": normalized.buyer_email,
                             "buyer_identity_sub": normalized.buyer_identity_sub,
+                            **dispute_parameters,
                         },
                     )
                 )
@@ -129,6 +120,46 @@ async def accept_checkout_webhook(endpoint_key: str, request: Request) -> dict[s
     return {
         "status": "accepted" if result["created"] else "replayed",
         "webhook_event_id": str(result["webhook_event_id"]),
+    }
+
+
+_ACCEPT = text(
+    "select * from app_private.accept_checkout_webhook("
+    "cast(:seller_id as uuid),cast(:endpoint_id as uuid),"
+    "cast(:endpoint_hash as text),cast(:secret_reference as text),"
+    "cast(:endpoint_revision as bigint),"
+    "cast(:event_hash as text),cast(:event_octets as smallint),"
+    "cast(:payload_hash as text),cast(:payload_octets as integer),"
+    "cast(:event_type as text),cast(:product_hash as text),"
+    "cast(:product_octets as smallint),cast(:purchase_hash as text),"
+    "cast(:purchase_octets as smallint),cast(:occurred_at as timestamptz),"
+    "cast(:signed_at_epoch as bigint),cast(:request_id as uuid),"
+    "cast(:buyer_email as text),cast(:buyer_identity_sub as text))"
+)
+# Disputa (#542): a mesma aceitação, mais o id (em hash) e a data real da
+# disputa, gravados na mesma transação do evento.
+_ACCEPT_DISPUTE = text(
+    "select * from app_private.accept_checkout_dispute_webhook("
+    "cast(:seller_id as uuid),cast(:endpoint_id as uuid),"
+    "cast(:endpoint_hash as text),cast(:secret_reference as text),"
+    "cast(:endpoint_revision as bigint),"
+    "cast(:event_hash as text),cast(:event_octets as smallint),"
+    "cast(:payload_hash as text),cast(:payload_octets as integer),"
+    "cast(:event_type as text),cast(:product_hash as text),"
+    "cast(:product_octets as smallint),cast(:purchase_hash as text),"
+    "cast(:purchase_octets as smallint),cast(:occurred_at as timestamptz),"
+    "cast(:signed_at_epoch as bigint),cast(:request_id as uuid),"
+    "cast(:buyer_email as text),cast(:buyer_identity_sub as text),"
+    "cast(:dispute_hash as text),cast(:dispute_created_at as timestamptz))"
+)
+
+
+def _accept_call(normalized: NormalizedCheckoutEvent) -> tuple[Any, dict[str, Any]]:
+    if normalized.dispute_id is None or normalized.dispute_created_at is None:
+        return _ACCEPT, {}
+    return _ACCEPT_DISPUTE, {
+        "dispute_hash": _sha256(normalized.dispute_id),
+        "dispute_created_at": normalized.dispute_created_at,
     }
 
 

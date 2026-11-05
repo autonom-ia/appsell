@@ -66,12 +66,34 @@ def test_o_desvio_entra_antes_do_ramo_de_estorno(migration: ModuleType) -> None:
     assert "app_private.apply_checkout_dispute(" in migration._DESVIO_PARA
 
 
+def test_as_ancoras_da_conciliacao_existem_uma_vez(migration: ModuleType) -> None:
+    # Pega: âncora da conciliação digitada errada, que só falharia no deploy.
+    fonte = (VERSOES / "0063_conciliacao_do_acesso.py").read_text(encoding="utf-8")
+    for de, _para in migration._TROCAS_NA_CONCILIACAO:
+        assert fonte.count(de) == 1, de
+
+
+def test_a_conciliacao_ganha_as_categorias_da_disputa(migration: ModuleType) -> None:
+    trocas = "".join(para for _de, para in migration._TROCAS_NA_CONCILIACAO)
+    for categoria in (
+        "'disputed_with_access'",
+        "'suspended_without_dispute'",
+        "'dispute_without_fulfillment'",
+    ):
+        assert categoria in trocas
+
+
+def test_o_estorno_nao_troca_a_perdida(migration: ModuleType) -> None:
+    assert "then 'charged_back' else 'refunded' end" in migration._ESTORNO_GRANT_PARA
+
+
 def test_aprovacao_repetida_nao_reativa_disputa(migration: ModuleType) -> None:
     assert "in ('refunded','suspended','charged_back')" in migration._APROVACAO_PARA
 
 
 def test_estorno_revoga_tambem_o_suspenso(migration: ModuleType) -> None:
-    assert "status in ('active','suspended')" in migration._ESTORNO_PARA
+    assert "buyer_entitlement.status in ('active','suspended')" in migration._ESTORNO_PARA
+    assert "then 'suspended' else 'revoked' end" in migration._ESTORNO_PARA
 
 
 def test_estados_novos_sem_tirar_os_antigos(migration: ModuleType) -> None:
@@ -85,7 +107,8 @@ def test_estados_novos_sem_tirar_os_antigos(migration: ModuleType) -> None:
 def test_a_funcao_de_disputa_e_fechada(migration: ModuleType) -> None:
     sql = migration._FUNCAO_DISPUTA
     assert "security definer" in sql
-    assert "set search_path=pg_catalog,app_private,public" in sql
+    assert "set search_path=pg_catalog,app_private,public,pg_temp" in sql
+    assert "set search_path=pg_catalog,app_private,public,pg_temp" in migration._ACEITA
     assert "'commerce.fulfillment.worker'" in sql
     assert "app_private.dispute_access_switch" in sql
     comandos = _comandos_de(migration, migration.upgrade)
@@ -93,6 +116,25 @@ def test_a_funcao_de_disputa_e_fechada(migration: ModuleType) -> None:
     assert not any(
         "grant execute" in comando and "apply_checkout_dispute" in comando for comando in comandos
     )
+
+
+def test_tabelas_novas_tem_rls_forcada_e_ficam_fora_do_runtime(migration: ModuleType) -> None:
+    # Pega: tabela nova sem RLS enable + force (§7) ou legível pela api.
+    comandos = _comandos_de(migration, migration.upgrade)
+    for tabela in migration._TABELAS_NOVAS:
+        assert f"alter table {tabela} enable row level security" in comandos
+        assert f"alter table {tabela} force row level security" in comandos
+        assert f"revoke all on table {tabela} from public,appsell_runtime" in comandos
+    assert f"grant execute on function {migration._ACEITA_DISPUTA} to appsell_runtime" in comandos
+
+
+def test_o_readiness_confere_as_tabelas_e_funcoes_novas(migration: ModuleType) -> None:
+    de, para = migration._ready_funcao()
+    assert para.startswith(de)
+    for tabela in migration._TABELAS_NOVAS:
+        assert f"to_regclass('{tabela}') is not null" in para
+    assert "relforcerowsecurity" in para
+    assert migration._APPLY_DISPUTA in para and migration._ACEITA_DISPUTA in para
 
 
 def test_a_chave_por_loja_nasce_vazia_e_fora_do_runtime(migration: ModuleType) -> None:

@@ -9,15 +9,23 @@ São três eventos novos:
 * `purchase.dispute_won` — a loja ganhou;
 * `purchase.dispute_lost` — a loja perdeu.
 
+Cada evento de disputa traz o id da disputa na Stripe e a data em que ela foi
+aberta lá. A api grava os dois, com o id só em hash, em
+`app_private.checkout_dispute_event`, na mesma transação do evento, pela
+função `accept_checkout_dispute_webhook` (a aceitação de sempre mais essa
+gravação).
+
 O que muda no banco:
 
 * as checagens de tipo de evento de `webhook_event`, `fulfillment_job` e das
   funções de ingresso passam a aceitar os três tipos;
 * `entitlement_grant.status` ganha `suspended` (disputa aberta) e
   `charged_back` (disputa perdida, distinto de `refunded`, que segue sendo só
-  estorno), e o grant guarda o último estado de disputa e o momento dele;
+  estorno);
 * `buyer_entitlement.status` ganha `suspended`. Quem filtra `status='active'`
   já nega o acesso sem mudança;
+* `app_private.purchase_dispute` guarda o estado de cada disputa da compra
+  (uma compra pode ter mais de uma);
 * `app_private.dispute_access_switch` liga a regra loja por loja. É um
   histórico só de inserção (quem, quando, por quê): a última linha da loja
   decide, e `disable` desliga sem apagar quem ligou. Vazia, a regra não vale
@@ -27,35 +35,56 @@ O que muda no banco:
 * `app_private.apply_checkout_dispute` aplica a regra. A função de
   fulfillment (`apply_checkout_fulfillment`) chama essa função para os três
   tipos novos, depois de já ter validado o lease e tomado os dois locks da
-  compra e do par (comprador, produto).
+  compra e do par (comprador, produto);
+* a conciliação (#147) passa a ver a disputa: compra suspensa ou perdida com
+  acesso ativo, acesso suspenso sem disputa, e evento de disputa sem job.
 
-A regra, por compra:
+A regra, por disputa:
 
-* aberta: o grant vira `suspended`;
-* ganha: o grant volta a `active`;
-* perdida: o grant vira `charged_back`, que é final;
-* estorno vence: `refunded` não muda por disputa, e um estorno sobre um
-  grant suspenso revoga o acesso;
-* ordem trocada: vale o evento mais recente pelo `occurred_at`. Uma abertura
-  que chega depois de um desfecho mais novo é ignorada; a perdida vale
-  sempre;
+* o desfecho vence a abertura, em qualquer ordem de chegada; a perdida vence
+  a ganha. Não se usa o `occurred_at` para ordenar: num retry do Financial
+  ele muda;
+* vale só a disputa aberta na Stripe depois de a loja ser ligada (a data real
+  da disputa contra a linha `enable` vigente). A anterior fica registrada sem
+  efeito, e isso é fixado na primeira vez que ela chega.
+
+E por compra, a partir das disputas que valem:
+
+* alguma perdida: o grant vira `charged_back`, que é final;
+* senão, alguma aberta: o grant vira `suspended`;
+* senão: `active`;
+* estorno vence: `refunded` não muda por disputa;
 * `purchase.approved` repetido não reativa um grant suspenso nem perdido.
 
 O acesso do par (comprador, produto) é recalculado depois de cada mudança:
 `active` se algum grant está ativo; senão `suspended` se algum está suspenso;
 senão `revoked`. Só muda um acesso que estava `active` ou `suspended`; um acesso
-expirado ou revogado por outro motivo não volta por disputa.
+expirado ou revogado por outro motivo não volta por disputa. Se a disputa foi
+ganha e o acesso nunca chegou a existir (a disputa chegou antes da aprovação),
+ele é criado, como na aprovação, desde que a aprovação já tenha sido aplicada.
 
-A função de fulfillment é reescrita pelo padrão da 0049 (`pg_get_functiondef`
-com `replace` ancorado, cada âncora exatamente uma vez). A assinatura não muda,
-então a api em produção segue funcionando entre a migration e o deploy.
+O estorno passa a usar a mesma regra: estornada a compra, o acesso fica
+`suspended` se outra compra do par está suspensa, e não `revoked`. E o estorno
+não troca `charged_back` por `refunded`.
+
+A função de fulfillment e a da conciliação são reescritas pelo padrão da 0049
+(`pg_get_functiondef` com `replace` ancorado, cada âncora exatamente uma vez).
+As assinaturas não mudam, então a api em produção segue funcionando entre a
+migration e o deploy.
+
+As três tabelas novas têm RLS `enable` + `force`, só com a policy do dono, e o
+`schema_ready` confere as três e as duas funções novas.
 
 A descida recusa enquanto existir evento de disputa, grant suspenso ou
-perdido, ou acesso suspenso: esse estado não tem como voltar ao esquema
-anterior sem decidir o acesso de alguém.
+perdido, acesso suspenso ou linha na chave por loja: esse estado não tem como
+voltar ao esquema anterior sem decidir o acesso de alguém ou apagar auditoria.
 """
 
 from __future__ import annotations
+
+from importlib import util as importlib_util
+from pathlib import Path
+from types import ModuleType
 
 from alembic import op
 
@@ -65,7 +94,21 @@ branch_labels = None
 depends_on = None
 
 _APPLY = "app_private.apply_checkout_fulfillment(uuid,text,uuid,uuid,bigint,uuid,text)"
-_APPLY_DISPUTA = "app_private.apply_checkout_dispute(uuid,uuid,uuid,uuid,text,uuid,text,timestamptz,uuid,uuid,uuid)"
+_APPLY_DISPUTA = (
+    "app_private.apply_checkout_dispute("
+    "uuid,uuid,uuid,uuid,text,uuid,text,timestamptz,uuid,uuid,uuid)"
+)
+_ACEITA_DISPUTA = (
+    "app_private.accept_checkout_dispute_webhook("
+    "uuid,uuid,text,text,bigint,text,smallint,text,integer,text,text,smallint,text,"
+    "smallint,timestamptz,bigint,uuid,text,text,text,timestamptz)"
+)
+_RELATORIO = "app_private.checkout_reconciliation_report(timestamptz,timestamptz,interval)"
+_TABELAS_NOVAS: tuple[str, ...] = (
+    "app_private.dispute_access_switch",
+    "app_private.checkout_dispute_event",
+    "app_private.purchase_dispute",
+)
 
 _TIPOS_DE_ANTES = "'purchase.approved','purchase.refunded','subscription.cancelled'"
 _TIPOS_DE_DISPUTA = "'purchase.dispute_opened','purchase.dispute_won','purchase.dispute_lost'"
@@ -88,6 +131,42 @@ _BASES_DO_READY: tuple[str, ...] = (
     "app_private.schema_ready_base_0016()",
     "app_private.schema_ready_base_0017()",
 )
+_BASE_DO_ACESSO = "app_private.schema_ready_base_0016()"
+# A 0065 não mexeu no trecho de funções do readiness: o último a mexer foi a 0064.
+_ULTIMA_DO_READY = "0064_vendas_ativadas_pela_loja"
+
+_READY_DA_DISPUTA = (
+    "            and to_regclass('app_private.dispute_access_switch') is not null\n"
+    "            and to_regclass('app_private.checkout_dispute_event') is not null\n"
+    "            and to_regclass('app_private.purchase_dispute') is not null\n"
+    "            and (select count(*) from pg_catalog.pg_class tabela\n"
+    "              where tabela.oid in (to_regclass('app_private.dispute_access_switch'),\n"
+    "                to_regclass('app_private.checkout_dispute_event'),\n"
+    "                to_regclass('app_private.purchase_dispute'))\n"
+    "                and tabela.relrowsecurity and tabela.relforcerowsecurity) = 3\n"
+    "            and to_regprocedure('app_private.apply_checkout_dispute("
+    "uuid,uuid,uuid,uuid,text,uuid,text,timestamptz,uuid,uuid,uuid)') is not null\n"
+    "            and to_regprocedure('app_private.accept_checkout_dispute_webhook("
+    "uuid,uuid,text,text,bigint,text,smallint,text,integer,text,text,smallint,text,"
+    "smallint,timestamptz,bigint,uuid,text,text,text,timestamptz)') is not null\n"
+)
+
+
+def _migration_do_ready() -> ModuleType:
+    """Lê a âncora que a 0064 deixou no `schema_ready`, em vez de copiá-la."""
+    caminho = Path(__file__).with_name(f"{_ULTIMA_DO_READY}.py")
+    spec = importlib_util.spec_from_file_location("appsell_migration_0064_para_0074", caminho)
+    if spec is None or spec.loader is None:  # pragma: no cover - caminho fixo no repo
+        raise RuntimeError("a migration 0064 nao pode ser lida")
+    modulo = importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(modulo)
+    return modulo
+
+
+def _ready_funcao() -> tuple[str, str]:
+    de = _migration_do_ready()._ready_funcao()[1]
+    return de, de + _READY_DA_DISPUTA
+
 
 # Marcadores com sublinhado: o texto trocado pode conter "DE" ou "PARA".
 _REESCREVE = """
@@ -110,7 +189,8 @@ def _reescreve(alvo: str, de: str, para: str) -> str:
 
 
 # Toda função de ingresso que lista os tipos aceitos. Pelo menos uma tem de
-# existir (accept_checkout_webhook); cada uma é reescrita com a lista nova.
+# existir (accept_checkout_webhook); cada uma contém a lista exatamente uma vez
+# e é reescrita com a lista nova.
 _TROCA_TIPOS_NAS_FUNCOES = """
 do $migration$
 declare alvo record; achadas integer := 0; definicao text;
@@ -123,6 +203,11 @@ begin
       and position($de$__DE__$de$ in proc.prosrc) > 0
   loop
     definicao := pg_get_functiondef(alvo.oid);
+    if (length(definicao)-length(replace(definicao,$de$__DE__$de$,'')))
+         / length($de$__DE__$de$) <> 1 then
+      raise exception '% nao continha a lista de tipos exatamente uma vez',
+        alvo.oid::regprocedure using errcode='55000';
+    end if;
     execute replace(definicao,$de$__DE__$de$,$para$__PARA__$para$);
     achadas := achadas + 1;
   end loop;
@@ -200,13 +285,8 @@ _GRANT_AGORA = "'active','refunded','suspended','charged_back'"
 _ENTITLEMENT_ANTES = "'active','revoked','expired'"
 _ENTITLEMENT_AGORA = "'active','revoked','expired','suspended'"
 
-_COLUNAS_DO_GRANT = """
-alter table app_private.entitlement_grant
-  add column dispute_state text check (dispute_state in ('opened','won','lost')),
-  add column dispute_occurred_at timestamptz,
-  add constraint entitlement_grant_dispute_pair_check
-    check ((dispute_state is null) = (dispute_occurred_at is null))
-"""
+# Hash hexadecimal minúsculo de 64 caracteres, sem expressão regular.
+_HASH_OK = "length(%s)=64 and ltrim(%s,'0123456789abcdef')=''"
 
 _CHAVE_POR_LOJA = """
 create table app_private.dispute_access_switch (
@@ -227,7 +307,7 @@ create index dispute_access_switch_seller_idx
 # Histórico só de inserção: nem o dono reescreve quem ligou ou desligou.
 _SO_INSERCAO = """
 create function app_private.dispute_access_switch_append_only() returns trigger
-language plpgsql set search_path=pg_catalog as $$
+language plpgsql set search_path=pg_catalog,pg_temp as $$
 begin
   raise exception 'dispute_access_switch is append-only' using errcode='55000';
 end $$
@@ -239,16 +319,108 @@ create trigger dispute_access_switch_append_only
   for each row execute function app_private.dispute_access_switch_append_only()
 """
 
+# O que o evento de disputa diz da disputa, gravado na aceitação do evento.
+_DADOS_DO_EVENTO = f"""
+create table app_private.checkout_dispute_event (
+  seller_organization_id uuid not null,
+  webhook_event_id uuid not null,
+  dispute_id_sha256 text not null check ({_HASH_OK % ("dispute_id_sha256", "dispute_id_sha256")}),
+  dispute_created_at timestamptz not null,
+  recorded_at timestamptz not null default clock_timestamp(),
+  constraint checkout_dispute_event_pkey primary key (seller_organization_id,webhook_event_id),
+  constraint checkout_dispute_event_event_fkey foreign key (seller_organization_id,webhook_event_id)
+    references public.webhook_event(seller_organization_id,id)
+)
+"""
+
+# O estado de cada disputa da compra, mantido pela função de disputa.
+_DISPUTA_DA_COMPRA = f"""
+create table app_private.purchase_dispute (
+  seller_organization_id uuid not null,
+  checkout_integration_id uuid not null,
+  external_purchase_id_sha256 text not null check (
+    {_HASH_OK % ("external_purchase_id_sha256", "external_purchase_id_sha256")}),
+  dispute_id_sha256 text not null check ({_HASH_OK % ("dispute_id_sha256", "dispute_id_sha256")}),
+  state text not null check (state in ('opened','won','lost')),
+  dispute_created_at timestamptz not null,
+  effective boolean not null,
+  created_at timestamptz not null default clock_timestamp(),
+  updated_at timestamptz not null default clock_timestamp(),
+  constraint purchase_dispute_pkey primary key (seller_organization_id,checkout_integration_id,
+    external_purchase_id_sha256,dispute_id_sha256),
+  constraint purchase_dispute_integration_fkey
+    foreign key (seller_organization_id,checkout_integration_id)
+    references public.checkout_integration(seller_organization_id,id)
+)
+"""
+
+
+def _rls(tabela: str) -> tuple[str, ...]:
+    nome = tabela.removeprefix("app_private.")
+    return (
+        f"alter table {tabela} enable row level security",
+        f"alter table {tabela} force row level security",
+        f"create policy {nome}_owner_all on {tabela} to appsell_owner using (true) with check (true)",
+        f"revoke all on table {tabela} from public,appsell_runtime",
+    )
+
+
+_ACEITA = """
+create function app_private.accept_checkout_dispute_webhook(
+  p_seller uuid,p_endpoint uuid,p_endpoint_key text,p_secret_reference text,
+  p_endpoint_revision bigint,p_event_sha text,p_event_octets smallint,p_payload_sha text,
+  p_payload_octets integer,p_event_type text,p_product_sha text,p_product_octets smallint,
+  p_purchase_sha text,p_purchase_octets smallint,p_occurred timestamptz,p_signed_at bigint,
+  p_request uuid,p_buyer_email text,p_buyer_sub text,
+  p_dispute_sha text,p_dispute_created_at timestamptz
+) returns table(webhook_event_id uuid,outbox_event_id uuid,created boolean)
+language plpgsql security definer
+set search_path=pg_catalog,app_private,public,pg_temp as $$
+#variable_conflict use_column
+declare aceito record; gravado record;
+begin
+  if p_event_type is null or p_event_type not in (__DISPUTA__)
+     or p_dispute_sha is null or length(p_dispute_sha)<>64
+     or ltrim(p_dispute_sha,'0123456789abcdef')<>''
+     or p_dispute_created_at is null or p_occurred is null
+     or p_dispute_created_at > p_occurred then
+    raise exception 'dispute webhook is invalid' using errcode='22023';
+  end if;
+  -- A aceitação de sempre: contexto, assinatura do endpoint, dedupe e job.
+  select * into strict aceito from app_private.accept_checkout_webhook(
+    p_seller,p_endpoint,p_endpoint_key,p_secret_reference,p_endpoint_revision,
+    p_event_sha,p_event_octets,p_payload_sha,p_payload_octets,p_event_type,
+    p_product_sha,p_product_octets,p_purchase_sha,p_purchase_octets,p_occurred,
+    p_signed_at,p_request,p_buyer_email,p_buyer_sub);
+  insert into app_private.checkout_dispute_event(
+    seller_organization_id,webhook_event_id,dispute_id_sha256,dispute_created_at
+  ) values (p_seller,aceito.webhook_event_id,p_dispute_sha,p_dispute_created_at)
+  on conflict on constraint checkout_dispute_event_pkey do nothing;
+  -- Reentrega do mesmo evento: os dados da disputa têm de ser os mesmos.
+  select evento.dispute_id_sha256,evento.dispute_created_at into strict gravado
+  from app_private.checkout_dispute_event evento
+  where evento.seller_organization_id=p_seller
+    and evento.webhook_event_id=aceito.webhook_event_id;
+  if gravado.dispute_id_sha256<>p_dispute_sha
+     or gravado.dispute_created_at<>p_dispute_created_at then
+    raise exception 'dispute details conflict' using errcode='23505';
+  end if;
+  return query select aceito.webhook_event_id,aceito.outbox_event_id,aceito.created;
+end $$
+"""
+
 _FUNCAO_DISPUTA = """
 create function app_private.apply_checkout_dispute(
   p_worker uuid,p_seller uuid,p_job uuid,p_request uuid,p_event_type text,
   p_integration uuid,p_purchase text,p_occurred timestamptz,p_webhook_event uuid,
   p_buyer uuid,p_product uuid
 ) returns jsonb language plpgsql security definer
-set search_path=pg_catalog,app_private,public as $$
+set search_path=pg_catalog,app_private,public,pg_temp as $$
 declare
-  ledger record; estado text; novo_status text; resultado text;
-  acesso text; v_entitlement_id uuid; mudou boolean := false;
+  detalhe record; chave record; estado text; alvo text; estado_gravado text;
+  vale boolean;
+  grant_status text; resultado text; acesso text; v_entitlement_id uuid;
+  v_publication uuid; mudou boolean := false;
 begin
   -- Chamada só de dentro de apply_checkout_fulfillment, que já validou o
   -- worker, o lease e tomou os locks da compra e do par (comprador, produto).
@@ -266,54 +438,88 @@ begin
   if estado is null then
     raise exception 'unknown dispute event' using errcode='22023';
   end if;
-  novo_status := case estado
-    when 'opened' then 'suspended'
-    when 'lost' then 'charged_back'
-    else 'active'
-  end;
+  select evento.dispute_id_sha256,evento.dispute_created_at into detalhe
+  from app_private.checkout_dispute_event evento
+  where evento.seller_organization_id=p_seller and evento.webhook_event_id=p_webhook_event;
+  if not found then
+    -- Evento de disputa aceito sem os dados da disputa: o job volta à fila
+    -- e acaba em dead_letter, visível na conciliação.
+    raise exception 'dispute details are missing' using errcode='55000';
+  end if;
 
-  if coalesce((select chave.action from app_private.dispute_access_switch chave
-                where chave.seller_organization_id=p_seller
-                order by chave.created_at desc, chave.id desc limit 1),
-              'disable') <> 'enable' then
+  select ultima.action,ultima.created_at into chave
+  from app_private.dispute_access_switch ultima
+  where ultima.seller_organization_id=p_seller
+  order by ultima.created_at desc, ultima.id desc limit 1;
+  if not found or chave.action <> 'enable' then
     resultado := 'dispute_access_disabled';
   else
-    select grant_row.status,grant_row.dispute_occurred_at into ledger
+    -- Estado por disputa: o desfecho vence a abertura em qualquer ordem, e a
+    -- perdida vence a ganha. Vale só a disputa aberta depois de a loja ser
+    -- ligada; isso é fixado na primeira vez que a disputa chega.
+    insert into app_private.purchase_dispute as atual(
+      seller_organization_id,checkout_integration_id,external_purchase_id_sha256,
+      dispute_id_sha256,state,dispute_created_at,effective
+    ) values (
+      p_seller,p_integration,p_purchase,detalhe.dispute_id_sha256,estado,
+      detalhe.dispute_created_at,detalhe.dispute_created_at >= chave.created_at
+    )
+    on conflict on constraint purchase_dispute_pkey do update set
+      state=case
+        when atual.state='lost' or excluded.state='lost' then 'lost'
+        when atual.state='won' or excluded.state='won' then 'won'
+        else 'opened' end,
+      updated_at=clock_timestamp()
+    returning atual.state,atual.effective into estado_gravado,vale;
+
+    alvo := case
+      when exists(select 1 from app_private.purchase_dispute disputa
+                  where disputa.seller_organization_id=p_seller
+                    and disputa.checkout_integration_id=p_integration
+                    and disputa.external_purchase_id_sha256=p_purchase
+                    and disputa.effective and disputa.state='lost') then 'charged_back'
+      when exists(select 1 from app_private.purchase_dispute disputa
+                  where disputa.seller_organization_id=p_seller
+                    and disputa.checkout_integration_id=p_integration
+                    and disputa.external_purchase_id_sha256=p_purchase
+                    and disputa.effective and disputa.state='opened') then 'suspended'
+      else 'active'
+    end;
+
+    select grant_row.status into grant_status
     from app_private.entitlement_grant grant_row
     where grant_row.seller_organization_id=p_seller
       and grant_row.checkout_integration_id=p_integration
       and grant_row.external_purchase_id_sha256=p_purchase
     for update;
     if not found then
-      -- A disputa chegou antes da aprovação: o grant nasce no estado dela, e
-      -- a aprovação que vier depois não o reativa.
-      insert into app_private.entitlement_grant(
-        seller_organization_id,checkout_integration_id,external_purchase_id_sha256,
-        buyer_identity_user_id,catalog_product_id,status,occurred_at,
-        dispute_state,dispute_occurred_at
-      ) values (
-        p_seller,p_integration,p_purchase,p_buyer,p_product,novo_status,p_occurred,
-        estado,p_occurred
-      );
-      mudou := true;
-      resultado := 'grant_created';
-    elsif ledger.status in ('refunded','charged_back') then
-      -- Estorno vence, e a disputa perdida é final.
+      if alvo = 'active' then
+        -- Nada a suspender: o grant nasce na aprovação.
+        resultado := case when vale then 'grant_pending'
+          else 'dispute_before_enable' end;
+      else
+        -- A disputa chegou antes da aprovação: o grant nasce no estado dela, e
+        -- a aprovação que vier depois não o reativa.
+        insert into app_private.entitlement_grant(
+          seller_organization_id,checkout_integration_id,external_purchase_id_sha256,
+          buyer_identity_user_id,catalog_product_id,status,occurred_at
+        ) values (p_seller,p_integration,p_purchase,p_buyer,p_product,alvo,p_occurred);
+        mudou := true;
+        resultado := 'grant_created';
+      end if;
+    elsif grant_status = 'refunded' then
+      -- Estorno vence.
       resultado := 'grant_final';
-    elsif estado <> 'lost' and ledger.dispute_occurred_at is not null
-          and (p_occurred < ledger.dispute_occurred_at
-               or (estado='opened' and p_occurred = ledger.dispute_occurred_at)) then
-      -- Ordem trocada: já existe um estado de disputa mais novo.
-      resultado := 'stale_event';
+    elsif grant_status = alvo then
+      resultado := case when vale then 'grant_unchanged'
+        else 'dispute_before_enable' end;
     else
-      update app_private.entitlement_grant set
-        status=novo_status,dispute_state=estado,dispute_occurred_at=p_occurred,
-        updated_at=clock_timestamp()
+      update app_private.entitlement_grant set status=alvo,updated_at=clock_timestamp()
       where seller_organization_id=p_seller
         and checkout_integration_id=p_integration
         and external_purchase_id_sha256=p_purchase;
-      mudou := ledger.status is distinct from novo_status;
-      resultado := 'grant_'||novo_status;
+      mudou := true;
+      resultado := 'grant_'||alvo;
     end if;
   end if;
 
@@ -338,6 +544,36 @@ begin
       and status in ('active','suspended')
       and status<>acesso
     returning id into v_entitlement_id;
+    -- Ganha depois de a aprovação ter sido pulada pela disputa: o acesso nunca
+    -- existiu e nasce agora, como na aprovação.
+    if acesso='active' and v_entitlement_id is null
+       and not exists(select 1 from public.buyer_entitlement existente
+                      where existente.seller_organization_id=p_seller
+                        and existente.buyer_identity_user_id=p_buyer
+                        and existente.catalog_product_id=p_product)
+       and exists(select 1 from app_private.fulfillment_job aprovado
+                  join public.webhook_event evento
+                    on evento.seller_organization_id=aprovado.seller_organization_id
+                   and evento.id=aprovado.webhook_event_id
+                  where aprovado.seller_organization_id=p_seller
+                    and aprovado.event_type='purchase.approved'
+                    and aprovado.status='completed'
+                    and aprovado.external_purchase_id_sha256=p_purchase
+                    and evento.checkout_integration_id=p_integration) then
+      select catalog.published_snapshot_id into v_publication
+      from public.catalog_product catalog
+      where catalog.seller_organization_id=p_seller and catalog.id=p_product;
+      if v_publication is not null then
+        insert into public.buyer_entitlement(
+          seller_organization_id,id,buyer_identity_user_id,catalog_product_id,
+          publication_id,reference_key,source,status,progress_percent
+        ) values (
+          p_seller,gen_random_uuid(),p_buyer,p_product,v_publication,
+          'billing:'||p_buyer::text||':'||p_product::text,'billing','active',0
+        )
+        returning id into v_entitlement_id;
+      end if;
+    end if;
   end if;
 
   update app_private.fulfillment_job set status='completed',
@@ -352,6 +588,7 @@ begin
     'fulfillment_job',p_job,'succeeded',p_request,
     jsonb_build_object('webhook_event_id',p_webhook_event,
       'event_type',p_event_type,'reason',resultado,
+      'dispute_state',estado_gravado,'dispute_effective',vale,
       'entitlement_status',acesso,
       'external_purchase_id_sha256',p_purchase));
   return jsonb_build_object('status','completed',
@@ -385,16 +622,109 @@ _APROVACAO_PARA = (
     "                then app_private.entitlement_grant.status else 'active' end,\n"
 )
 
-_ESTORNO_DE = "              and status='active'\n            returning id into v_entitlement_id;\n"
-_ESTORNO_PARA = (
-    "              and status in ('active','suspended')\n"
+# O estorno não troca a disputa perdida por estorno.
+_ESTORNO_GRANT_DE = "            status='refunded',updated_at=clock_timestamp();\n"
+_ESTORNO_GRANT_PARA = (
+    "            status=case when app_private.entitlement_grant.status='charged_back'\n"
+    "              then 'charged_back' else 'refunded' end,\n"
+    "            updated_at=clock_timestamp();\n"
+)
+
+# Estornada a compra, o acesso fica suspenso se outra compra do par está
+# suspensa (a vitória dela o devolve), e revogado se não.
+_ESTORNO_DE = (
+    "            update public.buyer_entitlement set status='revoked',\n"
+    "              updated_at=clock_timestamp()\n"
+    "            where seller_organization_id=p_seller\n"
+    "              and buyer_identity_user_id=buyer_id\n"
+    "              and catalog_product_id=mapped_product_id\n"
+    "              and status='active'\n"
     "            returning id into v_entitlement_id;\n"
+)
+_ESTORNO_PARA = (
+    "            update public.buyer_entitlement set status=alvo_do_acesso.status,\n"
+    "              updated_at=clock_timestamp()\n"
+    "            from (select case when exists(\n"
+    "                select 1 from app_private.entitlement_grant suspenso\n"
+    "                where suspenso.seller_organization_id=p_seller\n"
+    "                  and suspenso.buyer_identity_user_id=buyer_id\n"
+    "                  and suspenso.catalog_product_id=mapped_product_id\n"
+    "                  and suspenso.status='suspended')\n"
+    "              then 'suspended' else 'revoked' end as status) alvo_do_acesso\n"
+    "            where public.buyer_entitlement.seller_organization_id=p_seller\n"
+    "              and public.buyer_entitlement.buyer_identity_user_id=buyer_id\n"
+    "              and public.buyer_entitlement.catalog_product_id=mapped_product_id\n"
+    "              and public.buyer_entitlement.status in ('active','suspended')\n"
+    "              and public.buyer_entitlement.status<>alvo_do_acesso.status\n"
+    "            returning public.buyer_entitlement.id into v_entitlement_id;\n"
 )
 
 _TROCAS_NA_APLICACAO: tuple[tuple[str, str], ...] = (
     (_DESVIO_DE, _DESVIO_PARA),
     (_APROVACAO_DE, _APROVACAO_PARA),
+    (_ESTORNO_GRANT_DE, _ESTORNO_GRANT_PARA),
     (_ESTORNO_DE, _ESTORNO_PARA),
+)
+
+# Conciliação (0063): o evento de disputa sem job tem categoria própria.
+_CONCILIA_EVENTO_DE = (
+    "  select case when event.event_type='purchase.approved'\n"
+    "      then 'approved_without_fulfillment' else 'refund_without_fulfillment' end,\n"
+)
+_CONCILIA_EVENTO_PARA = (
+    "  select case when event.event_type='purchase.approved'\n"
+    "      then 'approved_without_fulfillment'\n"
+    f"    when event.event_type in ({_TIPOS_DE_DISPUTA})\n"
+    "      then 'dispute_without_fulfillment'\n"
+    "    else 'refund_without_fulfillment' end,\n"
+)
+
+# E o estado da disputa divergente do acesso, antes dos fatos por janela.
+_CONCILIA_ESTADO_DE = "  -- Fato que nao muda (o evento chega uma vez): a janela pelo received_at\n"
+_CONCILIA_ESTADO_PARA = """  -- Disputa (#542, 0074): compra suspensa ou perdida com o acesso ativo e
+  -- nenhuma outra compra ativa do mesmo produto. Uma linha por compra.
+  return query
+  select 'disputed_with_access'::text, grant_row.seller_organization_id, seller.slug,
+    'buyer_entitlement'::text, access.id, null::text,
+    grant_row.external_purchase_id_sha256, grant_row.catalog_product_id,
+    access.status, null::text, greatest(grant_row.updated_at, access.updated_at)
+  from app_private.entitlement_grant grant_row
+  join public.seller_organization seller on seller.id=grant_row.seller_organization_id
+  join public.buyer_entitlement access
+    on access.seller_organization_id=grant_row.seller_organization_id
+   and access.buyer_identity_user_id=grant_row.buyer_identity_user_id
+   and access.catalog_product_id=grant_row.catalog_product_id
+  where grant_row.status in ('suspended','charged_back')
+    and access.status='active'
+    and not exists (
+      select 1 from app_private.entitlement_grant other
+      where other.seller_organization_id=grant_row.seller_organization_id
+        and other.buyer_identity_user_id=grant_row.buyer_identity_user_id
+        and other.catalog_product_id=grant_row.catalog_product_id
+        and other.status='active');
+
+  -- Acesso suspenso sem compra suspensa do mesmo produto: a suspensao perdeu
+  -- o motivo e nada a desfaz sozinho.
+  return query
+  select 'suspended_without_dispute'::text, access.seller_organization_id, seller.slug,
+    'buyer_entitlement'::text, access.id, null::text, null::text,
+    access.catalog_product_id, access.status, null::text, access.updated_at
+  from public.buyer_entitlement access
+  join public.seller_organization seller on seller.id=access.seller_organization_id
+  where access.status='suspended'
+    and not exists (
+      select 1 from app_private.entitlement_grant grant_row
+      where grant_row.seller_organization_id=access.seller_organization_id
+        and grant_row.buyer_identity_user_id=access.buyer_identity_user_id
+        and grant_row.catalog_product_id=access.catalog_product_id
+        and grant_row.status='suspended');
+
+  -- Fato que nao muda (o evento chega uma vez): a janela pelo received_at
+"""
+
+_TROCAS_NA_CONCILIACAO: tuple[tuple[str, str], ...] = (
+    (_CONCILIA_EVENTO_DE, _CONCILIA_EVENTO_PARA),
+    (_CONCILIA_ESTADO_DE, _CONCILIA_ESTADO_PARA),
 )
 
 _RECUSA_DESCIDA = """
@@ -403,8 +733,9 @@ begin
   if exists(select 1 from public.webhook_event
             where event_type in (__DISPUTA__))
      or exists(select 1 from app_private.entitlement_grant
-               where status in ('suspended','charged_back') or dispute_state is not null)
+               where status in ('suspended','charged_back'))
      or exists(select 1 from public.buyer_entitlement where status='suspended')
+     or exists(select 1 from app_private.purchase_dispute)
      or exists(select 1 from app_private.dispute_access_switch) then
     raise exception 'ha disputa ou chave registrada; a descida apagaria decisao de acesso ou auditoria'
       using errcode='55000';
@@ -423,20 +754,34 @@ def _sobe_esquema() -> None:
     op.execute(_TROCA_TIPOS_NAS_TABELAS.replace("__TIPOS__", _TIPOS_DE_AGORA))
     op.execute(_troca_status(_GRANT, "'refunded'", _GRANT_AGORA))
     op.execute(_troca_status(_ENTITLEMENT, "'expired'", _ENTITLEMENT_AGORA))
-    op.execute(_COLUNAS_DO_GRANT)
     op.execute("set local role appsell_owner")
 
 
-def upgrade() -> None:
-    _sobe_esquema()
+def _cria_tabelas() -> None:
     op.execute(_CHAVE_POR_LOJA)
     op.execute(_INDICE_DA_CHAVE)
     op.execute(_SO_INSERCAO)
     op.execute(_GATILHO_SO_INSERCAO)
-    op.execute("revoke all on table app_private.dispute_access_switch from public,appsell_runtime")
     op.execute("revoke all on function app_private.dispute_access_switch_append_only() from public")
+    op.execute(_DADOS_DO_EVENTO)
+    op.execute(_DISPUTA_DA_COMPRA)
+    for tabela in _TABELAS_NOVAS:
+        for comando in _rls(tabela):
+            op.execute(comando)
+
+
+def _cria_funcoes() -> None:
     op.execute(_FUNCAO_DISPUTA)
     op.execute(f"revoke all on function {_APPLY_DISPUTA} from public")
+    op.execute(_ACEITA.replace("__DISPUTA__", _TIPOS_DE_DISPUTA))
+    op.execute(f"revoke all on function {_ACEITA_DISPUTA} from public")
+    op.execute(f"grant execute on function {_ACEITA_DISPUTA} to appsell_runtime")
+
+
+def upgrade() -> None:
+    _sobe_esquema()
+    _cria_tabelas()
+    _cria_funcoes()
     op.execute(
         _TROCA_TIPOS_NAS_FUNCOES.replace("__DE__", _TIPOS_DE_ANTES).replace(
             "__PARA__", _TIPOS_DE_AGORA
@@ -444,15 +789,23 @@ def upgrade() -> None:
     )
     for de, para in _TROCAS_NA_APLICACAO:
         op.execute(_reescreve(_APPLY, de, para))
+    for de, para in _TROCAS_NA_CONCILIACAO:
+        op.execute(_reescreve(_RELATORIO, de, para))
     for alvo in _BASES_DO_READY:
         op.execute(_reescreve(alvo, _READY_ATE_0065, _READY_ATE_0074))
+    de, para = _ready_funcao()
+    op.execute(_reescreve(_BASE_DO_ACESSO, de, para))
 
 
 def downgrade() -> None:
     op.execute("set local role appsell_owner")
     op.execute(_RECUSA_DESCIDA.replace("__DISPUTA__", _TIPOS_DE_DISPUTA))
+    de, para = _ready_funcao()
+    op.execute(_reescreve(_BASE_DO_ACESSO, para, de))
     for alvo in _BASES_DO_READY:
         op.execute(_reescreve(alvo, _READY_ATE_0074, _READY_ATE_0065))
+    for de, para in reversed(_TROCAS_NA_CONCILIACAO):
+        op.execute(_reescreve(_RELATORIO, para, de))
     for de, para in reversed(_TROCAS_NA_APLICACAO):
         op.execute(_reescreve(_APPLY, para, de))
     op.execute(
@@ -460,15 +813,13 @@ def downgrade() -> None:
             "__PARA__", _TIPOS_DE_ANTES
         )
     )
+    op.execute(f"drop function {_ACEITA_DISPUTA}")
     op.execute(f"drop function {_APPLY_DISPUTA}")
+    op.execute("drop table app_private.purchase_dispute")
+    op.execute("drop table app_private.checkout_dispute_event")
     op.execute("drop table app_private.dispute_access_switch")
     op.execute("drop function app_private.dispute_access_switch_append_only()")
     op.execute("reset role")
-    op.execute(
-        "alter table app_private.entitlement_grant "
-        "drop constraint entitlement_grant_dispute_pair_check, "
-        "drop column dispute_occurred_at, drop column dispute_state"
-    )
     op.execute(_troca_status(_ENTITLEMENT, "'suspended'", _ENTITLEMENT_ANTES))
     op.execute(_troca_status(_GRANT, "'charged_back'", _GRANT_ANTES))
     op.execute(_TROCA_TIPOS_NAS_TABELAS_DESCIDA)
