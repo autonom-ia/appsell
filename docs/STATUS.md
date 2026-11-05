@@ -75,5 +75,4 @@ e no [Issue #195](https://github.com/autonom-ia/appsell/issues/195).
 - [Decisões](DECISIONS.md)
 - [Arquitetura](architecture/README.md)
 - [Runbook de produção](runbooks/PRODUCTION_RELEASE_APPSSELL.md)
-- [Memória do projeto](memory/MEMORY_PROJECT.md)
 - [Memória da sessão](memory/MEMORY_SESSION.md)

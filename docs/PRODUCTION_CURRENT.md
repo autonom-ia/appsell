@@ -1807,7 +1807,6 @@ ser lidos com esse limite explícito. Nenhum reset demo deve ser executado contr
 - [Arquitetura](architecture/README.md)
 - [Matriz de autorização](architecture/AUTHORIZATION_MATRIX.md)
 - [Release, backup e rollback](runbooks/PRODUCTION_RELEASE_APPSSELL.md)
-- [Memória do projeto](memory/MEMORY_PROJECT.md)
 - [Memória da sessão](memory/MEMORY_SESSION.md)
 
 ## Release `0060` — a atualização chega a quem comprou (2026-09-04)
