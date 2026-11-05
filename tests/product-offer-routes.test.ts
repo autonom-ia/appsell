@@ -22,8 +22,8 @@ const {
   return {
     createDomainProductOffer: vi.fn<(...args: unknown[]) => Promise<unknown>>(),
     setDomainDefaultOffer: vi.fn<(...args: unknown[]) => Promise<unknown>>(),
-    getSession: vi.fn(async () => ({ identity: { sub: "seller" } })),
-    verifyMutation: vi.fn(() => true),
+    getSession: vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => ({ identity: { sub: "seller" } })),
+    verifyMutation: vi.fn<(...args: unknown[]) => boolean>(() => true),
     DomainApiError
   };
 });
@@ -172,7 +172,7 @@ describe("rotas da segunda oferta", () => {
       .toBe(403);
     expect((await setDefault(formRequest(DEFAULT_PATH, DEFAULT_FORM, null), offerContext)).status)
       .toBe(403);
-    getSession.mockResolvedValueOnce(null as never);
+    getSession.mockResolvedValueOnce(null);
     expect((await setDefault(formRequest(DEFAULT_PATH, DEFAULT_FORM), offerContext)).status)
       .toBe(401);
     expect(verifyMutation.mock.calls[0]?.[2]).toBe("POST:/api/products/offers");

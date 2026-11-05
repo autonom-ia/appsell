@@ -18,7 +18,7 @@ const { createDomainProductOffer, setDomainDefaultOffer, getSession, DomainApiEr
   return {
     createDomainProductOffer: vi.fn<(...args: unknown[]) => Promise<unknown>>(),
     setDomainDefaultOffer: vi.fn<(...args: unknown[]) => Promise<unknown>>(),
-    getSession: vi.fn(async () => ({ identity: { sub: "seller" } })),
+    getSession: vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => ({ identity: { sub: "seller" } })),
     DomainApiError
   };
 });
