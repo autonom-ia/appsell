@@ -82,6 +82,27 @@ def test_acesso_gratuito_ve_qualquer_oferta_ativa_antes_da_padrao(migration: Mod
     assert para.endswith("offer.version desc,offer.id desc\n")
 
 
+def test_publicar_exige_a_oferta_padrao(migration: ModuleType) -> None:
+    fontes = {
+        migration._PUBLICA_TROCA: next(VERSOES.glob("*_private_asset_storage.py")).read_text(),
+        migration._PUBLICA_COM_ACESSO_TROCA: next(
+            VERSOES.glob("*_publish_access_links.py")
+        ).read_text(),
+    }
+    for (de, para), fonte in fontes.items():
+        # A âncora existe uma vez na última definição, e a troca só acrescenta.
+        assert fonte.count(de) == 1
+        assert "if not locked_offer.is_default then" in para
+        assert migration._RECUSA_NAO_PADRAO in para
+        assert de.strip() in para
+    # A 0016 reescreve publish_product, mas não a linha da âncora.
+    patch_0016 = next(VERSOES.glob("*_pdf_access_policy.py")).read_text()
+    assert migration._PUBLICA_TROCA[0].strip() not in patch_0016
+    comandos = _comandos_de(migration, migration.upgrade)
+    for alvo in (migration._PUBLICA, migration._PUBLICA_COM_ACESSO):
+        assert sum(1 for c in comandos if alvo in c) == 1
+
+
 def test_o_link_de_acesso_nao_muda(migration: ModuleType) -> None:
     # create_product_access_link recusa se QUALQUER oferta do produto estiver
     # ativa. É a escolha conservadora e fica como está.

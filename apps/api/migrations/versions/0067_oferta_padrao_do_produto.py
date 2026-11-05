@@ -18,6 +18,9 @@ Esta fase é só expand e não muda nada que alguém veja:
 - O acesso gratuito (`grant_public_product_access`, 0031) escolhe primeiro
   uma oferta ativa, depois a padrão. Produto com qualquer oferta à venda
   continua exigindo checkout (P4222).
+- Publicar exige a oferta padrão: `publish_product` (0008, com o patch da
+  0016) e `publish_product_with_access` (0034) recusam com 55000, o mesmo
+  erro de oferta não publicável, quando o `p_offer_id` não é a padrão.
 - `create_product_access_link` (0034) não muda: já recusa quando qualquer
   oferta do produto está ativa, que é a escolha conservadora.
 - **A unique antiga continua.** A segunda oferta só passa a ser possível na
@@ -50,6 +53,11 @@ _BASES_DO_READY: tuple[str, ...] = (
 )
 _VITRINE = "app_private.read_public_storefront(text)"
 _ACESSO = "app_private.grant_public_product_access(uuid,uuid,uuid,uuid,text,uuid)"
+_PUBLICA = "app_private.publish_product(uuid,uuid,uuid,uuid,bigint,bigint,jsonb,uuid,text,uuid)"
+_PUBLICA_COM_ACESSO = (
+    "app_private.publish_product_with_access(uuid,uuid,uuid,uuid,bigint,bigint,jsonb,text,uuid,text,uuid)"
+)
+_RECUSA_NAO_PADRAO = "raise exception 'catalog offer is not the default' using errcode='55000'"
 
 # Âncora da 0052: o join da vitrine com a oferta do produto.
 _VITRINE_TROCA = (
@@ -61,6 +69,20 @@ _ACESSO_TROCA = (
     "  order by offer.version desc,offer.id desc\n",
     "  order by (offer.status='active') desc,offer.is_default desc,"
     "offer.version desc,offer.id desc\n",
+)
+
+# Âncora da 0008: publicar só a oferta padrão. A 0016 não toca nesta linha.
+_PUBLICA_TROCA = (
+    "raise exception 'catalog offer is not publishable' using errcode='55000'; end if;\n",
+    "raise exception 'catalog offer is not publishable' using errcode='55000'; end if;\n"
+    f"          if not locked_offer.is_default then\n            {_RECUSA_NAO_PADRAO}; end if;\n",
+)
+# Âncora da 0034: a venda ativa só a oferta padrão (defesa em profundidade; a
+# publish_product chamada antes já recusa).
+_PUBLICA_COM_ACESSO_TROCA = (
+    "    if locked_offer.unit_amount_minor <= 0 then\n",
+    f"    if not locked_offer.is_default then\n      {_RECUSA_NAO_PADRAO};\n    end if;\n"
+    "    if locked_offer.unit_amount_minor <= 0 then\n",
 )
 
 _COLUNA = "alter table public.offer add column is_default boolean not null default true"
@@ -111,6 +133,8 @@ def upgrade() -> None:
     op.execute(_INDICE)
     op.execute(_reescreve(_VITRINE, *_VITRINE_TROCA))
     op.execute(_reescreve(_ACESSO, *_ACESSO_TROCA))
+    op.execute(_reescreve(_PUBLICA, *_PUBLICA_TROCA))
+    op.execute(_reescreve(_PUBLICA_COM_ACESSO, *_PUBLICA_COM_ACESSO_TROCA))
     de, para = _ready_versoes(_migration_anterior())
     for alvo in _BASES_DO_READY:
         op.execute(_reescreve(alvo, de, para))
@@ -121,6 +145,8 @@ def downgrade() -> None:
     de, para = _ready_versoes(_migration_anterior())
     for alvo in _BASES_DO_READY:
         op.execute(_reescreve(alvo, para, de))
+    op.execute(_reescreve(_PUBLICA_COM_ACESSO, *reversed(_PUBLICA_COM_ACESSO_TROCA)))
+    op.execute(_reescreve(_PUBLICA, *reversed(_PUBLICA_TROCA)))
     op.execute(_reescreve(_ACESSO, _ACESSO_TROCA[1], _ACESSO_TROCA[0]))
     op.execute(_reescreve(_VITRINE, _VITRINE_TROCA[1], _VITRINE_TROCA[0]))
     op.execute("drop index public.offer_one_default_per_product")

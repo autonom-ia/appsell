@@ -88,6 +88,29 @@ def test_a_oferta_da_demo_e_a_padrao_e_a_coluna_nasce_verdadeira() -> None:
     assert "UNIQUE" in indice[0] and "WHERE is_default" in indice[0]
 
 
+def test_oferta_de_produto_criado_depois_da_migration_nasce_padrao() -> None:
+    # O insert do editor e os seeds não informam is_default: o default da
+    # coluna tem de fazer da primeira oferta a padrão, senão o produto some
+    # da vitrine.
+    assert ADMIN_URL
+    seller, _, _ = _ids()
+    novo = uuid4()
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "insert into catalog_product(seller_organization_id,id,slug,title,description,status)"
+            " values(%s,%s,'produto-depois-da-0067','Produto novo','Depois da 0067.','draft')",
+            (seller, novo),
+        )
+        _inserir_oferta(connection, seller, str(novo), is_default=None)
+        linha = connection.execute(
+            "select is_default from offer "
+            "where seller_organization_id=%s and catalog_product_id=%s",
+            (seller, novo),
+        ).fetchone()
+        connection.rollback()
+    assert linha == (True,)
+
+
 def test_a_fase_1_ainda_recusa_a_segunda_oferta() -> None:
     assert ADMIN_URL
     seller, product, _ = _ids()
