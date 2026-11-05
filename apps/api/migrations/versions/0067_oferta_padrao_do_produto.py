@@ -54,9 +54,7 @@ _BASES_DO_READY: tuple[str, ...] = (
 _VITRINE = "app_private.read_public_storefront(text)"
 _ACESSO = "app_private.grant_public_product_access(uuid,uuid,uuid,uuid,text,uuid)"
 _PUBLICA = "app_private.publish_product(uuid,uuid,uuid,uuid,bigint,bigint,jsonb,uuid,text,uuid)"
-_PUBLICA_COM_ACESSO = (
-    "app_private.publish_product_with_access(uuid,uuid,uuid,uuid,bigint,bigint,jsonb,text,uuid,text,uuid)"
-)
+_PUBLICA_COM_ACESSO = "app_private.publish_product_with_access(uuid,uuid,uuid,uuid,bigint,bigint,jsonb,text,uuid,text,uuid)"
 _RECUSA_NAO_PADRAO = "raise exception 'catalog offer is not the default' using errcode='55000'"
 
 # Âncora da 0052: o join da vitrine com a oferta do produto.
