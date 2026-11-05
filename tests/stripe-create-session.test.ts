@@ -34,7 +34,9 @@ const {
     // The legacy platform-direct suite: no payout destination bound. The
     // direct-charge branch has its own suite.
     resolveCheckoutPayoutDestination: vi.fn<
-      (sellerId: string) => Promise<{ payout_destination: { provider_account_id: string; charges_enabled: boolean } | null }>
+      (sellerId: string) => Promise<{
+        payout_destination: { provider_account_id: string; charges_enabled: boolean; payouts_enabled?: boolean } | null;
+      }>
     >(async () => ({ payout_destination: null })),
     createFinancialExternalCheckoutIntent: vi.fn(async () => ({
       checkoutIntentId: "0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c",
@@ -377,7 +379,7 @@ describe("POST /api/checkout/stripe/create-session — Financial with the store'
   const ENDPOINT_KEY = "endpointkeyendpointkeyendpointkey123456";
 
   function readyDestination(accountId = "acct_store_a") {
-    return { payout_destination: { provider_account_id: accountId, charges_enabled: true } };
+    return { payout_destination: { provider_account_id: accountId, charges_enabled: true, payouts_enabled: true } };
   }
 
   function intentInput(call = 0) {
@@ -496,6 +498,52 @@ describe("POST /api/checkout/stripe/create-session — Financial with the store'
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({ error: "seller_not_ready_to_charge" });
     expect(createFinancialExternalCheckoutIntent).not.toHaveBeenCalled();
+  });
+
+  it("#545: refuses (409) and raises the alert when the store's account does not pay out yet", async () => {
+    // Catches: "can charge" treated as "verified", and a store that loses
+    // verification after activation selling silently. A destination from an
+    // older api image (no payouts_enabled) is not verified either.
+    process.env.APPSELL_FINANCIAL_CONNECT_SELLER_IDS = SELLER_ID;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    for (const destination of [
+      { provider_account_id: "acct_store_a", charges_enabled: true, payouts_enabled: false },
+      { provider_account_id: "acct_store_a", charges_enabled: true }
+    ]) {
+      warn.mockClear();
+      resolveCheckoutPayoutDestination.mockResolvedValue({ payout_destination: destination });
+
+      const response = await POST(request(validBody));
+
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({ error: "seller_not_ready_to_charge" });
+      expect(warn).toHaveBeenCalledOnce();
+      const line = JSON.parse(String(warn.mock.calls[0]?.[0])) as Record<string, unknown>;
+      expect(line).toEqual({
+        marker: "appsell.connect.seller_not_ready",
+        seller_id: SELLER_ID,
+        charges_enabled: true,
+        payouts_enabled: false
+      });
+      expect(JSON.stringify(line)).not.toContain("acct_store_a");
+    }
+    expect(createFinancialExternalCheckoutIntent).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("#545: the legacy local direct charge still needs only charges_enabled", async () => {
+    // Catches: the new rule leaking outside the Connect list.
+    process.env.APPSELL_CHECKOUT_PROVIDER = "local_stripe";
+    process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON = JSON.stringify({
+      [`${SELLER}/${PRODUCT}`]: { financial_product_key: "prod_codex_v1" }
+    });
+    resolveCheckoutPayoutDestination.mockResolvedValue({
+      payout_destination: { provider_account_id: "acct_store_a", charges_enabled: true, payouts_enabled: false }
+    });
+
+    const response = await POST(request(validBody));
+
+    expect(response.status).toBe(200);
   });
 
   it("fails closed (503) when the payout destination cannot be read", async () => {
