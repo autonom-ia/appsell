@@ -18,6 +18,12 @@ from .capacity_telemetry import (
     emit_capacity_product_create_trace,
 )
 from .internal_requests import AuthenticatedInternalRequest, InternalRequestAuthenticator
+from .multi_offer import (
+    MultiOfferConfigError,
+    MultiOfferDisabledError,
+    multi_offer_enabled,
+    require_multi_offer,
+)
 from .storage_s3 import S3Storage, StorageError
 
 router = APIRouter(prefix="/v1")
@@ -143,6 +149,55 @@ class ProductCourseOfferUpdateBody(ProductCourseDraftBody):
         if _CURRENCY.fullmatch(value) is None:
             raise ValueError("invalid offer currency")
         return value
+
+
+_CURRENCY_LETTERS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+
+class OfferCreateBody(BaseModel):
+    """Segunda oferta de um produto (#553). Nasce rascunho e não padrão."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    idempotency_key: str
+    offer_id: str
+    title: str = Field(min_length=2, max_length=120)
+    summary: str = Field(default="", max_length=500)
+    unit_amount_minor: int = Field(ge=0, le=_MAX_UNIT_AMOUNT_MINOR)
+    currency: str
+    billing_period: Literal["one_time", "monthly", "yearly"]
+
+    @field_validator("idempotency_key", "offer_id")
+    @classmethod
+    def validate_ids(cls, value: str) -> str:
+        return _canonical_uuid(value, "invalid id")
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, value: str) -> str:
+        if value != value.strip():
+            raise ValueError("title must not start or end with spaces")
+        return value
+
+    @field_validator("currency")
+    @classmethod
+    def validate_currency(cls, value: str) -> str:
+        # Sem regex: três letras maiúsculas, conferidas uma a uma.
+        if len(value) != 3 or not set(value) <= _CURRENCY_LETTERS:
+            raise ValueError("invalid currency")
+        return value
+
+
+class DefaultOfferBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    idempotency_key: str
+    expected_offer_version: int = Field(ge=1, le=_MAX_SAFE_INTEGER)
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def validate_idempotency_key(cls, value: str) -> str:
+        return _canonical_uuid(value, "invalid idempotency key")
 
 
 class OfferStatusTransitionBody(BaseModel):
@@ -1114,6 +1169,117 @@ async def transition_offer_status(
     }
 
 
+async def _require_multi_offer_or_reject(
+    internal: AuthenticatedInternalRequest, seller_id: UUID
+) -> None:
+    """Portão da lista de lojas. Toda rota que cria oferta ou troca a padrão passa aqui."""
+    try:
+        require_multi_offer(seller_id)
+    except MultiOfferConfigError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="multi_offer_misconfigured"
+        ) from error
+    except MultiOfferDisabledError as error:
+        await internal.consume_rejected_request()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="multi_offer_disabled"
+        ) from error
+
+
+@router.post("/me/sellers/{seller_id}/products/{product_id}/offers")
+async def create_product_offer(
+    request: Request, seller_id: UUID, product_id: UUID
+) -> dict[str, Any]:
+    auth, internal = await _authenticate(request, "catalog.offer.create")
+    await _require_seller(internal, seller_id)
+    await _require_multi_offer_or_reject(internal, seller_id)
+    body = await _model_from_body(OfferCreateBody, internal)
+    envelope = internal.envelope
+    try:
+        async with auth.domain_session(envelope) as session:
+            row = (
+                (
+                    await session.execute(
+                        text(
+                            "select offer_id, offer_version, created "
+                            "from app_private.create_product_offer("
+                            ":identity_user_id, :seller_id, :product_id, :offer_id, "
+                            ":title, :summary, :unit_amount_minor, :currency, "
+                            ":billing_period, :idempotency_key, :body_sha256, :request_id)"
+                        ),
+                        {
+                            "identity_user_id": envelope.identity.user_id,
+                            "seller_id": seller_id,
+                            "product_id": product_id,
+                            "offer_id": UUID(body.offer_id),
+                            "title": body.title,
+                            "summary": body.summary,
+                            "unit_amount_minor": body.unit_amount_minor,
+                            "currency": body.currency,
+                            "billing_period": body.billing_period,
+                            "idempotency_key": UUID(body.idempotency_key),
+                            "body_sha256": envelope.body_sha256,
+                            "request_id": envelope.request_id,
+                        },
+                    )
+                )
+                .mappings()
+                .one()
+            )
+    except DBAPIError as error:
+        raise _domain_error(error) from error
+    return {
+        "offer_id": str(row["offer_id"]),
+        "offer_version": row["offer_version"],
+        "created": bool(row["created"]),
+    }
+
+
+@router.post("/me/sellers/{seller_id}/products/{product_id}/offers/{offer_id}/default")
+async def set_default_offer(
+    request: Request, seller_id: UUID, product_id: UUID, offer_id: UUID
+) -> dict[str, Any]:
+    auth, internal = await _authenticate(request, "catalog.offer.default.update")
+    await _require_seller(internal, seller_id)
+    await _require_multi_offer_or_reject(internal, seller_id)
+    body = await _model_from_body(DefaultOfferBody, internal)
+    envelope = internal.envelope
+    try:
+        async with auth.domain_session(envelope) as session:
+            row = (
+                (
+                    await session.execute(
+                        text(
+                            "select offer_id, previous_default_offer_id, changed "
+                            "from app_private.set_default_offer("
+                            ":identity_user_id, :seller_id, :product_id, :offer_id, "
+                            ":expected_offer_version, :idempotency_key, :body_sha256, "
+                            ":request_id)"
+                        ),
+                        {
+                            "identity_user_id": envelope.identity.user_id,
+                            "seller_id": seller_id,
+                            "product_id": product_id,
+                            "offer_id": offer_id,
+                            "expected_offer_version": body.expected_offer_version,
+                            "idempotency_key": UUID(body.idempotency_key),
+                            "body_sha256": envelope.body_sha256,
+                            "request_id": envelope.request_id,
+                        },
+                    )
+                )
+                .mappings()
+                .one()
+            )
+    except DBAPIError as error:
+        raise _domain_error(error) from error
+    return {
+        "offer_id": str(row["offer_id"]),
+        "previous_default_offer_id": str(row["previous_default_offer_id"]),
+        "changed": bool(row["changed"]),
+    }
+
+
 @router.post("/me/sellers/{seller_id}/products/{product_id}/publications", response_model=None)
 async def publish_product(request: Request, seller_id: UUID, product_id: UUID) -> JSONResponse:
     auth, internal = await _authenticate(request, "catalog.publication.create")
@@ -1774,6 +1940,21 @@ async def _read_product_draft(
                             "where module.seller_organization_id = course.seller_organization_id "
                             "and module.course_id = course.id and module.status = 'active'), "
                             "'[]'::jsonb) as curriculum_modules, "
+                            "coalesce((select jsonb_agg(jsonb_build_object("
+                            "'id', every_offer.id, 'title', every_offer.title, "
+                            "'summary', every_offer.summary, 'status', every_offer.status, "
+                            "'version', every_offer.version, "
+                            "'is_default', every_offer.is_default, "
+                            "'unit_amount_minor', every_offer.unit_amount_minor, "
+                            "'currency', every_offer.currency, "
+                            "'billing_period', every_offer.billing_period) "
+                            "order by every_offer.is_default desc, every_offer.created_at, "
+                            "every_offer.id) "
+                            "from offer every_offer "
+                            "where every_offer.seller_organization_id = "
+                            "product.seller_organization_id "
+                            "and every_offer.catalog_product_id = product.id), "
+                            "'[]'::jsonb) as offers, "
                             "offer.id as offer_id, offer.title as offer_title, "
                             "offer.summary as offer_summary, offer.status as offer_status, "
                             "offer.version as offer_version, "
@@ -1827,6 +2008,36 @@ async def _read_product_draft(
     if not rows:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="product_not_found")
     return list(rows)
+
+
+def _offers_response(raw: Any) -> list[dict[str, Any]]:
+    """Todas as ofertas do produto, a padrão primeiro (#553). `offer` segue sendo a padrão."""
+    if not isinstance(raw, list):
+        return []
+    return [
+        {
+            "id": str(item["id"]),
+            "title": item["title"],
+            "summary": item["summary"],
+            "status": item["status"],
+            "version": item["version"],
+            "is_default": bool(item["is_default"]),
+            "unit_amount_minor": item["unit_amount_minor"],
+            "currency": item["currency"],
+            "billing_period": item["billing_period"],
+        }
+        for item in raw
+        if isinstance(item, dict)
+    ]
+
+
+def _multi_offer_enabled_for(seller_id: Any) -> bool:
+    # Na leitura, env malformada desliga em vez de derrubar o editor; as rotas
+    # de escrita recusam com 503 (multi_offer_misconfigured).
+    try:
+        return multi_offer_enabled(UUID(str(seller_id)))
+    except MultiOfferConfigError:
+        return False
 
 
 def _product_detail_response(rows: list[Any], storage: S3Storage | None) -> dict[str, Any]:
@@ -1917,6 +2128,8 @@ def _product_detail_response(rows: list[Any], storage: S3Storage | None) -> dict
                 "lessons": curriculum_lessons,
             },
             "offer": offer,
+            "offers": _offers_response(row.get("offers")),
+            "multi_offer_enabled": _multi_offer_enabled_for(row["seller_organization_id"]),
             "publication": publication,
             "has_unpublished_changes": has_unpublished_changes,
             "readiness": {
@@ -2008,6 +2221,16 @@ def _domain_error(error: DBAPIError) -> HTTPException:
         return HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="offer_status_conflict",
+        )
+    if sqlstate == "P4093":
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="default_offer_locked",
+        )
+    if sqlstate == "P4094":
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="offer_limit_reached",
         )
     if sqlstate == "P4221":
         return HTTPException(
