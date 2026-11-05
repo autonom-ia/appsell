@@ -248,6 +248,24 @@ jobs:
           pnpm test:e2e
           pnpm test:e2e:production
 
+      # A flaky E2E passes on retry and leaves the gate green, so the only
+      # evidence of its cause is the trace of the failed attempt (#519, #526).
+      # Playwright keeps a trace only for failed attempts (retain-on-failure),
+      # so this uploads nothing on a clean run. The suite runs as the local demo
+      # persona against throwaway services: no CI secret reaches the browser.
+      - name: Keep Playwright traces of failed or retried attempts
+        id: e2e-traces
+        if: ${{ !cancelled() && steps.cert-web.outcome != 'skipped' && hashFiles('test-results/**/trace.zip') != '' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: playwright-traces-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            test-results/**/trace.zip
+            test-results/**/error-context.md
+          retention-days: 7
+          if-no-files-found: ignore
+
       - name: Certify API on the integrated SHA
         id: cert-api
         if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && steps.policy.outputs.product_checks == 'true') || github.event_name == 'workflow_dispatch') && steps.route.outputs.api == 'true' }}
