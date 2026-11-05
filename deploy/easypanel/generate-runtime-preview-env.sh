@@ -13,6 +13,11 @@ source_sha="$2"
   echo "refusing to reuse runtime-preview env directory" >&2
   exit 2
 }
+public_ipv4="${APPSELL_RUNTIME_PREVIEW_PUBLIC_IPV4:-}"
+[[ -n "$public_ipv4" && "$public_ipv4" != *$'\n'* && "$public_ipv4" != *$'\r'* ]] || {
+  echo "APPSELL_RUNTIME_PREVIEW_PUBLIC_IPV4 is required: the approved public IPv4 of the host" >&2
+  exit 2
+}
 for command_name in docker jq openssl xxd base64; do
   command -v "$command_name" >/dev/null 2>&1 || {
     echo "missing required command: $command_name" >&2
@@ -83,6 +88,7 @@ trap 'rm -f -- "$output_file"' ERR INT TERM
   printf 'APPSELL_SELL_IMAGE=autonomia-sell-preview-sell:%s\n' "$source_sha"
   printf 'APPSELL_ALPINE_IMAGE=autonomia-sell-preview-base-alpine:%s\n' "$source_sha"
   printf 'APPSELL_PUBLIC_ORIGIN=https://sell.autonomia.site\n'
+  printf 'APPSELL_RUNTIME_PREVIEW_PUBLIC_IPV4=%s\n' "$public_ipv4"
   printf 'APPSELL_POSTGRES_ADMIN_USER=%s\n' "$postgres_user"
   printf 'APPSELL_POSTGRES_ADMIN_PASSWORD=%s\n' "$postgres_secret"
   printf 'APPSELL_POSTGRES_DEFAULT_DATABASE=%s\n' "$postgres_database"

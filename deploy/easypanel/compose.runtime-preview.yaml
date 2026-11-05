@@ -364,6 +364,7 @@ services:
     command: ["node", "deploy/easypanel/runtime-preview-unix-bridge.mjs"]
     environment:
       E2E_RUNTIME_BRIDGE_SOCKET: /transport/sell.sock
+      APPSELL_RUNTIME_PREVIEW_PUBLIC_IPV4: ${APPSELL_RUNTIME_PREVIEW_PUBLIC_IPV4:-}
     volumes: ["runtime_e2e_transport:/transport"]
     labels: *runtime-labels
     healthcheck:
