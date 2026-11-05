@@ -49,19 +49,19 @@ Conexao = psycopg.Connection[tuple[object, ...]]
 def base() -> None:
     assert ADMIN_URL
     with psycopg.connect(ADMIN_URL) as connection:
-        for tabela in (
-            "email_consent",
-            "email_unsubscribe_token",
-            "email_suppression",
-        ):
+        enderecos = (EMAIL, EMAIL_SUPRIMIDO, EMAIL_SEM_CONSENTIMENTO)
+        for tabela in ("email_consent", "email_unsubscribe_token"):
             connection.execute(
                 f"delete from app_private.{tabela} where email_normalized in (%s,%s,%s)",  # noqa: S608
-                (EMAIL, EMAIL_SUPRIMIDO, EMAIL_SEM_CONSENTIMENTO),
+                enderecos,
             )
-        connection.execute(
-            "delete from app_private.email_suppression_global where email_normalized in (%s,%s)",
-            (EMAIL, EMAIL_SUPRIMIDO),
-        )
+        for tabela in ("email_suppression", "email_suppression_global"):
+            connection.execute(
+                f"delete from app_private.{tabela} where email_sha256 in "  # noqa: S608
+                "(app_private.email_sha256(%s),app_private.email_sha256(%s),"
+                "app_private.email_sha256(%s))",
+                enderecos,
+            )
         connection.execute(
             "delete from app_private.email_outbox where seller_organization_id in (%s,%s)",
             (LOJA_A, LOJA_B),
@@ -251,8 +251,8 @@ def _registrar_worker() -> None:
 
 def _suprimir_globalmente(connection: Conexao, email: str) -> None:
     connection.execute(
-        "insert into app_private.email_suppression_global(email_normalized,reason) "
-        "values(%s,'complaint') on conflict do nothing",
+        "insert into app_private.email_suppression_global(email_sha256,reason) "
+        "values(app_private.email_sha256(%s),'complaint') on conflict do nothing",
         (email,),
     )
 
@@ -344,3 +344,32 @@ def test_o_runtime_nao_le_as_tabelas_nem_emite_token() -> None:
         with psycopg.connect(RUNTIME_URL) as connection:
             with pytest.raises(psycopg.errors.InsufficientPrivilege):
                 connection.execute(consulta)
+
+
+def test_uma_normalizacao_so_em_todo_caminho() -> None:
+    # Token emitido com o endereço sujo; a checagem com outra grafia; a
+    # supressão guardada como sha do endereço limpo, igual ao que o Python
+    # calcula. Nenhum caminho normaliza por conta própria.
+    sujo = "  " + EMAIL_SEM_CONSENTIMENTO.upper() + " "
+    assert _descadastrar(_emitir_token(LOJA_B, sujo)) is True
+    assert _bloqueio(LOJA_B, EMAIL_SEM_CONSENTIMENTO.title()) == "suppressed"
+    esperado = hashlib.sha256(EMAIL_SEM_CONSENTIMENTO.encode()).hexdigest()
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        normalizado = connection.execute(
+            "select app_private.normalize_email(%s),app_private.email_sha256(%s)", (sujo, sujo)
+        ).fetchone()
+        guardado = connection.execute(
+            "select count(*) from app_private.email_suppression "
+            "where scope_id=%s and email_sha256=%s",
+            (LOJA_B, esperado),
+        ).fetchone()
+        colunas = connection.execute(
+            "select table_name,column_name from information_schema.columns "
+            "where table_schema='app_private' "
+            "and table_name in ('email_suppression','email_suppression_global')"
+        ).fetchall()
+    assert normalizado == (EMAIL_SEM_CONSENTIMENTO, esperado)
+    assert guardado == (1,)
+    # A supressão sobrevive à exclusão da conta, então não guarda o endereço.
+    assert not any("email_normalized" == coluna for _, coluna in colunas)

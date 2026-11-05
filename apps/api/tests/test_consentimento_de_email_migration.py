@@ -105,3 +105,30 @@ def test_todo_texto_de_consentimento_v1_existe_para_cada_finalidade(
     for corpo in migration.TEXTOS_V1.values():
         assert "descadastro" in corpo
         assert 20 <= len(corpo.encode()) <= 2000
+
+
+def test_a_normalizacao_e_uma_so_e_nasce_antes_das_tabelas(migration: ModuleType) -> None:
+    comandos = _comandos_de(migration, migration.upgrade)
+    normaliza = next(
+        i for i, c in enumerate(comandos) if "function app_private.normalize_email" in c
+    )
+    primeira_tabela = next(i for i, c in enumerate(comandos) if "create table" in c)
+    assert normaliza < primeira_tabela
+    # trim + lower só existe dentro de normalize_email.
+    for comando in comandos:
+        if "lower(btrim(" in comando:
+            assert "function app_private.normalize_email" in comando
+
+
+def test_a_supressao_guarda_o_sha_e_nao_o_endereco(migration: ModuleType) -> None:
+    for sql in migration._CRIA_TABELAS:
+        if "table app_private.email_suppression" in sql:
+            assert "email_sha256" in sql
+            assert "email_normalized" not in sql
+
+
+def test_a_descida_derruba_tabelas_antes_das_funcoes(migration: ModuleType) -> None:
+    comandos = _comandos_de(migration, migration.downgrade)
+    ultima_tabela = max(i for i, c in enumerate(comandos) if c.startswith("drop table"))
+    normaliza = next(i for i, c in enumerate(comandos) if "normalize_email" in c and "drop" in c)
+    assert ultima_tabela < normaliza

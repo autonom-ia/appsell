@@ -16,7 +16,8 @@ Tudo é pelo **endereço** de e-mail normalizado, porque é para ele que se envi
 - `email_unsubscribe_token`: um token por e-mail opcional emitido. Só o sha256
   fica aqui; o token cru vai no payload do item da caixa de saída;
 - `email_suppression` (por escopo) e `email_suppression_global` (todas as
-  lojas: reclamação, hard bounce). Nenhuma tem FK para `identity_user`: a
+  lojas: reclamação, hard bounce). Guardam o sha256 do endereço, não o
+  endereço. Nenhuma tem FK para `identity_user`: a
   supressão sobrevive à exclusão da conta, porque respeitar o pedido de não
   receber é o que a exclusão não pode desfazer.
 
@@ -113,7 +114,7 @@ TRECHO_DO_CLAIM = """        and queued.attempt_count>=10;
 """
 
 _EMAIL_CHECK = (
-    "check (email_normalized = lower(btrim(email_normalized)) "
+    "check (email_normalized = app_private.normalize_email(email_normalized) "
     "and position('@' in email_normalized) > 1 and octet_length(email_normalized) <= 254)"
 )
 _FINALIDADES = FINALIDADES_DA_LOJA + FINALIDADES_DA_PLATAFORMA
@@ -127,6 +128,24 @@ TABELAS = (
     "email_unsubscribe_token",
     "email_suppression",
     "email_suppression_global",
+)
+
+# Uma só normalização, usada em todo caminho: trim + lower, nada além. A
+# supressão guarda o sha256 do endereço normalizado, não o endereço, porque é
+# ela que sobrevive à exclusão da conta.
+NORMALIZACAO = (
+    """
+    create function app_private.normalize_email(p_email text)
+    returns text language sql immutable strict
+    set search_path=pg_catalog as $$ select lower(btrim(p_email)) $$
+    """,
+    """
+    create function app_private.email_sha256(p_email text)
+    returns text language sql immutable strict
+    set search_path=pg_catalog,app_private,public as $$
+      select encode(digest(convert_to(app_private.normalize_email(p_email),'UTF8'),'sha256'),'hex')
+    $$
+    """,
 )
 
 _CRIA_TABELAS_MOLDE = (
@@ -176,15 +195,15 @@ _CRIA_TABELAS_MOLDE = (
     """
     create table app_private.email_suppression (
       scope_id uuid not null,
-      email_normalized text not null __EMAIL_CHECK__,
+      email_sha256 text not null check (octet_length(email_sha256) = 64),
       reason text not null check (reason in ('unsubscribed','manual')),
       created_at timestamptz not null default clock_timestamp(),
-      primary key (scope_id,email_normalized)
+      primary key (scope_id,email_sha256)
     )
     """,
     """
     create table app_private.email_suppression_global (
-      email_normalized text primary key __EMAIL_CHECK__,
+      email_sha256 text primary key check (octet_length(email_sha256) = 64),
       reason text not null check (reason in ('hard_bounce','complaint','manual')),
       created_at timestamptz not null default clock_timestamp()
     )
@@ -228,16 +247,17 @@ _FUNCOES_MOLDE = (
          or p_purpose not in (__FINALIDADES__) then
         return 'no_consent';
       end if;
-      v_email := lower(btrim(p_email));
+      v_email := app_private.normalize_email(p_email);
       v_scope := case when p_purpose in (__FINALIDADES_DA_PLATAFORMA__)
         then '__PLATAFORMA__'::uuid else p_seller end;
       if v_scope is null then
         return 'no_consent';
       end if;
       if exists(select 1 from app_private.email_suppression_global global
-                where global.email_normalized=v_email)
+                where global.email_sha256=app_private.email_sha256(v_email))
          or exists(select 1 from app_private.email_suppression scoped
-                   where scoped.scope_id=v_scope and scoped.email_normalized=v_email) then
+                   where scoped.scope_id=v_scope
+                     and scoped.email_sha256=app_private.email_sha256(v_email)) then
         return 'suppressed';
       end if;
       if not exists(select 1 from app_private.email_consent consent
@@ -269,7 +289,8 @@ _FUNCOES_MOLDE = (
                is distinct from p_seller) then
         raise exception 'email consent is not authorized' using errcode='28000';
       end if;
-      select person.email_normalized into v_email from public.identity_user person
+      select app_private.normalize_email(person.email_normalized) into v_email
+        from public.identity_user person
         where person.id=v_identity;
       select consent_text.body_sha256 into v_sha from app_private.email_consent_text consent_text
         where consent_text.purpose=p_purpose and consent_text.version=p_text_version;
@@ -287,7 +308,7 @@ _FUNCOES_MOLDE = (
         granted_at=excluded.granted_at,revoked_at=null,revoked_source=null,
         updated_at=clock_timestamp();
       delete from app_private.email_suppression scoped
-        where scoped.scope_id=v_scope and scoped.email_normalized=v_email
+        where scoped.scope_id=v_scope and scoped.email_sha256=app_private.email_sha256(v_email)
           and scoped.reason='unsubscribed';
       insert into public.audit_event(seller_organization_id,actor_identity_user_id,
         action,target_type,target_id,result,request_id,metadata)
@@ -315,7 +336,7 @@ _FUNCOES_MOLDE = (
       insert into app_private.email_unsubscribe_token(token_sha256,scope_id,email_normalized,
         purpose)
       values (encode(digest(convert_to(v_token,'UTF8'),'sha256'),'hex'),v_scope,
-        lower(btrim(p_email)),p_purpose);
+        app_private.normalize_email(p_email),p_purpose);
       return v_token;
     end $$
     """,
@@ -345,9 +366,9 @@ _FUNCOES_MOLDE = (
         where consent.scope_id=v_row.scope_id
           and consent.email_normalized=v_row.email_normalized
           and consent.status='granted';
-      insert into app_private.email_suppression(scope_id,email_normalized,reason)
-        values (v_row.scope_id,v_row.email_normalized,'unsubscribed')
-        on conflict (scope_id,email_normalized) do nothing;
+      insert into app_private.email_suppression(scope_id,email_sha256,reason)
+        values (v_row.scope_id,app_private.email_sha256(v_row.email_normalized),'unsubscribed')
+        on conflict (scope_id,email_sha256) do nothing;
       return true;
     end $$
     """,
@@ -379,6 +400,8 @@ _ASSINATURAS_DO_RUNTIME = (
     "app_private.unsubscribe_email(text)",
 )
 _ASSINATURAS_INTERNAS = (
+    "app_private.normalize_email(text)",
+    "app_private.email_sha256(text)",
     "app_private.email_kind_is_transactional(text)",
     "app_private.email_optional_block_reason(uuid,text,text)",
     "app_private.issue_email_unsubscribe_token(uuid,text,text)",
@@ -406,6 +429,8 @@ def _reescreve(alvo: str, de: str, para: str) -> str:
 
 
 def upgrade() -> None:
+    for sql in NORMALIZACAO:
+        op.execute(sql)
     for sql in _CRIA_TABELAS:
         op.execute(sql)
     for tabela in TABELAS:
@@ -437,7 +462,8 @@ def downgrade() -> None:
     for alvo in _BASES_DO_READY:
         op.execute(_reescreve(alvo, _READY_ATE_0066, _READY_ATE_0065))
     op.execute(_reescreve(_CLAIM, TRECHO_DO_CLAIM, ANCORA_DO_CLAIM))
-    for assinatura in reversed(_ASSINATURAS_DO_RUNTIME + _ASSINATURAS_INTERNAS):
-        op.execute(f"drop function if exists {assinatura}")
+    # Tabelas antes das funções: o check de e-mail depende de normalize_email.
     for tabela in reversed(TABELAS):
         op.execute(f"drop table if exists app_private.{tabela}")
+    for assinatura in reversed(_ASSINATURAS_DO_RUNTIME + _ASSINATURAS_INTERNAS):
+        op.execute(f"drop function if exists {assinatura}")
