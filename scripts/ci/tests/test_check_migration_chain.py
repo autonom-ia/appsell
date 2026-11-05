@@ -153,6 +153,39 @@ class ChainTests(unittest.TestCase):
                 with self.assertRaises(ChainError):
                     check_chain(self.versions)
 
+    def test_reflection_fails_by_allowlist_not_denylist(self) -> None:
+        # Catches: frames, __globals__ and getattr-with-string reaching the
+        # module namespace; each round of review found another one, so the rule
+        # is an allowlist of imports plus a ban on reflective names.
+        for nome, extra in {
+            "getframe": 'import sys\nsys._getframe().f_globals["revision"] = "0004_z"\n',
+            "dunder_globals": '(lambda: 0).__globals__["revision"] = "0004_z"\n',
+            "getattr_string": 'f = lambda: 0\ngetattr(f, "__globals__")["revision"] = "0004_z"\n',
+            "inspect": 'import inspect\ninspect.currentframe().f_globals["revision"] = "0004_z"\n',
+            "gerador": 'g = (x for x in ())\ng.gi_frame.f_globals["revision"] = "0004_z"\n',
+            "modulo_via_atributo": 'from importlib import util\nutil.sys.modules[__name__].x = 1\n',
+            "import_fora_da_lista": "import os\n",
+            "importlib_inteiro": "import importlib\n",
+        }.items():
+            with self.subTest(nome=nome):
+                self.linear()
+                self.write("0004_a.py", migration("0004_a", "0003_coluna") + extra)
+                with self.assertRaises(ChainError):
+                    check_chain(self.versions)
+
+    def test_the_imports_the_repository_uses_pass(self) -> None:
+        self.linear()
+        self.write(
+            "0004_a.py",
+            "from __future__ import annotations\nfrom collections.abc import Sequence\n"
+            "from importlib import util as importlib_util\nfrom pathlib import Path\n"
+            "from types import ModuleType\nfrom alembic import op\n"
+            + migration("0004_a", "0003_coluna")
+            + 'caminho = Path(__file__).with_name("0003_coluna.py")\nX = importlib_util.module_from_spec\n',
+        )
+
+        self.assertEqual("0004_a", check_chain(self.versions))
+
     def test_any_other_binding_of_the_names_fails_closed(self) -> None:
         # Fail-closed on purpose: a local variable named revision is a visible,
         # cheap false red (rename it); modelling scopes left silent false greens.
@@ -162,7 +195,7 @@ class ChainTests(unittest.TestCase):
             "anotacao": 'def f(a: (revision := "0004_z")):\n    pass\n',
             "del": "del revision\n",
             "comprehension": "xs = [revision for revision in range(3)]\n",
-            "import_estrela": "from os.path import *\n",
+            "import_estrela": "from pathlib import *\n",
             "match_mapping": "match {}:\n    case {**revision}:\n        pass\n",
         }.items():
             with self.subTest(nome=nome):

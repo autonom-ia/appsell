@@ -26,11 +26,23 @@ VERSIONS = Path("apps/api/migrations/versions")
 # `alembic upgrade` na hora de carimbar a versão.
 MAX_REVISION_LENGTH = 32
 NAMES = frozenset({"revision", "down_revision"})
-# Referências que permitem escrever no módulo sem uma ligação visível. A regra
-# é pela referência, não pela chamada: alias (`g = globals`) e atributo
-# (`builtins.exec`) também contam.
-DYNAMIC_WRITERS = frozenset(
-    {"globals", "vars", "setattr", "exec", "eval", "__import__", "__builtins__", "builtins", "__dict__", "modules"}
+# Lista de permitidos, não de proibidos: cada rodada de revisão achou outro
+# caminho de reflexão (frames, `__globals__`, `getattr` com string). Import só
+# destes módulos; import novo reprova até alguém conferir e acrescentar aqui.
+ALLOWED_FROM_IMPORTS = frozenset(
+    {"__future__", "alembic", "collections.abc", "importlib.util", "pathlib", "sqlalchemy", "typing", "types"}
+)
+ALLOWED_PLAIN_IMPORTS = frozenset({"sqlalchemy"})
+ALLOWED_DUNDER_NAMES = frozenset({"__file__", "__name__"})
+# Nomes que dão acesso ao namespace do módulo, a frames ou a outros módulos,
+# proibidos como nome e como atributo (`util.sys`, `mod.getattr`).
+REFLECTIVE = frozenset(
+    {
+        "getattr", "setattr", "delattr", "vars", "globals", "locals", "exec", "eval", "compile",
+        "breakpoint", "sys", "os", "builtins", "inspect", "gc", "ctypes", "importlib", "modules",
+        "_getframe", "_sys", "f_globals", "f_locals", "f_back", "f_builtins", "gi_frame",
+        "cr_frame", "ag_frame", "tb_frame", "currentframe",
+    }
 )
 
 
@@ -55,6 +67,29 @@ def _bound_name(node: ast.AST) -> str | None:
         return node.rest
     if isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del)):
         return node.attr
+    return None
+
+
+def _reflection(node: ast.AST) -> str | None:
+    """Por que este nó impede a leitura estática, se impede."""
+    if isinstance(node, ast.ImportFrom):
+        module = "." * node.level + (node.module or "")
+        names = {alias.name for alias in node.names}
+        if module == "importlib" and names == {"util"}:
+            return None
+        if module not in ALLOWED_FROM_IMPORTS:
+            return f"import de {module!r} fora da lista"
+    if isinstance(node, ast.Import):
+        outside = sorted(alias.name for alias in node.names if alias.name not in ALLOWED_PLAIN_IMPORTS)
+        if outside:
+            return f"import de {outside} fora da lista"
+    if isinstance(node, ast.Name):
+        if node.id.startswith("__") and node.id not in ALLOWED_DUNDER_NAMES:
+            return f"nome {node.id!r}"
+        if node.id in REFLECTIVE:
+            return f"nome reflexivo {node.id!r}"
+    if isinstance(node, ast.Attribute) and (node.attr.startswith("__") or node.attr in REFLECTIVE):
+        return f"atributo reflexivo {node.attr!r}"
     return None
 
 
@@ -94,14 +129,9 @@ def _assigned_literals(path: Path) -> dict[str, object]:
         isinstance(node, (ast.Global, ast.Nonlocal)) and NAMES.intersection(node.names)
         for node in ast.walk(tree)
     )
-    dynamic = any(
-        (isinstance(node, ast.Name) and node.id in DYNAMIC_WRITERS)
-        or (isinstance(node, ast.Attribute) and node.attr in DYNAMIC_WRITERS)
-        or (isinstance(node, ast.alias) and node.name.partition(".")[0] in DYNAMIC_WRITERS)
-        for node in ast.walk(tree)
-    )
-    if dynamic:
-        raise ChainError(f"{path.name}: migration usa escrita dinâmica (globals, exec, builtins...); não dá para checar")
+    problem = next((reason for node in ast.walk(tree) if (reason := _reflection(node))), None)
+    if problem:
+        raise ChainError(f"{path.name}: {problem}; não dá para checar a revision")
     if bindings != top_level or declared:
         raise ChainError(
             f"{path.name}: revision ou down_revision ligado fora das duas atribuições do topo; "
