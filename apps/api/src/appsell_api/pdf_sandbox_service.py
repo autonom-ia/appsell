@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import os
 import re
@@ -29,7 +31,14 @@ from .pdf_raster import (
     RenderedPdfPage,
     render_pdf_page,
 )
-from .pdf_verifier import MAX_PDF_BYTES, PDF_MIME, PdfRejected, verified_pdf_file
+from .pdf_verifier import (
+    MAX_PDF_BYTES,
+    PDF_MIME,
+    PdfRejected,
+    PdfSandboxUnavailable,
+    verified_pdf_file,
+)
+from .pdf_watermark import PdfWatermarkRejected, StampedPdf, stamp_pdf
 from .video_remux import (
     MAX_DERIVATIVE_BYTES as MAX_REMUX_BYTES,
 )
@@ -203,6 +212,18 @@ async def render_page(
             _begin_draining_after_job(request)
 
 
+@app.post("/watermark")
+async def watermark(request: Request) -> Response:
+    """Cópia do PDF com a linha de licença em todas as páginas (#559)."""
+    _reject_busy_or_draining()
+    async with _MEDIA_SLOT:
+        _reject_if_draining()
+        try:
+            return await _watermark_request(request)
+        finally:
+            _begin_draining_after_job(request)
+
+
 @app.post("/rasterize")
 async def rasterize(request: Request) -> Response:
     _reject_busy_or_draining()
@@ -234,6 +255,90 @@ async def probe_video(request: Request) -> Response:
             return await _probe_video_request(request)
         finally:
             _begin_draining_after_job(request)
+
+
+_HEX_DIGITS: Final = frozenset("0123456789abcdef")
+#: Rótulo em base64url (UTF-8): cabeçalho HTTP é latin-1, e o rótulo tem "•" e
+#: pode ter acento no domínio do e-mail.
+WATERMARK_HEADER: Final = "x-appsell-watermark-b64"
+_MAX_ENCODED_WATERMARK: Final = 1_200
+
+
+def _decode_watermark_header(value: str) -> str:
+    if not 1 <= len(value) <= _MAX_ENCODED_WATERMARK:
+        raise ValueError("watermark header is outside the allowed range")
+    try:
+        # validate=True: caractere fora do alfabeto é erro, não é descartado.
+        raw = base64.b64decode(value + "=" * (-len(value) % 4), altchars=b"-_", validate=True)
+        return raw.decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError) as error:
+        raise ValueError("watermark header is not base64url UTF-8") from error
+
+
+async def _watermark_request(request: Request) -> Response:
+    if request.headers.get("content-type") != PDF_MIME:
+        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE)
+    try:
+        expected_size = int(request.headers["x-appsell-byte-size"])
+        expected_sha256 = request.headers["x-appsell-sha256"]
+        label = _decode_watermark_header(request.headers[WATERMARK_HEADER])
+    except (KeyError, ValueError) as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT) from error
+    if (
+        not 1 <= expected_size <= MAX_PDF_BYTES
+        or len(expected_sha256) != 64
+        or not set(expected_sha256) <= _HEX_DIGITS
+    ):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT)
+
+    job_directory = _private_job_directory("appsell-watermark-job-")
+    try:
+        source_path = job_directory / "source.pdf"
+        received = 0
+        with source_path.open("xb") as source:
+            async for chunk in request.stream():
+                received += len(chunk)
+                if received > expected_size or received > MAX_PDF_BYTES:
+                    raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE)
+                source.write(chunk)
+            source.flush()
+            os.fsync(source.fileno())
+        os.chmod(source_path, 0o600)
+
+        def _stamp() -> StampedPdf:
+            with source_path.open("rb") as payload:
+                return stamp_pdf(
+                    payload,
+                    expected_size=expected_size,
+                    expected_sha256_hex=expected_sha256,
+                    watermark=label,
+                    temporary_directory=str(job_directory),
+                )
+
+        stamped = await to_thread.run_sync(_stamp)
+        return Response(
+            stamped.payload,
+            media_type=PDF_MIME,
+            headers={
+                "x-appsell-page-count": str(stamped.page_count),
+                "x-appsell-byte-size": str(stamped.byte_size),
+                "x-appsell-sha256": stamped.sha256_hex,
+                "x-appsell-source-sha256": stamped.source_sha256_hex,
+                "cache-control": "no-store, private, max-age=0",
+                "pragma": "no-cache",
+                "x-content-type-options": "nosniff",
+            },
+        )
+    except HTTPException:
+        raise
+    except PdfWatermarkRejected as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT) from error
+    except PdfRejected as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT) from error
+    except PdfSandboxUnavailable as error:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE) from error
+    finally:
+        shutil.rmtree(job_directory)
 
 
 async def _normalize_request(request: Request) -> Response:
