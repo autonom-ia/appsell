@@ -23,7 +23,17 @@ esac
 DOCKER
 chmod 0700 "$tmp/bin/docker"
 
-PATH="$tmp/bin:$PATH" "$here/generate-runtime-preview-env.sh" \
+if PATH="$tmp/bin:$PATH" env -u APPSELL_RUNTIME_PREVIEW_PUBLIC_IPV4 \
+  "$here/generate-runtime-preview-env.sh" \
+  "$tmp/missing-ipv4" 0123456789abcdef0123456789abcdef01234567 >/dev/null 2>"$tmp/missing-ipv4.err"; then
+  echo "runtime-preview generator ran without the approved public IPv4" >&2
+  exit 1
+fi
+grep -Fq 'APPSELL_RUNTIME_PREVIEW_PUBLIC_IPV4 is required' "$tmp/missing-ipv4.err"
+[[ ! -e "$tmp/missing-ipv4" ]]
+
+PATH="$tmp/bin:$PATH" APPSELL_RUNTIME_PREVIEW_PUBLIC_IPV4=192.0.2.10 \
+  "$here/generate-runtime-preview-env.sh" \
   "$tmp/generated" 0123456789abcdef0123456789abcdef01234567 >"$tmp/log"
 
 directory_mode="$(stat -c '%a' "$tmp/generated" 2>/dev/null || stat -f '%Lp' "$tmp/generated")"
@@ -56,6 +66,7 @@ assert values["APPSELL_POSTGRES_ADMIN_PASSWORD"] == "exclusive-postgres-fixture"
 assert values["APPSELL_POSTGRES_DEFAULT_DATABASE"] == "appsell"
 assert values["APPSELL_REDIS_PASSWORD"] == "exclusive-redis-fixture"
 assert values["APPSELL_PUBLIC_ORIGIN"] == "https://sell.autonomia.site"
+assert values["APPSELL_RUNTIME_PREVIEW_PUBLIC_IPV4"] == "192.0.2.10"
 assert re.fullmatch(r"[0-9a-f]{48}", values["APPSELL_MIGRATOR_PASSWORD"])
 assert re.fullmatch(r"[0-9a-f]{48}", values["APPSELL_RUNTIME_PASSWORD"])
 assert re.fullmatch(r"[0-9a-f]{64}", values["APPSELL_CONTEXT_SIGNING_KEY_HEX"])
@@ -80,7 +91,7 @@ for name in (
     assert len(base64.b64decode(parsed[0]["key"], validate=True)) == 32
 PY
 
-if PATH="$tmp/bin:$PATH" "$here/generate-runtime-preview-env.sh" \
+if PATH="$tmp/bin:$PATH" APPSELL_RUNTIME_PREVIEW_PUBLIC_IPV4=192.0.2.10 "$here/generate-runtime-preview-env.sh" \
   "$tmp/generated" 0123456789abcdef0123456789abcdef01234567 >/dev/null 2>&1; then
   echo "runtime-preview generator overwrote an existing secret directory" >&2
   exit 1

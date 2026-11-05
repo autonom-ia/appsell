@@ -1,6 +1,11 @@
 import { expect, test } from "vitest";
 
-import { parseCheckoutProductMap, resolveCheckoutProduct } from "../lib/checkout-config";
+import {
+  checkoutProductMapIsValid,
+  lookupCheckoutProductByKey,
+  parseCheckoutProductMap,
+  resolveCheckoutProduct
+} from "../lib/checkout-config";
 
 test("parses a strict product map with one or more entries", () => {
   const raw = JSON.stringify({
@@ -72,4 +77,34 @@ test("resolveCheckoutProduct fails closed (null) when the env var is malformed",
     if (original === undefined) delete process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON;
     else process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON = original;
   }
+});
+
+test("lookupCheckoutProductByKey says why a key did not resolve to exactly one product", () => {
+  const original = process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON;
+  try {
+    process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON = JSON.stringify({
+      "loja-a/curso": { financial_product_key: "prod_a" },
+      "loja-b/curso": { financial_product_key: "prod_dup" },
+      "loja-c/curso": { financial_product_key: "prod_dup" }
+    });
+    expect(lookupCheckoutProductByKey("prod_a")).toEqual({ kind: "found", sellerSlug: "loja-a", productSlug: "curso" });
+    expect(lookupCheckoutProductByKey("prod_missing")).toEqual({ kind: "not_mapped" });
+    expect(lookupCheckoutProductByKey("prod_dup")).toEqual({ kind: "ambiguous" });
+
+    process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON = "{not json";
+    expect(lookupCheckoutProductByKey("prod_a")).toEqual({ kind: "map_invalid" });
+  } finally {
+    if (original === undefined) delete process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON;
+    else process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON = original;
+  }
+});
+
+test("checkoutProductMapIsValid accepts an absent or well-formed map and refuses one that does not parse", () => {
+  expect(checkoutProductMapIsValid({})).toBe(true);
+  expect(checkoutProductMapIsValid({ APPSELL_CHECKOUT_PRODUCT_MAP_JSON: "" })).toBe(true);
+  expect(checkoutProductMapIsValid({
+    APPSELL_CHECKOUT_PRODUCT_MAP_JSON: JSON.stringify({ "a/b": { financial_product_key: "prod_x" } })
+  })).toBe(true);
+  expect(checkoutProductMapIsValid({ APPSELL_CHECKOUT_PRODUCT_MAP_JSON: "{not json" })).toBe(false);
+  expect(checkoutProductMapIsValid({ APPSELL_CHECKOUT_PRODUCT_MAP_JSON: JSON.stringify({ "a/b": {} }) })).toBe(false);
 });
