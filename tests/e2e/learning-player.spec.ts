@@ -664,26 +664,40 @@ test("edits, erases and restores a saved annotation, and survives a resize", asy
   const mobile = testInfo.project.name.includes("mobile");
   const seeded = seededPenMark("86000000-0000-4000-8000-000000000011");
   const studyMutations: Record<string, unknown>[] = [];
-  const pdfStudyStore: PdfStudyMockStore = { revision: 0, annotations: [seeded], bookmarks: [1] };
+  const pdfStudyStore: PdfStudyMockStore = {
+    revision: 0, annotations: [seeded], bookmarks: [1, 2]
+  };
   await mockLearningApi(page, {
     pdfPageCount: 3,
     pdfStudyStore,
     onPdfStudyMutation: (mutation) => studyMutations.push(mutation)
   });
   await enterAndWaitForSession(page);
-  const reopened = await openReader(page, mobile ? { width: 390, height: 844 } : { width: 1440, height: 900 });
+  const reader = await openReader(page, mobile ? { width: 390, height: 844 } : { width: 1440, height: 900 });
+
+  // O painel leva à página 2, e o campo traz de volta à 1.
+  await reader.getByRole("button", { name: /Minhas marcações/ }).click();
+  const panel = reader.locator(".pdf-study-panel");
+  await expect(panel).toBeVisible();
+  await panel.getByRole("button", { name: /Página 2/ }).click();
+  await expect(reader.getByLabel("Ir para página")).toHaveValue("2");
+  if (!mobile) await reader.getByRole("button", { name: /Minhas marcações/ }).click();
+  await reader.getByLabel("Ir para página").fill("1");
+  await reader.getByLabel("Ir para página").press("Enter");
+  await expect(reader.getByLabel("Ir para página")).toHaveValue("1");
+  await reader.getByRole("button", { name: "Ajustar à largura" }).click();
+  await reader.getByRole("button", { name: "Voltar ao curso" }).click();
+  await expect(reader).toBeHidden();
+
+  // Reabrir traz a marcação e o favorito salvos.
+  await page.getByRole("button", { name: "Abrir leitor" }).click();
+  const reopened = page.getByRole("dialog", { name: "Leitor de Guia da aula" });
+  await expect(reopened.getByRole("button", { name: /Caneta/ })).toBeEnabled();
   const reopenedLayer = reopened.locator('.pdf-reader-page[data-page="1"] .pdf-study-layer');
   await expect(reopenedLayer.locator("polyline")).toHaveCount(1);
   await expect(reopened.getByRole("button", { name: /Favorito/ })).toHaveAttribute(
     "aria-pressed", "true"
   );
-
-  await reopened.getByRole("button", { name: /Minhas marcações/ }).click();
-  const panel = reopened.locator(".pdf-study-panel");
-  await expect(panel).toBeVisible();
-  await panel.getByRole("button", { name: /Página 1/ }).click();
-  await expect(reopened.getByLabel("Ir para página")).toHaveValue("1");
-  if (!mobile) await reopened.getByRole("button", { name: /Minhas marcações/ }).click();
 
   await reopened.getByRole("button", { name: /Borracha/ }).click();
   await reopened.locator('.pdf-reader-page[data-page="1"] .pdf-study-hit-target')
