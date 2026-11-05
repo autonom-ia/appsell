@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { MAX_UNIT_AMOUNT_MINOR } from "../lib/offer-price";
 import {
   InstallmentError,
   installmentOptions,
@@ -76,6 +77,15 @@ describe("juros do comprador (Tabela Price): o total é arredondado antes de div
     expect(installmentPlan({ principalMinor: 9, count: 2, monthlyRateBasisPoints: 2_500, interestPayer: "buyer" }).totalMinor).toBe(13);
   });
 
+  it("R$ 47,00 a 1,99% a.m., de 1x a 12x, com o total exato de cada prazo", () => {
+    // Conferido em fractions.Fraction, arredondando meio centavo para cima.
+    const esperados = [4_700, 4_841, 4_888, 4_936, 4_984, 5_033, 5_081, 5_131, 5_180, 5_230, 5_280, 5_330];
+    const totais = esperados.map((_, index) =>
+      installmentPlan({ principalMinor: 4_700, count: index + 1, monthlyRateBasisPoints: 199, interestPayer: "buyer" }).totalMinor
+    );
+    expect(totais).toEqual(esperados);
+  });
+
   it("o total com juros nunca é menor que o preço", () => {
     for (const rate of [1, 99, 199, 349, 999]) {
       for (let count = 2; count <= 12; count += 1) {
@@ -115,6 +125,36 @@ describe("entradas inválidas falham alto, nunca viram outro valor", () => {
     expect(() => installmentPlan({ ...base, ...override })).toThrow(InstallmentError);
   });
 
+  it.each([
+    ["NaN", { principalMinor: Number.NaN }],
+    ["Infinity", { principalMinor: Number.POSITIVE_INFINITY }],
+    ["-Infinity", { count: Number.NEGATIVE_INFINITY }],
+    ["-0", { principalMinor: -0 }],
+    ["texto", { principalMinor: "10000" as never }],
+    ["bigint", { count: 3n as never }],
+    ["juros NaN", { monthlyRateBasisPoints: Number.NaN }]
+  ])("valor que não é inteiro seguro: %s", (_name, override) => {
+    expect(() => installmentPlan({ ...base, ...override })).toThrow(InstallmentError);
+  });
+
+  it("aceita os limites exatos", () => {
+    expect(installmentPlan({ ...base, principalMinor: MAX_UNIT_AMOUNT_MINOR, count: 12, interestPayer: "seller" }).totalMinor)
+      .toBe(MAX_UNIT_AMOUNT_MINOR);
+    expect(installmentPlan({ ...base, principalMinor: 12, count: 12 }).installmentsMinor).toEqual(Array(12).fill(1));
+    expect(installmentPlan({ ...base, count: 2, monthlyRateBasisPoints: 10_000 }).totalMinor).toBe(26_667);
+  });
+
+  it("recusa o total com juros acima do teto da oferta", () => {
+    expect(() => installmentPlan({ principalMinor: MAX_UNIT_AMOUNT_MINOR, count: 12, monthlyRateBasisPoints: 199, interestPayer: "buyer" }))
+      .toThrow(InstallmentError);
+  });
+
+  it("o plano não pode ser alterado depois de calculado", () => {
+    const plan = installmentPlan(base);
+    expect(Object.isFrozen(plan)).toBe(true);
+    expect(Object.isFrozen(plan.installmentsMinor)).toBe(true);
+  });
+
   it("quem paga os juros precisa ser comprador ou loja", () => {
     expect(() => installmentPlan({ ...base, interestPayer: "ninguem" as never })).toThrow(InstallmentError);
   });
@@ -125,6 +165,22 @@ describe("opções do checkout", () => {
     const options = installmentOptions({ principalMinor: 4_700, maxCount: 12, monthlyRateBasisPoints: 0, interestPayer: "seller", minInstallmentMinor: 500 });
     expect(options.map((plan) => plan.count)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
     for (const plan of options) expect(Math.min(...plan.installmentsMinor)).toBeGreaterThanOrEqual(500);
+  });
+
+  it("com juros do comprador, o corte usa a parcela já com juros", () => {
+    const options = installmentOptions({ principalMinor: 4_700, maxCount: 12, monthlyRateBasisPoints: 299, interestPayer: "buyer", minInstallmentMinor: 500 });
+    expect(options.map((plan) => plan.count)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+  });
+
+  it.each([
+    ["máximo zero", { maxCount: 0 }],
+    ["máximo acima de 12", { maxCount: 13 }],
+    ["máximo fracionado", { maxCount: 2.5 }],
+    ["parcela mínima negativa", { minInstallmentMinor: -1 }],
+    ["parcela mínima NaN", { minInstallmentMinor: Number.NaN }]
+  ])("recusa opção inválida: %s", (_name, override) => {
+    const options = { principalMinor: 4_700, maxCount: 12, monthlyRateBasisPoints: 0, interestPayer: "seller" as const, minInstallmentMinor: 500 };
+    expect(() => installmentOptions({ ...options, ...override })).toThrow(InstallmentError);
   });
 
   it("à vista sempre existe, mesmo abaixo da parcela mínima", () => {
@@ -148,6 +204,14 @@ describe("texto do checkout: cada parcela, o total e quem paga os juros", () => 
     const plan = installmentPlan({ principalMinor: 8_700, count: 2, monthlyRateBasisPoints: 299, interestPayer: "buyer" });
     expect(installmentSummary(plan, "BRL")).toBe("2x de R$ 45,46 com juros de 2,99% a.m. · total R$ 90,92 (R$ 3,92 de juros)");
   });
+
+  it.each([["minúscula", "usd"], ["vazia", ""], ["curta", "BR"], ["indefinida", undefined as never], ["com acento", "RÉA"]])(
+    "moeda inválida é erro, nunca vira BRL: %s",
+    (_name, currency) => {
+      const plan = installmentPlan({ principalMinor: 9_000, count: 3, monthlyRateBasisPoints: 0, interestPayer: "seller" });
+      expect(() => installmentSummary(plan, currency)).toThrow(InstallmentError);
+    }
+  );
 
   it("à vista", () => {
     const plan = installmentPlan({ principalMinor: 4_700, count: 1, monthlyRateBasisPoints: 0, interestPayer: "seller" });

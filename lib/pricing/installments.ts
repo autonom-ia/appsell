@@ -82,7 +82,12 @@ function priceTableTotalMinor(principalMinor: number, count: number, rateBasisPo
 function buyerTotalMinor(input: InstallmentInput): number {
   const chargesInterest = input.interestPayer === "buyer" && input.count > 1 && input.monthlyRateBasisPoints > 0;
   if (!chargesInterest) return input.principalMinor;
-  return Number(priceTableTotalMinor(input.principalMinor, input.count, input.monthlyRateBasisPoints));
+  const total = priceTableTotalMinor(input.principalMinor, input.count, input.monthlyRateBasisPoints);
+  // O total com juros respeita o mesmo teto do preço da oferta.
+  if (total > BigInt(MAX_UNIT_AMOUNT_MINOR)) {
+    throw new InstallmentError("total com juros acima do teto da oferta");
+  }
+  return Number(total);
 }
 
 function splitWithRemainderFirst(totalMinor: number, count: number): number[] {
@@ -94,15 +99,15 @@ function splitWithRemainderFirst(totalMinor: number, count: number): number[] {
 export function installmentPlan(input: InstallmentInput): InstallmentPlan {
   validate(input);
   const totalMinor = buyerTotalMinor(input);
-  return {
+  return Object.freeze({
     count: input.count,
-    installmentsMinor: splitWithRemainderFirst(totalMinor, input.count),
+    installmentsMinor: Object.freeze(splitWithRemainderFirst(totalMinor, input.count)),
     totalMinor,
     principalMinor: input.principalMinor,
     interestMinor: totalMinor - input.principalMinor,
     interestPayer: input.interestPayer,
     monthlyRateBasisPoints: input.monthlyRateBasisPoints
-  };
+  });
 }
 
 export type InstallmentOptionsInput = Omit<InstallmentInput, "count"> & {
@@ -130,8 +135,22 @@ function formatRate(basisPoints: number): string {
   return `${whole},${String(cents).padStart(2, "0")}% a.m.`;
 }
 
-/** Texto para o checkout: o valor de cada parcela, o total e quem paga os juros. */
+const CURRENCY_CODE_LENGTH = 3;
+
+/** Código ISO 4217 em maiúsculas. Sem regex: confere caractere a caractere. */
+function isCurrencyCode(value: unknown): value is string {
+  return typeof value === "string"
+    && value.length === CURRENCY_CODE_LENGTH
+    && Array.from(value).every((char) => char >= "A" && char <= "Z");
+}
+
+/**
+ * Texto para o checkout: o valor de cada parcela, o total e quem paga os juros.
+ * Moeda inválida é erro: aqui nunca cai em BRL, para o comprador não ver um
+ * símbolo de moeda que não é a do pedido.
+ */
 export function installmentSummary(plan: InstallmentPlan, currency: string): string {
+  if (!isCurrencyCode(currency)) throw new InstallmentError("moeda inválida");
   const money = (minor: number) => formatOfferPrice(minor, currency);
   const total = money(plan.totalMinor);
   if (plan.count === 1) return `à vista ${total}`;
