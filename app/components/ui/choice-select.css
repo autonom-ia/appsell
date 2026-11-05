@@ -1,0 +1,24 @@
+/* Escolha única do Sell (ChoiceSelect). Mesma altura, borda e foco dos campos do editor. */
+.choice-field { position: relative; min-width: 0; display: grid; gap: 7px; color: var(--ink); font-size: .76rem; font-weight: 800; }
+.choice-anchor { position: relative; min-width: 0; }
+.choice-trigger { width: 100%; min-width: 0; min-height: 48px; padding: 12px 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid var(--border); border-radius: 12px; background: #fff; color: var(--ink); font-size: 1rem; font-weight: 400; line-height: 1.5; text-align: left; cursor: pointer; transition: border-color .16s, box-shadow .16s; }
+.choice-trigger:hover:not(:disabled) { border-color: rgba(77, 96, 126, .42); }
+.choice-trigger:focus-visible { outline: 3px solid var(--bright); outline-offset: 2px; border-color: var(--bright); }
+.choice-trigger[aria-invalid="true"] { border-color: var(--orange); }
+.choice-field[data-open="true"] .choice-trigger { border-color: var(--bright); box-shadow: 0 0 0 3px rgba(37, 99, 184, .14); }
+.choice-trigger:disabled { cursor: not-allowed; }
+.choice-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.choice-chevron { flex: none; width: 9px; height: 9px; margin-top: -4px; border-right: 2px solid var(--soft); border-bottom: 2px solid var(--soft); transform: rotate(45deg); transition: transform .16s; }
+.choice-field[data-open="true"] .choice-chevron { margin-top: 4px; transform: rotate(225deg); }
+.choice-list { position: absolute; z-index: 60; top: calc(100% + 6px); left: 0; right: 0; max-height: min(320px, 60vh); margin: 0; padding: 6px; overflow: auto; list-style: none; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-apex); box-shadow: var(--shadow-float); outline: none; }
+.choice-list[data-above="true"] { top: auto; bottom: calc(100% + 6px); }
+.choice-list[hidden] { display: none; }
+.choice-list [role="option"] { min-height: 44px; padding: 9px 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-radius: 8px; color: var(--ink); font-size: .95rem; font-weight: 400; line-height: 1.35; cursor: pointer; user-select: none; }
+.choice-list [role="option"][data-active="true"] { background: #eef2ff; }
+.choice-list [role="option"][aria-selected="true"] { color: var(--blue); font-weight: 700; }
+.choice-option-copy { min-width: 0; display: grid; gap: 2px; }
+.choice-option-copy small { color: var(--soft); font-size: .78rem; font-weight: 400; }
+.choice-check { flex: none; width: 6px; height: 11px; margin-right: 4px; border-right: 2px solid var(--blue); border-bottom: 2px solid var(--blue); transform: rotate(45deg); }
+.choice-note { color: var(--soft); font-size: .7rem; font-weight: 600; line-height: 1.45; }
+@media (prefers-reduced-motion: reduce) { .choice-trigger, .choice-chevron { transition: none; } }
+@media (max-width: 640px) { .choice-list [role="option"] { min-height: 48px; } }
