@@ -14,7 +14,8 @@ Decisão de 05/11/2026: o volume atual não sustenta alerta de frescor por
 horário. O alerta é de **cadeia travada**, e "nenhuma venda na semana" vai no
 resumo semanal (`--resumo-semanal`), não como alarme.
 
-Só biblioteca padrão, compatível com Python 3.9, como o alerta de logs.
+Só biblioteca padrão, como o alerta de logs. Roda no host com Python 3.12
+(lido em 05/11/2026); testado também em 3.9.
 Runbook: docs/runbooks/cadeia-travada.md.
 """
 

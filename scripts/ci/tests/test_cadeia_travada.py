@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-# Sem `datetime.UTC` nem `with (...)`: o host roda Python 3.9.
+# Sem `datetime.UTC` nem `with (...)`: o script também é testado em Python 3.9.
 UTC = timezone.utc
 
 
