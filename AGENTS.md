@@ -118,6 +118,22 @@ Rodrigo em 23/10/2026, Decisão 022) quando **tudo** for verdade:
      `.claude/agents/`;
    - secrets.
 
+**PR que toca o web entra só com a certificação integrada lida** (Orquestração,
+05/11/2026). Vale para `app/`, `lib/`, `next.config.ts`, `proxy.ts` e
+dependência do web, seguro ou não. O `ci-gate` do `pull_request` roda só os
+testes rápidos: o E2E (`cert_web`) e o smoke rodam no `workflow_dispatch` e no
+push da `main`. Então, antes do merge:
+
+1. um run de `workflow_dispatch` no **head atual** do PR terminou verde;
+2. `cert_web` e smoke desse run foram **lidos**, com o número de testes que
+   falharam e que passaram só no retry. `ci-gate` verde não basta;
+3. sem esse run, o veredito da Qualidade é **pendente**, não aprovado.
+
+Por que existe: em 05/11/2026 o #534 (Next 16.4.3) entrou com `ci-gate` verde
+enquanto o dispatch do mesmo código tinha `cert_web=failure`. Os runs de push
+dos merges intermediários foram cancelados pela concorrência, e nenhum deles
+foi certificado.
+
 Todo o resto espera OK explícito do Rodrigo, citado no PR: merge de PR não
 seguro, deploy, migration que não seja só coluna ou índice, qualquer coisa em produção,
 DNS, permissões, billing, liberar funcionalidade para todas as lojas.
@@ -176,11 +192,10 @@ no runbook, nunca presumida.
 
 ## 8. Regras que mais quebram aqui
 
-- Sem `<select>` nativo. O projeto **ainda não tem** o componente de escolha
-  acessível (padrão *select-only combobox*; referência: Bio
-  `src/components/ui/choice-select.tsx`). Quem tocar primeiro numa tela com
-  `<select>` cria o componente em `app/components/ui/` e troca todos os da tela.
-  Hoje há `<select>` em `product-editor-workspace.tsx`,
+- Sem `<select>` nativo. Toda escolha única usa `ChoiceSelect`
+  (`app/components/ui/choice-select.tsx`, padrão *select-only combobox*,
+  teclado em `choice-keys.ts`). Quem tocar numa tela com `<select>` troca
+  todos os da tela por ele. Hoje ainda há `<select>` em
   `product-draft-workspace.tsx`, `lesson-material-panel.tsx`,
   `lesson-asset-panel.tsx` e no painel de demo.
 - Sem regex para interpretar o que uma pessoa escreveu.
@@ -192,7 +207,7 @@ no runbook, nunca presumida.
 
 <!-- BEGIN:nextjs-agent-rules -->
 
-# This is NOT the Next.js you know
+## This is NOT the Next.js you know
 
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
 

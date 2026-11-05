@@ -425,7 +425,7 @@ as funções `*_seller_logo_*` que a 0054 dropa.
 ### Como foi aplicado
 
 ```bash
-D=/tmp/sell-release-banner-20260903-112420   # specs api/web/asset-worker, nomes das vars, pg_dump -Fc, cabeça 0053
+D=<dir-do-release>   # specs api/web/asset-worker, nomes das vars, pg_dump -Fc, cabeça 0053
 # fonte via git archive → <home-do-operador>/appsell-src-a49e017; imagens web e api com --build-arg GIT_SHA=a49e017
 docker service update --image easypanel/sell-autonomia/web:a49e017 --update-order stop-first sell-autonomia_web
 docker service update --image easypanel/sell-autonomia/api:a49e017 --update-order stop-first sell-autonomia_api
@@ -465,7 +465,7 @@ outro upload para em 409 `logo_upload_superseded` antes de qualquer ação
 destrutiva. O falso autenticador dos testes passou a replicar o guarda, e há
 teste para os três desfechos da confirmação, cada um exigindo uma sessão só.
 Deploy só da `api`, sem migration; backup em
-`/tmp/sell-release-hotfix-20260903-115707`.
+`<dir-do-release>`.
 
 Fica aberto: 401 e 403 no mesmo estado do painel (`failureState` em
 `product-cover-panel.tsx`), que faz a tela culpar a permissão por qualquer
@@ -547,7 +547,7 @@ coluna não existe. O review pegou a ordem invertida na primeira versão da PR.
 ### Como foi aplicado
 
 ```bash
-D=/tmp/sell-release-8a0eca0-<ts>                    # specs api/web, nomes das vars, pg_dump -Fc
+D=<dir-do-release>                    # specs api/web, nomes das vars, pg_dump -Fc
 # fonte via git archive → <home-do-operador>/appsell-src-8a0eca0
 # imagens: deploy/easypanel-native/Dockerfile.web e Dockerfile.api, --build-arg GIT_SHA=8a0eca0
 docker service update --image easypanel/sell-autonomia/web:8a0eca0 --update-order stop-first sell-autonomia_web   # 1
@@ -653,7 +653,7 @@ inverso da `0050`.
 ### Como foi aplicado
 
 ```bash
-D=/tmp/sell-release-803fa82-20260902-201936      # specs api/web, nomes das vars, pg_dump -Fc
+D=<dir-do-release>      # specs api/web, nomes das vars, pg_dump -Fc
 # fonte via git archive → <home-do-operador>/appsell-src-803fa82; imagens api e web com --build-arg GIT_SHA=803fa82
 docker run --rm --network easypanel -e APPSELL_MIGRATOR_DATABASE_URL=<montada no host> \
   -v <home-do-operador>/appsell-src-803fa82/apps/api:/mig -w /mig \
@@ -734,7 +734,7 @@ dez minutos — o que protege igualmente um **rollback** para a imagem anterior.
 ### Como foi aplicado
 
 ```bash
-D=/tmp/sell-release-374c10b-20260902-181204          # specs, imagem anterior, pg_dump -Fc
+D=<dir-do-release>          # specs, imagem anterior, pg_dump -Fc
 docker service update --image easypanel/sell-autonomia/api:374c10b \
   --update-order stop-first sell-autonomia_api        # 1. serviço
 docker run --rm --network easypanel -e APPSELL_MIGRATOR_DATABASE_URL=<montada no host> \
@@ -804,7 +804,7 @@ checkout quando os dois diferem.
 
 ```bash
 # 1. backups
-D=/tmp/sell-release-70e6cb6-20260902-114346
+D=<dir-do-release>
 for s in api web asset-worker; do docker service inspect sell-autonomia_$s > $D/spec_${s}_antes.json; done
 docker exec <postgres-native-90> sh -c 'pg_dump -U "$POSTGRES_USER" -d appsell_native_90 -Fc' > $D/appsell_native_90_antes.dump
 
@@ -900,7 +900,7 @@ docker service update --image easypanel/sell-autonomia/web:9ebb93f \
   --update-order stop-first sell-autonomia_web
 ```
 
-Spec anterior em `/tmp/sell-release-346/spec_web_antes.json` no host.
+Spec anterior em `<dir-do-release>/spec_web_antes.json` no host.
 
 ## Release `581a592` — o nome de quem entrou, e a primeira migration exercitada (2026-09-01)
 
@@ -964,7 +964,7 @@ cadeia para em `permission denied for schema public`.
 
 ```bash
 # 1. backups, antes de tocar em qualquer coisa
-D=/tmp/sell-release-581a592-20260901-231248
+D=<dir-do-release>
 mkdir -p $D
 for s in api web; do docker service inspect sell-autonomia_$s > $D/spec_${s}_antes.json; done
 docker exec <postgres-native-90> pg_dump -U $POSTGRES_USER -d appsell_native_90 -Fc > $D/appsell_native_90_antes.dump
@@ -1022,7 +1022,7 @@ docker service update --image easypanel/sell-autonomia/api:d5e00ec --update-orde
 A API `d5e00ec` volta a funcionar **sem** desfazer a migration, porque a
 assinatura antiga continua viva. Se ainda assim for preciso descer o schema:
 `alembic downgrade 0047_cota_de_armazenamento`, ciclo exercitado localmente e
-no CI. Dump e specs em `/tmp/sell-release-581a592-20260901-231248`.
+no CI. Dump e specs em `<dir-do-release>`.
 
 ## Release `982d46e` — o painel parou de falar com quem não tem loja (2026-09-01)
 
@@ -1084,8 +1084,8 @@ defeito novo introduzido pela correção da rodada anterior:
 ### Como foi aplicado
 
 ```bash
-mkdir -p /tmp/sell-release-982d46e
-docker service inspect sell-autonomia_web > /tmp/sell-release-982d46e/spec_web_antes.json
+mkdir -p <dir-do-release>
+docker service inspect sell-autonomia_web > <dir-do-release>/spec_web_antes.json
 
 git archive --format=tar origin/main | ssh <host> \
   'mkdir -p <home-do-operador>/appsell-src-982d46e && tar -x -C <home-do-operador>/appsell-src-982d46e'
@@ -1118,7 +1118,7 @@ docker service update --image easypanel/sell-autonomia/web:3bcae6e \
   --update-order stop-first sell-autonomia_web
 ```
 
-Spec anterior em `/tmp/sell-release-982d46e/spec_web_antes.json`.
+Spec anterior em `<dir-do-release>/spec_web_antes.json`.
 
 ## Release `3bcae6e` — a navegação passa a saber quem está logado (2026-09-01)
 
@@ -1148,10 +1148,10 @@ da API. O comportamento é novo em produção.
 
 ```bash
 # 1. backup antes de tocar em qualquer coisa
-mkdir -p /tmp/sell-release-350
-docker service inspect sell-autonomia_web > /tmp/sell-release-350/spec_web_antes.json
+mkdir -p <dir-do-release>
+docker service inspect sell-autonomia_web > <dir-do-release>/spec_web_antes.json
 docker service inspect sell-autonomia_web \
-  --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}' > /tmp/sell-release-350/imagem_anterior.txt
+  --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}' > <dir-do-release>/imagem_anterior.txt
 
 # 2. fonte no host
 git archive --format=tar origin/main | ssh <host> \
@@ -1201,7 +1201,7 @@ docker service update --image easypanel/sell-autonomia/web:a139d86 \
 ```
 
 A imagem `a139d86` está no host, ao lado de `9ebb93f`, `d5e00ec` e `8930313`.
-Spec anterior em `/tmp/sell-release-350/spec_web_antes.json`.
+Spec anterior em `<dir-do-release>/spec_web_antes.json`.
 
 ## Release `9ebb93f` — página pública nova (2026-09-01)
 
@@ -1212,10 +1212,10 @@ rollback é um comando e não há migration para reverter.
 
 ```bash
 # 1. backup da spec, antes de tocar em qualquer coisa
-mkdir -p /tmp/sell-release-lp
-docker service inspect sell-autonomia_web > /tmp/sell-release-lp/spec_web_antes.json
+mkdir -p <dir-do-release>
+docker service inspect sell-autonomia_web > <dir-do-release>/spec_web_antes.json
 docker service inspect sell-autonomia_web \
-  --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}' > /tmp/sell-release-lp/imagem_anterior.txt
+  --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}' > <dir-do-release>/imagem_anterior.txt
 
 # 2. fonte no host, no padrao de sempre
 git archive --format=tar origin/main | ssh <host> \
@@ -1361,14 +1361,14 @@ foi ajustado para aguentar o documento que o número promete.
 
 ```bash
 # 1. backup das specs
-mkdir -p /tmp/backup-specs-<data>
+mkdir -p <dir-do-release>
 for s in api pdf-sandbox asset-worker web; do
-  docker service inspect sell-autonomia_$s > /tmp/backup-specs-<data>/$s.json
+  docker service inspect sell-autonomia_$s > <dir-do-release>/$s.json
 done
 
 # 2. migration — a imagem tem só `src/`, então o alembic roda do fonte extraído
-docker run --rm --network container:<api> -v /tmp/b712/apps/api:/work -w /work \
-  -e APPSELL_MIGRATOR_DATABASE_URL="postgresql+psycopg://appsell_native_admin:<senha>@sell-autonomia_postgres-native-90:5432/appsell_native_90" \
+docker run --rm --network container:<api> -v <fonte-do-release>/apps/api:/work -w /work \
+  -e APPSELL_MIGRATOR_DATABASE_URL="postgresql+psycopg://<usuario-admin>:<senha>@<host-do-banco>:5432/<banco>" \
   --entrypoint sh easypanel/sell-autonomia/api:712e5bb -c 'cd /work && python -m alembic upgrade head'
 
 # 3. serviços, nesta ordem, sempre stop-first
@@ -1879,7 +1879,7 @@ Não foi acionado. O caminho, se precisar:
 # desliga o avanço na hora, sem tocar em dado
 sudo docker exec <postgres-native-90> sh -lc \
   'psql -U $POSTGRES_USER -d appsell_native_90 \
-     -f /tmp/publish_product_pre_0060_20260904-182021.sql'
+     -f <dir-do-release>/publish_product_pre_0060.sql'
 ```
 
 A chave estrangeira **não** volta por esse caminho: re-adicionar o
