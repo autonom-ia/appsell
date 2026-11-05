@@ -7,7 +7,12 @@ que os próprios dados produzem, não o total.
 
 Cada caso que deve aparecer tem um vizinho que não deve: o e-mail recente que
 ainda não está parado, o grant recente que ainda pode ganhar e-mail, o grant
-antigo de antes da janela e o grant que já tem e-mail.
+antigo de antes da janela, o grant cujo e-mail já saiu, o `dead_letter` antigo
+e o descadastro.
+
+A janela é lida de dois jeitos: a larga, de dois dias, e a que o checador
+manda a cada 5 minutos (`since = now - 10 min`). A segunda é a que roda em
+produção, e foi nela que o grant sem e-mail sumia.
 """
 
 from __future__ import annotations
@@ -33,6 +38,8 @@ RUN = uuid4().hex[:8]
 ISSUER = "https://identity.test.autonomia.site"
 NOW = datetime.now(UTC)
 SINCE = NOW - timedelta(days=2)
+# O que o checador manda: o fim da rodada anterior menos a sobreposição.
+SINCE_DO_CHECADOR = NOW - timedelta(minutes=10)
 EMAIL_STALE = timedelta(minutes=30)
 GRANT_STALE = timedelta(minutes=15)
 
@@ -141,12 +148,14 @@ def _email(
     *,
     recipient: UUID | None = None,
     sent_at: datetime | None = None,
+    updated_at: datetime | None = None,
+    error_code: str | None = None,
 ) -> None:
     destinatario = recipient or _buyer(connection, f"mail-{name}")
     connection.execute(
         "insert into app_private.email_outbox(seller_organization_id,kind,dedupe_key,"
-        "recipient_identity_user_id,recipient_email,payload,status,sent_at,created_at,"
-        "updated_at) values(%s,'purchase_confirmed',%s,%s,%s,%s,%s,%s,%s,%s)",
+        "recipient_identity_user_id,recipient_email,payload,status,sent_at,error_code,"
+        "created_at,updated_at) values(%s,'purchase_confirmed',%s,%s,%s,%s,%s,%s,%s,%s,%s)",
         (
             store.seller,
             f"purchase:{store.integration}:{store.purchase(name)}",
@@ -155,8 +164,9 @@ def _email(
             Jsonb({"schema_version": 1}),
             status,
             sent_at,
+            error_code,
             created_at,
-            NOW if status == "dead_letter" else created_at,
+            updated_at or (NOW if status == "dead_letter" else created_at),
         ),
     )
 
@@ -175,10 +185,13 @@ def _read(
     return {str(metric): (int(quantity), observed) for metric, quantity, observed in rows}
 
 
+Leituras = dict[str, tuple[Leitura, Leitura]]
+
+
 @pytest.fixture(scope="module")
-def delta() -> tuple[Leitura, Leitura]:
+def leituras() -> Leituras:
     assert ADMIN_URL
-    antes = _read()
+    larga, checador = _read(), _read(SINCE_DO_CHECADOR)
     store = Store()
     with psycopg.connect(ADMIN_URL) as connection:
         _seed_store(connection, store)
@@ -195,8 +208,36 @@ def delta() -> tuple[Leitura, Leitura]:
             sent_at=NOW - timedelta(days=1),
         )
         _email(connection, store, "morto", "dead_letter", NOW - timedelta(hours=5))
-        # Grant: um sem e-mail na janela, e os vizinhos que não podem contar.
+        # Fora do alerta: o dead_letter antigo já alertou, e o descadastro é escolha.
+        _email(
+            connection,
+            store,
+            "morto-antigo",
+            "dead_letter",
+            NOW - timedelta(days=3),
+            updated_at=NOW - timedelta(days=3),
+        )
+        _email(
+            connection,
+            store,
+            "descadastro",
+            "dead_letter",
+            NOW - timedelta(hours=1),
+            error_code="suppressed",
+        )
+        # Grant: sem e-mail e com e-mail que não saiu contam; os vizinhos não.
         _grant(connection, store, "sem-email", NOW - timedelta(hours=1))
+        # Na janela do checador: 20 min, já passou dos 15 do limite.
+        _grant(connection, store, "sem-email-agora", NOW - timedelta(minutes=20))
+        nao_saiu = _grant(connection, store, "email-nao-saiu", NOW - timedelta(hours=1))
+        _email(
+            connection,
+            store,
+            "email-nao-saiu",
+            "retry",
+            NOW - timedelta(hours=1),
+            recipient=nao_saiu,
+        )
         com_email = _grant(connection, store, "com-email", NOW - timedelta(hours=1))
         _email(
             connection,
@@ -213,7 +254,12 @@ def delta() -> tuple[Leitura, Leitura]:
         _sale(connection, store, "semana", NOW - timedelta(days=1))
         _sale(connection, store, "velha", NOW - timedelta(days=10))
         connection.commit()
-    return antes, _read()
+    return {"larga": (larga, _read()), "checador": (checador, _read(SINCE_DO_CHECADOR))}
+
+
+@pytest.fixture(scope="module")
+def delta(leituras: Leituras) -> tuple[Leitura, Leitura]:
+    return leituras["larga"]
 
 
 def _diferenca(delta: tuple[Leitura, Leitura], metrica: str) -> int:
@@ -233,26 +279,38 @@ def test_devolve_as_seis_metricas() -> None:
 
 
 def test_email_parado_conta_so_o_que_passou_do_limite(delta: tuple[Leitura, Leitura]) -> None:
-    assert _diferenca(delta, "email_stalled") == 2
+    # Os dois parados e o "não saiu" (retry há 1 h); o recente fica fora.
+    assert _diferenca(delta, "email_stalled") == 3
     observado = delta[1]["email_stalled"][1]
-    assert observado is not None and observado <= NOW - timedelta(hours=2)
+    assert observado is not None and observado <= NOW - EMAIL_STALE
 
 
 def test_dead_letter_novo_aparece_pelo_instante(delta: tuple[Leitura, Leitura]) -> None:
+    # Só o "morto": o antigo está fora da janela e o descadastro não é falha.
     assert _diferenca(delta, "email_dead_letter") == 1
     observado = delta[1]["email_dead_letter"][1]
     assert observado is not None and observado >= NOW - timedelta(seconds=1)
 
 
 def test_grant_sem_email_respeita_janela_e_limite(delta: tuple[Leitura, Leitura]) -> None:
-    # Só o "sem-email": o com e-mail, o fresco e o antigo ficam de fora.
-    assert _diferenca(delta, "grant_without_email") == 1
+    # Sem e-mail (1 h e 20 min) e com e-mail que não saiu; o enviado, o fresco
+    # e o antigo ficam de fora.
+    assert _diferenca(delta, "grant_without_email") == 3
+
+
+def test_grant_sem_email_aparece_na_janela_do_checador(leituras: Leituras) -> None:
+    # A rodada de 5 min manda since = now - 10 min. A janela anda deslocada pelo
+    # limite: [since - 15 min, now - 15 min) pega o grant de 20 min.
+    antes, depois = leituras["checador"]
+    assert depois["grant_without_email"][0] - antes["grant_without_email"][0] == 1
+    observado = depois["grant_without_email"][1]
+    assert observado is not None and observado <= NOW - GRANT_STALE
 
 
 def test_resumo_da_semana(delta: tuple[Leitura, Leitura]) -> None:
     assert _diferenca(delta, "week_sales") == 1
-    # Os três grants dos últimos 7 dias; o de 40 dias fica fora.
-    assert _diferenca(delta, "week_grants") == 3
+    # Os cinco grants dos últimos 7 dias; o de 40 dias fica fora.
+    assert _diferenca(delta, "week_grants") == 5
     assert _diferenca(delta, "week_emails_sent") == 2
 
 

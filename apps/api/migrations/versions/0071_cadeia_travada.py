@@ -17,16 +17,28 @@ mais nada. O papel nasce fora da migration, porque o migrator é
 
 | Métrica | O que conta |
 |---|---|
-| `email_stalled` | e-mail em `pending`, `retry` ou `leased` há mais que `p_email_stale_after`; `observed_at` é o mais antigo |
-| `email_dead_letter` | todo e-mail em `dead_letter`; `observed_at` é o mais recente, para o checador saber se surgiu um novo |
-| `grant_without_email` | grant ativo criado na janela `[p_since, now() - p_grant_stale_after)` sem a linha de e-mail da compra |
+| `email_stalled` | e-mail em `pending`, `retry` ou `leased` há mais que `p_email_stale_after` |
+| `email_dead_letter` | e-mail que foi a `dead_letter` desde `p_since`, menos o descadastro (`suppressed`, `no_consent`) |
+| `grant_without_email` | grant ativo criado em `[p_since - p_grant_stale_after, now() - p_grant_stale_after)` cujo e-mail da compra não está `sent` |
 | `week_sales` | `purchase.approved` recebidos nos últimos 7 dias |
 | `week_grants` | grants criados nos últimos 7 dias |
 | `week_emails_sent` | e-mails enviados nos últimos 7 dias |
 
+Em toda métrica de problema, `observed_at` é o instante do caso **mais novo**.
+Com ele, o checador vê um caso novo mesmo quando a contagem não muda (um sai,
+outro entra).
+
 `grant_without_email` usa janela de propósito. A linha de e-mail nasce na
 mesma transação do grant desde a 0049, e um grant de antes dela não tem e-mail
-nenhum. Sem janela, todo grant antigo apareceria para sempre.
+nenhum. Sem janela, todo grant antigo apareceria para sempre. A janela anda
+deslocada pelo limite: o checador manda `p_since` = fim da rodada anterior, e
+cada grant é olhado quando passa dos `p_grant_stale_after`. Sem o
+deslocamento, o intervalo `[p_since, now() - limite)` fica vazio no ritmo de
+5 minutos.
+
+`email_dead_letter` também é janela: o `dead_letter` é final e alerta uma vez,
+quando acontece. O descadastro (0066) vai a `dead_letter` por decisão da
+pessoa, e não é cadeia travada.
 
 O `downgrade` só remove a leitura: não há dado a preservar.
 
@@ -104,7 +116,7 @@ begin
   end if;
 
   return query
-  select 'email_stalled'::text, count(*), min(outbox.created_at)
+  select 'email_stalled'::text, count(*), max(outbox.created_at)
   from app_private.email_outbox outbox
   where outbox.status in ('pending','retry','leased')
     and outbox.created_at < now() - p_email_stale_after;
@@ -112,19 +124,23 @@ begin
   return query
   select 'email_dead_letter'::text, count(*), max(outbox.updated_at)
   from app_private.email_outbox outbox
-  where outbox.status='dead_letter';
+  where outbox.status='dead_letter'
+    and outbox.updated_at >= p_since
+    and outbox.error_code is distinct from 'suppressed'
+    and outbox.error_code is distinct from 'no_consent';
 
   return query
-  select 'grant_without_email'::text, count(*), min(grant_row.created_at)
+  select 'grant_without_email'::text, count(*), max(grant_row.created_at)
   from app_private.entitlement_grant grant_row
   where grant_row.status='active'
-    and grant_row.created_at >= p_since
+    and grant_row.created_at >= p_since - p_grant_stale_after
     and grant_row.created_at < now() - p_grant_stale_after
     and not exists (
       select 1 from app_private.email_outbox outbox
       where outbox.seller_organization_id=grant_row.seller_organization_id
         and outbox.dedupe_key='purchase:'||grant_row.checkout_integration_id::text
-          ||':'||grant_row.external_purchase_id_sha256);
+          ||':'||grant_row.external_purchase_id_sha256
+        and outbox.status='sent');
 
   return query
   select 'week_sales'::text, count(*), max(event.received_at)

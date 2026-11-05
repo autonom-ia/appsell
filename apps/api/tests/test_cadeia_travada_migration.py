@@ -52,6 +52,12 @@ def test_a_leitura_so_devolve_metrica_quantidade_e_instante(migration: ModuleTyp
     funcao = migration._FUNCAO
     retorno = funcao[funcao.index("returns table(") : funcao.index(")\nlanguage")]
     assert retorno == "returns table(metric text, quantity bigint, observed_at timestamptz"
+    # Nenhuma coluna de pessoa ou de identificador: se uma entrar, o teste cai.
+    colunas = [c.strip().split(" ")[0] for c in retorno.removeprefix("returns table(").split(",")]
+    for coluna in colunas:
+        assert not coluna.endswith("_id"), coluna
+        for pessoal in ("email", "slug", "sha256", "sub", "name", "buyer", "recipient"):
+            assert pessoal not in coluna, coluna
     corpo = funcao.lower()
     # Nenhum campo de pessoa sai: só agregados.
     for pessoal in ("recipient_email", "email_normalized", "identity_sub", "payload"):

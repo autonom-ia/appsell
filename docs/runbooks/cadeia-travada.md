@@ -19,15 +19,27 @@ A checagem roda a cada 5 minutos (`scripts/ops/cadeia_travada.py`).
 | venda sem job de entrega | `purchase.approved` aceito sem job | 0063 |
 | entrega concluída sem acesso registrado | job concluído sem `entitlement_grant` | 0063 |
 | acesso registrado e comprador sem acesso | grant ativo, `buyer_entitlement` não ativo | 0063 |
-| acesso liberado sem e-mail | grant ativo há mais de 15 min sem a linha de e-mail da compra | 0071 |
+| acesso liberado sem e-mail | grant ativo há mais de 15 min cujo e-mail da compra não está `sent` | 0071 |
 | e-mail na fila | `pending`, `retry` ou `leased` há mais de 30 min | 0071 |
-| e-mail esgotou as tentativas | `dead_letter` | 0071 |
+| e-mail esgotou as tentativas | foi a `dead_letter` desde a rodada anterior; o descadastro (`suppressed`, `no_consent`) fica fora | 0071 |
 | **a própria checagem falhou** | banco, contêiner ou consulta fora do ar | o script |
 
 Regra do envio:
-- um problema que aparece ou cresce alerta na hora;
+- um problema que aparece, cresce ou tem um caso mais novo que o da rodada
+  anterior alerta na hora. O caso mais novo vem do instante que a leitura
+  devolve, e cobre o "um sai, outro entra", em que a contagem fica igual;
 - o mesmo problema, parado, repete uma vez por dia;
 - a falha da checagem repete no máximo uma vez por hora e não avança a janela.
+  É falha qualquer exceção, a saída fora do formato, a categoria desconhecida
+  e a métrica da 0071 que não veio. Uma saída quebrada nunca vira zero.
+
+O acesso sem e-mail e o e-mail esgotado são eventos: alertam quando acontecem.
+A janela do acesso anda deslocada pelos 15 min do limite, para cada grant ser
+olhado quando passa do limite. Os parados (entrega e e-mail na fila) são
+estado: aparecem enquanto não forem reparados, e repetem uma vez por dia.
+
+O estado do checador é gravado inteiro ou não é gravado (temporário, `fsync` e
+troca), com permissão 0600.
 
 Ficam fora: `access_without_grant`, até ser medido em produção (ver a 0063), e
 o lado do estorno, que não é venda travada.
@@ -41,8 +53,9 @@ instante, nunca linha de cliente:
 - `app_private.chain_health_report` (0071).
 
 O papel é o `appsell_reconciler`: `connect`, `usage` em `app_private` e
-`execute` nas duas funções. Ele não lê nenhuma tabela e roda sempre em
-transação só-leitura. O script entra no contêiner do Postgres e conecta pelo IP
+`execute` nas duas funções. Ele não lê nenhuma tabela. A conexão do checador
+liga `default_transaction_read_only` e um `statement_timeout` de 20 s por conta
+própria, sem depender da config do papel. O script entra no contêiner do Postgres e conecta pelo IP
 dele, com SCRAM. A senha sai de um arquivo 0600 pelo stdin, e nunca vai em
 argumento de processo.
 

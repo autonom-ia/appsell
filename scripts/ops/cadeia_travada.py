@@ -22,7 +22,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import smtplib
+import tempfile
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -72,19 +74,53 @@ SEMANA = {
     "week_emails_sent": "e-mails enviados",
 }
 CONFIG_DO_BANCO = ("CADEIA_PG_SERVICO", "CADEIA_PG_BANCO", "CADEIA_SENHA_ARQUIVO")
+# O que cada leitura pode devolver. Categoria fora da lista é leitura quebrada,
+# não "zero": o contrato do banco mudou e o checador precisa saber.
+CATEGORIAS_DA_CONCILIACAO = frozenset(
+    {
+        "fulfillment_dead_letter",
+        "fulfillment_stalled",
+        "fulfillment_completed_without_grant",
+        "grant_without_access",
+        "access_without_grant",
+        "refunded_with_access",
+        "approved_without_fulfillment",
+        "refund_without_fulfillment",
+    }
+)
+# A 0071 devolve sempre as seis, mesmo com quantidade zero. Faltar uma é falha.
+METRICAS_DA_CADEIA = frozenset(
+    {
+        "email_stalled",
+        "email_dead_letter",
+        "grant_without_email",
+        "week_sales",
+        "week_grants",
+        "week_emails_sent",
+    }
+)
+DIGITOS = frozenset("0123456789")
 
 _SQL_CONCILIACAO = (
-    "select category, count(*) from app_private.checkout_reconciliation_report("
+    "select category, count(*), max(observed_at) from app_private.checkout_reconciliation_report("
     "'{inicio}'::timestamptz, '{fim}'::timestamptz, interval '{parado} minutes') group by 1"
 )
 _SQL_CADEIA = (
-    "select metric, quantity from app_private.chain_health_report("
+    "select metric, quantity, observed_at from app_private.chain_health_report("
     "'{inicio}'::timestamptz, interval '{email} minutes', interval '{grant} minutes')"
 )
+# Cada conexão: só leitura e com teto de tempo, sem depender da config do papel.
+_OPCOES_DA_CONEXAO = "-c default_transaction_read_only=on -c statement_timeout=20000"
 
 
 class LeituraFalhou(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class Leitura:
+    quantidade: int
+    instante: str | None
 
 
 @dataclass(frozen=True)
@@ -96,47 +132,79 @@ class Decisao:
 
 def inicio_da_janela(estado: dict[str, object], *, agora: datetime) -> datetime:
     padrao = agora - timedelta(minutes=15)
-    texto = estado.get("fim")
-    if not isinstance(texto, str):
-        return padrao
-    try:
-        anterior = datetime.fromisoformat(texto)
-    except ValueError:
-        return padrao
-    if anterior > agora:
+    anterior = _instante(estado.get("fim"))
+    if anterior is None or anterior > agora:
         return padrao
     return max(anterior - SOBREPOSICAO, agora - MAX_ATRASO)
 
 
-def ler_contagens(saida: str) -> dict[str, int]:
-    """`psql -At -F '|'`: uma linha `categoria|quantidade` por métrica."""
-    contagens: dict[str, int] = {}
+def ler_leituras(
+    saida: str, *, permitidas: frozenset[str], obrigatorias: frozenset[str] = frozenset()
+) -> dict[str, Leitura]:
+    """`psql -At -F '|'`: uma linha `categoria|quantidade|instante` por métrica.
+
+    Linha fora do formato, quantidade que não é número, categoria desconhecida
+    ou métrica obrigatória ausente são falha da leitura. Ler "zero" de uma
+    saída quebrada seria o silêncio que a #550 proíbe.
+    """
+    leituras: dict[str, Leitura] = {}
     for linha in saida.splitlines():
-        nome, separador, quantidade = linha.strip().partition("|")
-        if not separador:
+        if not linha.strip():
             continue
-        if not quantidade.strip().isdigit():
+        partes = linha.strip().split("|")
+        if len(partes) != 3:
+            raise LeituraFalhou("linha fora do formato")
+        nome, quantidade, instante = (parte.strip() for parte in partes)
+        if nome not in permitidas:
+            raise LeituraFalhou(f"categoria desconhecida: {nome[:40]}")
+        if not quantidade or not set(quantidade) <= DIGITOS:
             raise LeituraFalhou(f"quantidade inválida para {nome}")
-        contagens[nome.strip()] = int(quantidade)
-    return contagens
+        if nome in leituras:
+            raise LeituraFalhou(f"categoria repetida: {nome}")
+        leituras[nome] = Leitura(int(quantidade), instante or None)
+    faltando = sorted(obrigatorias - leituras.keys())
+    if faltando:
+        raise LeituraFalhou("faltam métricas: " + ", ".join(faltando))
+    return leituras
 
 
 def decidir(
-    contagens: dict[str, int], estado: dict[str, object], *, agora: datetime
+    leituras: dict[str, Leitura], estado: dict[str, object], *, agora: datetime
 ) -> Decisao:
-    """Alerta quando um problema aparece ou cresce, e repete uma vez por dia
-    enquanto ele existir. Some sozinho quando a contagem volta a zero."""
-    atuais = {nome: contagens.get(nome, 0) for nome in ALERTAS}
-    anteriores_brutos = estado.get("contagens")
-    anteriores = anteriores_brutos if isinstance(anteriores_brutos, dict) else {}
-    cresceu = [n for n, q in atuais.items() if q > int(anteriores.get(n, 0) or 0)]
-    existe = [n for n, q in atuais.items() if q > 0]
+    """Alerta quando um problema aparece, cresce ou tem um caso mais novo que o
+    da rodada anterior, e repete uma vez por dia enquanto ele existir.
+
+    O caso mais novo vem do `observed_at`. Ele cobre o "um sai, outro entra",
+    em que a contagem fica igual e o problema é outro.
+    """
+    vazia = Leitura(0, None)
+    atuais = {nome: leituras.get(nome, vazia) for nome in ALERTAS}
+    contagens_antes = _dicionario(estado.get("contagens"))
+    instantes_antes = _dicionario(estado.get("instantes"))
+    novos = [
+        nome
+        for nome, leitura in atuais.items()
+        if leitura.quantidade > 0
+        and (
+            leitura.quantidade > _inteiro(contagens_antes.get(nome))
+            or _mais_novo(leitura.instante, instantes_antes.get(nome))
+        )
+    ]
+    existe = [nome for nome, leitura in atuais.items() if leitura.quantidade > 0]
     ultimo = _instante(estado.get("ultimo_alerta"))
     repetir = bool(existe) and (ultimo is None or agora - ultimo >= REPETE_APOS)
-    alertar = bool(cresceu) or repetir
-    linhas = tuple(f"{ALERTAS[n]}: {atuais[n]}" for n in ALERTAS if atuais[n] > 0)
-    novo: dict[str, object] = {"fim": agora.isoformat(), "contagens": atuais}
-    novo["ultimo_alerta"] = agora.isoformat() if alertar else estado.get("ultimo_alerta")
+    alertar = bool(novos) or repetir
+    linhas = tuple(f"{ALERTAS[n]}: {atuais[n].quantidade}" for n in ALERTAS if n in existe)
+    novo: dict[str, object] = {
+        "fim": agora.isoformat(),
+        "contagens": {nome: leitura.quantidade for nome, leitura in atuais.items()},
+        "instantes": {
+            nome: leitura.instante or instantes_antes.get(nome)
+            for nome, leitura in atuais.items()
+            if leitura.instante or instantes_antes.get(nome)
+        },
+        "ultimo_alerta": agora.isoformat() if alertar else estado.get("ultimo_alerta"),
+    }
     return Decisao(alertar=alertar, linhas=linhas, estado=novo)
 
 
@@ -166,9 +234,13 @@ def mensagem(
     return email
 
 
-def resumo_semanal(contagens: dict[str, int]) -> tuple[str, ...]:
-    linhas = tuple(f"{texto}: {contagens.get(nome, 0)}" for nome, texto in SEMANA.items())
-    if contagens.get("week_sales", 0) == 0:
+def resumo_semanal(leituras: dict[str, Leitura]) -> tuple[str, ...]:
+    def quantidade(nome: str) -> int:
+        leitura = leituras.get(nome)
+        return leitura.quantidade if leitura else 0
+
+    linhas = tuple(f"{texto}: {quantidade(nome)}" for nome, texto in SEMANA.items())
+    if quantidade("week_sales") == 0:
         linhas += ("nenhuma venda aprovada nos últimos 7 dias",)
     return linhas
 
@@ -177,9 +249,49 @@ def _instante(valor: object) -> datetime | None:
     if not isinstance(valor, str):
         return None
     try:
-        return datetime.fromisoformat(valor)
+        instante = datetime.fromisoformat(valor)
     except ValueError:
         return None
+    return instante if instante.tzinfo else None
+
+
+def _instante_do_banco(valor: object) -> datetime | None:
+    """O `timestamptz` do psql sai como `2026-11-05 12:00:00.5+00`.
+
+    O `fromisoformat` do Python 3.9 só aceita fração com 3 ou 6 dígitos e fuso
+    com minutos. A fração vira 6 dígitos e o fuso ganha `:00`.
+    """
+    if not isinstance(valor, str):
+        return None
+    texto = valor.strip().replace(" ", "T", 1)
+    inicio_do_fuso = max(texto.rfind("+"), texto.rfind("-"))
+    if inicio_do_fuso <= texto.find("T"):
+        return None
+    corpo, fuso = texto[:inicio_do_fuso], texto[inicio_do_fuso:]
+    if len(fuso) == 3:
+        fuso += ":00"
+    segundos, ponto, fracao = corpo.partition(".")
+    if ponto:
+        if not fracao or len(fracao) > 6 or not set(fracao) <= DIGITOS:
+            return None
+        corpo = f"{segundos}.{fracao.ljust(6, '0')}"
+    return _instante(corpo + fuso)
+
+
+def _mais_novo(atual: str | None, anterior: object) -> bool:
+    novo = _instante_do_banco(atual)
+    if novo is None:
+        return False
+    velho = _instante_do_banco(anterior)
+    return velho is None or novo > velho
+
+
+def _dicionario(valor: object) -> dict[str, object]:
+    return valor if isinstance(valor, dict) else {}
+
+
+def _inteiro(valor: object) -> int:
+    return valor if isinstance(valor, int) and not isinstance(valor, bool) else 0
 
 
 def consultar(sql: str, config: dict[str, str]) -> str:
@@ -197,11 +309,24 @@ def consultar(sql: str, config: dict[str, str]) -> str:
     senha = Path(config["CADEIA_SENHA_ARQUIVO"]).read_text(encoding="utf-8").strip()
     roteiro = (
         'read -r P; export PGPASSWORD="$P"; H=$(hostname -i | cut -d" " -f1); '
+        'export PGOPTIONS="$3"; '
         'exec psql "host=$H dbname=$1 user=appsell_reconciler sslmode=disable" '
         "-X -At -F '|' -v ON_ERROR_STOP=1 -c \"$2\""
     )
     return _rodar(
-        ["docker", "exec", "-i", ids[0], "sh", "-c", roteiro, "sh", config["CADEIA_PG_BANCO"], sql],
+        [
+            "docker",
+            "exec",
+            "-i",
+            ids[0],
+            "sh",
+            "-c",
+            roteiro,
+            "sh",
+            config["CADEIA_PG_BANCO"],
+            sql,
+            _OPCOES_DA_CONEXAO,
+        ],
         entrada=senha + "\n",
     )
 
@@ -225,7 +350,9 @@ def _rodar(argumentos: list[str], *, entrada: str | None) -> str:
     return completo.stdout
 
 
-def ler_tudo(config: dict[str, str], *, inicio: datetime, agora: datetime) -> dict[str, int]:
+def ler_tudo(
+    config: dict[str, str], *, inicio: datetime, agora: datetime
+) -> dict[str, Leitura]:
     conciliacao = consultar(
         _SQL_CONCILIACAO.format(
             inicio=inicio.isoformat(),
@@ -242,7 +369,41 @@ def ler_tudo(config: dict[str, str], *, inicio: datetime, agora: datetime) -> di
         ),
         config,
     )
-    return {**ler_contagens(conciliacao), **ler_contagens(cadeia)}
+    return {
+        **ler_leituras(conciliacao, permitidas=CATEGORIAS_DA_CONCILIACAO),
+        **ler_leituras(
+            cadeia, permitidas=METRICAS_DA_CADEIA, obrigatorias=METRICAS_DA_CADEIA
+        ),
+    }
+
+
+def ler_estado(caminho: Path) -> dict[str, object]:
+    """Estado ausente, ilegível ou com formato errado recomeça do zero."""
+    try:
+        bruto = json.loads(caminho.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        return {}
+    return bruto if isinstance(bruto, dict) else {}
+
+
+def gravar_estado(caminho: Path, estado: dict[str, object]) -> None:
+    """Grava inteiro ou não grava: temporário na mesma pasta, `fsync` e
+    `os.replace`, com permissão 0600. Uma queda no meio não deixa JSON
+    truncado, que faria a janela voltar e tudo alertar de novo."""
+    caminho.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descritor, temporario = tempfile.mkstemp(dir=caminho.parent, prefix=".cadeia-")
+    try:
+        os.fchmod(descritor, 0o600)
+        with os.fdopen(descritor, "w", encoding="utf-8") as arquivo:
+            json.dump(estado, arquivo)
+            arquivo.flush()
+            os.fsync(arquivo.fileno())
+        os.replace(temporario, caminho)
+    except BaseException:
+        Path(temporario).unlink(missing_ok=True)
+        raise
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -264,34 +425,31 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     agora = datetime.now(UTC).replace(microsecond=0)
-    estado: dict[str, object] = {}
-    if argumentos.estado.exists():
-        try:
-            estado = json.loads(argumentos.estado.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            estado = {}
-    inicio = inicio_da_janela(estado, agora=agora)
-
+    estado = ler_estado(argumentos.estado)
     try:
-        contagens = ler_tudo(config, inicio=inicio, agora=agora)
-    except (OSError, LeituraFalhou) as erro:
+        inicio = inicio_da_janela(estado, agora=agora)
+        leituras = ler_tudo(config, inicio=inicio, agora=agora)
+        if argumentos.resumo_semanal:
+            linhas = resumo_semanal(leituras)
+            return _entregar("resumo da semana", linhas, config, argumentos.seco)
+        decisao = decidir(leituras, estado, agora=agora)
+        titulo = "venda travada no caminho até o cliente"
+        codigo = 0
+    except LeituraFalhou as erro:
         decisao = decidir_falha(estado, agora=agora, motivo=str(erro))
         titulo = "a checagem da cadeia de venda falhou"
         codigo = 1
-    else:
-        if argumentos.resumo_semanal:
-            linhas = resumo_semanal(contagens)
-            return _entregar("resumo da semana", linhas, config, argumentos.seco)
-        decisao = decidir(contagens, estado, agora=agora)
-        titulo = "venda travada no caminho até o cliente"
-        codigo = 0
+    except Exception as erro:  # noqa: BLE001 - qualquer falha precisa virar alerta
+        # Só o nome do tipo: a mensagem pode trazer conteúdo de arquivo.
+        decisao = decidir_falha(estado, agora=agora, motivo=type(erro).__name__)
+        titulo = "a checagem da cadeia de venda falhou"
+        codigo = 1
 
     if decisao.alertar and _entregar(titulo, decisao.linhas, config, argumentos.seco) != 0:
         # Sem gravar o estado: a próxima rodada tenta alertar de novo.
         return 1
     if not argumentos.seco:
-        argumentos.estado.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        argumentos.estado.write_text(json.dumps(decisao.estado), encoding="utf-8")
+        gravar_estado(argumentos.estado, decisao.estado)
     return codigo
 
 
