@@ -503,12 +503,15 @@ describe("POST /api/checkout/stripe/create-session — Financial with the store'
   it("#545: refuses (409) and raises the alert when the store's account does not pay out yet", async () => {
     // Catches: "can charge" treated as "verified", and a store that loses
     // verification after activation selling silently. A destination from an
-    // older api image (no payouts_enabled) is not verified either.
+    // older api image (no payouts_enabled) is not verified either, nor is a
+    // null or a "true" string: only the boolean true counts.
     process.env.APPSELL_FINANCIAL_CONNECT_SELLER_IDS = SELLER_ID;
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     for (const destination of [
       { provider_account_id: "acct_store_a", charges_enabled: true, payouts_enabled: false },
-      { provider_account_id: "acct_store_a", charges_enabled: true }
+      { provider_account_id: "acct_store_a", charges_enabled: true },
+      { provider_account_id: "acct_store_a", charges_enabled: true, payouts_enabled: null as unknown as boolean },
+      { provider_account_id: "acct_store_a", charges_enabled: true, payouts_enabled: "true" as unknown as boolean }
     ]) {
       warn.mockClear();
       resolveCheckoutPayoutDestination.mockResolvedValue({ payout_destination: destination });
