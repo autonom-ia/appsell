@@ -7,6 +7,7 @@ import hashlib
 import io
 
 import httpx
+import pikepdf
 import pytest
 from pypdf import PdfReader
 from reportlab.pdfgen.canvas import Canvas  # type: ignore[import-untyped]
@@ -75,6 +76,11 @@ async def test_sandbox_returns_the_stamped_copy() -> None:
         ("x-appsell-sha256", "a" * 63),
         ("x-appsell-byte-size", "abc"),
         ("x-appsell-byte-size", "0"),
+        ("x-appsell-byte-size", "-5"),
+        ("x-appsell-byte-size", str(10**12)),
+        ("x-appsell-watermark-b64", "A" * 1_201),
+        ("x-appsell-watermark-b64", encoded(LABEL).replace("-", "+") + "+/"),
+        ("x-appsell-watermark-b64", encoded(LABEL) + "=="),
     ],
 )
 async def test_sandbox_refuses_input_outside_the_contract(header: str, value: str) -> None:
@@ -134,5 +140,58 @@ async def test_sandbox_refuses_body_larger_than_declared() -> None:
     payload = make_pdf()
     response = await post(payload, {**headers_for(payload), "x-appsell-byte-size": "10"})
 
-    assert response.status_code in (413, 422)
+    assert response.status_code == 413
     assert not response.content.startswith(b"%PDF-")
+
+
+def hostile_pdf(attach: str) -> bytes:
+    with pikepdf.open(io.BytesIO(make_pdf())) as pdf:
+        action = pikepdf.Dictionary(S=pikepdf.Name.JavaScript, JS=pikepdf.String("app.alert(1)"))
+        if attach == "OpenAction":
+            pdf.Root[pikepdf.Name.OpenAction] = pdf.make_indirect(action)
+        elif attach == "AA":
+            pdf.pages[0].obj[pikepdf.Name.AA] = pikepdf.Dictionary(O=pdf.make_indirect(action))
+        elif attach == "JavaScript":
+            pdf.Root[pikepdf.Name.Names] = pikepdf.Dictionary(
+                JavaScript=pikepdf.Dictionary(
+                    Names=pikepdf.Array([pikepdf.String("x"), pdf.make_indirect(action)])
+                )
+            )
+        elif attach == "EmbeddedFiles":
+            embedded = pikepdf.Stream(pdf, b"MZ executable")
+            embedded[pikepdf.Name.Type] = pikepdf.Name.EmbeddedFile
+            spec = pikepdf.Dictionary(
+                Type=pikepdf.Name.Filespec,
+                F=pikepdf.String("a.exe"),
+                EF=pikepdf.Dictionary(F=pdf.make_indirect(embedded)),
+            )
+            pdf.Root[pikepdf.Name.Names] = pikepdf.Dictionary(
+                EmbeddedFiles=pikepdf.Dictionary(
+                    Names=pikepdf.Array([pikepdf.String("a.exe"), pdf.make_indirect(spec)])
+                )
+            )
+        output = io.BytesIO()
+        pdf.save(output)
+        return output.getvalue()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("attach", ["OpenAction", "AA", "JavaScript", "EmbeddedFiles"])
+async def test_sandbox_refuses_pdf_with_active_content(attach: str) -> None:
+    payload = hostile_pdf(attach)
+    response = await post(payload, headers_for(payload))
+
+    assert response.status_code == 422
+    assert not response.content.startswith(b"%PDF-")
+
+
+@pytest.mark.asyncio
+async def test_sandbox_refuses_invalid_rotate_with_422() -> None:
+    with pikepdf.open(io.BytesIO(make_pdf())) as pdf:
+        pdf.pages[0].obj[pikepdf.Name.Rotate] = pikepdf.Name("/Noventa")
+        output = io.BytesIO()
+        pdf.save(output)
+    payload = output.getvalue()
+    response = await post(payload, headers_for(payload))
+
+    assert response.status_code == 422

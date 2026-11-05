@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import math
 from dataclasses import dataclass
 from typing import BinaryIO
 
@@ -25,9 +26,14 @@ import pikepdf
 from .pdf_raster import PdfRasterRejected, normalize_watermark
 from .pdf_verifier import MAX_PDF_BYTES, PDF_MIME, PdfRejected, verified_pdf_file
 
-# A cópia marcada é o original normalizado mais um content stream curto por
-# página; uma folga de 1 MiB cobre milhares de páginas.
-MAX_STAMPED_BYTES = MAX_PDF_BYTES + 1024 * 1024
+# Teto de páginas do carimbo. O carimbo e o `save` rodam no processo do
+# sandbox, fora dos rlimits do normalizador, e seguram o slot único de mídia: o
+# teto limita esse tempo. Material de apoio com mais páginas é recusado.
+MAX_STAMP_PAGES = 2_000
+# A cópia marcada é o original normalizado mais, por página, um Form XObject e
+# dois content streams curtos (cerca de 0,5 KiB). 2 MiB cobrem o teto de
+# páginas com folga.
+MAX_STAMPED_BYTES = MAX_PDF_BYTES + 2 * 1024 * 1024
 
 _FONT_SIZE = 7.0
 _MIN_FONT_SIZE = 3.5
@@ -75,6 +81,8 @@ def stamp_pdf(
             temporary_directory=temporary_directory,
             isolated_service_boundary=True,
         ) as verified:
+            if verified.page_count > MAX_STAMP_PAGES:
+                raise PdfWatermarkRejected("PDF has too many pages to stamp")
             with pikepdf.open(verified.ready_path) as pdf:
                 _stamp_pages(pdf, label)
                 output = io.BytesIO()
@@ -120,45 +128,115 @@ def _stamp_pages(pdf: pikepdf.Pdf, label: bytes) -> None:
         )
     )
     for page in pdf.pages:
+        geometry = _page_geometry(page)
+        original = _original_as_form(pdf, page)
         font_name = page.add_resource(font, pikepdf.Name.Font, prefix="AppsellLicense")
-        # O conteúdo original vai entre q/Q: um `cm` ou cor que ele deixe
-        # pendurado não desloca nem pinta a linha.
-        page.contents_add(b"q\n", prepend=True)
-        page.contents_add(b"\nQ\n")
-        page.contents_add(_stamp_stream(pdf, page, font_name, label))
+        streams: list[pikepdf.Object] = []
+        if original is not None:
+            # `Do` de um Form XObject salva e restaura o estado gráfico inteiro:
+            # um `q` sem `Q`, um `cm` ou um modo de texto que o original deixe
+            # pendurado não alcança a linha de licença.
+            form_name = page.add_resource(original, pikepdf.Name.XObject, prefix="AppsellPage")
+            streams.append(_content(pdf, [([], "q"), ([form_name], "Do"), ([], "Q")]))
+        streams.append(_stamp_stream(pdf, geometry, font_name, label))
+        page.obj[pikepdf.Name.Contents] = pikepdf.Array(streams)
 
 
-def _stamp_stream(
-    pdf: pikepdf.Pdf, page: pikepdf.Page, font_name: pikepdf.Name, label: bytes
-) -> pikepdf.Stream:
-    box = page.cropbox
-    left, bottom, right, top = (float(value) for value in box)
-    rotation = int(page.obj.get(pikepdf.Name.Rotate, 0)) % 360
+def _inherited(page: pikepdf.Page, key: pikepdf.Name) -> pikepdf.Object | None:
+    """Atributo herdável da página (`/Resources`, `/Rotate`), subindo a árvore."""
+    node: pikepdf.Object | None = page.obj
+    for _ in range(64):
+        if node is None:
+            return None
+        if key in node:
+            return node[key]
+        node = node.get(pikepdf.Name.Parent)
+    return None
+
+
+def _original_as_form(pdf: pikepdf.Pdf, page: pikepdf.Page) -> pikepdf.Stream | None:
+    contents = page.obj.get(pikepdf.Name.Contents)
+    if contents is None:
+        return None
+    parts = list(contents) if isinstance(contents, pikepdf.Array) else [contents]
+    data = b"\n".join(part.read_bytes() for part in parts)
+    resources = _inherited(page, pikepdf.Name.Resources)
+    if not isinstance(resources, pikepdf.Dictionary):
+        resources = pikepdf.Dictionary()
+    # A página passa a ter recursos próprios (o carimbo acrescenta a fonte e o
+    # form), e o form fica com uma cópia rasa dos recursos de antes.
+    page.obj[pikepdf.Name.Resources] = pikepdf.Dictionary(dict(resources.items()))
+    form = pikepdf.Stream(pdf, data)
+    form[pikepdf.Name.Type] = pikepdf.Name.XObject
+    form[pikepdf.Name.Subtype] = pikepdf.Name.Form
+    form[pikepdf.Name.BBox] = pikepdf.Array([float(value) for value in page.mediabox])
+    form[pikepdf.Name.Resources] = pikepdf.Dictionary(dict(resources.items()))
+    return pdf.make_indirect(form)
+
+
+@dataclass(frozen=True)
+class _Geometry:
+    left: float
+    bottom: float
+    right: float
+    top: float
+    rotation: int
+
+
+def _page_geometry(page: pikepdf.Page) -> _Geometry:
+    """CropBox e /Rotate validados: valor fora do tipo é recusa (422), não 500."""
+    try:
+        left, bottom, right, top = (float(value) for value in page.cropbox)
+        rotate = _inherited(page, pikepdf.Name.Rotate)
+        rotation = 0 if rotate is None else int(rotate) % 360
+    except (TypeError, ValueError, pikepdf.PdfError) as error:
+        raise PdfWatermarkRejected("page geometry is invalid") from error
+    if not all(map(math.isfinite, (left, bottom, right, top))):
+        raise PdfWatermarkRejected("page geometry is invalid")
+    if right <= left or top <= bottom:
+        raise PdfWatermarkRejected("page geometry is invalid")
     if rotation not in (0, 90, 180, 270):
         rotation = 0
-    width, height = right - left, top - bottom
-    shown_width = height if rotation in (90, 270) else width
-    matrix = _shown_to_user(rotation, left, bottom, right, top)
+    return _Geometry(left, bottom, right, top, rotation)
 
-    size = min(_FONT_SIZE, (shown_width - 2 * _MARGIN) / max(1, len(label) * _SAFE_EM))
-    size = max(_MIN_FONT_SIZE, size)
-    x = max(_MARGIN / 2, (shown_width - len(label) * size * _AVERAGE_EM) / 2)
-    steps: tuple[tuple[list[pikepdf.Object | float], str], ...] = (
-        ([], "q"),
-        (list(matrix), "cm"),
-        (list(_GRAY), "rg"),
-        ([], "BT"),
-        ([font_name, size], "Tf"),
-        ([x, _BASELINE], "Td"),
-        ([pikepdf.String(label)], "Tj"),
-        ([], "ET"),
-        ([], "Q"),
-    )
+
+def _content(
+    pdf: pikepdf.Pdf, steps: list[tuple[list[pikepdf.Object | float], str]]
+) -> pikepdf.Stream:
     instructions = [
         pikepdf.ContentStreamInstruction(operands, pikepdf.Operator(operator))
         for operands, operator in steps
     ]
     return pikepdf.Stream(pdf, pikepdf.unparse_content_stream(instructions))
+
+
+def _stamp_stream(
+    pdf: pikepdf.Pdf, geometry: _Geometry, font_name: pikepdf.Name, label: bytes
+) -> pikepdf.Stream:
+    width = geometry.right - geometry.left
+    height = geometry.top - geometry.bottom
+    shown_width = height if geometry.rotation in (90, 270) else width
+    matrix = _shown_to_user(
+        geometry.rotation, geometry.left, geometry.bottom, geometry.right, geometry.top
+    )
+
+    size = min(_FONT_SIZE, (shown_width - 2 * _MARGIN) / max(1, len(label) * _SAFE_EM))
+    size = max(_MIN_FONT_SIZE, size)
+    x = max(_MARGIN / 2, (shown_width - len(label) * size * _AVERAGE_EM) / 2)
+    return _content(
+        pdf,
+        [
+            ([], "q"),
+            (list(matrix), "cm"),
+            (list(_GRAY), "rg"),
+            ([], "BT"),
+            ([font_name, size], "Tf"),
+            ([x, _BASELINE], "Td"),
+            ([pikepdf.String(label)], "Tj"),
+            ([], "ET"),
+            ([], "Q"),
+        ],
+    )
 
 
 def _shown_to_user(

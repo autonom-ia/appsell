@@ -264,9 +264,17 @@ WATERMARK_HEADER: Final = "x-appsell-watermark-b64"
 _MAX_ENCODED_WATERMARK: Final = 1_200
 
 
+_BASE64URL_ALPHABET: Final = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+)
+
+
 def _decode_watermark_header(value: str) -> str:
     if not 1 <= len(value) <= _MAX_ENCODED_WATERMARK:
         raise ValueError("watermark header is outside the allowed range")
+    # base64url sem padding: `+`, `/` e `=` também são recusados.
+    if not set(value) <= _BASE64URL_ALPHABET:
+        raise ValueError("watermark header is not base64url")
     try:
         # validate=True: caractere fora do alfabeto é erro, não é descartado.
         raw = base64.b64decode(value + "=" * (-len(value) % 4), altchars=b"-_", validate=True)

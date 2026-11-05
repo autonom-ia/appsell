@@ -103,6 +103,21 @@ def test_hostile_label_stays_text() -> None:
     assert label in page_texts(result.payload)[0]
     with pikepdf.open(io.BytesIO(result.payload)) as pdf:
         assert len(pdf.pages) == 1
+        operators = [str(item.operator) for item in pikepdf.parse_content_stream(pdf.pages[0])]
+    assert operators == [
+        "q",
+        "Do",
+        "Q",
+        "q",
+        "cm",
+        "rg",
+        "BT",
+        "Tf",
+        "Td",
+        "Tj",
+        "ET",
+        "Q",
+    ]
 
 
 def test_label_outside_the_font_charset_is_refused() -> None:
@@ -157,7 +172,6 @@ def dark_rows(png: bytes) -> list[int]:
         ]
 
 
-@pytest.mark.skipif(shutil.which("pdftoppm") is None, reason="pdftoppm ausente")
 @pytest.mark.parametrize("degrees", [0, 90, 180, 270])
 def test_line_sits_at_the_reader_bottom_on_rotated_pages(degrees: int, tmp_path: Path) -> None:
     # Página só com o carimbo: tudo o que é escuro na imagem é a linha.
@@ -185,3 +199,79 @@ def test_line_sits_at_the_reader_bottom_on_rotated_pages(degrees: int, tmp_path:
     assert min(rows) > height * 0.85, "a linha precisa ficar no rodapé de quem lê"
     if degrees in (90, 270):
         assert width > height
+
+
+def render_png(payload: bytes, tmp_path: Path) -> bytes:
+    pdftoppm = shutil.which("pdftoppm")
+    assert pdftoppm is not None, "pdftoppm é obrigatório para provar a renderização"
+    stamped = tmp_path / "stamped.pdf"
+    stamped.write_bytes(payload)
+    subprocess.run(  # noqa: S603 - binário resolvido e argumentos fixos do teste
+        [pdftoppm, "-png", "-r", "36", "-singlefile", str(stamped), str(tmp_path / "page")],
+        check=True,
+        timeout=30,
+    )
+    return (tmp_path / "page.png").read_bytes()
+
+
+def with_raw_content(content: bytes) -> bytes:
+    blank = io.BytesIO()
+    canvas = Canvas(blank, pagesize=(320, 480), invariant=1)
+    canvas.showPage()
+    canvas.save()
+    with pikepdf.open(io.BytesIO(blank.getvalue())) as pdf:
+        pdf.pages[0].obj[pikepdf.Name.Contents] = pikepdf.Stream(pdf, content)
+        output = io.BytesIO()
+        pdf.save(output)
+        return output.getvalue()
+
+
+def test_line_survives_content_that_leaves_the_graphics_state_unbalanced(
+    tmp_path: Path,
+) -> None:
+    # Dois `q` sem `Q`, uma escala que encolhe tudo a 1% e texto invisível:
+    # embrulhar o original em q/Q não bastaria.
+    hostile = with_raw_content(b"q q 0.01 0 0 0.01 0 0 cm 3 Tr 1 1 1 rg")
+    result = stamp(hostile)
+
+    png = render_png(result.payload, tmp_path)
+    with Image.open(io.BytesIO(png)) as image:
+        height = image.size[1]
+    rows = dark_rows(png)
+    assert rows, "a linha de licença sumiu com o estado gráfico do original"
+    assert min(rows) > height * 0.85
+    assert LABEL in page_texts(result.payload)[0]
+
+
+def test_original_text_is_still_on_the_page() -> None:
+    result = stamp(make_pdf(page_count=2))
+    with pikepdf.open(io.BytesIO(result.payload)) as pdf:
+        for page in pdf.pages:
+            assert isinstance(page.obj.Contents, pikepdf.Array)
+    assert "Material de apoio, página 2" in page_texts(result.payload)[1]
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("/Rotate", pikepdf.Name("/Noventa")),
+        ("/Rotate", pikepdf.String("90")),
+        ("/CropBox", pikepdf.Array([pikepdf.Name("/a"), 0, 320, 480])),
+        ("/CropBox", pikepdf.Array([0, 0, 0, 0])),
+    ],
+)
+def test_invalid_page_geometry_is_refused_not_a_crash(key: str, value: object) -> None:
+    with pikepdf.open(io.BytesIO(make_pdf())) as pdf:
+        pdf.pages[0].obj[pikepdf.Name(key)] = value
+        output = io.BytesIO()
+        pdf.save(output)
+    with pytest.raises(PdfWatermarkRejected):
+        stamp(output.getvalue())
+
+
+def test_too_many_pages_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    from appsell_api import pdf_watermark
+
+    monkeypatch.setattr(pdf_watermark, "MAX_STAMP_PAGES", 2)
+    with pytest.raises(PdfWatermarkRejected):
+        stamp(make_pdf(page_count=3))
