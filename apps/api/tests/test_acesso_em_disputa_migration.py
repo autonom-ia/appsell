@@ -12,7 +12,7 @@ from types import ModuleType
 
 import pytest
 
-from appsell_api import reset_demo_tenant
+from appsell_api.reset_demo_tenant import EXPECTED_MIGRATION
 
 VERSOES = Path(__file__).parents[1] / "migrations" / "versions"
 
@@ -87,7 +87,7 @@ def test_a_funcao_de_disputa_e_fechada(migration: ModuleType) -> None:
     assert "security definer" in sql
     assert "set search_path=pg_catalog,app_private,public" in sql
     assert "'commerce.fulfillment.worker'" in sql
-    assert "app_private.dispute_access_seller" in sql
+    assert "app_private.dispute_access_switch" in sql
     comandos = _comandos_de(migration, migration.upgrade)
     assert f"revoke all on function {migration._APPLY_DISPUTA} from public" in comandos
     assert not any(
@@ -98,9 +98,10 @@ def test_a_funcao_de_disputa_e_fechada(migration: ModuleType) -> None:
 def test_a_chave_por_loja_nasce_vazia_e_fora_do_runtime(migration: ModuleType) -> None:
     comandos = _comandos_de(migration, migration.upgrade)
     assert migration._CHAVE_POR_LOJA in comandos
-    assert not any("insert into app_private.dispute_access_seller" in c for c in comandos)
+    assert not any("insert into app_private.dispute_access_switch" in c for c in comandos)
+    assert migration._GATILHO_SO_INSERCAO in comandos
     assert (
-        "revoke all on table app_private.dispute_access_seller from public,appsell_runtime"
+        "revoke all on table app_private.dispute_access_switch from public,appsell_runtime"
         in comandos
     )
 
@@ -117,7 +118,7 @@ def test_o_esquema_muda_como_dono_e_volta_ao_papel(migration: ModuleType) -> Non
 def test_a_descida_recusa_com_disputa_registrada(migration: ModuleType) -> None:
     comandos = _comandos_de(migration, migration.downgrade)
     assert comandos[0] == "set local role appsell_owner"
-    assert "ha disputa registrada" in comandos[1]
+    assert "ha disputa ou chave registrada" in comandos[1]
     assert comandos[-1] == "set local role appsell_owner"
 
 
@@ -128,7 +129,7 @@ def test_o_readiness_aprende_a_versao(migration: ModuleType) -> None:
     assert migration._READY_ATE_0074.startswith(migration._READY_ATE_0065[:-2])
     assert migration.revision in migration._READY_ATE_0074
     assert migration._BASES_DO_READY == anterior._BASES_DO_READY
-    assert reset_demo_tenant.EXPECTED_MIGRATION == migration.revision
+    assert EXPECTED_MIGRATION == migration.revision
 
 
 def test_a_revisao_cabe_no_alembic_version(migration: ModuleType) -> None:

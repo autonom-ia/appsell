@@ -18,9 +18,12 @@ O que muda no banco:
   estorno), e o grant guarda o último estado de disputa e o momento dele;
 * `buyer_entitlement.status` ganha `suspended`. Quem filtra `status='active'`
   já nega o acesso sem mudança;
-* `app_private.dispute_access_seller` liga a regra loja por loja. Vazia, a
-  regra não vale para ninguém: o evento é aceito, o job é concluído e nada
-  muda no acesso;
+* `app_private.dispute_access_switch` liga a regra loja por loja. É um
+  histórico só de inserção (quem, quando, por quê): a última linha da loja
+  decide, e `disable` desliga sem apagar quem ligou. Vazia, a regra não vale
+  para ninguém: o evento é aceito, o job é concluído e nada muda no acesso.
+  Fica no banco, e não em env, porque a regra é decidida dentro do SQL, sob o
+  lock da compra; só `apply_checkout_dispute` lê a tabela;
 * `app_private.apply_checkout_dispute` aplica a regra. A função de
   fulfillment (`apply_checkout_fulfillment`) chama essa função para os três
   tipos novos, depois de já ter validado o lease e tomado os dois locks da
@@ -206,13 +209,34 @@ alter table app_private.entitlement_grant
 """
 
 _CHAVE_POR_LOJA = """
-create table app_private.dispute_access_seller (
-  seller_organization_id uuid primary key
-    references public.seller_organization(id),
+create table app_private.dispute_access_switch (
+  id bigint generated always as identity primary key,
+  seller_organization_id uuid not null references public.seller_organization(id),
+  action text not null check (action in ('enable','disable')),
   actor text not null check (length(btrim(actor)) between 1 and 200),
   reason text not null check (length(btrim(reason)) between 1 and 1000),
-  enabled_at timestamptz not null default clock_timestamp()
+  created_at timestamptz not null default clock_timestamp()
 )
+"""
+
+_INDICE_DA_CHAVE = """
+create index dispute_access_switch_seller_idx
+  on app_private.dispute_access_switch(seller_organization_id,created_at desc,id desc)
+"""
+
+# Histórico só de inserção: nem o dono reescreve quem ligou ou desligou.
+_SO_INSERCAO = """
+create function app_private.dispute_access_switch_append_only() returns trigger
+language plpgsql set search_path=pg_catalog as $$
+begin
+  raise exception 'dispute_access_switch is append-only' using errcode='55000';
+end $$
+"""
+
+_GATILHO_SO_INSERCAO = """
+create trigger dispute_access_switch_append_only
+  before update or delete on app_private.dispute_access_switch
+  for each row execute function app_private.dispute_access_switch_append_only()
 """
 
 _FUNCAO_DISPUTA = """
@@ -248,8 +272,10 @@ begin
     else 'active'
   end;
 
-  if not exists(select 1 from app_private.dispute_access_seller chave
-                where chave.seller_organization_id=p_seller) then
+  if coalesce((select chave.action from app_private.dispute_access_switch chave
+                where chave.seller_organization_id=p_seller
+                order by chave.created_at desc, chave.id desc limit 1),
+              'disable') <> 'enable' then
     resultado := 'dispute_access_disabled';
   else
     select grant_row.status,grant_row.dispute_occurred_at into ledger
@@ -378,8 +404,9 @@ begin
             where event_type in (__DISPUTA__))
      or exists(select 1 from app_private.entitlement_grant
                where status in ('suspended','charged_back') or dispute_state is not null)
-     or exists(select 1 from public.buyer_entitlement where status='suspended') then
-    raise exception 'ha disputa registrada; a descida decidiria o acesso de alguem'
+     or exists(select 1 from public.buyer_entitlement where status='suspended')
+     or exists(select 1 from app_private.dispute_access_switch) then
+    raise exception 'ha disputa ou chave registrada; a descida apagaria decisao de acesso ou auditoria'
       using errcode='55000';
   end if;
 end $migration$
@@ -403,7 +430,11 @@ def _sobe_esquema() -> None:
 def upgrade() -> None:
     _sobe_esquema()
     op.execute(_CHAVE_POR_LOJA)
-    op.execute("revoke all on table app_private.dispute_access_seller from public,appsell_runtime")
+    op.execute(_INDICE_DA_CHAVE)
+    op.execute(_SO_INSERCAO)
+    op.execute(_GATILHO_SO_INSERCAO)
+    op.execute("revoke all on table app_private.dispute_access_switch from public,appsell_runtime")
+    op.execute("revoke all on function app_private.dispute_access_switch_append_only() from public")
     op.execute(_FUNCAO_DISPUTA)
     op.execute(f"revoke all on function {_APPLY_DISPUTA} from public")
     op.execute(
@@ -430,7 +461,8 @@ def downgrade() -> None:
         )
     )
     op.execute(f"drop function {_APPLY_DISPUTA}")
-    op.execute("drop table app_private.dispute_access_seller")
+    op.execute("drop table app_private.dispute_access_switch")
+    op.execute("drop function app_private.dispute_access_switch_append_only()")
     op.execute("reset role")
     op.execute(
         "alter table app_private.entitlement_grant "

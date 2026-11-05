@@ -161,11 +161,14 @@ def worker() -> UUID:
         )
         _seed_seller(connection, SELLER)
         _seed_seller(connection, OFF_SELLER)
-        # Só SELLER tem a regra ligada; OFF_SELLER prova o desligado.
+        # Só SELLER tem a regra ligada. OFF_SELLER foi ligada e depois
+        # desligada: prova o desligado e que desligar não apaga quem ligou.
         connection.execute(
-            "insert into app_private.dispute_access_seller(seller_organization_id,actor,reason) "
-            "values(%s,'pytest','teste da #542') on conflict do nothing",
-            (SELLER,),
+            "insert into app_private.dispute_access_switch("
+            "seller_organization_id,action,actor,reason) "
+            "values(%s,'enable','pytest','teste da #542'),"
+            "(%s,'enable','pytest','teste da #542'),(%s,'disable','pytest','teste da #542')",
+            (SELLER, OFF_SELLER, OFF_SELLER),
         )
         connection.commit()
     with psycopg.connect(RUNTIME_URL) as connection:
@@ -447,7 +450,7 @@ def test_runtime_nao_le_nem_escreve_a_chave_por_loja() -> None:
     assert RUNTIME_URL
     with psycopg.connect(RUNTIME_URL) as connection:
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
-            connection.execute("select 1 from app_private.dispute_access_seller")
+            connection.execute("select 1 from app_private.dispute_access_switch")
 
 
 def test_runtime_nao_chama_a_funcao_de_disputa_direto(worker: UUID) -> None:
@@ -473,3 +476,46 @@ def test_runtime_nao_chama_a_funcao_de_disputa_direto(worker: UUID) -> None:
                     _ids(SELLER)["product"],
                 ),
             )
+
+
+def test_so_a_funcao_de_disputa_le_a_chave(worker: UUID) -> None:
+    # Pega: outra função (ou um grant) passando a decidir pela chave por loja.
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        leitoras = connection.execute(
+            "select proc.proname from pg_proc proc "
+            "join pg_namespace ns on ns.oid=proc.pronamespace "
+            "where ns.nspname not in ('pg_catalog','information_schema') "
+            "and position('dispute_access_switch' in proc.prosrc) > 0 order by 1"
+        ).fetchall()
+        privilegios = connection.execute(
+            "select papel, has_table_privilege(papel,'app_private.dispute_access_switch',acao) "
+            "from unnest(array['appsell_runtime','appsell_reconciler','public']) papel, "
+            "unnest(array['select','insert','update','delete']) acao"
+        ).fetchall()
+    # A trigger só recusa; ela cita a tabela na mensagem, não a lê.
+    assert [nome for (nome,) in leitoras] == [
+        "apply_checkout_dispute",
+        "dispute_access_switch_append_only",
+    ]
+    assert not any(pode for _papel, pode in privilegios)
+
+
+def test_a_chave_guarda_quem_ligou_e_desligou(worker: UUID) -> None:
+    # Pega: desligar uma loja apagando a auditoria de quem ligou.
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        historico = connection.execute(
+            "select action,actor from app_private.dispute_access_switch "
+            "where seller_organization_id=%s order by created_at,id",
+            (OFF_SELLER,),
+        ).fetchall()
+        assert historico[-2:] == [("enable", "pytest"), ("disable", "pytest")]
+        for comando in (
+            "delete from app_private.dispute_access_switch where seller_organization_id=%s",
+            "update app_private.dispute_access_switch set actor='outro' "
+            "where seller_organization_id=%s",
+        ):
+            with pytest.raises(psycopg.errors.ObjectNotInPrerequisiteState):
+                connection.execute(comando, (OFF_SELLER,))
+            connection.rollback()
