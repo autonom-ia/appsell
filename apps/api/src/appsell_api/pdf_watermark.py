@@ -47,6 +47,9 @@ _GRAY = (0.39, 0.45, 0.55)
 _HEX_DIGITS = frozenset("0123456789abcdef")
 
 
+_FormKey = tuple[tuple[tuple[int, int], ...], bytes, tuple[float, float, float, float]]
+
+
 class PdfWatermarkRejected(ValueError):
     """Entrada fora do contrato: o arquivo ou o rótulo não podem ser marcados."""
 
@@ -127,9 +130,12 @@ def _stamp_pages(pdf: pikepdf.Pdf, label: bytes) -> None:
             Encoding=pikepdf.Name.WinAnsiEncoding,
         )
     )
+    # Páginas que compartilham o mesmo content stream e os mesmos recursos
+    # ganham o mesmo form: o arquivo não cresce uma cópia por página.
+    forms: dict[_FormKey, pikepdf.Stream] = {}
     for page in pdf.pages:
         geometry = _page_geometry(page)
-        original = _original_as_form(pdf, page)
+        original = _original_as_form(pdf, page, geometry, forms)
         font_name = page.add_resource(font, pikepdf.Name.Font, prefix="AppsellLicense")
         streams: list[pikepdf.Object] = []
         if original is not None:
@@ -154,24 +160,40 @@ def _inherited(page: pikepdf.Page, key: pikepdf.Name) -> pikepdf.Object | None:
     return None
 
 
-def _original_as_form(pdf: pikepdf.Pdf, page: pikepdf.Page) -> pikepdf.Stream | None:
+def _original_as_form(
+    pdf: pikepdf.Pdf,
+    page: pikepdf.Page,
+    geometry: _Geometry,
+    forms: dict[_FormKey, pikepdf.Stream],
+) -> pikepdf.Stream | None:
     contents = page.obj.get(pikepdf.Name.Contents)
     if contents is None:
         return None
     parts = list(contents) if isinstance(contents, pikepdf.Array) else [contents]
-    data = b"\n".join(part.read_bytes() for part in parts)
     resources = _inherited(page, pikepdf.Name.Resources)
     if not isinstance(resources, pikepdf.Dictionary):
         resources = pikepdf.Dictionary()
+    # Chave do reaproveitamento: os streams, os recursos e a caixa. O
+    # normalizador deixa `/Resources` direto em cada página, então os recursos
+    # entram pela serialização (referências viram "N 0 R"), não pela identidade.
+    # Content stream direto não tem identidade, e então não há reaproveitamento.
+    stream_ids = tuple(part.objgen for part in parts)
+    key = (stream_ids, resources.unparse(), geometry.media)
+    shareable = all(objgen != (0, 0) for objgen in stream_ids)
     # A página passa a ter recursos próprios (o carimbo acrescenta a fonte e o
     # form), e o form fica com uma cópia rasa dos recursos de antes.
     page.obj[pikepdf.Name.Resources] = pikepdf.Dictionary(dict(resources.items()))
-    form = pikepdf.Stream(pdf, data)
+    if shareable and key in forms:
+        return forms[key]
+    form = pikepdf.Stream(pdf, b"\n".join(part.read_bytes() for part in parts))
     form[pikepdf.Name.Type] = pikepdf.Name.XObject
     form[pikepdf.Name.Subtype] = pikepdf.Name.Form
-    form[pikepdf.Name.BBox] = pikepdf.Array([float(value) for value in page.mediabox])
+    form[pikepdf.Name.BBox] = pikepdf.Array(list(geometry.media))
     form[pikepdf.Name.Resources] = pikepdf.Dictionary(dict(resources.items()))
-    return pdf.make_indirect(form)
+    indirect = pdf.make_indirect(form)
+    if shareable:
+        forms[key] = indirect
+    return indirect
 
 
 @dataclass(frozen=True)
@@ -181,23 +203,26 @@ class _Geometry:
     right: float
     top: float
     rotation: int
+    media: tuple[float, float, float, float]
 
 
 def _page_geometry(page: pikepdf.Page) -> _Geometry:
     """CropBox e /Rotate validados: valor fora do tipo é recusa (422), não 500."""
     try:
         left, bottom, right, top = (float(value) for value in page.cropbox)
+        media_left, media_bottom, media_right, media_top = (float(value) for value in page.mediabox)
         rotate = _inherited(page, pikepdf.Name.Rotate)
         rotation = 0 if rotate is None else int(rotate) % 360
     except (TypeError, ValueError, pikepdf.PdfError) as error:
         raise PdfWatermarkRejected("page geometry is invalid") from error
-    if not all(map(math.isfinite, (left, bottom, right, top))):
+    media = (media_left, media_bottom, media_right, media_top)
+    if not all(map(math.isfinite, (left, bottom, right, top, *media))):
         raise PdfWatermarkRejected("page geometry is invalid")
-    if right <= left or top <= bottom:
+    if right <= left or top <= bottom or media_right <= media_left or media_top <= media_bottom:
         raise PdfWatermarkRejected("page geometry is invalid")
     if rotation not in (0, 90, 180, 270):
         rotation = 0
-    return _Geometry(left, bottom, right, top, rotation)
+    return _Geometry(left, bottom, right, top, rotation, media)
 
 
 def _content(

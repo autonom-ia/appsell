@@ -275,3 +275,40 @@ def test_too_many_pages_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(pdf_watermark, "MAX_STAMP_PAGES", 2)
     with pytest.raises(PdfWatermarkRejected):
         stamp(make_pdf(page_count=3))
+
+
+def test_invalid_media_box_is_refused_not_a_crash() -> None:
+    # O normalizador repõe MediaBox inválida; a checagem própria do carimbo
+    # é a defesa se isso mudar, e é provada direto na página.
+    from appsell_api.pdf_watermark import _page_geometry
+
+    with pikepdf.open(io.BytesIO(make_pdf())) as pdf:
+        page = pdf.pages[0]
+        page.obj[pikepdf.Name.CropBox] = pikepdf.Array([0, 0, 320, 480])
+        page.obj[pikepdf.Name.MediaBox] = pikepdf.Array([pikepdf.Name("/a"), 0, 320, 480])
+        with pytest.raises(PdfWatermarkRejected):
+            _page_geometry(page)
+
+
+def test_shared_content_stream_becomes_one_shared_form() -> None:
+    with pikepdf.open(io.BytesIO(make_pdf(page_count=2))) as pdf:
+        first, second = pdf.pages[0].obj, pdf.pages[1].obj
+        second[pikepdf.Name.Contents] = first.Contents
+        second[pikepdf.Name.Resources] = first.Resources
+        output = io.BytesIO()
+        pdf.save(output)
+    result = stamp(output.getvalue())
+
+    with pikepdf.open(io.BytesIO(result.payload)) as pdf:
+        forms = {
+            value.objgen
+            for page in pdf.pages
+            for name, value in page.obj.Resources.XObject.items()
+            if name.startswith("/AppsellPage")
+        }
+        pages = len(pdf.pages)
+    assert pages == 2
+    assert len(forms) == 1, "o mesmo conteúdo precisa virar um form só"
+    texts = page_texts(result.payload)
+    assert "Material de apoio, página 1" in texts[0]
+    assert "Material de apoio, página 1" in texts[1]
