@@ -9,6 +9,7 @@ const {
   updateDomainProductCourseDraft,
   transitionDomainOfferStatus,
   publishDomainProductDraft,
+  resolveCheckoutPayoutDestination,
   getSession,
   DomainApiError
 } = vi.hoisted(() => {
@@ -23,6 +24,7 @@ const {
     updateDomainProductCourseDraft: vi.fn(async () => ({ ok: true })),
     transitionDomainOfferStatus: vi.fn(async () => ({ ok: true })),
     publishDomainProductDraft: vi.fn(async () => ({ created: true })),
+    resolveCheckoutPayoutDestination: vi.fn<(...args: unknown[]) => Promise<unknown>>(),
     getSession: vi.fn(async () => ({ identity: { sub: "seller" } })),
     DomainApiError
   };
@@ -34,6 +36,7 @@ vi.mock("@/lib/internal-api-client.server", () => ({
   updateDomainProductCourseDraft,
   transitionDomainOfferStatus,
   publishDomainProductDraft,
+  resolveCheckoutPayoutDestination,
   DomainApiError
 }));
 
@@ -153,6 +156,8 @@ describe("preço mínimo nas rotas do produtor (#546)", () => {
     vi.clearAllMocks();
     getSession.mockResolvedValue({ identity: { sub: "seller" } });
     process.env.APPSELL_PUBLIC_ORIGIN = ORIGIN;
+    delete process.env.APPSELL_CHECKOUT_PROVIDER;
+    delete process.env.APPSELL_FINANCIAL_CONNECT_SELLER_IDS;
   });
 
   afterEach(() => {
@@ -257,6 +262,80 @@ describe("preço mínimo nas rotas do produtor (#546)", () => {
       const response = await publish(publishRequest("free"), productContext);
       expect(response.status).toBe(201);
       expect(readDomainProductDraft).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("escopo: só a loja com comissão", () => {
+    // Sem comissão a loja recebe o valor inteiro; a trava não tem o que
+    // proteger e não pode alcançar a Hub2You (AGENTS.md §7).
+    const READY = { payout_destination: { provider: "stripe", provider_account_id: "acct_a", charges_enabled: true } };
+
+    function financial(listed: boolean) {
+      process.env.APPSELL_CHECKOUT_PROVIDER = "financial_checkout";
+      process.env.APPSELL_FINANCIAL_CONNECT_SELLER_IDS = listed ? SELLER_ID : "";
+    }
+
+    it("Financial fora da lista Connect grava, ativa e publica a 51 centavos", async () => {
+      // Pega: a trava recusando preço de loja que não paga comissão.
+      financial(false);
+      readDomainProductDraft.mockResolvedValue(draftWithPrice(51));
+      expect((await patchProduct(priceUpdate("51"), productContext)).status).toBe(200);
+      expect(updateDomainProductDraft).toHaveBeenCalledTimes(1);
+      expect((await patchOfferStatus(activate(), offerContext)).status).toBe(200);
+      expect(transitionDomainOfferStatus).toHaveBeenCalledTimes(1);
+      expect((await publish(publishRequest("paid"), productContext)).status).toBe(201);
+      expect(resolveCheckoutPayoutDestination).not.toHaveBeenCalled();
+    });
+
+    it("Financial na lista Connect recusa 51 centavos nas três rotas", async () => {
+      financial(true);
+      readDomainProductDraft.mockResolvedValue(draftWithPrice(51));
+      const responses = [
+        await patchProduct(priceUpdate("51"), productContext),
+        await patchOfferStatus(activate(), offerContext),
+        await publish(publishRequest("paid"), productContext)
+      ];
+      for (const response of responses) {
+        expect(response.status).toBe(422);
+        expect(await response.json()).toEqual(BELOW_MINIMUM);
+      }
+      expect(updateDomainProductDraft).not.toHaveBeenCalled();
+      expect(transitionDomainOfferStatus).not.toHaveBeenCalled();
+      expect(publishDomainProductDraft).not.toHaveBeenCalled();
+    });
+
+    it("local_stripe com conta de repasse recusa; sem conta, grava", async () => {
+      process.env.APPSELL_CHECKOUT_PROVIDER = "local_stripe";
+      resolveCheckoutPayoutDestination.mockResolvedValueOnce(READY);
+      expect((await patchProduct(priceUpdate("51"), productContext)).status).toBe(422);
+      expect(resolveCheckoutPayoutDestination).toHaveBeenCalledWith(SELLER_ID);
+      resolveCheckoutPayoutDestination.mockResolvedValueOnce({ payout_destination: null });
+      expect((await patchProduct(priceUpdate("51"), productContext)).status).toBe(200);
+      expect(updateDomainProductDraft).toHaveBeenCalledTimes(1);
+    });
+
+    it("falha fechado quando não consegue ler a conta de repasse", async () => {
+      process.env.APPSELL_CHECKOUT_PROVIDER = "local_stripe";
+      resolveCheckoutPayoutDestination.mockRejectedValue(new DomainApiError(503, "domain_unavailable"));
+      const response = await patchProduct(priceUpdate("51"), productContext);
+      expect(response.status).toBe(503);
+      expect(updateDomainProductDraft).not.toHaveBeenCalled();
+    });
+
+    it("não diz nada da comissão de uma loja que não é de quem pede", async () => {
+      // Pega: o 422 revelando se outra loja está na lista ou tem conta.
+      financial(true);
+      readDomainProductDraft.mockRejectedValue(new DomainApiError(403, "forbidden"));
+      const response = await patchProduct(priceUpdate("51"), productContext);
+      expect(response.status).toBe(403);
+      expect(updateDomainProductDraft).not.toHaveBeenCalled();
+    });
+
+    it("preço acima do mínimo não consulta comissão nem lê o rascunho", async () => {
+      process.env.APPSELL_CHECKOUT_PROVIDER = "local_stripe";
+      expect((await patchProduct(priceUpdate("4700"), productContext)).status).toBe(200);
+      expect(readDomainProductDraft).not.toHaveBeenCalled();
+      expect(resolveCheckoutPayoutDestination).not.toHaveBeenCalled();
     });
   });
 });
