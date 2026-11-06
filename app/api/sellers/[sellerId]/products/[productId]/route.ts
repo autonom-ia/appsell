@@ -23,6 +23,7 @@ import {
 import { isOfferBillingPeriod, MAX_UNIT_AMOUNT_MINOR } from "@/lib/offer-price";
 import { configuredPublicOrigin, hasConfiguredOrigin } from "@/lib/public-origin";
 
+import { minimumForPrice, priceBelowMinimum } from "./_minimum-price";
 import {
   authenticatedSession,
   canonicalUuid,
@@ -211,6 +212,8 @@ export async function PATCH(request: NextRequest, context: ProductRouteContext) 
     if (!isOfferBillingPeriod(fields.offer_billing_period)) {
       return invalidInput("offer_billing_period");
     }
+    const minimumMinor = minimumForPrice(Number(fields.offer_unit_amount_minor), fields.offer_currency!);
+    if (minimumMinor !== null) return priceBelowMinimum(minimumMinor);
   }
 
   try {

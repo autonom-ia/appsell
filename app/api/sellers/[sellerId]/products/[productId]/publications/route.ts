@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { sessionCookieName } from "@/lib/cookies";
-import { publishDomainProductDraft } from "@/lib/internal-api-client.server";
+import {
+  publishDomainProductDraft,
+  readDomainProductDraft
+} from "@/lib/internal-api-client.server";
 import {
   PUBLISH_PRODUCT_DRAFT_CSRF_ACTION,
   verifyMutation
@@ -22,6 +25,7 @@ import {
   safeVersion,
   unauthorized
 } from "../_route-shared";
+import { draftOfferMinimum, priceBelowMinimum } from "../_minimum-price";
 
 const LEGACY_PUBLISH_FIELDS = [
   "_csrf",
@@ -99,6 +103,16 @@ export async function POST(request: NextRequest, context: ProductRouteContext) {
       ? legacyCourseVersions(fields)
       : parseCourseVersions(fields.course_versions);
     if (!courseVersions) return invalidInput("course_versions");
+
+    // #546: publicar pago exige que a loja receba algo pelo preço atual.
+    if (accessMode === "paid") {
+      const minimum = draftOfferMinimum(
+        await readDomainProductDraft(authenticated.sessionId, authenticated.session, ids.sellerId, ids.productId),
+        offerId
+      );
+      if (minimum.kind === "invalid_draft") return mappedError(new Error("invalid domain response"));
+      if (minimum.kind === "below_minimum") return priceBelowMinimum(minimum.minimumMinor);
+    }
 
     const payload = await publishDomainProductDraft(
       authenticated.sessionId,
