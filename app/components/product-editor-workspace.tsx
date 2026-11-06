@@ -235,6 +235,9 @@ export function ProductEditorWorkspace({
   const [savedFields, setSavedFields] = useState<EditorFields>(emptyFields);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [invalidField, setInvalidField] = useState("");
+  // Pedido de foco depois de um salvar recusado. Fica separado de invalidField
+  // porque digitar limpa o destaque, e isso não pode mover o foco de novo.
+  const [invalidFocusRequest, setInvalidFocusRequest] = useState<{ field: string; attempt: number } | null>(null);
   // #546: menor preço em que a loja recebe algo, vindo do servidor no 422.
   const [minimumPriceMinor, setMinimumPriceMinor] = useState<number | null>(null);
   const [previewState, setPreviewState] = useState<PreviewState>("idle");
@@ -343,10 +346,20 @@ export function ProductEditorWorkspace({
     if (publishState !== "publishing") return;
     requestAnimationFrame(() => publishStatus.current?.focus());
   }, [publishState]);
+  // Um só dono do foco quando o salvar é recusado: o campo apontado, se ele
+  // existe na tela; senão, o resumo do erro. Antes eram dois — o campo levava o
+  // foco na hora e o resumo o tomava no quadro seguinte (#546).
   useEffect(() => {
-    if (saveState !== "invalid") return;
-    requestAnimationFrame(() => saveErrorSummary.current?.focus());
-  }, [saveState]);
+    if (invalidFocusRequest === null) return;
+    const frame = requestAnimationFrame(() => {
+      const inputName = inputNameForField(invalidFocusRequest.field);
+      const input = inputName ? formElement.current?.elements.namedItem(inputName) : null;
+      if (input instanceof HTMLElement) input.focus();
+      if (input instanceof HTMLElement && document.activeElement === input) return;
+      saveErrorSummary.current?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [invalidFocusRequest]);
   const handleCurriculumDirty = useCallback((nextDirty: boolean) => setCurriculumDirty(nextDirty), []);
   const handleCurriculumBusy = useCallback((nextBusy: boolean) => {
     setCurriculumBusy(nextBusy);
@@ -467,8 +480,7 @@ export function ProductEditorWorkspace({
     if (savingOffer && submittedUnitAmountMinor === null) {
       setInvalidField("offer_price");
       setSaveState("invalid");
-      const input = formElement.current?.elements.namedItem("offer_price");
-      if (input instanceof HTMLElement) input.focus();
+      setInvalidFocusRequest((current) => ({ field: "offer_price", attempt: (current?.attempt ?? 0) + 1 }));
       return false;
     }
     const submittedVersions = versionsFromDetail(detail);
@@ -510,10 +522,7 @@ export function ProductEditorWorkspace({
           setMinimumPriceMinor(minimumFromResponse(payload));
           setInvalidField(field);
           setSaveState("invalid");
-          // O servidor fala do preço em centavos; na tela, o campo é offer_price.
-          const inputName = field === "offer_unit_amount_minor" ? "offer_price" : field;
-          const input = formElement.current?.elements.namedItem(inputName);
-          if (input instanceof HTMLElement) input.focus();
+          setInvalidFocusRequest((current) => ({ field, attempt: (current?.attempt ?? 0) + 1 }));
         } else if (response.status === 503) setSaveState("unavailable");
         else setSaveState("error");
         return false;
@@ -1200,6 +1209,13 @@ function editorFieldError(field: string) {
   if (field === "offer_price" || field === "offer_unit_amount_minor") return "Informe um preço válido, maior que zero para ativar vendas.";
   if (field === "offer_title") return "Informe um nome de checkout com pelo menos 2 caracteres.";
   return "Corrija este campo e tente novamente.";
+}
+
+// O servidor fala do preço em centavos; na tela, o campo é offer_price.
+// "form" não aponta campo nenhum: o foco vai para o resumo do erro.
+function inputNameForField(field: string): string | null {
+  if (field === "" || field === "form") return null;
+  return field === "offer_unit_amount_minor" ? "offer_price" : field;
 }
 
 function editorFieldLabel(field: string) {
