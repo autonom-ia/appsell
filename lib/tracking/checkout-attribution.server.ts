@@ -41,3 +41,8 @@ export async function registrarAtribuicaoDoCheckout(
     }
   }
 }
+
+// Para quem chama: um erro que escapou da atribuição vira só log, nunca resposta.
+export function atribuicaoFalhou(error: unknown): void {
+  registrarFalha(CAMINHO, "unexpected", error, null);
+}

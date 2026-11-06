@@ -22,6 +22,7 @@ import { RawBodyTooLargeError, readLimitedRawBody } from "@/lib/limited-raw-body
 import { configuredPublicOrigin, hasConfiguredOrigin } from "@/lib/public-origin";
 import { parsePublicStorefront, type PublicStorefrontProduct } from "@/lib/public-storefront";
 import { StripeConfigError, stripeClient } from "@/lib/stripe-config.server";
+import { atribuicaoFalhou, registrarAtribuicaoDoCheckout } from "@/lib/tracking/checkout-attribution.server";
 
 // Stripe refuses expires_at under 30 minutes from ITS creation time, which is
 // later than ours by the request latency; one extra minute keeps us above it.
@@ -216,6 +217,13 @@ export async function POST(request: NextRequest) {
           : crypto.randomUUID()
       });
       const stripeCheckoutUrl = await createFinancialExternalCheckoutSession(result.checkoutUrl);
+      // #563: a atribuição da campanha nunca muda o checkout. Fora do piloto ou
+      // sem aceite ela volta sem rede; se lançar, o erro fica aqui e não vira 503.
+      try {
+        await registrarAtribuicaoDoCheckout(request, parsed.seller.id, result.checkoutIntentId);
+      } catch (error) {
+        atribuicaoFalhou(error);
+      }
       return NextResponse.json({ url: stripeCheckoutUrl }, { headers: noStore() });
     } catch (error) {
       if (error instanceof FinancialExternalCheckoutConfigError) return jsonError("financial_checkout_not_configured", 503);
