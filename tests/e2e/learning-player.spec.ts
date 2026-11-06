@@ -632,29 +632,41 @@ test("keeps vector annotations anchored to the page across zoom", async ({ page 
   const pageOne = reader.locator('.pdf-reader-page[data-page="1"]');
   const mark = pageOne.locator(".pdf-study-layer polyline").first();
   await expect(mark).toHaveCount(1);
-  const pageBefore = await pageOne.boundingBox();
-  const markBefore = await mark.boundingBox();
+  // A posição da marcação relativa à página, medida no mesmo instante.
+  const anchor = async () => {
+    const [box, markBox] = await Promise.all([pageOne.boundingBox(), mark.boundingBox()]);
+    if (!box || !markBox) return null;
+    return {
+      width: box.width,
+      x: (markBox.x + markBox.width / 2 - box.x) / box.width,
+      y: (markBox.y + markBox.height / 2 - box.y) / box.height
+    };
+  };
+  // Antes do zoom, espera o layout assentar: duas leituras seguidas iguais.
+  let before = await anchor();
+  await expect.poll(async () => {
+    const current = await anchor();
+    const settled = Boolean(before && current && Math.abs(before.x - current.x) < 0.0001 &&
+      Math.abs(before.y - current.y) < 0.0001 && before.width === current.width);
+    before = current;
+    return settled;
+  }).toBe(true);
   const pointsBefore = await mark.getAttribute("points");
   for (let step = 0; step < 12; step += 1) {
     await reader.getByRole("button", { name: "Aumentar zoom" }).click();
   }
   await expect(reader.getByText("400%", { exact: true })).toBeVisible();
   await expect.poll(async () => (await pageOne.boundingBox())?.width ?? 0).toBeGreaterThan(
-    (pageBefore?.width ?? 0) * 3.98
+    before!.width * 3.98
   );
-  const pageAfter = await pageOne.boundingBox();
-  const markAfter = await mark.boundingBox();
-  expect(pageBefore && markBefore && pageAfter && markAfter).toBeTruthy();
-  const normalizedBefore = {
-    x: (markBefore!.x + markBefore!.width / 2 - pageBefore!.x) / pageBefore!.width,
-    y: (markBefore!.y + markBefore!.height / 2 - pageBefore!.y) / pageBefore!.height
-  };
-  const normalizedAfter = {
-    x: (markAfter!.x + markAfter!.width / 2 - pageAfter!.x) / pageAfter!.width,
-    y: (markAfter!.y + markAfter!.height / 2 - pageAfter!.y) / pageAfter!.height
-  };
-  expect(Math.abs(normalizedBefore.x - normalizedAfter.x)).toBeLessThan(0.005);
-  expect(Math.abs(normalizedBefore.y - normalizedAfter.y)).toBeLessThan(0.005);
+  // A camada SVG redimensiona um quadro depois da página. O limite continua
+  // 0,005: se a marcação ficar desalinhada de verdade, a espera estoura e o
+  // teste falha (#585).
+  await expect.poll(async () => {
+    const after = await anchor();
+    if (!after) return Number.POSITIVE_INFINITY;
+    return Math.max(Math.abs(before!.x - after.x), Math.abs(before!.y - after.y));
+  }).toBeLessThan(0.005);
   expect(await mark.getAttribute("points")).toBe(pointsBefore);
 });
 
