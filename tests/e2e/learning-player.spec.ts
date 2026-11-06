@@ -762,6 +762,74 @@ test("edits, erases and restores a saved annotation, and survives a resize", asy
   expect(size.scroll).toBeLessThanOrEqual(size.client);
 });
 
+test("saves a quick drag at the position where the pointer was released", async ({
+  page
+}, testInfo) => {
+  const mobile = testInfo.project.name.includes("mobile");
+  const seeded = seededPenMark("86000000-0000-4000-8000-000000000012");
+  const studyMutations: Record<string, unknown>[] = [];
+  const pdfStudyStore: PdfStudyMockStore = { revision: 0, annotations: [seeded], bookmarks: [] };
+  await mockLearningApi(page, {
+    pdfPageCount: 3,
+    pdfStudyStore,
+    onPdfStudyMutation: (mutation) => studyMutations.push(mutation)
+  });
+  await enterAndWaitForSession(page);
+  const reader = await openReader(page, mobile ? { width: 390, height: 844 } : { width: 1440, height: 900 });
+  const layer = reader.locator('.pdf-reader-page[data-page="1"] .pdf-study-layer');
+  const mark = layer.locator("polyline").first();
+  await expect(mark).toHaveCount(1);
+  await reader.getByRole("button", { name: "Editar marcação" }).click();
+
+  const start = await mark.evaluate((element) => {
+    const line = element as SVGPolylineElement;
+    const point = line.getPointAtLength(line.getTotalLength() / 2);
+    const matrix = line.getScreenCTM();
+    if (!matrix) throw new Error("missing annotation transform");
+    const projected = new DOMPoint(point.x, point.y).matrixTransform(matrix);
+    return { x: projected.x, y: projected.y };
+  });
+  await layer.evaluate((element) => {
+    element.addEventListener("pointerdown", (event) => {
+      (window as unknown as { dragPointerId: number }).dragPointerId = (event as PointerEvent).pointerId;
+    }, { capture: true, once: true });
+  });
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+
+  // Um arraste rápido: os movimentos e a soltura chegam na mesma tarefa do
+  // navegador, sem um quadro de render no meio. O servidor tem que guardar a
+  // posição da soltura, a mesma que a tela mostra.
+  await layer.evaluate((element, origin) => {
+    const pointerId = (window as unknown as { dragPointerId: number }).dragPointerId;
+    const fire = (type: string, dx: number, dy: number) => element.dispatchEvent(new PointerEvent(type, {
+      bubbles: true, cancelable: true, composed: true, isPrimary: true,
+      pointerId, pointerType: "mouse", button: 0, buttons: type === "pointerup" ? 0 : 1,
+      clientX: origin.x + dx, clientY: origin.y + dy
+    }));
+    fire("pointermove", 6, 4);
+    fire("pointermove", 12, 9);
+    fire("pointermove", 18, 14);
+    fire("pointerup", 24, 18);
+  }, start);
+  await page.mouse.up();
+
+  await expect.poll(() => studyMutations.map((item) => item.action)).toEqual(["annotation.upsert"]);
+  const shown = await mark.evaluate((element) => {
+    const line = element as SVGPolylineElement;
+    const ratio = line.ownerSVGElement!.viewBox.baseVal.height;
+    return Array.from(line.points).map((point) => ({ x: point.x, y: point.y / ratio }));
+  });
+  const saved = pdfStudyStore.annotations.find((item) => item.id === seeded.id);
+  const savedPoints = (saved?.points ?? []) as { x: number; y: number }[];
+  expect(savedPoints).toHaveLength(shown.length);
+  savedPoints.forEach((point, index) => {
+    expect(Math.abs(point.x - shown[index].x)).toBeLessThan(0.0005);
+    expect(Math.abs(point.y - shown[index].y)).toBeLessThan(0.0005);
+  });
+  expect(savedPoints[0].x).toBeGreaterThan(seeded.points[0].x);
+});
+
 test("draws with one touch, reserves two touches for zoom and scrolls in hand mode", async ({
   page
 }, testInfo) => {
