@@ -305,7 +305,7 @@ export async function syncPayoutAccountStatus(input: {
 }
 
 // The checkout worker's destination lookup: which provider account receives
-// this seller's money, and can it charge yet. Worker envelope (no user
+// this seller's money, can it charge yet and does it pay out. Worker envelope (no user
 // session, no seller claim, pinned subject) — the seller id is the lookup key
 // from the storefront the buyer is viewing. An empty result means the seller
 // has NO destination and the caller must refuse the direct charge; it must
@@ -354,6 +354,9 @@ export async function resolveCheckoutPayoutDestination(sellerOrganizationId: str
         provider: "stripe";
         provider_account_id: string;
         charges_enabled: boolean;
+        // #545. Optional: an older api image does not send it, and absent
+        // means "not verified".
+        payouts_enabled?: boolean;
       } | null;
     };
   } catch (error) {

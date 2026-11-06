@@ -243,6 +243,8 @@ services:
       APPSELL_VAULT_PROVIDER: local
       APPSELL_VAULT_LOCAL_KEYRING_B64_JSON: ${APPSELL_VAULT_LOCAL_KEYRING_B64_JSON:?APPSELL_VAULT_LOCAL_KEYRING_B64_JSON is required}
       APPSELL_DOMAIN_API_URL: http://domain-api:15800
+      # Obrigatória desde a #544: sem ela o web não fica pronto.
+      APPSELL_CHECKOUT_PROVIDER: local_stripe
       APPSELL_INTERNAL_ISSUER: appsell-bff-runtime-preview-77
       APPSELL_INTERNAL_AUDIENCE: appsell-api-runtime-preview-77
       APPSELL_INTERNAL_HMAC_KEYRING_B64_JSON: ${APPSELL_INTERNAL_HMAC_KEYRING_B64_JSON}

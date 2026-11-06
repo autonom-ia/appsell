@@ -48,6 +48,22 @@ interface CreateSessionInput {
   buyerEmail: string;
 }
 
+// The alert for a listed store that cannot sell. Seller id only: the account
+// id stays out of the log.
+function logConnectSellerNotReady(
+  sellerId: string,
+  destination: { charges_enabled: boolean; payouts_enabled?: boolean }
+) {
+  console.warn(
+    JSON.stringify({
+      marker: "appsell.connect.seller_not_ready",
+      seller_id: sellerId,
+      charges_enabled: destination.charges_enabled === true,
+      payouts_enabled: destination.payouts_enabled === true
+    })
+  );
+}
+
 export async function POST(request: NextRequest) {
   // Same-origin guard (defense against cross-site POST): this endpoint mints a
   // payment session, so reject anything that is not the configured public origin.
@@ -63,7 +79,13 @@ export async function POST(request: NextRequest) {
   const input = parseCreateSessionInput(rawBody);
   if (!input) return jsonError("invalid_request", 400);
 
-  const provider = checkoutProvider();
+  let provider: ReturnType<typeof checkoutProvider>;
+  try {
+    provider = checkoutProvider();
+  } catch (error) {
+    if (error instanceof FinancialExternalCheckoutConfigError) return jsonError("checkout_not_configured", 503);
+    throw error;
+  }
   const mapping = resolveCheckoutProduct(input.sellerSlug, input.productSlug);
   if (provider === "local_stripe" && !mapping) return jsonError("product_not_configured", 409);
 
@@ -112,7 +134,7 @@ export async function POST(request: NextRequest) {
   // the Financial path, only to the stores listed for their own connected
   // account (#440); every other Financial store sends no account.
   const connectSeller = provider === "financial_checkout" && isFinancialConnectSeller(parsed.seller.id);
-  let destination: { provider_account_id: string; charges_enabled: boolean } | null = null;
+  let destination: { provider_account_id: string; charges_enabled: boolean; payouts_enabled?: boolean } | null = null;
   if (provider !== "financial_checkout" || connectSeller) {
     try {
       destination = (await resolveCheckoutPayoutDestination(parsed.seller.id)).payout_destination;
@@ -125,6 +147,13 @@ export async function POST(request: NextRequest) {
     // A listed store charges on its own account or not at all: falling back to
     // the operator's gateway would put the money in the wrong account.
     if (connectSeller && !destination) return jsonError("seller_not_ready_to_charge", 409);
+    // #545: a listed store sells only with a VERIFIED account, charges AND
+    // payouts. Checked on every sale, so an account that loses verification
+    // after activation stops selling on the next purchase.
+    if (connectSeller && destination && destination.payouts_enabled !== true) {
+      logConnectSellerNotReady(parsed.seller.id, destination);
+      return jsonError("seller_not_ready_to_charge", 409);
+    }
   }
 
   const origin = configuredPublicOrigin();
