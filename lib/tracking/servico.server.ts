@@ -48,14 +48,28 @@ export function registrarFalha(
   error: unknown,
   status: number | null
 ): void {
-  console.error(
-    JSON.stringify({
-      level: "error",
-      marker: "appsell.tracking.unavailable",
-      path: caminho,
-      reason: motivo,
-      error_name: error instanceof Error ? error.name : null,
-      upstream_status: status
-    })
-  );
+  // Nunca lança: quem chama está no caminho do checkout ou de uma resposta
+  // pública, e uma falha do log não pode virar falha da requisição.
+  try {
+    console.error(
+      JSON.stringify({
+        level: "error",
+        marker: "appsell.tracking.unavailable",
+        path: caminho,
+        reason: motivo,
+        error_name: nomeDoErro(error),
+        upstream_status: status
+      })
+    );
+  } catch {
+    // Sem saída para o log, não resta o que fazer além de seguir.
+  }
+}
+
+function nomeDoErro(error: unknown): string | null {
+  try {
+    return error instanceof Error && typeof error.name === "string" ? error.name : null;
+  } catch {
+    return null;
+  }
 }

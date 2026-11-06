@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 
 import { isChargeableBuyerEmail, normalizeBuyerEmail } from "@/lib/buyer-email";
 import { resolveBuyerIdentity } from "@/lib/buyer-identity.server";
@@ -217,13 +217,7 @@ export async function POST(request: NextRequest) {
           : crypto.randomUUID()
       });
       const stripeCheckoutUrl = await createFinancialExternalCheckoutSession(result.checkoutUrl);
-      // #563: a atribuição da campanha nunca muda o checkout. Fora do piloto ou
-      // sem aceite ela volta sem rede; se lançar, o erro fica aqui e não vira 503.
-      try {
-        await registrarAtribuicaoDoCheckout(request, parsed.seller.id, result.checkoutIntentId);
-      } catch (error) {
-        atribuicaoFalhou(error);
-      }
+      agendarAtribuicao(request, parsed.seller.id, result.checkoutIntentId);
       return NextResponse.json({ url: stripeCheckoutUrl }, { headers: noStore() });
     } catch (error) {
       if (error instanceof FinancialExternalCheckoutConfigError) return jsonError("financial_checkout_not_configured", 503);
@@ -347,6 +341,31 @@ function hasExactKeys<T extends string>(value: Record<string, unknown>, expected
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// #563: a atribuição da campanha roda depois da resposta (`after`), então o
+// comprador não espera por ela. Nem o agendamento, nem a chamada, nem o log
+// podem lançar daqui: depois da sessão criada, o checkout não vira 503.
+function agendarAtribuicao(request: NextRequest, sellerId: string, checkoutIntentId: string): void {
+  try {
+    after(async () => {
+      try {
+        await registrarAtribuicaoDoCheckout(request, sellerId, checkoutIntentId);
+      } catch (error) {
+        logarSemLancar(error);
+      }
+    });
+  } catch (error) {
+    logarSemLancar(error);
+  }
+}
+
+function logarSemLancar(error: unknown): void {
+  try {
+    atribuicaoFalhou(error);
+  } catch {
+    // O log é o último recurso. Se até ele falhar, a resposta segue igual.
+  }
 }
 
 function noStore() {

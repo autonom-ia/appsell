@@ -3,9 +3,11 @@ import type { NextRequest } from "next/server";
 
 vi.mock("server-only", () => ({}));
 
-// #563: o checkout chama a atribuição da campanha depois de criar o intent. O
-// que este arquivo prova é a regra da Dinheiro: se a atribuição lançar erro,
-// síncrono ou assíncrono, o checkout responde exatamente o mesmo.
+// #563: o checkout agenda a atribuição da campanha com `after`, para rodar
+// depois da resposta. O que este arquivo prova:
+// - o comprador não espera: a resposta sai antes de a atribuição rodar;
+// - a regra da Dinheiro: nada da atribuição muda a resposta. Nem o `after`
+//   lançando, nem a chamada rejeitando, nem o log de falha lançando.
 const {
   readPublicStorefront,
   resolveCheckoutPayoutDestination,
@@ -13,6 +15,8 @@ const {
   createFinancialExternalCheckoutSession,
   registrarAtribuicaoDoCheckout,
   atribuicaoFalhou,
+  agendados,
+  afterMock,
   sessionsCreate,
   FakeFinancialConfigError,
   FakeFinancialCheckoutError,
@@ -39,6 +43,8 @@ const {
     createFinancialExternalCheckoutSession: vi.fn(async () => "https://checkout.stripe.com/c/pay/cs_test_123"),
     registrarAtribuicaoDoCheckout: vi.fn(async () => undefined),
     atribuicaoFalhou: vi.fn(),
+    agendados: [] as Array<() => unknown>,
+    afterMock: vi.fn(),
     sessionsCreate: vi.fn(async () => ({ url: "https://checkout.stripe.test/session/cs_test_123" })),
     FakeFinancialConfigError,
     FakeFinancialCheckoutError,
@@ -46,6 +52,12 @@ const {
   };
 });
 
+// O `after` real só existe dentro de uma requisição do Next. Aqui ele guarda o
+// callback, e o teste decide quando rodar: assim dá para ver a resposta antes.
+vi.mock("next/server", async (original) => ({
+  ...(await original<typeof import("next/server")>()),
+  after: afterMock
+}));
 vi.mock("@/lib/stripe-config.server", () => ({
   StripeConfigError: class extends Error {},
   stripeClient: () => ({ checkout: { sessions: { create: sessionsCreate } } }),
@@ -134,52 +146,111 @@ describe("checkout do Financial com a atribuição da campanha (#563)", () => {
     readPublicStorefront.mockResolvedValue(vitrine());
     vi.clearAllMocks();
     registrarAtribuicaoDoCheckout.mockImplementation(async () => undefined);
+    atribuicaoFalhou.mockImplementation(() => undefined);
+    agendados.length = 0;
+    afterMock.mockImplementation((callback: () => unknown) => {
+      agendados.push(callback);
+    });
   });
+
+  async function rodarOsAgendados() {
+    for (const callback of agendados.splice(0)) await callback();
+  }
 
   afterEach(() => {
     process.env = { ...originalEnvironment };
   });
 
-  it("registra a atribuição com a loja da vitrine e o id do intent, depois de criar a sessão", async () => {
+  it("responde antes de a atribuição rodar, e só depois registra com a loja e o intent", async () => {
     const resultado = await checkout();
 
     expect(resultado).toEqual({ status: 200, body: { url: URL_DO_STRIPE }, cache: "private, no-store" });
+    expect(afterMock).toHaveBeenCalledTimes(1);
+    expect(registrarAtribuicaoDoCheckout).not.toHaveBeenCalled();
+
+    await rodarOsAgendados();
+
     expect(registrarAtribuicaoDoCheckout).toHaveBeenCalledTimes(1);
     const [requisicao, loja, intent] = registrarAtribuicaoDoCheckout.mock.calls[0] as unknown[];
     expect(requisicao).toBeDefined();
     expect(loja).toBe(SELLER_ID);
     expect(intent).toBe(INTENT_ID);
     const ordemDaSessao = createFinancialExternalCheckoutSession.mock.invocationCallOrder[0];
-    const ordemDaAtribuicao = registrarAtribuicaoDoCheckout.mock.invocationCallOrder[0];
-    expect(ordemDaAtribuicao).toBeGreaterThan(ordemDaSessao);
+    expect(afterMock.mock.invocationCallOrder[0]).toBeGreaterThan(ordemDaSessao);
     expect(atribuicaoFalhou).not.toHaveBeenCalled();
   });
 
-  it("se a atribuição rejeitar, o checkout responde igual e o erro só vai ao log", async () => {
-    const semFalha = await checkout();
+  it("uma atribuição lenta não segura a resposta", async () => {
+    // Como o `after` de verdade: o callback começa, mas ninguém espera por ele.
+    afterMock.mockImplementation((callback: () => unknown) => {
+      void callback();
+    });
+    registrarAtribuicaoDoCheckout.mockImplementation(() => new Promise<undefined>(() => undefined));
+
+    const resultado = await checkout();
+
+    expect(resultado.status).toBe(200);
+    expect(resultado.body).toEqual({ url: URL_DO_STRIPE });
+  });
+
+  it("se a atribuição rejeitar depois da resposta, o erro só vai ao log e o callback não rejeita", async () => {
     const erro = new Error("boom");
     registrarAtribuicaoDoCheckout.mockImplementation(async () => {
       throw erro;
     });
 
-    const comFalha = await checkout();
+    const resultado = await checkout();
+    await expect(rodarOsAgendados()).resolves.toBeUndefined();
 
-    expect(comFalha).toEqual(semFalha);
+    expect(resultado).toEqual({ status: 200, body: { url: URL_DO_STRIPE }, cache: "private, no-store" });
     expect(atribuicaoFalhou).toHaveBeenCalledTimes(1);
     expect(atribuicaoFalhou).toHaveBeenCalledWith(erro);
-    expect(createFinancialExternalCheckoutIntent).toHaveBeenCalledTimes(2);
   });
 
-  it("se a atribuição lançar de forma síncrona, o checkout responde igual", async () => {
-    const semFalha = await checkout();
+  it("se a atribuição lançar de forma síncrona, o callback não rejeita", async () => {
     registrarAtribuicaoDoCheckout.mockImplementation(() => {
       throw new TypeError("sync");
+    });
+
+    await checkout();
+    await expect(rodarOsAgendados()).resolves.toBeUndefined();
+
+    expect(atribuicaoFalhou).toHaveBeenCalledTimes(1);
+  });
+
+  it("se o próprio after lançar, o checkout responde igual", async () => {
+    const semFalha = await checkout();
+    afterMock.mockImplementation(() => {
+      throw new Error("after fora de uma requisição");
     });
 
     const comFalha = await checkout();
 
     expect(comFalha).toEqual(semFalha);
     expect(atribuicaoFalhou).toHaveBeenCalledTimes(1);
+    expect(registrarAtribuicaoDoCheckout).not.toHaveBeenCalled();
+  });
+
+  it("se até o log da falha lançar, o checkout responde igual e o callback não rejeita", async () => {
+    const semFalha = await checkout();
+    agendados.length = 0;
+    atribuicaoFalhou.mockImplementation(() => {
+      throw new Error("log quebrado");
+    });
+    registrarAtribuicaoDoCheckout.mockImplementation(async () => {
+      throw new Error("boom");
+    });
+    afterMock.mockImplementationOnce(() => {
+      throw new Error("after quebrado");
+    });
+
+    const comAfterQuebrado = await checkout();
+    const comChamadaQuebrada = await checkout();
+    await expect(rodarOsAgendados()).resolves.toBeUndefined();
+
+    expect(comAfterQuebrado).toEqual(semFalha);
+    expect(comChamadaQuebrada).toEqual(semFalha);
+    expect(atribuicaoFalhou).toHaveBeenCalledTimes(2);
   });
 
   it("se o intent falhar, a atribuição nem é chamada e o erro do checkout é o de hoje", async () => {
@@ -189,7 +260,7 @@ describe("checkout do Financial com a atribuição da campanha (#563)", () => {
 
     expect(resultado.status).toBe(503);
     expect(resultado.body).toEqual({ error: "financial_checkout_unavailable" });
-    expect(registrarAtribuicaoDoCheckout).not.toHaveBeenCalled();
+    expect(afterMock).not.toHaveBeenCalled();
   });
 
   it("se a sessão do Stripe falhar, a atribuição não é chamada", async () => {
@@ -198,7 +269,7 @@ describe("checkout do Financial com a atribuição da campanha (#563)", () => {
     const resultado = await checkout();
 
     expect(resultado.status).toBe(503);
-    expect(registrarAtribuicaoDoCheckout).not.toHaveBeenCalled();
+    expect(afterMock).not.toHaveBeenCalled();
   });
 
   it("no Stripe direto (local_stripe) a atribuição não é chamada", async () => {
@@ -211,6 +282,6 @@ describe("checkout do Financial com a atribuição da campanha (#563)", () => {
 
     expect(resultado.status).toBe(200);
     expect(sessionsCreate).toHaveBeenCalledTimes(1);
-    expect(registrarAtribuicaoDoCheckout).not.toHaveBeenCalled();
+    expect(afterMock).not.toHaveBeenCalled();
   });
 });
