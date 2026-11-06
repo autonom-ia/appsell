@@ -383,8 +383,16 @@ export function useProtectedPdfStudy({
       const dragging = dragRef.current;
       if (dragging?.pointer === event.pointerId) {
         dragRef.current = null;
-        const after = stateRef.current?.annotations.find((item) => item.id === dragging.before.id);
-        if (after && !samePoints(after.points, dragging.before.points)) {
+        // A posição salva sai da soltura, não do estado: num arraste rápido o
+        // React ainda não aplicou o último movimento quando o pointerup chega,
+        // e o estado lido aqui teria os pontos antigos (#600).
+        // A existência não muda no meio do arraste; se a marcação sumiu (outro
+        // aparelho apagou), não volta por aqui.
+        const stillThere = stateRef.current?.annotations.some((item) => item.id === dragging.before.id);
+        const point = pointFromEvent(event);
+        const after = moveAnnotation(dragging.before, point.x - dragging.start.x, point.y - dragging.start.y);
+        if (stillThere) applyLocal((current) => withAnnotation(current, after));
+        if (stillThere && !samePoints(after.points, dragging.before.points)) {
           historyRef.current.push(upsertCommand(dragging.before, after));
           redoRef.current = [];
           setHistoryCounts({ undo: historyRef.current.length, redo: 0 });
