@@ -510,7 +510,9 @@ export function ProductEditorWorkspace({
           setMinimumPriceMinor(minimumFromResponse(payload));
           setInvalidField(field);
           setSaveState("invalid");
-          const input = formElement.current?.elements.namedItem(field);
+          // O servidor fala do preço em centavos; na tela, o campo é offer_price.
+          const inputName = field === "offer_unit_amount_minor" ? "offer_price" : field;
+          const input = formElement.current?.elements.namedItem(inputName);
           if (input instanceof HTMLElement) input.focus();
         } else if (response.status === 503) setSaveState("unavailable");
         else setSaveState("error");
