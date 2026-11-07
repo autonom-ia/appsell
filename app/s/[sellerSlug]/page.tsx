@@ -15,6 +15,8 @@ import { storeAccent } from "@/lib/store-brand";
 import { parsePublicStorefront } from "@/lib/public-storefront";
 import { storefrontCardImage, twitterCardKind } from "@/lib/social-card";
 import { SITE } from "@/lib/site";
+import { atribuicaoLiberada } from "@/lib/tracking/pilot";
+import { RastreioDaLoja } from "@/lib/tracking/rastreio-da-loja";
 
 export const dynamic = "force-dynamic";
 
@@ -133,6 +135,7 @@ export default async function SellerStorefront({
       </section>
     </main>
     <StorefrontFooter/>
+    {atribuicaoLiberada(seller.id) ? <RastreioDaLoja sellerId={seller.id}/> : null}
   </div>;
 }
 
