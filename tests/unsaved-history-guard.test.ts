@@ -20,43 +20,83 @@ import {
 // quantas mudanças de `dirty` o teste quiser: é a oscilação do upload.
 type Engine = "webkit" | "chromium";
 
-interface Entry { document: "dashboard" | "product"; state: Record<string, unknown> | null }
+interface Entry { document: "dashboard" | "product"; state: Record<string, unknown> | null; url: string }
+
+const PRODUCT_URL = "https://app.test/products/p";
 
 class FakeBrowser {
   readonly events = new EventTarget();
   entries: Entry[] = [
-    { document: "dashboard", state: null },
-    { document: "product", state: { __NA: true } }
+    { document: "dashboard", state: null, url: "https://app.test/dashboard" },
+    { document: "product", state: { __NA: true }, url: PRODUCT_URL }
   ];
   index = 1;
   leftProduct = false;
   private scheduled: Array<{ target?: number; delta?: number }> = [];
+  private timers = new Map<number, () => void>();
+  private nextTimer = 1;
 
   constructor(private readonly engine: Engine) {}
 
   get env(): GuardEnvironment {
     const history = {
-      pushState: (state: Record<string, unknown>) => {
-        this.entries = [...this.entries.slice(0, this.index + 1), { document: "product", state }];
-        this.index += 1;
+      pushState: (state: Record<string, unknown>, _title: string, url?: string) => {
+        this.push({ document: "product", state, url: url ?? this.url });
       },
-      replaceState: (state: Record<string, unknown>) => {
-        this.entries = this.entries.map((entry, i) => i === this.index ? { ...entry, state } : entry);
+      replaceState: (state: Record<string, unknown>, _title: string, url?: string) => {
+        this.entries = this.entries.map((entry, i) => i === this.index ? { ...entry, state, url: url ?? entry.url } : entry);
       },
       back: () => this.traverse(-1),
       go: (delta = 0) => this.traverse(delta)
     };
     Object.defineProperty(history, "state", { get: () => this.entries[this.index].state });
+    const location = {};
+    Object.defineProperty(location, "href", { get: () => this.url });
     return {
       events: this.events,
-      location: { href: "https://app.test/products/p" },
-      history: history as unknown as GuardEnvironment["history"]
+      location: location as GuardEnvironment["location"],
+      history: history as unknown as GuardEnvironment["history"],
+      timers: {
+        set: (callback) => {
+          const id = this.nextTimer++;
+          this.timers.set(id, callback);
+          return id;
+        },
+        clear: (id) => { this.timers.delete(id); }
+      }
     };
+  }
+
+  get url() {
+    return this.entries[this.index].url;
   }
 
   /** O voltar do usuário: imediato, com o popstate dele. */
   userBack() {
     this.arrive(this.index - 1);
+  }
+
+  /** Link para um fragmento da própria página: entrada nova, com popstate. */
+  fragment(hash: string) {
+    this.push({ document: "product", state: null, url: `${this.url.split("#")[0]}#${hash}` });
+    this.events.dispatchEvent(new Event("popstate"));
+  }
+
+  /** `router.replace` do Next: troca a URL e reescreve o estado da entrada. */
+  routerReplace(url: string) {
+    this.entries = this.entries.map((entry, i) => i === this.index ? { ...entry, state: { __NA: true }, url } : entry);
+  }
+
+  /** `router.push` do Next: entrada nova na mesma página, sem popstate. */
+  routerPush(url: string) {
+    this.push({ document: "product", state: { __NA: true }, url });
+  }
+
+  /** O prazo dos temporizadores pendentes se esgota. */
+  elapse() {
+    const pending = [...this.timers.values()];
+    this.timers.clear();
+    pending.forEach((callback) => callback());
   }
 
   hasPending() {
@@ -74,6 +114,11 @@ class FakeBrowser {
   settle() {
     for (let i = 0; i < 50 && this.hasPending(); i += 1) this.step();
     expect(this.hasPending()).toBe(false);
+  }
+
+  private push(entry: Entry) {
+    this.entries = [...this.entries.slice(0, this.index + 1), entry];
+    this.index += 1;
   }
 
   private traverse(delta: number) {
@@ -221,8 +266,15 @@ describe("guarda de alterações não salvas (#612)", () => {
     }
   );
 
-  it("o voltar durante a saída da sentinela fica com o usuário, sem diálogo", () => {
-    const browser = new FakeBrowser("chromium");
+  // Tela limpa: o voltar é do usuário e nada se perde. No Chromium a volta da
+  // guarda segue na fila e o usuário chega à página anterior; no WebKit ela
+  // tinha alvo fixo na entrada da tela, e o usuário precisa de um segundo
+  // voltar. Nos dois, sem diálogo.
+  it.each<[Engine, { leftProduct: boolean; index: number }]>([
+    ["chromium", { leftProduct: true, index: 0 }],
+    ["webkit", { leftProduct: false, index: 1 }]
+  ])("no %s, o voltar durante a saída da sentinela fica com o usuário, sem diálogo", (engine, esperado) => {
+    const browser = new FakeBrowser(engine);
     let bloqueios = 0;
     browser.events.addEventListener(DIRTY_HISTORY_BLOCKED_EVENT, () => { bloqueios += 1; });
     const guard = createUnsavedHistoryGuard(browser.env, true);
@@ -230,8 +282,83 @@ describe("guarda de alterações não salvas (#612)", () => {
     browser.userBack();
     browser.settle();
     expect(bloqueios).toBe(0);
-    expect(browser.leftProduct).toBe(true);
+    expect({ leftProduct: browser.leftProduct, index: browser.index }).toEqual(esperado);
   });
+
+  it.each<Engine>(["webkit", "chromium"])(
+    "no %s, uma navegação liberada que não desmonta a tela não desliga a guarda",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      let bloqueios = 0;
+      browser.events.addEventListener(DIRTY_HISTORY_BLOCKED_EVENT, () => { bloqueios += 1; });
+      const guard = createUnsavedHistoryGuard(browser.env, true);
+      const avisos: boolean[] = [];
+      browser.events.addEventListener("beforeunload", (event) => { avisos.push(event.defaultPrevented); });
+
+      // "Descartar e ir" para o mesmo editor em outra URL: a tela fica montada.
+      browser.events.dispatchEvent(new Event("appsell:dirty-navigation-allowed"));
+      browser.routerPush("https://app.test/products?seller=s");
+      guard.setDirty(false);
+      browser.settle();
+      const entradaDoDestino = browser.index;
+
+      // Uma alteração nova volta a ser protegida: sentinela, diálogo e aviso.
+      guard.setDirty(true);
+      expect(browser.index).toBe(entradaDoDestino + 1);
+      browser.events.dispatchEvent(new Event("beforeunload", { cancelable: true }));
+      expect(avisos).toEqual([true]);
+      browser.userBack();
+      browser.settle();
+      expect(bloqueios).toBe(1);
+      expect(browser.leftProduct).toBe(false);
+      expect(browser.index).toBe(entradaDoDestino + 1);
+    }
+  );
+
+  it.each<Engine>(["webkit", "chromium"])(
+    "no %s, um link de fragmento com a tela suja não trava a guarda nem abre diálogo",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      let bloqueios = 0;
+      browser.events.addEventListener(DIRTY_HISTORY_BLOCKED_EVENT, () => { bloqueios += 1; });
+      const guard = createUnsavedHistoryGuard(browser.env, true);
+
+      // O skip-link empilha uma entrada em cima da sentinela: o `go(1)` que
+      // tentaria devolvê-la não tem para onde ir.
+      browser.fragment("conteudo");
+      browser.settle();
+      browser.elapse();
+      const fragmento = browser.index - 1;
+      expect(browser.entries[fragmento].url).toBe(`${PRODUCT_URL}#conteudo`);
+      expect(browser.index).toBe(fragmento + 1);
+
+      // Salvar limpa a tela: a sentinela sai e nenhum diálogo aparece.
+      guard.setDirty(false);
+      browser.settle();
+      expect(browser.index).toBe(fragmento);
+      expect(bloqueios).toBe(0);
+      expect(browser.leftProduct).toBe(false);
+
+      // E o próximo voltar, com a tela limpa, é só do usuário.
+      browser.userBack();
+      browser.settle();
+      expect(bloqueios).toBe(0);
+    }
+  );
+
+  it.each<Engine>(["webkit", "chromium"])(
+    "no %s, a URL trocada com a sentinela no topo sobrevive à saída dela",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      const guard = createUnsavedHistoryGuard(browser.env, true);
+      browser.routerReplace(`${PRODUCT_URL}?section=oferta`);
+      guard.setDirty(false);
+      browser.settle();
+      expect(browser.index).toBe(1);
+      expect(browser.url).toBe(`${PRODUCT_URL}?section=oferta`);
+      expect(browser.entries[1].state).toEqual({ __NA: true });
+    }
+  );
 
   it("desmontar com a tela suja tira a sentinela", () => {
     const browser = new FakeBrowser("webkit");

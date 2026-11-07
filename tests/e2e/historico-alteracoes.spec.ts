@@ -85,8 +85,15 @@ test("a tela do produto fica onde está quando o estado oscila rápido", async (
     definirNome(`${titulo}x`);
     definirNome(titulo);
     definirNome(`${titulo}x`);
-    await new Promise<void>((resolve) => {
+    // Sem travessia não há o que testar: se o React deixar de rodar os efeitos
+    // dentro do despacho do `input`, a guarda não pede `back()` aqui e o
+    // teste falha com o motivo escrito, em vez de esperar o tempo todo.
+    await new Promise<void>((resolve, reject) => {
+      const prazo = window.setTimeout(() => {
+        reject(new Error("a guarda não pediu nenhuma travessia depois de limpar a tela"));
+      }, 5_000);
       window.addEventListener("popstate", () => {
+        window.clearTimeout(prazo);
         definirNome(titulo);
         resolve();
       }, { once: true });
