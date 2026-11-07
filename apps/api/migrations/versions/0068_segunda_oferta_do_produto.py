@@ -49,7 +49,7 @@ from types import ModuleType
 from alembic import op
 
 revision = "0068_segunda_oferta_do_produto"
-down_revision = "0067_oferta_padrao_do_produto"
+down_revision = "0073_destino_com_repasse"
 branch_labels = None
 depends_on = None
 
@@ -452,9 +452,10 @@ def _carregar(revisao: str) -> ModuleType:
 
 
 def _ready_versoes() -> tuple[str, str]:
-    anterior = _carregar(down_revision)
-    _, para_anterior = anterior._ready_versoes(anterior._migration_anterior())
-    return para_anterior, para_anterior[:-2] + f",'{revision}'))"
+    """A lista de versões que a anterior deixou (`_READY_ATE_<n>` dela), mais esta."""
+    numero = down_revision.split("_", 1)[0]
+    de: str = getattr(_carregar(down_revision), f"_READY_ATE_{numero}")
+    return de, de[:-2] + f",'{revision}'))"
 
 
 def _ready_funcoes() -> tuple[str, str]:

@@ -12,6 +12,7 @@ camadas, e não só pela primeira que alguém encontrar.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import re
 import time
@@ -255,9 +256,45 @@ class TestPrazoDaRasterizacao:
         assert pdf_derivatives._PDFTOPPM_TIMEOUT_SECONDS >= pior_caso * 1.5
 
 
+def _revisoes(caminho: Path) -> tuple[str, str | None]:
+    """`revision` e `down_revision` do arquivo, lidos como literais, sem importar."""
+    valores: dict[str, object] = {}
+    for no in ast.parse(caminho.read_text()).body:
+        if isinstance(no, ast.Assign) and len(no.targets) == 1:
+            alvo, valor = no.targets[0], no.value
+        elif isinstance(no, ast.AnnAssign) and no.value is not None:
+            alvo, valor = no.target, no.value
+        else:
+            continue
+        if isinstance(alvo, ast.Name) and alvo.id in {"revision", "down_revision"}:
+            valores[alvo.id] = ast.literal_eval(valor)
+    revisao, pai = valores.get("revision"), valores.get("down_revision")
+    assert isinstance(revisao, str), f"{caminho.name}: revision não é texto literal"
+    assert pai is None or isinstance(pai, str), f"{caminho.name}: down_revision não é texto"
+    return revisao, pai
+
+
 def _versoes() -> list[Path]:
-    """Os arquivos de migration, em ordem de número."""
-    return sorted((_RAIZ / "apps/api/migrations/versions").glob("0*.py"))
+    """Os arquivos de migration na ordem da cadeia, da raiz ao topo.
+
+    O número não é a ordem. A reserva é por trilha, e o `down_revision` é o head
+    da main na hora do merge: a 0068 entrou depois da 0073. Ordenar pelo nome
+    chamaria de topo uma migration que não é o head.
+    """
+    arquivos = sorted((_RAIZ / "apps/api/migrations/versions").glob("0*.py"))
+    por_pai: dict[str | None, tuple[str, Path]] = {}
+    for arquivo in arquivos:
+        revisao, origem = _revisoes(arquivo)
+        assert origem not in por_pai, f"duas migrations partem de {origem}"
+        por_pai[origem] = (revisao, arquivo)
+    cadeia: list[Path] = []
+    pai: str | None = None
+    while pai in por_pai:
+        pai, caminho = por_pai[pai]
+        cadeia.append(caminho)
+    fora = sorted(set(arquivos) - set(cadeia))
+    assert not fora, f"migrations fora da cadeia: {[c.name for c in fora]}"
+    return cadeia
 
 
 def _carrega_migration(prefixo: str = "0044_") -> Any:
@@ -862,7 +899,7 @@ class TestAMigrationNaoQuebraOReadiness:
         for anterior, atual in zip(versoes, versoes[1:], strict=False):
             assert atual.down_revision == anterior.revision, (
                 f"{atual.revision} diz vir de {atual.down_revision}, "
-                f"e a anterior no diretório é {anterior.revision}"
+                f"e a anterior na cadeia é {anterior.revision}"
             )
 
     def test_nenhum_teste_ficou_preso_na_versao_anterior(self) -> None:
