@@ -8,10 +8,11 @@ import {
   sessionCookieName,
   transactionCookieName
 } from "../../lib/cookies";
+import { E2E_BUILD_PUBLIC_ORIGIN } from "../../lib/e2e-build-runtime";
 import { login } from "./support/login";
 
-// A suíte roda sobre o build de produção (#585): os cookies têm o prefixo
-// __Host- e saem com Secure, como no ar.
+// A suíte roda sobre o build de produção, em HTTPS (#585): os cookies têm o
+// prefixo __Host- e saem com Secure, como no ar.
 const SESSION = sessionCookieName(true);
 const TRANSACTION = transactionCookieName(true);
 const CSRF = csrfCookieName(true);
@@ -129,7 +130,7 @@ test("preserves a legitimate transaction after an invalid callback", async ({ co
   const valid = await page.request.get(callbackUrl, { maxRedirects: 0 });
   expect(valid.status()).toBe(307);
   expect(valid.headers()["cache-control"]).toBe("no-store");
-  expect(valid.headers().location).toBe("http://localhost:3000/dashboard");
+  expect(valid.headers().location).toBe(`${E2E_BUILD_PUBLIC_ORIGIN}/dashboard`);
   const finalCookies = await context.cookies();
   expect(finalCookies.some((cookie) => cookie.name === TRANSACTION)).toBe(false);
   expect(finalCookies.some((cookie) => cookie.name === SESSION)).toBe(true);
@@ -139,7 +140,7 @@ test("rejects a forged session before reading oversized mutation bodies", async 
   await context.addCookies([{
     name: SESSION,
     value: "forged-session",
-    url: "http://localhost:3000",
+    url: E2E_BUILD_PUBLIC_ORIGIN,
     httpOnly: true,
     secure: true,
     sameSite: "Lax"
@@ -150,7 +151,7 @@ test("rejects a forged session before reading oversized mutation bodies", async 
   ]) {
     const response = await page.request.post(endpoint, {
       headers: {
-        origin: "http://localhost:3000",
+        origin: E2E_BUILD_PUBLIC_ORIGIN,
         "content-type": "application/x-www-form-urlencoded;charset=UTF-8"
       },
       data: `padding=${"x".repeat(20_000)}`
@@ -187,7 +188,7 @@ test("rejects forged origin and CSRF before revoking a same-origin session", asy
   for (const token of ["", otherCsrf]) {
     const rejected = await page.request.post("/auth/logout", {
       headers: {
-        origin: "http://localhost:3000",
+        origin: E2E_BUILD_PUBLIC_ORIGIN,
         "content-type": "application/x-www-form-urlencoded"
       },
       data: new URLSearchParams({ _csrf: token }).toString(),

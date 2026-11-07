@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { E2E_BUILD_PUBLIC_ORIGIN } from "../../lib/e2e-build-runtime";
 import { login } from "./support/login";
 
 const SHELL_BRAND_NAME = "sell. by Autonom.ia: início";
@@ -20,7 +21,7 @@ test("keeps the core journey usable without horizontal overflow", async ({ page 
     { path: "/products", heading: "Produtos" },
     { path: "/library", heading: "Minha biblioteca" },
   ]) {
-    if (page.url() !== `http://localhost:3000${target.path}`) {
+    if (page.url() !== `${E2E_BUILD_PUBLIC_ORIGIN}${target.path}`) {
       await page.locator(`a[href="${target.path}"]:visible`).first().click();
       await expect(page).toHaveURL(target.path, { timeout: 20_000 });
       await expect(page.getByRole("heading", { name: target.heading, exact: true })).toBeVisible();
@@ -789,7 +790,7 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
       await route.fulfill({
         status: 204,
         headers: {
-          "access-control-allow-origin": "http://localhost:3000",
+          "access-control-allow-origin": E2E_BUILD_PUBLIC_ORIGIN,
           "access-control-allow-methods": "PUT,OPTIONS",
           "access-control-allow-headers": "content-type,x-amz-checksum-sha256,x-amz-meta-appsell-upload-id"
         }
@@ -798,7 +799,7 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
     }
     markUploadStarted();
     await new Promise<void>((resolve) => { releaseUpload = resolve; });
-    await route.fulfill({ status: 200, headers: { "access-control-allow-origin": "http://localhost:3000" }, body: "" });
+    await route.fulfill({ status: 200, headers: { "access-control-allow-origin": E2E_BUILD_PUBLIC_ORIGIN }, body: "" });
   });
   await page.route("**/api/sellers/**", async (route) => {
     const request = route.request();
@@ -1115,7 +1116,10 @@ test("fails publication closed for string readiness and a missing offer", async 
 
   await page.getByRole("navigation", { name: "Áreas do produto" })
     .getByRole("link", { name: /^Distribuição/ }).click();
-  await expect(page.getByText("offer_missing")).toBeVisible();
+  // No build de produção o painel "O que falta para publicar" já está na tela
+  // junto com o de publicar, e os dois listam a pendência (#585). O que este
+  // teste afirma é o bloqueio da publicação, então olha o painel dela.
+  await expect(page.getByLabel("Publicar catálogo").getByText("offer_missing")).toBeVisible();
   await expect(page.getByRole("button", { name: "Publicar catálogo primeira versão" })).toBeDisabled();
 });
 
