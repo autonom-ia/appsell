@@ -1,4 +1,5 @@
 import { capacityLocalCiRuntimeEnabled } from "./capacity-local-ci-runtime";
+import { e2eBuildRuntimeEnabled } from "./e2e-build-runtime";
 import { publicDemoRuntimeEnabled } from "./public-demo-runtime";
 
 export type OAuthRuntimeMode = "local" | "identity";
@@ -14,7 +15,8 @@ export function oauthRuntimeMode(
     throw new OAuthRuntimeConfigurationError("APPSELL_OAUTH_MODE must be local or identity.");
   }
   if (configured === "local" && environment.NODE_ENV === "production" &&
-      !capacityLocalCiRuntimeEnabled(environment) && !publicDemoRuntimeEnabled(environment)) {
+      !capacityLocalCiRuntimeEnabled(environment) && !publicDemoRuntimeEnabled(environment) &&
+      !e2eBuildRuntimeEnabled(environment)) {
     throw new OAuthRuntimeConfigurationError("Local OAuth is forbidden in production.");
   }
   return configured;
