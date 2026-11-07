@@ -475,10 +475,18 @@ export function LessonAssetPanel({
 
   useEffect(() => {
     if (!justReadyId) return;
+    let limpar: number | null = null;
+    const soltarDestaque = (depoisDeMs: number) => {
+      limpar = window.setTimeout(() => setJustReadyId(null), depoisDeMs);
+    };
     // Um quadro depois: o card acabou de entrar na lista e o painel ainda vai
     // crescer. Medir antes do layout assentar dá uma posição que deixa de valer
     // no quadro seguinte — e o card fica fora da vista mesmo tendo "rolado".
     const quadro = justReadyVisible ? window.requestAnimationFrame(() => {
+      // O destaque conta a partir do quadro em que o card apareceu. Se o
+      // relógio começasse antes, um aparelho lento soltaria o destaque, e com
+      // ele o quadro do foco, antes de o card receber o foco (#605).
+      soltarDestaque(2_500);
       const card = justReadyRef.current;
       if (!card) return;
       // Se o vendedor está trabalhando **fora deste painel**, a verificação
@@ -517,10 +525,10 @@ export function LessonAssetPanel({
     // é solto. Ele existe para o estado não ficar preso a um material que já
     // não vai chegar — e por não produzir efeito visível, não tem teste de
     // comportamento. Dizer que tem seria pior do que não ter.
-    const limpar = window.setTimeout(() => setJustReadyId(null), justReadyVisible ? 2_500 : 15_000);
+    if (!justReadyVisible) soltarDestaque(15_000);
     return () => {
       if (quadro !== null) window.cancelAnimationFrame(quadro);
-      window.clearTimeout(limpar);
+      if (limpar !== null) window.clearTimeout(limpar);
     };
   }, [justReadyId, justReadyVisible]);
 

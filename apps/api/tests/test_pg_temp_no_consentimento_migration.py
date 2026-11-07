@@ -34,9 +34,10 @@ def _comandos(migration: ModuleType, direcao: Callable[[], None]) -> list[str]:
 
 
 def test_encadeia_no_topo_e_ensina_o_readiness(migration: ModuleType) -> None:
+    # Encadeia na anterior da pasta; uma migration nova depois dela não quebra o teste.
     nomes = [p.stem for p in sorted(VERSOES.glob("0*.py"))]
-    assert nomes[-1] == migration.revision
-    assert migration.down_revision == nomes[-2]
+    posicao = nomes.index(migration.revision)
+    assert migration.down_revision == nomes[posicao - 1]
     assert migration.READY_DEPOIS.startswith(migration.READY_ANTES[:-2])
     assert len(migration.revision) <= 32
 

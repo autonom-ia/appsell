@@ -12,7 +12,7 @@ function`. Não muda corpo, dono, grant nem comportamento. O `downgrade`
 devolve o valor anterior.
 
 Revision ID: 0076_pg_temp_no_consentimento
-Revises: 0066_consentimento_de_email
+Revises: 0075_links_e_atribuicao_utm
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "0076_pg_temp_no_consentimento"
-down_revision = "0066_consentimento_de_email"
+down_revision = "0075_links_e_atribuicao_utm"
 branch_labels = None
 depends_on = None
 
@@ -55,15 +55,21 @@ READY_ANTES = (
     "'0060_atualizacao_chega_ao_aluno','0061_o_atraso_alcanca_o_aluno',"
     "'0062_mapping_do_produto_novo','0063_conciliacao_do_acesso',"
     "'0064_vendas_ativadas_pela_loja','0065_dono_da_conta_payout',"
-    "'0066_consentimento_de_email'))"
+    "'0066_consentimento_de_email','0067_oferta_padrao_do_produto',"
+    "'0073_destino_com_repasse','0075_links_e_atribuicao_utm'))"
 )
 READY_DEPOIS = (
     "'0057_banner_na_vitrine','0058_capa_na_biblioteca','0059_canal_financial_global',"
     "'0060_atualizacao_chega_ao_aluno','0061_o_atraso_alcanca_o_aluno',"
     "'0062_mapping_do_produto_novo','0063_conciliacao_do_acesso',"
     "'0064_vendas_ativadas_pela_loja','0065_dono_da_conta_payout',"
-    "'0066_consentimento_de_email','0076_pg_temp_no_consentimento'))"
+    "'0066_consentimento_de_email','0067_oferta_padrao_do_produto',"
+    "'0073_destino_com_repasse','0075_links_e_atribuicao_utm',"
+    "'0076_pg_temp_no_consentimento'))"
 )
+# Nome que as migrations seguintes leem por `getattr` (padrão da 0067 em diante).
+_READY_ATE_0075 = READY_ANTES
+_READY_ATE_0076 = READY_DEPOIS
 _BASES_DO_READY: tuple[str, ...] = (
     "app_private.schema_ready_base_0016()",
     "app_private.schema_ready_base_0017()",
