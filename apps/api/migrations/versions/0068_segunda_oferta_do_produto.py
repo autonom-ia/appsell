@@ -49,7 +49,7 @@ from types import ModuleType
 from alembic import op
 
 revision = "0068_segunda_oferta_do_produto"
-down_revision = "0073_destino_com_repasse"
+down_revision = "0075_links_e_atribuicao_utm"
 branch_labels = None
 depends_on = None
 
