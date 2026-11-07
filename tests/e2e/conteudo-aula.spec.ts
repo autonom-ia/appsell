@@ -1,5 +1,6 @@
 import { expect as expectBase, test, type Page } from "@playwright/test";
 import { login } from "./support/login";
+import { E2E_STORAGE_ORIGIN } from "./support/storage";
 
 // Ver o comentário no topo: 20 s cobrem o carregamento sob carga da suíte
 // inteira. As asserções continuam medindo comportamento; só a paciência muda.
@@ -282,8 +283,8 @@ test.describe("o material verificado aparece onde o vendedor está olhando", () 
       await route.fulfill({ json: {
         upload_id: uploadId,
         asset_id: NOVO.id,
-        upload_url: "http://127.0.0.1:8333/appsell-quarantine/obj?X-Amz-Signature=assinado",
-        upload_origin: "http://127.0.0.1:8333",
+        upload_url: `${E2E_STORAGE_ORIGIN}/appsell-quarantine/obj?X-Amz-Signature=assinado`,
+        upload_origin: E2E_STORAGE_ORIGIN,
         // `validIntent` recusa validade acima de 330 s: uma assinatura de vida
         // longa demais e uma assinatura vazada valem quase a mesma coisa.
         expires_at: new Date(Date.now() + 300_000).toISOString(),
@@ -294,7 +295,7 @@ test.describe("o material verificado aparece onde o vendedor está olhando", () 
         }
       } });
     });
-    await page.route("http://127.0.0.1:8333/**", async (route) => {
+    await page.route(`${E2E_STORAGE_ORIGIN}/**`, async (route) => {
       await route.fulfill({ status: 200, headers: { etag: '"etag"' }, body: "" });
     });
     await page.route(`**/assets/uploads/${uploadId}/confirm`, async (route) => {
@@ -430,8 +431,8 @@ test.describe("o PDF em Anexos só entra na lista depois da política", () => {
       await route.fulfill({ json: {
         upload_id: uploadId,
         asset_id: PDF_NOVO.id,
-        upload_url: "http://127.0.0.1:8333/appsell-quarantine/obj?X-Amz-Signature=assinado",
-        upload_origin: "http://127.0.0.1:8333",
+        upload_url: `${E2E_STORAGE_ORIGIN}/appsell-quarantine/obj?X-Amz-Signature=assinado`,
+        upload_origin: E2E_STORAGE_ORIGIN,
         expires_at: new Date(Date.now() + 300_000).toISOString(),
         required_headers: {
           "Content-Type": "application/pdf",
@@ -440,7 +441,7 @@ test.describe("o PDF em Anexos só entra na lista depois da política", () => {
         }
       } });
     });
-    await page.route("http://127.0.0.1:8333/**", async (route) => {
+    await page.route(`${E2E_STORAGE_ORIGIN}/**`, async (route) => {
       await route.fulfill({ status: 200, headers: { etag: '"etag"' }, body: "" });
     });
     await page.route(`**/assets/uploads/${uploadId}/confirm`, async (route) => {
@@ -498,8 +499,8 @@ test.describe("o PDF em Anexos só entra na lista depois da política", () => {
     await page.route("**/assets/upload-intents", async (route) => {
       await route.fulfill({ json: {
         upload_id: uploadId, asset_id: PDF_NOVO.id,
-        upload_url: "http://127.0.0.1:8333/appsell-quarantine/obj?X-Amz-Signature=assinado",
-        upload_origin: "http://127.0.0.1:8333",
+        upload_url: `${E2E_STORAGE_ORIGIN}/appsell-quarantine/obj?X-Amz-Signature=assinado`,
+        upload_origin: E2E_STORAGE_ORIGIN,
         expires_at: new Date(Date.now() + 300_000).toISOString(),
         required_headers: {
           "Content-Type": "application/pdf",
@@ -508,7 +509,7 @@ test.describe("o PDF em Anexos só entra na lista depois da política", () => {
         }
       } });
     });
-    await page.route("http://127.0.0.1:8333/**", async (route) => {
+    await page.route(`${E2E_STORAGE_ORIGIN}/**`, async (route) => {
       await route.fulfill({ status: 200, headers: { etag: '"etag"' }, body: "" });
     });
     await page.route(`**/assets/uploads/${uploadId}/confirm`, async (route) => {

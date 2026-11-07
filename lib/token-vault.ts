@@ -5,6 +5,7 @@ import {
   timingSafeEqual
 } from "node:crypto";
 import { capacityLocalCiRuntimeEnabled } from "./capacity-local-ci-runtime";
+import { e2eBuildRuntimeEnabled } from "./e2e-build-runtime";
 import { publicDemoRuntimeEnabled } from "./public-demo-runtime";
 
 const AES_KEY_BYTES = 32;
@@ -182,11 +183,17 @@ export class LocalAesKeyEnvelopeProvider implements KeyEnvelopeProvider {
 
   constructor(
     entries: LocalKeyEntry[],
-    options: { nodeEnvironment?: string; forbiddenKeys?: Buffer[] } = {}
+    options: {
+      nodeEnvironment?: string;
+      forbiddenKeys?: Buffer[];
+      // O mesmo ambiente que decidiu o runtime em fromEnvironment: o
+      // construtor não relê o process.env por conta própria (#585).
+      environment?: Partial<Record<string, string | undefined>>;
+    } = {}
   ) {
     if (
       (process.env.NODE_ENV === "production" || options.nodeEnvironment === "production") &&
-      !capacityLocalCiRuntimeEnabled() && !publicDemoRuntimeEnabled()
+      !localVaultAllowedInProduction(options.environment ?? process.env)
     ) {
       throw new TokenVaultConfigurationError("Local vault key provider is forbidden in production.");
     }
@@ -225,7 +232,7 @@ export class LocalAesKeyEnvelopeProvider implements KeyEnvelopeProvider {
   ) {
     if (
       (process.env.NODE_ENV === "production" || environment.NODE_ENV === "production") &&
-      !capacityLocalCiRuntimeEnabled(environment) && !publicDemoRuntimeEnabled(environment)
+      !localVaultAllowedInProduction(environment)
     ) {
       throw new TokenVaultConfigurationError("Local vault key provider is forbidden in production.");
     }
@@ -242,7 +249,8 @@ export class LocalAesKeyEnvelopeProvider implements KeyEnvelopeProvider {
     const entries = parsed.map((value) => parseEnvironmentKey(value));
     return new LocalAesKeyEnvelopeProvider(entries, {
       nodeEnvironment: environment.NODE_ENV,
-      forbiddenKeys
+      forbiddenKeys,
+      environment
     });
   }
 
@@ -284,6 +292,14 @@ export class LocalAesKeyEnvelopeProvider implements KeyEnvelopeProvider {
       }
     }
   }
+}
+
+// Os únicos runtimes em que o build de produção aceita a chave local: o de
+// capacidade, a demo pública de staging e o e2e. Fora deles, falha fechada.
+function localVaultAllowedInProduction(environment: Partial<Record<string, string | undefined>>) {
+  return capacityLocalCiRuntimeEnabled(environment) ||
+    publicDemoRuntimeEnabled(environment) ||
+    e2eBuildRuntimeEnabled(environment);
 }
 
 export function createLocalTokenVaultFromEnvironment(
