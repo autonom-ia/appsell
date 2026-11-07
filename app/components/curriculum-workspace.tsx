@@ -5,6 +5,32 @@ import { AccessibleDialog } from "./accessible-dialog";
 import { LessonAssetPanel } from "./lesson-asset-panel";
 import { LessonMaterialPanel } from "./lesson-material-panel";
 
+export interface AssetActivity {
+  dirty: boolean;
+  busy: boolean;
+}
+
+/**
+ * Junta o que cada painel de anexos avisa. A chave é o painel, não a aula:
+ * cada aula tem dois painéis (conteúdo e anexos), e com a chave da aula o
+ * aviso de um sobrescrevia o do outro. Um painel que terminava apagava o
+ * envio ainda em curso no irmão, e a tela se achava limpa (#612).
+ */
+export function mergeAssetActivity(
+  current: Readonly<Record<string, AssetActivity>>,
+  panelKey: string,
+  value: AssetActivity
+): Record<string, AssetActivity> {
+  const previous = current[panelKey];
+  if (previous?.dirty === value.dirty && previous.busy === value.busy) return current;
+  if (!value.dirty && !value.busy) {
+    const next = { ...current };
+    delete next[panelKey];
+    return next;
+  }
+  return { ...current, [panelKey]: value };
+}
+
 interface CurriculumLesson {
   id: string;
   title: string;
@@ -94,24 +120,15 @@ export function CurriculumWorkspace({
   const [invalidField, setInvalidField] = useState("");
   const [pendingArchive, setPendingArchive] = useState<PendingArchive | null>(null);
   const archiveKeepButton = useRef<HTMLButtonElement>(null);
-  const [assetActivity, setAssetActivity] = useState<Record<string, { dirty: boolean; busy: boolean }>>({});
+  const [assetActivity, setAssetActivity] = useState<Record<string, AssetActivity>>({});
   const mutationKeys = useRef(new Map<string, string>());
 
   const assetDirty = Object.values(assetActivity).some((activity) => activity.dirty || activity.busy);
   const assetBusy = Object.values(assetActivity).some((activity) => activity.busy);
   const dirty = moduleTitle.length > 0 || Object.values(lessonDrafts).some((draft) => draft.title.length > 0 || draft.content.length > 0) || Object.keys(editDrafts).length > 0 || assetDirty;
 
-  const handleAssetActivity = useCallback((lessonId: string, value: { dirty: boolean; busy: boolean }) => {
-    setAssetActivity((current) => {
-      const previous = current[lessonId];
-      if (previous?.dirty === value.dirty && previous.busy === value.busy) return current;
-      if (!value.dirty && !value.busy) {
-        const next = { ...current };
-        delete next[lessonId];
-        return next;
-      }
-      return { ...current, [lessonId]: value };
-    });
+  const handleAssetActivity = useCallback((panelKey: string, value: AssetActivity) => {
+    setAssetActivity((current) => mergeAssetActivity(current, panelKey, value));
   }, []);
 
   useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
