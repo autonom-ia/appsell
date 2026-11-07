@@ -36,6 +36,7 @@ from .platform_bootstrap_routes import router as platform_bootstrap_router
 from .platform_routes import router as platform_router
 from .public_routes import router as public_router
 from .routes import router
+from .sales_report_routes import router as sales_report_router
 from .seller_settings_routes import router as seller_settings_router
 from .storage_s3 import S3Storage
 from .storage_worker import (
@@ -268,6 +269,7 @@ app.include_router(seller_settings_router)
 app.include_router(platform_bootstrap_router)
 app.include_router(platform_router)
 app.include_router(public_router)
+app.include_router(sales_report_router)
 app.include_router(email_preferences_router)
 app.include_router(webhook_router)
 app.include_router(campaign_link_router)
