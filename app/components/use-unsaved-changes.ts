@@ -70,6 +70,9 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
   let leavingUrl = "";
   let restoringTimer: ReturnType<GuardEnvironment["timers"]["set"]> | null = null;
   let allowNavigation = false;
+  // Onde a tela estava quando a navegação foi liberada. Enquanto o navegador
+  // não sai dela, a navegação ainda está em voo e não pode ser desfeita.
+  let allowedFromUrl = "";
   let disposed = false;
 
   const onSentinel = () => (history.state as { __appsellDirtyGuard?: unknown } | null)?.__appsellDirtyGuard === token;
@@ -120,6 +123,7 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
     // a guarda tenta devolver a sentinela; limpa, a travessia é do usuário.
     if (dirty) {
       pending = "restoring";
+      clearRestoringTimer();
       history.go(1);
       // Sem entrada à frente (fragmento), o `go(1)` não chega e não há
       // `popstate`. O prazo devolve a guarda ao estado real em vez de
@@ -138,9 +142,13 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
   const warnBeforeUnload = (event: Event) => {
     if (dirty && !allowNavigation) event.preventDefault();
   };
-  const allow = () => { allowNavigation = true; };
+  const allow = () => {
+    allowNavigation = true;
+    allowedFromUrl = location.href;
+  };
   const continueHistory = () => {
     allowNavigation = true;
+    allowedFromUrl = location.href;
     // A sentinela e a entrada da própria tela: dois passos para sair.
     history.go(sentinel ? -2 : -1);
   };
@@ -154,11 +162,14 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
   return {
     setDirty(next) {
       // Navegação liberada que não desmontou a tela (o mesmo editor em outra
-      // URL) já passou. Uma alteração nova volta a ser protegida, e a
-      // sentinela antiga ficou para trás no histórico.
-      if (next && !dirty && allowNavigation) {
+      // URL) já chegou: uma alteração nova volta a ser protegida, e a
+      // sentinela antiga ficou para trás no histórico. Ainda na URL de onde
+      // saiu, a navegação está em voo, e rearmar agora faria o desmontar
+      // devolver o vendedor à tela que ele acabou de deixar.
+      if (next && !dirty && allowNavigation && location.href !== allowedFromUrl) {
         allowNavigation = false;
         sentinel = onSentinel();
+        clearRestoringTimer();
         pending = null;
       }
       dirty = next;

@@ -316,6 +316,34 @@ describe("guarda de alterações não salvas (#612)", () => {
   );
 
   it.each<Engine>(["webkit", "chromium"])(
+    "no %s, sujar de novo com a navegação liberada ainda em voo não a desfaz",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      const guard = createUnsavedHistoryGuard(browser.env, true);
+      const avisos: boolean[] = [];
+      browser.events.addEventListener("beforeunload", (event) => { avisos.push(event.defaultPrevented); });
+
+      // "Descartar e ir": a tela limpa e volta a sujar antes de o
+      // `router.push` terminar.
+      browser.events.dispatchEvent(new Event("appsell:dirty-navigation-allowed"));
+      guard.setDirty(false);
+      guard.setDirty(true);
+      expect(browser.hasPending()).toBe(false);
+      browser.routerPush("https://app.test/products?seller=s");
+      const destino = browser.index;
+
+      // O destino desmonta a tela: o vendedor fica onde a navegação o levou.
+      guard.dispose();
+      browser.settle();
+      expect(browser.index).toBe(destino);
+      expect(browser.leftProduct).toBe(false);
+      // E a guarda desmontada não avisa ao sair da página.
+      browser.events.dispatchEvent(new Event("beforeunload", { cancelable: true }));
+      expect(avisos).toEqual([false]);
+    }
+  );
+
+  it.each<Engine>(["webkit", "chromium"])(
     "no %s, um link de fragmento com a tela suja não trava a guarda nem abre diálogo",
     (engine) => {
       const browser = new FakeBrowser(engine);
