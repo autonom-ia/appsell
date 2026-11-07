@@ -23,7 +23,7 @@ import {
   safeVersion,
   unauthorized
 } from "../../../_route-shared";
-import { draftOfferMinimum, priceBelowMinimum } from "../../../_minimum-price";
+import { draftOfferMinimum, priceBelowMinimum, sellerChargesCommission } from "../../../_minimum-price";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const OFFER_STATUSES = new Set(["draft", "active", "archived"]);
@@ -87,7 +87,9 @@ export async function PATCH(request: NextRequest, context: OfferStatusRouteConte
         offerId
       );
       if (minimum.kind === "invalid_draft") return mappedError(new Error("invalid domain response"));
-      if (minimum.kind === "below_minimum") return priceBelowMinimum(minimum.minimumMinor);
+      if (minimum.kind === "below_minimum" && await sellerChargesCommission(sellerId)) {
+        return priceBelowMinimum(minimum.minimumMinor);
+      }
     }
     const payload = await transitionDomainOfferStatus(
       authenticated.sessionId,

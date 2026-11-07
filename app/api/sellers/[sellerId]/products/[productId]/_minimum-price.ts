@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
 
+import { isFinancialConnectSeller } from "@/lib/financial-connect-checkout";
+import { configuredCheckoutProvider } from "@/lib/financial-external-checkout.server";
+import { resolveCheckoutPayoutDestination } from "@/lib/internal-api-client.server";
 import { checkSellerNet } from "@/lib/minimum-price";
 
 import { isRecord } from "./_route-shared";
@@ -8,6 +11,10 @@ import { isRecord } from "./_route-shared";
 // positivo em BRL: preço zero continua permitido no rascunho (a ativação e a
 // publicação paga já exigem preço), e outra moeda não é vendida pelo checkout.
 // Quem cobra é o create-session, que repete a conta como última trava.
+//
+// Escopo: a trava vale só para a loja que paga comissão. Sem comissão, a loja
+// recebe o valor inteiro e não há preço em que ela fique sem nada (é o caso da
+// Hub2You, AGENTS.md §7). A regra de quem paga comissão é a do create-session.
 
 export function minimumForPrice(unitAmountMinor: number, currency: string): number | null {
   if (currency !== "BRL" || !Number.isSafeInteger(unitAmountMinor) || unitAmountMinor <= 0) {
@@ -45,4 +52,20 @@ export function priceBelowMinimum(minimumMinor: number) {
     },
     { status: 422, headers: { "cache-control": "no-store" } }
   );
+}
+
+// A loja paga comissão? Mesma regra do create-session:
+// - financial_checkout: só a loja da lista Connect manda conta e comissão;
+// - local_stripe: a comissão existe quando a loja tem conta de repasse.
+// Provedor ausente ou inválido: a trava vale (o checkout recusa a venda de
+// qualquer jeito). Erro ao ler a conta de repasse sobe para a rota, que falha
+// fechado. Chame só depois de a rota confirmar que a loja é de quem pede.
+export async function sellerChargesCommission(sellerId: string): Promise<boolean> {
+  const provider = configuredCheckoutProvider();
+  if (provider === "financial_checkout") return isFinancialConnectSeller(sellerId);
+  if (provider === "local_stripe") {
+    const { payout_destination: destination } = await resolveCheckoutPayoutDestination(sellerId);
+    return destination !== null && destination !== undefined;
+  }
+  return true;
 }

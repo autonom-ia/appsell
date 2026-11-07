@@ -25,7 +25,7 @@ import {
   safeVersion,
   unauthorized
 } from "../_route-shared";
-import { draftOfferMinimum, priceBelowMinimum } from "../_minimum-price";
+import { draftOfferMinimum, priceBelowMinimum, sellerChargesCommission } from "../_minimum-price";
 
 const LEGACY_PUBLISH_FIELDS = [
   "_csrf",
@@ -111,7 +111,9 @@ export async function POST(request: NextRequest, context: ProductRouteContext) {
         offerId
       );
       if (minimum.kind === "invalid_draft") return mappedError(new Error("invalid domain response"));
-      if (minimum.kind === "below_minimum") return priceBelowMinimum(minimum.minimumMinor);
+      if (minimum.kind === "below_minimum" && await sellerChargesCommission(ids.sellerId)) {
+        return priceBelowMinimum(minimum.minimumMinor);
+      }
     }
 
     const payload = await publishDomainProductDraft(
