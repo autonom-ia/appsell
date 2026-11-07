@@ -19,6 +19,7 @@ import {
   resolveCheckoutPayoutDestination
 } from "@/lib/internal-api-client.server";
 import { RawBodyTooLargeError, readLimitedRawBody } from "@/lib/limited-raw-body.server";
+import { checkSellerNet } from "@/lib/minimum-price";
 import { configuredPublicOrigin, hasConfiguredOrigin } from "@/lib/public-origin";
 import { parsePublicStorefront, type PublicStorefrontProduct } from "@/lib/public-storefront";
 import { StripeConfigError, stripeClient } from "@/lib/stripe-config.server";
@@ -159,9 +160,12 @@ export async function POST(request: NextRequest) {
 
   const origin = configuredPublicOrigin();
   const applicationFeeCents = destination ? directChargeApplicationFeeCents(amount) : null;
-  // The fee is capped at the whole price, and the Financial refuses a fee that
-  // is not below it: the store would net nothing. Refuse before creating an order.
-  if (connectSeller && applicationFeeCents !== null && applicationFeeCents >= amount) {
+  // Last guard of the minimum price (#546), on every charge that carries a
+  // commission: the store must net something and the charge must clear the
+  // Stripe minimum. The producer routes already refuse such a price; this one
+  // also catches an offer priced through the internal API, which does not
+  // check the minimum. Refuse before creating an order.
+  if (applicationFeeCents !== null && !checkSellerNet({ amountMinor: amount, currency: "BRL" }).ok) {
     return jsonError("product_price_below_platform_fee", 409);
   }
   if (provider === "financial_checkout") {

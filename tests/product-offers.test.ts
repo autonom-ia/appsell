@@ -5,6 +5,7 @@ import {
   canCreateOffer,
   MAX_OFFERS_PER_PRODUCT,
   offerErrorMessage,
+  offerFailureMessage,
   orderedOffers,
   readMultiOffer,
   type ProductOfferSummary
@@ -98,5 +99,20 @@ describe("offerErrorMessage", () => {
   it("código desconhecido cai na mensagem pelo status", () => {
     expect(offerErrorMessage(409, "outro")).toContain("Recarregue");
     expect(offerErrorMessage(500, undefined)).toContain("Tente de novo");
+  });
+});
+
+describe("offerFailureMessage (#546)", () => {
+  it("o 422 de preço mínimo diz o menor preço, não o genérico", () => {
+    // Pega: o produtor vendo "Confira os campos do preço" sem saber qual preço serve.
+    const body = { error: "invalid_product_input", field: "unit_amount_minor", reason: "below_minimum", minimum_minor: 52 };
+    const message = offerFailureMessage(422, body).replaceAll("\u00a0", " ");
+    expect(message).toContain("O menor preço possível é R$ 0,52");
+  });
+
+  it("as demais recusas seguem as mensagens do painel", () => {
+    expect(offerFailureMessage(409, { error: "offer_limit_reached" })).toBe(offerErrorMessage(409, "offer_limit_reached"));
+    expect(offerFailureMessage(422, { error: "invalid_product_input" })).toBe(offerErrorMessage(422, "invalid_product_input"));
+    expect(offerFailureMessage(503, null)).toBe(offerErrorMessage(503, undefined));
   });
 });
