@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { demoModeEnabled } from "../lib/demo-config";
 import { canAccessDemoPreview } from "../lib/demo-view";
@@ -28,6 +28,19 @@ const keyring = JSON.stringify([
   { id: "e2e-v1", key: randomBytes(32).toString("base64"), active: true }
 ]);
 
+// No ar, o vault local é montado com o próprio process.env, e o construtor
+// também lê o process.env. O teste reproduz isso: põe o ambiente no
+// process.env antes de montar o vault.
+function vaultFrom(environment: Partial<Record<string, string>>) {
+  for (const key of Object.keys(e2eBuild)) vi.stubEnv(key, environment[key]);
+  vi.stubEnv("APPSELL_VAULT_LOCAL_KEYRING_B64_JSON", keyring);
+  return () => LocalAesKeyEnvelopeProvider.fromEnvironment(process.env);
+}
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 function without(key: keyof typeof e2eBuild) {
   const copy: Partial<Record<string, string>> = { ...e2eBuild };
   delete copy[key];
@@ -41,10 +54,7 @@ describe("runtime de demo do e2e sobre o build de produção", () => {
     expect(oauthRuntimeMode(e2eBuild)).toBe("local");
     expect(canAccessDemoPreview("demo-admin-v1", "production", e2eBuild)).toBe(true);
     expect(configuredPublicOrigin(e2eBuild)).toBe("http://localhost:3000");
-    expect(() => LocalAesKeyEnvelopeProvider.fromEnvironment({
-      ...e2eBuild,
-      APPSELL_VAULT_LOCAL_KEYRING_B64_JSON: keyring
-    })).not.toThrow();
+    expect(vaultFrom(e2eBuild)).not.toThrow();
   });
 
   it("sem o marcador do job, o build de produção não liga a demo", () => {
@@ -54,10 +64,7 @@ describe("runtime de demo do e2e sobre o build de produção", () => {
     expect(() => oauthRuntimeMode(semMarcador)).toThrow("Local OAuth is forbidden in production.");
     expect(canAccessDemoPreview("demo-admin-v1", "production", semMarcador)).toBe(false);
     expect(() => configuredPublicOrigin(semMarcador)).toThrow("Production public origin must use HTTPS.");
-    expect(() => LocalAesKeyEnvelopeProvider.fromEnvironment({
-      ...semMarcador,
-      APPSELL_VAULT_LOCAL_KEYRING_B64_JSON: keyring
-    })).toThrow("Local vault key provider is forbidden in production.");
+    expect(vaultFrom(semMarcador)).toThrow("Local vault key provider is forbidden in production.");
   });
 
   it("com as variáveis de produção, nada liga a demo, nem com o marcador copiado", () => {
