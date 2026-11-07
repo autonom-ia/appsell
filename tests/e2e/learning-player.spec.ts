@@ -1370,7 +1370,9 @@ test("o vídeo do PDF diz que está sendo preparado, e depois toca", async ({ pa
   // Com o relógio parado, o tempo do `retry-after` não passa: o diálogo segue
   // esperando e não entrega endereço nenhum ao `<video>`.
   await expect(video).toHaveCount(0);
-  expect(videoMediaRequests()).toBe(1);
+  // "Preparando" já aparece antes de a primeira pergunta sair, e o evento de
+  // request chega ao teste depois: espera a primeira, e só ela.
+  await expect.poll(videoMediaRequests).toBe(1);
 
   // O relógio anda em passos de meio segundo até a próxima pergunta sair. Em
   // passos, e não 2 s de uma vez: o timer da próxima espera só existe depois
