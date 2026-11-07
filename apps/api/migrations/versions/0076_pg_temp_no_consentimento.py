@@ -12,15 +12,19 @@ function`. Não muda corpo, dono, grant nem comportamento. O `downgrade`
 devolve o valor anterior.
 
 Revision ID: 0076_pg_temp_no_consentimento
-Revises: 0075_links_e_atribuicao_utm
+Revises: 0068_segunda_oferta_do_produto
 """
 
 from __future__ import annotations
 
+from importlib import util as importlib_util
+from pathlib import Path
+from types import ModuleType
+
 from alembic import op
 
 revision = "0076_pg_temp_no_consentimento"
-down_revision = "0075_links_e_atribuicao_utm"
+down_revision = "0068_segunda_oferta_do_produto"
 branch_labels = None
 depends_on = None
 
@@ -50,25 +54,23 @@ FUNCOES: tuple[tuple[str, str, str], ...] = (
     ("app_private.forget_email_consents(uuid)", _COMPLETO_ANTES, _COMPLETO_DEPOIS),
 )
 
-READY_ANTES = (
-    "'0057_banner_na_vitrine','0058_capa_na_biblioteca','0059_canal_financial_global',"
-    "'0060_atualizacao_chega_ao_aluno','0061_o_atraso_alcanca_o_aluno',"
-    "'0062_mapping_do_produto_novo','0063_conciliacao_do_acesso',"
-    "'0064_vendas_ativadas_pela_loja','0065_dono_da_conta_payout',"
-    "'0066_consentimento_de_email','0067_oferta_padrao_do_produto',"
-    "'0073_destino_com_repasse','0075_links_e_atribuicao_utm'))"
-)
-READY_DEPOIS = (
-    "'0057_banner_na_vitrine','0058_capa_na_biblioteca','0059_canal_financial_global',"
-    "'0060_atualizacao_chega_ao_aluno','0061_o_atraso_alcanca_o_aluno',"
-    "'0062_mapping_do_produto_novo','0063_conciliacao_do_acesso',"
-    "'0064_vendas_ativadas_pela_loja','0065_dono_da_conta_payout',"
-    "'0066_consentimento_de_email','0067_oferta_padrao_do_produto',"
-    "'0073_destino_com_repasse','0075_links_e_atribuicao_utm',"
-    "'0076_pg_temp_no_consentimento'))"
-)
+
+def _carregar(revisao: str) -> ModuleType:
+    caminho = Path(__file__).with_name(f"{revisao}.py")
+    spec = importlib_util.spec_from_file_location(f"appsell_anterior_{revisao}", caminho)
+    if spec is None or spec.loader is None:  # pragma: no cover - caminho fixo no repo
+        raise RuntimeError(f"a migration {revisao} nao pode ser lida")
+    modulo = importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(modulo)
+    return modulo
+
+
+# A 0068 não expõe `_READY_ATE_0068`: a lista dela sai de `_ready_versoes()`,
+# que devolve (antes, depois). O "depois" dela é o "antes" desta.
+READY_ANTES: str = _carregar(down_revision)._ready_versoes()[1]
+READY_DEPOIS = READY_ANTES[:-2] + f",'{revision}'))"
 # Nome que as migrations seguintes leem por `getattr` (padrão da 0067 em diante).
-_READY_ATE_0075 = READY_ANTES
+_READY_ATE_0068 = READY_ANTES
 _READY_ATE_0076 = READY_DEPOIS
 _BASES_DO_READY: tuple[str, ...] = (
     "app_private.schema_ready_base_0016()",
