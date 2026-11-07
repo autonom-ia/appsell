@@ -395,7 +395,7 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
     const posted = route.request().postDataBuffer();
     const form = await new Request(route.request().url(), { method: "POST", headers: route.request().headers(), body: posted ? new Uint8Array(posted) : undefined }).formData();
     accessLinkLabels.push(String(form.get("label")));
-    return route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ access_link: { access_link_id: "9f1d6f1e-0e2a-4a3b-8c4d-5e6f70819293", token_prefix: "aabbccdd", label: form.get("label"), max_uses: null, redeemed_count: 0, expires_at: null, created_at: null }, url: `http://localhost:3000/c/${"a".repeat(64)}` }) });
+    return route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ access_link: { access_link_id: "9f1d6f1e-0e2a-4a3b-8c4d-5e6f70819293", token_prefix: "aabbccdd", label: form.get("label"), max_uses: null, redeemed_count: 0, expires_at: null, created_at: null }, url: `${E2E_BUILD_PUBLIC_ORIGIN}/c/${"a".repeat(64)}` }) });
   });
   await page.route(`**/api/sellers/${sellerId}/products/${productId}/publications`, async (route) => {
     const posted = route.request().postDataBuffer();

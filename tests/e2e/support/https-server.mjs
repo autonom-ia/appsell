@@ -5,8 +5,13 @@
 // numa origem http, nem em localhost, e o login do webkit-mobile se perdia.
 // Servir em HTTPS deixa o navegador tratar os cookies como no ar. O `next
 // start` não tem HTTPS, então o mesmo handler do build roda num servidor
-// https do Node, com um certificado autoassinado gerado a cada run e apagado
-// do disco antes do servidor subir.
+// https do Node, com um certificado autoassinado gerado pelo openssl a cada
+// run. Chave e certificado ficam no $RUNNER_TEMP (o tmp do sistema fora do
+// CI), são apagados do disco antes do servidor subir e nunca vão para o
+// repositório nem para artefato.
+//
+// Host e porta vêm de APPSELL_PUBLIC_ORIGIN, que o playwright.config.ts
+// preenche com E2E_BUILD_PUBLIC_ORIGIN: a URL existe num lugar só.
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:https";
@@ -15,11 +20,15 @@ import { join } from "node:path";
 
 import next from "next";
 
-const HOSTNAME = "localhost";
-const PORT = 3000;
+const origin = new URL(process.env.APPSELL_PUBLIC_ORIGIN ?? "");
+if (origin.protocol !== "https:" || !origin.port) {
+  throw new Error("https-server.mjs exige APPSELL_PUBLIC_ORIGIN em https com porta explícita.");
+}
+const HOSTNAME = origin.hostname;
+const PORT = Number(origin.port);
 
 function selfSignedCertificate() {
-  const directory = mkdtempSync(join(tmpdir(), "appsell-e2e-tls-"));
+  const directory = mkdtempSync(join(process.env.RUNNER_TEMP ?? tmpdir(), "appsell-e2e-tls-"));
   const keyPath = join(directory, "key.pem");
   const certPath = join(directory, "cert.pem");
   try {
