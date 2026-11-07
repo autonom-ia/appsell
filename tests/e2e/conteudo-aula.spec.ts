@@ -392,11 +392,20 @@ test.describe("o PDF em Anexos só entra na lista depois da política", () => {
   };
   const uploadId = "bb000000-0000-4000-8000-0000000000ff";
 
-  test("aparece com destaque e foco quando a política demora", async ({ page }) => {
+  async function pdfEntraComPoliticaDemorada(page: Page, quadroAtrasadoMs: number) {
     await login(page);
     await page.clock.install();
     const lista: MaterialView[] = [PDF, MARKDOWN, TEXTO];
     await openCurriculum(page, lista);
+    if (quadroAtrasadoMs > 0) {
+      // Aparelho lento: o navegador entrega o quadro de render depois do tempo
+      // em que o destaque some. O foco tem de chegar mesmo assim (#605).
+      await page.evaluate((atraso) => {
+        window.requestAnimationFrame = (callback) =>
+          window.setTimeout(() => callback(performance.now()), atraso);
+        window.cancelAnimationFrame = (id) => window.clearTimeout(id);
+      }, quadroAtrasadoMs);
+    }
 
     let liberarPolitica: (() => void) | null = null;
     let registrada: Promise<unknown> = Promise.resolve();
@@ -467,6 +476,14 @@ test.describe("o PDF em Anexos só entra na lista depois da política", () => {
     // card nem existia neste painel. A lista aqui é curta e o card já nasce
     // visível, então não rolar é o comportamento certo.
     await expect(cardNovo).toBeFocused();
+  }
+
+  test("aparece com destaque e foco quando a política demora", async ({ page }) => {
+    await pdfEntraComPoliticaDemorada(page, 0);
+  });
+
+  test("o foco chega ao card mesmo com o quadro de render atrasado", async ({ page }) => {
+    await pdfEntraComPoliticaDemorada(page, 3_000);
   });
 
   test("a política que falha avisa o vendedor e não põe o PDF nos anexos", async ({ page }) => {
