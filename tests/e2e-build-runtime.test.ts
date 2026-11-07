@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { demoModeEnabled } from "../lib/demo-config";
 import { canAccessDemoPreview } from "../lib/demo-view";
@@ -28,18 +28,12 @@ const keyring = JSON.stringify([
   { id: "e2e-v1", key: randomBytes(32).toString("base64"), active: true }
 ]);
 
-// No ar, o vault local é montado com o próprio process.env, e o construtor
-// também lê o process.env. O teste reproduz isso: põe o ambiente no
-// process.env antes de montar o vault.
 function vaultFrom(environment: Partial<Record<string, string>>) {
-  for (const key of Object.keys(e2eBuild)) vi.stubEnv(key, environment[key]);
-  vi.stubEnv("APPSELL_VAULT_LOCAL_KEYRING_B64_JSON", keyring);
-  return () => LocalAesKeyEnvelopeProvider.fromEnvironment(process.env);
+  return () => LocalAesKeyEnvelopeProvider.fromEnvironment({
+    ...environment,
+    APPSELL_VAULT_LOCAL_KEYRING_B64_JSON: keyring
+  });
 }
-
-afterEach(() => {
-  vi.unstubAllEnvs();
-});
 
 function without(key: keyof typeof e2eBuild) {
   const copy: Partial<Record<string, string>> = { ...e2eBuild };
