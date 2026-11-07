@@ -40,7 +40,7 @@ interface ApiRequest {
     "platform.demo.inspect.start" | "platform.demo.inspect.read" |
     "platform.demo.inspect.revoke" |
     "catalog.draft.read" | "catalog.draft.create" | "catalog.draft.update" |
-    "catalog.offer.status.update" |
+    "catalog.offer.status.update" | "catalog.offer.create" | "catalog.offer.default.update" |
     "catalog.draft.preview" | "catalog.publication.read" | "catalog.publication.create" |
     "catalog.curriculum.read" | "catalog.curriculum.create" |
     "catalog.curriculum.update" | "catalog.curriculum.archive" |
@@ -626,6 +626,60 @@ export async function transitionDomainOfferStatus(
       idempotency_key: input.idempotencyKey,
       expected_status: input.expectedStatus,
       status: input.status,
+      expected_offer_version: input.expectedOfferVersion
+    }
+  });
+}
+
+/** Segunda oferta do produto (#553). A api decide se a loja pode e valida preço e moeda. */
+export async function createDomainProductOffer(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  input: {
+    idempotencyKey: string;
+    offerId: string;
+    title: string;
+    summary: string;
+    unitAmountMinor: number;
+    currency: string;
+    billingPeriod: string;
+  }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}/offers`,
+    capability: "catalog.offer.create",
+    sellerOrganizationId,
+    body: {
+      idempotency_key: input.idempotencyKey,
+      offer_id: input.offerId,
+      title: input.title,
+      summary: input.summary,
+      unit_amount_minor: input.unitAmountMinor,
+      currency: input.currency,
+      billing_period: input.billingPeriod
+    }
+  });
+}
+
+/** Troca a oferta padrão do produto (#553). A api recusa troca que mude o preço à venda. */
+export async function setDomainDefaultOffer(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  productId: string,
+  offerId: string,
+  input: { idempotencyKey: string; expectedOfferVersion: number }
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `/v1/me/sellers/${sellerOrganizationId}/products/${productId}/offers/${offerId}/default`,
+    capability: "catalog.offer.default.update",
+    sellerOrganizationId,
+    body: {
+      idempotency_key: input.idempotencyKey,
       expected_offer_version: input.expectedOfferVersion
     }
   });
