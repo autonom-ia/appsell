@@ -594,6 +594,25 @@ describe("POST /api/checkout/stripe/create-session — Financial with the store'
     expect(createFinancialExternalCheckoutIntent).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["the list unset", undefined],
+    ["another store on the list", OTHER_SELLER_ID]
+  ])("#546: outside the Connect list (%s), a 51-cent price still sells with no commission", async (_case, list) => {
+    // Pega: a trava do preço mínimo alcançando a loja sem comissão (o caminho
+    // da Hub2You em produção). Sem destino não há comissão, e a loja recebe tudo.
+    if (list === undefined) delete process.env.APPSELL_FINANCIAL_CONNECT_SELLER_IDS;
+    else process.env.APPSELL_FINANCIAL_CONNECT_SELLER_IDS = list;
+    readPublicStorefront.mockResolvedValue(storefrontWithPrice(51));
+
+    const response = await POST(request(validBody));
+
+    expect(response.status).toBe(200);
+    expect(resolveCheckoutPayoutDestination).not.toHaveBeenCalled();
+    expect(createFinancialExternalCheckoutIntent).toHaveBeenCalledOnce();
+    expect(intentInput().pricing).toEqual({ amountMinor: 51, currency: "BRL", billingPeriod: "one_time" });
+    expect(intentInput().connect).toEqual({ accountId: null, applicationFeeAmountMinor: null });
+  });
+
   it("on the list, the same click repeated gets the same idempotency key, and another buyer a different one", async () => {
     vi.useFakeTimers({ now: new Date("2026-10-25T12:05:00Z"), toFake: ["Date"] });
     process.env.APPSELL_FINANCIAL_CONNECT_SELLER_IDS = SELLER_ID;

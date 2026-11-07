@@ -25,6 +25,7 @@ import {
 import { isOfferBillingPeriod, MAX_UNIT_AMOUNT_MINOR } from "@/lib/offer-price";
 import { configuredPublicOrigin, hasConfiguredOrigin } from "@/lib/public-origin";
 
+import { minimumForPrice, priceBelowMinimum, sellerChargesCommission } from "./_minimum-price";
 import {
   authenticatedSession,
   canonicalUuid,
@@ -224,8 +225,18 @@ export async function PATCH(request: NextRequest, context: ProductRouteContext) 
       return invalidInput("offer_billing_period");
     }
   }
+  const minimumMinor = hasPriceFields
+    ? minimumForPrice(Number(fields.offer_unit_amount_minor), fields.offer_currency!)
+    : null;
 
   try {
+    // #546: preço abaixo do mínimo só é recusado para loja com comissão. A
+    // leitura do rascunho vem antes, para confirmar que a loja é de quem pede
+    // antes de dizer qualquer coisa sobre a comissão dela.
+    if (minimumMinor !== null) {
+      await readDomainProductDraft(authenticated.sessionId, authenticated.session, ids.sellerId, ids.productId);
+      if (await sellerChargesCommission(ids.sellerId)) return priceBelowMinimum(minimumMinor);
+    }
     const payload = await updateDomainProductDraft(
       authenticated.sessionId,
       authenticated.session,

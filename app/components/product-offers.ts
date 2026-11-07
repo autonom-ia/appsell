@@ -4,6 +4,8 @@
 // ela mandou: qualquer resposta fora do formato desliga o painel, e o editor
 // fica idêntico ao de hoje.
 
+import { minimumFromResponse, minimumPriceMessage } from "@/lib/minimum-price-copy";
+
 export type OfferStatus = "draft" | "active" | "archived";
 
 export interface ProductOfferSummary {
@@ -95,6 +97,17 @@ export function canBecomeDefault(
 }
 
 /** Mensagem para cada recusa da api, pelo código exato que ela devolve. */
+/**
+ * Mensagem da recusa a partir da resposta inteira. O 422 de preço mínimo
+ * (#546) traz o menor preço possível e diz isso; o resto segue pelo código.
+ */
+export function offerFailureMessage(status: number, body: unknown): string {
+  const minimum = minimumFromResponse(body);
+  if (minimum !== null) return minimumPriceMessage(minimum);
+  const code = isRecord(body) && typeof body.error === "string" ? body.error : undefined;
+  return offerErrorMessage(status, code);
+}
+
 export function offerErrorMessage(status: number, code: string | undefined): string {
   if (code === "multi_offer_disabled") return "Esta loja ainda não pode ter mais de um preço.";
   if (code === "multi_offer_misconfigured") return "Preços extras indisponíveis agora. Tente mais tarde.";

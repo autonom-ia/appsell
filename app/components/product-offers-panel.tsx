@@ -16,6 +16,7 @@ import {
   MAX_OFFERS_PER_PRODUCT,
   OFFER_CURRENCIES,
   offerErrorMessage,
+  offerFailureMessage,
   orderedOffers,
   type OfferStatus,
   type ProductOfferSummary
@@ -75,8 +76,8 @@ export function ProductOffersPanel(props: ProductOffersPanelProps) {
     try {
       const response = await fetch(url, { method, body: data });
       if (!response.ok) {
-        const body = await response.json().catch(() => null) as { error?: unknown } | null;
-        setMessage(offerErrorMessage(response.status, typeof body?.error === "string" ? body.error : undefined));
+        const body: unknown = await response.json().catch(() => null);
+        setMessage(offerFailureMessage(response.status, body));
         return false;
       }
       const refreshed = await props.onChanged();
