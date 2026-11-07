@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { sessionCookieName } from "@/lib/cookies";
-import { createDomainProductOffer } from "@/lib/internal-api-client.server";
+import { createDomainProductOffer, readDomainProductDraft } from "@/lib/internal-api-client.server";
 import {
   CREATE_PRODUCT_OFFER_CSRF_ACTION,
   verifyMutation
@@ -22,6 +22,7 @@ import {
   safeVersion,
   unauthorized
 } from "../_route-shared";
+import { minimumForPrice, priceBelowMinimum, sellerChargesCommission } from "../_minimum-price";
 
 // Segunda oferta do produto (#553). Quem decide se a loja pode, e se preço e
 // moeda valem, é a api (Decisão 005): o BFF confere forma, sessão e CSRF e
@@ -65,8 +66,16 @@ export async function POST(request: NextRequest, context: ProductRouteContext) {
   const unitAmountMinor = safeVersion(fields.unit_amount_minor, true);
   if (!idempotencyKey || !offerId) return invalidInput("form");
   if (unitAmountMinor === null) return invalidInput("unit_amount_minor");
+  const minimumMinor = minimumForPrice(unitAmountMinor, fields.currency ?? "");
 
   try {
+    // #546: oferta nova abaixo do mínimo, em loja com comissão, não é gravada.
+    // Ler o rascunho antes confirma que a loja é de quem pede; só depois se
+    // consulta a comissão, para o 422 não revelar nada de loja alheia.
+    if (minimumMinor !== null) {
+      await readDomainProductDraft(authenticated.sessionId, authenticated.session, ids.sellerId, ids.productId);
+      if (await sellerChargesCommission(ids.sellerId)) return priceBelowMinimum(minimumMinor, "unit_amount_minor");
+    }
     const payload = await createDomainProductOffer(
       authenticated.sessionId,
       authenticated.session,

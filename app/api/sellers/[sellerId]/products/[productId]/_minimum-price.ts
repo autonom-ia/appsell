@@ -32,8 +32,8 @@ export type DraftOfferMinimum =
 // Lê a oferta do rascunho devolvido pela api. Resposta fora do formato falha
 // fechado: sem saber o preço, não ativa nem publica.
 export function draftOfferMinimum(draft: unknown, offerId: string): DraftOfferMinimum {
-  const offer = isRecord(draft) && isRecord(draft.product) ? draft.product.offer : undefined;
-  if (!isRecord(offer) || offer.id !== offerId) return { kind: "invalid_draft" };
+  const offer = findDraftOffer(draft, offerId);
+  if (offer === null) return { kind: "invalid_draft" };
   const amount = offer.unit_amount_minor;
   const currency = offer.currency;
   if (amount === null || amount === undefined) return { kind: "ok" };
@@ -42,11 +42,24 @@ export function draftOfferMinimum(draft: unknown, offerId: string): DraftOfferMi
   return minimumMinor === null ? { kind: "ok" } : { kind: "below_minimum", minimumMinor };
 }
 
-export function priceBelowMinimum(minimumMinor: number) {
+// Desde o #553 a api devolve `offer` (a padrão) e `offers` (todas). A oferta
+// pedida é procurada pelo id em `offers`; `offer` cobre a api de antes.
+function findDraftOffer(draft: unknown, offerId: string): Record<string, unknown> | null {
+  const product = isRecord(draft) && isRecord(draft.product) ? draft.product : null;
+  if (product === null) return null;
+  const offers = Array.isArray(product.offers) ? product.offers : [];
+  const listed = offers.find((offer) => isRecord(offer) && offer.id === offerId);
+  if (isRecord(listed)) return listed;
+  return isRecord(product.offer) && product.offer.id === offerId ? product.offer : null;
+}
+
+// O campo segue o nome que a rota recebe: o PATCH do produto manda
+// offer_unit_amount_minor; o POST de oferta nova, unit_amount_minor.
+export function priceBelowMinimum(minimumMinor: number, field = "offer_unit_amount_minor") {
   return NextResponse.json(
     {
       error: "invalid_product_input",
-      field: "offer_unit_amount_minor",
+      field,
       reason: "below_minimum",
       minimum_minor: minimumMinor
     },

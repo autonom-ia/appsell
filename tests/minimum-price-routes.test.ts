@@ -9,6 +9,7 @@ const {
   updateDomainProductCourseDraft,
   transitionDomainOfferStatus,
   publishDomainProductDraft,
+  createDomainProductOffer,
   resolveCheckoutPayoutDestination,
   getSession,
   DomainApiError
@@ -24,6 +25,7 @@ const {
     updateDomainProductCourseDraft: vi.fn(async () => ({ ok: true })),
     transitionDomainOfferStatus: vi.fn(async () => ({ ok: true })),
     publishDomainProductDraft: vi.fn(async () => ({ created: true })),
+    createDomainProductOffer: vi.fn(async () => ({ created: true })),
     resolveCheckoutPayoutDestination: vi.fn<(...args: unknown[]) => Promise<unknown>>(),
     getSession: vi.fn(async () => ({ identity: { sub: "seller" } })),
     DomainApiError
@@ -36,6 +38,7 @@ vi.mock("@/lib/internal-api-client.server", () => ({
   updateDomainProductCourseDraft,
   transitionDomainOfferStatus,
   publishDomainProductDraft,
+  createDomainProductOffer,
   resolveCheckoutPayoutDestination,
   DomainApiError
 }));
@@ -52,6 +55,7 @@ vi.mock("@/lib/mutation-protection.server", () => ({
   CLEAR_PRODUCT_COVER_CSRF_ACTION: "a",
   CONFIRM_COVER_UPLOAD_CSRF_ACTION: "b",
   CREATE_COVER_UPLOAD_CSRF_ACTION: "c",
+  CREATE_PRODUCT_OFFER_CSRF_ACTION: "k",
   PUBLISH_PRODUCT_DRAFT_CSRF_ACTION: "d",
   CREATE_ACCESS_LINK_CSRF_ACTION: "e",
   REVOKE_ACCESS_LINK_CSRF_ACTION: "f",
@@ -67,6 +71,7 @@ import { PATCH as patchProduct } from "../app/api/sellers/[sellerId]/products/[p
 import { PATCH as patchOfferStatus } from
   "../app/api/sellers/[sellerId]/products/[productId]/offers/[offerId]/status/route";
 import { POST as publish } from "../app/api/sellers/[sellerId]/products/[productId]/publications/route";
+import { POST as createOffer } from "../app/api/sellers/[sellerId]/products/[productId]/offers/route";
 
 const ORIGIN = "http://localhost:3000";
 const SELLER_ID = "44444444-4444-4444-8444-444444444444";
@@ -74,6 +79,7 @@ const PRODUCT_ID = "55555555-5555-4555-8555-555555555555";
 const OFFER_ID = "66666666-6666-4666-8666-666666666666";
 const COURSE_ID = "88888888-8888-4888-8888-888888888888";
 const IDEMPOTENCY = "77777777-7777-4777-8777-777777777777";
+const SECOND_OFFER_ID = "99999999-9999-4999-8999-999999999999";
 const originalEnvironment = { ...process.env };
 
 const productContext = { params: Promise.resolve({ sellerId: SELLER_ID, productId: PRODUCT_ID }) };
@@ -142,6 +148,40 @@ function draftWithPrice(amount: number | null, currency = "BRL", offerId = OFFER
       offer: { id: offerId, status: "draft", unit_amount_minor: amount, currency, billing_period: "one_time" }
     }
   };
+}
+
+function newOffer(amount: string, currency = "BRL") {
+  return formRequest("POST", `/api/sellers/${SELLER_ID}/products/${PRODUCT_ID}/offers`, {
+    _csrf: "csrf-token-test",
+    idempotency_key: IDEMPOTENCY,
+    offer_id: SECOND_OFFER_ID,
+    title: "Preço de lançamento",
+    summary: "",
+    unit_amount_minor: amount,
+    currency,
+    billing_period: "one_time"
+  });
+}
+
+function activateSecond() {
+  return formRequest("PATCH", `/api/sellers/${SELLER_ID}/products/${PRODUCT_ID}/offers/${SECOND_OFFER_ID}/status`, {
+    _csrf: "csrf-token-test",
+    idempotency_key: IDEMPOTENCY,
+    expected_status: "draft",
+    status: "active",
+    expected_offer_version: "1"
+  });
+}
+
+const secondOfferContext = {
+  params: Promise.resolve({ sellerId: SELLER_ID, productId: PRODUCT_ID, offerId: SECOND_OFFER_ID })
+};
+
+// Depois do #553 a api devolve `offer` (a padrão) e `offers` (todas).
+function draftWithSecondOffer(secondAmount: number | null) {
+  const main = { id: OFFER_ID, status: "active", is_default: true, unit_amount_minor: 4700, currency: "BRL", billing_period: "one_time" };
+  const second = { id: SECOND_OFFER_ID, status: "draft", is_default: false, unit_amount_minor: secondAmount, currency: "BRL", billing_period: "one_time" };
+  return { product: { id: PRODUCT_ID, offer: main, offers: [main, second] } };
 }
 
 const BELOW_MINIMUM = {
@@ -336,6 +376,77 @@ describe("preço mínimo nas rotas do produtor (#546)", () => {
       expect((await patchProduct(priceUpdate("4700"), productContext)).status).toBe(200);
       expect(readDomainProductDraft).not.toHaveBeenCalled();
       expect(resolveCheckoutPayoutDestination).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("segunda oferta (#553)", () => {
+    const NEW_OFFER_BELOW_MINIMUM = { ...BELOW_MINIMUM, field: "unit_amount_minor" };
+
+    function hub2you() {
+      // Financial fora da lista Connect: a loja não paga comissão.
+      process.env.APPSELL_CHECKOUT_PROVIDER = "financial_checkout";
+      process.env.APPSELL_FINANCIAL_CONNECT_SELLER_IDS = "";
+    }
+
+    it("loja com comissão: criar a segunda oferta a 51 centavos é recusado, sem chamar a api", async () => {
+      // Pega: o POST novo do #553 passando por fora da trava.
+      readDomainProductDraft.mockResolvedValue(draftWithSecondOffer(null));
+      const response = await createOffer(newOffer("51"), productContext);
+      expect(response.status).toBe(422);
+      expect(await response.json()).toEqual(NEW_OFFER_BELOW_MINIMUM);
+      expect(createDomainProductOffer).not.toHaveBeenCalled();
+    });
+
+    it("loja sem comissão (Hub2You): cria a segunda oferta a 51 centavos", async () => {
+      hub2you();
+      readDomainProductDraft.mockResolvedValue(draftWithSecondOffer(null));
+      const response = await createOffer(newOffer("51"), productContext);
+      expect(response.status).toBe(201);
+      expect(createDomainProductOffer).toHaveBeenCalledTimes(1);
+    });
+
+    it("criar acima do mínimo não lê rascunho nem comissão", async () => {
+      process.env.APPSELL_CHECKOUT_PROVIDER = "local_stripe";
+      expect((await createOffer(newOffer("52"), productContext)).status).toBe(201);
+      expect(readDomainProductDraft).not.toHaveBeenCalled();
+      expect(resolveCheckoutPayoutDestination).not.toHaveBeenCalled();
+    });
+
+    it("criar não diz nada da comissão de uma loja que não é de quem pede", async () => {
+      readDomainProductDraft.mockRejectedValue(new DomainApiError(403, "forbidden"));
+      const response = await createOffer(newOffer("51"), productContext);
+      expect(response.status).toBe(403);
+      expect(createDomainProductOffer).not.toHaveBeenCalled();
+    });
+
+    it("loja com comissão: ativar a segunda oferta abaixo do mínimo é recusado pelo preço dela", async () => {
+      // Pega: a conta feita com o preço da oferta padrão (R$ 47), e não o da segunda.
+      readDomainProductDraft.mockResolvedValue(draftWithSecondOffer(51));
+      const response = await patchOfferStatus(activateSecond(), secondOfferContext);
+      expect(response.status).toBe(422);
+      expect(await response.json()).toEqual(BELOW_MINIMUM);
+      expect(transitionDomainOfferStatus).not.toHaveBeenCalled();
+    });
+
+    it("ativa a segunda oferta acima do mínimo", async () => {
+      // Pega: a busca só em `product.offer` (a padrão) falhando fechado com 503.
+      readDomainProductDraft.mockResolvedValue(draftWithSecondOffer(4700));
+      expect((await patchOfferStatus(activateSecond(), secondOfferContext)).status).toBe(200);
+      expect(transitionDomainOfferStatus).toHaveBeenCalledTimes(1);
+    });
+
+    it("loja sem comissão (Hub2You): ativa a segunda oferta a 51 centavos", async () => {
+      hub2you();
+      readDomainProductDraft.mockResolvedValue(draftWithSecondOffer(51));
+      expect((await patchOfferStatus(activateSecond(), secondOfferContext)).status).toBe(200);
+      expect(transitionDomainOfferStatus).toHaveBeenCalledTimes(1);
+    });
+
+    it("falha fechado quando a oferta não está no rascunho", async () => {
+      readDomainProductDraft.mockResolvedValue(draftWithPrice(4700));
+      const response = await patchOfferStatus(activateSecond(), secondOfferContext);
+      expect(response.status).toBe(503);
+      expect(transitionDomainOfferStatus).not.toHaveBeenCalled();
     });
   });
 });
