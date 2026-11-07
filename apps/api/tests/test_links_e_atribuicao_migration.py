@@ -11,6 +11,7 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+from cadeia_de_migrations import anterior_na_cadeia
 
 VERSOES = Path(__file__).parents[1] / "migrations" / "versions"
 
@@ -37,9 +38,8 @@ def _comandos(migration: ModuleType, direcao: Callable[[], None]) -> list[str]:
 
 
 def test_encadeia_no_topo_e_ensina_o_readiness(migration: ModuleType) -> None:
-    nomes = [p.stem for p in sorted(VERSOES.glob("0*.py"))]
-    assert nomes[-1] == migration.revision
-    assert migration.down_revision == nomes[-2]
+    # A anterior vem da cadeia (`down_revision`), não da ordem dos arquivos.
+    assert migration.down_revision == anterior_na_cadeia(migration.revision)
     assert migration.revision in migration.READY_DEPOIS
     assert migration.READY_DEPOIS.startswith(migration.READY_ANTES[:-2])
     assert len(migration.revision) <= 32
