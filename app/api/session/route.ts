@@ -3,6 +3,7 @@ import { oauthService } from "@/lib/oauth-service.server";
 import { sessionCookieName } from "@/lib/cookies";
 import { isOAuthStoreUnavailable } from "@/lib/redis-oauth-service";
 import { demoProfileForSubject } from "@/lib/demo-config";
+import { e2eBuildRuntimeEnabled } from "@/lib/e2e-build-runtime";
 import { publicDemoRuntimeEnabled } from "@/lib/public-demo-runtime";
 import { resolveSessionIdentity } from "@/lib/session-identity.server";
 import {
@@ -38,7 +39,7 @@ async function safeIdentity(
 
 export async function GET(request: NextRequest) {
   if (process.env.NODE_ENV === "production" && process.env.APPSELL_OAUTH_MODE !== "identity" &&
-      !publicDemoRuntimeEnabled()) {
+      !publicDemoRuntimeEnabled() && !e2eBuildRuntimeEnabled()) {
     return NextResponse.json({ authenticated: false }, {
       status: 401,
       headers: { "cache-control": "no-store" }

@@ -1,4 +1,5 @@
 import { capacityLocalCiRuntimeEnabled } from "./capacity-local-ci-runtime";
+import { e2eBuildRuntimeEnabled } from "./e2e-build-runtime";
 
 export class PublicOriginConfigurationError extends Error {}
 
@@ -25,7 +26,8 @@ export function configuredPublicOrigin(
   if (
     environment.NODE_ENV === "production" &&
     url.protocol !== "https:" &&
-    !capacityLocalCiRuntimeEnabled(environment)
+    !capacityLocalCiRuntimeEnabled(environment) &&
+    !e2eBuildRuntimeEnabled(environment)
   ) {
     throw new PublicOriginConfigurationError("Production public origin must use HTTPS.");
   }

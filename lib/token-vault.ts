@@ -5,6 +5,7 @@ import {
   timingSafeEqual
 } from "node:crypto";
 import { capacityLocalCiRuntimeEnabled } from "./capacity-local-ci-runtime";
+import { e2eBuildRuntimeEnabled } from "./e2e-build-runtime";
 import { publicDemoRuntimeEnabled } from "./public-demo-runtime";
 
 const AES_KEY_BYTES = 32;
@@ -186,7 +187,7 @@ export class LocalAesKeyEnvelopeProvider implements KeyEnvelopeProvider {
   ) {
     if (
       (process.env.NODE_ENV === "production" || options.nodeEnvironment === "production") &&
-      !capacityLocalCiRuntimeEnabled() && !publicDemoRuntimeEnabled()
+      !capacityLocalCiRuntimeEnabled() && !publicDemoRuntimeEnabled() && !e2eBuildRuntimeEnabled()
     ) {
       throw new TokenVaultConfigurationError("Local vault key provider is forbidden in production.");
     }
@@ -225,7 +226,8 @@ export class LocalAesKeyEnvelopeProvider implements KeyEnvelopeProvider {
   ) {
     if (
       (process.env.NODE_ENV === "production" || environment.NODE_ENV === "production") &&
-      !capacityLocalCiRuntimeEnabled(environment) && !publicDemoRuntimeEnabled(environment)
+      !capacityLocalCiRuntimeEnabled(environment) && !publicDemoRuntimeEnabled(environment) &&
+      !e2eBuildRuntimeEnabled(environment)
     ) {
       throw new TokenVaultConfigurationError("Local vault key provider is forbidden in production.");
     }

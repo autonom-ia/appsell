@@ -1,4 +1,8 @@
+import { join } from "node:path";
+
 import { defineConfig, devices } from "@playwright/test";
+
+import { E2E_BUILD_PUBLIC_ORIGIN, E2E_BUILD_RUNTIME_MARKER } from "./lib/e2e-build-runtime";
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -18,25 +22,35 @@ export default defineConfig({
     trace: "retain-on-failure"
   },
   webServer: {
-    // No CI, o servidor sobe por um filtro que só deixa passar para o log
-    // as linhas de compilação; o resto da saída nunca chega ao log público
-    // (tests/e2e/support/dev-server-log.mjs, #585).
-    command: process.env.CI ? "node tests/e2e/support/dev-server-log.mjs" : "pnpm dev",
+    // A suíte roda sobre o build de produção, não sobre o `next dev`: o
+    // servidor de desenvolvimento travava ~30 s atendendo o WebKit, e era a
+    // origem dos testes instáveis do webkit-mobile (#585). No CI o build já
+    // foi feito no passo anterior; localmente, este comando o refaz.
+    command: process.env.CI ? "pnpm start" : "pnpm build && pnpm start",
     url: "http://localhost:3000",
     // Desde o #350, sessão sem papel é falha fechada: sem menu de vendedor e
-    // sem CSRF de produto. Os specs entram como persona demo, que só existe em
-    // NODE_ENV development/test com APP_ENV local/ci (lib/demo-config.ts;
-    // tests/demo-config.test.ts prova a recusa em produção). A sessão sem
-    // papel continua coberta em tests/e2e/sessao-sem-papel.spec.ts.
+    // sem CSRF de produto. Os specs entram como persona demo, que o build de
+    // produção só aceita com as três travas de lib/e2e-build-runtime.ts:
+    // NODE_ENV=production com APP_ENV=ci, origem http://localhost:3000 com
+    // OAuth local, e o marcador abaixo. tests/e2e-build-runtime.test.ts prova
+    // cada recusa, e tests/production/ prova o mesmo build fechado sem o
+    // marcador. A sessão sem papel continua coberta em
+    // tests/e2e/sessao-sem-papel.spec.ts.
     // #544: o web não escolhe o provedor do checkout sozinho.
     env: {
-      APP_ENV: "local",
+      APP_ENV: "ci",
+      APPSELL_PUBLIC_ORIGIN: E2E_BUILD_PUBLIC_ORIGIN,
+      APPSELL_OAUTH_MODE: "local",
+      APPSELL_E2E_BUILD_RUNTIME: E2E_BUILD_RUNTIME_MARKER,
       APPSELL_DEMO_ENABLED: "true",
+      // Em produção a raiz dos PDFs da aula é obrigatória; aqui é a mesma
+      // pasta que o `next dev` usava por padrão.
+      APPSELL_PRIVATE_LEARNING_ASSET_ROOT: join(process.cwd(), "output", "pdf", "codex"),
       APPSELL_CHECKOUT_PROVIDER: process.env.APPSELL_CHECKOUT_PROVIDER ?? "local_stripe"
     },
     reuseExistingServer: false,
-    stdout: process.env.CI ? "pipe" : "ignore",
-    timeout: 120_000
+    stdout: "ignore",
+    timeout: process.env.CI ? 120_000 : 600_000
   },
   projects: [
     { name: "chromium", use: { ...devices["Desktop Chrome"] } },
