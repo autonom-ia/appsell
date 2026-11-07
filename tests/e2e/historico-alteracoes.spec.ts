@@ -45,25 +45,70 @@ function saidasDoProduto(page: Page) {
   return saidas;
 }
 
+declare global {
+  interface Window { __e2eDefinirNome?: (valor: string) => void }
+}
+
+// Muda o nome do produto como o React enxerga uma digitação: valor nativo e
+// evento `input`. Evento `input` é discreto para o React, que renderiza e roda
+// os efeitos dentro do próprio despacho — a guarda reage antes de a função
+// voltar, sem esperar o navegador andar. Fica instalado na janela porque a
+// CSP do build não deixa montar função a partir de texto.
+async function instalarDefinirNome(page: Page) {
+  await page.evaluate(() => {
+    window.__e2eDefinirNome = (valor: string) => {
+      const campo = document.querySelector<HTMLInputElement>('input[name="product_title"]');
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      if (!campo || !setter) throw new Error("campo Nome do produto ausente");
+      setter.call(campo, valor);
+      campo.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+  });
+}
+
 test("a tela do produto fica onde está quando o estado oscila rápido", async ({ page }) => {
   await login(page);
   await openEditor(page);
   const saidas = saidasDoProduto(page);
   const nome = page.getByLabel("Nome do produto");
-  await nome.focus();
-  await page.keyboard.press("End");
+  await instalarDefinirNome(page);
 
-  // Cada letra suja a tela e cada apagar a limpa: a guarda entra e sai a cada
-  // tecla, sem esperar uma travessia terminar antes da próxima.
-  for (let i = 0; i < OSCILACOES; i += 1) {
-    await page.keyboard.type("x");
-    await page.keyboard.press("Backspace");
-  }
+  // A ordem que tirava o vendedor da tela no WebKit, a mesma do upload de
+  // anexo: suja, limpa e suja de novo sem o navegador andar; deixa uma única
+  // travessia acontecer; e limpa antes da seguinte. Com a guarda antiga, essa
+  // travessia era o `back()` da limpeza, a guarda nova a tomava por gesto do
+  // usuário e pedia `go(1)`, e o `back()` da última limpeza cancelava o
+  // `go(1)` e saía da página. O listener entra depois da guarda, então roda
+  // depois dela no mesmo `popstate`.
+  await page.evaluate(async (titulo) => {
+    const definirNome = window.__e2eDefinirNome!;
+    definirNome(`${titulo}x`);
+    definirNome(titulo);
+    definirNome(`${titulo}x`);
+    await new Promise<void>((resolve) => {
+      window.addEventListener("popstate", () => {
+        definirNome(titulo);
+        resolve();
+      }, { once: true });
+    });
+  }, TITULO);
+  await expect(nome).toHaveValue(TITULO);
+
+  // Oscilações seguidas num único despacho também não podem sair da tela.
+  await page.evaluate(({ titulo, vezes }) => {
+    const definirNome = window.__e2eDefinirNome!;
+    for (let i = 0; i < vezes; i += 1) {
+      definirNome(`${titulo}x`);
+      definirNome(titulo);
+    }
+  }, { titulo: TITULO, vezes: OSCILACOES });
   await expect(nome).toHaveValue(TITULO);
 
   // A tela termina suja e o voltar tem de abrir o diálogo, não sair. Se a
   // conta do histórico tivesse perdido um passo, a página já estaria fora
-  // daqui e o diálogo nunca apareceria.
+  // daqui e o campo nem existiria.
+  await nome.focus();
+  await page.keyboard.press("End");
   await page.keyboard.type("!");
   await expect(nome).toHaveValue(`${TITULO}!`);
   await page.goBack();
@@ -76,6 +121,7 @@ test("a tela do produto fica onde está quando o estado oscila rápido", async (
   // Limpa de novo, um único voltar leva para a página anterior: a guarda não
   // deixou entrada sobrando no histórico.
   await nome.focus();
+  await page.keyboard.press("End");
   await page.keyboard.press("Backspace");
   await expect(nome).toHaveValue(TITULO);
   await expect(page.getByText("Há alterações não salvas.")).toHaveCount(0);
