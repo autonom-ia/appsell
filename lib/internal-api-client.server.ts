@@ -57,7 +57,8 @@ interface ApiRequest {
     "commerce.payout.read" | "commerce.payout.manage" | "commerce.payout.sync" |
     "commerce.checkout.destination" |
     "account.read" | "account.export" | "account.deletion.request" |
-    "seller.settings.read" | "seller.settings.update";
+    "seller.settings.read" | "seller.settings.update" |
+    "growth.campaign_link.read" | "growth.campaign_link.write";
   sellerOrganizationId?: string;
   inspectionToken?: string;
   body?: Record<string, unknown>;
@@ -1228,6 +1229,87 @@ export async function updateDomainSellerSettings(
       accent_color: input.accentColor
     }
   }) as Promise<SellerSettingsProjection>;
+}
+
+// Links UTM da loja e vendas por campanha (#563, Crescimento). A query entra no
+// envelope assinado, então a ordem dos parâmetros é a mesma aqui e na API.
+export interface CampaignLinkInput {
+  name: string;
+  destinationPageSlug: string | null;
+  utmSource: string;
+  utmMedium: string | null;
+  utmCampaign: string | null;
+  utmContent: string | null;
+  utmTerm: string | null;
+}
+
+function campaignLinksPath(sellerOrganizationId: string) {
+  return `/v1/me/sellers/${sellerOrganizationId}/campaign-links`;
+}
+
+export async function listDomainCampaignLinks(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: campaignLinksPath(sellerOrganizationId),
+    capability: "growth.campaign_link.read",
+    sellerOrganizationId
+  }) as Promise<Record<string, unknown>>;
+}
+
+export async function createDomainCampaignLink(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  input: CampaignLinkInput
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: campaignLinksPath(sellerOrganizationId),
+    capability: "growth.campaign_link.write",
+    sellerOrganizationId,
+    body: {
+      name: input.name,
+      destination_page_slug: input.destinationPageSlug,
+      utm_source: input.utmSource,
+      utm_medium: input.utmMedium,
+      utm_campaign: input.utmCampaign,
+      utm_content: input.utmContent,
+      utm_term: input.utmTerm
+    }
+  }) as Promise<Record<string, unknown>>;
+}
+
+export async function archiveDomainCampaignLink(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  linkId: string
+) {
+  return domainRequest(sessionId, session, {
+    method: "POST",
+    path: `${campaignLinksPath(sellerOrganizationId)}/${linkId}/archive`,
+    capability: "growth.campaign_link.write",
+    sellerOrganizationId
+  });
+}
+
+export async function readDomainCampaignSales(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  period: { from: string; to: string }
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `${campaignLinksPath(sellerOrganizationId)}/report`,
+    query: new URLSearchParams({ from: period.from, to: period.to }).toString(),
+    capability: "growth.campaign_link.read",
+    sellerOrganizationId
+  }) as Promise<Record<string, unknown>>;
 }
 
 export async function createDomainLogoUploadIntent(
