@@ -288,9 +288,12 @@ def _versoes() -> list[Path]:
         assert origem not in por_pai, f"duas migrations partem de {origem}"
         por_pai[origem] = (revisao, arquivo)
     cadeia: list[Path] = []
+    visitadas: set[str] = set()
     pai: str | None = None
     while pai in por_pai:
         pai, caminho = por_pai[pai]
+        assert pai not in visitadas, f"a cadeia volta para {pai}"
+        visitadas.add(pai)
         cadeia.append(caminho)
     fora = sorted(set(arquivos) - set(cadeia))
     assert not fora, f"migrations fora da cadeia: {[c.name for c in fora]}"

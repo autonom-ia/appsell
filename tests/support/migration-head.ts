@@ -43,11 +43,13 @@ export function migrationHead(root: string): string {
     porPai.set(downRevision, revision);
   }
   let cabeca: string | null = null;
-  let elos = 0;
+  const visitadas = new Set<string>();
   while (porPai.has(cabeca)) {
     cabeca = porPai.get(cabeca)!;
-    elos += 1;
+    if (visitadas.has(cabeca)) throw new Error(`a cadeia volta para ${cabeca}`);
+    visitadas.add(cabeca);
   }
+  const elos = visitadas.size;
   if (cabeca === null || elos !== arquivos.length) {
     throw new Error(`a cadeia tem ${elos} elos e o diretório tem ${arquivos.length} migrations`);
   }
