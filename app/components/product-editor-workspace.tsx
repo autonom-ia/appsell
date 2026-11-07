@@ -9,6 +9,8 @@ import { CurriculumWorkspace } from "./curriculum-workspace";
 import { ChoiceSelect } from "./ui/choice-select";
 import { ProductHeadlinePanel } from "./product-headline-panel";
 import { ProductImagePanel, type ProductCover } from "./product-image-panel";
+import { ProductOffersPanel } from "./product-offers-panel";
+import { readMultiOffer, type MultiOfferState } from "./product-offers";
 import { allowUnsavedNavigation, useUnsavedChanges } from "./use-unsaved-changes";
 import {
   formatOfferPrice,
@@ -88,7 +90,7 @@ interface EditorPayload {
   offer?: OfferDetail | null;
   publication?: ProductDetail["publication"];
   latest_publication?: ProductDetail["publication"];
-  csrf?: { update?: string; publish?: string; offer_status?: string; access_link_create?: string; access_link_revoke?: string; access_link_rotate?: string; cover_intent?: string; cover_confirm?: string; cover_clear?: string; headline?: string };
+  csrf?: { update?: string; publish?: string; offer_status?: string; access_link_create?: string; access_link_revoke?: string; access_link_rotate?: string; cover_intent?: string; cover_confirm?: string; cover_clear?: string; headline?: string; offer_create?: string; offer_default?: string };
   readiness?: { can_publish: boolean; has_unpublished_changes?: boolean; items: Array<ReadinessItem | string> };
   can_publish?: boolean;
   readiness_violations?: Array<string | { key?: string; label?: string; detail?: string }>;
@@ -225,7 +227,8 @@ export function ProductEditorWorkspace({
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [detail, setDetail] = useState<ProductDetail | null>(null);
   const detailRef = useRef<ProductDetail | null>(null);
-  const [csrf, setCsrf] = useState<{ update: string; publish: string; offerStatus: string; accessLinkCreate: string; accessLinkRevoke: string; accessLinkRotate: string; coverIntent: string; coverConfirm: string; coverClear: string; headline: string }>({ update: "", publish: "", offerStatus: "", accessLinkCreate: "", accessLinkRevoke: "", accessLinkRotate: "", coverIntent: "", coverConfirm: "", coverClear: "", headline: "" });
+  const [csrf, setCsrf] = useState<{ update: string; publish: string; offerStatus: string; accessLinkCreate: string; accessLinkRevoke: string; accessLinkRotate: string; coverIntent: string; coverConfirm: string; coverClear: string; headline: string; offerCreate: string; offerDefault: string }>({ update: "", publish: "", offerStatus: "", accessLinkCreate: "", accessLinkRevoke: "", accessLinkRotate: "", coverIntent: "", coverConfirm: "", coverClear: "", headline: "", offerCreate: "", offerDefault: "" });
+  const [multiOffer, setMultiOffer] = useState<MultiOfferState>(() => readMultiOffer(null));
   const [fields, setFields] = useState<EditorFields>(emptyFields);
   const fieldsRef = useRef(fields);
   const dirtyRef = useRef(false);
@@ -403,7 +406,8 @@ export function ProductEditorWorkspace({
       detailRef.current = loadedDetail;
       setDetail(loadedDetail);
       setCurriculumSummary(nextDetail.curriculum);
-      setCsrf({ update: payload.csrf?.update ?? readActionCsrf("update"), publish: payload.csrf?.publish ?? readActionCsrf("publish"), offerStatus: payload.csrf?.offer_status ?? "", accessLinkCreate: payload.csrf?.access_link_create ?? "", accessLinkRevoke: payload.csrf?.access_link_revoke ?? "", accessLinkRotate: payload.csrf?.access_link_rotate ?? "", coverIntent: payload.csrf?.cover_intent ?? "", coverConfirm: payload.csrf?.cover_confirm ?? "", coverClear: payload.csrf?.cover_clear ?? "", headline: payload.csrf?.headline ?? "" });
+      setCsrf({ update: payload.csrf?.update ?? readActionCsrf("update"), publish: payload.csrf?.publish ?? readActionCsrf("publish"), offerStatus: payload.csrf?.offer_status ?? "", accessLinkCreate: payload.csrf?.access_link_create ?? "", accessLinkRevoke: payload.csrf?.access_link_revoke ?? "", accessLinkRotate: payload.csrf?.access_link_rotate ?? "", coverIntent: payload.csrf?.cover_intent ?? "", coverConfirm: payload.csrf?.cover_confirm ?? "", coverClear: payload.csrf?.cover_clear ?? "", headline: payload.csrf?.headline ?? "", offerCreate: payload.csrf?.offer_create ?? "", offerDefault: payload.csrf?.offer_default ?? "" });
+      setMultiOffer(readMultiOffer(payload));
       setFields(nextFields);
       setSavedFields(nextFields);
       setLoadState("ready");
@@ -541,7 +545,7 @@ export function ProductEditorWorkspace({
       updateIdempotencyKey.current = null;
       setDetail({ ...updated, readiness: payload.readiness ?? updated.readiness });
       setCurriculumSummary(updated.curriculum);
-      setCsrf((current) => ({ ...current, update: payload.csrf?.update ?? current.update, publish: payload.csrf?.publish ?? current.publish, offerStatus: payload.csrf?.offer_status ?? current.offerStatus, accessLinkCreate: payload.csrf?.access_link_create ?? current.accessLinkCreate, accessLinkRevoke: payload.csrf?.access_link_revoke ?? current.accessLinkRevoke, accessLinkRotate: payload.csrf?.access_link_rotate ?? current.accessLinkRotate, coverIntent: payload.csrf?.cover_intent ?? current.coverIntent, coverConfirm: payload.csrf?.cover_confirm ?? current.coverConfirm, coverClear: payload.csrf?.cover_clear ?? current.coverClear, headline: payload.csrf?.headline ?? current.headline }));
+      setCsrf((current) => ({ ...current, update: payload.csrf?.update ?? current.update, publish: payload.csrf?.publish ?? current.publish, offerStatus: payload.csrf?.offer_status ?? current.offerStatus, accessLinkCreate: payload.csrf?.access_link_create ?? current.accessLinkCreate, accessLinkRevoke: payload.csrf?.access_link_revoke ?? current.accessLinkRevoke, accessLinkRotate: payload.csrf?.access_link_rotate ?? current.accessLinkRotate, coverIntent: payload.csrf?.cover_intent ?? current.coverIntent, coverConfirm: payload.csrf?.cover_confirm ?? current.coverConfirm, coverClear: payload.csrf?.cover_clear ?? current.coverClear, headline: payload.csrf?.headline ?? current.headline, offerCreate: payload.csrf?.offer_create ?? current.offerCreate, offerDefault: payload.csrf?.offer_default ?? current.offerDefault }));
       setSavedFields(fieldsFromDetail(updated));
       if (sameFields(fieldsRef.current, submitted)) {
         const serverFields = fieldsFromDetail(updated);
@@ -582,7 +586,7 @@ export function ProductEditorWorkspace({
       setDetail(latest);
       setCurriculumSummary(latest.curriculum);
       setSavedFields(fieldsFromDetail(latest));
-      setCsrf((current) => ({ ...current, update: payload.csrf?.update ?? current.update, publish: payload.csrf?.publish ?? current.publish, offerStatus: payload.csrf?.offer_status ?? current.offerStatus, accessLinkCreate: payload.csrf?.access_link_create ?? current.accessLinkCreate, accessLinkRevoke: payload.csrf?.access_link_revoke ?? current.accessLinkRevoke, accessLinkRotate: payload.csrf?.access_link_rotate ?? current.accessLinkRotate, coverIntent: payload.csrf?.cover_intent ?? current.coverIntent, coverConfirm: payload.csrf?.cover_confirm ?? current.coverConfirm, coverClear: payload.csrf?.cover_clear ?? current.coverClear, headline: payload.csrf?.headline ?? current.headline }));
+      setCsrf((current) => ({ ...current, update: payload.csrf?.update ?? current.update, publish: payload.csrf?.publish ?? current.publish, offerStatus: payload.csrf?.offer_status ?? current.offerStatus, accessLinkCreate: payload.csrf?.access_link_create ?? current.accessLinkCreate, accessLinkRevoke: payload.csrf?.access_link_revoke ?? current.accessLinkRevoke, accessLinkRotate: payload.csrf?.access_link_rotate ?? current.accessLinkRotate, coverIntent: payload.csrf?.cover_intent ?? current.coverIntent, coverConfirm: payload.csrf?.cover_confirm ?? current.coverConfirm, coverClear: payload.csrf?.cover_clear ?? current.coverClear, headline: payload.csrf?.headline ?? current.headline, offerCreate: payload.csrf?.offer_create ?? current.offerCreate, offerDefault: payload.csrf?.offer_default ?? current.offerDefault }));
       offerId.current = latest.offer.id ?? offerId.current ?? crypto.randomUUID();
       updateIdempotencyKey.current = null;
       setInvalidField("");
@@ -1092,6 +1096,20 @@ export function ProductEditorWorkspace({
         ) : null}
       </form>
       )}
+      {/* Ofertas extras (#553): fora do form do editor, que tem o próprio submit.
+          Só existe quando a api liga a loja; desligado, o DOM é o de antes. */}
+      {section === "oferta" && multiOffer.enabled ? (
+        <ProductOffersPanel
+          sellerId={sellerId}
+          productId={productId}
+          offers={multiOffer.offers}
+          csrfCreate={csrf.offerCreate}
+          csrfDefault={csrf.offerDefault}
+          csrfStatus={csrf.offerStatus}
+          disabled={detail.status === "archived" || dirty}
+          onChanged={() => loadDetail(true)}
+        />
+      ) : null}
 
 
       {publishDialogOpen ? (

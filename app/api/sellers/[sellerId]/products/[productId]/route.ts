@@ -11,10 +11,12 @@ import {
   CLEAR_PRODUCT_COVER_CSRF_ACTION,
   CONFIRM_COVER_UPLOAD_CSRF_ACTION,
   CREATE_COVER_UPLOAD_CSRF_ACTION,
+  CREATE_PRODUCT_OFFER_CSRF_ACTION,
   PUBLISH_PRODUCT_DRAFT_CSRF_ACTION,
   CREATE_ACCESS_LINK_CSRF_ACTION,
   REVOKE_ACCESS_LINK_CSRF_ACTION,
   ROTATE_ACCESS_LINK_CSRF_ACTION,
+  SET_DEFAULT_OFFER_CSRF_ACTION,
   TRANSITION_OFFER_STATUS_CSRF_ACTION,
   UPDATE_PRODUCT_DRAFT_CSRF_ACTION,
   UPDATE_PRODUCT_HEADLINE_CSRF_ACTION,
@@ -126,6 +128,16 @@ export async function GET(request: NextRequest, context: ProductRouteContext) {
         headline: csrfTokenForSession(
           authenticated.sessionId,
           UPDATE_PRODUCT_HEADLINE_CSRF_ACTION
+        ),
+        // Segunda oferta (#553): o painel só aparece quando a api diz
+        // multi_offer_enabled; o token sozinho não libera nada.
+        offer_create: csrfTokenForSession(
+          authenticated.sessionId,
+          CREATE_PRODUCT_OFFER_CSRF_ACTION
+        ),
+        offer_default: csrfTokenForSession(
+          authenticated.sessionId,
+          SET_DEFAULT_OFFER_CSRF_ACTION
         )
       }
     }, { headers: { "cache-control": "no-store" } });

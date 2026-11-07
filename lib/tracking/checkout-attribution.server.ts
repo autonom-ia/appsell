@@ -1,0 +1,48 @@
+import "server-only";
+
+import { CAMPOS_UTM } from "./attribution";
+import { atribuicaoLiberada } from "./pilot";
+import { atribuicaoDoPedido } from "./request-attribution";
+import { chamarRastreio, registrarFalha } from "./servico.server";
+
+interface PedidoComCookies {
+  cookies: { get(nome: string): { value: string } | undefined };
+}
+
+const CAMINHO = "/v1/public/tracking/checkout-attribution";
+
+// Chamada pelo checkout logo depois de criar o intent (#563). Nunca lança erro
+// e nunca muda o checkout: sem piloto, sem aceite, sem cookie válido ou com a
+// API fora do ar, o checkout segue igual e só a atribuição se perde.
+export async function registrarAtribuicaoDoCheckout(
+  request: PedidoComCookies,
+  sellerId: string,
+  checkoutIntentId: string,
+  agora: number = Math.floor(Date.now() / 1000)
+): Promise<void> {
+  try {
+    if (!atribuicaoLiberada(sellerId)) return;
+    const aceita = atribuicaoDoPedido(request.cookies, sellerId, agora);
+    if (aceita === null) return;
+    const { atribuicao, versaoDoTexto } = aceita;
+    const utm = Object.fromEntries(CAMPOS_UTM.map((campo) => [campo, atribuicao.utm[campo] ?? null]));
+    await chamarRastreio(CAMINHO, {
+      seller_organization_id: sellerId,
+      purchase_reference: checkoutIntentId,
+      link_id: atribuicao.link,
+      ...utm,
+      visited_at: atribuicao.visitadoEm,
+      consent_text_version: versaoDoTexto
+    });
+  } catch (error) {
+    // chamarRastreio já registrou a falha da API; aqui só o erro inesperado.
+    if (!(error instanceof Error && error.message === "tracking_unavailable")) {
+      registrarFalha(CAMINHO, "unexpected", error, null);
+    }
+  }
+}
+
+// Para quem chama: um erro que escapou da atribuição vira só log, nunca resposta.
+export function atribuicaoFalhou(error: unknown): void {
+  registrarFalha(CAMINHO, "unexpected", error, null);
+}
