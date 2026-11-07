@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { sessionCookieName } from "@/lib/cookies";
-import { transitionDomainOfferStatus } from "@/lib/internal-api-client.server";
+import {
+  readDomainProductDraft,
+  transitionDomainOfferStatus
+} from "@/lib/internal-api-client.server";
 import {
   TRANSITION_OFFER_STATUS_CSRF_ACTION,
   verifyMutation
@@ -20,6 +23,7 @@ import {
   safeVersion,
   unauthorized
 } from "../../../_route-shared";
+import { draftOfferMinimum, priceBelowMinimum, sellerChargesCommission } from "../../../_minimum-price";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const OFFER_STATUSES = new Set(["draft", "active", "archived"]);
@@ -76,6 +80,17 @@ export async function PATCH(request: NextRequest, context: OfferStatusRouteConte
   if (fields.expected_status === fields.status) return invalidInput("status");
 
   try {
+    // #546: ativar vendas exige que a loja receba algo pelo preço atual.
+    if (fields.status === "active") {
+      const minimum = draftOfferMinimum(
+        await readDomainProductDraft(authenticated.sessionId, authenticated.session, sellerId, productId),
+        offerId
+      );
+      if (minimum.kind === "invalid_draft") return mappedError(new Error("invalid domain response"));
+      if (minimum.kind === "below_minimum" && await sellerChargesCommission(sellerId)) {
+        return priceBelowMinimum(minimum.minimumMinor);
+      }
+    }
     const payload = await transitionDomainOfferStatus(
       authenticated.sessionId,
       authenticated.session,

@@ -9,6 +9,8 @@ import { CurriculumWorkspace } from "./curriculum-workspace";
 import { ChoiceSelect } from "./ui/choice-select";
 import { ProductHeadlinePanel } from "./product-headline-panel";
 import { ProductImagePanel, type ProductCover } from "./product-image-panel";
+import { ProductOffersPanel } from "./product-offers-panel";
+import { readMultiOffer, type MultiOfferState } from "./product-offers";
 import { allowUnsavedNavigation, useUnsavedChanges } from "./use-unsaved-changes";
 import {
   formatOfferPrice,
@@ -17,6 +19,7 @@ import {
   parsePriceInputToMinor,
   priceInputFromMinor
 } from "@/lib/offer-price";
+import { minimumFromResponse, minimumPriceMessage } from "@/lib/minimum-price-copy";
 import { keepPriceCharacters } from "@/lib/numeric-field";
 import { publishedOnLabel, stepSummaries } from "@/lib/editor-steps";
 
@@ -24,8 +27,8 @@ type EditorSection = "produto" | "curriculo" | "oferta" | "publicar";
 type LoadState = "loading" | "ready" | "unauthorized" | "forbidden" | "not_found" | "unavailable" | "error";
 type SaveState = "idle" | "saving" | "saved" | "saved_with_changes" | "conflict" | "rebasing" | "rebased" | "invalid" | "forbidden" | "unavailable" | "error";
 type PreviewState = "idle" | "loading" | "ready" | "unavailable" | "error";
-type PublishState = "idle" | "publishing" | "published" | "conflict" | "forbidden" | "unavailable" | "error";
-type OfferStatusState = "idle" | "transitioning" | "reloading" | "done" | "conflict" | "blocked" | "forbidden" | "unavailable" | "error";
+type PublishState = "idle" | "publishing" | "published" | "conflict" | "below_minimum" | "forbidden" | "unavailable" | "error";
+type OfferStatusState = "idle" | "transitioning" | "reloading" | "done" | "conflict" | "blocked" | "below_minimum" | "forbidden" | "unavailable" | "error";
 
 interface CourseDetail {
   id: string;
@@ -87,7 +90,7 @@ interface EditorPayload {
   offer?: OfferDetail | null;
   publication?: ProductDetail["publication"];
   latest_publication?: ProductDetail["publication"];
-  csrf?: { update?: string; publish?: string; offer_status?: string; access_link_create?: string; access_link_revoke?: string; access_link_rotate?: string; cover_intent?: string; cover_confirm?: string; cover_clear?: string; headline?: string };
+  csrf?: { update?: string; publish?: string; offer_status?: string; access_link_create?: string; access_link_revoke?: string; access_link_rotate?: string; cover_intent?: string; cover_confirm?: string; cover_clear?: string; headline?: string; offer_create?: string; offer_default?: string };
   readiness?: { can_publish: boolean; has_unpublished_changes?: boolean; items: Array<ReadinessItem | string> };
   can_publish?: boolean;
   readiness_violations?: Array<string | { key?: string; label?: string; detail?: string }>;
@@ -224,7 +227,8 @@ export function ProductEditorWorkspace({
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [detail, setDetail] = useState<ProductDetail | null>(null);
   const detailRef = useRef<ProductDetail | null>(null);
-  const [csrf, setCsrf] = useState<{ update: string; publish: string; offerStatus: string; accessLinkCreate: string; accessLinkRevoke: string; accessLinkRotate: string; coverIntent: string; coverConfirm: string; coverClear: string; headline: string }>({ update: "", publish: "", offerStatus: "", accessLinkCreate: "", accessLinkRevoke: "", accessLinkRotate: "", coverIntent: "", coverConfirm: "", coverClear: "", headline: "" });
+  const [csrf, setCsrf] = useState<{ update: string; publish: string; offerStatus: string; accessLinkCreate: string; accessLinkRevoke: string; accessLinkRotate: string; coverIntent: string; coverConfirm: string; coverClear: string; headline: string; offerCreate: string; offerDefault: string }>({ update: "", publish: "", offerStatus: "", accessLinkCreate: "", accessLinkRevoke: "", accessLinkRotate: "", coverIntent: "", coverConfirm: "", coverClear: "", headline: "", offerCreate: "", offerDefault: "" });
+  const [multiOffer, setMultiOffer] = useState<MultiOfferState>(() => readMultiOffer(null));
   const [fields, setFields] = useState<EditorFields>(emptyFields);
   const fieldsRef = useRef(fields);
   const dirtyRef = useRef(false);
@@ -234,6 +238,11 @@ export function ProductEditorWorkspace({
   const [savedFields, setSavedFields] = useState<EditorFields>(emptyFields);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [invalidField, setInvalidField] = useState("");
+  // Pedido de foco depois de um salvar recusado. Fica separado de invalidField
+  // porque digitar limpa o destaque, e isso não pode mover o foco de novo.
+  const [invalidFocusRequest, setInvalidFocusRequest] = useState<{ field: string; attempt: number } | null>(null);
+  // #546: menor preço em que a loja recebe algo, vindo do servidor no 422.
+  const [minimumPriceMinor, setMinimumPriceMinor] = useState<number | null>(null);
   const [previewState, setPreviewState] = useState<PreviewState>("idle");
   const [preview, setPreview] = useState<PrivatePreview | null>(null);
   const [previewRetry, setPreviewRetry] = useState(0);
@@ -340,10 +349,20 @@ export function ProductEditorWorkspace({
     if (publishState !== "publishing") return;
     requestAnimationFrame(() => publishStatus.current?.focus());
   }, [publishState]);
+  // Um só dono do foco quando o salvar é recusado: o campo apontado, se ele
+  // existe na tela; senão, o resumo do erro. Antes eram dois — o campo levava o
+  // foco na hora e o resumo o tomava no quadro seguinte (#546).
   useEffect(() => {
-    if (saveState !== "invalid") return;
-    requestAnimationFrame(() => saveErrorSummary.current?.focus());
-  }, [saveState]);
+    if (invalidFocusRequest === null) return;
+    const frame = requestAnimationFrame(() => {
+      const inputName = inputNameForField(invalidFocusRequest.field);
+      const input = inputName ? formElement.current?.elements.namedItem(inputName) : null;
+      if (input instanceof HTMLElement) input.focus();
+      if (input instanceof HTMLElement && document.activeElement === input) return;
+      saveErrorSummary.current?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [invalidFocusRequest]);
   const handleCurriculumDirty = useCallback((nextDirty: boolean) => setCurriculumDirty(nextDirty), []);
   const handleCurriculumBusy = useCallback((nextBusy: boolean) => {
     setCurriculumBusy(nextBusy);
@@ -387,7 +406,8 @@ export function ProductEditorWorkspace({
       detailRef.current = loadedDetail;
       setDetail(loadedDetail);
       setCurriculumSummary(nextDetail.curriculum);
-      setCsrf({ update: payload.csrf?.update ?? readActionCsrf("update"), publish: payload.csrf?.publish ?? readActionCsrf("publish"), offerStatus: payload.csrf?.offer_status ?? "", accessLinkCreate: payload.csrf?.access_link_create ?? "", accessLinkRevoke: payload.csrf?.access_link_revoke ?? "", accessLinkRotate: payload.csrf?.access_link_rotate ?? "", coverIntent: payload.csrf?.cover_intent ?? "", coverConfirm: payload.csrf?.cover_confirm ?? "", coverClear: payload.csrf?.cover_clear ?? "", headline: payload.csrf?.headline ?? "" });
+      setCsrf({ update: payload.csrf?.update ?? readActionCsrf("update"), publish: payload.csrf?.publish ?? readActionCsrf("publish"), offerStatus: payload.csrf?.offer_status ?? "", accessLinkCreate: payload.csrf?.access_link_create ?? "", accessLinkRevoke: payload.csrf?.access_link_revoke ?? "", accessLinkRotate: payload.csrf?.access_link_rotate ?? "", coverIntent: payload.csrf?.cover_intent ?? "", coverConfirm: payload.csrf?.cover_confirm ?? "", coverClear: payload.csrf?.cover_clear ?? "", headline: payload.csrf?.headline ?? "", offerCreate: payload.csrf?.offer_create ?? "", offerDefault: payload.csrf?.offer_default ?? "" });
+      setMultiOffer(readMultiOffer(payload));
       setFields(nextFields);
       setSavedFields(nextFields);
       setLoadState("ready");
@@ -464,8 +484,7 @@ export function ProductEditorWorkspace({
     if (savingOffer && submittedUnitAmountMinor === null) {
       setInvalidField("offer_price");
       setSaveState("invalid");
-      const input = formElement.current?.elements.namedItem("offer_price");
-      if (input instanceof HTMLElement) input.focus();
+      setInvalidFocusRequest((current) => ({ field: "offer_price", attempt: (current?.attempt ?? 0) + 1 }));
       return false;
     }
     const submittedVersions = versionsFromDetail(detail);
@@ -504,10 +523,10 @@ export function ProductEditorWorkspace({
         else if (response.status === 422) {
           const payload = await response.json().catch(() => null) as { field?: string } | null;
           const field = payload?.field ?? "form";
+          setMinimumPriceMinor(minimumFromResponse(payload));
           setInvalidField(field);
           setSaveState("invalid");
-          const input = formElement.current?.elements.namedItem(field);
-          if (input instanceof HTMLElement) input.focus();
+          setInvalidFocusRequest((current) => ({ field, attempt: (current?.attempt ?? 0) + 1 }));
         } else if (response.status === 503) setSaveState("unavailable");
         else setSaveState("error");
         return false;
@@ -526,7 +545,7 @@ export function ProductEditorWorkspace({
       updateIdempotencyKey.current = null;
       setDetail({ ...updated, readiness: payload.readiness ?? updated.readiness });
       setCurriculumSummary(updated.curriculum);
-      setCsrf((current) => ({ ...current, update: payload.csrf?.update ?? current.update, publish: payload.csrf?.publish ?? current.publish, offerStatus: payload.csrf?.offer_status ?? current.offerStatus, accessLinkCreate: payload.csrf?.access_link_create ?? current.accessLinkCreate, accessLinkRevoke: payload.csrf?.access_link_revoke ?? current.accessLinkRevoke, accessLinkRotate: payload.csrf?.access_link_rotate ?? current.accessLinkRotate, coverIntent: payload.csrf?.cover_intent ?? current.coverIntent, coverConfirm: payload.csrf?.cover_confirm ?? current.coverConfirm, coverClear: payload.csrf?.cover_clear ?? current.coverClear, headline: payload.csrf?.headline ?? current.headline }));
+      setCsrf((current) => ({ ...current, update: payload.csrf?.update ?? current.update, publish: payload.csrf?.publish ?? current.publish, offerStatus: payload.csrf?.offer_status ?? current.offerStatus, accessLinkCreate: payload.csrf?.access_link_create ?? current.accessLinkCreate, accessLinkRevoke: payload.csrf?.access_link_revoke ?? current.accessLinkRevoke, accessLinkRotate: payload.csrf?.access_link_rotate ?? current.accessLinkRotate, coverIntent: payload.csrf?.cover_intent ?? current.coverIntent, coverConfirm: payload.csrf?.cover_confirm ?? current.coverConfirm, coverClear: payload.csrf?.cover_clear ?? current.coverClear, headline: payload.csrf?.headline ?? current.headline, offerCreate: payload.csrf?.offer_create ?? current.offerCreate, offerDefault: payload.csrf?.offer_default ?? current.offerDefault }));
       setSavedFields(fieldsFromDetail(updated));
       if (sameFields(fieldsRef.current, submitted)) {
         const serverFields = fieldsFromDetail(updated);
@@ -567,7 +586,7 @@ export function ProductEditorWorkspace({
       setDetail(latest);
       setCurriculumSummary(latest.curriculum);
       setSavedFields(fieldsFromDetail(latest));
-      setCsrf((current) => ({ ...current, update: payload.csrf?.update ?? current.update, publish: payload.csrf?.publish ?? current.publish, offerStatus: payload.csrf?.offer_status ?? current.offerStatus, accessLinkCreate: payload.csrf?.access_link_create ?? current.accessLinkCreate, accessLinkRevoke: payload.csrf?.access_link_revoke ?? current.accessLinkRevoke, accessLinkRotate: payload.csrf?.access_link_rotate ?? current.accessLinkRotate, coverIntent: payload.csrf?.cover_intent ?? current.coverIntent, coverConfirm: payload.csrf?.cover_confirm ?? current.coverConfirm, coverClear: payload.csrf?.cover_clear ?? current.coverClear, headline: payload.csrf?.headline ?? current.headline }));
+      setCsrf((current) => ({ ...current, update: payload.csrf?.update ?? current.update, publish: payload.csrf?.publish ?? current.publish, offerStatus: payload.csrf?.offer_status ?? current.offerStatus, accessLinkCreate: payload.csrf?.access_link_create ?? current.accessLinkCreate, accessLinkRevoke: payload.csrf?.access_link_revoke ?? current.accessLinkRevoke, accessLinkRotate: payload.csrf?.access_link_rotate ?? current.accessLinkRotate, coverIntent: payload.csrf?.cover_intent ?? current.coverIntent, coverConfirm: payload.csrf?.cover_confirm ?? current.coverConfirm, coverClear: payload.csrf?.cover_clear ?? current.coverClear, headline: payload.csrf?.headline ?? current.headline, offerCreate: payload.csrf?.offer_create ?? current.offerCreate, offerDefault: payload.csrf?.offer_default ?? current.offerDefault }));
       offerId.current = latest.offer.id ?? offerId.current ?? crypto.randomUUID();
       updateIdempotencyKey.current = null;
       setInvalidField("");
@@ -654,6 +673,7 @@ export function ProductEditorWorkspace({
       const response = await fetch(`/api/sellers/${sellerId}/products/${productId}/publications`, { method: "POST", body: data, signal: controller.signal });
       if (!response.ok) {
         const errorPayload = await response.json().catch(() => null) as { error?: string } | null;
+        const publishMinimum = response.status === 422 ? minimumFromResponse(errorPayload) : null;
         if (checkoutPlan.activateAfterPublication && errorPayload?.error === "no_unpublished_changes") {
           publishIdempotencyKey.current = null;
           const refreshedOk = await loadDetail();
@@ -665,6 +685,11 @@ export function ProductEditorWorkspace({
           }
         }
         if (response.status === 401 || response.status === 403) setPublishState("forbidden");
+        else if (publishMinimum !== null) {
+          publishIdempotencyKey.current = null;
+          setMinimumPriceMinor(publishMinimum);
+          setPublishState("below_minimum");
+        }
         else if (response.status === 409 || response.status === 422) {
           publishIdempotencyKey.current = null;
           setPublishState("conflict");
@@ -739,7 +764,11 @@ export function ProductEditorWorkspace({
       if (!response.ok) {
         if (response.status === 401 || response.status === 403) setOfferStatusState("forbidden");
         else if (response.status === 409) setOfferStatusState("conflict");
-        else if (response.status === 422) setOfferStatusState("blocked");
+        else if (response.status === 422) {
+          const minimum = minimumFromResponse(await response.json().catch(() => null));
+          setMinimumPriceMinor(minimum);
+          setOfferStatusState(minimum === null ? "blocked" : "below_minimum");
+        }
         else if (response.status === 503) setOfferStatusState("unavailable");
         else setOfferStatusState("error");
         return false;
@@ -989,7 +1018,7 @@ export function ProductEditorWorkspace({
                 : <div className="billing-boundary" role="note"><strong>{detail.offer.status === "active" ? "Vendas ativas" : "Vendas encerradas"}</strong><p>{detail.offer.status === "active" ? "Para editar termos ou preço, desative as vendas primeiro." : "Encerrar vendas é definitivo, e o produto não volta para a vitrine."}</p></div>}
               <EditorField label="Nome no checkout" name="offer_title" value={fields.offer_title} onChange={(value) => updateField("offer_title", value)} minLength={2} maxLength={120} required invalid={invalidField === "offer_title"}/>
               <EditorField label="Descrição no checkout" name="offer_summary" value={fields.offer_summary} onChange={(value) => updateField("offer_summary", value)} maxLength={500} multiline invalid={invalidField === "offer_summary"}/>
-              <EditorField label={`Preço (${offerCurrencyLabel})`} name="offer_price" value={fields.offer_price} onChange={(value) => updateField("offer_price", value)} onBlur={() => setPriceTouched(true)} maxLength={12} inputMode="decimal" pattern="[0-9]{1,9}([.,][0-9]{1,2})?" sanitize={keepPriceCharacters} invalid={invalidField === "offer_price" || invalidField === "offer_unit_amount_minor" || priceLocallyInvalid} help="Use vírgula para centavos, ex.: 49,90. Deixe vazio para manter sem preço."/>
+              <EditorField label={`Preço (${offerCurrencyLabel})`} name="offer_price" value={fields.offer_price} onChange={(value) => updateField("offer_price", value)} onBlur={() => setPriceTouched(true)} maxLength={12} inputMode="decimal" pattern="[0-9]{1,9}([.,][0-9]{1,2})?" sanitize={keepPriceCharacters} invalid={invalidField === "offer_price" || invalidField === "offer_unit_amount_minor" || priceLocallyInvalid} error={invalidField === "offer_unit_amount_minor" && minimumPriceMinor !== null ? minimumPriceMessage(minimumPriceMinor) : undefined} help="Use vírgula para centavos, ex.: 49,90. Deixe vazio para manter sem preço."/>
               <ChoiceSelect<string> label="Cobrança" id="offer_billing_period" name="offer_billing_period" value={fields.offer_billing_period} options={OFFER_BILLING_PERIODS} onChange={(value) => updateField("offer_billing_period", value)} invalid={invalidField === "offer_billing_period"} disabled={detail.status === "archived" || offerLocked}/>
             </fieldset>
             <section className="offer-status-panel" aria-labelledby="offer-status-title">
@@ -1038,6 +1067,7 @@ export function ProductEditorWorkspace({
                 {offerStatusState === "done" ? <p className="form-success">Modo de acesso atualizado.</p> : null}
                 {offerStatusState === "conflict" ? <><p className="form-error">O preço mudou em outra sessão. Atualize os dados antes de tentar novamente.</p><button className="secondary-button" type="button" onClick={() => void reloadOfferAfterConflict()}>Atualizar dados do preço</button></> : null}
                 {offerStatusState === "reloading" ? <p className="form-note">Atualizando os dados do preço…</p> : null}
+                {offerStatusState === "below_minimum" && minimumPriceMinor !== null ? <p className="form-error" role="alert">{minimumPriceMessage(minimumPriceMinor)}</p> : null}
                 {offerStatusState === "blocked" ? <p className="form-error">A mudança foi bloqueada. Publique o catálogo e confira se há preço salvo maior que zero.</p> : null}
                 {offerStatusState === "forbidden" ? <p className="form-error">Sua sessão ou permissão mudou. Entre novamente.</p> : null}
                 {offerStatusState === "unavailable" ? <p className="form-note">A API não respondeu. Nenhuma mudança foi confirmada; tente novamente.</p> : null}
@@ -1049,6 +1079,7 @@ export function ProductEditorWorkspace({
             <div ref={publishStatus} className="form-feedback" aria-live="polite" aria-atomic="true" tabIndex={-1}>
               {publishState === "publishing" ? <p className="form-note">Publicando uma versão fixa do catálogo…</p> : null}
               {publishState === "published" ? <p className="form-success">Catálogo publicado com sucesso. Agora escolha acima entre acesso gratuito e vendas com checkout.</p> : null}
+              {publishState === "below_minimum" && minimumPriceMinor !== null ? <p className="form-error" role="alert">{minimumPriceMessage(minimumPriceMinor)}</p> : null}
               {publishState === "conflict" ? <p className="form-error">O produto mudou ou não está pronto. Recarregue os dados antes de publicar.</p> : null}
               {publishState === "forbidden" ? <p className="form-error">Sua sessão ou permissão mudou. Entre novamente.</p> : null}
               {publishState === "unavailable" ? <p className="form-note">A API não respondeu. A chave desta publicação foi preservada para uma tentativa segura.</p> : null}
@@ -1065,6 +1096,20 @@ export function ProductEditorWorkspace({
         ) : null}
       </form>
       )}
+      {/* Ofertas extras (#553): fora do form do editor, que tem o próprio submit.
+          Só existe quando a api liga a loja; desligado, o DOM é o de antes. */}
+      {section === "oferta" && multiOffer.enabled ? (
+        <ProductOffersPanel
+          sellerId={sellerId}
+          productId={productId}
+          offers={multiOffer.offers}
+          csrfCreate={csrf.offerCreate}
+          csrfDefault={csrf.offerDefault}
+          csrfStatus={csrf.offerStatus}
+          disabled={detail.status === "archived" || dirty}
+          onChanged={() => loadDetail(true)}
+        />
+      ) : null}
 
 
       {publishDialogOpen ? (
@@ -1169,12 +1214,12 @@ function EditorLoadState({ state, sellerId, onRetry }: { state: LoadState; selle
 // `sanitize` é o que impede um campo numérico de aceitar texto: ele filtra a
 // digitação em vez de deixar o valor entrar e recusá-lo no envio. Fica fora do
 // spread de propriedades porque não é atributo de DOM.
-function EditorField({ label, name, value, onChange, onBlur, multiline = false, invalid = false, help, sanitize, ...inputProps }: { label: string; name: keyof EditorFields; value: string; onChange: (value: string) => void; onBlur?: () => void; multiline?: boolean; invalid?: boolean; help?: string; sanitize?: (raw: string) => string; minLength?: number; maxLength?: number; required?: boolean; pattern?: string; inputMode?: "decimal" | "numeric" }) {
+function EditorField({ label, name, value, onChange, onBlur, multiline = false, invalid = false, error, help, sanitize, ...inputProps }: { label: string; name: keyof EditorFields; value: string; onChange: (value: string) => void; onBlur?: () => void; multiline?: boolean; invalid?: boolean; error?: string; help?: string; sanitize?: (raw: string) => string; minLength?: number; maxLength?: number; required?: boolean; pattern?: string; inputMode?: "decimal" | "numeric" }) {
   const helpId = `${name}-help`;
   const errorId = `${name}-error`;
   const describedBy = [help ? helpId : "", invalid ? errorId : ""].filter(Boolean).join(" ") || undefined;
   const accept = (raw: string) => onChange(sanitize ? sanitize(raw) : raw);
-  return <label className="editor-field">{label}{multiline ? <textarea id={name} name={name} value={value} onChange={(event) => accept(event.target.value)} onBlur={onBlur} rows={5} autoComplete="off" aria-invalid={invalid} aria-describedby={describedBy} {...inputProps}/> : <input id={name} name={name} value={value} onChange={(event) => accept(event.target.value)} onBlur={onBlur} autoComplete="off" spellCheck={name === "slug" ? false : undefined} autoCapitalize={name === "slug" ? "none" : undefined} aria-invalid={invalid} aria-describedby={describedBy} {...inputProps}/>} {help ? <span id={helpId}>{help}</span> : null}{invalid ? <span id={errorId} className="form-error" role="alert">{editorFieldError(name)}</span> : null}</label>;
+  return <label className="editor-field">{label}{multiline ? <textarea id={name} name={name} value={value} onChange={(event) => accept(event.target.value)} onBlur={onBlur} rows={5} autoComplete="off" aria-invalid={invalid} aria-describedby={describedBy} {...inputProps}/> : <input id={name} name={name} value={value} onChange={(event) => accept(event.target.value)} onBlur={onBlur} autoComplete="off" spellCheck={name === "slug" ? false : undefined} autoCapitalize={name === "slug" ? "none" : undefined} aria-invalid={invalid} aria-describedby={describedBy} {...inputProps}/>} {help ? <span id={helpId}>{help}</span> : null}{invalid ? <span id={errorId} className="form-error" role="alert">{error ?? editorFieldError(name)}</span> : null}</label>;
 }
 
 function editorFieldError(field: string) {
@@ -1182,6 +1227,13 @@ function editorFieldError(field: string) {
   if (field === "offer_price" || field === "offer_unit_amount_minor") return "Informe um preço válido, maior que zero para ativar vendas.";
   if (field === "offer_title") return "Informe um nome de checkout com pelo menos 2 caracteres.";
   return "Corrija este campo e tente novamente.";
+}
+
+// O servidor fala do preço em centavos; na tela, o campo é offer_price.
+// "form" não aponta campo nenhum: o foco vai para o resumo do erro.
+function inputNameForField(field: string): string | null {
+  if (field === "" || field === "form") return null;
+  return field === "offer_unit_amount_minor" ? "offer_price" : field;
 }
 
 function editorFieldLabel(field: string) {

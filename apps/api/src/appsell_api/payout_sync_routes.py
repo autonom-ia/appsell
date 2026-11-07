@@ -106,7 +106,8 @@ async def sync_payout_account(request: Request) -> dict[str, Any]:
 @router.get("/sellers/{seller_id}/payout-destination")
 async def resolve_payout_destination(request: Request, seller_id: UUID) -> dict[str, Any]:
     # The checkout worker's single question before charging: which provider
-    # account receives this seller's money, and can it charge yet. The seller
+    # account receives this seller's money, can it charge yet and does it pay
+    # out (#545: a store charging on its own account needs both). The seller
     # id is a LOOKUP KEY from the storefront the buyer is viewing, not a tenant
     # claim — the envelope must be worker-shaped (no seller, pinned subject).
     auth, internal = await _authenticate(request, "commerce.checkout.destination")
@@ -120,8 +121,8 @@ async def resolve_payout_destination(request: Request, seller_id: UUID) -> dict[
                 (
                     await session.execute(
                         text(
-                            "select provider_account_id, charges_enabled "
-                            "from app_private.resolve_payout_destination("
+                            "select provider_account_id, charges_enabled, payouts_enabled "
+                            "from app_private.resolve_payout_destination_v2("
                             ":seller_id, 'stripe')"
                         ),
                         {"seller_id": seller_id},
@@ -139,6 +140,7 @@ async def resolve_payout_destination(request: Request, seller_id: UUID) -> dict[
             "provider": "stripe",
             "provider_account_id": row["provider_account_id"],
             "charges_enabled": bool(row["charges_enabled"]),
+            "payouts_enabled": bool(row["payouts_enabled"]),
         }
     }
 

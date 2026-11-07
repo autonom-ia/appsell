@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 
 import { isChargeableBuyerEmail, normalizeBuyerEmail } from "@/lib/buyer-email";
 import { resolveBuyerIdentity } from "@/lib/buyer-identity.server";
@@ -19,9 +19,11 @@ import {
   resolveCheckoutPayoutDestination
 } from "@/lib/internal-api-client.server";
 import { RawBodyTooLargeError, readLimitedRawBody } from "@/lib/limited-raw-body.server";
+import { checkSellerNet } from "@/lib/minimum-price";
 import { configuredPublicOrigin, hasConfiguredOrigin } from "@/lib/public-origin";
 import { parsePublicStorefront, type PublicStorefrontProduct } from "@/lib/public-storefront";
 import { StripeConfigError, stripeClient } from "@/lib/stripe-config.server";
+import { atribuicaoFalhou, registrarAtribuicaoDoCheckout } from "@/lib/tracking/checkout-attribution.server";
 
 // Stripe refuses expires_at under 30 minutes from ITS creation time, which is
 // later than ours by the request latency; one extra minute keeps us above it.
@@ -48,6 +50,22 @@ interface CreateSessionInput {
   buyerEmail: string;
 }
 
+// The alert for a listed store that cannot sell. Seller id only: the account
+// id stays out of the log.
+function logConnectSellerNotReady(
+  sellerId: string,
+  destination: { charges_enabled: boolean; payouts_enabled?: boolean }
+) {
+  console.warn(
+    JSON.stringify({
+      marker: "appsell.connect.seller_not_ready",
+      seller_id: sellerId,
+      charges_enabled: destination.charges_enabled === true,
+      payouts_enabled: destination.payouts_enabled === true
+    })
+  );
+}
+
 export async function POST(request: NextRequest) {
   // Same-origin guard (defense against cross-site POST): this endpoint mints a
   // payment session, so reject anything that is not the configured public origin.
@@ -63,7 +81,13 @@ export async function POST(request: NextRequest) {
   const input = parseCreateSessionInput(rawBody);
   if (!input) return jsonError("invalid_request", 400);
 
-  const provider = checkoutProvider();
+  let provider: ReturnType<typeof checkoutProvider>;
+  try {
+    provider = checkoutProvider();
+  } catch (error) {
+    if (error instanceof FinancialExternalCheckoutConfigError) return jsonError("checkout_not_configured", 503);
+    throw error;
+  }
   const mapping = resolveCheckoutProduct(input.sellerSlug, input.productSlug);
   if (provider === "local_stripe" && !mapping) return jsonError("product_not_configured", 409);
 
@@ -112,7 +136,7 @@ export async function POST(request: NextRequest) {
   // the Financial path, only to the stores listed for their own connected
   // account (#440); every other Financial store sends no account.
   const connectSeller = provider === "financial_checkout" && isFinancialConnectSeller(parsed.seller.id);
-  let destination: { provider_account_id: string; charges_enabled: boolean } | null = null;
+  let destination: { provider_account_id: string; charges_enabled: boolean; payouts_enabled?: boolean } | null = null;
   if (provider !== "financial_checkout" || connectSeller) {
     try {
       destination = (await resolveCheckoutPayoutDestination(parsed.seller.id)).payout_destination;
@@ -125,13 +149,23 @@ export async function POST(request: NextRequest) {
     // A listed store charges on its own account or not at all: falling back to
     // the operator's gateway would put the money in the wrong account.
     if (connectSeller && !destination) return jsonError("seller_not_ready_to_charge", 409);
+    // #545: a listed store sells only with a VERIFIED account, charges AND
+    // payouts. Checked on every sale, so an account that loses verification
+    // after activation stops selling on the next purchase.
+    if (connectSeller && destination && destination.payouts_enabled !== true) {
+      logConnectSellerNotReady(parsed.seller.id, destination);
+      return jsonError("seller_not_ready_to_charge", 409);
+    }
   }
 
   const origin = configuredPublicOrigin();
   const applicationFeeCents = destination ? directChargeApplicationFeeCents(amount) : null;
-  // The fee is capped at the whole price, and the Financial refuses a fee that
-  // is not below it: the store would net nothing. Refuse before creating an order.
-  if (connectSeller && applicationFeeCents !== null && applicationFeeCents >= amount) {
+  // Last guard of the minimum price (#546), on every charge that carries a
+  // commission: the store must net something and the charge must clear the
+  // Stripe minimum. The producer routes already refuse such a price; this one
+  // also catches an offer priced through the internal API, which does not
+  // check the minimum. Refuse before creating an order.
+  if (applicationFeeCents !== null && !checkSellerNet({ amountMinor: amount, currency: "BRL" }).ok) {
     return jsonError("product_price_below_platform_fee", 409);
   }
   if (provider === "financial_checkout") {
@@ -187,6 +221,7 @@ export async function POST(request: NextRequest) {
           : crypto.randomUUID()
       });
       const stripeCheckoutUrl = await createFinancialExternalCheckoutSession(result.checkoutUrl);
+      agendarAtribuicao(request, parsed.seller.id, result.checkoutIntentId);
       return NextResponse.json({ url: stripeCheckoutUrl }, { headers: noStore() });
     } catch (error) {
       if (error instanceof FinancialExternalCheckoutConfigError) return jsonError("financial_checkout_not_configured", 503);
@@ -310,6 +345,31 @@ function hasExactKeys<T extends string>(value: Record<string, unknown>, expected
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// #563: a atribuição da campanha roda depois da resposta (`after`), então o
+// comprador não espera por ela. Nem o agendamento, nem a chamada, nem o log
+// podem lançar daqui: depois da sessão criada, o checkout não vira 503.
+function agendarAtribuicao(request: NextRequest, sellerId: string, checkoutIntentId: string): void {
+  try {
+    after(async () => {
+      try {
+        await registrarAtribuicaoDoCheckout(request, sellerId, checkoutIntentId);
+      } catch (error) {
+        logarSemLancar(error);
+      }
+    });
+  } catch (error) {
+    logarSemLancar(error);
+  }
+}
+
+function logarSemLancar(error: unknown): void {
+  try {
+    atribuicaoFalhou(error);
+  } catch {
+    // O log é o último recurso. Se até ele falhar, a resposta segue igual.
+  }
 }
 
 function noStore() {

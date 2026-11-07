@@ -70,13 +70,7 @@ launch_postgres() {
 }
 
 wait_ready() {
-  local container="$1"
-  local _
-  for _ in $(seq 1 30); do
-    docker exec "$container" pg_isready -q -U "$test_user" && return 0
-    sleep 2
-  done
-  docker exec "$container" pg_isready -q -U "$test_user"
+  pg_wait_container_ready "$1" "$test_user" "$test_db"
 }
 
 echo "--- setup: launch disposable source and target PostgreSQL"

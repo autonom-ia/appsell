@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
@@ -14,6 +14,7 @@ import {
   storeInitials
 } from "../lib/store-brand";
 import { parseStoreSettings } from "../lib/store-settings";
+import { migrationHead } from "./support/migration-head";
 import nextConfig from "../next.config";
 
 vi.mock("server-only", () => ({}));
@@ -257,13 +258,10 @@ describe("a cabeça fixada", () => {
     expect(revision).toBe("0052_configuracoes_da_loja");
     expect(migration).toContain(`'${revision}'))`);
     expect(migration).toContain("alter function {signature} owner to appsell_owner");
-    // A cabeça fixada é a última migration do diretório: a 0053 (dono das
-    // funções de recebimento) veio logo depois e este teste não pode envelhecer.
-    const head = readdirSync(resolve(root, "apps/api/migrations/versions"))
-      .filter((name) => /^\d{4}_.*\.py$/.test(name))
-      .sort()
-      .at(-1)!
-      .replace(/\.py$/, "");
+    // A cabeça fixada é a cabeça da cadeia: a 0053 (dono das funções de
+    // recebimento) veio logo depois e este teste não pode envelhecer. É achada
+    // pelo `down_revision`, porque o número do arquivo não é a ordem.
+    const head = migrationHead(root);
     const reset = readFileSync(resolve(root, "apps/api/src/appsell_api/reset_demo_tenant.py"), "utf8");
     expect(reset).toContain(`EXPECTED_MIGRATION = "${head}"`);
     const script = readFileSync(resolve(root, "scripts/test-postgres-foundation.sh"), "utf8");

@@ -26,15 +26,19 @@ simultâneos não passarem juntos.
 O `downgrade` só remove as duas funções: não há dado a preservar.
 
 Revision ID: 0072_relatorio_de_vendas
-Revises: 0065_dono_da_conta_payout
+Revises: 0076_pg_temp_no_consentimento
 """
 
 from __future__ import annotations
 
+from importlib import util as importlib_util
+from pathlib import Path
+from types import ModuleType
+
 from alembic import op
 
 revision = "0072_relatorio_de_vendas"
-down_revision = "0065_dono_da_conta_payout"
+down_revision = "0076_pg_temp_no_consentimento"
 branch_labels = None
 depends_on = None
 
@@ -45,19 +49,23 @@ EXPORTS_POR_MINUTO = 5
 MAXIMO_DE_LINHAS = 10000
 FUSO = "America/Sao_Paulo"
 
-READY_ANTES = (
-    "'0057_banner_na_vitrine','0058_capa_na_biblioteca','0059_canal_financial_global',"
-    "'0060_atualizacao_chega_ao_aluno','0061_o_atraso_alcanca_o_aluno',"
-    "'0062_mapping_do_produto_novo','0063_conciliacao_do_acesso',"
-    "'0064_vendas_ativadas_pela_loja','0065_dono_da_conta_payout'))"
-)
-READY_DEPOIS = (
-    "'0057_banner_na_vitrine','0058_capa_na_biblioteca','0059_canal_financial_global',"
-    "'0060_atualizacao_chega_ao_aluno','0061_o_atraso_alcanca_o_aluno',"
-    "'0062_mapping_do_produto_novo','0063_conciliacao_do_acesso',"
-    "'0064_vendas_ativadas_pela_loja','0065_dono_da_conta_payout',"
-    "'0072_relatorio_de_vendas'))"
-)
+
+def _carregar(revisao: str) -> ModuleType:
+    caminho = Path(__file__).with_name(f"{revisao}.py")
+    spec = importlib_util.spec_from_file_location(f"appsell_anterior_{revisao}", caminho)
+    if spec is None or spec.loader is None:  # pragma: no cover - caminho fixo no repo
+        raise RuntimeError(f"a migration {revisao} nao pode ser lida")
+    modulo = importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(modulo)
+    return modulo
+
+
+# A lista do readiness vem da anterior na cadeia (`_READY_ATE_0076`), não de
+# uma cópia escrita aqui: assim ela não perde as versões que entraram antes.
+READY_ANTES: str = _carregar(down_revision)._READY_ATE_0076
+READY_DEPOIS = READY_ANTES[:-2] + f",'{revision}'))"
+# Nome que as migrations seguintes leem por `getattr` (padrão da 0067 em diante).
+_READY_ATE_0072 = READY_DEPOIS
 _BASES_DO_READY: tuple[str, ...] = (
     "app_private.schema_ready_base_0016()",
     "app_private.schema_ready_base_0017()",
