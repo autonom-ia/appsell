@@ -632,29 +632,41 @@ test("keeps vector annotations anchored to the page across zoom", async ({ page 
   const pageOne = reader.locator('.pdf-reader-page[data-page="1"]');
   const mark = pageOne.locator(".pdf-study-layer polyline").first();
   await expect(mark).toHaveCount(1);
-  const pageBefore = await pageOne.boundingBox();
-  const markBefore = await mark.boundingBox();
+  // A posição da marcação relativa à página, medida no mesmo instante.
+  const anchor = async () => {
+    const [box, markBox] = await Promise.all([pageOne.boundingBox(), mark.boundingBox()]);
+    if (!box || !markBox) return null;
+    return {
+      width: box.width,
+      x: (markBox.x + markBox.width / 2 - box.x) / box.width,
+      y: (markBox.y + markBox.height / 2 - box.y) / box.height
+    };
+  };
+  // Antes do zoom, espera o layout assentar: duas leituras seguidas iguais.
+  let before = await anchor();
+  await expect.poll(async () => {
+    const current = await anchor();
+    const settled = Boolean(before && current && Math.abs(before.x - current.x) < 0.0001 &&
+      Math.abs(before.y - current.y) < 0.0001 && before.width === current.width);
+    before = current;
+    return settled;
+  }).toBe(true);
   const pointsBefore = await mark.getAttribute("points");
   for (let step = 0; step < 12; step += 1) {
     await reader.getByRole("button", { name: "Aumentar zoom" }).click();
   }
   await expect(reader.getByText("400%", { exact: true })).toBeVisible();
   await expect.poll(async () => (await pageOne.boundingBox())?.width ?? 0).toBeGreaterThan(
-    (pageBefore?.width ?? 0) * 3.98
+    before!.width * 3.98
   );
-  const pageAfter = await pageOne.boundingBox();
-  const markAfter = await mark.boundingBox();
-  expect(pageBefore && markBefore && pageAfter && markAfter).toBeTruthy();
-  const normalizedBefore = {
-    x: (markBefore!.x + markBefore!.width / 2 - pageBefore!.x) / pageBefore!.width,
-    y: (markBefore!.y + markBefore!.height / 2 - pageBefore!.y) / pageBefore!.height
-  };
-  const normalizedAfter = {
-    x: (markAfter!.x + markAfter!.width / 2 - pageAfter!.x) / pageAfter!.width,
-    y: (markAfter!.y + markAfter!.height / 2 - pageAfter!.y) / pageAfter!.height
-  };
-  expect(Math.abs(normalizedBefore.x - normalizedAfter.x)).toBeLessThan(0.005);
-  expect(Math.abs(normalizedBefore.y - normalizedAfter.y)).toBeLessThan(0.005);
+  // A camada SVG redimensiona um quadro depois da página. O limite continua
+  // 0,005: se a marcação ficar desalinhada de verdade, a espera estoura e o
+  // teste falha (#585).
+  await expect.poll(async () => {
+    const after = await anchor();
+    if (!after) return Number.POSITIVE_INFINITY;
+    return Math.max(Math.abs(before!.x - after.x), Math.abs(before!.y - after.y));
+  }).toBeLessThan(0.005);
   expect(await mark.getAttribute("points")).toBe(pointsBefore);
 });
 
@@ -760,6 +772,74 @@ test("edits, erases and restores a saved annotation, and survives a resize", asy
     scroll: document.documentElement.scrollWidth
   }));
   expect(size.scroll).toBeLessThanOrEqual(size.client);
+});
+
+test("saves a quick drag at the position where the pointer was released", async ({
+  page
+}, testInfo) => {
+  const mobile = testInfo.project.name.includes("mobile");
+  const seeded = seededPenMark("86000000-0000-4000-8000-000000000012");
+  const studyMutations: Record<string, unknown>[] = [];
+  const pdfStudyStore: PdfStudyMockStore = { revision: 0, annotations: [seeded], bookmarks: [] };
+  await mockLearningApi(page, {
+    pdfPageCount: 3,
+    pdfStudyStore,
+    onPdfStudyMutation: (mutation) => studyMutations.push(mutation)
+  });
+  await enterAndWaitForSession(page);
+  const reader = await openReader(page, mobile ? { width: 390, height: 844 } : { width: 1440, height: 900 });
+  const layer = reader.locator('.pdf-reader-page[data-page="1"] .pdf-study-layer');
+  const mark = layer.locator("polyline").first();
+  await expect(mark).toHaveCount(1);
+  await reader.getByRole("button", { name: "Editar marcação" }).click();
+
+  const start = await mark.evaluate((element) => {
+    const line = element as SVGPolylineElement;
+    const point = line.getPointAtLength(line.getTotalLength() / 2);
+    const matrix = line.getScreenCTM();
+    if (!matrix) throw new Error("missing annotation transform");
+    const projected = new DOMPoint(point.x, point.y).matrixTransform(matrix);
+    return { x: projected.x, y: projected.y };
+  });
+  await layer.evaluate((element) => {
+    element.addEventListener("pointerdown", (event) => {
+      (window as unknown as { dragPointerId: number }).dragPointerId = (event as PointerEvent).pointerId;
+    }, { capture: true, once: true });
+  });
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+
+  // Um arraste rápido: os movimentos e a soltura chegam na mesma tarefa do
+  // navegador, sem um quadro de render no meio. O servidor tem que guardar a
+  // posição da soltura, a mesma que a tela mostra.
+  await layer.evaluate((element, origin) => {
+    const pointerId = (window as unknown as { dragPointerId: number }).dragPointerId;
+    const fire = (type: string, dx: number, dy: number) => element.dispatchEvent(new PointerEvent(type, {
+      bubbles: true, cancelable: true, composed: true, isPrimary: true,
+      pointerId, pointerType: "mouse", button: 0, buttons: type === "pointerup" ? 0 : 1,
+      clientX: origin.x + dx, clientY: origin.y + dy
+    }));
+    fire("pointermove", 6, 4);
+    fire("pointermove", 12, 9);
+    fire("pointermove", 18, 14);
+    fire("pointerup", 24, 18);
+  }, start);
+  await page.mouse.up();
+
+  await expect.poll(() => studyMutations.map((item) => item.action)).toEqual(["annotation.upsert"]);
+  const shown = await mark.evaluate((element) => {
+    const line = element as SVGPolylineElement;
+    const ratio = line.ownerSVGElement!.viewBox.baseVal.height;
+    return Array.from(line.points).map((point) => ({ x: point.x, y: point.y / ratio }));
+  });
+  const saved = pdfStudyStore.annotations.find((item) => item.id === seeded.id);
+  const savedPoints = (saved?.points ?? []) as { x: number; y: number }[];
+  expect(savedPoints).toHaveLength(shown.length);
+  savedPoints.forEach((point, index) => {
+    expect(Math.abs(point.x - shown[index].x)).toBeLessThan(0.0005);
+    expect(Math.abs(point.y - shown[index].y)).toBeLessThan(0.0005);
+  });
+  expect(savedPoints[0].x).toBeGreaterThan(seeded.points[0].x);
 });
 
 test("draws with one touch, reserves two touches for zoom and scrolls in hand mode", async ({
