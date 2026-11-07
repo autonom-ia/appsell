@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { E2E_BUILD_PUBLIC_ORIGIN } from "../../lib/e2e-build-runtime";
 import { login } from "./support/login";
+import { E2E_STORAGE_ORIGIN } from "./support/storage";
 
 const SHELL_BRAND_NAME = "sell. by Autonom.ia: início";
 
@@ -785,7 +786,7 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
 
   await page.setViewportSize({ width: 360, height: 844 });
   await enterAndWaitForSession(page);
-  await page.route("http://127.0.0.1:8333/**", async (route) => {
+  await page.route(`${E2E_STORAGE_ORIGIN}/**`, async (route) => {
     if (route.request().method() === "OPTIONS") {
       await route.fulfill({
         status: 204,
@@ -869,8 +870,8 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
       await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({
         upload_id: uploadId,
         asset_id: "99000000-0000-4000-8000-000000000001",
-        upload_url: `http://127.0.0.1:8333/appsell-quarantine/${uploadId}?X-Amz-Signature=test`,
-        upload_origin: "http://127.0.0.1:8333",
+        upload_url: `${E2E_STORAGE_ORIGIN}/appsell-quarantine/${uploadId}?X-Amz-Signature=test`,
+        upload_origin: E2E_STORAGE_ORIGIN,
         expires_at: new Date(Date.now() + 300_000).toISOString(),
         required_headers: {
           "Content-Type": "application/pdf",
