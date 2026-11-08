@@ -309,7 +309,8 @@ def test_o_export_audita_sem_email() -> None:
         ).fetchone()
     assert row is not None
     metadata = cast(str, row[0])
-    assert '"audience": "marketing"' in metadata and '"rows": 1' in metadata
+    # Uma linha por acesso: quem consentiu tem dois produtos na loja A.
+    assert '"audience": "marketing"' in metadata and '"rows": 2' in metadata
     assert "@" not in metadata
 
 
