@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export const DIRTY_STATE_EVENT = "appsell:dirty-state";
 export const DIRTY_NAVIGATION_REQUEST_EVENT = "appsell:dirty-navigation-request";
@@ -33,6 +33,12 @@ export const RESTORE_DEADLINE_MS = 1_000;
 
 export interface UnsavedHistoryGuard {
   setDirty(dirty: boolean): void;
+  /**
+   * Roda `navigate` quando o histórico estiver assentado: sem travessia da
+   * guarda em voo e sem sentinela por sair. Uma navegação do app feita
+   * durante o `history.back()` da guarda é desfeita pelo `popstate` dele.
+   */
+  whenSettled(navigate: () => void): void;
   dispose(): void;
 }
 
@@ -90,10 +96,21 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
   // URL mudar, o Next gravou a mesma URL por cima dela: a navegação chegou.
   let allowedOnSentinel = false;
   let disposed = false;
+  // Navegações do app que esperam o histórico assentar (`whenSettled`).
+  let waiting: Array<() => void> = [];
 
   const onSentinel = () => (history.state as { __appsellDirtyGuard?: unknown } | null)?.__appsellDirtyGuard === token;
 
-  const reconcile = () => {
+  const settled = () => pending === null && (allowNavigation || disposed || dirty || !sentinel);
+
+  const flushWaiting = () => {
+    if (!settled() || waiting.length === 0) return;
+    const ready = waiting;
+    waiting = [];
+    ready.forEach((navigate) => navigate());
+  };
+
+  const adjust = () => {
     if (pending !== null || allowNavigation || disposed) return;
     if (dirty && !sentinel) {
       if (sentinelBelow) return;
@@ -107,6 +124,11 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
       leavingUrl = location.href;
       history.back();
     }
+  };
+
+  const reconcile = () => {
+    adjust();
+    flushWaiting();
   };
 
   const clearRestoringTimer = () => {
@@ -227,6 +249,10 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
       dirty = next;
       reconcile();
     },
+    whenSettled(navigate) {
+      waiting = [...waiting, navigate];
+      flushWaiting();
+    },
     dispose() {
       disposed = true;
       clearRestoringTimer();
@@ -248,15 +274,26 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
         }, { once: true });
         history.back();
       }
+      // A tela saiu: quem esperava navega agora, sem guarda para desfazer.
+      const ready = waiting;
+      waiting = [];
+      ready.forEach((navigate) => navigate());
     }
   };
 }
 
-export function useUnsavedChanges(dirty: boolean) {
+/**
+ * Protege a tela enquanto `dirty` e devolve como navegar dentro dela sem
+ * brigar com a guarda: a navegação pedida espera o React aplicar o estado do
+ * mesmo evento (o descarte, por exemplo) e a guarda tirar a sentinela.
+ */
+export function useUnsavedChanges(dirty: boolean): (navigate: () => void) => void {
   const router = useRouter();
   const routerRef = useRef(router);
   const dirtyRef = useRef(dirty);
   const guardRef = useRef<UnsavedHistoryGuard | null>(null);
+  const requestsRef = useRef<Array<() => void>>([]);
+  const [requestTick, setRequestTick] = useState(0);
 
   useEffect(() => {
     const guard = createUnsavedHistoryGuard({
@@ -283,4 +320,19 @@ export function useUnsavedChanges(dirty: boolean) {
     window.dispatchEvent(new CustomEvent(DIRTY_STATE_EVENT, { detail: { dirty } }));
     guardRef.current?.setDirty(dirty);
   }, [dirty]);
+
+  // Depois do efeito de `dirty`: no mesmo commit, a guarda já sabe se a tela
+  // ficou limpa e se a sentinela está saindo.
+  useEffect(() => {
+    if (requestsRef.current.length === 0) return;
+    const ready = requestsRef.current;
+    requestsRef.current = [];
+    const guard = guardRef.current;
+    ready.forEach((navigate) => (guard ? guard.whenSettled(navigate) : navigate()));
+  }, [requestTick]);
+
+  return useCallback((navigate: () => void) => {
+    requestsRef.current = [...requestsRef.current, navigate];
+    setRequestTick((tick) => tick + 1);
+  }, []);
 }

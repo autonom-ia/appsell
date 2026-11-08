@@ -188,6 +188,7 @@ function legacyGuard(env: GuardEnvironment, initialDirty: boolean): UnsavedHisto
       cleanup?.();
       cleanup = effect(next);
     },
+    whenSettled(navigate) { navigate(); },
     dispose() { cleanup?.(); }
   };
 }
@@ -484,6 +485,54 @@ describe("guarda de alterações não salvas (#612)", () => {
       expect(browser.entries[1].state).toEqual({ __NA: true });
     }
   );
+
+  it.each<Engine>(["webkit", "chromium"])(
+    "no %s, a troca de etapa pedida enquanto a sentinela sai espera o popstate dela",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      const guard = createUnsavedHistoryGuard(browser.env, true);
+      const navegacoes: string[] = [];
+      // "Descartar": a tela fica limpa e a etapa troca no mesmo evento. Se a
+      // troca fosse antes do popstate do `back()`, o Next restauraria a etapa
+      // de onde o vendedor saiu (#615, C).
+      guard.setDirty(false);
+      guard.whenSettled(() => {
+        navegacoes.push(browser.url);
+        browser.routerReplace(`${PRODUCT_URL}?section=oferta`);
+      });
+      expect(navegacoes).toEqual([]);
+      browser.settle();
+      expect(navegacoes).toEqual([PRODUCT_URL]);
+      expect(browser.index).toBe(1);
+      expect(browser.url).toBe(`${PRODUCT_URL}?section=oferta`);
+      // Um único voltar sai da tela: não sobrou sentinela.
+      browser.userBack();
+      browser.settle();
+      expect(browser.leftProduct).toBe(true);
+    }
+  );
+
+  it("com o histórico assentado, a navegação pedida roda na hora", () => {
+    const browser = new FakeBrowser("webkit");
+    const guard = createUnsavedHistoryGuard(browser.env, true);
+    let navegou = 0;
+    guard.whenSettled(() => { navegou += 1; });
+    expect(navegou).toBe(1);
+    guard.setDirty(false);
+    browser.settle();
+    guard.whenSettled(() => { navegou += 1; });
+    expect(navegou).toBe(2);
+  });
+
+  it("desmontar com navegação à espera deixa ela seguir", () => {
+    const browser = new FakeBrowser("chromium");
+    const guard = createUnsavedHistoryGuard(browser.env, true);
+    let navegou = 0;
+    guard.setDirty(false);
+    guard.whenSettled(() => { navegou += 1; });
+    guard.dispose();
+    expect(navegou).toBe(1);
+  });
 
   it("desmontar com a tela suja tira a sentinela", () => {
     const browser = new FakeBrowser("webkit");
