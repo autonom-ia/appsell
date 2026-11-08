@@ -38,14 +38,27 @@ export function cspReportOnlyHeaders(): ReadonlyArray<{ key: string; value: stri
   ];
 }
 
-// O endpoint é público. Cada relato é pequeno; o que passar disso é abuso.
+// O endpoint é público. Um relato avulso é pequeno; o que passar disso é abuso.
 export const MAX_REPORT_BYTES = 8 * 1024;
+// A Reporting API junta os relatos de uma página num lote só: uma vitrine com
+// muitas imagens do storage passa fácil de 8 KiB. Só esse tipo ganha teto
+// maior, e cada pedido grava no máximo MAX_VIOLATIONS_PER_REQUEST linhas.
+export const MAX_REPORT_BATCH_BYTES = 64 * 1024;
+export const REPORTS_JSON = "application/reports+json";
+export const MAX_VIOLATIONS_PER_REQUEST = 20;
+
+export function maxBytesFor(tipo: string): number {
+  return tipo === REPORTS_JSON ? MAX_REPORT_BATCH_BYTES : MAX_REPORT_BYTES;
+}
+
 const MAX_CAMPO = 200;
 // Regra do Rodrigo: sequência de 32+ caracteres [A-Za-z0-9_-] é tratada como
-// credencial. Feito com método de string, sem regex.
+// credencial. Aqui também entram `+`, `=` e `%`, para pegar token em base64 e
+// em percent-encoding. A `/` fica de fora de propósito: com ela, qualquer
+// caminho longo sumiria inteiro. Feito com método de string, sem regex.
 const TAMANHO_DE_CREDENCIAL = 32;
 const CARACTERES_DE_CREDENCIAL = new Set(
-  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-+=%"
 );
 // Valores que o navegador manda no lugar de uma URL em `blocked-uri`.
 const PALAVRAS_DO_NAVEGADOR = new Set(["inline", "eval", "data", "blob", "self", "wasm-eval"]);
@@ -137,7 +150,7 @@ function semConsulta(valor: string): string {
   try {
     const url = new URL(valor);
     if (url.protocol === "http:" || url.protocol === "https:") {
-      return limpo(`${url.origin}${url.pathname}`);
+      return limpo(`${url.origin}${semToken(url.pathname)}`);
     }
     return limpo(url.protocol.slice(0, -1));
   } catch {
@@ -157,10 +170,14 @@ function caminho(valor: string): string {
   } catch {
     return valor ? "<invalid>" : "";
   }
+  return limpo(semToken(pathname));
+}
+
+function semToken(pathname: string): string {
   if (pathname.startsWith(LINK_DE_ACESSO) && !PAGINAS_FIXAS_DO_LINK.has(pathname)) {
     return `${LINK_DE_ACESSO}<token>`;
   }
-  return limpo(pathname);
+  return pathname;
 }
 
 function limpo(valor: string): string {
@@ -181,15 +198,21 @@ function semCredencial(valor: string): string {
   return saida.join("").slice(0, -1);
 }
 
-// Limite por processo, em janela fixa. Passou do limite, o relato é descartado
-// e conta numa linha só por janela: o log não vira lixeira de quem quiser
-// encher. Por ser global, uma enxurrada também esconde relato legítimo por até
-// um minuto; no modo só-relatório isso é aceitável.
+// Limite por processo, em janela fixa, contado por violação gravada, não por
+// pedido. Passou do limite, a violação é descartada e conta numa linha só por
+// janela: o log não vira lixeira de quem quiser encher. Por ser global, uma
+// enxurrada também esconde relato legítimo por até um minuto; no modo
+// só-relatório isso é aceitável.
 export const MAX_REPORTS_PER_WINDOW = 120;
 export const RATE_WINDOW_MS = 60_000;
 
+export type Vez = { readonly aceitos: number; readonly descartadosNaJanelaAnterior: number };
+
 export type RateLimiter = {
-  readonly aceitar: (agoraMs: number) => { aceito: boolean; descartadosNaJanelaAnterior: number };
+  // `quantidade` é o total de violações do pedido; `teto`, quantas dele podem
+  // ser gravadas. O que não for gravado, por teto ou por limite, conta como
+  // descartado.
+  readonly aceitar: (agoraMs: number, quantidade: number, teto?: number) => Vez;
 };
 
 export function criarLimite(maximo = MAX_REPORTS_PER_WINDOW, janelaMs = RATE_WINDOW_MS): RateLimiter {
@@ -197,7 +220,7 @@ export function criarLimite(maximo = MAX_REPORTS_PER_WINDOW, janelaMs = RATE_WIN
   let aceitos = 0;
   let descartados = 0;
   return {
-    aceitar(agoraMs) {
+    aceitar(agoraMs, quantidade, teto = quantidade) {
       let anterior = 0;
       if (agoraMs - inicio >= janelaMs) {
         anterior = descartados;
@@ -205,12 +228,10 @@ export function criarLimite(maximo = MAX_REPORTS_PER_WINDOW, janelaMs = RATE_WIN
         aceitos = 0;
         descartados = 0;
       }
-      if (aceitos >= maximo) {
-        descartados += 1;
-        return { aceito: false, descartadosNaJanelaAnterior: anterior };
-      }
-      aceitos += 1;
-      return { aceito: true, descartadosNaJanelaAnterior: anterior };
+      const vez = Math.max(0, Math.min(quantidade, teto, maximo - aceitos));
+      aceitos += vez;
+      descartados += quantidade - vez;
+      return { aceitos: vez, descartadosNaJanelaAnterior: anterior };
     }
   };
 }

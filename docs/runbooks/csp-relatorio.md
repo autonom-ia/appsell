@@ -24,14 +24,52 @@ que a semana de leitura precisa ver.
 | Proteção | Valor |
 |---|---|
 | Tipos aceitos | `application/csp-report`, `application/reports+json`, `application/json`. Outros recebem 415 |
-| Tamanho | 8 KiB por pedido, contado no que chega, não só no `content-length`. Acima disso, 413 |
-| Taxa | 120 relatos por minuto por processo. O excesso é descartado com 204 e vira uma linha `appsell.csp.dropped` com a contagem |
+| Tamanho | 8 KiB por pedido para `csp-report` e `json`; 64 KiB para `reports+json`, porque o Chrome junta os relatos de uma página num lote só. Contado no que chega, não só no `content-length`. Acima disso, 413 |
+| Violações por pedido | no máximo 20 linhas gravadas por pedido. O resto do lote conta como descartado |
+| Taxa | 120 violações gravadas por minuto por processo, contadas por violação, não por pedido. O excesso é descartado com 204 e vira uma linha `appsell.csp.dropped` com a contagem, na primeira gravação da janela seguinte |
+| Envio interrompido | se o navegador fecha a conexão no meio do envio, 400, sem log |
 | O que é gravado | uma linha `appsell.csp.violation` por violação, com `directive`, `blocked`, `document_path`, `source`, `line`, `column` e `disposition` |
-| O que nunca é gravado | query string, fragmento, `script-sample`, IP, user-agent e qualquer sequência de 32+ caracteres `[A-Za-z0-9_-]`, que sai como `<REDACTED>`. No link de acesso (`/c/<token>`), o caminho inteiro sai mascarado |
+| O que nunca é gravado | query string, fragmento, userinfo, `script-sample`, IP, user-agent e qualquer sequência de 32+ caracteres `[A-Za-z0-9_-+=%]`, que sai como `<REDACTED>`. No link de acesso (`/c/<token>`), o caminho inteiro sai mascarado em `document_path`, `blocked` e `source` |
+
+**Limite conhecido da troca por `<REDACTED>`.** A `/` não entra na contagem:
+com ela, todo caminho longo sumiria inteiro e o relato ficaria ilegível. Um
+token em base64 padrão com `/` no meio pode sair em pedaços menores que 32
+caracteres. Hoje isso não vaza nada: os tokens do Sell são hexadecimais ou
+base64url, e a query string, onde ficam as assinaturas, nunca é gravada. Se
+algum dia um token com `/` passar a ir no caminho, revisar esta regra.
+
+O efeito colateral oposto também existe: um trecho legítimo de 32+ caracteres
+sem separador, como um slug de produto longo, sai como `<REDACTED>`. Para a
+leitura, o caminho da página ainda mostra em que loja o relato nasceu.
 
 O limite de taxa é global por processo, então uma enxurrada também esconde
 relatos legítimos por até um minuto. No modo só-relatório isso é aceitável. No
 modo bloqueante, revisar.
+
+## Origens que já se espera ver nos relatos
+
+A política começa só com `'self'`, então estas origens legítimas vão aparecer
+nos relatos desde o primeiro dia. Não são abuso; são o que a semana de leitura
+existe para encontrar e liberar no PR do modo bloqueante:
+
+| Diretiva | Origem | Por quê |
+|---|---|---|
+| `frame-src` | `https://www.youtube-nocookie.com` | aula com vídeo embutido do YouTube (`lib/lesson-embed.ts`) |
+| `frame-src` | `https://player.vimeo.com` | aula com vídeo embutido do Vimeo (`lib/lesson-embed.ts`) |
+| `form-action` | `https://checkout.stripe.com` | checkout do Stripe, se ele for aberto por formulário ou redirecionamento de formulário. Hoje o cartão de compra chama a rota por `fetch` e navega para a URL, e essa navegação a CSP não cobre; o relato pode nem aparecer |
+| `img-src`, `media-src`, `connect-src` | origem do storage | imagens, vídeos e PDFs servidos por URL assinada |
+| `form-action`, `connect-src` | origem do Financial | checkout pelo serviço Financial |
+
+As origens exatas do storage e do Financial saem dos relatos, não deste
+documento.
+
+## Para o PR do modo bloqueante
+
+- `script-src 'self' 'unsafe-inline'` sem nonce não protege contra XSS: um
+  script injetado na página roda do mesmo jeito. O modo bloqueante deve usar
+  nonce (ou hash) com `'strict-dynamic'` e tirar o `'unsafe-inline'` de
+  `script-src`.
+- Revisar o limite de taxa global por processo (seção acima).
 
 ## Retenção
 
