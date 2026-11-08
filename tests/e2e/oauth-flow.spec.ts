@@ -1,5 +1,21 @@
 import { expect, test } from "@playwright/test";
+import {
+  csrfCookieName,
+  productCsrfCookieName,
+  productPublishCsrfCookieName,
+  productUpdateCsrfCookieName,
+  sellerCsrfCookieName,
+  sessionCookieName,
+  transactionCookieName
+} from "../../lib/cookies";
+import { E2E_BUILD_PUBLIC_ORIGIN } from "../../lib/e2e-build-runtime";
 import { login } from "./support/login";
+
+// A suíte roda sobre o build de produção, em HTTPS (#585): os cookies têm o
+// prefixo __Host- e saem com Secure, como no ar.
+const SESSION = sessionCookieName(true);
+const TRANSACTION = transactionCookieName(true);
+const CSRF = csrfCookieName(true);
 
 function containsRawOrBase64Encoded(input: string, raw: string) {
   if (input.includes(raw)) return true;
@@ -39,8 +55,8 @@ test("keeps the opaque session out of browser-readable surfaces", async ({ conte
   await login(page);
   await expect(page.getByRole("heading", { name: "Seu negócio em um só lugar." })).toBeVisible();
 
-  const sessionCookie = (await context.cookies()).find((cookie) => cookie.name === "appsell_session");
-  expect(sessionCookie).toMatchObject({ httpOnly: true, sameSite: "Lax" });
+  const sessionCookie = (await context.cookies()).find((cookie) => cookie.name === SESSION);
+  expect(sessionCookie).toMatchObject({ httpOnly: true, secure: true, sameSite: "Lax" });
   const rawSession = sessionCookie?.value ?? "";
   expect(rawSession).not.toBe("");
 
@@ -63,12 +79,12 @@ test("keeps the opaque session out of browser-readable surfaces", async ({ conte
     return [cookie.slice(0, separator), cookie.slice(separator + 1)];
   }));
   expect(Object.keys(readableCookies).sort()).toEqual([
-    "appsell_csrf",
-    "appsell_product_csrf",
-    "appsell_product_publish_csrf",
-    "appsell_product_update_csrf",
-    "appsell_seller_csrf"
-  ]);
+    CSRF,
+    productCsrfCookieName(true),
+    productPublishCsrfCookieName(true),
+    productUpdateCsrfCookieName(true),
+    sellerCsrfCookieName(true)
+  ].sort());
   for (const value of Object.values(readableCookies)) {
     expect(value).toMatch(/^[A-Za-z0-9_-]+$/);
   }
@@ -97,8 +113,8 @@ test("preserves a legitimate transaction after an invalid callback", async ({ co
   expect(login.status()).toBe(307);
   expect(login.headers()["cache-control"]).toBe("no-store");
 
-  const transaction = (await context.cookies()).find((cookie) => cookie.name === "appsell_oauth_tx");
-  expect(transaction).toMatchObject({ httpOnly: true, sameSite: "Lax" });
+  const transaction = (await context.cookies()).find((cookie) => cookie.name === TRANSACTION);
+  expect(transaction).toMatchObject({ httpOnly: true, secure: true, sameSite: "Lax" });
 
   const authorize = await page.request.get(login.headers().location, { maxRedirects: 0 });
   expect(authorize.status()).toBe(307);
@@ -109,23 +125,24 @@ test("preserves a legitimate transaction after an invalid callback", async ({ co
   const invalid = await page.request.get(invalidUrl, { maxRedirects: 0 });
   expect(invalid.status()).toBe(400);
   expect(invalid.headers()["cache-control"]).toBe("no-store");
-  expect((await context.cookies()).some((cookie) => cookie.name === "appsell_oauth_tx")).toBe(true);
+  expect((await context.cookies()).some((cookie) => cookie.name === TRANSACTION)).toBe(true);
 
   const valid = await page.request.get(callbackUrl, { maxRedirects: 0 });
   expect(valid.status()).toBe(307);
   expect(valid.headers()["cache-control"]).toBe("no-store");
-  expect(valid.headers().location).toBe("http://localhost:3000/dashboard");
+  expect(valid.headers().location).toBe(`${E2E_BUILD_PUBLIC_ORIGIN}/dashboard`);
   const finalCookies = await context.cookies();
-  expect(finalCookies.some((cookie) => cookie.name === "appsell_oauth_tx")).toBe(false);
-  expect(finalCookies.some((cookie) => cookie.name === "appsell_session")).toBe(true);
+  expect(finalCookies.some((cookie) => cookie.name === TRANSACTION)).toBe(false);
+  expect(finalCookies.some((cookie) => cookie.name === SESSION)).toBe(true);
 });
 
 test("rejects a forged session before reading oversized mutation bodies", async ({ context, page }) => {
   await context.addCookies([{
-    name: "appsell_session",
+    name: SESSION,
     value: "forged-session",
-    url: "http://localhost:3000",
+    url: E2E_BUILD_PUBLIC_ORIGIN,
     httpOnly: true,
+    secure: true,
     sameSite: "Lax"
   }]);
   for (const endpoint of [
@@ -134,7 +151,7 @@ test("rejects a forged session before reading oversized mutation bodies", async 
   ]) {
     const response = await page.request.post(endpoint, {
       headers: {
-        origin: "http://localhost:3000",
+        origin: E2E_BUILD_PUBLIC_ORIGIN,
         "content-type": "application/x-www-form-urlencoded;charset=UTF-8"
       },
       data: `padding=${"x".repeat(20_000)}`
@@ -147,14 +164,14 @@ test("rejects a forged session before reading oversized mutation bodies", async 
 test("rejects forged origin and CSRF before revoking a same-origin session", async ({ browser, context, page }) => {
   await login(page);
   const authCookies = await context.cookies();
-  const rawSession = authCookies.find((cookie) => cookie.name === "appsell_session")?.value ?? "";
-  const csrf = authCookies.find((cookie) => cookie.name === "appsell_csrf");
-  expect(csrf).toMatchObject({ httpOnly: false, sameSite: "Strict" });
+  const rawSession = authCookies.find((cookie) => cookie.name === SESSION)?.value ?? "";
+  const csrf = authCookies.find((cookie) => cookie.name === CSRF);
+  expect(csrf).toMatchObject({ httpOnly: false, secure: true, sameSite: "Strict" });
 
   const otherContext = await browser.newContext();
   const otherPage = await otherContext.newPage();
   await login(otherPage);
-  const otherCsrf = (await otherContext.cookies()).find((cookie) => cookie.name === "appsell_csrf")?.value ?? "";
+  const otherCsrf = (await otherContext.cookies()).find((cookie) => cookie.name === CSRF)?.value ?? "";
   await otherContext.close();
 
   for (const origin of [undefined, "null", "http://evil.local", "http://admin.localhost:3000"]) {
@@ -171,7 +188,7 @@ test("rejects forged origin and CSRF before revoking a same-origin session", asy
   for (const token of ["", otherCsrf]) {
     const rejected = await page.request.post("/auth/logout", {
       headers: {
-        origin: "http://localhost:3000",
+        origin: E2E_BUILD_PUBLIC_ORIGIN,
         "content-type": "application/x-www-form-urlencoded"
       },
       data: new URLSearchParams({ _csrf: token }).toString(),
@@ -183,8 +200,8 @@ test("rejects forged origin and CSRF before revoking a same-origin session", asy
 
   await page.getByRole("button", { name: "Sair com segurança" }).first().click();
   await expect(page).toHaveURL("/");
-  expect((await context.cookies()).some((cookie) => cookie.name === "appsell_session")).toBe(false);
+  expect((await context.cookies()).some((cookie) => cookie.name === SESSION)).toBe(false);
   expect((await page.request.get("/api/session")).status()).toBe(401);
-  const replay = await page.request.get("/api/session", { headers: { cookie: `appsell_session=${rawSession}` } });
+  const replay = await page.request.get("/api/session", { headers: { cookie: `${SESSION}=${rawSession}` } });
   expect(replay.status()).toBe(401);
 });

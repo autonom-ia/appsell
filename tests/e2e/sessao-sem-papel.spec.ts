@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { productCsrfCookieName, sellerCsrfCookieName, sessionCookieName } from "../../lib/cookies";
 import { login } from "./support/login";
 
 // O e2e entra como persona demo (support/login.ts). As duas regras de
@@ -38,9 +39,12 @@ test("o comprador sai do login sem nenhum CSRF de produto nem de loja", async ({
   const nomes = (await context.cookies()).map((cookie) => cookie.name);
   // A sessão existe: sem isto, "nenhum cookie de produto" passaria por um
   // login que simplesmente falhou.
-  expect(nomes).toContain("appsell_session");
+  expect(nomes).toContain(sessionCookieName(true));
   // Com CSRF de produto o comprador sairia do login com poder de criar,
   // editar e publicar catálogo (auth/callback/route.ts, sellerCookiePlan).
-  expect(nomes.filter((nome) => nome.startsWith("appsell_product_"))).toEqual([]);
-  expect(nomes).not.toContain("appsell_seller_csrf");
+  // Os nomes de produção têm o prefixo __Host- (#585); o filtro pega todos
+  // os CSRF de produto, inclusive o de criar.
+  const prefixoProduto = productCsrfCookieName(true).replace("csrf", "");
+  expect(nomes.filter((nome) => nome.startsWith(prefixoProduto))).toEqual([]);
+  expect(nomes).not.toContain(sellerCsrfCookieName(true));
 });

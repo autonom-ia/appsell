@@ -4,13 +4,14 @@ import { oauthService } from "@/lib/oauth-service.server";
 import { isOAuthStoreUnavailable } from "@/lib/redis-oauth-service";
 import { configuredPublicOrigin } from "@/lib/public-origin";
 import { demoProfileForPersona } from "@/lib/demo-config";
+import { e2eBuildRuntimeEnabled } from "@/lib/e2e-build-runtime";
 import { publicDemoRuntimeEnabled } from "@/lib/public-demo-runtime";
 import { verifyDemoPersonaBinding } from "@/lib/demo-persona-binding.server";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
-  if (process.env.NODE_ENV === "production" && !publicDemoRuntimeEnabled()) {
+  if (process.env.NODE_ENV === "production" && !publicDemoRuntimeEnabled() && !e2eBuildRuntimeEnabled()) {
     return new NextResponse(null, { status: 404, headers: { "cache-control": "no-store" } });
   }
   try {

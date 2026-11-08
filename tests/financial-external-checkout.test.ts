@@ -5,6 +5,7 @@ vi.mock("server-only", () => ({}));
 import {
   checkoutProvider,
   checkoutWebhookEndpointKey,
+  configuredCheckoutProvider,
   createFinancialExternalCheckoutIntent,
   createFinancialExternalCheckoutSession,
   FinancialExternalCheckoutConfigError,
@@ -24,11 +25,19 @@ describe("Financial external checkout client", () => {
     delete process.env.FINANCIAL_INTERNAL_API_KEY;
   });
 
-  it("defaults to the local Stripe checkout unless explicitly enabled", () => {
-    expect(checkoutProvider({})).toBe("local_stripe");
+  it("accepts only an explicit, known checkout provider (#544)", () => {
     expect(checkoutProvider({ APPSELL_CHECKOUT_PROVIDER: "local_stripe" })).toBe("local_stripe");
     expect(checkoutProvider({ APPSELL_CHECKOUT_PROVIDER: "financial_checkout" })).toBe("financial_checkout");
-    expect(checkoutProvider({ APPSELL_CHECKOUT_PROVIDER: "unexpected" })).toBe("local_stripe");
+    expect(configuredCheckoutProvider({ APPSELL_CHECKOUT_PROVIDER: "financial_checkout" })).toBe("financial_checkout");
+  });
+
+  it("never falls back to the old path when the provider is missing or unknown (#544)", () => {
+    for (const value of [undefined, "", " local_stripe", "unexpected", "FINANCIAL_CHECKOUT"]) {
+      const environment = { APPSELL_CHECKOUT_PROVIDER: value };
+      expect(() => checkoutProvider(environment), String(value)).toThrow(FinancialExternalCheckoutConfigError);
+      expect(() => checkoutProvider(environment), String(value)).toThrow("invalid_config: APPSELL_CHECKOUT_PROVIDER");
+      expect(configuredCheckoutProvider(environment), String(value)).toBeNull();
+    }
   });
 
   it("fails closed for missing production wiring", () => {
