@@ -43,7 +43,7 @@ pessoa, e não é cadeia travada.
 O `downgrade` só remove a leitura: não há dado a preservar.
 
 Revision ID: 0071_cadeia_travada
-Revises: 0072_relatorio_de_vendas
+Revises: 0074_acesso_em_disputa
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ from types import ModuleType
 from alembic import op
 
 revision = "0071_cadeia_travada"
-down_revision = "0072_relatorio_de_vendas"
+down_revision = "0074_acesso_em_disputa"
 branch_labels = None
 depends_on = None
 
@@ -181,7 +181,7 @@ end $migration$
 # texto que a última migration com função deixou. Ancorar num texto mais antigo
 # (o da 0063) põe a linha no meio do bloco: o texto das seguintes deixa de
 # existir inteiro, e a próxima que ancorar nele aborta com 55000.
-_ULTIMA_COM_FUNCAO_NO_READY = "0068_segunda_oferta_do_produto"
+_ULTIMA_COM_FUNCAO_NO_READY = "0074_acesso_em_disputa"
 _READY_DA_LEITURA = f"            and to_regprocedure('{_LEITURA}') is not null\n"
 
 

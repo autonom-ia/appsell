@@ -119,6 +119,6 @@ Pré-requisitos:
    precisar mais do login.
 3. A 0071 pode ficar, porque só lê. Se for preciso tirar a função, o alvo do
    downgrade é a migration logo antes da 0071 na cadeia, lida no
-   `down_revision` dela. Hoje: `alembic downgrade 0072_relatorio_de_vendas`.
+   `down_revision` dela. Hoje: `alembic downgrade 0074_acesso_em_disputa`.
    Nunca descer abaixo da versão que está em produção antes da 0071: conferir
    `select version_num from alembic_version` antes e depois.

@@ -1,5 +1,7 @@
 import type { NextConfig } from "next";
 
+import { cspReportOnlyHeaders } from "./lib/csp-report";
+
 const nextConfig: NextConfig = {
   distDir: process.env.APPSELL_NEXT_DIST_DIR || ".next",
   output: "standalone",
@@ -37,6 +39,9 @@ const nextConfig: NextConfig = {
           ...(process.env.NODE_ENV === "production"
             ? [{ key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains" }]
             : []),
+          // Só relata, não bloqueia (#548). Fora de produção o `next dev` usa
+          // eval e encheria os relatos de ruído.
+          ...(process.env.NODE_ENV === "production" ? cspReportOnlyHeaders() : []),
           { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
           { key: "Cross-Origin-Resource-Policy", value: "same-site" }
         ]
