@@ -17,7 +17,7 @@ from uuid import UUID, uuid4
 
 import psycopg
 import pytest
-from cadeia_de_migrations import anterior_na_cadeia
+from cadeia_de_migrations import VERSOES, anterior_na_cadeia, revisoes
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
 from sqlalchemy.engine import make_url
@@ -325,7 +325,9 @@ def test_new_publication_that_did_not_reach_the_student_is_update_pending() -> N
 MIGRATOR_URL = os.environ.get("APPSELL_MIGRATOR_DATABASE_URL")
 
 
-ESTA = "0069_motivo_do_acesso"
+# O nome vem do arquivo: um literal aqui ficaria preso quando outra migration
+# entrasse por cima (test_nenhum_teste_ficou_preso_na_versao_anterior).
+ESTA = revisoes(next(VERSOES.glob("*_motivo_do_acesso.py")))[0]
 # O rollback documentado no PR: desce só até a anterior na cadeia.
 ANTERIOR = anterior_na_cadeia(ESTA)
 
@@ -366,7 +368,7 @@ def test_downgrade_removes_the_function_and_its_place_in_the_ready() -> None:
             ).fetchone()
         assert row is not None
         definitions = str(row[2])
-        cites = "buyer_access_decision" in definitions and "0069_motivo_do_acesso" in definitions
+        cites = "buyer_access_decision" in definitions and ESTA in definitions
         return (bool(row[0]), cites, bool(row[1]), definitions)
 
     with psycopg.connect(maintenance_url, autocommit=True) as connection:
