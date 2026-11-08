@@ -34,6 +34,8 @@ class FakeBrowser {
   leftProduct = false;
   private scheduled: Array<{ target?: number; delta?: number }> = [];
   private timers = new Map<number, () => void>();
+  /** URLs que a guarda pediu ao router do app. */
+  readonly routerReplaces: string[] = [];
   private nextTimer = 1;
 
   constructor(private readonly engine: Engine) {}
@@ -57,6 +59,7 @@ class FakeBrowser {
       events: this.events,
       location: location as GuardEnvironment["location"],
       history: history as unknown as GuardEnvironment["history"],
+      router: { replace: (url) => { this.routerReplaces.push(url); this.routerReplace(url); } },
       timers: {
         set: (callback) => {
           const id = this.nextTimer++;
@@ -476,6 +479,8 @@ describe("guarda de alterações não salvas (#612)", () => {
       browser.settle();
       expect(browser.index).toBe(1);
       expect(browser.url).toBe(`${PRODUCT_URL}?section=oferta`);
+      // Pelo router do app, não por `replaceState` por fora dele (#615, C).
+      expect(browser.routerReplaces).toEqual([`${PRODUCT_URL}?section=oferta`]);
       expect(browser.entries[1].state).toEqual({ __NA: true });
     }
   );

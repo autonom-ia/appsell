@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useEffect, useRef } from "react";
 
 export const DIRTY_STATE_EVENT = "appsell:dirty-state";
@@ -19,6 +20,10 @@ export interface GuardEnvironment {
   location: Pick<Location, "href">;
   events: Pick<EventTarget, "addEventListener" | "removeEventListener" | "dispatchEvent">;
   timers: { set(callback: () => void, ms: number): number; clear(id: number): void };
+  // O router do app. A URL que mudou com a sentinela no topo volta pelas mãos
+  // dele: escrita por fora, o Next a sobrescreve ao terminar a própria
+  // restauração do `popstate`, e a tela fica na etapa anterior (#615, ponto C).
+  router: { replace(url: string): void };
 }
 
 // Quanto a guarda espera o `popstate` do `go(1)` que devolve a sentinela.
@@ -117,10 +122,9 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
       sentinel = false;
       sentinelBelow = false;
       // A URL pode ter mudado com a sentinela no topo (`router.replace` de
-      // troca de seção ou de loja). A entrada que sobra fica com ela.
-      if (location.href !== leavingUrl) {
-        history.replaceState(history.state, "", leavingUrl);
-      }
+      // troca de seção ou de loja). A entrada que sobra fica com ela, e quem a
+      // grava é o router: ele também troca a tela que acabou de restaurar.
+      if (location.href !== leavingUrl) env.router.replace(leavingUrl);
       reconcile();
       return;
     }
@@ -249,6 +253,8 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
 }
 
 export function useUnsavedChanges(dirty: boolean) {
+  const router = useRouter();
+  const routerRef = useRef(router);
   const dirtyRef = useRef(dirty);
   const guardRef = useRef<UnsavedHistoryGuard | null>(null);
 
@@ -257,7 +263,8 @@ export function useUnsavedChanges(dirty: boolean) {
       history,
       location: window.location,
       events: window,
-      timers: { set: (callback, ms) => window.setTimeout(callback, ms), clear: (id) => window.clearTimeout(id) }
+      timers: { set: (callback, ms) => window.setTimeout(callback, ms), clear: (id) => window.clearTimeout(id) },
+      router: { replace: (url) => routerRef.current.replace(url, { scroll: false }) }
     }, dirtyRef.current);
     guardRef.current = guard;
     return () => {
@@ -266,6 +273,10 @@ export function useUnsavedChanges(dirty: boolean) {
       window.dispatchEvent(new CustomEvent(DIRTY_STATE_EVENT, { detail: { dirty: false } }));
     };
   }, []);
+
+  useEffect(() => {
+    routerRef.current = router;
+  }, [router]);
 
   useEffect(() => {
     dirtyRef.current = dirty;
