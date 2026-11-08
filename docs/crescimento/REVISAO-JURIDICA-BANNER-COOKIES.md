@@ -47,17 +47,28 @@ Como o banner se comporta (`lib/tracking/consent.ts`, `banner-logic.ts`,
 - a loja funciona igual com a recusa. Comprar, entrar e estudar não dependem do
   aceite;
 - a escolha pode ser mudada a qualquer momento pelo botão **"Cookies"** no
-  rodapé da loja. Recusar depois de ter aceitado apaga o cookie de campanha na
-  hora;
+  rodapé da loja. Recusar depois de aceitar apaga o cookie de campanha na hora
+  e impede novas gravações. A atribuição de uma compra **já iniciada** continua
+  no servidor até o prazo da seção 4.1: nenhuma rota de revogação toca o
+  servidor (pergunta 7.8);
 - a escolha vale **só para aquela loja**. Aceitar numa loja não vale em outra.
 
 ## 3. O que fica no navegador
 
 Fonte: `lib/tracking/attribution.ts`, `consent.ts`, `cookies.ts`.
 
-Os dois cookies são do próprio domínio da loja, só trafegam em HTTPS
-(`Secure`) e só vão junto na navegação dentro do site (`SameSite=Lax`). Não são
-de terceiros e ninguém além da plataforma os lê.
+Os dois cookies são gravados pelo banner, no navegador, no **domínio da
+plataforma**, com `Path=/` e sem `Domain`. As lojas ficam sob esse mesmo
+domínio, então o cookie de uma loja vai junto em qualquer página da
+plataforma. O nome leva o código da loja, e a plataforma só lê o cookie da loja
+da página.
+
+- **Não são `HttpOnly`.** Quem grava é o JavaScript do banner, e qualquer script
+  da página consegue lê-los. As páginas da loja não têm script de terceiro.
+- Só trafegam em HTTPS (`Secure`).
+- Com `SameSite=Lax`, não vão em requisições feitas por outros sites, **exceto**
+  quando a pessoa clica num link que leva à plataforma.
+- São primários: nenhum terceiro os grava nem os recebe.
 
 | Cookie | O que guarda | Quando é gravado | Duração |
 |---|---|---|---|
@@ -101,11 +112,25 @@ ligar a campanha à compra e, pela compra, à pessoa que comprou.
 A loja vê, no painel, **só o total de vendas por campanha**. Ela não vê a linha
 de cada compra ligada à campanha.
 
+Mesmo assim, **numa loja de pouco volume o vendedor pode deduzir** qual venda
+veio de qual campanha. O painel aceita período de um dia e conta a partir de
+uma venda, e o relatório de vendas lista cada venda por dia. Ver a pergunta
+7.7.
+
 **Guarda:**
 
-- sem venda aprovada em **48 horas**, a linha é apagada;
-- com venda aprovada, a linha fica **13 meses** e depois é apagada;
-- a limpeza roda **a cada hora**, de forma automática.
+- sem venda aprovada em **48 horas**, a linha é apagada na limpeza seguinte, ou
+  seja, em até cerca de 49 horas;
+- com venda aprovada, a linha fica **13 meses**, contados do início do checkout,
+  não da venda, e depois é apagada;
+- a limpeza roda **a cada hora**, de forma automática;
+- uma venda aprovada depois das 48 horas, como Pix ou boleto pago com atraso,
+  já perdeu a atribuição.
+
+**Escopo:** a atribuição é gravada só no checkout pelo Financial. O caminho
+local do Stripe não grava. Cada campo de campanha tem limite de 100 bytes no
+banco. Um texto com acento perto do limite faz a atribuição inteira ser
+descartada.
 
 ### 4.2 Contagem de aceites e recusas (`cookie_consent_tally`)
 
@@ -114,20 +139,29 @@ aceitaram e quantas recusaram. É só um número. Não há linha por pessoa, IP,
 identificador nem horário exato. Serve de prova agregada de que o banner é
 mostrado e da taxa de aceite.
 
+A rota que recebe a contagem usa o IP só na memória do processo, para limitar
+abuso. O IP não é gravado.
+
 **Guarda:** hoje não há prazo de apagamento, porque não há dado pessoal. Ver a
 pergunta 7.5.
 
 ### 4.3 Links de campanha (`campaign_link`)
 
 São os links que o próprio vendedor monta no painel: nome, página de destino e
-campos da campanha. É dado da loja, não da pessoa que visita. Ficam enquanto a
-loja quiser, e o vendedor pode arquivar.
+campos da campanha. É dado da loja, não da pessoa que visita. O link guarda
+também `created_by`, a pessoa da equipe da loja que o criou. Não existe apagar,
+só arquivar: o link arquivado continua guardado.
 
 ### 4.4 Proteção técnica
 
-As três tabelas têm isolamento por loja (RLS forçada). Só funções específicas,
-com verificação da loja e do papel (dono ou administrador), leem ou gravam
-nelas. Uma loja nunca lê a campanha de outra.
+- As tabelas **não são acessíveis diretamente pela aplicação**: a RLS é forçada,
+  e o acesso foi revogado. A política de RLS é `using (true)` para o dono do
+  banco. O isolamento vem do `revoke` e das funções `security definer`, não de
+  um filtro por loja na política.
+- A gravação da atribuição, a contagem e a limpeza passam por funções chamadas
+  só pelo servidor da plataforma, sem papel de usuário.
+- A leitura pelo painel exige a loja do contexto e o papel de dono ou
+  administrador. Uma loja nunca lê a campanha de outra.
 
 ## 5. Base legal e papéis (proposta para validar)
 
@@ -136,7 +170,9 @@ art. 7º, I). Motivos:
 
 - o cookie não é necessário para a loja funcionar;
 - a pessoa escolhe, a recusa é o padrão e a escolha pode ser revogada a
-  qualquer momento (art. 8º, § 5º);
+  qualquer momento (art. 8º, § 5º). A revogação vale para frente: apaga o
+  cookie e impede novas gravações, mas não apaga a atribuição já gravada
+  (pergunta 7.8);
 - a versão do texto aceito fica gravada junto, como prova (art. 8º, § 2º).
 
 **Cookie da escolha (`sell_choice_`).** Proposta: necessário para cumprir a
@@ -174,9 +210,10 @@ Proposta para a seção 3 da Política de Cookies, "Cookies opcionais":
 > | `sell_utm_<loja>` | Guarda os campos da campanha do link que trouxe você (origem, meio, campanha, conteúdo e termo), o código do link e a data da visita. Não guarda nome, e-mail nem IP. | 7 dias |
 >
 > Se você comprar nos 7 dias, a loja fica sabendo qual campanha trouxe a venda. A
-> loja vê o total por campanha, não quem comprou por qual campanha. Esse
-> registro é apagado em 48 horas se a compra não for aprovada, e em 13 meses se
-> for.
+> loja vê o total de vendas por campanha, não a lista de quem comprou por cada
+> uma. Numa loja com poucas vendas, ela pode deduzir de qual campanha veio uma
+> compra. Esse registro é apagado em até 49 horas se a compra não for aprovada,
+> e 13 meses depois do início da compra se for.
 >
 > Não usamos cookie de publicidade, de rede social nem ferramenta de análise de
 > terceiros.
@@ -185,12 +222,25 @@ Proposta para a seção 2, acrescentando uma linha à tabela de essenciais:
 
 > | `sell_choice_<loja>` | Lembra se você aceitou ou recusou o cookie de campanha daquela loja, para não perguntar de novo a cada página. Dura cerca de 6 meses. |
 
+A seção 2 diz hoje que, "em produção, todos usam o prefixo `__Host-`". O
+`sell_choice_` não tem esse prefixo, nem o `sell_utm_`, porque quem grava os
+dois é o banner, no navegador. A frase precisa mudar junto. Proposta:
+
+> Os cookies de sessão e de login acima usam, em produção, o prefixo `__Host-`,
+> que os prende ao domínio, exige conexão segura e impede que sejam lidos por
+> subdomínios. O cookie da escolha de campanha, gravado pelo aviso da loja, não
+> usa esse prefixo, mas também só trafega em conexão segura.
+
+A alternativa é renomear os dois cookies com o prefixo `__Host-`. Isso é mudança
+de código, e a trilha faz se o jurídico preferir.
+
 Proposta para a seção 4, "Como gerenciar sua escolha":
 
 > Nas lojas que usam o cookie de campanha, um aviso pergunta se você aceita.
 > Recusar é tão fácil quanto aceitar, e a loja funciona do mesmo jeito. Você
 > pode mudar a escolha quando quiser pelo botão "Cookies" no rodapé da loja.
-> Recusar depois de aceitar apaga o cookie de campanha na hora.
+> Recusar depois de aceitar apaga o cookie de campanha na hora e impede novos
+> registros. O registro de uma compra já iniciada segue o prazo acima.
 
 Proposta para a seção 10 da Política de Privacidade:
 
@@ -223,9 +273,16 @@ Proposta para a seção 10 da Política de Privacidade:
    nenhum fluxo de exclusão apaga a atribuição antes do prazo: ela só sai pela
    limpeza automática (48 horas ou 13 meses). Isso basta, ou a exclusão precisa
    ser imediata?
-7. **Texto do banner.** "Se você comprar, a loja vê só a campanha que trouxe a
-   venda" descreve o que acontece? O painel mostra o total por campanha, sem
-   ligar a compra à pessoa.
+7. **Texto do banner e dedução em loja pequena.** O banner diz: "Se você
+   comprar, a loja vê só a campanha que trouxe a venda". Isso descreve o que
+   acontece? O painel mostra o total por campanha. Mas numa loja de pouco
+   volume, cruzando com o relatório de vendas por dia, o vendedor pode deduzir
+   de qual campanha veio uma compra. Isso basta ser dito, ou o painel deve
+   esconder contagens pequenas, por exemplo abaixo de 5?
+8. **Revogação para frente.** Recusar depois de aceitar apaga o cookie e
+   impede novas gravações, mas a atribuição de uma compra já iniciada fica no
+   servidor até o prazo (48 horas sem venda, 13 meses com venda). Isso atende ao
+   art. 8º, § 5º, ou a revogação precisa apagar também o que já foi gravado?
 
 ## 8. Como ligar depois do OK
 
@@ -273,9 +330,10 @@ O texto já está gravado no banco como `store_news` versão 1, na migration
   - um registro de auditoria.
 - O e-mail gravado é o da conta da pessoa logada, nunca um digitado no
   formulário.
-- Cada e-mail opcional leva um link de descadastro em um clique. Ele vale na
-  hora e grava uma supressão que vence qualquer consentimento posterior da
-  mesma loja, até a pessoa marcar a caixa de novo.
+- O descadastro em um clique já existe (#561). Todo e-mail opcional deve levar
+  esse link. Ele vale na hora e grava uma supressão. A supressão impede o envio
+  mesmo que exista um consentimento, até a pessoa marcar a caixa de novo. Hoje
+  ainda não há envio de e-mail opcional ligado.
 - Excluir a conta apaga o consentimento. A supressão fica, guardada só como
   sha256 do e-mail, para o descadastro continuar valendo.
 - O e-mail transacional (compra, acesso) não depende da caixa e continua
