@@ -512,6 +512,37 @@ describe("guarda de alterações não salvas (#612)", () => {
     }
   );
 
+  it.each<Engine>(["webkit", "chromium"])(
+    "no %s, se o popstate da saída nunca chega, a troca de etapa segue no prazo",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      const guard = createUnsavedHistoryGuard(browser.env, true);
+      let navegou = 0;
+      guard.setDirty(false);
+      guard.whenSettled(() => { navegou += 1; });
+      // O `back()` da guarda foi pedido e o navegador não o entregou: sem o
+      // prazo, o vendedor ficaria preso no editor.
+      expect(navegou).toBe(0);
+      browser.elapse();
+      expect(navegou).toBe(1);
+      // O popstate atrasado não repete a navegação que já seguiu.
+      browser.settle();
+      expect(navegou).toBe(1);
+    }
+  );
+
+  it("a navegação que assentou a tempo não roda de novo no prazo", () => {
+    const browser = new FakeBrowser("webkit");
+    const guard = createUnsavedHistoryGuard(browser.env, true);
+    let navegou = 0;
+    guard.setDirty(false);
+    guard.whenSettled(() => { navegou += 1; });
+    browser.settle();
+    expect(navegou).toBe(1);
+    browser.elapse();
+    expect(navegou).toBe(1);
+  });
+
   it("com o histórico assentado, a navegação pedida roda na hora", () => {
     const browser = new FakeBrowser("webkit");
     const guard = createUnsavedHistoryGuard(browser.env, true);

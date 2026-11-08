@@ -31,6 +31,11 @@ export interface GuardEnvironment {
 // nunca chega.
 export const RESTORE_DEADLINE_MS = 1_000;
 
+// Quanto uma navegação pedida por `whenSettled` espera a guarda assentar. Se
+// o `popstate` da travessia dela nunca chegar, a navegação segue mesmo assim:
+// o vendedor não pode ficar preso no editor.
+export const SETTLE_DEADLINE_MS = 1_000;
+
 export interface UnsavedHistoryGuard {
   setDirty(dirty: boolean): void;
   /**
@@ -98,6 +103,7 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
   let disposed = false;
   // Navegações do app que esperam o histórico assentar (`whenSettled`).
   let waiting: Array<() => void> = [];
+  let settleTimer: ReturnType<GuardEnvironment["timers"]["set"]> | null = null;
 
   const onSentinel = () => (history.state as { __appsellDirtyGuard?: unknown } | null)?.__appsellDirtyGuard === token;
 
@@ -105,6 +111,12 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
 
   const flushWaiting = () => {
     if (!settled() || waiting.length === 0) return;
+    runWaiting();
+  };
+
+  const runWaiting = () => {
+    if (settleTimer !== null) timers.clear(settleTimer);
+    settleTimer = null;
     const ready = waiting;
     waiting = [];
     ready.forEach((navigate) => navigate());
@@ -252,6 +264,12 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
     whenSettled(navigate) {
       waiting = [...waiting, navigate];
       flushWaiting();
+      if (waiting.length > 0 && settleTimer === null) {
+        settleTimer = timers.set(() => {
+          settleTimer = null;
+          runWaiting();
+        }, SETTLE_DEADLINE_MS);
+      }
     },
     dispose() {
       disposed = true;
@@ -275,9 +293,7 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
         history.back();
       }
       // A tela saiu: quem esperava navega agora, sem guarda para desfazer.
-      const ready = waiting;
-      waiting = [];
-      ready.forEach((navigate) => navigate());
+      runWaiting();
     }
   };
 }
