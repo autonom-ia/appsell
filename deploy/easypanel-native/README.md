@@ -78,7 +78,8 @@ laboratório #71 permanecem intocados. Nenhum serviço novo pode entrar nas rede
    `web.staging.env.example` e Basic Auth obrigatório com credencial exclusiva de
    homologação.
 8. Adicionar pelo Domain & Proxy nativo:
-   `sell-issue90.85-31-60-100.sslip.io` → `web:3000`, HTTPS habilitado.
+   `<staging-public-host>` → `web:3000` (o mesmo valor de
+   `APPSELL_PUBLIC_DEMO_ORIGIN`), HTTPS habilitado.
 9. Validar API `/health/ready` internamente e web `/api/health/ready` por HTTPS.
 10. Rodar E2E real de admin, comprador, superadmin, cupom 100%, vídeo, PDF-aula
     protegido e PDF de apoio autorizado.

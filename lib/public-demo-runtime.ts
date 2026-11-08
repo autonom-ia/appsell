@@ -1,11 +1,23 @@
 export const PUBLIC_DEMO_STAGING_RUNTIME_MARKER = "sell-autonomia-native-90-staging";
 export const PUBLIC_DEMO_RUNTIME_MARKER = PUBLIC_DEMO_STAGING_RUNTIME_MARKER;
 
+// O endereço público da homologação vem da env, nunca de literal no código: o
+// repositório é público. A demo só liga quando a origem pública do web é a
+// origem declarada para a demo, por HTTPS, e nunca a origem de produção.
+const PRODUCTION_PUBLIC_ORIGIN = "https://sell.autonomia.site";
+
+function demoOriginMatches(environment: Partial<Record<string, string | undefined>>) {
+  const declared = environment.APPSELL_PUBLIC_DEMO_ORIGIN?.trim() ?? "";
+  return declared.startsWith("https://") &&
+    declared !== PRODUCTION_PUBLIC_ORIGIN &&
+    environment.APPSELL_PUBLIC_ORIGIN === declared;
+}
+
 export function publicDemoRuntimeEnabled(
   environment: Partial<Record<string, string | undefined>> = process.env
 ) {
   return environment.APPSELL_PUBLIC_DEMO_RUNTIME === PUBLIC_DEMO_STAGING_RUNTIME_MARKER &&
-    environment.APPSELL_PUBLIC_ORIGIN === "https://sell-issue90.85-31-60-100.sslip.io" &&
+    demoOriginMatches(environment) &&
     environment.NODE_ENV === "production" &&
     environment.APP_ENV === "ci" &&
     environment.APPSELL_OAUTH_MODE === "local" &&

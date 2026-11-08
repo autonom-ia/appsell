@@ -27,7 +27,8 @@ const shared = {
 const staging = {
   ...shared,
   APPSELL_PUBLIC_DEMO_RUNTIME: PUBLIC_DEMO_STAGING_RUNTIME_MARKER,
-  APPSELL_PUBLIC_ORIGIN: "https://sell-issue90.85-31-60-100.sslip.io"
+  APPSELL_PUBLIC_ORIGIN: "https://demo-staging.example.test",
+  APPSELL_PUBLIC_DEMO_ORIGIN: "https://demo-staging.example.test"
 };
 
 describe("public demo runtime", () => {
@@ -56,6 +57,24 @@ describe("public demo runtime", () => {
     expect(publicDemoRuntimeEnabled({
       ...staging,
       APPSELL_PUBLIC_ORIGIN: "https://sell.autonomia.site"
+    })).toBe(false);
+    expect(publicDemoRuntimeEnabled({
+      ...staging,
+      APPSELL_PUBLIC_ORIGIN: "https://sell.autonomia.site",
+      APPSELL_PUBLIC_DEMO_ORIGIN: "https://sell.autonomia.site"
+    })).toBe(false);
+  });
+
+  it("requires the declared demo origin over HTTPS and equal to the public origin", () => {
+    expect(publicDemoRuntimeEnabled({ ...staging, APPSELL_PUBLIC_DEMO_ORIGIN: "" })).toBe(false);
+    expect(publicDemoRuntimeEnabled({
+      ...staging,
+      APPSELL_PUBLIC_ORIGIN: "http://demo-staging.example.test",
+      APPSELL_PUBLIC_DEMO_ORIGIN: "http://demo-staging.example.test"
+    })).toBe(false);
+    expect(publicDemoRuntimeEnabled({
+      ...staging,
+      APPSELL_PUBLIC_DEMO_ORIGIN: "https://other-staging.example.test"
     })).toBe(false);
   });
 });
