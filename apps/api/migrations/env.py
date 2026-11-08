@@ -6,13 +6,15 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+from appsell_api.migration_target import resolve_migration_url
+
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-database_url = os.environ.get("APPSELL_MIGRATOR_DATABASE_URL")
-if database_url:
-    config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
+# Sem a variável do migrador, o alembic.ini só vale com opt-in local (#524).
+database_url = resolve_migration_url(os.environ, config.get_main_option("sqlalchemy.url") or "")
+config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 
 
 def run_migrations_offline() -> None:

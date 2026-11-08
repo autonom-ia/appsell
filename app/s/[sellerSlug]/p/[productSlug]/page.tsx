@@ -17,6 +17,8 @@ import { isProductCheckoutAvailable } from "@/lib/product-checkout-availability.
 import { parsePublicStorefront } from "@/lib/public-storefront";
 import { productCardImage, twitterCardKind } from "@/lib/social-card";
 import { SITE } from "@/lib/site";
+import { atribuicaoLiberada } from "@/lib/tracking/pilot";
+import { RastreioDaLoja } from "@/lib/tracking/rastreio-da-loja";
 
 export const dynamic = "force-dynamic";
 
@@ -185,6 +187,7 @@ export default async function ProductCheckoutPage({
       >Comprar agora</a>
     </div> : null}
     <StorefrontFooter/>
+    {atribuicaoLiberada(seller.id) ? <RastreioDaLoja sellerId={seller.id}/> : null}
   </div>;
 }
 

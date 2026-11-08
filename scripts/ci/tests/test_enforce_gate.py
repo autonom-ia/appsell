@@ -6,6 +6,7 @@ from scripts.ci.enforce_gate import evaluate_gate, expected_steps
 def outcomes(**overrides: str) -> dict[str, str]:
     values = {
         "route": "success",
+        "migration_shape": "success",
         "audit_api": "skipped",
         "fast_web": "skipped",
         "fast_api": "skipped",
@@ -32,11 +33,11 @@ class ExpectedStepsTests(unittest.TestCase):
     def test_pull_request_requires_only_fast_scopes(self) -> None:
         route = {"web": True, "api": False}
 
-        self.assertEqual({"route", "fast_web"}, expected_steps("pull_request", route))
+        self.assertEqual({"route", "migration_shape", "fast_web"}, expected_steps("pull_request", route))
 
     def test_docs_pull_request_requires_route_only(self) -> None:
         self.assertEqual(
-            {"route"},
+            {"route", "migration_shape"},
             expected_steps("pull_request", {"web": False, "api": False}),
         )
 
@@ -44,7 +45,7 @@ class ExpectedStepsTests(unittest.TestCase):
         route = {"backup": True, "preview": True}
 
         self.assertEqual(
-            {"route", "fast_backup", "fast_preview"},
+            {"route", "migration_shape", "fast_backup", "fast_preview"},
             expected_steps("pull_request", route),
         )
 
@@ -65,6 +66,7 @@ class ExpectedStepsTests(unittest.TestCase):
         self.assertEqual(
             {
                 "route",
+                "migration_shape",
                 "audit_api",
                 "cert_web",
                 "cert_api",
@@ -93,7 +95,7 @@ class ExpectedStepsTests(unittest.TestCase):
         # #450: o pip-audit dentro do mesmo passo do pytest escondeu a suíte
         # de banco desde setembro. Passo próprio: um reprova sem calar o outro.
         self.assertEqual(
-            {"route", "audit_api", "fast_api"},
+            {"route", "migration_shape", "audit_api", "fast_api"},
             expected_steps("pull_request", {"api": True}),
         )
         for event in ("merge_group", "push", "workflow_dispatch"):
@@ -147,6 +149,7 @@ class ExpectedStepsTests(unittest.TestCase):
         self.assertEqual(
             {
                 "route",
+                "migration_shape",
                 "audit_api",
                 "cert_web",
                 "cert_postgres",
@@ -165,7 +168,7 @@ class ExpectedStepsTests(unittest.TestCase):
         }
 
         self.assertEqual(
-            {"route", "smoke"},
+            {"route", "migration_shape", "smoke"},
             expected_steps("push", route, merge_queue_active=True),
         )
 
@@ -204,6 +207,24 @@ class EvaluateGateTests(unittest.TestCase):
         )
 
         self.assertIn("cert_storage=unexpected-success", failures)
+
+    def test_migration_shape_is_expected_on_every_event(self) -> None:
+        # #551: dois PRs verdes com a mesma 0066 quebram a main juntos. A
+        # checagem é barata e vale em todo evento, inclusive no push com a fila.
+        for event in ("pull_request", "merge_group", "push", "workflow_dispatch"):
+            with self.subTest(event=event):
+                self.assertIn("migration_shape", expected_steps(event, {}))
+        self.assertIn(
+            "migration_shape", expected_steps("push", {}, merge_queue_active=True)
+        )
+
+    def test_migration_shape_failure_or_skip_rejects_the_gate(self) -> None:
+        for outcome in ("failure", "skipped", "missing"):
+            with self.subTest(outcome=outcome):
+                failures = evaluate_gate(
+                    "pull_request", {}, outcomes(migration_shape=outcome)
+                )
+                self.assertEqual([f"migration_shape={outcome}"], failures)
 
     def test_route_failure_always_fails(self) -> None:
         failures = evaluate_gate(
