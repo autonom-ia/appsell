@@ -74,7 +74,9 @@ ficam registradas sem efeito e não mudam acesso nenhum.
   suspensa ou perdida com acesso ativo), `suspended_without_dispute` (acesso
   suspenso sem compra suspensa), `dispute_without_fulfillment` (evento de
   disputa sem job), `dispute_without_created_at` (evento de disputa sem a
-  data real) ou `disputed_while_disabled` (compra suspensa em loja desligada).
+  data real), `disputed_while_disabled` (compra suspensa em loja desligada) ou
+  `dispute_while_switch_off` (disputa aberta ou perdida que chegou com a loja
+  desligada e não foi registrada: decidir na mão antes de ligar a loja).
 
 Mandar para fora só contagens. Nenhuma linha com comprador.
 
@@ -97,9 +99,84 @@ Religar depois de desligar move o piso para a nova linha `enable`: a disputa
 aberta no intervalo fica sem efeito. A disputa já registrada mantém o que
 tinha, e o desfecho dela continua valendo.
 
-## Volta da migration
+## Deploy e volta
 
-A descida da 0074 recusa enquanto existir evento de disputa, estado de
-disputa, grant suspenso ou perdido, acesso suspenso ou linha na chave por loja
-(apagaria a auditoria).
-Com a regra já usada, a volta é desligar as lojas e reverter o código. A migration fica.
+Produção está em `0072_relatorio_de_vendas` (release de 08/11). Este PR entra
+depois do #583 (`0069_motivo_do_acesso`), então o deploy sobe a cadeia
+`0072 → 0069 → 0074` numa transação só, se as duas ainda não estiverem
+aplicadas.
+
+Quem executa é a Trilha 1 · Plataforma, com OK do Rodrigo em cada fase 🔴.
+Procedimento de shell, túnel e credencial: o de `release-0064-api.md` (D3, o
+migrador roda na máquina de quem opera, por `com_tunel`, a partir de um
+checkout limpo do `SHA` mergeado; a credencial não vai ao host).
+
+### Ordem
+
+1. **Migration antes da api.** A api atual roda sobre o banco em 0074: a
+   migration só acrescenta tabelas, funções e estados, e o `schema_ready` passa
+   a aceitar a versão nova. O worker atual não tem o desvio de disputa, mas
+   também não recebe evento de disputa, porque o ingresso só aceita os tipos
+   novos depois da 0074 e o Financial só manda com o worker dele em `deliver`.
+2. **Api depois**, pela ordem de update da **spec do host** (a api é
+   `start-first`; ler `UpdateConfig.Order` antes, nunca supor pelo release
+   anterior). Sem `--update-order` no comando.
+3. **Financial (#165) por último**, com o worker de disputa desligado. Ligar
+   o `deliver` para uma loja é passo separado, com OK do Rodrigo.
+
+### Subir 🔴
+
+```sh
+cd "$CHECKOUT/apps/api"
+export PGOPTIONS="-c lock_timeout=5s -c statement_timeout=120s"
+PGOPTIONS="$PGOPTIONS -c default_transaction_read_only=on" \
+  com_tunel .venv/bin/alembic current      # 0072_relatorio_de_vendas ou 0069_motivo_do_acesso
+com_tunel .venv/bin/alembic upgrade head; echo "alembic rc=$?"
+PGOPTIONS="$PGOPTIONS -c default_transaction_read_only=on" \
+  com_tunel .venv/bin/alembic current      # 0074_acesso_em_disputa
+```
+
+ETA de 1 a 2 min. A 0074 também põe `lock_timeout = '5s'` antes das trocas de
+checagem em `webhook_event`, `fulfillment_job`, `entitlement_grant` e
+`buyer_entitlement`. Se o bloqueio não sair em 5 s, a transação volta inteira
+(a 0069 junto) e o comando pode ser repetido.
+
+Conferir: `alembic rc=0`, `alembic current` = 0074, `/health/ready` da api
+**atual** verde depois da migration, e o smoke da Hub2You de
+`storage-461-rede-interna.md`, antes e depois.
+
+### Voltar a api
+
+Pela imagem anterior guardada, com `docker service update --image`, como na
+seção Rollback de `release-0064-api.md` (não `docker service rollback`). ETA
+de 2 a 7 min. Voltar a api não mexe no banco: a api anterior roda sobre a 0074.
+
+### Voltar o banco 🔴
+
+Só se a causa for a própria 0074, com OK do Rodrigo, e com a api já na imagem
+anterior. A descida recusa enquanto existir evento de disputa, estado de
+disputa, grant suspenso ou perdido, acesso suspenso ou linha na chave por loja:
+apagaria a auditoria. Com a regra já usada, a volta é desligar as lojas e
+reverter o código; a migration fica.
+
+```sh
+cd "$CHECKOUT/apps/api"
+export PGOPTIONS="-c lock_timeout=5s -c statement_timeout=120s"
+com_tunel .venv/bin/alembic downgrade 0069_motivo_do_acesso; echo "rc=$?"
+PGOPTIONS="$PGOPTIONS -c default_transaction_read_only=on" \
+  com_tunel .venv/bin/alembic current      # 0069_motivo_do_acesso
+```
+
+ETA de 1 a 2 min; o `drop`/`add` das checagens pode precisar de repetição por
+causa do `lock_timeout`. O alvo é a **anterior na cadeia** (`0069`), nunca
+`-1` nem um número de outra trilha.
+
+### Quem confere o quê
+
+| O quê | Quem | Como |
+|---|---|---|
+| `alembic current` antes e depois | quem executa | comandos acima |
+| `/health/ready` da api atual depois da migration | quem executa | `curl` pelo host |
+| Smoke da Hub2You antes e depois | quem executa, e a Dinheiro lê | `storage-461-rede-interna.md` |
+| Nenhum `dead_letter` de disputa e a conciliação vazia nas categorias de disputa | a Dinheiro | seção Conferir |
+| O Financial com o worker de disputa desligado | a Dinheiro | switch do #165 em `off` |

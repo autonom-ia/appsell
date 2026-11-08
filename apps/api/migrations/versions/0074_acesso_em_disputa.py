@@ -96,7 +96,7 @@ from types import ModuleType
 from alembic import op
 
 revision = "0074_acesso_em_disputa"
-down_revision = "0072_relatorio_de_vendas"
+down_revision = "0069_motivo_do_acesso"
 branch_labels = None
 depends_on = None
 
@@ -117,6 +117,10 @@ _TABELAS_NOVAS: tuple[str, ...] = (
     "app_private.purchase_dispute",
 )
 
+# Na fila de um bloqueio de tabela, a migration desiste em 5 s em vez de deixar
+# leituras e webhooks esperando atrás dela (padrão da 0068).
+_LOCK_TIMEOUT = "set local lock_timeout = '5s'"
+
 _TIPOS_DE_ANTES = "'purchase.approved','purchase.refunded','subscription.cancelled'"
 _TIPOS_DE_DISPUTA = "'purchase.dispute_opened','purchase.dispute_won','purchase.dispute_lost'"
 _TIPOS_DE_AGORA = _TIPOS_DE_ANTES + "," + _TIPOS_DE_DISPUTA
@@ -132,9 +136,9 @@ def _carregar(revisao: str) -> ModuleType:
     return modulo
 
 
-# A lista do readiness vem da anterior na cadeia (`_READY_ATE_0072`), não de
+# A lista do readiness vem da anterior na cadeia (`_READY_ATE_<n>` dela), não de
 # uma cópia escrita aqui: assim ela não perde as versões que entraram antes.
-READY_ANTES: str = _carregar(down_revision)._READY_ATE_0072
+READY_ANTES: str = getattr(_carregar(down_revision), f"_READY_ATE_{down_revision.split('_', 1)[0]}")
 # Nome que as migrations seguintes leem por `getattr` (padrão da 0067 em diante).
 _READY_ATE_0074 = READY_ANTES[:-2] + f",'{revision}'))"
 _BASES_DO_READY: tuple[str, ...] = (
@@ -142,10 +146,9 @@ _BASES_DO_READY: tuple[str, ...] = (
     "app_private.schema_ready_base_0017()",
 )
 _BASE_DO_ACESSO = "app_private.schema_ready_base_0016()"
-# Âncora do trecho de funções do readiness: o texto que a 0064 deixou. A 0068
-# também acrescenta logo depois dessa âncora; ela continua aparecendo uma vez
-# só, e a troca põe as linhas da disputa entre a âncora e as da 0068.
-_ULTIMA_DO_READY = "0064_vendas_ativadas_pela_loja"
+# A última migration que acrescentou função ao readiness. As linhas da disputa
+# entram depois das dela, e a próxima lê `_ready_funcao()` desta.
+_ULTIMA_COM_FUNCAO_NO_READY = "0069_motivo_do_acesso"
 
 _READY_DA_DISPUTA = (
     "            and to_regclass('app_private.dispute_access_switch') is not null\n"
@@ -164,20 +167,15 @@ _READY_DA_DISPUTA = (
 )
 
 
-def _migration_do_ready() -> ModuleType:
-    """Lê a âncora que a 0064 deixou no `schema_ready`, em vez de copiá-la."""
-    caminho = Path(__file__).with_name(f"{_ULTIMA_DO_READY}.py")
-    spec = importlib_util.spec_from_file_location("appsell_migration_0064_para_0074", caminho)
-    if spec is None or spec.loader is None:  # pragma: no cover - caminho fixo no repo
-        raise RuntimeError("a migration 0064 nao pode ser lida")
-    modulo = importlib_util.module_from_spec(spec)
-    spec.loader.exec_module(modulo)
-    return modulo
-
-
 def _ready_funcao() -> tuple[str, str]:
-    de = _migration_do_ready()._ready_funcao()[1]
+    de: str = _carregar(_ULTIMA_COM_FUNCAO_NO_READY)._ready_funcao()[1]
     return de, de + _READY_DA_DISPUTA
+
+
+# Nome da 0068 (`_ready_funcoes`), que a próxima migration com função no
+# readiness lê para achar o fim deste bloco: (antes, depois desta).
+def _ready_funcoes() -> tuple[str, str]:
+    return _ready_funcao()
 
 
 # Marcadores com sublinhado: o texto trocado pode conter "DE" ou "PARA".
@@ -229,8 +227,12 @@ begin
 end $migration$
 """
 
-# Cada tabela tem exatamente uma checagem com a lista de tipos. `not valid` e
-# depois `validate`: a troca não segura a tabela durante a varredura.
+# Cada tabela tem exatamente uma checagem com a lista de tipos. O `drop` e o
+# `add` pegam o bloqueio exclusivo da tabela, que dura até o commit da
+# migration: nesse tempo a leitura da biblioteca e o ingresso de webhook (da
+# Hub2You também) esperam atrás. `not valid` e depois `validate` só tiram a
+# varredura de dentro do bloqueio exclusivo. Quem limita a espera é o
+# `_LOCK_TIMEOUT`, posto antes de qualquer troca nas duas direções.
 _TROCA_TIPOS_NAS_TABELAS = """
 do $migration$
 declare alvo record; achadas integer := 0;
@@ -695,9 +697,29 @@ _ESTORNO_PARA = (
     "            returning public.buyer_entitlement.id into v_entitlement_id;\n"
 )
 
+# Aprovação que não concede porque a compra está suspensa ou perdida: a 0020
+# registrava sempre `purchase_refunded`, o que confunde quem lê o audit.
+_MOTIVO_DO_PULO_DE = (
+    "              p_job,'succeeded',p_request,jsonb_build_object(\n"
+    "                  'reason','purchase_refunded',\n"
+)
+_MOTIVO_DO_PULO_PARA = (
+    "              p_job,'succeeded',p_request,jsonb_build_object(\n"
+    "                  'reason',coalesce((select case motivo.status\n"
+    "                      when 'suspended' then 'purchase_disputed'\n"
+    "                      when 'charged_back' then 'purchase_charged_back'\n"
+    "                      else 'purchase_refunded' end\n"
+    "                    from app_private.entitlement_grant motivo\n"
+    "                    where motivo.seller_organization_id=p_seller\n"
+    "                      and motivo.checkout_integration_id=event.checkout_integration_id\n"
+    "                      and motivo.external_purchase_id_sha256=job.external_purchase_id_sha256),\n"
+    "                    'purchase_refunded'),\n"
+)
+
 _TROCAS_NA_APLICACAO: tuple[tuple[str, str], ...] = (
     (_DESVIO_DE, _DESVIO_PARA),
     (_APROVACAO_DE, _APROVACAO_PARA),
+    (_MOTIVO_DO_PULO_DE, _MOTIVO_DO_PULO_PARA),
     (_ESTORNO_GRANT_DE, _ESTORNO_GRANT_PARA),
     (_ESTORNO_DE, _ESTORNO_PARA),
 )
@@ -784,6 +806,31 @@ _CONCILIA_ESTADO_PARA = """  -- Disputa (#542, 0074): compra suspensa ou perdida
   where event.received_at >= p_since and event.received_at < p_before
     and detail.dispute_created_at is null;
 
+  -- Disputa aberta ou perdida que chegou com a regra desligada (gate #147):
+  -- nao foi registrada e o acesso seguiu como estava; so sobra o audit_event.
+  -- Alguem decide na mao antes de ligar a loja. Fato, pela janela.
+  return query
+  select 'dispute_while_switch_off'::text, event.seller_organization_id, seller.slug,
+    'webhook_event'::text, event.id, event.event_type, event.external_purchase_id_sha256,
+    null::uuid, null::text, null::text, event.received_at
+  from public.webhook_event event
+  join public.seller_organization seller on seller.id=event.seller_organization_id
+  join app_private.checkout_dispute_event detail
+    on detail.seller_organization_id=event.seller_organization_id
+   and detail.webhook_event_id=event.id
+  join app_private.fulfillment_job job
+    on job.seller_organization_id=event.seller_organization_id
+   and job.webhook_event_id=event.id
+  where event.received_at >= p_since and event.received_at < p_before
+    and event.event_type in ('purchase.dispute_opened','purchase.dispute_lost')
+    and job.status='completed'
+    and not exists (
+      select 1 from app_private.purchase_dispute disputa
+      where disputa.seller_organization_id=event.seller_organization_id
+        and disputa.checkout_integration_id=event.checkout_integration_id
+        and disputa.external_purchase_id_sha256=event.external_purchase_id_sha256
+        and disputa.dispute_id_sha256=detail.dispute_id_sha256);
+
   -- Fato que nao muda (o evento chega uma vez): a janela pelo received_at
 """
 
@@ -816,6 +863,7 @@ def _sobe_esquema() -> None:
     # Alterar tabelas exige o dono, que em produção pode ser o migrador; o
     # `reset role` devolve a sessão a ele só pelo tempo das trocas (padrão da 0060).
     op.execute("reset role")
+    op.execute(_LOCK_TIMEOUT)
     op.execute(_TROCA_TIPOS_NAS_TABELAS.replace("__TIPOS__", _TIPOS_DE_AGORA))
     op.execute(_troca_status(_GRANT, "'refunded'", _GRANT_AGORA))
     op.execute(_troca_status(_ENTITLEMENT, "'expired'", _ENTITLEMENT_AGORA))
@@ -865,6 +913,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.execute("set local role appsell_owner")
     op.execute(_RECUSA_DESCIDA.replace("__DISPUTA__", _TIPOS_DE_DISPUTA))
+    op.execute(_LOCK_TIMEOUT)
     de, para = _ready_funcao()
     op.execute(_reescreve(_BASE_DO_ACESSO, para, de))
     for alvo in _BASES_DO_READY:

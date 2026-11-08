@@ -30,7 +30,6 @@ _DISPUTE_EVENT_TYPES = frozenset(
 )
 _DISPUTE_ID_KEY = "dispute_id"
 _DISPUTE_CREATED_KEY = "dispute_created_at"
-_DISPUTE_PREFIX = "dp_"
 _DISPUTE_ID_MAX = 255
 _LEGACY_PROTOCOL = "appsell.webhook.generic-hmac.v1"
 _EXTERNAL_CHECKOUT_PROTOCOL = "external-checkout.webhook.generic-hmac.v1"
@@ -212,11 +211,13 @@ def _dispute_created_at(value: object, occurred_at: datetime) -> datetime | None
 
 
 def _valid_dispute_id(value: object) -> bool:
-    # Id de disputa da Stripe: "dp_" e letras ou dígitos ASCII.
-    if not isinstance(value, str) or not value.startswith(_DISPUTE_PREFIX):
+    # Quem garante que é disputa é o Financial: ele lê o objeto da Stripe pelo
+    # tipo (`object == "dispute"`) e assina o corpo. Aqui só a forma, sem lista
+    # de prefixos (a Stripe já usa `dp_` e `du_`, e pode criar outro): texto
+    # ASCII de letras, dígitos e `_`, não vazio, até o teto.
+    if not isinstance(value, str) or not 0 < len(value) <= _DISPUTE_ID_MAX:
         return False
-    body = value.removeprefix(_DISPUTE_PREFIX)
-    return len(value) <= _DISPUTE_ID_MAX and body.isascii() and body.isalnum()
+    return value.isascii() and value.replace("_", "").isalnum()
 
 
 def _valid_buyer_email(value: object) -> bool:

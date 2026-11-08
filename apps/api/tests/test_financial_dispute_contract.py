@@ -131,11 +131,24 @@ def test_campos_da_disputa_fora_de_evento_de_disputa_sao_recusados(event_type: s
 
 
 @pytest.mark.parametrize(
+    "dispute_id", ["dp_1Q2w3E4r5T6y7U8i", "du_1MtJUT2eZvKYlo2CNaw2HvEv", "zz_9Novo8Prefixo7"]
+)
+def test_id_de_disputa_entra_sem_depender_de_prefixo(dispute_id: str) -> None:
+    # Pega: disputa real recusada por prefixo. A Stripe usa `dp_` e `du_` (a
+    # referência do objeto Dispute mostra `du_`) e pode criar outro; o prefixo
+    # inventado prova que não há lista. Recusar deixaria o acesso de quem abriu
+    # disputa intacto, sem erro em lugar nenhum. O tipo quem confere é o
+    # Financial, pelo `object` da Stripe.
+    event = parse_generic_hmac_v1(_with(dispute_id=dispute_id))
+    assert event.dispute_id == dispute_id
+
+
+@pytest.mark.parametrize(
     "dispute_id",
     [
         "",
-        "dp_",
-        "ch_1Q2w3E4r5T6y7U8i",
+        "_",
+        "du_1Q2w-3E4",
         "dp_1Q2w 3E4",
         "dp_1Q2w-3E4",
         "dp_ação",
@@ -143,8 +156,8 @@ def test_campos_da_disputa_fora_de_evento_de_disputa_sao_recusados(event_type: s
         "dp_" + "a" * 253,
     ],
 )
-def test_id_da_disputa_fora_do_formato_da_stripe_e_recusado(dispute_id: object) -> None:
-    # Pega: lixo (ou o id de uma cobrança) tomado como id de disputa.
+def test_id_da_disputa_fora_do_formato_e_recusado(dispute_id: object) -> None:
+    # Pega: lixo tomado como id de disputa (o tipo é conferido no Financial).
     with pytest.raises(WebhookRejectedError):
         parse_generic_hmac_v1(_with(dispute_id=dispute_id))
 

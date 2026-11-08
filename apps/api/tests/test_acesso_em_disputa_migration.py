@@ -12,8 +12,6 @@ from types import ModuleType
 
 import pytest
 
-from appsell_api.reset_demo_tenant import EXPECTED_MIGRATION
-
 VERSOES = Path(__file__).parents[1] / "migrations" / "versions"
 
 
@@ -81,6 +79,7 @@ def test_a_conciliacao_ganha_as_categorias_da_disputa(migration: ModuleType) -> 
         "'dispute_without_fulfillment'",
         "'dispute_without_created_at'",
         "'disputed_while_disabled'",
+        "'dispute_while_switch_off'",
     ):
         assert categoria in trocas
 
@@ -133,6 +132,10 @@ def test_tabelas_novas_tem_rls_forcada_e_ficam_fora_do_runtime(migration: Module
 def test_o_readiness_confere_as_tabelas_e_funcoes_novas(migration: ModuleType) -> None:
     de, para = migration._ready_funcao()
     assert para.startswith(de)
+    # Pega: a disputa entrando no meio do trecho de outra migration. A âncora é o
+    # texto inteiro que a 0069 deixou, para a próxima achar o desta contíguo.
+    anterior = _carregar("motivo_do_acesso", "appsell_motivo_0069_ancora")
+    assert de == anterior._ready_funcao()[1]
     for tabela in migration._TABELAS_NOVAS:
         assert f"to_regclass('{tabela}') is not null" in para
     assert "relforcerowsecurity" in para
@@ -167,14 +170,53 @@ def test_a_descida_recusa_com_disputa_registrada(migration: ModuleType) -> None:
 
 
 def test_o_readiness_aprende_a_versao(migration: ModuleType) -> None:
-    anterior = _carregar("relatorio_de_vendas", "appsell_relatorio_0072_para_0074")
+    anterior = _carregar("motivo_do_acesso", "appsell_motivo_0069_para_0074")
     assert migration.down_revision == anterior.revision
-    assert migration.READY_ANTES == anterior._READY_ATE_0072
+    assert migration.READY_ANTES == anterior._READY_ATE_0069
     assert migration._READY_ATE_0074 == migration.READY_ANTES[:-2] + ",'0074_acesso_em_disputa'))"
     assert migration.revision in migration._READY_ATE_0074
     assert migration._BASES_DO_READY == anterior._BASES_DO_READY
-    assert EXPECTED_MIGRATION == migration.revision
 
 
 def test_a_revisao_cabe_no_alembic_version(migration: ModuleType) -> None:
     assert len(migration.revision) <= 32
+
+
+def test_a_ancora_fica_no_fim_do_bloco_e_a_descida_restaura(migration: ModuleType) -> None:
+    # Pega: a disputa entrando no meio do bloco de outra migration, o que fez a
+    # 0069 (ou a próxima) abortar com 55000 por casar a âncora 0 vezes.
+    m0064 = _carregar("vendas_ativadas_pela_loja", "appsell_0064_ancora")
+    m0068 = _carregar("segunda_oferta_do_produto", "appsell_0068_ancora")
+    m0069 = _carregar("motivo_do_acesso", "appsell_0069_ancora_fim")
+    original = "begin\n" + m0064._ready_funcao()[1] + "  return true;\nend"
+    passos = [m0068._ready_funcoes(), m0069._ready_funcao(), migration._ready_funcoes()]
+    texto = original
+    for de, para in passos:
+        assert texto.count(de) == 1
+        texto = texto.replace(de, para)
+    # O bloco da 0069 continua inteiro, e a disputa vem depois dele.
+    assert texto.count(m0069._ready_funcao()[1] + migration._READY_DA_DISPUTA) == 1
+    # A próxima migration com função ancora no fim deste bloco e o acha uma vez.
+    assert texto.count(migration._ready_funcoes()[1]) == 1
+    for de, para in reversed(passos):
+        assert texto.count(para) == 1
+        texto = texto.replace(para, de)
+    assert texto == original
+
+
+def test_as_trocas_de_checagem_tem_lock_timeout_nas_duas_direcoes(migration: ModuleType) -> None:
+    # Pega: o bloqueio de tabela esperando sem limite, com a biblioteca e o
+    # webhook da Hub2You parados atrás dele.
+    for direcao in (migration.upgrade, migration.downgrade):
+        comandos = _comandos_de(migration, direcao)
+        assert migration._LOCK_TIMEOUT == "set local lock_timeout = '5s'"
+        trocas = [i for i, c in enumerate(comandos) if "drop constraint" in c]
+        assert trocas
+        assert comandos.index(migration._LOCK_TIMEOUT) < min(trocas)
+
+
+def test_a_aprovacao_pulada_diz_o_motivo_da_disputa(migration: ModuleType) -> None:
+    # Pega: compra suspensa ou perdida registrada no audit como "purchase_refunded".
+    para = migration._MOTIVO_DO_PULO_PARA
+    assert "then 'purchase_disputed'" in para and "then 'purchase_charged_back'" in para
+    assert para.startswith(migration._MOTIVO_DO_PULO_DE.split("'reason'")[0])

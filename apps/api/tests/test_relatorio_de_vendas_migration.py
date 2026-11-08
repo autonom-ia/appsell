@@ -11,7 +11,7 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
-from cadeia_de_migrations import anterior_na_cadeia
+from cadeia_de_migrations import anterior_na_cadeia, versoes
 
 VERSOES = Path(__file__).parents[1] / "migrations" / "versions"
 
@@ -41,9 +41,11 @@ def _comandos(migration: ModuleType, direcao: Callable[[], None]) -> list[str]:
     return executados
 
 
-def test_encadeia_na_anterior_e_ensina_o_readiness(migration: ModuleType) -> None:
-    # A anterior vem da cadeia (`down_revision`), não da ordem dos arquivos. Ser
-    # o topo não é desta migration: quem confere o topo é EXPECTED_MIGRATION.
+def test_encadeia_no_topo_e_ensina_o_readiness(migration: ModuleType) -> None:
+    # A anterior vem da cadeia (`down_revision`), não da ordem dos arquivos. Ser o
+    # topo valia só até a próxima migration entrar: a cadeia é o que se prova,
+    # como nas irmãs 0075 e 0076. Quem é o topo prova `EXPECTED_MIGRATION`.
+    assert migration.revision in [caminho.stem for caminho in versoes()]
     assert migration.down_revision == anterior_na_cadeia(migration.revision)
     assert migration.revision in migration.READY_DEPOIS
     assert migration.READY_DEPOIS.startswith(migration.READY_ANTES[:-2])

@@ -404,6 +404,7 @@ def test_perdida_e_final_nem_ganha_nem_aprovacao_repetida_devolvem(worker: UUID)
     _send(worker, "final", WON, T3)
     _send(worker, "final", APPROVED, T3, event_reference=f"{RUN}:final:approved-replay")
     assert _state("final") == ("charged_back", "revoked")
+    assert _skip_reason("final") == "purchase_charged_back"
 
 
 def test_ganha_antes_da_aberta_mantem_o_acesso(worker: UUID) -> None:
@@ -457,6 +458,8 @@ def test_aprovacao_repetida_nao_reativa_compra_suspensa(worker: UUID) -> None:
     _send(worker, "suspensa-replay", OPENED, T1)
     _send(worker, "suspensa-replay", APPROVED, T2, event_reference=f"{RUN}:suspensa:replay")
     assert _state("suspensa-replay") == ("suspended", "suspended")
+    # Pega: a aprovação pulada registrada como "purchase_refunded" no audit.
+    assert _skip_reason("suspensa-replay") == "purchase_disputed"
 
 
 def test_disputa_antes_da_aprovacao_nao_libera(worker: UUID) -> None:
@@ -506,10 +509,15 @@ def test_retoma_de_onde_parou_quando_o_worker_cai(worker: UUID) -> None:
 def test_loja_desligada_aceita_o_evento_e_nao_muda_o_acesso(worker: UUID) -> None:
     # Pega: a regra valendo para loja que não foi ligada.
     _send(worker, "desligada", APPROVED, T0, seller=OFF_SELLER)
-    _accept("desligada", OPENED, T1, seller=OFF_SELLER)
+    event_id, _created = _accept("desligada", OPENED, T1, seller=OFF_SELLER)
     results = _drain(worker)
     assert [result["reason"] for result in results] == ["dispute_access_disabled"]
     assert _state("desligada", OFF_SELLER) == ("active", "active")
+    # Gate #147: a disputa que a loja desligada ignorou aparece na conciliação,
+    # em vez de deixar só um audit_event.
+    assert any(
+        row[0] == "dispute_while_switch_off" and row[2] == event_id for row in _report(OFF_SELLER)
+    )
 
 
 def test_disputa_sem_data_e_gravada_sem_efeito_e_alerta(worker: UUID) -> None:
@@ -650,6 +658,19 @@ def _report(seller: UUID = SELLER) -> list[tuple[str, str | None, UUID | None]]:
             (seller,),
         ).fetchall()
     return cast(list[tuple[str, str | None, UUID | None]], rows)
+
+
+def _skip_reason(purchase: str, seller: UUID = SELLER) -> str | None:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        row = connection.execute(
+            "select metadata->>'reason' from public.audit_event "
+            "where seller_organization_id=%s and action='commerce.fulfillment_skipped' "
+            "and metadata->>'external_purchase_id_sha256'=%s "
+            "order by created_at desc limit 1",
+            (seller, _sha(purchase)),
+        ).fetchone()
+    return None if row is None else cast(str | None, row[0])
 
 
 def _switch(seller: UUID, action: str, created_at: str) -> None:
