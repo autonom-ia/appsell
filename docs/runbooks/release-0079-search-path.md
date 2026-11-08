@@ -169,31 +169,37 @@ select assinatura, antes as esperado, encontrado
  order by assinatura;
 ```
 
-Conferência complementar, também só de leitura: quantas funções `security
-definer` ainda não terminam em `pg_temp`. **Esperado antes do deploy: 129.
-Depois: 0.**
+Conferência complementar, também só de leitura: quais funções `security
+definer` ainda não terminam em `pg_temp`. Ela pega também uma função criada
+fora das migrations, que a consulta acima não enxerga. **Esperado antes do
+deploy: 129 linhas, todas na lista acima. Depois: 0 linhas.** Qualquer outro
+número para o deploy: a linha a mais é uma função que a migration não conhece.
 
 ```sql
-select count(*)
+select proc.oid::regprocedure::text as assinatura
   from pg_proc proc
   join pg_namespace ns on ns.oid = proc.pronamespace
  where proc.prosecdef
    and ns.nspname not in ('pg_catalog', 'information_schema')
    and ns.nspname not like 'pg\_%'
    and coalesce((select substr(config, 13) from unnest(proc.proconfig) config
-                  where config like 'search_path=%'), '') not like '%, pg_temp';
+                  where config like 'search_path=%'), '') not like '%, pg_temp'
+ order by 1;
 ```
 
 ## Ordem
 
-Migration aditiva, sem mudança de contrato: pode ir antes do código, sozinha. O
-código da api e do web não depende dela. A ordem final vai escrita no PR de
-release, como manda o AGENTS.md §6.
+**Migration antes do código.** A migration não muda contrato, mas a imagem da
+api desta versão exige a 0079: `reset_demo_tenant`, `seed_capacity_tenants` e
+`seed_buyer_multi_seller` conferem que `alembic_version` é exatamente
+`0079_pg_temp_nas_funcoes`. Se a imagem subir antes, essas ferramentas de demo
+e seed recusam rodar. A ordem final vai escrita no PR de release, como manda o
+AGENTS.md §6.
 
 ## Depois do deploy
 
 - `alembic current` = `0079_pg_temp_nas_funcoes` e `schema_ready` verdadeiro;
-- a conferência complementar devolve 0;
+- a conferência complementar devolve 0 linhas;
 - o smoke da Hub2You igual ao de antes (AGENTS.md §7).
 
 ## Volta
