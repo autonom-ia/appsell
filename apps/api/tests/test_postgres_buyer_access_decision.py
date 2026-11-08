@@ -17,6 +17,7 @@ from uuid import UUID, uuid4
 
 import psycopg
 import pytest
+from cadeia_de_migrations import anterior_na_cadeia
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
 from sqlalchemy.engine import make_url
@@ -324,6 +325,11 @@ def test_new_publication_that_did_not_reach_the_student_is_update_pending() -> N
 MIGRATOR_URL = os.environ.get("APPSELL_MIGRATOR_DATABASE_URL")
 
 
+ESTA = "0069_motivo_do_acesso"
+# O rollback documentado no PR: desce só até a anterior na cadeia.
+ANTERIOR = anterior_na_cadeia(ESTA)
+
+
 @pytest.mark.skipif(not MIGRATOR_URL, reason="migrator URL is required for downgrade test")
 def test_downgrade_removes_the_function_and_its_place_in_the_ready() -> None:
     assert ADMIN_URL and MIGRATOR_URL
@@ -374,17 +380,18 @@ def test_downgrade_removes_the_function_and_its_place_in_the_ready() -> None:
             )
         )
     try:
-        # Esta migration é a cabeça da cadeia (o teste de limites confere).
-        migrate("upgrade", "head")
-        head = state()
-        assert head[:2] == (True, True)
-        migrate("downgrade", "-1")
-        down = state()
-        assert down[:2] == (False, False)
+        # Alvos explícitos, não `head` e `-1`: esta migration deixa de ser a
+        # cabeça assim que outra encadeia nela, e o teste continua sobre ela.
+        migrate("upgrade", ESTA)
+        com = state()
+        assert com[:2] == (True, True)
+        migrate("downgrade", ANTERIOR)
+        sem = state()
+        assert sem[:2] == (False, False)
         # O downgrade só tira o que é desta migration: o veredito não muda.
-        assert down[2] == head[2]
-        migrate("upgrade", "head")
-        assert state() == head
+        assert sem[2] == com[2]
+        migrate("upgrade", ESTA)
+        assert state() == com
     finally:
         with psycopg.connect(maintenance_url, autocommit=True) as connection:
             connection.execute(

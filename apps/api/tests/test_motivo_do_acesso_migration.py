@@ -11,6 +11,7 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+from cadeia_de_migrations import anterior_na_cadeia, versoes
 
 VERSOES = Path(__file__).parents[1] / "migrations" / "versions"
 
@@ -36,12 +37,12 @@ def _comandos_de(migration: ModuleType, direcao: Callable[[], None]) -> list[str
     return executados
 
 
-def test_e_a_migration_do_topo(migration: ModuleType) -> None:
-    from appsell_api.reset_demo_tenant import EXPECTED_MIGRATION
-
-    # O down_revision acompanha o head da main no merge; só precisa existir.
-    assert (VERSOES / f"{migration.down_revision}.py").is_file()
-    assert EXPECTED_MIGRATION == migration.revision
+def test_esta_na_cadeia(migration: ModuleType) -> None:
+    # Ser o topo valia só até a próxima migration entrar (o #625 encadeia
+    # nesta). A cadeia é o que se prova; quem é o topo prova
+    # `test_limites_de_midia`, contra `EXPECTED_MIGRATION`.
+    assert migration.revision in [caminho.stem for caminho in versoes()]
+    assert migration.down_revision == anterior_na_cadeia(migration.revision)
 
 
 def test_contexto_da_biblioteca_antes_de_ler(migration: ModuleType) -> None:
