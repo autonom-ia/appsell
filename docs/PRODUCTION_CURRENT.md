@@ -22,7 +22,8 @@
 | Banco | **`0072_relatorio_de_vendas`**, lido do banco em 08/11/2026 depois do upgrade (0065 → 0066 → 0067 → 0073 → 0075 → 0068 → 0076 → 0072) |
 
 **Release de 2026-11-08: a `main` em `38e9f92` (#616) no web, na api e no
-worker, com as migrations `0066`–`0076` e `0072`.** Entram #599, #603, #594,
+worker, com as migrations `0066`, `0067`, `0073`, `0075`, `0068`, `0076` e
+`0072`.** Entram #599, #603, #594,
 #610 e #613, e junto o que estava na `main` desde o release anterior: #607, #597,
 #587, #575, #553 (fase 1), #545, #544, #559 (parte A, só o lado do sandbox),
 #595 e outros. O pdf-sandbox não mudou de imagem: a api ainda não chama o
@@ -55,7 +56,10 @@ carimbo do #559.
   lista Connect dependem de env de piloto, que não existe. Nenhuma loja vê o
   comportamento novo até a env ser ligada, com OK próprio.
 - A volta: as imagens anteriores pelas tags de volta (ou pelo `.tar`), api e
-  worker antes do web, sem mexer no banco, porque as migrations são aditivas.
+  worker antes do web, sem mexer no banco. O código anterior funciona sobre o
+  schema novo: ele fala com o banco só pelas funções, que a 0067 fez ler a
+  oferta padrão. E a 0068 só desce enquanto nenhum produto tiver mais de uma
+  oferta.
   Depois do primeiro `offer.create` do #603, a volta é tirar a loja da lista, não
   descer migration.
 
