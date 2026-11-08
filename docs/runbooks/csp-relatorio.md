@@ -70,6 +70,10 @@ documento.
   nonce (ou hash) com `'strict-dynamic'` e tirar o `'unsafe-inline'` de
   `script-src`.
 - Revisar o limite de taxa global por processo (seção acima).
+- Pôr `frame-ancestors 'none'` na política. Ela ficou fora do modo
+  só-relatório porque o navegador a ignora ali, e o Safari loga um erro de
+  console em toda página. Até lá, o `X-Frame-Options: DENY` impede a página de
+  ser carregada num iframe.
 
 ## Retenção
 

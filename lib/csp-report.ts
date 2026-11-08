@@ -10,6 +10,10 @@
 export const CSP_REPORT_PATH = "/api/csp-report";
 export const CSP_REPORT_GROUP = "csp";
 
+// Sem `frame-ancestors`: em política só-relatório o navegador a ignora, e o
+// Safari loga um console.error em toda página. Quem impede a página de ir num
+// iframe é o `X-Frame-Options: DENY` do next.config.ts. A diretiva volta no PR
+// do modo bloqueante, onde ela vale.
 const DIRETIVAS: ReadonlyArray<readonly [string, string]> = [
   ["default-src", "'self'"],
   ["script-src", "'self' 'unsafe-inline'"],
@@ -19,7 +23,6 @@ const DIRETIVAS: ReadonlyArray<readonly [string, string]> = [
   ["connect-src", "'self'"],
   ["media-src", "'self' blob:"],
   ["frame-src", "'self'"],
-  ["frame-ancestors", "'none'"],
   ["form-action", "'self'"],
   ["base-uri", "'self'"],
   ["object-src", "'none'"],

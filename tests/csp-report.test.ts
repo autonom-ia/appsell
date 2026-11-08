@@ -90,7 +90,9 @@ describe("política de conteúdo só-relatório", () => {
     expect(nomes).not.toContain("Content-Security-Policy");
     expect(global?.headers).toContainEqual({ key: "Reporting-Endpoints", value: 'csp="/api/csp-report"' });
     expect(cspReportOnlyPolicy()).toContain("report-uri /api/csp-report");
-    expect(cspReportOnlyPolicy()).toContain("frame-ancestors 'none'");
+    // frame-ancestors é ignorada em só-relatório; o X-Frame-Options cobre.
+    expect(cspReportOnlyPolicy()).not.toContain("frame-ancestors");
+    expect(global?.headers).toContainEqual({ key: "X-Frame-Options", value: "DENY" });
   });
 
   it("fica fora do next dev", async () => {
