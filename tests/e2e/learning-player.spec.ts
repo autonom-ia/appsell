@@ -1336,21 +1336,62 @@ test("o vídeo do PDF diz que está sendo preparado, e depois toca", async ({ pa
     ]
   });
   await enterAndWaitForSession(page);
+  // O relógio da página fica com o teste. As duas respostas 202 pedem 2 s de
+  // espera cada, e com o relógio real o vídeo só chegava uns 4 s depois de
+  // "Preparando" aparecer — perto do prazo do `expect`, e o WebKit às vezes
+  // passava dele (#614). Agora a espera é provada, não cronometrada.
+  await page.clock.install();
+  const mediaHref = `/api/library/items/${entitlementId}/assets/${assetId}/pages/links/${videoLinkId}/media`;
+  let pedidosDoVideo = 0;
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === mediaHref) pedidosDoVideo += 1;
+  });
+  const videoMediaRequests = () => pedidosDoVideo;
   await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
   await page.getByRole("button", { name: "Abrir leitor" }).click();
   const reader = page.getByRole("dialog", { name: "Leitor de Guia da aula" });
   await reader.getByRole("button", { name: "Ir para a página 4" }).click();
-  await reader.getByRole("button", { name: "Reproduzir vídeo complementar da página 4" }).click();
+  const reproduzir = reader.getByRole("button", { name: "Reproduzir vídeo complementar da página 4" });
+  // A página 4 assenta com o relógio andando; só então ele para. Para a partir
+  // da hora da página, não da do processo de teste: daqui em diante só passa
+  // o tempo que o teste mandar.
+  await expect(reproduzir).toBeVisible();
+  const agoraNaPagina = await page.evaluate(() => Date.now());
+  await page.clock.pauseAt(agoraNaPagina + 500);
+  await reproduzir.click();
 
   const dialog = page.getByRole("dialog", { name: "Vídeo complementar da página 4" });
-  await expect(dialog.getByText("Preparando o vídeo para tocar no seu navegador…")).toBeVisible();
+  const preparando = dialog.getByText("Preparando o vídeo para tocar no seu navegador…");
+  const video = dialog.locator("video");
+  await expect(preparando).toBeVisible();
   // Nada de erro enquanto há o que esperar.
   await expect(dialog.getByText("Não foi possível reproduzir este vídeo.")).toHaveCount(0);
 
-  const video = dialog.locator("video");
-  await expect(video).toHaveAttribute(
-    "src",
-    `/api/library/items/${entitlementId}/assets/${assetId}/pages/links/${videoLinkId}/media`
-  );
-  await expect(dialog.getByText("Preparando o vídeo para tocar no seu navegador…")).toHaveCount(0);
+  // Com o relógio parado, o tempo do `retry-after` não passa: o diálogo segue
+  // esperando e não entrega endereço nenhum ao `<video>`.
+  await expect(video).toHaveCount(0);
+  // "Preparando" já aparece antes de a primeira pergunta sair, e o evento de
+  // request chega ao teste depois: espera a primeira, e só ela.
+  await expect.poll(videoMediaRequests).toBe(1);
+
+  // O relógio anda em passos de meio segundo até a próxima pergunta sair. Em
+  // passos, e não 2 s de uma vez: o timer da próxima espera só existe depois
+  // que a resposta anterior é lida, e avançar antes disso não dispararia nada.
+  const avancarAtePergunta = async (perguntas: number) => {
+    await expect(async () => {
+      await page.clock.runFor(500);
+      expect(videoMediaRequests()).toBeGreaterThanOrEqual(perguntas);
+    }).toPass({ intervals: [100], timeout: 5_000 });
+  };
+
+  // A segunda pergunta ainda responde 202: segue preparando, sem vídeo.
+  await avancarAtePergunta(2);
+  await expect(preparando).toBeVisible();
+  await expect(video).toHaveCount(0);
+
+  // A terceira traz o vídeo.
+  await avancarAtePergunta(3);
+
+  await expect(video).toHaveAttribute("src", mediaHref);
+  await expect(preparando).toHaveCount(0);
 });
