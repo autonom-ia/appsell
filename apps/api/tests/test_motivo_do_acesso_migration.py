@@ -109,3 +109,31 @@ def test_downgrade_desfaz_na_ordem_inversa(migration: ModuleType) -> None:
     comandos = _comandos_de(migration, migration.downgrade)
     assert comandos[0] == "set local role appsell_owner"
     assert comandos[-1] == "drop function app_private.buyer_access_decision(uuid,uuid)"
+
+
+def _anterior(migration: ModuleType, revisao: str) -> ModuleType:
+    caminho = VERSOES / f"{revisao}.py"
+    spec = importlib_util.spec_from_file_location(f"appsell_anterior_{revisao}", caminho)
+    assert spec is not None and spec.loader is not None
+    module = importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_ready_parte_da_lista_da_anterior_na_cadeia(migration: ModuleType) -> None:
+    # A lista vem da migration de baixo, não de uma cópia: uma cópia escrita à
+    # mão perdia as versões que entraram depois que este PR nasceu.
+    numero = migration.down_revision.split("_", 1)[0]
+    anterior = getattr(_anterior(migration, migration.down_revision), f"_READY_ATE_{numero}")
+    assert migration.READY_ANTES == anterior
+    assert migration.READY_DEPOIS == anterior[:-2] + ",'0069_motivo_do_acesso'))"
+    assert migration._READY_ATE_0069 == migration.READY_DEPOIS
+
+
+def test_ancora_das_funcoes_e_a_ultima_que_as_mudou(migration: ModuleType) -> None:
+    # A 0068 foi a última a acrescentar função ao ready; a decisão entra depois
+    # da linha dela, e não no meio da lista.
+    de, para = migration._ready_funcao()
+    assert de == _anterior(migration, "0068_segunda_oferta_do_produto")._ready_funcoes()[1]
+    linha = "            and to_regprocedure('{}') is not null\n"
+    assert para == de + linha.format("app_private.buyer_access_decision(uuid,uuid)")

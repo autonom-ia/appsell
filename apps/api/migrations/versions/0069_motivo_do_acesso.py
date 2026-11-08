@@ -31,7 +31,8 @@ biblioteca e o asset negam.
 
 Contexto: o mesmo da biblioteca (`library.read`, sem loja no envelope).
 
-Downgrade: tira a função e devolve o `schema_ready` ao estado da 0065.
+Downgrade: tira a função e devolve o `schema_ready` ao estado da anterior na
+cadeia.
 """
 
 from __future__ import annotations
@@ -43,30 +44,20 @@ from types import ModuleType
 from alembic import op
 
 revision = "0069_motivo_do_acesso"
-down_revision = "0065_dono_da_conta_payout"
+down_revision = "0072_relatorio_de_vendas"
 branch_labels = None
 depends_on = None
 
 _FUNCAO = "app_private.buyer_access_decision(uuid,uuid)"
 
-_READY_ATE_0065 = (
-    "'0057_banner_na_vitrine','0058_capa_na_biblioteca','0059_canal_financial_global',"
-    "'0060_atualizacao_chega_ao_aluno','0061_o_atraso_alcanca_o_aluno',"
-    "'0062_mapping_do_produto_novo','0063_conciliacao_do_acesso',"
-    "'0064_vendas_ativadas_pela_loja','0065_dono_da_conta_payout'))"
-)
-_READY_ATE_0069 = (
-    "'0057_banner_na_vitrine','0058_capa_na_biblioteca','0059_canal_financial_global',"
-    "'0060_atualizacao_chega_ao_aluno','0061_o_atraso_alcanca_o_aluno',"
-    "'0062_mapping_do_produto_novo','0063_conciliacao_do_acesso',"
-    "'0064_vendas_ativadas_pela_loja','0065_dono_da_conta_payout',"
-    "'0069_motivo_do_acesso'))"
-)
 _BASES_DO_READY: tuple[str, ...] = (
     "app_private.schema_ready_base_0016()",
     "app_private.schema_ready_base_0017()",
 )
 _BASE_DO_ACESSO = "app_private.schema_ready_base_0016()"
+# A última migration que acrescentou função ao readiness. A decisão entra
+# depois da linha dela.
+_ULTIMA_COM_FUNCAO_NO_READY = "0068_segunda_oferta_do_produto"
 
 _READY_DA_DECISAO = f"            and to_regprocedure('{_FUNCAO}') is not null\n"
 
@@ -174,19 +165,26 @@ end $$
 """
 
 
-def _migration_0064() -> ModuleType:
-    """A 0065 não registrou função no ready; a âncora vigente é a da 0064."""
-    caminho = Path(__file__).with_name("0064_vendas_ativadas_pela_loja.py")
-    spec = importlib_util.spec_from_file_location("appsell_migration_0064", caminho)
+def _carregar(revisao: str) -> ModuleType:
+    caminho = Path(__file__).with_name(f"{revisao}.py")
+    spec = importlib_util.spec_from_file_location(f"appsell_anterior_{revisao}", caminho)
     if spec is None or spec.loader is None:  # pragma: no cover - caminho fixo no repo
-        raise RuntimeError("a migration 0064 nao pode ser lida")
+        raise RuntimeError(f"a migration {revisao} nao pode ser lida")
     modulo = importlib_util.module_from_spec(spec)
     spec.loader.exec_module(modulo)
     return modulo
 
 
+# A lista do readiness vem da anterior na cadeia (`_READY_ATE_<n>` dela), não de
+# uma cópia escrita aqui: assim ela não perde as versões que entraram antes.
+READY_ANTES: str = getattr(_carregar(down_revision), f"_READY_ATE_{down_revision.split('_', 1)[0]}")
+READY_DEPOIS = READY_ANTES[:-2] + f",'{revision}'))"
+# Nome que as migrations seguintes leem por `getattr`.
+_READY_ATE_0069 = READY_DEPOIS
+
+
 def _ready_funcao() -> tuple[str, str]:
-    de = _migration_0064()._ready_funcao()[1]
+    de: str = _carregar(_ULTIMA_COM_FUNCAO_NO_READY)._ready_funcoes()[1]
     return de, de + _READY_DA_DECISAO
 
 
@@ -198,8 +196,8 @@ def upgrade() -> None:
     for alvo in _BASES_DO_READY:
         op.execute(
             _REESCREVE.replace("ALVO", alvo)
-            .replace("DE", _READY_ATE_0065)
-            .replace("PARA", _READY_ATE_0069)
+            .replace("DE", READY_ANTES)
+            .replace("PARA", READY_DEPOIS)
         )
     de, para = _ready_funcao()
     op.execute(_REESCREVE.replace("ALVO", _BASE_DO_ACESSO).replace("DE", de).replace("PARA", para))
@@ -212,7 +210,7 @@ def downgrade() -> None:
     for alvo in _BASES_DO_READY:
         op.execute(
             _REESCREVE.replace("ALVO", alvo)
-            .replace("DE", _READY_ATE_0069)
-            .replace("PARA", _READY_ATE_0065)
+            .replace("DE", READY_DEPOIS)
+            .replace("PARA", READY_ANTES)
         )
     op.execute(f"drop function {_FUNCAO}")
