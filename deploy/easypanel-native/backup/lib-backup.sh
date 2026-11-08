@@ -18,14 +18,39 @@
 #   only needs Docker plus gpg; the server version is matched by the image tag.
 # - Encryption is gpg symmetric AES256 (portable, present on CI and the host).
 #
-# This file is sourced by backup-native.sh, restore-native.sh and
-# test-backup-native.sh. It defines functions only; it starts nothing.
+# This file is sourced by backup-native.sh, restore-native.sh,
+# test-backup-native.sh and test-entrypoints-native.sh. It defines functions only; it starts nothing.
 
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
 die() { log "FATAL: $*"; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Disposable PostgreSQL readiness
+# ---------------------------------------------------------------------------
+# pg_wait_container_ready CONTAINER USER DB — wait until the container serves DB
+# for real (#586).
+#
+# The official image initialises in two phases: a temporary server listening on
+# the Unix socket only (listen_addresses='') creates POSTGRES_DB and runs the
+# init scripts, then it stops and the final server starts on TCP. `pg_isready`
+# over the socket answers "ready" during the temporary phase, before the
+# database exists, so a client could race it ("database ... does not exist").
+# Over TCP on 127.0.0.1 only the final server answers, and it starts after
+# POSTGRES_DB was created. That is what makes the wait correct; `-d` adds
+# nothing (pg_isready does not authenticate nor check the database). This waits
+# for a state, it does not retry the failing command.
+pg_wait_container_ready() {
+  local container="$1" user="$2" db="$3" _
+  for _ in $(seq 1 60); do
+    docker exec "$container" pg_isready -q -h 127.0.0.1 -U "$user" -d "$db" && return 0
+    sleep 1
+  done
+  log "PostgreSQL in ${container} did not serve ${db} over TCP in time"
+  return 1
+}
 
 # ---------------------------------------------------------------------------
 # Environment validation

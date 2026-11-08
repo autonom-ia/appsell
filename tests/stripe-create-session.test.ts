@@ -33,7 +33,11 @@ const {
     readPublicStorefront: vi.fn(),
     // The legacy platform-direct suite: no payout destination bound. The
     // direct-charge branch has its own suite.
-    resolveCheckoutPayoutDestination: vi.fn(async () => ({ payout_destination: null })),
+    resolveCheckoutPayoutDestination: vi.fn<
+      (sellerId: string) => Promise<{
+        payout_destination: { provider_account_id: string; charges_enabled: boolean; payouts_enabled?: boolean } | null;
+      }>
+    >(async () => ({ payout_destination: null })),
     createFinancialExternalCheckoutIntent: vi.fn(async () => ({
       checkoutIntentId: "0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c",
       checkoutUrl: "https://financial.test/financial/public/external-checkout/0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c"
@@ -70,7 +74,12 @@ vi.mock("@/lib/buyer-identity.server", () => ({
 }));
 
 vi.mock("@/lib/financial-external-checkout.server", () => ({
-  checkoutProvider: () => process.env.APPSELL_CHECKOUT_PROVIDER === "financial_checkout" ? "financial_checkout" : "local_stripe",
+  // Same contract as the real one (#544): only an explicit, known value.
+  checkoutProvider: () => {
+    const value = process.env.APPSELL_CHECKOUT_PROVIDER;
+    if (value === "financial_checkout" || value === "local_stripe") return value;
+    throw new FakeFinancialConfigError("invalid_config: APPSELL_CHECKOUT_PROVIDER");
+  },
   checkoutWebhookEndpointKey: () => process.env.APPSELL_CHECKOUT_WEBHOOK_ENDPOINT_KEY ?? "",
   createFinancialExternalCheckoutIntent,
   createFinancialExternalCheckoutSession,
@@ -134,6 +143,7 @@ const originalEnvironment = { ...process.env };
 describe("POST /api/checkout/stripe/create-session", () => {
   beforeEach(() => {
     process.env.APPSELL_PUBLIC_ORIGIN = ORIGIN;
+    process.env.APPSELL_CHECKOUT_PROVIDER = "local_stripe";
     process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON = JSON.stringify({
       [`${SELLER}/${PRODUCT}`]: { financial_product_key: "prod_codex_v1" }
     });
@@ -147,6 +157,21 @@ describe("POST /api/checkout/stripe/create-session", () => {
 
   afterEach(() => {
     process.env = { ...originalEnvironment };
+  });
+
+  it("#544: a missing or unknown checkout provider charges nothing, on either path (503)", async () => {
+    for (const value of [undefined, "", "unexpected", "Financial_Checkout"]) {
+      if (value === undefined) delete process.env.APPSELL_CHECKOUT_PROVIDER;
+      else process.env.APPSELL_CHECKOUT_PROVIDER = value;
+      const response = await POST(request(validBody));
+      expect(response.status, String(value)).toBe(503);
+      expect(await response.json()).toEqual({ error: "checkout_not_configured" });
+    }
+    expect(readPublicStorefront).not.toHaveBeenCalled();
+    expect(sessionsCreate).not.toHaveBeenCalled();
+    expect(createFinancialExternalCheckoutIntent).not.toHaveBeenCalled();
+    expect(resolveBuyerIdentityMock).not.toHaveBeenCalled();
+    expect(resolveCheckoutPayoutDestination).not.toHaveBeenCalled();
   });
 
   it("rejects a cross-origin request (403) before touching Stripe or the domain", async () => {
@@ -362,5 +387,279 @@ describe("POST /api/checkout/stripe/create-session", () => {
     const response = await POST(request(validBody));
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: "seller_not_found" });
+  });
+});
+
+// #440: the store is the seller. Behind APPSELL_FINANCIAL_CONNECT_SELLER_IDS
+// (empty by default) the Financial checkout carries the store's own connected
+// account and the platform commission. Outside the list the payload must stay
+// exactly as it is today.
+describe("POST /api/checkout/stripe/create-session — Financial with the store's connected account (#440)", () => {
+  const SELLER_ID = "11111111-1111-4111-8111-111111111111";
+  const OTHER_SELLER_ID = "66666666-6666-4666-8666-666666666666";
+  const ENDPOINT_KEY = "endpointkeyendpointkeyendpointkey123456";
+
+  function readyDestination(accountId = "acct_store_a") {
+    return { payout_destination: { provider_account_id: accountId, charges_enabled: true, payouts_enabled: true } };
+  }
+
+  function intentInput(call = 0) {
+    return (createFinancialExternalCheckoutIntent.mock.calls[call] as unknown[])[0] as Record<string, unknown>;
+  }
+
+  beforeEach(() => {
+    process.env.APPSELL_PUBLIC_ORIGIN = ORIGIN;
+    process.env.APPSELL_CHECKOUT_PROVIDER = "financial_checkout";
+    process.env.APPSELL_CHECKOUT_WEBHOOK_ENDPOINT_KEY = ENDPOINT_KEY;
+    process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON = "{}";
+    delete process.env.APPSELL_FINANCIAL_CONNECT_SELLER_IDS;
+    readPublicStorefront.mockReset();
+    readPublicStorefront.mockResolvedValue(storefrontWithPrice(4990));
+    createFinancialExternalCheckoutIntent.mockClear();
+    createFinancialExternalCheckoutSession.mockClear();
+    resolveCheckoutPayoutDestination.mockReset();
+    resolveCheckoutPayoutDestination.mockResolvedValue({ payout_destination: null });
+    resolveBuyerIdentityMock.mockReset();
+    resolveBuyerIdentityMock.mockResolvedValue({ status: "authenticated", subject: "cognito-sub-default" });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    process.env = { ...originalEnvironment };
+  });
+
+  it("outside the list, sends exactly today's payload: no account, no commission, random idempotency key", async () => {
+    process.env.APPSELL_FINANCIAL_CONNECT_SELLER_IDS = OTHER_SELLER_ID;
+
+    const response = await POST(request(validBody));
+
+    expect(response.status).toBe(200);
+    expect(resolveCheckoutPayoutDestination).not.toHaveBeenCalled();
+    expect(intentInput()).toEqual({
+      operatorId: "44444444-4444-4444-8444-444444444444",
+      productCatalogItemId: "55555555-5555-4555-8555-555555555555",
+      seller: { id: SELLER_ID, slug: SELLER, name: "Autonomia Demo" },
+      buyer: { userId: "cognito-sub-default", email: "buyer@example.test", identitySub: "cognito-sub-default" },
+      product: {
+        externalProductId: "22222222-2222-4222-8222-222222222222",
+        externalOfferId: "33333333-3333-4333-8333-333333333333",
+        fulfillmentExternalProductId: "22222222-2222-4222-8222-222222222222",
+        title: "Codex na Prática",
+        description: "Curso",
+        imageUrl: `${ORIGIN}/api/storefronts/${SELLER}/products/${PRODUCT}/cover`
+      },
+      pricing: { amountMinor: 4990, currency: "BRL", billingPeriod: "one_time" },
+      connect: { accountId: null, applicationFeeAmountMinor: null },
+      successUrl: `${ORIGIN}/library?checkout=success`,
+      cancelUrl: `${ORIGIN}/s/${SELLER}/p/${PRODUCT}?checkout=cancelled`,
+      fulfillmentWebhookUrl: `${ORIGIN}/api/webhooks/checkouts/${ENDPOINT_KEY}`,
+      fulfillmentEndpointKey: ENDPOINT_KEY,
+      idempotencyKey: expect.stringMatching(UUID)
+    });
+  });
+
+  it("with the list unset, two identical clicks still get different keys (today's behavior)", async () => {
+    await POST(request(validBody));
+    await POST(request(validBody));
+
+    expect(resolveCheckoutPayoutDestination).not.toHaveBeenCalled();
+    expect(intentInput(0).idempotencyKey).not.toEqual(intentInput(1).idempotencyKey);
+  });
+
+  it("on the list, sends the store's own account and the platform commission", async () => {
+    process.env.APPSELL_FINANCIAL_CONNECT_SELLER_IDS = ` ${OTHER_SELLER_ID} , ${SELLER_ID} `;
+    resolveCheckoutPayoutDestination.mockResolvedValue(readyDestination());
+
+    const response = await POST(request(validBody));
+
+    expect(response.status).toBe(200);
+    expect(resolveCheckoutPayoutDestination).toHaveBeenCalledOnce();
+    expect(resolveCheckoutPayoutDestination).toHaveBeenCalledWith(SELLER_ID);
+    // launch plan: floor(4990 * 5.5%) + 49 = 274 + 49.
+    expect(intentInput().connect).toEqual({ accountId: "acct_store_a", applicationFeeAmountMinor: 323 });
+    expect(intentInput().pricing).toEqual({ amountMinor: 4990, currency: "BRL", billingPeriod: "one_time" });
+  });
+
+  it("never sends another store's account: the destination is resolved for the storefront's own seller", async () => {
+    process.env.APPSELL_FINANCIAL_CONNECT_SELLER_IDS = `${SELLER_ID},${OTHER_SELLER_ID}`;
+    resolveCheckoutPayoutDestination.mockImplementation(async (sellerId: string) =>
+      sellerId === SELLER_ID ? readyDestination("acct_store_a") : readyDestination("acct_store_b"));
+    const otherStorefront = storefrontWithPrice(4990);
+    readPublicStorefront.mockResolvedValueOnce(storefrontWithPrice(4990)).mockResolvedValueOnce({
+      ...otherStorefront,
+      seller: { ...otherStorefront.seller, id: OTHER_SELLER_ID }
+    });
+
+    await POST(request(validBody));
+    await POST(request(validBody));
+
+    expect(resolveCheckoutPayoutDestination.mock.calls).toEqual([[SELLER_ID], [OTHER_SELLER_ID]]);
+    expect((intentInput(0).connect as { accountId: string }).accountId).toBe("acct_store_a");
+    expect((intentInput(1).connect as { accountId: string }).accountId).toBe("acct_store_b");
+  });
+
+  it("refuses to charge (409) when the store on the list has no connected account yet", async () => {
+    process.env.APPSELL_FINANCIAL_CONNECT_SELLER_IDS = SELLER_ID;
+
+    const response = await POST(request(validBody));
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "seller_not_ready_to_charge" });
+    expect(createFinancialExternalCheckoutIntent).not.toHaveBeenCalled();
+  });
+
+  it("refuses to charge (409) when the store's account cannot charge yet", async () => {
+    process.env.APPSELL_FINANCIAL_CONNECT_SELLER_IDS = SELLER_ID;
+    resolveCheckoutPayoutDestination.mockResolvedValue({
+      payout_destination: { provider_account_id: "acct_store_a", charges_enabled: false }
+    });
+
+    const response = await POST(request(validBody));
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "seller_not_ready_to_charge" });
+    expect(createFinancialExternalCheckoutIntent).not.toHaveBeenCalled();
+  });
+
+  it("#545: refuses (409) and raises the alert when the store's account does not pay out yet", async () => {
+    // Catches: "can charge" treated as "verified", and a store that loses
+    // verification after activation selling silently. A destination from an
+    // older api image (no payouts_enabled) is not verified either, nor is a
+    // null or a "true" string: only the boolean true counts.
+    process.env.APPSELL_FINANCIAL_CONNECT_SELLER_IDS = SELLER_ID;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    for (const destination of [
+      { provider_account_id: "acct_store_a", charges_enabled: true, payouts_enabled: false },
+      { provider_account_id: "acct_store_a", charges_enabled: true },
+      { provider_account_id: "acct_store_a", charges_enabled: true, payouts_enabled: null as unknown as boolean },
+      { provider_account_id: "acct_store_a", charges_enabled: true, payouts_enabled: "true" as unknown as boolean }
+    ]) {
+      warn.mockClear();
+      resolveCheckoutPayoutDestination.mockResolvedValue({ payout_destination: destination });
+
+      const response = await POST(request(validBody));
+
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({ error: "seller_not_ready_to_charge" });
+      expect(warn).toHaveBeenCalledOnce();
+      const line = JSON.parse(String(warn.mock.calls[0]?.[0])) as Record<string, unknown>;
+      expect(line).toEqual({
+        marker: "appsell.connect.seller_not_ready",
+        seller_id: SELLER_ID,
+        charges_enabled: true,
+        payouts_enabled: false
+      });
+      expect(JSON.stringify(line)).not.toContain("acct_store_a");
+    }
+    expect(createFinancialExternalCheckoutIntent).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("#545: the legacy local direct charge still needs only charges_enabled", async () => {
+    // Catches: the new rule leaking outside the Connect list.
+    process.env.APPSELL_CHECKOUT_PROVIDER = "local_stripe";
+    process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON = JSON.stringify({
+      [`${SELLER}/${PRODUCT}`]: { financial_product_key: "prod_codex_v1" }
+    });
+    resolveCheckoutPayoutDestination.mockResolvedValue({
+      payout_destination: { provider_account_id: "acct_store_a", charges_enabled: true, payouts_enabled: false }
+    });
+
+    const response = await POST(request(validBody));
+
+    expect(response.status).toBe(200);
+  });
+
+  it("fails closed (503) when the payout destination cannot be read", async () => {
+    process.env.APPSELL_FINANCIAL_CONNECT_SELLER_IDS = SELLER_ID;
+    resolveCheckoutPayoutDestination.mockRejectedValue(new Error("domain down"));
+
+    const response = await POST(request(validBody));
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "payout_destination_unavailable" });
+    expect(createFinancialExternalCheckoutIntent).not.toHaveBeenCalled();
+  });
+
+  it("refuses (409) a price the commission would swallow, instead of sending a fee the Financial rejects", async () => {
+    // launch: floor(50 * 5.5%) + 49 = 51, capped at 50 = the whole price.
+    process.env.APPSELL_FINANCIAL_CONNECT_SELLER_IDS = SELLER_ID;
+    resolveCheckoutPayoutDestination.mockResolvedValue(readyDestination());
+    readPublicStorefront.mockResolvedValue(storefrontWithPrice(50));
+
+    const response = await POST(request(validBody));
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "product_price_below_platform_fee" });
+    expect(createFinancialExternalCheckoutIntent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["the list unset", undefined],
+    ["another store on the list", OTHER_SELLER_ID]
+  ])("#546: outside the Connect list (%s), a 51-cent price still sells with no commission", async (_case, list) => {
+    // Pega: a trava do preço mínimo alcançando a loja sem comissão (o caminho
+    // da Hub2You em produção). Sem destino não há comissão, e a loja recebe tudo.
+    if (list === undefined) delete process.env.APPSELL_FINANCIAL_CONNECT_SELLER_IDS;
+    else process.env.APPSELL_FINANCIAL_CONNECT_SELLER_IDS = list;
+    readPublicStorefront.mockResolvedValue(storefrontWithPrice(51));
+
+    const response = await POST(request(validBody));
+
+    expect(response.status).toBe(200);
+    expect(resolveCheckoutPayoutDestination).not.toHaveBeenCalled();
+    expect(createFinancialExternalCheckoutIntent).toHaveBeenCalledOnce();
+    expect(intentInput().pricing).toEqual({ amountMinor: 51, currency: "BRL", billingPeriod: "one_time" });
+    expect(intentInput().connect).toEqual({ accountId: null, applicationFeeAmountMinor: null });
+  });
+
+  it("on the list, the same click repeated gets the same idempotency key, and another buyer a different one", async () => {
+    vi.useFakeTimers({ now: new Date("2026-10-25T12:05:00Z"), toFake: ["Date"] });
+    process.env.APPSELL_FINANCIAL_CONNECT_SELLER_IDS = SELLER_ID;
+    resolveCheckoutPayoutDestination.mockResolvedValue(readyDestination());
+
+    await POST(request(validBody));
+    vi.setSystemTime(new Date("2026-10-25T12:20:00Z"));
+    await POST(request(validBody));
+    resolveBuyerIdentityMock.mockResolvedValue({ status: "authenticated", subject: "cognito-sub-other" });
+    await POST(request({ ...validBody, buyer_email: "other@example.test" }));
+
+    const [first, repeated, otherBuyer] = [0, 1, 2].map((call) => intentInput(call).idempotencyKey as string);
+    expect(first).toEqual(repeated);
+    expect(first).not.toEqual(otherBuyer);
+    expect(first.startsWith("sell-connect-v1:")).toBe(true);
+    expect(first.length).toBeLessThanOrEqual(160);
+    // Nothing that identifies the buyer travels in clear in the key.
+    expect(first).not.toContain("cognito-sub-default");
+    expect(first).not.toContain("buyer@example.test");
+  });
+
+  it("on the list, the same buyer fixing the e-mail inside the window gets a new key", async () => {
+    // Otherwise the Financial would reuse the old order and the receipt would
+    // go to the e-mail the buyer just corrected.
+    vi.useFakeTimers({ now: new Date("2026-10-25T12:05:00Z"), toFake: ["Date"] });
+    process.env.APPSELL_FINANCIAL_CONNECT_SELLER_IDS = SELLER_ID;
+    resolveCheckoutPayoutDestination.mockResolvedValue(readyDestination());
+
+    await POST(request(validBody));
+    await POST(request({ ...validBody, buyer_email: "fixed@example.test" }));
+
+    expect(intentInput(0).idempotencyKey).not.toEqual(intentInput(1).idempotencyKey);
+    expect((intentInput(1).buyer as { email: string }).email).toBe("fixed@example.test");
+  });
+
+  it("on the list, a new 30-minute window or a new price gets a new key", async () => {
+    vi.useFakeTimers({ now: new Date("2026-10-25T12:05:00Z"), toFake: ["Date"] });
+    process.env.APPSELL_FINANCIAL_CONNECT_SELLER_IDS = SELLER_ID;
+    resolveCheckoutPayoutDestination.mockResolvedValue(readyDestination());
+
+    await POST(request(validBody));
+    vi.setSystemTime(new Date("2026-10-25T12:31:00Z"));
+    await POST(request(validBody));
+    readPublicStorefront.mockResolvedValue(storefrontWithPrice(5990));
+    await POST(request(validBody));
+
+    const keys = [0, 1, 2].map((call) => intentInput(call).idempotencyKey);
+    expect(new Set(keys).size).toBe(3);
   });
 });

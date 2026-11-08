@@ -65,7 +65,8 @@ Pré-requisitos:
 - a 0071 aplicada;
 - o alerta de logs (#472) instalado, porque esta checagem usa o mesmo canal e
   a mesma config;
-- o canal (`ALERTA_PARA`) definido.
+- o destino do e-mail definido em `ALERTA_PARA`, no host. O canal é e-mail
+  (decisão do Rodrigo, 08/11), e o endereço não entra no repositório.
 
 1. **Login do papel.** O `appsell_reconciler` existe sem login. Para esta
    checagem, ele passa a ter login. A senha já está no arquivo 0600 do host:

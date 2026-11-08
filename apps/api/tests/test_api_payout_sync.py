@@ -39,6 +39,10 @@ class ScriptedSession:
         self.script = list(script)
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
+    async def execute(self, statement: Any, parameters: dict[str, Any] | None = None) -> Any:
+        row = await self.scalar(statement, parameters)
+        return SimpleNamespace(mappings=lambda: SimpleNamespace(one_or_none=lambda: row))
+
     async def scalar(self, statement: Any, parameters: dict[str, Any] | None = None) -> Any:
         self.calls.append((str(statement), parameters or {}))
         assert self.script, "route issued more SQL than the test scripted"
@@ -179,3 +183,41 @@ async def test_database_denial_maps_to_forbidden() -> None:
     async with client_for(auth) as client:
         response = await client.post("/v1/internal/payout-accounts/sync", content=sync_body())
     assert response.status_code == 403
+
+
+CHECKOUT_SUBJECT = "stripe-checkout-v1"
+
+
+@pytest.mark.asyncio
+async def test_destination_reports_whether_the_account_also_pays_out() -> None:
+    # #545: a store that cobra na própria conta só vende com a conta verificada
+    # (charges_enabled E payouts_enabled). Catches the route reading the 0024
+    # function, which has no payouts_enabled, and the web treating "can charge"
+    # as "verified".
+    row = {"provider_account_id": ACCOUNT, "charges_enabled": True, "payouts_enabled": False}
+    auth = FakeAuth(script=[row], subject=CHECKOUT_SUBJECT)
+    async with client_for(auth) as client:
+        response = await client.get(f"/v1/internal/sellers/{SELLER_ID}/payout-destination")
+    assert response.status_code == 200
+    assert response.json() == {
+        "payout_destination": {
+            "provider": "stripe",
+            "provider_account_id": ACCOUNT,
+            "charges_enabled": True,
+            "payouts_enabled": False,
+        }
+    }
+    assert auth.capabilities == ["commerce.checkout.destination"]
+    sql, params = auth.session.calls[0]
+    assert "app_private.resolve_payout_destination_v2(" in sql
+    assert "payouts_enabled" in sql
+    assert params == {"seller_id": SELLER_ID}
+
+
+@pytest.mark.asyncio
+async def test_destination_without_binding_is_still_empty() -> None:
+    auth = FakeAuth(script=[None], subject=CHECKOUT_SUBJECT)
+    async with client_for(auth) as client:
+        response = await client.get(f"/v1/internal/sellers/{SELLER_ID}/payout-destination")
+    assert response.status_code == 200
+    assert response.json() == {"payout_destination": None}

@@ -8,6 +8,7 @@ from typing import Mapping
 
 KNOWN_STEPS = {
     "route",
+    "migration_shape",
     "audit_api",
     "fast_web",
     "fast_api",
@@ -34,7 +35,9 @@ def expected_steps(
     *,
     merge_queue_active: bool = False,
 ) -> set[str]:
-    expected = {"route"}
+    # A forma da cadeia de migrations vale em todo evento (#551): é barata, e
+    # dois PRs verdes com a mesma 0066 só se encontram depois do merge.
+    expected = {"route", "migration_shape"}
     if event == "pull_request":
         if route.get("api"):
             expected.add("audit_api")
@@ -74,7 +77,7 @@ def expected_steps(
         if event == "push":
             expected.add("smoke")
     else:
-        expected.update(KNOWN_STEPS - {"route"})
+        expected.update(KNOWN_STEPS - {"route", "migration_shape"})
     return expected
 
 

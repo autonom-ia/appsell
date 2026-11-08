@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Final
 
 import pytest
+from cadeia_de_migrations import versoes as _versoes
 
 from appsell_api import learning_pdf, pdf_derivatives, pdf_link_qr
 
@@ -253,11 +254,6 @@ class TestPrazoDaRasterizacao:
         # E com folga: um serviço mais lento que o medido não pode virar um
         # documento recusado sem explicação.
         assert pdf_derivatives._PDFTOPPM_TIMEOUT_SECONDS >= pior_caso * 1.5
-
-
-def _versoes() -> list[Path]:
-    """Os arquivos de migration, em ordem de número."""
-    return sorted((_RAIZ / "apps/api/migrations/versions").glob("0*.py"))
 
 
 def _carrega_migration(prefixo: str = "0044_") -> Any:
@@ -862,7 +858,7 @@ class TestAMigrationNaoQuebraOReadiness:
         for anterior, atual in zip(versoes, versoes[1:], strict=False):
             assert atual.down_revision == anterior.revision, (
                 f"{atual.revision} diz vir de {atual.down_revision}, "
-                f"e a anterior no diretório é {anterior.revision}"
+                f"e a anterior na cadeia é {anterior.revision}"
             )
 
     def test_nenhum_teste_ficou_preso_na_versao_anterior(self) -> None:

@@ -43,7 +43,7 @@ pessoa, e não é cadeia travada.
 O `downgrade` só remove a leitura: não há dado a preservar.
 
 Revision ID: 0071_cadeia_travada
-Revises: 0065_dono_da_conta_payout
+Revises: 0072_relatorio_de_vendas
 """
 
 from __future__ import annotations
@@ -55,23 +55,25 @@ from types import ModuleType
 from alembic import op
 
 revision = "0071_cadeia_travada"
-down_revision = "0065_dono_da_conta_payout"
+down_revision = "0072_relatorio_de_vendas"
 branch_labels = None
 depends_on = None
 
-_READY_ATE_0065 = (
-    "'0057_banner_na_vitrine','0058_capa_na_biblioteca','0059_canal_financial_global',"
-    "'0060_atualizacao_chega_ao_aluno','0061_o_atraso_alcanca_o_aluno',"
-    "'0062_mapping_do_produto_novo','0063_conciliacao_do_acesso',"
-    "'0064_vendas_ativadas_pela_loja','0065_dono_da_conta_payout'))"
-)
-_READY_ATE_0071 = (
-    "'0057_banner_na_vitrine','0058_capa_na_biblioteca','0059_canal_financial_global',"
-    "'0060_atualizacao_chega_ao_aluno','0061_o_atraso_alcanca_o_aluno',"
-    "'0062_mapping_do_produto_novo','0063_conciliacao_do_acesso',"
-    "'0064_vendas_ativadas_pela_loja','0065_dono_da_conta_payout',"
-    "'0071_cadeia_travada'))"
-)
+
+def _carregar(revisao: str) -> ModuleType:
+    caminho = Path(__file__).with_name(f"{revisao}.py")
+    spec = importlib_util.spec_from_file_location(f"appsell_anterior_{revisao}", caminho)
+    if spec is None or spec.loader is None:  # pragma: no cover - caminho fixo no repo
+        raise RuntimeError(f"a migration {revisao} nao pode ser lida")
+    modulo = importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(modulo)
+    return modulo
+
+
+# A lista do readiness vem da anterior na cadeia (`_READY_ATE_0072`), não de
+# uma cópia escrita aqui: assim ela não perde as versões que entraram antes.
+READY_ANTES: str = _carregar(down_revision)._READY_ATE_0072
+_READY_ATE_0071 = READY_ANTES[:-2] + f",'{revision}'))"
 _BASES_DO_READY: tuple[str, ...] = (
     "app_private.schema_ready_base_0016()",
     "app_private.schema_ready_base_0017()",
@@ -198,7 +200,7 @@ def upgrade() -> None:
     for alvo in _BASES_DO_READY:
         op.execute(
             _REESCREVE.replace("ALVO", alvo)
-            .replace("DE", _READY_ATE_0065)
+            .replace("DE", READY_ANTES)
             .replace("PARA", _READY_ATE_0071)
         )
     de, para = _ready_funcao()
@@ -214,7 +216,7 @@ def downgrade() -> None:
         op.execute(
             _REESCREVE.replace("ALVO", alvo)
             .replace("DE", _READY_ATE_0071)
-            .replace("PARA", _READY_ATE_0065)
+            .replace("PARA", READY_ANTES)
         )
     op.execute(_RETIRA)
     op.execute(f"drop function {_LEITURA}")

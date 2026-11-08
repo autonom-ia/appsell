@@ -99,14 +99,14 @@ def test_o_downgrade_desfaz_na_ordem_inversa(migration: ModuleType) -> None:
 
 
 def test_o_readiness_aprende_a_versao(migration: ModuleType) -> None:
-    caminho = next(VERSOES.glob("*_dono_da_conta_payout.py"))
-    spec = importlib_util.spec_from_file_location("appsell_dono_0065_para_0071", caminho)
+    caminho = next(VERSOES.glob("*_relatorio_de_vendas.py"))
+    spec = importlib_util.spec_from_file_location("appsell_relatorio_0072_para_0071", caminho)
     assert spec is not None and spec.loader is not None
     anterior = importlib_util.module_from_spec(spec)
     spec.loader.exec_module(anterior)
     assert migration.down_revision == anterior.revision
-    assert migration._READY_ATE_0065 == anterior._READY_ATE_0065
-    assert migration._READY_ATE_0071.startswith(migration._READY_ATE_0065[:-2])
+    assert migration.READY_ANTES == anterior._READY_ATE_0072
+    assert migration._READY_ATE_0071 == anterior._READY_ATE_0072[:-2] + ",'0071_cadeia_travada'))"
     assert migration.revision in migration._READY_ATE_0071
     assert migration._BASES_DO_READY == anterior._BASES_DO_READY
     # `alembic_version.version_num` é varchar(32).

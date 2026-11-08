@@ -11,10 +11,12 @@ import {
   CLEAR_PRODUCT_COVER_CSRF_ACTION,
   CONFIRM_COVER_UPLOAD_CSRF_ACTION,
   CREATE_COVER_UPLOAD_CSRF_ACTION,
+  CREATE_PRODUCT_OFFER_CSRF_ACTION,
   PUBLISH_PRODUCT_DRAFT_CSRF_ACTION,
   CREATE_ACCESS_LINK_CSRF_ACTION,
   REVOKE_ACCESS_LINK_CSRF_ACTION,
   ROTATE_ACCESS_LINK_CSRF_ACTION,
+  SET_DEFAULT_OFFER_CSRF_ACTION,
   TRANSITION_OFFER_STATUS_CSRF_ACTION,
   UPDATE_PRODUCT_DRAFT_CSRF_ACTION,
   UPDATE_PRODUCT_HEADLINE_CSRF_ACTION,
@@ -23,6 +25,7 @@ import {
 import { isOfferBillingPeriod, MAX_UNIT_AMOUNT_MINOR } from "@/lib/offer-price";
 import { configuredPublicOrigin, hasConfiguredOrigin } from "@/lib/public-origin";
 
+import { minimumForPrice, priceBelowMinimum, sellerChargesCommission } from "./_minimum-price";
 import {
   authenticatedSession,
   canonicalUuid,
@@ -125,6 +128,16 @@ export async function GET(request: NextRequest, context: ProductRouteContext) {
         headline: csrfTokenForSession(
           authenticated.sessionId,
           UPDATE_PRODUCT_HEADLINE_CSRF_ACTION
+        ),
+        // Segunda oferta (#553): o painel só aparece quando a api diz
+        // multi_offer_enabled; o token sozinho não libera nada.
+        offer_create: csrfTokenForSession(
+          authenticated.sessionId,
+          CREATE_PRODUCT_OFFER_CSRF_ACTION
+        ),
+        offer_default: csrfTokenForSession(
+          authenticated.sessionId,
+          SET_DEFAULT_OFFER_CSRF_ACTION
         )
       }
     }, { headers: { "cache-control": "no-store" } });
@@ -212,8 +225,18 @@ export async function PATCH(request: NextRequest, context: ProductRouteContext) 
       return invalidInput("offer_billing_period");
     }
   }
+  const minimumMinor = hasPriceFields
+    ? minimumForPrice(Number(fields.offer_unit_amount_minor), fields.offer_currency!)
+    : null;
 
   try {
+    // #546: preço abaixo do mínimo só é recusado para loja com comissão. A
+    // leitura do rascunho vem antes, para confirmar que a loja é de quem pede
+    // antes de dizer qualquer coisa sobre a comissão dela.
+    if (minimumMinor !== null) {
+      await readDomainProductDraft(authenticated.sessionId, authenticated.session, ids.sellerId, ids.productId);
+      if (await sellerChargesCommission(ids.sellerId)) return priceBelowMinimum(minimumMinor);
+    }
     const payload = await updateDomainProductDraft(
       authenticated.sessionId,
       authenticated.session,

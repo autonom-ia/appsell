@@ -1,9 +1,14 @@
+from __future__ import annotations
+
 import importlib.util
 import json
 import sys
 import unittest
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
+
+# Sem `datetime.UTC`: o script declara compatibilidade com Python 3.9.
+UTC = timezone.utc
 
 
 ROOT = Path(__file__).resolve().parents[3]
