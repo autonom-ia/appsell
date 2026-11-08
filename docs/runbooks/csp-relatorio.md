@@ -83,7 +83,9 @@ precisa ser lido no host antes do deploy e registrado na Issue.
 1. Depois do deploy, ler os relatos uma vez por dia, agrupados por
    `directive` e `blocked`. Só os campos acima existem.
 2. Para cada origem legítima (storage, Financial), ajustar a política neste
-   arquivo, em PR.
+   arquivo, em PR. Uma origem só entra na política depois de confirmada no
+   código ou no host. Aparecer num relato não basta, porque qualquer um pode
+   mandar um relato com a origem que quiser.
 3. Depois de sete dias, ou quando os relatos restantes forem só de extensões
    do navegador, propor o modo bloqueante, em PR separado.
 
