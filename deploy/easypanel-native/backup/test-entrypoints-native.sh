@@ -18,6 +18,10 @@
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# Only for pg_wait_container_ready; the entrypoints themselves run as
+# subprocesses below, exactly as an operator runs them.
+# shellcheck source=deploy/easypanel-native/backup/lib-backup.sh
+source "$script_dir/lib-backup.sh"
 
 readonly network_name="appsell-backup-e2e-net"
 readonly source_container="appsell-backup-e2e-source"
@@ -56,11 +60,7 @@ POSTGRES_PASSWORD="$source_secret" docker run -d --name "$source_container" \
   -e POSTGRES_DB="$test_db" \
   "$postgres_image" >/dev/null
 
-for _ in $(seq 1 30); do
-  docker exec "$source_container" pg_isready -q -U "$test_user" && break
-  sleep 2
-done
-docker exec "$source_container" pg_isready -q -U "$test_user" \
+pg_wait_container_ready "$source_container" "$test_user" "$test_db" \
   || { echo "source PostgreSQL did not become ready" >&2; exit 1; }
 
 echo "--- setup: seed representative data (identity_user + order_item)"

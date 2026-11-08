@@ -9,6 +9,8 @@ import { DomainApiError, readPublicStorefront } from "@/lib/internal-api-client.
 import { ENROLL_PUBLIC_PRODUCT_CSRF_ACTION, csrfTokenForSession } from "@/lib/mutation-protection.server";
 import { oauthService } from "@/lib/oauth-service.server";
 import { parsePublicStorefront } from "@/lib/public-storefront";
+import { atribuicaoLiberada } from "@/lib/tracking/pilot";
+import { RastreioDaLoja } from "@/lib/tracking/rastreio-da-loja";
 
 export const dynamic = "force-dynamic";
 
@@ -47,6 +49,7 @@ export default async function FreeAccessPage({
       </section>
     </main>
     <StorefrontFooter/>
+    {atribuicaoLiberada(seller.id) ? <RastreioDaLoja sellerId={seller.id}/> : null}
   </div>;
 }
 

@@ -105,6 +105,7 @@ STORAGE_PATTERNS = (
     "tests/http-byte-range.test.ts",
     "scripts/generate-demo-codex-pdfs.py",
     "scripts/test-storage-vertical.sh",
+    "scripts/test-storage-minio.sh",
 )
 # O endurecimento do pdf-sandbox e o que ele prova (#478): o script, o ensaio
 # em Swarm e todo módulo que o sandbox importa e roda (pdf_* e video_*: o
@@ -209,6 +210,10 @@ def classify_paths(paths: Iterable[str]) -> dict[str, object]:
 
         if path == "scripts/test-postgres-foundation.sh":
             route["api"] = True
+            route["postgres"] = True
+            matched = True
+        elif path == "scripts/test-pdf-sandbox-isolation.sh":
+            # A sonda da #468 roda dentro do test-postgres-foundation.sh.
             route["postgres"] = True
             matched = True
         elif path == "scripts/with-isolated-redis.mjs":

@@ -2,6 +2,9 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./tests/production",
+  // Its own folder: Playwright empties outputDir at start, and this run comes
+  // after test:e2e in CI, whose failed-attempt traces must survive (#519).
+  outputDir: "test-results/production",
   fullyParallel: false,
   retries: 0,
   reporter: process.env.CI ? "github" : "list",
@@ -11,6 +14,8 @@ export default defineConfig({
   },
   webServer: {
     command: "pnpm start",
+    // #544: the web refuses to pick a checkout provider on its own.
+    env: { APPSELL_CHECKOUT_PROVIDER: process.env.APPSELL_CHECKOUT_PROVIDER ?? "local_stripe" },
     url: "http://localhost:3000",
     reuseExistingServer: false,
     timeout: 120_000
