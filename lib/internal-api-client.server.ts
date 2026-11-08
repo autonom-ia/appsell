@@ -59,6 +59,7 @@ interface ApiRequest {
     "account.read" | "account.export" | "account.deletion.request" |
     "seller.settings.read" | "seller.settings.update" |
     "commerce.sales.report.read" | "commerce.sales.report.export" |
+    "growth.leads.read" | "growth.leads.export" | "notification.email.consent" |
     "growth.campaign_link.read" | "growth.campaign_link.write";
   sellerOrganizationId?: string;
   inspectionToken?: string;
@@ -1288,6 +1289,66 @@ export async function exportDomainSalesRows(
     sellerOrganizationId,
     timeoutMs: 10_000
   }) as Promise<Record<string, unknown>>;
+}
+
+// Base de leads da loja (#619, Crescimento). O produto é opcional; a ordem
+// dos parâmetros da query é a mesma aqui e na API (envelope assinado).
+export interface LeadsFilter extends SalesPeriod {
+  product: string | null;
+}
+
+function leadsQuery(filter: LeadsFilter) {
+  const parametros = new URLSearchParams({ from: filter.from, to: filter.to });
+  if (filter.product) parametros.set("product", filter.product);
+  return parametros.toString();
+}
+
+export async function readDomainStoreLeads(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  filter: LeadsFilter
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/sellers/${sellerOrganizationId}/leads`,
+    query: leadsQuery(filter),
+    capability: "growth.leads.read",
+    sellerOrganizationId
+  }) as Promise<Record<string, unknown>>;
+}
+
+export async function exportDomainStoreLeads(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  filter: LeadsFilter
+) {
+  return domainRequest(sessionId, session, {
+    method: "GET",
+    path: `/v1/me/sellers/${sellerOrganizationId}/leads/export`,
+    query: leadsQuery(filter),
+    capability: "growth.leads.export",
+    sellerOrganizationId,
+    timeoutMs: 10_000
+  }) as Promise<Record<string, unknown>>;
+}
+
+// Consentimento de e-mail da loja pela própria pessoa (#619): a API grava
+// `store_news` v1 com o e-mail da identidade da sessão, nunca de um campo.
+export async function recordDomainEmailConsent(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string,
+  source: "checkout" | "account"
+) {
+  await domainRequest(sessionId, session, {
+    method: "POST",
+    path: `/v1/me/sellers/${sellerOrganizationId}/email-consent`,
+    capability: "notification.email.consent",
+    sellerOrganizationId,
+    body: { source }
+  });
 }
 
 export async function readDomainSellerSettings(

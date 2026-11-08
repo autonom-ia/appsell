@@ -24,10 +24,12 @@ from .db import (
     financial_channel_ready,
 )
 from .demo_checkout_worker import run_demo_checkout_worker_loop
+from .email_consent_routes import router as email_consent_router
 from .email_preferences_routes import router as email_preferences_router
 from .email_worker import run_email_worker_loop
 from .fulfillment_worker import run_fulfillment_worker_loop
 from .internal_requests import InternalRequestAuthenticator
+from .leads_routes import router as leads_router
 from .learning_routes import router as learning_router
 from .logging_setup import configure_logging, get_logger, install_request_logging
 from .payout_routes import router as payout_router
@@ -270,6 +272,8 @@ app.include_router(platform_bootstrap_router)
 app.include_router(platform_router)
 app.include_router(public_router)
 app.include_router(sales_report_router)
+app.include_router(leads_router)
+app.include_router(email_consent_router)
 app.include_router(email_preferences_router)
 app.include_router(webhook_router)
 app.include_router(campaign_link_router)

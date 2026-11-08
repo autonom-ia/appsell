@@ -50,7 +50,7 @@ def periodo_da_query(de: str | None, ate: str | None) -> tuple[date, date] | Non
     return inicio, fim
 
 
-def _parametros(request: Request) -> tuple[date, date, UUID | None]:
+def parametros_do_periodo(request: Request) -> tuple[date, date, UUID | None]:
     periodo = periodo_da_query(request.query_params.get("from"), request.query_params.get("to"))
     if periodo is None:
         raise HTTPException(
@@ -88,7 +88,7 @@ def _objeto(valor: object) -> dict[str, Any]:
 async def read_sales_report(request: Request, seller_id: UUID) -> dict[str, Any]:
     auth, internal = await _authenticate(request, LEITURA)
     await _require_seller(internal, seller_id)
-    inicio, fim, produto = _parametros(request)
+    inicio, fim, produto = parametros_do_periodo(request)
     try:
         async with auth.domain_session(internal.envelope) as session:
             valor = await session.scalar(
@@ -110,7 +110,7 @@ async def read_sales_report(request: Request, seller_id: UUID) -> dict[str, Any]
 async def export_sales_rows(request: Request, seller_id: UUID) -> dict[str, Any]:
     auth, internal = await _authenticate(request, EXPORT)
     await _require_seller(internal, seller_id)
-    inicio, fim, produto = _parametros(request)
+    inicio, fim, produto = parametros_do_periodo(request)
     try:
         async with auth.domain_session(internal.envelope) as session:
             valor = await session.scalar(
