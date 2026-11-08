@@ -16,6 +16,8 @@ da `main`, não estimado. Cada item cita o arquivo de onde saiu.
    (seção 6). Hoje as duas dizem que não há cookie opcional. Precisam mudar
    antes de ligar o banner.
 5. Responder às **perguntas abertas** (seção 7).
+6. Aprovar o **texto da caixa de consentimento de e-mail** da loja (seção 9),
+   que entra junto com a base de leads (#619).
 
 Se o texto mudar, a versão do texto sobe (`v1` → `v2`). Quem já escolheu vê o
 banner de novo.
@@ -237,3 +239,59 @@ Proposta para a seção 10 da Política de Privacidade:
    - a recusa não grava;
    - o aceite grava;
    - a recusa depois do aceite apaga.
+
+## 9. Caixa de consentimento de e-mail da loja (#619)
+
+A base de leads (#619) mostra para a loja quem comprou ou recebeu acesso. Ela
+só deixa exportar para marketing quem consentiu em receber e-mail daquela
+loja. Hoje nenhuma tela pede esse consentimento.
+
+Por decisão da Orquestração Sell, em 08/11/2026, uma caixa entra em dois
+lugares:
+- no checkout, feita pela Frente D;
+- em "Minha conta", feita pela Frente E.
+
+As duas usam o mesmo componente e a mesma gravação, e ficam atrás do piloto da
+base de leads.
+
+### 9.1 Texto da caixa
+
+O texto já está gravado no banco como `store_news` versão 1, na migration
+`0066_consentimento_de_email.py` (`TEXTOS_V1`):
+
+> ☐ Quero receber por e-mail as novidades desta loja, como produtos e módulos
+> novos. Posso parar quando quiser, pelo link de descadastro em cada e-mail.
+
+### 9.2 Como a caixa se comporta
+
+- Vem **desmarcada**. Comprar e entrar não dependem dela.
+- Marcar grava o consentimento só para **aquela loja**, com:
+  - a data;
+  - a origem (`checkout` ou `account`);
+  - a versão do texto e o sha256 do texto exato que a pessoa viu, como prova
+    (art. 8º, § 2º);
+  - um registro de auditoria.
+- O e-mail gravado é o da conta da pessoa logada, nunca um digitado no
+  formulário.
+- Cada e-mail opcional leva um link de descadastro em um clique. Ele vale na
+  hora e grava uma supressão que vence qualquer consentimento posterior da
+  mesma loja, até a pessoa marcar a caixa de novo.
+- Excluir a conta apaga o consentimento. A supressão fica, guardada só como
+  sha256 do e-mail, para o descadastro continuar valendo.
+- O e-mail transacional (compra, acesso) não depende da caixa e continua
+  saindo.
+
+### 9.3 Base legal e o que pedimos
+
+Proposta: **consentimento** (LGPD, art. 7º, I) para o e-mail de marketing da
+loja. O vendedor é o controlador, e a Autonom.ia é a operadora (seção 5).
+
+Pedimos:
+1. aprovar o texto da caixa. Se ele mudar, entra como versão 2, e quem
+   consentiu na versão 1 continua com a prova da versão 1;
+2. confirmar que a loja, como controladora, pode exportar a lista de quem
+   consentiu para mandar e-mail por fora da plataforma;
+3. dizer se a loja precisa aceitar um termo de uso dessa lista, por exemplo
+   "só para e-mail desta loja, respeitando o descadastro", antes do primeiro
+   export.
+
