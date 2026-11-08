@@ -56,9 +56,7 @@ describe("rotas da base de leads", () => {
       rows: [{
         name: "=HYPERLINK(1)",
         email: "lead@example.test",
-        product_title: "Curso, avançado",
-        source: "billing",
-        access_status: "active",
+        products: "Curso, avançado; Mentoria",
         since: "2026-10-05"
       }]
     });
@@ -117,8 +115,8 @@ describe("rotas da base de leads", () => {
     expect([...bytes.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
     const texto = new TextDecoder().decode(bytes.slice(3));
     expect(texto).toBe(
-      "nome,email,produto,como_entrou,acesso,desde\r\n" +
-      "'=HYPERLINK(1),lead@example.test,\"Curso, avançado\",compra,ativo,2026-10-05\r\n"
+      "nome,email,produtos,desde\r\n" +
+      "'=HYPERLINK(1),lead@example.test,\"Curso, avançado; Mentoria\",2026-10-05\r\n"
     );
   });
 

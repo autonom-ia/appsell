@@ -28,7 +28,10 @@ produtos aparece em duas linhas. O total de pessoas distintas vai no topo.
 
 Há um botão de CSV, **"Exportar para marketing"**. Ele leva só quem pode
 receber e-mail opcional da loja agora: consentimento `granted` e nenhuma
-supressão (seção 3). Não há "Exportar todos" na v1 (decisão 7.1). A tela mostra
+supressão (seção 3). O CSV tem **uma linha por pessoa**, com nome, e-mail,
+os produtos juntos numa coluna e a primeira entrada no período. O mesmo e-mail
+nunca sai duas vezes, e quem importa numa ferramenta de e-mail não manda em
+dobro. Não há "Exportar todos" na v1 (decisão 7.1). A tela mostra
 as primeiras 500 linhas, mais os totais. Quando há mais, ela pede para usar o
 filtro.
 

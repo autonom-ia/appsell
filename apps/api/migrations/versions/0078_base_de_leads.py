@@ -10,8 +10,9 @@ Sem tabela nova. A lista junta o que já existe:
 Esta migration cria só duas leituras, presas à loja do contexto e ao papel de
 dono ou admin:
 - `read_store_leads`: a tela, com as primeiras 500 linhas e os totais;
-- `export_store_leads`: o CSV "para marketing". Leva **só** quem pode receber
-  e-mail opcional da loja agora, decidido pela própria
+- `export_store_leads`: o CSV "para marketing", **uma linha por pessoa**, com
+  os produtos juntos numa coluna. Leva **só** quem pode receber e-mail
+  opcional da loja agora, decidido pela própria
   `app_private.email_optional_block_reason` (finalidade `store_news`). Assim, a
   lista e o envio nunca discordam. Grava `audit_event` sem e-mail, tem limite de
   5 exports por minuto por pessoa e uma trava por pessoa antes da contagem, como
@@ -206,11 +207,20 @@ __GUARDA__
         raise exception 'store leads export rate limited' using errcode='P4291';
       end if;
 __LEADS__
+      -- Uma linha por pessoa: o mesmo e-mail nunca sai duas vezes, e quem
+      -- importa numa ferramenta de e-mail não manda em dobro. Os produtos vão
+      -- juntos numa coluna, e "desde" é a primeira entrada no período.
       , marketing as (
-        select * from leads where situacao_do_email='granted'
+        select pessoa,min(nome) nome,email,
+          string_agg(distinct produto_titulo,'; ' order by produto_titulo) produtos,
+          min(entrou_em) entrou_em
+        from leads where situacao_do_email='granted'
+        group by pessoa,email
       )
-      select count(*),coalesce(jsonb_agg(__LINHA__ order by linha.entrou_em desc,linha.acesso),
-        '[]'::jsonb)
+      select count(*),coalesce(jsonb_agg(jsonb_build_object('name',linha.nome,
+          'email',linha.email,'products',linha.produtos,
+          'since',(linha.entrou_em at time zone '__FUSO__')::date)
+          order by linha.entrou_em desc,linha.email),'[]'::jsonb)
         into total,resultado from marketing linha;
       if total > __MAXIMO__ then
         raise exception 'store leads export too large' using errcode='P4131';

@@ -91,6 +91,8 @@ def test_demo_e_pedido_de_exclusao_aberto_ficam_de_fora(migration: ModuleType) -
 def test_o_export_e_so_marketing_e_usa_a_regra_do_envio(migration: ModuleType) -> None:
     export = next(sql for sql in migration.FUNCOES if "export_store_leads" in sql)
     assert "where situacao_do_email='granted'" in export
+    # Uma linha por pessoa no export: o e-mail não se repete.
+    assert "group by pessoa,email" in export
     assert "app_private.email_optional_block_reason(p_seller,acessos.email,'store_news')" in export
 
 

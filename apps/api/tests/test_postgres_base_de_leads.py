@@ -284,9 +284,16 @@ def test_periodo_invertido_ou_longo_demais_e_recusado() -> None:
 
 def test_o_export_leva_so_quem_pode_receber_e_bate_com_a_regra_do_envio() -> None:
     export = _export()
-    assert {(linha["email"], linha["email_status"]) for linha in export["rows"]} == {
-        (_email(CONSENTIU), "granted")
-    }
+    # Uma linha por pessoa: os dois produtos de quem consentiu vão juntos, e o
+    # e-mail não se repete. "Desde" é a primeira entrada (01/10 em São Paulo).
+    assert export["rows"] == [
+        {
+            "name": "=HYPERLINK(1)",
+            "email": _email(CONSENTIU),
+            "products": "Curso leads-a 1; Curso leads-a 2",
+            "since": "2026-10-01",
+        }
+    ]
     assert ADMIN_URL
     with psycopg.connect(ADMIN_URL) as connection:
         for linha in export["rows"]:
@@ -309,8 +316,7 @@ def test_o_export_audita_sem_email() -> None:
         ).fetchone()
     assert row is not None
     metadata = cast(str, row[0])
-    # Uma linha por acesso: quem consentiu tem dois produtos na loja A.
-    assert '"audience": "marketing"' in metadata and '"rows": 2' in metadata
+    assert '"audience": "marketing"' in metadata and '"rows": 1' in metadata
     assert "@" not in metadata
 
 
