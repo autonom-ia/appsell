@@ -1395,3 +1395,90 @@ test("o vídeo do PDF diz que está sendo preparado, e depois toca", async ({ pa
   await expect(video).toHaveAttribute("src", mediaHref);
   await expect(preparando).toHaveCount(0);
 });
+
+// DIAGNÓSTICO TEMPORÁRIO (#631) — sai antes do merge. Repete a abertura do
+// vídeo protegido no celular com uma sonda na página: ticks de setTimeout,
+// MessageChannel e rAF, visibilidade e mudanças no <main>. Na falha, a sonda
+// diz se o laço de eventos parou ou se o React não aplicou o render.
+for (let rodada = 0; rodada < 40; rodada += 1) {
+  test(`diagnóstico 631 · rodada ${rodada}`, async ({ page, browserName }, testInfo) => {
+    test.skip(browserName !== "webkit", "o flaky é só do WebKit");
+    await page.addInitScript(() => {
+      const t0 = performance.now();
+      const log: string[] = [];
+      const stamp = (what: string) => log.push(`${Math.round(performance.now() - t0)} ${what}`);
+      (window as unknown as { __sonda: string[] }).__sonda = log;
+      let lastTimer = performance.now();
+      const timerTick = () => {
+        const now = performance.now();
+        if (now - lastTimer > 250) stamp(`timer atrasou ${Math.round(now - lastTimer)}ms`);
+        lastTimer = now;
+        setTimeout(timerTick, 50);
+      };
+      setTimeout(timerTick, 50);
+      const channel = new MessageChannel();
+      let lastMessage = performance.now();
+      channel.port1.onmessage = () => {
+        const now = performance.now();
+        if (now - lastMessage > 250) stamp(`mensagem atrasou ${Math.round(now - lastMessage)}ms`);
+        lastMessage = now;
+        setTimeout(() => channel.port2.postMessage(0), 50);
+      };
+      channel.port2.postMessage(0);
+      let lastFrame = performance.now();
+      const frame = () => {
+        const now = performance.now();
+        if (now - lastFrame > 250) stamp(`rAF atrasou ${Math.round(now - lastFrame)}ms`);
+        lastFrame = now;
+        requestAnimationFrame(frame);
+      };
+      requestAnimationFrame(frame);
+      document.addEventListener("visibilitychange", () => stamp(`visibilidade ${document.visibilityState}`));
+      window.addEventListener("error", (event) => stamp(`erro ${event.message}`));
+      window.addEventListener("unhandledrejection", (event) => stamp(`rejeição ${String(event.reason)}`));
+      const watch = () => {
+        const main = document.querySelector("main");
+        if (!main) return void setTimeout(watch, 20);
+        stamp(`main inicial: ${main.querySelector("video") ? "vídeo" : main.textContent?.slice(0, 40)}`);
+        new MutationObserver(() => {
+          stamp(`main mudou: ${main.querySelector("video") ? "vídeo" : main.textContent?.slice(0, 40)}`);
+        }).observe(main, { childList: true, subtree: true });
+      };
+      watch();
+      const originalFetch = window.fetch;
+      window.fetch = (...args) => {
+        const url = String(args[0] instanceof Request ? args[0].url : args[0]);
+        stamp(`fetch ${url.slice(0, 80)}`);
+        return originalFetch(...args).then((response) => {
+          stamp(`fetch ok ${response.status} ${url.slice(0, 80)}`);
+          return response;
+        }, (error: unknown) => {
+          stamp(`fetch erro ${String(error)} ${url.slice(0, 80)}`);
+          throw error;
+        });
+      };
+      stamp(`início visibilidade ${document.visibilityState}`);
+    });
+    const logs: string[] = [];
+    page.on("console", (message) => logs.push(`console ${message.type()} ${message.text().slice(0, 200)}`));
+    page.on("pageerror", (error) => logs.push(`pageerror ${error.message.slice(0, 200)}`));
+    await page.setViewportSize({ width: 320, height: 800 });
+    await mockLearningApi(page, {
+      onFirstLesson: async (route) => {
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(videoPlayerEnvelope()) });
+      }
+    });
+    await enterAndWaitForSession(page);
+    await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
+    const video = page.locator('video[aria-label="Codex em 3 passos"]');
+    try {
+      await expect(video).toHaveAttribute("src", `/api/library/items/${entitlementId}/assets/${videoAssetId}`);
+    } catch (error) {
+      const sonda = await page.evaluate(() => (window as unknown as { __sonda: string[] }).__sonda).catch((e: unknown) => [`sem sonda: ${String(e)}`]);
+      const relato = [`rodada ${rodada}`, ...sonda, ...logs].join("\n");
+      process.stdout.write(`\n==== SONDA 631 ====\n${relato}\n==== FIM SONDA ====\n`);
+      await testInfo.attach("sonda-631", { body: relato, contentType: "text/plain" });
+      throw error;
+    }
+  });
+}
