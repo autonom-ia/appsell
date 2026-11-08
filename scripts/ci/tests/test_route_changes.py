@@ -107,6 +107,33 @@ class ClassifyPathsTests(unittest.TestCase):
 
         self.assertTrue(route["storage"])
 
+    def test_host_scripts_route_their_own_tests(self) -> None:
+        # #591: script Python do host (cron) vai só para a suíte dele.
+        route = classify_paths(["scripts/ops/cadeia_travada.py"])
+
+        self.assertTrue(route["ops"])
+        self.assertFalse(route["full"])
+        self.assertFalse(route["unknown"])
+        self.assertFalse(route["web"])
+        self.assertFalse(route["api"])
+
+    def test_host_sql_script_keeps_the_suites_that_read_it(self) -> None:
+        # O exporta-conta.sql é lido pelo teste de Postgres e pelo vitest: antes
+        # caía no fallback completo, e não pode perder essas suítes.
+        route = classify_paths(["scripts/ops/exporta-conta.sql"])
+
+        self.assertTrue(route["ops"])
+        self.assertTrue(route["web"])
+        self.assertTrue(route["api"])
+        self.assertTrue(route["postgres"])
+        self.assertFalse(route["unknown"])
+
+    def test_ci_tests_change_routes_ops_through_full_certification(self) -> None:
+        route = classify_paths(["scripts/ci/tests/test_cadeia_travada.py"])
+
+        self.assertTrue(route["full"])
+        self.assertTrue(route["ops"])
+
     def test_compose_change_fails_safe_to_full_certification(self) -> None:
         route = classify_paths(["compose.yaml"])
 

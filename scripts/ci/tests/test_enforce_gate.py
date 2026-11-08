@@ -23,6 +23,7 @@ def outcomes(**overrides: str) -> dict[str, str]:
         "image_web": "skipped",
         "image_api": "skipped",
         "image_bootstrap": "skipped",
+        "ops_tests": "skipped",
         "smoke": "skipped",
     }
     values.update(overrides)
@@ -171,6 +172,34 @@ class ExpectedStepsTests(unittest.TestCase):
             {"route", "migration_shape", "smoke"},
             expected_steps("push", route, merge_queue_active=True),
         )
+
+
+    def test_ops_scripts_tests_are_expected_outside_push(self) -> None:
+        # #591: os testes dos scripts do host só rodavam no smoke do push. O PR
+        # e o dispatch passam a rodá-los sempre que a área é tocada.
+        for event in ("pull_request", "merge_group", "workflow_dispatch"):
+            with self.subTest(event=event):
+                self.assertIn("ops_tests", expected_steps(event, {"ops": True}))
+                self.assertNotIn("ops_tests", expected_steps(event, {"web": True}))
+        # No push o smoke já roda a mesma suíte.
+        self.assertNotIn("ops_tests", expected_steps("push", {"ops": True}))
+        self.assertNotIn(
+            "ops_tests", expected_steps("push", {"ops": True}, merge_queue_active=True)
+        )
+
+    def test_failed_or_skipped_ops_tests_reject_the_gate(self) -> None:
+        for event in ("pull_request", "workflow_dispatch"):
+            for outcome in ("failure", "skipped", "missing"):
+                with self.subTest(event=event, outcome=outcome):
+                    failures = evaluate_gate(
+                        event, {"ops": True}, outcomes(ops_tests=outcome)
+                    )
+                    self.assertEqual([f"ops_tests={outcome}"], failures)
+
+    def test_ops_tests_running_outside_the_scope_rejects_the_gate(self) -> None:
+        failures = evaluate_gate("pull_request", {}, outcomes(ops_tests="success"))
+
+        self.assertEqual(["ops_tests=unexpected-success"], failures)
 
 
 class EvaluateGateTests(unittest.TestCase):
