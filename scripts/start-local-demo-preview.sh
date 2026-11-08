@@ -135,6 +135,8 @@ export APPSELL_PUBLIC_ORIGIN="$origin"
 export APPSELL_STORAGE_PUBLIC_ORIGIN="http://127.0.0.1:${storage_port}"
 export APPSELL_VAULT_LOCAL_KEYRING_B64_JSON="[{\"id\":\"preview-v1\",\"key\":\"${vault_key_b64}\",\"active\":true}]"
 export APPSELL_DOMAIN_API_URL="http://127.0.0.1:${api_port}"
+# #544: o web não escolhe o provedor do checkout sozinho.
+export APPSELL_CHECKOUT_PROVIDER="local_stripe"
 export APPSELL_DEMO_ENABLED="true"
 export APPSELL_DEMO_SUPERADMIN_ENABLED="true"
 export APPSELL_NEXT_DIST_DIR="$next_dist_dir"

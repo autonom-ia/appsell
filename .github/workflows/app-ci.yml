@@ -76,8 +76,9 @@ jobs:
             --github-output "$GITHUB_OUTPUT"
 
       # #551: uma cabeça Alembic só e nenhum número repetido, em todo evento.
-      # Na fila de merge isto roda sobre o resultado integrado, que é onde
-      # duas migrations 0066 de PRs diferentes se encontram.
+      # No pull_request roda sobre refs/pull/N/merge (o PR mesclado com a main
+      # do momento). Sem fila de merge (conta pessoal), o verde fica velho
+      # quando a main anda; ver docs/ci/COST_CONTAINMENT_2026-07.md.
       - name: Check the migration chain has one head and unique numbers
         id: migration-shape
         if: ${{ !cancelled() }}

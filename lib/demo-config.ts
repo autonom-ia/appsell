@@ -1,3 +1,4 @@
+import { e2eBuildRuntimeEnabled } from "./e2e-build-runtime";
 import { publicDemoRuntimeEnabled } from "./public-demo-runtime";
 
 export type DemoPersona = "admin" | "buyer" | "superadmin";
@@ -44,7 +45,8 @@ const profiles: Record<DemoPersona, DemoProfile> = {
 };
 
 export function demoModeEnabled(environment: Partial<Record<string, string | undefined>> = process.env) {
-  return (localCiRuntime(environment) || publicDemoRuntimeEnabled(environment)) &&
+  return (localCiRuntime(environment) || publicDemoRuntimeEnabled(environment) ||
+      e2eBuildRuntimeEnabled(environment)) &&
     environment.APPSELL_DEMO_ENABLED?.toLowerCase() === "true";
 }
 

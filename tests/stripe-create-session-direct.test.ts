@@ -95,6 +95,7 @@ function firstCreateCall(): CreateCall {
 describe("POST /api/checkout/stripe/create-session (direct charge)", () => {
   beforeEach(() => {
     process.env.APPSELL_PUBLIC_ORIGIN = ORIGIN;
+    process.env.APPSELL_CHECKOUT_PROVIDER = "local_stripe";
     process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON = JSON.stringify({
       [`${SELLER}/${PRODUCT}`]: { financial_product_key: "prod_curso_real_v1" }
     });
@@ -161,5 +162,38 @@ describe("POST /api/checkout/stripe/create-session (direct charge)", () => {
     const [params, options] = firstCreateCall();
     expect(params.payment_intent_data).toBeUndefined();
     expect(options).toBeUndefined();
+  });
+
+  describe("preço mínimo, última trava (#546)", () => {
+    const destination = {
+      payout_destination: { provider: "stripe", provider_account_id: CONNECTED_ACCOUNT, charges_enabled: true }
+    };
+
+    it("recusa preço em que a comissão leva tudo, antes de falar com a Stripe", async () => {
+      // Pega: oferta criada pela chave interna, sem a trava das rotas,
+      // cobrando o comprador para a loja receber zero.
+      resolveCheckoutPayoutDestination.mockResolvedValue(destination);
+      readPublicStorefront.mockResolvedValue(storefront(51));
+      const response = await POST(request());
+      expect(response.status).toBe(409);
+      expect((await response.json()).error).toBe("product_price_below_platform_fee");
+      expect(sessionsCreate).not.toHaveBeenCalled();
+    });
+
+    it("cobra no primeiro preço em que a loja recebe algo", async () => {
+      resolveCheckoutPayoutDestination.mockResolvedValue(destination);
+      readPublicStorefront.mockResolvedValue(storefront(52));
+      const response = await POST(request());
+      expect(response.status).toBe(200);
+      expect(firstCreateCall()[0].payment_intent_data).toEqual({ application_fee_amount: 51 });
+    });
+
+    it("não trava a cobrança sem comissão", async () => {
+      // Pega: a trava alcançando venda sem repasse, que não tem comissão.
+      resolveCheckoutPayoutDestination.mockResolvedValue({ payout_destination: null });
+      readPublicStorefront.mockResolvedValue(storefront(51));
+      const response = await POST(request());
+      expect(response.status).toBe(200);
+    });
   });
 });
