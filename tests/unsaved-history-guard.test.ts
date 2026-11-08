@@ -50,6 +50,7 @@ class FakeBrowser {
       go: (delta = 0) => this.traverse(delta)
     };
     Object.defineProperty(history, "state", { get: () => this.entries[this.index].state });
+    Object.defineProperty(history, "length", { get: () => this.entries.length });
     const location = {};
     Object.defineProperty(location, "href", { get: () => this.url });
     return {
@@ -89,6 +90,12 @@ class FakeBrowser {
 
   /** `router.push` do Next: entrada nova na mesma página, sem popstate. */
   routerPush(url: string) {
+    // Mesma URL: o Next não empilha, troca o estado da entrada (e com ele a
+    // marca da guarda), como no `HistoryUpdater` do app router.
+    if (url === this.url) {
+      this.routerReplace(url);
+      return;
+    }
     this.push({ document: "product", state: { __NA: true }, url });
   }
 
@@ -344,33 +351,118 @@ describe("guarda de alterações não salvas (#612)", () => {
   );
 
   it.each<Engine>(["webkit", "chromium"])(
-    "no %s, um link de fragmento com a tela suja não trava a guarda nem abre diálogo",
+    "no %s, um link de fragmento com a tela suja não empilha outra sentinela nem abre diálogo",
     (engine) => {
       const browser = new FakeBrowser(engine);
       let bloqueios = 0;
       browser.events.addEventListener(DIRTY_HISTORY_BLOCKED_EVENT, () => { bloqueios += 1; });
       const guard = createUnsavedHistoryGuard(browser.env, true);
+      const sentinela = browser.index;
 
-      // O skip-link empilha uma entrada em cima da sentinela: o `go(1)` que
-      // tentaria devolvê-la não tem para onde ir.
+      // O skip-link empilha uma entrada do próprio vendedor em cima da
+      // sentinela. Ela continua embaixo, protegendo: nada de sentinela nova
+      // enterrando a antiga (#615, ponto E).
       browser.fragment("conteudo");
       browser.settle();
       browser.elapse();
-      const fragmento = browser.index - 1;
-      expect(browser.entries[fragmento].url).toBe(`${PRODUCT_URL}#conteudo`);
-      expect(browser.index).toBe(fragmento + 1);
-
-      // Salvar limpa a tela: a sentinela sai e nenhum diálogo aparece.
-      guard.setDirty(false);
-      browser.settle();
-      expect(browser.index).toBe(fragmento);
+      expect(browser.entries.length).toBe(sentinela + 2);
+      expect(browser.url).toBe(`${PRODUCT_URL}#conteudo`);
       expect(bloqueios).toBe(0);
-      expect(browser.leftProduct).toBe(false);
 
-      // E o próximo voltar, com a tela limpa, é só do usuário.
+      // Voltar do fragmento cai na sentinela: é o lugar de antes, na mesma
+      // página, sem diálogo.
       browser.userBack();
       browser.settle();
+      browser.elapse();
+      expect(browser.index).toBe(sentinela);
       expect(bloqueios).toBe(0);
+
+      // Voltar de novo é sair com alteração pendente: diálogo.
+      browser.userBack();
+      browser.settle();
+      expect(bloqueios).toBe(1);
+      expect(browser.index).toBe(sentinela);
+      expect(browser.leftProduct).toBe(false);
+
+      // Salvar limpa a tela e a sentinela sai.
+      guard.setDirty(false);
+      browser.settle();
+      expect(browser.index).toBe(sentinela - 1);
+    }
+  );
+
+  it.each<Engine>(["webkit", "chromium"])(
+    "no %s, salvar depois do fragmento não deixa a sentinela no caminho do voltar",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      let bloqueios = 0;
+      browser.events.addEventListener(DIRTY_HISTORY_BLOCKED_EVENT, () => { bloqueios += 1; });
+      const guard = createUnsavedHistoryGuard(browser.env, true);
+      const sentinela = browser.index;
+      browser.fragment("conteudo");
+      browser.settle();
+      guard.setDirty(false);
+      browser.settle();
+      expect(bloqueios).toBe(0);
+
+      // Limpa, o voltar do fragmento atravessa a sentinela sozinho: a guarda
+      // pousa nela e já segue para a entrada de antes.
+      browser.userBack();
+      browser.settle();
+      expect(browser.index).toBe(sentinela - 1);
+      expect(bloqueios).toBe(0);
+      expect(browser.leftProduct).toBe(false);
+    }
+  );
+
+  it.each<Engine>(["webkit", "chromium"])(
+    "no %s, o go(1) que chega depois do prazo pousa numa sentinela que a guarda reconhece",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      let bloqueios = 0;
+      browser.events.addEventListener(DIRTY_HISTORY_BLOCKED_EVENT, () => { bloqueios += 1; });
+      const guard = createUnsavedHistoryGuard(browser.env, true);
+      const sentinela = browser.index;
+
+      // O voltar do usuário: a guarda pede `go(1)`, mas a travessia demora. O
+      // vendedor salva nesse meio-tempo e o prazo esgota com a tela limpa.
+      browser.userBack();
+      guard.setDirty(false);
+      browser.elapse();
+      // A travessia chega atrasada e pousa na sentinela (#615, ponto B).
+      browser.step();
+      expect(browser.index).toBe(sentinela);
+
+      // A guarda a reconhece pela marca e a tira: a tela limpa não fica em
+      // cima de uma sentinela que ninguém mais conta.
+      browser.settle();
+      expect(browser.index).toBe(sentinela - 1);
+      expect(bloqueios).toBe(0);
+      expect(browser.leftProduct).toBe(false);
+    }
+  );
+
+  it.each<Engine>(["webkit", "chromium"])(
+    "no %s, uma navegação liberada para a mesma URL rearma a guarda sem empilhar entrada",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      let bloqueios = 0;
+      browser.events.addEventListener(DIRTY_HISTORY_BLOCKED_EVENT, () => { bloqueios += 1; });
+      const guard = createUnsavedHistoryGuard(browser.env, true);
+      const sentinela = browser.index;
+
+      // "Descartar e ir" para a própria URL: o Next troca o estado da entrada
+      // em vez de empilhar, e a tela continua montada (#615, ponto F).
+      browser.events.dispatchEvent(new Event("appsell:dirty-navigation-allowed"));
+      guard.setDirty(false);
+      browser.routerPush(PRODUCT_URL);
+
+      guard.setDirty(true);
+      expect(browser.entries.length).toBe(sentinela + 1);
+      browser.userBack();
+      browser.settle();
+      expect(bloqueios).toBe(1);
+      expect(browser.leftProduct).toBe(false);
     }
   );
 
