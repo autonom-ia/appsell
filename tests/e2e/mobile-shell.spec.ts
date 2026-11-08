@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
+import { E2E_BUILD_PUBLIC_ORIGIN } from "../../lib/e2e-build-runtime";
 import { login } from "./support/login";
+import { E2E_STORAGE_ORIGIN } from "./support/storage";
 
 const SHELL_BRAND_NAME = "sell. by Autonom.ia: início";
 
@@ -20,7 +22,7 @@ test("keeps the core journey usable without horizontal overflow", async ({ page 
     { path: "/products", heading: "Produtos" },
     { path: "/library", heading: "Minha biblioteca" },
   ]) {
-    if (page.url() !== `http://localhost:3000${target.path}`) {
+    if (page.url() !== `${E2E_BUILD_PUBLIC_ORIGIN}${target.path}`) {
       await page.locator(`a[href="${target.path}"]:visible`).first().click();
       await expect(page).toHaveURL(target.path, { timeout: 20_000 });
       await expect(page.getByRole("heading", { name: target.heading, exact: true })).toBeVisible();
@@ -394,7 +396,7 @@ test("edits, previews and publishes a tenant-scoped product at 320px", async ({ 
     const posted = route.request().postDataBuffer();
     const form = await new Request(route.request().url(), { method: "POST", headers: route.request().headers(), body: posted ? new Uint8Array(posted) : undefined }).formData();
     accessLinkLabels.push(String(form.get("label")));
-    return route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ access_link: { access_link_id: "9f1d6f1e-0e2a-4a3b-8c4d-5e6f70819293", token_prefix: "aabbccdd", label: form.get("label"), max_uses: null, redeemed_count: 0, expires_at: null, created_at: null }, url: `http://localhost:3000/c/${"a".repeat(64)}` }) });
+    return route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ access_link: { access_link_id: "9f1d6f1e-0e2a-4a3b-8c4d-5e6f70819293", token_prefix: "aabbccdd", label: form.get("label"), max_uses: null, redeemed_count: 0, expires_at: null, created_at: null }, url: `${E2E_BUILD_PUBLIC_ORIGIN}/c/${"a".repeat(64)}` }) });
   });
   await page.route(`**/api/sellers/${sellerId}/products/${productId}/publications`, async (route) => {
     const posted = route.request().postDataBuffer();
@@ -784,12 +786,12 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
 
   await page.setViewportSize({ width: 360, height: 844 });
   await enterAndWaitForSession(page);
-  await page.route("http://127.0.0.1:8333/**", async (route) => {
+  await page.route(`${E2E_STORAGE_ORIGIN}/**`, async (route) => {
     if (route.request().method() === "OPTIONS") {
       await route.fulfill({
         status: 204,
         headers: {
-          "access-control-allow-origin": "http://localhost:3000",
+          "access-control-allow-origin": E2E_BUILD_PUBLIC_ORIGIN,
           "access-control-allow-methods": "PUT,OPTIONS",
           "access-control-allow-headers": "content-type,x-amz-checksum-sha256,x-amz-meta-appsell-upload-id"
         }
@@ -798,7 +800,7 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
     }
     markUploadStarted();
     await new Promise<void>((resolve) => { releaseUpload = resolve; });
-    await route.fulfill({ status: 200, headers: { "access-control-allow-origin": "http://localhost:3000" }, body: "" });
+    await route.fulfill({ status: 200, headers: { "access-control-allow-origin": E2E_BUILD_PUBLIC_ORIGIN }, body: "" });
   });
   await page.route("**/api/sellers/**", async (route) => {
     const request = route.request();
@@ -868,8 +870,8 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
       await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({
         upload_id: uploadId,
         asset_id: "99000000-0000-4000-8000-000000000001",
-        upload_url: `http://127.0.0.1:8333/appsell-quarantine/${uploadId}?X-Amz-Signature=test`,
-        upload_origin: "http://127.0.0.1:8333",
+        upload_url: `${E2E_STORAGE_ORIGIN}/appsell-quarantine/${uploadId}?X-Amz-Signature=test`,
+        upload_origin: E2E_STORAGE_ORIGIN,
         expires_at: new Date(Date.now() + 300_000).toISOString(),
         required_headers: {
           "Content-Type": "application/pdf",
@@ -1115,7 +1117,10 @@ test("fails publication closed for string readiness and a missing offer", async 
 
   await page.getByRole("navigation", { name: "Áreas do produto" })
     .getByRole("link", { name: /^Distribuição/ }).click();
-  await expect(page.getByText("offer_missing")).toBeVisible();
+  // No build de produção o painel "O que falta para publicar" já está na tela
+  // junto com o de publicar, e os dois listam a pendência (#585). O que este
+  // teste afirma é o bloqueio da publicação, então olha o painel dela.
+  await expect(page.getByLabel("Publicar catálogo").getByText("offer_missing")).toBeVisible();
   await expect(page.getByRole("button", { name: "Publicar catálogo primeira versão" })).toBeDisabled();
 });
 

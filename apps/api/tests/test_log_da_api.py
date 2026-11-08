@@ -28,6 +28,7 @@ from io import StringIO
 from typing import Any
 
 import pytest
+import structlog
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from httpx import ASGITransport, AsyncClient
@@ -36,6 +37,7 @@ from appsell_api import logging_setup
 
 _ESPERA_DA_ROTA_LENTA = 0.05
 _TOKENS_DA_AMOSTRA = 20_000
+_HORARIO_COM_4111 = "2026-11-06T12:34:21.441110Z"
 
 
 @pytest.fixture(autouse=True)
@@ -631,13 +633,25 @@ def test_caminho_de_arquivo_do_traceback_nao_e_confundido_com_base64() -> None:
     assert caminho in _linhas(fluxo)[0]
 
 
-def test_numero_de_cartao_nao_chega_ao_log_e_identificador_numerico_sobrevive() -> None:
+def test_numero_de_cartao_nao_chega_ao_log_e_identificador_numerico_sobrevive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Cartão é redigido por Luhn, não por tamanho.
 
     Redigir todo número comprido apagaria identificador de pedido e de asset —
     e um log sem identificador não serve para nada. O dígito verificador separa
     os dois casos sem chute.
+
+    A busca olha os campos, não a linha: a linha traz o horário, e um horário
+    como `…:21.441110Z` contém `4111`. Buscar na linha inteira fazia o teste
+    falhar de vez em quando com o cartão redigido (#608). O horário fica fixo
+    num valor com `4111`, para o teste provar que não depende dele.
     """
+    monkeypatch.setattr(
+        structlog.processors.TimeStamper,
+        "__call__",
+        lambda _self, _logger, _nome, evento: {**evento, "timestamp": _HORARIO_COM_4111},
+    )
     fluxo = _configura("production")
 
     logging_setup.get_logger("teste").info(
@@ -647,9 +661,13 @@ def test_numero_de_cartao_nao_chega_ao_log_e_identificador_numerico_sobrevive() 
         pedido="1234567890123456789",
     )
 
-    linha = _linhas(fluxo)[0]
-    assert "4111" not in linha
-    assert "1234567890123456789" in linha
+    registro = json.loads(_linhas(fluxo)[0])
+    assert registro["timestamp"] == _HORARIO_COM_4111
+    assert registro["cartao"] == "<REDACTED>"
+    assert registro["outro_cartao"] == "<REDACTED>"
+    assert registro["pedido"] == "1234567890123456789"
+    sem_horario = {chave: valor for chave, valor in registro.items() if chave != "timestamp"}
+    assert all("4111" not in str(valor) for valor in sem_horario.values())
 
 
 def test_o_log_da_biblioteca_padrao_passa_pelos_mesmos_processadores() -> None:
