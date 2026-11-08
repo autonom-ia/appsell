@@ -58,7 +58,9 @@ nunca neste repositório nem em chat:
   `SMTP_SECURE_TRANSACIONAL`, `SMTP_USER_TRANSACIONAL`,
   `SMTP_PASS_TRANSACIONAL`: os mesmos do worker de e-mail da API (os nomes que o
   `config.py` lê). O remetente é o próprio usuário SMTP.
-- `ALERTA_PARA`: quem recebe. **A definir pelo Rodrigo.**
+- `ALERTA_PARA`: quem recebe. O canal é e-mail (decisão do Rodrigo, 08/11).
+  O endereço fica só nessa variável, no host. Não entra no repositório, em
+  PR, em Issue nem em chat.
 
 ## Instalação (só com OK do Rodrigo)
 
