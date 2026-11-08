@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { onRequestError } from "../instrumentation";
-import { redigirTexto } from "@/lib/redacao";
+import { onRequestError, register } from "../instrumentation";
+import { instalarConsoleRedigido, linhaRedigida } from "@/lib/console-redigido";
+import { limitarTamanho, redigirTexto, TETO_DE_TEXTO } from "@/lib/redacao";
 
 const EMAIL = "ana.silva+loja@exemplo.com.br";
 const CPF = "529.982.247-25";
@@ -85,5 +86,111 @@ describe("regras do redator do web", () => {
     "usuario@sem-dominio"
   ])("mantém %s", (valor) => {
     expect(redigirTexto(valor)).toBe(valor);
+  });
+});
+
+describe("revisão do PR #576: formatos que escapavam", () => {
+  it.each([
+    ["Apartamento 50 m²", "Apartamento 50 m²"],
+    ["GET /c/link?token=abc123 HTTP", "GET /c/link?<REDACTED> HTTP"],
+    ["https://h.test/a#rt=x fim", "https://h.test/a#<REDACTED> fim"],
+    ["http://api.internal:8080?notify=alice@autonomia.site", "http://api.internal:8080?<REDACTED>"],
+    ["{ 'set-cookie': [ 'sid=abc123', 'tema=claro' ] }", "{ 'set-cookie': [<REDACTED>] }"],
+    ["Map(1) { 'authorization' => 'Bearer abc123' }", "Map(1) { 'authorization' => '<REDACTED>' }"],
+    ["(b'authorization', b'Bearer abc123')", "(b'authorization', b'<REDACTED>')"],
+    ["Authorization: Bearer\n abc123\nproxima", "Authorization: <REDACTED>\nproxima"],
+    ["Authorization: Bearer x\n    at f (a.js:1:2)", "Authorization: <REDACTED>\n    at f (a.js:1:2)"],
+    ["authorization, cookie e x-api-key faltaram", "authorization, cookie e x-api-key faltaram"],
+    ["josé@gmail.com", "<REDACTED>"],
+    ["ana@exémplo.com.br", "<REDACTED>"],
+    ["/u/ana%40exemplo.com fim", "/u/<REDACTED> fim"],
+    ["ana_silva@exemplo.com", "<REDACTED>"],
+    ["pergunta?", "pergunta?"]
+  ])("%s", (entrada, esperado) => {
+    expect(redigirTexto(entrada)).toBe(esperado);
+  });
+
+  it("tem teto antes de redigir e não deixa e-mail pela metade", () => {
+    const texto = `${"x ".repeat(9000)}${EMAIL}${" y".repeat(9000)}`;
+    const limitado = limitarTamanho(texto, TETO_DE_TEXTO);
+    expect(limitado.length).toBeLessThanOrEqual(TETO_DE_TEXTO);
+    expect(limitarTamanho(limitado, TETO_DE_TEXTO)).toBe(limitado);
+    expect(new Set(limitado.split(" ").filter(Boolean))).toEqual(new Set(["x", "y", "[...truncated...]"]));
+  });
+
+  it.each([
+    "authorization ".repeat(3000),
+    "authorization:\n".repeat(3000),
+    "cookie".repeat(7000),
+    "http://a/b?c ".repeat(4000),
+    "a@b.co ".repeat(6000),
+    "'set-cookie': [".repeat(3000)
+  ])("texto de ~40 KB redige rápido (%#)", (entrada) => {
+    const inicio = performance.now();
+    redigirTexto(entrada);
+    expect(performance.now() - inicio).toBeLessThan(1000);
+  });
+});
+
+describe("o console do servidor sai redigido (register)", () => {
+  function consoleFalso() {
+    const escrito: unknown[][] = [];
+    const gravar = (...args: unknown[]) => { escrito.push(args); };
+    return { escrito, alvo: { error: gravar, warn: gravar, log: gravar, info: gravar, debug: gravar } };
+  }
+
+  it("o erro cru do Next (⨯ + Error) sai sem e-mail nem CPF", () => {
+    const { escrito, alvo } = consoleFalso();
+    instalarConsoleRedigido(alvo);
+    const erro = Object.assign(new Error(`pagina falhou para ${EMAIL} cpf ${CPF}`), { digest: "123" });
+    alvo.error("⨯", erro);
+    expect(escrito).toHaveLength(1);
+    const linha = String(escrito[0]?.[0]);
+    expect(linha).not.toContain(EMAIL);
+    expect(linha).not.toContain(CPF);
+    expect(linha).toContain("⨯ Error: pagina falhou para <REDACTED> cpf <REDACTED>");
+    expect(linha).toContain("digest: '123'");
+  });
+
+  it("linha JSON continua JSON válido, com cabeçalho e documento numérico redigidos", () => {
+    const { escrito, alvo } = consoleFalso();
+    instalarConsoleRedigido(alvo);
+    alvo.log(JSON.stringify({ level: "error", email: "josé@gmail.com", documento: 52998224725, headers: { "set-cookie": ["sid=abc123"], accept: "*/*" } }));
+    const registro = JSON.parse(String(escrito[0]?.[0])) as Record<string, unknown>;
+    expect(registro).toEqual({ level: "error", email: "<REDACTED>", documento: "<REDACTED>", headers: { "set-cookie": "<REDACTED>", accept: "*/*" } });
+  });
+
+  it("objeto com cabeçalhos sai sem o valor", () => {
+    const linha = linhaRedigida(["pedido", { authorization: `Bearer ${VALOR_CURTO}`, cookie: `sid=${VALOR_CURTO}` }]);
+    expect(linha).not.toContain(VALOR_CURTO);
+  });
+
+  it("não envolve duas vezes", () => {
+    const { escrito, alvo } = consoleFalso();
+    instalarConsoleRedigido(alvo);
+    const depoisDaPrimeira = alvo.error;
+    instalarConsoleRedigido(alvo);
+    expect(alvo.error).toBe(depoisDaPrimeira);
+    alvo.error("ok");
+    expect(escrito).toEqual([["ok"]]);
+  });
+
+  it("register instala o redator no console global", () => {
+    const metodos = ["error", "warn", "log", "info", "debug"] as const;
+    const originais = metodos.map((metodo) => console[metodo]);
+    const escrito: unknown[] = [];
+    console.error = (...args: unknown[]) => { escrito.push(...args); };
+    const marca = Symbol.for("appsell.console-redigido");
+    const global = console as unknown as Record<symbol, unknown>;
+    const marcado = global[marca];
+    delete global[marca];
+    try {
+      register();
+      console.error(`falhou para ${EMAIL}`);
+      expect(escrito).toEqual(["falhou para <REDACTED>"]);
+    } finally {
+      metodos.forEach((metodo, i) => { console[metodo] = originais[i] ?? console[metodo]; });
+      if (marcado) global[marca] = marcado; else delete global[marca];
+    }
   });
 });

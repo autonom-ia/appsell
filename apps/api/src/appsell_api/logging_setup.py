@@ -18,6 +18,7 @@ reproduzir o processo real dentro do contêiner:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -34,7 +35,11 @@ import structlog
 from fastapi import FastAPI
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from appsell_api.redacao_pessoal import redigir_dado_pessoal
+from appsell_api.redacao_pessoal import (
+    eh_cabecalho_sensivel,
+    limitar_tamanho,
+    redigir_dado_pessoal,
+)
 
 _InformacaoDeExcecao = tuple[type[BaseException], BaseException, TracebackType | None]
 
@@ -138,6 +143,7 @@ _ID_DE_CORRELACAO = re.compile(rf"^[A-Za-z0-9._-]{{1,{_TAMANHO_MAXIMO_DO_ID}}}$"
 _DIGITOS_DO_ID_GERADO = 16
 
 _ROTA_NAO_CASADA = "<unmatched>"
+_NIVEL_DO_METODO = {"exception": "error", "warn": "warning"}
 _PROFUNDIDADE_MAXIMA = 8
 _PROFUNDO_DEMAIS = "<too-deep>"
 _PREFIXO_DE_HEALTH = "/health/"
@@ -235,7 +241,13 @@ def configure_logging(
     # As duas passadas sao redundantes de proposito, e a redundancia foi medida:
     # desligar qualquer uma delas isoladamente nao faz nenhum teste de vazamento
     # reprovar. Cada uma cobre a outra.
-    processadores += [_redigir_segredos, renderizador, _redigir_a_linha_pronta]
+    #
+    # Em JSON a passada final decodifica a linha e redige os valores, em vez do
+    # texto cru. Redigir por cima do texto pronto ignorava o escape do JSON —
+    # `jos\u00e9@gmail.com` virava `jos\<REDACTED>` — e a linha invalida sumia do
+    # alerta do #472.
+    passada_final = _redigir_a_linha_json if estruturado else _redigir_a_linha_pronta
+    processadores += [_redigir_segredos, renderizador, passada_final]
     structlog.configure(
         processors=processadores,
         logger_factory=structlog.WriteLoggerFactory(file=saida),
@@ -243,13 +255,17 @@ def configure_logging(
         cache_logger_on_first_use=False,
     )
     _capturar_o_logging_da_biblioteca_padrao(
-        saida=saida, nivel=nivel, estruturado=estruturado, renderizador=renderizador
+        saida=saida,
+        nivel=nivel,
+        estruturado=estruturado,
+        renderizador=renderizador,
+        passada_final=passada_final,
     )
     _capturar_a_excecao_terminal()
 
 
 def _capturar_o_logging_da_biblioteca_padrao(
-    *, saida: TextIO, nivel: int, estruturado: bool, renderizador: Any
+    *, saida: TextIO, nivel: int, estruturado: bool, renderizador: Any, passada_final: Any
 ) -> None:
     """Faz o `logging` da biblioteca padrão passar pelos mesmos processadores.
 
@@ -276,7 +292,7 @@ def _capturar_o_logging_da_biblioteca_padrao(
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
             _redigir_segredos,
             renderizador,
-            _redigir_a_linha_pronta,
+            passada_final,
         ],
     )
     tratador = logging.StreamHandler(saida)
@@ -543,22 +559,59 @@ def _redigir_a_linha_pronta(_logger: Any, _method_name: str, linha: Any) -> Any:
     return _redigir_texto(linha) if isinstance(linha, str) else linha
 
 
+def _redigir_a_linha_json(_logger: Any, method_name: str, linha: Any) -> Any:
+    """Última passada em JSON: redige os valores decodificados da linha pronta.
+
+    Pega o que o renderizador transformou em texto depois da primeira passada
+    (o `repr` de um objeto qualquer) sem nunca deixar a linha inválida. Se ela
+    não decodificar, sai uma linha mínima válida: linha inválida não é contada
+    pelo alerta do #472, e o erro sumiria em silêncio.
+    """
+    if not isinstance(linha, str):
+        return linha
+    try:
+        registro = json.loads(linha)
+    except ValueError:
+        return json.dumps(
+            {
+                "level": _NIVEL_DO_METODO.get(method_name, method_name),
+                "event": "log_line_unparseable",
+                "request_id": request_id(),
+            }
+        )
+    return json.dumps(_redigir(registro))
+
+
 def _redigir_segredos(
     _logger: Any, _method_name: str, event_dict: MutableMapping[str, Any]
 ) -> Mapping[str, Any]:
-    return {chave: _redigir(valor) for chave, valor in event_dict.items()}
+    return {chave: _redigir_campo(chave, valor, 0) for chave, valor in event_dict.items()}
+
+
+def _redigir_campo(chave: Any, valor: Any, profundidade: int) -> Any:
+    # `headers={"set-cookie": [...]}` ou `authorization="Bearer x"`: o valor de
+    # um cabecalho sensivel sai inteiro, seja texto, lista ou numero.
+    if isinstance(chave, str) and valor is not None and eh_cabecalho_sensivel(chave):
+        return _REDIGIDO
+    return _redigir(valor, profundidade)
 
 
 def _redigir(valor: Any, profundidade: int = 0) -> Any:
     if isinstance(valor, str):
         return _redigir_texto(valor)
+    if isinstance(valor, int) and not isinstance(valor, bool):
+        # `documento=52998224725` chega como numero e saia inteiro.
+        texto = str(valor)
+        return _REDIGIDO if _redigir_texto(texto) != texto else valor
     if profundidade >= _PROFUNDIDADE_MAXIMA:
         # Registrar um evento nao pode derrubar quem o registrou. Uma estrutura
         # ciclica levava o redator a `RecursionError`, e a excecao escapava da
         # chamada de log para o handler.
         return _PROFUNDO_DEMAIS
     if isinstance(valor, dict):
-        return {chave: _redigir(item, profundidade + 1) for chave, item in valor.items()}
+        return {
+            chave: _redigir_campo(chave, item, profundidade + 1) for chave, item in valor.items()
+        }
     if isinstance(valor, list):
         return [_redigir(item, profundidade + 1) for item in valor]
     if isinstance(valor, tuple):
@@ -567,6 +620,9 @@ def _redigir(valor: Any, profundidade: int = 0) -> Any:
 
 
 def _redigir_texto(texto: str) -> str:
+    # O teto vem antes de tudo: o custo de redigir cresce com o texto, e o log
+    # roda dentro da requisicao.
+    texto = limitar_tamanho(texto)
     # A ordem importa: a credencial de URL e apagada antes dos padroes por
     # tamanho, para que `<REDACTED>` nao ocupe o lugar de onde a credencial
     # comecava e impeca o casamento do `(?<=://)`.
