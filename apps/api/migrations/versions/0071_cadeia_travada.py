@@ -70,9 +70,10 @@ def _carregar(revisao: str) -> ModuleType:
     return modulo
 
 
-# A lista do readiness vem da anterior na cadeia (`_READY_ATE_0072`), não de
-# uma cópia escrita aqui: assim ela não perde as versões que entraram antes.
-READY_ANTES: str = _carregar(down_revision)._READY_ATE_0072
+# A lista do readiness vem da anterior na cadeia, não de uma cópia escrita
+# aqui: assim ela não perde as versões que entraram antes. O nome é lido por
+# `getattr` (padrão da 0067 em diante), e trocar a base muda só o down_revision.
+READY_ANTES: str = getattr(_carregar(down_revision), f"_READY_ATE_{down_revision.split('_', 1)[0]}")
 _READY_ATE_0071 = READY_ANTES[:-2] + f",'{revision}'))"
 _BASES_DO_READY: tuple[str, ...] = (
     "app_private.schema_ready_base_0016()",
@@ -176,20 +177,18 @@ end $migration$
 """
 
 
-def _conciliacao() -> ModuleType:
-    """Lê a âncora de acesso que a `0063` deixou no `schema_ready`."""
-    caminho = Path(__file__).with_name("0063_conciliacao_do_acesso.py")
-    spec = importlib_util.spec_from_file_location("appsell_migration_0063", caminho)
-    if spec is None or spec.loader is None:  # pragma: no cover - caminho fixo no repo
-        raise RuntimeError("a migration 0063 nao pode ser lida")
-    modulo = importlib_util.module_from_spec(spec)
-    spec.loader.exec_module(modulo)
-    return modulo
+# A linha da 0071 entra no **fim** do bloco de funções do readiness, depois do
+# texto que a última migration com função deixou. Ancorar num texto mais antigo
+# (o da 0063) põe a linha no meio do bloco: o texto das seguintes deixa de
+# existir inteiro, e a próxima que ancorar nele aborta com 55000.
+_ULTIMA_COM_FUNCAO_NO_READY = "0068_segunda_oferta_do_produto"
+_READY_DA_LEITURA = f"            and to_regprocedure('{_LEITURA}') is not null\n"
 
 
-def _ready_funcao() -> tuple[str, str]:
-    de = _conciliacao()._ready_funcao()[1]
-    return de, de + f"            and to_regprocedure('{_LEITURA}') is not null\n"
+def _ready_funcoes() -> tuple[str, str]:
+    """Âncora: o fim do bloco da última com função. Devolve o texto antes e depois."""
+    de: str = _carregar(_ULTIMA_COM_FUNCAO_NO_READY)._ready_funcoes()[1]
+    return de, de + _READY_DA_LEITURA
 
 
 def upgrade() -> None:
@@ -203,14 +202,14 @@ def upgrade() -> None:
             .replace("DE", READY_ANTES)
             .replace("PARA", _READY_ATE_0071)
         )
-    de, para = _ready_funcao()
+    de, para = _ready_funcoes()
     op.execute(_REESCREVE.replace("ALVO", _BASE_DO_ACESSO).replace("DE", de).replace("PARA", para))
 
 
 def downgrade() -> None:
     """Só remove uma leitura: não há dado a preservar."""
     op.execute("set local role appsell_owner")
-    de, para = _ready_funcao()
+    de, para = _ready_funcoes()
     op.execute(_REESCREVE.replace("ALVO", _BASE_DO_ACESSO).replace("DE", para).replace("PARA", de))
     for alvo in _BASES_DO_READY:
         op.execute(

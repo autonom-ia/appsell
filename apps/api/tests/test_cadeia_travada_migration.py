@@ -12,6 +12,7 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+from cadeia_de_migrations import anterior_na_cadeia, versoes
 
 VERSOES = Path(__file__).parents[1] / "migrations" / "versions"
 
@@ -98,16 +99,41 @@ def test_o_downgrade_desfaz_na_ordem_inversa(migration: ModuleType) -> None:
     assert comandos[-1] == f"drop function {migration._LEITURA}"
 
 
-def test_o_readiness_aprende_a_versao(migration: ModuleType) -> None:
-    caminho = next(VERSOES.glob("*_relatorio_de_vendas.py"))
-    spec = importlib_util.spec_from_file_location("appsell_relatorio_0072_para_0071", caminho)
+def _carrega(caminho: Path) -> ModuleType:
+    spec = importlib_util.spec_from_file_location(f"appsell_anterior_{caminho.stem}", caminho)
     assert spec is not None and spec.loader is not None
-    anterior = importlib_util.module_from_spec(spec)
-    spec.loader.exec_module(anterior)
-    assert migration.down_revision == anterior.revision
-    assert migration.READY_ANTES == anterior._READY_ATE_0072
-    assert migration._READY_ATE_0071 == anterior._READY_ATE_0072[:-2] + ",'0071_cadeia_travada'))"
-    assert migration.revision in migration._READY_ATE_0071
+    modulo = importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(modulo)
+    return modulo
+
+
+def test_o_readiness_aprende_a_versao(migration: ModuleType) -> None:
+    # A anterior vem da cadeia (`down_revision`), não de um nome fixo aqui.
+    assert migration.down_revision == anterior_na_cadeia(migration.revision)
+    anterior = _carrega(VERSOES / f"{migration.down_revision}.py")
+    nome = f"_READY_ATE_{migration.down_revision.split('_', 1)[0]}"
+    assert migration.READY_ANTES == getattr(anterior, nome)
+    assert migration._READY_ATE_0071 == migration.READY_ANTES[:-2] + ",'0071_cadeia_travada'))"
     assert migration._BASES_DO_READY == anterior._BASES_DO_READY
     # `alembic_version.version_num` é varchar(32).
     assert len(migration.revision) <= 32
+
+
+def test_a_linha_entra_no_fim_do_bloco_de_funcoes(migration: ModuleType) -> None:
+    # Âncora na última migration antes da 0071 que estende o bloco de funções do
+    # readiness. Uma âncora mais antiga poria a linha no meio do bloco.
+    nomes = [caminho.stem for caminho in versoes()]
+    antes = nomes[: nomes.index(migration.revision)]
+    com_funcao = [
+        nome
+        for nome in antes
+        if any(
+            hasattr(_carrega(VERSOES / f"{nome}.py"), f)
+            for f in ("_ready_funcoes", "_ready_funcao")
+        )
+    ]
+    assert migration._ULTIMA_COM_FUNCAO_NO_READY == com_funcao[-1]
+    ultima = _carrega(VERSOES / f"{com_funcao[-1]}.py")
+    de, para = migration._ready_funcoes()
+    assert de == ultima._ready_funcoes()[1]
+    assert para == de + f"            and to_regprocedure('{migration._LEITURA}') is not null\n"

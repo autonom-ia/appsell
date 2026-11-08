@@ -463,7 +463,8 @@ def _entregar(titulo: str, linhas: tuple[str, ...], config: dict[str, str], seco
         return 0
     try:
         enviar(email, config)
-    except (OSError, smtplib.SMTPException) as erro:
+    except (OSError, smtplib.SMTPException, ValueError) as erro:
+        # ValueError: porta SMTP que não é número. Mesmo tratamento das outras.
         print(f"cadeia-travada: envio falhou: {type(erro).__name__}", file=sys.stderr)
         return 1
     return 0

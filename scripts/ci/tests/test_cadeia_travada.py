@@ -286,6 +286,12 @@ class MainTests(unittest.TestCase):
             gravado = cadeia.ler_estado(estado)
         return codigo, enviados, gravado
 
+    def test_porta_smtp_invalida_e_falha_de_envio_sem_traceback(self) -> None:
+        config = {"SMTP_USER_TRANSACIONAL": "a@b.c", "ALERTA_PARA": "d@e.f"}
+        with mock.patch.object(cadeia, "enviar", side_effect=ValueError("porta")), mock.patch("sys.stderr"):
+            codigo = cadeia._entregar("t", ("l",), config, False)
+        self.assertEqual(1, codigo)
+
     def test_tudo_limpo_nao_envia_e_grava_o_fim(self) -> None:
         respostas = iter(["", CADEIA_LIMPA])
         codigo, enviados, gravado = self.rodar(lambda _sql, _config: next(respostas))

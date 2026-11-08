@@ -79,14 +79,27 @@ Pré-requisitos:
    CADEIA_PG_BANCO=<banco do Sell>
    CADEIA_SENHA_ARQUIVO=<arquivo 0600 com a senha do appsell_reconciler>
    ```
-3. **Ensaio seco.** `python3 scripts/ops/cadeia_travada.py --seco` imprime o
-   e-mail que sairia e não grava estado.
-4. **Cron**, ao lado do alerta de logs:
+3. **Cópia do script**, ao lado do alerta de logs e do mesmo SHA registrado.
+   O checador importa o `alerta_de_logs.py` da mesma pasta:
+   ```sh
+   git -C <home-do-operador>/appsell-src-"$SHA" show "$SHA":scripts/ops/cadeia_travada.py > /opt/sell-alerta/cadeia_travada.py
+   chmod 0755 /opt/sell-alerta/cadeia_travada.py
    ```
-   */5 * * * *  python3 <checkout>/scripts/ops/cadeia_travada.py
-   0 12 * * 1   python3 <checkout>/scripts/ops/cadeia_travada.py --resumo-semanal
+4. **Ensaio seco.** `python3 /opt/sell-alerta/cadeia_travada.py --seco` imprime
+   o e-mail que sairia e não grava estado.
+5. **Cron.** Em `/etc/cron.d` a linha precisa do campo de usuário. Sem ele, o
+   cron ignora a linha e não avisa nada. A saída vai para o log, com `2>&1`:
+   ```sh
+   printf '%s\n' \
+     '*/5 * * * * root /usr/bin/python3 /opt/sell-alerta/cadeia_travada.py >>/var/log/sell-alerta.log 2>&1' \
+     '0 12 * * 1 root /usr/bin/python3 /opt/sell-alerta/cadeia_travada.py --resumo-semanal >>/var/log/sell-alerta.log 2>&1' \
+     > /etc/cron.d/sell-cadeia-travada
+   chmod 0644 /etc/cron.d/sell-cadeia-travada
    ```
-5. **Primeira semana.** Registrar cada alerta e se ele era real, para medir o
+6. **Conferir que rodou.** 10 minutos depois, `/var/lib/sell-alerta/cadeia.json`
+   existe e o campo `fim` é de menos de 5 minutos atrás. Se não existir, o cron
+   não rodou: ler `/var/log/sell-alerta.log` antes de seguir.
+7. **Primeira semana.** Registrar cada alerta e se ele era real, para medir o
    falso alarme.
 
 ## Quando o alerta chegar
@@ -101,7 +114,11 @@ Pré-requisitos:
 
 ## Volta
 
-- Tirar as duas linhas do cron.
-- `alter role appsell_reconciler nologin;`, se a conciliação manual não
-  precisar mais do login.
-- A 0071 pode ficar, porque só lê. O `downgrade` dela remove a função.
+1. Tirar o cron: `rm -- /etc/cron.d/sell-cadeia-travada`.
+2. `alter role appsell_reconciler nologin;`, se a conciliação manual não
+   precisar mais do login.
+3. A 0071 pode ficar, porque só lê. Se for preciso tirar a função, o alvo do
+   downgrade é a migration logo antes da 0071 na cadeia, lida no
+   `down_revision` dela. Hoje: `alembic downgrade 0072_relatorio_de_vendas`.
+   Nunca descer abaixo da versão que está em produção antes da 0071: conferir
+   `select version_num from alembic_version` antes e depois.
