@@ -40,11 +40,17 @@ export type BuyerIdentity =
   | { status: "mismatch" }
   | { status: "unavailable" };
 
-export async function resolveBuyerIdentity(
-  request: NextRequest,
-  purchaseBuyerEmail: string
-): Promise<BuyerIdentity> {
-  const sessionId = request.cookies.get(sessionCookieName())?.value;
+// The signed-in buyer as the session store sees it, before any purchase e-mail
+// is compared. The checkout page reads this to show who will be charged; the
+// create-session route reads it through resolveBuyerIdentity. One rule, two
+// callers (#154).
+export type BuyerSession =
+  | { status: "authenticated"; subject: string; email: string }
+  | { status: "anonymous" }
+  | { status: "unverified" }
+  | { status: "unavailable" };
+
+export async function readBuyerSession(sessionId: string | undefined): Promise<BuyerSession> {
   if (!sessionId) return { status: "anonymous" };
   let session: Awaited<ReturnType<ReturnType<typeof oauthService>["getSession"]>>;
   try {
@@ -60,18 +66,25 @@ export async function resolveBuyerIdentity(
   // registration-checkout subject, which belongs to the worker's namespace.
   if (typeof subject !== "string" || subject.length === 0) return { status: "anonymous" };
   if (subject.startsWith(REGISTRATION_SUBJECT_PREFIX)) return { status: "anonymous" };
-  if (
-    !identity
-    || identity.emailVerified !== true
-    || typeof identity.email !== "string"
-    || identity.email.trim().toLowerCase() !== purchaseBuyerEmail.trim().toLowerCase()
-  ) {
+  if (!identity || identity.emailVerified !== true || typeof identity.email !== "string") {
+    return { status: "unverified" };
+  }
+  return { status: "authenticated", subject, email: identity.email.trim().toLowerCase() };
+}
+
+export async function resolveBuyerIdentity(
+  request: NextRequest,
+  purchaseBuyerEmail: string
+): Promise<BuyerIdentity> {
+  const session = await readBuyerSession(request.cookies.get(sessionCookieName())?.value);
+  if (session.status === "anonymous" || session.status === "unavailable") return session;
+  if (session.status === "unverified" || session.email !== purchaseBuyerEmail.trim().toLowerCase()) {
     // Signed in, but not as the person being charged. Binding anyway would let
     // anyone holding a paid order id attach it to their own session (0020
     // prioritises an explicit sub over the derived one).
     return { status: "mismatch" };
   }
-  return { status: "authenticated", subject };
+  return { status: "authenticated", subject: session.subject };
 }
 
 // Post-charge convenience: by then the money is gone and the only question is
