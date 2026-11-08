@@ -83,6 +83,22 @@ describe("readCheckoutPageOffer", () => {
     expect(await readCheckoutPageOffer(SELLER, PRODUCT)).toEqual({ kind: "not_for_sale" });
   });
 
+  it("moeda estrangeira e preço zero são fora de venda: o portão é o mesmo do create-session", async () => {
+    readPublicStorefront.mockResolvedValueOnce(storefront({ ...ONE_TIME, currency: "USD" }));
+    expect(await readCheckoutPageOffer(SELLER, PRODUCT)).toEqual({ kind: "not_for_sale" });
+    readPublicStorefront.mockResolvedValueOnce(storefront({ ...ONE_TIME, unit_amount_minor: 0 }));
+    expect(await readCheckoutPageOffer(SELLER, PRODUCT)).toEqual({ kind: "not_for_sale" });
+  });
+
+  it("preço negativo ou fracionado nem passa da leitura da vitrine: é resposta fora do formato", async () => {
+    // parsePublicStorefront recusa a vitrine inteira (inteiro, >= 0). A página
+    // não mostra preço nenhum e trata como resposta quebrada da api.
+    readPublicStorefront.mockResolvedValueOnce(storefront({ ...ONE_TIME, unit_amount_minor: -100 }));
+    expect(await readCheckoutPageOffer(SELLER, PRODUCT)).toEqual({ kind: "unavailable" });
+    readPublicStorefront.mockResolvedValueOnce(storefront({ ...ONE_TIME, unit_amount_minor: 47.5 }));
+    expect(await readCheckoutPageOffer(SELLER, PRODUCT)).toEqual({ kind: "unavailable" });
+  });
+
   it("produto sem checkout configurado é fora de venda, sem ler a loja", async () => {
     isProductCheckoutAvailable.mockReturnValue(false);
     expect(await readCheckoutPageOffer(SELLER, PRODUCT)).toEqual({ kind: "not_for_sale" });
