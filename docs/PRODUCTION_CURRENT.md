@@ -2,12 +2,12 @@
 
 > Fonte operacional para retomar o projeto sem depender do histórico da conversa.
 >
-> Última verificação documentada: **2026-10-25**. Esta página separa o que foi
+> Última verificação documentada: **2026-11-08**. Esta página separa o que foi
 > comprovado na produção do que continua sendo plano ou laboratório Local/CI.
 
 ## Release em produção
 
-> Última verificação: **2026-10-25 11:17 UTC**, lendo o host, não a memória
+> Última verificação: **2026-11-08 08:25 UTC**, lendo o host, não a memória
 > desta página. Esta página já divergiu da realidade quatro vezes; o que vale é
 > o que `docker service ls` responde.
 
@@ -15,11 +15,53 @@
 |---|---|
 | Domínio | `https://sell.autonomia.site` |
 | Ambiente | VPS EasyPanel nativo, Docker Swarm |
-| SHA do **web** | `2d2e64f`, ID `sha256:01d83832b960…`, lido do host em 24/10/2026 (#437) |
-| SHA do **api** | `25771bf`, ID `sha256:d12d9fcebd08…`, lido do host em 25/10/2026 (#510) |
-| SHA do **asset-worker** | `2759090`, ID `sha256:0e126a1a5b03…` (não mudou no release de 25/10) |
-| SHA do **pdf-sandbox** | `d5e00ec`, ID `sha256:bc88217ab7b5…`, endurecido em 25/10 (#468): root read-only, `cap-drop ALL`, 64 processos, `/tmp` em tmpfs e rede interna sem saída |
-| Banco | **`0065_dono_da_conta_payout`**, lido do banco em 25/10/2026 depois do upgrade (0061 → 0062 → 0063 → 0064 → 0065) |
+| SHA do **web** | `38e9f92`, lido do host em 08/11/2026 (release de 08/11) |
+| SHA do **api** | `38e9f92`, lido do host em 08/11/2026 (release de 08/11) |
+| SHA do **asset-worker** | `38e9f92`, lido do host em 08/11/2026 (release de 08/11) |
+| SHA do **pdf-sandbox** | `d5e00ec`, sem mudança desde o endurecimento de 25/10 (#468): root read-only, `cap-drop ALL`, 64 processos, `/tmp` em tmpfs e rede interna sem saída |
+| Banco | **`0072_relatorio_de_vendas`**, lido do banco em 08/11/2026 depois do upgrade (0065 → 0066 → 0067 → 0073 → 0075 → 0068 → 0076 → 0072) |
+
+**Release de 2026-11-08: a `main` em `38e9f92` (#616) no web, na api e no
+worker, com as migrations `0066`, `0067`, `0073`, `0075`, `0068`, `0076` e
+`0072`.** Entram #599, #603, #594,
+#610 e #613, e junto o que estava na `main` desde o release anterior: #607, #597,
+#587, #575, #553 (fase 1), #545, #544, #559 (parte A, só o lado do sandbox),
+#595 e outros. O pdf-sandbox não mudou de imagem: a api ainda não chama o
+carimbo do #559.
+- CI no SHA: run 42460187866, success.
+- Antes: as imagens de volta do web, da api e do worker guardadas em
+  `docker save` com sha256, e `pg_dump -Fc` conferido por `pg_restore`. Os dois
+  ficam no host.
+- Migration pouco antes das 08:14 UTC, numa transação só, da máquina de quem opera, por um
+  túnel de uso único (D3: a credencial do migrador não vai ao host). Depois:
+  `alembic current` = `0072` e `schema_ready` verdadeiro. A api antiga seguiu
+  com `/health/ready` todo verdadeiro sobre o banco novo.
+- Trocas só com `--image`, na ordem de cada spec: api `start-first` (08:14:37 →
+  08:15:05), worker `stop-first` (08:16:05 → 08:16:35) e web `start-first`
+  (08:17:11 → 08:18:52). Os três healthy, com os mesmos nomes de env (38, 32 e
+  52) e 0 linhas de erro no log. O `/health/ready` da api deu `ok` três vezes,
+  com banco, storage, sandbox, antivírus e canal Financial verdadeiros.
+- Loja: 750 amostras da vitrine e do ready do web durante as três trocas, todas
+  200. O smoke da Hub2You saiu idêntico ao de antes.
+- Tester pós-deploy: 19 de 19, com assert duro e timeout contando como falha.
+  - Cobriu o smoke da Hub2You, as páginas públicas, o health e o bundle novo
+    (`/e/descadastro`).
+  - As rotas novas sem sessão voltam para `/`. O descadastro responde igual
+    para token inválido e vazio. O checkout sem sessão dá 403.
+  - Logs sem erro, banco em `0072` e as mesmas contagens de lojas, produtos,
+    ofertas e entitlements de antes.
+  - Não rodou: catálogo e autorização com sessão de superadmin, dono e
+    comprador. Fica para o próximo smoke autenticado.
+- Pilotos desligados: relatório de vendas, links UTM, segunda oferta e loja na
+  lista Connect dependem de env de piloto, que não existe. Nenhuma loja vê o
+  comportamento novo até a env ser ligada, com OK próprio.
+- A volta: as imagens anteriores pelas tags de volta (ou pelo `.tar`), api e
+  worker antes do web, sem mexer no banco. O código anterior funciona sobre o
+  schema novo: ele fala com o banco só pelas funções, que a 0067 fez ler a
+  oferta padrão. E a 0068 só desce enquanto nenhum produto tiver mais de uma
+  oferta.
+  Depois do primeiro `offer.create` do #603, a volta é tirar a loja da lista, não
+  descer migration.
 
 **Release de 2026-10-25: migrations `0062`–`0065` e a api `25771bf` (#509, #510;
 runbook `release-0064-api.md`, D3 no #525).** O worker, o web e o pdf-sandbox não

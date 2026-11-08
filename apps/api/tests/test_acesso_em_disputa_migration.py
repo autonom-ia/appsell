@@ -167,10 +167,10 @@ def test_a_descida_recusa_com_disputa_registrada(migration: ModuleType) -> None:
 
 
 def test_o_readiness_aprende_a_versao(migration: ModuleType) -> None:
-    anterior = _carregar("consentimento_de_email", "appsell_consentimento_0066_para_0074")
+    anterior = _carregar("relatorio_de_vendas", "appsell_relatorio_0072_para_0074")
     assert migration.down_revision == anterior.revision
-    assert migration._READY_ATE_0066 == anterior._READY_ATE_0066
-    assert migration._READY_ATE_0074.startswith(migration._READY_ATE_0066[:-2])
+    assert migration.READY_ANTES == anterior._READY_ATE_0072
+    assert migration._READY_ATE_0074 == migration.READY_ANTES[:-2] + ",'0074_acesso_em_disputa'))"
     assert migration.revision in migration._READY_ATE_0074
     assert migration._BASES_DO_READY == anterior._BASES_DO_READY
     assert EXPECTED_MIGRATION == migration.revision

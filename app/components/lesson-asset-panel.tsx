@@ -53,6 +53,15 @@ export interface LessonAssetsChangedDetail {
  *
  * Dizia "PDF" em todo card, inclusive num markdown de 10 KiB.
  */
+/**
+ * Identifica um painel de anexos: a aula e o papel. Cada aula tem dois
+ * painéis, e o id da aula sozinho não distingue um do outro — nem para o
+ * `id` dos inputs, nem para o aviso de atividade ao currículo (#612).
+ */
+export function assetPanelKey(lessonId: string, contentRole: AssetView["content_role"]): string {
+  return `${lessonId}-${contentRole}`;
+}
+
 export function downloadToggleLabel(mediaType: unknown): string {
   return `Permitir que o aluno baixe ${mediaDemonstrative(mediaType)} ${mediaLabel(mediaType)}`;
 }
@@ -196,7 +205,7 @@ export function LessonAssetPanel({
    * responde. Aqui ele deixa de ser pergunta e passa a ser o endereço.
    */
   contentRole: AssetView["content_role"];
-  onActivityChange: (lessonId: string, value: { dirty: boolean; busy: boolean }) => void;
+  onActivityChange: (panelKey: string, value: { dirty: boolean; busy: boolean }) => void;
   onCommitted: () => void;
   /** Links e vídeos, que moram na mesma lista de anexos mas em outra tabela. */
   children?: ReactNode;
@@ -247,7 +256,7 @@ export function LessonAssetPanel({
   // documento — "Adicionar anexo" abriria o seletor do painel de conteúdo e o
   // arquivo entraria com o papel errado. O mesmo valia para os dois diálogos, e
   // é o que distingue uma instância da outra ao avisar o irmão.
-  const panelId = `${lessonId}-${contentRole}`;
+  const panelId = assetPanelKey(lessonId, contentRole);
   const base = `/api/sellers/${sellerId}/products/${productId}/courses/${courseId}/modules/${moduleId}/lessons/${lessonId}/assets`;
   const uploadBusy = ["hashing", "creating", "uploading", "confirming", "verifying", "delayed"].includes(state.phase);
   const busy = policySavingId !== null || uploadBusy;
@@ -258,8 +267,10 @@ export function LessonAssetPanel({
     return await boundedAssetFetch(input, init, timeoutMs, fetchControllersRef.current, abortOnStop);
   }, []);
 
-  useEffect(() => onActivityChange(lessonId, { dirty, busy: transportBusy }), [dirty, lessonId, onActivityChange, transportBusy]);
-  useEffect(() => () => onActivityChange(lessonId, { dirty: false, busy: false }), [lessonId, onActivityChange]);
+  // A chave é o painel: os dois painéis da aula avisam o mesmo currículo, e
+  // com a chave da aula um apagava o aviso do outro (#612).
+  useEffect(() => onActivityChange(panelId, { dirty, busy: transportBusy }), [dirty, onActivityChange, panelId, transportBusy]);
+  useEffect(() => () => onActivityChange(panelId, { dirty: false, busy: false }), [onActivityChange, panelId]);
 
   const stopTransientWork = useCallback(() => {
     generationRef.current += 1;
@@ -475,10 +486,18 @@ export function LessonAssetPanel({
 
   useEffect(() => {
     if (!justReadyId) return;
+    let limpar: number | null = null;
+    const soltarDestaque = (depoisDeMs: number) => {
+      limpar = window.setTimeout(() => setJustReadyId(null), depoisDeMs);
+    };
     // Um quadro depois: o card acabou de entrar na lista e o painel ainda vai
     // crescer. Medir antes do layout assentar dá uma posição que deixa de valer
     // no quadro seguinte — e o card fica fora da vista mesmo tendo "rolado".
     const quadro = justReadyVisible ? window.requestAnimationFrame(() => {
+      // O destaque conta a partir do quadro em que o card apareceu. Se o
+      // relógio começasse antes, um aparelho lento soltaria o destaque, e com
+      // ele o quadro do foco, antes de o card receber o foco (#605).
+      soltarDestaque(2_500);
       const card = justReadyRef.current;
       if (!card) return;
       // Se o vendedor está trabalhando **fora deste painel**, a verificação
@@ -517,10 +536,10 @@ export function LessonAssetPanel({
     // é solto. Ele existe para o estado não ficar preso a um material que já
     // não vai chegar — e por não produzir efeito visível, não tem teste de
     // comportamento. Dizer que tem seria pior do que não ter.
-    const limpar = window.setTimeout(() => setJustReadyId(null), justReadyVisible ? 2_500 : 15_000);
+    if (!justReadyVisible) soltarDestaque(15_000);
     return () => {
       if (quadro !== null) window.cancelAnimationFrame(quadro);
-      window.clearTimeout(limpar);
+      if (limpar !== null) window.clearTimeout(limpar);
     };
   }, [justReadyId, justReadyVisible]);
 

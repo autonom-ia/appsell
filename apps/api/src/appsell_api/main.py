@@ -10,6 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from .asset_routes import router as asset_router
 from .asset_worker_runner import run_asset_worker_loop
+from .attribution_retention_worker import run_attribution_retention_loop
+from .campaign_link_routes import public_router as tracking_public_router
+from .campaign_link_routes import router as campaign_link_router
 from .catalog_routes import router as catalog_router
 from .checkout_routes import router as checkout_router
 from .config import Settings, get_settings
@@ -33,6 +36,7 @@ from .platform_bootstrap_routes import router as platform_bootstrap_router
 from .platform_routes import router as platform_router
 from .public_routes import router as public_router
 from .routes import router
+from .sales_report_routes import router as sales_report_router
 from .seller_settings_routes import router as seller_settings_router
 from .storage_s3 import S3Storage
 from .storage_worker import (
@@ -183,6 +187,10 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         fulfillment_worker_task = asyncio.create_task(
             run_fulfillment_worker_loop(app, fulfillment_worker_stop)
         )
+    # Retenção da atribuição de checkout (#563): uma réplica por vez, pela trava
+    # no banco.
+    retention_stop = asyncio.Event()
+    retention_task = asyncio.create_task(run_attribution_retention_loop(app, retention_stop))
     # O worker de e-mail decide sozinho se inicia: sem SMTP configurado ele
     # registra e sai, e as linhas da caixa de saída ficam pendentes.
     email_worker_stop = asyncio.Event()
@@ -226,6 +234,11 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
                 await asyncio.wait_for(checkout_worker_task, timeout=5)
             except TimeoutError:
                 checkout_worker_task.cancel()
+        retention_stop.set()
+        try:
+            await asyncio.wait_for(retention_task, timeout=5)
+        except TimeoutError:
+            retention_task.cancel()
         fulfillment_worker_stop.set()
         if fulfillment_worker_task is not None:
             try:
@@ -256,8 +269,11 @@ app.include_router(seller_settings_router)
 app.include_router(platform_bootstrap_router)
 app.include_router(platform_router)
 app.include_router(public_router)
+app.include_router(sales_report_router)
 app.include_router(email_preferences_router)
 app.include_router(webhook_router)
+app.include_router(campaign_link_router)
+app.include_router(tracking_public_router)
 
 
 @app.get("/health/live")

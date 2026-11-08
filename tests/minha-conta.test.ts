@@ -1,6 +1,7 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, test, vi } from "vitest";
+import { migrationHead } from "./support/migration-head";
 
 vi.mock("server-only", () => ({}));
 
@@ -291,13 +292,10 @@ describe("a conta no produto", () => {
     const revision = migration.match(/^revision = "([^"]+)"/m)?.[1];
     expect(revision).toBe("0051_minha_conta_do_comprador");
     expect(migration).toContain(`'${revision}'))`);
-    // A cabeça fixada é a última migration do diretório, seja ela qual for:
-    // a 0051 deixou de ser a cabeça na 0052 e este teste não pode envelhecer.
-    const head = readdirSync(resolve(root, "apps/api/migrations/versions"))
-      .filter((name) => /^\d{4}_.*\.py$/.test(name))
-      .sort()
-      .at(-1)!
-      .replace(/\.py$/, "");
+    // A cabeça fixada é a cabeça da cadeia, seja ela qual for: a 0051 deixou
+    // de ser a cabeça na 0052 e este teste não pode envelhecer. É achada pelo
+    // `down_revision`, porque o número do arquivo não é a ordem.
+    const head = migrationHead(root);
     const reset = readFileSync(resolve(root, "apps/api/src/appsell_api/reset_demo_tenant.py"), "utf8");
     expect(reset).toContain(`EXPECTED_MIGRATION = "${head}"`);
     const script = readFileSync(resolve(root, "scripts/test-postgres-foundation.sh"), "utf8");

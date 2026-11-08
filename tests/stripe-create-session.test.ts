@@ -34,7 +34,9 @@ const {
     // The legacy platform-direct suite: no payout destination bound. The
     // direct-charge branch has its own suite.
     resolveCheckoutPayoutDestination: vi.fn<
-      (sellerId: string) => Promise<{ payout_destination: { provider_account_id: string; charges_enabled: boolean } | null }>
+      (sellerId: string) => Promise<{
+        payout_destination: { provider_account_id: string; charges_enabled: boolean; payouts_enabled?: boolean } | null;
+      }>
     >(async () => ({ payout_destination: null })),
     createFinancialExternalCheckoutIntent: vi.fn(async () => ({
       checkoutIntentId: "0c0c0c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c",
@@ -72,7 +74,12 @@ vi.mock("@/lib/buyer-identity.server", () => ({
 }));
 
 vi.mock("@/lib/financial-external-checkout.server", () => ({
-  checkoutProvider: () => process.env.APPSELL_CHECKOUT_PROVIDER === "financial_checkout" ? "financial_checkout" : "local_stripe",
+  // Same contract as the real one (#544): only an explicit, known value.
+  checkoutProvider: () => {
+    const value = process.env.APPSELL_CHECKOUT_PROVIDER;
+    if (value === "financial_checkout" || value === "local_stripe") return value;
+    throw new FakeFinancialConfigError("invalid_config: APPSELL_CHECKOUT_PROVIDER");
+  },
   checkoutWebhookEndpointKey: () => process.env.APPSELL_CHECKOUT_WEBHOOK_ENDPOINT_KEY ?? "",
   createFinancialExternalCheckoutIntent,
   createFinancialExternalCheckoutSession,
@@ -136,6 +143,7 @@ const originalEnvironment = { ...process.env };
 describe("POST /api/checkout/stripe/create-session", () => {
   beforeEach(() => {
     process.env.APPSELL_PUBLIC_ORIGIN = ORIGIN;
+    process.env.APPSELL_CHECKOUT_PROVIDER = "local_stripe";
     process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON = JSON.stringify({
       [`${SELLER}/${PRODUCT}`]: { financial_product_key: "prod_codex_v1" }
     });
@@ -149,6 +157,21 @@ describe("POST /api/checkout/stripe/create-session", () => {
 
   afterEach(() => {
     process.env = { ...originalEnvironment };
+  });
+
+  it("#544: a missing or unknown checkout provider charges nothing, on either path (503)", async () => {
+    for (const value of [undefined, "", "unexpected", "Financial_Checkout"]) {
+      if (value === undefined) delete process.env.APPSELL_CHECKOUT_PROVIDER;
+      else process.env.APPSELL_CHECKOUT_PROVIDER = value;
+      const response = await POST(request(validBody));
+      expect(response.status, String(value)).toBe(503);
+      expect(await response.json()).toEqual({ error: "checkout_not_configured" });
+    }
+    expect(readPublicStorefront).not.toHaveBeenCalled();
+    expect(sessionsCreate).not.toHaveBeenCalled();
+    expect(createFinancialExternalCheckoutIntent).not.toHaveBeenCalled();
+    expect(resolveBuyerIdentityMock).not.toHaveBeenCalled();
+    expect(resolveCheckoutPayoutDestination).not.toHaveBeenCalled();
   });
 
   it("rejects a cross-origin request (403) before touching Stripe or the domain", async () => {
@@ -377,7 +400,7 @@ describe("POST /api/checkout/stripe/create-session — Financial with the store'
   const ENDPOINT_KEY = "endpointkeyendpointkeyendpointkey123456";
 
   function readyDestination(accountId = "acct_store_a") {
-    return { payout_destination: { provider_account_id: accountId, charges_enabled: true } };
+    return { payout_destination: { provider_account_id: accountId, charges_enabled: true, payouts_enabled: true } };
   }
 
   function intentInput(call = 0) {
@@ -498,6 +521,55 @@ describe("POST /api/checkout/stripe/create-session — Financial with the store'
     expect(createFinancialExternalCheckoutIntent).not.toHaveBeenCalled();
   });
 
+  it("#545: refuses (409) and raises the alert when the store's account does not pay out yet", async () => {
+    // Catches: "can charge" treated as "verified", and a store that loses
+    // verification after activation selling silently. A destination from an
+    // older api image (no payouts_enabled) is not verified either, nor is a
+    // null or a "true" string: only the boolean true counts.
+    process.env.APPSELL_FINANCIAL_CONNECT_SELLER_IDS = SELLER_ID;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    for (const destination of [
+      { provider_account_id: "acct_store_a", charges_enabled: true, payouts_enabled: false },
+      { provider_account_id: "acct_store_a", charges_enabled: true },
+      { provider_account_id: "acct_store_a", charges_enabled: true, payouts_enabled: null as unknown as boolean },
+      { provider_account_id: "acct_store_a", charges_enabled: true, payouts_enabled: "true" as unknown as boolean }
+    ]) {
+      warn.mockClear();
+      resolveCheckoutPayoutDestination.mockResolvedValue({ payout_destination: destination });
+
+      const response = await POST(request(validBody));
+
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({ error: "seller_not_ready_to_charge" });
+      expect(warn).toHaveBeenCalledOnce();
+      const line = JSON.parse(String(warn.mock.calls[0]?.[0])) as Record<string, unknown>;
+      expect(line).toEqual({
+        marker: "appsell.connect.seller_not_ready",
+        seller_id: SELLER_ID,
+        charges_enabled: true,
+        payouts_enabled: false
+      });
+      expect(JSON.stringify(line)).not.toContain("acct_store_a");
+    }
+    expect(createFinancialExternalCheckoutIntent).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("#545: the legacy local direct charge still needs only charges_enabled", async () => {
+    // Catches: the new rule leaking outside the Connect list.
+    process.env.APPSELL_CHECKOUT_PROVIDER = "local_stripe";
+    process.env.APPSELL_CHECKOUT_PRODUCT_MAP_JSON = JSON.stringify({
+      [`${SELLER}/${PRODUCT}`]: { financial_product_key: "prod_codex_v1" }
+    });
+    resolveCheckoutPayoutDestination.mockResolvedValue({
+      payout_destination: { provider_account_id: "acct_store_a", charges_enabled: true, payouts_enabled: false }
+    });
+
+    const response = await POST(request(validBody));
+
+    expect(response.status).toBe(200);
+  });
+
   it("fails closed (503) when the payout destination cannot be read", async () => {
     process.env.APPSELL_FINANCIAL_CONNECT_SELLER_IDS = SELLER_ID;
     resolveCheckoutPayoutDestination.mockRejectedValue(new Error("domain down"));
@@ -520,6 +592,25 @@ describe("POST /api/checkout/stripe/create-session — Financial with the store'
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({ error: "product_price_below_platform_fee" });
     expect(createFinancialExternalCheckoutIntent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["the list unset", undefined],
+    ["another store on the list", OTHER_SELLER_ID]
+  ])("#546: outside the Connect list (%s), a 51-cent price still sells with no commission", async (_case, list) => {
+    // Pega: a trava do preço mínimo alcançando a loja sem comissão (o caminho
+    // da Hub2You em produção). Sem destino não há comissão, e a loja recebe tudo.
+    if (list === undefined) delete process.env.APPSELL_FINANCIAL_CONNECT_SELLER_IDS;
+    else process.env.APPSELL_FINANCIAL_CONNECT_SELLER_IDS = list;
+    readPublicStorefront.mockResolvedValue(storefrontWithPrice(51));
+
+    const response = await POST(request(validBody));
+
+    expect(response.status).toBe(200);
+    expect(resolveCheckoutPayoutDestination).not.toHaveBeenCalled();
+    expect(createFinancialExternalCheckoutIntent).toHaveBeenCalledOnce();
+    expect(intentInput().pricing).toEqual({ amountMinor: 51, currency: "BRL", billingPeriod: "one_time" });
+    expect(intentInput().connect).toEqual({ accountId: null, applicationFeeAmountMinor: null });
   });
 
   it("on the list, the same click repeated gets the same idempotency key, and another buyer a different one", async () => {

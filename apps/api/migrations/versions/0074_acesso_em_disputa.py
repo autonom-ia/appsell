@@ -96,7 +96,7 @@ from types import ModuleType
 from alembic import op
 
 revision = "0074_acesso_em_disputa"
-down_revision = "0066_consentimento_de_email"
+down_revision = "0072_relatorio_de_vendas"
 branch_labels = None
 depends_on = None
 
@@ -121,27 +121,30 @@ _TIPOS_DE_ANTES = "'purchase.approved','purchase.refunded','subscription.cancell
 _TIPOS_DE_DISPUTA = "'purchase.dispute_opened','purchase.dispute_won','purchase.dispute_lost'"
 _TIPOS_DE_AGORA = _TIPOS_DE_ANTES + "," + _TIPOS_DE_DISPUTA
 
-_READY_ATE_0066 = (
-    "'0057_banner_na_vitrine','0058_capa_na_biblioteca','0059_canal_financial_global',"
-    "'0060_atualizacao_chega_ao_aluno','0061_o_atraso_alcanca_o_aluno',"
-    "'0062_mapping_do_produto_novo','0063_conciliacao_do_acesso',"
-    "'0064_vendas_ativadas_pela_loja','0065_dono_da_conta_payout',"
-    "'0066_consentimento_de_email'))"
-)
-_READY_ATE_0074 = (
-    "'0057_banner_na_vitrine','0058_capa_na_biblioteca','0059_canal_financial_global',"
-    "'0060_atualizacao_chega_ao_aluno','0061_o_atraso_alcanca_o_aluno',"
-    "'0062_mapping_do_produto_novo','0063_conciliacao_do_acesso',"
-    "'0064_vendas_ativadas_pela_loja','0065_dono_da_conta_payout',"
-    "'0066_consentimento_de_email','0074_acesso_em_disputa'))"
-)
+
+def _carregar(revisao: str) -> ModuleType:
+    caminho = Path(__file__).with_name(f"{revisao}.py")
+    spec = importlib_util.spec_from_file_location(f"appsell_anterior_{revisao}_para_0074", caminho)
+    if spec is None or spec.loader is None:  # pragma: no cover - caminho fixo no repo
+        raise RuntimeError(f"a migration {revisao} nao pode ser lida")
+    modulo = importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(modulo)
+    return modulo
+
+
+# A lista do readiness vem da anterior na cadeia (`_READY_ATE_0072`), não de
+# uma cópia escrita aqui: assim ela não perde as versões que entraram antes.
+READY_ANTES: str = _carregar(down_revision)._READY_ATE_0072
+# Nome que as migrations seguintes leem por `getattr` (padrão da 0067 em diante).
+_READY_ATE_0074 = READY_ANTES[:-2] + f",'{revision}'))"
 _BASES_DO_READY: tuple[str, ...] = (
     "app_private.schema_ready_base_0016()",
     "app_private.schema_ready_base_0017()",
 )
 _BASE_DO_ACESSO = "app_private.schema_ready_base_0016()"
-# A 0065 e a 0066 não mexeram no trecho de funções do readiness: o último a
-# mexer foi a 0064.
+# Âncora do trecho de funções do readiness: o texto que a 0064 deixou. A 0068
+# também acrescenta logo depois dessa âncora; ela continua aparecendo uma vez
+# só, e a troca põe as linhas da disputa entre a âncora e as da 0068.
 _ULTIMA_DO_READY = "0064_vendas_ativadas_pela_loja"
 
 _READY_DA_DISPUTA = (
@@ -854,7 +857,7 @@ def upgrade() -> None:
     for de, para in _TROCAS_NA_CONCILIACAO:
         op.execute(_reescreve(_RELATORIO, de, para))
     for alvo in _BASES_DO_READY:
-        op.execute(_reescreve(alvo, _READY_ATE_0066, _READY_ATE_0074))
+        op.execute(_reescreve(alvo, READY_ANTES, _READY_ATE_0074))
     de, para = _ready_funcao()
     op.execute(_reescreve(_BASE_DO_ACESSO, de, para))
 
@@ -865,7 +868,7 @@ def downgrade() -> None:
     de, para = _ready_funcao()
     op.execute(_reescreve(_BASE_DO_ACESSO, para, de))
     for alvo in _BASES_DO_READY:
-        op.execute(_reescreve(alvo, _READY_ATE_0074, _READY_ATE_0066))
+        op.execute(_reescreve(alvo, _READY_ATE_0074, READY_ANTES))
     for de, para in reversed(_TROCAS_NA_CONCILIACAO):
         op.execute(_reescreve(_RELATORIO, para, de))
     for de, para in reversed(_TROCAS_NA_APLICACAO):
