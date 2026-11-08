@@ -41,8 +41,8 @@ export default defineConfig({
     // produção só aceita com as três travas de lib/e2e-build-runtime.ts:
     // NODE_ENV=production com APP_ENV=ci, origem https://localhost:3000 com
     // OAuth local, e o marcador abaixo. tests/e2e-build-runtime.test.ts prova
-    // cada recusa, e tests/production/ prova o mesmo build fechado sem o
-    // marcador. A sessão sem papel continua coberta em
+    // cada recusa, e tests/production/ prova o mesmo build fechado sem
+    // nenhuma das três travas. A sessão sem papel continua coberta em
     // tests/e2e/sessao-sem-papel.spec.ts.
     // #544: o web não escolhe o provedor do checkout sozinho.
     env: {

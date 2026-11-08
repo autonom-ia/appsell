@@ -191,12 +191,7 @@ export class LocalAesKeyEnvelopeProvider implements KeyEnvelopeProvider {
       environment?: Partial<Record<string, string | undefined>>;
     } = {}
   ) {
-    if (
-      (process.env.NODE_ENV === "production" || options.nodeEnvironment === "production") &&
-      !localVaultAllowedInProduction(options.environment ?? process.env)
-    ) {
-      throw new TokenVaultConfigurationError("Local vault key provider is forbidden in production.");
-    }
+    assertLocalVaultAllowed(options.environment ?? process.env, options.nodeEnvironment);
     if (!Array.isArray(entries) || entries.length === 0 || entries.length > 16) {
       throw new TokenVaultConfigurationError("Local vault keyring must contain between 1 and 16 keys.");
     }
@@ -230,12 +225,7 @@ export class LocalAesKeyEnvelopeProvider implements KeyEnvelopeProvider {
     environment: Partial<Record<string, string | undefined>> = process.env,
     forbiddenKeys: Buffer[] = []
   ) {
-    if (
-      (process.env.NODE_ENV === "production" || environment.NODE_ENV === "production") &&
-      !localVaultAllowedInProduction(environment)
-    ) {
-      throw new TokenVaultConfigurationError("Local vault key provider is forbidden in production.");
-    }
+    assertLocalVaultAllowed(environment, environment.NODE_ENV);
     const raw = environment.APPSELL_VAULT_LOCAL_KEYRING_B64_JSON ?? "";
     let parsed: unknown;
     try {
@@ -300,6 +290,26 @@ function localVaultAllowedInProduction(environment: Partial<Record<string, strin
   return capacityLocalCiRuntimeEnabled(environment) ||
     publicDemoRuntimeEnabled(environment) ||
     e2eBuildRuntimeEnabled(environment);
+}
+
+// Num processo de produção, o ambiente recebido e o process.env precisam
+// autorizar juntos (#611): um chamador que monte um ambiente à mão não liga a
+// chave local. Fora de um processo de produção, decide o ambiente recebido,
+// como no teste unitário do runtime de e2e.
+function assertLocalVaultAllowed(
+  environment: Partial<Record<string, string | undefined>>,
+  nodeEnvironment: string | undefined
+) {
+  const processIsProduction = process.env.NODE_ENV === "production";
+  const production = processIsProduction ||
+    nodeEnvironment === "production" ||
+    environment.NODE_ENV === "production";
+  if (!production) return;
+  const allowed = localVaultAllowedInProduction(environment) &&
+    (!processIsProduction || localVaultAllowedInProduction(process.env));
+  if (!allowed) {
+    throw new TokenVaultConfigurationError("Local vault key provider is forbidden in production.");
+  }
 }
 
 export function createLocalTokenVaultFromEnvironment(

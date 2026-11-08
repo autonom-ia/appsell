@@ -7,8 +7,11 @@
 //   2. origem pública https://localhost:3000 com OAuth local (produção usa
 //      o domínio real e o Identity);
 //   3. o marcador do job de e2e, que só o playwright.config.ts passa.
-// tests/e2e-build-runtime.test.ts prova cada recusa; tests/production/
-// prova, contra o mesmo build e sem o marcador, que a demo fica fechada.
+// tests/e2e-build-runtime.test.ts prova cada recusa. tests/production/ sobe o
+// mesmo build com `next start` sem nenhuma das três travas (nem APP_ENV=ci,
+// nem a origem https com OAuth local, nem o marcador) e prova que a demo e o
+// Identity simulado ficam fechados. Ele não prova a recusa com só uma trava
+// faltando: isso é do teste unitário. Ver docs/ci/E2E_SOBRE_O_BUILD.md.
 export const E2E_BUILD_RUNTIME_MARKER = "appsell-e2e-build-v1";
 export const E2E_BUILD_PUBLIC_ORIGIN = "https://localhost:3000";
 
