@@ -324,7 +324,8 @@ O texto já está gravado no banco como `store_news` versão 1, na migration
 - Vem **desmarcada**. Comprar e entrar não dependem dela.
 - Marcar grava o consentimento só para **aquela loja**, com:
   - a data;
-  - a origem (`checkout` ou `account`);
+  - a origem: `checkout` ou `account` nesta caixa. O banco aceita também
+    `storefront_form`, que nenhuma tela usa hoje;
   - a versão do texto e o sha256 do texto exato que a pessoa viu, como prova
     (art. 8º, § 2º);
   - um registro de auditoria.
@@ -332,10 +333,12 @@ O texto já está gravado no banco como `store_news` versão 1, na migration
   formulário.
 - O descadastro em um clique já existe (#561). Todo e-mail opcional deve levar
   esse link. Ele vale na hora e grava uma supressão. A supressão impede o envio
-  mesmo que exista um consentimento, até a pessoa marcar a caixa de novo. Hoje
-  ainda não há envio de e-mail opcional ligado.
-- Excluir a conta apaga o consentimento. A supressão fica, guardada só como
-  sha256 do e-mail, para o descadastro continuar valendo.
+  mesmo que exista um consentimento. Marcar a caixa de novo tira só a supressão
+  daquela loja. A supressão global (reclamação, hard bounce ou bloqueio manual)
+  continua. Hoje ainda não há envio de e-mail opcional ligado.
+- A exclusão de conta é feita por um passo manual do runbook (#561). Quando a
+  identidade é apagada, o consentimento sai junto. A supressão fica, guardada
+  só como sha256 do e-mail, para o descadastro continuar valendo.
 - O e-mail transacional (compra, acesso) não depende da caixa e continua
   saindo.
 
