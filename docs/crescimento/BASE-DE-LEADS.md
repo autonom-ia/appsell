@@ -1,8 +1,8 @@
 # Base de leads da loja: desenho
 
-Refs #619. Trilha 4 · Crescimento. **Por enquanto é só desenho.** O código vem
-depois do OK da Orquestração. Envolve dado pessoal, então passa pelo
-`sell-security-reviewer`, e o merge é do Rodrigo.
+Refs #619. Trilha 4 · Crescimento. Desenho aprovado pela Orquestração em
+08/11/2026, com as decisões da seção 7, e implementado no PR #621. Envolve dado
+pessoal, então passa pelo `sell-security-reviewer`, e o merge é do Rodrigo.
 
 O desenho foi lido no schema da `main`, não estimado. As tabelas citadas são da
 cadeia de migrations em `apps/api/migrations/versions/`.
@@ -26,12 +26,11 @@ Os filtros são por produto e por período (data de entrada, até 366 dias, as
 duas pontas inclusivas), como no relatório de vendas. Uma pessoa com dois
 produtos aparece em duas linhas. O total de pessoas distintas vai no topo.
 
-Há dois botões de CSV:
-
-- **"Exportar para marketing"**: só quem pode receber e-mail opcional da loja.
-  Isso quer dizer consentimento `granted` e sem nenhuma supressão (seção 3);
-- **"Exportar todos"**: a lista inteira, para suporte e entrega. O texto ao lado
-  do botão diz que essa lista não serve para marketing. Ver a decisão 7.1.
+Há um botão de CSV, **"Exportar para marketing"**. Ele leva só quem pode
+receber e-mail opcional da loja agora: consentimento `granted` e nenhuma
+supressão (seção 3). Não há "Exportar todos" na v1 (decisão 7.1). A tela mostra
+as primeiras 500 linhas, mais os totais. Quando há mais, ela pede para usar o
+filtro.
 
 ## 2. Sem tabela nova, mas com uma migration de funções
 
@@ -48,15 +47,13 @@ A leitura junta tabelas que já existem:
 leitura passa por funções `security definer`, como todo acesso a dado da loja.
 Ela segue o padrão da 0072:
 
-- **0078** (pedida à Orquestração, que ainda precisa confirmar a reserva).
-  Ela cria só duas funções e entra no `schema_ready`. O `downgrade` apaga as
-  duas e não há dado a preservar;
-- `app_private.read_store_leads(p_actor, p_seller, p_from, p_to, p_product,
-  p_after, p_limit)` devolve uma página de até 200 linhas, com cursor, e o
-  total de pessoas;
+- **0078** (reservada pela Orquestração). Ela cria só duas funções e entra no
+  `schema_ready`. O `downgrade` apaga as duas, e não há dado a preservar;
+- `app_private.read_store_leads(p_actor, p_seller, p_from, p_to, p_product)`
+  devolve as primeiras 500 linhas, o total de linhas, o total de pessoas e
+  quantas pessoas podem receber marketing;
 - `app_private.export_store_leads(p_actor, p_seller, p_from, p_to, p_product,
-  p_audience, p_request)` recebe `p_audience` igual a `marketing` ou `all` e
-  devolve até 10.000 linhas;
+  p_request)` devolve só o público de marketing, até 10.000 linhas;
 - capacidades novas: `growth.leads.read` e `growth.leads.export`;
 - guarda igual à da 0072: contexto assinado da mesma pessoa e da mesma loja,
   capacidade certa e papel `seller_owner` ou `seller_admin`. Fora disso, erro
@@ -107,8 +104,10 @@ item. Ver a pergunta 7.2.
 O padrão é o do relatório de vendas (`app/(protected)/dashboard/vendas/`),
 dentro das pastas da trilha:
 
-- `app/(protected)/dashboard/leads/page.tsx`: a tela, com o `ChoiceSelect` de
-  produto, sem `<select>` nativo;
+- `app/(protected)/dashboard/leads/page.tsx` e
+  `app/components/dashboard-leads.tsx`: a tela, com o `ChoiceSelect` de
+  produto, sem `<select>` nativo. As opções de produto vêm dos leads do
+  período;
 - `app/(protected)/dashboard/leads/dados/route.ts`: a página de dados, com
   `no-store`;
 - `app/(protected)/dashboard/leads/csv/route.ts`: o CSV;
@@ -117,8 +116,8 @@ dentro das pastas da trilha:
   - neutraliza fórmula: célula que começa com `=`, `+`, `-`, `@`, tab ou CR
     ganha `'` na frente. Nome é texto livre do Identity;
 - `lib/reports/leads-pilot.ts`: piloto pela env **`APPSELL_LEADS_PILOT_SELLER_IDS`**,
-  vazia por padrão. Fora da lista, a tela e as rotas respondem 404, e o item do
-  menu não aparece;
+  vazia por padrão. Fora da lista, a tela e as rotas respondem 404. A tela não
+  tem item de menu, como a de vendas;
 - a API ganha `apps/api/src/appsell_api/leads_routes.py` (novo) e uma linha em
   `main.py`. O arquivo novo precisa entrar na linha da trilha em `TRILHAS.md`,
   que é da Orquestração.
@@ -135,16 +134,13 @@ O e-mail aparece inteiro para o dono ou o admin, que é o controlador desse dado
 - capacidade errada recebe 42501;
 - demo não aparece;
 - pedido de exclusão aberto esconde a pessoa;
-- pedido de exclusão atendido volta a não esconder, porque a identidade some;
 - cada situação de e-mail sai certa: global, loja, `revoked`, `granted` e
   nenhuma;
 - o export de marketing bate com `email_optional_block_reason`;
 - o 6º export no mesmo minuto é recusado;
 - dois exports simultâneos respeitam a trava;
 - `audit_event` gravado sem e-mail;
-- mais de 10.000 linhas é recusado;
-- período maior que 366 dias é recusado;
-- cursor de página estável.
+- período maior que 366 dias é recusado.
 
 **Migration:**
 - encadeia na cabeça pela cadeia (`cadeia_de_migrations`);
@@ -167,19 +163,21 @@ O e-mail aparece inteiro para o dono ou o admin, que é o controlador desse dado
 **Hub2You:** o smoke de sempre, antes e depois. A tela nova fica atrás do
 piloto, e a vitrine não muda.
 
-## 7. Decisões para a Orquestração e o Rodrigo
+## 7. Decisões da Orquestração (08/11/2026)
 
-1. **"Exportar todos" na v1?** A lista inteira tem e-mail de todo mundo, mesmo
-   de quem não consentiu. A loja, como controladora, pode precisar dela para
-   suporte e entrega. Mas é a exportação com mais risco de virar disparo sem
-   consentimento.
-   - **Recomendo:** v1 só com "Exportar para marketing" e a tela com a lista
-     completa. "Exportar todos" entra só se uma loja do piloto pedir.
-2. **Captura do consentimento.** Sem ela, o export de marketing fica vazio.
-   Quem faz a caixa "Quero receber novidades desta loja" no checkout ou na
-   conta, e quando? Ela grava pela `record_email_consent`, que já existe. Esse
-   ponto toca checkout e conta, que não são da trilha Crescimento.
-3. **Reservar a 0078** para esta migration de funções.
+1. **Sem "Exportar todos" na v1.** Saem a lista completa na tela e "Exportar
+   para marketing".
+2. **A captura do consentimento entra em dois lugares**, com uma caixa
+   desmarcada por padrão:
+   - no checkout, feita pela Frente D;
+   - em "Minha conta", feita pela Frente E.
+
+   A Frente F entrega o ponto único que as duas usam (seção 9). O texto da
+   caixa foi para o pacote jurídico (#618, seção 9). Tudo fica atrás do piloto
+   da base de leads.
+3. **A 0078 está reservada para o #619.** O `leads_routes.py`, o
+   `email_consent_routes.py`, `lib/email-consent/` e a 0078 entram no
+   `TRILHAS.md` no próximo PR que tocar nele.
 
 ## 8. O que fica de fora
 
@@ -187,3 +185,22 @@ piloto, e a vitrine não muda.
 - segmentação, tags ou importação de lista de fora;
 - disparo de e-mail pela tela de leads;
 - WhatsApp: telefone não existe no schema hoje.
+
+## 9. Ponto único do consentimento (para as Frentes D e E)
+
+A caixa e a gravação ficam num lugar só, para o checkout e a conta se
+comportarem igual:
+
+| Peça | Arquivo | Para quê |
+|---|---|---|
+| Texto | `lib/email-consent/texto.ts` | O texto `store_news` v1, igual ao do banco. Um teste da API compara as duas cópias. |
+| Props do servidor | `lib/email-consent/servidor.ts` | A página chama `propsDaCaixaDeConsentimento(sessionId, sellerId)`. Fora do piloto, devolve `null`, e a página não mostra a caixa. Dentro do piloto, devolve `{ sellerId, csrf }`. |
+| Caixa | `lib/email-consent/caixa-de-consentimento.tsx` | `<CaixaDeConsentimentoDeEmail marcada onChange/>`. Começa desmarcada. |
+| Gravação | o mesmo arquivo | `gravarConsentimentoDeEmail({ sellerId, csrf, origem })`, com `origem` igual a `checkout` ou `account`. Nunca lança e devolve se gravou. Uma falha não trava a compra. |
+| Rota do web | `app/api/email/consent/route.ts` | Exige sessão, origem configurada e o token anti-CSRF da ação `POST:/api/email/consent`. Recusa loja fora do piloto. |
+| Rota da API | `apps/api/src/appsell_api/email_consent_routes.py` | Chama `record_email_consent` com `store_news` v1. O e-mail sai da identidade da sessão, nunca do pedido. |
+
+No checkout, a Frente D chama `gravarConsentimentoDeEmail` só se a caixa estiver
+marcada, antes de mandar a pessoa ao pagamento, e segue mesmo se a gravação
+falhar. Na conta, a Frente E faz o mesmo ao salvar.
+
