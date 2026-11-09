@@ -173,7 +173,7 @@ def test_o_readiness_aprende_a_versao(migration: ModuleType) -> None:
     anterior = _carregar("motivo_do_acesso", "appsell_motivo_0069_para_0074")
     assert migration.down_revision == anterior.revision
     assert migration.READY_ANTES == anterior._READY_ATE_0069
-    assert migration._READY_ATE_0074 == migration.READY_ANTES[:-2] + ",'0074_acesso_em_disputa'))"
+    assert migration._READY_ATE_0074 == migration.READY_ANTES[:-2] + f",'{migration.revision}'))"
     assert migration.revision in migration._READY_ATE_0074
     assert migration._BASES_DO_READY == anterior._BASES_DO_READY
 
