@@ -42,7 +42,8 @@ pytestmark = pytest.mark.skipif(
 ALFABETO = "ABCDEFGHJKMNPQRSTVWXYZ23456789"
 DOWNLOAD = "library.asset.download"
 RESOLVER = "seller.purchase_code.resolve"
-BUCKET = "appsell-private"
+# O bucket do blob que `add_asset` cria: a cópia mora no mesmo bucket do original.
+BUCKET = "pytest-policy"
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -86,13 +87,20 @@ def _prepara(buyer: UUID, entitlement: UUID, asset: UUID, capability: str = DOWN
         return row
 
 
-def _registra(entitlement: UUID, asset: UUID, version: int, object_key: str, sha: str) -> Any:
+def _registra(
+    entitlement: UUID,
+    asset: UUID,
+    version: int,
+    object_key: str,
+    sha: str,
+    bucket: str = BUCKET,
+) -> Any:
     assert RUNTIME_URL
     with psycopg.connect(RUNTIME_URL) as connection:
         apply_context(connection, BUYER, None, DOWNLOAD)
         row = connection.execute(
             "select * from app_private.record_watermarked_asset_copy(%s,%s,%s,%s,%s,%s,%s,%s)",
-            (BUYER, entitlement, asset, version, BUCKET, object_key, sha, 2048),
+            (BUYER, entitlement, asset, version, bucket, object_key, sha, 2048),
         ).fetchone()
         connection.commit()
         return row
@@ -111,12 +119,12 @@ def test_o_comprador_recebe_um_codigo_estavel_e_a_chave_da_copia_na_loja() -> No
     # Pega: código novo a cada download (a loja não acharia a compra) e chave
     # da cópia fora do prefixo privado da loja.
     graph, pdf, _video, entitlement = _loja_com_pdf()
-    primeiro = _prepara(BUYER, entitlement, pdf.asset)
-    seller, code, version, key, bucket, sha, size = primeiro
+    seller, code, version, bucket, prefixo, *cache = _prepara(BUYER, entitlement, pdf.asset)
     assert seller == graph.seller
     assert len(code) == 10 and all(letra in ALFABETO for letra in code)
-    assert key == f"tenants/{graph.seller}/watermarked/{entitlement}/{pdf.asset}/v{version}.pdf"
-    assert (bucket, sha, size) == (None, None, None)
+    assert bucket == BUCKET
+    assert prefixo == f"tenants/{graph.seller}/watermarked/{entitlement}/{pdf.asset}/v{version}-"
+    assert cache == [None, None, None]
     assert _prepara(BUYER, entitlement, pdf.asset)[1] == code
 
 
@@ -127,34 +135,55 @@ def test_compras_diferentes_recebem_codigos_diferentes() -> None:
 
 
 def test_a_copia_registrada_volta_do_cache_e_a_primeira_gravacao_vale() -> None:
+    # Pega: dois downloads ao mesmo tempo deixando o cache com o hash de uma
+    # geração e a chave de outra. Cada geração tem a própria chave.
     _graph, pdf, _video, entitlement = _loja_com_pdf()
-    _seller, _code, version, key, *_ = _prepara(BUYER, entitlement, pdf.asset)
+    _seller, _code, version, _bucket, prefixo, *_ = _prepara(BUYER, entitlement, pdf.asset)
     sha = digest(f"copia:{entitlement}")
-    assert _registra(entitlement, pdf.asset, version, key, sha) == (BUCKET, key, sha, 2048)
-    # Uma corrida que grava outro hash não troca a cópia que ficou.
-    assert _registra(entitlement, pdf.asset, version, key, digest("outra"))[2] == sha
-    assert _prepara(BUYER, entitlement, pdf.asset)[4:] == (BUCKET, sha, 2048)
+    chave = f"{prefixo}{sha}.pdf"
+    assert _registra(entitlement, pdf.asset, version, chave, sha) == (BUCKET, chave, sha, 2048)
+    outra = digest("outra")
+    assert _registra(entitlement, pdf.asset, version, f"{prefixo}{outra}.pdf", outra) == (
+        BUCKET,
+        chave,
+        sha,
+        2048,
+    )
+    assert _prepara(BUYER, entitlement, pdf.asset)[5:] == (chave, sha, 2048)
 
 
 def test_a_copia_nao_sai_do_prefixo_da_loja() -> None:
-    # Pega: uma chave forjada apontando para o original ou para outra loja.
+    # Pega: uma chave forjada apontando para o original, para outra loja ou
+    # para bytes que não são os do hash gravado.
     graph, pdf, _video, entitlement = _loja_com_pdf()
-    _seller, _code, version, _key, *_ = _prepara(BUYER, entitlement, pdf.asset)
+    _seller, _code, version, _bucket, prefixo, *_ = _prepara(BUYER, entitlement, pdf.asset)
+    sha = digest("copia")
     for forjada in (
         f"tenants/{graph.seller}/assets/{pdf.asset}/v{version}/original.pdf",
-        f"tenants/{uuid4()}/watermarked/{entitlement}/{pdf.asset}/v{version}.pdf",
+        f"tenants/{uuid4()}/watermarked/{entitlement}/{pdf.asset}/v{version}-{sha}.pdf",
+        f"{prefixo}{digest('outros bytes')}.pdf",
     ):
         with pytest.raises(psycopg.errors.CheckViolation):
-            _registra(entitlement, pdf.asset, version, forjada, digest(forjada))
+            _registra(entitlement, pdf.asset, version, forjada, sha)
+
+
+def test_a_copia_mora_no_bucket_do_original() -> None:
+    # Pega: um bucket de fora servindo outro arquivo como se fosse a cópia.
+    _graph, pdf, _video, entitlement = _loja_com_pdf()
+    _seller, _code, version, _bucket, prefixo, *_ = _prepara(BUYER, entitlement, pdf.asset)
+    sha = digest("copia")
+    with pytest.raises(psycopg.errors.InvalidParameterValue):
+        _registra(entitlement, pdf.asset, version, f"{prefixo}{sha}.pdf", sha, "bucket-de-fora")
 
 
 def test_registrar_sem_codigo_ou_com_outra_versao_e_recusado() -> None:
     _graph, pdf, _video, entitlement = _loja_com_pdf()
     with pytest.raises(psycopg.errors.ObjectNotInPrerequisiteState):
         _registra(entitlement, pdf.asset, 1, "x", digest("x"))
-    _seller, _code, version, key, *_ = _prepara(BUYER, entitlement, pdf.asset)
+    _seller, _code, version, _bucket, prefixo, *_ = _prepara(BUYER, entitlement, pdf.asset)
+    sha = digest("y")
     with pytest.raises(psycopg.errors.InvalidParameterValue):
-        _registra(entitlement, pdf.asset, version + 1, key, digest("y"))
+        _registra(entitlement, pdf.asset, version + 1, f"{prefixo}{sha}.pdf", sha)
 
 
 @pytest.mark.parametrize(

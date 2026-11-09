@@ -92,6 +92,7 @@ def test_a_chave_da_copia_fica_no_prefixo_da_loja(migration: ModuleType) -> None
     assert migration._CHAVE_DA_COPIA.startswith(
         "'tenants/'||seller_organization_id::text||'/watermarked/'"
     )
+    assert migration._CHAVE_DA_COPIA.endswith("'-'||sha256||'.pdf'")
     tabela_da_copia = migration._CRIA_TABELAS[1]
     assert "watermarked_asset_copy_tenant_object_key_check" in tabela_da_copia
     assert migration._CHAVE_DA_COPIA in tabela_da_copia
@@ -122,6 +123,8 @@ def test_as_funcoes_do_comprador_passam_pela_autorizacao_do_download(
         assert "library_context_allowed(p_identity_user_id,'library.asset.download')" in funcao
         assert "app_private.authorize_publication_asset_download(" in funcao
         assert "v_media_type is distinct from 'application/pdf'" in funcao
+        assert "publicado.seller_organization_id=entitlement.seller_organization_id" in funcao
+    assert "p_storage_bucket is distinct from v_bucket" in migration._REGISTRA
 
 
 def test_resolver_exige_capacidade_loja_e_papel(migration: ModuleType) -> None:

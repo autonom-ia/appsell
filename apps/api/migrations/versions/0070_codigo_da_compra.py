@@ -13,15 +13,18 @@ Duas tabelas de loja, só acessíveis por função `security definer`:
   dona o resolve.
 * `app_private.watermarked_asset_copy`: a cópia marcada de um PDF por compra e
   versão do asset, guardada no S3 em
-  `tenants/<loja>/watermarked/<compra>/<asset>/v<n>.pdf`. O banco obriga essa
-  chave: a cópia nunca sai do prefixo privado da loja.
+  `tenants/<loja>/watermarked/<compra>/<asset>/v<n>-<sha256>.pdf`, no mesmo
+  bucket do original. O banco obriga essa chave e esse bucket: a cópia nunca
+  sai do prefixo privado da loja. O hash na chave fecha a corrida de dois
+  downloads ao mesmo tempo: cada geração cai na própria chave, e a linha que
+  fica descreve exatamente os bytes daquela chave.
 
 Funções:
 
 * `prepare_watermarked_download` (comprador, contexto `library.asset.download`):
   passa pela mesma autorização do download (`authorize_publication_asset_download`)
   e só aceita PDF. Garante o código da compra e devolve a cópia em cache, se
-  houver, junto com a chave onde a cópia deve ficar.
+  houver, junto com o bucket e o começo da chave onde uma cópia nova deve ficar.
 * `record_watermarked_asset_copy` (comprador, mesmo contexto): registra a cópia
   gerada. A primeira gravação vale; uma corrida devolve a que ficou.
 * `resolve_purchase_code` (loja, capacidade `seller.purchase_code.resolve`,
@@ -143,7 +146,7 @@ _CHECK_CODIGO = f"char_length(code) = {TAMANHO_DO_CODIGO} and translate(code,'{A
 _CHECK_SHA = "char_length(sha256) = 64 and translate(sha256,'0123456789abcdef','') = ''"
 _CHAVE_DA_COPIA = (
     "'tenants/'||seller_organization_id::text||'/watermarked/'||entitlement_id::text"
-    "||'/'||asset_id::text||'/v'||asset_version::text||'.pdf'"
+    "||'/'||asset_id::text||'/v'||asset_version::text||'-'||sha256||'.pdf'"
 )
 
 _CRIA_TABELAS = (
@@ -195,15 +198,23 @@ _GUARDA_DO_COMPRADOR = f"""
 
 # O asset autorizado para download desta compra, com a loja dela. A autorização
 # é a mesma do download de hoje: compra ativa e no prazo, loja ativa, produto
-# publicado, material de apoio com download liberado. Daqui só passa PDF.
+# publicado, material de apoio com download liberado. Daqui só passa PDF. A
+# loja da compra é a do asset publicado: o id da compra sozinho não escolhe a
+# loja, nem num seed que repetisse o id em duas lojas.
 _ASSET_AUTORIZADO = """
-      select autorizado.asset_version,autorizado.media_type,entitlement.seller_organization_id
-        into v_asset_version,v_media_type,v_seller
+      select autorizado.asset_version,autorizado.media_type,autorizado.storage_bucket,
+        entitlement.seller_organization_id
+        into v_asset_version,v_media_type,v_bucket,v_seller
       from app_private.authorize_publication_asset_download(
         p_identity_user_id,p_entitlement_id,p_asset_id) autorizado
       join public.buyer_entitlement entitlement
         on entitlement.id=p_entitlement_id
-       and entitlement.buyer_identity_user_id=p_identity_user_id;
+       and entitlement.buyer_identity_user_id=p_identity_user_id
+      join public.publication_asset publicado
+        on publicado.seller_organization_id=entitlement.seller_organization_id
+       and publicado.publication_id=entitlement.publication_id
+       and publicado.asset_id=p_asset_id
+       and publicado.asset_version=autorizado.asset_version;
       if v_seller is null or v_media_type is distinct from 'application/pdf' then
         raise exception 'watermarked download is unavailable' using errcode='28000';
       end if;
@@ -213,12 +224,13 @@ _PREPARA = f"""
 create function app_private.prepare_watermarked_download(
   p_identity_user_id uuid,p_entitlement_id uuid,p_asset_id uuid
 ) returns table(seller_organization_id uuid,purchase_code text,asset_version integer,
-  copy_object_key text,cached_storage_bucket text,cached_sha256 text,cached_byte_size bigint)
+  copy_storage_bucket text,copy_key_prefix text,cached_object_key text,cached_sha256 text,
+  cached_byte_size bigint)
 language plpgsql volatile security definer
 {SEARCH_PATH} as $$
 #variable_conflict use_column
 declare
-  v_asset_version integer; v_media_type text; v_seller uuid; v_code text;
+  v_asset_version integer; v_media_type text; v_bucket text; v_seller uuid; v_code text;
   v_bytes bytea; v_byte integer; v_tentativa integer := 0; v_posicao integer;
 begin
 {_GUARDA_DO_COMPRADOR}
@@ -256,10 +268,10 @@ begin
     where codigo.seller_organization_id=v_seller and codigo.entitlement_id=p_entitlement_id;
   end loop;
   return query
-  select v_seller,v_code,v_asset_version,
+  select v_seller,v_code,v_asset_version,v_bucket,
     'tenants/'||v_seller::text||'/watermarked/'||p_entitlement_id::text||'/'||p_asset_id::text
-      ||'/v'||v_asset_version::text||'.pdf',
-    copia.storage_bucket,copia.sha256,copia.byte_size
+      ||'/v'||v_asset_version::text||'-',
+    copia.object_key,copia.sha256,copia.byte_size
   from (select 1) uma
   left join app_private.watermarked_asset_copy copia
     on copia.seller_organization_id=v_seller and copia.entitlement_id=p_entitlement_id
@@ -275,12 +287,17 @@ create function app_private.record_watermarked_asset_copy(
 language plpgsql volatile security definer
 {SEARCH_PATH} as $$
 #variable_conflict use_column
-declare v_asset_version integer; v_media_type text; v_seller uuid;
+declare v_asset_version integer; v_media_type text; v_bucket text; v_seller uuid;
 begin
 {_GUARDA_DO_COMPRADOR}
 {_ASSET_AUTORIZADO}
   if p_asset_version is distinct from v_asset_version then
     raise exception 'watermarked copy is for another asset version' using errcode='22023';
+  end if;
+  -- A cópia mora no bucket do original: um bucket informado pelo chamador
+  -- poderia ser de fora e servir outro arquivo como se fosse a cópia.
+  if p_storage_bucket is distinct from v_bucket then
+    raise exception 'watermarked copy must live in the asset bucket' using errcode='22023';
   end if;
   if not exists (select 1 from app_private.purchase_code codigo
                  where codigo.seller_organization_id=v_seller
