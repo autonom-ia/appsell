@@ -200,10 +200,18 @@ comportarem igual:
 | Props do servidor | `lib/email-consent/servidor.ts` | A página chama `propsDaCaixaDeConsentimento(sessionId, sellerId)`. Fora do piloto, devolve `null`, e a página não mostra a caixa. Dentro do piloto, devolve `{ sellerId, csrf }`. |
 | Caixa | `lib/email-consent/caixa-de-consentimento.tsx` | `<CaixaDeConsentimentoDeEmail marcada onChange/>`. Começa desmarcada. |
 | Gravação | o mesmo arquivo | `gravarConsentimentoDeEmail({ sellerId, csrf, origem })`, com `origem` igual a `checkout` ou `account`. Nunca lança e devolve se gravou. Uma falha não trava a compra. |
-| Rota do web | `app/api/email/consent/route.ts` | Exige sessão, origem configurada e o token anti-CSRF da ação `POST:/api/email/consent`. Recusa loja fora do piloto. |
-| Rota da API | `apps/api/src/appsell_api/email_consent_routes.py` | Chama `record_email_consent` com `store_news` v1. O e-mail sai da identidade da sessão, nunca do pedido. |
+| Revogação | o mesmo arquivo | `revogarConsentimentoDeEmail({ sellerId, csrf })`, para "Minha conta". Nunca lança e devolve se revogou. |
+| Rota do web | `app/api/email/consent/route.ts` | Exige sessão, origem configurada e o token anti-CSRF da ação `POST:/api/email/consent`. O campo `decision` é `grant` (com `source`) ou `revoke` (sem `source`). Limite de 10 por minuto por pessoa, não por sessão. Recusa loja fora do piloto. |
+| Rota da API | `apps/api/src/appsell_api/email_consent_routes.py` | `POST .../email-consent` chama `record_email_consent` com `store_news` v1; `POST .../email-consent/revoke` chama `revoke_email_consent`. O e-mail sai da identidade da sessão, nunca do pedido. |
 
 No checkout, a Frente D chama `gravarConsentimentoDeEmail` só se a caixa estiver
 marcada, antes de mandar a pessoa ao pagamento, e segue mesmo se a gravação
-falhar. Na conta, a Frente E faz o mesmo ao salvar.
+falhar. Caixa desmarcada no checkout não revoga nada.
+
+Na conta, a Frente E mostra a caixa com o estado atual e, ao salvar, só chama
+algo se o estado mudou: `gravarConsentimentoDeEmail` quando a pessoa marcou,
+`revogarConsentimentoDeEmail` quando desmarcou. Gravar de novo a cada "salvar"
+não pode acontecer, porque reconsentir é ação nova da pessoa: a 0066 tira o
+descadastro da loja nessa hora. Por isso só um clique dela na caixa conta como
+reconsentimento.
 

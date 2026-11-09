@@ -46,6 +46,7 @@ DESCADASTROU = UUID("ee000000-0000-4000-8000-000000000793")
 SUPRIMIDO = UUID("ee000000-0000-4000-8000-000000000794")
 PEDIU_EXCLUSAO = UUID("ee000000-0000-4000-8000-000000000795")
 DEMO = UUID("ee000000-0000-4000-8000-000000000796")
+ADMIN_DA_TRAVA = UUID("ee000000-0000-4000-8000-000000000797")
 ISSUER = "https://identity.test.autonomia.site"
 LEITURA = "growth.leads.read"
 EXPORT = "growth.leads.export"
@@ -126,7 +127,7 @@ def _loja(
 def base() -> None:
     assert ADMIN_URL
     with psycopg.connect(ADMIN_URL) as connection:
-        for pessoa in (DONO, EDITOR, ADMIN):
+        for pessoa in (DONO, EDITOR, ADMIN, ADMIN_DA_TRAVA):
             _pessoa(connection, pessoa)
         for pessoa in (CONSENTIU, SEM_CONSENTIMENTO, DESCADASTROU, SUPRIMIDO, PEDIU_EXCLUSAO, DEMO):
             _pessoa(connection, pessoa, "=HYPERLINK(1)" if pessoa == CONSENTIU else "Pessoa")
@@ -137,7 +138,11 @@ def base() -> None:
             ((PRODUTO_A1, PUBLICACAO_A1), (PRODUTO_A2, PUBLICACAO_A2)),
         )
         _loja(connection, LOJA_B, "leads-b", ((PRODUTO_B, PUBLICACAO_B),))
-        for pessoa, papel in ((EDITOR, "seller_editor"), (ADMIN, "seller_admin")):
+        for pessoa, papel in (
+            (EDITOR, "seller_editor"),
+            (ADMIN, "seller_admin"),
+            (ADMIN_DA_TRAVA, "seller_admin"),
+        ):
             connection.execute(
                 "insert into seller_membership(seller_organization_id,identity_user_id,role,"
                 "status) values(%s,%s,%s,'active') on conflict do nothing",
@@ -205,17 +210,45 @@ def _leitura(
     return cast(dict[str, Any], row[0])
 
 
-def _export(loja: UUID = LOJA_A, pessoa: UUID = DONO) -> dict[str, Any]:
-    assert RUNTIME_URL
-    with psycopg.connect(RUNTIME_URL) as connection:
-        _context(connection, pessoa, EXPORT, loja)
-        row = connection.execute(
-            "select app_private.export_store_leads(%s,%s,%s,%s,null,%s)",
-            (pessoa, loja, OUTUBRO[0], OUTUBRO[1], uuid4()),
-        ).fetchone()
-        connection.commit()
+def _chamar_export(
+    connection: Conexao,
+    pessoa: UUID,
+    loja: UUID,
+    capacidade: str = EXPORT,
+    loja_do_contexto: UUID | None = None,
+) -> dict[str, Any]:
+    _context(connection, pessoa, capacidade, loja_do_contexto or loja)
+    row = connection.execute(
+        "select app_private.export_store_leads(%s,%s,%s,%s,null,%s)",
+        (pessoa, loja, OUTUBRO[0], OUTUBRO[1], uuid4()),
+    ).fetchone()
     assert row is not None
     return cast(dict[str, Any], row[0])
+
+
+def _export(
+    loja: UUID = LOJA_A,
+    pessoa: UUID = DONO,
+    capacidade: str = EXPORT,
+    loja_do_contexto: UUID | None = None,
+) -> dict[str, Any]:
+    assert RUNTIME_URL
+    with psycopg.connect(RUNTIME_URL) as connection:
+        resultado = _chamar_export(connection, pessoa, loja, capacidade, loja_do_contexto)
+        connection.commit()
+    return resultado
+
+
+def _exports_auditados(pessoa: UUID) -> int:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        row = connection.execute(
+            "select count(*) from audit_event where actor_identity_user_id=%s "
+            "and action='growth.leads_exported'",
+            (pessoa,),
+        ).fetchone()
+    assert row is not None
+    return cast(int, row[0])
 
 
 def _situacoes(resultado: dict[str, Any]) -> set[tuple[str, str, str]]:
@@ -318,6 +351,38 @@ def test_o_export_audita_sem_email() -> None:
     metadata = cast(str, row[0])
     assert '"audience": "marketing"' in metadata and '"rows": 1' in metadata
     assert "@" not in metadata
+
+
+def test_o_export_recusa_editor_capacidade_errada_e_contexto_de_outra_loja() -> None:
+    # Cada recusa sai antes da trava e da auditoria: nada é gravado.
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        _export(pessoa=EDITOR)
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        _export(capacidade=LEITURA)
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        _export(loja=LOJA_A, loja_do_contexto=LOJA_B)
+    assert _exports_auditados(EDITOR) == 0
+
+
+def test_dois_exports_ao_mesmo_tempo_respeitam_a_trava_e_o_limite() -> None:
+    # Quatro exports no minuto: sobra uma vaga. Dois pedidos ao mesmo tempo
+    # não podem ler a mesma contagem e passar os dois.
+    for _ in range(4):
+        _export(pessoa=ADMIN_DA_TRAVA)
+    assert RUNTIME_URL
+    with psycopg.connect(RUNTIME_URL) as primeira, psycopg.connect(RUNTIME_URL) as segunda:
+        # A primeira fica com a vaga e segura a trava até o commit.
+        _chamar_export(primeira, ADMIN_DA_TRAVA, LOJA_A)
+        segunda.execute("set lock_timeout = '300ms'")
+        with pytest.raises(psycopg.errors.LockNotAvailable):
+            _chamar_export(segunda, ADMIN_DA_TRAVA, LOJA_A)
+        segunda.rollback()
+        primeira.commit()
+        # Com a trava solta, a segunda lê a contagem já com a primeira.
+        with pytest.raises(psycopg.errors.DatabaseError) as recusa:
+            _chamar_export(segunda, ADMIN_DA_TRAVA, LOJA_A)
+        assert recusa.value.sqlstate == "P4291"
+    assert _exports_auditados(ADMIN_DA_TRAVA) == 5
 
 
 def test_o_export_tem_limite_de_taxa() -> None:

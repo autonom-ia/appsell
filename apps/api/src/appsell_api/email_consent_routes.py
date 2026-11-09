@@ -7,8 +7,9 @@ Ponto único para a caixa "quero novidades desta loja", no checkout e em
 - a auditoria vai na mesma transação.
 
 Aqui a finalidade é sempre `store_news`, versão 1, e a origem é `checkout` ou
-`account`. Mudar o texto é migration com versão nova, e esta constante sobe
-junto.
+`account`. A revogação pela própria pessoa (POST em `.../revoke`) passa por
+`app_private.revoke_email_consent`, que também audita. Mudar o texto é
+migration com versão nova, e esta constante sobe junto.
 """
 
 from __future__ import annotations
@@ -57,12 +58,33 @@ async def record_email_consent(request: Request, seller_id: UUID) -> Response:
                 },
             )
     except DBAPIError as error:
-        sqlstate = str(getattr(error.orig, "sqlstate", ""))
-        if sqlstate == "28000":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, detail="forbidden"
-            ) from error
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="email_consent_unavailable"
-        ) from error
+        raise _erro_do_banco(error) from error
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/{seller_id}/email-consent/revoke", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_email_consent(request: Request, seller_id: UUID) -> Response:
+    auth, internal = await _authenticate(request, CAPACIDADE)
+    await _require_seller(internal, seller_id)
+    try:
+        async with auth.domain_session(internal.envelope) as session:
+            await session.scalar(
+                text("select app_private.revoke_email_consent(:seller,:purpose,:request_id)"),
+                {
+                    "seller": seller_id,
+                    "purpose": FINALIDADE,
+                    "request_id": internal.envelope.request_id,
+                },
+            )
+    except DBAPIError as error:
+        raise _erro_do_banco(error) from error
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+def _erro_do_banco(error: DBAPIError) -> HTTPException:
+    sqlstate = str(getattr(error.orig, "sqlstate", ""))
+    if sqlstate == "28000":
+        return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="email_consent_unavailable"
+    )

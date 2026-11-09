@@ -45,7 +45,12 @@ const SITUACAO: Record<SituacaoDoEmail, string> = {
   granted: "Aceitou",
   none: "Sem consentimento",
   unsubscribed: "Descadastrou",
-  suppressed: "Bloqueado"
+  suppressed: "Bloqueado pela plataforma"
+};
+const ACESSO: Record<string, string> = {
+  active: "Ativo",
+  revoked: "Revogado",
+  expired: "Expirado"
 };
 const ORIGEM: Record<string, string> = {
   billing: "Compra",
@@ -178,7 +183,8 @@ function Resultado({ leads, csv }: { leads: Leads; csv: string | null }) {
           <thead>
             <tr>
               <th scope="col">Nome</th><th scope="col">E-mail</th><th scope="col">Produto</th>
-              <th scope="col">Como entrou</th><th scope="col">Desde</th><th scope="col">E-mail de marketing</th>
+              <th scope="col">Como entrou</th><th scope="col">Desde</th><th scope="col">Acesso</th>
+              <th scope="col">E-mail de marketing</th>
             </tr>
           </thead>
           <tbody>
@@ -189,6 +195,7 @@ function Resultado({ leads, csv }: { leads: Leads; csv: string | null }) {
                 <td>{linha.product_title}</td>
                 <td>{ORIGEM[linha.source] ?? linha.source}</td>
                 <td>{dataBr(linha.since)}</td>
+                <td>{ACESSO[linha.access_status] ?? linha.access_status}</td>
                 <td>{SITUACAO[linha.email_status] ?? linha.email_status}</td>
               </tr>
             ))}

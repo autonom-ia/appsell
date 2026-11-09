@@ -216,6 +216,33 @@ async def test_consentimento_erro_do_banco_sem_detalhe(
     assert resposta.status_code == status
 
 
+@pytest.mark.asyncio
+async def test_revogacao_chama_revoke_store_news_sem_corpo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chamadas: list[dict[str, Any]] = []
+    capacidades: list[str] = []
+    app = _app(monkeypatch, chamadas, None, capacidades)
+    resposta = await _pedir(app, "POST", f"/v1/me/sellers/{LOJA}/email-consent/revoke")
+    assert resposta.status_code == 204
+    assert capacidades == ["notification.email.consent"]
+    chamada = chamadas[0]
+    assert "app_private.revoke_email_consent" in chamada["sql"]
+    assert chamada["purpose"] == "store_news" and chamada["seller"] == LOJA
+    assert "email" not in chamada
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("sqlstate", "status"), [("28000", 403), ("XX000", 503)])
+async def test_revogacao_erro_do_banco_sem_detalhe(
+    monkeypatch: pytest.MonkeyPatch, sqlstate: str, status: int
+) -> None:
+    erro = DBAPIError("select", {}, _ErroDoBanco(sqlstate))
+    app = _app(monkeypatch, [], erro, [])
+    resposta = await _pedir(app, "POST", f"/v1/me/sellers/{LOJA}/email-consent/revoke")
+    assert resposta.status_code == status
+
+
 def test_o_texto_da_caixa_no_web_e_o_store_news_v1_do_banco() -> None:
     # O consentimento guarda o sha do texto v1 como prova: o que a pessoa vê
     # na caixa tem de ser exatamente ele.

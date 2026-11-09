@@ -11,8 +11,10 @@ interface CaixaDeConsentimentoProps {
 }
 
 // A caixa vem desmarcada (quem usa começa com `marcada=false`), e comprar ou
-// entrar não depende dela. Quem usa grava com `gravarConsentimentoDeEmail`
-// só se a pessoa marcou.
+// entrar não depende dela. No checkout, grave com `gravarConsentimentoDeEmail`
+// só se a pessoa marcou: desmarcada ali não revoga nada. Na conta, ao salvar,
+// grave se ela marcou e revogue com `revogarConsentimentoDeEmail` se
+// desmarcou o que estava marcado; sem mudança, não chame nada.
 export function CaixaDeConsentimentoDeEmail({ marcada, onChange, disabled }: CaixaDeConsentimentoProps) {
   const id = useId();
   return (
@@ -35,8 +37,21 @@ export async function gravarConsentimentoDeEmail(
   pedido: { sellerId: string; csrf: string; origem: OrigemDoConsentimento },
   enviar: typeof fetch = fetch
 ): Promise<boolean> {
+  return postar({ seller: pedido.sellerId, decision: "grant", source: pedido.origem, _csrf: pedido.csrf }, enviar);
+}
+
+// Revogação pela própria pessoa, em "Minha conta". Devolve se revogou. Nunca
+// lança.
+export async function revogarConsentimentoDeEmail(
+  pedido: { sellerId: string; csrf: string },
+  enviar: typeof fetch = fetch
+): Promise<boolean> {
+  return postar({ seller: pedido.sellerId, decision: "revoke", _csrf: pedido.csrf }, enviar);
+}
+
+async function postar(campos: Record<string, string>, enviar: typeof fetch): Promise<boolean> {
   try {
-    const corpo = new URLSearchParams({ seller: pedido.sellerId, source: pedido.origem, _csrf: pedido.csrf });
+    const corpo = new URLSearchParams(campos);
     const resposta = await enviar("/api/email/consent", {
       method: "POST",
       body: corpo,

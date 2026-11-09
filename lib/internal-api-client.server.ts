@@ -1351,6 +1351,22 @@ export async function recordDomainEmailConsent(
   });
 }
 
+// Revogação pela própria pessoa (#619): a API marca `store_news` como revogado
+// para o e-mail da identidade da sessão e audita.
+export async function revokeDomainEmailConsent(
+  sessionId: string,
+  session: ServerSession,
+  sellerOrganizationId: string
+) {
+  await domainRequest(sessionId, session, {
+    method: "POST",
+    path: `/v1/me/sellers/${sellerOrganizationId}/email-consent/revoke`,
+    capability: "notification.email.consent",
+    sellerOrganizationId,
+    body: {}
+  });
+}
+
 export async function readDomainSellerSettings(
   sessionId: string,
   session: ServerSession,
