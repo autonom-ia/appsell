@@ -42,7 +42,9 @@ ambiente AWS sem uma nova decisão de infraestrutura.
 1. Confirmar Issue, PR aprovada e CI verde no SHA exato.
 2. Confirmar `git rev-parse HEAD` e a origem do artefato.
 3. Fazer dump lógico do Postgres e validar `pg_restore --list`.
-4. Guardar o digest/tag anterior como rollback.
+4. Exportar para arquivo as imagens que vão sair (`docker save`), com
+   checksum (`sha256sum`) e manifesto conferidos: o manifesto precisa listar
+   as tags esperadas. Ver "Imagens de rollback" abaixo.
 5. Confirmar que não há migration pendente inesperada.
 6. Construir tags imutáveis de web e API com o SHA curto.
 7. Atualizar API e worker de forma controlada; depois atualizar web.
@@ -60,12 +62,15 @@ Quando a mudança é apenas do Next (página pública, telas, rotas do BFF), nã
 migration, não há imagem de API e o caminho encurta:
 
 1. Confirmar CI verde no SHA exato e fazer merge.
-2. Salvar a spec do serviço e a tag da imagem atual como rollback.
+2. Salvar a spec do serviço e exportar a imagem atual para arquivo, com
+   checksum e manifesto (ver "Imagens de rollback").
 3. Enviar o fonte para `<home-do-operador>/appsell-src-<sha>` e construir com
    `Dockerfile.web`, passando `--build-arg GIT_SHA=<sha>`.
-4. `docker service update --image ... --update-order stop-first sell-autonomia_web`.
+4. `docker service update --image ... sell-autonomia_web`. A ordem de
+   atualização (`start-first` ou `stop-first`) vem da spec do serviço lida no
+   host; não passe `--update-order` na mão.
 5. Se houver variável nova, adicioná-la **na mesma atualização**, com
-   `--env-add`, para um único `stop-first`. Nunca use o `updateEnv` do painel
+   `--env-add`, para uma única atualização. Nunca use o `updateEnv` do painel
    sem o campo `env` completo: omitir apaga todas as variáveis.
 6. Conferir o contador de variáveis **comparando nomes**, não contando
    entradas: uma variável duplicada na spec antiga faz o total encolher sem que
@@ -77,11 +82,12 @@ migration, não há imagem de API e o caminho encurta:
    buscada no CSS ou no HTML servido — health verde não prova nada sobre o
    bundle.
 
-O rollback é uma linha, e a imagem anterior continua no host:
+O rollback começa por carregar a imagem anterior do arquivo, porque a tag
+solta pode não estar mais no host:
 
 ```bash
-docker service update --image easypanel/sell-autonomia/web:<sha-anterior> \
-  --update-order stop-first sell-autonomia_web
+docker load -i <arquivo-de-rollback>.tar
+docker service update --image easypanel/sell-autonomia/web:<tag-de-rollback> sell-autonomia_web
 ```
 
 ## Smoke pós-deploy
@@ -114,7 +120,9 @@ docker service update --image easypanel/sell-autonomia/web:<sha-anterior> \
 Acionar rollback se health, convergência, autorização, conteúdo ou dados falhar.
 
 1. Pausar a progressão do release e registrar o sintoma/horário.
-2. Restaurar as imagens anteriores por tags/digests imutáveis.
+2. Carregar as imagens anteriores do arquivo da fase A (`docker load`),
+   conferir o checksum antes, e só então restaurar cada serviço pela tag que o
+   manifesto traz.
 3. Reverter API e worker antes da web quando houver mudança de contrato.
 4. Não executar `alembic downgrade` destrutivo como primeira resposta.
 5. Se houver alteração de schema/dados, restaurar o dump em banco separado,
@@ -126,6 +134,22 @@ O rollback da entrega de 2026-08-23 tinha as tags anteriores do release
 `64ab9956` e o backup lógico criado antes do cutover. O caminho exato e os
 nomes devem ser revalidados no host antes de uma nova operação; não reutilizar
 um caminho antigo sem confirmar que o arquivo existe e está íntegro.
+
+## Imagens de rollback
+
+O painel que administra os serviços faz uma limpeza diária do Docker e apaga
+toda imagem sem contêiner em uso, sem respeitar rótulo. Uma tag de rollback
+solta não sobrevive à noite (#581). Decisão do Rodrigo (09/11/2026): a limpeza
+continua ligada, e a cópia em arquivo é a regra fixa.
+
+- Na fase A de todo release, antes da troca: `docker save` das imagens que vão
+  sair para um arquivo na pasta de backups do release, com permissão restrita,
+  mais `sha256sum` do arquivo.
+- Conferir: `sha256sum -c` passa, e o `manifest.json` dentro do arquivo lista
+  exatamente as tags de rollback esperadas.
+- O rollback escrito começa por `docker load` desse arquivo.
+- A vigia pós-release confere as imagens em uso e a integridade do arquivo, e
+  não as tags de rollback.
 
 ## Backup e restore
 
