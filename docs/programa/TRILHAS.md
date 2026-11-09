@@ -58,7 +58,7 @@ Plataforma. Uma reserva vale por 7 dias sem PR aberto.
 | `0074` | 2 · Dinheiro | #542 | PR #593 |
 | `0075` | F · Crescimento | #563 | PR #599 |
 | `0076` | F · Crescimento | #561 (search_path) | PR #597 |
-| `0077` | D · Produto e preço | #154 (pedido pinado, fatia 1) | reservada em 09/11, PR desta fatia |
+| `0077` | D · Produto e preço | #154 (pedido pinado, fatia 1) | mergeada (#639) |
 
 O número reservado é da trilha, mas o `down_revision` é o head da `main` na
 hora do merge: quem entra depois rebaseia. O CI (`migration_shape`, #551) barra

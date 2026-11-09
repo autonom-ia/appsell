@@ -48,7 +48,7 @@ from types import ModuleType
 from alembic import op
 
 revision = "0070_codigo_da_compra"
-down_revision = "0074_acesso_em_disputa"
+down_revision = "0077_pedido_do_checkout"
 branch_labels = None
 depends_on = None
 
@@ -98,7 +98,9 @@ _BASES_DO_READY: tuple[str, ...] = (
 _BASE_DO_ACESSO = "app_private.schema_ready_base_0016()"
 # A última migration que acrescentou função ao readiness. As linhas desta
 # entram depois das dela, e a próxima lê `_ready_funcoes()` desta.
-_ULTIMA_COM_FUNCAO_NO_READY = down_revision
+# Nome literal, não `down_revision`: no rebase, este nome é revisto à parte do
+# `down_revision`, porque a anterior na cadeia pode não ter função no readiness.
+_ULTIMA_COM_FUNCAO_NO_READY = "0077_pedido_do_checkout"
 
 _READY_DO_CODIGO = (
     "            and to_regclass('app_private.purchase_code') is not null\n"
