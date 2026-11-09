@@ -102,7 +102,7 @@ def test_grants_so_para_o_runtime(migration: ModuleType) -> None:
 
 def test_ready_conhece_a_funcao_e_a_versao(migration: ModuleType) -> None:
     comandos = "\n".join(_comandos_de(migration, migration.upgrade))
-    assert "'0069_motivo_do_acesso'" in comandos
+    assert f"'{migration.revision}'" in comandos
     assert "to_regprocedure('app_private.buyer_access_decision(uuid,uuid)')" in comandos
 
 
@@ -127,7 +127,7 @@ def test_ready_parte_da_lista_da_anterior_na_cadeia(migration: ModuleType) -> No
     numero = migration.down_revision.split("_", 1)[0]
     anterior = getattr(_anterior(migration, migration.down_revision), f"_READY_ATE_{numero}")
     assert migration.READY_ANTES == anterior
-    assert migration.READY_DEPOIS == anterior[:-2] + ",'0069_motivo_do_acesso'))"
+    assert migration.READY_DEPOIS == anterior[:-2] + f",'{migration.revision}'))"
     assert migration._READY_ATE_0069 == migration.READY_DEPOIS
 
 
