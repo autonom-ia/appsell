@@ -293,8 +293,9 @@ async def test_o_mesmo_intent_em_dois_pedidos_responde_409() -> None:
 
 @pytest.mark.asyncio
 async def test_as_rotas_estao_no_app() -> None:
-    # Pega: a rota escrita e não incluída no app (404 em produção). Sem a
-    # autenticação interna configurada, a rota existente responde 503.
+    # Pega: a rota escrita e não incluída no app (404 em produção). Chegar à
+    # guarda da autenticação interna prova que a rota existe. A guarda responde
+    # 503 sem a autenticação configurada e 401 com ela, como no CI.
     from appsell_api.main import app
 
     async with httpx.AsyncClient(
@@ -302,5 +303,5 @@ async def test_as_rotas_estao_no_app() -> None:
     ) as client:
         for caminho in (CRIAR, LIGAR):
             resposta = await client.post(caminho, content=b"{}")
-            assert resposta.status_code == 503, caminho
-            assert resposta.json() == {"detail": "internal_auth_not_configured"}
+            assert resposta.status_code in (401, 503), caminho
+            assert resposta.json()["detail"] != "Not Found", caminho
