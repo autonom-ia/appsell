@@ -84,7 +84,7 @@ Capacity may satisfy the dedicated storage vertical only when capacity is
 required on the same SHA. The gate treats any expected `skipped`, `cancelled`,
 `failure`, missing or unknown outcome as failure.
 
-Any changed workflow runs checksum-pinned Actionlint. The installed Harness
+Any changed workflow runs checksum-pinned Actionlint. Checksum-pinned binaries (Actionlint and the MinIO used by `cert-storage`) are restored from `actions/cache`, keyed by name, version, platform and sha256, and are downloaded from GitHub Releases only on a cache miss, with a long retry; the sha256 is checked on every run, cache hit or not, and the cache is written only after that check (#634). A download that still fails is annotated as an infrastructure error, not a validation failure. The installed Harness
 2.1.2 workflow receives YAML/expression/action validation with ShellCheck
 disabled only for that one legacy file because it has two pre-existing style
 notices; reviewed upstream PR #16 makes the consolidated 2.1.3 workflow fully
