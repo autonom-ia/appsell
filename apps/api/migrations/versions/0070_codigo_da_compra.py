@@ -61,6 +61,11 @@ TAMANHO_DO_CODIGO = 10
 # descartado, para que cada letra saia com a mesma chance.
 LIMITE_SEM_VIES = 240
 TENTATIVAS_DE_CODIGO = 8
+# O teto do PDF no catálogo (`asset_media.SUPPORTED_MEDIA`, 100 MiB), escrito
+# aqui como número porque a migration não muda quando o catálogo mudar. A cópia
+# marcada de um PDF no limite pode passar do teto por causa do rodapé: o
+# registro dela é recusado, e a parte B2 precisa tratar essa recusa.
+TETO_DA_COPIA_EM_BYTES = 104_857_600
 SEARCH_PATH = "set search_path=pg_catalog,app_private,public,pg_temp"
 
 TABELAS = ("purchase_code", "watermarked_asset_copy")
@@ -173,7 +178,7 @@ _CRIA_TABELAS = (
         and translate(storage_bucket,'abcdefghijklmnopqrstuvwxyz0123456789.-','') = ''),
       object_key text not null,
       sha256 text not null check ({_CHECK_SHA}),
-      byte_size bigint not null check (byte_size > 0),
+      byte_size bigint not null check (byte_size between 1 and {TETO_DA_COPIA_EM_BYTES}),
       created_at timestamptz not null default clock_timestamp(),
       constraint watermarked_asset_copy_pkey
         primary key (seller_organization_id,entitlement_id,asset_id,asset_version),

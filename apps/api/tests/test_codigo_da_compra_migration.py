@@ -13,6 +13,8 @@ from types import ModuleType
 import pytest
 from cadeia_de_migrations import anterior_na_cadeia, versoes
 
+from appsell_api.asset_media import PDF_MEDIA_TYPE, max_bytes
+
 VERSOES = Path(__file__).parents[1] / "migrations" / "versions"
 
 
@@ -139,3 +141,12 @@ def test_a_descida_recusa_com_codigo_emitido_antes_de_tudo(migration: ModuleType
     comandos = _comandos_de(migration, migration.downgrade)
     assert "purchase codes were issued" in comandos[0]
     assert comandos[-1] == "drop table app_private.purchase_code"
+
+
+def test_a_copia_tem_o_teto_do_pdf_do_catalogo(migration: ModuleType) -> None:
+    # Pega: o catálogo e o banco aceitando tamanhos diferentes para o mesmo PDF.
+    assert migration.TETO_DA_COPIA_EM_BYTES == max_bytes(PDF_MEDIA_TYPE)
+    assert (
+        f"byte_size bigint not null check (byte_size between 1 and "
+        f"{max_bytes(PDF_MEDIA_TYPE)})" in migration._CRIA_TABELAS[1]
+    )
