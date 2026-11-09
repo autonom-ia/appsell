@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import timedelta
-from typing import Any
+from typing import Any, LiteralString
 from uuid import UUID, uuid4
 
 import psycopg
@@ -226,6 +226,41 @@ def test_loja_inativa_nao_grava_pedido() -> None:
         )
         connection.commit()
     assert _sqlstate(lambda: _cria(seller_id, product_id, publication_id)) == PRECO_MUDOU
+
+
+def _admin(sql: LiteralString, parametros: tuple[Any, ...]) -> None:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(sql, parametros)
+        connection.commit()
+
+
+@pytest.mark.parametrize(
+    "mudanca",
+    [
+        "update offer set status='archived' where seller_organization_id=%s and id=%s",
+        "update offer set status='draft' where seller_organization_id=%s and id=%s",
+        "update offer set is_default=false where seller_organization_id=%s and id=%s",
+    ],
+)
+def test_oferta_que_saiu_de_venda_ou_deixou_de_ser_a_padrao_e_recusada(
+    mudanca: LiteralString,
+) -> None:
+    # Pega: o pedido gravando uma oferta que não é mais a padrão à venda.
+    seller_id, product_id, publication_id, offer_id = _produto_a_venda()
+    _admin(mudanca, (seller_id, offer_id))
+    assert _sqlstate(lambda: _cria(seller_id, product_id, publication_id)) == PRECO_MUDOU
+    assert _pedidos_da_loja(seller_id) == 0
+
+
+def test_produto_despublicado_e_recusado() -> None:
+    seller_id, product_id, publication_id, _ = _produto_a_venda()
+    _admin(
+        "update catalog_product set status='unpublished' where seller_organization_id=%s and id=%s",
+        (seller_id, product_id),
+    )
+    assert _sqlstate(lambda: _cria(seller_id, product_id, publication_id)) == PRECO_MUDOU
+    assert _pedidos_da_loja(seller_id) == 0
 
 
 @pytest.mark.parametrize("com_loja", [False, True])

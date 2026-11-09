@@ -92,7 +92,9 @@ _BASES_DO_READY: tuple[str, ...] = (
 _BASE_DO_ACESSO = "app_private.schema_ready_base_0016()"
 # A última migration que acrescentou função ao readiness. As linhas desta
 # entram depois das dela, e a próxima lê `_ready_funcoes()` desta.
-_ULTIMA_COM_FUNCAO_NO_READY = down_revision
+# Nome literal, não `down_revision`: no rebase, este nome é revisto à parte do
+# `down_revision`, porque a anterior na cadeia pode não ter função no readiness.
+_ULTIMA_COM_FUNCAO_NO_READY = "0074_acesso_em_disputa"
 
 _READY_DO_PEDIDO = (
     "            and to_regclass('app_private.checkout_order') is not null\n"
