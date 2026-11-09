@@ -65,6 +65,10 @@ function productPayload(unitAmountMinor: number | null = 4990) {
  * O produto com estado, como o servidor real (#626): o PATCH grava o preço e o
  * GET seguinte devolve o que foi gravado. Sem isso, um salvamento automático
  * fora de hora trazia de volta "49,90", um preço que ninguém salvou.
+ *
+ * O salvamento automático pode, sim, rodar no meio dos testes de preço (2,5 s
+ * sem edição bastam, e o runner às vezes pausa isso). Com este mock ele devolve
+ * o que foi salvo, e o campo fica como a pessoa deixou.
  */
 async function mockEditor(page: Page) {
   let unitAmountMinor: number | null = 4990;
@@ -176,10 +180,6 @@ test.describe("#253 — o campo numérico recusa o impossível", () => {
   test("Preço recusa letra em vez de aceitar e reclamar no envio", async ({ page }) => {
     await login(page);
     await mockEditor(page);
-    // Relógio parado antes da navegação (#626): o salvamento automático só
-    // dispara depois de 2,5 s sem edição, e uma pausa do runner entre duas
-    // ações bastava para ele rodar no meio do teste. Aqui ele não anda.
-    await page.clock.install();
     await page.goto(`/products/${SELLER_ID}/${PRODUCT_ID}?section=oferta`);
 
     const price = page.locator("#offer_price");
@@ -199,10 +199,6 @@ test.describe("#253 — o campo numérico recusa o impossível", () => {
   test("Preço não acusa erro no meio de uma digitação válida", async ({ page }) => {
     await login(page);
     await mockEditor(page);
-    // Relógio parado antes da navegação (#626): o salvamento automático só
-    // dispara depois de 2,5 s sem edição, e uma pausa do runner entre duas
-    // ações bastava para ele rodar no meio do teste. Aqui ele não anda.
-    await page.clock.install();
     await page.goto(`/products/${SELLER_ID}/${PRODUCT_ID}?section=oferta`);
 
     const price = page.locator("#offer_price");
@@ -220,10 +216,6 @@ test.describe("#253 — o campo numérico recusa o impossível", () => {
   test("Preço acusa, aí sim, quando a pessoa sai do campo com valor pela metade", async ({ page }) => {
     await login(page);
     await mockEditor(page);
-    // Relógio parado antes da navegação (#626): o salvamento automático só
-    // dispara depois de 2,5 s sem edição, e uma pausa do runner entre duas
-    // ações bastava para ele rodar no meio do teste. Aqui ele não anda.
-    await page.clock.install();
     await page.goto(`/products/${SELLER_ID}/${PRODUCT_ID}?section=oferta`);
 
     const price = page.locator("#offer_price");
