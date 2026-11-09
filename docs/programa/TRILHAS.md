@@ -51,7 +51,7 @@ Plataforma. Uma reserva vale por 7 dias sem PR aberto.
 | `0067` | D · Produto e preço | #553 fase 1 | PR #572 |
 | `0068` | D · Produto e preço | #553 fase 2 | reservada em 05/11 |
 | `0069` | E · Conteúdo e membros | #558 | PR #583 |
-| `0070` | E · Conteúdo e membros | #559 | parte B1 (código da compra e cópia marcada), PR a abrir |
+| `0070` | E · Conteúdo e membros | #559 | parte B1 (código da compra e cópia marcada), PR #636 |
 | `0071` | 1 · Plataforma | #550 | PR #578 |
 | `0072` | F · Crescimento | #562 | PR #594 |
 | `0073` | 2 · Dinheiro | #545 | PR #587 |

@@ -7,6 +7,9 @@ teste da política de PDF, o mesmo caminho que o download de hoje autoriza.
 from __future__ import annotations
 
 import os
+import time
+from concurrent.futures import ThreadPoolExecutor
+from queue import Queue
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -44,6 +47,9 @@ DOWNLOAD = "library.asset.download"
 RESOLVER = "seller.purchase_code.resolve"
 # O bucket do blob que `add_asset` cria: a cópia mora no mesmo bucket do original.
 BUCKET = "pytest-policy"
+TAMANHO_DA_COPIA = 2048
+# O teto do PDF no catálogo, o mesmo da migration 0070.
+TETO_DA_COPIA = 104_857_600
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -92,15 +98,19 @@ def _registra(
     asset: UUID,
     version: int,
     object_key: str,
-    sha: str,
+    sha: str | None,
     bucket: str = BUCKET,
+    *,
+    comprador: UUID = BUYER,
+    capacidade: str = DOWNLOAD,
+    tamanho: int | None = TAMANHO_DA_COPIA,
 ) -> Any:
     assert RUNTIME_URL
     with psycopg.connect(RUNTIME_URL) as connection:
-        apply_context(connection, BUYER, None, DOWNLOAD)
+        apply_context(connection, comprador, None, capacidade)
         row = connection.execute(
             "select * from app_private.record_watermarked_asset_copy(%s,%s,%s,%s,%s,%s,%s,%s)",
-            (BUYER, entitlement, asset, version, bucket, object_key, sha, 2048),
+            (comprador, entitlement, asset, version, bucket, object_key, sha, tamanho),
         ).fetchone()
         connection.commit()
         return row
@@ -126,6 +136,177 @@ def test_o_comprador_recebe_um_codigo_estavel_e_a_chave_da_copia_na_loja() -> No
     assert prefixo == f"tenants/{graph.seller}/watermarked/{entitlement}/{pdf.asset}/v{version}-"
     assert cache == [None, None, None]
     assert _prepara(BUYER, entitlement, pdf.asset)[1] == code
+
+
+def test_dois_downloads_ao_mesmo_tempo_ficam_com_um_codigo_so() -> None:
+    # Pega: dois downloads simultâneos da mesma compra gravando dois códigos,
+    # ou o segundo falhando em vez de devolver o código que o primeiro emitiu.
+    # A conexão A emite o código e segura a transação aberta. A conexão B só é
+    # solta depois que o banco confirma que ela está esperando a A: a corrida
+    # acontece em toda execução, e não só quando o agendador ajuda.
+    graph, pdf, _video, entitlement = _loja_com_pdf()
+    assert RUNTIME_URL and ADMIN_URL
+    pid_de_b: Queue[int] = Queue()
+
+    def prepara_em_b() -> Any:
+        assert RUNTIME_URL
+        with psycopg.connect(RUNTIME_URL) as connection:
+            pid_de_b.put(connection.info.backend_pid)
+            apply_context(connection, BUYER, None, DOWNLOAD)
+            row = connection.execute(
+                "select * from app_private.prepare_watermarked_download(%s,%s,%s)",
+                (BUYER, entitlement, pdf.asset),
+            ).fetchone()
+            connection.commit()
+            return row
+
+    # A conexão A sai antes do pool: se algo falhar no meio, a transação dela
+    # é desfeita, a B é solta e o pool não fica esperando para sempre.
+    with (
+        ThreadPoolExecutor(max_workers=1) as pool,
+        psycopg.connect(RUNTIME_URL) as conexao_a,
+    ):
+        apply_context(conexao_a, BUYER, None, DOWNLOAD)
+        linha_a = conexao_a.execute(
+            "select * from app_private.prepare_watermarked_download(%s,%s,%s)",
+            (BUYER, entitlement, pdf.asset),
+        ).fetchone()
+        assert linha_a is not None
+        futuro_b = pool.submit(prepara_em_b)
+        pid_b = pid_de_b.get(timeout=5)
+        _espera_bloqueio(pid_b, conexao_a.info.backend_pid)
+        conexao_a.commit()
+        linha_b = futuro_b.result(timeout=10)
+    assert linha_b is not None
+    assert linha_b[1] == linha_a[1]
+    with psycopg.connect(ADMIN_URL) as connection:
+        linhas = connection.execute(
+            "select code from app_private.purchase_code "
+            "where seller_organization_id=%s and entitlement_id=%s",
+            (graph.seller, entitlement),
+        ).fetchall()
+    assert linhas == [(linha_a[1],)]
+
+
+def _espera_bloqueio(pid: int, bloqueador: int) -> None:
+    assert ADMIN_URL
+    prazo = time.monotonic() + 5
+    with psycopg.connect(ADMIN_URL, autocommit=True) as connection:
+        while time.monotonic() < prazo:
+            linha = connection.execute("select pg_blocking_pids(%s)", (pid,)).fetchone()
+            if linha is not None and bloqueador in linha[0]:
+                return
+            time.sleep(0.05)
+    pytest.fail("a conexão B não chegou a esperar a transação da A")
+
+
+# O sorteio de teste troca o `gen_random_bytes` do pgcrypto (em `public`) por
+# uma função em `app_private`, que vem antes no search_path das funções. Cada
+# chamada devolve os 16 bytes da posição seguinte da lista, e a última se
+# repete. Os bytes são índices do alfabeto: 00..09 sorteiam ABCDEFGHJK.
+_SORTEIO_FIXO = """
+create function app_private.gen_random_bytes(integer) returns bytea
+language plpgsql volatile as $teste$
+declare
+  v_chamada integer := coalesce(
+    nullif(current_setting('appsell_teste.sorteios', true), ''), '0')::integer + 1;
+  v_sorteios text[] := array[__SORTEIOS__];
+begin
+  perform set_config('appsell_teste.sorteios', v_chamada::text, false);
+  return decode(v_sorteios[least(v_chamada, cardinality(v_sorteios))], 'hex');
+end $teste$
+"""
+
+
+def _bytes_do_codigo(code: str) -> str:
+    return "".join(f"{ALFABETO.index(letra):02x}" for letra in code) + "00" * 6
+
+
+def _prepara_com_sorteio_fixo(
+    graph: Graph, entitlement: UUID, asset: UUID, codigos: tuple[str, ...]
+) -> tuple[Any, int, list[Any]]:
+    """Prepara numa transação que é desfeita no fim: nada do sorteio fica no banco.
+
+    Antes, uma segunda compra da mesma loja (do EDITOR) recebe o código
+    ABCDEFGHJK. Devolve a linha do prepare, quantos sorteios a função pediu e
+    os códigos da loja; ou propaga o erro do prepare.
+    """
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        try:
+            gen_random_bytes = connection.execute(
+                "select pronamespace::regnamespace::text from pg_proc "
+                "where proname='gen_random_bytes'"
+            ).fetchall()
+            # A troca só funciona se o original estiver depois de app_private.
+            assert gen_random_bytes == [("public",)]
+            outra_compra = uuid4()
+            connection.execute(
+                """
+                insert into buyer_entitlement(
+                  seller_organization_id,id,buyer_identity_user_id,catalog_product_id,
+                  publication_id,reference_key,source,status,progress_percent
+                ) select seller_organization_id,%s,%s,catalog_product_id,publication_id,%s,
+                  'manual','active',0
+                from buyer_entitlement where seller_organization_id=%s and id=%s
+                """,
+                (
+                    outra_compra,
+                    EDITOR,
+                    f"pytest-colisao-{outra_compra.hex}",
+                    graph.seller,
+                    entitlement,
+                ),
+            )
+            connection.execute(
+                "insert into app_private.purchase_code(seller_organization_id,entitlement_id,code) "
+                "values(%s,%s,'ABCDEFGHJK')",
+                (graph.seller, outra_compra),
+            )
+            # DDL não aceita parâmetro: os bytes entram no texto. São hex gerado
+            # aqui, de letras do alfabeto fixo, e não vêm de fora do teste.
+            sorteios_hex = ",".join(f"'{_bytes_do_codigo(code)}'" for code in codigos)
+            connection.execute(_SORTEIO_FIXO.replace("__SORTEIOS__", sorteios_hex))
+            connection.execute("set local role appsell_runtime")
+            apply_context(connection, BUYER, None, DOWNLOAD)
+            linha = connection.execute(
+                "select * from app_private.prepare_watermarked_download(%s,%s,%s)",
+                (BUYER, entitlement, asset),
+            ).fetchone()
+            connection.execute("reset role")
+            sorteios = connection.execute(
+                "select current_setting('appsell_teste.sorteios')::integer"
+            ).fetchone()
+            codigos_da_loja = connection.execute(
+                "select entitlement_id,code from app_private.purchase_code "
+                "where seller_organization_id=%s order by code",
+                (graph.seller,),
+            ).fetchall()
+            assert sorteios is not None
+            return linha, sorteios[0], codigos_da_loja
+        finally:
+            connection.rollback()
+
+
+def test_codigo_repetido_na_loja_e_sorteado_de_novo() -> None:
+    # Pega: o sorteio caindo num código que já é de outra compra da loja e o
+    # download falhando (ou, pior, as duas compras com o mesmo código).
+    graph, pdf, _video, entitlement = _loja_com_pdf()
+    linha, sorteios, codigos = _prepara_com_sorteio_fixo(
+        graph, entitlement, pdf.asset, ("ABCDEFGHJK", "MNPQRSTVWX")
+    )
+    assert linha[1] == "MNPQRSTVWX"
+    assert sorteios == 2
+    assert len(codigos) == 2
+    assert codigos[0][0] != entitlement and codigos[0][1] == "ABCDEFGHJK"
+    assert codigos[1] == (entitlement, "MNPQRSTVWX")
+
+
+def test_o_sorteio_desiste_depois_das_tentativas() -> None:
+    # Pega: um laço sem fim quando todo sorteio colide.
+    graph, pdf, _video, entitlement = _loja_com_pdf()
+    with pytest.raises(psycopg.errors.ObjectNotInPrerequisiteState):
+        _prepara_com_sorteio_fixo(graph, entitlement, pdf.asset, ("ABCDEFGHJK",))
 
 
 def test_compras_diferentes_recebem_codigos_diferentes() -> None:
@@ -197,6 +378,87 @@ def test_so_o_dono_da_compra_no_contexto_de_download_prepara(
     _graph, pdf, _video, entitlement = _loja_com_pdf()
     with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
         _prepara(comprador, entitlement, pdf.asset, capacidade)
+
+
+@pytest.mark.parametrize(
+    ("comprador", "capacidade"),
+    [(OWNER, DOWNLOAD), (BUYER, "library.asset.read"), (BUYER, "library.read")],
+)
+def test_so_o_dono_da_compra_no_contexto_de_download_registra(
+    comprador: UUID, capacidade: str
+) -> None:
+    # Pega: outra pessoa (ou o contexto de leitura) gravando a cópia da compra.
+    # O código já foi emitido e a chave é válida: só a pessoa ou o contexto erra.
+    _graph, pdf, _video, entitlement = _loja_com_pdf()
+    _seller, _code, version, _bucket, prefixo, *_ = _prepara(BUYER, entitlement, pdf.asset)
+    sha = digest("copia")
+    with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
+        _registra(
+            entitlement,
+            pdf.asset,
+            version,
+            f"{prefixo}{sha}.pdf",
+            sha,
+            comprador=comprador,
+            capacidade=capacidade,
+        )
+
+
+@pytest.mark.parametrize(
+    ("sha", "tamanho", "erro"),
+    [
+        (digest("copia").upper(), TAMANHO_DA_COPIA, psycopg.errors.CheckViolation),
+        (digest("copia")[:63], TAMANHO_DA_COPIA, psycopg.errors.CheckViolation),
+        (digest("copia"), 0, psycopg.errors.CheckViolation),
+        (digest("copia"), -1, psycopg.errors.CheckViolation),
+        (digest("copia"), TETO_DA_COPIA + 1, psycopg.errors.CheckViolation),
+        (digest("copia"), None, psycopg.errors.NotNullViolation),
+    ],
+    ids=[
+        "sha-maiusculo",
+        "sha-curto",
+        "tamanho-zero",
+        "tamanho-negativo",
+        "acima-do-teto",
+        "tamanho-nulo",
+    ],
+)
+def test_registro_com_hash_ou_tamanho_invalido_e_recusado(
+    sha: str, tamanho: int | None, erro: type[psycopg.Error]
+) -> None:
+    # Pega: o cache guardando um hash fora do formato da chave (64 hex
+    # minúsculos), ou um tamanho que o download depois anunciaria errado.
+    _graph, pdf, _video, entitlement = _loja_com_pdf()
+    _seller, _code, version, _bucket, prefixo, *_ = _prepara(BUYER, entitlement, pdf.asset)
+    with pytest.raises(erro):
+        _registra(entitlement, pdf.asset, version, f"{prefixo}{sha}.pdf", sha, tamanho=tamanho)
+
+
+def test_a_copia_no_teto_do_pdf_e_aceita() -> None:
+    _graph, pdf, _video, entitlement = _loja_com_pdf()
+    _seller, _code, version, _bucket, prefixo, *_ = _prepara(BUYER, entitlement, pdf.asset)
+    sha = digest("copia no teto")
+    chave = f"{prefixo}{sha}.pdf"
+    assert _registra(entitlement, pdf.asset, version, chave, sha, tamanho=TETO_DA_COPIA) == (
+        BUCKET,
+        chave,
+        sha,
+        TETO_DA_COPIA,
+    )
+
+
+def test_compra_da_loja_b_nao_alcanca_o_pdf_da_loja_a() -> None:
+    # Pega: o comprador usando uma compra válida de outra loja para emitir
+    # código ou gravar cópia de um PDF que ele não comprou.
+    _loja_a, pdf_a, _video_a, _compra_a = _loja_com_pdf()
+    _loja_b, pdf_b, _video_b, compra_b = _loja_com_pdf(owner=OTHER_OWNER)
+    with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
+        _prepara(BUYER, compra_b, pdf_a.asset)
+    # O código da compra B existe, para que a recusa venha da loja, não da falta dele.
+    _seller, _code, version, _bucket, _prefixo, *_ = _prepara(BUYER, compra_b, pdf_b.asset)
+    sha = digest("copia")
+    with pytest.raises(psycopg.errors.InvalidAuthorizationSpecification):
+        _registra(compra_b, pdf_a.asset, version, f"x-{sha}.pdf", sha)
 
 
 def test_so_pdf_com_download_liberado_ganha_copia() -> None:
