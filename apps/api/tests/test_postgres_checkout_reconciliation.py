@@ -40,7 +40,10 @@ ISSUER = "https://identity.test.autonomia.site"
 NOW = datetime.now(UTC)
 SINCE = NOW - timedelta(days=2)
 BEFORE = NOW + timedelta(minutes=5)
-STALE = timedelta(minutes=30)
+# A SQL mede "parado" pelo relógio do banco na hora da leitura (`now()`), e NOW
+# é tirado na importação do módulo, minutos antes do teste rodar. Por isso o
+# limite fica em horas: nenhum dado semeado chega perto dele durante a suíte.
+STALE = timedelta(hours=6)
 # Antes de qualquer janela que a conciliação aceite (31 dias).
 LONG_AGO = NOW - timedelta(days=40)
 
@@ -262,8 +265,9 @@ def _seed(connection: Connection, store: Store) -> None:
     _job(connection, store, "happy", "completed", NOW - timedelta(hours=1))
     _grant(connection, store, "happy", happy, "active")
     _access(connection, store, happy, "active")
-    # Pendente há menos que o limite: ainda não está parado.
-    _job(connection, store, "fresh", "pending", NOW - STALE + timedelta(minutes=2))
+    # Pendente recém-criado: só ficaria parado STALE depois de NOW. Não pode
+    # ficar a minutos do limite, senão uma suíte lenta o empurra para o outro lado.
+    _job(connection, store, "fresh", "pending", NOW)
     refunded = _buyer(connection, f"{store.label}-refunded")
     _grant(connection, store, "refunded", refunded, "refunded")
     _access(connection, store, refunded, "revoked")
