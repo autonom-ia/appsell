@@ -3,7 +3,9 @@ import { NextRequest, NextResponse, after } from "next/server";
 import { isChargeableBuyerEmail, normalizeBuyerEmail } from "@/lib/buyer-email";
 import { resolveBuyerIdentity } from "@/lib/buyer-identity.server";
 import { STRIPE_CHECKOUT_CURRENCY, resolveCheckoutProduct } from "@/lib/checkout-config";
-import { directChargeApplicationFeeCents } from "@/lib/checkout-fee";
+import { DEFAULT_CHECKOUT_PLAN, directChargeApplicationFeeCents } from "@/lib/checkout-fee";
+import { gravarPedidoDoCheckout, ligarPedidoAoIntent, type PedidoGravado } from "@/lib/checkout-order.server";
+import { pedidoPinadoLiberado } from "@/lib/checkout-order-pilot";
 import { connectCheckoutIdempotencyKey, isFinancialConnectSeller } from "@/lib/financial-connect-checkout";
 import {
   checkoutProvider,
@@ -165,10 +167,35 @@ export async function POST(request: NextRequest) {
   // Stripe minimum. The producer routes already refuse such a price; this one
   // also catches an offer priced through the internal API, which does not
   // check the minimum. Refuse before creating an order.
-  if (applicationFeeCents !== null && !checkSellerNet({ amountMinor: amount, currency: "BRL" }).ok) {
+  const sellerNet = applicationFeeCents === null ? null : checkSellerNet({ amountMinor: amount, currency: "BRL" });
+  if (sellerNet !== null && !sellerNet.ok) {
     return jsonError("product_price_below_platform_fee", 409);
   }
   if (provider === "financial_checkout") {
+    // #154, fatia 1: para a loja do piloto, o pedido é gravado com o que foi
+    // calculado acima, antes de qualquer cobrança. Fora do piloto, nada muda.
+    let pedido: PedidoGravado | null = null;
+    if (pedidoPinadoLiberado(parsed.seller.id)) {
+      try {
+        pedido = await gravarPedidoDoCheckout({
+          sellerId: parsed.seller.id,
+          productId: product.id,
+          publicationId: product.publication_id,
+          unitAmountMinor: amount,
+          currency: "BRL",
+          billingPeriod: "one_time",
+          platformFeeMinor: applicationFeeCents,
+          sellerNetMinor: sellerNet?.ok ? sellerNet.netMinor : null,
+          planKey: DEFAULT_CHECKOUT_PLAN,
+          buyerIdentitySub
+        });
+      } catch (error) {
+        if (error instanceof DomainApiError && error.status === 409 && error.code === "price_changed") {
+          return jsonError("price_changed", 409);
+        }
+        return jsonError("checkout_order_unavailable", 503);
+      }
+    }
     try {
       const endpointKey = checkoutWebhookEndpointKey();
       const result = await createFinancialExternalCheckoutIntent({
@@ -220,6 +247,7 @@ export async function POST(request: NextRequest) {
           })
           : crypto.randomUUID()
       });
+      if (pedido) await ligarAoIntentSemLancar(parsed.seller.id, pedido.orderId, result.checkoutIntentId);
       const stripeCheckoutUrl = await createFinancialExternalCheckoutSession(result.checkoutUrl);
       agendarAtribuicao(request, parsed.seller.id, result.checkoutIntentId);
       return NextResponse.json({ url: stripeCheckoutUrl }, { headers: noStore() });
@@ -369,6 +397,29 @@ function logarSemLancar(error: unknown): void {
     atribuicaoFalhou(error);
   } catch {
     // O log é o último recurso. Se até ele falhar, a resposta segue igual.
+  }
+}
+
+// #154: o intent já existe e o comprador segue para o pagamento. Se a ligação
+// falhar, só o log fica sabendo: a loja, o pedido e o motivo, nunca o intent
+// nem o comprador. A fatia 3 é quem passa a depender da ligação.
+async function ligarAoIntentSemLancar(sellerId: string, orderId: string, checkoutIntentId: string): Promise<void> {
+  try {
+    await ligarPedidoAoIntent(sellerId, orderId, checkoutIntentId);
+  } catch (error) {
+    try {
+      console.error(
+        JSON.stringify({
+          level: "error",
+          marker: "appsell.checkout_order.attach_failed",
+          seller_id: sellerId,
+          order_id: orderId,
+          reason: error instanceof DomainApiError ? error.code : "unexpected"
+        })
+      );
+    } catch {
+      // Sem log, o checkout segue igual.
+    }
   }
 }
 

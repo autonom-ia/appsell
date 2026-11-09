@@ -1,4 +1,5 @@
-import { expect, test, type Page, type Route } from "@playwright/test";
+import { expect, test, type Page, type Route, type TestInfo } from "@playwright/test";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { login } from "./support/login";
 
@@ -21,6 +22,97 @@ const protectedPng = Buffer.from(
   "base64"
 );
 const protectedVideoPath = resolve(process.cwd(), "output/pdf/codex/codex-em-3-passos.mp4");
+let protectedVideoBytes: Buffer | null = null;
+
+/**
+ * O vídeo da aula como a API entrega: MP4 com `accept-ranges: bytes`, e 206
+ * para um pedido de faixa única, que é o que o player de mídia manda.
+ *
+ * Antes o mock não servia esse endereço e respondia o 404 genérico de rota
+ * inesperada — um caminho que a API real não dá, e o caminho de erro de mídia
+ * menos exercitado do WebKit do Playwright (#631).
+ */
+async function fulfillProtectedVideo(route: Route) {
+  protectedVideoBytes ??= readFileSync(protectedVideoPath);
+  const total = protectedVideoBytes.length;
+  const range = singleByteRange(route.request().headers().range, total);
+  if (!range) {
+    return route.fulfill({
+      status: 200,
+      headers: { "content-type": "video/mp4", "accept-ranges": "bytes", "cache-control": "private, no-store, max-age=0" },
+      body: protectedVideoBytes
+    });
+  }
+  return route.fulfill({
+    status: 206,
+    headers: {
+      "content-type": "video/mp4",
+      "accept-ranges": "bytes",
+      "cache-control": "private, no-store, max-age=0",
+      "content-range": `bytes ${range.start}-${range.end}/${total}`
+    },
+    body: protectedVideoBytes.subarray(range.start, range.end + 1)
+  });
+}
+
+/** `bytes=início-fim` ou `bytes=início-`, lido por partes; o resto vira o arquivo inteiro. */
+function singleByteRange(header: string | undefined, total: number) {
+  const prefix = "bytes=";
+  if (!header?.startsWith(prefix) || header.includes(",")) return null;
+  const [startText, endText] = header.slice(prefix.length).split("-");
+  if (startText === undefined || startText === "") return null;
+  const start = Number(startText);
+  const end = endText ? Math.min(Number(endText), total - 1) : total - 1;
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start > end || start >= total) return null;
+  return { start, end };
+}
+
+/**
+ * Sonda leve do laço de eventos da página (#631). Não muda prazo nem retry:
+ * só registra atrasos de timer e de quadro, troca de visibilidade e o que o
+ * <main> mostra, e o teste anexa o registro quando falha.
+ */
+async function installEventLoopProbe(page: Page) {
+  await page.addInitScript(() => {
+    const t0 = performance.now();
+    const log: string[] = [];
+    const stamp = (what: string) => {
+      if (log.length < 200) log.push(`${Math.round(performance.now() - t0)}ms ${what}`);
+    };
+    (window as unknown as { __sondaLaco?: string[] }).__sondaLaco = log;
+    let lastTimer = performance.now();
+    const timerTick = () => {
+      const now = performance.now();
+      if (now - lastTimer > 250) stamp(`timer atrasou ${Math.round(now - lastTimer)}ms`);
+      lastTimer = now;
+      setTimeout(timerTick, 50);
+    };
+    setTimeout(timerTick, 50);
+    let lastFrame = performance.now();
+    const frame = () => {
+      const now = performance.now();
+      if (now - lastFrame > 250) stamp(`quadro atrasou ${Math.round(now - lastFrame)}ms`);
+      lastFrame = now;
+      requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
+    document.addEventListener("visibilitychange", () => stamp(`visibilidade ${document.visibilityState}`));
+    const watch = () => {
+      const main = document.querySelector("main");
+      if (!main) return void setTimeout(watch, 20);
+      const describe = () => main.querySelector("video") ? "vídeo" : (main.textContent ?? "").slice(0, 40);
+      stamp(`main: ${describe()}`);
+      new MutationObserver(() => stamp(`main: ${describe()}`)).observe(main, { childList: true, subtree: true });
+    };
+    watch();
+  });
+}
+
+async function attachEventLoopProbe(page: Page, testInfo: TestInfo) {
+  const log = await page.evaluate(() => (window as unknown as { __sondaLaco?: string[] }).__sondaLaco ?? [])
+    .catch((error: unknown) => [`a página não respondeu à sonda: ${String(error)}`]);
+  await testInfo.attach("sonda-laco-de-eventos", { body: log.join("\n"), contentType: "text/plain" });
+}
 
 type PdfStudyMockStore = {
   revision: number;
@@ -301,6 +393,9 @@ async function mockLearningApi(
     }
     if (request.method() === "GET" && (url.pathname.endsWith(`/items/${entitlementId}`) || url.pathname.endsWith(`/lessons/${lessonOne}`))) {
       return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(playerEnvelope(lessonOne)) });
+    }
+    if (request.method() === "GET" && url.pathname.endsWith(`/assets/${videoAssetId}`)) {
+      return fulfillProtectedVideo(route);
     }
     return route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "unexpected_test_route" }) });
   };
@@ -1010,7 +1105,8 @@ test("opens the mobile shelf, protects the PDF and completes into the next lesso
   expect(size.scroll).toBeLessThanOrEqual(size.client);
 });
 
-test("streams protected video on mobile and persists stepped and ended progress", async ({ page }) => {
+test("streams protected video on mobile and persists stepped and ended progress", async ({ page }, testInfo) => {
+  await installEventLoopProbe(page);
   await page.setViewportSize({ width: 320, height: 800 });
   const mutations = await mockLearningApi(page, {
     onFirstLesson: async (route) => {
@@ -1025,7 +1121,12 @@ test("streams protected video on mobile and persists stepped and ended progress"
   await page.goto(`/library/items/${entitlementId}/lessons/${lessonOne}`);
 
   const video = page.locator('video[aria-label="Codex em 3 passos"]');
-  await expect(video).toHaveAttribute("src", `/api/library/items/${entitlementId}/assets/${videoAssetId}`);
+  try {
+    await expect(video).toHaveAttribute("src", `/api/library/items/${entitlementId}/assets/${videoAssetId}`);
+  } catch (error) {
+    await attachEventLoopProbe(page, testInfo);
+    throw error;
+  }
   await expect(page.locator(".protected-pdf-page img"))
     .toHaveAttribute("src", `/api/library/items/${entitlementId}/assets/${assetId}/pages/1`);
   await expect(video).toHaveAttribute("controls", "");

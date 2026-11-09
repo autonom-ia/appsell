@@ -299,7 +299,7 @@ export function ProductEditorWorkspace({
   const [priceTouched, setPriceTouched] = useState(false);
   const priceLocallyInvalid = priceTouched && localPriceMinor === null;
 
-  useUnsavedChanges(editorDirty);
+  const navigateAfterGuard = useUnsavedChanges(editorDirty);
 
   // Autosave (A3.1/A3.7).
   //
@@ -833,7 +833,9 @@ export function ProductEditorWorkspace({
     setPendingSection(null);
     if (!target) return;
     setCurriculumDirty(false);
-    router.replace(`?section=${target}`, { scroll: false });
+    // Espera a guarda tirar a sentinela: o `popstate` do `history.back()`
+    // dela desfaria uma troca de etapa feita no mesmo evento (#615).
+    navigateAfterGuard(() => router.replace(`?section=${target}`, { scroll: false }));
   }
 
   function discardLocalEdits() {

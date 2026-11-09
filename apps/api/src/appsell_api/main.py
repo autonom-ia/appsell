@@ -14,6 +14,7 @@ from .attribution_retention_worker import run_attribution_retention_loop
 from .campaign_link_routes import public_router as tracking_public_router
 from .campaign_link_routes import router as campaign_link_router
 from .catalog_routes import router as catalog_router
+from .checkout_order_routes import router as checkout_order_router
 from .checkout_routes import router as checkout_router
 from .config import Settings, get_settings
 from .cover_routes import router as cover_router
@@ -274,6 +275,7 @@ app.include_router(email_preferences_router)
 app.include_router(webhook_router)
 app.include_router(campaign_link_router)
 app.include_router(tracking_public_router)
+app.include_router(checkout_order_router)
 
 
 @app.get("/health/live")
