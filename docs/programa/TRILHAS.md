@@ -51,14 +51,14 @@ Plataforma. Uma reserva vale por 7 dias sem PR aberto.
 | `0067` | D · Produto e preço | #553 fase 1 | PR #572 |
 | `0068` | D · Produto e preço | #553 fase 2 | reservada em 05/11 |
 | `0069` | E · Conteúdo e membros | #558 | PR #583 |
-| `0070` | E · Conteúdo e membros | #559 | reservada em 05/11 |
+| `0070` | E · Conteúdo e membros | #559 | parte B1 (código da compra e cópia marcada), PR #636 |
 | `0071` | 1 · Plataforma | #550 | PR #578 |
 | `0072` | F · Crescimento | #562 | PR #594 |
 | `0073` | 2 · Dinheiro | #545 | PR #587 |
 | `0074` | 2 · Dinheiro | #542 | PR #593 |
 | `0075` | F · Crescimento | #563 | PR #599 |
 | `0076` | F · Crescimento | #561 (search_path) | PR #597 |
-| `0077` | D · Produto e preço | #154 (pedido pinado, fatia 1) | reservada em 09/11, PR desta fatia |
+| `0077` | D · Produto e preço | #154 (pedido pinado, fatia 1) | mergeada (#639) |
 
 O número reservado é da trilha, mas o `down_revision` é o head da `main` na
 hora do merge: quem entra depois rebaseia. O CI (`migration_shape`, #551) barra
