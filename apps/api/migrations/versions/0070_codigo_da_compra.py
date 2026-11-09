@@ -61,11 +61,11 @@ TAMANHO_DO_CODIGO = 10
 # descartado, para que cada letra saia com a mesma chance.
 LIMITE_SEM_VIES = 240
 TENTATIVAS_DE_CODIGO = 8
-# O teto do PDF no catálogo (`asset_media.SUPPORTED_MEDIA`, 100 MiB), escrito
-# aqui como número porque a migration não muda quando o catálogo mudar. A cópia
-# marcada de um PDF no limite pode passar do teto por causa do rodapé: o
-# registro dela é recusado, e a parte B2 precisa tratar essa recusa.
-TETO_DA_COPIA_EM_BYTES = 104_857_600
+# O teto do PDF no catálogo (`asset_media.SUPPORTED_MEDIA`, 100 MiB) mais 10%
+# de folga: 110 MiB. A folga existe porque o rodapé aumenta o arquivo, e a cópia
+# de um PDF no limite não pode ser recusada só por isso. Escrito aqui como
+# número porque a migration não muda quando o catálogo mudar.
+TETO_DA_COPIA_EM_BYTES = 115_343_360
 SEARCH_PATH = "set search_path=pg_catalog,app_private,public,pg_temp"
 
 TABELAS = ("purchase_code", "watermarked_asset_copy")

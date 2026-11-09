@@ -48,8 +48,8 @@ RESOLVER = "seller.purchase_code.resolve"
 # O bucket do blob que `add_asset` cria: a cópia mora no mesmo bucket do original.
 BUCKET = "pytest-policy"
 TAMANHO_DA_COPIA = 2048
-# O teto do PDF no catálogo, o mesmo da migration 0070.
-TETO_DA_COPIA = 104_857_600
+# O teto da cópia na migration 0070: o do PDF no catálogo (100 MiB) + 10%.
+TETO_DA_COPIA = 115_343_360
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -434,7 +434,7 @@ def test_registro_com_hash_ou_tamanho_invalido_e_recusado(
         _registra(entitlement, pdf.asset, version, f"{prefixo}{sha}.pdf", sha, tamanho=tamanho)
 
 
-def test_a_copia_no_teto_do_pdf_e_aceita() -> None:
+def test_a_copia_no_teto_e_aceita() -> None:
     _graph, pdf, _video, entitlement = _loja_com_pdf()
     _seller, _code, version, _bucket, prefixo, *_ = _prepara(BUYER, entitlement, pdf.asset)
     sha = digest("copia no teto")

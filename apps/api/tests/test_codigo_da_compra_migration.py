@@ -143,10 +143,13 @@ def test_a_descida_recusa_com_codigo_emitido_antes_de_tudo(migration: ModuleType
     assert comandos[-1] == "drop table app_private.purchase_code"
 
 
-def test_a_copia_tem_o_teto_do_pdf_do_catalogo(migration: ModuleType) -> None:
-    # Pega: o catálogo e o banco aceitando tamanhos diferentes para o mesmo PDF.
-    assert migration.TETO_DA_COPIA_EM_BYTES == max_bytes(PDF_MEDIA_TYPE)
+def test_a_copia_tem_o_teto_do_pdf_do_catalogo_com_folga(migration: ModuleType) -> None:
+    # Pega: o teto da cópia descolado do teto do PDF no catálogo, ou sem a
+    # folga de 10% para o rodapé. Conta inteira, sem arredondamento de float.
+    teto_do_catalogo = max_bytes(PDF_MEDIA_TYPE)
+    assert teto_do_catalogo * 11 % 10 == 0
+    assert migration.TETO_DA_COPIA_EM_BYTES == teto_do_catalogo * 11 // 10
     assert (
         f"byte_size bigint not null check (byte_size between 1 and "
-        f"{max_bytes(PDF_MEDIA_TYPE)})" in migration._CRIA_TABELAS[1]
+        f"{migration.TETO_DA_COPIA_EM_BYTES})" in migration._CRIA_TABELAS[1]
     )
