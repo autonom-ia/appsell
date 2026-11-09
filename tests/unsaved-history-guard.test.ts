@@ -34,6 +34,8 @@ class FakeBrowser {
   leftProduct = false;
   private scheduled: Array<{ target?: number; delta?: number }> = [];
   private timers = new Map<number, () => void>();
+  /** URLs que a guarda pediu ao router do app. */
+  readonly routerReplaces: string[] = [];
   private nextTimer = 1;
 
   constructor(private readonly engine: Engine) {}
@@ -50,12 +52,14 @@ class FakeBrowser {
       go: (delta = 0) => this.traverse(delta)
     };
     Object.defineProperty(history, "state", { get: () => this.entries[this.index].state });
+    Object.defineProperty(history, "length", { get: () => this.entries.length });
     const location = {};
     Object.defineProperty(location, "href", { get: () => this.url });
     return {
       events: this.events,
       location: location as GuardEnvironment["location"],
       history: history as unknown as GuardEnvironment["history"],
+      router: { replace: (url) => { this.routerReplaces.push(url); this.routerReplace(url); } },
       timers: {
         set: (callback) => {
           const id = this.nextTimer++;
@@ -89,6 +93,12 @@ class FakeBrowser {
 
   /** `router.push` do Next: entrada nova na mesma página, sem popstate. */
   routerPush(url: string) {
+    // Mesma URL: o Next não empilha, troca o estado da entrada (e com ele a
+    // marca da guarda), como no `HistoryUpdater` do app router.
+    if (url === this.url) {
+      this.routerReplace(url);
+      return;
+    }
     this.push({ document: "product", state: { __NA: true }, url });
   }
 
@@ -178,6 +188,7 @@ function legacyGuard(env: GuardEnvironment, initialDirty: boolean): UnsavedHisto
       cleanup?.();
       cleanup = effect(next);
     },
+    whenSettled(navigate) { navigate(); },
     dispose() { cleanup?.(); }
   };
 }
@@ -344,33 +355,118 @@ describe("guarda de alterações não salvas (#612)", () => {
   );
 
   it.each<Engine>(["webkit", "chromium"])(
-    "no %s, um link de fragmento com a tela suja não trava a guarda nem abre diálogo",
+    "no %s, um link de fragmento com a tela suja não empilha outra sentinela nem abre diálogo",
     (engine) => {
       const browser = new FakeBrowser(engine);
       let bloqueios = 0;
       browser.events.addEventListener(DIRTY_HISTORY_BLOCKED_EVENT, () => { bloqueios += 1; });
       const guard = createUnsavedHistoryGuard(browser.env, true);
+      const sentinela = browser.index;
 
-      // O skip-link empilha uma entrada em cima da sentinela: o `go(1)` que
-      // tentaria devolvê-la não tem para onde ir.
+      // O skip-link empilha uma entrada do próprio vendedor em cima da
+      // sentinela. Ela continua embaixo, protegendo: nada de sentinela nova
+      // enterrando a antiga (#615, ponto E).
       browser.fragment("conteudo");
       browser.settle();
       browser.elapse();
-      const fragmento = browser.index - 1;
-      expect(browser.entries[fragmento].url).toBe(`${PRODUCT_URL}#conteudo`);
-      expect(browser.index).toBe(fragmento + 1);
-
-      // Salvar limpa a tela: a sentinela sai e nenhum diálogo aparece.
-      guard.setDirty(false);
-      browser.settle();
-      expect(browser.index).toBe(fragmento);
+      expect(browser.entries.length).toBe(sentinela + 2);
+      expect(browser.url).toBe(`${PRODUCT_URL}#conteudo`);
       expect(bloqueios).toBe(0);
-      expect(browser.leftProduct).toBe(false);
 
-      // E o próximo voltar, com a tela limpa, é só do usuário.
+      // Voltar do fragmento cai na sentinela: é o lugar de antes, na mesma
+      // página, sem diálogo.
       browser.userBack();
       browser.settle();
+      browser.elapse();
+      expect(browser.index).toBe(sentinela);
       expect(bloqueios).toBe(0);
+
+      // Voltar de novo é sair com alteração pendente: diálogo.
+      browser.userBack();
+      browser.settle();
+      expect(bloqueios).toBe(1);
+      expect(browser.index).toBe(sentinela);
+      expect(browser.leftProduct).toBe(false);
+
+      // Salvar limpa a tela e a sentinela sai.
+      guard.setDirty(false);
+      browser.settle();
+      expect(browser.index).toBe(sentinela - 1);
+    }
+  );
+
+  it.each<Engine>(["webkit", "chromium"])(
+    "no %s, salvar depois do fragmento não deixa a sentinela no caminho do voltar",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      let bloqueios = 0;
+      browser.events.addEventListener(DIRTY_HISTORY_BLOCKED_EVENT, () => { bloqueios += 1; });
+      const guard = createUnsavedHistoryGuard(browser.env, true);
+      const sentinela = browser.index;
+      browser.fragment("conteudo");
+      browser.settle();
+      guard.setDirty(false);
+      browser.settle();
+      expect(bloqueios).toBe(0);
+
+      // Limpa, o voltar do fragmento atravessa a sentinela sozinho: a guarda
+      // pousa nela e já segue para a entrada de antes.
+      browser.userBack();
+      browser.settle();
+      expect(browser.index).toBe(sentinela - 1);
+      expect(bloqueios).toBe(0);
+      expect(browser.leftProduct).toBe(false);
+    }
+  );
+
+  it.each<Engine>(["webkit", "chromium"])(
+    "no %s, o go(1) que chega depois do prazo pousa numa sentinela que a guarda reconhece",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      let bloqueios = 0;
+      browser.events.addEventListener(DIRTY_HISTORY_BLOCKED_EVENT, () => { bloqueios += 1; });
+      const guard = createUnsavedHistoryGuard(browser.env, true);
+      const sentinela = browser.index;
+
+      // O voltar do usuário: a guarda pede `go(1)`, mas a travessia demora. O
+      // vendedor salva nesse meio-tempo e o prazo esgota com a tela limpa.
+      browser.userBack();
+      guard.setDirty(false);
+      browser.elapse();
+      // A travessia chega atrasada e pousa na sentinela (#615, ponto B).
+      browser.step();
+      expect(browser.index).toBe(sentinela);
+
+      // A guarda a reconhece pela marca e a tira: a tela limpa não fica em
+      // cima de uma sentinela que ninguém mais conta.
+      browser.settle();
+      expect(browser.index).toBe(sentinela - 1);
+      expect(bloqueios).toBe(0);
+      expect(browser.leftProduct).toBe(false);
+    }
+  );
+
+  it.each<Engine>(["webkit", "chromium"])(
+    "no %s, uma navegação liberada para a mesma URL rearma a guarda sem empilhar entrada",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      let bloqueios = 0;
+      browser.events.addEventListener(DIRTY_HISTORY_BLOCKED_EVENT, () => { bloqueios += 1; });
+      const guard = createUnsavedHistoryGuard(browser.env, true);
+      const sentinela = browser.index;
+
+      // "Descartar e ir" para a própria URL: o Next troca o estado da entrada
+      // em vez de empilhar, e a tela continua montada (#615, ponto F).
+      browser.events.dispatchEvent(new Event("appsell:dirty-navigation-allowed"));
+      guard.setDirty(false);
+      browser.routerPush(PRODUCT_URL);
+
+      guard.setDirty(true);
+      expect(browser.entries.length).toBe(sentinela + 1);
+      browser.userBack();
+      browser.settle();
+      expect(bloqueios).toBe(1);
+      expect(browser.leftProduct).toBe(false);
     }
   );
 
@@ -384,9 +480,90 @@ describe("guarda de alterações não salvas (#612)", () => {
       browser.settle();
       expect(browser.index).toBe(1);
       expect(browser.url).toBe(`${PRODUCT_URL}?section=oferta`);
+      // Pelo router do app, não por `replaceState` por fora dele (#615, C).
+      expect(browser.routerReplaces).toEqual([`${PRODUCT_URL}?section=oferta`]);
       expect(browser.entries[1].state).toEqual({ __NA: true });
     }
   );
+
+  it.each<Engine>(["webkit", "chromium"])(
+    "no %s, a troca de etapa pedida enquanto a sentinela sai espera o popstate dela",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      const guard = createUnsavedHistoryGuard(browser.env, true);
+      const navegacoes: string[] = [];
+      // "Descartar": a tela fica limpa e a etapa troca no mesmo evento. Se a
+      // troca fosse antes do popstate do `back()`, o Next restauraria a etapa
+      // de onde o vendedor saiu (#615, C).
+      guard.setDirty(false);
+      guard.whenSettled(() => {
+        navegacoes.push(browser.url);
+        browser.routerReplace(`${PRODUCT_URL}?section=oferta`);
+      });
+      expect(navegacoes).toEqual([]);
+      browser.settle();
+      expect(navegacoes).toEqual([PRODUCT_URL]);
+      expect(browser.index).toBe(1);
+      expect(browser.url).toBe(`${PRODUCT_URL}?section=oferta`);
+      // Um único voltar sai da tela: não sobrou sentinela.
+      browser.userBack();
+      browser.settle();
+      expect(browser.leftProduct).toBe(true);
+    }
+  );
+
+  it.each<Engine>(["webkit", "chromium"])(
+    "no %s, se o popstate da saída nunca chega, a troca de etapa segue no prazo",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      const guard = createUnsavedHistoryGuard(browser.env, true);
+      let navegou = 0;
+      guard.setDirty(false);
+      guard.whenSettled(() => { navegou += 1; });
+      // O `back()` da guarda foi pedido e o navegador não o entregou: sem o
+      // prazo, o vendedor ficaria preso no editor.
+      expect(navegou).toBe(0);
+      browser.elapse();
+      expect(navegou).toBe(1);
+      // O popstate atrasado não repete a navegação que já seguiu.
+      browser.settle();
+      expect(navegou).toBe(1);
+    }
+  );
+
+  it("a navegação que assentou a tempo não roda de novo no prazo", () => {
+    const browser = new FakeBrowser("webkit");
+    const guard = createUnsavedHistoryGuard(browser.env, true);
+    let navegou = 0;
+    guard.setDirty(false);
+    guard.whenSettled(() => { navegou += 1; });
+    browser.settle();
+    expect(navegou).toBe(1);
+    browser.elapse();
+    expect(navegou).toBe(1);
+  });
+
+  it("com o histórico assentado, a navegação pedida roda na hora", () => {
+    const browser = new FakeBrowser("webkit");
+    const guard = createUnsavedHistoryGuard(browser.env, true);
+    let navegou = 0;
+    guard.whenSettled(() => { navegou += 1; });
+    expect(navegou).toBe(1);
+    guard.setDirty(false);
+    browser.settle();
+    guard.whenSettled(() => { navegou += 1; });
+    expect(navegou).toBe(2);
+  });
+
+  it("desmontar com navegação à espera deixa ela seguir", () => {
+    const browser = new FakeBrowser("chromium");
+    const guard = createUnsavedHistoryGuard(browser.env, true);
+    let navegou = 0;
+    guard.setDirty(false);
+    guard.whenSettled(() => { navegou += 1; });
+    guard.dispose();
+    expect(navegou).toBe(1);
+  });
 
   it("desmontar com a tela suja tira a sentinela", () => {
     const browser = new FakeBrowser("webkit");
