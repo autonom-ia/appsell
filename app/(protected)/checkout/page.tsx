@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 
 import { DemoCheckoutWorkspace } from "../../components/demo-checkout-workspace";
 import { StripeCheckoutCard } from "../../components/stripe-checkout-card";
+import { isChargeableBuyerEmail } from "@/lib/buyer-email";
 import { readBuyerSession } from "@/lib/buyer-identity.server";
 import { readCheckoutPageOffer } from "@/lib/checkout-page-offer.server";
 import { sessionCookieName } from "@/lib/cookies";
@@ -48,6 +49,19 @@ export default async function DemoCheckoutPage({
         <CheckoutNotice title="Não foi possível confirmar seu login">
           Não conseguimos confirmar seu login agora. Tente de novo em alguns
           minutos. Nenhuma cobrança foi realizada.
+        </CheckoutNotice>
+      </>;
+    }
+
+    // O mesmo filtro de e-mail da rota de cobrança: um e-mail verificado que o
+    // ingresso do pagamento recusaria (fora de ASCII, sem ponto no domínio,
+    // longo demais) levaria 400 ao pagar. Aqui ele vê o motivo antes.
+    if (!isChargeableBuyerEmail(buyer.email)) {
+      return <>
+        {header}
+        <CheckoutNotice title="Este e-mail não pode ser usado no pagamento">
+          O e-mail da sua conta não é aceito pelo pagamento. Entre com outra
+          conta para comprar. Nenhuma cobrança foi realizada.
         </CheckoutNotice>
       </>;
     }
