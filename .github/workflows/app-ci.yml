@@ -85,11 +85,50 @@ jobs:
         shell: bash
         run: python3 scripts/ci/check_migration_chain.py apps/api/migrations/versions
 
-      - name: Validate workflow schema with checksum-pinned actionlint
+      # #634: o actionlint vem do actions/cache entre runs. O GitHub Releases
+      # só é consultado quando a chave (versão + plataforma + sha256) muda ou o
+      # cache expira, com retentativa longa. O sha256 é conferido sempre, com
+      # cache ou sem, e o cache só é gravado depois dessa conferência.
+      - name: Resolve the pinned actionlint cache key
+        id: actionlint-key
         if: ${{ !cancelled() && steps.route.outputs.workflow == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
+          key="$(bash scripts/ci/run_actionlint.sh --cache-key)"
+          test -n "$key"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the pinned actionlint from cache
+        id: actionlint-cache
+        if: ${{ !cancelled() && steps.actionlint-key.outcome == 'success' }}
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/appsell-pinned/actionlint
+          key: ${{ steps.actionlint-key.outputs.key }}
+
+      - name: Fetch the pinned actionlint on cache miss and verify its checksum
+        id: actionlint-fetch
+        if: ${{ !cancelled() && steps.actionlint-key.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export APPSELL_PINNED_CACHE_DIR="$HOME/.cache/appsell-pinned/actionlint"
+          bash scripts/ci/run_actionlint.sh --fetch-only
+
+      - name: Save the verified actionlint to cache
+        if: ${{ !cancelled() && steps.actionlint-fetch.outcome == 'success' && steps.actionlint-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/appsell-pinned/actionlint
+          key: ${{ steps.actionlint-key.outputs.key }}
+
+      - name: Validate workflow schema with checksum-pinned actionlint
+        if: ${{ !cancelled() && steps.route.outputs.workflow == 'true' && steps.actionlint-fetch.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export APPSELL_PINNED_CACHE_DIR="$HOME/.cache/appsell-pinned/actionlint"
           workflows=()
           while IFS= read -r -d '' candidate; do
             workflows+=("$candidate")
@@ -306,12 +345,51 @@ jobs:
           pnpm exec playwright install --with-deps chromium
           ./scripts/test-postgres-foundation.sh
 
+      # #634: o binário do MinIO vem do actions/cache entre runs, como o
+      # actionlint. O sha256 é conferido na cópia que roda, com cache ou sem.
+      # Se a busca falhar, o cert-storage roda mesmo assim e tenta de novo;
+      # o job já fica vermelho pela falha desta busca.
+      - name: Resolve the pinned MinIO cache key
+        id: minio-key
+        if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && steps.policy.outputs.product_checks == 'true') || github.event_name == 'workflow_dispatch') && steps.route.outputs.storage == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="$(bash scripts/test-storage-minio.sh --cache-key)"
+          test -n "$key"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the pinned MinIO from cache
+        id: minio-cache
+        if: ${{ !cancelled() && steps.minio-key.outcome == 'success' }}
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/appsell-pinned/minio
+          key: ${{ steps.minio-key.outputs.key }}
+
+      - name: Fetch the pinned MinIO on cache miss and verify its checksum
+        id: minio-fetch
+        if: ${{ !cancelled() && steps.minio-key.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export APPSELL_PINNED_CACHE_DIR="$HOME/.cache/appsell-pinned/minio"
+          bash scripts/test-storage-minio.sh --fetch-only
+
+      - name: Save the verified MinIO to cache
+        if: ${{ !cancelled() && steps.minio-fetch.outcome == 'success' && steps.minio-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/appsell-pinned/minio
+          key: ${{ steps.minio-key.outputs.key }}
+
       - name: Certify storage on the integrated SHA
         id: cert-storage
         if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && steps.policy.outputs.product_checks == 'true') || github.event_name == 'workflow_dispatch') && steps.route.outputs.storage == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
+          export APPSELL_PINNED_CACHE_DIR="$HOME/.cache/appsell-pinned/minio"
           ./scripts/test-storage-vertical.sh
           ./scripts/test-storage-minio.sh
 
