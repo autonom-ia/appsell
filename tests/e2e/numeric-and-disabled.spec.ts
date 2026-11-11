@@ -20,7 +20,7 @@ const PRODUCT_ID = "82efefc5-a3c9-5126-a7d1-4918d5428d63";
 const COURSE_ID = "9a4a73d6-bf11-5429-8582-89434000af44";
 const OFFER_ID = "b1d0c9f6-5a1e-52a4-9c3f-2f0f1d3a7e55";
 
-function productPayload() {
+function productPayload(unitAmountMinor: number | null = 4990) {
   return {
     id: PRODUCT_ID,
     seller_organization_id: SELLER_ID,
@@ -45,7 +45,7 @@ function productPayload() {
       summary: "",
       status: "draft",
       draft_version: 1,
-      unit_amount_minor: 4990,
+      unit_amount_minor: unitAmountMinor,
       currency: "BRL",
       billing_period: "one_time"
     },
@@ -61,9 +61,26 @@ function productPayload() {
   };
 }
 
+/**
+ * O produto com estado, como o servidor real (#626): o PATCH grava o preço e o
+ * GET seguinte devolve o que foi gravado. Sem isso, um salvamento automático
+ * fora de hora trazia de volta "49,90", um preço que ninguém salvou.
+ *
+ * O salvamento automático pode, sim, rodar no meio dos testes de preço (2,5 s
+ * sem edição bastam, e o runner às vezes pausa isso). Com este mock ele devolve
+ * o que foi salvo, e o campo fica como a pessoa deixou.
+ */
 async function mockEditor(page: Page) {
+  let unitAmountMinor: number | null = 4990;
   await page.route(`**/api/sellers/${SELLER_ID}/products/${PRODUCT_ID}`, async (route) => {
-    await route.fulfill({ json: productPayload() });
+    const request = route.request();
+    if (request.method() === "PATCH") {
+      const body = new Uint8Array(request.postDataBuffer() ?? Buffer.alloc(0));
+      const form = await new Response(body, { headers: { "content-type": request.headers()["content-type"] ?? "" } }).formData();
+      const saved = form.get("offer_unit_amount_minor");
+      if (typeof saved === "string") unitAmountMinor = saved === "" ? null : Number(saved);
+    }
+    await route.fulfill({ json: productPayload(unitAmountMinor) });
   });
   await page.route("**/api/sellers/**/curriculum", async (route) => {
     await route.fulfill({ json: { course: { id: COURSE_ID, title: "Especialista" }, modules: [], limits: { modules_per_course: 20, lessons_per_module: 30, lessons_per_course: 200 }, usage: { modules: 0, lessons_total: 0, lessons_by_module: {} }, csrf: {} } });

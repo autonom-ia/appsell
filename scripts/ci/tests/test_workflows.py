@@ -210,6 +210,50 @@ class AppCiWorkflowTests(unittest.TestCase):
         self.assertIn('if [ "$os" = linux ]; then', script)
         self.assertIn("steps.route.outputs.workflow == 'true'", self.source)
 
+    def test_pinned_binaries_come_from_cache_and_are_always_verified(self) -> None:
+        # #634: um 504 do GitHub Releases derrubava certificações verdes. O
+        # binário vem do actions/cache; o download fica só para cache miss, e
+        # o sha256 é conferido com cache ou sem.
+        helper = (ROOT / "scripts" / "ci" / "pinned_download.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("--retry-all-errors", helper)
+        self.assertIn("--retry-max-time 120", helper)
+        self.assertIn("::error title=Download externo indisponível", helper)
+        self.assertNotIn("sha256", helper.split("pinned_fetch() {", 1)[1])
+
+        for name, label, script_path in (
+            ("actionlint", "actionlint", "scripts/ci/run_actionlint.sh"),
+            ("minio", "MinIO", "scripts/test-storage-minio.sh"),
+        ):
+            with self.subTest(binary=name):
+                script = (ROOT / script_path).read_text(encoding="utf-8")
+                self.assertIn("pinned_fetch ", script)
+                self.assertIn("sha256sum --check --status", script)
+                self.assertNotIn("curl ", script.split("pinned_fetch ", 1)[0])
+                self.assertIn(f"bash {script_path} --cache-key", self.source)
+                self.assertIn(f"bash {script_path} --fetch-only", self.source)
+                cache_dir = f"~/.cache/appsell-pinned/{name}"
+                self.assertEqual(2, self.source.count(f"path: {cache_dir}"))
+                self.assertIn(
+                    f'APPSELL_PINNED_CACHE_DIR="$HOME/.cache/appsell-pinned/{name}"',
+                    self.source,
+                )
+                save = self.source.index(f"- name: Save the verified {label} to cache")
+                block = self.source[save : self.source.index("- name:", save + 1)]
+                self.assertIn(f"steps.{name}-fetch.outcome == 'success'", block)
+                self.assertIn(f"steps.{name}-cache.outputs.cache-hit != 'true'", block)
+                self.assertIn("uses: actions/cache/save@", block)
+        self.assertEqual(2, self.source.count("uses: actions/cache/restore@"))
+
+    def test_actionlint_runs_only_after_the_verified_fetch(self) -> None:
+        start = self.source.index(
+            "- name: Validate workflow schema with checksum-pinned actionlint"
+        )
+        block = self.source[start : self.source.index("- name:", start + 1)]
+        self.assertIn("steps.route.outputs.workflow == 'true'", block)
+        self.assertIn("steps.actionlint-fetch.outcome == 'success'", block)
+
     def test_preview_contract_is_exercised_for_manual_provenance(self) -> None:
         self.assertIn(
             "APPSELL_ARTIFACT_EVENT=workflow_dispatch bash deploy/preview-vps/test-verify-downloads-local.sh",

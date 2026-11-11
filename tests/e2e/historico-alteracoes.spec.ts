@@ -135,3 +135,82 @@ test("a tela do produto fica onde está quando o estado oscila rápido", async (
   await page.goBack();
   await expect(page).toHaveURL("/dashboard");
 });
+
+// Troca de etapa com alteração pendente (#615, ponto C). As etapas usam
+// `router.replace`: a URL muda com a sentinela da guarda ainda no topo, e a
+// guarda a tira logo depois. O que se prova é o que o vendedor vê — a URL e a
+// etapa na tela concordam, agora e depois de voltar e avançar.
+test.describe("troca de etapa com alteração pendente", () => {
+  const COURSE_ID = "9a4a73d6-bf11-5429-8582-89434000af44";
+
+  function produto(titulo: string) {
+    return {
+      id: PRODUCT_ID, seller_organization_id: SELLER_ID, seller_slug: "autonomia",
+      slug: "ia-na-pratica", title: titulo, description: "Conteúdo",
+      status: "draft", draft_version: 3,
+      course: { id: COURSE_ID, title: "Especialista", description: "", status: "draft", draft_version: 2, position: 1 },
+      courses: [],
+      offer: { id: "b1d0c9f6-5a1e-52a4-9c3f-2f0f1d3a7e55", title: "Padrão", summary: "", status: "draft", draft_version: 1, unit_amount_minor: 0, currency: "BRL", billing_period: "one_time" },
+      curriculum: { modules: 0, lessons: 0 },
+      publication: null,
+      has_unpublished_changes: false,
+      readiness: { can_publish: false, has_unpublished_changes: false, items: [] },
+      csrf: { update: "u", publish: "p", offer_status: "o" }
+    };
+  }
+
+  async function abrirNaEtapaProduto(page: Page) {
+    let titulo = TITULO;
+    await page.route(`**/api/sellers/${SELLER_ID}/products/${PRODUCT_ID}`, async (route) => {
+      if (route.request().method() === "PATCH") {
+        const posted = route.request().postDataBuffer();
+        const form = await new Request(route.request().url(), {
+          method: "PATCH", headers: route.request().headers(), body: posted ? new Uint8Array(posted) : undefined
+        }).formData();
+        titulo = String(form.get("product_title"));
+        return route.fulfill({ json: { ok: true } });
+      }
+      if (route.request().method() !== "GET") return route.fallback();
+      await route.fulfill({ json: produto(titulo) });
+    });
+    await page.goto(`${PRODUCT_PATH}?section=produto`);
+    await expect(page.getByLabel("Nome do produto")).toHaveValue(TITULO);
+  }
+
+  // A guarda terminou o que tinha a fazer: nenhuma sentinela dela no topo.
+  async function guardaAssentada(page: Page) {
+    await expect.poll(() => page.evaluate(() => {
+      const state = history.state as { __appsellDirtyGuard?: unknown } | null;
+      return state?.__appsellDirtyGuard ?? null;
+    })).toBeNull();
+  }
+
+  async function confereEtapaPreco(page: Page) {
+    await expect(page).toHaveURL(`${PRODUCT_PATH}?section=oferta`);
+    await expect(page.getByLabel("Preço (R$)")).toBeVisible();
+    await expect(page.getByLabel("Nome do produto")).toHaveCount(0);
+  }
+
+  for (const saida of ["Descartar", "Salvar e continuar"] as const) {
+    test(`"${saida}" leva à etapa pedida, e voltar e avançar mantêm URL e tela juntas`, async ({ page }) => {
+      await login(page);
+      await abrirNaEtapaProduto(page);
+      await page.getByLabel("Nome do produto").fill(`${TITULO} 2`);
+      await page.getByRole("navigation", { name: "Áreas do produto" })
+        .getByRole("link", { name: /^Preço/ }).click();
+      await expect(page.getByRole("heading", { name: "Guardar antes de sair desta etapa?" })).toBeVisible();
+      await page.getByRole("button", { name: saida }).click();
+
+      await confereEtapaPreco(page);
+      await guardaAssentada(page);
+      await confereEtapaPreco(page);
+
+      // As etapas trocam a URL sem empilhar: um voltar sai do editor.
+      await page.goBack();
+      await expect(page).toHaveURL("/dashboard");
+      // E avançar volta à etapa em que o vendedor estava, com a tela dela.
+      await page.goForward();
+      await confereEtapaPreco(page);
+    });
+  }
+});
