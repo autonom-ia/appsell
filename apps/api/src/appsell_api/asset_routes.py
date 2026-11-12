@@ -48,6 +48,7 @@ from .storage_s3 import (
 
 router = APIRouter(prefix="/v1")
 _logger = get_logger(__name__)
+_SIGN_CAPABILITY = "catalog.asset.upload.sign"
 _MAX_SAFE_INTEGER = (1 << 53) - 1
 _MAX_PDF_BYTES = _catalogue_max_bytes(PDF_MEDIA_TYPE)
 _MAX_VIDEO_BYTES = _catalogue_max_bytes(VIDEO_MEDIA_TYPE)
@@ -422,8 +423,11 @@ async def read_asset_upload_parts(
 
     Sem esta resposta o navegador não teria como saber o que sobreviveu a uma
     queda de rede, e a única saída honesta seria mandar tudo de novo.
+
+    Pede a capacidade de assinar, e não a de ler: a listagem é um passo do
+    envio, e o banco só entrega a intenção a quem está assinando partes dela.
     """
-    auth, internal = await _authenticate(request, "catalog.asset.read")
+    auth, internal = await _authenticate(request, _SIGN_CAPABILITY)
     await _require_seller(internal, seller_id)
     storage = await _storage(request, internal)
     signing, plan = await _multipart_context(
@@ -488,7 +492,7 @@ async def sign_asset_upload_part(
     Uma URL por parte, e não uma para o arquivo todo: cada uma dura pouco, e é
     isso que permite um envio longo sobreviver ao prazo da assinatura.
     """
-    auth, internal = await _authenticate(request, "catalog.asset.upload.sign")
+    auth, internal = await _authenticate(request, _SIGN_CAPABILITY)
     await _require_seller(internal, seller_id)
     body = await _model_from_body(AssetUploadPartBody, internal)
     storage = await _storage(request, internal)
@@ -900,17 +904,28 @@ async def _multipart_context(
     O plano é derivado do tamanho gravado na intenção, e não de nada que venha
     no pedido: é o mesmo número dos dois lados, e não dá para pedir um plano
     diferente do que foi declarado.
+
+    Quem chega aqui é um pedido próprio do navegador (listar ou assinar uma
+    parte), sem sessão de domínio antes dele. Uma continuação seria recusada
+    sempre, porque não há nada para continuar: por isso a leitura abre a
+    sessão do próprio pedido, que já foi assinado com a capacidade de assinar.
     """
-    signing = await _read_upload_for_signing(
-        auth=auth,
-        envelope=envelope,
-        seller_id=seller_id,
-        product_id=product_id,
-        course_id=course_id,
-        module_id=module_id,
-        lesson_id=lesson_id,
-        upload_id=upload_id,
-    )
+    if envelope.capability != _SIGN_CAPABILITY:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+    try:
+        async with auth.domain_session(envelope) as session:
+            signing = await _select_upload_for_signing(
+                session,
+                actor=envelope.identity.user_id,
+                seller_id=seller_id,
+                product_id=product_id,
+                course_id=course_id,
+                module_id=module_id,
+                lesson_id=lesson_id,
+                upload_id=upload_id,
+            )
+    except DBAPIError as error:
+        raise _domain_error(error) from error
     if not needs_multipart(int(signing["byte_size"])):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="asset_upload_is_not_multipart"
@@ -934,25 +949,41 @@ async def _read_upload_for_signing(
     lesson_id: UUID,
     upload_id: UUID,
 ) -> dict[str, Any]:
-    signing_envelope = replace(envelope, capability="catalog.asset.upload.sign")
+    signing_envelope = replace(envelope, capability=_SIGN_CAPABILITY)
     async with auth.continuation_domain_session(signing_envelope) as session:
-        value = await session.scalar(
-            text(
-                "select app_private.read_asset_upload_for_signing("
-                ":actor,:seller,:product,:course,:module,:lesson,:upload)"
-            ),
-            {
-                **_route_parameters(
-                    envelope.identity.user_id,
-                    seller_id,
-                    product_id,
-                    course_id,
-                    module_id,
-                    lesson_id,
-                ),
-                "upload": upload_id,
-            },
+        return await _select_upload_for_signing(
+            session,
+            actor=envelope.identity.user_id,
+            seller_id=seller_id,
+            product_id=product_id,
+            course_id=course_id,
+            module_id=module_id,
+            lesson_id=lesson_id,
+            upload_id=upload_id,
         )
+
+
+async def _select_upload_for_signing(
+    session: Any,
+    *,
+    actor: UUID,
+    seller_id: UUID,
+    product_id: UUID,
+    course_id: UUID,
+    module_id: UUID,
+    lesson_id: UUID,
+    upload_id: UUID,
+) -> dict[str, Any]:
+    value = await session.scalar(
+        text(
+            "select app_private.read_asset_upload_for_signing("
+            ":actor,:seller,:product,:course,:module,:lesson,:upload)"
+        ),
+        {
+            **_route_parameters(actor, seller_id, product_id, course_id, module_id, lesson_id),
+            "upload": upload_id,
+        },
+    )
     return _json_object(value)
 
 
