@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   DIRTY_HISTORY_BLOCKED_EVENT,
   DIRTY_HISTORY_CONTINUE_EVENT,
+  DIRTY_IN_PAGE_TRAVERSAL_EVENT,
   createUnsavedHistoryGuard,
   unsavedGuardMarkOf,
   type GuardEnvironment,
@@ -658,6 +659,109 @@ describe("guarda de alterações não salvas (#612)", () => {
       expect(browser.url).toBe(lista);
       expect(browser.routerReplaces).toEqual([]);
       expect(browser.leftProduct).toBe(false);
+      guard.dispose();
+    }
+  );
+
+  // O "Voltar para o curso" da aula aberta pela lista, com a guarda armada:
+  // o que `closeLesson` faz no curso (#649).
+  function voltarDaAula(browser: FakeBrowser) {
+    browser.events.dispatchEvent(new Event(DIRTY_IN_PAGE_TRAVERSAL_EVENT));
+    browser.env.history.go(-2);
+  }
+
+  /** Abrir uma aula pela lista, enviar um material, voltar e o envio terminar. */
+  function cicloDeEnvio(browser: FakeBrowser, guard: UnsavedHistoryGuard, aula: number) {
+    browser.env.history.pushState({ __NA: true }, "", `${PRODUCT_URL}?section=curriculo&aula=${aula}`);
+    guard.setDirty(true);
+    voltarDaAula(browser);
+    browser.settle();
+    guard.setDirty(false);
+    browser.settle();
+  }
+
+  it.each<Engine>(["webkit", "chromium"])(
+    "no %s, três envios seguidos em três aulas não acumulam entradas no histórico",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      let bloqueios = 0;
+      browser.events.addEventListener(DIRTY_HISTORY_BLOCKED_EVENT, () => { bloqueios += 1; });
+      browser.env.history.replaceState({ __NA: true }, "", `${PRODUCT_URL}?section=curriculo`);
+      const guard = createUnsavedHistoryGuard(browser.env, false);
+      const lista = browser.index;
+
+      for (const aula of [1, 2, 3]) {
+        cicloDeEnvio(browser, guard, aula);
+        // Depois de cada ciclo, a tela está na mesma entrada da lista.
+        expect(browser.index).toBe(lista);
+        expect(browser.url).toBe(`${PRODUCT_URL}?section=curriculo`);
+      }
+      expect(bloqueios).toBe(0);
+      expect(browser.routerReplaces).toEqual([]);
+
+      // Um único voltar sai do curso: nada de voltar preso dentro dele.
+      browser.userBack();
+      expect(browser.leftProduct).toBe(true);
+      guard.dispose();
+    }
+  );
+
+  it.each<Engine>(["webkit", "chromium"])(
+    "no %s, voltar da aula no meio do envio mostra a lista e continua protegendo a saída",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      let bloqueios = 0;
+      browser.events.addEventListener(DIRTY_HISTORY_BLOCKED_EVENT, () => { bloqueios += 1; });
+      browser.env.history.replaceState({ __NA: true }, "", `${PRODUCT_URL}?section=curriculo`);
+      const guard = createUnsavedHistoryGuard(browser.env, false);
+      const lista = browser.index;
+
+      browser.env.history.pushState({ __NA: true }, "", `${PRODUCT_URL}?section=curriculo&aula=1`);
+      guard.setDirty(true);
+      voltarDaAula(browser);
+      browser.settle();
+      // A lista na tela, sem diálogo, e a sentinela de novo no topo.
+      expect(browser.url).toBe(`${PRODUCT_URL}?section=curriculo`);
+      expect(browser.index).toBe(lista + 1);
+      expect(bloqueios).toBe(0);
+
+      // Sair da página com o envio em curso ainda pede confirmação.
+      browser.userBack();
+      browser.settle();
+      expect(bloqueios).toBe(1);
+      expect(browser.leftProduct).toBe(false);
+      guard.dispose();
+    }
+  );
+
+  it.each<Engine>(["webkit", "chromium"])(
+    "no %s, com link direto a entrada a mais é uma só, mesmo com vários envios depois",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      browser.env.history.replaceState({ __NA: true }, "", `${PRODUCT_URL}?section=curriculo&aula=26`);
+      const guard = createUnsavedHistoryGuard(browser.env, false);
+      const history = browser.env.history;
+
+      // Envio na aula do link, e "Voltar para o curso": a lista fica na
+      // entrada da sentinela, com a marca.
+      guard.setDirty(true);
+      history.replaceState({ __NA: true, ...unsavedGuardMarkOf(history.state) }, "", `${PRODUCT_URL}?section=curriculo`);
+      guard.setDirty(false);
+      browser.settle();
+      const lista = browser.index;
+
+      for (const aula of [1, 2, 3]) {
+        cicloDeEnvio(browser, guard, aula);
+        expect(browser.index).toBe(lista);
+      }
+
+      // Voltar leva à aula do link (de onde a pessoa veio) e o seguinte sai.
+      browser.userBack();
+      browser.settle();
+      expect(browser.url).toBe(`${PRODUCT_URL}?section=curriculo&aula=26`);
+      expect(browser.leftProduct).toBe(false);
+      browser.userBack();
+      expect(browser.leftProduct).toBe(true);
       guard.dispose();
     }
   );

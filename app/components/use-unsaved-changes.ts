@@ -8,9 +8,20 @@ export const DIRTY_NAVIGATION_REQUEST_EVENT = "appsell:dirty-navigation-request"
 export const DIRTY_HISTORY_BLOCKED_EVENT = "appsell:dirty-history-blocked";
 export const DIRTY_HISTORY_CONTINUE_EVENT = "appsell:dirty-history-continue";
 export const DIRTY_NAVIGATION_ALLOWED_EVENT = "appsell:dirty-navigation-allowed";
+export const DIRTY_IN_PAGE_TRAVERSAL_EVENT = "appsell:dirty-in-page-traversal";
 
 export function allowUnsavedNavigation() {
   window.dispatchEvent(new Event(DIRTY_NAVIGATION_ALLOWED_EVENT));
+}
+
+/**
+ * Avisa a guarda que a próxima travessia do histórico é dentro da própria
+ * página (voltar da aula para a lista do curso, #649). Ela atravessa a
+ * sentinela sem pedir confirmação e põe a sentinela de novo onde a tela
+ * chegou, em vez de deixá-la para trás.
+ */
+export function announceInPageTraversal() {
+  window.dispatchEvent(new Event(DIRTY_IN_PAGE_TRAVERSAL_EVENT));
 }
 
 // A marca da sentinela no estado da entrada: de qual guarda ela é e em que
@@ -121,6 +132,8 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
   let leavingUrl = "";
   let restoringTimer: ReturnType<GuardEnvironment["timers"]["set"]> | null = null;
   let allowNavigation = false;
+  // A tela anunciou que a próxima travessia fica na página (`announceInPageTraversal`).
+  let inPageTraversal = false;
   // Onde a tela estava quando a navegação foi liberada. Enquanto o navegador
   // não sai dela, a navegação ainda está em voo e não pode ser desfeita.
   let allowedFromUrl = "";
@@ -207,6 +220,16 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
   const onPopState = () => {
     const grew = history.length > knownLength;
     knownLength = history.length;
+    if (inPageTraversal && pending === null && !allowNavigation) {
+      // A sentinela ficou à frente e sai do histórico com a próxima entrada.
+      // Uma só por ativação: a guarda a põe de novo aqui, no lugar a que a
+      // tela chegou, e a entrada antiga não se acumula.
+      inPageTraversal = false;
+      sentinel = onSentinel();
+      sentinelBelow = false;
+      reconcile();
+      return;
+    }
     if (pending === "leaving") {
       pending = null;
       sentinel = false;
@@ -273,6 +296,9 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
   const warnBeforeUnload = (event: Event) => {
     if (dirty && !allowNavigation) event.preventDefault();
   };
+  const expectInPageTraversal = () => {
+    inPageTraversal = true;
+  };
   const allow = () => {
     allowNavigation = true;
     allowedFromUrl = location.href;
@@ -290,6 +316,7 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
   events.addEventListener("beforeunload", warnBeforeUnload);
   events.addEventListener(DIRTY_NAVIGATION_ALLOWED_EVENT, allow);
   events.addEventListener(DIRTY_HISTORY_CONTINUE_EVENT, continueHistory);
+  events.addEventListener(DIRTY_IN_PAGE_TRAVERSAL_EVENT, expectInPageTraversal);
   reconcile();
 
   return {
@@ -334,6 +361,7 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
       events.removeEventListener("beforeunload", warnBeforeUnload);
       events.removeEventListener(DIRTY_NAVIGATION_ALLOWED_EVENT, allow);
       events.removeEventListener(DIRTY_HISTORY_CONTINUE_EVENT, continueHistory);
+      events.removeEventListener(DIRTY_IN_PAGE_TRAVERSAL_EVENT, expectInPageTraversal);
       // Desmontar sem navegação liberada deixaria a sentinela para trás. Com
       // ela embaixo de um fragmento, fica: tirá-la custaria a entrada que o
       // vendedor empilhou, e o voltar dele só a atravessa na mesma página. A

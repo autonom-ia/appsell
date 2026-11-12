@@ -21,7 +21,7 @@ import { CourseOutline } from "./course-outline";
 import { LessonEditor } from "./lesson-editor";
 import { UndoProvider, useScheduleUndo } from "./undo-toast";
 import { useLessonSummaries } from "./use-lesson-summaries";
-import { onUnsavedGuardSentinel, replaceUrlKeepingUnsavedGuard } from "./use-unsaved-changes";
+import { announceInPageTraversal, onUnsavedGuardSentinel, replaceUrlKeepingUnsavedGuard } from "./use-unsaved-changes";
 
 export interface AssetActivity {
   dirty: boolean;
@@ -282,10 +282,14 @@ function Workspace({
   /** Volta para a lista e devolve o foco à aula de onde a pessoa saiu. */
   const closeLesson = useCallback((focusSelector?: string) => {
     // Com um envio em curso, a guarda de alteração pendente põe uma entrada
-    // dela no topo do histórico. O `back()` cairia nela e pediria confirmação
-    // de saída em vez de mostrar a lista: troca-se a URL dela, mantendo a marca.
-    if (selectedId && openedHere.current === selectedId && !onUnsavedGuardSentinel()) {
-      window.history.back();
+    // dela (a sentinela) por cima da aula. Aberta pela lista, a aula volta
+    // duas entradas, atravessando a sentinela com aviso à guarda, que a põe
+    // de novo na lista: o histórico não cresce a cada envio. Aberta por link
+    // direto, não há lista atrás: troca-se a URL da sentinela, com a marca.
+    const guarded = onUnsavedGuardSentinel();
+    if (selectedId && openedHere.current === selectedId) {
+      if (guarded) announceInPageTraversal();
+      window.history.go(guarded ? -2 : -1);
     } else {
       replaceUrlKeepingUnsavedGuard("?section=curriculo");
     }
