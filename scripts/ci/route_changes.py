@@ -22,6 +22,7 @@ SCOPES = (
     "backup",
     "preview",
     "sandbox",
+    "ops",
 )
 
 IGNORED_PREFIXES = (
@@ -228,6 +229,17 @@ def classify_paths(paths: Iterable[str]) -> dict[str, object]:
         elif path == "scripts/start-local-demo-preview.sh":
             route["web"] = True
             route["preview"] = True
+            matched = True
+
+        # #591: os scripts do host (cron) têm a suíte em scripts/ci/tests. O que
+        # não é Python (o exporta-conta.sql) é lido também pelo teste de
+        # Postgres e pelo vitest, e não perde essas suítes.
+        if path.startswith("scripts/ops/"):
+            route["ops"] = True
+            if not path.endswith(".py"):
+                route["web"] = True
+                route["api"] = True
+                route["postgres"] = True
             matched = True
 
         if path in WEB_EXACT or path.startswith(WEB_PREFIXES):

@@ -84,6 +84,7 @@ class AppCiWorkflowTests(unittest.TestCase):
             "image-web",
             "image-api",
             "image-bootstrap",
+            "ops-tests",
             "smoke",
         ):
             self.assertIn(f"id: {step_id}", self.source)
@@ -100,6 +101,28 @@ class AppCiWorkflowTests(unittest.TestCase):
         )
         self.assertIn(
             "CI_OUTCOME_CERT_SANDBOX: ${{ steps.cert-sandbox.outcome }}", self.source
+        )
+
+    def test_ops_scripts_tests_run_on_pull_request_and_dispatch(self) -> None:
+        # #591: a suíte de scripts/ci/tests (inclui os scripts do host em
+        # scripts/ops) roda fora do push quando a área é tocada, também no
+        # Python mais baixo que os scripts declaram, sem trocar o python3 dos
+        # passos seguintes.
+        start = self.source.index("id: ops-tests")
+        end = self.source.index("- name:", start)
+        block = self.source[start:end]
+        self.assertIn("steps.route.outputs.ops == 'true'", block)
+        self.assertIn("github.event_name != 'push'", block)
+        self.assertIn("python3 -m unittest discover -s scripts/ci/tests", block)
+        self.assertIn('"$OPS_PYTHON" scripts/ci/ops_tests.py', block)
+        self.assertIn("OPS_PYTHON: ${{ steps.ops-python.outputs.python-path }}", block)
+        start = self.source.index("id: ops-python")
+        end = self.source.index("- name:", start)
+        setup = self.source[start:end]
+        self.assertIn('python-version: "3.9"', setup)
+        self.assertIn("update-environment: false", setup)
+        self.assertIn(
+            "CI_OUTCOME_OPS_TESTS: ${{ steps.ops-tests.outcome }}", self.source
         )
 
     def test_sandbox_rehearsal_runs_only_in_queue_and_dispatch(self) -> None:

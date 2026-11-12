@@ -25,6 +25,7 @@ KNOWN_STEPS = {
     "image_web",
     "image_api",
     "image_bootstrap",
+    "ops_tests",
     "smoke",
 }
 
@@ -78,6 +79,11 @@ def expected_steps(
             expected.add("smoke")
     else:
         expected.update(KNOWN_STEPS - {"route", "migration_shape"})
+        return expected
+    # #591: os testes dos scripts do host (scripts/ops) e do próprio CI. No push
+    # o smoke já roda a mesma suíte.
+    if route.get("ops") and event in {"pull_request", "merge_group", "workflow_dispatch"}:
+        expected.add("ops_tests")
     return expected
 
 

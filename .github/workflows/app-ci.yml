@@ -496,6 +496,31 @@ jobs:
         timeout-minutes: 30
         run: bash deploy/easypanel-native/test-harden-pdf-sandbox-swarm.sh
 
+      # #591: a suíte de scripts/ci/tests (o roteador, o gate e os scripts do
+      # host em scripts/ops) rodava só no smoke do push. Agora roda no PR, na
+      # fila e no dispatch quando a área é tocada. Os scripts do host declaram
+      # Python 3.9, então o teste de cada um roda também em 3.9, sem trocar o
+      # python3 dos passos seguintes (update-environment: false).
+      - name: Set up the oldest Python the host scripts declare
+        id: ops-python
+        if: ${{ !cancelled() && github.event_name != 'push' && steps.route.outputs.ops == 'true' }}
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.9"
+          update-environment: false
+
+      - name: Test CI and host scripts outside push
+        id: ops-tests
+        if: ${{ !cancelled() && github.event_name != 'push' && steps.route.outputs.ops == 'true' }}
+        shell: bash
+        env:
+          OPS_PYTHON: ${{ steps.ops-python.outputs.python-path }}
+        run: |
+          set -euo pipefail
+          test -x "$OPS_PYTHON"
+          python3 -m unittest discover -s scripts/ci/tests -v
+          "$OPS_PYTHON" scripts/ci/ops_tests.py
+
       - name: Smoke merged main without repeating certification
         id: smoke
         if: ${{ !cancelled() && github.event_name == 'push' }}
@@ -533,5 +558,6 @@ jobs:
           CI_OUTCOME_IMAGE_WEB: ${{ steps.image-web.outcome }}
           CI_OUTCOME_IMAGE_API: ${{ steps.image-api.outcome }}
           CI_OUTCOME_IMAGE_BOOTSTRAP: ${{ steps.image-bootstrap.outcome }}
+          CI_OUTCOME_OPS_TESTS: ${{ steps.ops-tests.outcome }}
           CI_OUTCOME_SMOKE: ${{ steps.smoke.outcome }}
         run: python3 scripts/ci/enforce_gate.py
