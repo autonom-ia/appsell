@@ -107,6 +107,11 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
 
   const onSentinel = () => (history.state as { __appsellDirtyGuard?: unknown } | null)?.__appsellDirtyGuard === token;
 
+  // A tela empilhou uma entrada por cima da sentinela sem `popstate` (o
+  // `pushState` de abrir uma aula, #649). O `back()` da guarda tiraria essa
+  // entrada, e não a sentinela: a pessoa seria levada para a tela de antes.
+  const pushedOverSentinel = () => history.length !== knownLength;
+
   const settled = () => pending === null && (allowNavigation || disposed || dirty || !sentinel);
 
   const flushWaiting = () => {
@@ -132,6 +137,14 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
       return;
     }
     if (!dirty && sentinel) {
+      if (pushedOverSentinel()) {
+        // A sentinela fica para trás; se o voltar pousar nela, `onPopState`
+        // a reconhece e a atravessa.
+        sentinel = false;
+        sentinelBelow = false;
+        knownLength = history.length;
+        return;
+      }
       pending = "leaving";
       leavingUrl = location.href;
       history.back();
@@ -283,7 +296,7 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
       // vendedor empilhou, e o voltar dele só a atravessa na mesma página. A
       // URL pode ter mudado com ela no topo, então a entrada que sobra recebe
       // a URL atual.
-      if (sentinel && pending === null && !allowNavigation) {
+      if (sentinel && pending === null && !allowNavigation && !pushedOverSentinel()) {
         const targetUrl = location.href;
         events.addEventListener("popstate", () => {
           const { __appsellDirtyGuard: _guard, ...rest } = history.state ?? {};

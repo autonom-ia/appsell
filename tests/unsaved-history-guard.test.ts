@@ -576,6 +576,38 @@ describe("guarda de alterações não salvas (#612)", () => {
     expect(browser.entries[1].state).toEqual({ __NA: true });
   });
 
+  it.each<Engine>(["webkit", "chromium"])(
+    "no %s, a tela que empilhou uma entrada por cima da sentinela não é levada para trás ao limpar",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      const guard = createUnsavedHistoryGuard(browser.env, true);
+      const sentinela = browser.index;
+
+      // Abrir uma aula durante o envio: `pushState` do app, sem `popstate`.
+      browser.env.history.pushState({ __NA: true }, "", `${PRODUCT_URL}?aula=2`);
+      const aula = browser.index;
+      expect(aula).toBe(sentinela + 1);
+
+      // O envio termina. Tirar a sentinela aqui tiraria a aula aberta.
+      guard.setDirty(false);
+      browser.settle();
+      expect(browser.index).toBe(aula);
+      expect(browser.url).toBe(`${PRODUCT_URL}?aula=2`);
+
+      // O voltar pousa na sentinela que ficou para trás: a guarda a atravessa
+      // sozinha e a pessoa chega à entrada de antes, sem sair do produto.
+      browser.userBack();
+      browser.settle();
+      expect(browser.leftProduct).toBe(false);
+      expect(browser.index).toBe(sentinela - 1);
+      expect(browser.routerReplaces).toEqual([]);
+
+      guard.dispose();
+      browser.settle();
+      expect(browser.leftProduct).toBe(false);
+    }
+  );
+
   it("navegação liberada não é segurada nem desfeita", () => {
     const browser = new FakeBrowser("webkit");
     const guard = createUnsavedHistoryGuard(browser.env, true);
