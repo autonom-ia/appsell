@@ -756,6 +756,10 @@ async def test_a_listagem_mostra_o_que_ja_subiu_para_permitir_retomar() -> None:
         "part_count": 2,
         "uploaded_parts": [{"part_number": 1, "byte_size": MULTIPART_PART_BYTES}],
     }
+    # A listagem pede a capacidade de assinar: o banco só entrega a intenção
+    # nesse contexto, e com a de ler ela voltaria a responder 401 (#641).
+    assert auth.authenticated_capabilities == ["catalog.asset.upload.sign"]
+    assert auth.context_capabilities == ["catalog.asset.upload.sign"]
 
 
 @pytest.mark.asyncio
@@ -869,6 +873,7 @@ async def test_confirmar_de_novo_nao_precisa_de_envio_aberto() -> None:
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason="#642: cancelar lê a intenção por continuação que o autenticador recusa",
 )
 @pytest.mark.asyncio
@@ -907,6 +912,7 @@ async def test_cancelar_apaga_as_partes_ja_enviadas() -> None:
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason="#642: cancelar lê a intenção por continuação que o autenticador recusa",
 )
 @pytest.mark.asyncio
