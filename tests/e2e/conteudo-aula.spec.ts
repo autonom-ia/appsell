@@ -95,7 +95,7 @@ function curriculum() {
 
 type MaterialView = typeof PDF;
 
-async function openCurriculum(page: Page, assets: MaterialView[] = [PDF, MARKDOWN, TEXTO]) {
+async function openCurriculum(page: Page, assets: MaterialView[] = [PDF, MARKDOWN, TEXTO], uploads: unknown[] = []) {
   await page.route(`**/api/sellers/${SELLER_ID}/products/${PRODUCT_ID}`, async (route) => {
     if (route.request().method() !== "GET") return route.fallback();
     await route.fulfill({ json: {
@@ -112,7 +112,7 @@ async function openCurriculum(page: Page, assets: MaterialView[] = [PDF, MARKDOW
   });
   await page.route("**/lessons/*/assets", async (route) => {
     if (route.request().method() !== "GET") return route.fallback();
-    await route.fulfill({ json: { assets, uploads: [], csrf: CSRF } });
+    await route.fulfill({ json: { assets, uploads, csrf: CSRF } });
   });
   await page.route("**/materials", async (route) => {
     await route.fulfill({ json: { materials: [], csrf: { create: "m", archive: "n" } } });
@@ -658,5 +658,32 @@ test.describe("o aviso chega enquanto o painel de destino ainda carrega", () => 
 
     await expect(anexos.locator(".asset-status-card")).toHaveCount(3);
     await expect(anexos).not.toContainText("Carregando materiais…");
+  });
+});
+
+test.describe("um envio interrompido não trava o painel", () => {
+  // Gabriela, 12/11/2026: um envio de vídeo parou no meio (o envio em partes
+  // respondia 401, #641). Na carga seguinte o painel adotou o `pending` do
+  // servidor como "verificação em andamento", desligou o seletor de arquivo e
+  // ficou dizendo que a verificação estava demorando. Não havia arquivo sendo
+  // verificado: os bytes nunca terminaram de subir (#645).
+  test("o painel avisa que o envio parou e deixa escolher o arquivo de novo", async ({ page }) => {
+    await login(page);
+    await openCurriculum(page, [], [{
+      id: "bb000000-0000-4000-8000-000000000001",
+      status: "pending",
+      file_name: "aula-1.mp4",
+      byte_size: 209_420_000,
+      safe_reason: null
+    }]);
+
+    const conteudo = page.getByTestId(`lesson-${LESSON_ID}`)
+      .locator("details").filter({ hasText: "Conteúdo da aula" }).first();
+    await expect(conteudo.locator("summary")).not.toContainText("Preparação em andamento");
+    await conteudo.locator("summary").click();
+
+    await expect(conteudo).toContainText("O envio de aula-1.mp4 foi interrompido antes de terminar.");
+    await expect(conteudo).not.toContainText("A verificação está demorando");
+    await expect(conteudo.locator('input[type="file"]')).toBeEnabled();
   });
 });

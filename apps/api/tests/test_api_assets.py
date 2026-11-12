@@ -290,6 +290,64 @@ async def test_list_assets_maps_internal_active_draft_to_public_ready_status() -
     assert "list_lesson_asset_drafts_v2" in auth.session.calls[0][0]
 
 
+def _pending_upload(upload_id: UUID, *, expires_in: timedelta) -> dict[str, Any]:
+    return {
+        "upload_id": upload_id,
+        "status": "pending",
+        "file_name": "aula.mp4",
+        "byte_size": MULTIPART_PART_BYTES * 12,
+        "safe_reason": None,
+        "expires_at": (datetime.now(UTC) + expires_in).isoformat(),
+    }
+
+
+@pytest.mark.asyncio
+async def test_intencao_vencida_aparece_expirada_na_lista() -> None:
+    """Vencida e ainda `pending` na linha: o banco só grava o prazo na próxima
+    intenção da loja, e até lá a tela travava o painel como se houvesse arquivo
+    em verificação (#645)."""
+    vencida, valendo = uuid4(), uuid4()
+    auth = FakeAuth(
+        seller=SELLER,
+        scalar_values=[],
+        execute_values=[
+            {
+                "assets": [],
+                "uploads": [
+                    _pending_upload(vencida, expires_in=timedelta(minutes=-1)),
+                    _pending_upload(valendo, expires_in=timedelta(minutes=30)),
+                ],
+            }
+        ],
+    )
+    async with client_for(auth, FakeStorage(uuid4())) as client:
+        response = await client.get(asset_path())
+
+    assert response.status_code == 200
+    por_id = {upload["id"]: upload for upload in response.json()["uploads"]}
+    assert por_id[str(vencida)]["status"] == "expired"
+    assert por_id[str(vencida)]["safe_reason"] == (
+        "O prazo do envio terminou. Escolha o arquivo novamente."
+    )
+    assert por_id[str(valendo)]["status"] == "pending"
+    assert por_id[str(valendo)]["safe_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_intencao_vencida_aparece_expirada_no_status() -> None:
+    upload_id = uuid4()
+    auth = FakeAuth(
+        seller=SELLER,
+        scalar_values=[_pending_upload(upload_id, expires_in=timedelta(seconds=-5))],
+    )
+    async with client_for(auth, FakeStorage(upload_id)) as client:
+        response = await client.get(asset_path(f"/uploads/{upload_id}"))
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "expired"
+    assert response.json()["asset"] is None
+
+
 @pytest.mark.asyncio
 async def test_owner_updates_pdf_policy_with_version_and_idempotency_binding() -> None:
     asset_id = uuid4()

@@ -703,11 +703,13 @@ test("authors and reorders a tenant curriculum at 320px without drag", async ({ 
   // Archiving used to hand off to the browser's own confirm, which announces
   // nothing and traps no focus. It is a dialog in the page now, so the test has
   // to confirm the way a person does.
-  await practice.getByRole("button", { name: "Arquivar aula" }).click();
-  const archiveDialog = page.getByRole("dialog", { name: "Arquivar a aula Prática guiada?" });
+  // Excluir fica no cabeçalho da aula, à vista: dentro de "Editar aula" e com
+  // o nome "Arquivar", a vendedora procurou e não achou (#645).
+  await practice.getByRole("button", { name: "Excluir aula Prática guiada" }).click();
+  const archiveDialog = page.getByRole("dialog", { name: "Excluir a aula Prática guiada?" });
   await expect(archiveDialog).toBeVisible();
   await expect(archiveDialog.getByRole("button", { name: "Manter" })).toBeFocused();
-  await archiveDialog.getByRole("button", { name: "Arquivar" }).click();
+  await archiveDialog.getByRole("button", { name: "Excluir" }).click();
   await expect(page.getByRole("heading", { name: "Prática guiada" })).toHaveCount(0);
 
   const touchAndWidth = await page.evaluate(() => ({

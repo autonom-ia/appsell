@@ -1056,21 +1056,48 @@ def _asset_view(value: dict[str, Any]) -> dict[str, Any]:
 
 
 def _upload_view(value: dict[str, Any]) -> dict[str, Any]:
+    status_value, reason = _effective_upload_state(value)
     return {
         "id": str(value["upload_id"]),
-        "status": str(value["status"]),
+        "status": status_value,
         "file_name": str(value["file_name"]),
         "byte_size": int(value["byte_size"]),
-        "safe_reason": _safe_reason(value.get("safe_reason")),
+        "safe_reason": _safe_reason(reason),
     }
+
+
+def _effective_upload_state(value: dict[str, Any]) -> tuple[str, Any]:
+    """O estado que o vendedor deve ver, com o prazo da intenção já aplicado.
+
+    O banco só grava `expired` quando a mesma loja abre outra intenção. Até lá
+    uma intenção vencida continua `pending` na linha, e a tela a tratava como
+    arquivo em verificação: o painel travava sem ter nada sendo verificado
+    (#645). Vencida é vencida, esteja gravado ou não.
+    """
+    status_value = str(value["status"])
+    reason = value.get("safe_reason")
+    if status_value != "pending":
+        return status_value, reason
+    expires_at = value.get("expires_at")
+    if expires_at is None:
+        return status_value, reason
+    moment = (
+        expires_at
+        if isinstance(expires_at, datetime)
+        else datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+    )
+    if moment <= datetime.now(UTC):
+        return "expired", "expired"
+    return status_value, reason
 
 
 def _status_view(value: dict[str, Any]) -> dict[str, Any]:
     ready = value.get("ready_asset")
+    status_value, reason = _effective_upload_state(value)
     return {
         "upload_id": str(value["upload_id"]),
-        "status": str(value["status"]),
-        "safe_reason": _safe_reason(value.get("safe_reason")),
+        "status": status_value,
+        "safe_reason": _safe_reason(reason),
         "retry_after_seconds": 2,
         "asset": _asset_view({**ready, "status": "ready"}) if isinstance(ready, dict) else None,
     }
@@ -1078,9 +1105,9 @@ def _status_view(value: dict[str, Any]) -> dict[str, Any]:
 
 def _safe_reason(value: Any) -> str | None:
     messages = {
-        "expired": "O prazo do envio terminou. Escolha o PDF novamente.",
-        "upload_mismatch": "O arquivo recebido não corresponde ao PDF selecionado.",
-        "verification_failed": "Este arquivo não passou na verificação. Escolha outro PDF.",
+        "expired": "O prazo do envio terminou. Escolha o arquivo novamente.",
+        "upload_mismatch": "O arquivo recebido não corresponde ao arquivo selecionado.",
+        "verification_failed": "Este arquivo não passou na verificação. Escolha outro arquivo.",
         "cancelled": "O envio foi cancelado. Seu curso não foi alterado.",
     }
     return messages.get(str(value)) if value is not None else None
