@@ -871,11 +871,6 @@ async def test_confirmar_de_novo_nao_precisa_de_envio_aberto() -> None:
     assert [nome for nome, _ in storage.multipart_calls] == ["find"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="#642: cancelar lê a intenção por continuação que o autenticador recusa",
-)
 @pytest.mark.asyncio
 async def test_cancelar_apaga_as_partes_ja_enviadas() -> None:
     """Cancelar sem abortar deixa as partes ocupando disco sem aparecer em nada."""
@@ -884,14 +879,16 @@ async def test_cancelar_apaga_as_partes_ja_enviadas() -> None:
         seller=SELLER,
         scalar_values=[
             {
-                "upload_id": upload_id,
-                "bucket": "appsell-quarantine",
-                "object_key": f"tenants/{SELLER}/quarantine/{upload_id}",
-                "content_type": "video/mp4",
-                "byte_size": VIDEO_GRANDE,
-                "sha256": "ab" * 32,
+                "upload_id": str(upload_id),
+                "status": "cancelled",
+                "cancelled": True,
+                "storage": {
+                    "storage_driver": "s3",
+                    "bucket": "appsell-quarantine",
+                    "object_key": f"tenants/{SELLER}/quarantine/{upload_id}",
+                    "byte_size": VIDEO_GRANDE,
+                },
             },
-            {"upload_id": upload_id, "status": "cancelled"},
         ],
     )
     storage = FakeStorage(upload_id)
@@ -907,14 +904,19 @@ async def test_cancelar_apaga_as_partes_ja_enviadas() -> None:
     assert [nome for nome, _ in storage.multipart_calls] == ["find", "abort"]
     # A ordem importa: o banco autoriza e decide primeiro; só depois as partes
     # são apagadas. O contrário destruiria um envio legítimo se o banco recusasse.
-    assert "cancel_asset_upload" in auth.session.calls[1][0]
+    assert len(auth.session.calls) == 1
+    assert "cancel_asset_upload" in auth.session.calls[0][0]
+    # Um contexto só, o de cancelar: nada de continuação para ler a intenção.
+    assert auth.context_capabilities == ["catalog.asset.upload.cancel"]
+    # Bucket e chave são do servidor; o navegador recebe só o desfecho.
+    assert response.json() == {
+        "upload_id": str(upload_id),
+        "status": "cancelled",
+        "cancelled": True,
+    }
+    assert "appsell-quarantine" not in response.text
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="#642: cancelar lê a intenção por continuação que o autenticador recusa",
-)
 @pytest.mark.asyncio
 async def test_cancelar_envio_pequeno_nao_procura_partes() -> None:
     upload_id = uuid4()
@@ -922,14 +924,16 @@ async def test_cancelar_envio_pequeno_nao_procura_partes() -> None:
         seller=SELLER,
         scalar_values=[
             {
-                "upload_id": upload_id,
-                "bucket": "appsell-quarantine",
-                "object_key": f"tenants/{SELLER}/quarantine/{upload_id}",
-                "content_type": "application/pdf",
-                "byte_size": 128,
-                "sha256": "ab" * 32,
+                "upload_id": str(upload_id),
+                "status": "cancelled",
+                "cancelled": True,
+                "storage": {
+                    "storage_driver": "s3",
+                    "bucket": "appsell-quarantine",
+                    "object_key": f"tenants/{SELLER}/quarantine/{upload_id}",
+                    "byte_size": 128,
+                },
             },
-            {"upload_id": upload_id, "status": "cancelled"},
         ],
     )
     storage = FakeStorage(upload_id)
@@ -942,6 +946,69 @@ async def test_cancelar_envio_pequeno_nao_procura_partes() -> None:
 
     assert response.status_code == 200
     assert storage.multipart_calls == []
+    assert "storage" not in response.json()
+
+
+@pytest.mark.asyncio
+async def test_cancelar_sem_storage_na_resposta_do_banco_nao_procura_partes() -> None:
+    """O banco antes da 0080 não devolve `storage`, e o cancelamento vale assim mesmo.
+
+    Pega: a API nova no ar antes da migration respondendo 500 por esperar um
+    campo que ainda não existe. As partes, nesse caso, caem pela regra de
+    expiração do bucket.
+    """
+    upload_id = uuid4()
+    auth = FakeAuth(
+        seller=SELLER,
+        scalar_values=[{"upload_id": str(upload_id), "status": "cancelled", "cancelled": True}],
+    )
+    storage = FakeStorage(upload_id)
+    storage.open_multipart_id = "envio-aberto"
+    async with client_for(auth, storage, video_upload_enabled=True) as client:
+        response = await client.post(
+            asset_path(f"/uploads/{upload_id}/cancel"),
+            content=json.dumps({"idempotency_key": str(uuid4())}).encode(),
+            headers={"content-type": "application/json"},
+        )
+
+    assert response.status_code == 200
+    assert storage.multipart_calls == []
+    assert response.json()["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_repetir_o_cancelamento_aborta_as_partes_que_ficaram() -> None:
+    """A repetição devolve o `storage` também: a primeira tentativa pode ter caído
+    entre gravar o cancelamento e abortar as partes."""
+    upload_id = uuid4()
+    auth = FakeAuth(
+        seller=SELLER,
+        scalar_values=[
+            {
+                "upload_id": str(upload_id),
+                "status": "cancelled",
+                "cancelled": False,
+                "storage": {
+                    "storage_driver": "s3",
+                    "bucket": "appsell-quarantine",
+                    "object_key": f"tenants/{SELLER}/quarantine/{upload_id}",
+                    "byte_size": VIDEO_GRANDE,
+                },
+            },
+        ],
+    )
+    storage = FakeStorage(upload_id)
+    storage.open_multipart_id = "envio-aberto"
+    async with client_for(auth, storage, video_upload_enabled=True) as client:
+        response = await client.post(
+            asset_path(f"/uploads/{upload_id}/cancel"),
+            content=json.dumps({"idempotency_key": str(uuid4())}).encode(),
+            headers={"content-type": "application/json"},
+        )
+
+    assert response.status_code == 200
+    assert [nome for nome, _ in storage.multipart_calls] == ["find", "abort"]
+    assert response.json()["cancelled"] is False
 
 
 @pytest.mark.asyncio
