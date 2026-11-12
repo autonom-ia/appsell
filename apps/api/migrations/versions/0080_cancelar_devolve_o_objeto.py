@@ -70,7 +70,6 @@ _BASES_DO_READY: tuple[str, ...] = (
 )
 # Esta migration não acrescenta função ao readiness: a assinatura é a mesma.
 # A próxima que acrescentar continua lendo `_ready_funcoes()` da 0070.
-_ULTIMA_COM_FUNCAO_NO_READY = "0070_codigo_da_compra"
 
 _REESCREVE = """
 do $migration$

@@ -2388,3 +2388,57 @@ def test_cancelar_devolve_onde_o_arquivo_estava_sem_gravar_isso_na_repeticao() -
     assert repeticao["cancelled"] is False and repeticao["storage"] == esperado
     # Um registro só, o da primeira chamada, e sem o `storage`.
     assert gravado == (0, 1)
+
+
+@pytest.mark.parametrize("quem", ["contexto_de_outra_acao", "quem_nao_e_da_loja"])
+def test_cancelar_nao_devolve_nada_sem_autorizacao(quem: str) -> None:
+    """O `storage` só sai depois de o banco autorizar o contexto de cancelar.
+
+    Pega: a função devolvendo bucket e chave antes de `lock_curriculum_access`,
+    para quem chamou com o contexto de outra ação ou não é da loja.
+    """
+    assert ADMIN_URL and RUNTIME_URL
+    admin, seller, product, course, module, lesson = _personas()
+    manifest, _ = load_manifest()
+    comprador = identity_id(manifest["personas"]["buyer"]["subject"])
+    with psycopg.connect(RUNTIME_URL) as connection:
+        criado, _ = _intencao_de_envio(
+            connection,
+            admin=admin,
+            seller=seller,
+            product=product,
+            course=course,
+            module=module,
+            lesson=lesson,
+            byte_size=MULTIPART_PART_BYTES + 1024,
+        )
+    ator, contexto = (
+        (admin, "catalog.asset.create")
+        if quem == "contexto_de_outra_acao"
+        else (comprador, "catalog.asset.upload.cancel")
+    )
+    with psycopg.connect(RUNTIME_URL) as connection, pytest.raises(psycopg.DatabaseError):
+        # O próprio contexto pode ser recusado para quem não é da loja; de um
+        # jeito ou de outro, nada chega a ser devolvido.
+        apply_context(connection, ator, seller, contexto)
+        connection.execute(
+            "select app_private.cancel_asset_upload(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (
+                ator,
+                seller,
+                product,
+                course,
+                module,
+                lesson,
+                criado["upload_id"],
+                uuid4(),
+                digest(f"recusa-{uuid4()}"),
+                uuid4(),
+            ),
+        ).fetchone()
+    with psycopg.connect(ADMIN_URL) as administrativa:
+        linha = administrativa.execute(
+            "select status from app_private.asset_upload where id=%s",
+            (criado["upload_id"],),
+        ).fetchone()
+    assert linha is not None and linha[0] == "pending"

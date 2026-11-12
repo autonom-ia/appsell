@@ -907,7 +907,13 @@ async def test_cancelar_apaga_as_partes_ja_enviadas() -> None:
     assert len(auth.session.calls) == 1
     assert "cancel_asset_upload" in auth.session.calls[0][0]
     # Um contexto só, o de cancelar: nada de continuação para ler a intenção.
+    # O dublê aplica a mesma regra de continuação do autenticador real; e o par
+    # cancelar/assinar continua fora dela, então uma leitura por continuação
+    # aqui voltaria a dar 401.
     assert auth.context_capabilities == ["catalog.asset.upload.cancel"]
+    assert ("catalog.asset.upload.cancel", "catalog.asset.upload.sign") not in (
+        _ALLOWED_CONTINUATIONS
+    )
     # Bucket e chave são do servidor; o navegador recebe só o desfecho.
     assert response.json() == {
         "upload_id": str(upload_id),
@@ -974,6 +980,35 @@ async def test_cancelar_sem_storage_na_resposta_do_banco_nao_procura_partes() ->
     assert response.status_code == 200
     assert storage.multipart_calls == []
     assert response.json()["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_cancelar_com_storage_inesperado_nao_vira_erro() -> None:
+    """O cancelamento já foi gravado quando o abort começa: nada depois dele pode
+    devolver 500 a quem cancelou."""
+    upload_id = uuid4()
+    auth = FakeAuth(
+        seller=SELLER,
+        scalar_values=[
+            {
+                "upload_id": str(upload_id),
+                "status": "cancelled",
+                "cancelled": True,
+                "storage": {"bucket": "appsell-quarantine", "byte_size": "grande"},
+            },
+        ],
+    )
+    storage = FakeStorage(upload_id)
+    async with client_for(auth, storage, video_upload_enabled=True) as client:
+        response = await client.post(
+            asset_path(f"/uploads/{upload_id}/cancel"),
+            content=json.dumps({"idempotency_key": str(uuid4())}).encode(),
+            headers={"content-type": "application/json"},
+        )
+
+    assert response.status_code == 200
+    assert storage.multipart_calls == []
+    assert "storage" not in response.json()
 
 
 @pytest.mark.asyncio

@@ -738,10 +738,16 @@ async def _abort_cancelled_parts(
     em listagem de objeto nenhuma. Falhar aqui não desfaz o cancelamento, que já
     está gravado: a regra de expiração do bucket é a rede embaixo desta.
     """
-    if not needs_multipart(int(stored_object["byte_size"])):
+    bucket = stored_object.get("bucket")
+    key = stored_object.get("object_key")
+    byte_size = stored_object.get("byte_size")
+    if not (isinstance(bucket, str) and isinstance(key, str) and isinstance(byte_size, int)):
+        # O cancelamento já está gravado; um formato inesperado não pode virar
+        # 500 para quem cancelou. A expiração do bucket recolhe as partes.
+        _logger.warning("appsell_multipart_abort_skipped", upload_id=str(upload_id))
         return
-    bucket = str(stored_object["bucket"])
-    key = str(stored_object["object_key"])
+    if not needs_multipart(byte_size):
+        return
     try:
         storage = await _storage(request, internal)
         storage_upload_id = await to_thread.run_sync(
