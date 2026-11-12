@@ -314,6 +314,35 @@ test.describe("arquivos da aula", () => {
     expect(curso.pedidosPara("POST", "/cancel")).toHaveLength(0);
   });
 
+  test("aula aberta pela lista: voltar no meio do envio mostra a lista sem pedir confirmação", async ({ page }) => {
+    const licao = aula("Aberta pela lista");
+    const curso = new CursoSimulado([modulo("Módulo", [licao])]);
+    curso.envio.segurarStorage = true;
+    await login(page);
+    await abrirCurso(page, curso);
+
+    await page.locator(`[data-lesson-link="${licao.id}"]`).click();
+    await expect(page).toHaveURL(/aula=/);
+    await painelPrincipal(page).getByLabel("Escolher vídeo ou PDF").setInputFiles({
+      name: "aula.mp4",
+      mimeType: "video/mp4",
+      buffer: Buffer.alloc(32 * 1024, 2)
+    });
+    await expect(painelPrincipal(page).getByText(/^Enviando \d+%$/)).toBeVisible();
+
+    // Com o envio em curso a guarda de saída está armada. Voltar para o curso
+    // é ficar na página: nada de diálogo de saída, e a lista aparece.
+    await page.getByRole("button", { name: "Voltar para o curso", exact: true }).click();
+    await expect(page).not.toHaveURL(/aula=/);
+    await expect(page.getByTestId(`lesson-${licao.id}`)).toContainText(/Enviando \d+%/);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+
+    curso.liberarEnvio({ concluir: true });
+    await expect(page.getByTestId(`lesson-${licao.id}`)).toContainText("✓ Pronta");
+    await expect(page).not.toHaveURL(/aula=/);
+    await expect(page.locator(`[data-lesson-link="${licao.id}"]`)).toBeVisible();
+  });
+
   test("material para o aluno também termina de subir com outra aula aberta", async ({ page }) => {
     const licao = aula("Aula com material");
     const outra = aula("Outra aula", "texto");

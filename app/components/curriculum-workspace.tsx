@@ -21,6 +21,7 @@ import { CourseOutline } from "./course-outline";
 import { LessonEditor } from "./lesson-editor";
 import { UndoProvider, useScheduleUndo } from "./undo-toast";
 import { useLessonSummaries } from "./use-lesson-summaries";
+import { onUnsavedGuardSentinel, replaceUrlKeepingUnsavedGuard } from "./use-unsaved-changes";
 
 export interface AssetActivity {
   dirty: boolean;
@@ -271,7 +272,7 @@ function Workspace({
       // Trocar de aula com outra aberta (lado a lado) não empilha histórico:
       // o "voltar" continua levando para a lista, e não para a aula anterior.
       if (openedHere.current === selectedId) openedHere.current = lessonId;
-      window.history.replaceState(null, "", href);
+      replaceUrlKeepingUnsavedGuard(href);
       return;
     }
     openedHere.current = lessonId;
@@ -280,10 +281,13 @@ function Workspace({
 
   /** Volta para a lista e devolve o foco à aula de onde a pessoa saiu. */
   const closeLesson = useCallback((focusSelector?: string) => {
-    if (selectedId && openedHere.current === selectedId) {
+    // Com um envio em curso, a guarda de alteração pendente põe uma entrada
+    // dela no topo do histórico. O `back()` cairia nela e pediria confirmação
+    // de saída em vez de mostrar a lista: troca-se a URL dela, mantendo a marca.
+    if (selectedId && openedHere.current === selectedId && !onUnsavedGuardSentinel()) {
       window.history.back();
     } else {
-      window.history.replaceState(null, "", "?section=curriculo");
+      replaceUrlKeepingUnsavedGuard("?section=curriculo");
     }
     openedHere.current = null;
     const target = selectedId ?? lastOpened.current ?? "";

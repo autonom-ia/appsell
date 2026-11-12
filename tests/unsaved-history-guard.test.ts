@@ -4,6 +4,7 @@ import {
   DIRTY_HISTORY_BLOCKED_EVENT,
   DIRTY_HISTORY_CONTINUE_EVENT,
   createUnsavedHistoryGuard,
+  unsavedGuardMarkOf,
   type GuardEnvironment,
   type UnsavedHistoryGuard
 } from "../app/components/use-unsaved-changes";
@@ -605,6 +606,59 @@ describe("guarda de alterações não salvas (#612)", () => {
       guard.dispose();
       browser.settle();
       expect(browser.leftProduct).toBe(false);
+    }
+  );
+
+  it.each<Engine>(["webkit", "chromium"])(
+    "no %s, a tela que trocou a URL da sentinela não é levada para a URL antiga ao limpar",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      const guard = createUnsavedHistoryGuard(browser.env, true);
+      const sentinela = browser.index;
+      const history = browser.env.history;
+
+      // Fechar a aula durante o envio: a URL da sentinela muda, com a marca.
+      history.replaceState({ __NA: true, ...unsavedGuardMarkOf(history.state) }, "", `${PRODUCT_URL}?section=curriculo`);
+
+      guard.setDirty(false);
+      browser.settle();
+      expect(browser.index).toBe(sentinela);
+      expect(browser.url).toBe(`${PRODUCT_URL}?section=curriculo`);
+      expect(browser.routerReplaces).toEqual([]);
+      // A entrada deixa de ser sentinela: nada a atravessar depois.
+      expect(unsavedGuardMarkOf(history.state)).toBeNull();
+      guard.dispose();
+      browser.settle();
+      expect(browser.index).toBe(sentinela);
+    }
+  );
+
+  it.each<Engine>(["webkit", "chromium"])(
+    "no %s, link direto, voltar à lista, abrir outra aula e voltar: a lista fica na tela",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      const guard = createUnsavedHistoryGuard(browser.env, true);
+      const sentinela = browser.index;
+      const history = browser.env.history;
+      const lista = `${PRODUCT_URL}?section=curriculo`;
+
+      // Voltar para o curso com o envio em curso (troca a URL, mantém a marca).
+      history.replaceState({ __NA: true, ...unsavedGuardMarkOf(history.state) }, "", lista);
+      // Abrir outra aula: entrada nova, sem `popstate`.
+      history.pushState({ __NA: true }, "", `${PRODUCT_URL}?section=curriculo&aula=27`);
+      // O envio termina com a outra aula aberta.
+      guard.setDirty(false);
+      browser.settle();
+      expect(browser.url).toBe(`${PRODUCT_URL}?section=curriculo&aula=27`);
+
+      // Voltar da outra aula pousa na lista e fica nela.
+      browser.userBack();
+      browser.settle();
+      expect(browser.index).toBe(sentinela);
+      expect(browser.url).toBe(lista);
+      expect(browser.routerReplaces).toEqual([]);
+      expect(browser.leftProduct).toBe(false);
+      guard.dispose();
     }
   );
 
