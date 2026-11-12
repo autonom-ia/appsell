@@ -134,6 +134,7 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
   let allowNavigation = false;
   // A tela anunciou que a próxima travessia fica na página (`announceInPageTraversal`).
   let inPageTraversal = false;
+  let inPageTimer: ReturnType<GuardEnvironment["timers"]["set"]> | null = null;
   // Onde a tela estava quando a navegação foi liberada. Enquanto o navegador
   // não sai dela, a navegação ainda está em voo e não pode ser desfeita.
   let allowedFromUrl = "";
@@ -173,7 +174,9 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
   };
 
   const adjust = () => {
-    if (pending !== null || allowNavigation || disposed) return;
+    // Com a travessia da tela em voo, um `back()` da guarda a cancelaria (no
+    // WebKit) e a pessoa iria parar noutro lugar. Espera o `popstate` dela.
+    if (pending !== null || allowNavigation || disposed || inPageTraversal) return;
     if (dirty && !sentinel) {
       if (sentinelBelow) return;
       history.pushState(markHere(), "", location.href);
@@ -220,11 +223,14 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
   const onPopState = () => {
     const grew = history.length > knownLength;
     knownLength = history.length;
-    if (inPageTraversal && pending === null && !allowNavigation) {
+    // O aviso vale para um `popstate` só, seja qual for o ramo: preso, ele
+    // faria um voltar de verdade, com alteração pendente, sair sem diálogo.
+    const inPage = inPageTraversal;
+    clearInPage();
+    if (inPage && pending === null && !allowNavigation) {
       // A sentinela ficou à frente e sai do histórico com a próxima entrada.
       // Uma só por ativação: a guarda a põe de novo aqui, no lugar a que a
       // tela chegou, e a entrada antiga não se acumula.
-      inPageTraversal = false;
       sentinel = onSentinel();
       sentinelBelow = false;
       reconcile();
@@ -296,8 +302,23 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
   const warnBeforeUnload = (event: Event) => {
     if (dirty && !allowNavigation) event.preventDefault();
   };
+  const clearInPage = () => {
+    inPageTraversal = false;
+    if (inPageTimer !== null) timers.clear(inPageTimer);
+    inPageTimer = null;
+  };
   const expectInPageTraversal = () => {
+    clearInPage();
     inPageTraversal = true;
+    // Uma travessia que não chega (sem entrada para trás) não pode deixar a
+    // guarda esperando: no prazo, ela volta ao estado real.
+    inPageTimer = timers.set(() => {
+      inPageTimer = null;
+      if (!inPageTraversal || disposed) return;
+      inPageTraversal = false;
+      sentinel = onSentinel();
+      reconcile();
+    }, RESTORE_DEADLINE_MS);
   };
   const allow = () => {
     allowNavigation = true;
@@ -357,6 +378,7 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
     dispose() {
       disposed = true;
       clearRestoringTimer();
+      clearInPage();
       events.removeEventListener("popstate", onPopState);
       events.removeEventListener("beforeunload", warnBeforeUnload);
       events.removeEventListener(DIRTY_NAVIGATION_ALLOWED_EVENT, allow);

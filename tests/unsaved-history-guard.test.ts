@@ -735,6 +735,53 @@ describe("guarda de alterações não salvas (#612)", () => {
   );
 
   it.each<Engine>(["webkit", "chromium"])(
+    "no %s, o envio que termina antes do popstate do voltar não deixa a próxima saída sem diálogo",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      let bloqueios = 0;
+      browser.events.addEventListener(DIRTY_HISTORY_BLOCKED_EVENT, () => { bloqueios += 1; });
+      browser.env.history.replaceState({ __NA: true }, "", `${PRODUCT_URL}?section=curriculo`);
+      const guard = createUnsavedHistoryGuard(browser.env, false);
+      const lista = browser.index;
+
+      browser.env.history.pushState({ __NA: true }, "", `${PRODUCT_URL}?section=curriculo&aula=1`);
+      guard.setDirty(true);
+      voltarDaAula(browser);
+      // O envio termina com a travessia ainda em voo: a guarda não pode
+      // pedir o próprio `back()` por cima dela.
+      guard.setDirty(false);
+      browser.settle();
+      expect(browser.index).toBe(lista);
+      expect(browser.url).toBe(`${PRODUCT_URL}?section=curriculo`);
+
+      // Uma alteração nova e um voltar de verdade: o diálogo aparece.
+      guard.setDirty(true);
+      browser.userBack();
+      browser.settle();
+      expect(bloqueios).toBe(1);
+      expect(browser.leftProduct).toBe(false);
+      guard.dispose();
+    }
+  );
+
+  it.each<Engine>(["webkit", "chromium"])(
+    "no %s, o aviso de travessia que nunca chega vence no prazo e a guarda segue protegendo",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      let bloqueios = 0;
+      browser.events.addEventListener(DIRTY_HISTORY_BLOCKED_EVENT, () => { bloqueios += 1; });
+      const guard = createUnsavedHistoryGuard(browser.env, true);
+      browser.events.dispatchEvent(new Event(DIRTY_IN_PAGE_TRAVERSAL_EVENT));
+      browser.elapse();
+      browser.userBack();
+      browser.settle();
+      expect(bloqueios).toBe(1);
+      expect(browser.leftProduct).toBe(false);
+      guard.dispose();
+    }
+  );
+
+  it.each<Engine>(["webkit", "chromium"])(
     "no %s, com link direto a entrada a mais é uma só, mesmo com vários envios depois",
     (engine) => {
       const browser = new FakeBrowser(engine);
