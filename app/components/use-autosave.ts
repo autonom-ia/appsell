@@ -79,7 +79,11 @@ export function useAutosave({
       if (timer.current !== null) window.clearTimeout(timer.current);
       timer.current = null;
       const pending = stateRef.current;
-      if (disabled || running.current || pending.value === pending.saved || pending.status === "failed") return;
+      if (disabled || pending.value === pending.saved || pending.status === "failed") return;
+      // Com um salvamento em voo, o que foi digitado depois dele ainda não saiu.
+      // O pedido em voo não tem `keepalive` e pode morrer junto com a aba;
+      // mandar o valor atual agora é a única chance dele.
+      if (running.current && pending.value === pending.inFlight) return;
       void saveRef.current(pending.value, { keepalive: true });
     };
     window.addEventListener("pagehide", leave);

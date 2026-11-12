@@ -7,7 +7,7 @@
  */
 
 export type AutosaveStatus = "idle" | "pending" | "saving" | "saved" | "failed";
-export type AutosaveFailure = "offline" | "invalid" | "conflict" | "forbidden" | "error";
+export type AutosaveFailure = "offline" | "invalid" | "tooLong" | "conflict" | "forbidden" | "error";
 
 export interface AutosaveState {
   status: AutosaveStatus;

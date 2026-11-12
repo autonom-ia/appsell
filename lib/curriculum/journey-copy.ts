@@ -95,7 +95,9 @@ export const JOURNEY_COPY = {
   archivedProduct: "Este produto foi encerrado. Dá para ver o curso, mas não para mudar.",
   limitModules: "Este curso chegou ao máximo de módulos. Exclua um para criar outro.",
   limitLessons: "Este curso chegou ao máximo de aulas. Exclua uma para criar outra.",
-  nameTooShort: "Escreva um nome com pelo menos 2 letras."
+  nameTooShort: "Escreva um nome com pelo menos 2 letras.",
+  nameTooLong: "Este nome está longo demais. Encurte um pouco e ele salva.",
+  textTooLong: "O texto passou do tamanho que cabe na aula. Encurte um pouco e ele salva."
 } as const;
 
 export interface StageCopy {

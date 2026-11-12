@@ -47,6 +47,14 @@ export interface CurriculumPayload {
   usage?: { modules_total: number; lessons_total: number; lessons_by_module: Record<string, number> };
 }
 
+/**
+ * O servidor mede nome e texto em bytes, não em letras: "ç" e "ã" ocupam dois.
+ * Contar letras deixava passar um texto acentuado que o servidor recusa.
+ */
+export function exceedsBytes(value: string, maxBytes: number): boolean {
+  return new TextEncoder().encode(value).length > maxBytes;
+}
+
 export const DEFAULT_LIMITS: CurriculumLimits = {
   modules_per_course: 50,
   lessons_per_module: 100,

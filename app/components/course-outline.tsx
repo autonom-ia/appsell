@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { FormEvent, useRef, useState } from "react";
 
-import type { CurriculumLimits, CurriculumModule } from "@/lib/curriculum/curriculum-api.client";
+import { exceedsBytes, type CurriculumLimits, type CurriculumModule } from "@/lib/curriculum/curriculum-api.client";
 import { JOURNEY_COPY } from "@/lib/curriculum/journey-copy";
 import { outlineProgress, type LessonReadiness } from "@/lib/curriculum/lesson-readiness";
 
@@ -75,6 +75,7 @@ export function CourseOutline(props: CourseOutlineProps) {
       <h3>{JOURNEY_COPY.emptyTitle}</h3>
       <p>{JOURNEY_COPY.emptyHelp}</p>
       {!archived ? <NameForm
+        maxBytes={limits.title_bytes}
         id="new-module-title"
         label={JOURNEY_COPY.moduleName}
         placeholder={JOURNEY_COPY.modulePlaceholder}
@@ -118,6 +119,7 @@ export function CourseOutline(props: CourseOutlineProps) {
 
             {renaming === module.id ? <div className="course-rename">
               <NameForm
+                maxBytes={limits.title_bytes}
                 id={`rename-module-${module.id}`}
                 label={JOURNEY_COPY.moduleName}
                 initial={module.title}
@@ -157,6 +159,7 @@ export function CourseOutline(props: CourseOutlineProps) {
             </ol>}
 
             {!archived ? addingLessonTo === module.id ? <NameForm
+              maxBytes={limits.title_bytes}
               id={`new-lesson-${module.id}`}
               label={JOURNEY_COPY.lessonName}
               placeholder={JOURNEY_COPY.lessonPlaceholder}
@@ -187,6 +190,7 @@ export function CourseOutline(props: CourseOutlineProps) {
       {lessonsFull ? <p className="form-note" id="course-lessons-full">{JOURNEY_COPY.limitLessons}</p> : null}
       {!archived ? addingModule ? <div className="course-module course-module-new">
         <NameForm
+          maxBytes={limits.title_bytes}
           id="new-module-title"
           label={JOURNEY_COPY.moduleName}
           placeholder={JOURNEY_COPY.modulePlaceholder}
@@ -222,6 +226,7 @@ function StatusChip({ readiness }: { readiness: LessonReadiness }) {
 
 function NameForm({
   id,
+  maxBytes,
   label,
   placeholder,
   initial = "",
@@ -231,6 +236,8 @@ function NameForm({
   onCancel
 }: {
   id: string;
+  /** O limite do servidor, em bytes: acento conta dois. */
+  maxBytes: number;
   label: string;
   placeholder?: string;
   initial?: string;
@@ -248,6 +255,11 @@ function NameForm({
     const title = value.trim();
     if (title.length < MIN_TITLE) {
       setError(JOURNEY_COPY.nameTooShort);
+      input.current?.focus();
+      return;
+    }
+    if (exceedsBytes(title, maxBytes)) {
+      setError(JOURNEY_COPY.nameTooLong);
       input.current?.focus();
       return;
     }

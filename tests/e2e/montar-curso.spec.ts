@@ -306,7 +306,40 @@ test.describe("arquivos da aula", () => {
     await expect(page).not.toHaveURL(/aula=/);
     await expect(page.getByTestId(`lesson-${licao.id}`)).toContainText(/Enviando \d+%/);
     expect(curso.pedidosPara("POST", "/cancel")).toHaveLength(0);
-    curso.liberarEnvio();
+
+    // O envio segue sozinho com a lista na tela e chega ao fim.
+    curso.liberarEnvio({ concluir: true });
+    await expect.poll(() => curso.pedidosPara("POST", "/confirm").length).toBe(1);
+    await expect(page.getByTestId(`lesson-${licao.id}`)).toContainText("✓ Pronta");
+    expect(curso.pedidosPara("POST", "/cancel")).toHaveLength(0);
+  });
+
+  test("material para o aluno também termina de subir com outra aula aberta", async ({ page }) => {
+    const licao = aula("Aula com material");
+    const outra = aula("Outra aula", "texto");
+    const curso = new CursoSimulado([modulo("Módulo", [licao, outra])]);
+    curso.envio.segurarStorage = true;
+    await login(page);
+    await abrirCurso(page, curso, licao.id);
+
+    await painelMateriais(page).locator('input[type="file"]').setInputFiles({
+      name: "roteiro.md",
+      mimeType: "text/markdown",
+      buffer: Buffer.from("# roteiro\n")
+    });
+    await expect(painelMateriais(page).getByText(/^Enviando \d+%$/)).toBeVisible();
+    await page.getByRole("button", { name: "Voltar para o curso", exact: true }).click();
+    await page.locator(`[data-lesson-link="${outra.id}"]`).click();
+    await expect(page.getByRole("heading", { level: 2, name: /Outra aula/ })).toBeVisible();
+
+    // Sem o editor da primeira aula montado, o envio era cortado aqui.
+    curso.liberarEnvio({ concluir: true });
+    await expect.poll(() => curso.pedidosPara("POST", "/confirm").length).toBe(1);
+    expect(curso.pedidosPara("POST", "/cancel")).toHaveLength(0);
+
+    await page.getByRole("button", { name: "Voltar para o curso", exact: true }).click();
+    await page.locator(`[data-lesson-link="${licao.id}"]`).click();
+    await expect(painelMateriais(page).getByRole("article", { name: "roteiro.md" })).toBeVisible();
   });
 });
 

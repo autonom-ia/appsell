@@ -93,14 +93,19 @@ function Workspace({
   const scheduleUndo = useScheduleUndo();
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [modules, setModules] = useState<CurriculumModule[]>([]);
-  const [csrf, setCsrf] = useState<CurriculumCsrf>({ create: "", update: "", reorder: "", archive: "" });
   const [limits, setLimits] = useState<CurriculumLimits>(DEFAULT_LIMITS);
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
   const [notice, setNotice] = useState("");
   const [structureBusy, setStructureBusy] = useState(false);
   const [assetActivity, setAssetActivity] = useState<Record<string, AssetActivity>>({});
   const [live, setLive] = useState<Record<string, LiveUpload>>({});
+  // O envio de material para o aluno corre num painel à parte. Ele não entra
+  // no estado da aula na lista, mas prende o editor montado do mesmo jeito.
+  const [materialPhase, setMaterialPhase] = useState<Record<string, LiveUpload["phase"]>>({});
   const versionRef = useRef(1);
+  // O token mais novo: uma nova tentativa depois de reler o curso não pode
+  // sair com o token de antes da releitura.
+  const csrfRef = useRef<CurriculumCsrf>({ create: "", update: "", reorder: "", archive: "" });
   const [courseVersion, setCourseVersion] = useState(1);
   const keys = useRef(new Map<string, string>());
   const serialize = useMemo(() => createSerializer(), []);
@@ -182,7 +187,7 @@ function Workspace({
       setModules(payload.modules);
       versionRef.current = payload.course.draft_version;
       setCourseVersion(payload.course.draft_version);
-      setCsrf(payload.csrf);
+      csrfRef.current = payload.csrf;
       setLimits(payload.limits ?? DEFAULT_LIMITS);
       setLoadState("ready");
     } catch {
@@ -217,7 +222,7 @@ function Workspace({
       const idempotencyKey = keys.current.get(keyName) ?? crypto.randomUUID();
       keys.current.set(keyName, idempotencyKey);
       const result = await sendCurriculumMutation({
-        url, method, csrf: csrf[action], idempotencyKey, courseVersion: versionRef.current, fields: body,
+        url, method, csrf: csrfRef.current[action], idempotencyKey, courseVersion: versionRef.current, fields: body,
         keepalive: options.keepalive
       });
       if (result.ok) {
@@ -231,7 +236,7 @@ function Workspace({
       return result;
     };
     return options.keepalive ? task() : serialize(task);
-  }, [csrf, onCommitted, serialize]);
+  }, [onCommitted, serialize]);
 
   const report = useCallback((result: MutationResult, invalidMessage: string = JOURNEY_COPY.nameTooShort) => {
     if (result.ok) return setNotice("");
@@ -288,6 +293,14 @@ function Workspace({
   // não voltava para a aula na lista.
   const backToList = useCallback(() => closeLesson(), [closeLesson]);
 
+  // "Atualizar" depois de uma mudança feita em outro lugar relê por baixo. A
+  // carga inicial trocava a tela por "Carregando…" e desmontava os editores,
+  // cortando um envio que ainda subia.
+  const reload = useCallback(() => {
+    setNotice("");
+    void load("revalidate");
+  }, [load]);
+
   useEffect(() => {
     if (selectedId || !pendingFocus.current) return;
     const selector = pendingFocus.current;
@@ -322,22 +335,27 @@ function Workspace({
     if (target < 0 || target >= visibleModules.length) return;
     const reordered = swap(visibleModules, index, target);
     const moved = visibleModules[index];
+    // O servidor quer a ordem de todos os módulos ativos, inclusive o que está
+    // excluído só na tela, esperando o Desfazer: ele continua ativo lá.
+    const fullOrder = reorderLike(modules, reordered.map((module) => module.id)).map((module) => module.id);
     const result = await structural(() => mutate(`modules:order:${moved.id}:${target}`, `${endpoint}/modules/order`, "PUT", "reorder", {
-      ordered_ids: JSON.stringify(reordered.map((module) => module.id))
+      ordered_ids: JSON.stringify(fullOrder)
     }), JOURNEY_COPY.orderFailed);
     if (!result.ok) return;
     setModules((current) => reorderLike(current, reordered.map((module) => module.id)));
     setNotice(`Módulo ${moved.title} agora é o ${target + 1}º de ${visibleModules.length}.`);
     focusAfterRender(`[data-move="module-${direction < 0 ? "up" : "down"}-${cssText(moved.id)}"]`, `[data-move="module-${direction < 0 ? "down" : "up"}-${cssText(moved.id)}"]`);
-  }, [endpoint, mutate, structural, visibleModules]);
+  }, [endpoint, modules, mutate, structural, visibleModules]);
 
   const moveLesson = useCallback(async (module: CurriculumModule, index: number, direction: -1 | 1) => {
     const target = index + direction;
     if (target < 0 || target >= module.lessons.length) return;
     const reordered = swap(module.lessons, index, target);
     const moved = module.lessons[index];
+    const allLessons = modules.find((entry) => entry.id === module.id)?.lessons ?? module.lessons;
+    const fullOrder = reorderLike(allLessons, reordered.map((lesson) => lesson.id)).map((lesson) => lesson.id);
     const result = await structural(() => mutate(`lessons:order:${module.id}:${moved.id}:${target}`, `${endpoint}/modules/${module.id}/lessons/order`, "PUT", "reorder", {
-      ordered_ids: JSON.stringify(reordered.map((lesson) => lesson.id))
+      ordered_ids: JSON.stringify(fullOrder)
     }), JOURNEY_COPY.orderFailed);
     if (!result.ok) return;
     setModules((current) => current.map((entry) => entry.id === module.id
@@ -345,7 +363,7 @@ function Workspace({
       : entry));
     setNotice(`Aula ${moved.title} agora é a ${target + 1}ª de ${module.lessons.length}.`);
     focusAfterRender(`[data-move="lesson-${direction < 0 ? "up" : "down"}-${cssText(moved.id)}"]`, `[data-move="lesson-${direction < 0 ? "down" : "up"}-${cssText(moved.id)}"]`);
-  }, [endpoint, mutate, structural]);
+  }, [endpoint, modules, mutate, structural]);
 
   const hide = useCallback((id: string, value: boolean) => {
     setHidden((current) => {
@@ -366,10 +384,14 @@ function Workspace({
     if (!leaving) await load("revalidate");
   }, [load, mutate]);
 
+  /** Algum painel da aula, vídeo ou material, está nesta fase agora. */
+  const lessonIn = useCallback((lessonId: string, phases: readonly LiveUpload["phase"][]) =>
+    phases.includes(live[lessonId]?.phase ?? "idle") || phases.includes(materialPhase[lessonId] ?? "idle"), [live, materialPhase]);
+
   const deleteModule = useCallback((module: CurriculumModule) => {
     // Excluir o módulo desmontaria o editor de uma aula que ainda envia
     // arquivo, e o envio ficaria pela metade no servidor.
-    if (module.lessons.some((lesson) => TRANSPORT.includes(live[lesson.id]?.phase ?? "idle"))) {
+    if (module.lessons.some((lesson) => lessonIn(lesson.id, TRANSPORT))) {
       setNotice(JOURNEY_COPY.deleteModuleBlocked);
       return;
     }
@@ -389,7 +411,7 @@ function Workspace({
       commit: archiveCommit(`module:archive:${module.id}`, `${endpoint}/modules/${module.id}/archive`),
       revert: () => hide(module.id, false)
     });
-  }, [archiveCommit, closeLesson, endpoint, hide, live, scheduleUndo, selectedId, visibleModules]);
+  }, [archiveCommit, closeLesson, endpoint, hide, lessonIn, scheduleUndo, selectedId, visibleModules]);
 
   const deleteLesson = useCallback((module: CurriculumModule, lesson: CurriculumLesson) => {
     // A aula some da lista; o foco vai para a aula vizinha, ou para "+ Nova aula".
@@ -467,6 +489,15 @@ function Workspace({
     });
   }, []);
 
+  const handleMaterialLive = useCallback((lessonId: string, value: LiveUpload) => {
+    setMaterialPhase((current) => {
+      if ((current[lessonId] ?? "idle") === value.phase) return current;
+      const next = { ...current };
+      if (value.phase === "idle") delete next[lessonId]; else next[lessonId] = value.phase;
+      return next;
+    });
+  }, []);
+
   const handleAssetCommitted = useCallback((lessonId: string) => {
     onCommitted();
     refreshSummary(lessonId);
@@ -499,7 +530,7 @@ function Workspace({
   const selected = visibleModules.flatMap((module) => module.lessons.map((lesson) => ({ module, lesson })))
     .find((entry) => entry.lesson.id === selectedId) ?? null;
   const mounted = visibleModules.flatMap((module) => module.lessons.map((lesson) => ({ module, lesson })))
-    .filter((entry) => entry.lesson.id === selectedId || KEEP_MOUNTED.includes(live[entry.lesson.id]?.phase ?? "idle"));
+    .filter((entry) => entry.lesson.id === selectedId || lessonIn(entry.lesson.id, KEEP_MOUNTED));
 
   return (
     <section className="curriculum-workspace" data-view={selected ? "lesson" : "list"} aria-labelledby="curriculum-title" data-testid="curriculum-workspace">
@@ -520,7 +551,7 @@ function Workspace({
           onMoveModule={moveModule}
           onCreateLesson={createLesson}
           onMoveLesson={moveLesson}
-          onReload={() => void load()}
+          onReload={reload}
         />
       </div>
       <div className="curriculum-lesson-pane">
@@ -533,14 +564,16 @@ function Workspace({
           module={module}
           lesson={lesson}
           courseVersion={courseVersion}
+          limits={limits}
           archived={archived}
           readiness={readinessOf(lesson)}
-          transportBusy={TRANSPORT.includes(live[lesson.id]?.phase ?? "idle")}
+          transportBusy={lessonIn(lesson.id, TRANSPORT)}
           onBack={backToList}
           onDelete={() => deleteLesson(module, lesson)}
           onSave={(change, options) => saveLesson(module, lesson, change, options)}
           onActivityChange={handleAssetActivity}
           onLiveChange={handleLive}
+          onMaterialLiveChange={handleMaterialLive}
           onCommitted={handleAssetCommitted}
         />)}
         {!selected ? <p className="curriculum-lesson-placeholder">Escolha uma aula na lista para pôr vídeo, PDF, texto e materiais.</p> : null}

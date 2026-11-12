@@ -51,7 +51,8 @@ export function useLessonSummaries(courseBase: string, lessons: readonly LessonR
       if (!checking) checkingSince.current.delete(ref.lessonId);
       setSummaries((current) => ({ ...current, [ref.lessonId]: summary }));
     } catch {
-      // A lista mostra "—" para esta aula; abrir a aula carrega de novo.
+      // Sem resposta, a aula fica com o estado anterior (ou "…" na primeira
+      // vez); abrir a aula ou a próxima mudança relê. Estado de falha: #656.
     } finally {
       window.clearTimeout(timeout);
     }

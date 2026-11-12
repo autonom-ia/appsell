@@ -112,7 +112,7 @@ export class CursoSimulado {
   envio: EnvioSimulado = {};
   private respostas = new Map<string, { status: number; json: unknown }>();
   private chaveAtual: string | null = null;
-  private liberarStorage: (() => void) | null = null;
+  private liberarStorage: ((concluir: boolean) => void) | null = null;
 
   constructor(modulos: ModuloSimulado[] = []) {
     this.modulos = modulos;
@@ -122,8 +122,10 @@ export class CursoSimulado {
     return this.pedidos.filter((pedido) => pedido.method === method && pedido.path.endsWith(final));
   }
 
-  liberarEnvio() {
-    this.liberarStorage?.();
+  /** Solta o PUT segurado: por padrão ele cai (a pessoa parou); com
+   *  `concluir`, ele chega ao storage e o envio segue até o fim. */
+  liberarEnvio({ concluir = false }: { concluir?: boolean } = {}) {
+    this.liberarStorage?.(concluir);
     this.liberarStorage = null;
   }
 
@@ -157,8 +159,8 @@ export class CursoSimulado {
         } });
       }
       if (this.envio.segurarStorage) {
-        await new Promise<void>((resolve) => { this.liberarStorage = resolve; });
-        return route.abort("aborted").catch(() => undefined);
+        const concluir = await new Promise<boolean>((resolve) => { this.liberarStorage = resolve; });
+        if (!concluir) return route.abort("aborted").catch(() => undefined);
       }
       await route.fulfill({ status: 200, headers: { ...cors, etag: '"etag"' }, body: "" });
     });

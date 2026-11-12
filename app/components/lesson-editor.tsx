@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef } from "react";
 
 import type { AutosaveFailure, AutosaveState } from "@/lib/curriculum/autosave";
-import type { CurriculumLesson, CurriculumModule } from "@/lib/curriculum/curriculum-api.client";
+import { exceedsBytes, type CurriculumLesson, type CurriculumLimits, type CurriculumModule } from "@/lib/curriculum/curriculum-api.client";
 import { JOURNEY_COPY } from "@/lib/curriculum/journey-copy";
 import type { LessonReadiness, LiveUpload } from "@/lib/curriculum/lesson-readiness";
 
@@ -29,6 +29,7 @@ export function LessonEditor({
   module,
   lesson,
   courseVersion,
+  limits,
   archived,
   readiness,
   transportBusy,
@@ -37,6 +38,7 @@ export function LessonEditor({
   onSave,
   onActivityChange,
   onLiveChange,
+  onMaterialLiveChange,
   onCommitted
 }: {
   hidden: boolean;
@@ -46,6 +48,7 @@ export function LessonEditor({
   module: CurriculumModule;
   lesson: CurriculumLesson;
   courseVersion: number;
+  limits: CurriculumLimits;
   archived: boolean;
   readiness: LessonReadiness;
   transportBusy: boolean;
@@ -54,13 +57,20 @@ export function LessonEditor({
   onSave: (change: { title?: string; content?: string }, options?: { keepalive?: boolean }) => Promise<SaveResult>;
   onActivityChange: (panelKey: string, value: AssetActivity) => void;
   onLiveChange: (lessonId: string, value: LiveUpload) => void;
+  /** O envio de material também prende a aula montada até terminar. */
+  onMaterialLiveChange: (lessonId: string, value: LiveUpload) => void;
   onCommitted: (lessonId: string) => void;
 }) {
   const heading = useRef<HTMLHeadingElement>(null);
-  const saveTitle = useCallback((value: string, options?: { keepalive?: boolean }) => value.trim().length < 2
-    ? Promise.resolve<SaveResult>({ ok: false, reason: "invalid" })
-    : onSave({ title: value.trim() }, options), [onSave]);
-  const saveContent = useCallback((value: string, options?: { keepalive?: boolean }) => onSave({ content: value }, options), [onSave]);
+  const saveTitle = useCallback((value: string, options?: { keepalive?: boolean }) => {
+    const name = value.trim();
+    if (name.length < 2) return Promise.resolve<SaveResult>({ ok: false, reason: "invalid" });
+    if (exceedsBytes(name, limits.title_bytes)) return Promise.resolve<SaveResult>({ ok: false, reason: "tooLong" });
+    return onSave({ title: name }, options);
+  }, [limits.title_bytes, onSave]);
+  const saveContent = useCallback((value: string, options?: { keepalive?: boolean }) => exceedsBytes(value, limits.lesson_content_bytes)
+    ? Promise.resolve<SaveResult>({ ok: false, reason: "tooLong" })
+    : onSave({ content: value }, options), [limits.lesson_content_bytes, onSave]);
   const title = useAutosave({ serverValue: lesson.title, save: saveTitle, disabled: archived });
   const content = useAutosave({ serverValue: lesson.content, save: saveContent, disabled: archived });
 
@@ -70,6 +80,7 @@ export function LessonEditor({
 
   const committed = useCallback(() => onCommitted(lesson.id), [lesson.id, onCommitted]);
   const live = useCallback((value: LiveUpload) => onLiveChange(lesson.id, value), [lesson.id, onLiveChange]);
+  const materialLive = useCallback((value: LiveUpload) => onMaterialLiveChange(lesson.id, value), [lesson.id, onMaterialLiveChange]);
   const done = readiness.done;
   const deleteHelp = `lesson-delete-help-${lesson.id}`;
 
@@ -101,12 +112,12 @@ export function LessonEditor({
         maxLength={160}
         disabled={archived}
         autoComplete="off"
-        aria-invalid={title.state.reason === "invalid" ? "true" : undefined}
+        aria-invalid={title.state.reason === "invalid" || title.state.reason === "tooLong" ? "true" : undefined}
         aria-describedby={`lesson-title-state-${lesson.id}`}
         onChange={(event) => title.onChange(event.target.value)}
         onBlur={() => void title.flush()}
       />
-      <SaveState id={`lesson-title-state-${lesson.id}`} state={title.state} onRetry={title.retry}/>
+      <SaveState id={`lesson-title-state-${lesson.id}`} state={title.state} onRetry={title.retry} invalidMessage={JOURNEY_COPY.nameTooShort} tooLongMessage={JOURNEY_COPY.nameTooLong}/>
     </div>
 
     <section className="lesson-block" aria-labelledby={`lesson-main-${lesson.id}`}>
@@ -148,7 +159,7 @@ export function LessonEditor({
         onBlur={() => void content.flush()}
       />
       <p className="field-help" id={`lesson-content-help-${lesson.id}`}>{JOURNEY_COPY.textHelp}</p>
-      <SaveState id={`lesson-content-state-${lesson.id}`} state={content.state} onRetry={content.retry}/>
+      <SaveState id={`lesson-content-state-${lesson.id}`} state={content.state} onRetry={content.retry} invalidMessage={JOURNEY_COPY.textTooLong} tooLongMessage={JOURNEY_COPY.textTooLong}/>
     </section>
 
     <section className="lesson-block" aria-labelledby={`lesson-materials-${lesson.id}`}>
@@ -167,6 +178,7 @@ export function LessonEditor({
         courseVersion={courseVersion}
         archived={archived}
         onActivityChange={onActivityChange}
+        onLiveChange={materialLive}
         onCommitted={committed}
       >
         <LessonMaterialPanel
@@ -189,10 +201,18 @@ export function LessonEditor({
   </section>;
 }
 
-function SaveState({ id, state, onRetry }: { id: string; state: AutosaveState; onRetry: () => void }) {
+function SaveState({ id, state, onRetry, invalidMessage, tooLongMessage }: {
+  id: string;
+  state: AutosaveState;
+  onRetry: () => void;
+  /** O servidor recusou o conteúdo: cada campo diz o que corrigir nele. */
+  invalidMessage: string;
+  tooLongMessage: string;
+}) {
   if (state.status === "failed") {
     const messages: Record<AutosaveFailure, string> = {
-      invalid: JOURNEY_COPY.nameTooShort,
+      invalid: invalidMessage,
+      tooLong: tooLongMessage,
       offline: JOURNEY_COPY.offline,
       forbidden: JOURNEY_COPY.noPermission,
       conflict: JOURNEY_COPY.changedElsewhere,
@@ -201,7 +221,7 @@ function SaveState({ id, state, onRetry }: { id: string; state: AutosaveState; o
     const message = messages[state.reason ?? "error"];
     return <p className="save-state save-state-failed" id={id} role="alert">
       <span>{message}</span>
-      {state.reason !== "invalid" ? <button className="secondary-button" type="button" onClick={onRetry}>{JOURNEY_COPY.notSaved}</button> : null}
+      {state.reason !== "invalid" && state.reason !== "tooLong" ? <button className="secondary-button" type="button" onClick={onRetry}>{JOURNEY_COPY.notSaved}</button> : null}
     </p>;
   }
   const text = state.status === "saving" ? JOURNEY_COPY.saving : state.status === "saved" ? JOURNEY_COPY.saved : "";

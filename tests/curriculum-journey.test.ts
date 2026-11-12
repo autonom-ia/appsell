@@ -4,6 +4,7 @@ import { lessonReadiness, outlineProgress, type LessonAssetSummary } from "../li
 import { classifyLessonLink, suggestedLinkTitle } from "../lib/curriculum/lesson-link";
 import { createUndoQueue } from "../lib/curriculum/undo-queue";
 import { autosaveReducer, initialAutosave } from "../lib/curriculum/autosave";
+import { exceedsBytes } from "../lib/curriculum/curriculum-api.client";
 import {
   FORBIDDEN_SELLER_WORDS,
   JOURNEY_COPY,
@@ -273,15 +274,25 @@ function recusa(...args: Parameters<typeof fileRefusal>) {
 }
 
 describe("o que a tela diz", () => {
-  it("nenhum texto da jornada usa termo técnico", () => {
+  // Cobre os textos centrais da jornada. Os textos escritos direto nos
+  // componentes são conferidos na tela pelo E2E "sem nenhuma palavra técnica".
+  it("textos da jornada, fases do envio e recusas não usam termo técnico", () => {
     const textos = [
       ...Object.values(JOURNEY_COPY),
       ...(["hashing", "creating", "uploading", "confirming", "verifying", "delayed"] as const)
         .map((fase) => uploadStage(fase, 37).title + " " + uploadStage(fase, 37).detail),
-      recusa({ name: "aula.mov", size: 10, type: "video/quicktime" }, "course_content").fix,
-      recusa({ name: "aula.mp4", size: MAX_VIDEO_BYTES + 1, type: VIDEO_MEDIA_TYPE }, "course_content").fix
+      ...[
+        recusa({ name: "aula.mov", size: 10, type: "video/quicktime" }, "course_content"),
+        recusa({ name: "aula.mp4", size: MAX_VIDEO_BYTES + 1, type: VIDEO_MEDIA_TYPE }, "course_content")
+      ].map((resultado) => `${resultado.title} ${resultado.fix}`)
     ].join("\n").toLowerCase();
     for (const palavra of FORBIDDEN_SELLER_WORDS) expect(textos).not.toContain(palavra);
+  });
+
+  it("nome e texto medem bytes, como o servidor: acento conta dois", () => {
+    expect(exceedsBytes("a".repeat(160), 160)).toBe(false);
+    expect(exceedsBytes("ç".repeat(80), 160)).toBe(false);
+    expect(exceedsBytes("ç".repeat(81), 160)).toBe(true);
   });
 
   it("o envio tem três momentos que a pessoa entende", () => {
