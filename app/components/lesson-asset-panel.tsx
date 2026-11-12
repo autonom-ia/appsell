@@ -5,23 +5,22 @@ import { sha256File } from "../../lib/file-sha256.client";
 import {
   acceptedByBothPanels,
   acceptForContentRole,
-  assetMediaLimit,
-  mediaFitsContentRole,
   assetMediaSpec,
   assetMediaTypeForFile,
   isDownloadableMedia,
-  mediaAgreement,
   mediaDemonstrative,
   mediaLabel,
   type AssetMediaType
 } from "../../lib/asset-media";
-import { AccessibleDialog } from "./accessible-dialog";
+import { fileRefusal, humanSize, JOURNEY_COPY, uploadStage } from "../../lib/curriculum/journey-copy";
+import type { LiveUpload } from "../../lib/curriculum/lesson-readiness";
+import { useScheduleUndo } from "./undo-toast";
 
 
 export const MAX_VERIFICATION_WAIT_MS = 15_000;
-const MATERIAL_PREPARATION_MESSAGE = "Arquivo recebido. Verificando segurança…";
+const MATERIAL_PREPARATION_MESSAGE = "Quase lá: conferindo o arquivo";
 const VERIFYING_UPLOAD_STATUSES: readonly string[] = ["uploaded", "verifying"];
-const MATERIAL_DELAYED_MESSAGE = "A verificação está demorando mais que o esperado. O arquivo continua sendo processado; você pode continuar editando e verificar novamente em instantes.";
+const MATERIAL_DELAYED_MESSAGE = "Quase lá: conferindo o arquivo";
 const ALLOWED_UPLOAD_HEADERS = new Set([
   "content-type",
   "x-amz-checksum-sha256",
@@ -148,19 +147,22 @@ interface UploadState {
   phase: Phase;
   progress: number;
   message: string;
+  /** O que fazer agora, quando a mensagem sozinha não diz. */
+  detail: string;
   uploadId: string | null;
   fileName: string;
 }
 
 type UploadAction =
-  | { type: "phase"; phase: Phase; message: string; fileName?: string; uploadId?: string | null }
+  | { type: "phase"; phase: Phase; message: string; detail?: string; fileName?: string; uploadId?: string | null }
   | { type: "progress"; progress: number }
   | { type: "reset" };
 
 const initialUploadState: UploadState = {
   phase: "idle",
   progress: 0,
-  message: "Selecione um arquivo para iniciar.",
+  message: "",
+  detail: "",
   uploadId: null,
   fileName: ""
 };
@@ -172,6 +174,7 @@ function uploadReducer(state: UploadState, action: UploadAction): UploadState {
     ...state,
     phase: action.phase,
     message: action.message,
+    detail: action.detail ?? "",
     fileName: action.fileName ?? state.fileName,
     uploadId: action.uploadId === undefined ? state.uploadId : action.uploadId,
     progress: action.phase === "uploading" ? state.progress : action.phase === "ready" ? 100 : state.progress
@@ -189,6 +192,7 @@ export function LessonAssetPanel({
   archived,
   contentRole,
   onActivityChange,
+  onLiveChange,
   onCommitted,
   children
 }: {
@@ -207,19 +211,21 @@ export function LessonAssetPanel({
    */
   contentRole: AssetView["content_role"];
   onActivityChange: (panelKey: string, value: { dirty: boolean; busy: boolean }) => void;
+  /** O envio desta aba, para a lista do curso mostrar "Enviando 42%" (#649). */
+  onLiveChange?: (value: LiveUpload) => void;
   onCommitted: () => void;
   /** Links e vídeos, que moram na mesma lista de anexos mas em outra tabela. */
   children?: ReactNode;
 }) {
   const [state, dispatch] = useReducer(uploadReducer, initialUploadState);
   const [assets, setAssets] = useState<AssetView[]>([]);
-  const [uploads, setUploads] = useState<UploadView[]>([]);
   const [csrf, setCsrf] = useState<AssetListPayload["csrf"] | null>(null);
-  const [opened, setOpened] = useState(false);
+  // O painel não fica mais recolhido (#649): ele está aberto desde que existe.
+  const opened = true;
   const [loaded, setLoaded] = useState(false);
-  const [archiveTarget, setArchiveTarget] = useState<AssetView | null>(null);
-  const [archiveError, setArchiveError] = useState("");
-  const [archiving, setArchiving] = useState(false);
+  // Tirado da aula e esperando o "Desfazer": some da tela antes do pedido sair.
+  const [removedIds, setRemovedIds] = useState<ReadonlySet<string>>(new Set());
+  const scheduleUndo = useScheduleUndo();
   const [policySavingId, setPolicySavingId] = useState<string | null>(null);
   const [policyError, setPolicyError] = useState("");
   const [justReadyId, setJustReadyId] = useState<string | null>(null);
@@ -246,11 +252,11 @@ export function LessonAssetPanel({
   const fetchControllersRef = useRef(new Set<AbortController>());
   const progressFrameRef = useRef<number | null>(null);
   const pendingProgressRef = useRef(0);
-  const archiveCancelRef = useRef<HTMLButtonElement>(null);
-  const summaryRef = useRef<HTMLElement>(null);
+  const focusAnchorRef = useRef<HTMLDivElement>(null);
+  const courseVersionRef = useRef(courseVersion);
   const applyPanelRoleRef = useRef<(asset: AssetView) => void>(() => {});
   const justReadyRef = useRef<HTMLElement>(null);
-  const panelRef = useRef<HTMLDetailsElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
 
   // Há dois painéis por aula. Sem o papel no identificador, os dois inputs de
   // arquivo nascem com o mesmo `id`, e um `<label htmlFor>` ativa o primeiro do
@@ -272,6 +278,9 @@ export function LessonAssetPanel({
   // com a chave da aula um apagava o aviso do outro (#612).
   useEffect(() => onActivityChange(panelId, { dirty, busy: transportBusy }), [dirty, onActivityChange, panelId, transportBusy]);
   useEffect(() => () => onActivityChange(panelId, { dirty: false, busy: false }), [onActivityChange, panelId]);
+  useEffect(() => { onLiveChange?.({ phase: state.phase, progress: state.progress }); }, [onLiveChange, state.phase, state.progress]);
+  useEffect(() => () => onLiveChange?.({ phase: "idle", progress: 0 }), [onLiveChange]);
+  useEffect(() => { courseVersionRef.current = courseVersion; }, [courseVersion]);
 
   const stopTransientWork = useCallback(() => {
     generationRef.current += 1;
@@ -315,12 +324,12 @@ export function LessonAssetPanel({
     const task = discardPendingAssetUpload(uploadId, pendingIntent, cancelIntent)
       .then(() => {
         activeUploadIdRef.current = null;
-        dispatch({ type: "phase", phase: "cancelled", message: "Envio cancelado. Seu curso não foi alterado." });
+        dispatch({ type: "phase", phase: "cancelled", message: "Envio parado. Nada mudou na aula." });
         if (inputRef.current) inputRef.current.value = "";
         if (uploadId || pendingIntent) onCommitted();
       })
       .catch((error: unknown) => {
-        dispatch({ type: "phase", phase: "failed", message: "Não foi possível cancelar o envio com segurança. Tente novamente antes de sair." });
+        dispatch({ type: "phase", phase: "failed", message: "Não deu para parar o envio agora.", detail: "Espere alguns segundos e tente de novo antes de sair desta tela." });
         throw error;
       })
       .finally(() => {
@@ -359,7 +368,7 @@ export function LessonAssetPanel({
    */
   const load = useCallback(async (mode: "initial" | "revalidate" = "initial") => {
     const initial = mode === "initial";
-    if (initial) dispatch({ type: "phase", phase: "loading", message: "Carregando materiais…" });
+    if (initial) dispatch({ type: "phase", phase: "loading", message: "Carregando os arquivos…" });
     setRefreshFailed(false);
     // Duas revalidações podem correr juntas — a do envio e a da política, por
     // exemplo. Sem isto vence a **última a responder**, não a mais nova: a
@@ -379,7 +388,6 @@ export function LessonAssetPanel({
       if (!atual()) return;
       const primeiraEntrega = initial || !loadedRef.current;
       setAssets(payload.assets);
-      setUploads(payload.uploads);
       setCsrf(payload.csrf);
       setLoaded(true);
       // No mesmo instante, não num efeito depois do commit: entre `setLoaded` e
@@ -411,7 +419,7 @@ export function LessonAssetPanel({
         dispatch({ type: "phase", phase: "verifying", message: MATERIAL_PREPARATION_MESSAGE, fileName: active.file_name, uploadId: active.id });
       } else if (interrupted) {
         verificationStartedAtRef.current = null;
-        dispatch({ type: "phase", phase: "failed", message: `O envio de ${interrupted.file_name} não terminou. Se ele ainda estiver subindo em outra aba, espere por lá; se não, escolha o arquivo de novo.` });
+        dispatch({ type: "phase", phase: "failed", message: `O envio de ${interrupted.file_name} não terminou.`, detail: "Se ele ainda estiver subindo em outra aba, espere por lá. Se não, escolha o arquivo de novo." });
       } else {
         verificationStartedAtRef.current = null;
         dispatch({ type: "reset" });
@@ -421,7 +429,7 @@ export function LessonAssetPanel({
       // existe para acabar: o arquivo subiu, e a lista não mostra.
       if (!atual()) return;
       if (!initial && loadedRef.current) return setRefreshFailed(true);
-      dispatch({ type: "phase", phase: "failed", message: "Não foi possível carregar os materiais. Tente novamente." });
+      dispatch({ type: "phase", phase: "failed", message: "Não deu para carregar os arquivos desta aula.", detail: "Confira a internet e tente de novo." });
     }
   }, [base, boundedFetch]);
 
@@ -590,8 +598,7 @@ export function LessonAssetPanel({
           verificationStartedAtRef.current = null;
           replacementTargetRef.current = null;
           applyPanelRoleRef.current(payload.asset);
-          setUploads((current) => current.filter((upload) => upload.id !== uploadId));
-          dispatch({ type: "phase", phase: "ready", message: `${mediaLabel(payload.asset.media_type)} ${mediaAgreement(payload.asset.media_type, "pronto", "pronta")} para publicar.`, uploadId });
+          dispatch({ type: "phase", phase: "ready", message: `Pronto: ${payload.asset.file_name} entrou na aula.`, uploadId });
           // A lista vem do servidor, não de um palpite sobre a resposta da
           // verificação. É o que faz o material aparecer sem o vendedor ter de
           // recarregar a página para descobrir se subiu.
@@ -608,12 +615,12 @@ export function LessonAssetPanel({
         if (["quarantined", "rejected", "cancelled", "expired"].includes(payload.status)) {
           activeUploadIdRef.current = null;
           verificationStartedAtRef.current = null;
-          const message = payload.status === "quarantined"
-            ? "Arquivo isolado para análise. Ele não será publicado."
+          const [message, detail] = payload.status === "quarantined"
+            ? ["Este arquivo não pode entrar no curso.", "Ele foi separado por segurança. Escolha outro arquivo."]
             : payload.status === "rejected"
-              ? payload.safe_reason || "Este arquivo não passou na verificação. Escolha outro arquivo."
-              : "O envio foi interrompido. Seu curso não foi alterado.";
-          dispatch({ type: "phase", phase: payload.status === "cancelled" ? "cancelled" : "failed", message, uploadId });
+              ? ["Este arquivo não abriu.", payload.safe_reason || "Confira se ele abre no seu aparelho e escolha de novo."]
+              : ["O envio parou antes de terminar.", "Nada mudou na aula. Escolha o arquivo de novo."];
+          dispatch({ type: "phase", phase: payload.status === "cancelled" ? "cancelled" : "failed", message, detail, uploadId });
           pollingUploadRef.current = null;
           if (inputRef.current) inputRef.current.value = "";
           onCommitted();
@@ -672,21 +679,15 @@ export function LessonAssetPanel({
     // O `accept` do input é dica: quem escolhe "todos os arquivos" no seletor
     // do sistema passa por cima dele.
     const mediaType = selectedMediaType(file);
-    if (mediaType && !mediaFitsContentRole(mediaType, contentRole)) {
+    const refusal = fileRefusal({ name: file.name, size: file.size, type: file.type }, contentRole);
+    if (refusal.refused || !mediaType) {
       dispatch({
         type: "phase",
         phase: "failed",
-        message: attachments
-          ? "Vídeo não é anexo: o aluno não pode baixá-lo. Envie-o em Conteúdo da aula."
-          : "Este formato o aluno abre fora da aula. Envie-o em Anexos e links.",
+        message: refusal.refused ? refusal.title : "Este tipo de arquivo não entra.",
+        detail: refusal.refused ? refusal.fix : "",
         fileName: file.name
       });
-      event.target.value = "";
-      return;
-    }
-    const maximum = assetMediaLimit(mediaType);
-    if (!mediaType || file.size < 1 || file.size > maximum) {
-      dispatch({ type: "phase", phase: "failed", message: uploadRefusalMessage(file), fileName: file.name });
       event.target.value = "";
       return;
     }
@@ -697,7 +698,7 @@ export function LessonAssetPanel({
         activeUploadIdRef.current = null;
         onCommitted();
       } catch {
-        dispatch({ type: "phase", phase: "failed", message: "O envio anterior ainda não foi cancelado com segurança. Tente novamente em instantes.", uploadId: previousUploadId });
+        dispatch({ type: "phase", phase: "failed", message: "O envio anterior ainda não parou.", detail: "Espere alguns segundos e escolha o arquivo de novo.", uploadId: previousUploadId });
         // Sem limpar, reescolher o mesmo arquivo não dispara outro `change` e o
         // vendedor fica sem saída.
         event.target.value = "";
@@ -706,21 +707,28 @@ export function LessonAssetPanel({
     }
     stopTransientWork();
     const generation = generationRef.current;
-    dispatch({ type: "phase", phase: "hashing", message: "Verificando o arquivo neste dispositivo: 0%", fileName: file.name });
+    dispatch({ type: "phase", phase: "hashing", message: "Preparando o arquivo", fileName: file.name });
     const hashController = new AbortController();
     hashControllerRef.current = hashController;
+    // Ler o arquivo no aparelho e falar com o servidor falham por motivos
+    // diferentes, e cada um pede uma saída diferente.
+    let reading = true;
     try {
       const sha256 = await sha256File(file, hashController.signal, (progress) => {
         if (generation === generationRef.current) {
-          dispatch({ type: "phase", phase: "hashing", message: `Verificando o arquivo neste dispositivo: ${progress}%` });
+          dispatch({ type: "phase", phase: "hashing", message: `Preparando o arquivo: ${progress}%` });
         }
       });
       if (generation !== generationRef.current) return;
+      reading = false;
       await createIntentAndUpload(file, mediaType, sha256, generation);
     } catch (error) {
       if (generation !== generationRef.current) return;
       if (error instanceof DOMException && error.name === "AbortError") return;
-      dispatch({ type: "phase", phase: "failed", message: "Não foi possível preparar o arquivo. Escolha-o novamente." });
+      const [message, detail] = reading
+        ? ["Não deu para ler este arquivo.", "Confira se ele abre no seu aparelho e escolha de novo."]
+        : startFailure(error);
+      dispatch({ type: "phase", phase: "failed", message, detail });
     } finally {
       if (hashControllerRef.current === hashController) hashControllerRef.current = null;
     }
@@ -873,7 +881,7 @@ export function LessonAssetPanel({
         // de transporte merece insistência.
         const definitiva = error instanceof DOMException || (error instanceof Error && /^part_(4\d\d|invalid)/.test(error.message));
         if (definitiva || tentativa >= PART_ATTEMPTS) throw error;
-        dispatch({ type: "phase", phase: "uploading", message: "Conexão instável. Retomando o envio…", uploadId });
+        dispatch({ type: "phase", phase: "uploading", message: "Enviando", detail: "A internet oscilou. Tentando de novo…", uploadId });
         await new Promise<void>((resolve) => window.setTimeout(resolve, PART_RETRY_BASE_MS * tentativa));
       }
     }
@@ -929,10 +937,10 @@ export function LessonAssetPanel({
       activeUploadIdRef.current = null;
       onCommitted();
     } catch {
-      dispatch({ type: "phase", phase: "failed", message: "O envio falhou e ainda não foi possível cancelá-lo com segurança. Tente novamente antes de enviar outro arquivo.", uploadId });
+      dispatch({ type: "phase", phase: "failed", message: "O envio parou e ainda não deu para limpar o que subiu.", detail: "Espere alguns segundos e escolha o arquivo de novo.", uploadId });
       return true;
     }
-    dispatch({ type: "phase", phase: "failed", message: "O envio foi interrompido. Seu curso não foi alterado.", uploadId });
+    dispatch({ type: "phase", phase: "failed", message: "O envio parou porque a conexão caiu.", detail: "Confira a internet e escolha o arquivo de novo. Nada foi salvo pela metade.", uploadId });
     return true;
   }
 
@@ -1012,27 +1020,37 @@ export function LessonAssetPanel({
     await discardCurrentUpload().catch(() => undefined);
   }
 
-  async function archiveAsset() {
-    if (!archiveTarget || !csrf || archiving) return;
-    setArchiving(true);
-    setArchiveError("");
-    const body = new FormData();
-    body.set("_csrf", csrf.archive);
-    body.set("idempotency_key", crypto.randomUUID());
-    body.set("expected_course_version", String(courseVersion));
-    try {
-      const response = await boundedFetch(`${base}/${archiveTarget.id}/archive`, { method: "POST", body }, 8_000);
-      if (!response.ok) throw new Error("archive_failed");
-      setAssets((current) => current.filter((asset) => asset.id !== archiveTarget.id));
-      setArchiveTarget(null);
-      dispatch({ type: "phase", phase: "idle", message: "Material removido da aula. Publicações anteriores continuam inalteradas." });
-      onCommitted();
-      queueMicrotask(() => summaryRef.current?.focus());
-    } catch {
-      setArchiveError("Não foi possível arquivar. Recarregue os materiais e tente novamente.");
-    } finally {
-      setArchiving(false);
-    }
+  /**
+   * Tirar da aula some na hora e o pedido só sai quando o "Desfazer" vence
+   * (#649, decisão D2). Antes era um diálogo de risco com a palavra "rascunho".
+   */
+  function removeAsset(asset: AssetView) {
+    if (!csrf) return;
+    const archiveCsrf = csrf.archive;
+    setRemovedIds((current) => new Set(current).add(asset.id));
+    dispatch({ type: "phase", phase: "idle", message: "" });
+    queueMicrotask(() => focusAnchorRef.current?.focus());
+    const restore = () => setRemovedIds((current) => {
+      const next = new Set(current);
+      next.delete(asset.id);
+      return next;
+    });
+    scheduleUndo({
+      id: `asset:${asset.id}`,
+      message: `“${asset.file_name}” saiu da aula.`,
+      revert: restore,
+      commit: async ({ leaving }) => {
+        const body = new FormData();
+        body.set("_csrf", archiveCsrf);
+        body.set("idempotency_key", crypto.randomUUID());
+        body.set("expected_course_version", String(courseVersionRef.current));
+        const response = await boundedFetch(`${base}/${asset.id}/archive`, { method: "POST", body, keepalive: leaving }, 8_000, false);
+        if (!response.ok) throw new Error("archive_failed");
+        setAssets((current) => current.filter((entry) => entry.id !== asset.id));
+        restore();
+        onCommitted();
+      }
+    });
   }
 
   async function updatePolicy(
@@ -1072,9 +1090,9 @@ export function LessonAssetPanel({
         dispatch({
           type: "phase",
           phase: "idle",
-          message: safeDownload
-            ? "Material de apoio liberado para download na próxima publicação."
-            : "Política do material atualizada para a próxima publicação."
+          message: role !== asset.content_role
+            ? role === "support_material" ? "O PDF foi para Materiais para o aluno." : "O PDF foi para Vídeo ou PDF da aula."
+            : safeDownload ? "Pronto: o aluno poderá baixar este arquivo." : "Pronto: o aluno não poderá baixar este arquivo."
         });
         onCommitted();
       } finally {
@@ -1085,7 +1103,7 @@ export function LessonAssetPanel({
     try {
       await task;
     } catch {
-      setPolicyError("Não foi possível salvar a permissão. Recarregue e tente novamente.");
+      setPolicyError("Não deu para salvar esta mudança. Confira a internet e tente de novo.");
     } finally {
       if (policyTaskRef.current === task) policyTaskRef.current = null;
     }
@@ -1093,103 +1111,123 @@ export function LessonAssetPanel({
 
   const attachments = contentRole === "support_material";
   const readyAssets = assets.filter(
-    (asset) => asset.status === "ready" && asset.content_role === contentRole
+    (asset) => asset.status === "ready" && asset.content_role === contentRole && !removedIds.has(asset.id)
   );
-  const heading = attachments ? "Anexos e links" : "Conteúdo da aula";
-  const noun = attachments ? "anexo" : "conteúdo";
   const otherRole: AssetView["content_role"] = attachments ? "course_content" : "support_material";
-  const summary = !loaded
-    ? "Abrir para carregar"
-    : readyAssets.length > 0
-      ? `${readyAssets.length} ${readyAssets.length === 1 ? `${noun} pronto` : `${noun}s prontos`}`
-      : uploads.some((upload) => VERIFYING_UPLOAD_STATUSES.includes(upload.status))
-        ? "Preparação em andamento"
-        : `Nenhum ${noun}`;
+  const stageVisible = uploadBusy;
+  const stage = uploadStage(state.phase, state.progress);
+  const showMessage = !stageVisible && state.phase !== "loading" && state.message !== "";
+  const pickLabel = attachments
+    ? JOURNEY_COPY.addFile
+    : readyAssets.length > 0 ? JOURNEY_COPY.pickAnotherMain : JOURNEY_COPY.pickMain;
+  const firstChoice = !attachments && readyAssets.length === 0;
 
-  return <div className="lesson-assets">
-    <details ref={panelRef} onToggle={(event) => setOpened(event.currentTarget.open)}>
-      <summary ref={summaryRef}><span>{heading}</span><small>{summary}</small></summary>
-      <p className="asset-panel-hint">{attachments
-        ? "Documentos, planilhas, apresentações, links e vídeos. O aluno pode baixar ou abrir."
-        : "PDF ou vídeo MP4. Fica protegido dentro da área do aluno, sem download."}</p>
-      <div className="lesson-assets-body" aria-busy={busy}>
-        {readyAssets.map((asset) => <article className={`asset-status-card state-ready${asset.id === justReadyId ? " state-just-ready" : ""}`} key={asset.id} ref={asset.id === justReadyId ? justReadyRef : undefined} tabIndex={asset.id === justReadyId ? -1 : undefined}>
-          <div><span className="asset-state">{mediaLabel(asset.media_type)} {mediaAgreement(asset.media_type, "pronto", "pronta")} para publicar</span><strong dir="auto">{asset.title}</strong><small className="asset-file-name" dir="auto" title={asset.file_name}>{asset.file_name}</small><small dir="auto">{asset.content_role === "support_material" ? "Material de apoio" : "Conteúdo protegido"} · {formatBytes(asset.byte_size)}</small></div>
-          {!archived ? <div className="asset-policy-controls">
-            {attachments && isDownloadableMedia(asset.media_type)
-              ? <label className="asset-download-toggle">
-                  <input
-                    type="checkbox"
-                    checked={asset.download_allowed}
-                    disabled={busy}
-                    onChange={(event) => void updatePolicy(
-                      asset,
-                      "support_material",
-                      event.target.checked
-                    )}
-                  />
-                  {downloadToggleLabel(asset.media_type)}
-                </label>
-              : <small>Fica disponível apenas dentro da área do aluno, sem download.</small>}
-          </div> : null}
-          {!archived ? <div className="asset-actions">
-            {/* O PDF é o único formato que os dois painéis aceitam: ebook
-                protegido no leitor ou anexo para o aluno baixar. Sem esta ação
-                o vendedor teria de remover e reenviar o arquivo só para mudar
-                de ideia.
-
-                Mover só move: a permissão de download é levada como está e
-                continua sendo uma escolha à parte. Indo para o conteúdo da
-                aula ela cai para `false` sozinha, porque `updatePolicy` não
-                deixa material protegido ser baixável. */}
+  return <div className={`lesson-files lesson-files-${attachments ? "extra" : "main"}`} ref={panelRef} aria-busy={busy}>
+    <div ref={focusAnchorRef} tabIndex={-1} className="lesson-files-anchor"/>
+    {readyAssets.length > 0 ? <ul className="lesson-file-list">
+      {readyAssets.map((asset, index) => <li key={asset.id}>
+        <article
+          className={`lesson-file${!attachments && index === 0 ? " is-main" : ""}${asset.id === justReadyId ? " state-just-ready" : ""}`}
+          ref={asset.id === justReadyId ? justReadyRef : undefined}
+          tabIndex={asset.id === justReadyId ? -1 : undefined}
+          aria-label={asset.file_name}
+        >
+          <span className="lesson-file-badge" aria-hidden="true">{fileBadge(asset.media_type)}</span>
+          <div className="lesson-file-meta">
+            <strong className="lesson-file-name" dir="auto" title={asset.file_name}>{asset.file_name}</strong>
+            <span className="lesson-file-detail">
+              <span className="course-chip course-chip-ok">✓ Pronto</span>
+              <span>{capitalize(mediaLabel(asset.media_type))} · {humanSize(asset.byte_size)}</span>
+            </span>
+            {attachments && isDownloadableMedia(asset.media_type) && !archived ? <label className="lesson-switch">
+              <input
+                type="checkbox"
+                role="switch"
+                checked={asset.download_allowed}
+                disabled={busy}
+                aria-label={`${JOURNEY_COPY.downloadToggle}: ${asset.file_name}`}
+                onChange={(event) => void updatePolicy(asset, "support_material", event.target.checked)}
+              />
+              <span aria-hidden="true">{JOURNEY_COPY.downloadToggle}</span>
+            </label> : null}
+          </div>
+          {!archived ? <div className="lesson-file-actions">
+            {/* O PDF é o único formato que os dois lugares aceitam: lido aqui
+                dentro, protegido, ou baixado pelo aluno. Mudar de ideia não
+                pode exigir tirar e mandar o arquivo de novo. */}
             {acceptedByBothPanels(asset.media_type)
               ? <button className="secondary-button" type="button" disabled={busy} onClick={() => void updatePolicy(asset, otherRole, asset.download_allowed)}>
-                  {attachments ? "Mover para conteúdo da aula" : "Mover para anexos"}
+                  {attachments ? "Mover para Vídeo ou PDF da aula" : "Mover para Materiais para o aluno"}
                 </button>
               : null}
-            <button className="secondary-button" type="button" disabled={busy} onClick={() => openReplacementPicker(asset.id)}>Substituir arquivo</button>
-            <button className="danger-button" type="button" disabled={busy} onClick={() => setArchiveTarget(asset)}>Remover</button>
+            <button className="secondary-button" type="button" disabled={busy} aria-label={`${JOURNEY_COPY.replaceFile}: ${asset.file_name}`} onClick={() => openReplacementPicker(asset.id)}>{JOURNEY_COPY.replaceFile}</button>
+            <button className="quiet-button" type="button" disabled={busy} aria-label={`${JOURNEY_COPY.removeFile}: ${asset.file_name}`} onClick={() => removeAsset(asset)}>{JOURNEY_COPY.removeFile}</button>
           </div> : null}
-        </article>)}
-        {policyError ? <p className="form-error" role="alert">{policyError}</p> : null}
-        {refreshFailed ? <p className="form-error asset-refresh-failed" role="alert">
-          <span>Seu arquivo foi salvo, mas não foi possível atualizar esta lista.</span>
-          <button className="secondary-button" type="button" disabled={busy} onClick={() => void load("revalidate")}>Atualizar lista</button>
-        </p> : null}
-        {children}
+        </article>
+      </li>)}
+    </ul> : null}
+    {attachments && readyAssets.length === 0 ? <p className="lesson-files-empty">{JOURNEY_COPY.materialsHelp}</p> : null}
+    {policyError ? <p className="form-error" role="alert">{policyError}</p> : null}
+    {refreshFailed ? <p className="form-error lesson-files-refresh" role="alert">
+      <span>O arquivo foi salvo, mas a lista não atualizou.</span>
+      <button className="secondary-button" type="button" disabled={busy} onClick={() => void load("revalidate")}>Atualizar lista</button>
+    </p> : null}
 
-        {!archived && loaded ? <div className="asset-uploader">
-          <div className="asset-file-picker">
-            <label className="asset-file-label" htmlFor={`asset-file-${panelId}`} onClick={() => { replacementTargetRef.current = null; }}>{readyAssets.length > 0 ? `Adicionar outro ${noun}` : `Adicionar ${noun}`}</label>
-            <input ref={inputRef} id={`asset-file-${panelId}`} type="file" accept={acceptForContentRole(contentRole)} onClick={resetReplacementOnDirectPickerClick} onChange={(event) => void selectFile(event)} disabled={busy}/>
-          </div>
-          {/* O rotulo dizia "Adicione um PDF ou vídeo MP4" e o seletor sempre aceitou
-    nove formatos. O vendedor lia o rotulo, concluia que documento nao
-    cabia, e ia procurar em "Material complementar" — que so faz link e
-    video. A capacidade existia; o rotulo escondia. */}
-          <p className="asset-help"><strong>PDF</strong> ou <strong>MP4</strong> viram conteúdo da aula, protegido. <strong>DOCX</strong>, <strong>XLSX</strong>, <strong>PPTX</strong>, <strong>TXT</strong>, <strong>MD</strong>, <strong>CSV</strong> e <strong>JSON</strong> entram como material de apoio, que o aluno pode baixar. Uma aula aceita vários. O arquivo só entra em uma nova publicação depois da verificação.</p>
-        </div> : null}
-
-        <div className={`asset-feedback state-${state.phase}`} role="status" aria-live="polite" aria-atomic="true" tabIndex={state.phase === "failed" || state.phase === "delayed" ? -1 : undefined}>
-          <span>{state.message}</span>
-          {state.fileName ? <small>Material selecionado</small> : null}
-          {state.phase === "uploading" ? <><label className="sr-only" htmlFor={`asset-progress-${panelId}`}>Progresso do envio</label><progress id={`asset-progress-${panelId}`} aria-label="Progresso do envio" max="100" value={state.progress}>{state.progress}%</progress></> : null}
-          {uploadBusy ? <button className="secondary-button" type="button" onClick={() => void cancelUpload()}>Cancelar envio</button> : null}
-          {state.phase === "failed" && !loaded ? <button className="secondary-button" type="button" onClick={() => void load()}>Recarregar materiais</button> : null}
-          {state.phase === "delayed" ? <button className="secondary-button" type="button" onClick={retryVerification}>Verificar novamente</button> : null}
-          {(state.phase === "failed" && loaded) || state.phase === "cancelled" ? <button className="secondary-button" type="button" onClick={() => inputRef.current?.click()}>Tentar novamente</button> : null}
+    <div className={`lesson-upload-state${stageVisible ? " is-active" : ""}${state.phase === "failed" ? " is-failed" : ""}`} role="status" aria-live="polite" aria-atomic="true" tabIndex={state.phase === "failed" || state.phase === "delayed" ? -1 : undefined}>
+      {stageVisible ? <>
+        <p><strong>{stage.title}</strong>{state.fileName ? <span className="lesson-upload-file" dir="auto"> · {state.fileName}</span> : null}</p>
+        <p className="lesson-upload-detail">{state.detail || stage.detail}</p>
+        {["hashing", "creating", "uploading", "confirming"].includes(state.phase)
+          ? <progress aria-label="Andamento do envio" max="100" value={state.progress}>{state.progress}%</progress>
+          : null}
+        <div className="lesson-upload-actions">
+          <button className="secondary-button" type="button" onClick={() => void cancelUpload()}>{JOURNEY_COPY.stopUpload}</button>
+          {state.phase === "delayed" ? <button className="secondary-button" type="button" onClick={retryVerification}>Conferir de novo</button> : null}
         </div>
-      </div>
-    </details>
+      </> : null}
+      {showMessage ? <>
+        <p><strong>{state.message}</strong></p>
+        {state.detail ? <p className="lesson-upload-detail">{state.detail}</p> : null}
+        {state.phase === "failed" && !loaded ? <button className="secondary-button" type="button" onClick={() => void load()}>Tentar de novo</button> : null}
+      </> : null}
+      {state.phase === "loading" ? <p className="lesson-upload-detail">{state.message}</p> : null}
+    </div>
 
-    {archiveTarget ? <AccessibleDialog titleId={`archive-asset-title-${panelId}`} descriptionId={`archive-asset-description-${panelId}`} initialFocusRef={archiveCancelRef} returnFocusRef={summaryRef} onClose={() => { if (!archiving) setArchiveTarget(null); }}>
-      <p className="eyebrow">Remover material</p>
-      <h2 id={`archive-asset-title-${panelId}`}>Remover {archiveTarget ? `${mediaDemonstrative(archiveTarget.media_type)} ${mediaLabel(archiveTarget.media_type)}` : "este material"} da aula?</h2>
-      <p id={`archive-asset-description-${panelId}`}>Ele sairá do rascunho da aula <strong>{lessonTitle}</strong>. Publicações anteriores e alunos com acesso a elas continuarão usando a versão já publicada.</p>
-      {archiveError ? <p className="form-error" role="alert">{archiveError}</p> : null}
-      <div className="dialog-actions"><button ref={archiveCancelRef} className="secondary-button" type="button" disabled={archiving} onClick={() => setArchiveTarget(null)}>Manter na aula</button><button className="danger-button" type="button" disabled={archiving} onClick={() => void archiveAsset()}>{archiving ? "Removendo…" : "Remover da aula"}</button></div>
-    </AccessibleDialog> : null}
+    {children}
+
+    {!archived && loaded ? <div className={`lesson-picker${firstChoice ? " is-first" : ""}`} hidden={uploadBusy}>
+      {firstChoice ? <span className="lesson-picker-icon" aria-hidden="true">▶</span> : null}
+      <div className="lesson-picker-control">
+        <label className={firstChoice ? "primary-button" : "secondary-button"} htmlFor={`asset-file-${panelId}`} onClick={() => { replacementTargetRef.current = null; }}>
+          {state.phase === "failed" || state.phase === "cancelled" ? JOURNEY_COPY.tryAgain : pickLabel}
+        </label>
+        <input ref={inputRef} id={`asset-file-${panelId}`} type="file" accept={acceptForContentRole(contentRole)} onClick={resetReplacementOnDirectPickerClick} onChange={(event) => void selectFile(event)} disabled={busy}/>
+      </div>
+      {!attachments ? <p className="lesson-picker-help">{JOURNEY_COPY.mainLimits}</p> : null}
+    </div> : null}
   </div>;
+}
+
+function fileBadge(mediaType: unknown): string {
+  const spec = assetMediaSpec(mediaType);
+  if (!spec) return "ARQ";
+  return spec.extension === "mp4" ? "▶" : spec.extension.toUpperCase();
+}
+
+function capitalize(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+/** Por que o envio não começou, dito para quem vende, com o que fazer. */
+function startFailure(error: unknown): [string, string] {
+  const code = error instanceof Error ? error.message : "";
+  if (code === "intent_409") {
+    return ["O curso mudou em outra aba ou aparelho.", "Recarregue a página e escolha o arquivo de novo."];
+  }
+  if (code === "intent_401" || code === "intent_403") {
+    return ["Sua sessão terminou.", "Entre de novo e escolha o arquivo outra vez."];
+  }
+  return ["Não deu para preparar o envio.", "Confira a internet e escolha o arquivo de novo."];
 }
 
 function validListPayload(value: AssetListPayload): boolean {
@@ -1201,13 +1239,6 @@ function validListPayload(value: AssetListPayload): boolean {
         asset.content_role === "support_material" && isDownloadableMedia(asset.media_type)
       )))
     && ["intent", "confirm", "cancel", "archive", "policy"].every((key) => typeof value.csrf[key as keyof AssetListPayload["csrf"]] === "string");
-}
-
-function uploadRefusalMessage(file: File): string {
-  const mediaType = assetMediaTypeForFile(file.name, file.type);
-  if (!mediaType) return "Formato não aceito. Envie PDF, MP4, documento, planilha, apresentação ou texto.";
-  const limit = assetMediaLimit(mediaType);
-  return `Este arquivo passa do limite de ${formatBytes(limit)} para o formato escolhido.`;
 }
 
 function selectedMediaType(file: File): AssetMediaType | null {

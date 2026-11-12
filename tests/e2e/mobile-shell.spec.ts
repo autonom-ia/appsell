@@ -559,6 +559,7 @@ test("authors and reorders a tenant curriculum at 320px without drag", async ({ 
   let version = 3;
   let productArchived = false;
   const moduleAttemptKeys: string[] = [];
+  let practiceArchived = false;
   const modules = [{
     id: baseModuleId,
     title: "Base",
@@ -622,6 +623,16 @@ test("authors and reorders a tenant curriculum at 320px without drag", async ({ 
       }) });
       return;
     }
+    // A lista do curso pede os arquivos de cada aula para mostrar o estado
+    // dela (#649), e a aula aberta pede os mesmos arquivos para o painel.
+    if (path.endsWith("/assets") && request.method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        assets: [],
+        uploads: [],
+        csrf: { intent: "i", confirm: "c", cancel: "x", archive: "a", policy: "p", signPart: "s" }
+      }) });
+      return;
+    }
     // Daqui para baixo só passa envio de formulário. Qualquer outra coisa é uma
     // rota que a tela passou a chamar e este teste ainda não conhece: falhar
     // dizendo isso custa menos do que um erro de content-type.
@@ -665,9 +676,20 @@ test("authors and reorders a tenant curriculum at 320px without drag", async ({ 
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ course_version: version, reordered: true }) });
       return;
     }
+    if (path === `${curriculumPath}/modules/${baseModuleId}/lessons/86000000-0000-4000-8000-000000000002` && request.method() === "PATCH") {
+      expect(form.get("_csrf")).toBe("update-token");
+      expect(form.get("kind")).toBe("text");
+      const lesson = modules[0].lessons.find((entry) => entry.id === "86000000-0000-4000-8000-000000000002")!;
+      lesson.title = String(form.get("title"));
+      lesson.content = String(form.get("content"));
+      version += 1;
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ course_version: version, updated: true }) });
+      return;
+    }
     if (path === `${curriculumPath}/modules/${baseModuleId}/lessons/86000000-0000-4000-8000-000000000002/archive` && request.method() === "POST") {
       expect(form.get("_csrf")).toBe("archive-token");
       modules[0].lessons = modules[0].lessons.filter((lesson) => lesson.id !== "86000000-0000-4000-8000-000000000002");
+      practiceArchived = true;
       version += 1;
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ course_version: version, archived: true }) });
       return;
@@ -676,49 +698,45 @@ test("authors and reorders a tenant curriculum at 320px without drag", async ({ 
   });
 
   await page.goto(`/products/${sellerId}/${productId}?section=curriculo`);
-  await expect(page.getByRole("heading", { name: "Módulos e aulas" })).toBeVisible();
-  await page.getByLabel("Novo módulo").fill("Avançado");
-  await page.getByRole("button", { name: "Adicionar módulo" }).click();
-  await expect(page.getByRole("status").filter({ hasText: "A API não respondeu" })).toBeVisible();
-  await expect(page.getByLabel("Novo módulo")).toHaveValue("Avançado");
-  await page.getByRole("button", { name: "Adicionar módulo" }).click();
+  await expect(page.getByRole("heading", { name: "Seu curso" })).toBeVisible();
+  await page.getByRole("button", { name: "+ Novo módulo" }).click();
+  await page.getByLabel("Nome do módulo").fill("Avançado");
+  await page.getByRole("button", { name: "Criar módulo" }).click();
+  // A falha diz o que fazer, e o nome digitado continua no campo.
+  await expect(page.getByTestId("curriculum-live")).toContainText("Confira a internet e tente de novo.");
+  await expect(page.getByLabel("Nome do módulo")).toHaveValue("Avançado");
+  await page.getByRole("button", { name: "Criar módulo" }).click();
   await expect(page.getByRole("heading", { name: "Avançado" })).toBeVisible();
   expect(moduleAttemptKeys).toHaveLength(2);
   expect(moduleAttemptKeys[1]).toBe(moduleAttemptKeys[0]);
+  // O módulo novo já oferece o nome da primeira aula; aqui a aula vai no outro.
+  await page.getByRole("button", { name: "Cancelar" }).click();
 
-  const baseModule = page.getByRole("article").filter({ has: page.getByRole("heading", { name: "Base" }) });
-  const lessonCreate = baseModule.getByTestId(`lesson-create-form-${baseModuleId}`);
-  await lessonCreate.getByLabel("Nome da aula").fill("Prática guiada");
-  await lessonCreate.getByLabel("Conteúdo textual").fill("Faça o exercício com calma e registre o resultado.");
-  await lessonCreate.getByRole("button", { name: "Adicionar aula" }).click();
-  await expect(page.getByRole("heading", { name: "Prática guiada" })).toBeVisible();
-  const moveUp = page.getByRole("button", { name: "Mover aula Prática guiada para cima" });
+  await page.getByRole("button", { name: "Nova aula em Base" }).click();
+  await page.getByLabel("Nome da nova aula").fill("Prática guiada");
+  await page.getByRole("button", { name: "Criar e abrir a aula" }).click();
+  await expect(page.getByRole("heading", { level: 2, name: /Prática guiada/ })).toBeVisible();
+  await page.getByRole("textbox", { name: "Texto da aula" }).fill("Faça o exercício com calma e registre o resultado.");
+  await expect(page.getByText("✓ Salvo")).toBeVisible();
+  await page.getByRole("button", { name: "Voltar para o curso", exact: true }).click();
+
+  const moveUp = page.getByRole("button", { name: "Subir aula Prática guiada" });
   await moveUp.focus();
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("button", { name: "Mover aula Prática guiada para baixo" })).toBeFocused();
-  await expect(page.getByRole("status").filter({ hasText: "Prática guiada movida para a posição 1 de 2" })).toBeVisible();
-  const practice = page.getByTestId("lesson-86000000-0000-4000-8000-000000000002");
-  await practice.getByText("Editar aula").click();
-  await practice.getByLabel("Nome da aula").fill("Rascunho que será descartado");
-  // Archiving used to hand off to the browser's own confirm, which announces
-  // nothing and traps no focus. It is a dialog in the page now, so the test has
-  // to confirm the way a person does.
-  // Excluir fica no cabeçalho da aula, à vista: dentro de "Editar aula" e com
-  // o nome "Arquivar", a vendedora procurou e não achou (#645).
-  const excluirPratica = practice.getByRole("button", { name: "Excluir aula Prática guiada" });
-  // "Manter" fecha o diálogo e devolve o foco a quem o abriu.
-  await excluirPratica.click();
-  await page.getByRole("dialog", { name: "Excluir a aula Prática guiada?" }).getByRole("button", { name: "Manter" }).click();
-  await expect(excluirPratica).toBeFocused();
-  await excluirPratica.click();
-  const archiveDialog = page.getByRole("dialog", { name: "Excluir a aula Prática guiada?" });
-  await expect(archiveDialog).toBeVisible();
-  await expect(archiveDialog.getByRole("button", { name: "Manter" })).toBeFocused();
-  await archiveDialog.getByRole("button", { name: "Excluir" }).click();
-  await expect(page.getByRole("heading", { name: "Prática guiada" })).toHaveCount(0);
-  // O botão clicado sumiu com a aula: o foco vai para a aula que ficou, e não
-  // para o body.
-  await expect(page.getByRole("button", { name: "Excluir aula Boas-vindas" })).toBeFocused();
+  await expect(page.getByRole("button", { name: "Descer aula Prática guiada" })).toBeFocused();
+  await expect(page.getByTestId("curriculum-live")).toHaveText("Aula Prática guiada agora é a 1ª de 2.");
+
+  // Excluir não pergunta nada: a aula sai na hora, o aviso oferece Desfazer,
+  // e o foco vai para a aula que ficou, e não para o body (#649).
+  await page.getByTestId("lesson-86000000-0000-4000-8000-000000000002").getByRole("link").click();
+  await page.getByRole("button", { name: "Excluir aula" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.locator(".undo-toast")).toContainText("Aula “Prática guiada” excluída.");
+  await expect(page.getByTestId("lesson-86000000-0000-4000-8000-000000000002")).toHaveCount(0);
+  await expect(page.locator('[data-lesson-link="86000000-0000-4000-8000-000000000001"]')).toBeFocused();
+  // Sem desfazer, o pedido sai quando o aviso vence.
+  await expect.poll(() => practiceArchived, { timeout: 15_000 }).toBe(true);
+  await expect(page.locator(".undo-toast")).toHaveCount(0);
 
   const touchAndWidth = await page.evaluate(() => ({
     client: document.documentElement.clientWidth,
@@ -735,7 +753,7 @@ test("authors and reorders a tenant curriculum at 320px without drag", async ({ 
   const scaled = await page.evaluate(() => ({
     client: document.documentElement.clientWidth,
     scroll: document.documentElement.scrollWidth,
-    moduleIntrinsicInlineSize: getComputedStyle(document.querySelector(".curriculum-module")!).containIntrinsicInlineSize,
+    moduleIntrinsicInlineSize: getComputedStyle(document.querySelector(".course-module")!).containIntrinsicInlineSize,
     clipped: [...document.querySelectorAll("a,button,input,textarea,summary")].flatMap((element) => {
       const rect = element.getBoundingClientRect();
       return rect.width > 0 && (rect.left < -1 || rect.right > document.documentElement.clientWidth + 1)
@@ -753,12 +771,13 @@ test("authors and reorders a tenant curriculum at 320px without drag", async ({ 
 
   productArchived = true;
   await page.reload();
-  await expect(page.getByText("Produto arquivado: conteúdo disponível somente para leitura.")).toBeVisible();
-  await expect(page.getByTestId("module-create-form")).toHaveCount(0);
-  const archivedOrderButtons = page.getByRole("button", { name: /Mover módulo/ });
-  await expect(archivedOrderButtons).toHaveCount(4);
-  expect(await archivedOrderButtons.evaluateAll((buttons) => buttons.every((button) => (button as HTMLButtonElement).disabled))).toBe(true);
-  await expect(page.getByText("Editar aula")).toHaveCount(0);
+  // Produto encerrado: dá para ver o curso inteiro, mas nada para mudar.
+  await expect(page.getByText("Este produto foi encerrado. Dá para ver o curso, mas não para mudar.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Avançado" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "+ Novo módulo" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^(Subir|Descer) / })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^Nova aula em / })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^Mudar nome do módulo / })).toHaveCount(0);
 });
 
 test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", async ({ page }, testInfo) => {
@@ -862,6 +881,14 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
       }) });
       return;
     }
+    // Os links da aula moram em "Materiais para o aluno", à vista desde o #649.
+    if (path.endsWith(`/lessons/${lessonId}/materials`) && request.method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        materials: [],
+        csrf: { create: "material-create-token", archive: "material-archive-token" }
+      }) });
+      return;
+    }
     if (path === `${assetsPath}/upload-intents` && request.method() === "POST") {
       const posted = request.postDataBuffer();
       const form = await new Request(request.url(), {
@@ -949,31 +976,33 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
     await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "unexpected_test_route" }) });
   });
 
-  await page.goto(`/products/${sellerId}/${productId}?section=curriculo`);
-  const lesson = page.getByTestId(`lesson-${lessonId}`);
-  // São dois painéis desde a Fase 2: "Conteúdo da aula" e "Anexos e links". O
-  // uploader coberto por este teste é o do primeiro.
-  const summary = lesson.locator(".lesson-assets summary").first();
-  await expect(summary).toContainText("Conteúdo da aula");
-  await summary.click();
-  await expect(lesson.getByText("2 conteúdos prontos", { exact: true })).toBeVisible();
-  // O nome do arquivo agora aparece no card — no editor do vendedor, que foi
-  // quem escolheu o arquivo. A P1.4 de 23/08/2026 proíbe o nome físico chegar
-  // ao **aluno**, e o `title` (que viaja para lá) segue sendo o texto da aula.
-  await expect(lesson.locator(".asset-status-card").first()).toContainText("guia-atual.pdf");
-  const input = lesson.getByLabel("Adicionar outro conteúdo");
-  const feedback = lesson.locator(".asset-feedback").first();
+  const lessonUrl = `/products/${sellerId}/${productId}?section=curriculo&aula=${lessonId}`;
+  await page.goto(lessonUrl);
+  // Desde o #649 a aula abre em tela própria, com os dois lugares à vista:
+  // "Vídeo ou PDF da aula" e "Materiais para o aluno". O uploader coberto por
+  // este teste é o do primeiro.
+  const lesson = page.locator(".lesson-editor:not([hidden])");
+  const conteudo = page.getByRole("region", { name: "Vídeo ou PDF da aula" });
+  const anexos = page.getByRole("region", { name: "Materiais para o aluno" });
+  await expect(conteudo.locator(".lesson-file")).toHaveCount(2);
+  // O nome do arquivo aparece no card, no editor de quem vende, que foi quem
+  // escolheu o arquivo. A P1.4 de 23/08/2026 proíbe o nome físico chegar ao
+  // **aluno**, e o `title` (que viaja para lá) segue sendo o texto da aula.
+  await expect(conteudo.locator(".lesson-file").first()).toContainText("guia-atual.pdf");
+  const input = conteudo.locator('input[type="file"]');
+  await expect(input).toHaveAccessibleName("+ Adicionar outro vídeo ou PDF");
+  const feedback = conteudo.locator(".lesson-upload-state");
   await expect(feedback).toHaveAttribute("role", "status");
   await expect(feedback).toHaveAttribute("aria-live", "polite");
   await expect(feedback).toHaveAttribute("aria-atomic", "true");
 
-  // "Uso deste material" era um `<select>` em cada card. Ele saiu: o painel em
-  // que o vendedor clica já é a resposta. O PDF é o único formato que cabe nos
-  // dois, então ele ganhou uma ação explícita — e é ela que dispara a mesma
+  // "Uso deste material" era um `<select>` em cada card. Ele saiu: o lugar em
+  // que se clica já é a resposta. O PDF é o único formato que cabe nos dois,
+  // então ele ganhou uma ação explícita, e é ela que dispara a mesma
   // requisição de política que este teste acompanha.
-  await lesson.getByRole("button", { name: "Mover para anexos" }).first().click();
+  await conteudo.getByRole("button", { name: "Mover para Materiais para o aluno" }).first().click();
   await policyStarted;
-  await expect(lesson.getByRole("button", { name: "Cancelar envio" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Parar envio" })).toHaveCount(0);
   const pendingPolicyUrl = page.url();
   await page.getByRole("navigation", { name: "Navegação móvel" })
     .getByRole("link", { name: "Minha biblioteca" }).click();
@@ -983,21 +1012,15 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
   await expect(page).toHaveURL(pendingPolicyUrl);
   releasePolicy();
   await expect(page).toHaveURL("/library");
-  await page.goto(`/products/${sellerId}/${productId}?section=curriculo`);
-  await summary.click();
+  await page.goto(lessonUrl);
   await expect.poll(() => policyWrites).toEqual([
     { contentRole: "support_material", downloadAllowed: "false" }
   ]);
-  await expect(page.getByRole("region", { name: "Módulos e aulas" })).toContainText("versão 5");
-  // O PDF foi movido: quem o mostra agora é o painel de anexos, e é lá que
-  // mora a caixa de download.
-  const anexos = lesson.locator(".lesson-assets details").filter({ hasText: "Anexos e links" });
-  const anexosSummary = anexos.locator("summary");
-  if ((await anexos.getAttribute("open")) === null) {
-    await anexosSummary.click();
-  }
-  const downloadToggle = lesson.getByLabel("Permitir que o aluno baixe este PDF");
+  // O PDF foi movido: quem o mostra agora é "Materiais para o aluno", e é lá
+  // que mora a escolha de deixar baixar.
+  const downloadToggle = anexos.getByRole("switch", { name: "O aluno pode baixar: guia-atual.pdf" });
   await expect(downloadToggle).toBeVisible();
+  await expect(downloadToggle).not.toBeChecked();
   rejectNextPolicy = true;
   await downloadToggle.click({ noWaitAfter: true });
   await rejectedPolicyStarted;
@@ -1017,32 +1040,26 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
     { contentRole: "support_material", downloadAllowed: "false" },
     { contentRole: "support_material", downloadAllowed: "true" }
   ]);
-  await expect(page.getByRole("region", { name: "Módulos e aulas" })).toContainText("versão 6");
-  if ((await anexos.getAttribute("open")) === null) {
-    await anexosSummary.click();
-  }
+  await expect(downloadToggle).toBeChecked();
 
   const pdf = { name: "guia-novo.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF") };
   await input.setInputFiles(pdf);
-  await expect(feedback).toContainText("Não foi possível preparar o arquivo");
+  // O servidor não respondeu: a mensagem diz o que fazer, sem culpar o arquivo.
+  await expect(feedback).toContainText("Não deu para preparar o envio.");
+  await expect(feedback).toContainText("Confira a internet e escolha o arquivo de novo.");
   await expect(feedback).not.toContainText("guia-novo.pdf");
-  const retry = lesson.getByRole("button", { name: "Tentar novamente" });
-  await expect(retry).toBeVisible();
-  await retry.focus();
-  await expect(retry).toBeFocused();
+  await expect(input).toHaveAccessibleName("Escolher o arquivo de novo");
+  await input.focus();
+  await expect(input).toBeFocused();
   await input.setInputFiles(pdf);
   await uploadStarted;
-  await expect(feedback).toContainText("Enviando PDF");
-  await expect(lesson.getByRole("progressbar", { name: "Progresso do envio" })).toBeVisible();
-  await lesson.getByRole("button", { name: "Cancelar envio" }).click();
+  await expect(feedback).toContainText(/Enviando \d+%/);
+  await expect(conteudo.getByRole("progressbar", { name: "Andamento do envio" })).toBeVisible();
+  await conteudo.getByRole("button", { name: "Parar envio" }).click();
   await cancelCalled;
   releaseUpload();
-  // Falha pré-existente a esta branch: a mensagem esperada não existe no código
-  // desde que o uploader passou a aceitar nove formatos, e cancelar deixa o
-  // painel dizendo o que aconteceu em vez de voltar ao texto inicial — que é o
-  // comportamento certo.
-  await expect(feedback).toContainText("Envio cancelado. Seu curso não foi alterado.");
-  await expect(lesson.getByRole("button", { name: "Cancelar envio" })).toHaveCount(0);
+  await expect(feedback).toContainText("Envio parado. Nada mudou na aula.");
+  await expect(conteudo.getByRole("button", { name: "Parar envio" })).toHaveCount(0);
 
   for (const width of [320, 360, 390]) {
     await page.setViewportSize({ width, height: 844 });
@@ -1065,7 +1082,7 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
   const zoomed = await lesson.evaluate((element) => ({
     client: document.documentElement.clientWidth,
     scroll: document.documentElement.scrollWidth,
-    clipped: [...element.querySelectorAll("button,input,select,summary,.asset-feedback")].flatMap((target) => {
+    clipped: [...element.querySelectorAll("button,input,select,summary,.lesson-upload-state")].flatMap((target) => {
       const rect = target.getBoundingClientRect();
       return rect.width > 0 && (rect.left < -1 || rect.right > document.documentElement.clientWidth + 1)
         ? [{ name: target.textContent?.trim() || target.getAttribute("id"), left: rect.left, right: rect.right }]
@@ -1076,33 +1093,30 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
   expect(zoomed.clipped).toEqual([]);
   await page.evaluate(() => { document.documentElement.style.fontSize = "100%"; });
 
-  // O painel de conteúdo é onde o segundo PDF ficou; o primeiro foi movido para
-  // anexos no início deste teste.
-  const conteudo = lesson.locator(".lesson-assets details").filter({ hasText: "Conteúdo da aula" }).first();
-  if ((await conteudo.getAttribute("open")) === null) await summary.click();
-  const archive = lesson.getByRole("button", { name: "Remover" }).first();
-  await archive.click();
-  const archiveDialog = page.getByRole("dialog", { name: "Remover este PDF da aula?" });
-  await expect(archiveDialog).toBeVisible();
-  await expect(archiveDialog.getByRole("button", { name: "Manter na aula" })).toBeFocused();
-  await archiveDialog.getByRole("button", { name: "Manter na aula" }).click();
-  await expect(archiveDialog).toHaveCount(0);
-  await expect(summary).toBeFocused();
+  // "Vídeo ou PDF da aula" ficou com o segundo PDF; o primeiro foi movido no
+  // início deste teste. Tirar da aula não pergunta nada: some na hora, e o
+  // aviso oferece Desfazer (#649).
+  const segundo = conteudo.getByRole("article", { name: "exercicios.pdf" });
+  await segundo.getByRole("button", { name: "Tirar da aula: exercicios.pdf" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(segundo).toHaveCount(0);
+  await page.locator(".undo-toast").getByRole("button", { name: "Desfazer" }).click();
+  await expect(segundo).toBeVisible();
 
   // Mirar pelo painel, e não pela ordem no DOM: com dois painéis, `.nth(1)`
-  // pularia para o card do outro e o teste mediria a substituição errada.
-  const substituir = conteudo.getByRole("button", { name: "Substituir arquivo" });
+  // pularia para o card do outro e o teste mediria a troca errada.
+  const substituir = segundo.getByRole("button", { name: "Trocar arquivo: exercicios.pdf" });
   const cancelledChooser = page.waitForEvent("filechooser");
   await substituir.click();
   await (await cancelledChooser).setFiles([]);
   const directChooser = page.waitForEvent("filechooser");
   await input.click();
   await (await directChooser).setFiles(pdf);
-  await expect(feedback).toContainText("Não foi possível preparar o arquivo");
+  await expect(feedback).toContainText("Não deu para preparar o envio.");
   const replacementChooser = page.waitForEvent("filechooser");
   await substituir.click();
   await (await replacementChooser).setFiles(pdf);
-  await expect(feedback).toContainText("Não foi possível preparar o arquivo");
+  await expect(feedback).toContainText("Não deu para preparar o envio.");
   expect(intentReplacementTargets).toEqual([null, null, null, secondAssetId]);
 });
 

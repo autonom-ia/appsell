@@ -1,9 +1,26 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
-import { AccessibleDialog } from "./accessible-dialog";
-import { LessonAssetPanel } from "./lesson-asset-panel";
-import { LessonMaterialPanel } from "./lesson-material-panel";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+import {
+  createSerializer,
+  DEFAULT_LIMITS,
+  sendCurriculumMutation,
+  validCurriculum,
+  type CurriculumCsrf,
+  type CurriculumLesson,
+  type CurriculumLimits,
+  type CurriculumModule,
+  type MutationResult
+} from "@/lib/curriculum/curriculum-api.client";
+import { JOURNEY_COPY } from "@/lib/curriculum/journey-copy";
+import { lessonReadiness, type LiveUpload } from "@/lib/curriculum/lesson-readiness";
+
+import { CourseOutline } from "./course-outline";
+import { LessonEditor } from "./lesson-editor";
+import { UndoProvider, useScheduleUndo } from "./undo-toast";
+import { useLessonSummaries } from "./use-lesson-summaries";
 
 export interface AssetActivity {
   dirty: boolean;
@@ -31,67 +48,11 @@ export function mergeAssetActivity(
   return { ...current, [panelKey]: value };
 }
 
-interface CurriculumLesson {
-  id: string;
-  title: string;
-  kind: "text";
-  content: string;
-  status: string;
-  position: number;
-}
-
-interface CurriculumModule {
-  id: string;
-  title: string;
-  status: string;
-  position: number;
-  lessons: CurriculumLesson[];
-}
-
-interface CurriculumPayload {
-  course: { id: string; draft_version: number };
-  modules: CurriculumModule[];
-  csrf: { create: string; update: string; reorder: string; archive: string };
-  limits: {
-    modules_per_course: number;
-    lessons_per_module: number;
-    lessons_per_course: number;
-    title_bytes: number;
-    lesson_content_bytes: number;
-  };
-  usage?: {
-    modules_total: number;
-    lessons_total: number;
-    lessons_by_module: Record<string, number>;
-  };
-}
-
 type LoadState = "loading" | "ready" | "unauthorized" | "forbidden" | "not_found" | "unavailable" | "error";
-type MutationState = "idle" | "saving" | "conflict" | "invalid" | "forbidden" | "unavailable" | "error";
 
-const defaultLimits = {
-  modules_per_course: 50,
-  lessons_per_module: 100,
-  lessons_per_course: 500,
-  title_bytes: 160,
-  lesson_content_bytes: 8_192
-};
+const TRANSPORT: readonly LiveUpload["phase"][] = ["hashing", "creating", "uploading", "confirming"];
 
-type PendingArchive =
-  | { kind: "module"; module: CurriculumModule }
-  | { kind: "lesson"; module: CurriculumModule; lesson: CurriculumLesson };
-
-export function CurriculumWorkspace({
-  sellerId,
-  productId,
-  courseId,
-  courseTitle,
-  archived,
-  onDirtyChange,
-  onBusyChange,
-  onSummaryChange,
-  onCommitted
-}: {
+export interface CurriculumWorkspaceProps {
   sellerId: string;
   productId: string;
   courseId: string;
@@ -101,65 +62,76 @@ export function CurriculumWorkspace({
   onBusyChange: (busy: boolean) => void;
   onSummaryChange: (summary: { modules: number; lessons: number }) => void;
   onCommitted: () => void;
-}) {
+}
+
+/**
+ * Montar o curso, do módulo à aula pronta (#649).
+ *
+ * Duas telas: a lista "Seu curso", com o estado de cada aula, e a aula aberta
+ * (`?aula=<id>`), com vídeo ou PDF, texto e materiais. No celular uma de cada
+ * vez; com espaço, lado a lado.
+ */
+export function CurriculumWorkspace(props: CurriculumWorkspaceProps) {
+  return <UndoProvider><Workspace {...props}/></UndoProvider>;
+}
+
+function Workspace({
+  sellerId,
+  productId,
+  courseId,
+  archived,
+  onDirtyChange,
+  onBusyChange,
+  onSummaryChange,
+  onCommitted
+}: CurriculumWorkspaceProps) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const scheduleUndo = useScheduleUndo();
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [modules, setModules] = useState<CurriculumModule[]>([]);
-  const [courseVersion, setCourseVersion] = useState(1);
-  const [csrf, setCsrf] = useState<CurriculumPayload["csrf"]>({ create: "", update: "", reorder: "", archive: "" });
-  const [limits, setLimits] = useState(defaultLimits);
-  const [usage, setUsage] = useState({
-    modules_total: 0,
-    lessons_total: 0,
-    lessons_by_module: {} as Record<string, number>
-  });
-  const [moduleTitle, setModuleTitle] = useState("");
-  const [lessonDrafts, setLessonDrafts] = useState<Record<string, { title: string; content: string }>>({});
-  const [editDrafts, setEditDrafts] = useState<Record<string, string>>({});
-  const [mutationState, setMutationState] = useState<MutationState>("idle");
-  const [message, setMessage] = useState("");
-  const [invalidField, setInvalidField] = useState("");
-  const [pendingArchive, setPendingArchive] = useState<PendingArchive | null>(null);
-  const archiveKeepButton = useRef<HTMLButtonElement>(null);
-  // Quem abriu o diálogo recebe o foco de volta ao "Manter": sem isso o foco
-  // caía no body e o leitor de tela perdia o lugar.
-  const archiveTrigger = useRef<HTMLElement | null>(null);
+  const [csrf, setCsrf] = useState<CurriculumCsrf>({ create: "", update: "", reorder: "", archive: "" });
+  const [limits, setLimits] = useState<CurriculumLimits>(DEFAULT_LIMITS);
+  const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
+  const [notice, setNotice] = useState("");
+  const [structureBusy, setStructureBusy] = useState(false);
   const [assetActivity, setAssetActivity] = useState<Record<string, AssetActivity>>({});
-  const mutationKeys = useRef(new Map<string, string>());
+  const [live, setLive] = useState<Record<string, LiveUpload>>({});
+  const versionRef = useRef(1);
+  const [courseVersion, setCourseVersion] = useState(1);
+  const keys = useRef(new Map<string, string>());
+  const serialize = useMemo(() => createSerializer(), []);
+  const openedHere = useRef(false);
+  const lastOpened = useRef<string | null>(null);
+  const pendingFocus = useRef<string | null>(null);
 
-  const assetDirty = Object.values(assetActivity).some((activity) => activity.dirty || activity.busy);
+  const endpoint = `/api/sellers/${sellerId}/products/${productId}/courses/${courseId}`;
+  const selectedId = searchParams.get("aula");
+
+  const visibleModules = useMemo(() => modules
+    .filter((module) => !hidden.has(module.id))
+    .map((module) => ({ ...module, lessons: module.lessons.filter((lesson) => !hidden.has(lesson.id)) })),
+  [hidden, modules]);
+
+  const lessonRefs = useMemo(() => visibleModules.flatMap((module) =>
+    module.lessons.map((lesson) => ({ moduleId: module.id, lessonId: lesson.id }))), [visibleModules]);
+  const { summaries, refresh: refreshSummary } = useLessonSummaries(endpoint, lessonRefs);
+
   const assetBusy = Object.values(assetActivity).some((activity) => activity.busy);
-  const dirty = moduleTitle.length > 0 || Object.values(lessonDrafts).some((draft) => draft.title.length > 0 || draft.content.length > 0) || Object.keys(editDrafts).length > 0 || assetDirty;
-
-  const handleAssetActivity = useCallback((panelKey: string, value: AssetActivity) => {
-    setAssetActivity((current) => mergeAssetActivity(current, panelKey, value));
-  }, []);
-
-  useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
+  const assetDirty = Object.values(assetActivity).some((activity) => activity.dirty || activity.busy);
+  useEffect(() => onDirtyChange(assetDirty), [assetDirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
   useEffect(() => onBusyChange(assetBusy), [assetBusy, onBusyChange]);
   useEffect(() => () => onBusyChange(false), [onBusyChange]);
-  useEffect(() => onSummaryChange({ modules: modules.length, lessons: modules.reduce((total, module) => total + module.lessons.length, 0) }), [modules, onSummaryChange]);
-
-  const endpoint = `/api/sellers/${sellerId}/products/${productId}/courses/${courseId}`;
+  useEffect(() => onSummaryChange({
+    modules: visibleModules.length,
+    lessons: visibleModules.reduce((total, module) => total + module.lessons.length, 0)
+  }), [onSummaryChange, visibleModules]);
 
   /**
-   * Carregar e revalidar não são a mesma coisa.
-   *
-   * `setLoadState("loading")` faz o `return` antecipado trocar a página inteira
-   * por "Carregando conteúdo…". Na primeira carga isso é o certo — não há nada
-   * na tela ainda. Depois de uma ação do vendedor é destrutivo: **todo** painel
-   * desmonta e perde o estado de aberto, e como a página encolhe para uma linha
-   * de texto o navegador leva o scroll de volta ao topo.
-   *
-   * O painel de materiais dispara isto em oito pontos — enviar, cancelar,
-   * falhar, arquivar, substituir, mudar o papel — e as mutações de módulo e aula
-   * em mais seis. Era isto que fazia "clico em qualquer coisa e ele fecha tudo e
-   * volta para o começo".
-   *
-   * Revalidar troca os dados por baixo e não mexe em `loadState`. As três
-   * respostas que invalidam a sessão ou o endereço continuam derrubando a tela
-   * mesmo numa revalidação: seguir mostrando conteúdo que o servidor acabou de
-   * negar seria pior do que a interrupção.
+   * Carregar e revalidar não são a mesma coisa: revalidar troca os dados por
+   * baixo sem trocar a tela por "Carregando…", que desmontava tudo e levava o
+   * scroll ao topo a cada clique.
    */
   const load = useCallback(async (mode: "initial" | "revalidate" = "initial") => {
     const initial = mode === "initial";
@@ -167,7 +139,7 @@ export function CurriculumWorkspace({
     const fail = (state: Exclude<LoadState, "ready">) => {
       const fatal = state === "unauthorized" || state === "forbidden" || state === "not_found";
       if (initial || fatal) return setLoadState(state);
-      setMessage("Não foi possível atualizar o conteúdo. O que está na tela pode estar desatualizado.");
+      setNotice(JOURNEY_COPY.loadFailed);
     };
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 8_000);
@@ -176,20 +148,14 @@ export function CurriculumWorkspace({
       if (response.status === 401) return fail("unauthorized");
       if (response.status === 403) return fail("forbidden");
       if (response.status === 404) return fail("not_found");
-      if (response.status === 503) return fail("unavailable");
-      if (!response.ok) return fail("error");
-      const payload = await response.json() as CurriculumPayload;
-      if (!validPayload(payload, courseId)) return fail("error");
+      if (!response.ok) return fail(response.status === 503 ? "unavailable" : "error");
+      const payload: unknown = await response.json();
+      if (!validCurriculum(payload, courseId)) return fail("error");
       setModules(payload.modules);
+      versionRef.current = payload.course.draft_version;
       setCourseVersion(payload.course.draft_version);
       setCsrf(payload.csrf);
-      setLimits(payload.limits ?? defaultLimits);
-      setUsage(payload.usage ?? {
-        modules_total: payload.modules.length,
-        lessons_total: payload.modules.reduce((total, module) => total + module.lessons.length, 0),
-        lessons_by_module: Object.fromEntries(payload.modules.map((module) => [module.id, module.lessons.length]))
-      });
-      setMutationState("idle");
+      setLimits(payload.limits ?? DEFAULT_LIMITS);
       setLoadState("ready");
     } catch {
       fail("unavailable");
@@ -198,311 +164,328 @@ export function CurriculumWorkspace({
     }
   }, [courseId, endpoint]);
 
-  const handleAssetCommitted = useCallback(() => {
-    onCommitted();
-    void load("revalidate");
-  }, [load, onCommitted]);
-
   useEffect(() => {
     const start = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(start);
   }, [load]);
 
-  async function mutate(
-    operation: string,
-    url: string,
-    method: "POST" | "PUT" | "PATCH",
-    action: keyof CurriculumPayload["csrf"],
-    fields: Record<string, string>,
-    onSuccess: (payload: Record<string, unknown>) => void,
-    submittedForm?: HTMLFormElement
-  ) {
-    if (mutationState === "saving" || archived || assetDirty) return;
-    const key = mutationKeys.current.get(operation) ?? crypto.randomUUID();
-    mutationKeys.current.set(operation, key);
-    const form = new FormData();
-    form.set("_csrf", csrf[action]);
-    form.set("idempotency_key", key);
-    form.set("expected_course_version", String(courseVersion));
-    for (const [name, value] of Object.entries(fields)) form.set(name, value);
-    setMutationState("saving");
-    setMessage("");
-    setInvalidField("");
-    const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 10_000);
-    try {
-      const response = await fetch(url, { method, body: form, signal: controller.signal });
-      if (!response.ok) {
-        if (response.status === 401 || response.status === 403) setMutationState("forbidden");
-        else if (response.status === 409) {
-          mutationKeys.current.delete(operation);
-          setMutationState("conflict");
-        } else if (response.status === 422) {
-          const payload = await response.json().catch(() => null) as { field?: string } | null;
-          const field = payload?.field ?? "form";
-          setInvalidField(`${operation}:${field}`);
-          setMutationState("invalid");
-          const input = submittedForm?.elements.namedItem(field);
-          if (input instanceof HTMLElement) queueMicrotask(() => input.focus());
-        } else if (response.status === 503) setMutationState("unavailable");
-        else setMutationState("error");
-        return;
-      }
-      const payload = await response.json() as Record<string, unknown>;
-      if (typeof payload.course_version !== "number") return setMutationState("error");
-      mutationKeys.current.delete(operation);
-      setCourseVersion(payload.course_version);
-      onSuccess(payload);
-      onCommitted();
-      setMutationState("idle");
-    } catch {
-      setMutationState("unavailable");
-    } finally {
-      window.clearTimeout(timeout);
-    }
-  }
-
-  async function createModule(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    await mutate("module:create", `${endpoint}/modules`, "POST", "create", { title: moduleTitle }, () => {
-      setModuleTitle("");
-      setMessage(`Módulo ${moduleTitle} criado.`);
-      void load("revalidate");
-    }, event.currentTarget);
-  }
-
-  async function createLesson(event: FormEvent<HTMLFormElement>, module: CurriculumModule) {
-    event.preventDefault();
-    const draft = lessonDrafts[module.id] ?? { title: "", content: "" };
-    await mutate(`lesson:create:${module.id}`, `${endpoint}/modules/${module.id}/lessons`, "POST", "create", {
-      title: draft.title,
-      kind: "text",
-      content: draft.content
-    }, () => {
-      setLessonDrafts((current) => ({ ...current, [module.id]: { title: "", content: "" } }));
-      setMessage(`Aula ${draft.title} criada em ${module.title}.`);
-      void load("revalidate");
-    }, event.currentTarget);
-  }
-
-  async function updateModule(event: FormEvent<HTMLFormElement>, module: CurriculumModule) {
-    event.preventDefault();
-    const title = editDrafts[`module:${module.id}`] ?? module.title;
-    await mutate(`module:update:${module.id}`, `${endpoint}/modules/${module.id}`, "PATCH", "update", { title }, () => {
-      setEditDrafts((current) => removeKey(current, `module:${module.id}`));
-      setMessage(`Módulo atualizado para ${title}.`);
-      void load("revalidate");
-    }, event.currentTarget);
-  }
-
-  async function updateLesson(event: FormEvent<HTMLFormElement>, module: CurriculumModule, lesson: CurriculumLesson) {
-    event.preventDefault();
-    const title = editDrafts[`lesson-title:${lesson.id}`] ?? lesson.title;
-    const content = editDrafts[`lesson-content:${lesson.id}`] ?? lesson.content;
-    await mutate(`lesson:update:${lesson.id}`, `${endpoint}/modules/${module.id}/lessons/${lesson.id}`, "PATCH", "update", {
-      title,
-      kind: "text",
-      content
-    }, () => {
-      setEditDrafts((current) => removeKeys(current, [`lesson-title:${lesson.id}`, `lesson-content:${lesson.id}`]));
-      setMessage(`Aula ${title} atualizada.`);
-      void load("revalidate");
-    }, event.currentTarget);
-  }
-
-  async function reorderModules(index: number, direction: -1 | 1) {
-    const target = index + direction;
-    if (target < 0 || target >= modules.length) return;
-    const reordered = swap(modules, index, target);
-    const moved = modules[index];
-    await mutate(`modules:order:${moved.id}:${target}`, `${endpoint}/modules/order`, "PUT", "reorder", {
-      ordered_ids: JSON.stringify(reordered.map((module) => module.id))
-    }, () => {
-      setModules(reordered.map((module, position) => ({ ...module, position })));
-      setMessage(`Módulo ${moved.title} movido para a posição ${target + 1} de ${modules.length}.`);
-      const focusDirection = target === 0 ? "down" : target === modules.length - 1 ? "up" : direction === -1 ? "up" : "down";
-      focusAfterMutation(`module-move-${focusDirection}-${moved.id}`);
+  /** Uma mudança no curso, em fila, com a versão mais nova e chave de repetição. */
+  const mutate = useCallback((operation: string, url: string, method: "POST" | "PUT" | "PATCH",
+    action: keyof CurriculumCsrf, fields: Record<string, string>, options: { keepalive?: boolean } = {}
+  ): Promise<MutationResult> => serialize(async () => {
+    const idempotencyKey = keys.current.get(operation) ?? crypto.randomUUID();
+    keys.current.set(operation, idempotencyKey);
+    const result = await sendCurriculumMutation({
+      url, method, csrf: csrf[action], idempotencyKey, courseVersion: versionRef.current, fields,
+      keepalive: options.keepalive
     });
-  }
+    if (result.ok) {
+      keys.current.delete(operation);
+      versionRef.current = result.courseVersion;
+      setCourseVersion(result.courseVersion);
+      onCommitted();
+    } else if (result.failure !== "offline") {
+      keys.current.delete(operation);
+    }
+    return result;
+  }), [csrf, onCommitted, serialize]);
 
-  async function reorderLessons(module: CurriculumModule, index: number, direction: -1 | 1) {
+  const report = useCallback((result: MutationResult) => {
+    if (result.ok) return setNotice("");
+    if (result.failure === "conflict") {
+      setNotice(JOURNEY_COPY.changedElsewhere);
+      void load("revalidate");
+    } else if (result.failure === "forbidden") setNotice(JOURNEY_COPY.noPermission);
+    else if (result.failure === "offline") setNotice(JOURNEY_COPY.offline);
+    else if (result.failure === "invalid") setNotice(JOURNEY_COPY.nameTooShort);
+    else setNotice(JOURNEY_COPY.loadFailed);
+  }, [load]);
+
+  const structural = useCallback(async (task: () => Promise<MutationResult>) => {
+    setStructureBusy(true);
+    try {
+      const result = await task();
+      report(result);
+      return result;
+    } finally {
+      setStructureBusy(false);
+    }
+  }, [report]);
+
+  const openLesson = useCallback((lessonId: string) => {
+    openedHere.current = true;
+    lastOpened.current = lessonId;
+    router.push(`?section=curriculo&aula=${lessonId}`, { scroll: false });
+  }, [router]);
+
+  /** Volta para a lista e devolve o foco à aula de onde a pessoa saiu. */
+  const closeLesson = useCallback((focusSelector?: string) => {
+    if (openedHere.current) {
+      openedHere.current = false;
+      router.back();
+    } else {
+      router.replace("?section=curriculo", { scroll: false });
+    }
+    const target = lastOpened.current ?? selectedId;
+    // A troca de tela só acontece quando o roteador termina; o foco espera a
+    // lista aparecer (o efeito abaixo), senão cairia num elemento escondido.
+    pendingFocus.current = focusSelector ?? `[data-lesson-link="${target}"]`;
+  }, [router, selectedId]);
+
+  useEffect(() => {
+    if (selectedId || !pendingFocus.current) return;
+    const selector = pendingFocus.current;
+    pendingFocus.current = null;
+    focusAfterRender(selector);
+  }, [selectedId]);
+
+  const createModule = useCallback(async (title: string) => {
+    const result = await structural(() => mutate("module:create", `${endpoint}/modules`, "POST", "create", { title }));
+    if (!result.ok) return null;
+    await load("revalidate");
+    return typeof result.payload.module_id === "string" ? result.payload.module_id : null;
+  }, [endpoint, load, mutate, structural]);
+
+  const renameModule = useCallback(async (module: CurriculumModule, title: string) => {
+    if (title === module.title) return true;
+    const result = await structural(() => mutate(`module:update:${module.id}`, `${endpoint}/modules/${module.id}`, "PATCH", "update", { title }));
+    if (result.ok) setModules((current) => current.map((entry) => entry.id === module.id ? { ...entry, title } : entry));
+    return result.ok;
+  }, [endpoint, mutate, structural]);
+
+  const createLesson = useCallback(async (module: CurriculumModule, title: string) => {
+    const result = await structural(() => mutate(`lesson:create:${module.id}`, `${endpoint}/modules/${module.id}/lessons`, "POST", "create", { title, kind: "text", content: "" }));
+    if (!result.ok) return false;
+    await load("revalidate");
+    if (typeof result.payload.lesson_id === "string") openLesson(result.payload.lesson_id);
+    return true;
+  }, [endpoint, load, mutate, openLesson, structural]);
+
+  const moveModule = useCallback(async (index: number, direction: -1 | 1) => {
+    const target = index + direction;
+    if (target < 0 || target >= visibleModules.length) return;
+    const reordered = swap(visibleModules, index, target);
+    const moved = visibleModules[index];
+    const result = await structural(() => mutate(`modules:order:${moved.id}:${target}`, `${endpoint}/modules/order`, "PUT", "reorder", {
+      ordered_ids: JSON.stringify(reordered.map((module) => module.id))
+    }));
+    if (!result.ok) return;
+    setModules((current) => reorderLike(current, reordered.map((module) => module.id)));
+    setNotice(`Módulo ${moved.title} agora é o ${target + 1}º de ${visibleModules.length}.`);
+    focusAfterRender(`[data-move="module-${direction < 0 ? "up" : "down"}-${moved.id}"]`, `[data-move="module-${direction < 0 ? "down" : "up"}-${moved.id}"]`);
+  }, [endpoint, mutate, structural, visibleModules]);
+
+  const moveLesson = useCallback(async (module: CurriculumModule, index: number, direction: -1 | 1) => {
     const target = index + direction;
     if (target < 0 || target >= module.lessons.length) return;
     const reordered = swap(module.lessons, index, target);
     const moved = module.lessons[index];
-    await mutate(`lessons:order:${module.id}:${moved.id}:${target}`, `${endpoint}/modules/${module.id}/lessons/order`, "PUT", "reorder", {
+    const result = await structural(() => mutate(`lessons:order:${module.id}:${moved.id}:${target}`, `${endpoint}/modules/${module.id}/lessons/order`, "PUT", "reorder", {
       ordered_ids: JSON.stringify(reordered.map((lesson) => lesson.id))
-    }, () => {
-      setModules((current) => current.map((entry) => entry.id === module.id
-        ? { ...entry, lessons: reordered.map((lesson, position) => ({ ...lesson, position })) }
-        : entry));
-      setMessage(`Aula ${moved.title} movida para a posição ${target + 1} de ${module.lessons.length}.`);
-      const focusDirection = target === 0 ? "down" : target === module.lessons.length - 1 ? "up" : direction === -1 ? "up" : "down";
-      focusAfterMutation(`lesson-move-${focusDirection}-${moved.id}`);
+    }));
+    if (!result.ok) return;
+    setModules((current) => current.map((entry) => entry.id === module.id
+      ? { ...entry, lessons: reorderLike(entry.lessons, reordered.map((lesson) => lesson.id)) }
+      : entry));
+    setNotice(`Aula ${moved.title} agora é a ${target + 1}ª de ${module.lessons.length}.`);
+    focusAfterRender(`[data-move="lesson-${direction < 0 ? "up" : "down"}-${moved.id}"]`, `[data-move="lesson-${direction < 0 ? "down" : "up"}-${moved.id}"]`);
+  }, [endpoint, mutate, structural]);
+
+  const hide = useCallback((id: string, value: boolean) => {
+    setHidden((current) => {
+      const next = new Set(current);
+      if (value) next.add(id); else next.delete(id);
+      return next;
     });
-  }
+  }, []);
 
-  function requestArchive(target: PendingArchive, trigger: HTMLElement) {
-    // O botão vem do evento, e não de `document.activeElement`: no Safari um
-    // clique não dá foco ao botão, e o foco voltaria para o body.
-    archiveTrigger.current = trigger;
-    setPendingArchive(target);
-  }
+  const archiveCommit = useCallback((operation: string, url: string) => async ({ leaving }: { leaving: boolean }) => {
+    const result = await mutate(operation, url, "POST", "archive", {}, { keepalive: leaving });
+    if (!result.ok) throw new Error(result.failure);
+    if (!leaving) await load("revalidate");
+  }, [load, mutate]);
 
-  async function confirmArchive() {
-    const target = pendingArchive;
-    setPendingArchive(null);
-    if (!target) return;
-    if (target.kind === "module") await archiveModule(target.module);
-    else await archiveLesson(target.module, target.lesson);
-  }
-
-  async function archiveModule(module: CurriculumModule) {
-    await mutate(`module:archive:${module.id}`, `${endpoint}/modules/${module.id}/archive`, "POST", "archive", {}, () => {
-      setEditDrafts((current) => removeKeys(current, [
-        `module:${module.id}`,
-        ...module.lessons.flatMap((lesson) => [`lesson-title:${lesson.id}`, `lesson-content:${lesson.id}`])
-      ]));
-      setLessonDrafts((current) => removeKey(current, module.id));
-      setMessage(`Módulo ${module.title} arquivado.`);
-      void load("revalidate");
+  const deleteModule = useCallback((module: CurriculumModule) => {
+    // O foco não pode cair no vazio junto com o módulo: vai para o vizinho.
+    const index = visibleModules.findIndex((entry) => entry.id === module.id);
+    const neighbour = visibleModules[index + 1] ?? visibleModules[index - 1];
+    const focusTarget = neighbour
+      ? `[aria-label="Mudar nome do módulo ${cssText(neighbour.title)}"]`
+      : "#new-module-title";
+    if (module.lessons.some((lesson) => lesson.id === selectedId)) closeLesson(focusTarget);
+    else focusAfterRender(focusTarget);
+    hide(module.id, true);
+    scheduleUndo({
+      id: `module:${module.id}`,
+      message: `Módulo “${module.title}” excluído.`,
+      commit: archiveCommit(`module:archive:${module.id}`, `${endpoint}/modules/${module.id}/archive`),
+      revert: () => hide(module.id, false)
     });
-  }
+  }, [archiveCommit, closeLesson, endpoint, hide, scheduleUndo, selectedId, visibleModules]);
 
-  async function archiveLesson(module: CurriculumModule, lesson: CurriculumLesson) {
-    // O botão clicado some com a aula, e fica desligado enquanto o pedido
-    // corre. Depois que a lista volta, o foco vai para a aula seguinte (ou a
-    // anterior), e numa aula única para o campo de criar aula do módulo.
-    const index = module.lessons.findIndex((item) => item.id === lesson.id);
-    const neighbour = module.lessons[index + 1] ?? module.lessons[index - 1];
-    const focusKey = neighbour ? `lesson-delete-${neighbour.id}` : `lesson-create-${module.id}`;
-    await mutate(`lesson:archive:${lesson.id}`, `${endpoint}/modules/${module.id}/lessons/${lesson.id}/archive`, "POST", "archive", {}, () => {
-      setEditDrafts((current) => removeKeys(current, [`lesson-title:${lesson.id}`, `lesson-content:${lesson.id}`]));
-      setMessage(`Aula ${lesson.title} excluída.`);
-      void load("revalidate").then(() => focusAfterMutation(focusKey));
+  const deleteLesson = useCallback((module: CurriculumModule, lesson: CurriculumLesson) => {
+    // A aula some da lista; o foco vai para a aula vizinha, ou para "+ Nova aula".
+    const siblings = visibleModules.find((entry) => entry.id === module.id)?.lessons ?? [];
+    const index = siblings.findIndex((entry) => entry.id === lesson.id);
+    const neighbour = siblings[index + 1] ?? siblings[index - 1];
+    const focusTarget = neighbour
+      ? `[data-lesson-link="${neighbour.id}"]`
+      : `[aria-label="Nova aula em ${cssText(module.title)}"]`;
+    if (selectedId === lesson.id) closeLesson(focusTarget);
+    else focusAfterRender(focusTarget);
+    hide(lesson.id, true);
+    scheduleUndo({
+      id: `lesson:${lesson.id}`,
+      message: `Aula “${lesson.title}” excluída.`,
+      commit: archiveCommit(`lesson:archive:${lesson.id}`, `${endpoint}/modules/${module.id}/lessons/${lesson.id}/archive`),
+      revert: () => hide(lesson.id, false)
     });
-  }
+  }, [archiveCommit, closeLesson, endpoint, hide, scheduleUndo, selectedId, visibleModules]);
+
+  /** O salvar sozinho do nome e do texto da aula. */
+  const saveLesson = useCallback(async (module: CurriculumModule, lesson: CurriculumLesson, change: { title?: string; content?: string }) => {
+    const current = modules.find((entry) => entry.id === module.id)?.lessons.find((entry) => entry.id === lesson.id) ?? lesson;
+    const title = change.title ?? current.title;
+    const content = change.content ?? current.content;
+    const send = () => mutate(`lesson:update:${lesson.id}:${title}:${content.length}`, `${endpoint}/modules/${module.id}/lessons/${lesson.id}`, "PATCH", "update", { title, kind: "text", content });
+    let result = await send();
+    // A versão do curso é uma só, e um arquivo que fica pronto também a muda.
+    // Uma tentativa a mais com a versão nova resolve esse caso sem incomodar
+    // ninguém; se o conflito voltar, quem decide é a pessoa.
+    if (!result.ok && result.failure === "conflict") {
+      await load("revalidate");
+      result = await send();
+    }
+    if (result.ok) {
+      setModules((list) => list.map((entry) => entry.id !== module.id ? entry : {
+        ...entry,
+        lessons: entry.lessons.map((item) => item.id === lesson.id ? { ...item, title, content } : item)
+      }));
+      return { ok: true as const };
+    }
+    if (result.failure === "conflict") setNotice(JOURNEY_COPY.changedElsewhere);
+    return { ok: false as const, reason: result.failure };
+  }, [endpoint, load, modules, mutate]);
+
+  const handleAssetActivity = useCallback((panelKey: string, value: AssetActivity) => {
+    setAssetActivity((current) => mergeAssetActivity(current, panelKey, value));
+  }, []);
+
+  const handleLive = useCallback((lessonId: string, value: LiveUpload) => {
+    setLive((current) => {
+      const previous = current[lessonId];
+      if (previous?.phase === value.phase && previous.progress === value.progress) return current;
+      return { ...current, [lessonId]: value };
+    });
+  }, []);
+
+  const handleAssetCommitted = useCallback((lessonId: string) => {
+    onCommitted();
+    refreshSummary(lessonId);
+    void load("revalidate");
+  }, [load, onCommitted, refreshSummary]);
 
   if (loadState !== "ready") {
     const labels: Record<Exclude<LoadState, "ready">, string> = {
-      loading: "Carregando conteúdo…",
-      unauthorized: "Sua sessão expirou. Entre novamente.",
-      forbidden: "Você não pode acessar o conteúdo desta loja.",
-      not_found: "Conteúdo não encontrado nesta loja.",
-      unavailable: "A API do conteúdo não respondeu. Nada demonstrativo foi usado.",
-      error: "Não foi possível carregar o conteúdo."
+      loading: JOURNEY_COPY.loading,
+      unauthorized: JOURNEY_COPY.sessionExpired,
+      forbidden: JOURNEY_COPY.noPermission,
+      not_found: JOURNEY_COPY.notFound,
+      unavailable: JOURNEY_COPY.loadFailed,
+      error: JOURNEY_COPY.loadFailed
     };
-    return <section className="curriculum-state" aria-live="polite"><h2>{labels[loadState]}</h2>{loadState === "unavailable" || loadState === "error" ? <button className="primary-button" type="button" onClick={() => void load()}>Tentar novamente</button> : null}</section>;
+    return <section className="curriculum-state" aria-live="polite">
+      <h2>{labels[loadState]}</h2>
+      {loadState === "unavailable" || loadState === "error"
+        ? <button className="primary-button" type="button" onClick={() => void load()}>Tentar de novo</button>
+        : null}
+    </section>;
   }
 
+  const readinessOf = (lesson: CurriculumLesson) => lessonReadiness({
+    content: lesson.content,
+    summary: summaries[lesson.id] ?? null,
+    live: live[lesson.id] ?? null
+  });
+
+  const selected = visibleModules.flatMap((module) => module.lessons.map((lesson) => ({ module, lesson })))
+    .find((entry) => entry.lesson.id === selectedId) ?? null;
+  const mounted = visibleModules.flatMap((module) => module.lessons.map((lesson) => ({ module, lesson })))
+    .filter((entry) => entry.lesson.id === selectedId || TRANSPORT.includes(live[entry.lesson.id]?.phase ?? "idle"));
+
   return (
-    <section className="curriculum-workspace" aria-labelledby="curriculum-title" data-testid="curriculum-workspace">
-      <header className="curriculum-header">
-        <div><p className="eyebrow">Conteúdo do produto</p><h2 id="curriculum-title">Módulos e aulas</h2><p><strong>{courseTitle}</strong> · versão {courseVersion}</p></div>
-        <span>{usage.modules_total}/{limits.modules_per_course} módulos usados</span>
-      </header>
-      <p className="curriculum-intro">Organize aulas de texto e PDFs verificados em uma sequência clara. Vídeos, checkout e acesso pago ainda não estão disponíveis.</p>
-      {archived ? <p className="form-note" role="status">Produto arquivado: conteúdo disponível somente para leitura.</p> : null}
-      {assetDirty ? <p className="form-note" role="status">Conclua ou cancele o envio do arquivo antes de alterar a estrutura do conteúdo.</p> : null}
-      {/* Os dois tetos desligam botões de adicionar. O contador do cabeçalho
-          mostra os módulos, mas nada mostrava as aulas do curso inteiro — e um
-          botão morto sem motivo na tela é o defeito que a #254 fecha. */}
-      {usage.modules_total >= limits.modules_per_course ? <p className="form-note" role="status">Você chegou ao limite de {limits.modules_per_course} módulos neste produto. Remova um módulo para adicionar outro.</p> : null}
-      {usage.lessons_total >= limits.lessons_per_course ? <p className="form-note" role="status">Você chegou ao limite de {limits.lessons_per_course} aulas neste produto. Remova uma aula para adicionar outra.</p> : null}
-      <div className={`curriculum-feedback state-${mutationState}`} role="status" aria-live="polite" aria-atomic="true" data-testid="curriculum-live">
-        {mutationState === "idle" ? message || mutationMessage(mutationState) : mutationMessage(mutationState)}
-        {mutationState === "conflict" ? <button className="secondary-button" type="button" onClick={() => void load()}>Recarregar conteúdo</button> : null}
+    <section className="curriculum-workspace" data-view={selected ? "lesson" : "list"} aria-labelledby="curriculum-title" data-testid="curriculum-workspace">
+      <div className="curriculum-split">
+      <div className="curriculum-outline-pane">
+        <CourseOutline
+          modules={visibleModules}
+          limits={limits}
+          archived={archived}
+          busy={structureBusy}
+          selectedId={selected?.lesson.id ?? null}
+          readinessOf={readinessOf}
+          notice={notice}
+          onOpenLesson={openLesson}
+          onCreateModule={createModule}
+          onRenameModule={renameModule}
+          onDeleteModule={deleteModule}
+          onMoveModule={moveModule}
+          onCreateLesson={createLesson}
+          onMoveLesson={moveLesson}
+          onReload={() => void load()}
+        />
       </div>
-
-      {!archived ? <form className="curriculum-create" onSubmit={createModule} data-testid="module-create-form">
-        <label htmlFor="new-module-title">Novo módulo</label>
-        <input id="new-module-title" name="title" value={moduleTitle} onChange={(event) => { setModuleTitle(event.target.value); setMutationState("idle"); }} minLength={2} maxLength={160} required aria-invalid={invalidField === "module:create:title"} aria-describedby={invalidField === "module:create:title" ? "new-module-title-error" : undefined}/>
-        {invalidField === "module:create:title" ? <span id="new-module-title-error" className="form-error">Informe um nome de módulo válido.</span> : null}
-        <button className="primary-button" type="submit" disabled={mutationState === "saving" || assetDirty || usage.modules_total >= limits.modules_per_course}>{mutationState === "saving" ? "Salvando…" : "Adicionar módulo"}</button>
-      </form> : null}
-
-      {modules.length === 0 ? <div className="curriculum-empty" data-testid="curriculum-empty"><strong>Seu produto ainda não tem módulos.</strong><p>Adicione o primeiro módulo para começar a organizar a jornada do aluno.</p></div> : (
-        <ol className="curriculum-modules">
-          {modules.map((module, moduleIndex) => <li key={module.id} data-testid={`module-${module.id}`}>
-            <article className="curriculum-module" aria-labelledby={`module-title-${module.id}`}>
-              <header><div><span>Módulo {moduleIndex + 1}</span><h3 id={`module-title-${module.id}`}>{module.title}</h3><small>{module.lessons.length}/{limits.lessons_per_module} aulas</small></div><div className="order-actions" aria-label={`Ordenar módulo ${module.title}`}><button data-focus-key={`module-move-up-${module.id}`} type="button" className="secondary-button" disabled={archived || moduleIndex === 0 || mutationState === "saving" || assetDirty} onClick={() => void reorderModules(moduleIndex, -1)} aria-label={`Mover módulo ${module.title} para cima`}>↑ <span>Subir</span></button><button data-focus-key={`module-move-down-${module.id}`} type="button" className="secondary-button" disabled={archived || moduleIndex === modules.length - 1 || mutationState === "saving" || assetDirty} onClick={() => void reorderModules(moduleIndex, 1)} aria-label={`Mover módulo ${module.title} para baixo`}>↓ <span>Descer</span></button></div></header>
-              {!archived ? <details className="curriculum-edit"><summary>Editar módulo</summary><form onSubmit={(event) => void updateModule(event, module)}><label htmlFor={`module-title-input-${module.id}`}>Nome do módulo</label><input id={`module-title-input-${module.id}`} name="title" value={editDrafts[`module:${module.id}`] ?? module.title} onChange={(event) => setEditDrafts((current) => ({ ...current, [`module:${module.id}`]: event.target.value }))} minLength={2} maxLength={160} required aria-invalid={invalidField === `module:update:${module.id}:title`} aria-describedby={invalidField === `module:update:${module.id}:title` ? `module-title-error-${module.id}` : undefined}/>{invalidField === `module:update:${module.id}:title` ? <span id={`module-title-error-${module.id}`} className="form-error">Informe um nome de módulo válido.</span> : null}<div className="inline-actions"><button className="primary-button" type="submit" disabled={mutationState === "saving" || assetDirty}>Salvar módulo</button><button className="danger-button" type="button" disabled={assetDirty} onClick={(event) => requestArchive({ kind: "module", module }, event.currentTarget)}>Arquivar módulo</button></div></form></details> : null}
-              {module.lessons.length === 0 ? <p className="lesson-empty">Nenhuma aula neste módulo.</p> : <ol className="curriculum-lessons">{module.lessons.map((lesson, lessonIndex) => <li key={lesson.id} data-testid={`lesson-${lesson.id}`}><article aria-labelledby={`lesson-title-${lesson.id}`}><header><div><span>Aula {lessonIndex + 1}</span><h4 id={`lesson-title-${lesson.id}`}>{lesson.title}</h4></div><div className="order-actions"><button data-focus-key={`lesson-move-up-${lesson.id}`} className="secondary-button" type="button" disabled={archived || lessonIndex === 0 || mutationState === "saving" || assetDirty} onClick={() => void reorderLessons(module, lessonIndex, -1)} aria-label={`Mover aula ${lesson.title} para cima`}>↑ <span>Subir</span></button><button data-focus-key={`lesson-move-down-${lesson.id}`} className="secondary-button" type="button" disabled={archived || lessonIndex === module.lessons.length - 1 || mutationState === "saving" || assetDirty} onClick={() => void reorderLessons(module, lessonIndex, 1)} aria-label={`Mover aula ${lesson.title} para baixo`}>↓ <span>Descer</span></button>{!archived ? <button data-focus-key={`lesson-delete-${lesson.id}`} className="danger-button" type="button" disabled={mutationState === "saving" || assetDirty} onClick={(event) => requestArchive({ kind: "lesson", module, lesson }, event.currentTarget)} aria-label={`Excluir aula ${lesson.title}`}>Excluir aula</button> : null}</div></header><p>{lesson.content || "Aula de texto ainda sem conteúdo."}</p><LessonAssetPanel contentRole="course_content" sellerId={sellerId} productId={productId} courseId={courseId} moduleId={module.id} lessonId={lesson.id} lessonTitle={lesson.title} courseVersion={courseVersion} archived={archived} onActivityChange={handleAssetActivity} onCommitted={handleAssetCommitted}/><LessonAssetPanel contentRole="support_material" sellerId={sellerId} productId={productId} courseId={courseId} moduleId={module.id} lessonId={lesson.id} lessonTitle={lesson.title} courseVersion={courseVersion} archived={archived} onActivityChange={handleAssetActivity} onCommitted={handleAssetCommitted}><LessonMaterialPanel sellerId={sellerId} productId={productId} courseId={courseId} moduleId={module.id} lessonId={lesson.id} lessonTitle={lesson.title} courseVersion={courseVersion} archived={archived} onCommitted={handleAssetCommitted}/></LessonAssetPanel>{!archived ? <details className="curriculum-edit"><summary>Editar aula</summary><form onSubmit={(event) => void updateLesson(event, module, lesson)}><label htmlFor={`lesson-title-input-${lesson.id}`}>Nome da aula</label><input id={`lesson-title-input-${lesson.id}`} name="title" value={editDrafts[`lesson-title:${lesson.id}`] ?? lesson.title} onChange={(event) => setEditDrafts((current) => ({ ...current, [`lesson-title:${lesson.id}`]: event.target.value }))} minLength={2} maxLength={160} required aria-invalid={invalidField === `lesson:update:${lesson.id}:title`} aria-describedby={invalidField === `lesson:update:${lesson.id}:title` ? `lesson-title-error-${lesson.id}` : undefined}/>{invalidField === `lesson:update:${lesson.id}:title` ? <span id={`lesson-title-error-${lesson.id}`} className="form-error">Informe um nome de aula válido.</span> : null}<label htmlFor={`lesson-content-input-${lesson.id}`}>Conteúdo textual</label><textarea id={`lesson-content-input-${lesson.id}`} name="content" value={editDrafts[`lesson-content:${lesson.id}`] ?? lesson.content} onChange={(event) => setEditDrafts((current) => ({ ...current, [`lesson-content:${lesson.id}`]: event.target.value }))} maxLength={8192} aria-invalid={invalidField === `lesson:update:${lesson.id}:content`} aria-describedby={invalidField === `lesson:update:${lesson.id}:content` ? `lesson-content-error-${lesson.id}` : undefined}/>{invalidField === `lesson:update:${lesson.id}:content` ? <span id={`lesson-content-error-${lesson.id}`} className="form-error">O conteúdo textual ultrapassa o limite permitido.</span> : null}<div className="inline-actions"><button className="primary-button" type="submit" disabled={mutationState === "saving" || assetDirty}>Salvar aula</button></div></form></details> : null}</article></li>)}</ol>}
-              {!archived ? <form className="lesson-create" onSubmit={(event) => void createLesson(event, module)} data-testid={`lesson-create-form-${module.id}`}><fieldset disabled={mutationState === "saving" || assetDirty || (usage.lessons_by_module[module.id] ?? module.lessons.length) >= limits.lessons_per_module || usage.lessons_total >= limits.lessons_per_course}><legend>Adicionar aula de texto</legend><label htmlFor={`new-lesson-title-${module.id}`}>Nome da aula</label><input id={`new-lesson-title-${module.id}`} data-focus-key={`lesson-create-${module.id}`} name="title" value={lessonDrafts[module.id]?.title ?? ""} onChange={(event) => setLessonDrafts((current) => ({ ...current, [module.id]: { title: event.target.value, content: current[module.id]?.content ?? "" } }))} minLength={2} maxLength={160} required aria-invalid={invalidField === `lesson:create:${module.id}:title`} aria-describedby={invalidField === `lesson:create:${module.id}:title` ? `new-lesson-title-error-${module.id}` : undefined}/>{invalidField === `lesson:create:${module.id}:title` ? <span id={`new-lesson-title-error-${module.id}`} className="form-error">Informe um nome de aula válido.</span> : null}<label htmlFor={`new-lesson-content-${module.id}`}>Conteúdo textual</label><textarea id={`new-lesson-content-${module.id}`} name="content" value={lessonDrafts[module.id]?.content ?? ""} onChange={(event) => setLessonDrafts((current) => ({ ...current, [module.id]: { title: current[module.id]?.title ?? "", content: event.target.value } }))} maxLength={8192} aria-invalid={invalidField === `lesson:create:${module.id}:content`} aria-describedby={invalidField === `lesson:create:${module.id}:content` ? `new-lesson-content-error-${module.id}` : undefined}/>{invalidField === `lesson:create:${module.id}:content` ? <span id={`new-lesson-content-error-${module.id}`} className="form-error">O conteúdo textual ultrapassa o limite permitido.</span> : null}<button className="primary-button" type="submit">Adicionar aula</button></fieldset></form> : null}
-            </article>
-          </li>)}
-        </ol>
-      )}
-      {pendingArchive ? (
-        <AccessibleDialog
-          titleId="curriculum-archive-title"
-          descriptionId="curriculum-archive-description"
-          initialFocusRef={archiveKeepButton}
-          returnFocusRef={archiveTrigger}
-          onClose={() => setPendingArchive(null)}
-        >
-          <p className="eyebrow">Ação irreversível</p>
-          <h2 id="curriculum-archive-title">
-            {pendingArchive.kind === "module"
-              ? `Arquivar o módulo ${pendingArchive.module.title}?`
-              : `Excluir a aula ${pendingArchive.lesson.title}?`}
-          </h2>
-          <p id="curriculum-archive-description">
-            {pendingArchive.kind === "module"
-              ? "As aulas dentro dele saem junto. Quem já tem acesso continua vendo a versão publicada até você publicar outra."
-              : "Ela sai do produto. Quem já tem acesso continua vendo a versão publicada até você publicar outra."}
-          </p>
-          <div className="dialog-actions">
-            <button ref={archiveKeepButton} type="button" className="secondary-button" onClick={() => setPendingArchive(null)}>
-              Manter
-            </button>
-            <button type="button" className="danger-button" onClick={() => void confirmArchive()}>
-              {pendingArchive.kind === "module" ? "Arquivar" : "Excluir"}
-            </button>
-          </div>
-        </AccessibleDialog>
-      ) : null}
+      <div className="curriculum-lesson-pane">
+        {mounted.map(({ module, lesson }) => <LessonEditor
+          key={lesson.id}
+          hidden={lesson.id !== selected?.lesson.id}
+          sellerId={sellerId}
+          productId={productId}
+          courseId={courseId}
+          module={module}
+          lesson={lesson}
+          courseVersion={courseVersion}
+          archived={archived}
+          readiness={readinessOf(lesson)}
+          transportBusy={TRANSPORT.includes(live[lesson.id]?.phase ?? "idle")}
+          onBack={closeLesson}
+          onDelete={() => deleteLesson(module, lesson)}
+          onSave={(change) => saveLesson(module, lesson, change)}
+          onActivityChange={handleAssetActivity}
+          onLiveChange={handleLive}
+          onCommitted={handleAssetCommitted}
+        />)}
+        {!selected ? <p className="curriculum-lesson-placeholder">Escolha uma aula na lista para pôr vídeo, PDF, texto e materiais.</p> : null}
+      </div>
+      </div>
     </section>
   );
 }
 
-function validPayload(payload: CurriculumPayload, expectedCourseId: string) {
-  return payload && payload.course?.id === expectedCourseId && Number.isSafeInteger(payload.course.draft_version) && Array.isArray(payload.modules) && payload.csrf && typeof payload.csrf.create === "string";
-}
-
-function mutationMessage(state: MutationState) {
-  const messages: Record<MutationState, string> = {
-    idle: "Tudo salvo.",
-    saving: "Salvando conteúdo…",
-    conflict: "O conteúdo mudou no servidor. Recarregue antes de tentar novamente.",
-    invalid: "Revise o campo indicado e tente novamente.",
-    forbidden: "Sua sessão ou permissão nesta loja mudou.",
-    unavailable: "A API não respondeu. Seu texto e a chave da tentativa foram preservados.",
-    error: "Não foi possível salvar o conteúdo."
-  };
-  return messages[state];
-}
-
-function swap<T>(items: T[], first: number, second: number) {
+function swap<T>(items: readonly T[], first: number, second: number): T[] {
   const copy = [...items];
   [copy[first], copy[second]] = [copy[second], copy[first]];
   return copy;
 }
 
-function focusAfterMutation(key: string) {
+/** A lista completa na ordem nova, sem perder o que está escondido esperando o desfazer. */
+function reorderLike<T extends { id: string }>(items: readonly T[], visibleOrder: readonly string[]): T[] {
+  const position = new Map(visibleOrder.map((id, index) => [id, index]));
+  const visible = items.filter((item) => position.has(item.id))
+    .sort((a, b) => (position.get(a.id) ?? 0) - (position.get(b.id) ?? 0));
+  let cursor = 0;
+  return items.map((item) => (position.has(item.id) ? visible[cursor++] : item));
+}
+
+function focusAfterRender(preferred: string, fallback?: string) {
   window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
-    document.querySelector<HTMLElement>(`[data-focus-key="${key}"]`)?.focus();
+    const first = document.querySelector<HTMLButtonElement>(preferred);
+    const target = first && !first.disabled ? first : fallback ? document.querySelector<HTMLElement>(fallback) : null;
+    target?.focus();
   }));
 }
 
-function removeKey<T>(value: Record<string, T>, key: string) {
-  const next = { ...value };
-  delete next[key];
-  return next;
-}
-
-function removeKeys(value: Record<string, string>, keys: string[]) {
-  const next = { ...value };
-  for (const key of keys) delete next[key];
-  return next;
+/** Um texto da pessoa dentro de um seletor `[atributo="…"]`, sem quebrar o seletor. */
+function cssText(value: string): string {
+  return CSS.escape(value);
 }

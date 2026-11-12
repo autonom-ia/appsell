@@ -407,131 +407,6 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .readiness-list p { margin: 4px 0 0; color: var(--text); font-size: .72rem; line-height: 1.45; overflow-wrap: anywhere; }
 .form-success { color: var(--success); font-weight: 750; }
 .curriculum-workspace, .curriculum-state { min-width: 0; padding: 20px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow-sm); }
-.curriculum-header { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
-.curriculum-header > div { min-width: 0; }
-.curriculum-header h2 { margin: 0 0 8px; font-size: clamp(1.8rem,8vw,2.8rem); overflow-wrap: anywhere; }
-.curriculum-header p { margin: 0; color: var(--text); line-height: 1.5; overflow-wrap: anywhere; }
-.curriculum-header > span { align-self: flex-start; padding: 7px 10px; border-radius: 99px; background: rgba(59,130,246,.1); color: var(--blue); font-size: .72rem; font-weight: 800; }
-.curriculum-intro { margin: 18px 0; color: var(--text); line-height: 1.65; }
-.curriculum-feedback { min-width: 0; min-height: 48px; margin-bottom: 16px; padding: 12px 14px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid var(--border); border-radius: 13px; background: #f8fbff; color: var(--text); font-size: .78rem; line-height: 1.5; overflow-wrap: anywhere; }
-.curriculum-feedback.state-conflict, .curriculum-feedback.state-invalid, .curriculum-feedback.state-forbidden, .curriculum-feedback.state-error { border-color: rgba(180,35,24,.24); background: #fff5f4; color: #8d251d; }
-.curriculum-feedback.state-unavailable { border-color: rgba(154,103,0,.24); background: #fff9e7; color: #6b4d00; }
-.curriculum-create, .lesson-create fieldset, .curriculum-edit form { min-width: 0; margin: 0; padding: 16px; display: grid; grid-template-columns: minmax(0,1fr); gap: 9px; border: 1px solid var(--border); border-radius: 16px; background: #f8fbff; }
-.curriculum-create label, .lesson-create label, .curriculum-edit label { color: var(--ink); font-size: .76rem; font-weight: 800; }
-.curriculum-create input, .lesson-create input, .lesson-create textarea, .curriculum-edit input, .curriculum-edit textarea { width: 100%; min-width: 0; max-width: 100%; min-height: 48px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: #fff; color: var(--ink); font-size: 1rem; line-height: 1.5; }
-.lesson-create textarea, .curriculum-edit textarea { min-height: 120px; resize: vertical; }
-.curriculum-create .primary-button, .lesson-create .primary-button { width: 100%; }
-.curriculum-empty { margin-top: 16px; padding: 24px 18px; border: 1px dashed rgba(30,58,138,.3); border-radius: 16px; background: rgba(219,234,254,.35); }
-.curriculum-empty p { margin: 7px 0 0; color: var(--text); line-height: 1.55; }
-.curriculum-modules, .curriculum-lessons { min-width: 0; margin: 16px 0 0; padding: 0; display: grid; gap: 14px; list-style: none; }
-.curriculum-module { width: 100%; min-width: 0; max-width: 100%; padding: 16px; border: 1px solid var(--border); border-radius: 18px; background: linear-gradient(145deg,#fff,#f8fbff); }
-.curriculum-module > header, .curriculum-lessons article > header { min-width: 0; display: grid; gap: 12px; }
-.curriculum-module header > div:first-child, .curriculum-lessons article header > div:first-child { min-width: 0; }
-.curriculum-module header span, .curriculum-lessons article header span { color: var(--soft); font-size: .66rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
-.curriculum-module h3, .curriculum-lessons h4 { margin: 5px 0; overflow-wrap: anywhere; }
-.curriculum-module h3 { font-size: 1.2rem; }
-.curriculum-module small { color: var(--soft); }
-.order-actions { min-width: 0; display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 8px; }
-.order-actions .secondary-button { width: 100%; min-height: 48px; padding: 0 10px; gap: 6px; }
-.curriculum-lessons > li { min-width: 0; padding: 14px; border: 1px solid rgba(100,116,139,.18); border-radius: 14px; background: #fff; }
-.curriculum-lessons h4 { font-size: 1rem; }
-.curriculum-lessons article > p { margin: 12px 0 0; color: var(--text); font-size: .82rem; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
-.lesson-empty { margin: 16px 0 0; padding: 14px; border-radius: 12px; background: #f1f5f9; color: var(--soft); font-size: .78rem; }
-.lesson-create { margin-top: 14px; }
-.lesson-create legend { padding: 0 5px; color: var(--ink); font-weight: 800; }
-.curriculum-edit { margin-top: 14px; }
-.curriculum-edit summary { min-height: 44px; display: flex; align-items: center; color: var(--blue); font-size: .78rem; font-weight: 800; cursor: pointer; }
-.curriculum-edit form { margin-top: 4px; background: #fff; }
-.lesson-assets { min-width: 0; margin-top: 14px; }
-.lesson-assets > details { min-width: 0; border: 1px solid rgba(30,58,138,.18); border-radius: 14px; background: #f8fbff; }
-.lesson-assets > details > summary { min-width: 0; min-height: 48px; padding: 10px 13px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--blue); cursor: pointer; font-size: .78rem; font-weight: 800; }
-.lesson-assets > details > summary span, .lesson-assets > details > summary small { min-width: 0; overflow-wrap: anywhere; }
-.lesson-assets > details > summary small { color: var(--soft); font-size: .68rem; font-weight: 700; text-align: right; }
-.lesson-assets-body { min-width: 0; padding: 0 12px 12px; display: grid; gap: 12px; }
-.asset-status-card, .asset-uploader, .asset-feedback { min-width: 0; padding: 14px; border: 1px solid var(--border); border-radius: 13px; background: #fff; }
-/* `align-content: start` mantem os cards da mesma altura mesmo quando um tem a
-   caixa de download e o outro nao: sem isso o conteudo estica e a lista fica
-   com blocos de alturas diferentes, que foi o que o vendedor viu como
-   desalinhamento. */
-.asset-status-card { display: grid; align-content: start; gap: 12px; }
-.asset-status-card > div:first-child { min-width: 0; display: grid; gap: 5px; }
-.asset-status-card strong, .asset-status-card small { overflow-wrap: anywhere; }
-.asset-status-card small { color: var(--soft); font-size: .7rem; line-height: 1.5; }
-/* O nome do arquivo e o que distingue um material do outro: cinco `.md` de uma
-   aula tinham o mesmo titulo e nada mais na tela para diferencia-los. */
-.asset-file-name { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace; font-size: .66rem; color: var(--soft); }
-.asset-panel-hint { margin: 0; padding: 0 13px 10px; color: var(--soft); font-size: .7rem; line-height: 1.5; }
-.asset-state { color: var(--success); font-size: .7rem; font-weight: 800; }
-/* O arquivo subiu e a lista nao atualizou: o vendedor precisa saber as duas
-   coisas e ter o caminho de volta na mesma linha, sem recarregar a pagina. */
-.asset-refresh-failed { display: grid; gap: 8px; }
-.asset-refresh-failed button { min-height: 44px; }
-/* O material que acabou de ser verificado se anuncia por um instante. A lista
-   pode ser longa, e um card que aparece fora da tela e sem marca nenhuma e
-   indistinguivel de um card que nao apareceu. */
-.asset-status-card.state-just-ready { border-color: var(--success); box-shadow: 0 0 0 3px rgba(22,163,74,.14); }
-/* O card so recebe foco por codigo, quando acaba de ficar pronto. `:focus`, e
-   nao `:focus-visible`: o destaque verde expira em 2,5 s e o foco continua ali,
-   e um foco sem indicador e um foco perdido. */
-.asset-status-card:focus { outline: 2px solid var(--blue); outline-offset: 2px; }
-/* Em alto contraste o box-shadow some e a borda e normalizada — o destaque
-   ficaria invisivel justamente para quem mais precisa dele. */
-@media (forced-colors: active) {
-  .asset-status-card.state-just-ready { outline: 3px solid Highlight; outline-offset: 2px; }
-  .asset-status-card:focus { outline: 3px solid Highlight; outline-offset: 2px; }
-}
-@media (prefers-reduced-motion: no-preference) {
-  .asset-status-card.state-just-ready { animation: asset-just-ready 2.5s ease-out; }
-  @keyframes asset-just-ready {
-    from { box-shadow: 0 0 0 6px rgba(22,163,74,.28); }
-    to { box-shadow: 0 0 0 3px rgba(22,163,74,.14); }
-  }
-}
-.asset-policy-controls { min-width: 0; display: grid; gap: 7px; }
-.asset-policy-controls > label { color: var(--ink); font-size: .72rem; font-weight: 800; }
-.asset-policy-controls select { width: 100%; min-height: 44px; padding: 0 10px; border: 1px solid var(--border); border-radius: 10px; background: #fff; color: var(--ink); }
-.asset-download-toggle { min-height: 44px; display: flex; align-items: center; gap: 5px; line-height: 1.35; }
-/* A caixa desenhada continua com 20px; o alvo de toque tem 44. Antes o próprio
-   input media 20x20 e ficava abaixo do minimo — o teste de acessibilidade movel
-   nao pegava porque parava numa assercao anterior. */
-.asset-download-toggle input {
-  width: 44px; height: 44px; flex: 0 0 auto; margin: 0; padding: 0;
-  appearance: none; -webkit-appearance: none;
-  background: none; border: 0; cursor: pointer;
-  display: grid; place-content: center;
-}
-.asset-download-toggle input::before {
-  content: ""; width: 20px; height: 20px;
-  border: 1px solid var(--border); border-radius: 5px; background: #fff;
-}
-.asset-download-toggle input:checked::before {
-  border-color: var(--blue); background: var(--blue); box-shadow: inset 0 0 0 3px #fff;
-}
-.asset-download-toggle input:disabled { cursor: not-allowed; opacity: .5; }
-.asset-download-toggle input:focus-visible { outline: 2px solid var(--blue); outline-offset: -8px; }
-/* Em alto contraste o desenho proprio some: a marca dependia de background e
-   box-shadow, que o modo substitui. Devolver o controle nativo mantem o estado
-   marcado distinguivel, e a area de toque continua sendo a do rotulo. */
-@media (forced-colors: active) {
-  .asset-download-toggle input { appearance: auto; -webkit-appearance: auto; width: 20px; height: 20px; }
-  .asset-download-toggle input::before { content: none; }
-}
-.asset-actions { min-width: 0; display: grid; grid-template-columns: minmax(0,1fr); gap: 8px; }
-.asset-uploader { display: grid; gap: 8px; }
-.asset-file-picker { position: relative; min-width: 0; min-height: 48px; }
-.asset-file-label { min-height: 48px; padding: 0 14px; display: flex; align-items: center; justify-content: center; border: 1px solid var(--blue); border-radius: 12px; background: var(--blue); color: #fff; font-size: .78rem; font-weight: 800; text-align: center; cursor: pointer; }
-.asset-file-picker:focus-within .asset-file-label { outline: 3px solid var(--bright); outline-offset: 3px; }
-.asset-file-picker input[type="file"] { position: absolute; inset: 0; width: 100%; height: 100%; min-width: 0; opacity: 0; cursor: pointer; }
-.asset-file-picker input[type="file"]:disabled { cursor: not-allowed; }
-.asset-help { margin: 0; color: var(--soft); font-size: .7rem; line-height: 1.5; }
-.asset-feedback { display: grid; gap: 9px; color: var(--text); line-height: 1.5; overflow-wrap: anywhere; }
-.asset-feedback > span { font-size: .78rem; font-weight: 750; }
-.asset-feedback > small { color: var(--soft); font-size: .7rem; overflow-wrap: anywhere; }
-.asset-feedback.state-failed { border-color: rgba(180,35,24,.28); background: #fff5f4; color: #8d251d; }
-.asset-feedback.state-ready { border-color: rgba(8,122,75,.25); background: #f1fbf6; color: var(--success); }
-.asset-feedback.state-verifying, .asset-feedback.state-uploading, .asset-feedback.state-confirming { border-color: rgba(37,99,184,.25); background: #eff6ff; color: var(--blue); }
-.asset-feedback.state-delayed { border-color: rgba(154,103,0,.28); background: #fff9e7; color: #6b4d00; }
-.asset-feedback progress { width: 100%; height: 10px; accent-color: var(--bright); }
 .inline-actions { display: grid; gap: 8px; }
 .inline-actions > * { width: 100%; }
 .editor-load-state { min-height: 55dvh; padding: 22px; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); }
@@ -572,10 +447,6 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
   .save-indicator .secondary-button { width: auto; }
   .editor-section-nav { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .editor-form fieldset, .publish-panel, .curriculum-workspace { padding: 28px; }
-  .curriculum-header { flex-direction: row; align-items: flex-start; justify-content: space-between; }
-  .curriculum-module > header, .curriculum-lessons article > header { grid-template-columns: minmax(0,1fr) auto; align-items: start; }
-  .order-actions { grid-template-columns: auto auto; }
-  .order-actions .secondary-button { width: auto; min-width: 108px; }
   .inline-actions { grid-template-columns: minmax(0,1fr) minmax(0,1fr); }
   .asset-status-card { grid-template-columns: minmax(0,1fr) auto; align-items: center; }
   .asset-actions { grid-template-columns: auto auto; }
@@ -778,17 +649,6 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
 .lesson-support-list { margin: 0; padding-left: 1.3em; display: grid; gap: .5em; }
 .lesson-support-list li { overflow-wrap: anywhere; }
 .lesson-support-host { color: var(--soft); font-size: .82rem; }
-.lesson-material-panel { min-width: 0; margin-top: 16px; padding: 14px; display: grid; gap: 10px; border: 1px dashed var(--border); border-radius: 14px; }
-.lesson-material-panel h5 { margin: 0; font-size: .92rem; }
-.lesson-material-empty { margin: 0; color: var(--soft); font-size: .85rem; font-style: italic; }
-.lesson-material-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
-.lesson-material-list li { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; }
-.lesson-material-kind { padding: .1em .5em; border-radius: 999px; background: rgba(30,58,138,.08); font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; }
-.lesson-material-title { flex: 1 1 12ch; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
-.lesson-material-detail { color: var(--soft); font-size: .8rem; overflow-wrap: anywhere; }
-.lesson-material-form { display: grid; gap: 6px; }
-.lesson-material-form fieldset { display: grid; gap: 6px; margin: 0; padding: 0; border: 0; }
-.lesson-material-feedback { margin: 0; min-height: 1.2em; color: var(--soft); font-size: .82rem; }
 .field-help { color: var(--soft); font-size: .78rem; }
 .lesson-material { min-width: 0; margin-top: 30px; padding: 18px; display: grid; gap: 18px; border: 1px solid rgba(30,58,138,.2); border-radius: 18px; background: #f5f9ff; }
 .lesson-material h2 { margin: 3px 0 7px; font-size: 1.15rem; overflow-wrap: anywhere; }
@@ -1510,4 +1370,180 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--bright); outlin
      e frase abaixo dela. Pôr o texto ao lado do logo o empurrava para dentro
      da área escura da imagem. */
   .storefront-hero-covered .storefront-hero-body { margin-top: -56px; }
+}
+
+/* Montar o curso (#649). Uma tela por vez no celular: a lista do curso ou a
+   aula aberta. Com espaço, as duas lado a lado. Todo alvo de toque tem pelo
+   menos 44 px, e nada fica escondido em seção recolhida. */
+.curriculum-workspace { container-type: inline-size; container-name: curso; padding: 16px; }
+.curriculum-workspace [hidden] { display: none !important; }
+.curriculum-workspace input:focus-visible, .curriculum-workspace textarea:focus-visible, .curriculum-workspace label:focus-visible { outline: 3px solid var(--bright); outline-offset: 2px; }
+.curriculum-outline-pane, .curriculum-lesson-pane { min-width: 0; }
+.curriculum-workspace[data-view="lesson"] .curriculum-outline-pane { display: none; }
+.curriculum-workspace[data-view="list"] .curriculum-lesson-pane { display: none; }
+.curriculum-lesson-placeholder { margin: 0; padding: 28px 20px; border: 1px dashed rgba(30,58,138,.28); border-radius: var(--radius-md); color: var(--soft); line-height: 1.55; text-align: center; }
+.curriculum-split { min-width: 0; }
+/* A consulta mede a própria área do curso, não a janela: o editor tem barra
+   lateral, e o que importa é o espaço que sobra para as duas colunas. */
+@container curso (min-width: 900px) {
+  .curriculum-split { display: grid; grid-template-columns: minmax(300px, 380px) minmax(0, 1fr); gap: 24px; align-items: start; }
+  .curriculum-workspace[data-view] .curriculum-outline-pane, .curriculum-workspace[data-view] .curriculum-lesson-pane { display: block; }
+}
+@supports not (container-type: inline-size) {
+  @media (min-width: 1180px) {
+    .curriculum-split { display: grid; grid-template-columns: minmax(300px, 380px) minmax(0, 1fr); gap: 24px; align-items: start; }
+    .curriculum-workspace[data-view] .curriculum-outline-pane, .curriculum-workspace[data-view] .curriculum-lesson-pane { display: block; }
+  }
+}
+
+/* A lista do curso */
+.course-outline { min-width: 0; display: grid; gap: 16px; }
+.course-outline-head h2 { margin: 0; font-size: clamp(1.6rem, 7vw, 2.2rem); }
+.course-notice { min-height: 0; margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; color: var(--text); font-size: .9rem; line-height: 1.5; overflow-wrap: anywhere; }
+.course-notice:empty { display: none; }
+.course-empty { padding: 22px 18px; display: grid; gap: 10px; border: 1px dashed rgba(30,58,138,.3); border-radius: var(--radius-md); background: rgba(219,234,254,.35); }
+.course-empty h3 { margin: 0; font-size: 1.25rem; }
+.course-empty p { margin: 0; color: var(--text); line-height: 1.55; }
+.course-progress { padding: 16px; display: grid; gap: 10px; border: 1px solid var(--border); border-radius: var(--radius-md); background: linear-gradient(145deg, #fff, #f5f9ff); }
+.course-progress > strong { font-size: 1.05rem; }
+.course-progress-bar { height: 10px; overflow: hidden; border-radius: 99px; background: rgba(30,58,138,.1); }
+.course-progress-bar > span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--success), #12a366); transition: width 300ms ease; }
+.course-next { display: grid; gap: 10px; }
+.course-next p, .course-next-hint { margin: 0; color: var(--text); line-height: 1.5; overflow-wrap: anywhere; }
+.course-next .primary-button { width: 100%; }
+.course-modules, .course-lessons { min-width: 0; margin: 0; padding: 0; display: grid; list-style: none; }
+.course-modules { gap: 14px; }
+.course-lessons { gap: 8px; }
+.course-module { min-width: 0; padding: 14px; display: grid; gap: 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); }
+.course-module-head { min-width: 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.course-module-name { min-width: 0; display: grid; gap: 2px; }
+.course-module-name small { color: var(--soft); font-size: .72rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.course-module-name h3 { margin: 0; font-size: 1.15rem; overflow-wrap: anywhere; }
+.course-actions { display: flex; flex: 0 0 auto; gap: 4px; }
+.icon-button { display: inline-grid; width: 44px; height: 44px; place-items: center; padding: 0; border: 1px solid var(--border); border-radius: 12px; background: #fff; color: var(--blue); font-size: 1.05rem; font-weight: 800; cursor: pointer; }
+.icon-button:hover:not(:disabled) { border-color: rgba(30,58,138,.4); background: #f8fbff; }
+.icon-button:disabled { opacity: .35; cursor: not-allowed; }
+.course-rename { display: grid; gap: 10px; }
+.course-rename .danger-button { width: 100%; }
+.course-lesson { min-width: 0; display: flex; align-items: center; gap: 8px; }
+.course-lesson-open { min-width: 0; min-height: 56px; padding: 10px 12px; display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; border: 1px solid rgba(100,116,139,.2); border-radius: 14px; background: #fff; color: var(--ink); transition: border-color 160ms ease, background 160ms ease; }
+.course-lesson-open:hover { border-color: rgba(30,58,138,.38); background: #f8fbff; }
+.course-lesson[aria-current="true"] .course-lesson-open { border-color: var(--bright); background: rgba(59,130,246,.07); box-shadow: inset 3px 0 0 var(--bright); }
+.course-lesson-title { min-width: 0; font-weight: 700; overflow-wrap: anywhere; }
+.course-lesson-empty { margin: 0; color: var(--soft); font-size: .9rem; }
+.course-add { width: 100%; }
+.course-module-new { background: #f8fbff; }
+.course-chip { display: inline-flex; align-items: center; min-height: 26px; padding: 3px 10px; border-radius: 99px; font-size: .78rem; font-weight: 750; line-height: 1.3; }
+.course-chip-ok { background: rgba(8,122,75,.1); color: var(--success); }
+.course-chip-todo { background: rgba(154,103,0,.1); color: var(--warning); }
+.course-chip-run { background: rgba(37,99,184,.1); color: var(--bright); }
+.course-chip-bad { background: #fff1f0; color: #9f241b; }
+.course-chip-quiet { background: rgba(100,116,139,.1); color: var(--soft); }
+.course-name-form { min-width: 0; display: grid; gap: 8px; }
+.course-name-form label, .lesson-field label { color: var(--ink); font-size: .9rem; font-weight: 800; }
+.course-name-form input, .lesson-field input, .lesson-text { width: 100%; min-width: 0; min-height: 48px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: #fff; color: var(--ink); font-size: 1rem; line-height: 1.5; }
+.course-name-form input[aria-invalid="true"], .lesson-field input[aria-invalid="true"] { border-color: #b42318; }
+.course-name-actions, .lesson-link-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.course-name-actions > *, .lesson-link-actions > * { flex: 1 1 140px; }
+
+/* A aula aberta */
+.lesson-editor { min-width: 0; display: grid; gap: 18px; }
+.lesson-editor-top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.lesson-back { padding: 0 16px; gap: 8px; }
+.lesson-editor-heading { margin: 0; display: grid; gap: 4px; font-size: clamp(1.4rem, 6vw, 2rem); overflow-wrap: anywhere; }
+.lesson-editor-heading:focus { outline: none; }
+.lesson-editor-heading:focus-visible { outline: 3px solid var(--bright); outline-offset: 4px; border-radius: 6px; }
+.lesson-editor-heading .eyebrow { margin: 0; font-family: var(--font-inter), Inter, ui-sans-serif, system-ui, sans-serif; letter-spacing: .12em; }
+.lesson-field { min-width: 0; display: grid; gap: 6px; }
+.lesson-block { min-width: 0; padding: 16px; display: grid; gap: 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); }
+.lesson-block-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; }
+.lesson-block-head h3 { margin: 0; font-size: 1.1rem; }
+.lesson-block-hint { color: var(--soft); font-size: .85rem; }
+.lesson-text { min-height: 160px; resize: vertical; }
+.save-state { min-height: 1.4em; margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--soft); font-size: .85rem; }
+.save-state-saved { color: var(--success); font-weight: 700; }
+.save-state-failed { color: #b42318; font-weight: 700; }
+.lesson-editor-foot .primary-button { width: 100%; }
+
+/* Arquivos e links da aula */
+.lesson-files, .lesson-links { min-width: 0; display: grid; gap: 12px; }
+.lesson-files-anchor:focus { outline: none; }
+.lesson-file-list { min-width: 0; margin: 0; padding: 0; display: grid; gap: 10px; list-style: none; }
+.lesson-file { min-width: 0; padding: 12px; display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 10px 12px; align-items: start; border: 1px solid var(--border); border-radius: 14px; background: #fff; }
+.lesson-file.is-main { border-color: rgba(37,99,184,.35); background: linear-gradient(145deg, #fff, #f3f8ff); }
+.lesson-file.state-just-ready { border-color: var(--success); box-shadow: 0 0 0 3px rgba(8,122,75,.14); }
+.lesson-file:focus { outline: 2px solid var(--blue); outline-offset: 2px; }
+.lesson-file-badge { display: grid; width: 44px; height: 44px; place-items: center; border-radius: 12px; background: rgba(30,58,138,.08); color: var(--blue); font-size: .72rem; font-weight: 800; }
+.lesson-file-meta { min-width: 0; display: grid; gap: 6px; }
+.lesson-file-name { min-width: 0; overflow-wrap: anywhere; }
+.lesson-file-detail { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; color: var(--soft); font-size: .85rem; }
+.lesson-file-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; }
+.lesson-file-actions > * { flex: 1 1 150px; min-height: 44px; }
+.quiet-button { display: inline-flex; min-width: 0; min-height: 44px; align-items: center; justify-content: center; padding: 0 16px; border: 1px solid transparent; border-radius: 15px; background: transparent; color: #9f241b; font-weight: 750; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.quiet-button:hover:not(:disabled) { background: #fff1f0; }
+.quiet-button:disabled { opacity: .55; cursor: not-allowed; }
+.lesson-link-actions .quiet-button { color: var(--blue); }
+.lesson-switch { min-height: 44px; display: inline-flex; align-items: center; gap: 10px; color: var(--ink); font-weight: 650; cursor: pointer; }
+/* A caixa desenhada tem 22 px; o alvo de toque, 44. Mesmo desenho do
+   controle de download que veio antes desta tela. */
+.lesson-switch input { width: 44px; height: 44px; flex: 0 0 auto; margin: 0 0 0 -11px; padding: 0; appearance: none; -webkit-appearance: none; display: grid; place-content: center; border: 0; background: none; cursor: pointer; }
+.lesson-switch input::before { content: ""; width: 22px; height: 22px; border: 2px solid rgba(30,58,138,.4); border-radius: 6px; background: #fff; }
+.lesson-switch input:checked::before { border-color: var(--blue); background: var(--blue); box-shadow: inset 0 0 0 3px #fff; }
+.lesson-switch input:disabled { cursor: not-allowed; opacity: .5; }
+.lesson-switch input:focus-visible { outline: 3px solid var(--bright); outline-offset: -6px; }
+@media (forced-colors: active) {
+  .lesson-switch input { appearance: auto; -webkit-appearance: auto; width: 22px; height: 22px; margin: 0; }
+  .lesson-switch input::before { content: none; }
+}
+.lesson-files-empty { margin: 0; color: var(--soft); line-height: 1.5; }
+.lesson-files-refresh { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.lesson-upload-state { min-width: 0; display: grid; gap: 8px; }
+.lesson-upload-state:empty { display: none; }
+.lesson-upload-state.is-active { padding: 14px; border: 1px solid rgba(37,99,184,.28); border-radius: 14px; background: #f3f8ff; }
+.lesson-upload-state.is-failed { padding: 14px; border: 1px solid rgba(180,35,24,.25); border-radius: 14px; background: #fff5f4; color: #8d251d; }
+.lesson-upload-state p { margin: 0; line-height: 1.5; overflow-wrap: anywhere; }
+.lesson-upload-file { color: var(--soft); font-weight: 500; }
+.lesson-upload-detail { color: var(--text); font-size: .9rem; }
+.lesson-upload-state progress { width: 100%; height: 10px; accent-color: var(--bright); }
+.lesson-upload-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.lesson-upload-actions > * { flex: 1 1 150px; }
+.lesson-picker { min-width: 0; display: grid; gap: 8px; justify-items: stretch; }
+.lesson-picker.is-first { padding: 22px 16px; justify-items: center; border: 2px dashed rgba(37,99,184,.32); border-radius: var(--radius-md); background: rgba(219,234,254,.28); text-align: center; }
+.lesson-picker-icon { display: grid; width: 52px; height: 52px; place-items: center; border-radius: 50%; background: rgba(37,99,184,.12); color: var(--bright); font-size: 1.3rem; }
+.lesson-picker-control { position: relative; display: grid; width: 100%; max-width: 420px; }
+.lesson-picker-control > label { width: 100%; }
+.lesson-picker-control > input[type="file"] { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.lesson-picker-control > input[type="file"]:disabled { cursor: not-allowed; }
+.lesson-picker-control:focus-within > label { outline: 3px solid var(--bright); outline-offset: 3px; }
+.lesson-picker > .secondary-button { width: 100%; }
+.lesson-picker-help { margin: 0; max-width: 46ch; color: var(--soft); font-size: .85rem; line-height: 1.5; }
+.lesson-link-form fieldset { min-width: 0; margin: 0; padding: 14px; display: grid; gap: 12px; border: 1px solid var(--border); border-radius: 14px; background: #f8fbff; }
+.lesson-link-form .field-help { margin: 0; }
+.lesson-link-form .field-help.is-detected { color: var(--success); font-weight: 700; }
+.lesson-links-notice { margin: 0; color: var(--success); font-weight: 700; }
+.lesson-links-notice:empty { display: none; }
+
+/* Desfazer: no rodapé, ao alcance do polegar */
+.undo-region { position: fixed; right: 0; bottom: 0; left: 0; z-index: 60; padding: 0 max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); display: grid; justify-items: center; pointer-events: none; }
+.undo-toast { width: 100%; max-width: 520px; min-height: 56px; padding: 8px 8px 8px 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-radius: 16px; background: var(--ink); box-shadow: var(--shadow-float); color: #fff; pointer-events: auto; }
+.undo-toast p { min-width: 0; margin: 0; line-height: 1.4; overflow-wrap: anywhere; }
+.undo-toast button { min-width: 44px; min-height: 44px; flex: 0 0 auto; padding: 0 16px; border: 0; border-radius: 12px; background: rgba(255,255,255,.14); color: #fff; font-weight: 800; cursor: pointer; }
+.undo-toast button:hover { background: rgba(255,255,255,.24); }
+.undo-toast button:focus-visible { outline: 3px solid var(--sky); outline-offset: 2px; }
+.undo-toast-failure { background: #8d251d; }
+@media (prefers-reduced-motion: no-preference) {
+  .undo-toast { animation: undo-in 180ms ease-out; }
+  @keyframes undo-in { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+}
+@media (forced-colors: active) {
+  .course-chip, .lesson-file, .undo-toast, .course-lesson-open { border: 1px solid CanvasText; }
+  .course-lesson[aria-current="true"] .course-lesson-open { outline: 2px solid Highlight; }
+}
+@media (min-width: 680px) {
+  .curriculum-workspace { padding: 24px; }
+  .course-next { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+  .course-next .primary-button { width: auto; }
+  .lesson-picker > .secondary-button { width: auto; justify-self: start; }
+  .lesson-editor-foot .primary-button { width: auto; }
+  .course-rename .danger-button { width: auto; justify-self: start; }
 }

@@ -12,7 +12,7 @@ import { login } from "./support/login";
  * tela, indistinguível de um botão vivo que ignora o clique.
  *
  * Por isso as asserções abaixo leem `getComputedStyle`, não atributos. Apagar a
- * regra `.secondary-button:disabled` do CSS faz este arquivo falhar.
+ * regra `.icon-button:disabled` do CSS faz este arquivo falhar.
  */
 
 const SELLER_ID = "4df98a2e-d1dd-5f25-bbea-58b8072a0e7b";
@@ -265,24 +265,24 @@ test.describe("#254 — nenhum botão desligado em silêncio", () => {
   });
 
   test("o botão que fica mesmo desligado parece desligado", async ({ page }) => {
-    // O primeiro módulo nunca sobe. Este botão é `secondary-button` e fica
-    // `disabled` de verdade — e era exatamente esta a classe que a folha de
-    // estilo não tratava: opacity 1 e cursor pointer, idêntico a um botão vivo.
-    // Apagar `.secondary-button:disabled` do CSS faz este teste falhar.
+    // O primeiro módulo nunca sobe. Este botão fica `disabled` de verdade, e um
+    // botão desligado sem tratamento na folha de estilo tem opacity 1 e cursor
+    // pointer, idêntico a um botão vivo. Desde o #649 ele é `icon-button`:
+    // apagar `.icon-button:disabled` do CSS faz este teste falhar.
     await login(page);
     await mockEditorWithModules(page);
     await page.goto(`/products/${SELLER_ID}/${PRODUCT_ID}?section=curriculo`);
 
-    const moveUp = page.getByRole("button", { name: "Mover módulo Fundamentos para cima" });
+    const moveUp = page.getByRole("button", { name: "Subir módulo Fundamentos" });
     await expect(moveUp).toBeVisible();
     await expect(moveUp).toBeDisabled();
 
     // `expect.poll` e não uma leitura única: a folha anima `opacity`, e uma
     // amostra tirada no instante do render pega o valor de partida.
     await expect
-      .poll(async () => (await paintedState(page, "[data-focus-key='module-move-up-mod-1']"))?.opacity)
+      .poll(async () => (await paintedState(page, "[data-move='module-up-mod-1']"))?.opacity)
       .toBeLessThan(1);
-    const painted = await paintedState(page, "[data-focus-key='module-move-up-mod-1']");
+    const painted = await paintedState(page, "[data-move='module-up-mod-1']");
     expect(painted!.cursor).toBe("not-allowed");
   });
 
@@ -291,12 +291,12 @@ test.describe("#254 — nenhum botão desligado em silêncio", () => {
     await mockEditorWithModules(page);
     await page.goto(`/products/${SELLER_ID}/${PRODUCT_ID}?section=curriculo`);
 
-    const moveUp = page.getByRole("button", { name: "Mover módulo Aprofundamento para cima" });
+    const moveUp = page.getByRole("button", { name: "Subir módulo Aprofundamento" });
     await expect(moveUp).toBeEnabled();
     await expect
-      .poll(async () => (await paintedState(page, "[data-focus-key='module-move-up-mod-2']"))?.opacity)
+      .poll(async () => (await paintedState(page, "[data-move='module-up-mod-2']"))?.opacity)
       .toBe(1);
-    const painted = await paintedState(page, "[data-focus-key='module-move-up-mod-2']");
+    const painted = await paintedState(page, "[data-move='module-up-mod-2']");
     expect(painted!.cursor).toBe("pointer");
   });
 });

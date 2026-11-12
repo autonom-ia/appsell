@@ -1,11 +1,12 @@
 "use client";
 
-import { KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
-import { embedIdFromInput } from "@/lib/lesson-embed";
+import { JOURNEY_COPY } from "@/lib/curriculum/journey-copy";
+import { classifyLessonLink, suggestedLinkTitle, type LessonLink } from "@/lib/curriculum/lesson-link";
 import { safeLessonLink } from "@/lib/lesson-markup";
 
-import { AccessibleDialog } from "./accessible-dialog";
+import { useScheduleUndo } from "./undo-toast";
 
 interface LessonMaterial {
   material_id: string;
@@ -29,11 +30,15 @@ const LOAD_TIMEOUT_MS = 8_000;
 const MUTATION_TIMEOUT_MS = 12_000;
 
 /**
- * The seller's list of links and embedded videos for one lesson.
+ * Os links da aula (#649): um campo só para colar, e a máquina descobre o resto.
  *
- * The panel deliberately sits outside the lesson's edit form: its fields are not
- * part of that form's submission, and Enter here adds a material instead of
- * saving the lesson.
+ * Antes eram dois `<select>` (tipo e provedor), um campo "Endereço (https)" e
+ * um diálogo de risco para remover. Agora quem vende cola o link, vê na hora
+ * se é um vídeo do YouTube ou do Vimeo, confere o nome que o aluno vai ver e
+ * adiciona. Tirar da aula some na hora e pode ser desfeito por 8 segundos.
+ *
+ * O painel fica fora de qualquer outro formulário da aula: Enter aqui adiciona
+ * o link e não mexe no resto.
  */
 export function LessonMaterialPanel({
   sellerId,
@@ -62,27 +67,26 @@ export function LessonMaterialPanel({
   const [actionState, setActionState] = useState<ActionState>("idle");
   const [invalidField, setInvalidField] = useState("");
   const [open, setOpen] = useState(false);
-  const [kind, setKind] = useState<"external" | "embed">("external");
+  const [link, setLink] = useState("");
   const [title, setTitle] = useState("");
-  const [url, setUrl] = useState("");
-  const [provider, setProvider] = useState<"youtube" | "vimeo">("youtube");
-  const [videoId, setVideoId] = useState("");
-  const [archiveTarget, setArchiveTarget] = useState<LessonMaterial | null>(null);
+  const [titleTouched, setTitleTouched] = useState(false);
+  const [removedIds, setRemovedIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [notice, setNotice] = useState("");
+  const scheduleUndo = useScheduleUndo();
 
-  const listHeading = useRef<HTMLHeadingElement>(null);
-  const archiveCancel = useRef<HTMLButtonElement>(null);
-  // One key per pending mutation, held until the server answers. A retry after a
-  // dropped connection replays the same operation instead of adding a second row.
-  //
-  // The key is paired with the payload it was minted for. A replay is only a
-  // replay of the same thing: if the seller edits the fields after a failed
-  // attempt, the old key would make the server answer for the old material while
-  // this panel reported the new one, so the edit earns a new key instead.
-  const createKey = useRef<{ key: string; payload: string } | null>(null);
-  const archiveKeys = useRef(new Map<string, string>());
+  const addButton = useRef<HTMLButtonElement>(null);
+  const linkInput = useRef<HTMLInputElement>(null);
+  const courseVersionRef = useRef(courseVersion);
+  // Uma chave por pedido pendente, guardada até o servidor responder. Repetir
+  // depois de uma queda de conexão reenvia o mesmo pedido em vez de criar um
+  // segundo link. A chave vale só para o mesmo conteúdo: se a pessoa mudar os
+  // campos depois da falha, o pedido é outro e ganha chave nova.
+  const createKey = useRef<CreateKey | null>(null);
   const listRequest = useRef<{ controller: AbortController; version: number } | null>(null);
   const listVersion = useRef(0);
   const inFlight = useRef(new Set<AbortController>());
+
+  useEffect(() => { courseVersionRef.current = courseVersion; }, [courseVersion]);
 
   const base = `/api/sellers/${encodeURIComponent(sellerId)}/products/${encodeURIComponent(productId)}`
     + `/courses/${encodeURIComponent(courseId)}/modules/${encodeURIComponent(moduleId)}`
@@ -96,7 +100,7 @@ export function LessonMaterialPanel({
     const timeout = setTimeout(() => controller.abort(), LOAD_TIMEOUT_MS);
     try {
       const response = await fetch(base, { cache: "no-store", signal: controller.signal });
-      // A slower earlier answer must never overwrite a newer one.
+      // Uma resposta antiga e lenta nunca sobrescreve uma mais nova.
       if (listVersion.current !== version) return;
       if (response.status === 401) return setListState("unauthorized");
       if (response.status === 403) return setListState("forbidden");
@@ -125,30 +129,36 @@ export function LessonMaterialPanel({
     };
   }, [loadMaterials]);
 
-  function invalidLocalField() {
-    if (title.trim().length < 2) return "title";
-    if (kind === "external") return safeLessonLink(url.trim()) ? "" : "url";
-    return embedIdFromInput(provider, videoId) ? "" : "video_id";
+  const detected = classifyLessonLink(link);
+  const suggestion = detected ? suggestedLinkTitle(detected) : "";
+  const shownTitle = titleTouched ? title : suggestion;
+
+  function openForm() {
+    setOpen(true);
+    setNotice("");
+    setActionState("idle");
+    queueMicrotask(() => linkInput.current?.focus());
   }
 
-  async function create() {
+  function closeForm() {
+    setOpen(false);
+    setLink("");
+    setTitle("");
+    setTitleTouched(false);
+    setInvalidField("");
+    setActionState("idle");
+    createKey.current = null;
+    queueMicrotask(() => addButton.current?.focus());
+  }
+
+  async function create(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
     if (actionState === "working" || archived || !csrf) return;
-    const localFailure = invalidLocalField();
-    if (localFailure) {
-      setInvalidField(localFailure);
-      setActionState("invalid");
-      return;
-    }
-    const fields = {
-      expected_course_version: String(courseVersion),
-      kind,
-      title: title.trim(),
-      url: kind === "external" ? (safeLessonLink(url.trim()) ?? "") : "",
-      provider: kind === "embed" ? provider : "",
-      video_id: kind === "embed" ? (embedIdFromInput(provider, videoId) ?? "") : ""
-    };
-    const payload = JSON.stringify(fields);
-    createKey.current = nextCreateKey(createKey.current, payload, () => crypto.randomUUID());
+    const finalTitle = shownTitle.trim();
+    if (!detected) return invalid("link");
+    if (finalTitle.length < 2) return invalid("title");
+    const fields = linkFields(detected, finalTitle, courseVersionRef.current);
+    createKey.current = nextCreateKey(createKey.current, JSON.stringify(fields), () => crypto.randomUUID());
     setActionState("working");
     setInvalidField("");
     const data = new FormData();
@@ -162,21 +172,23 @@ export function LessonMaterialPanel({
       const response = await fetch(base, { method: "POST", body: data, signal: controller.signal });
       if (!response.ok) {
         const failure = await failureState(response, setInvalidField);
-        // A rejected request will never be accepted as a replay, so the key goes.
+        // Um pedido recusado nunca será aceito como repetição: a chave sai.
         if (failure === "invalid" || failure === "forbidden") createKey.current = null;
         setActionState(failure);
         return;
       }
       createKey.current = null;
+      setNotice(`Pronto: “${finalTitle}” está na aula.`);
+      setOpen(false);
+      setLink("");
       setTitle("");
-      setUrl("");
-      setVideoId("");
+      setTitleTouched(false);
       setActionState("idle");
       await loadMaterials();
       onCommitted?.();
-      queueMicrotask(() => listHeading.current?.focus());
+      queueMicrotask(() => addButton.current?.focus());
     } catch {
-      // The key is kept on purpose: the next attempt replays rather than repeats.
+      // A chave fica de propósito: a próxima tentativa repete, não duplica.
       setActionState("unavailable");
     } finally {
       clearTimeout(timeout);
@@ -184,210 +196,157 @@ export function LessonMaterialPanel({
     }
   }
 
-  async function archive(material: LessonMaterial) {
-    if (actionState === "working" || !csrf) return;
-    const existing = archiveKeys.current.get(material.material_id) ?? crypto.randomUUID();
-    archiveKeys.current.set(material.material_id, existing);
-    setActionState("working");
-    setInvalidField("");
-    const data = new FormData();
-    data.set("_csrf", csrf.archive);
-    data.set("idempotency_key", existing);
-    data.set("expected_course_version", String(courseVersion));
-    const controller = new AbortController();
-    inFlight.current.add(controller);
-    const timeout = setTimeout(() => controller.abort(), MUTATION_TIMEOUT_MS);
-    try {
-      const response = await fetch(`${base}/${encodeURIComponent(material.material_id)}/archive`, {
-        method: "POST",
-        body: data,
-        signal: controller.signal
-      });
-      if (!response.ok) {
-        const failure = await failureState(response, setInvalidField);
-        if (failure === "invalid" || failure === "forbidden") {
-          archiveKeys.current.delete(material.material_id);
+  function invalid(field: "link" | "title") {
+    setInvalidField(field);
+    setActionState("invalid");
+    queueMicrotask(() => document.getElementById(`${panelId}-${field}`)?.focus());
+  }
+
+  function remove(material: LessonMaterial) {
+    if (!csrf) return;
+    const archiveCsrf = csrf.archive;
+    const key = crypto.randomUUID();
+    setNotice("");
+    setRemovedIds((current) => new Set(current).add(material.material_id));
+    queueMicrotask(() => addButton.current?.focus());
+    const restore = () => setRemovedIds((current) => {
+      const next = new Set(current);
+      next.delete(material.material_id);
+      return next;
+    });
+    scheduleUndo({
+      id: `material:${material.material_id}`,
+      message: `“${material.title}” saiu da aula.`,
+      revert: restore,
+      commit: async ({ leaving }) => {
+        const data = new FormData();
+        data.set("_csrf", archiveCsrf);
+        data.set("idempotency_key", key);
+        data.set("expected_course_version", String(courseVersionRef.current));
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), MUTATION_TIMEOUT_MS);
+        try {
+          const response = await fetch(`${base}/${encodeURIComponent(material.material_id)}/archive`, {
+            method: "POST",
+            body: data,
+            keepalive: leaving,
+            signal: controller.signal
+          });
+          if (!response.ok) throw new Error("material_archive_failed");
+        } finally {
+          clearTimeout(timeout);
         }
-        setActionState(failure);
-        return;
+        setMaterials((current) => current.filter((entry) => entry.material_id !== material.material_id));
+        restore();
+        onCommitted?.();
       }
-      archiveKeys.current.delete(material.material_id);
-      setActionState("idle");
-      // Only a removal that actually happened closes the dialog. Closing it on a
-      // refusal would leave the failure in a live region at the foot of the
-      // panel while the thing the seller was looking at disappeared, which reads
-      // as success.
-      setArchiveTarget(null);
-      await loadMaterials();
-      onCommitted?.();
-      queueMicrotask(() => listHeading.current?.focus());
-    } catch {
-      setActionState("unavailable");
-    } finally {
-      clearTimeout(timeout);
-      inFlight.current.delete(controller);
-    }
-  }
-
-  function createOnEnter(event: KeyboardEvent<HTMLInputElement | HTMLSelectElement>) {
-    if (event.key !== "Enter") return;
-    event.preventDefault();
-    void create();
+    });
   }
 
   const panelId = `lesson-materials-${lessonId}`;
   const busy = actionState === "working";
+  const visible = materials.filter((material) => !removedIds.has(material.material_id));
+  const linkHelp = linkHint(link, detected, invalidField === "link");
 
-  return <section className="lesson-material-panel" aria-labelledby={`${panelId}-title`}>
-    <h5 id={`${panelId}-title`} ref={listHeading} tabIndex={-1}>
-      Material complementar ({materials.length})
-    </h5>
-
-    {listState === "loading" ? <p role="status">Carregando material…</p> : null}
+  return <div className="lesson-links" aria-label={`Links de ${lessonTitle}`} role="group">
+    {listState === "loading" ? <p className="lesson-files-empty" role="status">Carregando links…</p> : null}
     {listState !== "loading" && listState !== "ready"
-      ? <p className="form-error" role="status">{listMessage(listState)}</p>
+      ? <p className="form-error" role="alert">
+          <span>{listMessage(listState)}</span>
+          {listState === "unavailable" || listState === "error"
+            ? <button type="button" className="secondary-button" onClick={() => void loadMaterials()}>Tentar de novo</button>
+            : null}
+        </p>
       : null}
 
-    {listState === "ready" && materials.length === 0
-      ? <p className="lesson-material-empty">Nenhum link ou vídeo nesta aula.</p>
-      : null}
-
-    {materials.length > 0 ? <ul className="lesson-material-list">
-      {materials.map((material) => <li key={material.material_id} data-testid={`material-${material.material_id}`}>
-        <span className="lesson-material-kind">{material.kind === "embed" ? "Vídeo" : "Link"}</span>
-        <span className="lesson-material-title">{material.title}</span>
-        <span className="lesson-material-detail">
-          {material.kind === "embed"
-            ? `${material.provider ?? "–"} · ${material.video_id ?? "–"}`
-            : hostOf(material.url)}
-        </span>
-        {!archived ? <button
-          type="button"
-          className="danger-button"
-          disabled={busy}
-          onClick={() => setArchiveTarget(material)}
-          aria-label={`Remover ${material.title}`}
-        >Remover</button> : null}
+    {visible.length > 0 ? <ul className="lesson-file-list">
+      {visible.map((material) => <li key={material.material_id} data-testid={`material-${material.material_id}`}>
+        <article className="lesson-file" aria-label={material.title}>
+          <span className="lesson-file-badge" aria-hidden="true">{material.kind === "embed" ? "▶" : "🔗"}</span>
+          <div className="lesson-file-meta">
+            <strong className="lesson-file-name" dir="auto">{material.title}</strong>
+            <span className="lesson-file-detail">
+              <span>{materialDetail(material)}</span>
+            </span>
+          </div>
+          {!archived ? <div className="lesson-file-actions">
+            <button
+              type="button"
+              className="quiet-button"
+              aria-label={`${JOURNEY_COPY.removeFile}: ${material.title}`}
+              onClick={() => remove(material)}
+            >{JOURNEY_COPY.removeFile}</button>
+          </div> : null}
+        </article>
       </li>)}
     </ul> : null}
 
-    {!archived && listState === "ready" ? <div className="lesson-material-add">
-      <button
-        type="button"
-        className="secondary-button"
-        aria-expanded={open}
-        aria-controls={`${panelId}-form`}
-        onClick={() => setOpen((current) => !current)}
-      >{open ? "Cancelar" : "Adicionar link ou vídeo"}</button>
+    <p className="lesson-links-notice" role="status" aria-live="polite">{notice}</p>
 
-      {open ? <div id={`${panelId}-form`} className="lesson-material-form">
-        <fieldset aria-label={`Novo material para ${lessonTitle}`} disabled={busy}>
-          <label htmlFor={`${panelId}-kind`}>Tipo</label>
-          <select
-            id={`${panelId}-kind`}
-            value={kind}
-            onChange={(event) => setKind(event.target.value === "embed" ? "embed" : "external")}
-            onKeyDown={createOnEnter}
-          >
-            <option value="external">Link externo</option>
-            <option value="embed">Vídeo incorporado</option>
-          </select>
+    {!archived && listState === "ready" && !open
+      ? <div className="lesson-picker">
+          <button ref={addButton} type="button" className="secondary-button" onClick={openForm}>{JOURNEY_COPY.addLink}</button>
+        </div>
+      : null}
 
-          <label htmlFor={`${panelId}-title`}>Título</label>
+    {!archived && listState === "ready" && open ? <form className="lesson-link-form" noValidate onSubmit={(event) => void create(event)}>
+      <fieldset disabled={busy}>
+        <legend className="sr-only">Novo link para {lessonTitle}</legend>
+        <div className="lesson-field">
+          <label htmlFor={`${panelId}-link`}>{JOURNEY_COPY.linkLabel}</label>
+          <input
+            ref={linkInput}
+            id={`${panelId}-link`}
+            type="url"
+            inputMode="url"
+            autoComplete="off"
+            autoCapitalize="none"
+            spellCheck={false}
+            value={link}
+            maxLength={2000}
+            placeholder="https://"
+            aria-invalid={invalidField === "link" ? "true" : undefined}
+            aria-describedby={`${panelId}-link-help`}
+            onChange={(event) => {
+              setLink(event.target.value);
+              if (invalidField === "link") setInvalidField("");
+            }}
+          />
+          <p
+            id={`${panelId}-link-help`}
+            className={`field-help${invalidField === "link" ? " form-error" : ""}${detected?.kind === "embed" ? " is-detected" : ""}`}
+            aria-live="polite"
+          >{linkHelp}</p>
+        </div>
+        <div className="lesson-field">
+          <label htmlFor={`${panelId}-title`}>{JOURNEY_COPY.linkName}</label>
           <input
             id={`${panelId}-title`}
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-            onKeyDown={createOnEnter}
-            minLength={2}
+            value={shownTitle}
             maxLength={160}
-            aria-invalid={invalidField === "title"}
+            autoComplete="off"
+            aria-invalid={invalidField === "title" ? "true" : undefined}
             aria-describedby={invalidField === "title" ? `${panelId}-title-error` : undefined}
+            onChange={(event) => {
+              setTitle(event.target.value);
+              setTitleTouched(true);
+              if (invalidField === "title") setInvalidField("");
+            }}
           />
           {invalidField === "title"
-            ? <span id={`${panelId}-title-error`} className="form-error">Informe um título entre 2 e 160 caracteres.</span>
+            ? <p id={`${panelId}-title-error`} className="form-error">{JOURNEY_COPY.linkNameInvalid}</p>
             : null}
-
-          {kind === "external" ? <>
-            <label htmlFor={`${panelId}-url`}>Endereço (https)</label>
-            <input
-              id={`${panelId}-url`}
-              type="url"
-              inputMode="url"
-              value={url}
-              onChange={(event) => setUrl(event.target.value)}
-              onKeyDown={createOnEnter}
-              maxLength={2000}
-              placeholder="https://exemplo.com/material"
-              aria-invalid={invalidField === "url"}
-              aria-describedby={`${panelId}-url-help`}
-            />
-            <span id={`${panelId}-url-help`} className={invalidField === "url" ? "form-error" : "field-help"}>
-              {invalidField === "url"
-                ? "O endereço precisa começar com https:// e não pode conter branco nem aspas."
-                : "Somente endereços https. O aluno abre em outra aba."}
-            </span>
-          </> : <>
-            <label htmlFor={`${panelId}-provider`}>Provedor</label>
-            <select
-              id={`${panelId}-provider`}
-              value={provider}
-              onChange={(event) => setProvider(event.target.value === "vimeo" ? "vimeo" : "youtube")}
-              onKeyDown={createOnEnter}
-            >
-              <option value="youtube">YouTube</option>
-              <option value="vimeo">Vimeo</option>
-            </select>
-
-            <label htmlFor={`${panelId}-video`}>Link do vídeo</label>
-            <input
-              id={`${panelId}-video`}
-              value={videoId}
-              onChange={(event) => setVideoId(event.target.value)}
-              onKeyDown={createOnEnter}
-              maxLength={2000}
-              placeholder={provider === "youtube"
-                ? "https://youtu.be/dQw4w9WgXcQ"
-                : "https://vimeo.com/76979871"}
-              aria-invalid={invalidField === "video_id"}
-              aria-describedby={`${panelId}-video-help`}
-            />
-            <span id={`${panelId}-video-help`} className={invalidField === "video_id" ? "form-error" : "field-help"}>
-              {invalidField === "video_id"
-                ? "Não reconhecemos um vídeo neste endereço. Cole o link da página do vídeo."
-                : "Cole o link do vídeo. Pode ser o endereço inteiro, com ou sem os parâmetros que o site acrescenta."}
-            </span>
-          </>}
-
-          <button type="button" className="primary-button" disabled={busy} onClick={() => void create()}>
-            {busy ? "Adicionando…" : "Adicionar material"}
-          </button>
-        </fieldset>
-      </div> : null}
-    </div> : null}
-
-    <p className="lesson-material-feedback" aria-live="polite">{actionMessage(actionState)}</p>
-
-    {archiveTarget ? <AccessibleDialog
-      titleId={`${panelId}-archive-title`}
-      descriptionId={`${panelId}-archive-description`}
-      initialFocusRef={archiveCancel}
-      onClose={() => setArchiveTarget(null)}
-    >
-      <h2 id={`${panelId}-archive-title`}>Remover {archiveTarget.title}?</h2>
-      <p id={`${panelId}-archive-description`}>
-        O material sai desta aula. O aluno deixa de vê-lo assim que você publicar de novo.
-      </p>
-      <div className="inline-actions">
-        <button ref={archiveCancel} type="button" className="secondary-button" onClick={() => setArchiveTarget(null)}>
-          Manter
-        </button>
-        <button type="button" className="danger-button" disabled={busy} onClick={() => void archive(archiveTarget)}>
-          Remover
-        </button>
-      </div>
-    </AccessibleDialog> : null}
-  </section>;
+        </div>
+        <div className="lesson-link-actions">
+          <button type="submit" className="primary-button">{busy ? "Adicionando…" : JOURNEY_COPY.saveLink}</button>
+          <button type="button" className="quiet-button" onClick={closeForm}>{JOURNEY_COPY.cancel}</button>
+        </div>
+        {actionState !== "idle" && actionState !== "working" && actionState !== "invalid"
+          ? <p className="form-error" role="alert">{actionMessage(actionState)}</p>
+          : null}
+      </fieldset>
+    </form> : null}
+  </div>;
 }
 
 export interface CreateKey {
@@ -396,13 +355,13 @@ export interface CreateKey {
 }
 
 /**
- * Decides whether the next attempt is a replay or a new operation.
+ * Decide se a próxima tentativa é repetição ou pedido novo.
  *
- * Keeping the key across a dropped connection is what makes a retry safe. But a
- * key only means "the same request again": if the seller edited the fields after
- * the failure, replaying would let the server answer for the material they typed
- * first while this panel reports the one they typed second. A changed payload
- * therefore earns a new key.
+ * Manter a chave depois de uma queda de conexão é o que torna a repetição
+ * segura. Mas a chave só quer dizer "o mesmo pedido de novo": se a pessoa
+ * mudou os campos depois da falha, repetir faria o servidor responder pelo
+ * link digitado primeiro enquanto o painel mostra o segundo. Conteúdo mudado
+ * ganha chave nova.
  */
 export function nextCreateKey(
   current: CreateKey | null,
@@ -413,27 +372,45 @@ export function nextCreateKey(
   return { key: mint(), payload };
 }
 
-function hostOf(url: string | null) {
-  const safe = safeLessonLink(url ?? "");
-  if (!safe) return "endereço indisponível";
-  return new URL(safe).hostname;
+function linkFields(link: LessonLink, title: string, courseVersion: number): Record<string, string> {
+  return {
+    expected_course_version: String(courseVersion),
+    kind: link.kind,
+    title,
+    url: link.kind === "external" ? link.url : "",
+    provider: link.kind === "embed" ? link.provider : "",
+    video_id: link.kind === "embed" ? link.videoId : ""
+  };
+}
+
+function linkHint(raw: string, detected: LessonLink | null, showError: boolean): string {
+  if (showError) return JOURNEY_COPY.linkInvalid;
+  if (detected?.kind === "embed") return detected.provider === "youtube" ? JOURNEY_COPY.linkYoutube : JOURNEY_COPY.linkVimeo;
+  if (detected?.kind === "external" && raw.trim()) return `O aluno abre ${detected.host} numa nova aba.`;
+  return JOURNEY_COPY.linkHelp;
+}
+
+function materialDetail(material: LessonMaterial): string {
+  if (material.kind === "embed") {
+    return material.provider === "vimeo" ? "Vídeo do Vimeo · o aluno assiste na aula" : "Vídeo do YouTube · o aluno assiste na aula";
+  }
+  const safe = safeLessonLink(material.url ?? "");
+  if (!safe) return "Link";
+  const host = new URL(safe).hostname.toLowerCase();
+  return `Abre ${host.startsWith("www.") ? host.slice(4) : host}`;
 }
 
 function listMessage(state: ListState) {
-  if (state === "unauthorized") return "Sua sessão expirou. Entre novamente para ver o material.";
-  if (state === "forbidden") return "Você não tem permissão para ver o material desta aula.";
-  if (state === "unavailable") return "Não foi possível carregar o material agora.";
-  return "Não foi possível carregar o material desta aula.";
+  if (state === "unauthorized") return JOURNEY_COPY.sessionExpired;
+  if (state === "forbidden") return JOURNEY_COPY.noPermission;
+  return "Não deu para carregar os links desta aula. Confira a internet e tente de novo.";
 }
 
 function actionMessage(state: ActionState) {
-  if (state === "working") return "Salvando…";
-  if (state === "invalid") return "Confira os campos destacados.";
-  if (state === "conflict") return "O conteúdo mudou em outra aba. Recarregue a página e tente de novo.";
-  if (state === "forbidden") return "Você não tem permissão para alterar o material desta aula.";
-  if (state === "unavailable") return "Não foi possível falar com o servidor. Tente de novo.";
-  if (state === "error") return "Não foi possível concluir a operação.";
-  return "";
+  if (state === "conflict") return JOURNEY_COPY.changedElsewhere;
+  if (state === "forbidden") return JOURNEY_COPY.noPermission;
+  if (state === "unavailable") return JOURNEY_COPY.offline;
+  return "Não deu para adicionar o link. Tente de novo.";
 }
 
 async function failureState(
@@ -446,7 +423,8 @@ async function failureState(
   if (response.status === 503) return "unavailable";
   if (response.status === 422) {
     const payload = await response.json().catch(() => null) as { field?: string } | null;
-    setInvalidField(typeof payload?.field === "string" ? payload.field : "");
+    const field = payload?.field === "title" ? "title" : "link";
+    setInvalidField(field);
     return "invalid";
   }
   return "error";
