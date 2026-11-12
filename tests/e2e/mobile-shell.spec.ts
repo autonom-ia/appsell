@@ -703,11 +703,11 @@ test("authors and reorders a tenant curriculum at 320px without drag", async ({ 
   await page.goto(`/products/${sellerId}/${productId}?section=curriculo`);
   await expect(page.getByRole("heading", { name: "Seu curso" })).toBeVisible();
   await page.getByRole("button", { name: "+ Novo módulo" }).click();
-  await page.getByLabel("Nome do módulo").fill("Avançado");
+  await page.getByLabel("Nome do módulo", { exact: true }).fill("Avançado");
   await page.getByRole("button", { name: "Criar módulo" }).click();
   // A falha diz o que fazer, e o nome digitado continua no campo.
   await expect(page.getByTestId("curriculum-live")).toContainText("Confira a internet e tente de novo.");
-  await expect(page.getByLabel("Nome do módulo")).toHaveValue("Avançado");
+  await expect(page.getByLabel("Nome do módulo", { exact: true })).toHaveValue("Avançado");
   await page.getByRole("button", { name: "Criar módulo" }).click();
   await expect(page.getByRole("heading", { name: "Avançado" })).toBeVisible();
   expect(moduleAttemptKeys).toHaveLength(2);

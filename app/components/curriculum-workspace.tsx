@@ -142,6 +142,27 @@ function Workspace({
    * baixo sem trocar a tela por "Carregando…", que desmontava tudo e levava o
    * scroll ao topo a cada clique.
    */
+  /**
+   * Uma releitura que saiu antes de um salvamento pode voltar depois dele, com
+   * a versão velha. Aplicá-la trocava o texto recém-salvo pelo antigo, e o
+   * campo, sem nada pendente, aceitava a troca: o que a pessoa escreveu sumia.
+   * Resposta mais velha que a versão já confirmada aqui é descartada e lida de
+   * novo uma vez.
+   */
+  const fetchFreshCurriculum = useCallback(async (signal: AbortSignal) => {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await fetch(`${endpoint}/curriculum`, { cache: "no-store", signal });
+      if (response.status === 401) return "unauthorized" as const;
+      if (response.status === 403) return "forbidden" as const;
+      if (response.status === 404) return "not_found" as const;
+      if (!response.ok) return response.status === 503 ? "unavailable" as const : "error" as const;
+      const payload: unknown = await response.json();
+      if (!validCurriculum(payload, courseId)) return "error" as const;
+      if (payload.course.draft_version >= versionRef.current) return payload;
+    }
+    return null;
+  }, [courseId, endpoint]);
+
   const load = useCallback(async (mode: "initial" | "revalidate" = "initial") => {
     const initial = mode === "initial";
     if (initial) setLoadState("loading");
@@ -153,13 +174,11 @@ function Workspace({
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 8_000);
     try {
-      const response = await fetch(`${endpoint}/curriculum`, { cache: "no-store", signal: controller.signal });
-      if (response.status === 401) return fail("unauthorized");
-      if (response.status === 403) return fail("forbidden");
-      if (response.status === 404) return fail("not_found");
-      if (!response.ok) return fail(response.status === 503 ? "unavailable" : "error");
-      const payload: unknown = await response.json();
-      if (!validCurriculum(payload, courseId)) return fail("error");
+      const payload = await fetchFreshCurriculum(controller.signal);
+      if (typeof payload === "string") return fail(payload);
+      // Mesmo depois de reler, o servidor ainda está atrás do que já foi salvo
+      // aqui: a tela fica com o estado mais novo, e a próxima mudança relê.
+      if (payload === null) return;
       setModules(payload.modules);
       versionRef.current = payload.course.draft_version;
       setCourseVersion(payload.course.draft_version);
@@ -171,7 +190,7 @@ function Workspace({
     } finally {
       window.clearTimeout(timeout);
     }
-  }, [courseId, endpoint]);
+  }, [fetchFreshCurriculum]);
 
   useEffect(() => {
     const start = window.setTimeout(() => void load(), 0);
@@ -263,6 +282,11 @@ function Workspace({
     // lista aparecer (o efeito abaixo), senão cairia num elemento escondido.
     pendingFocus.current = focusSelector ?? `[data-lesson-link="${cssText(target)}"]`;
   }, [router, selectedId]);
+
+  // O botão entrega o evento do clique como primeiro argumento. Repassá-lo
+  // direto fazia o evento virar o seletor de foco, a busca quebrava e o foco
+  // não voltava para a aula na lista.
+  const backToList = useCallback(() => closeLesson(), [closeLesson]);
 
   useEffect(() => {
     if (selectedId || !pendingFocus.current) return;
@@ -512,7 +536,7 @@ function Workspace({
           archived={archived}
           readiness={readinessOf(lesson)}
           transportBusy={TRANSPORT.includes(live[lesson.id]?.phase ?? "idle")}
-          onBack={closeLesson}
+          onBack={backToList}
           onDelete={() => deleteLesson(module, lesson)}
           onSave={(change, options) => saveLesson(module, lesson, change, options)}
           onActivityChange={handleAssetActivity}

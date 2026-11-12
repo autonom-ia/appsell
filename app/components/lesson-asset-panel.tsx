@@ -520,10 +520,15 @@ export function LessonAssetPanel({
       // de adicionar daqui. O `<summary>` que ele acabou de acionar retém o foco
       // em alguns navegadores, e tratá-lo como "outro controle" impedia o card
       // de receber o foco justamente de quem estava esperando por ele.
+      //
+      // Um título com `tabIndex={-1}` não é controle em uso: é onde a troca de
+      // tela pôs o foco (o título da aula ao abrir). Tratá-lo como ocupado
+      // deixava o card sem foco para quem acabou de escolher o arquivo aqui.
       const ativo = document.activeElement;
       const painel = panelRef.current;
       const ocupado = ativo instanceof HTMLElement
         && ativo !== document.body
+        && ativo.tabIndex >= 0
         && !(painel?.contains(ativo) ?? false);
       if (ocupado) return;
       // `nearest` já é "mova o mínimo necessário": com o card inteiro à vista a

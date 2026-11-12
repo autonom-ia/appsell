@@ -43,7 +43,7 @@ test.describe("montar o curso do zero", () => {
     const vazio = page.getByTestId("curriculum-empty");
     await expect(vazio).toBeVisible();
     await expect(vazio).toContainText("Comece pelo primeiro módulo");
-    await vazio.getByLabel("Nome do módulo").fill("Boas-vindas");
+    await vazio.getByLabel("Nome do módulo", { exact: true }).fill("Boas-vindas");
     await vazio.getByRole("button", { name: "Criar módulo" }).click();
 
     await expect(page.getByRole("heading", { level: 3, name: "Boas-vindas" })).toBeVisible();
@@ -139,7 +139,7 @@ test.describe("organizar sem medo", () => {
     await abrirCurso(page, curso);
 
     await page.getByRole("button", { name: "Mudar nome do módulo Módulo A" }).click();
-    const nome = page.getByLabel("Nome do módulo");
+    const nome = page.getByLabel("Nome do módulo", { exact: true });
     await expect(nome).toBeFocused();
     await nome.fill("Fundamentos");
     await page.getByRole("button", { name: "Salvar nome" }).click();
