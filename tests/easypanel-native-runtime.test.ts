@@ -105,7 +105,8 @@ describe("EasyPanel native runtime contract", () => {
   it("documents public staging honestly and preserves the old runtime for rollback", () => {
     expect(readme).toMatch(/homologação pública do\s+demo em modo/);
     expect(readme).toContain("não pode ser promovido para");
-    expect(readme).toContain("sell-issue90.85-31-60-100.sslip.io");
+    expect(readme).toContain("`<staging-public-host>` → `web:3000`");
+    expect(readme).not.toContain("sslip.io");
     expect(readme).toContain("runtime-preview` e o");
     expect(readme).toContain("PDFs-aula 1–4 não entram");
     expect(readme).toContain("Não existe marker local-demo de produção");

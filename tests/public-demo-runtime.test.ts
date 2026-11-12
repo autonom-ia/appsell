@@ -27,7 +27,8 @@ const shared = {
 const staging = {
   ...shared,
   APPSELL_PUBLIC_DEMO_RUNTIME: PUBLIC_DEMO_STAGING_RUNTIME_MARKER,
-  APPSELL_PUBLIC_ORIGIN: "https://sell-issue90.85-31-60-100.sslip.io"
+  APPSELL_PUBLIC_ORIGIN: "https://demo-staging.example.test",
+  APPSELL_PUBLIC_DEMO_ORIGIN: "https://demo-staging.example.test"
 };
 
 describe("public demo runtime", () => {
@@ -56,6 +57,94 @@ describe("public demo runtime", () => {
     expect(publicDemoRuntimeEnabled({
       ...staging,
       APPSELL_PUBLIC_ORIGIN: "https://sell.autonomia.site"
+    })).toBe(false);
+    expect(publicDemoRuntimeEnabled({
+      ...staging,
+      APPSELL_PUBLIC_ORIGIN: "https://sell.autonomia.site",
+      APPSELL_PUBLIC_DEMO_ORIGIN: "https://sell.autonomia.site"
+    })).toBe(false);
+  });
+
+  it("rejects spelling variants of the production origin", () => {
+    const variants = [
+      "https://SELL.autonomia.site",
+      "https://Sell.Autonomia.Site",
+      "https://sell.autonomia.site/",
+      "https://sell.autonomia.site:443",
+      "https://sell.autonomia.site.",
+      "https://sell.autonomia.site./"
+    ];
+    for (const origin of variants) {
+      expect(publicDemoRuntimeEnabled({
+        ...staging,
+        APPSELL_PUBLIC_ORIGIN: origin,
+        APPSELL_PUBLIC_DEMO_ORIGIN: origin
+      })).toBe(false);
+    }
+  });
+
+  it("rejects the production domain and any of its subdomains", () => {
+    for (const origin of [
+      "https://autonomia.site",
+      "https://demo.autonomia.site",
+      "https://a.b.autonomia.site",
+      "https://AUTONOMIA.SITE"
+    ]) {
+      expect(publicDemoRuntimeEnabled({
+        ...staging,
+        APPSELL_PUBLIC_ORIGIN: origin,
+        APPSELL_PUBLIC_DEMO_ORIGIN: origin
+      })).toBe(false);
+    }
+  });
+
+  it("requires the declared demo origin to be a canonical origin", () => {
+    for (const origin of [
+      "https://demo-staging.example.test/",
+      "https://demo-staging.example.test:443",
+      "https://DEMO-staging.example.test",
+      "https://demo-staging.example.test.",
+      "https://user@demo-staging.example.test",
+      "https://user:pass@demo-staging.example.test",
+      "https://demo-staging.example.test/path",
+      "https://demo-staging.example.test?x=1",
+      "https://demo-staging.example.test#x",
+      "not a url"
+    ]) {
+      expect(publicDemoRuntimeEnabled({
+        ...staging,
+        APPSELL_PUBLIC_ORIGIN: origin,
+        APPSELL_PUBLIC_DEMO_ORIGIN: origin
+      })).toBe(false);
+    }
+  });
+
+  it("rejects a declared demo origin with whitespace instead of trimming it", () => {
+    for (const declared of [
+      " https://demo-staging.example.test",
+      "https://demo-staging.example.test ",
+      "https://demo-staging.example.test\n",
+      "\thttps://demo-staging.example.test"
+    ]) {
+      expect(publicDemoRuntimeEnabled({ ...staging, APPSELL_PUBLIC_DEMO_ORIGIN: declared })).toBe(false);
+      expect(publicDemoRuntimeEnabled({
+        ...staging,
+        APPSELL_PUBLIC_ORIGIN: declared,
+        APPSELL_PUBLIC_DEMO_ORIGIN: declared
+      })).toBe(false);
+    }
+  });
+
+  it("requires the declared demo origin over HTTPS and equal to the public origin", () => {
+    expect(publicDemoRuntimeEnabled({ ...staging, APPSELL_PUBLIC_DEMO_ORIGIN: "" })).toBe(false);
+    expect(publicDemoRuntimeEnabled({
+      ...staging,
+      APPSELL_PUBLIC_ORIGIN: "http://demo-staging.example.test",
+      APPSELL_PUBLIC_DEMO_ORIGIN: "http://demo-staging.example.test"
+    })).toBe(false);
+    expect(publicDemoRuntimeEnabled({
+      ...staging,
+      APPSELL_PUBLIC_DEMO_ORIGIN: "https://other-staging.example.test"
     })).toBe(false);
   });
 });
