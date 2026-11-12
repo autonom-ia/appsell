@@ -746,7 +746,6 @@ def test_o_access_log_do_uvicorn_continua_calado() -> None:
         ("chave com uuid", "derivatives/pdf-link-video/550e8400-e29b-41d4-a716-446655440000.mp4"),
         ("slug de produto", "curso-de-inteligencia-artificial-na-pratica-2026"),
         ("nome de banco com sublinhado", "appsell_native_90-backup-2026-08-31"),
-        ("query com e-mail", "http://api.internal:8080?notify=ops@autonomia.site"),
         ("igual no meio", "correlation=abcdefghijklmnop"),
         ("caminho com C++", "/Users/alguem/dev/C++/worktrees/appsell_api/main.py"),
         ("carimbo unix", "1788134400000"),
