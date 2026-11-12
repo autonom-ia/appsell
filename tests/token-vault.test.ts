@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { sha256 } from "../lib/crypto";
+import { E2E_BUILD_RUNTIME_MARKER } from "../lib/e2e-build-runtime";
 import {
   EnvelopeTokenVault,
   LocalAesKeyEnvelopeProvider,
@@ -244,6 +245,76 @@ describe("token vault envelope encryption", () => {
         writable: true
       });
     }
+  });
+});
+
+// #611: num processo de produção, a chave local só vale quando o ambiente
+// recebido e o process.env autorizam juntos. Um chamador que monte um
+// ambiente à mão não liga a chave local no processo de produção.
+describe("chave local num processo de produção", () => {
+  const e2eBuild = {
+    NODE_ENV: "production",
+    APP_ENV: "ci",
+    APPSELL_PUBLIC_ORIGIN: "https://localhost:3000",
+    APPSELL_OAUTH_MODE: "local",
+    APPSELL_E2E_BUILD_RUNTIME: E2E_BUILD_RUNTIME_MARKER
+  };
+  const producao = {
+    NODE_ENV: "production",
+    APP_ENV: "production",
+    APPSELL_PUBLIC_ORIGIN: "https://sell.example",
+    APPSELL_OAUTH_MODE: "identity"
+  };
+  const keyring = JSON.stringify([{ id: "local-v1", key: firstKey.toString("base64"), active: true }]);
+  const entries: LocalKeyEntry[] = [{ id: "local-v1", key: firstKey, active: true }];
+
+  function processEnvironment(values: Record<string, string>) {
+    for (const [name, value] of Object.entries(values)) vi.stubEnv(name, value);
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("recusa o ambiente montado à mão quando o processo de produção não autoriza", () => {
+    processEnvironment(producao);
+    expect(() => LocalAesKeyEnvelopeProvider.fromEnvironment({
+      ...e2eBuild,
+      APPSELL_VAULT_LOCAL_KEYRING_B64_JSON: keyring
+    })).toThrow("forbidden in production");
+    expect(() => new LocalAesKeyEnvelopeProvider(entries, {
+      nodeEnvironment: "production",
+      environment: e2eBuild
+    })).toThrow("forbidden in production");
+  });
+
+  it("recusa quando o processo autoriza e o ambiente recebido não", () => {
+    processEnvironment(e2eBuild);
+    expect(() => LocalAesKeyEnvelopeProvider.fromEnvironment({
+      ...producao,
+      APPSELL_VAULT_LOCAL_KEYRING_B64_JSON: keyring
+    })).toThrow("forbidden in production");
+    expect(() => new LocalAesKeyEnvelopeProvider(entries, {
+      nodeEnvironment: "production",
+      environment: producao
+    })).toThrow("forbidden in production");
+  });
+
+  it("aceita quando o processo e o ambiente recebido autorizam juntos", () => {
+    processEnvironment(e2eBuild);
+    expect(LocalAesKeyEnvelopeProvider.fromEnvironment({
+      ...e2eBuild,
+      APPSELL_VAULT_LOCAL_KEYRING_B64_JSON: keyring
+    })).toBeInstanceOf(LocalAesKeyEnvelopeProvider);
+    expect(new LocalAesKeyEnvelopeProvider(entries, {
+      nodeEnvironment: "production",
+      environment: e2eBuild
+    })).toBeInstanceOf(LocalAesKeyEnvelopeProvider);
+  });
+
+  it("recusa o construtor sem ambiente quando o processo de produção não autoriza", () => {
+    processEnvironment(producao);
+    expect(() => new LocalAesKeyEnvelopeProvider(entries)).toThrow("forbidden in production");
   });
 });
 

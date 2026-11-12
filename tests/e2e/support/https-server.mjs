@@ -12,6 +12,15 @@
 //
 // Host e porta vêm de APPSELL_PUBLIC_ORIGIN, que o playwright.config.ts
 // preenche com E2E_BUILD_PUBLIC_ORIGIN: a URL existe num lugar só.
+//
+// Diferença de produção (#611): este servidor carrega o build pela API do
+// Next (`next({ dev: false })`, sobre a pasta .next inteira). Produção roda o
+// pacote standalone (`node server.js`, deploy/easypanel-native/Dockerfile.web),
+// que leva só os arquivos que o build rastreou, mais .next/static e public
+// copiados à parte. O e2e não pega arquivo que o rastreio deixou de fora, falta
+// na cópia de static/public, nem diferença do servidor do standalone. O que
+// cobre isso: o build da imagem web no CI e o smoke e o tester depois do
+// deploy. Ver docs/ci/E2E_SOBRE_O_BUILD.md.
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:https";
