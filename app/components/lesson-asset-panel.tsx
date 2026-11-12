@@ -398,9 +398,11 @@ export function LessonAssetPanel({
       // controle. Um caso de outra aba não paga esse preço.
       if (!primeiraEntrega) return;
       // Só `uploaded` e `verifying` têm arquivo no servidor sendo conferido.
-      // Um `pending` que chega na carga da página é um envio que este painel
-      // não está fazendo: os bytes nunca terminaram de subir. Tratá-lo como
-      // verificação travava o seletor de arquivo sem nada para esperar (#645).
+      // Um `pending` na carga é um envio que ESTE painel não está fazendo: ou
+      // parou no meio, ou ainda sobe em outra aba. O servidor não distingue os
+      // dois. Tratá-lo como verificação travava o seletor por até duas horas
+      // sem nada para esperar (#645); o aviso descreve os dois casos e deixa a
+      // pessoa escolher. Vencido, ele já chega `expired` da API.
       const active = payload.uploads.find((upload) => VERIFYING_UPLOAD_STATUSES.includes(upload.status));
       const interrupted = payload.uploads.find((upload) => upload.status === "pending");
       if (active) {
@@ -409,7 +411,7 @@ export function LessonAssetPanel({
         dispatch({ type: "phase", phase: "verifying", message: MATERIAL_PREPARATION_MESSAGE, fileName: active.file_name, uploadId: active.id });
       } else if (interrupted) {
         verificationStartedAtRef.current = null;
-        dispatch({ type: "phase", phase: "failed", message: `O envio de ${interrupted.file_name} foi interrompido antes de terminar. Escolha o arquivo novamente.` });
+        dispatch({ type: "phase", phase: "failed", message: `O envio de ${interrupted.file_name} não terminou. Se ele ainda estiver subindo em outra aba, espere por lá; se não, escolha o arquivo de novo.` });
       } else {
         verificationStartedAtRef.current = null;
         dispatch({ type: "reset" });

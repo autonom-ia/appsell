@@ -1069,10 +1069,12 @@ def _upload_view(value: dict[str, Any]) -> dict[str, Any]:
 def _effective_upload_state(value: dict[str, Any]) -> tuple[str, Any]:
     """O estado que o vendedor deve ver, com o prazo da intenção já aplicado.
 
-    O banco só grava `expired` quando a mesma loja abre outra intenção. Até lá
-    uma intenção vencida continua `pending` na linha, e a tela a tratava como
-    arquivo em verificação: o painel travava sem ter nada sendo verificado
-    (#645). Vencida é vencida, esteja gravado ou não.
+    O banco só grava `expired` quando uma nova intenção é aberta (pela loja
+    ou pelo mesmo usuário). Até lá uma intenção vencida continua `pending` na
+    linha, e a tela a tratava como arquivo em verificação: o painel travava
+    sem ter nada sendo verificado (#645). Vencida é vencida, esteja gravado ou
+    não. O relógio aqui é o da API; o do banco pode diferir por segundos, o
+    que só adianta ou atrasa o aviso.
     """
     status_value = str(value["status"])
     reason = value.get("safe_reason")

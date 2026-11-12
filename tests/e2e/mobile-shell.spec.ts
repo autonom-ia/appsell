@@ -711,6 +711,9 @@ test("authors and reorders a tenant curriculum at 320px without drag", async ({ 
   await expect(archiveDialog.getByRole("button", { name: "Manter" })).toBeFocused();
   await archiveDialog.getByRole("button", { name: "Excluir" }).click();
   await expect(page.getByRole("heading", { name: "Prática guiada" })).toHaveCount(0);
+  // O botão clicado sumiu com a aula: o foco vai para a aula que ficou, e não
+  // para o body.
+  await expect(page.getByRole("button", { name: "Excluir aula Boas-vindas" })).toBeFocused();
 
   const touchAndWidth = await page.evaluate(() => ({
     client: document.documentElement.clientWidth,
