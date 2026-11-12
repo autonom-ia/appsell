@@ -62,7 +62,7 @@ export function CourseOutline(props: CourseOutlineProps) {
   return <div className="course-outline">
     <header className="course-outline-head">
       <p className="eyebrow">{JOURNEY_COPY.courseEyebrow}</p>
-      <h2 id="curriculum-title">{JOURNEY_COPY.courseTitle}</h2>
+      <h2 id="curriculum-title" tabIndex={-1}>{JOURNEY_COPY.courseTitle}</h2>
     </header>
 
     {archived ? <p className="form-note" role="status">{JOURNEY_COPY.archivedProduct}</p> : null}

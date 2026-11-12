@@ -44,6 +44,9 @@ export function autosaveReducer(state: AutosaveState, action: AutosaveAction): A
     case "failure":
       return { ...state, status: "failed", inFlight: null, reason: action.reason };
     case "external": {
+      // O servidor guarda o nome sem espaço nas pontas. O eco do próprio valor
+      // aparado não pode apagar o espaço que a pessoa acabou de digitar.
+      if (action.value !== state.value && action.value === state.value.trim()) return state;
       const editing = state.value !== state.saved || state.status === "saving";
       if (editing) return { ...state, saved: action.value };
       return { ...state, value: action.value, saved: action.value, status: "idle" };

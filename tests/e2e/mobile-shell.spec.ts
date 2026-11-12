@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { UNDO_WINDOW_MS } from "../../lib/curriculum/undo-queue";
 import { E2E_BUILD_PUBLIC_ORIGIN } from "../../lib/e2e-build-runtime";
 import { login } from "./support/login";
 import { E2E_STORAGE_ORIGIN } from "./support/storage";
@@ -576,6 +577,8 @@ test("authors and reorders a tenant curriculum at 320px without drag", async ({ 
   }];
 
   await page.setViewportSize({ width: 320, height: 800 });
+  // O Desfazer dura UNDO_WINDOW_MS; o relógio controlado avança sem esperar.
+  await page.clock.install();
   await enterAndWaitForSession(page);
   await page.route("**/api/sellers/**", async (route) => {
     const request = route.request();
@@ -735,7 +738,8 @@ test("authors and reorders a tenant curriculum at 320px without drag", async ({ 
   await expect(page.getByTestId("lesson-86000000-0000-4000-8000-000000000002")).toHaveCount(0);
   await expect(page.locator('[data-lesson-link="86000000-0000-4000-8000-000000000001"]')).toBeFocused();
   // Sem desfazer, o pedido sai quando o aviso vence.
-  await expect.poll(() => practiceArchived, { timeout: 15_000 }).toBe(true);
+  await page.clock.runFor(UNDO_WINDOW_MS + 500);
+  await expect.poll(() => practiceArchived).toBe(true);
   await expect(page.locator(".undo-toast")).toHaveCount(0);
 
   const touchAndWidth = await page.evaluate(() => ({
@@ -995,6 +999,9 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
   await expect(feedback).toHaveAttribute("role", "status");
   await expect(feedback).toHaveAttribute("aria-live", "polite");
   await expect(feedback).toHaveAttribute("aria-atomic", "true");
+  // A falha tem região própria, que interrompe a leitura: é um alerta.
+  const alerta = conteudo.locator(".lesson-upload-alert");
+  await expect(alerta).toHaveAttribute("role", "alert");
 
   // "Uso deste material" era um `<select>` em cada card. Ele saiu: o lugar em
   // que se clica já é a resposta. O PDF é o único formato que cabe nos dois,
@@ -1045,9 +1052,9 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
   const pdf = { name: "guia-novo.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF") };
   await input.setInputFiles(pdf);
   // O servidor não respondeu: a mensagem diz o que fazer, sem culpar o arquivo.
-  await expect(feedback).toContainText("Não deu para preparar o envio.");
-  await expect(feedback).toContainText("Confira a internet e escolha o arquivo de novo.");
-  await expect(feedback).not.toContainText("guia-novo.pdf");
+  await expect(alerta).toContainText("Não deu para preparar o envio.");
+  await expect(alerta).toContainText("Confira a internet e escolha o arquivo de novo.");
+  await expect(alerta).not.toContainText("guia-novo.pdf");
   await expect(input).toHaveAccessibleName("Escolher o arquivo de novo");
   await input.focus();
   await expect(input).toBeFocused();
@@ -1082,7 +1089,7 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
   const zoomed = await lesson.evaluate((element) => ({
     client: document.documentElement.clientWidth,
     scroll: document.documentElement.scrollWidth,
-    clipped: [...element.querySelectorAll("button,input,select,summary,.lesson-upload-state")].flatMap((target) => {
+    clipped: [...element.querySelectorAll("button,input,select,summary,.lesson-upload-box")].flatMap((target) => {
       const rect = target.getBoundingClientRect();
       return rect.width > 0 && (rect.left < -1 || rect.right > document.documentElement.clientWidth + 1)
         ? [{ name: target.textContent?.trim() || target.getAttribute("id"), left: rect.left, right: rect.right }]
@@ -1112,11 +1119,11 @@ test("keeps the PDF uploader accessible at mobile widths and 200% text zoom", as
   const directChooser = page.waitForEvent("filechooser");
   await input.click();
   await (await directChooser).setFiles(pdf);
-  await expect(feedback).toContainText("Não deu para preparar o envio.");
+  await expect(alerta).toContainText("Não deu para preparar o envio.");
   const replacementChooser = page.waitForEvent("filechooser");
   await substituir.click();
   await (await replacementChooser).setFiles(pdf);
-  await expect(feedback).toContainText("Não deu para preparar o envio.");
+  await expect(alerta).toContainText("Não deu para preparar o envio.");
   expect(intentReplacementTargets).toEqual([null, null, null, secondAssetId]);
 });
 

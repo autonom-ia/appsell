@@ -19,8 +19,8 @@ import { useScheduleUndo } from "./undo-toast";
 
 export const MAX_VERIFICATION_WAIT_MS = 15_000;
 const MATERIAL_PREPARATION_MESSAGE = "Quase lá: conferindo o arquivo";
+const MATERIAL_DELAYED_MESSAGE = MATERIAL_PREPARATION_MESSAGE;
 const VERIFYING_UPLOAD_STATUSES: readonly string[] = ["uploaded", "verifying"];
-const MATERIAL_DELAYED_MESSAGE = "Quase lá: conferindo o arquivo";
 const ALLOWED_UPLOAD_HEADERS = new Set([
   "content-type",
   "x-amz-checksum-sha256",
@@ -35,7 +35,7 @@ export const ASSET_DISCARD_REQUEST_EVENT = "appsell:asset-discard-request";
  * Um material mudou de painel, e o painel de destino precisa saber.
  *
  * Cada aula renderiza duas instâncias deste componente, cada uma com a própria
- * lista. Mover um PDF de "Conteúdo da aula" para "Anexos e links" tira o card da
+ * lista. Mover um PDF de "Vídeo ou PDF da aula" para "Materiais para o aluno" tira o card da
  * primeira — e a segunda, se já estiver aberta, não fica sabendo. O material
  * sumiria de vista até recarregar a página, que é exatamente a experiência que
  * esta entrega existe para acabar.
@@ -48,11 +48,6 @@ export interface LessonAssetsChangedDetail {
   panelId: string;
 }
 
-/**
- * O rótulo diz qual formato o aluno vai baixar.
- *
- * Dizia "PDF" em todo card, inclusive num markdown de 10 KiB.
- */
 /**
  * Identifica um painel de anexos: a aula e o papel. Cada aula tem dois
  * painéis, e o id da aula sozinho não distingue um do outro — nem para o
@@ -220,8 +215,6 @@ export function LessonAssetPanel({
   const [state, dispatch] = useReducer(uploadReducer, initialUploadState);
   const [assets, setAssets] = useState<AssetView[]>([]);
   const [csrf, setCsrf] = useState<AssetListPayload["csrf"] | null>(null);
-  // O painel não fica mais recolhido (#649): ele está aberto desde que existe.
-  const opened = true;
   const [loaded, setLoaded] = useState(false);
   // Tirado da aula e esperando o "Desfazer": some da tela antes do pedido sair.
   const [removedIds, setRemovedIds] = useState<ReadonlySet<string>>(new Set());
@@ -449,18 +442,17 @@ export function LessonAssetPanel({
       // Aberto basta: se o carregamento inicial ainda está em voo, ele responde
       // com o retrato de antes da mudança, e a sequência mais nova o descarta.
       // Fechado não precisa — ele carrega ao abrir.
-      if (!opened) return;
       void load("revalidate");
     };
     window.addEventListener(LESSON_ASSETS_CHANGED_EVENT, ouvir);
     return () => window.removeEventListener(LESSON_ASSETS_CHANGED_EVENT, ouvir);
-  }, [lessonId, load, opened, panelId]);
+  }, [lessonId, load, panelId]);
 
   useEffect(() => {
-    if (!opened || loaded) return;
+    if (loaded) return;
     const start = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(start);
-  }, [load, loaded, opened]);
+  }, [load, loaded]);
 
   useEffect(() => {
     const input = inputRef.current;
@@ -659,10 +651,10 @@ export function LessonAssetPanel({
   }, [pollStatus, state.uploadId]);
 
   useEffect(() => {
-    if (opened && state.phase === "verifying" && state.uploadId && pollTimerRef.current === null) {
+    if (state.phase === "verifying" && state.uploadId && pollTimerRef.current === null) {
       pollStatus(state.uploadId);
     }
-  }, [opened, pollStatus, state.phase, state.uploadId]);
+  }, [pollStatus, state.phase, state.uploadId]);
 
   async function selectFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -749,7 +741,9 @@ export function LessonAssetPanel({
     const body = new FormData();
     body.set("_csrf", csrf.intent);
     body.set("idempotency_key", crypto.randomUUID());
-    body.set("expected_course_version", String(courseVersion));
+    // A versão de agora, não a do começo: o hash de um arquivo grande leva
+    // segundos, e nesse meio tempo o texto salvo sozinho já mudou a versão.
+    body.set("expected_course_version", String(courseVersionRef.current));
     // O título viaja até a área do aluno, e a P1.4 da revisão de 23/08/2026
     // proíbe o nome físico do arquivo chegar lá. Por isso ele continua sendo o
     // texto humano da aula; quem distingue um material do outro na tela do
@@ -815,8 +809,11 @@ export function LessonAssetPanel({
       .filter((numero) => !jaEnviadas.has(numero));
     let enviados = [...jaEnviadas].reduce((total, numero) => total + tamanhoDaParte(numero), 0);
 
+    // Uma parte que falha para as outras: sem isto, o trabalhador que ainda
+    // corria reescrevia a falha com "Enviando N%" e um botão de parar inútil.
+    let parou = false;
     const relatar = () => {
-      if (generation !== generationRef.current) return;
+      if (parou || generation !== generationRef.current) return;
       const progresso = Math.max(0, Math.min(100, Math.floor((enviados / file.size) * 100)));
       dispatch({ type: "progress", progress: progresso });
       dispatch({
@@ -830,7 +827,7 @@ export function LessonAssetPanel({
 
     let proxima = 0;
     const trabalhador = async () => {
-      while (true) {
+      while (!parou) {
         const indice = proxima;
         proxima += 1;
         if (indice >= pendentes.length) return;
@@ -846,6 +843,7 @@ export function LessonAssetPanel({
         Array.from({ length: Math.min(PART_CONCURRENCY, Math.max(pendentes.length, 1)) }, trabalhador)
       );
     } catch (error) {
+      parou = true;
       // O mesmo desfecho do envio único: cancela a intenção e diz ao vendedor
       // que o curso não mudou. As partes já enviadas somem com o cancelamento.
       if (await falhaDoEnvio(intent.upload_id, generation, error)) throw error;
@@ -940,7 +938,7 @@ export function LessonAssetPanel({
       dispatch({ type: "phase", phase: "failed", message: "O envio parou e ainda não deu para limpar o que subiu.", detail: "Espere alguns segundos e escolha o arquivo de novo.", uploadId });
       return true;
     }
-    dispatch({ type: "phase", phase: "failed", message: "O envio parou porque a conexão caiu.", detail: "Confira a internet e escolha o arquivo de novo. Nada foi salvo pela metade.", uploadId });
+    dispatch({ type: "phase", phase: "failed", message: "O envio parou antes de terminar.", detail: "Confira a internet e escolha o arquivo de novo. Nada foi salvo pela metade.", uploadId });
     return true;
   }
 
@@ -1029,7 +1027,13 @@ export function LessonAssetPanel({
     const archiveCsrf = csrf.archive;
     setRemovedIds((current) => new Set(current).add(asset.id));
     dispatch({ type: "phase", phase: "idle", message: "" });
-    queueMicrotask(() => focusAnchorRef.current?.focus());
+    // O foco vai para o que sobrou: o próximo arquivo, ou a escolha de arquivo.
+    window.requestAnimationFrame(() => {
+      const painel = panelRef.current;
+      const vizinho = painel?.querySelector<HTMLElement>(".lesson-file-actions button:not(:disabled)");
+      const escolher = inputRef.current && !inputRef.current.disabled ? inputRef.current : null;
+      (vizinho ?? escolher ?? focusAnchorRef.current)?.focus();
+    });
     const restore = () => setRemovedIds((current) => {
       const next = new Set(current);
       next.delete(asset.id);
@@ -1037,6 +1041,7 @@ export function LessonAssetPanel({
     });
     scheduleUndo({
       id: `asset:${asset.id}`,
+      name: asset.file_name,
       message: `“${asset.file_name}” saiu da aula.`,
       revert: restore,
       commit: async ({ leaving }) => {
@@ -1045,7 +1050,11 @@ export function LessonAssetPanel({
         body.set("idempotency_key", crypto.randomUUID());
         body.set("expected_course_version", String(courseVersionRef.current));
         const response = await boundedFetch(`${base}/${asset.id}/archive`, { method: "POST", body, keepalive: leaving }, 8_000, false);
-        if (!response.ok) throw new Error("archive_failed");
+        if (!response.ok) {
+          // A versão do curso pode ter andado: a tela relê antes da próxima mudança.
+          onCommitted();
+          throw new Error("archive_failed");
+        }
         setAssets((current) => current.filter((entry) => entry.id !== asset.id));
         restore();
         onCommitted();
@@ -1067,7 +1076,9 @@ export function LessonAssetPanel({
     const body = new FormData();
     body.set("_csrf", csrf.policy);
     body.set("idempotency_key", idempotencyKey);
-    body.set("expected_course_version", String(courseVersion));
+    // A versão de agora, não a do começo: o hash de um arquivo grande leva
+    // segundos, e nesse meio tempo o texto salvo sozinho já mudou a versão.
+    body.set("expected_course_version", String(courseVersionRef.current));
     body.set("content_role", role);
     body.set("download_allowed", String(safeDownload));
     setPolicySavingId(asset.id);
@@ -1078,7 +1089,13 @@ export function LessonAssetPanel({
           method: "PATCH",
           body
         }, 8_000);
-        if (!response.ok) throw new Error(`policy_${response.status}`);
+        if (!response.ok) {
+          // Recusado não vira repetição: a próxima tentativa é outro pedido,
+          // com a versão nova. Só a queda (503) guarda a chave.
+          if (response.status !== 503) policyKeysRef.current.delete(operation);
+          if (response.status === 409) onCommitted();
+          throw new Error(`policy_${response.status}`);
+        }
         // De novo do servidor, e não uma edição na lista local. Mover um
         // material entre painéis muda de que lista ele faz parte, e uma
         // atualização local só acerta quando ele já está na lista que estamos
@@ -1173,24 +1190,37 @@ export function LessonAssetPanel({
       <button className="secondary-button" type="button" disabled={busy} onClick={() => void load("revalidate")}>Atualizar lista</button>
     </p> : null}
 
-    <div className={`lesson-upload-state${stageVisible ? " is-active" : ""}${state.phase === "failed" ? " is-failed" : ""}`} role="status" aria-live="polite" aria-atomic="true" tabIndex={state.phase === "failed" || state.phase === "delayed" ? -1 : undefined}>
-      {stageVisible ? <>
-        <p><strong>{stage.title}</strong>{state.fileName ? <span className="lesson-upload-file" dir="auto"> · {state.fileName}</span> : null}</p>
-        <p className="lesson-upload-detail">{state.detail || stage.detail}</p>
-        {["hashing", "creating", "uploading", "confirming"].includes(state.phase)
-          ? <progress aria-label="Andamento do envio" max="100" value={state.progress}>{state.progress}%</progress>
-          : null}
-        <div className="lesson-upload-actions">
-          <button className="secondary-button" type="button" onClick={() => void cancelUpload()}>{JOURNEY_COPY.stopUpload}</button>
-          {state.phase === "delayed" ? <button className="secondary-button" type="button" onClick={retryVerification}>Conferir de novo</button> : null}
-        </div>
-      </> : null}
-      {showMessage ? <>
-        <p><strong>{state.message}</strong></p>
-        {state.detail ? <p className="lesson-upload-detail">{state.detail}</p> : null}
-        {state.phase === "failed" && !loaded ? <button className="secondary-button" type="button" onClick={() => void load()}>Tentar de novo</button> : null}
-      </> : null}
-      {state.phase === "loading" ? <p className="lesson-upload-detail">{state.message}</p> : null}
+    {/* O que muda a cada instante (a porcentagem, os botões) fica fora das
+        regiões anunciadas: o leitor de tela ouve a fase, não cada número. */}
+    <div className={`lesson-upload-box${stageVisible ? " is-active" : ""}${state.phase === "failed" ? " is-failed" : ""}`}>
+      <div className="lesson-upload-state" role="status" aria-live="polite" aria-atomic="true">
+        {stageVisible ? <>
+          <p>
+            <strong><span aria-hidden="true">{stage.title}</span><span className="sr-only">{spokenStage(state.phase)}</span></strong>
+            {state.fileName ? <span className="lesson-upload-file" dir="auto"> · {state.fileName}</span> : null}
+          </p>
+          <p className="lesson-upload-detail">{state.detail || stage.detail}</p>
+        </> : null}
+        {showMessage && state.phase !== "failed" ? <>
+          <p><strong>{state.message}</strong></p>
+          {state.detail ? <p className="lesson-upload-detail">{state.detail}</p> : null}
+        </> : null}
+        {state.phase === "loading" ? <p className="lesson-upload-detail">{state.message}</p> : null}
+      </div>
+      <div className="lesson-upload-alert" role="alert">
+        {state.phase === "failed" ? <>
+          <p><strong>{state.message}</strong></p>
+          {state.detail ? <p className="lesson-upload-detail">{state.detail}</p> : null}
+        </> : null}
+      </div>
+      {stageVisible && ["hashing", "creating", "uploading", "confirming"].includes(state.phase)
+        ? <progress aria-label="Andamento do envio" max="100" value={state.progress}>{state.progress}%</progress>
+        : null}
+      {stageVisible ? <div className="lesson-upload-actions">
+        <button className="secondary-button" type="button" onClick={() => void cancelUpload()}>{JOURNEY_COPY.stopUpload}</button>
+        {state.phase === "delayed" ? <button className="secondary-button" type="button" onClick={retryVerification}>Conferir de novo</button> : null}
+      </div> : null}
+      {state.phase === "failed" && !loaded ? <button className="secondary-button" type="button" onClick={() => void load()}>Tentar de novo</button> : null}
     </div>
 
     {children}
@@ -1206,6 +1236,11 @@ export function LessonAssetPanel({
       {!attachments ? <p className="lesson-picker-help">{JOURNEY_COPY.mainLimits}</p> : null}
     </div> : null}
   </div>;
+}
+
+/** A fase em palavras, sem a porcentagem: é o que o leitor de tela anuncia. */
+function spokenStage(phase: Phase): string {
+  return phase === "verifying" || phase === "delayed" ? MATERIAL_PREPARATION_MESSAGE : "Enviando o arquivo";
 }
 
 function fileBadge(mediaType: unknown): string {

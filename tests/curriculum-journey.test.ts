@@ -135,6 +135,17 @@ describe("o link colado vira link ou vídeo", () => {
   });
 });
 
+describe("um endereço que só parece do YouTube não vira vídeo", () => {
+  it.each([
+    "https://youtube.com.exemplo-falso.com/watch?v=dQw4w9WgXcQ",
+    "https://exemplo-falso.com/youtube.com/watch?v=dQw4w9WgXcQ",
+    "https://exemplo-falso.com/?u=https://youtu.be/dQw4w9WgXcQ",
+    "https://vimeo.com.exemplo-falso.com/76979871"
+  ])("%s fica link comum, aberto em outra aba", (endereco) => {
+    expect(classifyLessonLink(endereco)?.kind).toBe("external");
+  });
+});
+
 describe("desfazer em vez de perguntar", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
@@ -242,6 +253,16 @@ describe("salvar sozinho", () => {
     expect(state).toMatchObject({ status: "idle", value: "Z", saved: "Z" });
     const editing = autosaveReducer(autosaveReducer(initialAutosave("A"), { type: "edit", value: "AB" }), { type: "external", value: "Z" });
     expect(editing).toMatchObject({ status: "pending", value: "AB", saved: "Z" });
+  });
+
+  it("o eco do nome sem espaço nas pontas não apaga o espaço que a pessoa digitou", () => {
+    let state = autosaveReducer(initialAutosave("Curso"), { type: "edit", value: "Curso de " });
+    state = autosaveReducer(state, { type: "start" });
+    state = autosaveReducer(state, { type: "success", value: "Curso de " });
+    state = autosaveReducer(state, { type: "external", value: "Curso de" });
+    expect(state.value).toBe("Curso de ");
+    state = autosaveReducer(state, { type: "edit", value: "Curso de m" });
+    expect(state.value).toBe("Curso de m");
   });
 });
 

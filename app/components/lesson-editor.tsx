@@ -51,16 +51,16 @@ export function LessonEditor({
   transportBusy: boolean;
   onBack: () => void;
   onDelete: () => void;
-  onSave: (change: { title?: string; content?: string }) => Promise<SaveResult>;
+  onSave: (change: { title?: string; content?: string }, options?: { keepalive?: boolean }) => Promise<SaveResult>;
   onActivityChange: (panelKey: string, value: AssetActivity) => void;
   onLiveChange: (lessonId: string, value: LiveUpload) => void;
   onCommitted: (lessonId: string) => void;
 }) {
   const heading = useRef<HTMLHeadingElement>(null);
-  const saveTitle = useCallback((value: string) => value.trim().length < 2
+  const saveTitle = useCallback((value: string, options?: { keepalive?: boolean }) => value.trim().length < 2
     ? Promise.resolve<SaveResult>({ ok: false, reason: "invalid" })
-    : onSave({ title: value.trim() }), [onSave]);
-  const saveContent = useCallback((value: string) => onSave({ content: value }), [onSave]);
+    : onSave({ title: value.trim() }, options), [onSave]);
+  const saveContent = useCallback((value: string, options?: { keepalive?: boolean }) => onSave({ content: value }, options), [onSave]);
   const title = useAutosave({ serverValue: lesson.title, save: saveTitle, disabled: archived });
   const content = useAutosave({ serverValue: lesson.content, save: saveContent, disabled: archived });
 

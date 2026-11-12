@@ -82,6 +82,8 @@ export const JOURNEY_COPY = {
   tryAgain: "Escolher o arquivo de novo",
   undo: "Desfazer",
   undoFailed: "Não deu para concluir a exclusão. O item voltou para a lista. Tente de novo.",
+  orderFailed: "Não deu para mudar a ordem. Recarregue o curso e tente de novo.",
+  deleteModuleBlocked: "Uma aula deste módulo ainda está enviando um arquivo. Espere terminar, ou pare o envio, para excluir o módulo.",
   offline: "Sem conexão com o servidor. Confira a internet e tente de novo.",
   reload: "Recarregar o curso",
   changedElsewhere: "O curso mudou em outra aba ou aparelho. Recarregue para ver a versão mais nova.",

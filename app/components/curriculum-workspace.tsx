@@ -51,6 +51,9 @@ export function mergeAssetActivity(
 type LoadState = "loading" | "ready" | "unauthorized" | "forbidden" | "not_found" | "unavailable" | "error";
 
 const TRANSPORT: readonly LiveUpload["phase"][] = ["hashing", "creating", "uploading", "confirming"];
+/** Enquanto o arquivo ainda está sendo conferido, o editor fica montado,
+ *  escondido: é ele quem acompanha a conferência e avisa pronto ou recusado. */
+const KEEP_MOUNTED: readonly LiveUpload["phase"][] = [...TRANSPORT, "verifying", "delayed"];
 
 export interface CurriculumWorkspaceProps {
   sellerId: string;
@@ -101,7 +104,13 @@ function Workspace({
   const [courseVersion, setCourseVersion] = useState(1);
   const keys = useRef(new Map<string, string>());
   const serialize = useMemo(() => createSerializer(), []);
-  const openedHere = useRef(false);
+  // A aula que esta tela abriu com push: só ela volta com o "voltar" do
+  // navegador. Aberta por endereço, ou depois de um voltar do navegador, a
+  // saída troca o endereço em vez de sair da área do curso.
+  const openedHere = useRef<string | null>(null);
+  // O último nome e texto de cada aula, como a pessoa deixou. O pedido de
+  // salvar é montado na hora em que sai da fila, com estes valores.
+  const lessonDrafts = useRef(new Map<string, { title: string; content: string }>());
   const lastOpened = useRef<string | null>(null);
   const pendingFocus = useRef<string | null>(null);
 
@@ -169,43 +178,58 @@ function Workspace({
     return () => window.clearTimeout(start);
   }, [load]);
 
-  /** Uma mudança no curso, em fila, com a versão mais nova e chave de repetição. */
+  /**
+   * Uma mudança no curso, em fila, com a versão mais nova e chave de repetição.
+   *
+   * A chave vale para o mesmo pedido: operação e conteúdo. Repetir depois de
+   * uma queda reenvia o mesmo pedido; mudar o conteúdo é outro pedido, com
+   * outra chave, para o servidor não responder pelo conteúdo antigo.
+   * `fields` pode ser uma função: o conteúdo é lido na hora em que o pedido
+   * sai da fila, com o último valor. Ao sair da página (`keepalive`) o pedido
+   * não espera a fila, senão não sairia antes de a aba fechar.
+   */
   const mutate = useCallback((operation: string, url: string, method: "POST" | "PUT" | "PATCH",
-    action: keyof CurriculumCsrf, fields: Record<string, string>, options: { keepalive?: boolean } = {}
-  ): Promise<MutationResult> => serialize(async () => {
-    const idempotencyKey = keys.current.get(operation) ?? crypto.randomUUID();
-    keys.current.set(operation, idempotencyKey);
-    const result = await sendCurriculumMutation({
-      url, method, csrf: csrf[action], idempotencyKey, courseVersion: versionRef.current, fields,
-      keepalive: options.keepalive
-    });
-    if (result.ok) {
-      keys.current.delete(operation);
-      versionRef.current = result.courseVersion;
-      setCourseVersion(result.courseVersion);
-      onCommitted();
-    } else if (result.failure !== "offline") {
-      keys.current.delete(operation);
-    }
-    return result;
-  }), [csrf, onCommitted, serialize]);
+    action: keyof CurriculumCsrf, fields: Record<string, string> | (() => Record<string, string>),
+    options: { keepalive?: boolean } = {}
+  ): Promise<MutationResult> => {
+    const task = async () => {
+      const body = typeof fields === "function" ? fields() : fields;
+      const keyName = `${operation}\n${JSON.stringify(body)}`;
+      const idempotencyKey = keys.current.get(keyName) ?? crypto.randomUUID();
+      keys.current.set(keyName, idempotencyKey);
+      const result = await sendCurriculumMutation({
+        url, method, csrf: csrf[action], idempotencyKey, courseVersion: versionRef.current, fields: body,
+        keepalive: options.keepalive
+      });
+      if (result.ok) {
+        keys.current.delete(keyName);
+        versionRef.current = result.courseVersion;
+        setCourseVersion(result.courseVersion);
+        onCommitted();
+      } else if (result.failure !== "offline") {
+        keys.current.delete(keyName);
+      }
+      return result;
+    };
+    return options.keepalive ? task() : serialize(task);
+  }, [csrf, onCommitted, serialize]);
 
-  const report = useCallback((result: MutationResult) => {
+  const report = useCallback((result: MutationResult, invalidMessage: string = JOURNEY_COPY.nameTooShort) => {
     if (result.ok) return setNotice("");
     if (result.failure === "conflict") {
       setNotice(JOURNEY_COPY.changedElsewhere);
       void load("revalidate");
     } else if (result.failure === "forbidden") setNotice(JOURNEY_COPY.noPermission);
     else if (result.failure === "offline") setNotice(JOURNEY_COPY.offline);
-    else if (result.failure === "invalid") setNotice(JOURNEY_COPY.nameTooShort);
+    else if (result.failure === "invalid") setNotice(invalidMessage);
     else setNotice(JOURNEY_COPY.loadFailed);
   }, [load]);
 
-  const structural = useCallback(async (task: () => Promise<MutationResult>) => {
+  const structural = useCallback(async (task: () => Promise<MutationResult>, invalidMessage?: string) => {
     setStructureBusy(true);
     try {
       const result = await task();
-      report(result);
+      report(result, invalidMessage);
       return result;
     } finally {
       setStructureBusy(false);
@@ -213,30 +237,38 @@ function Workspace({
   }, [report]);
 
   const openLesson = useCallback((lessonId: string) => {
-    openedHere.current = true;
     lastOpened.current = lessonId;
-    router.push(`?section=curriculo&aula=${lessonId}`, { scroll: false });
-  }, [router]);
+    const href = `?section=curriculo&aula=${encodeURIComponent(lessonId)}`;
+    if (selectedId) {
+      // Trocar de aula com outra aberta (lado a lado) não empilha histórico:
+      // o "voltar" continua levando para a lista, e não para a aula anterior.
+      if (openedHere.current === selectedId) openedHere.current = lessonId;
+      router.replace(href, { scroll: false });
+      return;
+    }
+    openedHere.current = lessonId;
+    router.push(href, { scroll: false });
+  }, [router, selectedId]);
 
   /** Volta para a lista e devolve o foco à aula de onde a pessoa saiu. */
   const closeLesson = useCallback((focusSelector?: string) => {
-    if (openedHere.current) {
-      openedHere.current = false;
+    if (selectedId && openedHere.current === selectedId) {
       router.back();
     } else {
       router.replace("?section=curriculo", { scroll: false });
     }
-    const target = lastOpened.current ?? selectedId;
+    openedHere.current = null;
+    const target = selectedId ?? lastOpened.current ?? "";
     // A troca de tela só acontece quando o roteador termina; o foco espera a
     // lista aparecer (o efeito abaixo), senão cairia num elemento escondido.
-    pendingFocus.current = focusSelector ?? `[data-lesson-link="${target}"]`;
+    pendingFocus.current = focusSelector ?? `[data-lesson-link="${cssText(target)}"]`;
   }, [router, selectedId]);
 
   useEffect(() => {
     if (selectedId || !pendingFocus.current) return;
     const selector = pendingFocus.current;
     pendingFocus.current = null;
-    focusAfterRender(selector);
+    focusAfterRender(selector, "#curriculum-title");
   }, [selectedId]);
 
   const createModule = useCallback(async (title: string) => {
@@ -268,11 +300,11 @@ function Workspace({
     const moved = visibleModules[index];
     const result = await structural(() => mutate(`modules:order:${moved.id}:${target}`, `${endpoint}/modules/order`, "PUT", "reorder", {
       ordered_ids: JSON.stringify(reordered.map((module) => module.id))
-    }));
+    }), JOURNEY_COPY.orderFailed);
     if (!result.ok) return;
     setModules((current) => reorderLike(current, reordered.map((module) => module.id)));
     setNotice(`Módulo ${moved.title} agora é o ${target + 1}º de ${visibleModules.length}.`);
-    focusAfterRender(`[data-move="module-${direction < 0 ? "up" : "down"}-${moved.id}"]`, `[data-move="module-${direction < 0 ? "down" : "up"}-${moved.id}"]`);
+    focusAfterRender(`[data-move="module-${direction < 0 ? "up" : "down"}-${cssText(moved.id)}"]`, `[data-move="module-${direction < 0 ? "down" : "up"}-${cssText(moved.id)}"]`);
   }, [endpoint, mutate, structural, visibleModules]);
 
   const moveLesson = useCallback(async (module: CurriculumModule, index: number, direction: -1 | 1) => {
@@ -282,13 +314,13 @@ function Workspace({
     const moved = module.lessons[index];
     const result = await structural(() => mutate(`lessons:order:${module.id}:${moved.id}:${target}`, `${endpoint}/modules/${module.id}/lessons/order`, "PUT", "reorder", {
       ordered_ids: JSON.stringify(reordered.map((lesson) => lesson.id))
-    }));
+    }), JOURNEY_COPY.orderFailed);
     if (!result.ok) return;
     setModules((current) => current.map((entry) => entry.id === module.id
       ? { ...entry, lessons: reorderLike(entry.lessons, reordered.map((lesson) => lesson.id)) }
       : entry));
     setNotice(`Aula ${moved.title} agora é a ${target + 1}ª de ${module.lessons.length}.`);
-    focusAfterRender(`[data-move="lesson-${direction < 0 ? "up" : "down"}-${moved.id}"]`, `[data-move="lesson-${direction < 0 ? "down" : "up"}-${moved.id}"]`);
+    focusAfterRender(`[data-move="lesson-${direction < 0 ? "up" : "down"}-${cssText(moved.id)}"]`, `[data-move="lesson-${direction < 0 ? "down" : "up"}-${cssText(moved.id)}"]`);
   }, [endpoint, mutate, structural]);
 
   const hide = useCallback((id: string, value: boolean) => {
@@ -301,11 +333,22 @@ function Workspace({
 
   const archiveCommit = useCallback((operation: string, url: string) => async ({ leaving }: { leaving: boolean }) => {
     const result = await mutate(operation, url, "POST", "archive", {}, { keepalive: leaving });
-    if (!result.ok) throw new Error(result.failure);
+    if (!result.ok) {
+      // O item volta para a lista; a versão do curso pode ter andado, então a
+      // tela relê antes da próxima mudança.
+      if (!leaving && result.failure !== "offline") void load("revalidate");
+      throw new Error(result.failure);
+    }
     if (!leaving) await load("revalidate");
   }, [load, mutate]);
 
   const deleteModule = useCallback((module: CurriculumModule) => {
+    // Excluir o módulo desmontaria o editor de uma aula que ainda envia
+    // arquivo, e o envio ficaria pela metade no servidor.
+    if (module.lessons.some((lesson) => TRANSPORT.includes(live[lesson.id]?.phase ?? "idle"))) {
+      setNotice(JOURNEY_COPY.deleteModuleBlocked);
+      return;
+    }
     // O foco não pode cair no vazio junto com o módulo: vai para o vizinho.
     const index = visibleModules.findIndex((entry) => entry.id === module.id);
     const neighbour = visibleModules[index + 1] ?? visibleModules[index - 1];
@@ -313,15 +356,16 @@ function Workspace({
       ? `[aria-label="Mudar nome do módulo ${cssText(neighbour.title)}"]`
       : "#new-module-title";
     if (module.lessons.some((lesson) => lesson.id === selectedId)) closeLesson(focusTarget);
-    else focusAfterRender(focusTarget);
+    else focusAfterRender(focusTarget, "#curriculum-title");
     hide(module.id, true);
     scheduleUndo({
       id: `module:${module.id}`,
+      name: module.title,
       message: `Módulo “${module.title}” excluído.`,
       commit: archiveCommit(`module:archive:${module.id}`, `${endpoint}/modules/${module.id}/archive`),
       revert: () => hide(module.id, false)
     });
-  }, [archiveCommit, closeLesson, endpoint, hide, scheduleUndo, selectedId, visibleModules]);
+  }, [archiveCommit, closeLesson, endpoint, hide, live, scheduleUndo, selectedId, visibleModules]);
 
   const deleteLesson = useCallback((module: CurriculumModule, lesson: CurriculumLesson) => {
     // A aula some da lista; o foco vai para a aula vizinha, ou para "+ Nova aula".
@@ -329,37 +373,57 @@ function Workspace({
     const index = siblings.findIndex((entry) => entry.id === lesson.id);
     const neighbour = siblings[index + 1] ?? siblings[index - 1];
     const focusTarget = neighbour
-      ? `[data-lesson-link="${neighbour.id}"]`
+      ? `[data-lesson-link="${cssText(neighbour.id)}"]`
       : `[aria-label="Nova aula em ${cssText(module.title)}"]`;
     if (selectedId === lesson.id) closeLesson(focusTarget);
-    else focusAfterRender(focusTarget);
+    else focusAfterRender(focusTarget, "#curriculum-title");
     hide(lesson.id, true);
     scheduleUndo({
       id: `lesson:${lesson.id}`,
+      name: lesson.title,
       message: `Aula “${lesson.title}” excluída.`,
       commit: archiveCommit(`lesson:archive:${lesson.id}`, `${endpoint}/modules/${module.id}/lessons/${lesson.id}/archive`),
       revert: () => hide(lesson.id, false)
     });
   }, [archiveCommit, closeLesson, endpoint, hide, scheduleUndo, selectedId, visibleModules]);
 
-  /** O salvar sozinho do nome e do texto da aula. */
-  const saveLesson = useCallback(async (module: CurriculumModule, lesson: CurriculumLesson, change: { title?: string; content?: string }) => {
-    const current = modules.find((entry) => entry.id === module.id)?.lessons.find((entry) => entry.id === lesson.id) ?? lesson;
-    const title = change.title ?? current.title;
-    const content = change.content ?? current.content;
-    const send = () => mutate(`lesson:update:${lesson.id}:${title}:${content.length}`, `${endpoint}/modules/${module.id}/lessons/${lesson.id}`, "PATCH", "update", { title, kind: "text", content });
+  /**
+   * O salvar sozinho do nome e do texto da aula.
+   *
+   * O servidor pede nome e texto juntos. Os dois campos salvam cada um no seu
+   * tempo, então o pedido leva o último valor de cada um, lido na hora em que
+   * sai da fila: um nome salvo enquanto o texto ainda ia não pode mandar o
+   * texto antigo de volta.
+   */
+  const saveLesson = useCallback(async (
+    module: CurriculumModule,
+    lesson: CurriculumLesson,
+    change: { title?: string; content?: string },
+    options: { keepalive?: boolean } = {}
+  ) => {
+    const known = modules.find((entry) => entry.id === module.id)?.lessons.find((entry) => entry.id === lesson.id) ?? lesson;
+    const draft = { ...(lessonDrafts.current.get(lesson.id) ?? { title: known.title, content: known.content }), ...change };
+    lessonDrafts.current.set(lesson.id, draft);
+    let sent = draft;
+    const fields = () => {
+      sent = { ...(lessonDrafts.current.get(lesson.id) ?? draft) };
+      return { title: sent.title, kind: "text", content: sent.content };
+    };
+    const send = () => mutate(`lesson:update:${lesson.id}`, `${endpoint}/modules/${module.id}/lessons/${lesson.id}`, "PATCH", "update", fields, options);
     let result = await send();
     // A versão do curso é uma só, e um arquivo que fica pronto também a muda.
     // Uma tentativa a mais com a versão nova resolve esse caso sem incomodar
     // ninguém; se o conflito voltar, quem decide é a pessoa.
-    if (!result.ok && result.failure === "conflict") {
+    if (!result.ok && result.failure === "conflict" && !options.keepalive) {
       await load("revalidate");
       result = await send();
     }
     if (result.ok) {
+      const latest = lessonDrafts.current.get(lesson.id);
+      if (latest && latest.title === sent.title && latest.content === sent.content) lessonDrafts.current.delete(lesson.id);
       setModules((list) => list.map((entry) => entry.id !== module.id ? entry : {
         ...entry,
-        lessons: entry.lessons.map((item) => item.id === lesson.id ? { ...item, title, content } : item)
+        lessons: entry.lessons.map((item) => item.id === lesson.id ? { ...item, title: sent.title, content: sent.content } : item)
       }));
       return { ok: true as const };
     }
@@ -411,7 +475,7 @@ function Workspace({
   const selected = visibleModules.flatMap((module) => module.lessons.map((lesson) => ({ module, lesson })))
     .find((entry) => entry.lesson.id === selectedId) ?? null;
   const mounted = visibleModules.flatMap((module) => module.lessons.map((lesson) => ({ module, lesson })))
-    .filter((entry) => entry.lesson.id === selectedId || TRANSPORT.includes(live[entry.lesson.id]?.phase ?? "idle"));
+    .filter((entry) => entry.lesson.id === selectedId || KEEP_MOUNTED.includes(live[entry.lesson.id]?.phase ?? "idle"));
 
   return (
     <section className="curriculum-workspace" data-view={selected ? "lesson" : "list"} aria-labelledby="curriculum-title" data-testid="curriculum-workspace">
@@ -450,7 +514,7 @@ function Workspace({
           transportBusy={TRANSPORT.includes(live[lesson.id]?.phase ?? "idle")}
           onBack={closeLesson}
           onDelete={() => deleteLesson(module, lesson)}
-          onSave={(change) => saveLesson(module, lesson, change)}
+          onSave={(change, options) => saveLesson(module, lesson, change, options)}
           onActivityChange={handleAssetActivity}
           onLiveChange={handleLive}
           onCommitted={handleAssetCommitted}

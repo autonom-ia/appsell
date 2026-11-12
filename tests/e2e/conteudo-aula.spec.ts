@@ -1,4 +1,5 @@
 import { expect as expectBase, test, type Page } from "@playwright/test";
+import { UNDO_WINDOW_MS } from "../../lib/curriculum/undo-queue";
 import { login } from "./support/login";
 import { E2E_STORAGE_ORIGIN } from "./support/storage";
 
@@ -124,6 +125,11 @@ async function openCurriculum(page: Page, assets: MaterialView[] = [PDF, MARKDOW
   await page.route("**/access-links", async (route) => {
     await route.fulfill({ json: { access_links: [] } });
   });
+  // "Tirar da aula" sai depois do Desfazer; sem esta rota o pedido iria ao
+  // servidor de verdade.
+  await page.route("**/assets/*/archive", async (route) => {
+    await route.fulfill({ json: { archived: true, course_version: 3 } });
+  });
   await page.goto(`/products/${SELLER_ID}/${PRODUCT_ID}?section=curriculo&aula=${LESSON_ID}`);
   await expect(page.getByTestId("curriculum-workspace")).toBeVisible();
   await expect(page.getByRole("heading", { level: 2, name: /Gerador de Cotações Comparativas/ })).toBeVisible();
@@ -151,7 +157,7 @@ test.describe("o painel de conteúdo da aula não se desmonta a cada clique", ()
     await expect(anexos.locator(CARD)).toHaveCount(2);
     await anexos.getByRole("button", { name: `Tirar da aula: ${MARKDOWN.file_name}` }).click();
     await expect(anexos.locator(CARD)).toHaveCount(1);
-    await page.clock.runFor(8_500);
+    await page.clock.runFor(UNDO_WINDOW_MS + 500);
     await expect.poll(() => page.evaluate(() => document.querySelectorAll(".undo-toast").length)).toBe(0);
 
     // O defeito: `load()` punha a tela em "Carregando…", o que desmontava todos

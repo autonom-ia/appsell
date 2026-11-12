@@ -1,5 +1,6 @@
 import type { Page, Request, Route } from "@playwright/test";
 
+import { E2E_BUILD_PUBLIC_ORIGIN } from "../../../lib/e2e-build-runtime";
 import { E2E_STORAGE_ORIGIN } from "./storage";
 
 /**
@@ -10,6 +11,10 @@ import { E2E_STORAGE_ORIGIN } from "./storage";
  * mudança: a resposta precisa refletir o que a pessoa acabou de fazer, como o
  * servidor de verdade. Cada pedido que muda alguma coisa fica registrado em
  * `pedidos`, para o teste provar o que saiu (e o que não saiu) da tela.
+ *
+ * Como o servidor de verdade, ele recusa com 409 o pedido que traz uma versão
+ * do curso diferente da atual (`conflitos` conta quantos), e responde a uma
+ * chave de repetição já vista com a resposta guardada, sem aplicar de novo.
  */
 
 export const SELLER_ID = "4df98a2e-d1dd-5f25-bbea-58b8072a0e7b";
@@ -103,7 +108,10 @@ export class CursoSimulado {
   arquivos = new Map<string, ArquivoSimulado[]>();
   links = new Map<string, LinkSimulado[]>();
   pedidos: PedidoRegistrado[] = [];
+  conflitos = 0;
   envio: EnvioSimulado = {};
+  private respostas = new Map<string, { status: number; json: unknown }>();
+  private chaveAtual: string | null = null;
   private liberarStorage: (() => void) | null = null;
 
   constructor(modulos: ModuloSimulado[] = []) {
@@ -140,11 +148,19 @@ export class CursoSimulado {
   /** Liga o servidor simulado às rotas da página. */
   async ligar(page: Page) {
     await page.route(`${E2E_STORAGE_ORIGIN}/**`, async (route) => {
+      const cors = { "access-control-allow-origin": E2E_BUILD_PUBLIC_ORIGIN };
+      if (route.request().method() === "OPTIONS") {
+        return route.fulfill({ status: 204, headers: {
+          ...cors,
+          "access-control-allow-methods": "PUT,OPTIONS",
+          "access-control-allow-headers": "content-type,x-amz-checksum-sha256,x-amz-meta-appsell-upload-id"
+        } });
+      }
       if (this.envio.segurarStorage) {
         await new Promise<void>((resolve) => { this.liberarStorage = resolve; });
         return route.abort("aborted").catch(() => undefined);
       }
-      await route.fulfill({ status: 200, headers: { etag: '"etag"' }, body: "" });
+      await route.fulfill({ status: 200, headers: { ...cors, etag: '"etag"' }, body: "" });
     });
     await page.route("**/api/sellers/**", (route) => this.atender(route));
   }
@@ -162,6 +178,14 @@ export class CursoSimulado {
     const partes = path.slice(prefixo.length).split("/");
     const fields = method === "GET" ? {} : camposDoFormulario(request);
     if (method !== "GET") this.pedidos.push({ method, path, fields });
+    const chave = fields.idempotency_key ?? null;
+    const guardada = chave ? this.respostas.get(chave) : undefined;
+    if (guardada) return route.fulfill(guardada);
+    if (fields.expected_course_version !== undefined && Number(fields.expected_course_version) !== this.versao) {
+      this.conflitos += 1;
+      return route.fulfill({ status: 409, json: { error: "course_version_conflict" } });
+    }
+    this.chaveAtual = chave;
     return this.rotear(route, method, partes, fields);
   }
 
@@ -250,7 +274,8 @@ export class CursoSimulado {
       return route.fulfill({ json: {
         upload_id: uploadId,
         asset_id: assetId,
-        upload_url: `${E2E_STORAGE_ORIGIN}/appsell-quarantine/${uploadId}`,
+        // `validIntent` só aceita endereço assinado, como o do storage real.
+        upload_url: `${E2E_STORAGE_ORIGIN}/appsell-quarantine/${uploadId}?X-Amz-Signature=e2e`,
         upload_origin: E2E_STORAGE_ORIGIN,
         expires_at: new Date(Date.now() + 300_000).toISOString(),
         required_headers: {
@@ -329,7 +354,9 @@ export class CursoSimulado {
 
   private mudou(route: Route, payload: Record<string, unknown>) {
     this.versao += 1;
-    return route.fulfill({ json: { ...payload, course_version: this.versao } });
+    const resposta = { status: 200, json: { ...payload, course_version: this.versao } };
+    if (this.chaveAtual) this.respostas.set(this.chaveAtual, resposta);
+    return route.fulfill(resposta);
   }
 }
 

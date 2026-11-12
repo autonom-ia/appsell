@@ -1,5 +1,7 @@
 import { expect as expectBase, test, type Locator, type Page } from "@playwright/test";
 
+import { UNDO_WINDOW_MS } from "../../lib/curriculum/undo-queue";
+
 import { login } from "./support/login";
 import {
   abrirCurso,
@@ -101,11 +103,15 @@ test.describe("montar o curso do zero", () => {
     await expect(page.getByRole("link", { name: "Ir para Preço" })).toBeVisible();
     await expect(page.getByTestId(`lesson-${curso.modulos[0].lessons[0].id}`)).toContainText("✓ Pronta");
 
-    // Nenhum termo de máquina em nenhum momento da tela.
+    // Nenhum termo de máquina em nenhum momento da tela (a mesma lista de
+    // FORBIDDEN_SELLER_WORDS, que o teste de unidade aplica aos textos).
     const palavras = (await page.getByTestId("curriculum-workspace").innerText()).toLowerCase();
-    for (const proibida of ["arquivar", "verificação", "rascunho", "multipart", "intenção", "upload"]) {
+    for (const proibida of ["arquivar", "arquivad", "verificaç", "verificand", "rascunho", "multipart", "intenção", "upload", "a api "]) {
       expect(palavras).not.toContain(proibida);
     }
+    // E nenhuma mudança esbarrou na versão do curso: texto, vídeo e link
+    // salvaram em sequência, cada um com a versão mais nova.
+    expect(curso.conflitos).toBe(0);
   });
 
   test("o progresso aponta a próxima aula que falta", async ({ page }) => {
@@ -175,7 +181,7 @@ test.describe("organizar sem medo", () => {
     await page.getByTestId(`lesson-${sai.id}`).getByRole("link").click();
     await page.getByRole("button", { name: "Excluir aula" }).click();
     await expect(aviso).toBeVisible();
-    await page.clock.runFor(8_500);
+    await page.clock.runFor(UNDO_WINDOW_MS + 500);
     await expect(aviso).toHaveCount(0);
     await expect.poll(() => curso.pedidosPara("POST", `/lessons/${sai.id}/archive`).length).toBe(1);
     await expect.poll(() => curso.modulos[0].lessons.map((entry) => entry.id)).toEqual([fica.id]);
@@ -206,8 +212,8 @@ test.describe("organizar sem medo", () => {
 
     await page.getByTestId(`lesson-${sai.id}`).getByRole("link").click();
     await page.getByRole("button", { name: "Excluir aula" }).click();
-    await page.clock.runFor(8_500);
-    await expect(page.getByRole("alert").filter({ hasText: "O item voltou para a lista. Tente de novo." })).toBeVisible();
+    await page.clock.runFor(UNDO_WINDOW_MS + 500);
+    await expect(page.getByRole("alert").filter({ hasText: "Não deu para excluir “Sai”." })).toContainText("O item voltou para a lista. Tente de novo.");
     await expect(page.getByTestId(`lesson-${sai.id}`)).toBeVisible();
   });
 });
@@ -233,10 +239,10 @@ test.describe("arquivos da aula", () => {
     expect(curso.pedidosPara("POST", "/archive")).toHaveLength(0);
 
     await card.getByRole("button", { name: "Tirar da aula: apostila.pdf" }).click();
-    await page.clock.runFor(8_500);
+    await page.clock.runFor(UNDO_WINDOW_MS + 500);
     await expect.poll(() => curso.pedidosPara("POST", `/assets/${pdf.id}/archive`).length).toBe(1);
-    // Sem o arquivo, a aula volta a oferecer a escolha principal.
-    await expect(principal.getByLabel("Escolher vídeo ou PDF")).toBeAttached();
+    // Sem o arquivo, a aula volta a oferecer a escolha principal, à vista.
+    await expect(principal.getByText("Escolher vídeo ou PDF", { exact: true })).toBeVisible();
   });
 
   test("arquivo que não entra diz por quê e como resolver, sem enviar nada", async ({ page }) => {
@@ -253,7 +259,7 @@ test.describe("arquivos da aula", () => {
     });
     await expect(principal.getByText("Vídeos .MOV do iPhone ainda não entram.")).toBeVisible();
     await expect(principal.getByText(/Exporte o vídeo como MP4/)).toBeVisible();
-    await expect(principal.getByLabel("Escolher o arquivo de novo")).toBeAttached();
+    await expect(principal.getByText("Escolher o arquivo de novo", { exact: true })).toBeVisible();
     expect(curso.pedidosPara("POST", "/upload-intents")).toHaveLength(0);
   });
 
@@ -279,7 +285,7 @@ test.describe("arquivos da aula", () => {
     await principal.getByRole("button", { name: "Parar envio" }).click();
     curso.liberarEnvio();
     await expect.poll(() => curso.pedidosPara("POST", "/cancel").length).toBe(1);
-    await expect(principal.getByLabel(/Escolher/)).toBeAttached();
+    await expect(principal.getByText("Escolher o arquivo de novo", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Excluir aula" })).not.toHaveAttribute("aria-disabled", "true");
   });
 
@@ -349,7 +355,8 @@ test.describe("feito para qualquer pessoa, em qualquer tela", () => {
           const caixa = alvo.getBoundingClientRect();
           // A caixa marcável conta pelo rótulo inteiro, que é o alvo do toque.
           const rotulo = alvo instanceof HTMLInputElement ? alvo.closest("label")?.getBoundingClientRect() : null;
-          return (rotulo ?? caixa).height < 44;
+          const medida = rotulo ?? caixa;
+          return medida.height < 44 || medida.width < 44;
         })
         .map((alvo) => alvo.getAttribute("aria-label") || alvo.textContent?.trim() || alvo.tagName);
     });

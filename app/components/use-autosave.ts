@@ -22,7 +22,7 @@ export function useAutosave({
   disabled
 }: {
   serverValue: string;
-  save: (value: string) => Promise<{ ok: true } | { ok: false; reason: AutosaveFailure }>;
+  save: (value: string, options?: { keepalive?: boolean }) => Promise<{ ok: true } | { ok: false; reason: AutosaveFailure }>;
   disabled: boolean;
 }) {
   const [state, dispatch] = useReducer(autosaveReducer, serverValue, initialAutosave);
@@ -71,6 +71,20 @@ export function useAutosave({
     stateRef.current = { ...stateRef.current, status: "pending" };
     void flush();
   }, [flush]);
+
+  // Fechar a aba logo depois de digitar também não perde o texto: o pedido
+  // sai com `keepalive`, que o navegador completa depois de a página sumir.
+  useEffect(() => {
+    const leave = () => {
+      if (timer.current !== null) window.clearTimeout(timer.current);
+      timer.current = null;
+      const pending = stateRef.current;
+      if (disabled || running.current || pending.value === pending.saved || pending.status === "failed") return;
+      void saveRef.current(pending.value, { keepalive: true });
+    };
+    window.addEventListener("pagehide", leave);
+    return () => window.removeEventListener("pagehide", leave);
+  }, [disabled]);
 
   // Voltar para o curso logo depois de digitar não pode perder o texto: o que
   // ainda não foi salvo sai na hora em que o campo deixa a tela.

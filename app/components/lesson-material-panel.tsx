@@ -147,7 +147,8 @@ export function LessonMaterialPanel({
     setTitleTouched(false);
     setInvalidField("");
     setActionState("idle");
-    createKey.current = null;
+    // A chave fica: se a tentativa anterior chegou ao servidor, adicionar o
+    // mesmo link de novo repete aquele pedido em vez de duplicar o link.
     queueMicrotask(() => addButton.current?.focus());
   }
 
@@ -216,6 +217,7 @@ export function LessonMaterialPanel({
     });
     scheduleUndo({
       id: `material:${material.material_id}`,
+      name: material.title,
       message: `“${material.title}” saiu da aula.`,
       revert: restore,
       commit: async ({ leaving }) => {
@@ -232,7 +234,11 @@ export function LessonMaterialPanel({
             keepalive: leaving,
             signal: controller.signal
           });
-          if (!response.ok) throw new Error("material_archive_failed");
+          if (!response.ok) {
+            // A versão do curso pode ter andado: a tela relê antes da próxima mudança.
+            onCommitted?.();
+            throw new Error("material_archive_failed");
+          }
         } finally {
           clearTimeout(timeout);
         }
