@@ -705,7 +705,12 @@ test("authors and reorders a tenant curriculum at 320px without drag", async ({ 
   // to confirm the way a person does.
   // Excluir fica no cabeçalho da aula, à vista: dentro de "Editar aula" e com
   // o nome "Arquivar", a vendedora procurou e não achou (#645).
-  await practice.getByRole("button", { name: "Excluir aula Prática guiada" }).click();
+  const excluirPratica = practice.getByRole("button", { name: "Excluir aula Prática guiada" });
+  // "Manter" fecha o diálogo e devolve o foco a quem o abriu.
+  await excluirPratica.click();
+  await page.getByRole("dialog", { name: "Excluir a aula Prática guiada?" }).getByRole("button", { name: "Manter" }).click();
+  await expect(excluirPratica).toBeFocused();
+  await excluirPratica.click();
   const archiveDialog = page.getByRole("dialog", { name: "Excluir a aula Prática guiada?" });
   await expect(archiveDialog).toBeVisible();
   await expect(archiveDialog.getByRole("button", { name: "Manter" })).toBeFocused();
