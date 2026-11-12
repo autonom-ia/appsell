@@ -47,6 +47,14 @@ export function autosaveReducer(state: AutosaveState, action: AutosaveAction): A
       // O servidor guarda o nome sem espaço nas pontas. O eco do próprio valor
       // aparado não pode apagar o espaço que a pessoa acabou de digitar.
       if (action.value !== state.value && action.value === state.value.trim()) return state;
+      // O eco do valor que já está no campo (o próprio salvamento voltando
+      // como valor do servidor) não muda a tela. Tratá-lo como troca externa
+      // punha o estado em "idle" e o "✓ Salvo" sumia no instante em que
+      // aparecia.
+      if (action.value === state.value) {
+        const settled = state.status === "pending" || state.status === "failed" ? "idle" : state.status;
+        return { ...state, saved: action.value, status: settled, reason: settled === "idle" ? null : state.reason };
+      }
       const editing = state.value !== state.saved || state.status === "saving";
       if (editing) return { ...state, saved: action.value };
       return { ...state, value: action.value, saved: action.value, status: "idle" };

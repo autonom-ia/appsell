@@ -256,6 +256,14 @@ describe("salvar sozinho", () => {
     expect(editing).toMatchObject({ status: "pending", value: "AB", saved: "Z" });
   });
 
+  it("o eco do próprio salvamento mantém o ✓ Salvo na tela", () => {
+    let state = autosaveReducer(initialAutosave(""), { type: "edit", value: "Assista ao vídeo" });
+    state = autosaveReducer(state, { type: "start" });
+    state = autosaveReducer(state, { type: "success", value: "Assista ao vídeo" });
+    state = autosaveReducer(state, { type: "external", value: "Assista ao vídeo" });
+    expect(state).toMatchObject({ status: "saved", value: "Assista ao vídeo", saved: "Assista ao vídeo" });
+  });
+
   it("o eco do nome sem espaço nas pontas não apaga o espaço que a pessoa digitou", () => {
     let state = autosaveReducer(initialAutosave("Curso"), { type: "edit", value: "Curso de " });
     state = autosaveReducer(state, { type: "start" });

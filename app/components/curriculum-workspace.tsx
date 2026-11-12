@@ -1,6 +1,6 @@
 "use client";
 
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
@@ -88,7 +88,6 @@ function Workspace({
   onSummaryChange,
   onCommitted
 }: CurriculumWorkspaceProps) {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const scheduleUndo = useScheduleUndo();
   const [loadState, setLoadState] = useState<LoadState>("loading");
@@ -260,6 +259,11 @@ function Workspace({
     }
   }, [report]);
 
+  // Abrir e fechar a aula muda só `?aula=` no endereço, e para isso basta a
+  // History API do navegador, que o Next sincroniza com `useSearchParams`.
+  // Pelo roteador, cada troca pedia a página ao servidor e o "voltar"
+  // restaurava a árvore guardada na entrada do histórico: depois de chegar por
+  // um link direto, voltar à lista reabria a aula do link.
   const openLesson = useCallback((lessonId: string) => {
     lastOpened.current = lessonId;
     const href = `?section=curriculo&aula=${encodeURIComponent(lessonId)}`;
@@ -267,26 +271,26 @@ function Workspace({
       // Trocar de aula com outra aberta (lado a lado) não empilha histórico:
       // o "voltar" continua levando para a lista, e não para a aula anterior.
       if (openedHere.current === selectedId) openedHere.current = lessonId;
-      router.replace(href, { scroll: false });
+      window.history.replaceState(null, "", href);
       return;
     }
     openedHere.current = lessonId;
-    router.push(href, { scroll: false });
-  }, [router, selectedId]);
+    window.history.pushState(null, "", href);
+  }, [selectedId]);
 
   /** Volta para a lista e devolve o foco à aula de onde a pessoa saiu. */
   const closeLesson = useCallback((focusSelector?: string) => {
     if (selectedId && openedHere.current === selectedId) {
-      router.back();
+      window.history.back();
     } else {
-      router.replace("?section=curriculo", { scroll: false });
+      window.history.replaceState(null, "", "?section=curriculo");
     }
     openedHere.current = null;
     const target = selectedId ?? lastOpened.current ?? "";
     // A troca de tela só acontece quando o roteador termina; o foco espera a
     // lista aparecer (o efeito abaixo), senão cairia num elemento escondido.
     pendingFocus.current = focusSelector ?? `[data-lesson-link="${cssText(target)}"]`;
-  }, [router, selectedId]);
+  }, [selectedId]);
 
   // O botão entrega o evento do clique como primeiro argumento. Repassá-lo
   // direto fazia o evento virar o seletor de foco, a busca quebrava e o foco
