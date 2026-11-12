@@ -159,7 +159,7 @@ export function LessonEditor({
         onBlur={() => void content.flush()}
       />
       <p className="field-help" id={`lesson-content-help-${lesson.id}`}>{JOURNEY_COPY.textHelp}</p>
-      <SaveState id={`lesson-content-state-${lesson.id}`} state={content.state} onRetry={content.retry} invalidMessage={JOURNEY_COPY.textTooLong} tooLongMessage={JOURNEY_COPY.textTooLong}/>
+      <SaveState id={`lesson-content-state-${lesson.id}`} state={content.state} onRetry={content.retry} invalidMessage={JOURNEY_COPY.saveFailed} tooLongMessage={JOURNEY_COPY.textTooLong}/>
     </section>
 
     <section className="lesson-block" aria-labelledby={`lesson-materials-${lesson.id}`}>

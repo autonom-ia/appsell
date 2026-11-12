@@ -74,6 +74,9 @@ export function useAutosave({
 
   // Fechar a aba logo depois de digitar também não perde o texto: o pedido
   // sai com `keepalive`, que o navegador completa depois de a página sumir.
+  // Lacuna conhecida (#656): com um salvamento em voo que já chegou ao
+  // servidor, o `keepalive` sai com a versão do curso de antes dele e recebe
+  // 409. O texto digitado depois do pedido em voo se perde nesse caso.
   useEffect(() => {
     const leave = () => {
       if (timer.current !== null) window.clearTimeout(timer.current);
@@ -82,7 +85,7 @@ export function useAutosave({
       if (disabled || pending.value === pending.saved || pending.status === "failed") return;
       // Com um salvamento em voo, o que foi digitado depois dele ainda não saiu.
       // O pedido em voo não tem `keepalive` e pode morrer junto com a aba;
-      // mandar o valor atual agora é a única chance dele.
+      // mandar o valor atual agora é a melhor chance dele (ver a lacuna acima).
       if (running.current && pending.value === pending.inFlight) return;
       void saveRef.current(pending.value, { keepalive: true });
     };
