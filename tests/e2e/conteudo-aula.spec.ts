@@ -95,7 +95,7 @@ function curriculum() {
 
 type MaterialView = typeof PDF;
 
-async function openCurriculum(page: Page, assets: MaterialView[] = [PDF, MARKDOWN, TEXTO]) {
+async function openCurriculum(page: Page, assets: MaterialView[] = [PDF, MARKDOWN, TEXTO], uploads: unknown[] = []) {
   await page.route(`**/api/sellers/${SELLER_ID}/products/${PRODUCT_ID}`, async (route) => {
     if (route.request().method() !== "GET") return route.fallback();
     await route.fulfill({ json: {
@@ -112,7 +112,7 @@ async function openCurriculum(page: Page, assets: MaterialView[] = [PDF, MARKDOW
   });
   await page.route("**/lessons/*/assets", async (route) => {
     if (route.request().method() !== "GET") return route.fallback();
-    await route.fulfill({ json: { assets, uploads: [], csrf: CSRF } });
+    await route.fulfill({ json: { assets, uploads, csrf: CSRF } });
   });
   await page.route("**/materials", async (route) => {
     await route.fulfill({ json: { materials: [], csrf: { create: "m", archive: "n" } } });
@@ -658,5 +658,53 @@ test.describe("o aviso chega enquanto o painel de destino ainda carrega", () => 
 
     await expect(anexos.locator(".asset-status-card")).toHaveCount(3);
     await expect(anexos).not.toContainText("Carregando materiais…");
+  });
+});
+
+test.describe("um envio que não terminou não trava o painel", () => {
+  // Um `pending` na carga da página é um envio que este painel não está
+  // fazendo. Antes ele virava "verificação em andamento" e desligava o seletor
+  // por até duas horas, sem nada sendo verificado (#645).
+  function conteudoDaAula(page: Page) {
+    return page.getByTestId(`lesson-${LESSON_ID}`)
+      .locator("details").filter({ hasText: "Conteúdo da aula" }).first();
+  }
+
+  test("envio dentro do prazo: avisa os dois casos e deixa escolher de novo", async ({ page }) => {
+    await login(page);
+    await openCurriculum(page, [], [{
+      id: "bb000000-0000-4000-8000-000000000001",
+      status: "pending",
+      file_name: "aula-1.mp4",
+      byte_size: 209_420_000,
+      safe_reason: null
+    }]);
+
+    const conteudo = conteudoDaAula(page);
+    await expect(conteudo.locator("summary")).not.toContainText("Preparação em andamento");
+    await conteudo.locator("summary").click();
+
+    await expect(conteudo).toContainText("O envio de aula-1.mp4 não terminou.");
+    await expect(conteudo).toContainText("Se ele ainda estiver subindo em outra aba, espere por lá");
+    await expect(conteudo).not.toContainText("A verificação está demorando");
+    await expect(conteudo.locator('input[type="file"]')).toBeEnabled();
+  });
+
+  test("envio vencido chega expirado e não deixa aviso nenhum", async ({ page }) => {
+    await login(page);
+    await openCurriculum(page, [], [{
+      id: "bb000000-0000-4000-8000-000000000002",
+      status: "expired",
+      file_name: "aula-1.mp4",
+      byte_size: 209_420_000,
+      safe_reason: "O prazo do envio terminou. Escolha o arquivo novamente."
+    }]);
+
+    const conteudo = conteudoDaAula(page);
+    await conteudo.locator("summary").click();
+
+    await expect(conteudo).not.toContainText("não terminou");
+    await expect(conteudo).not.toContainText("A verificação está demorando");
+    await expect(conteudo.locator('input[type="file"]')).toBeEnabled();
   });
 });

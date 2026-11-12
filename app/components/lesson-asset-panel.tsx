@@ -20,6 +20,7 @@ import { AccessibleDialog } from "./accessible-dialog";
 
 export const MAX_VERIFICATION_WAIT_MS = 15_000;
 const MATERIAL_PREPARATION_MESSAGE = "Arquivo recebido. Verificando segurança…";
+const VERIFYING_UPLOAD_STATUSES: readonly string[] = ["uploaded", "verifying"];
 const MATERIAL_DELAYED_MESSAGE = "A verificação está demorando mais que o esperado. O arquivo continua sendo processado; você pode continuar editando e verificar novamente em instantes.";
 const ALLOWED_UPLOAD_HEADERS = new Set([
   "content-type",
@@ -396,11 +397,21 @@ export function LessonAssetPanel({
       // envio local recém-começado, os dois dividindo as mesmas referências de
       // controle. Um caso de outra aba não paga esse preço.
       if (!primeiraEntrega) return;
-      const active = payload.uploads.find((upload) => ["pending", "uploaded", "verifying"].includes(upload.status));
+      // Só `uploaded` e `verifying` têm arquivo no servidor sendo conferido.
+      // Um `pending` na carga é um envio que ESTE painel não está fazendo: ou
+      // parou no meio, ou ainda sobe em outra aba. O servidor não distingue os
+      // dois. Tratá-lo como verificação travava o seletor por até duas horas
+      // sem nada para esperar (#645); o aviso descreve os dois casos e deixa a
+      // pessoa escolher. Vencido, ele já chega `expired` da API.
+      const active = payload.uploads.find((upload) => VERIFYING_UPLOAD_STATUSES.includes(upload.status));
+      const interrupted = payload.uploads.find((upload) => upload.status === "pending");
       if (active) {
         activeUploadIdRef.current = active.id;
         verificationStartedAtRef.current = Date.now();
         dispatch({ type: "phase", phase: "verifying", message: MATERIAL_PREPARATION_MESSAGE, fileName: active.file_name, uploadId: active.id });
+      } else if (interrupted) {
+        verificationStartedAtRef.current = null;
+        dispatch({ type: "phase", phase: "failed", message: `O envio de ${interrupted.file_name} não terminou. Se ele ainda estiver subindo em outra aba, espere por lá; se não, escolha o arquivo de novo.` });
       } else {
         verificationStartedAtRef.current = null;
         dispatch({ type: "reset" });
@@ -600,7 +611,7 @@ export function LessonAssetPanel({
           const message = payload.status === "quarantined"
             ? "Arquivo isolado para análise. Ele não será publicado."
             : payload.status === "rejected"
-              ? payload.safe_reason || "Este arquivo não passou na verificação. Escolha outro PDF."
+              ? payload.safe_reason || "Este arquivo não passou na verificação. Escolha outro arquivo."
               : "O envio foi interrompido. Seu curso não foi alterado.";
           dispatch({ type: "phase", phase: payload.status === "cancelled" ? "cancelled" : "failed", message, uploadId });
           pollingUploadRef.current = null;
@@ -1091,7 +1102,7 @@ export function LessonAssetPanel({
     ? "Abrir para carregar"
     : readyAssets.length > 0
       ? `${readyAssets.length} ${readyAssets.length === 1 ? `${noun} pronto` : `${noun}s prontos`}`
-      : uploads.some((upload) => ["pending", "uploaded", "verifying"].includes(upload.status))
+      : uploads.some((upload) => VERIFYING_UPLOAD_STATUSES.includes(upload.status))
         ? "Preparação em andamento"
         : `Nenhum ${noun}`;
 
