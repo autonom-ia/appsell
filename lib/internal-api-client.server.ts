@@ -1510,7 +1510,9 @@ export async function readDomainAssetUploadParts(
   return domainRequest(sessionId, session, {
     method: "GET",
     path: `${lessonAssetPath(input)}/uploads/${input.uploadId}/parts`,
-    capability: "catalog.asset.read",
+    // A mesma capacidade de assinar uma parte: o domínio só lê a intenção para
+    // quem está no meio do envio dela.
+    capability: "catalog.asset.upload.sign",
     sellerOrganizationId: input.sellerOrganizationId
   });
 }

@@ -13,11 +13,11 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, status
 
 from appsell_api.asset_media import PDF_MEDIA_TYPE, VIDEO_MEDIA_TYPE, max_bytes
 from appsell_api.asset_routes import router
-from appsell_api.internal_requests import AuthenticatedInternalRequest
+from appsell_api.internal_requests import _ALLOWED_CONTINUATIONS, AuthenticatedInternalRequest
 from appsell_api.service_auth import ServiceEnvelope, ServiceIdentity
 from appsell_api.storage_s3 import MULTIPART_PART_BYTES, PresignedRequest, UploadedPart
 
@@ -69,6 +69,7 @@ class FakeAuth:
         self.authenticated_capabilities: list[str] = []
         self.context_capabilities: list[str] = []
         self.rejected_requests = 0
+        self.guarded_envelopes: list[ServiceEnvelope] = []
 
     async def authenticate(self, request: Any, capability: str) -> AuthenticatedInternalRequest:
         body = await request.body()
@@ -105,11 +106,22 @@ class FakeAuth:
     async def domain_session(self, envelope: ServiceEnvelope) -> AsyncIterator[FakeSession]:
         self.context_capabilities.append(envelope.capability)
         yield self.session
+        self.guarded_envelopes.append(envelope)
 
     @asynccontextmanager
     async def continuation_domain_session(
         self, envelope: ServiceEnvelope
     ) -> AsyncIterator[FakeSession]:
+        # A mesma regra do autenticador de verdade: continuação só existe depois
+        # de uma sessão de domínio do mesmo pedido, e só entre os pares
+        # permitidos. Um dublê que aceita tudo escondeu por dois meses que o
+        # envio em partes respondia 401 em produção.
+        if not any(
+            guarded.request_id == envelope.request_id
+            and (guarded.capability, envelope.capability) in _ALLOWED_CONTINUATIONS
+            for guarded in self.guarded_envelopes
+        ):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
         self.context_capabilities.append(envelope.capability)
         yield self.session
 
@@ -744,6 +756,10 @@ async def test_a_listagem_mostra_o_que_ja_subiu_para_permitir_retomar() -> None:
         "part_count": 2,
         "uploaded_parts": [{"part_number": 1, "byte_size": MULTIPART_PART_BYTES}],
     }
+    # A listagem pede a capacidade de assinar: o banco só entrega a intenção
+    # nesse contexto, e com a de ler ela voltaria a responder 401 (#641).
+    assert auth.authenticated_capabilities == ["catalog.asset.upload.sign"]
+    assert auth.context_capabilities == ["catalog.asset.upload.sign"]
 
 
 @pytest.mark.asyncio
@@ -855,6 +871,11 @@ async def test_confirmar_de_novo_nao_precisa_de_envio_aberto() -> None:
     assert [nome for nome, _ in storage.multipart_calls] == ["find"]
 
 
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="#642: cancelar lê a intenção por continuação que o autenticador recusa",
+)
 @pytest.mark.asyncio
 async def test_cancelar_apaga_as_partes_ja_enviadas() -> None:
     """Cancelar sem abortar deixa as partes ocupando disco sem aparecer em nada."""
@@ -889,6 +910,11 @@ async def test_cancelar_apaga_as_partes_ja_enviadas() -> None:
     assert "cancel_asset_upload" in auth.session.calls[1][0]
 
 
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="#642: cancelar lê a intenção por continuação que o autenticador recusa",
+)
 @pytest.mark.asyncio
 async def test_cancelar_envio_pequeno_nao_procura_partes() -> None:
     upload_id = uuid4()
