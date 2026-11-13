@@ -3,7 +3,7 @@ from __future__ import annotations
 import shutil
 import socket
 import struct
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -44,6 +44,24 @@ _IDADE_MAXIMA_SEM_MIRROR = timedelta(days=14)
 # o `freshclam` baixar. Mais que isso é o `freshclam` deixando de buscar o que
 # existe — e aí, sim, o antivírus tem menos do que poderia ter.
 _VERSOES_DE_ATRASO_TOLERADAS = 2
+
+# Espera da resposta do `INSTREAM` no worker: o clamd só responde depois de ler
+# e analisar o arquivo inteiro. Os 3 s do `PING` derrubavam todo vídeo grande
+# (13/11/2026: 200 MB preso em "verificando", tentado de novo a cada 10 min).
+# A base cobre a análise de arquivo pequeno; a taxa é conservadora; o teto fica
+# abaixo da concessão de 10 min do job, para o erro aparecer antes de outra
+# tentativa pegar o mesmo envio.
+_INSTREAM_TIMEOUT_BASE_SECONDS = 30.0
+_INSTREAM_BYTES_PER_SECOND = 2 * 1024 * 1024
+_INSTREAM_TIMEOUT_MAX_SECONDS = 300.0
+
+
+def instream_timeout_for_size(byte_size: int) -> float:
+    """Quanto o worker espera o clamd responder sobre um arquivo deste tamanho."""
+    return min(
+        _INSTREAM_TIMEOUT_MAX_SECONDS,
+        _INSTREAM_TIMEOUT_BASE_SECONDS + byte_size / _INSTREAM_BYTES_PER_SECOND,
+    )
 
 
 class ScanRejected(RuntimeError):
@@ -126,9 +144,19 @@ class ClamAvScanner:
     provider_name = "clamav-clamd"
     production_capable = True
 
-    def __init__(self, socket_path: str, *, timeout_seconds: float = 3.0) -> None:
+    def __init__(
+        self,
+        socket_path: str,
+        *,
+        timeout_seconds: float = 3.0,
+        instream_timeout: Callable[[int], float] | None = None,
+    ) -> None:
         self.socket_path = socket_path
         self.timeout_seconds = timeout_seconds
+        # Só o worker passa a espera proporcional ao arquivo. A API verifica
+        # capa e logo dentro da requisição HTTP, e lá um clamd travado precisa
+        # falhar rápido.
+        self.instream_timeout = instream_timeout
 
     def healthy(self) -> bool:
         """O veredito sozinho, que é o que o `MalwareScanner` exige.
@@ -216,17 +244,24 @@ class ClamAvScanner:
         )
 
     def scan(self, path: Path) -> bool:
-        response = self._request(b"zINSTREAM\0", stream=path)
+        timeout = self.timeout_seconds
+        if self.instream_timeout is not None:
+            timeout = max(timeout, self.instream_timeout(path.stat().st_size))
+        response = self._request(b"zINSTREAM\0", stream=path, timeout_seconds=timeout)
         if response.endswith(b" OK"):
             return True
         if response.endswith(b" FOUND"):
             return False
         raise ScannerUnavailable("malware scanner returned an invalid response")
 
-    def _request(self, command: bytes, *, stream: Path | None) -> bytes:
+    def _request(
+        self, command: bytes, *, stream: Path | None, timeout_seconds: float | None = None
+    ) -> bytes:
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-                client.settimeout(self.timeout_seconds)
+                client.settimeout(
+                    self.timeout_seconds if timeout_seconds is None else timeout_seconds
+                )
                 client.connect(self.socket_path)
                 client.sendall(command)
                 if stream is not None:

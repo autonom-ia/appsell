@@ -18,6 +18,7 @@ from .storage_worker import (
     DeterministicLocalScanner,
     MalwareScanner,
     assert_storage_worker_ready,
+    instream_timeout_for_size,
 )
 
 
@@ -38,7 +39,9 @@ async def run() -> None:
     storage = S3Storage(settings)
     scanner: MalwareScanner
     if settings.malware_scanner_provider == "clamav":
-        scanner = ClamAvScanner(settings.malware_scanner_socket)
+        scanner = ClamAvScanner(
+            settings.malware_scanner_socket, instream_timeout=instream_timeout_for_size
+        )
     elif settings.malware_scanner_provider == "deterministic" and settings.environment in {
         "local",
         "ci",
