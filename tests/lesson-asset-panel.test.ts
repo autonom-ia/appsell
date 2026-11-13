@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { boundedAssetFetch, discardPendingAssetUpload, downloadToggleLabel, formatBytes, MAX_VERIFICATION_WAIT_MS, nextVerificationPollMs, VERIFICATION_GIVE_UP_MS, validIntent, validPart, verificationPhaseForElapsed, verificationStatusTimeoutForElapsed, type UploadIntentPayload } from "../app/components/lesson-asset-panel";
+import { boundedAssetFetch, discardPendingAssetUpload, downloadToggleLabel, formatBytes, MAX_VERIFICATION_WAIT_MS, nextVerificationPollMs, startFailure, VERIFICATION_GIVE_UP_MS, validIntent, validPart, verificationPhaseForElapsed, verificationStatusTimeoutForElapsed, type UploadIntentPayload } from "../app/components/lesson-asset-panel";
 import { ASSET_MEDIA_TYPES, SUPPORTED_ASSET_MEDIA, mediaLabel } from "../lib/asset-media";
 
 const valid: UploadIntentPayload = {
@@ -74,6 +74,30 @@ describe("lesson asset verification UX", () => {
     expect(nextVerificationPollMs(15_000, 7)).toBe(5_000);
     expect(nextVerificationPollMs(15_000 + 60_000, 9)).toBe(10_000);
     expect(nextVerificationPollMs(15_000 + 10 * 60_000, 30)).toBe(15_000);
+  });
+});
+
+describe("por que o envio não começou", () => {
+  it("diz que são envios demais, e não que caiu, quando a API responde 429", () => {
+    // Antes o limite de envios virava 503 e a tela mandava conferir a internet.
+    const [titulo, detalhe] = startFailure(new Error("intent_429"));
+    expect(titulo).toBe("Muitos envios ao mesmo tempo.");
+    expect(detalhe).toBe("Espere os arquivos em verificação terminarem e tente de novo.");
+    expect(`${titulo} ${detalhe}`).not.toContain("internet");
+    expect(`${titulo} ${detalhe}`).not.toContain("limite de arquivos");
+  });
+
+  it("diz que o espaço acabou, e não que o curso mudou, quando a cota está cheia", () => {
+    // O caminho do corpo até este código está em `limite-de-envio-na-tela.test.ts`.
+    expect(startFailure(new Error("intent_storage_quota_exceeded"))).toEqual([
+      "A loja chegou ao limite de arquivos guardados.",
+      "Apague arquivos que não usa ou fale com o suporte."
+    ]);
+    expect(startFailure(new Error("intent_409"))[0]).toBe("O curso mudou em outra aba ou aparelho.");
+  });
+
+  it("mantém a queda genérica para o que não é limite", () => {
+    expect(startFailure(new Error("intent_503"))[1]).toContain("internet");
   });
 });
 

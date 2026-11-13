@@ -785,7 +785,7 @@ export function LessonAssetPanel({
       // Do not abort an ambiguous intent request during UI cancellation: wait for its
       // bounded response, recover the upload id, then issue the durable cancel call.
       const response = await boundedFetch(`${base}/upload-intents`, { method: "POST", body }, 15_000, false);
-      if (!response.ok) throw new Error(`intent_${response.status}`);
+      if (!response.ok) throw new Error(await intentFailureCode(response));
       const intent = await response.json() as UploadIntentPayload;
       if (!validIntent(intent, window.location.origin)) throw new Error("intent_invalid");
       return intent;
@@ -1281,9 +1281,50 @@ function capitalize(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
+/** Quanto a tela espera pelo corpo de um 409 antes de cair no código genérico. */
+export const INTENT_FAILURE_BODY_TIMEOUT_MS = 2_000;
+
+/**
+ * O código de falha da intenção. A cota de armazenamento cheia é um 409, como o
+ * curso que mudou em outra aba, e só o corpo separa os dois. O corpo vem da rota
+ * do Next (`mappedError`), que repassa o `detail` da API como `{ error }`.
+ *
+ * Só o 409 tem o corpo lido, e com prazo curto: o `boundedAssetFetch` desarma o
+ * tempo limite quando os cabeçalhos chegam, e um corpo que não termina deixaria
+ * a tela presa em "Preparando envio seguro…". No prazo estourado vale o status.
+ */
+export async function intentFailureCode(
+  response: Response,
+  timeoutMs: number = INTENT_FAILURE_BODY_TIMEOUT_MS
+): Promise<string> {
+  const generic = `intent_${response.status}`;
+  if (response.status !== 409) return generic;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), timeoutMs);
+  });
+  try {
+    const payload = await Promise.race([response.json().catch(() => null), expired]) as unknown;
+    const error = typeof payload === "object" && payload !== null && "error" in payload
+      ? (payload as { error: unknown }).error
+      : null;
+    return error === "storage_quota_exceeded" ? "intent_storage_quota_exceeded" : generic;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Por que o envio não começou, dito para quem vende, com o que fazer. */
-function startFailure(error: unknown): [string, string] {
+export function startFailure(error: unknown): [string, string] {
   const code = error instanceof Error ? error.message : "";
+  // Vem antes do `intent_409`: a cota cheia também é 409, e esperar não resolve.
+  if (code === "intent_storage_quota_exceeded") {
+    return ["A loja chegou ao limite de arquivos guardados.", "Apague arquivos que não usa ou fale com o suporte."];
+  }
+  // 429 é `upload_limit_reached`: envios abertos demais ao mesmo tempo.
+  if (code === "intent_429") {
+    return ["Muitos envios ao mesmo tempo.", "Espere os arquivos em verificação terminarem e tente de novo."];
+  }
   if (code === "intent_409") {
     return ["O curso mudou em outra aba ou aparelho.", "Recarregue a página e escolha o arquivo de novo."];
   }

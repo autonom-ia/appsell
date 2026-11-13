@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 import httpx
 import pytest
 from fastapi import FastAPI, HTTPException, status
+from sqlalchemy.exc import DBAPIError
 
 from appsell_api.asset_media import PDF_MEDIA_TYPE, VIDEO_MEDIA_TYPE, max_bytes
 from appsell_api.asset_routes import router
@@ -461,6 +462,47 @@ async def test_create_intent_uses_server_bucket_key_and_internal_signing_context
     assert "object_key" not in create_parameters
     assert create_parameters["quarantine_bucket"] == "appsell-quarantine"
     assert create_parameters["ready_bucket"] == "appsell-ready"
+
+
+class FalhaDoBanco(Exception):
+    def __init__(self, sqlstate: str) -> None:
+        super().__init__(sqlstate)
+        self.sqlstate = sqlstate
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sqlstate", "esperado", "detalhe"),
+    [
+        # Envios abertos demais. Antes caía no 503 `domain_unavailable`, e a
+        # tela dizia "fora do ar" para quem só precisava esperar.
+        ("P4290", 429, "upload_limit_reached"),
+        # Loja sem espaço (0082): esperar não resolve, e o código é outro.
+        ("P4231", 409, "storage_quota_exceeded"),
+    ],
+)
+async def test_limites_do_envio_tem_resposta_propria_e_nao_fora_do_ar(
+    sqlstate: str, esperado: int, detalhe: str
+) -> None:
+    auth = FakeAuth(seller=SELLER, scalar_values=[])
+
+    async def recusa(statement: Any, parameters: dict[str, Any]) -> Any:
+        auth.session.calls.append((str(statement), parameters))
+        raise DBAPIError("select", {}, FalhaDoBanco(sqlstate))
+
+    auth.session.scalar = recusa  # type: ignore[method-assign]
+    storage = FakeStorage(uuid4())
+    async with client_for(auth, storage) as client:
+        response = await client.post(
+            asset_path("/upload-intents"),
+            content=intent_body(),
+            headers={"content-type": "application/json"},
+        )
+
+    assert response.status_code == esperado
+    assert response.json() == {"detail": detalhe}
+    assert "create_asset_upload_intent" in auth.session.calls[0][0]
+    assert storage.presign_calls == []
 
 
 @pytest.mark.asyncio

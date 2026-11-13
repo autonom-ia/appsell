@@ -2442,3 +2442,231 @@ def test_cancelar_nao_devolve_nada_sem_autorizacao(quem: str) -> None:
             (criado["upload_id"],),
         ).fetchone()
     assert linha is not None and linha[0] == "pending"
+
+
+def test_envio_pronto_nao_ocupa_a_vaga_de_envio_aberto() -> None:
+    """Dez aulas prontas em sequência não barram a 11ª (0082).
+
+    Os limites de envio aberto contavam todo envio com o `quarantine_reconcile`
+    pendente, e esse job só roda umas duas horas depois. Um vídeo pronto ficava
+    ocupando a vaga esse tempo todo. Em verificação ele segue contando: está em
+    voo de verdade.
+    """
+    assert ADMIN_URL and RUNTIME_URL
+    admin, seller, product, course, module, lesson = _personas()
+    manifest, _ = load_manifest()
+    asset = UUID(manifest["lessons"][0]["asset_id"])
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            """
+            insert into app_private.asset_upload(
+              seller_organization_id,id,identity_user_id,catalog_product_id,course_id,
+              module_id,lesson_id,asset_id,blob_id,reserved_version,title,file_name,
+              expected_media_type,expected_byte_size,expected_sha256,storage_driver,
+              quarantine_bucket,ready_bucket,quarantine_key,ready_key,status,expires_at
+            ) select %s,gen_random_uuid(),%s,%s,%s,%s,%s,%s,gen_random_uuid(),ordinality+700,
+              'Aula em sequencia','aula-em-sequencia.pdf','application/pdf',128,
+              encode(digest('sequencia'||ordinality::text,'sha256'),'hex'),'s3',
+              'appsell-quarantine','appsell-ready','sequencia-quarantine-'||ordinality,
+              'sequencia-ready-'||ordinality,'verifying',clock_timestamp()+interval '10 minutes'
+            from generate_series(1,10) input(ordinality)
+            """,
+            (seller, admin, product, course, module, lesson, asset),
+        )
+        # O reconcile fica na fila, como fica de verdade nas duas horas depois
+        # do envio: é ele que fazia o envio contar como aberto.
+        connection.execute(
+            """
+            insert into app_private.asset_storage_cleanup_job(
+              seller_organization_id,upload_id,kind,storage_driver,bucket,object_key,
+              storage_version_id,status,available_at
+            ) select seller_organization_id,id,'quarantine_reconcile','s3',
+              quarantine_bucket,quarantine_key,null,'queued',clock_timestamp()+interval '2 hours'
+            from app_private.asset_upload
+            where seller_organization_id=%s and title='Aula em sequencia'
+            """,
+            (seller,),
+        )
+        connection.commit()
+
+    # Dez em verificação: a 11ª continua barrada pelo limite por pessoa.
+    with psycopg.connect(RUNTIME_URL) as connection, pytest.raises(psycopg.DatabaseError) as recusa:
+        _intencao_de_envio(
+            connection,
+            admin=admin,
+            seller=seller,
+            product=product,
+            course=course,
+            module=module,
+            lesson=lesson,
+            byte_size=1024,
+        )
+    assert recusa.value.sqlstate == "P4290"
+    assert "open asset upload limit exceeded" in str(recusa.value)
+
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "update app_private.asset_upload set status='ready' "
+            "where seller_organization_id=%s and title='Aula em sequencia'",
+            (seller,),
+        )
+        pendentes = connection.execute(
+            """
+            select count(*) from app_private.asset_storage_cleanup_job reconcile
+            join app_private.asset_upload upload
+              on upload.seller_organization_id=reconcile.seller_organization_id
+             and upload.id=reconcile.upload_id
+            where upload.seller_organization_id=%s and upload.title='Aula em sequencia'
+              and reconcile.kind='quarantine_reconcile' and reconcile.status<>'completed'
+            """,
+            (seller,),
+        ).fetchone()
+        connection.commit()
+    # O reconcile segue pendente: quem libera a vaga é o `ready`, não o job.
+    assert pendentes == (10,)
+
+    # Dez prontos: a 11ª passa.
+    with psycopg.connect(RUNTIME_URL) as connection:
+        criado, _ = _intencao_de_envio(
+            connection,
+            admin=admin,
+            seller=seller,
+            product=product,
+            course=course,
+            module=module,
+            lesson=lesson,
+            byte_size=1024,
+        )
+    assert criado["created"] is True
+
+
+def test_cota_de_armazenamento_cheia_tem_codigo_proprio() -> None:
+    """A loja sem espaço recebe `P4231`, e não o `P4290` dos envios abertos (0082).
+
+    Com o mesmo código a API não separava os dois casos, e a tela mandaria
+    esperar quem precisa liberar espaço.
+    """
+    assert ADMIN_URL and RUNTIME_URL
+    admin, seller, product, course, module, lesson = _personas()
+    with psycopg.connect(ADMIN_URL) as connection:
+        cota_row = connection.execute("select app_private.seller_storage_quota_bytes()").fetchone()
+        assert cota_row is not None
+        dez_mib = 10 * 1024 * 1024
+        # Material publicado até a cota exata: qualquer byte a mais estoura.
+        quantos = cota_row[0] // dez_mib
+        connection.execute(
+            """
+            insert into asset_blob(
+              seller_organization_id,id,storage_driver,storage_bucket,object_key,
+              storage_version_id,storage_etag,file_name,media_type,byte_size,sha256,
+              magic_type,scanner_result,verified_at
+            ) select %s,gen_random_uuid(),'s3','appsell-ready','cheia/blob/'||ordinality,
+              'version-'||ordinality,'etag-'||ordinality,'cheia.pdf','application/pdf',
+              %s,encode(digest(('cheia-'||ordinality)::text,'sha256'),'hex'),
+              'application/pdf','clean',clock_timestamp()
+            from generate_series(1,%s) input(ordinality)
+            """,
+            (seller, dez_mib, quantos),
+        )
+        connection.commit()
+
+    with psycopg.connect(RUNTIME_URL) as connection, pytest.raises(psycopg.DatabaseError) as recusa:
+        _intencao_de_envio(
+            connection,
+            admin=admin,
+            seller=seller,
+            product=product,
+            course=course,
+            module=module,
+            lesson=lesson,
+            byte_size=1024,
+        )
+    assert recusa.value.sqlstate == "P4231"
+    assert "seller ready asset byte quota exceeded" in str(recusa.value)
+
+
+def test_bytes_de_envio_pronto_seguem_no_teto_ate_o_reconcile() -> None:
+    """O pronto sai só das contagens; os bytes dele seguem no teto de 4 GiB (0082).
+
+    A cópia em quarentena de um envio pronto só some com certeza quando o
+    reconcile completa. Até lá ela ocupa disco, e o teto de bytes em voo existe
+    exatamente para isso.
+    """
+    assert ADMIN_URL and RUNTIME_URL
+    admin, seller, product, course, module, lesson = _personas()
+    manifest, _ = load_manifest()
+    asset = UUID(manifest["lessons"][0]["asset_id"])
+    meio_giga = 512 * 1024 * 1024
+    with psycopg.connect(ADMIN_URL) as connection:
+        # Oito prontos no tamanho máximo enchem os 4 GiB. Pela contagem eles já
+        # não ocupam vaga nenhuma (8 está abaixo de 10 e de 100 de todo jeito).
+        connection.execute(
+            """
+            insert into app_private.asset_upload(
+              seller_organization_id,id,identity_user_id,catalog_product_id,course_id,
+              module_id,lesson_id,asset_id,blob_id,reserved_version,title,file_name,
+              expected_media_type,expected_byte_size,expected_sha256,storage_driver,
+              quarantine_bucket,ready_bucket,quarantine_key,ready_key,status,expires_at
+            ) select %s,gen_random_uuid(),%s,%s,%s,%s,%s,%s,
+              gen_random_uuid(),ordinality+800,'Pronto pesado','aula-pronta.mp4','video/mp4',%s,
+              encode(digest('pronto-pesado'||ordinality::text,'sha256'),'hex'),'s3',
+              'appsell-quarantine','appsell-ready','pronto-pesado-quarantine-'||ordinality,
+              'pronto-pesado-ready-'||ordinality,'ready',clock_timestamp()+interval '30 minutes'
+            from generate_series(1,8) input(ordinality)
+            """,
+            (seller, admin, product, course, module, lesson, asset, meio_giga),
+        )
+        connection.execute(
+            """
+            insert into app_private.asset_storage_cleanup_job(
+              seller_organization_id,upload_id,kind,storage_driver,bucket,object_key,
+              storage_version_id,status,available_at
+            ) select seller_organization_id,id,'quarantine_reconcile','s3',
+              quarantine_bucket,quarantine_key,null,'queued',clock_timestamp()+interval '2 hours'
+            from app_private.asset_upload
+            where seller_organization_id=%s and title='Pronto pesado'
+            """,
+            (seller,),
+        )
+        connection.commit()
+
+    with psycopg.connect(RUNTIME_URL) as connection, pytest.raises(psycopg.DatabaseError) as recusa:
+        _intencao_de_envio(
+            connection,
+            admin=admin,
+            seller=seller,
+            product=product,
+            course=course,
+            module=module,
+            lesson=lesson,
+            byte_size=1024,
+        )
+    assert recusa.value.sqlstate == "P4290"
+    assert "seller open asset upload byte quota exceeded" in str(recusa.value)
+
+    # Com o reconcile completo a cópia saiu do disco, e os bytes deixam de contar.
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            """
+            update app_private.asset_storage_cleanup_job reconcile set status='completed'
+            from app_private.asset_upload upload
+            where upload.seller_organization_id=reconcile.seller_organization_id
+              and upload.id=reconcile.upload_id
+              and upload.seller_organization_id=%s and upload.title='Pronto pesado'
+              and reconcile.kind='quarantine_reconcile'
+            """,
+            (seller,),
+        )
+        connection.commit()
+    with psycopg.connect(RUNTIME_URL) as connection:
+        criado, _ = _intencao_de_envio(
+            connection,
+            admin=admin,
+            seller=seller,
+            product=product,
+            course=course,
+            module=module,
+            lesson=lesson,
+            byte_size=1024,
+        )
+    assert criado["created"] is True
