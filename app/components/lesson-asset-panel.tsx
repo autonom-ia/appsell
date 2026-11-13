@@ -785,7 +785,7 @@ export function LessonAssetPanel({
       // Do not abort an ambiguous intent request during UI cancellation: wait for its
       // bounded response, recover the upload id, then issue the durable cancel call.
       const response = await boundedFetch(`${base}/upload-intents`, { method: "POST", body }, 15_000, false);
-      if (!response.ok) throw new Error(`intent_${response.status}`);
+      if (!response.ok) throw new Error(await intentFailureCode(response));
       const intent = await response.json() as UploadIntentPayload;
       if (!validIntent(intent, window.location.origin)) throw new Error("intent_invalid");
       return intent;
@@ -1281,16 +1281,29 @@ function capitalize(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
+/**
+ * O código de falha da intenção. A cota de armazenamento cheia é um 409, como o
+ * curso que mudou em outra aba, e só o corpo separa os dois.
+ */
+export async function intentFailureCode(response: Response): Promise<string> {
+  const payload = await response.json().catch(() => null) as unknown;
+  const error = typeof payload === "object" && payload !== null && "error" in payload
+    ? (payload as { error: unknown }).error
+    : null;
+  if (error === "storage_quota_exceeded") return "intent_storage_quota_exceeded";
+  return `intent_${response.status}`;
+}
+
 /** Por que o envio não começou, dito para quem vende, com o que fazer. */
 export function startFailure(error: unknown): [string, string] {
   const code = error instanceof Error ? error.message : "";
-  // 429 é o limite de envios (`upload_limit_reached`): abertos demais ao mesmo
-  // tempo ou, mais raro, o espaço da loja cheio. A mesma resposta cobre os dois.
+  // Vem antes do `intent_409`: a cota cheia também é 409, e esperar não resolve.
+  if (code === "intent_storage_quota_exceeded") {
+    return ["O espaço de arquivos da loja está cheio.", "Apague arquivos que não usa ou fale com o suporte."];
+  }
+  // 429 é `upload_limit_reached`: envios abertos demais ao mesmo tempo.
   if (code === "intent_429") {
-    return [
-      "Muitos envios ao mesmo tempo.",
-      "Espere os arquivos em verificação terminarem e tente de novo. Se o aviso continuar, o espaço de arquivos da loja pode estar cheio."
-    ];
+    return ["Muitos envios ao mesmo tempo.", "Espere os arquivos em verificação terminarem e tente de novo."];
   }
   if (code === "intent_409") {
     return ["O curso mudou em outra aba ou aparelho.", "Recarregue a página e escolha o arquivo de novo."];

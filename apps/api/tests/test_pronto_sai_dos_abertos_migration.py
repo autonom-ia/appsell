@@ -1,7 +1,8 @@
 """A 0082, lida como texto.
 
 O SQL rodando de verdade é provado em `test_postgres_private_assets.py`
-(`test_envio_pronto_nao_ocupa_a_vaga_de_envio_aberto`).
+(`test_envio_pronto_nao_ocupa_a_vaga_de_envio_aberto` e
+`test_cota_de_armazenamento_cheia_tem_codigo_proprio`).
 """
 
 from __future__ import annotations
@@ -74,14 +75,15 @@ def test_o_readiness_aprende_a_versao(migration: ModuleType) -> None:
 
 def test_cada_ancora_existe_uma_vez_no_corpo_vivo(migration: ModuleType) -> None:
     # Pega: uma âncora que não bate com o corpo da 0013 + 0047, ou que casa com
-    # mais de um dos três subselects (eles são quase iguais). Nos dois casos a
-    # subida falharia em produção com "nao continha as ancoras exatamente uma vez".
+    # mais de um dos três subselects (eles são quase iguais), ou com outra
+    # recusa `P4290`. Em qualquer caso a subida falharia em produção com
+    # "nao continha as ancoras exatamente uma vez".
     corpo = _corpo_vivo()
-    assert len(migration.TROCAS) == 3
-    for ancora, _filtro in migration.TROCAS:
+    assert len(migration.TROCAS) == 4
+    for ancora, _novo in migration.TROCAS:
         assert corpo.count(ancora) == 1
-    ancoras = [ancora for ancora, _filtro in migration.TROCAS]
-    assert len(set(ancoras)) == 3
+    ancoras = [ancora for ancora, _novo in migration.TROCAS]
+    assert len(set(ancoras)) == 4
 
 
 def test_os_tres_limites_passam_a_ignorar_o_pronto(migration: ModuleType) -> None:
@@ -90,7 +92,7 @@ def test_os_tres_limites_passam_a_ignorar_o_pronto(migration: ModuleType) -> Non
     for ancora, filtro in migration.TROCAS:
         novo = novo.replace(ancora, filtro)
     assert novo.count("and upload.status<>'ready'") == 3
-    assert novo.count(migration.MARCADOR) == 3
+    assert novo.count(migration.MARCADOR) == 4
     for ancora, filtro in migration.TROCAS:
         assert novo.count(ancora) == 0
         assert novo.count(filtro) == 1
@@ -104,6 +106,36 @@ def test_os_tres_limites_passam_a_ignorar_o_pronto(migration: ModuleType) -> Non
     for ancora, filtro in migration.TROCAS:
         volta = volta.replace(filtro, ancora)
     assert volta == corpo
+
+
+def test_cota_cheia_ganha_codigo_proprio_e_p4290_fica_para_os_abertos(
+    migration: ModuleType,
+) -> None:
+    corpo = _corpo_vivo()
+    assert corpo.count("errcode='P4290'") == 4
+    novo = corpo
+    for ancora, troca in migration.TROCAS:
+        novo = novo.replace(ancora, troca)
+    assert "'seller ready asset byte quota exceeded' using errcode='P4231';" in novo
+    # As três recusas de envio aberto continuam com P4290.
+    assert novo.count("errcode='P4290'") == 3
+    assert novo.count("errcode='P4231'") == 1
+    for mensagem in (
+        "'seller open asset upload limit exceeded' using errcode='P4290'",
+        "'open asset upload limit exceeded' using errcode='P4290'",
+        "'seller open asset upload byte quota exceeded' using errcode='P4290'",
+    ):
+        assert mensagem in novo
+
+
+def test_p4231_era_livre_no_repo() -> None:
+    # Um código já usado por outra função faria a API trocar a resposta dela.
+    usos = [
+        caminho.name
+        for caminho in VERSOES.glob("0*.py")
+        if "P4231" in caminho.read_text() and "_pronto_sai_dos_abertos" not in caminho.name
+    ]
+    assert usos == []
 
 
 def test_subida_e_descida_sao_idempotentes_pelo_marcador(migration: ModuleType) -> None:

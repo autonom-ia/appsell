@@ -471,14 +471,24 @@ class FalhaDoBanco(Exception):
 
 
 @pytest.mark.asyncio
-async def test_limite_de_envios_responde_429_e_nao_fora_do_ar() -> None:
-    # P4290 é o limite de envios abertos. Antes caía no 503 `domain_unavailable`,
-    # e a tela dizia "fora do ar" para quem só precisava esperar.
+@pytest.mark.parametrize(
+    ("sqlstate", "esperado", "detalhe"),
+    [
+        # Envios abertos demais. Antes caía no 503 `domain_unavailable`, e a
+        # tela dizia "fora do ar" para quem só precisava esperar.
+        ("P4290", 429, "upload_limit_reached"),
+        # Loja sem espaço (0082): esperar não resolve, e o código é outro.
+        ("P4231", 409, "storage_quota_exceeded"),
+    ],
+)
+async def test_limites_do_envio_tem_resposta_propria_e_nao_fora_do_ar(
+    sqlstate: str, esperado: int, detalhe: str
+) -> None:
     auth = FakeAuth(seller=SELLER, scalar_values=[])
 
     async def recusa(statement: Any, parameters: dict[str, Any]) -> Any:
         auth.session.calls.append((str(statement), parameters))
-        raise DBAPIError("select", {}, FalhaDoBanco("P4290"))
+        raise DBAPIError("select", {}, FalhaDoBanco(sqlstate))
 
     auth.session.scalar = recusa  # type: ignore[method-assign]
     storage = FakeStorage(uuid4())
@@ -489,8 +499,8 @@ async def test_limite_de_envios_responde_429_e_nao_fora_do_ar() -> None:
             headers={"content-type": "application/json"},
         )
 
-    assert response.status_code == 429
-    assert response.json() == {"detail": "upload_limit_reached"}
+    assert response.status_code == esperado
+    assert response.json() == {"detail": detalhe}
     assert "create_asset_upload_intent" in auth.session.calls[0][0]
     assert storage.presign_calls == []
 

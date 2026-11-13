@@ -1,4 +1,4 @@
-"""Envio que já ficou pronto deixa de contar como envio aberto.
+"""Envio pronto deixa de contar como aberto, e cota cheia ganha código próprio.
 
 `create_asset_upload_intent` tem três limites de envio "aberto": 100 por
 vendedor, 10 por pessoa e 4 GiB somados por vendedor. Os três contam todo
@@ -14,9 +14,16 @@ contando como antes: pendente, enviado e em verificação estão em voo, e
 recusado, cancelado e expirado ainda deixam o objeto na quarentena até o
 reconcile limpar.
 
+A mesma função recusava a cota de armazenamento cheia (`seller ready asset byte
+quota exceeded`) com o mesmo `P4290` dos envios abertos. A API não tinha como
+separar os dois casos, e a tela mandaria esperar quem precisa liberar espaço.
+A cota cheia passa a usar `P4231`, e `P4290` fica só para envios abertos.
+`finalize_asset_verification_v2` (0017) também levanta essa recusa, mas é
+chamada pelo worker e não passa pela API; ela não muda aqui.
+
 A reescrita é feita sobre o corpo que está no banco (`pg_get_functiondef`).
-Cada um dos três limites tem a sua âncora, e cada âncora precisa aparecer
-exatamente uma vez. Se o marcador já estiver lá, a subida não faz nada: o mesmo
+Cada uma das quatro trocas (três limites e o código da cota) tem a sua âncora,
+e cada âncora precisa aparecer exatamente uma vez. Se o marcador já estiver lá, a subida não faz nada: o mesmo
 SQL pode ser aplicado como hotfix antes do release sem duplicar o filtro quando
 a cadeia chegar aqui.
 
@@ -44,7 +51,7 @@ INTENCAO = (
     "text,text,text,bigint,text,text,text,text,uuid,text,uuid)"
 )
 
-MARCADOR = "/* 0082: pronto nao conta como aberto */"
+MARCADOR = "/* 0082: limites de envio */"
 
 # Os três subselects são quase iguais. O que separa um do outro é a linha que
 # fecha o `exists(` e compara com o limite, por isso cada âncora leva as duas
@@ -53,14 +60,14 @@ MARCADOR = "/* 0082: pronto nao conta como aberto */"
 ANCORA_VENDEDOR = "                  and reconcile.status<>'completed'\n              ))>=100 then"
 FILTRO_VENDEDOR = (
     "                  and reconcile.status<>'completed'\n"
-    "              ) /* 0082: pronto nao conta como aberto */\n"
+    "              ) /* 0082: limites de envio */\n"
     "                and upload.status<>'ready')>=100 then"
 )
 
 ANCORA_PESSOA = "                    and reconcile.status<>'completed'\n                ))>=10 then"
 FILTRO_PESSOA = (
     "                    and reconcile.status<>'completed'\n"
-    "                ) /* 0082: pronto nao conta como aberto */\n"
+    "                ) /* 0082: limites de envio */\n"
     "                  and upload.status<>'ready')>=10 then"
 )
 
@@ -70,19 +77,30 @@ ANCORA_BYTES = (
 )
 FILTRO_BYTES = (
     "                  and reconcile.status<>'completed'\n"
-    "              ) /* 0082: pronto nao conta como aberto */\n"
+    "              ) /* 0082: limites de envio */\n"
     "                and upload.status<>'ready'),0)+p_size"
     " > app_private.seller_open_upload_quota_bytes() then"
+)
+
+# A cota de armazenamento cheia ganha código próprio. A mensagem separa esta
+# linha das outras recusas `P4290` da função.
+ANCORA_COTA = (
+    "            raise exception 'seller ready asset byte quota exceeded' using errcode='P4290';"
+)
+CODIGO_COTA = (
+    "            raise exception 'seller ready asset byte quota exceeded' using errcode='P4231';"
+    " /* 0082: limites de envio */"
 )
 
 TROCAS: tuple[tuple[str, str], ...] = (
     (ANCORA_VENDEDOR, FILTRO_VENDEDOR),
     (ANCORA_PESSOA, FILTRO_PESSOA),
     (ANCORA_BYTES, FILTRO_BYTES),
+    (ANCORA_COTA, CODIGO_COTA),
 )
 
 # Sobe: se o marcador já está, não faz nada (hotfix aplicado antes). Senão cada
-# âncora precisa aparecer uma vez só, e as três trocas entram juntas.
+# âncora precisa aparecer uma vez só, e as trocas entram juntas.
 _SOBE = """
 do $migration$
 declare definicao text;
@@ -91,24 +109,17 @@ begin
   if position($m$__MARCADOR__$m$ in definicao) > 0 then
     return;
   end if;
-  if (length(definicao)-length(replace(definicao,$a1$__ANCORA1__$a1$,'')))
-       / length($a1$__ANCORA1__$a1$) <> 1
-     or (length(definicao)-length(replace(definicao,$a2$__ANCORA2__$a2$,'')))
-       / length($a2$__ANCORA2__$a2$) <> 1
-     or (length(definicao)-length(replace(definicao,$a3$__ANCORA3__$a3$,'')))
-       / length($a3$__ANCORA3__$a3$) <> 1 then
+  if __CONTAGENS__ then
     raise exception '__ALVO__ nao continha as ancoras exatamente uma vez' using errcode='55000';
   end if;
-  definicao := replace(definicao,$a1$__ANCORA1__$a1$,$f1$__FILTRO1__$f1$);
-  definicao := replace(definicao,$a2$__ANCORA2__$a2$,$f2$__FILTRO2__$f2$);
-  definicao := replace(definicao,$a3$__ANCORA3__$a3$,$f3$__FILTRO3__$f3$);
+__TROCAS__
   execute definicao;
 end $migration$
 """
 
-# Desce: tira os três filtros, se estiverem lá. Sem o marcador, não faz nada.
-# Se sobrar marcador depois da troca, o corpo foi mexido por outra mão, e descer
-# pela metade seria pior do que parar.
+# Desce: desfaz as trocas, se estiverem lá. Sem o marcador, não faz nada.
+# Se sobrar marcador depois, o corpo foi mexido por outra mão, e descer pela
+# metade seria pior do que parar.
 _DESCE = """
 do $migration$
 declare definicao text;
@@ -117,26 +128,46 @@ begin
   if position($m$__MARCADOR__$m$ in definicao) = 0 then
     return;
   end if;
-  definicao := replace(definicao,$f1$__FILTRO1__$f1$,$a1$__ANCORA1__$a1$);
-  definicao := replace(definicao,$f2$__FILTRO2__$f2$,$a2$__ANCORA2__$a2$);
-  definicao := replace(definicao,$f3$__FILTRO3__$f3$,$a3$__ANCORA3__$a3$);
+__TROCAS__
   if position($m$__MARCADOR__$m$ in definicao) > 0 then
-    raise exception '__ALVO__ tinha o marcador fora dos tres filtros' using errcode='55000';
+    raise exception '__ALVO__ tinha o marcador fora das trocas' using errcode='55000';
   end if;
   execute definicao;
 end $migration$
 """
 
 
-def _sql(modelo: str) -> str:
-    sql = modelo.replace("__ALVO__", INTENCAO).replace("__MARCADOR__", MARCADOR)
-    for numero, (ancora, filtro) in enumerate(TROCAS, start=1):
-        sql = sql.replace(f"__ANCORA{numero}__", ancora).replace(f"__FILTRO{numero}__", filtro)
-    return sql
+def _contagem(numero: int, ancora: str) -> str:
+    texto = f"$a{numero}${ancora}$a{numero}$"
+    return f"(length(definicao)-length(replace(definicao,{texto},''))) / length({texto}) <> 1"
 
 
-SOBE = _sql(_SOBE)
-DESCE = _sql(_DESCE)
+def _troca(numero: int, de: str, para: str, de_tag: str, para_tag: str) -> str:
+    return (
+        f"  definicao := replace(definicao,${de_tag}{numero}${de}${de_tag}{numero}$,"
+        f"${para_tag}{numero}${para}${para_tag}{numero}$);"
+    )
+
+
+def _sql(modelo: str, *, subindo: bool) -> str:
+    numeradas = list(enumerate(TROCAS, start=1))
+    contagens = "\n     or ".join(_contagem(n, ancora) for n, (ancora, _) in numeradas)
+    if subindo:
+        trocas = [_troca(n, ancora, novo, "a", "f") for n, (ancora, novo) in numeradas]
+    else:
+        trocas = [_troca(n, novo, ancora, "f", "a") for n, (ancora, novo) in numeradas]
+    # As âncoras entram depois dos outros marcadores do modelo, para nenhum
+    # texto delas ser trocado por engano.
+    return (
+        modelo.replace("__ALVO__", INTENCAO)
+        .replace("__MARCADOR__", MARCADOR)
+        .replace("__CONTAGENS__", contagens)
+        .replace("__TROCAS__", "\n".join(trocas))
+    )
+
+
+SOBE = _sql(_SOBE, subindo=True)
+DESCE = _sql(_DESCE, subindo=False)
 
 _REESCREVE = """
 do $migration$

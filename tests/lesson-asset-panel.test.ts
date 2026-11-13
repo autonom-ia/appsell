@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { boundedAssetFetch, discardPendingAssetUpload, downloadToggleLabel, formatBytes, MAX_VERIFICATION_WAIT_MS, nextVerificationPollMs, startFailure, VERIFICATION_GIVE_UP_MS, validIntent, validPart, verificationPhaseForElapsed, verificationStatusTimeoutForElapsed, type UploadIntentPayload } from "../app/components/lesson-asset-panel";
+import { boundedAssetFetch, discardPendingAssetUpload, downloadToggleLabel, formatBytes, MAX_VERIFICATION_WAIT_MS, intentFailureCode, nextVerificationPollMs, startFailure, VERIFICATION_GIVE_UP_MS, validIntent, validPart, verificationPhaseForElapsed, verificationStatusTimeoutForElapsed, type UploadIntentPayload } from "../app/components/lesson-asset-panel";
 import { ASSET_MEDIA_TYPES, SUPPORTED_ASSET_MEDIA, mediaLabel } from "../lib/asset-media";
 
 const valid: UploadIntentPayload = {
@@ -82,8 +82,30 @@ describe("por que o envio não começou", () => {
     // Antes o limite de envios virava 503 e a tela mandava conferir a internet.
     const [titulo, detalhe] = startFailure(new Error("intent_429"));
     expect(titulo).toBe("Muitos envios ao mesmo tempo.");
-    expect(detalhe).toContain("Espere os arquivos em verificação terminarem e tente de novo.");
+    expect(detalhe).toBe("Espere os arquivos em verificação terminarem e tente de novo.");
     expect(`${titulo} ${detalhe}`).not.toContain("internet");
+    expect(`${titulo} ${detalhe}`).not.toContain("espaço");
+  });
+
+  it("diz que o espaço acabou, e não que o curso mudou, quando a cota está cheia", async () => {
+    const resposta = new Response(JSON.stringify({ error: "storage_quota_exceeded" }), { status: 409 });
+    const codigo = await intentFailureCode(resposta);
+    expect(codigo).toBe("intent_storage_quota_exceeded");
+    expect(startFailure(new Error(codigo))).toEqual([
+      "O espaço de arquivos da loja está cheio.",
+      "Apague arquivos que não usa ou fale com o suporte."
+    ]);
+  });
+
+  it("mantém o 409 comum como curso que mudou em outra aba", async () => {
+    const resposta = new Response(JSON.stringify({ error: "draft_version_conflict" }), { status: 409 });
+    const codigo = await intentFailureCode(resposta);
+    expect(codigo).toBe("intent_409");
+    expect(startFailure(new Error(codigo))[0]).toBe("O curso mudou em outra aba ou aparelho.");
+  });
+
+  it("não quebra quando a resposta de erro não é JSON", async () => {
+    expect(await intentFailureCode(new Response("falhou", { status: 502 }))).toBe("intent_502");
   });
 
   it("mantém a queda genérica para o que não é limite", () => {

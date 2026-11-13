@@ -2538,3 +2538,48 @@ def test_envio_pronto_nao_ocupa_a_vaga_de_envio_aberto() -> None:
             byte_size=1024,
         )
     assert criado["created"] is True
+
+
+def test_cota_de_armazenamento_cheia_tem_codigo_proprio() -> None:
+    """A loja sem espaço recebe `P4231`, e não o `P4290` dos envios abertos (0082).
+
+    Com o mesmo código a API não separava os dois casos, e a tela mandaria
+    esperar quem precisa liberar espaço.
+    """
+    assert ADMIN_URL and RUNTIME_URL
+    admin, seller, product, course, module, lesson = _personas()
+    with psycopg.connect(ADMIN_URL) as connection:
+        cota_row = connection.execute("select app_private.seller_storage_quota_bytes()").fetchone()
+        assert cota_row is not None
+        dez_mib = 10 * 1024 * 1024
+        # Material publicado até a cota exata: qualquer byte a mais estoura.
+        quantos = cota_row[0] // dez_mib
+        connection.execute(
+            """
+            insert into asset_blob(
+              seller_organization_id,id,storage_driver,storage_bucket,object_key,
+              storage_version_id,storage_etag,file_name,media_type,byte_size,sha256,
+              magic_type,scanner_result,verified_at
+            ) select %s,gen_random_uuid(),'s3','appsell-ready','cheia/blob/'||ordinality,
+              'version-'||ordinality,'etag-'||ordinality,'cheia.pdf','application/pdf',
+              %s,encode(digest(('cheia-'||ordinality)::text,'sha256'),'hex'),
+              'application/pdf','clean',clock_timestamp()
+            from generate_series(1,%s) input(ordinality)
+            """,
+            (seller, dez_mib, quantos),
+        )
+        connection.commit()
+
+    with psycopg.connect(RUNTIME_URL) as connection, pytest.raises(psycopg.DatabaseError) as recusa:
+        _intencao_de_envio(
+            connection,
+            admin=admin,
+            seller=seller,
+            product=product,
+            course=course,
+            module=module,
+            lesson=lesson,
+            byte_size=1024,
+        )
+    assert recusa.value.sqlstate == "P4231"
+    assert "seller ready asset byte quota exceeded" in str(recusa.value)
