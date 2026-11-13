@@ -358,6 +358,9 @@ test.describe("arquivos da aula", () => {
     });
     await expect(painelMateriais(page).getByText(/^Enviando \d+%$/)).toBeVisible();
     await page.getByRole("button", { name: "Voltar para o curso", exact: true }).click();
+    // O foco volta ao card um quadro depois e rola a lista até ele; o clique
+    // espera essa rolagem para não cair fora do card.
+    await expect(page.locator(`[data-lesson-link="${licao.id}"]`)).toBeFocused();
     await page.locator(`[data-lesson-link="${outra.id}"]`).click();
     await expect(page.getByRole("heading", { level: 2, name: /Outra aula/ })).toBeVisible();
 
@@ -367,6 +370,7 @@ test.describe("arquivos da aula", () => {
     expect(curso.pedidosPara("POST", "/cancel")).toHaveLength(0);
 
     await page.getByRole("button", { name: "Voltar para o curso", exact: true }).click();
+    await expect(page.locator(`[data-lesson-link="${outra.id}"]`)).toBeFocused();
     await page.locator(`[data-lesson-link="${licao.id}"]`).click();
     await expect(painelMateriais(page).getByRole("article", { name: "roteiro.md" })).toBeVisible();
   });
