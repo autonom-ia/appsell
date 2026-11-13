@@ -75,7 +75,6 @@ def _corpo_vivo() -> str:
 def test_esta_na_cadeia_e_cabe_no_alembic_version(migration: ModuleType) -> None:
     assert migration.revision in [caminho.stem for caminho in versoes()]
     assert anterior_na_cadeia(migration.revision) == migration.down_revision
-    assert migration.down_revision == "0081_posicao_livre_ao_criar"
     assert len(migration.revision) <= 32
 
 

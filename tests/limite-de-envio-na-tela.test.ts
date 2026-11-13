@@ -26,7 +26,7 @@ describe("limite de envio, do corpo da rota até a mensagem", () => {
     expect(resposta.status).toBe(409);
     const codigo = await intentFailureCode(resposta);
     expect(codigo).toBe("intent_storage_quota_exceeded");
-    expect(startFailure(new Error(codigo))[0]).toBe("O espaço de arquivos da loja está cheio.");
+    expect(startFailure(new Error(codigo))[0]).toBe("A loja chegou ao limite de arquivos guardados.");
   });
 
   it("o 409 do curso que mudou continua sendo o curso que mudou", async () => {

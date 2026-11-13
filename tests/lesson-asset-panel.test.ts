@@ -84,13 +84,13 @@ describe("por que o envio não começou", () => {
     expect(titulo).toBe("Muitos envios ao mesmo tempo.");
     expect(detalhe).toBe("Espere os arquivos em verificação terminarem e tente de novo.");
     expect(`${titulo} ${detalhe}`).not.toContain("internet");
-    expect(`${titulo} ${detalhe}`).not.toContain("espaço");
+    expect(`${titulo} ${detalhe}`).not.toContain("limite de arquivos");
   });
 
   it("diz que o espaço acabou, e não que o curso mudou, quando a cota está cheia", () => {
     // O caminho do corpo até este código está em `limite-de-envio-na-tela.test.ts`.
     expect(startFailure(new Error("intent_storage_quota_exceeded"))).toEqual([
-      "O espaço de arquivos da loja está cheio.",
+      "A loja chegou ao limite de arquivos guardados.",
       "Apague arquivos que não usa ou fale com o suporte."
     ]);
     expect(startFailure(new Error("intent_409"))[0]).toBe("O curso mudou em outra aba ou aparelho.");

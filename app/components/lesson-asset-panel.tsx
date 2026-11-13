@@ -1319,7 +1319,7 @@ export function startFailure(error: unknown): [string, string] {
   const code = error instanceof Error ? error.message : "";
   // Vem antes do `intent_409`: a cota cheia também é 409, e esperar não resolve.
   if (code === "intent_storage_quota_exceeded") {
-    return ["O espaço de arquivos da loja está cheio.", "Apague arquivos que não usa ou fale com o suporte."];
+    return ["A loja chegou ao limite de arquivos guardados.", "Apague arquivos que não usa ou fale com o suporte."];
   }
   // 429 é `upload_limit_reached`: envios abertos demais ao mesmo tempo.
   if (code === "intent_429") {
