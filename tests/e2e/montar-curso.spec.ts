@@ -138,9 +138,13 @@ test.describe("montar o curso do zero", () => {
     await abrirCurso(page, curso);
     await expect(page.getByTestId("curriculum-empty")).toHaveCount(0);
 
-    curso.versao += 1;
     await page.getByRole("button", { name: "Nova aula em Começo" }).click();
     await page.getByLabel("Nome da nova aula").fill("Segunda aula");
+    // A versão anda só depois que as leituras da abertura terminaram: se ela
+    // andasse antes, uma releitura tardia pegaria a versão nova e o conflito
+    // que este teste quer provar não aconteceria.
+    await page.waitForLoadState("networkidle");
+    curso.versao += 1;
     await page.getByRole("button", { name: "Criar e abrir a aula" }).click();
 
     await expect(page.getByRole("heading", { level: 2, name: /Segunda aula/ })).toBeVisible();
