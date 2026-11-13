@@ -722,6 +722,10 @@ test("authors and reorders a tenant curriculum at 320px without drag", async ({ 
   await page.getByRole("textbox", { name: "Texto da aula" }).fill("Faça o exercício com calma e registre o resultado.");
   await expect(page.getByText("✓ Salvo")).toBeVisible();
   await page.getByRole("button", { name: "Voltar para o curso", exact: true }).click();
+  // A lista devolve o foco ao card da aula um quadro depois de aparecer. Sem
+  // esperar por ele, o foco do card chega depois do focus abaixo e o Enter
+  // abre a aula em vez de subi-la.
+  await expect(page.locator('[data-lesson-link="86000000-0000-4000-8000-000000000002"]')).toBeFocused();
 
   const moveUp = page.getByRole("button", { name: "Subir aula Prática guiada" });
   await moveUp.focus();
