@@ -139,6 +139,7 @@ test.describe("montar o curso do zero", () => {
     await expect(page.getByTestId("curriculum-empty")).toHaveCount(0);
 
     curso.versao += 1;
+    await page.getByRole("button", { name: "Nova aula em Começo" }).click();
     await page.getByLabel("Nome da nova aula").fill("Segunda aula");
     await page.getByRole("button", { name: "Criar e abrir a aula" }).click();
 
