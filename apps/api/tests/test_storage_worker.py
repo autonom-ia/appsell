@@ -26,6 +26,7 @@ from appsell_api.storage_worker import (
     ScanRejected,
     VerifyPdfJob,
     assert_storage_worker_ready,
+    instream_timeout_for_size,
 )
 from appsell_api.video_verifier import PreparedCatalogueVideo
 
@@ -327,7 +328,8 @@ def test_clamav_scanner_uses_bounded_unix_instream_protocol(
             return None
 
         def settimeout(self, value: float) -> None:
-            assert value == 3.0
+            # Prazo total da conversa: cada chamada recebe o que sobra dos 3 s.
+            assert 0 < value <= 3.0
 
         def connect(self, path: str) -> None:
             assert path == "/run/appsell-clamav/clamd.sock"
@@ -346,6 +348,144 @@ def test_clamav_scanner_uses_bounded_unix_instream_protocol(
     assert sent[0] == b"zINSTREAM\0"
     assert sent[-1] == b"\0\0\0\0"
     assert b"safe-pdf" in sent
+
+
+@pytest.mark.parametrize(
+    ("byte_size", "expected"),
+    [(0, 20.0), (200 * 1024 * 1024, 70.0), (512 * 1024 * 1024, 148.0), (10**12, 150.0)],
+)
+def test_tempo_de_verificacao_cresce_com_o_arquivo_e_tem_teto(
+    byte_size: int, expected: float
+) -> None:
+    assert instream_timeout_for_size(byte_size) == pytest.approx(expected)
+
+
+def test_worker_espera_o_clamd_analisar_o_video_inteiro(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Em 13/11/2026, um vídeo de 200 MB ficou preso em "verificando".
+
+    O clamd aceitava o arquivo, mas levava mais de 3 s para responder, e o
+    worker desistia no `recv` com o mesmo timeout do `PING`. O erro virava
+    `ScannerUnavailable` e o envio era tentado de novo a cada 10 min, para
+    sempre. A espera da resposta do `INSTREAM` cresce com o tamanho; o `PING`
+    continua curto.
+    """
+    timeouts: list[float] = []
+
+    class FakeSocket:
+        def __enter__(self) -> FakeSocket:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def settimeout(self, value: float) -> None:
+            timeouts.append(value)
+
+        def connect(self, _path: str) -> None:
+            pass
+
+        def sendall(self, _payload: bytes) -> None:
+            pass
+
+        def recv(self, _size: int) -> bytes:
+            return b"stream: OK\0"
+
+    monkeypatch.setattr("appsell_api.storage_worker.socket.socket", lambda *_args: FakeSocket())
+    source = tmp_path / "aula.mp4"
+    source.write_bytes(b"x" * (4 * 1024 * 1024))
+    scanner = ClamAvScanner(
+        "/run/appsell-clamav/clamd.sock", instream_timeout=instream_timeout_for_size
+    )
+
+    assert scanner.scan(source) is True
+    # Antes do connect, o prazo inteiro: 20 s + 4 MiB a 4 MiB/s.
+    assert timeouts[0] == pytest.approx(21.0, abs=0.5)
+    assert all(0 < value <= 21.0 for value in timeouts)
+
+
+def test_prazo_do_scan_vale_para_a_conversa_inteira(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Um clamd lento que nunca para de todo não pode passar do prazo.
+
+    O `settimeout` do socket vale por chamada. Se cada envio leva 5 s, nenhum
+    estoura sozinho, mas a soma passa dos 25 s do prazo. O scan desiste antes
+    de pedir a resposta, e o vídeo não estoura a concessão do job.
+    """
+    relogio = [1_000.0]
+    recebeu = False
+
+    class FakeSocket:
+        def __enter__(self) -> FakeSocket:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def settimeout(self, _value: float) -> None:
+            pass
+
+        def connect(self, _path: str) -> None:
+            pass
+
+        def sendall(self, _payload: bytes) -> None:
+            relogio[0] += 5.0
+
+        def recv(self, _size: int) -> bytes:
+            nonlocal recebeu
+            recebeu = True
+            return b"stream: OK\0"
+
+    monkeypatch.setattr("appsell_api.storage_worker.socket.socket", lambda *_args: FakeSocket())
+    monkeypatch.setattr("appsell_api.storage_worker.monotonic", lambda: relogio[0])
+    source = tmp_path / "aula.mp4"
+    source.write_bytes(b"x" * (3 * 64 * 1024))
+    scanner = ClamAvScanner("/run/appsell-clamav/clamd.sock", instream_timeout=lambda _size: 25.0)
+
+    with pytest.raises(ScannerUnavailable):
+        scanner.scan(source)
+    assert recebeu is False
+
+
+def test_ping_continua_curto_no_scanner_do_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A espera longa é só do `INSTREAM`. Saúde do antivírus segue com 3 s."""
+    timeouts: list[float] = []
+
+    class FakeSocket:
+        def __enter__(self) -> FakeSocket:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def settimeout(self, value: float) -> None:
+            timeouts.append(value)
+
+        def connect(self, _path: str) -> None:
+            pass
+
+        def sendall(self, _payload: bytes) -> None:
+            pass
+
+        def recv(self, _size: int) -> bytes:
+            return b"PONG\0"
+
+    monkeypatch.setattr("appsell_api.storage_worker.socket.socket", lambda *_args: FakeSocket())
+    scanner = ClamAvScanner(
+        "/run/appsell-clamav/clamd.sock", instream_timeout=instream_timeout_for_size
+    )
+
+    assert scanner._request(b"zPING\0", stream=None) == b"PONG"
+    assert timeouts
+    assert all(0 < value <= 3.0 for value in timeouts)
+
+
+def test_dois_scans_no_pior_caso_cabem_na_concessao_do_job() -> None:
+    """Vídeo passa por dois scans (origem e derivado) numa concessão de 600 s."""
+    pior_caso = instream_timeout_for_size(512 * 1024 * 1024)
+    assert 2 * pior_caso <= 600 / 2
 
 
 def test_clamav_invalid_response_is_retryable(
