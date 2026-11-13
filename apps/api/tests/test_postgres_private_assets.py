@@ -2292,3 +2292,153 @@ def test_os_bytes_em_voo_tem_teto_proprio() -> None:
             byte_size=1024,
         )
     assert "open asset upload byte quota" in str(recusa.value)
+
+
+def _cancela(
+    connection: Any,
+    *,
+    admin: UUID,
+    seller: UUID,
+    product: UUID,
+    course: UUID,
+    module: UUID,
+    lesson: UUID,
+    upload: UUID,
+    chave: UUID,
+) -> dict[str, Any]:
+    apply_context(connection, admin, seller, "catalog.asset.upload.cancel")
+    linha = connection.execute(
+        "select app_private.cancel_asset_upload(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        (
+            admin,
+            seller,
+            product,
+            course,
+            module,
+            lesson,
+            upload,
+            chave,
+            digest(f"cancela-{chave}"),
+            uuid4(),
+        ),
+    ).fetchone()
+    assert linha is not None
+    connection.commit()
+    resultado: dict[str, Any] = linha[0]
+    return resultado
+
+
+def test_cancelar_devolve_onde_o_arquivo_estava_sem_gravar_isso_na_repeticao() -> None:
+    """O cancelamento diz à rota onde estão as partes, num contexto só (#642).
+
+    Pega: a rota voltar a precisar de uma segunda leitura, por outro contexto,
+    para abortar as partes; e o `storage` vazar para o registro de
+    idempotência, mudando o que uma repetição antiga devolve.
+    """
+    assert ADMIN_URL and RUNTIME_URL
+    admin, seller, product, course, module, lesson = _personas()
+    tamanho = MULTIPART_PART_BYTES + 1024
+    chave = uuid4()
+    with psycopg.connect(RUNTIME_URL) as connection:
+        criado, _ = _intencao_de_envio(
+            connection,
+            admin=admin,
+            seller=seller,
+            product=product,
+            course=course,
+            module=module,
+            lesson=lesson,
+            byte_size=tamanho,
+        )
+        argumentos = {
+            "admin": admin,
+            "seller": seller,
+            "product": product,
+            "course": course,
+            "module": module,
+            "lesson": lesson,
+            "upload": criado["upload_id"],
+            "chave": chave,
+        }
+        primeiro = _cancela(connection, **argumentos)
+        repeticao = _cancela(connection, **argumentos)
+
+    with psycopg.connect(ADMIN_URL) as administrativa:
+        linha = administrativa.execute(
+            "select storage_driver,quarantine_bucket,quarantine_key,status"
+            " from app_private.asset_upload where id=%s",
+            (criado["upload_id"],),
+        ).fetchone()
+        gravado = administrativa.execute(
+            "select count(*) filter (where result ? 'storage'), count(*)"
+            " from app_private.asset_mutation_request"
+            " where seller_organization_id=%s and upload_id=%s and operation='upload.cancel'",
+            (seller, criado["upload_id"]),
+        ).fetchone()
+    assert linha is not None and gravado is not None
+    driver, bucket, chave_do_objeto, situacao = linha
+    esperado = {
+        "storage_driver": driver,
+        "bucket": bucket,
+        "object_key": chave_do_objeto,
+        "byte_size": tamanho,
+    }
+    assert situacao == "cancelled"
+    assert primeiro["cancelled"] is True and primeiro["storage"] == esperado
+    assert repeticao["cancelled"] is False and repeticao["storage"] == esperado
+    # Um registro só, o da primeira chamada, e sem o `storage`.
+    assert gravado == (0, 1)
+
+
+@pytest.mark.parametrize("quem", ["contexto_de_outra_acao", "quem_nao_e_da_loja"])
+def test_cancelar_nao_devolve_nada_sem_autorizacao(quem: str) -> None:
+    """O `storage` só sai depois de o banco autorizar o contexto de cancelar.
+
+    Pega: a função devolvendo bucket e chave antes de `lock_curriculum_access`,
+    para quem chamou com o contexto de outra ação ou não é da loja.
+    """
+    assert ADMIN_URL and RUNTIME_URL
+    admin, seller, product, course, module, lesson = _personas()
+    manifest, _ = load_manifest()
+    comprador = identity_id(manifest["personas"]["buyer"]["subject"])
+    with psycopg.connect(RUNTIME_URL) as connection:
+        criado, _ = _intencao_de_envio(
+            connection,
+            admin=admin,
+            seller=seller,
+            product=product,
+            course=course,
+            module=module,
+            lesson=lesson,
+            byte_size=MULTIPART_PART_BYTES + 1024,
+        )
+    ator, contexto = (
+        (admin, "catalog.asset.create")
+        if quem == "contexto_de_outra_acao"
+        else (comprador, "catalog.asset.upload.cancel")
+    )
+    with psycopg.connect(RUNTIME_URL) as connection, pytest.raises(psycopg.DatabaseError):
+        # O próprio contexto pode ser recusado para quem não é da loja; de um
+        # jeito ou de outro, nada chega a ser devolvido.
+        apply_context(connection, ator, seller, contexto)
+        connection.execute(
+            "select app_private.cancel_asset_upload(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (
+                ator,
+                seller,
+                product,
+                course,
+                module,
+                lesson,
+                criado["upload_id"],
+                uuid4(),
+                digest(f"recusa-{uuid4()}"),
+                uuid4(),
+            ),
+        ).fetchone()
+    with psycopg.connect(ADMIN_URL) as administrativa:
+        linha = administrativa.execute(
+            "select status from app_private.asset_upload where id=%s",
+            (criado["upload_id"],),
+        ).fetchone()
+    assert linha is not None and linha[0] == "pending"

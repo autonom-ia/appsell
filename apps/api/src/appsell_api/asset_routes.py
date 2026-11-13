@@ -683,19 +683,6 @@ async def cancel_asset_upload(
     auth, internal = await _authenticate(request, "catalog.asset.upload.cancel")
     await _require_seller(internal, seller_id)
     body = await _model_from_body(AssetMutationBody, internal)
-    # Lido antes do cancelamento, enquanto a intenção ainda existe para ser
-    # lida. A ordem importa: o banco é quem autoriza, então ele decide primeiro
-    # e só depois as partes são apagadas.
-    signing = await _read_upload_for_signing(
-        auth=auth,
-        envelope=internal.envelope,
-        seller_id=seller_id,
-        product_id=product_id,
-        course_id=course_id,
-        module_id=module_id,
-        lesson_id=lesson_id,
-        upload_id=upload_id,
-    )
     try:
         async with auth.domain_session(internal.envelope) as session:
             value = await session.scalar(
@@ -725,33 +712,59 @@ async def cancel_asset_upload(
         ) from error
     except DBAPIError as error:
         raise _domain_error(error) from error
-    if needs_multipart(int(signing["byte_size"])):
-        # Cancelar sem abortar deixaria as partes gravadas ocupando disco sem
-        # aparecer em listagem de objeto nenhuma. Falhar aqui não desfaz o
-        # cancelamento, que já está gravado: a regra de expiração do bucket é a
-        # rede embaixo desta.
-        try:
-            storage = await _storage(request, internal)
-            storage_upload_id = await to_thread.run_sync(
-                lambda: storage.find_multipart_upload(
-                    bucket=str(signing["bucket"]), key=str(signing["object_key"])
+    # O banco autorizou e gravou o cancelamento; só agora as partes são
+    # apagadas. O contrário destruiria um envio legítimo se o banco recusasse.
+    #
+    # Onde o arquivo estava vem na própria resposta do cancelamento (0080). Ler
+    # a intenção antes pedia outro contexto por continuação, que o autenticador
+    # recusa, e o cancelamento respondia 401 (#642). Bucket e chave saem da
+    # resposta aqui: o navegador recebe só o desfecho.
+    result = _json_object(value)
+    stored_object = result.pop("storage", None)
+    if isinstance(stored_object, dict):
+        await _abort_cancelled_parts(request, internal, upload_id, stored_object)
+    return result
+
+
+async def _abort_cancelled_parts(
+    request: Request,
+    internal: AuthenticatedInternalRequest,
+    upload_id: UUID,
+    stored_object: dict[str, Any],
+) -> None:
+    """Apaga as partes de um envio fatiado que acabou de ser cancelado.
+
+    Cancelar sem abortar deixaria as partes gravadas ocupando disco sem aparecer
+    em listagem de objeto nenhuma. Falhar aqui não desfaz o cancelamento, que já
+    está gravado: a regra de expiração do bucket é a rede embaixo desta.
+    """
+    bucket = stored_object.get("bucket")
+    key = stored_object.get("object_key")
+    byte_size = stored_object.get("byte_size")
+    if not (isinstance(bucket, str) and isinstance(key, str) and isinstance(byte_size, int)):
+        # O cancelamento já está gravado; um formato inesperado não pode virar
+        # 500 para quem cancelou. A expiração do bucket recolhe as partes.
+        _logger.warning("appsell_multipart_abort_skipped", upload_id=str(upload_id))
+        return
+    if not needs_multipart(byte_size):
+        return
+    try:
+        storage = await _storage(request, internal)
+        storage_upload_id = await to_thread.run_sync(
+            lambda: storage.find_multipart_upload(bucket=bucket, key=key)
+        )
+        if storage_upload_id is not None:
+            await to_thread.run_sync(
+                lambda: storage.abort_multipart_upload(
+                    bucket=bucket, key=key, storage_upload_id=str(storage_upload_id)
                 )
             )
-            if storage_upload_id is not None:
-                await to_thread.run_sync(
-                    lambda: storage.abort_multipart_upload(
-                        bucket=str(signing["bucket"]),
-                        key=str(signing["object_key"]),
-                        storage_upload_id=str(storage_upload_id),
-                    )
-                )
-        except (StorageError, HTTPException) as error:
-            _logger.warning(
-                "appsell_multipart_abort_failed",
-                upload_id=str(upload_id),
-                reason=type(error).__name__,
-            )
-    return _json_object(value)
+    except (StorageError, HTTPException) as error:
+        _logger.warning(
+            "appsell_multipart_abort_failed",
+            upload_id=str(upload_id),
+            reason=type(error).__name__,
+        )
 
 
 @router.post(
