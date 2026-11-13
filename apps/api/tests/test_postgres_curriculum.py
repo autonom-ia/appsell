@@ -1003,3 +1003,180 @@ def test_publication_v1_is_preserved_and_v2_is_deterministic() -> None:
     assert published_module["status"] == "active"
     assert published_module["lessons"][0]["kind"] == "text"
     assert "content" in published_module["lessons"][0]
+
+
+PRODUCT_POSICAO = UUID("53000000-0000-4000-8000-0000000000a1")
+COURSE_POSICAO = UUID("54000000-0000-4000-8000-0000000000a1")
+
+
+def _versao_do_curso(course: UUID) -> int:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        return cast(
+            int,
+            required_row(
+                connection.execute(
+                    "select draft_version from course where seller_organization_id=%s and id=%s",
+                    (SELLER_A, course),
+                ).fetchone()
+            )[0],
+        )
+
+
+def _curriculo(capability: str, sql: str, params: tuple[Any, ...]) -> tuple[Any, ...]:
+    assert RUNTIME_URL
+    with psycopg.connect(RUNTIME_URL) as connection:
+        apply_context(connection, USER_A, SELLER_A, capability)
+        row = required_row(connection.execute(sql, params).fetchone())
+        connection.commit()
+    return row
+
+
+def _novo_modulo(titulo: str) -> UUID:
+    return cast(
+        UUID,
+        _curriculo(
+            "catalog.curriculum.create",
+            "select module_id from app_private.create_course_module(%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (
+                USER_A,
+                SELLER_A,
+                PRODUCT_POSICAO,
+                COURSE_POSICAO,
+                titulo,
+                _versao_do_curso(COURSE_POSICAO),
+                uuid4(),
+                digest(titulo),
+                uuid4(),
+            ),
+        )[0],
+    )
+
+
+def _nova_aula(modulo: UUID, titulo: str) -> UUID:
+    return cast(
+        UUID,
+        _curriculo(
+            "catalog.curriculum.create",
+            "select lesson_id from app_private.create_course_lesson("
+            "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (
+                USER_A,
+                SELLER_A,
+                PRODUCT_POSICAO,
+                COURSE_POSICAO,
+                modulo,
+                titulo,
+                f"Texto de {titulo}",
+                _versao_do_curso(COURSE_POSICAO),
+                uuid4(),
+                digest(titulo),
+                uuid4(),
+            ),
+        )[0],
+    )
+
+
+def _excluir_aula(modulo: UUID, aula: UUID) -> None:
+    _curriculo(
+        "catalog.curriculum.archive",
+        "select course_version from app_private.archive_course_lesson("
+        "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        (
+            USER_A,
+            SELLER_A,
+            PRODUCT_POSICAO,
+            COURSE_POSICAO,
+            modulo,
+            aula,
+            _versao_do_curso(COURSE_POSICAO),
+            uuid4(),
+            digest(f"excluir-{aula}"),
+            uuid4(),
+        ),
+    )
+
+
+def _excluir_modulo(modulo: UUID) -> None:
+    _curriculo(
+        "catalog.curriculum.archive",
+        "select course_version from app_private.archive_course_module(%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        (
+            USER_A,
+            SELLER_A,
+            PRODUCT_POSICAO,
+            COURSE_POSICAO,
+            modulo,
+            _versao_do_curso(COURSE_POSICAO),
+            uuid4(),
+            digest(f"excluir-{modulo}"),
+            uuid4(),
+        ),
+    )
+
+
+def _posicoes(tabela: str, filtro: str, valor: UUID) -> dict[str, list[int]]:
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        linhas = connection.execute(
+            f"select status, position from {tabela} "  # noqa: S608 - nomes fixos do teste
+            f"where seller_organization_id=%s and {filtro}=%s order by position",
+            (SELLER_A, valor),
+        ).fetchall()
+    resultado: dict[str, list[int]] = {"active": [], "archived": []}
+    for status, posicao in linhas:
+        resultado[str(status)].append(int(posicao))
+    return resultado
+
+
+def test_criar_depois_de_excluir_nao_esbarra_na_arquivada() -> None:
+    """13/11/2026: uma vendedora excluiu aulas e não conseguiu mais criar nenhuma.
+
+    Arquivar manda a aula para `max(position)+1` e renumera as ativas. Criar
+    usava `count(ativas)` como posição, e a segunda aula nova caía na posição da
+    arquivada: 23505 em `lesson_position_key`, 409 na tela, para sempre. O mesmo
+    valia para módulos. Agora as arquivadas no caminho andam uma casa.
+    """
+    assert ADMIN_URL
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "insert into catalog_product(seller_organization_id,id,slug,title,description,status) "
+            "values (%s,%s,'curriculum-posicao','Posicao','Descricao','draft')",
+            (SELLER_A, PRODUCT_POSICAO),
+        )
+        connection.execute(
+            "insert into course(seller_organization_id,id,title,description,status,draft_version) "
+            "values (%s,%s,'Curso posicao','Descricao do curso','draft',1)",
+            (SELLER_A, COURSE_POSICAO),
+        )
+        connection.execute(
+            "insert into product_course("
+            "seller_organization_id,catalog_product_id,course_id,position) values (%s,%s,%s,0)",
+            (SELLER_A, PRODUCT_POSICAO, COURSE_POSICAO),
+        )
+        connection.commit()
+
+    modulo = _novo_modulo("Modulo um")
+    primeira = _nova_aula(modulo, "Aula um")
+    segunda = _nova_aula(modulo, "Aula dois")
+    _nova_aula(modulo, "Aula tres")
+    _excluir_aula(modulo, segunda)
+    _excluir_aula(modulo, primeira)
+    # Era aqui que quebrava: 1 ativa (0) e arquivadas em 3 e 4. A 2ª e a 3ª
+    # aulas novas caíam em 3 e 4.
+    for titulo in ("Aula quatro", "Aula cinco", "Aula seis", "Aula sete"):
+        _nova_aula(modulo, titulo)
+    aulas = _posicoes("lesson", "module_id", modulo)
+    assert aulas["active"] == [0, 1, 2, 3, 4]
+    assert len(aulas["archived"]) == 2
+    assert min(aulas["archived"]) > max(aulas["active"])
+
+    outro = _novo_modulo("Modulo dois")
+    _novo_modulo("Modulo tres")
+    _excluir_modulo(outro)
+    for titulo in ("Modulo quatro", "Modulo cinco", "Modulo seis"):
+        _novo_modulo(titulo)
+    modulos = _posicoes("course_module", "course_id", COURSE_POSICAO)
+    assert modulos["active"] == [0, 1, 2, 3, 4]
+    assert len(modulos["archived"]) == 1
+    assert min(modulos["archived"]) > max(modulos["active"])
