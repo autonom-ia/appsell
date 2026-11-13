@@ -18,6 +18,14 @@ import { useScheduleUndo } from "./undo-toast";
 
 
 export const MAX_VERIFICATION_WAIT_MS = 15_000;
+// Depois dos 15 s a tela avisa que está demorando, mas continua perguntando.
+// Um vídeo grande leva de 20 s a alguns minutos (baixar, antivírus, preparar e
+// antivírus de novo), e a tela prometia "a lista mostra quando ficar pronto"
+// sem voltar a perguntar: a pessoa ficava esperando para sempre (13/11/2026).
+// Só para de perguntar sozinha depois de 20 min, perto do que o servidor leva
+// para desistir de uma verificação, e aí oferece "Conferir de novo".
+export const VERIFICATION_GIVE_UP_MS = 20 * 60_000;
+const DELAYED_POLL_MS = [5_000, 10_000, 15_000] as const;
 const MATERIAL_PREPARATION_MESSAGE = "Quase lá: conferindo o arquivo";
 const MATERIAL_DELAYED_MESSAGE = MATERIAL_PREPARATION_MESSAGE;
 const VERIFYING_UPLOAD_STATUSES: readonly string[] = ["uploaded", "verifying"];
@@ -233,6 +241,9 @@ export function LessonAssetPanel({
   const hashControllerRef = useRef<AbortController | null>(null);
   const pollTimerRef = useRef<number | null>(null);
   const pollingUploadRef = useRef<string | null>(null);
+  // Cada laço de perguntas tem um número. "Conferir de novo" começa outro, e o
+  // anterior, se ainda tiver um pedido no ar, para quando ele voltar.
+  const pollLoopRef = useRef(0);
   const verificationStartedAtRef = useRef<number | null>(null);
   const generationRef = useRef(0);
   const intentRequestRef = useRef<Promise<UploadIntentPayload> | null>(null);
@@ -563,19 +574,20 @@ export function LessonAssetPanel({
     if (pollingUploadRef.current === uploadId) return;
     pollingUploadRef.current = uploadId;
     const generation = generationRef.current;
+    const loop = ++pollLoopRef.current;
     verificationStartedAtRef.current ??= Date.now();
     let attempt = 0;
     const run = async () => {
-      if (generation !== generationRef.current) return;
+      if (generation !== generationRef.current || loop !== pollLoopRef.current) return;
       pollTimerRef.current = null;
       const elapsed = Date.now() - (verificationStartedAtRef.current ?? Date.now());
-      if (verificationPhaseForElapsed(elapsed) === "delayed") {
+      if (elapsed >= VERIFICATION_GIVE_UP_MS) {
         pollingUploadRef.current = null;
         dispatch({ type: "phase", phase: "delayed", message: MATERIAL_DELAYED_MESSAGE, uploadId });
         return;
       }
       if (document.hidden) {
-        pollTimerRef.current = window.setTimeout(run, Math.min(2_000, MAX_VERIFICATION_WAIT_MS - elapsed));
+        pollTimerRef.current = window.setTimeout(run, 2_000);
         return;
       }
       try {
@@ -583,13 +595,9 @@ export function LessonAssetPanel({
         const response = await boundedFetch(`${base}/uploads/${uploadId}`, { cache: "no-store" }, statusTimeout);
         if (!response.ok) throw new Error("status_failed");
         const payload = await response.json() as UploadStatusPayload;
+        if (generation !== generationRef.current || loop !== pollLoopRef.current) return;
         if (payload.upload_id !== uploadId) throw new Error("status_invalid");
         const responseElapsed = Date.now() - (verificationStartedAtRef.current ?? Date.now());
-        if (responseElapsed >= MAX_VERIFICATION_WAIT_MS && ["pending", "uploaded", "verifying"].includes(payload.status)) {
-          pollingUploadRef.current = null;
-          dispatch({ type: "phase", phase: "delayed", message: MATERIAL_DELAYED_MESSAGE, uploadId });
-          return;
-        }
         if (payload.status === "ready" && payload.asset) {
           activeUploadIdRef.current = null;
           verificationStartedAtRef.current = null;
@@ -623,24 +631,33 @@ export function LessonAssetPanel({
           onCommitted();
           return;
         }
-        dispatch({ type: "phase", phase: "verifying", message: MATERIAL_PREPARATION_MESSAGE, uploadId });
+        const phase = verificationPhaseForElapsed(responseElapsed);
+        dispatch({
+          type: "phase",
+          phase,
+          message: phase === "delayed" ? MATERIAL_DELAYED_MESSAGE : MATERIAL_PREPARATION_MESSAGE,
+          uploadId
+        });
         const requested = payload.retry_after_seconds;
         const delay = requested && requested >= 1 && requested <= 10
           ? requested * 1_000
-          : Math.min(5_000, [1_500, 2_000, 4_000, 5_000][attempt] ?? 5_000);
+          : nextVerificationPollMs(responseElapsed, attempt);
         attempt += 1;
-        pollTimerRef.current = window.setTimeout(run, Math.min(delay + Math.floor(Math.random() * 250), MAX_VERIFICATION_WAIT_MS - elapsed));
+        pollTimerRef.current = window.setTimeout(run, delay + Math.floor(Math.random() * 250));
       } catch {
-        if (generation !== generationRef.current) return;
+        if (generation !== generationRef.current || loop !== pollLoopRef.current) return;
         const retryElapsed = Date.now() - (verificationStartedAtRef.current ?? Date.now());
-        if (verificationPhaseForElapsed(retryElapsed) === "delayed") {
+        if (retryElapsed >= VERIFICATION_GIVE_UP_MS) {
           pollingUploadRef.current = null;
           dispatch({ type: "phase", phase: "delayed", message: MATERIAL_DELAYED_MESSAGE, uploadId });
           return;
         }
-        const delay = Math.min(5_000, [1_500, 2_000, 4_000, 5_000][attempt] ?? 5_000);
+        if (verificationPhaseForElapsed(retryElapsed) === "delayed") {
+          dispatch({ type: "phase", phase: "delayed", message: MATERIAL_DELAYED_MESSAGE, uploadId });
+        }
+        const delay = nextVerificationPollMs(retryElapsed, attempt);
         attempt += 1;
-        pollTimerRef.current = window.setTimeout(run, Math.min(delay, MAX_VERIFICATION_WAIT_MS - retryElapsed));
+        pollTimerRef.current = window.setTimeout(run, delay);
       }
     };
     void run();
@@ -650,13 +667,16 @@ export function LessonAssetPanel({
     const uploadId = state.uploadId ?? activeUploadIdRef.current;
     if (!uploadId) return;
     verificationStartedAtRef.current = Date.now();
+    if (pollTimerRef.current !== null) window.clearTimeout(pollTimerRef.current);
+    pollTimerRef.current = null;
     pollingUploadRef.current = null;
     dispatch({ type: "phase", phase: "verifying", message: MATERIAL_PREPARATION_MESSAGE, uploadId });
     pollStatus(uploadId);
   }, [pollStatus, state.uploadId]);
 
   useEffect(() => {
-    if (state.phase === "verifying" && state.uploadId && pollTimerRef.current === null) {
+    if ((state.phase === "verifying" || state.phase === "delayed") && state.uploadId
+        && pollTimerRef.current === null && pollingUploadRef.current === null) {
       pollStatus(state.uploadId);
     }
   }, [pollStatus, state.phase, state.uploadId]);
@@ -1004,6 +1024,7 @@ export function LessonAssetPanel({
     } catch (error) {
       if (error instanceof Error && error.message === "asset_request_timeout" && generation === generationRef.current) {
         dispatch({ type: "phase", phase: "delayed", message: MATERIAL_DELAYED_MESSAGE, uploadId });
+        pollStatus(uploadId);
         return;
       }
       throw error;
@@ -1011,11 +1032,13 @@ export function LessonAssetPanel({
     if (response.status !== 202 && !response.ok) throw new Error(`confirm_${response.status}`);
     if (generation !== generationRef.current) return;
     const elapsed = Date.now() - (verificationStartedAtRef.current ?? Date.now());
-    if (verificationPhaseForElapsed(elapsed) === "delayed") {
-      dispatch({ type: "phase", phase: "delayed", message: MATERIAL_DELAYED_MESSAGE, uploadId });
-      return;
-    }
-    dispatch({ type: "phase", phase: "verifying", message: MATERIAL_PREPARATION_MESSAGE, uploadId });
+    const phase = verificationPhaseForElapsed(elapsed);
+    dispatch({
+      type: "phase",
+      phase,
+      message: phase === "delayed" ? MATERIAL_DELAYED_MESSAGE : MATERIAL_PREPARATION_MESSAGE,
+      uploadId
+    });
     pollStatus(uploadId);
   }
 
@@ -1364,7 +1387,16 @@ export function verificationPhaseForElapsed(elapsedMs: number): "verifying" | "d
 }
 
 export function verificationStatusTimeoutForElapsed(elapsedMs: number): number {
-  return Math.max(1, Math.min(10_000, MAX_VERIFICATION_WAIT_MS - Math.max(0, elapsedMs)));
+  return Math.max(1, Math.min(10_000, VERIFICATION_GIVE_UP_MS - Math.max(0, elapsedMs)));
+}
+
+/** Intervalo até a próxima pergunta: rápido no começo, mais espaçado depois dos 15 s. */
+export function nextVerificationPollMs(elapsedMs: number, attempt: number): number {
+  if (elapsedMs < MAX_VERIFICATION_WAIT_MS) {
+    return Math.min(5_000, [1_500, 2_000, 4_000, 5_000][attempt] ?? 5_000);
+  }
+  const passos = Math.floor((elapsedMs - MAX_VERIFICATION_WAIT_MS) / 60_000);
+  return DELAYED_POLL_MS[Math.min(passos, DELAYED_POLL_MS.length - 1)];
 }
 
 export async function boundedAssetFetch(
