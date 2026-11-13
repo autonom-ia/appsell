@@ -26,6 +26,7 @@ from appsell_api.storage_worker import (
     ScanRejected,
     VerifyPdfJob,
     assert_storage_worker_ready,
+    instream_timeout_for_size,
 )
 from appsell_api.video_verifier import PreparedCatalogueVideo
 
@@ -346,6 +347,59 @@ def test_clamav_scanner_uses_bounded_unix_instream_protocol(
     assert sent[0] == b"zINSTREAM\0"
     assert sent[-1] == b"\0\0\0\0"
     assert b"safe-pdf" in sent
+
+
+@pytest.mark.parametrize(
+    ("byte_size", "expected"),
+    [(0, 30.0), (200 * 1024 * 1024, 130.0), (512 * 1024 * 1024, 286.0), (10**12, 300.0)],
+)
+def test_tempo_de_verificacao_cresce_com_o_arquivo_e_tem_teto(
+    byte_size: int, expected: float
+) -> None:
+    assert instream_timeout_for_size(byte_size) == pytest.approx(expected)
+
+
+def test_worker_espera_o_clamd_analisar_o_video_inteiro(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Em 13/11/2026, um vídeo de 200 MB ficou preso em "verificando".
+
+    O clamd aceitava o arquivo, mas levava mais de 3 s para responder, e o
+    worker desistia no `recv` com o mesmo timeout do `PING`. O erro virava
+    `ScannerUnavailable` e o envio era tentado de novo a cada 10 min, para
+    sempre. A espera da resposta do `INSTREAM` cresce com o tamanho; o `PING`
+    continua curto.
+    """
+    timeouts: list[float] = []
+
+    class FakeSocket:
+        def __enter__(self) -> FakeSocket:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def settimeout(self, value: float) -> None:
+            timeouts.append(value)
+
+        def connect(self, _path: str) -> None:
+            pass
+
+        def sendall(self, _payload: bytes) -> None:
+            pass
+
+        def recv(self, _size: int) -> bytes:
+            return b"stream: OK\0"
+
+    monkeypatch.setattr("appsell_api.storage_worker.socket.socket", lambda *_args: FakeSocket())
+    source = tmp_path / "aula.mp4"
+    source.write_bytes(b"x" * (4 * 1024 * 1024))
+    scanner = ClamAvScanner(
+        "/run/appsell-clamav/clamd.sock", instream_timeout=instream_timeout_for_size
+    )
+
+    assert scanner.scan(source) is True
+    assert timeouts == [pytest.approx(32.0)]
 
 
 def test_clamav_invalid_response_is_retryable(
