@@ -249,6 +249,20 @@ function Workspace({
     else setNotice(JOURNEY_COPY.loadFailed);
   }, [load]);
 
+  /**
+   * A versão do curso é uma só, e um arquivo que fica pronto também a muda.
+   * Criar ou renomear logo depois chegava com a versão velha e recebia 409, e a
+   * pessoa via "o curso mudou em outra aba" sem ter mexido em nada. Uma tentativa
+   * a mais, depois de ler a versão nova, resolve sem incomodar; se o conflito
+   * voltar, aí sim é outra aba, e quem decide é a pessoa.
+   */
+  const withFreshVersion = useCallback(async (task: () => Promise<MutationResult>) => {
+    const first = await task();
+    if (first.ok || first.failure !== "conflict") return first;
+    await load("revalidate");
+    return task();
+  }, [load]);
+
   const structural = useCallback(async (task: () => Promise<MutationResult>, invalidMessage?: string) => {
     setStructureBusy(true);
     try {
@@ -321,26 +335,26 @@ function Workspace({
   }, [selectedId]);
 
   const createModule = useCallback(async (title: string) => {
-    const result = await structural(() => mutate("module:create", `${endpoint}/modules`, "POST", "create", { title }));
+    const result = await structural(() => withFreshVersion(() => mutate("module:create", `${endpoint}/modules`, "POST", "create", { title })));
     if (!result.ok) return null;
     await load("revalidate");
     return typeof result.payload.module_id === "string" ? result.payload.module_id : null;
-  }, [endpoint, load, mutate, structural]);
+  }, [endpoint, load, mutate, structural, withFreshVersion]);
 
   const renameModule = useCallback(async (module: CurriculumModule, title: string) => {
     if (title === module.title) return true;
-    const result = await structural(() => mutate(`module:update:${module.id}`, `${endpoint}/modules/${module.id}`, "PATCH", "update", { title }));
+    const result = await structural(() => withFreshVersion(() => mutate(`module:update:${module.id}`, `${endpoint}/modules/${module.id}`, "PATCH", "update", { title })));
     if (result.ok) setModules((current) => current.map((entry) => entry.id === module.id ? { ...entry, title } : entry));
     return result.ok;
-  }, [endpoint, mutate, structural]);
+  }, [endpoint, mutate, structural, withFreshVersion]);
 
   const createLesson = useCallback(async (module: CurriculumModule, title: string) => {
-    const result = await structural(() => mutate(`lesson:create:${module.id}`, `${endpoint}/modules/${module.id}/lessons`, "POST", "create", { title, kind: "text", content: "" }));
+    const result = await structural(() => withFreshVersion(() => mutate(`lesson:create:${module.id}`, `${endpoint}/modules/${module.id}/lessons`, "POST", "create", { title, kind: "text", content: "" })));
     if (!result.ok) return false;
     await load("revalidate");
     if (typeof result.payload.lesson_id === "string") openLesson(result.payload.lesson_id);
     return true;
-  }, [endpoint, load, mutate, openLesson, structural]);
+  }, [endpoint, load, mutate, openLesson, structural, withFreshVersion]);
 
   const moveModule = useCallback(async (index: number, direction: -1 | 1) => {
     const target = index + direction;
