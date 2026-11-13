@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { boundedAssetFetch, discardPendingAssetUpload, downloadToggleLabel, formatBytes, MAX_VERIFICATION_WAIT_MS, validIntent, validPart, verificationPhaseForElapsed, verificationStatusTimeoutForElapsed, type UploadIntentPayload } from "../app/components/lesson-asset-panel";
+import { boundedAssetFetch, discardPendingAssetUpload, downloadToggleLabel, formatBytes, MAX_VERIFICATION_WAIT_MS, nextVerificationPollMs, VERIFICATION_GIVE_UP_MS, validIntent, validPart, verificationPhaseForElapsed, verificationStatusTimeoutForElapsed, type UploadIntentPayload } from "../app/components/lesson-asset-panel";
 import { ASSET_MEDIA_TYPES, SUPPORTED_ASSET_MEDIA, mediaLabel } from "../lib/asset-media";
 
 const valid: UploadIntentPayload = {
@@ -55,12 +55,25 @@ describe("lesson asset size labels", () => {
 });
 
 describe("lesson asset verification UX", () => {
-  it("leaves the service processing but exits the polling state after 15 seconds", () => {
+  it("passa a avisar que demora aos 15 s, mas segue perguntando até 20 min", () => {
+    // 13/11/2026: aos 15 s a tela parava de perguntar e o vídeo, pronto 4 s
+    // depois, nunca aparecia. Os 15 s mudam só a mensagem.
     expect(MAX_VERIFICATION_WAIT_MS).toBe(15_000);
+    expect(VERIFICATION_GIVE_UP_MS).toBe(20 * 60_000);
     expect(verificationPhaseForElapsed(14_999)).toBe("verifying");
     expect(verificationPhaseForElapsed(15_000)).toBe("delayed");
-    expect(verificationStatusTimeoutForElapsed(14_900)).toBe(100);
-    expect(verificationStatusTimeoutForElapsed(15_000)).toBe(1);
+    expect(verificationStatusTimeoutForElapsed(14_900)).toBe(10_000);
+    expect(verificationStatusTimeoutForElapsed(15_000)).toBe(10_000);
+    expect(verificationStatusTimeoutForElapsed(VERIFICATION_GIVE_UP_MS - 500)).toBe(500);
+    expect(verificationStatusTimeoutForElapsed(VERIFICATION_GIVE_UP_MS)).toBe(1);
+  });
+
+  it("pergunta rápido no começo e mais espaçado depois, sem nunca parar antes do limite", () => {
+    expect(nextVerificationPollMs(0, 0)).toBe(1_500);
+    expect(nextVerificationPollMs(5_000, 3)).toBe(5_000);
+    expect(nextVerificationPollMs(15_000, 7)).toBe(5_000);
+    expect(nextVerificationPollMs(15_000 + 60_000, 9)).toBe(10_000);
+    expect(nextVerificationPollMs(15_000 + 10 * 60_000, 30)).toBe(15_000);
   });
 });
 

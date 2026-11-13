@@ -128,6 +128,26 @@ test.describe("montar o curso do zero", () => {
     await expect(page).toHaveURL(new RegExp(`aula=${falta.id}`));
     await expect(page.getByRole("heading", { level: 2, name: /Primeiro exercício/ })).toBeVisible();
   });
+
+  test("um arquivo que ficou pronto não impede criar a próxima aula", async ({ page }) => {
+    // 13/11/2026: o vídeo ficou pronto, a versão do curso andou, e "Criar e
+    // abrir a aula" recebeu 409 com "o curso mudou em outra aba", sem a pessoa
+    // ter mexido em nada. A criação agora lê a versão nova e tenta de novo.
+    const curso = new CursoSimulado([modulo("Começo", [aula("Abertura", "Bem-vindo.")])]);
+    await login(page);
+    await abrirCurso(page, curso);
+    await expect(page.getByTestId("curriculum-empty")).toHaveCount(0);
+
+    curso.versao += 1;
+    await page.getByLabel("Nome da nova aula").fill("Segunda aula");
+    await page.getByRole("button", { name: "Criar e abrir a aula" }).click();
+
+    await expect(page.getByRole("heading", { level: 2, name: /Segunda aula/ })).toBeVisible();
+    await expect.poll(() => page.url()).toContain("aula=");
+    expect(curso.conflitos).toBe(1);
+    expect(curso.pedidosPara("POST", "/lessons")).toHaveLength(2);
+    await expect(page.getByText("O curso mudou em outra aba ou aparelho.", { exact: false })).toHaveCount(0);
+  });
 });
 
 test.describe("organizar sem medo", () => {
