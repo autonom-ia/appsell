@@ -2287,6 +2287,14 @@ def _domain_error(error: DBAPIError) -> HTTPException:
             status_code=status.HTTP_409_CONFLICT,
             detail="cover_upload_closed",
         )
+    # Limite de envio de arquivo (so as funcoes de envio levantam P4290). Sem
+    # isto caia no 503 do fim, e a tela dizia "fora do ar" para quem so precisa
+    # esperar os envios abertos terminarem.
+    if sqlstate == "P4290":
+        return HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="upload_limit_reached",
+        )
     # Uma linha que nao existe e 404. Sem isto ela cairia no 503 do fim, que
     # diz "o dominio esta fora do ar" sobre um pedido que so estava errado.
     if sqlstate == "P4041":

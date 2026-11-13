@@ -2442,3 +2442,99 @@ def test_cancelar_nao_devolve_nada_sem_autorizacao(quem: str) -> None:
             (criado["upload_id"],),
         ).fetchone()
     assert linha is not None and linha[0] == "pending"
+
+
+def test_envio_pronto_nao_ocupa_a_vaga_de_envio_aberto() -> None:
+    """Dez aulas prontas em sequência não barram a 11ª (0082).
+
+    Os limites de envio aberto contavam todo envio com o `quarantine_reconcile`
+    pendente, e esse job só roda umas duas horas depois. Um vídeo pronto ficava
+    ocupando a vaga esse tempo todo. Em verificação ele segue contando: está em
+    voo de verdade.
+    """
+    assert ADMIN_URL and RUNTIME_URL
+    admin, seller, product, course, module, lesson = _personas()
+    manifest, _ = load_manifest()
+    asset = UUID(manifest["lessons"][0]["asset_id"])
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            """
+            insert into app_private.asset_upload(
+              seller_organization_id,id,identity_user_id,catalog_product_id,course_id,
+              module_id,lesson_id,asset_id,blob_id,reserved_version,title,file_name,
+              expected_media_type,expected_byte_size,expected_sha256,storage_driver,
+              quarantine_bucket,ready_bucket,quarantine_key,ready_key,status,expires_at
+            ) select %s,gen_random_uuid(),%s,%s,%s,%s,%s,%s,gen_random_uuid(),ordinality+700,
+              'Aula em sequencia','aula-em-sequencia.pdf','application/pdf',128,
+              encode(digest('sequencia'||ordinality::text,'sha256'),'hex'),'s3',
+              'appsell-quarantine','appsell-ready','sequencia-quarantine-'||ordinality,
+              'sequencia-ready-'||ordinality,'verifying',clock_timestamp()+interval '10 minutes'
+            from generate_series(1,10) input(ordinality)
+            """,
+            (seller, admin, product, course, module, lesson, asset),
+        )
+        # O reconcile fica na fila, como fica de verdade nas duas horas depois
+        # do envio: é ele que fazia o envio contar como aberto.
+        connection.execute(
+            """
+            insert into app_private.asset_storage_cleanup_job(
+              seller_organization_id,upload_id,kind,storage_driver,bucket,object_key,
+              storage_version_id,status,available_at
+            ) select seller_organization_id,id,'quarantine_reconcile','s3',
+              quarantine_bucket,quarantine_key,null,'queued',clock_timestamp()+interval '2 hours'
+            from app_private.asset_upload
+            where seller_organization_id=%s and title='Aula em sequencia'
+            """,
+            (seller,),
+        )
+        connection.commit()
+
+    # Dez em verificação: a 11ª continua barrada pelo limite por pessoa.
+    with psycopg.connect(RUNTIME_URL) as connection, pytest.raises(psycopg.DatabaseError) as recusa:
+        _intencao_de_envio(
+            connection,
+            admin=admin,
+            seller=seller,
+            product=product,
+            course=course,
+            module=module,
+            lesson=lesson,
+            byte_size=1024,
+        )
+    assert recusa.value.sqlstate == "P4290"
+    assert "open asset upload limit exceeded" in str(recusa.value)
+
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            "update app_private.asset_upload set status='ready' "
+            "where seller_organization_id=%s and title='Aula em sequencia'",
+            (seller,),
+        )
+        pendentes = connection.execute(
+            """
+            select count(*) from app_private.asset_storage_cleanup_job reconcile
+            join app_private.asset_upload upload
+              on upload.seller_organization_id=reconcile.seller_organization_id
+             and upload.id=reconcile.upload_id
+            where upload.seller_organization_id=%s and upload.title='Aula em sequencia'
+              and reconcile.kind='quarantine_reconcile' and reconcile.status<>'completed'
+            """,
+            (seller,),
+        ).fetchone()
+        connection.commit()
+    # O reconcile segue pendente: quem libera a vaga é o `ready`, não o job.
+    assert pendentes == (10,)
+
+    # Dez prontos: a 11ª passa.
+    with psycopg.connect(RUNTIME_URL) as connection:
+        criado, _ = _intencao_de_envio(
+            connection,
+            admin=admin,
+            seller=seller,
+            product=product,
+            course=course,
+            module=module,
+            lesson=lesson,
+            byte_size=1024,
+        )
+    assert criado["created"] is True

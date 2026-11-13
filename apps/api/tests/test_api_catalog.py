@@ -456,6 +456,7 @@ def test_domain_errors_are_stable_and_do_not_leak_driver_details() -> None:
         ("P4222", 422, "invalid_offer_status_transition"),
         ("22023", 422, "invalid_domain_request"),
         ("55000", 422, "publication_not_ready"),
+        ("P4290", 429, "upload_limit_reached"),
         ("28000", 403, "forbidden"),
         ("42501", 403, "forbidden"),
         (None, 503, "domain_unavailable"),

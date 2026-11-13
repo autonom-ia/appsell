@@ -1282,8 +1282,16 @@ function capitalize(value: string): string {
 }
 
 /** Por que o envio não começou, dito para quem vende, com o que fazer. */
-function startFailure(error: unknown): [string, string] {
+export function startFailure(error: unknown): [string, string] {
   const code = error instanceof Error ? error.message : "";
+  // 429 é o limite de envios (`upload_limit_reached`): abertos demais ao mesmo
+  // tempo ou, mais raro, o espaço da loja cheio. A mesma resposta cobre os dois.
+  if (code === "intent_429") {
+    return [
+      "Muitos envios ao mesmo tempo.",
+      "Espere os arquivos em verificação terminarem e tente de novo. Se o aviso continuar, o espaço de arquivos da loja pode estar cheio."
+    ];
+  }
   if (code === "intent_409") {
     return ["O curso mudou em outra aba ou aparelho.", "Recarregue a página e escolha o arquivo de novo."];
   }

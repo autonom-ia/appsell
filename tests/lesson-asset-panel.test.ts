@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { boundedAssetFetch, discardPendingAssetUpload, downloadToggleLabel, formatBytes, MAX_VERIFICATION_WAIT_MS, nextVerificationPollMs, VERIFICATION_GIVE_UP_MS, validIntent, validPart, verificationPhaseForElapsed, verificationStatusTimeoutForElapsed, type UploadIntentPayload } from "../app/components/lesson-asset-panel";
+import { boundedAssetFetch, discardPendingAssetUpload, downloadToggleLabel, formatBytes, MAX_VERIFICATION_WAIT_MS, nextVerificationPollMs, startFailure, VERIFICATION_GIVE_UP_MS, validIntent, validPart, verificationPhaseForElapsed, verificationStatusTimeoutForElapsed, type UploadIntentPayload } from "../app/components/lesson-asset-panel";
 import { ASSET_MEDIA_TYPES, SUPPORTED_ASSET_MEDIA, mediaLabel } from "../lib/asset-media";
 
 const valid: UploadIntentPayload = {
@@ -74,6 +74,20 @@ describe("lesson asset verification UX", () => {
     expect(nextVerificationPollMs(15_000, 7)).toBe(5_000);
     expect(nextVerificationPollMs(15_000 + 60_000, 9)).toBe(10_000);
     expect(nextVerificationPollMs(15_000 + 10 * 60_000, 30)).toBe(15_000);
+  });
+});
+
+describe("por que o envio não começou", () => {
+  it("diz que são envios demais, e não que caiu, quando a API responde 429", () => {
+    // Antes o limite de envios virava 503 e a tela mandava conferir a internet.
+    const [titulo, detalhe] = startFailure(new Error("intent_429"));
+    expect(titulo).toBe("Muitos envios ao mesmo tempo.");
+    expect(detalhe).toContain("Espere os arquivos em verificação terminarem e tente de novo.");
+    expect(`${titulo} ${detalhe}`).not.toContain("internet");
+  });
+
+  it("mantém a queda genérica para o que não é limite", () => {
+    expect(startFailure(new Error("intent_503"))[1]).toContain("internet");
   });
 });
 

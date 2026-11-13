@@ -61,6 +61,7 @@ Plataforma. Uma reserva vale por 7 dias sem PR aberto.
 | `0077` | D · Produto e preço | #154 (pedido pinado, fatia 1) | mergeada (#639) |
 | `0080` | E · Conteúdo e membros | #642 (cancelar envio devolve o objeto) | PR aberto em 12/11 |
 | `0081` | E · Conteúdo e membros | criar aula ou módulo depois de excluir (posição livre) | PR aberto em 13/11 |
+| `0082` | E · Conteúdo e membros | envio pronto deixa de contar como aberto (limite de envios) | PR aberto em 13/11, sobre o da 0081 |
 
 O número reservado é da trilha, mas o `down_revision` é o head da `main` na
 hora do merge: quem entra depois rebaseia. O CI (`migration_shape`, #551) barra
