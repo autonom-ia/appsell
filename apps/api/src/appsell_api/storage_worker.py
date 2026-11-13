@@ -45,15 +45,17 @@ _IDADE_MAXIMA_SEM_MIRROR = timedelta(days=14)
 # existe — e aí, sim, o antivírus tem menos do que poderia ter.
 _VERSOES_DE_ATRASO_TOLERADAS = 2
 
-# Espera da resposta do `INSTREAM` no worker: o clamd só responde depois de ler
-# e analisar o arquivo inteiro. Os 3 s do `PING` derrubavam todo vídeo grande
+# Prazo total de um `INSTREAM` no worker: o clamd só responde depois de ler e
+# analisar o arquivo inteiro. Os 3 s do `PING` derrubavam todo vídeo grande
 # (13/11/2026: 200 MB preso em "verificando", tentado de novo a cada 10 min).
-# A base cobre a análise de arquivo pequeno; a taxa é conservadora; o teto fica
-# abaixo da concessão de 10 min do job, para o erro aparecer antes de outra
-# tentativa pegar o mesmo envio.
-_INSTREAM_TIMEOUT_BASE_SECONDS = 30.0
-_INSTREAM_BYTES_PER_SECOND = 2 * 1024 * 1024
-_INSTREAM_TIMEOUT_MAX_SECONDS = 300.0
+# O prazo vale para a conversa inteira (envio e resposta), não por chamada.
+# O teto é de 150 s porque o vídeo passa por dois scans (origem e derivado) e a
+# concessão do job é de 600 s: 2 × 150 s deixa metade para baixar, preparar e
+# gravar antes que outra tentativa pegue o mesmo envio. A taxa é folgada: em
+# produção, 200 MB foram analisados em menos de 3 s.
+_INSTREAM_TIMEOUT_BASE_SECONDS = 20.0
+_INSTREAM_BYTES_PER_SECOND = 4 * 1024 * 1024
+_INSTREAM_TIMEOUT_MAX_SECONDS = 150.0
 
 
 def instream_timeout_for_size(byte_size: int) -> float:
@@ -246,7 +248,11 @@ class ClamAvScanner:
     def scan(self, path: Path) -> bool:
         timeout = self.timeout_seconds
         if self.instream_timeout is not None:
-            timeout = max(timeout, self.instream_timeout(path.stat().st_size))
+            try:
+                byte_size = path.stat().st_size
+            except OSError as error:
+                raise ScannerUnavailable("file to scan is unavailable") from error
+            timeout = max(timeout, self.instream_timeout(byte_size))
         response = self._request(b"zINSTREAM\0", stream=path, timeout_seconds=timeout)
         if response.endswith(b" OK"):
             return True
@@ -257,21 +263,36 @@ class ClamAvScanner:
     def _request(
         self, command: bytes, *, stream: Path | None, timeout_seconds: float | None = None
     ) -> bytes:
+        # O `settimeout` do socket vale por chamada; um clamd lento que nunca
+        # para de todo passaria de qualquer prazo. O prazo é da conversa
+        # inteira, e cada chamada recebe só o que sobra dele.
+        deadline = monotonic() + (
+            self.timeout_seconds if timeout_seconds is None else timeout_seconds
+        )
+
+        def restante() -> float:
+            sobra = deadline - monotonic()
+            if sobra <= 0:
+                raise TimeoutError("malware scanner deadline exceeded")
+            return sobra
+
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-                client.settimeout(
-                    self.timeout_seconds if timeout_seconds is None else timeout_seconds
-                )
+                client.settimeout(restante())
                 client.connect(self.socket_path)
+                client.settimeout(restante())
                 client.sendall(command)
                 if stream is not None:
                     with stream.open("rb") as source:
                         while chunk := source.read(64 * 1024):
+                            client.settimeout(restante())
                             client.sendall(struct.pack("!I", len(chunk)))
                             client.sendall(chunk)
+                    client.settimeout(restante())
                     client.sendall(struct.pack("!I", 0))
                 response = bytearray()
                 while len(response) <= 4_096:
+                    client.settimeout(restante())
                     chunk = client.recv(4_096 - len(response))
                     if not chunk:
                         break
