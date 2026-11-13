@@ -2583,3 +2583,90 @@ def test_cota_de_armazenamento_cheia_tem_codigo_proprio() -> None:
         )
     assert recusa.value.sqlstate == "P4231"
     assert "seller ready asset byte quota exceeded" in str(recusa.value)
+
+
+def test_bytes_de_envio_pronto_seguem_no_teto_ate_o_reconcile() -> None:
+    """O pronto sai só das contagens; os bytes dele seguem no teto de 4 GiB (0082).
+
+    A cópia em quarentena de um envio pronto só some com certeza quando o
+    reconcile completa. Até lá ela ocupa disco, e o teto de bytes em voo existe
+    exatamente para isso.
+    """
+    assert ADMIN_URL and RUNTIME_URL
+    admin, seller, product, course, module, lesson = _personas()
+    manifest, _ = load_manifest()
+    asset = UUID(manifest["lessons"][0]["asset_id"])
+    meio_giga = 512 * 1024 * 1024
+    with psycopg.connect(ADMIN_URL) as connection:
+        # Oito prontos no tamanho máximo enchem os 4 GiB. Pela contagem eles já
+        # não ocupam vaga nenhuma (8 está abaixo de 10 e de 100 de todo jeito).
+        connection.execute(
+            """
+            insert into app_private.asset_upload(
+              seller_organization_id,id,identity_user_id,catalog_product_id,course_id,
+              module_id,lesson_id,asset_id,blob_id,reserved_version,title,file_name,
+              expected_media_type,expected_byte_size,expected_sha256,storage_driver,
+              quarantine_bucket,ready_bucket,quarantine_key,ready_key,status,expires_at
+            ) select %s,gen_random_uuid(),%s,%s,%s,%s,%s,%s,
+              gen_random_uuid(),ordinality+800,'Pronto pesado','aula-pronta.mp4','video/mp4',%s,
+              encode(digest('pronto-pesado'||ordinality::text,'sha256'),'hex'),'s3',
+              'appsell-quarantine','appsell-ready','pronto-pesado-quarantine-'||ordinality,
+              'pronto-pesado-ready-'||ordinality,'ready',clock_timestamp()+interval '30 minutes'
+            from generate_series(1,8) input(ordinality)
+            """,
+            (seller, admin, product, course, module, lesson, asset, meio_giga),
+        )
+        connection.execute(
+            """
+            insert into app_private.asset_storage_cleanup_job(
+              seller_organization_id,upload_id,kind,storage_driver,bucket,object_key,
+              storage_version_id,status,available_at
+            ) select seller_organization_id,id,'quarantine_reconcile','s3',
+              quarantine_bucket,quarantine_key,null,'queued',clock_timestamp()+interval '2 hours'
+            from app_private.asset_upload
+            where seller_organization_id=%s and title='Pronto pesado'
+            """,
+            (seller,),
+        )
+        connection.commit()
+
+    with psycopg.connect(RUNTIME_URL) as connection, pytest.raises(psycopg.DatabaseError) as recusa:
+        _intencao_de_envio(
+            connection,
+            admin=admin,
+            seller=seller,
+            product=product,
+            course=course,
+            module=module,
+            lesson=lesson,
+            byte_size=1024,
+        )
+    assert recusa.value.sqlstate == "P4290"
+    assert "seller open asset upload byte quota exceeded" in str(recusa.value)
+
+    # Com o reconcile completo a cópia saiu do disco, e os bytes deixam de contar.
+    with psycopg.connect(ADMIN_URL) as connection:
+        connection.execute(
+            """
+            update app_private.asset_storage_cleanup_job reconcile set status='completed'
+            from app_private.asset_upload upload
+            where upload.seller_organization_id=reconcile.seller_organization_id
+              and upload.id=reconcile.upload_id
+              and upload.seller_organization_id=%s and upload.title='Pronto pesado'
+              and reconcile.kind='quarantine_reconcile'
+            """,
+            (seller,),
+        )
+        connection.commit()
+    with psycopg.connect(RUNTIME_URL) as connection:
+        criado, _ = _intencao_de_envio(
+            connection,
+            admin=admin,
+            seller=seller,
+            product=product,
+            course=course,
+            module=module,
+            lesson=lesson,
+            byte_size=1024,
+        )
+    assert criado["created"] is True

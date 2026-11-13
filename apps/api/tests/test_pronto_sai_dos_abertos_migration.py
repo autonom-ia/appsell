@@ -44,18 +44,32 @@ def _comandos(migration: ModuleType, direcao: Callable[[], None]) -> list[str]:
 
 
 def _corpo_vivo() -> str:
-    """O corpo da intenção como o banco tem hoje: o da 0013 com o bloco da 0047.
+    """O corpo da intenção como o banco tem hoje, refeito pela cadeia real.
 
-    A 0035, a 0039 e a 0046 também reescrevem esta função, mas em linhas que
-    não tocam os três limites de envio aberto.
+    Parte da definição da 0013 e aplica, na ordem, cada reescrita que veio
+    depois: 0035 (contrato de mídia), 0039 (catálogo de mídia), 0046 (validade
+    da intenção fatiada) e 0047 (cota como função e teto de bytes em voo). Cada
+    âncora delas tem de casar uma vez, como casou no banco.
     """
     fonte = next(VERSOES.glob("0013_*.py")).read_text()
     inicio = fonte.index("create or replace function app_private.create_asset_upload_intent(")
     fim = fonte.index("create or replace function app_private.confirm_asset_upload(")
     corpo = fonte[inicio:fim]
+    documento = _carregar("0035_*.py", "appsell_documento_0035_para_0082")
+    catalogo = _carregar("0039_*.py", "appsell_catalogo_0039_para_0082")
+    meio_giga = _carregar("0046_*.py", "appsell_meio_giga_0046_para_0082")
     cota = _carregar("0047_*.py", "appsell_cota_0047_para_0082")
-    assert corpo.count(cota._ANCORA_EM_VOO) == 1
-    return corpo.replace(cota._ANCORA_EM_VOO, cota._COM_BYTES_EM_VOO)
+    reescritas = (
+        (documento._INTENT_ANCHOR, documento._INTENT_REPLACEMENT),
+        (catalogo._INTENT_ANCHOR, catalogo._INTENT_REPLACEMENT),
+        (meio_giga._VALIDADE_DE, meio_giga._VALIDADE_PARA),
+        (str(cota._COTA_ANTIGA), "app_private.seller_storage_quota_bytes()"),
+        (cota._ANCORA_EM_VOO, cota._COM_BYTES_EM_VOO),
+    )
+    for de, para in reescritas:
+        assert corpo.count(de) == 1, de
+        corpo = corpo.replace(de, para)
+    return corpo
 
 
 def test_esta_na_cadeia_e_cabe_no_alembic_version(migration: ModuleType) -> None:
@@ -74,25 +88,25 @@ def test_o_readiness_aprende_a_versao(migration: ModuleType) -> None:
 
 
 def test_cada_ancora_existe_uma_vez_no_corpo_vivo(migration: ModuleType) -> None:
-    # Pega: uma âncora que não bate com o corpo da 0013 + 0047, ou que casa com
-    # mais de um dos três subselects (eles são quase iguais), ou com outra
-    # recusa `P4290`. Em qualquer caso a subida falharia em produção com
+    # Pega: uma âncora que não bate com o corpo vivo, ou que casa com mais de
+    # um dos três subselects (eles são quase iguais), ou com outra recusa
+    # `P4290`. Em qualquer caso a subida falharia em produção com
     # "nao continha as ancoras exatamente uma vez".
     corpo = _corpo_vivo()
-    assert len(migration.TROCAS) == 4
+    assert len(migration.TROCAS) == 3
     for ancora, _novo in migration.TROCAS:
         assert corpo.count(ancora) == 1
     ancoras = [ancora for ancora, _novo in migration.TROCAS]
-    assert len(set(ancoras)) == 4
+    assert len(set(ancoras)) == 3
 
 
-def test_os_tres_limites_passam_a_ignorar_o_pronto(migration: ModuleType) -> None:
+def test_so_os_limites_de_quantidade_ignoram_o_pronto(migration: ModuleType) -> None:
     corpo = _corpo_vivo()
     novo = corpo
     for ancora, filtro in migration.TROCAS:
         novo = novo.replace(ancora, filtro)
-    assert novo.count("and upload.status<>'ready'") == 3
-    assert novo.count(migration.MARCADOR) == 4
+    assert novo.count("and upload.status<>'ready'") == 2
+    assert novo.count(migration.MARCADOR) == 3
     for ancora, filtro in migration.TROCAS:
         assert novo.count(ancora) == 0
         assert novo.count(filtro) == 1
@@ -100,7 +114,11 @@ def test_os_tres_limites_passam_a_ignorar_o_pronto(migration: ModuleType) -> Non
     # Os limites continuam os mesmos: só muda o que conta como aberto.
     assert ")>=100 then" in migration.FILTRO_VENDEDOR
     assert ")>=10 then" in migration.FILTRO_PESSOA
-    assert "app_private.seller_open_upload_quota_bytes()" in migration.FILTRO_BYTES
+    # O teto de bytes fica intacto: a cópia em quarentena de um envio pronto
+    # ocupa disco até o reconcile completar.
+    cota = _carregar("0047_*.py", "appsell_cota_0047_teto_0082")
+    assert novo.count(cota._COM_BYTES_EM_VOO) == 1
+    assert not hasattr(migration, "FILTRO_BYTES")
     # A descida devolve o corpo exatamente como estava.
     volta = novo
     for ancora, filtro in migration.TROCAS:

@@ -1,4 +1,4 @@
-"""Envio pronto deixa de contar como aberto, e cota cheia ganha código próprio.
+"""Envio pronto deixa de ocupar vaga, e cota cheia ganha código próprio.
 
 `create_asset_upload_intent` tem três limites de envio "aberto": 100 por
 vendedor, 10 por pessoa e 4 GiB somados por vendedor. Os três contam todo
@@ -7,25 +7,30 @@ job só roda cerca de duas horas depois do envio. Com isso um vídeo que já
 ficou pronto (`status='ready'`) continuava ocupando a vaga por duas horas: quem
 sobe dez aulas em sequência era barrado no 11º envio com tudo pronto.
 
-Um envio pronto não está mais "em voo". O que ele guarda já é limitado por
-outra regra, `seller_storage_quota_bytes()`, que soma `asset_blob`. Por isso os
-três limites passam a ignorar `status='ready'`. Os outros estados continuam
-contando como antes: pendente, enviado e em verificação estão em voo, e
-recusado, cancelado e expirado ainda deixam o objeto na quarentena até o
-reconcile limpar.
+Os dois limites de **quantidade** (100 e 10) passam a ignorar `status='ready'`:
+um envio pronto não é mais um envio em andamento. O teto de **bytes** (4 GiB)
+não muda: a cópia em quarentena de um envio pronto só some com certeza quando o
+reconcile completa, e até lá ela ocupa disco. Os outros estados continuam
+contando nos três, como antes.
 
 A mesma função recusava a cota de armazenamento cheia (`seller ready asset byte
 quota exceeded`) com o mesmo `P4290` dos envios abertos. A API não tinha como
 separar os dois casos, e a tela mandaria esperar quem precisa liberar espaço.
-A cota cheia passa a usar `P4231`, e `P4290` fica só para envios abertos.
-`finalize_asset_verification_v2` (0017) também levanta essa recusa, mas é
-chamada pelo worker e não passa pela API; ela não muda aqui.
+Nesta função a cota cheia passa a usar `P4231`, e o `P4290` dela fica só para
+envios abertos. `finalize_asset_verification_v2` (0017) continua levantando
+`P4290` para a mesma cota cheia; ela é chamada pelo worker, não passa pela API,
+e não muda aqui.
 
 A reescrita é feita sobre o corpo que está no banco (`pg_get_functiondef`).
-Cada uma das quatro trocas (três limites e o código da cota) tem a sua âncora,
-e cada âncora precisa aparecer exatamente uma vez. Se o marcador já estiver lá, a subida não faz nada: o mesmo
-SQL pode ser aplicado como hotfix antes do release sem duplicar o filtro quando
-a cadeia chegar aqui.
+Cada uma das três trocas (os dois limites de quantidade e o código da cota) tem
+a sua âncora, e cada âncora precisa aparecer exatamente uma vez. Se o marcador
+já estiver lá, a subida não faz nada.
+
+Hotfix antes do release: como na 0081, aplica-se **só o bloco `SOBE`**, e não a
+reescrita do readiness. A reescrita do readiness não tem marcador: ela exige
+a lista antiga exatamente uma vez. Aplicada no hotfix, a subida do release não a
+encontraria e falharia. Quando a cadeia chegar aqui, o `SOBE` encontra o
+marcador e não duplica nada, e o readiness é reescrito normalmente.
 
 Revision ID: 0082_pronto_sai_dos_abertos
 Revises: 0081_posicao_livre_ao_criar
@@ -53,9 +58,10 @@ INTENCAO = (
 
 MARCADOR = "/* 0082: limites de envio */"
 
-# Os três subselects são quase iguais. O que separa um do outro é a linha que
-# fecha o `exists(` e compara com o limite, por isso cada âncora leva as duas
-# linhas: a do `reconcile.status` (com a indentação de cada um) e a do limite.
+# Os três subselects são quase iguais (o de bytes fica como está). O que separa
+# um do outro é a linha que fecha o `exists(` e compara com o limite, por isso
+# cada âncora leva as duas linhas: a do `reconcile.status` (com a indentação de
+# cada um) e a do limite.
 # O marcador vai escrito por extenso (sem interpolar) para o texto ser literal.
 ANCORA_VENDEDOR = "                  and reconcile.status<>'completed'\n              ))>=100 then"
 FILTRO_VENDEDOR = (
@@ -71,17 +77,6 @@ FILTRO_PESSOA = (
     "                  and upload.status<>'ready')>=10 then"
 )
 
-ANCORA_BYTES = (
-    "                  and reconcile.status<>'completed'\n"
-    "              )),0)+p_size > app_private.seller_open_upload_quota_bytes() then"
-)
-FILTRO_BYTES = (
-    "                  and reconcile.status<>'completed'\n"
-    "              ) /* 0082: limites de envio */\n"
-    "                and upload.status<>'ready'),0)+p_size"
-    " > app_private.seller_open_upload_quota_bytes() then"
-)
-
 # A cota de armazenamento cheia ganha código próprio. A mensagem separa esta
 # linha das outras recusas `P4290` da função.
 ANCORA_COTA = (
@@ -95,7 +90,6 @@ CODIGO_COTA = (
 TROCAS: tuple[tuple[str, str], ...] = (
     (ANCORA_VENDEDOR, FILTRO_VENDEDOR),
     (ANCORA_PESSOA, FILTRO_PESSOA),
-    (ANCORA_BYTES, FILTRO_BYTES),
     (ANCORA_COTA, CODIGO_COTA),
 )
 

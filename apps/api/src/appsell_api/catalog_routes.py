@@ -2287,9 +2287,11 @@ def _domain_error(error: DBAPIError) -> HTTPException:
             status_code=status.HTTP_409_CONFLICT,
             detail="cover_upload_closed",
         )
-    # Envios abertos demais (so as funcoes de envio levantam P4290). Sem isto
-    # caia no 503 do fim, e a tela dizia "fora do ar" para quem so precisa
-    # esperar os envios abertos terminarem.
+    # Envios abertos demais. So as funcoes de envio levantam P4290: na
+    # `create_asset_upload_intent` (a unica que chega aqui) ele e so envio
+    # aberto desde a 0082; a `finalize_asset_verification_v2` (0017) ainda o usa
+    # para cota de armazenamento, mas roda no worker e nao passa por esta rota.
+    # Sem isto caia no 503 do fim, e a tela dizia "fora do ar".
     if sqlstate == "P4290":
         return HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
