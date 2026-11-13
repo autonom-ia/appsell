@@ -418,7 +418,10 @@ export function ProductEditorWorkspace({
       clearTimeout(timeout);
     }
   }, [productId, sellerId]);
-  const handleCurriculumCommitted = useCallback(() => { void loadDetail(); }, [loadDetail]);
+  // O curso avisa a cada mudança salva, inclusive o texto que salva sozinho.
+  // Falhar ao reler o produto não pode trocar a tela por erro e desmontar o
+  // editor no meio de um envio: a tela fica, e a próxima releitura corrige.
+  const handleCurriculumCommitted = useCallback(() => { void loadDetail(true); }, [loadDetail]);
   // A capa muda a versão do produto e o endereço assinado da imagem. Recarregar
   // é o que mantém o painel falando do estado real: o número devolvido pela
   // mutação sozinho não traz a URL nova. Falhar aqui não desfaz nada, então a

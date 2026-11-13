@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   DIRTY_HISTORY_BLOCKED_EVENT,
   DIRTY_HISTORY_CONTINUE_EVENT,
+  DIRTY_IN_PAGE_TRAVERSAL_EVENT,
   createUnsavedHistoryGuard,
+  unsavedGuardMarkOf,
   type GuardEnvironment,
   type UnsavedHistoryGuard
 } from "../app/components/use-unsaved-changes";
@@ -575,6 +577,241 @@ describe("guarda de alterações não salvas (#612)", () => {
     expect(browser.leftProduct).toBe(false);
     expect(browser.entries[1].state).toEqual({ __NA: true });
   });
+
+  it.each<Engine>(["webkit", "chromium"])(
+    "no %s, a tela que empilhou uma entrada por cima da sentinela não é levada para trás ao limpar",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      const guard = createUnsavedHistoryGuard(browser.env, true);
+      const sentinela = browser.index;
+
+      // Abrir uma aula durante o envio: `pushState` do app, sem `popstate`.
+      browser.env.history.pushState({ __NA: true }, "", `${PRODUCT_URL}?aula=2`);
+      const aula = browser.index;
+      expect(aula).toBe(sentinela + 1);
+
+      // O envio termina. Tirar a sentinela aqui tiraria a aula aberta.
+      guard.setDirty(false);
+      browser.settle();
+      expect(browser.index).toBe(aula);
+      expect(browser.url).toBe(`${PRODUCT_URL}?aula=2`);
+
+      // O voltar pousa na sentinela que ficou para trás: a guarda a atravessa
+      // sozinha e a pessoa chega à entrada de antes, sem sair do produto.
+      browser.userBack();
+      browser.settle();
+      expect(browser.leftProduct).toBe(false);
+      expect(browser.index).toBe(sentinela - 1);
+      expect(browser.routerReplaces).toEqual([]);
+
+      guard.dispose();
+      browser.settle();
+      expect(browser.leftProduct).toBe(false);
+    }
+  );
+
+  it.each<Engine>(["webkit", "chromium"])(
+    "no %s, a tela que trocou a URL da sentinela não é levada para a URL antiga ao limpar",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      const guard = createUnsavedHistoryGuard(browser.env, true);
+      const sentinela = browser.index;
+      const history = browser.env.history;
+
+      // Fechar a aula durante o envio: a URL da sentinela muda, com a marca.
+      history.replaceState({ __NA: true, ...unsavedGuardMarkOf(history.state) }, "", `${PRODUCT_URL}?section=curriculo`);
+
+      guard.setDirty(false);
+      browser.settle();
+      expect(browser.index).toBe(sentinela);
+      expect(browser.url).toBe(`${PRODUCT_URL}?section=curriculo`);
+      expect(browser.routerReplaces).toEqual([]);
+      // A entrada deixa de ser sentinela: nada a atravessar depois.
+      expect(unsavedGuardMarkOf(history.state)).toBeNull();
+      guard.dispose();
+      browser.settle();
+      expect(browser.index).toBe(sentinela);
+    }
+  );
+
+  it.each<Engine>(["webkit", "chromium"])(
+    "no %s, link direto, voltar à lista, abrir outra aula e voltar: a lista fica na tela",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      const guard = createUnsavedHistoryGuard(browser.env, true);
+      const sentinela = browser.index;
+      const history = browser.env.history;
+      const lista = `${PRODUCT_URL}?section=curriculo`;
+
+      // Voltar para o curso com o envio em curso (troca a URL, mantém a marca).
+      history.replaceState({ __NA: true, ...unsavedGuardMarkOf(history.state) }, "", lista);
+      // Abrir outra aula: entrada nova, sem `popstate`.
+      history.pushState({ __NA: true }, "", `${PRODUCT_URL}?section=curriculo&aula=27`);
+      // O envio termina com a outra aula aberta.
+      guard.setDirty(false);
+      browser.settle();
+      expect(browser.url).toBe(`${PRODUCT_URL}?section=curriculo&aula=27`);
+
+      // Voltar da outra aula pousa na lista e fica nela.
+      browser.userBack();
+      browser.settle();
+      expect(browser.index).toBe(sentinela);
+      expect(browser.url).toBe(lista);
+      expect(browser.routerReplaces).toEqual([]);
+      expect(browser.leftProduct).toBe(false);
+      guard.dispose();
+    }
+  );
+
+  // O "Voltar para o curso" da aula aberta pela lista, com a guarda armada:
+  // o que `closeLesson` faz no curso (#649).
+  function voltarDaAula(browser: FakeBrowser) {
+    browser.events.dispatchEvent(new Event(DIRTY_IN_PAGE_TRAVERSAL_EVENT));
+    browser.env.history.go(-2);
+  }
+
+  /** Abrir uma aula pela lista, enviar um material, voltar e o envio terminar. */
+  function cicloDeEnvio(browser: FakeBrowser, guard: UnsavedHistoryGuard, aula: number) {
+    browser.env.history.pushState({ __NA: true }, "", `${PRODUCT_URL}?section=curriculo&aula=${aula}`);
+    guard.setDirty(true);
+    voltarDaAula(browser);
+    browser.settle();
+    guard.setDirty(false);
+    browser.settle();
+  }
+
+  it.each<Engine>(["webkit", "chromium"])(
+    "no %s, três envios seguidos em três aulas não acumulam entradas no histórico",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      let bloqueios = 0;
+      browser.events.addEventListener(DIRTY_HISTORY_BLOCKED_EVENT, () => { bloqueios += 1; });
+      browser.env.history.replaceState({ __NA: true }, "", `${PRODUCT_URL}?section=curriculo`);
+      const guard = createUnsavedHistoryGuard(browser.env, false);
+      const lista = browser.index;
+
+      for (const aula of [1, 2, 3]) {
+        cicloDeEnvio(browser, guard, aula);
+        // Depois de cada ciclo, a tela está na mesma entrada da lista.
+        expect(browser.index).toBe(lista);
+        expect(browser.url).toBe(`${PRODUCT_URL}?section=curriculo`);
+      }
+      expect(bloqueios).toBe(0);
+      expect(browser.routerReplaces).toEqual([]);
+
+      // Um único voltar sai do curso: nada de voltar preso dentro dele.
+      browser.userBack();
+      expect(browser.leftProduct).toBe(true);
+      guard.dispose();
+    }
+  );
+
+  it.each<Engine>(["webkit", "chromium"])(
+    "no %s, voltar da aula no meio do envio mostra a lista e continua protegendo a saída",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      let bloqueios = 0;
+      browser.events.addEventListener(DIRTY_HISTORY_BLOCKED_EVENT, () => { bloqueios += 1; });
+      browser.env.history.replaceState({ __NA: true }, "", `${PRODUCT_URL}?section=curriculo`);
+      const guard = createUnsavedHistoryGuard(browser.env, false);
+      const lista = browser.index;
+
+      browser.env.history.pushState({ __NA: true }, "", `${PRODUCT_URL}?section=curriculo&aula=1`);
+      guard.setDirty(true);
+      voltarDaAula(browser);
+      browser.settle();
+      // A lista na tela, sem diálogo, e a sentinela de novo no topo.
+      expect(browser.url).toBe(`${PRODUCT_URL}?section=curriculo`);
+      expect(browser.index).toBe(lista + 1);
+      expect(bloqueios).toBe(0);
+
+      // Sair da página com o envio em curso ainda pede confirmação.
+      browser.userBack();
+      browser.settle();
+      expect(bloqueios).toBe(1);
+      expect(browser.leftProduct).toBe(false);
+      guard.dispose();
+    }
+  );
+
+  it.each<Engine>(["webkit", "chromium"])(
+    "no %s, o envio que termina antes do popstate do voltar não deixa a próxima saída sem diálogo",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      let bloqueios = 0;
+      browser.events.addEventListener(DIRTY_HISTORY_BLOCKED_EVENT, () => { bloqueios += 1; });
+      browser.env.history.replaceState({ __NA: true }, "", `${PRODUCT_URL}?section=curriculo`);
+      const guard = createUnsavedHistoryGuard(browser.env, false);
+      const lista = browser.index;
+
+      browser.env.history.pushState({ __NA: true }, "", `${PRODUCT_URL}?section=curriculo&aula=1`);
+      guard.setDirty(true);
+      voltarDaAula(browser);
+      // O envio termina com a travessia ainda em voo: a guarda não pode
+      // pedir o próprio `back()` por cima dela.
+      guard.setDirty(false);
+      browser.settle();
+      expect(browser.index).toBe(lista);
+      expect(browser.url).toBe(`${PRODUCT_URL}?section=curriculo`);
+
+      // Uma alteração nova e um voltar de verdade: o diálogo aparece.
+      guard.setDirty(true);
+      browser.userBack();
+      browser.settle();
+      expect(bloqueios).toBe(1);
+      expect(browser.leftProduct).toBe(false);
+      guard.dispose();
+    }
+  );
+
+  it.each<Engine>(["webkit", "chromium"])(
+    "no %s, o aviso de travessia que nunca chega vence no prazo e a guarda segue protegendo",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      let bloqueios = 0;
+      browser.events.addEventListener(DIRTY_HISTORY_BLOCKED_EVENT, () => { bloqueios += 1; });
+      const guard = createUnsavedHistoryGuard(browser.env, true);
+      browser.events.dispatchEvent(new Event(DIRTY_IN_PAGE_TRAVERSAL_EVENT));
+      browser.elapse();
+      browser.userBack();
+      browser.settle();
+      expect(bloqueios).toBe(1);
+      expect(browser.leftProduct).toBe(false);
+      guard.dispose();
+    }
+  );
+
+  it.each<Engine>(["webkit", "chromium"])(
+    "no %s, com link direto a entrada a mais é uma só, mesmo com vários envios depois",
+    (engine) => {
+      const browser = new FakeBrowser(engine);
+      browser.env.history.replaceState({ __NA: true }, "", `${PRODUCT_URL}?section=curriculo&aula=26`);
+      const guard = createUnsavedHistoryGuard(browser.env, false);
+      const history = browser.env.history;
+
+      // Envio na aula do link, e "Voltar para o curso": a lista fica na
+      // entrada da sentinela, com a marca.
+      guard.setDirty(true);
+      history.replaceState({ __NA: true, ...unsavedGuardMarkOf(history.state) }, "", `${PRODUCT_URL}?section=curriculo`);
+      guard.setDirty(false);
+      browser.settle();
+      const lista = browser.index;
+
+      for (const aula of [1, 2, 3]) {
+        cicloDeEnvio(browser, guard, aula);
+        expect(browser.index).toBe(lista);
+      }
+
+      // Voltar leva à aula do link (de onde a pessoa veio) e o seguinte sai.
+      browser.userBack();
+      browser.settle();
+      expect(browser.url).toBe(`${PRODUCT_URL}?section=curriculo&aula=26`);
+      expect(browser.leftProduct).toBe(false);
+      browser.userBack();
+      expect(browser.leftProduct).toBe(true);
+      guard.dispose();
+    }
+  );
 
   it("navegação liberada não é segurada nem desfeita", () => {
     const browser = new FakeBrowser("webkit");
