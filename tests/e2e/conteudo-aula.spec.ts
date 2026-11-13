@@ -1,4 +1,5 @@
 import { expect as expectBase, test, type Page } from "@playwright/test";
+import { UNDO_WINDOW_MS } from "../../lib/curriculum/undo-queue";
 import { login } from "./support/login";
 import { E2E_STORAGE_ORIGIN } from "./support/storage";
 
@@ -25,6 +26,10 @@ const expect = expectBase.configure({ timeout: 20_000 });
  * 3. **O rótulo dizia "PDF" para tudo**, inclusive num `.md` de 10 KiB.
  * 4. **O papel do material era uma pergunta**, num `<select>`, quando o painel
  *    em que o vendedor clica já é a resposta.
+ *
+ * Desde o #649 a aula abre em tela própria (`?aula=`), com os dois lugares à
+ * vista: "Vídeo ou PDF da aula" e "Materiais para o aluno". Nada mais fica
+ * recolhido, e tirar um arquivo da aula tem "Desfazer" em vez de diálogo.
  */
 
 const SELLER_ID = "4df98a2e-d1dd-5f25-bbea-58b8072a0e7b";
@@ -120,40 +125,47 @@ async function openCurriculum(page: Page, assets: MaterialView[] = [PDF, MARKDOW
   await page.route("**/access-links", async (route) => {
     await route.fulfill({ json: { access_links: [] } });
   });
-  await page.goto(`/products/${SELLER_ID}/${PRODUCT_ID}?section=curriculo`);
+  // "Tirar da aula" sai depois do Desfazer; sem esta rota o pedido iria ao
+  // servidor de verdade.
+  await page.route("**/assets/*/archive", async (route) => {
+    await route.fulfill({ json: { archived: true, course_version: 3 } });
+  });
+  await page.goto(`/products/${SELLER_ID}/${PRODUCT_ID}?section=curriculo&aula=${LESSON_ID}`);
   await expect(page.getByTestId("curriculum-workspace")).toBeVisible();
+  await expect(page.getByRole("heading", { level: 2, name: /Gerador de Cotações Comparativas/ })).toBeVisible();
 }
 
-function lessonAssets(page: Page) {
-  return page.getByTestId(`lesson-${LESSON_ID}`)
-    .locator("details").filter({ hasText: "Anexos e links" }).first();
+/** "Vídeo ou PDF da aula": o que o aluno assiste ou lê sem baixar. */
+function conteudoDaAula(page: Page) {
+  return page.getByRole("region", { name: "Vídeo ou PDF da aula" });
 }
+
+/** "Materiais para o aluno": arquivos para baixar, links e vídeos. */
+function materiais(page: Page) {
+  return page.getByRole("region", { name: "Materiais para o aluno" });
+}
+
+const CARD = ".lesson-file";
 
 test.describe("o painel de conteúdo da aula não se desmonta a cada clique", () => {
-  test("arquivar um material mantém o painel aberto e a página no lugar", async ({ page }) => {
+  test("tirar um material da aula mantém a aula aberta e a lista no lugar", async ({ page }) => {
     await login(page);
+    await page.clock.install();
     await openCurriculum(page);
 
-    const painel = lessonAssets(page);
-    await painel.locator("summary").click();
-    await expect(painel).toHaveAttribute("open", "");
+    const anexos = materiais(page);
+    await expect(anexos.locator(CARD)).toHaveCount(2);
+    await anexos.getByRole("button", { name: `Tirar da aula: ${MARKDOWN.file_name}` }).click();
+    await expect(anexos.locator(CARD)).toHaveCount(1);
+    await page.clock.runFor(UNDO_WINDOW_MS + 500);
+    await expect.poll(() => page.evaluate(() => document.querySelectorAll(".undo-toast").length)).toBe(0);
 
-    // Desce até o painel para haver posição de scroll a preservar.
-    await painel.scrollIntoViewIfNeeded();
-    const antes = await page.evaluate(() => window.scrollY);
-    expect(antes).toBeGreaterThan(0);
-
-    await page.route("**/assets/*/archive", async (route) => {
-      await route.fulfill({ json: { archived: true } });
-    });
-    await painel.getByRole("button", { name: "Remover" }).first().click();
-    await page.getByRole("button", { name: "Remover da aula" }).click();
-
-    // O defeito: `load()` punha a tela em "Carregando conteúdo…", o que
-    // desmontava todos os painéis e levava o scroll ao topo.
-    await expect(page.getByRole("heading", { name: "Carregando conteúdo…" })).toHaveCount(0);
-    await expect(painel).toHaveAttribute("open", "");
-    expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+    // O defeito: `load()` punha a tela em "Carregando…", o que desmontava todos
+    // os painéis e levava o scroll ao topo.
+    await expect(page.getByText("Carregando o curso…")).toHaveCount(0);
+    await expect(page.getByRole("heading", { level: 2, name: /Gerador de Cotações Comparativas/ })).toBeVisible();
+    await expect(anexos.locator(CARD)).toHaveCount(1);
+    await expect(anexos).toContainText(TEXTO.file_name);
   });
 });
 
@@ -162,9 +174,7 @@ test.describe("cada material se identifica", () => {
     await login(page);
     await openCurriculum(page);
 
-    const anexos = page.getByTestId(`lesson-${LESSON_ID}`)
-      .locator("details").filter({ hasText: "Anexos e links" }).first();
-    await anexos.locator("summary").click();
+    const anexos = materiais(page);
 
     // O defeito: `body.set("title", lessonTitle)` era fixo, e os cinco materiais
     // da aula viravam cinco cards "Gerador de Cotações Comparativas".
@@ -172,17 +182,14 @@ test.describe("cada material se identifica", () => {
     await expect(anexos).toContainText("perfil_corretora.txt");
   });
 
-  test("o rótulo de download nomeia o formato, e não PDF sempre", async ({ page }) => {
+  test("o card nomeia o formato, e não PDF sempre", async ({ page }) => {
     await login(page);
     await openCurriculum(page);
 
-    const anexos = page.getByTestId(`lesson-${LESSON_ID}`)
-      .locator("details").filter({ hasText: "Anexos e links" }).first();
-    await anexos.locator("summary").click();
-
-    const markdown = anexos.locator(".asset-status-card").filter({ hasText: "SKILL-01" });
-    await expect(markdown).toContainText("baixe este documento");
-    await expect(markdown).not.toContainText("baixe este PDF");
+    const markdown = materiais(page).locator(CARD).filter({ hasText: "SKILL-01" });
+    await expect(markdown).toContainText("Documento");
+    await expect(markdown).not.toContainText("PDF");
+    await expect(markdown.getByRole("switch", { name: `O aluno pode baixar: ${MARKDOWN.file_name}` })).toBeChecked();
   });
 });
 
@@ -191,30 +198,25 @@ test.describe("o painel em que se clica é a resposta", () => {
     await login(page);
     await openCurriculum(page);
 
-    const aula = page.getByTestId(`lesson-${LESSON_ID}`);
-    for (const nome of ["Conteúdo da aula", "Anexos e links"]) {
-      await aula.locator("details").filter({ hasText: nome }).first().locator("summary").click();
-    }
+    const aula = page.getByTestId("curriculum-workspace");
     // Perguntar o papel era pedir ao vendedor uma resposta que o painel já dá.
     await expect(aula.getByText("Uso deste material")).toHaveCount(0);
     await expect(aula.getByRole("combobox")).toHaveCount(0);
+    await expect(aula.locator("select")).toHaveCount(0);
   });
 
   test("cada painel mostra só o que lhe pertence", async ({ page }) => {
     await login(page);
     await openCurriculum(page);
 
-    const aula = page.getByTestId(`lesson-${LESSON_ID}`);
-    const conteudo = aula.locator("details").filter({ hasText: "Conteúdo da aula" }).first();
-    const anexos = aula.locator("details").filter({ hasText: "Anexos e links" }).first();
-    await conteudo.locator("summary").click();
-    await anexos.locator("summary").click();
+    const conteudo = conteudoDaAula(page);
+    const anexos = materiais(page);
 
-    await expect(conteudo.locator(".asset-status-card")).toHaveCount(1);
+    await expect(conteudo.locator(CARD)).toHaveCount(1);
     await expect(conteudo).toContainText("Playbook_HUB2YOU_02_Gerador_Cotacoes_Comparativas.pdf");
     await expect(conteudo).not.toContainText("SKILL-01");
 
-    await expect(anexos.locator(".asset-status-card")).toHaveCount(2);
+    await expect(anexos.locator(CARD)).toHaveCount(2);
     await expect(anexos).not.toContainText("Playbook_HUB2YOU_02");
   });
 
@@ -222,11 +224,8 @@ test.describe("o painel em que se clica é a resposta", () => {
     await login(page);
     await openCurriculum(page);
 
-    const aula = page.getByTestId(`lesson-${LESSON_ID}`);
-    const conteudo = aula.locator("details").filter({ hasText: "Conteúdo da aula" }).first();
-    const anexos = aula.locator("details").filter({ hasText: "Anexos e links" }).first();
-    await conteudo.locator("summary").click();
-    await anexos.locator("summary").click();
+    const conteudo = conteudoDaAula(page);
+    const anexos = materiais(page);
 
     // O `accept` deriva do catálogo: o player desenha PDF e MP4, o resto o
     // aluno baixa. O PDF aparece nos dois de propósito — é o único formato
@@ -243,18 +242,16 @@ test.describe("o painel em que se clica é a resposta", () => {
     }
   });
 
-  test("links e vídeos ficam dentro de Anexos e links", async ({ page }) => {
+  test("links e vídeos ficam em Materiais para o aluno", async ({ page }) => {
     await login(page);
     await openCurriculum(page);
-
-    const anexos = page.getByTestId(`lesson-${LESSON_ID}`)
-      .locator("details").filter({ hasText: "Anexos e links" }).first();
-    await anexos.locator("summary").click();
 
     // Eram dois painéis quase homônimos — "Materiais da aula" e "Material
     // complementar" — e foi por isso que o vendedor procurou o arquivo no lugar
     // errado. Agora arquivo, link e vídeo dividem o mesmo lugar.
-    await expect(anexos.getByRole("heading", { name: /Material complementar/ })).toBeVisible();
+    const anexos = materiais(page);
+    await expect(anexos.getByRole("button", { name: "+ Adicionar link" })).toBeVisible();
+    await expect(anexos.getByRole("button", { name: "+ Adicionar arquivo" }).or(anexos.getByLabel("+ Adicionar arquivo"))).toHaveCount(1);
   });
 });
 
@@ -309,10 +306,8 @@ test.describe("o material verificado aparece onde o vendedor está olhando", () 
       await route.fulfill({ json: { upload_id: uploadId, status: "ready", asset: NOVO } });
     });
 
-    const anexos = page.getByTestId(`lesson-${LESSON_ID}`)
-      .locator("details").filter({ hasText: "Anexos e links" }).first();
-    await anexos.locator("summary").click();
-    await expect(anexos.locator(".asset-status-card")).toHaveCount(2);
+    const anexos = materiais(page);
+    await expect(anexos.locator(CARD)).toHaveCount(2);
 
     // `window.scrollY` não serve de prova: o shell tem o próprio container
     // rolável. O que prova o comportamento é a rolagem ter sido pedida, e para
@@ -337,7 +332,7 @@ test.describe("o material verificado aparece onde o vendedor está olhando", () 
       buffer: Buffer.from("# instruções\n")
     });
 
-    await expect(anexos.locator(".asset-status-card")).toHaveCount(3);
+    await expect(anexos.locator(CARD)).toHaveCount(3);
     // Sem esta asserção o teste passaria mesmo sem existir rolagem nenhuma,
     // bastando o card cair por acaso dentro da janela.
     await expect.poll(() => page.evaluate(
@@ -348,11 +343,11 @@ test.describe("o material verificado aparece onde o vendedor está olhando", () 
     // por perto — e concluía, com razão, que não tinha entrado. Recarregar
     // fazia o card pular do topo para o fim, porque o servidor ordena por
     // `position`.
-    const nomes = await anexos.locator(".asset-status-card .asset-file-name").allInnerTexts();
+    const nomes = await anexos.locator(`${CARD} .lesson-file-name`).allInnerTexts();
     expect(nomes[nomes.length - 1]).toBe(NOVO.file_name);
 
     // E o vendedor é levado até ele, com destaque que some sozinho.
-    const cardNovo = anexos.locator(".asset-status-card").filter({ hasText: NOVO.file_name });
+    const cardNovo = anexos.locator(CARD).filter({ hasText: NOVO.file_name });
     await expect(cardNovo).toHaveClass(/state-just-ready/);
     // `toBeInViewport` mede uma vez a cada tentativa do locator e, com a suíte
     // inteira sob carga, chegava a medir entre o quadro em que a rolagem foi
@@ -452,10 +447,8 @@ test.describe("o PDF em Anexos só entra na lista depois da política", () => {
       await route.fulfill({ json: { upload_id: uploadId, status: "ready", asset: PDF_NOVO } });
     });
 
-    const anexos = page.getByTestId(`lesson-${LESSON_ID}`)
-      .locator("details").filter({ hasText: "Anexos e links" }).first();
-    await anexos.locator("summary").click();
-    await expect(anexos.locator(".asset-status-card")).toHaveCount(2);
+    const anexos = materiais(page);
+    await expect(anexos.locator(CARD)).toHaveCount(2);
 
     await anexos.locator('input[type="file"]').setInputFiles({
       name: PDF_NOVO.file_name,
@@ -466,12 +459,12 @@ test.describe("o PDF em Anexos só entra na lista depois da política", () => {
     await politicaPedida;
     // Enquanto a política não volta, o PDF é conteúdo da aula: ele não pertence
     // a este painel, e mostrá-lo aqui seria mentir sobre o que já vale.
-    await expect(anexos.locator(".asset-status-card")).toHaveCount(2);
+    await expect(anexos.locator(CARD)).toHaveCount(2);
 
     liberarPolitica!();
 
-    await expect(anexos.locator(".asset-status-card")).toHaveCount(3);
-    const cardNovo = anexos.locator(".asset-status-card").filter({ hasText: PDF_NOVO.file_name });
+    await expect(anexos.locator(CARD)).toHaveCount(3);
+    const cardNovo = anexos.locator(CARD).filter({ hasText: PDF_NOVO.file_name });
     await expect(cardNovo).toHaveClass(/state-just-ready/);
     // O foco é a prova de que o efeito rodou **depois** do PATCH: antes dele o
     // card nem existia neste painel. A lista aqui é curta e o card já nasce
@@ -520,9 +513,7 @@ test.describe("o PDF em Anexos só entra na lista depois da política", () => {
       await route.fulfill({ json: { upload_id: uploadId, status: "ready", asset: PDF_NOVO } });
     });
 
-    const anexos = page.getByTestId(`lesson-${LESSON_ID}`)
-      .locator("details").filter({ hasText: "Anexos e links" }).first();
-    await anexos.locator("summary").click();
+    const anexos = materiais(page);
     await anexos.locator('input[type="file"]').setInputFiles({
       name: PDF_NOVO.file_name,
       mimeType: "application/pdf",
@@ -531,14 +522,15 @@ test.describe("o PDF em Anexos só entra na lista depois da política", () => {
 
     // O vendedor precisa saber. O pior desfecho aqui seria o silêncio: o
     // arquivo subiu, foi verificado, e não está em painel nenhum.
-    await expect(anexos.getByRole("alert")).toContainText("Não foi possível salvar a permissão");
+    await expect(anexos.getByRole("alert")).toContainText("Não deu para salvar esta mudança.");
     // E não entra nos anexos: enquanto a política não valer, ele continua sendo
     // conteúdo da aula, e mostrá-lo aqui seria mentir sobre o que está gravado.
     // Este teste não vai além disso — que ele reapareça no painel de conteúdo
     // depois de recarregar é o que a mensagem promete, e provar isso exigiria
     // recarregar a página aqui.
-    await expect(anexos.locator(".asset-status-card")).toHaveCount(2);
-    await expect(anexos.getByRole("alert")).toContainText("Recarregue");
+    await expect(anexos.locator(CARD)).toHaveCount(2);
+    // E diz o que fazer, em vez de deixar o vendedor adivinhar.
+    await expect(anexos.getByRole("alert")).toContainText("tente de novo");
   });
 });
 
@@ -564,20 +556,16 @@ test.describe("mover um PDF entre os painéis", () => {
       } });
     });
 
-    const aula = page.getByTestId(`lesson-${LESSON_ID}`);
-    const conteudo = aula.locator("details").filter({ hasText: "Conteúdo da aula" }).first();
-    const anexos = aula.locator("details").filter({ hasText: "Anexos e links" }).first();
+    // Os dois lugares sempre à vista: é a situação em que o defeito aparecia.
+    const conteudo = conteudoDaAula(page);
+    const anexos = materiais(page);
+    await expect(conteudo.locator(CARD)).toHaveCount(1);
+    await expect(anexos.locator(CARD)).toHaveCount(2);
 
-    // Os dois painéis abertos: é a situação em que o defeito aparecia.
-    await conteudo.locator("summary").click();
-    await anexos.locator("summary").click();
-    await expect(conteudo.locator(".asset-status-card")).toHaveCount(1);
-    await expect(anexos.locator(".asset-status-card")).toHaveCount(2);
+    await conteudo.getByRole("button", { name: "Mover para Materiais para o aluno" }).click();
 
-    await conteudo.getByRole("button", { name: "Mover para anexos" }).click();
-
-    await expect(conteudo.locator(".asset-status-card")).toHaveCount(0);
-    await expect(anexos.locator(".asset-status-card")).toHaveCount(3);
+    await expect(conteudo.locator(CARD)).toHaveCount(0);
+    await expect(anexos.locator(CARD)).toHaveCount(3);
     await expect(anexos).toContainText(PDF.file_name);
   });
 });
@@ -595,15 +583,19 @@ test.describe("o aviso chega enquanto o painel de destino ainda carrega", () => 
     await login(page);
 
     const lista: MaterialView[] = [PDF, MARKDOWN, TEXTO];
+    // A lista do curso pede o resumo de cada aula assim que abre. Só depois de
+    // abrir a aula os dois painéis pedem a própria lista, na ordem da tela:
+    // primeiro "Vídeo ou PDF da aula", depois "Materiais para o aluno".
+    let aulaAberta = false;
     let chamadas = 0;
     let liberarSegunda: (() => void) | null = null;
     const segundaPedida = new Promise<void>((resolve) => {
       void page.route("**/lessons/*/assets", async (route) => {
         if (route.request().method() !== "GET") return route.fallback();
-        chamadas += 1;
-        // A segunda é a do painel de anexos: fica presa até o teste soltar,
+        if (aulaAberta && route.request().url().includes(`/lessons/${LESSON_ID}/`)) chamadas += 1;
+        // A segunda é a do painel de materiais: fica presa até o teste soltar,
         // reproduzindo o carregamento inicial ainda em voo.
-        if (chamadas === 2) {
+        if (aulaAberta && chamadas === 2) {
           resolve();
           await new Promise<void>((liberar) => { liberarSegunda = liberar; });
         }
@@ -642,22 +634,22 @@ test.describe("o aviso chega enquanto o painel de destino ainda carrega", () => 
 
     await page.goto(`/products/${SELLER_ID}/${PRODUCT_ID}?section=curriculo`);
     await expect(page.getByTestId("curriculum-workspace")).toBeVisible();
+    // Os resumos das oito aulas chegam antes de a aula abrir.
+    await expect(page.getByTestId(`lesson-${LESSON_ID}`)).toContainText("✓ Pronta");
 
-    const aula = page.getByTestId(`lesson-${LESSON_ID}`);
-    const conteudo = aula.locator("details").filter({ hasText: "Conteúdo da aula" }).first();
-    const anexos = aula.locator("details").filter({ hasText: "Anexos e links" }).first();
-
-    await conteudo.locator("summary").click();
-    await expect(conteudo.locator(".asset-status-card")).toHaveCount(1);
-    await anexos.locator("summary").click();
+    aulaAberta = true;
+    await page.getByTestId(`lesson-${LESSON_ID}`).getByRole("link").click();
+    const conteudo = conteudoDaAula(page);
+    const anexos = materiais(page);
+    await expect(conteudo.locator(CARD)).toHaveCount(1);
     await segundaPedida;
 
     // O irmão anuncia enquanto o destino ainda espera a própria lista.
-    await conteudo.getByRole("button", { name: "Mover para anexos" }).click();
+    await conteudo.getByRole("button", { name: "Mover para Materiais para o aluno" }).click();
     liberarSegunda!();
 
-    await expect(anexos.locator(".asset-status-card")).toHaveCount(3);
-    await expect(anexos).not.toContainText("Carregando materiais…");
+    await expect(anexos.locator(CARD)).toHaveCount(3);
+    await expect(anexos).not.toContainText("Carregando os arquivos…");
   });
 });
 
@@ -665,11 +657,6 @@ test.describe("um envio que não terminou não trava o painel", () => {
   // Um `pending` na carga da página é um envio que este painel não está
   // fazendo. Antes ele virava "verificação em andamento" e desligava o seletor
   // por até duas horas, sem nada sendo verificado (#645).
-  function conteudoDaAula(page: Page) {
-    return page.getByTestId(`lesson-${LESSON_ID}`)
-      .locator("details").filter({ hasText: "Conteúdo da aula" }).first();
-  }
-
   test("envio dentro do prazo: avisa os dois casos e deixa escolher de novo", async ({ page }) => {
     await login(page);
     await openCurriculum(page, [], [{
@@ -681,9 +668,7 @@ test.describe("um envio que não terminou não trava o painel", () => {
     }]);
 
     const conteudo = conteudoDaAula(page);
-    await expect(conteudo.locator("summary")).not.toContainText("Preparação em andamento");
-    await conteudo.locator("summary").click();
-
+    await expect(conteudo).not.toContainText("Quase lá");
     await expect(conteudo).toContainText("O envio de aula-1.mp4 não terminou.");
     await expect(conteudo).toContainText("Se ele ainda estiver subindo em outra aba, espere por lá");
     await expect(conteudo).not.toContainText("A verificação está demorando");
@@ -701,8 +686,7 @@ test.describe("um envio que não terminou não trava o painel", () => {
     }]);
 
     const conteudo = conteudoDaAula(page);
-    await conteudo.locator("summary").click();
-
+    await expect(conteudo.locator('input[type="file"]')).toBeAttached();
     await expect(conteudo).not.toContainText("não terminou");
     await expect(conteudo).not.toContainText("A verificação está demorando");
     await expect(conteudo.locator('input[type="file"]')).toBeEnabled();

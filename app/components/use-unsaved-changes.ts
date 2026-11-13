@@ -8,9 +8,47 @@ export const DIRTY_NAVIGATION_REQUEST_EVENT = "appsell:dirty-navigation-request"
 export const DIRTY_HISTORY_BLOCKED_EVENT = "appsell:dirty-history-blocked";
 export const DIRTY_HISTORY_CONTINUE_EVENT = "appsell:dirty-history-continue";
 export const DIRTY_NAVIGATION_ALLOWED_EVENT = "appsell:dirty-navigation-allowed";
+export const DIRTY_IN_PAGE_TRAVERSAL_EVENT = "appsell:dirty-in-page-traversal";
 
 export function allowUnsavedNavigation() {
   window.dispatchEvent(new Event(DIRTY_NAVIGATION_ALLOWED_EVENT));
+}
+
+/**
+ * Avisa a guarda que a próxima travessia do histórico é dentro da própria
+ * página (voltar da aula para a lista do curso, #649). Ela atravessa a
+ * sentinela sem pedir confirmação e põe a sentinela de novo onde a tela
+ * chegou, em vez de deixá-la para trás.
+ */
+export function announceInPageTraversal() {
+  window.dispatchEvent(new Event(DIRTY_IN_PAGE_TRAVERSAL_EVENT));
+}
+
+// A marca da sentinela no estado da entrada: de qual guarda ela é e em que
+// URL ela foi posta.
+const GUARD_MARK = "__appsellDirtyGuard";
+const GUARD_MARK_URL = "__appsellDirtyGuardUrl";
+
+type HistoryState = Record<string, unknown> | null;
+
+/** Só a marca da guarda, para levar a uma entrada reescrita. */
+export function unsavedGuardMarkOf(state: HistoryState): Record<string, unknown> | null {
+  if (!state?.[GUARD_MARK]) return null;
+  return { [GUARD_MARK]: state[GUARD_MARK], [GUARD_MARK_URL]: state[GUARD_MARK_URL] };
+}
+
+/** A entrada atual é a sentinela de uma guarda de alteração pendente. */
+export function onUnsavedGuardSentinel(): boolean {
+  return unsavedGuardMarkOf(window.history.state as HistoryState) !== null;
+}
+
+/**
+ * Troca a URL da entrada atual sem apagar a marca da guarda (#649). O Next só
+ * copia o estado dele para a entrada; sem a marca, a guarda perde a conta de
+ * onde está a sentinela e, ao limpar, volta uma entrada que não é dela.
+ */
+export function replaceUrlKeepingUnsavedGuard(url: string) {
+  window.history.replaceState(unsavedGuardMarkOf(window.history.state as HistoryState), "", url);
 }
 
 // O pedaço do navegador que a guarda usa. Em teste entra um histórico falso
@@ -94,6 +132,9 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
   let leavingUrl = "";
   let restoringTimer: ReturnType<GuardEnvironment["timers"]["set"]> | null = null;
   let allowNavigation = false;
+  // A tela anunciou que a próxima travessia fica na página (`announceInPageTraversal`).
+  let inPageTraversal = false;
+  let inPageTimer: ReturnType<GuardEnvironment["timers"]["set"]> | null = null;
   // Onde a tela estava quando a navegação foi liberada. Enquanto o navegador
   // não sai dela, a navegação ainda está em voo e não pode ser desfeita.
   let allowedFromUrl = "";
@@ -105,7 +146,17 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
   let waiting: Array<() => void> = [];
   let settleTimer: ReturnType<GuardEnvironment["timers"]["set"]> | null = null;
 
-  const onSentinel = () => (history.state as { __appsellDirtyGuard?: unknown } | null)?.__appsellDirtyGuard === token;
+  const onSentinel = () => (history.state as HistoryState)?.[GUARD_MARK] === token;
+  const markHere = () => ({ ...history.state, [GUARD_MARK]: token, [GUARD_MARK_URL]: location.href });
+  // A tela trocou a URL da sentinela sem sair dela (abrir ou fechar a aula,
+  // #649). O `back()` pousaria na entrada de baixo, que guarda a URL antiga, e
+  // a tela mudaria sozinha.
+  const sentinelUrlChanged = () => onSentinel() && (history.state as HistoryState)?.[GUARD_MARK_URL] !== location.href;
+
+  // A tela empilhou uma entrada por cima da sentinela sem `popstate` (o
+  // `pushState` de abrir uma aula, #649). O `back()` da guarda tiraria essa
+  // entrada, e não a sentinela: a pessoa seria levada para a tela de antes.
+  const pushedOverSentinel = () => history.length !== knownLength;
 
   const settled = () => pending === null && (allowNavigation || disposed || dirty || !sentinel);
 
@@ -123,15 +174,36 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
   };
 
   const adjust = () => {
-    if (pending !== null || allowNavigation || disposed) return;
+    // Com a travessia da tela em voo, um `back()` da guarda a cancelaria (no
+    // WebKit) e a pessoa iria parar noutro lugar. Espera o `popstate` dela.
+    if (pending !== null || allowNavigation || disposed || inPageTraversal) return;
     if (dirty && !sentinel) {
       if (sentinelBelow) return;
-      history.pushState({ ...history.state, __appsellDirtyGuard: token }, "", location.href);
+      history.pushState(markHere(), "", location.href);
       knownLength = history.length;
       sentinel = true;
       return;
     }
     if (!dirty && sentinel) {
+      if (pushedOverSentinel()) {
+        // A sentinela fica para trás; se o voltar pousar nela, `onPopState`
+        // a reconhece e a atravessa.
+        sentinel = false;
+        sentinelBelow = false;
+        knownLength = history.length;
+        return;
+      }
+      if (sentinelUrlChanged()) {
+        // A entrada fica onde está, com a URL de agora, e deixa de ser
+        // sentinela: tirar a marca é o que a impede de ser atravessada depois.
+        const { [GUARD_MARK]: _mark, [GUARD_MARK_URL]: _url, ...rest } = (history.state as HistoryState) ?? {};
+        void _mark;
+        void _url;
+        history.replaceState(rest, "", location.href);
+        sentinel = false;
+        sentinelBelow = false;
+        return;
+      }
       pending = "leaving";
       leavingUrl = location.href;
       history.back();
@@ -151,6 +223,19 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
   const onPopState = () => {
     const grew = history.length > knownLength;
     knownLength = history.length;
+    // O aviso vale para um `popstate` só, seja qual for o ramo: preso, ele
+    // faria um voltar de verdade, com alteração pendente, sair sem diálogo.
+    const inPage = inPageTraversal;
+    clearInPage();
+    if (inPage && pending === null && !allowNavigation) {
+      // A sentinela ficou à frente e sai do histórico com a próxima entrada.
+      // Uma só por ativação: a guarda a põe de novo aqui, no lugar a que a
+      // tela chegou, e a entrada antiga não se acumula.
+      sentinel = onSentinel();
+      sentinelBelow = false;
+      reconcile();
+      return;
+    }
     if (pending === "leaving") {
       pending = null;
       sentinel = false;
@@ -217,6 +302,24 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
   const warnBeforeUnload = (event: Event) => {
     if (dirty && !allowNavigation) event.preventDefault();
   };
+  const clearInPage = () => {
+    inPageTraversal = false;
+    if (inPageTimer !== null) timers.clear(inPageTimer);
+    inPageTimer = null;
+  };
+  const expectInPageTraversal = () => {
+    clearInPage();
+    inPageTraversal = true;
+    // Uma travessia que não chega (sem entrada para trás) não pode deixar a
+    // guarda esperando: no prazo, ela volta ao estado real.
+    inPageTimer = timers.set(() => {
+      inPageTimer = null;
+      if (!inPageTraversal || disposed) return;
+      inPageTraversal = false;
+      sentinel = onSentinel();
+      reconcile();
+    }, RESTORE_DEADLINE_MS);
+  };
   const allow = () => {
     allowNavigation = true;
     allowedFromUrl = location.href;
@@ -234,6 +337,7 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
   events.addEventListener("beforeunload", warnBeforeUnload);
   events.addEventListener(DIRTY_NAVIGATION_ALLOWED_EVENT, allow);
   events.addEventListener(DIRTY_HISTORY_CONTINUE_EVENT, continueHistory);
+  events.addEventListener(DIRTY_IN_PAGE_TRAVERSAL_EVENT, expectInPageTraversal);
   reconcile();
 
   return {
@@ -254,7 +358,7 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
         // A mesma URL gravada por cima da sentinela: a entrada é a mesma de
         // antes e volta a ser a sentinela, sem empilhar outra.
         if (rewritten) {
-          history.replaceState({ ...history.state, __appsellDirtyGuard: token }, "", location.href);
+          history.replaceState(markHere(), "", location.href);
         }
         sentinel = onSentinel();
       }
@@ -274,20 +378,23 @@ export function createUnsavedHistoryGuard(env: GuardEnvironment, initialDirty: b
     dispose() {
       disposed = true;
       clearRestoringTimer();
+      clearInPage();
       events.removeEventListener("popstate", onPopState);
       events.removeEventListener("beforeunload", warnBeforeUnload);
       events.removeEventListener(DIRTY_NAVIGATION_ALLOWED_EVENT, allow);
       events.removeEventListener(DIRTY_HISTORY_CONTINUE_EVENT, continueHistory);
+      events.removeEventListener(DIRTY_IN_PAGE_TRAVERSAL_EVENT, expectInPageTraversal);
       // Desmontar sem navegação liberada deixaria a sentinela para trás. Com
       // ela embaixo de um fragmento, fica: tirá-la custaria a entrada que o
       // vendedor empilhou, e o voltar dele só a atravessa na mesma página. A
       // URL pode ter mudado com ela no topo, então a entrada que sobra recebe
       // a URL atual.
-      if (sentinel && pending === null && !allowNavigation) {
+      if (sentinel && pending === null && !allowNavigation && !pushedOverSentinel()) {
         const targetUrl = location.href;
         events.addEventListener("popstate", () => {
-          const { __appsellDirtyGuard: _guard, ...rest } = history.state ?? {};
+          const { [GUARD_MARK]: _guard, [GUARD_MARK_URL]: _guardUrl, ...rest } = (history.state as HistoryState) ?? {};
           void _guard;
+          void _guardUrl;
           history.replaceState(rest, "", targetUrl);
         }, { once: true });
         history.back();
