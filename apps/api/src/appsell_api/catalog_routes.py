@@ -2287,6 +2287,23 @@ def _domain_error(error: DBAPIError) -> HTTPException:
             status_code=status.HTTP_409_CONFLICT,
             detail="cover_upload_closed",
         )
+    # Envios abertos demais. So as funcoes de envio levantam P4290: na
+    # `create_asset_upload_intent` (a unica que chega aqui) ele e so envio
+    # aberto desde a 0082; a `finalize_asset_verification_v2` (0017) ainda o usa
+    # para cota de armazenamento, mas roda no worker e nao passa por esta rota.
+    # Sem isto caia no 503 do fim, e a tela dizia "fora do ar".
+    if sqlstate == "P4290":
+        return HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="upload_limit_reached",
+        )
+    # Cota de armazenamento da loja cheia (0082). Esperar nao resolve; e 409
+    # como os outros limites de quantidade daqui (`offer_limit_reached`).
+    if sqlstate == "P4231":
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="storage_quota_exceeded",
+        )
     # Uma linha que nao existe e 404. Sem isto ela cairia no 503 do fim, que
     # diz "o dominio esta fora do ar" sobre um pedido que so estava errado.
     if sqlstate == "P4041":
